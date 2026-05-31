@@ -2964,6 +2964,12 @@ fn resolve_range_dim_arg(
 /// Returns `None` when no matching cell is found (e.g. unnamed inline solid),
 /// causing the caller to fall through per PRD invariant #2 (never
 /// partial-construct sub-handles from a non-hydrated geometry cell).
+///
+/// # Uniqueness assumption
+/// Kernel handles are unique per shape within a session (PRD §4 intra-session
+/// handle persistence), so at most one `Value::GeometryHandle` in `values`
+/// carries any given `kernel_handle`. The linear scan returns on the first
+/// match; that match is expected to be the only one.
 fn resolve_owner_solid_handle(
     values: &reify_ir::ValueMap,
     parent_body_kh: GeometryHandleId,
@@ -11141,6 +11147,167 @@ mod tests {
             result.is_none(),
             "must fall through to None when parent solid is not hydrated in values, got {:?}",
             result
+        );
+    }
+
+    // ── error-path coverage for dispatch_filtered_subhandles (suggestion 3) ──
+
+    /// When the `AdjacentFaces` kernel query is not staged, `adjacent_to_face`
+    /// returns `Err`; `dispatch_filtered_subhandles` receives `filter_result = Err`
+    /// and must return `Some(Value::Undef)` with a Warning diagnostic.
+    #[test]
+    fn adjacent_faces_dispatch_emits_warning_and_undef_on_kernel_query_failure() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+
+        let parent_handle = GeometryHandleId(1);
+        let face_handle = GeometryHandleId(1);
+        let parent_rr = RealizationNodeId::new("Solid", 0);
+        let parent_hash: [u8; 32] = [0x77; 32];
+
+        // Stage extract_faces so adjacent_to_face can find the face index (0),
+        // but omit the AdjacentFaces query result → kernel.query(...) returns Err
+        // → adjacent_to_face propagates Err → filter_result = Err in
+        // dispatch_filtered_subhandles → Warning + Value::Undef.
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_faces(parent_handle, vec![face_handle]);
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("b".to_string(), parent_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("Solid", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: parent_handle,
+            },
+        );
+        values.insert(
+            ValueCellId::new("Solid", "face"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: face_handle,
+            },
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "adjacent_faces",
+            "Solid",
+            "b",
+            Type::Geometry,
+            "face",
+            Type::Geometry,
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let mut diagnostics = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "kernel query failure must yield Value::Undef; got {:?}; diags: {:?}",
+            result,
+            diagnostics
+        );
+        assert!(
+            !diagnostics.is_empty(),
+            "a Warning diagnostic must be emitted on kernel query failure"
+        );
+    }
+
+    /// When the `SharedEdges` kernel query is not staged, `dispatch_shared_edges`
+    /// hits `Err` at step 4 (SharedEdges query) and must return
+    /// `Some(Value::Undef)` with a Warning diagnostic.
+    #[test]
+    fn shared_edges_dispatch_emits_warning_and_undef_on_shared_edges_query_failure() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+
+        let parent_handle = GeometryHandleId(1);
+        let face_a_handle = GeometryHandleId(2);
+        let face_b_handle = GeometryHandleId(3);
+        let parent_rr = RealizationNodeId::new("Solid", 0);
+        let parent_hash: [u8; 32] = [0x77; 32];
+
+        // Stage OwnerBody + extract_faces so the arm passes the cross-solid guard
+        // and face-index recovery, but omit the SharedEdges query result →
+        // kernel.query(SharedEdges { ... }) returns Err → Warning + Value::Undef.
+        let mut kernel = MockGeometryKernel::new()
+            .with_owner_body_result(face_a_handle, parent_handle)
+            .with_owner_body_result(face_b_handle, parent_handle)
+            .with_extracted_faces(parent_handle, vec![face_a_handle, face_b_handle]);
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("fa".to_string(), face_a_handle);
+        named_steps.insert("fb".to_string(), face_b_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("Solid", "body"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: parent_handle,
+            },
+        );
+        values.insert(
+            ValueCellId::new("Solid", "fa"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: face_a_handle,
+            },
+        );
+        values.insert(
+            ValueCellId::new("Solid", "fb"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: face_b_handle,
+            },
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "shared_edges",
+            "Solid",
+            "fa",
+            Type::Geometry,
+            "fb",
+            Type::Geometry,
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let mut diagnostics = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "SharedEdges query failure must yield Value::Undef; got {:?}; diags: {:?}",
+            result,
+            diagnostics
+        );
+        assert!(
+            !diagnostics.is_empty(),
+            "a Warning diagnostic must be emitted on SharedEdges query failure"
         );
     }
 }
