@@ -352,3 +352,195 @@ structure Test {
         conformance_errors
     );
 }
+
+// ── Step-11: objective / realization / guarded-group coverage (soundness) ────
+//
+// The step-2 trait-object wildcard relaxation in `resolve_function_overload` is
+// GLOBAL: a non-conforming `couple(FixedThing())` resolves to the trait overload
+// at EVERY entity-scope call site, replacing the pre-change "no matching
+// overload" hard error.  If `phase_fn_arg_conformance` walks ONLY value-cell
+// defaults, constraints, and function bodies (the step-6/8/10 scope), the same
+// non-conforming call placed in an objective / realization / guarded `where`
+// block compiles with NO diagnostic — a silent loss of a previously-existing
+// hard error (a soundness REGRESSION, not a merely-missing feature, because the
+// resolution-level suppression ships in this same diff).
+//
+// Each test filters diagnostics by `DiagnosticCode::TypeNotConformingToTrait` so
+// unrelated unit/type diagnostics never affect the count.
+//
+// Cases (a)/(b)/(c) are deterministically RED on the step-10 implementation
+// (objective, realization, and guarded-group exprs are not walked); the two
+// positive guards must hold both before and after step-12.
+
+/// (a) A non-conforming call in an OBJECTIVE expr — `minimize couple(FixedThing())`
+/// — emits TypeNotConformingToTrait.
+///
+/// The objective lives in `template.objective` = `OptimizationObjective::Minimize(expr)`
+/// (`minimize <expr>` is a valid structure member; boundary2_producer.rs:1303).
+///
+/// RED until step-12: `template.objective` is not walked by step-10.
+#[test]
+fn objective_bad_arg_emits_type_not_conforming_to_trait() {
+    let source = format!(
+        r#"{}
+structure TObj {{
+    param x : Real = 0.0
+    minimize couple(FixedThing())
+}}
+"#,
+        preamble()
+    );
+    let module = compile_source(&source);
+
+    let conformance_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
+        .collect();
+
+    assert_eq!(
+        conformance_errors.len(),
+        1,
+        "expected exactly 1 TypeNotConformingToTrait in objective, got {}: {:?}",
+        conformance_errors.len(),
+        module.diagnostics
+    );
+    let msg = &conformance_errors[0].message;
+    assert!(
+        msg.contains("FixedThing") && msg.contains("DrivingJoint"),
+        "diagnostic should mention 'FixedThing' and 'DrivingJoint'; got: {}",
+        msg
+    );
+}
+
+/// (b) A non-conforming call in a REALIZATION geometry-op arg —
+/// `cylinder(couple(FixedThing()), 2.0)` — emits TypeNotConformingToTrait.
+///
+/// The geometry `let` is skipped from `value_cells` (`continue` at
+/// entity.rs:1175-1177) and emitted as a realization, so the `couple(...)` call
+/// sits in `realizations[*].operations[*].args` with NO double-count against a
+/// value cell. (Bare-number primitive args are accepted — `cylinder(1, 2)`
+/// precedent.)
+///
+/// RED until step-12: realizations are not walked by step-10.
+#[test]
+fn realization_bad_arg_emits_type_not_conforming_to_trait() {
+    let source = format!(
+        r#"{}
+structure TReal {{
+    let body = cylinder(couple(FixedThing()), 2.0)
+}}
+"#,
+        preamble()
+    );
+    let module = compile_source(&source);
+
+    let conformance_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
+        .collect();
+
+    assert_eq!(
+        conformance_errors.len(),
+        1,
+        "expected exactly 1 TypeNotConformingToTrait in realization, got {}: {:?}",
+        conformance_errors.len(),
+        module.diagnostics
+    );
+}
+
+/// (c) A non-conforming call in a GUARDED `where` block member —
+/// `where flag {{ let bad = couple(FixedThing()) }}` — emits TypeNotConformingToTrait.
+///
+/// Guard members live in `guarded_groups[*].members`, a vec distinct from
+/// `value_cells`.
+///
+/// RED until step-12: guarded groups are not walked by step-10.
+#[test]
+fn guarded_group_bad_arg_emits_type_not_conforming_to_trait() {
+    let source = format!(
+        r#"{}
+structure TGuard {{
+    param flag : Bool = true
+    where flag {{
+        let bad = couple(FixedThing())
+    }}
+}}
+"#,
+        preamble()
+    );
+    let module = compile_source(&source);
+
+    let conformance_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
+        .collect();
+
+    assert_eq!(
+        conformance_errors.len(),
+        1,
+        "expected exactly 1 TypeNotConformingToTrait in guarded group, got {}: {:?}",
+        conformance_errors.len(),
+        module.diagnostics
+    );
+}
+
+/// Positive guard: a conforming `minimize couple(RevoluteJoint())` objective
+/// produces NO TypeNotConformingToTrait error. Must hold before and after step-12.
+#[test]
+fn objective_good_arg_emits_no_conformance_error() {
+    let source = format!(
+        r#"{}
+structure TObjOk {{
+    param x : Real = 0.0
+    minimize couple(RevoluteJoint())
+}}
+"#,
+        preamble()
+    );
+    let module = compile_source(&source);
+
+    let conformance_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
+        .collect();
+
+    assert!(
+        conformance_errors.is_empty(),
+        "conforming objective call must produce no TypeNotConformingToTrait errors; got: {:?}",
+        conformance_errors
+    );
+}
+
+/// Positive guard: a conforming `where flag {{ let ok = couple(RevoluteJoint()) }}`
+/// guarded member produces NO TypeNotConformingToTrait error.
+#[test]
+fn guarded_group_good_arg_emits_no_conformance_error() {
+    let source = format!(
+        r#"{}
+structure TGuardOk {{
+    param flag : Bool = true
+    where flag {{
+        let ok = couple(RevoluteJoint())
+    }}
+}}
+"#,
+        preamble()
+    );
+    let module = compile_source(&source);
+
+    let conformance_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
+        .collect();
+
+    assert!(
+        conformance_errors.is_empty(),
+        "conforming guarded call must produce no TypeNotConformingToTrait errors; got: {:?}",
+        conformance_errors
+    );
+}
