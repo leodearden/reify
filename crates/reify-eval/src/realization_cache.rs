@@ -606,4 +606,28 @@ mod tests {
             "hash_a and hash_b buckets must hold distinct values (not the same slot)"
         );
     }
+
+    /// step-07: a `KernelHandle` value round-trips through the value-agnostic
+    /// `RealizationCache` unchanged — insert then lookup at the same
+    /// `(entity, repr, tol, options)` key returns the same handle. Pins the
+    /// PRD §8 signal that the cache carries the typed kernel-tagged handle
+    /// cleanly (and that `reify_ir::{KernelId, KernelHandle}` resolve at the
+    /// crate root).
+    #[test]
+    fn kernel_handle_round_trips_through_realization_cache() {
+        use reify_ir::{GeometryHandleId, KernelHandle, KernelId};
+
+        let mut cache = RealizationCache::<KernelHandle>::new();
+        let handle = KernelHandle {
+            kernel: KernelId::Manifold,
+            id: GeometryHandleId(5),
+        };
+        cache.insert("Bracket", ReprKind::Mesh, 0.01, super::NO_OPTIONS, handle);
+
+        assert_eq!(
+            cache.lookup("Bracket", ReprKind::Mesh, 0.01, super::NO_OPTIONS),
+            Some(&handle),
+            "KernelHandle must round-trip through the value-agnostic cache"
+        );
+    }
 }
