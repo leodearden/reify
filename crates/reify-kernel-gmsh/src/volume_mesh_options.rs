@@ -120,6 +120,23 @@ mod tests {
         );
     }
 
+    /// `{force_tet:true, require_hex_wedge:false}` and `{force_tet:false,
+    /// require_hex_wedge:true}` must produce different hashes — pins the
+    /// positional encoding of the two bool discriminators against a field-swap
+    /// collision (the most plausible regression for two same-typed fields).
+    #[test]
+    fn field_order_is_positionally_independent() {
+        let a = VolumeMeshOptions { force_tet: true, require_hex_wedge: false };
+        let b = VolumeMeshOptions { force_tet: false, require_hex_wedge: true };
+        assert_ne!(
+            a.content_hash(),
+            b.content_hash(),
+            "VolumeMeshOptions{{force_tet:true,require_hex_wedge:false}} and \
+             {{force_tet:false,require_hex_wedge:true}} must produce different hashes — \
+             positional encoding of the two bool fields broken (field-swap collision)",
+        );
+    }
+
     /// Identical `VolumeMeshOptions` must produce equal hashes (determinism).
     /// Confirms the hash is purely a function of the field values — no
     /// timestamp, no RNG, no pointer identity.
