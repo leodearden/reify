@@ -709,11 +709,12 @@ fn edges_parallel_to_let_resolves_to_filtered_list_via_helper() {
 }
 
 /// `let es = edges_at_height(body, z, tol)` with `let z = 0mm` and
-/// `let tol = 0.01mm` must resolve to the height-filtered `Value::List`. The
-/// single staged edge's bbox z-extent is `[0, 0]` (exactly on the `z = 0`
-/// plane), within the 0.01 mm tolerance, so it survives. Pins the
-/// Length-scalar-arg resolution + delegation to
-/// `topology_selectors::edges_at_height`.
+/// `let tol = 0.01mm` must resolve to the height-filtered `Value::List` of
+/// edge sub-handles (PRD §4 KGQ-θ). The single staged edge's bbox z-extent is
+/// `[0, 0]` (exactly on the `z = 0` plane), within the 0.01 mm tolerance, so
+/// it survives. Pins the Length-scalar-arg resolution + delegation to
+/// `topology_selectors::edges_at_height` and the sub-handle output contract
+/// (task 3617).
 #[test]
 fn edges_at_height_let_resolves_to_filtered_list_via_helper() {
     let source = "structure def Bracket {\n    \
@@ -737,13 +738,30 @@ fn edges_at_height_let_resolves_to_filtered_list_via_helper() {
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let cell = ValueCellId::new("Bracket", "es");
-    assert_eq!(
-        result.values.get(&cell),
-        Some(&Value::List(vec![Value::Int(2)])),
-        "Bracket.es must resolve to the height-filtered Value::List via \
-         topology_selectors::edges_at_height, got {:?}",
-        result.values.get(&cell),
-    );
+    let list = match result.values.get(&cell) {
+        Some(Value::List(elems)) => elems.clone(),
+        other => panic!(
+            "Bracket.es must be Value::List of GeometryHandle sub-handles \
+             (PRD §4 KGQ-θ); got {:?}",
+            other
+        ),
+    };
+    assert_eq!(list.len(), 1, "expected 1 edge sub-handle (z-plane filter)");
+    match &list[0] {
+        Value::GeometryHandle { kernel_handle, upstream_values_hash, .. } => {
+            assert_eq!(
+                kernel_handle,
+                &GeometryHandleId(2),
+                "es[0] kernel_handle must be GHId(2)"
+            );
+            assert_ne!(
+                upstream_values_hash,
+                &[0u8; 32],
+                "es[0] upstream_values_hash must be non-zero (PRD §4)"
+            );
+        }
+        other => panic!("es[0] must be Value::GeometryHandle, got {:?}", other),
+    }
 }
 
 /// `let neighbors = adjacent_faces(body, body)` must resolve to a
