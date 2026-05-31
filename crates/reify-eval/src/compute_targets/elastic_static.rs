@@ -990,6 +990,125 @@ mod tests {
         );
     }
 
+    /// Row 3 (ε/3781 step-3): constant-field lift of an IsotropicElastic must
+    /// produce an ElasticResult identical to the native isotropic path.
+    ///
+    /// # Rationale
+    ///
+    /// β/3778 C4 guarantees that `element_stiffness_p1_with_field(&ConstantField{..})`
+    /// for an identity-frame isotropic lift is bitwise identical to the legacy
+    /// `element_stiffness(P1, ..)`. Since the same mesh, same f, and same
+    /// deterministic CG are used, the displacement vectors u must also be
+    /// bitwise identical.
+    ///
+    /// # Thresholds
+    ///
+    /// - **iterations**: exact equality (`assert_eq!`). Contingent on β/3778 C4
+    ///   bitwise-identity: identical K + deterministic preconditioned CG ⇒
+    ///   identical convergence path. If C4 is ever softened to a numerical
+    ///   tolerance, this assertion must be relaxed accordingly.
+    /// - **displacement u**: 1e-12 relative tolerance. The expected diff is 0.0
+    ///   ULPs (bit-identity propagates through CG), but a tolerance-based guard
+    ///   is used over `assert_eq!` as defensive style.
+    /// - **max_von_mises**: 1e-9 relative tolerance, reflecting the fact that
+    ///   the two stress-recovery code paths (`element_stress_p1` vs
+    ///   `element_von_mises_anisotropic`) share the same u but compute stress
+    ///   via different numerical sequences; 1e-9 is the expected agreement band
+    ///   for an identity-frame isotropic lift.
+    ///
+    /// This proves the C4 isotropic-lift equivalence flows end-to-end through
+    /// `solve_cantilever_fea` to the consumer `CantileverFeaSolve`.
+    #[test]
+    fn constant_field_lift_matches_isotropic_elastic_result() {
+        // Same geometry/load as the sibling orthotropic tests.
+        let length    = 0.8_f64;
+        let width     = 0.1_f64;
+        let height    = 0.1_f64;
+        let tip_force = 1000.0_f64;
+
+        let iso = IsotropicElastic {
+            youngs_modulus: 200e9,
+            poisson_ratio:  0.3,
+        };
+        let identity: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let aniso = AnisotropicMaterial::from_law(&iso, identity);
+
+        // Solve with the native isotropic path.
+        let (iso_result, _) = solve_cantilever_fea(
+            &MaterialModel::Isotropic(iso),
+            length, width, height, tip_force, None,
+        );
+        // Solve with the anisotropic identity-frame lift path.
+        let (aniso_result, _) = solve_cantilever_fea(
+            &MaterialModel::Anisotropic(aniso),
+            length, width, height, tip_force, None,
+        );
+
+        // Both must converge.
+        assert!(iso_result.converged,   "isotropic solve must converge");
+        assert!(aniso_result.converged, "anisotropic solve must converge");
+
+        // CG iteration count must be identical: same K (bit-identical per β/3778
+        // C4 guarantee), same f, same deterministic preconditioner ⇒ same
+        // convergence path.
+        //
+        // NOTE: this exact-equality assertion is contingent on the β/3778 C4
+        // bitwise-identity guarantee holding all the way through assembly.  If
+        // that guarantee is ever softened to a numerical tolerance, the two
+        // solves may converge in a different number of steps and this assertion
+        // must be relaxed to a tolerance-based comparison.
+        assert_eq!(
+            iso_result.iterations,
+            aniso_result.iterations,
+            "iso and identity-frame aniso must require identical CG iterations \
+             (same K + same f + deterministic CG ⇒ identical convergence path; \
+             contingent on β/3778 C4 bitwise-identity guarantee)",
+        );
+
+        // Displacement vectors must agree component-wise.
+        //
+        // The underlying guarantee is bitwise identity (β/3778 C4 ⇒ identical K
+        // + deterministic CG ⇒ bit-equal u), so the 1e-12 relative tolerance is
+        // a defensive guard rather than a numerically tight bound — the actual
+        // diff is expected to be 0.0 ULPs.  A tolerance-based assertion is used
+        // here rather than component-wise assert_eq! because floating-point
+        // equality assertions are considered fragile style even when the
+        // theoretical guarantee is exact; the 1e-12 budget leaves no practical
+        // room for divergence.
+        assert_eq!(
+            iso_result.u.len(),
+            aniso_result.u.len(),
+            "displacement vectors must have the same length",
+        );
+        for i in 0..iso_result.u.len() {
+            let tol  = 1e-12 * iso_result.u[i].abs().max(1.0);
+            let diff = (aniso_result.u[i] - iso_result.u[i]).abs();
+            assert!(
+                diff < tol,
+                "displacement at i={i}: |u_aniso−u_iso|={diff:.3e} ≥ tol={tol:.3e} \
+                 (u_iso={:.3e}, u_aniso={:.3e})",
+                iso_result.u[i], aniso_result.u[i],
+            );
+        }
+
+        // max_von_mises must agree to 1e-9 relative: the two stress-recovery
+        // code paths (element_stress_p1 vs element_von_mises_anisotropic)
+        // compute the same physical quantity for an identity-frame isotropic lift.
+        let vm_iso   = iso_result.max_von_mises;
+        let vm_aniso = aniso_result.max_von_mises;
+        assert!(
+            vm_iso > 0.0,
+            "isotropic max_von_mises must be positive (got {vm_iso})",
+        );
+        let vm_tol = 1e-9 * vm_iso.abs().max(1.0);
+        assert!(
+            (vm_aniso - vm_iso).abs() < vm_tol,
+            "max_von_mises: iso={vm_iso:.4e} Pa, aniso={vm_aniso:.4e} Pa, \
+             |diff|={:.3e}, tol={vm_tol:.3e}",
+            (vm_aniso - vm_iso).abs(),
+        );
+    }
+
     /// Amendment (test_coverage): pin `element_von_mises_anisotropic` against the
     /// analytic bending-stress reference for the same orthotropic fixture.
     ///
