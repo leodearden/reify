@@ -2491,4 +2491,126 @@ mod tests {
             );
         }
     }
+
+    /// The 9 legitimate zero-energy modes of the degenerate shell element on the
+    /// patch (`nodes`, `directors`): 3 rigid translations, 3 rigid rotations
+    /// about the mid-surface centroid, and 3 nodal drilling rotations (`θ_i = V_i`
+    /// at node `i`, all else 0). The drilling modes are EXACT zero-energy: every
+    /// strain term reads a nodal rotation only through `(θ_i × V_i) =
+    /// −skew(V_i)·θ_i`, which annihilates `θ_i ∥ V_i`. On a curved patch
+    /// (non-parallel directors) these 9 vectors are linearly independent (no
+    /// uniform `ω` can equal a per-node multiple of three non-parallel
+    /// directors), so they span a 9-dimensional kernel.
+    fn legitimate_kernel_modes(
+        nodes: &[[f64; 3]; 3],
+        directors: &[[f64; 3]; 3],
+    ) -> Vec<[f64; Mitc3Plus::N_DOFS]> {
+        const NDP: usize = Mitc3Plus::N_DOFS_PER_NODE;
+        let mut modes: Vec<[f64; Mitc3Plus::N_DOFS]> = Vec::with_capacity(9);
+        // (a) 3 rigid translations along each global axis.
+        for axis in 0..3 {
+            let mut u = [0.0_f64; Mitc3Plus::N_DOFS];
+            for node in 0..Mitc3Plus::N_NODES {
+                u[NDP * node + axis] = 1.0;
+            }
+            modes.push(u);
+        }
+        // (b) 3 rigid rotations about the mid-surface centroid: u_i = ω×(x_i−c),
+        // θ_i = ω.
+        let c = [
+            (nodes[0][0] + nodes[1][0] + nodes[2][0]) / 3.0,
+            (nodes[0][1] + nodes[1][1] + nodes[2][1]) / 3.0,
+            (nodes[0][2] + nodes[1][2] + nodes[2][2]) / 3.0,
+        ];
+        for w in [[1.0_f64, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] {
+            let mut u = [0.0_f64; Mitc3Plus::N_DOFS];
+            for node in 0..Mitc3Plus::N_NODES {
+                let dx = [
+                    nodes[node][0] - c[0],
+                    nodes[node][1] - c[1],
+                    nodes[node][2] - c[2],
+                ];
+                u[NDP * node] = w[1] * dx[2] - w[2] * dx[1];
+                u[NDP * node + 1] = w[2] * dx[0] - w[0] * dx[2];
+                u[NDP * node + 2] = w[0] * dx[1] - w[1] * dx[0];
+                u[NDP * node + 3] = w[0];
+                u[NDP * node + 4] = w[1];
+                u[NDP * node + 5] = w[2];
+            }
+            modes.push(u);
+        }
+        // (c) 3 nodal drilling rotations θ_i = V_i (zero translation).
+        for node in 0..Mitc3Plus::N_NODES {
+            let mut u = [0.0_f64; Mitc3Plus::N_DOFS];
+            u[NDP * node + 3] = directors[node][0];
+            u[NDP * node + 4] = directors[node][1];
+            u[NDP * node + 5] = directors[node][2];
+            modes.push(u);
+        }
+        modes
+    }
+
+    #[test]
+    fn degenerate_element_has_no_spurious_zero_energy_modes() {
+        // On a CURVED patch (non-parallel directors ⇒ the varying J is active),
+        // the free element's kernel must be EXACTLY the legitimate rigid-body +
+        // MITC3 drilling kernel and nothing more — no spurious (hourglass)
+        // mechanism. We do NOT assert "exactly 6 zero modes": pure MITC3/MITC3+
+        // carries a drilling-rotation kernel by construction (no local θ_z
+        // stiffness — see the drilling-singularity note on
+        // `shell_element_stiffness_mitc3_plus`), so the legitimate kernel here is
+        // 9-dimensional (6 rigid + 3 nodal drilling). The assertion targets the
+        // absence of a mode BEYOND rigid+drilling.
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let nodes = UNIT_TRI;
+        let directors = curved_directors();
+        let thicknesses = [t; 3];
+        let k = shell_element_stiffness_degenerate(&nodes, &directors, &thicknesses, &mat);
+        let k_max = element_k_max(&k);
+        // Kernel eigenvalues measure ~1e-16·k_max; the first deformational
+        // eigenvalue ~5.4e-4·k_max — a ~12-order gap, so 1e-9·k_max cleanly
+        // separates them.
+        let zero_tol = 1e-9 * k_max;
+
+        // (A) Each of the 9 KNOWN kernel modes is zero-energy (Rayleigh quotient
+        // ≈ 0). This pins WHICH 9-dimensional subspace the kernel is.
+        let modes = legitimate_kernel_modes(&nodes, &directors);
+        assert_eq!(modes.len(), 9, "expected 9 legitimate kernel modes");
+        for (m, u) in modes.iter().enumerate() {
+            let ku = matvec(&k, u);
+            let energy: f64 = 0.5 * ku.iter().zip(u.iter()).map(|(a, b)| a * b).sum::<f64>();
+            let unorm2: f64 = u.iter().map(|x| x * x).sum::<f64>();
+            assert!(
+                energy.abs() < zero_tol * unorm2,
+                "legitimate kernel mode {m} not zero-energy: ½uᵀKu = {energy} \
+                 (tol {})",
+                zero_tol * unorm2,
+            );
+        }
+
+        // (B) EXACTLY 9 near-zero eigenvalues ⇒ the kernel is exactly the
+        // 9-dim span of the known modes (≥9 because (A) gives 9 independent
+        // zero-energy modes; =9 because no 10th eigenvalue is near zero), so
+        // there is NO spurious zero mode.
+        let mut eig = element_eigenvalues(&k);
+        eig.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let n_zero = eig.iter().filter(|&&l| l.abs() < zero_tol).count();
+        assert_eq!(
+            n_zero, 9,
+            "degenerate kernel dimension = {n_zero}, expected 9 (6 rigid + 3 \
+             drilling); spectrum = {eig:?}",
+        );
+
+        // (C) The first deformational eigenvalue (10th smallest) is STRICTLY
+        // positive with a wide gap above the kernel — every mode outside
+        // rigid+drilling carries genuine stiffness.
+        let first_positive = eig[9];
+        assert!(
+            first_positive > 1e-6 * k_max,
+            "first deformational eigenvalue {first_positive} not strictly positive \
+             (λ/k_max = {}, expected > 1e-6)",
+            first_positive / k_max,
+        );
+    }
 }
