@@ -4908,4 +4908,174 @@ mod tests {
             d.message,
         );
     }
+
+    // ── task-4081 step-3: check_fn_arg_conformance unit tests ────────────────
+
+    /// Build a marker trait with no requirements.
+    fn marker_trait(name: &str) -> CompiledTrait {
+        CompiledTrait {
+            name: name.to_string(),
+            is_pub: false,
+            doc: None,
+            type_params: vec![],
+            refinements: vec![],
+            required_members: vec![],
+            defaults: vec![],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        }
+    }
+
+    /// Build a `TopologyTemplate` with the given `trait_bounds` and no value cells.
+    fn template_with_bounds(name: &str, bounds: Vec<&str>) -> TopologyTemplate {
+        minimal_template_with_bounds(name, bounds)
+    }
+
+    fn minimal_template_with_bounds(name: &str, bounds: Vec<&str>) -> TopologyTemplate {
+        TopologyTemplate {
+            name: name.to_string(),
+            doc: None,
+            entity_kind: EntityKind::Structure,
+            visibility: Visibility::Public,
+            type_params: vec![],
+            trait_bounds: bounds.into_iter().map(|s| s.to_string()).collect(),
+            value_cells: vec![],
+            constraints: vec![],
+            realizations: vec![],
+            sub_components: vec![],
+            ports: vec![],
+            connections: vec![],
+            guarded_groups: vec![],
+            structure_controlling: HashSet::new(),
+            objective: None,
+            meta: HashMap::new(),
+            content_hash: ContentHash(0),
+            is_recursive: false,
+            annotations: vec![],
+            pragmas: vec![],
+            match_arm_groups: vec![],
+            forall_templates: vec![],
+            assoc_fns: vec![],
+        }
+    }
+
+    /// (a) NonConforming arg against DrivingJoint param → one TypeNotConformingToTrait.
+    /// RED until step-4: `check_fn_arg_conformance` does not exist yet.
+    #[test]
+    fn fn_arg_conformance_non_conforming_emits_diagnostic() {
+        let conforming = template_with_bounds("Conforming", vec!["DrivingJoint"]);
+        let non_conforming = template_with_bounds("NonConforming", vec![]);
+        let template_registry: HashMap<String, &TopologyTemplate> = [
+            ("Conforming", &conforming),
+            ("NonConforming", &non_conforming),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+
+        let dj = marker_trait("DrivingJoint");
+        let trait_registry: HashMap<String, &CompiledTrait> =
+            [("DrivingJoint", &dj)]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect();
+
+        let compiled_arg = CompiledExpr::value_ref(
+            ValueCellId::new("Test", "x"),
+            Type::StructureRef("NonConforming".to_string()),
+        );
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &Type::TraitObject("DrivingJoint".to_string()),
+            "joint",
+            &compiled_arg,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly 1 TypeNotConformingToTrait diagnostic, got: {:?}",
+            diagnostics
+        );
+        let d = &diagnostics[0];
+        assert_eq!(d.code, Some(DiagnosticCode::TypeNotConformingToTrait));
+        assert!(
+            d.message.contains("NonConforming"),
+            "diagnostic should mention 'NonConforming'; got: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("DrivingJoint"),
+            "diagnostic should mention 'DrivingJoint'; got: {}",
+            d.message
+        );
+    }
+
+    /// (b) Conforming arg against DrivingJoint param → zero diagnostics.
+    #[test]
+    fn fn_arg_conformance_conforming_emits_no_diagnostic() {
+        let conforming = template_with_bounds("Conforming", vec!["DrivingJoint"]);
+        let template_registry: HashMap<String, &TopologyTemplate> =
+            [("Conforming", &conforming)]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect();
+        let dj = marker_trait("DrivingJoint");
+        let trait_registry: HashMap<String, &CompiledTrait> =
+            [("DrivingJoint", &dj)]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect();
+
+        let compiled_arg = CompiledExpr::value_ref(
+            ValueCellId::new("Test", "x"),
+            Type::StructureRef("Conforming".to_string()),
+        );
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &Type::TraitObject("DrivingJoint".to_string()),
+            "joint",
+            &compiled_arg,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &mut diagnostics,
+        );
+
+        assert!(
+            diagnostics.is_empty(),
+            "expected no diagnostics for conforming arg, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// (c) Type::Error arg → zero diagnostics (anti-cascade).
+    #[test]
+    fn fn_arg_conformance_error_arg_no_cascade() {
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+
+        let error_arg = CompiledExpr::literal(Value::Real(0.0), Type::Error);
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &Type::TraitObject("DrivingJoint".to_string()),
+            "joint",
+            &error_arg,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &mut diagnostics,
+        );
+
+        assert!(
+            diagnostics.is_empty(),
+            "Type::Error arg must not produce diagnostics (anti-cascade), got: {:?}",
+            diagnostics
+        );
+    }
 }
