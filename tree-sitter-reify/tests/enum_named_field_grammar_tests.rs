@@ -224,3 +224,115 @@ fn named_variant_rect_has_two_field_decls() {
         field_decls.len()
     );
 }
+
+// ── Step-5 RED: variant_construction brace-expression grammar ─────────────────
+//
+// These tests assert that the grammar accepts brace-construction expressions
+// (`Name { field: value }`) as a primary expression.  They fail (RED) until
+// step-6 adds the variant_construction / variant_construction_field productions.
+
+/// Parse dce-construction-expr.ri and assert 0 ERROR/MISSING nodes.
+///
+/// RED: no variant_construction production yet — `Rect { ... }` in param-default
+/// position produces ERROR subtrees.
+/// GREEN (step-6): variant_construction added to _primary_expression.
+#[test]
+fn construction_fixture_parses_with_zero_errors() {
+    let mut parser = make_parser();
+    let source = include_bytes!("../test/fixtures/dce-construction-expr.ri");
+    let tree = parser.parse(source, None).expect("parse failed");
+    assert_eq!(
+        count_errors(tree.root_node()),
+        0,
+        "dce-construction-expr.ri must parse with 0 ERROR/MISSING nodes; got kinds: {:?}",
+        collect_kinds(tree.root_node())
+    );
+}
+
+/// The param default in dce-construction-expr.ri must produce a
+/// `variant_construction` CST node.
+///
+/// RED: no variant_construction production yet.
+#[test]
+fn construction_fixture_contains_variant_construction_node() {
+    let mut parser = make_parser();
+    let source = include_bytes!("../test/fixtures/dce-construction-expr.ri");
+    let tree = parser.parse(source, None).expect("parse failed");
+
+    let vc = find_node_by_kind(tree.root_node(), "variant_construction");
+    assert!(
+        vc.is_some(),
+        "dce-construction-expr.ri must contain a variant_construction node; \
+         got kinds: {:?}",
+        collect_kinds(tree.root_node())
+    );
+
+    // The construction node must have variant_construction_field children.
+    let vc_node = vc.unwrap();
+    let fields = find_all_nodes_by_kind(vc_node, "variant_construction_field");
+    assert_eq!(
+        fields.len(),
+        2,
+        "Rect {{ ... }} must have 2 variant_construction_field children; got {}",
+        fields.len()
+    );
+}
+
+/// Scrutinee-ambiguity regression: `match outline { ... }` must keep `outline`
+/// as an identifier discriminant — NOT a variant_construction.
+///
+/// RED: until conflicts resolution lands in step-6 the grammar may not even
+/// parse this correctly.  GREEN: 0 errors + discriminant is an identifier.
+#[test]
+fn match_scrutinee_is_identifier_not_variant_construction() {
+    let mut parser = make_parser();
+    let source = br#"
+structure def W {
+    let a = match outline { Circle { radius: r } => r, Point => 0mm }
+}
+"#;
+    let tree = parser.parse(source, None).expect("parse failed");
+    assert_eq!(
+        count_errors(tree.root_node()),
+        0,
+        "match with variant-bind arms must parse with 0 ERROR/MISSING nodes; \
+         got kinds: {:?}",
+        collect_kinds(tree.root_node())
+    );
+
+    // The match discriminant must be an identifier node (`outline`), not a
+    // variant_construction — brace-construction must NOT be parsed as the scrutinee.
+    let match_node = find_node_by_kind(tree.root_node(), "match_expression")
+        .expect("expected a match_expression node");
+    let discriminant = match_node
+        .child_by_field_name("discriminant")
+        .expect("match_expression must have a 'discriminant' field");
+    assert_eq!(
+        discriminant.kind(),
+        "identifier",
+        "match discriminant must be an identifier, got {}",
+        discriminant.kind()
+    );
+}
+
+/// A `where` guarded block must still parse with 0 ERROR nodes after the
+/// variant_construction production is added.
+///
+/// RED (pre step-6): no variant_construction yet (but where blocks should
+/// already be 0-error).  Kept as a regression lock for step-6.
+#[test]
+fn where_block_still_parses_with_zero_errors() {
+    let mut parser = make_parser();
+    let source = br#"
+structure def W {
+    where x > 0mm { }
+}
+"#;
+    let tree = parser.parse(source, None).expect("parse failed");
+    assert_eq!(
+        count_errors(tree.root_node()),
+        0,
+        "where-guarded block must parse with 0 ERROR/MISSING nodes; got kinds: {:?}",
+        collect_kinds(tree.root_node())
+    );
+}
