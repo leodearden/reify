@@ -55,6 +55,80 @@
 //!   Tables 5.2.1, 5.3.1, 5.4.2.
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Dispatcher types and entry point
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Which numerical integrator was selected by [`solve_modal_response`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Integrator {
+    /// Exact per-timestep Duhamel recurrence (Chopra Table 5.3.1) for uniform
+    /// time grids and underdamped (ζ < 1) modes with ω above a small floor.
+    DuhamelUniform,
+    /// Newmark-β average-acceleration (γ = 1/2, β = 1/4) for non-uniform grids,
+    /// critically/over-damped modes (ζ ≥ 1), and rigid-body modes (ω ≈ 0).
+    Newmark,
+}
+
+/// Result of [`solve_modal_response`]: modal coordinate time-history plus the
+/// integrator that was selected (observable in tests and downstream diagnostics).
+pub struct ModalResponse {
+    /// Modal coordinate ξ(tⱼ) at each sample time; length = `times.len()`.
+    pub coords: Vec<f64>,
+    /// Which integrator produced `coords`.
+    pub integrator: Integrator,
+}
+
+/// Floor below which ω is treated as a rigid-body mode and routed to Newmark.
+const OMEGA_FLOOR: f64 = 1e-9;
+/// Damping margin below the critical value ζ=1 below which Duhamel is valid.
+const ZETA_CEILING: f64 = 1.0 - 1e-9;
+
+/// Integrate one scalar SDOF modal ODE, automatically selecting the integrator.
+///
+/// # Selection logic
+///
+/// | Condition                                         | Integrator       |
+/// |---------------------------------------------------|------------------|
+/// | `times` uniform **and** ω > `OMEGA_FLOOR` **and** ζ < 1 − margin | `DuhamelUniform` |
+/// | otherwise                                         | `Newmark`        |
+///
+/// The Duhamel closed form uses ω_D = ω√(1−ζ²) and divides by ω²/ω_D, which
+/// is undefined for ζ ≥ 1 or ω ≈ 0; those modes always route to Newmark.
+///
+/// # Arguments
+/// * `omega`   — natural angular frequency ω (rad/s).
+/// * `zeta`    — modal damping ratio ζ (dimensionless, ≥ 0).
+/// * `times`   — monotonically-increasing time sample points (s); length ≥ 1.
+/// * `forcing` — pre-projected scalar modal forcing at each time point.
+/// * `xi0`     — initial modal displacement ξ(t₀).
+/// * `v0`      — initial modal velocity ξ̇(t₀).
+pub fn solve_modal_response(
+    omega: f64,
+    zeta: f64,
+    times: &[f64],
+    forcing: &[f64],
+    xi0: f64,
+    v0: f64,
+) -> ModalResponse {
+    let use_duhamel = omega > OMEGA_FLOOR
+        && zeta < ZETA_CEILING
+        && is_uniformly_sampled(times, 1e-9);
+
+    if use_duhamel {
+        let dt = times[1] - times[0];
+        ModalResponse {
+            coords: duhamel_solve(omega, zeta, dt, forcing, xi0, v0),
+            integrator: Integrator::DuhamelUniform,
+        }
+    } else {
+        ModalResponse {
+            coords: newmark_solve(omega, zeta, times, forcing, xi0, v0),
+            integrator: Integrator::Newmark,
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Duhamel uniform-sampling integrator
 // ─────────────────────────────────────────────────────────────────────────────
 
