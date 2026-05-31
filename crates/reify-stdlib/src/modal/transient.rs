@@ -563,6 +563,34 @@ pub fn dominant_antinode_index(shapes: &[[f64; 3]]) -> usize {
     best_idx
 }
 
+/// Reconstruct one location's physical displacement time series by modal
+/// superposition: `u_j = Σ_i coeffs[i]·mode_coords[i][j]`, where `coeffs[i]` is
+/// the per-mode projection coefficient `Φ_i[node]·direction` and `mode_coords[i]`
+/// is mode `i`'s modal-coordinate series ξ_i(t_j). The lazy core of
+/// `displacement_at`: only the queried node's coefficients are formed, so the
+/// full n_nodes × n_times displacement matrix is never materialized.
+///
+/// Graceful degradation (never panics on ragged / mismatched input):
+/// * Empty `mode_coords` → empty (no time dimension is defined).
+/// * The time length is taken from `mode_coords[0]`; a mode whose series is
+///   shorter contributes `0` at the missing timesteps (`.get(j)`).
+/// * Only the first `min(coeffs.len(), mode_coords.len())` modes contribute, so
+///   surplus modes or surplus coeffs are ignored rather than indexed out of bounds.
+pub fn reconstruct_series(coeffs: &[f64], mode_coords: &[Vec<f64>]) -> Vec<f64> {
+    let time_len = match mode_coords.first() {
+        Some(first) => first.len(),
+        None => return Vec::new(),
+    };
+    let n_modes = coeffs.len().min(mode_coords.len());
+    let mut out = vec![0.0_f64; time_len];
+    for (c, series) in coeffs.iter().zip(mode_coords.iter()).take(n_modes) {
+        for (j, slot) in out.iter_mut().enumerate() {
+            *slot += c * series.get(j).copied().unwrap_or(0.0);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
