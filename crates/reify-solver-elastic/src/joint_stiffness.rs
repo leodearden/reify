@@ -46,7 +46,6 @@ pub fn add_joint_stiffness(
     k_global: &SparseRowMat<usize, f64>,
     contributions: &[JointStiffness],
 ) -> SparseRowMat<usize, f64> {
-    let _ = contributions;
     let n = k_global.nrows();
     // Extract K's stored triplets — mirror project_free (modal_ops.rs:484-508) and
     // m_matvec (modal_ops.rs:515-528): symbolic() gives the sparsity structure;
@@ -60,7 +59,14 @@ pub fn add_joint_stiffness(
             trips.push(Triplet::new(r, *col_raw, val));
         }
     }
-    // Joint diagonal contributions appended in step-4 GREEN.
+    // Append one (dof, dof, k) triplet per contribution. faer sums duplicate
+    // (row, col) triplets in encounter order (assembly/global.rs:60-64), so an
+    // existing K[dof,dof] entry and this appended triplet sum to K[dof,dof] += k;
+    // a structurally-absent diagonal entry is created with value k; two contributions
+    // to the same dof accumulate by the same mechanism.
+    for c in contributions {
+        trips.push(Triplet::new(c.dof, c.dof, c.stiffness));
+    }
     SparseRowMat::try_new_from_triplets(n, n, &trips)
         .expect("joint-stiffness triplet rebuild must not violate CSR invariants")
 }
