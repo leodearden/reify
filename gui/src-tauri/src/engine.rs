@@ -1007,6 +1007,19 @@ impl EngineSession {
         self.drain_and_emit_warm_pool_events();
     }
 
+    /// Return a reference to the last `CheckResult` produced by `load_from_source`,
+    /// `load_file`, `update_source`, or `set_parameter`.
+    ///
+    /// Mirrors the established `#[cfg(test)] pub(crate)` test-support pattern
+    /// (emit_fea_case_for_test_with_result, drain_and_emit_warm_pool_events_for_test,
+    /// warm_pool_mut_for_test) — delegates to `core.last_check()` without exposing
+    /// the private `core` field.  Lets GUI tests read raw cell Values (incl.
+    /// `result` / `body`) from `CheckResult.values` for B4 / fixture assertions.
+    #[cfg(test)]
+    pub(crate) fn last_check_for_test(&self) -> Option<&reify_eval::CheckResult> {
+        self.core.last_check()
+    }
+
     /// Emit auto-resolve events if an emitter is installed and the check produced
     /// resolved auto-parameter values.
     ///

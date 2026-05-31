@@ -9706,3 +9706,89 @@ fn mode_shape_scale_degenerate_fallback() {
         }
     }
 }
+
+// ── Task 4086 step-1: RED — B4 dispatch (register_compute_fns not wired yet) ──
+//
+// Asserts that a GUI EngineSession produces a real (non-Undef) ElasticResult
+// with max_von_mises within ±50% of 6 MPa after loading fea_cantilever_smoke.ri.
+//
+// FAILS until step-2 calls register_compute_fns in EngineSession::from_engine:
+// without the wiring, the GUI solve body-inlines to the `{ ElasticResult() }`
+// stub, so every field (incl. max_von_mises) is Undef.
+
+/// B4 signal: GUI engine FEA dispatch produces a real ElasticResult.
+///
+/// Loads `examples/fea_cantilever_smoke.ri` in a fresh EngineSession
+/// (SimpleConstraintChecker + MockGeometryKernel) and asserts:
+///   - `CheckResult.values` contains the cell `FeaCantileverSmoke.result`
+///   - that value is a `Value::StructureInstance` (not Undef / stub)
+///   - `result.max_von_mises` is a `Value::Scalar` with dimension PRESSURE
+///   - the SI value is within ±50% of the analytical 6 MPa reference
+///     (matches the tolerance documented in the cantilever comment header and
+///     the reify-eval e2e test at crates/reify-eval/tests/solve_elastic_static_e2e.rs)
+#[test]
+fn register_compute_fns_dispatch_yields_real_elastic_result() {
+    use reify_core::DimensionVector;
+    use reify_ir::Value;
+
+    let source = include_str!("../../../../examples/fea_cantilever_smoke.ri");
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(source, "FeaCantileverSmoke")
+        .expect("load_from_source must succeed for fea_cantilever_smoke.ri");
+
+    let check = session
+        .last_check_for_test()
+        .expect("last_check_for_test must be Some after load_from_source");
+
+    let result_cell = ValueCellId::new("FeaCantileverSmoke", "result");
+    let result_val = check
+        .values
+        .get(&result_cell)
+        .unwrap_or_else(|| panic!("cell FeaCantileverSmoke.result not found in CheckResult.values"));
+
+    // Extract max_von_mises from the ElasticResult (Value::StructureInstance).
+    let mvm = match result_val {
+        Value::StructureInstance(data) => data
+            .fields
+            .get(&"max_von_mises".to_string())
+            .cloned()
+            .unwrap_or_else(|| panic!(
+                "max_von_mises field not found in ElasticResult; fields: {:?}",
+                data.fields.keys().collect::<Vec<_>>()
+            )),
+        other => panic!(
+            "expected FeaCantileverSmoke.result to be Value::StructureInstance, got: {:?}",
+            other
+        ),
+    };
+
+    // max_von_mises must be a Scalar with dimension PRESSURE, not Undef.
+    let (si_value, dimension) = match &mvm {
+        Value::Scalar { si_value, dimension } => (*si_value, *dimension),
+        other => panic!(
+            "expected max_von_mises to be Value::Scalar {{ ... }}, got: {:?}",
+            other
+        ),
+    };
+    assert_eq!(
+        dimension,
+        DimensionVector::PRESSURE,
+        "expected max_von_mises dimension == DimensionVector::PRESSURE, got: {:?}",
+        dimension
+    );
+
+    // Analytical reference σ_max = 6PL/(bh²) = 6×1000×1.0/(0.1×0.1×0.1) = 6e6 Pa.
+    // Tolerance: ±50% (3 MPa ≤ σ ≤ 9 MPa) — coarse P1-tet mesh method-error budget.
+    let analytical_sigma: f64 = 6.0 * 1000.0 * 1.0 / (0.1 * 0.1 * 0.1); // 6e6 Pa
+    let lo = analytical_sigma * 0.5; // 3e6 Pa
+    let hi = analytical_sigma * 1.5; // 9e6 Pa
+    assert!(
+        si_value.is_finite() && si_value >= lo && si_value <= hi,
+        "max_von_mises = {si_value:.3e} Pa is outside [{lo:.3e}, {hi:.3e}] (±50% of {analytical_sigma:.3e} Pa analytical)"
+    );
+}
