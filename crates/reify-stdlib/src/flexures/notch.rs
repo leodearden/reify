@@ -216,141 +216,9 @@ fn prb_notch_right_circular(args: &[Value]) -> Value {
 #[cfg(test)]
 mod tests {
     use reify_core::DimensionVector;
-    use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+    use reify_ir::Value;
     use std::f64::consts::PI;
-
-    /// Build a `Value::StructureInstance` material fixture from `(name, value)`
-    /// field pairs (mirrors the SIR-α constructor pattern in reify-ir value.rs).
-    fn material(name: &str, pairs: &[(&str, Value)]) -> Value {
-        let fields: PersistentMap<String, Value> = pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.clone()))
-            .collect();
-        Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: StructureTypeId(0),
-            type_name: name.to_string(),
-            version: 1,
-            fields,
-        }))
-    }
-
-    /// `Steel_AISI_1045`-like fixture: E = 205 GPa, yield = 310 MPa (PRESSURE).
-    fn steel() -> Value {
-        material(
-            "Steel_AISI_1045",
-            &[
-                (
-                    "youngs_modulus",
-                    Value::Scalar {
-                        si_value: 205e9,
-                        dimension: DimensionVector::PRESSURE,
-                    },
-                ),
-                (
-                    "yield_stress",
-                    Value::Option(Some(Box::new(Value::Scalar {
-                        si_value: 310e6,
-                        dimension: DimensionVector::PRESSURE,
-                    }))),
-                ),
-            ],
-        )
-    }
-
-    /// Like [`steel`] but carrying only `youngs_modulus` (no `yield_stress`),
-    /// to exercise the no-yield fallback branch.
-    fn steel_no_yield() -> Value {
-        material(
-            "Steel_NoYield",
-            &[(
-                "youngs_modulus",
-                Value::Scalar {
-                    si_value: 205e9,
-                    dimension: DimensionVector::PRESSURE,
-                },
-            )],
-        )
-    }
-
-    /// Material fixture with custom E (for functional-scaling tests).
-    fn material_with_e(e: f64) -> Value {
-        material(
-            "TestMaterial",
-            &[
-                (
-                    "youngs_modulus",
-                    Value::Scalar {
-                        si_value: e,
-                        dimension: DimensionVector::PRESSURE,
-                    },
-                ),
-                (
-                    "yield_stress",
-                    Value::Option(Some(Box::new(Value::Scalar {
-                        si_value: 310e6,
-                        dimension: DimensionVector::PRESSURE,
-                    }))),
-                ),
-            ],
-        )
-    }
-
-    fn axis_y() -> Value {
-        Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)])
-    }
-
-    fn origin() -> Value {
-        Value::Point(vec![
-            Value::length(0.0),
-            Value::length(0.0),
-            Value::length(0.0),
-        ])
-    }
-
-    fn map_get<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
-        match v {
-            Value::Map(m) => m.get(&Value::String(key.to_string())),
-            _ => None,
-        }
-    }
-
-    /// Destructure a bounded `Value::Range` into its inner `(lower, upper)`
-    /// values, panicking if either bound is absent.
-    fn range_lower_upper(v: &Value) -> (&Value, &Value) {
-        match v {
-            Value::Range {
-                lower: Some(lo),
-                upper: Some(up),
-                ..
-            } => (lo.as_ref(), up.as_ref()),
-            other => panic!("expected a both-bounded Range, got {other:?}"),
-        }
-    }
-
-    /// Assert `actual` is an ANGLE-dimensioned Scalar whose si_value matches
-    /// `expected_rad` to a relative tolerance of 1e-9 (closed-form reproduction).
-    fn assert_angle_close(actual: &Value, expected_rad: f64, label: &str) {
-        match actual {
-            Value::Scalar { si_value, dimension } => {
-                assert_eq!(
-                    *dimension,
-                    DimensionVector::ANGLE,
-                    "{label}: bound carries ANGLE dimension"
-                );
-                let rel = (si_value - expected_rad).abs() / expected_rad.abs();
-                assert!(rel < 1e-9, "{label}: {si_value} vs {expected_rad} (rel {rel})");
-            }
-            other => panic!("{label}: expected angle Scalar, got {other:?}"),
-        }
-    }
-
-    /// Extract the spring_rate si_value from a notch flexure revolute Map.
-    fn spring_rate_si(v: &Value) -> f64 {
-        match map_get(v, "spring_rate") {
-            Some(Value::Scalar { si_value, .. }) => *si_value,
-            other => panic!("expected spring_rate Scalar, got {other:?}"),
-        }
-    }
+    use super::super::test_util::*;
 
     /// Standard step-1 notch fixture: r=1mm, t=0.2mm, b=5mm, steel.
     fn base_args() -> Vec<Value> {
@@ -657,7 +525,7 @@ mod tests {
         // material_with_e always carries yield_stress = 310 MPa (hardcoded).
         let yield_stress = 310e6_f64;
 
-        let base = call_fn(r, t, b, material_with_e(e));
+        let base = call_fn(r, t, b, steel_with_e(e));
 
         // 1. Structure assertions.
         assert_eq!(
@@ -734,7 +602,7 @@ mod tests {
         // 4. Coefficient-independent functional-form scaling (κ cancels in ratios).
 
         // t^2.5 scaling: doubling t → ×2^2.5
-        let k_2t = spring_rate_si(&call_fn(r, 2.0 * t, b, material_with_e(e)));
+        let k_2t = spring_rate_si(&call_fn(r, 2.0 * t, b, steel_with_e(e)));
         let ratio_t = k_2t / k_base;
         let expected_t = 2.0_f64.powf(2.5);
         let rel_t = (ratio_t - expected_t).abs() / expected_t;
@@ -744,7 +612,7 @@ mod tests {
         );
 
         // r^-0.5 scaling: doubling r → ×2^-0.5
-        let k_2r = spring_rate_si(&call_fn(2.0 * r, t, b, material_with_e(e)));
+        let k_2r = spring_rate_si(&call_fn(2.0 * r, t, b, steel_with_e(e)));
         let ratio_r = k_2r / k_base;
         let expected_r = 2.0_f64.powf(-0.5);
         let rel_r = (ratio_r - expected_r).abs() / expected_r;
@@ -754,7 +622,7 @@ mod tests {
         );
 
         // b scaling: doubling b → ×2
-        let k_2b = spring_rate_si(&call_fn(r, t, 2.0 * b, material_with_e(e)));
+        let k_2b = spring_rate_si(&call_fn(r, t, 2.0 * b, steel_with_e(e)));
         let ratio_b = k_2b / k_base;
         let rel_b = (ratio_b - 2.0).abs() / 2.0;
         assert!(
@@ -763,7 +631,7 @@ mod tests {
         );
 
         // E scaling: doubling E → ×2
-        let k_2e = spring_rate_si(&call_fn(r, t, b, material_with_e(2.0 * e)));
+        let k_2e = spring_rate_si(&call_fn(r, t, b, steel_with_e(2.0 * e)));
         let ratio_e = k_2e / k_base;
         let rel_e = (ratio_e - 2.0).abs() / 2.0;
         assert!(
@@ -778,7 +646,7 @@ mod tests {
                 Value::length(r),
                 Value::length(2.0 * r), // t ≥ 2r → degenerate geometry
                 Value::length(b),
-                material_with_e(e),
+                steel_with_e(e),
                 origin(),
                 axis_y(),
             ],

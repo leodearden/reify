@@ -268,137 +268,16 @@ fn prb_let_joint(args: &[Value]) -> Value {
 #[cfg(test)]
 mod tests {
     use reify_core::DimensionVector;
-    use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+    use reify_ir::Value;
     use std::f64::consts::PI;
-
-    // ── Fixtures ─────────────────────────────────────────────────────────────
-
-    /// Build a `Value::StructureInstance` material fixture from `(name, value)`
-    /// field pairs (mirrors the SIR-α constructor pattern in reify-ir value.rs).
-    fn material(name: &str, pairs: &[(&str, Value)]) -> Value {
-        let fields: PersistentMap<String, Value> = pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.clone()))
-            .collect();
-        Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: StructureTypeId(0),
-            type_name: name.to_string(),
-            version: 1,
-            fields,
-        }))
-    }
-
-    /// `Steel_AISI_1045`-like fixture: E = 205 GPa, yield = 310 MPa (PRESSURE),
-    /// poisson_ratio = 0.29 (bare Real, for LET G derivation).
-    fn steel() -> Value {
-        material(
-            "Steel_AISI_1045",
-            &[
-                (
-                    "youngs_modulus",
-                    Value::Scalar {
-                        si_value: 205e9,
-                        dimension: DimensionVector::PRESSURE,
-                    },
-                ),
-                (
-                    "yield_stress",
-                    Value::Option(Some(Box::new(Value::Scalar {
-                        si_value: 310e6,
-                        dimension: DimensionVector::PRESSURE,
-                    }))),
-                ),
-                // poisson_ratio stored as bare Real (the runtime representation
-                // for ElasticMaterial::poisson_ratio : Real ∈ [0, 0.5)).
-                ("poisson_ratio", Value::Real(0.29)),
-            ],
-        )
-    }
-
-    /// Like [`steel`] but carrying only `youngs_modulus` (no `yield_stress`),
-    /// to exercise the no-yield fallback branch.
-    fn steel_no_yield() -> Value {
-        material(
-            "Steel_NoYield",
-            &[
-                (
-                    "youngs_modulus",
-                    Value::Scalar {
-                        si_value: 205e9,
-                        dimension: DimensionVector::PRESSURE,
-                    },
-                ),
-                ("poisson_ratio", Value::Real(0.29)),
-            ],
-        )
-    }
-
-    fn axis_y() -> Value {
-        Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)])
-    }
-
-    fn origin() -> Value {
-        Value::Point(vec![
-            Value::length(0.0),
-            Value::length(0.0),
-            Value::length(0.0),
-        ])
-    }
-
-    // ── Helpers ──────────────────────────────────────────────────────────────
-
-    fn map_get<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
-        match v {
-            Value::Map(m) => m.get(&Value::String(key.to_string())),
-            _ => None,
-        }
-    }
-
-    /// Destructure a bounded `Value::Range` into its inner `(lower, upper)` values.
-    fn range_lower_upper(v: &Value) -> (&Value, &Value) {
-        match v {
-            Value::Range {
-                lower: Some(lo),
-                upper: Some(up),
-                ..
-            } => (lo.as_ref(), up.as_ref()),
-            other => panic!("expected a both-bounded Range, got {other:?}"),
-        }
-    }
-
-    /// Assert `actual` is an ANGLE-dimensioned Scalar whose si_value matches
-    /// `expected_rad` to a relative tolerance of 1e-9 (closed-form reproduction).
-    fn assert_angle_close(actual: &Value, expected_rad: f64, label: &str) {
-        match actual {
-            Value::Scalar { si_value, dimension } => {
-                assert_eq!(
-                    *dimension,
-                    DimensionVector::ANGLE,
-                    "{label}: bound carries ANGLE dimension"
-                );
-                let rel = (si_value - expected_rad).abs() / expected_rad.abs();
-                assert!(rel < 1e-9, "{label}: {si_value} vs {expected_rad} (rel {rel})");
-            }
-            other => panic!("{label}: expected angle Scalar, got {other:?}"),
-        }
-    }
+    use super::super::test_util::*;
 
     // ── Convenience builders ─────────────────────────────────────────────────
 
-    /// Build the standard 6-arg living-hinge argument list.
-    fn lh_args_6(length: f64, width: f64, thickness: f64, mat: Value) -> Vec<Value> {
-        vec![
-            Value::length(length),
-            Value::length(width),
-            Value::length(thickness),
-            mat,
-            origin(),
-            axis_y(),
-        ]
-    }
-
-    /// Build the standard 6-arg cross-spring argument list (same positional layout).
-    fn cs_args_6(length: f64, width: f64, thickness: f64, mat: Value) -> Vec<Value> {
+    /// Build the standard 6-arg bending-hinge argument list
+    /// `(length, width, thickness, material, pivot, axis)` — shared by the
+    /// living-hinge and cross-spring-pivot test suites.
+    fn bending_hinge_args_6(length: f64, width: f64, thickness: f64, mat: Value) -> Vec<Value> {
         vec![
             Value::length(length),
             Value::length(width),
@@ -416,7 +295,7 @@ mod tests {
     /// (a) Structure: kind, damping, axis, spring_rate dimension.
     #[test]
     fn prb_living_hinge_structure() {
-        let args = lh_args_6(0.02, 0.005, 0.0005, steel());
+        let args = bending_hinge_args_6(0.02, 0.005, 0.0005, steel());
         let result = crate::eval_builtin("prb_living_hinge", &args);
         assert_eq!(
             map_get(&result, "kind"),
@@ -455,7 +334,7 @@ mod tests {
         let thickness = 0.0005_f64;
         let e = 205e9_f64;
 
-        let args = lh_args_6(length, width, thickness, steel());
+        let args = bending_hinge_args_6(length, width, thickness, steel());
         let result = crate::eval_builtin("prb_living_hinge", &args);
 
         // k_θ = γ_lh · E · I / L  with  I = width·t³/12  and  γ_lh = 1.0.
@@ -498,7 +377,7 @@ mod tests {
         );
         let result_yield = crate::eval_builtin(
             "prb_living_hinge",
-            &lh_args_6(l_short, 0.005, t_thick, steel()),
+            &bending_hinge_args_6(l_short, 0.005, t_thick, steel()),
         );
         let (lo, up) = range_lower_upper(map_get(&result_yield, "range").unwrap());
         assert_angle_close(lo, -theta_yield_short, "yield-capped lower");
@@ -515,7 +394,7 @@ mod tests {
         );
         let result_prb = crate::eval_builtin(
             "prb_living_hinge",
-            &lh_args_6(l_long, 0.005, t_thin, steel()),
+            &bending_hinge_args_6(l_long, 0.005, t_thin, steel()),
         );
         let (lo_prb, up_prb) =
             range_lower_upper(map_get(&result_prb, "range").unwrap());
@@ -525,7 +404,7 @@ mod tests {
         // (iii) No-yield fallback: steel without yield_stress → ±5°.
         let result_ny = crate::eval_builtin(
             "prb_living_hinge",
-            &lh_args_6(l_long, 0.005, t_thin, steel_no_yield()),
+            &bending_hinge_args_6(l_long, 0.005, t_thin, steel_no_yield()),
         );
         let (lo_ny, up_ny) =
             range_lower_upper(map_get(&result_ny, "range").unwrap());
@@ -537,7 +416,7 @@ mod tests {
     #[test]
     fn prb_living_hinge_neutral_angle_handling() {
         let two_deg = 2.0_f64 * PI / 180.0;
-        let base = lh_args_6(0.02, 0.005, 0.0005, steel());
+        let base = bending_hinge_args_6(0.02, 0.005, 0.0005, steel());
 
         let call_with_neutral = |n: Option<Value>| {
             let mut args = base.clone();
@@ -589,7 +468,7 @@ mod tests {
             let r = crate::eval_builtin("prb_living_hinge", &args);
             assert!(r.is_undef(), "{label}: expected Undef, got {r:?}");
         };
-        let base = lh_args_6(0.02, 0.005, 0.0005, steel());
+        let base = bending_hinge_args_6(0.02, 0.005, 0.0005, steel());
         let with = |idx: usize, v: Value| {
             let mut a = base.clone();
             a[idx] = v;
@@ -652,7 +531,7 @@ mod tests {
     /// (a) Structure for cross-spring pivot.
     #[test]
     fn prb_cross_spring_pivot_structure() {
-        let args = cs_args_6(0.02, 0.005, 0.0005, steel());
+        let args = bending_hinge_args_6(0.02, 0.005, 0.0005, steel());
         let result = crate::eval_builtin("prb_cross_spring_pivot", &args);
         assert_eq!(
             map_get(&result, "kind"),
@@ -691,7 +570,7 @@ mod tests {
         let thickness = 0.0005_f64;
         let e = 205e9_f64;
 
-        let args = cs_args_6(length, width, thickness, steel());
+        let args = bending_hinge_args_6(length, width, thickness, steel());
         let result = crate::eval_builtin("prb_cross_spring_pivot", &args);
 
         let i = width * thickness.powi(3) / 12.0;
@@ -727,7 +606,7 @@ mod tests {
         assert!(theta_yield_short < prb_limit);
         let result_yield = crate::eval_builtin(
             "prb_cross_spring_pivot",
-            &cs_args_6(l_short, 0.005, t_thick, steel()),
+            &bending_hinge_args_6(l_short, 0.005, t_thick, steel()),
         );
         let (lo, up) = range_lower_upper(map_get(&result_yield, "range").unwrap());
         assert_angle_close(lo, -theta_yield_short, "cs yield-capped lower");
@@ -740,7 +619,7 @@ mod tests {
         assert!(theta_yield_long > prb_limit);
         let result_prb = crate::eval_builtin(
             "prb_cross_spring_pivot",
-            &cs_args_6(l_long, 0.005, t_thin, steel()),
+            &bending_hinge_args_6(l_long, 0.005, t_thin, steel()),
         );
         let (lo_prb, up_prb) = range_lower_upper(map_get(&result_prb, "range").unwrap());
         assert_angle_close(lo_prb, -prb_limit, "cs PRB-capped lower");
@@ -749,7 +628,7 @@ mod tests {
         // (iii) No-yield fallback.
         let result_ny = crate::eval_builtin(
             "prb_cross_spring_pivot",
-            &cs_args_6(l_long, 0.005, t_thin, steel_no_yield()),
+            &bending_hinge_args_6(l_long, 0.005, t_thin, steel_no_yield()),
         );
         let (lo_ny, up_ny) = range_lower_upper(map_get(&result_ny, "range").unwrap());
         assert_angle_close(lo_ny, -prb_limit, "cs no-yield lower");
@@ -760,7 +639,7 @@ mod tests {
     #[test]
     fn prb_cross_spring_pivot_neutral_angle_handling() {
         let two_deg = 2.0_f64 * PI / 180.0;
-        let base = cs_args_6(0.02, 0.005, 0.0005, steel());
+        let base = bending_hinge_args_6(0.02, 0.005, 0.0005, steel());
 
         let call_with_neutral = |n: Option<Value>| {
             let mut args = base.clone();
@@ -796,7 +675,7 @@ mod tests {
             let r = crate::eval_builtin("prb_cross_spring_pivot", &args);
             assert!(r.is_undef(), "{label}: expected Undef, got {r:?}");
         };
-        let base = cs_args_6(0.02, 0.005, 0.0005, steel());
+        let base = bending_hinge_args_6(0.02, 0.005, 0.0005, steel());
         let with = |idx: usize, v: Value| {
             let mut a = base.clone();
             a[idx] = v;

@@ -19,6 +19,9 @@ mod beam;
 mod notch;
 mod hinge;
 
+#[cfg(test)]
+mod test_util;
+
 /// Evaluate a flexure stdlib function by name.
 ///
 /// Returns `Some(Value)` for known flexure constructors (including
