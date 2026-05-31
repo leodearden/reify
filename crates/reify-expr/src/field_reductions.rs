@@ -83,8 +83,12 @@ pub(crate) fn compute_min(field_val: &Value) -> Value {
 }
 
 /// Compute `argmax(field)` — return the domain coord at which a
-/// `Sampled`-source field attains its maximum value, wrapped per the
-/// field's `domain_type`.
+/// `Sampled`- or `VonMises`-source field attains its maximum value,
+/// wrapped per the field's `domain_type`.
+///
+/// For `VonMises` fields the backing Sampled tensor field is projected
+/// per 9-float window via `reify_stdlib::compute_von_mises_3x3` before
+/// the index search (see [`project_von_mises_sampled`]).
 ///
 /// Tie-break: lowest linear index wins (the `total_cmp` reduce keeps
 /// the first-seen extremum on equal values).
@@ -95,8 +99,12 @@ pub(crate) fn compute_argmax(field_val: &Value) -> Value {
 }
 
 /// Compute `argmin(field)` — return the domain coord at which a
-/// `Sampled`-source field attains its minimum value, wrapped per the
-/// field's `domain_type`.
+/// `Sampled`- or `VonMises`-source field attains its minimum value,
+/// wrapped per the field's `domain_type`.
+///
+/// For `VonMises` fields the backing Sampled tensor field is projected
+/// per 9-float window via `reify_stdlib::compute_von_mises_3x3` before
+/// the index search (see [`project_von_mises_sampled`]).
 ///
 /// Tie-break: lowest linear index wins (mirrors `compute_argmax`).
 ///
@@ -282,10 +290,27 @@ fn compute_argextremum(field_val: &Value, find_min: bool) -> Value {
             // Defensive: see compute_extremum's matching defensive arm.
             _ => Value::Undef,
         },
+        // VonMises: project the backing tensor field per 9-float window, then
+        // locate the extremum index in the projected scalar buffer and
+        // decompose it against the inner field's axis_grids.
+        // `project_von_mises_sampled` clones the inner grid metadata (including
+        // axis_grids), so `arg_coord_from_index` operates on the same shape —
+        // its shape guard (`data.len() == prod(axis_grid lengths)`) holds
+        // because data.len() == grid_count == prod(axis_grid lengths) after
+        // projection.
+        FieldSourceKind::VonMises => match project_von_mises_sampled(lambda.as_ref()) {
+            Some(sf) => match argmax_argmin_index(&sf.data, find_min) {
+                Some(linear) => arg_coord_from_index(&sf, linear, domain_type),
+                None => Value::Undef,
+            },
+            None => Value::Undef,
+        },
         // TODO(future): see compute_extremum for the full deferred-path note.
-        // Same staging rationale applies — argmax/argmin over a non-Sampled
-        // source would require numerical optimisation, not yet in scope.
-        // Pinned by the same step-15 tests as compute_extremum.
+        // Same staging rationale applies — argmax/argmin over Analytical/
+        // Composed/Gradient/Divergence/Curl/Laplacian/MaxShear/
+        // PrincipalStresses/SafetyFactor sources requires numerical optimisation
+        // or sampled-subfield reduction, not yet in scope (PRD §13 line 238).
+        // Pinned by the same step-15 / S5 negative-path tests as compute_extremum.
         _ => Value::Undef,
     }
 }
