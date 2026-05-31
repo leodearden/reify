@@ -390,3 +390,79 @@ fn geo_equiv_within_tolerance_perturbation_returns_true() {
         ),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Topology extraction: extract_faces (steps 1 + 2)
+//
+// Manifold "face" = mesh triangle (NOT a BRep parametric surface patch).
+// The unit cube tessellates to 12 triangles, so extract_faces returns 12
+// sub-handles — pinning the Manifold-face=triangle semantic gap (PRD Open
+// Question §10.5) as runtime behaviour: 12 != 6 (BRep's box face count).
+// ---------------------------------------------------------------------------
+
+/// Assert that every id in `handles` is non-INVALID and that the ids are
+/// pairwise distinct. Shared by the `extract_faces` / `extract_edges`
+/// sub-handle tests.
+fn assert_handles_valid_and_distinct(handles: &[GeometryHandleId], label: &str) {
+    for (i, h) in handles.iter().enumerate() {
+        assert_ne!(
+            *h,
+            GeometryHandleId::INVALID,
+            "{label} sub-handle [{i}] must be a real (non-INVALID) id",
+        );
+    }
+    let mut sorted: Vec<u64> = handles.iter().map(|h| h.0).collect();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(
+        sorted.len(),
+        handles.len(),
+        "{label} sub-handles must all be distinct ids",
+    );
+}
+
+/// `extract_faces` on the unit cube returns exactly 12 distinct, valid
+/// sub-handles — one per mesh triangle.
+///
+/// The `unit_cube_mesh` fixture has 12 outward-wound triangles
+/// (test_fixtures.rs), so the Manifold kernel — whose "face" is a mesh
+/// triangle, not a coalesced parametric surface patch — returns 12
+/// sub-handles. This is intentionally NOT 6 (the BRep box face count): the
+/// `12 != 6` assertion pins the documented Manifold-face-vs-BRep-face
+/// semantic gap (PRD Open Question §10.5) as observable runtime behaviour.
+///
+/// RED (step-1): `ManifoldKernel` inherits the trait default for
+/// `extract_faces`, which returns `Err(QueryError::QueryFailed("topology
+/// extraction not supported by this kernel"))`. GREEN is step-2 (sub-shape
+/// store + `extract_faces` override).
+#[test]
+fn extract_faces_unit_cube_returns_12_distinct_handles() {
+    let mut kernel = ManifoldKernel::new();
+    let handle = ingest(&mut kernel, [0.0, 0.0, 0.0]);
+
+    let faces = kernel
+        .extract_faces(handle)
+        .expect("extract_faces on a stored unit cube must return Ok(Vec)");
+
+    // (a) one sub-handle per mesh triangle.
+    assert_eq!(
+        faces.len(),
+        12,
+        "unit cube tessellates to 12 triangles; extract_faces must return \
+         one sub-handle per triangle",
+    );
+
+    // (b) 12 != 6 — pins the Manifold-face=triangle vs BRep-face=patch
+    // semantic gap. A BRep box has 6 faces; the Manifold mesh has 12
+    // triangles. This inequality is the runtime witness of PRD Open
+    // Question §10.5.
+    assert_ne!(
+        faces.len(),
+        6,
+        "Manifold face count (mesh triangles = 12) must differ from the \
+         BRep box face count (parametric patches = 6) — the semantic gap",
+    );
+
+    // (c) ids non-INVALID and distinct.
+    assert_handles_valid_and_distinct(&faces, "face");
+}
