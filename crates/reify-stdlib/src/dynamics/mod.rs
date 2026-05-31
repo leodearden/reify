@@ -6,4 +6,5 @@
 //! dispatch and no heavyweight linalg dependency.
 
 pub mod mass_props;
+pub mod rnea;
 pub mod spatial;
