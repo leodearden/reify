@@ -205,3 +205,110 @@ fn eval_make_widget_partial_covers_first_param() {
         tag
     );
 }
+
+// ─── step-5: accepted limitation — sibling-param default is pinned ────────────
+
+/// Accepted limitation (task 3895 design decision #3): a structure-def param
+/// whose default expression references a sibling param will not resolve in the
+/// neutral skeleton scope used by `build_structure_def_skeleton`.
+///
+/// **Current behavior (pinned by this test):**
+/// - The module compiles with **zero `Severity::Error` diagnostics.**
+///   `compile_expr` fails to resolve `y = x + 1.0` in the neutral scope; the
+///   diagnostic is routed to the throwaway buffer and discarded.
+///   `phase_entities` re-compiles `Point` authoritatively (siblings resolve
+///   there) and emits no Error.
+/// - `make_point()`'s fn body **still lowers to `StructureInstanceCtor`.**
+///   The skeleton successfully identifies `Point` as a structure; only `y`'s
+///   default expr is a poison value in the skeleton.
+/// - Eval is intentionally **not** asserted: `y`'s skeleton-baked poison
+///   default produces implementation-defined behavior at eval time.  The
+///   authoritative `Point` entity template (from `phase_entities`) has the
+///   correct default `x + 1.0` for direct entity instantiation.
+///
+/// If a future task implements sibling-param resolution in skeleton scope, this
+/// test must be updated to assert the correct eval result for `y`.
+#[test]
+fn sibling_param_default_accepted_limitation_body_is_ctor() {
+    let src = r#"
+module test.sibling_default
+structure def Point { param x : Real = 1.0  param y : Real = x + 1.0 }
+pub fn make_point() -> Point { Point() }
+"#;
+    let module = reify_test_support::helpers::compile_source_with_stdlib(src);
+
+    // Zero errors: skeleton's poisoned y-default diagnostic is discarded;
+    // phase_entities re-compiles authoritatively with no error.
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "sibling-default module should compile with zero errors; got: {:#?}",
+        errors
+    );
+
+    // The fn body IS a StructureInstanceCtor: the skeleton correctly identifies
+    // Point as a structure even though y's default is poisoned.
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "make_point")
+        .expect("make_point must be in compiled module");
+
+    match &func.body.result_expr.kind {
+        CompiledExprKind::StructureInstanceCtor { type_name, .. } => {
+            assert_eq!(type_name, "Point");
+        }
+        other => panic!(
+            "make_point body should be StructureInstanceCtor (sibling-default \
+             skeleton still lowers the ctor); got: {:?}",
+            other
+        ),
+    }
+}
+
+// ─── step-6: alias-registry dedup isolation guard ────────────────────────────
+
+/// Regression guard: the skeleton pass must not emit spurious
+/// `Severity::Info` diagnostics about parametric prelude aliases.
+///
+/// `build_structure_def_skeleton` clones the caller's `TypeAliasRegistry`
+/// before resolving param types (task 3895 bugfix).  Without the clone, the
+/// skeleton's neutral-scope type resolution would record source spans in the
+/// original registry's `emitted_skipped_parametric_prelude_spans` dedup set,
+/// silently suppressing the authoritative `Info` that `phase_entities` should
+/// later emit for parametric-alias param types.
+///
+/// The current stdlib has no parametric prelude aliases (all `pub type`
+/// declarations in stdlib modules are non-parametric), so no Info diagnostics
+/// of this kind can be triggered via integration tests today.  This test pins
+/// the **absence** of spurious Info messages as a guard against false
+/// positives.  A companion unit test in `entity.rs` directly verifies the
+/// clone-isolation property using a synthetic registry with a mocked
+/// parametric prelude name; see
+/// `build_structure_def_skeleton_does_not_consume_alias_registry_dedup_slots`.
+///
+/// When a parametric prelude alias is added to the stdlib, this test should be
+/// extended to assert that **exactly one** `Info` diagnostic matching
+/// `"parametric prelude alias"` is emitted — not zero (suppressed by skeleton)
+/// and not two (double-emitted).
+#[test]
+fn skeleton_pass_produces_no_spurious_parametric_alias_info_diagnostics() {
+    let module = load_widget_module();
+    let spurious: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Info && d.message.contains("parametric prelude alias")
+        })
+        .collect();
+    assert!(
+        spurious.is_empty(),
+        "skeleton pass must not produce spurious parametric-alias Info diagnostics; \
+         got: {:#?}",
+        spurious
+    );
+}

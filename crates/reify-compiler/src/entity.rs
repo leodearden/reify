@@ -3700,12 +3700,22 @@ pub(crate) fn expand_constraint_inst(
 /// and emits the authoritative diagnostics, avoiding double-emission and
 /// spurious neutral-scope errors.
 ///
-/// **Limitation** (accepted per task 3895 design decision #3): a param default
-/// that references a sibling param or a same-module function will not resolve
-/// in the neutral scope and will bake a poison literal into the skeleton —
-/// acceptable because the known stdlib consumers (`std/flexures`) and the
-/// acceptance test (`same_module_structure_ctor_compile.rs`) use only literal
-/// defaults.
+/// **Limitation — silent-divergence hazard** (accepted per task 3895 design
+/// decision #3): a param default that references a sibling param or a
+/// same-module function will not resolve in the neutral scope; `compile_expr`
+/// returns a poison expression and its diagnostic is swallowed by the throwaway
+/// buffer.  That poison default is then baked verbatim into the
+/// `StructureInstanceCtor.defaults` map at the fn-body lowering site in
+/// `expr.rs`.  `phase_entities` re-compiles the same `structure_def`
+/// authoritatively (siblings resolve there), but it emits NO diagnostic for the
+/// fn-body ctor.  Net result: a same-module fn body calling `Foo()` that relies
+/// on such a default silently evaluates the poison value at runtime, while
+/// direct entity instantiation of `Foo` gets the correct default — a
+/// diagnostic-free divergence.  A follow-up task should either detect skeleton
+/// poison defaults and emit a diagnostic at the ctor call site, or omit the
+/// default from the skeleton so the existing "missing default" path reports it.
+/// Acceptable for now because `std/flexures` and the acceptance test
+/// (`same_module_structure_ctor_compile.rs`) use only literal defaults.
 pub(crate) fn build_structure_def_skeleton(
     structure: &reify_ast::StructureDef,
     enum_defs: &[reify_ir::EnumDef],
@@ -3838,6 +3848,95 @@ mod tests {
     ///    `UnresolvedKind::Name` as the exact pathway (not `GuardedMember`).  The
     ///    exact ICE wording and label format are already pinned by the tests in
     ///    `ice.rs`.
+    /// Regression guard for the `alias_registry.clone()` in
+    /// `build_structure_def_skeleton` (task 3895 bugfix).
+    ///
+    /// `TypeAliasRegistry` maintains an interior-mutable
+    /// `emitted_skipped_parametric_prelude_spans` dedup set.  If the skeleton
+    /// builder were to share the caller's registry (instead of cloning it),
+    /// type resolution of a parametric-prelude-alias param type would record
+    /// the source span as "emitted" in the original registry, causing
+    /// `phase_entities`' authoritative re-compile of the same type expression
+    /// to skip its `Severity::Info` diagnostic silently.
+    ///
+    /// This test directly verifies the isolation: after calling
+    /// `build_structure_def_skeleton` with a registry whose
+    /// `emitted_skipped_parametric_prelude_spans` set is empty, the original
+    /// registry must still report `should_emit_skipped_parametric_prelude_info`
+    /// as `true` for the param type's source span — i.e. the skeleton's type
+    /// resolution did NOT consume the span from the original registry.
+    #[test]
+    fn build_structure_def_skeleton_does_not_consume_alias_registry_dedup_slots() {
+        let span = reify_core::SourceSpan::new(10, 30);
+
+        // Register "MyAlias" as a skipped parametric prelude name.
+        let mut alias_registry = crate::TypeAliasRegistry::new();
+        alias_registry.mark_skipped_parametric_prelude("MyAlias".to_string());
+
+        // A StructureDef with one param typed as `MyAlias<Real>`.  The skeleton
+        // builder will call `resolve_type_expr_with_aliases` for this param,
+        // which should hit the `should_emit_skipped_parametric_prelude_info`
+        // check.  Because `build_structure_def_skeleton` clones the registry,
+        // only the local clone's dedup set is populated — the original is clean.
+        let structure = reify_ast::StructureDef {
+            name: "S".to_string(),
+            doc: None,
+            is_pub: true,
+            type_params: vec![],
+            trait_bounds: vec![],
+            members: vec![reify_ast::MemberDecl::Param(reify_ast::ParamDecl {
+                name: "x".to_string(),
+                doc: None,
+                is_priv: false,
+                type_expr: Some(reify_ast::TypeExpr {
+                    kind: reify_ast::TypeExprKind::Named {
+                        name: "MyAlias".to_string(),
+                        type_args: vec![reify_ast::TypeExpr {
+                            kind: reify_ast::TypeExprKind::Named {
+                                name: "Real".to_string(),
+                                type_args: vec![],
+                            },
+                            span,
+                        }],
+                    },
+                    span,
+                }),
+                default: None,
+                where_clause: None,
+                annotations: vec![],
+                span,
+                content_hash: reify_core::ContentHash(0),
+            })],
+            span,
+            content_hash: reify_core::ContentHash(0),
+            pragmas: vec![],
+            annotations: vec![],
+        };
+
+        let _ = build_structure_def_skeleton(
+            &structure,
+            &[],
+            &[],
+            &alias_registry,
+            &Default::default(),
+            &Default::default(),
+            &UnitRegistry::new(),
+        );
+
+        // The original registry's dedup set must still be pristine — the
+        // skeleton used a local clone, so span 10..30 was not consumed.
+        // `should_emit_skipped_parametric_prelude_info` returns `true` exactly
+        // once per span (recording it on first call); if it returns `false`
+        // here the span was already consumed by the skeleton (bug regressed).
+        assert!(
+            alias_registry.should_emit_skipped_parametric_prelude_info("MyAlias", span),
+            "build_structure_def_skeleton must not consume dedup slots in the \
+             original alias_registry; the span must still be available for the \
+             authoritative Info emission by phase_entities \
+             (regression guard for task 3895 alias_registry.clone() bugfix)"
+        );
+    }
+
     #[test]
     fn arm_member_type_emits_ice_when_unresolved() {
         let span = SourceSpan::new(0, 0);
