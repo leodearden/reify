@@ -982,3 +982,103 @@ fn query_center_of_mass_unit_cube() {
          ρ=1 gave {c:?}, ρ=100 gave {c100:?}",
     );
 }
+
+/// Query `InertiaTensor{handle, density}` and decode the `Value::List` of 3 row
+/// `Value::List`s of 3 `Value::Real` into a row-major `[[f64;3];3]`, panicking
+/// on any other shape (the wire-format contract is itself under test).
+fn query_inertia_tensor(
+    kernel: &ManifoldKernel,
+    handle: GeometryHandleId,
+    density: f64,
+) -> [[f64; 3]; 3] {
+    let rows = match kernel.query(&GeometryQuery::InertiaTensor { handle, density }) {
+        Ok(Value::List(rows)) => rows,
+        other => panic!(
+            "InertiaTensor{{handle={handle:?}, density={density}}} must return \
+             Ok(Value::List(_)); got {other:?}"
+        ),
+    };
+    assert_eq!(rows.len(), 3, "inertia tensor must have 3 rows; got {}", rows.len());
+    let mut m = [[0.0f64; 3]; 3];
+    for (i, row) in rows.iter().enumerate() {
+        let cols = match row {
+            Value::List(cols) => cols,
+            other => panic!("inertia row {i} must be Value::List; got {other:?}"),
+        };
+        assert_eq!(cols.len(), 3, "inertia row {i} must have 3 columns; got {}", cols.len());
+        for (j, val) in cols.iter().enumerate() {
+            m[i][j] = match val {
+                Value::Real(r) => *r,
+                other => panic!("inertia[{i}][{j}] must be Value::Real; got {other:?}"),
+            };
+        }
+    }
+    m
+}
+
+/// `InertiaTensor` over the unit cube via signed-tetrahedron mesh integration,
+/// density-scaled and centroidal.
+///
+/// For a `1×1×1` cube of uniform density ρ (mass `m = ρ·V = ρ`, side `s = 1`),
+/// the centroidal inertia about each axis is `I = m(s² + s²)/12 = ρ/6`, and the
+/// products of inertia vanish (axis-aligned). Polyhedral integration is exact
+/// on the cube's `{0,1}` vertices, so the 1e-9 tolerances are derived. Pins:
+/// (a) diagonal == ρ/6; (b) off-diagonal ≈ 0; (c) symmetry; (d) linear density
+/// scaling (ρ=1 is exactly half the ρ=2 tensor — density is a pure multiplier).
+///
+/// RED (step-15): `query()` returns `Err(QueryFailed(STUB_MSG))` for
+/// `InertiaTensor`. GREEN is step-16.
+#[test]
+fn query_inertia_tensor_unit_cube_density_scaled() {
+    let mut kernel = ManifoldKernel::new();
+    let handle = ingest(&mut kernel, [0.0, 0.0, 0.0]);
+
+    let rho = 2.0;
+    let t = query_inertia_tensor(&kernel, handle, rho);
+
+    // (a) Diagonal == ρ/6 (centroidal inertia of a unit cube).
+    let expected_diag = rho / 6.0;
+    for k in 0..3 {
+        assert!(
+            (t[k][k] - expected_diag).abs() < 1e-9,
+            "inertia diagonal [{k}][{k}] must be ρ/6 = {expected_diag} within 1e-9; got {}",
+            t[k][k],
+        );
+    }
+    // (b) Off-diagonal ≈ 0 (axis-aligned cube ⇒ zero products of inertia).
+    for i in 0..3 {
+        for j in 0..3 {
+            if i != j {
+                assert!(
+                    t[i][j].abs() < 1e-9,
+                    "inertia off-diagonal [{i}][{j}] must be ≈ 0 within 1e-9; got {}",
+                    t[i][j],
+                );
+            }
+        }
+    }
+    // (c) Symmetric tensor.
+    for i in 0..3 {
+        for j in 0..3 {
+            assert!(
+                (t[i][j] - t[j][i]).abs() < 1e-12,
+                "inertia tensor must be symmetric: [{i}][{j}]={} != [{j}][{i}]={}",
+                t[i][j],
+                t[j][i],
+            );
+        }
+    }
+    // (d) Linear density scaling: 2·I(ρ=1) == I(ρ=2), entrywise (density is a
+    //     pure scalar multiplier over identical geometric integrals).
+    let t1 = query_inertia_tensor(&kernel, handle, 1.0);
+    for i in 0..3 {
+        for j in 0..3 {
+            assert!(
+                (t1[i][j] * 2.0 - t[i][j]).abs() < 1e-12,
+                "density scaling must be linear: 2·I(ρ=1)[{i}][{j}]={} != I(ρ=2)[{i}][{j}]={}",
+                t1[i][j] * 2.0,
+                t[i][j],
+            );
+        }
+    }
+}
