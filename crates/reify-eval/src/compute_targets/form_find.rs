@@ -95,12 +95,14 @@ fn run(value_inputs: &[Value]) -> Result<Value, String> {
 
 // ── input cracking (reuses the tensegrity.rs Tensegrity field shape) ──────────
 
+/// Cracked Tensegrity topology: node coordinates, member index pairs in
+/// struts-then-cables order, and the matching per-member [`MemberKind`] tags.
+type CrackedTopology = (Vec<[f64; 3]>, Vec<(usize, usize)>, Vec<MemberKind>);
+
 /// Crack the Tensegrity StructureInstance into node coordinates plus members in
 /// struts-then-cables order with their matching [`MemberKind`] tags. Member
 /// indices are range-checked here so the kernel never indexes out of bounds.
-fn crack_tensegrity(
-    v: &Value,
-) -> Result<(Vec<[f64; 3]>, Vec<(usize, usize)>, Vec<MemberKind>), String> {
+fn crack_tensegrity(v: &Value) -> Result<CrackedTopology, String> {
     let fields = match v {
         Value::StructureInstance(d) if d.type_name == "Tensegrity" => &d.fields,
         other => {

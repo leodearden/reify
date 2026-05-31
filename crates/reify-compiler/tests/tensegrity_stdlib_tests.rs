@@ -1,8 +1,8 @@
 //! Tests for stdlib/tensegrity.ri — Tensegrity structure network types:
-//! Strut, Cable, Tensegrity, TensegrityWire.
+//! Strut, Cable, Tensegrity, TensegrityWire, FormFindResult.
 //!
 //! Tests validate that the .ri file is loaded by the production stdlib path,
-//! that all four structure_defs are correctly represented in the compiled
+//! that all five structure_defs are correctly represented in the compiled
 //! module, and that param signatures match PRD §3.
 //!
 //! All tests use the production-path `load_stdlib_module()` helper that
@@ -82,10 +82,10 @@ fn std_tensegrity_module_loads_with_no_errors() {
     );
 }
 
-/// The std/tensegrity module must declare exactly four top-level structures:
-/// Strut, Cable, Tensegrity, TensegrityWire.
+/// The std/tensegrity module must declare exactly five top-level structures:
+/// Strut, Cable, Tensegrity, TensegrityWire, FormFindResult.
 #[test]
-fn std_tensegrity_module_has_four_structures() {
+fn std_tensegrity_module_has_five_structures() {
     let module = load_stdlib_module();
 
     let structures: Vec<&str> = module
@@ -95,7 +95,7 @@ fn std_tensegrity_module_has_four_structures() {
         .map(|t| t.name.as_str())
         .collect();
 
-    let expected = ["Strut", "Cable", "Tensegrity", "TensegrityWire"];
+    let expected = ["Strut", "Cable", "Tensegrity", "TensegrityWire", "FormFindResult"];
     assert_eq!(
         structures.len(),
         expected.len(),
