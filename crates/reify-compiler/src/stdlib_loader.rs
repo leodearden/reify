@@ -265,6 +265,18 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
             // the type-resolver's `resolution_enums`, so value-lowering sees the
             // same prelude enum set as the type resolver.
             //
+            // SCOPE: This seeding applies to EVERY stdlib module in `sources`, not
+            // only to `std.modal.analysis`.  The change is safe because any stdlib
+            // module that already references a prelude enum in value position WITHOUT
+            // a local copy would lower to MemberAccess→unresolved-name and trip the
+            // Error-severity `assert!` below — meaning `load_stdlib` already panics
+            // for such cases.  The seeding only changes lowering for cases that
+            // currently error; it cannot silently alter a module that compiles today.
+            // `all_stdlib_modules_have_no_errors` (stdlib_loader_tests.rs) is the
+            // regression guard for any accidental EnumAccess collision introduced by
+            // future stdlib modules whose X.Y value-positions collide with a prelude
+            // enum name.
+            //
             // We seed from the LOCAL growing `modules` Vec — NOT from
             // `load_stdlib_context()` — to avoid re-entering the `STDLIB_CACHE`
             // OnceLock (which would deadlock: `load_stdlib_context` calls

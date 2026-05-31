@@ -1714,6 +1714,11 @@ fn modal_options_element_order_resolves_to_shared_stdlib_enum() {
     // Cross-module drift anchor: modal's runtime trampoline reads `variant == "P2"`
     // from the shared enum. Re-anchor the [P1, P2] canonical order here so the
     // solver_elastic dependency is explicit even after modal drops its local copy.
+    //
+    // The primary pin lives in solver_elastic_tests.rs:
+    //   `element_order_enum_has_p1_and_p2_variants_in_canonical_order`
+    // This assertion adds the cross-module link: it confirms the enum reachable
+    // from modal's compiled perspective is that same solver_elastic definition.
     let elastic_module = stdlib_loader::load_stdlib()
         .iter()
         .find(|m| m.path.to_string() == "std/solver/elastic")
