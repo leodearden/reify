@@ -2094,6 +2094,124 @@ purpose marg(subject : Structure) {
     );
 }
 
+// ── §12: Deactivate restores byte-identity (task 4009 δ, B6/C4) ─────────────
+//
+// After `deactivate_purpose`, ALL injected let-cells must be removed from
+// graph.value_cells and snapshot.values so the graph is byte-identical to
+// the pre-activation state — no `__let_` entries may remain.
+
+/// B6/C4 — deactivate removes injected let cells, restoring byte-identity.
+///
+/// Activating the let-purpose injects one let-cell and one constraint; after
+/// deactivate, both counts must return to pre-activation values and no cell
+/// with member `"__let_m"` may remain in graph.value_cells.
+///
+/// RED because `deactivate_purpose` does not yet remove injected let cells.
+#[test]
+fn deactivate_removes_injected_let_cells_restoring_graph() {
+    let source = r#"
+structure Bracket {
+    param a : Length = 80mm
+    param b : Length = 50mm
+}
+
+purpose marg(subject : Structure) {
+    let m = subject.a - subject.b
+    constraint m > 0mm
+}
+"#;
+    let compiled = parse_and_compile(source);
+    assert!(
+        compiled
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != Severity::Error),
+        "fixture must compile without errors: {:?}",
+        compiled.diagnostics
+    );
+
+    let mut engine = make_simple_engine();
+    engine.eval(&compiled);
+
+    // Record pre-activation counts.
+    let pre_cell_count = engine
+        .snapshot()
+        .expect("snapshot before activation")
+        .graph
+        .value_cells
+        .len();
+    let pre_constraint_count = constraint_count(&engine);
+
+    // Activate — should inject one let-cell + one constraint.
+    engine.activate_purpose("marg", "Bracket");
+
+    let post_activate_cell_count = engine
+        .snapshot()
+        .expect("snapshot after activation")
+        .graph
+        .value_cells
+        .len();
+    let post_activate_constraint_count = constraint_count(&engine);
+
+    assert_eq!(
+        post_activate_cell_count,
+        pre_cell_count + 1,
+        "activation must inject exactly one let-cell into graph.value_cells"
+    );
+    assert_eq!(
+        post_activate_constraint_count,
+        pre_constraint_count + 1,
+        "activation must inject exactly one constraint"
+    );
+
+    // Verify the let-cell is present after activation.
+    assert!(
+        engine
+            .snapshot()
+            .expect("snapshot after activation")
+            .graph
+            .value_cells
+            .iter()
+            .any(|(id, _)| id.entity.starts_with("purpose:marg@Bracket")
+                && id.member == "__let_m"),
+        "after activation: expected '__let_m' cell in graph.value_cells"
+    );
+
+    // Deactivate.
+    engine.deactivate_purpose("marg");
+
+    // Graph must be byte-identical to pre-activation state.
+    let post_deactivate_cell_count = engine
+        .snapshot()
+        .expect("snapshot after deactivation")
+        .graph
+        .value_cells
+        .len();
+    let post_deactivate_constraint_count = constraint_count(&engine);
+
+    assert_eq!(
+        post_deactivate_cell_count, pre_cell_count,
+        "after deactivation: graph.value_cells count must be restored to pre-activation value"
+    );
+    assert_eq!(
+        post_deactivate_constraint_count, pre_constraint_count,
+        "after deactivation: constraint count must be restored to pre-activation value"
+    );
+
+    // No __let_ cell may remain.
+    let let_cell_still_present = engine
+        .snapshot()
+        .expect("snapshot after deactivation")
+        .graph
+        .value_cells
+        .iter()
+        .any(|(id, _)| id.member.starts_with("__let_"));
+    assert!(
+        !let_cell_still_present,
+        "after deactivation: no '__let_' cell must remain in graph.value_cells"
+    );
+}
+
 /// B3 (Violated) — `let m = subject.a - subject.b; constraint m > 0mm`
 /// with `a=50mm, b=80mm` → `m=-30mm > 0mm` is false → Violated.
 #[test]
