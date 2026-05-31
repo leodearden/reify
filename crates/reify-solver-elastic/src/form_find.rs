@@ -148,12 +148,28 @@ pub fn form_find_anchored(
         out_nodes[gi] = [rhs[(fi, 0)], rhs[(fi, 1)], rhs[(fi, 2)]];
     }
 
+    // Per-member axial force Nᵢ = qᵢ · Lᵢ on the solved geometry, in
+    // struts-then-cables member order (the input ordering).
+    let member_forces: Vec<f64> = members
+        .iter()
+        .zip(q.iter())
+        .map(|(&(j, k), &qi)| {
+            let pj = out_nodes[j];
+            let pk = out_nodes[k];
+            let len = ((pj[0] - pk[0]).powi(2)
+                + (pj[1] - pk[1]).powi(2)
+                + (pj[2] - pk[2]).powi(2))
+            .sqrt();
+            qi * len
+        })
+        .collect();
+
     // `kinds` drives the per-member sign validation added in step-6; the
     // happy-path solve here does not yet consume it.
     let _ = kinds;
     Ok(FormFindSolve {
         nodes: out_nodes,
-        member_forces: vec![],
+        member_forces,
         force_densities: q.to_vec(),
         converged: true,
     })
