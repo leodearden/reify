@@ -256,6 +256,35 @@ impl DimensionVector {
     pub const FRACTURE_TOUGHNESS: DimensionVector =
         DimensionVector::from_rational_exps(&[(0, -1, 2), (1, 1, 1), (2, -2, 1)]);
 
+    // ─── Compliant-joint / flexure dimensioned types (task 3849 / Phase-1) ──────
+    //
+    // Added for the Compliant-Joints/Flexures PRD (v0.3, task α).
+    // Index layout reminder: 0=Length 1=Mass 2=Time 7=Angle(rad).
+
+    /// Rotational stiffness: N·m/rad = kg·m²·s⁻²·rad⁻¹
+    ///
+    /// Spring coefficient for revolute joints (spring_force = -k·Δθ gives N·m torque).
+    pub const ROTATIONAL_STIFFNESS: DimensionVector =
+        DimensionVector::from_exps(&[(0, 2), (1, 1), (2, -2), (7, -1)]);
+    /// Rotational damping: N·m·s/rad = kg·m²·s⁻¹·rad⁻¹
+    ///
+    /// Damping coefficient for revolute joints (damping_force = -c·θ̇ gives N·m torque).
+    pub const ROTATIONAL_DAMPING: DimensionVector =
+        DimensionVector::from_exps(&[(0, 2), (1, 1), (2, -1), (7, -1)]);
+    /// Translational stiffness: N/m = kg·s⁻² — dimensionally identical to `STIFFNESS`.
+    ///
+    /// Spring coefficient for prismatic joints (spring_force = -k·Δx gives N force).
+    /// Name alias: `canonical_name()` returns `"Stiffness"` (first-match scan order;
+    /// see `STIFFNESS` above). The `"TranslationalStiffness"` name resolves in the
+    /// name→dim direction via `resolve_dimension_type`. Mirrors the Curvature/AbsorptionCoeff
+    /// alias precedent (task 3603 / GHR-α).
+    pub const TRANSLATIONAL_STIFFNESS: DimensionVector = DimensionVector::STIFFNESS;
+    /// Translational damping: N·s/m = kg·s⁻¹
+    ///
+    /// Damping coefficient for prismatic joints (damping_force = -c·ẋ gives N force).
+    pub const TRANSLATIONAL_DAMPING: DimensionVector =
+        DimensionVector::from_exps(&[(1, 1), (2, -1)]);
+
     const fn basis(index: usize) -> DimensionVector {
         let mut v = [Rational::ZERO; 10];
         v[index] = Rational::ONE;
