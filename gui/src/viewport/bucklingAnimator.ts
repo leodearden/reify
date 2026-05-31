@@ -26,6 +26,13 @@ import {
  * Compute the bounding-box center and half-space-diagonal radius for a flat
  * XYZ position array.  Pure function — no three.js dependency.
  *
+ * Deliberately avoids three.Box3 / BufferGeometry.computeBoundingSphere so
+ * the helper is unit-testable with plain numbers (no WebGL infrastructure)
+ * and keeps the BucklingPanel.test.tsx mock surface minimal (only
+ * Scene/Camera/Renderer need stubs, not Box3/Vector3).  For the three.Box3
+ * pattern used elsewhere see: viewport/scene.ts, viewport/selection.ts,
+ * gui/src/debug/bridge.ts.
+ *
  * Returns { center:[0,0,0], radius:0 } for an empty / zero-length input.
  */
 export function computePointCloudBounds(
