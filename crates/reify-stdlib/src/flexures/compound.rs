@@ -761,6 +761,74 @@ mod tests {
         assert!(rel_e < 1e-9, "doubling E should give ×2 stiffness, got ×{ratio_e} (rel {rel_e})");
     }
 
+    // ── θ/step-3: RED -- prb_cartwheel_flexure range branches ───────────────────
+
+    #[test]
+    fn prb_cartwheel_flexure_range_branches() {
+        let prb_limit = 5.0_f64 * std::f64::consts::PI / 180.0;
+        let e: f64 = 205e9;
+        let yield_stress: f64 = 310e6;
+
+        // (a) Yield-capped: L=5mm, t=0.5mm → θ_yield = yield·L/(E·t/2) < 5°
+        let l_a: f64 = 0.005;
+        let t_a: f64 = 0.0005;
+        let theta_yield_a = yield_stress * l_a / (e * t_a / 2.0);
+        assert!(
+            theta_yield_a < prb_limit,
+            "fixture (a) must have θ_yield < 5°: θ_yield={theta_yield_a:.4} rad ≈ {}°",
+            theta_yield_a * 180.0 / std::f64::consts::PI
+        );
+        let result_a = crate::eval_builtin(
+            "prb_cartwheel_flexure",
+            &[
+                Value::Int(4),
+                Value::length(l_a),
+                Value::length(0.005),
+                Value::length(t_a),
+                steel(),
+                origin(),
+                axis_y(),
+            ],
+        );
+        let range_a = map_get(&result_a, "range").expect("range key present (a)");
+        let (lo_a, up_a) = range_lower_upper(range_a);
+        assert_angle_close(lo_a, -theta_yield_a, "yield-capped lower (a)");
+        assert_angle_close(up_a, theta_yield_a, "yield-capped upper (a)");
+
+        // (b) PRB-capped: L=20mm, t=0.5mm → θ_yield ≈ 6.93° > 5° → range == ±5°
+        let l_b: f64 = 0.02;
+        let t_b: f64 = 0.0005;
+        let theta_yield_b = yield_stress * l_b / (e * t_b / 2.0);
+        assert!(
+            theta_yield_b > prb_limit,
+            "fixture (b) must have θ_yield > 5°: θ_yield={theta_yield_b:.4} rad ≈ {}°",
+            theta_yield_b * 180.0 / std::f64::consts::PI
+        );
+        let result_b = crate::eval_builtin("prb_cartwheel_flexure", &cartwheel_args(4));
+        let range_b = map_get(&result_b, "range").expect("range key present (b)");
+        let (lo_b, up_b) = range_lower_upper(range_b);
+        assert_angle_close(lo_b, -prb_limit, "prb-limited lower (b)");
+        assert_angle_close(up_b, prb_limit, "prb-limited upper (b)");
+
+        // (c) No yield_stress → range == ±5° PRB cap
+        let result_c = crate::eval_builtin(
+            "prb_cartwheel_flexure",
+            &[
+                Value::Int(4),
+                Value::length(0.02),
+                Value::length(0.005),
+                Value::length(0.0005),
+                steel_no_yield(),
+                origin(),
+                axis_y(),
+            ],
+        );
+        let range_c = map_get(&result_c, "range").expect("range key present (c)");
+        let (lo_c, up_c) = range_lower_upper(range_c);
+        assert_angle_close(lo_c, -prb_limit, "no-yield lower (c)");
+        assert_angle_close(up_c, prb_limit, "no-yield upper (c)");
+    }
+
     // ── step-9: RED -- prb_double_parallelogram_flexure series stiffness ───────
 
     #[test]
