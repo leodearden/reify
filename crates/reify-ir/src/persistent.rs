@@ -347,10 +347,18 @@ mod tests {
         // Verifies the Borrow-generic `get<Q>` overload: a bare `&str` must be
         // accepted as a key into a `PersistentMap<String, i32>` without any
         // intermediate `to_string()` allocation.
+        //
+        // Also pins the Q=K backward-compatible path: an existing `&String`
+        // caller must still compile unchanged (the blanket `Borrow<T> for T`
+        // gives `String: Borrow<String>`).
         let mut map: PersistentMap<String, i32> = PersistentMap::new();
         map.insert("key".to_string(), 42);
+        // New capability: bare &str lookup — no allocation required.
         assert_eq!(map.get("key"), Some(&42));
         assert_eq!(map.get("missing"), None);
+        // Backward compatibility: existing &String callers continue to compile
+        // unchanged via the Q=K blanket impl.
+        assert_eq!(map.get(&"key".to_string()), Some(&42));
     }
 
     #[test]
