@@ -749,6 +749,60 @@ mod tests {
         );
     }
 
+    // ── step-1 (task 4111): EI band-sweep residual ───────────────────────────
+
+    /// RED (task 4111 step-1): EI residual ≤ v_tol across the full ±15% band.
+    ///
+    /// Sweeps 31 frequencies over [8.5, 11.5] Hz (= [0.85, 1.15]·ω_n for 10 Hz)
+    /// for ζ ∈ {0.0, 0.05, 0.1} and asserts residual ≤ 0.05 + 1e-9 at every point.
+    ///
+    /// RED on the cascade EI: ζ=0.05 peaks at ≈0.050811 (1.016·v_tol) at 8.5 Hz.
+    /// ζ=0.0 already passes (no damping-induced asymmetry) — it is a regression guard.
+    #[test]
+    fn ei_residual_within_tolerance_across_band() {
+        let omega_n = 2.0 * PI * 10.0; // 10 Hz design frequency
+        let v_tol = 0.05_f64;
+        let n_pts = 31;
+        let f_lo = 8.5_f64;
+        let f_hi = 11.5_f64;
+
+        for &zeta in &[0.0_f64, 0.05, 0.1] {
+            let train = ImpulseTrain::ei(omega_n, zeta, v_tol);
+
+            // Structural invariants.
+            assert_eq!(train.impulses.len(), 4, "EI (ζ={zeta}) must have 4 impulses");
+            for (i, imp) in train.impulses.iter().enumerate() {
+                assert!(
+                    imp.amplitude > 0.0,
+                    "EI (ζ={zeta}) A[{i}] must be > 0, got {}",
+                    imp.amplitude
+                );
+            }
+            assert_close(train.impulses[0].time, 0.0, 1e-12, &format!("EI (ζ={zeta}) t0"));
+            for i in 1..4 {
+                assert!(
+                    train.impulses[i].time > train.impulses[i - 1].time,
+                    "EI (ζ={zeta}) times must be strictly increasing: t[{i}]={} <= t[{}]={}",
+                    train.impulses[i].time,
+                    i - 1,
+                    train.impulses[i - 1].time
+                );
+            }
+            assert_close(train.amplitude_sum(), 1.0, 1e-12, &format!("EI (ζ={zeta}) amplitude_sum"));
+
+            // Band-sweep residual check.
+            for j in 0..n_pts {
+                let f = f_lo + (f_hi - f_lo) * (j as f64) / ((n_pts - 1) as f64);
+                let omega = 2.0 * PI * f;
+                let v = train.residual_vibration(omega, zeta);
+                assert!(
+                    v <= v_tol + 1e-9,
+                    "EI (ζ={zeta}) residual {v:.8e} > v_tol+1e-9 at f={f:.4} Hz"
+                );
+            }
+        }
+    }
+
     /// ZV damped (ζ=0.1): verify K and ω_d formulas.
     #[test]
     fn zv_damped_amplitudes_and_times() {
