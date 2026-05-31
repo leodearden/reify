@@ -309,3 +309,32 @@ fn expr_kind_variant_construct_constructible() {
         _ => panic!("unexpected variant"),
     }
 }
+
+// ── Task 4029 α: EnumDecl.type_params contract ────────────────────────────────
+//
+// step-3 RED: EnumDecl has no `type_params` field yet — this test does not
+// compile until step-4 adds `pub type_params: Vec<TypeParamDecl>` to EnumDecl.
+// step-4 GREEN: the field exists and is accessible.
+
+#[test]
+fn enum_decl_type_params_field_accessible() {
+    let e = EnumDecl {
+        name: "Maybe".into(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![TypeParamDecl {
+            name: "T".into(),
+            bounds: vec![],
+            default: None,
+            span: SourceSpan::empty(0),
+        }],
+        variants: vec![EnumVariantDecl::unit("Nothing")],
+        span: SourceSpan::empty(0),
+        content_hash: ContentHash(0),
+        annotations: vec![],
+    };
+    assert_eq!(e.type_params.len(), 1, "EnumDecl must have 1 type_param");
+    assert_eq!(e.type_params[0].name, "T", "type_param name must be 'T'");
+    assert!(e.type_params[0].bounds.is_empty(), "T must have no bounds");
+    assert!(e.type_params[0].default.is_none(), "T must have no default");
+}
