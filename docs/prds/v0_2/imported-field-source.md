@@ -9,6 +9,9 @@ consumes this PRD's OpenVDB arm (symmetrical with multi-kernel-phase-3.md §11 "
 — §8 Phase 4 task θ — operative consumer-arm slice: `engine_eval.rs:621` `CompiledFieldSource::Imported` arm replaced, routing through `reify-kernel-openvdb::ingest::load_field_from_path` (GR-003 resolution per 2026-05-12 disposition).
 The 5-task OpenVDB decomposition in this PRD is superseded by task θ. HDF5/CSV continues under `docs/prds/v0_3/imported-field-source-hdf5-csv.md` (multi-kernel-phase-3.md §11). See "Decomposition plan" below.
 
+**Cross-reference — std.fields / stdlib-reconstruction (Slice C task ν):** `docs/prds/v0_6/stdlib-reconstruction.md`
+The `std.fields` stdlib module (`crates/reify-compiler/stdlib/fields.ri`) is the documented packaging surface for the built-in `Field<D,C>` parametric type that `imported` fields realize as (see "Lowering to internal `sampled` representation" below). `Field<D,C>` is a built-in parametric type that resolves without import; `std.fields` packages and documents the prelude field operators (gradient/divergence/curl/laplacian/sample).
+
 ## Goal
 
 Implement the `imported` source kind for `field def` declarations as specified in `docs/reify-language-spec.md` §3.5 and §4.1.4 (the `Field` source-kind table). v0.1 ships `analytical`, `sampled`, and `composed`; v0.2 adds `imported`, which reads field data from external files — primarily OpenVDB grids, CSV tables, and HDF5 datasets.
@@ -77,7 +80,7 @@ Caching: imported data is content-hashed on file contents (not path) so the eval
 
 **Cache invalidation by content hash.** The source file is content-hashed on read; the hash is part of the realization cache key. File-content change → cache invalidation; file-path change with same content → cache hit. Standard pattern; no surprises.
 
-**Lowering to internal `sampled` representation.** Once ingested, an `imported` field is indistinguishable from a `sampled` field at the field-machinery level (interpolation, gradient, composition all work the same). The distinction lives at the source-declaration level only.
+**Lowering to internal `sampled` representation.** Once ingested, an `imported` field is indistinguishable from a `sampled` field at the field-machinery level (interpolation, gradient, composition all work the same). The distinction lives at the source-declaration level only. Concretely, the realized value is a `Field<D,C>` — the built-in parametric type that resolves without import (not an alias declared by any module). The `Field<D,C>` type and the prelude field operators (gradient/divergence/curl/laplacian/sample) are packaged and documented by the `std.fields` stdlib module (`crates/reify-compiler/stdlib/fields.ri`).
 
 ## Decomposition plan (5 tasks, gated on 2295's OpenVDB sub-kernel)
 
