@@ -467,13 +467,13 @@ impl SelectorValue {
         target: GeometryHandleRef,
         query: LeafQuery,
     ) -> Result<Self, SelectorError> {
-        if let Some(required) = query.required_kind() {
-            if required != kind {
-                return Err(SelectorError::KindMismatch {
-                    expected: required,
-                    found: kind,
-                });
-            }
+        if let Some(required) = query.required_kind()
+            && required != kind
+        {
+            return Err(SelectorError::KindMismatch {
+                expected: required,
+                found: kind,
+            });
         }
         Ok(Self { kind, node: SelectorNode::Leaf { target, query } })
     }
