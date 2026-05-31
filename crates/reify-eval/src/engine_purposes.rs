@@ -543,6 +543,12 @@ impl Engine {
             None => return, // Not active — no-op
         };
 
+        // Remove injected let-cell ids (bookkeeping for byte-identity restore).
+        let let_ids = self
+            .active_purpose_let_cells
+            .remove(purpose_name)
+            .unwrap_or_default();
+
         // Update demand registry: remove demand for each ejected constraint node.
         for id in &injected_ids {
             self.demand.remove_demand(&NodeId::Constraint(id.clone()));
@@ -560,6 +566,10 @@ impl Engine {
         if let Some(state) = self.eval_state.as_mut() {
             for constraint_id in &injected_ids {
                 state.snapshot.graph.constraints.remove(constraint_id);
+            }
+            for let_id in &let_ids {
+                state.snapshot.graph.value_cells.remove(let_id);
+                state.snapshot.values.remove(let_id);
             }
             state.reverse_index = ReverseDependencyIndex::build_from_graph_and_fields(
                 &state.snapshot.graph,
