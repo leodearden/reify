@@ -101,6 +101,24 @@ impl KernelId {
             KernelId::OpenVdb => "openvdb",
         }
     }
+
+    /// Inverse of [`as_registry_name`](KernelId::as_registry_name): resolve a
+    /// canonical registry name back to its `KernelId`, or `None` if the string
+    /// is not a registered kernel name.
+    ///
+    /// Exact inverse over the distinct canonical names, so
+    /// `from_registry_name(k.as_registry_name()) == Some(k)` for every variant.
+    /// Matching is case-sensitive — registry names are canonical lowercase.
+    pub fn from_registry_name(name: &str) -> Option<KernelId> {
+        match name {
+            "fidget" => Some(KernelId::Fidget),
+            "gmsh" => Some(KernelId::Gmsh),
+            "manifold" => Some(KernelId::Manifold),
+            "occt" => Some(KernelId::Occt),
+            "openvdb" => Some(KernelId::OpenVdb),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
