@@ -514,3 +514,32 @@ pub use sweep::{
 // is enforced by the orchestrator, not by the projector itself. External
 // callers cannot misuse it with a short slice.
 pub use volume_refine::{RefineError, refine_with_size_field};
+// Task 3868: κ — additive joint-stiffness kernel.
+// PRD compliant-joints-flexures.md §7.2: each spring-loaded joint contributes
+// K[dof,dof] += k to the global stiffness matrix; empty contributions → rigid
+// joint (zero addition), preserving existing modal-analysis behaviour.
+//
+// # Usage example
+//
+// ```
+// use reify_solver_elastic::{JointStiffness, add_joint_stiffness};
+// use faer::sparse::{SparseRowMat, Triplet};
+//
+// // 2×2 K = [[5, 0], [0, 0]] with (1,1) absent
+// let trips: Vec<Triplet<usize, usize, f64>> = vec![Triplet::new(0, 0, 5.0)];
+// let k = SparseRowMat::try_new_from_triplets(2, 2, &trips).unwrap();
+//
+// // Add a spring of stiffness 3.0 at DOF 1 (structurally absent → created).
+// let k2 = add_joint_stiffness(&k, &[JointStiffness { dof: 1, stiffness: 3.0 }]);
+//
+// // K[0,0] unchanged; K[1,1] created as 3.0.
+// let sym = k2.symbolic();
+// let get = |r, c| {
+//     let cols = sym.col_idx_of_row_raw(r);
+//     let vals = k2.val_of_row(r);
+//     cols.iter().zip(vals.iter()).find(|(&col, _)| col == c).map(|(_, &v)| v).unwrap_or(0.0)
+// };
+// assert_eq!(get(0, 0), 5.0);
+// assert_eq!(get(1, 1), 3.0);
+// ```
+pub use joint_stiffness::{JointStiffness, add_joint_stiffness};

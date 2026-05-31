@@ -3,15 +3,12 @@
 //! A lumped mass `m` on a Howell-cantilever flexure of stiffness `k` has first-mode
 //! frequency `f₁ = (1/2π)·√(k/m)` within the PRD's 2% band.
 //!
-//! This file is RED until step-8 GREEN adds the crate-root re-export of
-//! `JointStiffness` and `add_joint_stiffness` (the established convention, cf.
-//! lib.rs:332-338 Task 3293 / :340-362 Task 3778).
-//!
-//! Implementation note: for a 1-DOF generalized eigenproblem `K φ = λ M φ` the
-//! eigenvalue is closed-form exact: `det(K − λM) = k − λm = 0 ⟹ λ = k/m`.
-//! `solve_eigen_dense` reproduces this to ~machine precision, so the PRD 2% band
-//! (which budgets for PRB-approximation + distributed-mass error in the full e2e
-//! pipeline) is satisfied with ~12 orders of magnitude margin.
+//! Implementation note: faer's dense QZ algorithm (used by `solve_eigen_dense`) requires
+//! n ≥ 2 for its scratch-buffer allocation. The test therefore uses a 2-DOF uncoupled
+//! spring-mass system: DOF 0 is the Howell-cantilever mass (lower frequency), DOF 1 is
+//! a stiff "anchor" DOF with much higher frequency. For a block-diagonal K = diag(k, k₁)
+//! and M = diag(m, m₁) the eigenvalues are still closed-form exact: λᵢ = kᵢ/mᵢ,
+//! so the PRD 2% band is met with ~machine-precision margin.
 
 use std::f64::consts::PI;
 
@@ -35,21 +32,44 @@ fn howell_cantilever_first_mode_frequency() {
 
     let m_load = 0.5_f64; // lumped tip mass [kg]
 
-    // Build a 1×1 zero K (no stored entries) and inject the joint spring rate.
+    // Second DOF: a stiff anchor with a much higher natural frequency (f₁ >> f₀)
+    // so that DOF 0's eigenvalue is the smallest (first mode).
+    let k_anchor = 1.0e6_f64; // [N/m] — stiff anchor spring
+    let m_anchor = 0.001_f64; // [kg]   — light anchor mass
+    // f_anchor = √(k_anchor/m_anchor)/(2π) ≈ 5.0 kHz >> f_cantilever ≈ 0.26 Hz.
+
+    // Build a 2×2 zero K (no stored entries) and inject both spring rates.
+    // faer's dense QZ algorithm requires n ≥ 2 for its scratch-buffer allocation;
+    // the 2-DOF uncoupled system has closed-form eigenvalues λᵢ = kᵢ/mᵢ (exact).
     let k_zero: SparseRowMat<usize, f64> =
-        SparseRowMat::try_new_from_triplets(1, 1, &[]).unwrap();
-    let k_j = add_joint_stiffness(&k_zero, &[JointStiffness { dof: 0, stiffness: k }]);
+        SparseRowMat::try_new_from_triplets(2, 2, &[]).unwrap();
+    let k_j = add_joint_stiffness(
+        &k_zero,
+        &[
+            JointStiffness { dof: 0, stiffness: k },
+            JointStiffness { dof: 1, stiffness: k_anchor },
+        ],
+    );
 
-    // Build the 1×1 lumped mass matrix.
-    let m_trips: Vec<Triplet<usize, usize, f64>> = vec![Triplet::new(0, 0, m_load)];
+    // Build the 2×2 lumped mass matrix.
+    let m_trips: Vec<Triplet<usize, usize, f64>> = vec![
+        Triplet::new(0, 0, m_load),
+        Triplet::new(1, 1, m_anchor),
+    ];
     let m: SparseRowMat<usize, f64> =
-        SparseRowMat::try_new_from_triplets(1, 1, &m_trips).unwrap();
+        SparseRowMat::try_new_from_triplets(2, 2, &m_trips).unwrap();
 
-    // Solve the generalized eigenproblem K φ = λ M φ.
-    let opts = EigenSolverOptions { n_modes: 1, ..Default::default() };
+    // Solve the generalized eigenproblem K φ = λ M φ; ask for both modes.
+    let opts = EigenSolverOptions { n_modes: 2, ..Default::default() };
     let result = solve_eigen_dense(&k_j, &m, opts);
 
-    // For a 1-DOF pencil λ = k/m is exact (closed-form), so f₁ = √λ/(2π).
+    // For the uncoupled block-diagonal system, λ₀ = k/m_load and λ₁ = k_anchor/m_anchor.
+    // eigenvalues are returned ascending by |λ|; since f_cantilever << f_anchor, λ₀ < λ₁.
+    assert!(
+        result.eigenvalues.len() >= 1,
+        "expected at least 1 eigenvalue, got {}",
+        result.eigenvalues.len()
+    );
     let lambda = result.eigenvalues[0];
     let f_computed = lambda.sqrt() / (2.0 * PI);
     let f_expected = (k / m_load).sqrt() / (2.0 * PI);
@@ -58,6 +78,7 @@ fn howell_cantilever_first_mode_frequency() {
     assert!(
         rel_err <= 0.02,
         "first-mode frequency relative error {rel_err:.2e} exceeds PRD 2% band: \
-         f_computed = {f_computed:.4} Hz, f_expected = {f_expected:.4} Hz",
+         f_computed = {f_computed:.6} Hz, f_expected = {f_expected:.6} Hz \
+         (k = {k:.4e} N/m, m = {m_load} kg)",
     );
 }
