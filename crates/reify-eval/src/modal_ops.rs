@@ -33,8 +33,8 @@ use reify_stdlib::modal::free_vibration::{
 };
 use reify_stdlib::modal::trampoline::ModalCacheKey;
 use reify_stdlib::modal::transient::{
-    dominant_antinode_index, harmonic_force_at, impulse_force_at, sampled_force_at,
-    solve_modal_response, step_force_at, uniform_time_grid,
+    dominant_antinode_index, harmonic_force_at, impulse_force_at, reconstruct_series,
+    sampled_force_at, solve_modal_response, step_force_at, uniform_time_grid,
 };
 
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
@@ -1360,19 +1360,69 @@ pub fn solve_transient_response_trampoline(
 /// `@optimized("modal::displacement_at")` public `ComputeFn` (task ι; registered
 /// in `compute_targets::mod`).
 ///
-/// STUB (step-10): returns an empty `Value::List`. The full Φ-projected
-/// single-location reconstruction (`u(tⱼ) = Σᵢ (Φᵢ[node]·dir)·mode_coords[i][j]`)
-/// lands in step-16. Unlike the other modal trampolines this returns a non-struct
-/// `Value::List(Real)` (PRD §5.2). No warm state is donated.
+/// Lazy single-location modal-superposition reconstruction (PRD §5.2):
+///   1. resolve the query `location` to a node (`resolve_location_node`: numeric
+///      string → explicit index, else the fundamental antinode over mode-0 Φ);
+///   2. read the query `direction` and form each mode's projection coefficient
+///      `coeff_i = Φ_i[node]·direction` (from the echoed `ModalResult`);
+///   3. recombine with the stored modal coordinates:
+///      `u(tⱼ) = Σ_i coeff_i · mode_coords[i][j]` (`reconstruct_series`).
+///
+/// Lazy: only the queried node's time series is reconstructed — the full
+/// `n_nodes × n_times` displacement field is never materialized. Unlike the other
+/// modal trampolines this returns a non-struct `Value::List(Real)` (PRD §5.2). No
+/// warm state is donated (ι owns fn+dispatch; caching is λ's job).
 pub fn displacement_at_trampoline(
-    _value_inputs: &[Value],
+    value_inputs: &[Value],
     _realization_inputs: &[RealizationReadHandle],
     _options: &Value,
     _prior_warm_state: Option<&OpaqueState>,
     _cancellation: &CancellationHandle,
 ) -> ComputeOutcome {
+    // value_inputs = [history, location, direction] (pre-2 signature).
+    let history = match value_inputs.first() {
+        Some(h) => h,
+        None => return displacement_series_outcome(Vec::new()),
+    };
+    let location = match value_inputs.get(1) {
+        Some(Value::String(s)) => s.as_str(),
+        _ => "",
+    };
+    let direction = value_inputs.get(2).map(read_vec3).unwrap_or([0.0; 3]);
+
+    // Per-mode node shapes Φᵢ (from the echoed ModalResult) — Φᵢ[node] supplies
+    // each projection coefficient. Borrowed (not cloned) off the history.
+    let shapes = match field_ref(history, "modal_result") {
+        Some(modal_result) => extract_mode_shapes(modal_result),
+        None => Vec::new(),
+    };
+    let mode0_shape: &[[f64; 3]] = shapes.first().map(Vec::as_slice).unwrap_or(&[]);
+    let node = resolve_location_node(location, mode0_shape);
+
+    // coeff_i = Φ_i[node]·direction (only the queried node is touched per mode).
+    let coeffs: Vec<f64> = shapes
+        .iter()
+        .map(|shape_i| {
+            let phi = shape_i.get(node).copied().unwrap_or([0.0; 3]);
+            phi[0] * direction[0] + phi[1] * direction[1] + phi[2] * direction[2]
+        })
+        .collect();
+
+    // The stored modal-coordinate matrix ξ_i(tⱼ) as Vec<Vec<f64>> (List<List<Real>>).
+    let mode_coords: Vec<Vec<f64>> = match field_ref(history, "mode_coords") {
+        Some(Value::List(series)) => series.iter().map(read_real_list).collect(),
+        _ => Vec::new(),
+    };
+
+    displacement_series_outcome(reconstruct_series(&coeffs, &mode_coords))
+}
+
+/// Wrap a reconstructed displacement series in a `ComputeOutcome::Completed`
+/// carrying a `Value::List(Real)` (PRD §5.2) — the non-struct result shape unique
+/// to `displacement_at`. No warm state / diagnostics (ι donates neither).
+fn displacement_series_outcome(series: Vec<f64>) -> ComputeOutcome {
     ComputeOutcome::Completed {
-        result: Value::List(Vec::new()),
+        result: Value::List(series.into_iter().map(Value::Real).collect()),
         new_warm_state: None,
         cost_per_byte: None,
         diagnostics: Vec::new(),
