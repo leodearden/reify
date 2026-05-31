@@ -919,6 +919,56 @@ mod tests {
         );
     }
 
+    // ── θ/step-7: RED -- prb_cartwheel_flexure neutral angle handling ────────────
+
+    /// Invoke `prb_cartwheel_flexure` on the base 7-arg fixture, optionally
+    /// appending an 8th `neutral` argument.
+    fn cartwheel_with_neutral(neutral: Option<Value>) -> Value {
+        let mut args = cartwheel_args(4);
+        if let Some(n) = neutral {
+            args.push(n);
+        }
+        crate::eval_builtin("prb_cartwheel_flexure", &args)
+    }
+
+    #[test]
+    fn prb_cartwheel_flexure_neutral_angle_handling() {
+        let two_deg = 2.0_f64 * std::f64::consts::PI / 180.0;
+
+        // (a) 7-arg → neutral defaults to angle(0).
+        let seven = cartwheel_with_neutral(None);
+        assert_eq!(
+            map_get(&seven, "neutral"),
+            Some(&Value::angle(0.0)),
+            "7-arg call defaults neutral to angle(0)"
+        );
+
+        // (b) 8-arg bare angle(2°) → neutral == angle(2°).
+        let eight_bare = cartwheel_with_neutral(Some(Value::angle(two_deg)));
+        assert_angle_close(
+            map_get(&eight_bare, "neutral").expect("neutral key present (b)"),
+            two_deg,
+            "8-arg bare-angle neutral",
+        );
+
+        // (c) 8-arg Option(Some(angle(2°))) → unwraps to angle(2°).
+        let eight_opt =
+            cartwheel_with_neutral(Some(Value::Option(Some(Box::new(Value::angle(two_deg))))));
+        assert_angle_close(
+            map_get(&eight_opt, "neutral").expect("neutral key present (c)"),
+            two_deg,
+            "8-arg optional-angle neutral",
+        );
+
+        // (d) 8-arg Option(None) → neutral defaults to angle(0).
+        let eight_none = cartwheel_with_neutral(Some(Value::Option(None)));
+        assert_eq!(
+            map_get(&eight_none, "neutral"),
+            Some(&Value::angle(0.0)),
+            "8-arg Option(None) neutral defaults to angle(0)"
+        );
+    }
+
     // ── step-9: RED -- prb_double_parallelogram_flexure series stiffness ───────
 
     #[test]
