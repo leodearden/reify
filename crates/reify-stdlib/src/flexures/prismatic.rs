@@ -19,7 +19,11 @@
 use reify_core::DimensionVector;
 use reify_ir::Value;
 
-use super::common::{length_si, make_flexure_joint, material_field_si};
+use std::collections::BTreeMap;
+
+use super::common::{
+    length_si, make_flexure_joint, material_field_si, symmetric_angle_range, PRB_ANGLE_LIMIT_RAD,
+};
 
 /// Single-cantilever-blade PRB transverse stiffness coefficient (Howell §6.2).
 ///
@@ -42,6 +46,7 @@ const SMALL_DEFLECTION_FRACTION: f64 = 0.1;
 pub(crate) fn eval_prismatic(name: &str, args: &[Value]) -> Option<Value> {
     match name {
         "prb_prismatic_blade" => Some(prb_prismatic_blade(args)),
+        "prb_two_axis_pivot" => Some(prb_two_axis_pivot(args)),
         _ => None,
     }
 }
@@ -167,6 +172,74 @@ fn prb_prismatic_blade(args: &[Value]) -> Value {
         Value::length(neutral_si),
         b.pivot.clone(),
     )
+}
+
+/// `prb_two_axis_pivot(length, width, thickness, material, pivot, axis[, neutral])`
+/// — Henein 2010 two-axis pivot presented as a spherical joint.
+///
+/// Returns a spherical-joint `Value::Map` (`kind == "spherical"`) with the
+/// isotropic per-axis rotational stiffness `k_axis = E·I/L` (γ = 1, slender
+/// blade; Henein 2010 §4). A topology-specific Henein coefficient is a future
+/// refinement — the symmetric slender-blade γ = 1 convention is shared with
+/// `prb_living_hinge` (hinge.rs).
+///
+/// Per PRD §8.6 / §13.1 the multi-DOF scalar spring tensor is deferred:
+/// `spring_rate = Value::Option(None)`. Per-axis stiffness is surfaced only via
+/// `effective_stiffness` (FlexureCompliance, populated in task λ).
+///
+/// The `axis` argument is validated (finite, non-zero, dimensionless 3-vector)
+/// for parser symmetry with the 1-DOF constructors but is NOT stored in the map
+/// — the spherical joint is axis-isotropic and the canonical spherical Map has
+/// no `axis` key.
+///
+/// Returns `Value::Undef` on the same invalid-input classes as
+/// [`prb_prismatic_blade`] (see [`parse_prismatic_inputs`]).
+fn prb_two_axis_pivot(args: &[Value]) -> Value {
+    let Some(b) = parse_prismatic_inputs(args) else {
+        return Value::Undef;
+    };
+
+    // Symmetric per-axis rotational stiffness k_axis = E·I/L (γ = 1, Henein 2010).
+    let k_axis = b.e * b.i / b.length;
+
+    // Angular validity range: θ_yield = yield·L/(E·t/2), capped at 5° PRB limit.
+    // No yield_stress ⇒ 5° PRB limit only.
+    let theta_lim = match b.yield_si {
+        Some(yield_si) => {
+            let theta_yield = yield_si * b.length / (b.e * b.thickness / 2.0);
+            theta_yield.min(PRB_ANGLE_LIMIT_RAD)
+        }
+        None => PRB_ANGLE_LIMIT_RAD,
+    };
+    let range_angle = symmetric_angle_range(theta_lim);
+
+    // Build the spherical joint Map directly (NOT make_flexure_joint, which
+    // emits `axis`/`range`/`neutral` keys appropriate for 1-DOF joints only).
+    // The canonical spherical Map uses `range_angle` (axis-isotropic), has no
+    // `axis` or `neutral` key, and carries `spring_rate = None` per §8.6.
+    let mut m = BTreeMap::new();
+    m.insert(
+        Value::String("kind".to_string()),
+        Value::String("spherical".to_string()),
+    );
+    m.insert(Value::String("range_angle".to_string()), range_angle);
+    m.insert(
+        Value::String("effective_stiffness".to_string()),
+        Value::Scalar {
+            si_value: k_axis,
+            dimension: DimensionVector::ROTATIONAL_STIFFNESS,
+        },
+    );
+    m.insert(
+        Value::String("spring_rate".to_string()),
+        Value::Option(None),
+    );
+    m.insert(
+        Value::String("damping".to_string()),
+        Value::Option(None),
+    );
+    m.insert(Value::String("pivot".to_string()), b.pivot.clone());
+    Value::Map(m)
 }
 
 #[cfg(test)]
