@@ -170,6 +170,16 @@ struct Args {
     fused_memory_url: String,
     runs_db: String,
     project_root: String,
+    /// jcodemunch MCP endpoint for P1; falls back to `JCODEMUNCH_URL` env
+    /// or `http://127.0.0.1:8901/mcp` (no trailing slash — `/mcp/` triggers
+    /// a 307 redirect that drops `mcp-session-id`).
+    jcodemunch_url: String,
+    /// Repo identifier passed to `RealJCodemunchOps::new`. Default is the
+    /// smoke-verified slash form `leodearden/reify`.
+    jcodemunch_repo: String,
+    /// When true, bind `NoopJCodemunchOps` even for P1 runs. Preserves
+    /// hermetic test behaviour and provides an offline escape hatch.
+    no_jcodemunch: bool,
 }
 
 fn parse_args(argv: &[String]) -> Result<Args, String> {
@@ -186,6 +196,12 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
         .unwrap_or_else(|_| "http://localhost:8002/mcp".to_string());
     let mut runs_db = "data/orchestrator/runs.db".to_string();
     let mut project_root = ".".to_string();
+    // Default uses `/mcp` (no trailing slash) — same redirect-avoidance
+    // rationale as fused_memory_url above.
+    let mut jcodemunch_url = std::env::var("JCODEMUNCH_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:8901/mcp".to_string());
+    let mut jcodemunch_repo = "leodearden/reify".to_string();
+    let mut no_jcodemunch = false;
 
     // NOTE: Last-wins semantics for duplicate flags.
     // When a flag appears more than once (e.g. the pre-done hook wrapper passes
@@ -260,6 +276,23 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
                     .ok_or("--project-root requires a value")?
                     .clone();
             }
+            "--jcodemunch-url" => {
+                i += 1;
+                jcodemunch_url = argv
+                    .get(i)
+                    .ok_or("--jcodemunch-url requires a value")?
+                    .clone();
+            }
+            "--jcodemunch-repo" => {
+                i += 1;
+                jcodemunch_repo = argv
+                    .get(i)
+                    .ok_or("--jcodemunch-repo requires a value")?
+                    .clone();
+            }
+            "--no-jcodemunch" => {
+                no_jcodemunch = true;
+            }
             other => {
                 return Err(format!("unknown flag '{}'", other));
             }
@@ -276,6 +309,9 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
         fused_memory_url,
         runs_db,
         project_root,
+        jcodemunch_url,
+        jcodemunch_repo,
+        no_jcodemunch,
     })
 }
 
