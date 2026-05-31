@@ -405,6 +405,88 @@ pub fn degenerate_membrane_bending_b(
     b
 }
 
+/// Exact degenerate-kinematics **covariant** in-plane MEMBRANE strain B-matrix
+/// (`3 × 18`) at the 3D reference coordinate `coord`, before any assumed-strain
+/// re-interpolation.
+///
+/// Rows are the covariant membrane components `(ε_ξξ, ε_ηη, 2ε_ξη)` (engineering
+/// in-plane shear in the third row); columns the 18 nodal DOFs
+/// (`6·node + {u_x,u_y,u_z,θ_x,θ_y,θ_z}`).
+///
+/// # Kinematics (the actual covariant strain)
+///
+/// With the degenerate in-plane base vectors `g_α = ∂X/∂ξ_α` (α ∈ {ξ, η}, the
+/// first two columns of [`degenerate_jacobian`]) and the displacement field
+/// `u = Σ_i N_i u_i + (ζ t_i/2) Σ_i N_i (θ_i × V_i)`, the covariant membrane
+/// strain is the genuine in-plane `ε_αβ`:
+///
+/// ```text
+/// ε_αβ = ½ (g_α · u_,β + g_β · u_,α)        (α, β ∈ {ξ, η})
+/// u_,α = Σ_i N_i,α u_i + (ζ t_i/2) Σ_i N_i,α (θ_i × V_i)
+/// ```
+///
+/// reading translation `u_i` (DOFs 0–2) and ALL THREE rotations `θ_i` (DOFs 3–5)
+/// via `(θ_i × V_i) = C_i·θ_i`, `C_i = −skew(V_i)` — structurally mirroring
+/// [`degenerate_exact_covariant_shear_b`]. Because it IS the covariant strain a
+/// rigid-body mode gives an identically-zero `ε_αβ`, and the field rotates as a
+/// tensor under a rigid 3D rotation.
+///
+/// At the mid-surface (`ζ = 0`) the rotation contribution vanishes (the `ζ t/2`
+/// factor), so the covariant MEMBRANE strain is translation-only and — for a
+/// linear triangle with constant `∇N_i` and `ζ`-independent in-plane base vectors
+/// — element-CONSTANT in `(ξ, η)`. [`degenerate_assumed_membrane_b`] samples this
+/// at the mid-surface to build the assumed-natural-strain membrane field.
+fn degenerate_exact_covariant_membrane_b(
+    nodes: &[[f64; 3]; 3],
+    directors: &[Director; 3],
+    thicknesses: &[f64; 3],
+    coord: ShellRefCoord3,
+) -> [[f64; 18]; 3] {
+    let (j, _det) = degenerate_jacobian(nodes, directors, thicknesses, coord);
+    // In-plane covariant base vectors = first two columns of J.
+    let g_xi = [j[0][0], j[1][0], j[2][0]];
+    let g_eta = [j[0][1], j[1][1], j[2][1]];
+    let dn = Mitc3Plus.shape_grad_at(coord.in_plane());
+    let half_zeta = 0.5 * coord.zeta;
+
+    let dot = |a: &[f64; 3], b: &[f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
+    let mut b = [[0.0_f64; 18]; 3];
+    for i in 0..Mitc3Plus::N_NODES {
+        let zt = half_zeta * thicknesses[i]; // ζ·t_i/2
+        // Translation DOFs (a = 0,1,2): u_,α = N_i,α e_a, so
+        //   ε_ξξ  col(6i+a) = g_ξ · (N_i,ξ e_a) = N_i,ξ · (g_ξ)_a
+        //   ε_ηη  col       = N_i,η · (g_η)_a
+        //   2ε_ξη col       = N_i,η · (g_ξ)_a + N_i,ξ · (g_η)_a
+        for a in 0..3 {
+            let col = 6 * i + a;
+            b[0][col] = dn[i][0] * g_xi[a];
+            b[1][col] = dn[i][1] * g_eta[a];
+            b[2][col] = dn[i][1] * g_xi[a] + dn[i][0] * g_eta[a];
+        }
+        // Rotation DOFs (c = 0,1,2 → θ_x,θ_y,θ_z): u_,α[θ_c] = (ζ t_i/2) N_i,α C_i[:,c],
+        // C_i = −skew(V_i). So
+        //   ε_ξξ  col(6i+3+c) = g_ξ · (zt N_i,ξ C_i[:,c]) = zt N_i,ξ (g_ξ·C_i[:,c])
+        //   ε_ηη  col         = zt N_i,η (g_η·C_i[:,c])
+        //   2ε_ξη col         = zt N_i,η (g_ξ·C_i[:,c]) + zt N_i,ξ (g_η·C_i[:,c])
+        let v = directors[i];
+        let c_cols = [
+            [0.0, -v[2], v[1]], // C_i[:,0] = (0, −V_z, V_y)
+            [v[2], 0.0, -v[0]], // C_i[:,1] = (V_z, 0, −V_x)
+            [-v[1], v[0], 0.0], // C_i[:,2] = (−V_y, V_x, 0)
+        ];
+        for (c, cc) in c_cols.iter().enumerate() {
+            let g_xi_cc = dot(&g_xi, cc);
+            let g_eta_cc = dot(&g_eta, cc);
+            let col = 6 * i + 3 + c;
+            b[0][col] = zt * dn[i][0] * g_xi_cc;
+            b[1][col] = zt * dn[i][1] * g_eta_cc;
+            b[2][col] = zt * dn[i][1] * g_xi_cc + zt * dn[i][0] * g_eta_cc;
+        }
+    }
+    b
+}
+
 /// Assumed **covariant** transverse-shear B-matrix (`2 × 18`) at the in-plane
 /// reference coordinate `coord`, carried VERBATIM from the MITC3+ formulation
 /// (task 3392) using the **flat-facet** (global `u_z/θ_x/θ_y`) kinematics.
