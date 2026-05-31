@@ -5864,4 +5864,47 @@ mod tests {
             "undef % 5 should propagate Undef"
         );
     }
+
+    // ── eval_pow overflow guard (task 4106 / step-3 RED / step-4 GREEN) ─────────
+    //
+    // The compile guard (step-2) already rejects out-of-i8-range integer literal
+    // exponents on dimensioned bases, so this path is not normally reachable via
+    // `eval_source`/`parse_and_compile`.  It is a defense-in-depth guard tested
+    // here by calling `eval_pow` directly from the in-crate `mod tests`
+    // (`use super::*`).
+
+    /// `eval_pow(5mm, Int(256))` must return `Value::Undef`.
+    ///
+    /// Without the `i8::try_from` guard the current code does
+    /// `dimension.pow(256 as i8)` = `pow(0)` = DIMENSIONLESS and
+    /// `0.005.powi(256)` ≈ 0.0, returning `Scalar{0.0, DIMENSIONLESS}` — a
+    /// silently truncated dimension, not Undef.
+    ///
+    /// RED (step-3): returns Scalar with i8-truncated dimension.
+    /// GREEN (step-4): `i8::try_from(256)` Err → `Value::Undef`.
+    #[test]
+    fn eval_pow_scalar_int_overflow_returns_undef() {
+        let result = eval_pow(&mm_val(5.0), &Value::Int(256));
+        assert!(
+            result.is_undef(),
+            "eval_pow(5mm, Int(256)) should return Undef (256 overflows i8), got {:?}",
+            result
+        );
+    }
+
+    /// `eval_pow(5mm, Int(-200))` must return `Value::Undef`.
+    ///
+    /// -200 underflows i8::MIN (-128).
+    ///
+    /// RED (step-3): returns Scalar with i8-truncated dimension (-200 as i8 = 56).
+    /// GREEN (step-4): `i8::try_from(-200)` Err → `Value::Undef`.
+    #[test]
+    fn eval_pow_scalar_int_underflow_returns_undef() {
+        let result = eval_pow(&mm_val(5.0), &Value::Int(-200));
+        assert!(
+            result.is_undef(),
+            "eval_pow(5mm, Int(-200)) should return Undef (-200 underflows i8), got {:?}",
+            result
+        );
+    }
 }
