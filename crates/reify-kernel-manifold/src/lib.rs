@@ -40,6 +40,7 @@
 //! `crates/reify-test-support/src/mocks.rs:889` — `FailingMockGeometryKernel`.
 
 pub mod kernel;
+pub mod queries;
 pub mod register;
 
 /// Shared test-only mesh fixtures (e.g. [`test_fixtures::unit_cube_mesh`]).

@@ -141,8 +141,23 @@ impl GeometryKernel for ManifoldKernel {
         }
     }
 
-    fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
-        Err(QueryError::QueryFailed(STUB_MSG.into()))
+    fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
+        match query {
+            // Distance between two manifold meshes — vertex-based min Euclidean
+            // (exact for axis-aligned fixtures; KGQ-ο extends to vertex-to-triangle).
+            // PRD §9 KGQ-α / task 3610.
+            GeometryQuery::Distance { from, to } => {
+                let a = self
+                    .get_manifold(*from)
+                    .map_err(|e| QueryError::QueryFailed(format!("{e:?}")))?;
+                let b = self
+                    .get_manifold(*to)
+                    .map_err(|e| QueryError::QueryFailed(format!("{e:?}")))?;
+                Ok(Value::Real(crate::queries::distance(a, b)))
+            }
+            // All other queries remain follow-up work (see STUB_MSG).
+            _ => Err(QueryError::QueryFailed(STUB_MSG.into())),
+        }
     }
 
     fn export(
