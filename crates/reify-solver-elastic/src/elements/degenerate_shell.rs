@@ -412,4 +412,108 @@ mod tests {
         assert!((mid[2]).abs() < 1e-12, "flat mid z must be 0");
         assert_pt(top, [mid[0], mid[1], mid[2] + t / 2.0], "flat top");
     }
+
+    // ── step-5: varying Jacobian (headline property) ────────────────────────
+
+    /// Max absolute entrywise difference between two 3×3 matrices.
+    fn mat3_max_abs_diff(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> f64 {
+        let mut m = 0.0_f64;
+        for i in 0..3 {
+            for j in 0..3 {
+                m = m.max((a[i][j] - b[i][j]).abs());
+            }
+        }
+        m
+    }
+
+    /// FLAT case: planar triangle, directors ∥ facet normal, uniform thickness.
+    /// The director-tilt term Σ ∇N_i V_i vanishes (Σ∇N_i = 0, V_i constant), so
+    /// J is INVARIANT in ζ and det(J) = (2A)·(t/2) = A·t.
+    #[test]
+    fn degenerate_jacobian_flat_case_is_zeta_invariant_with_closed_form_det() {
+        // WIDE_TRI: area A = 0.5·|(2,0,0)×(0,3,0)| = 3.
+        let nodes = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 3.0, 0.0]];
+        let directors = [[0.0, 0.0, 1.0]; 3];
+        let t = 0.2;
+        let thicknesses = [t; 3];
+        let area = 3.0_f64;
+
+        let (j_minus, det_minus) = degenerate_jacobian(
+            &nodes,
+            &directors,
+            &thicknesses,
+            ShellRefCoord3::new(1.0 / 3.0, 1.0 / 3.0, -0.5),
+        );
+        let (j_plus, det_plus) = degenerate_jacobian(
+            &nodes,
+            &directors,
+            &thicknesses,
+            ShellRefCoord3::new(1.0 / 3.0, 1.0 / 3.0, 0.5),
+        );
+
+        // (i) ζ-invariance of the whole matrix.
+        assert!(
+            mat3_max_abs_diff(&j_minus, &j_plus) < 1e-12,
+            "flat J must be invariant in ζ; max diff = {}",
+            mat3_max_abs_diff(&j_minus, &j_plus),
+        );
+        // det = A·t (closed form), at both ζ samples.
+        let want_det = area * t;
+        assert!((det_minus - want_det).abs() < 1e-12, "det@-0.5 = {det_minus}, want {want_det}");
+        assert!((det_plus - want_det).abs() < 1e-12, "det@+0.5 = {det_plus}, want {want_det}");
+        // The closed-form J itself: columns (2,0,0), (0,3,0), (0,0,t/2).
+        let want_j = [[2.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, t / 2.0]];
+        assert!(mat3_max_abs_diff(&j_plus, &want_j) < 1e-12, "flat J = {j_plus:?}");
+    }
+
+    /// CURVED case: non-parallel (tilted) directors make the director-tilt term
+    /// non-zero, so J genuinely VARIES with ζ AND in (ξ,η).
+    #[test]
+    fn degenerate_jacobian_curved_case_varies_in_zeta_and_in_plane() {
+        let nodes = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        // Non-parallel directors (radial-like tilt).
+        let c30 = 30.0_f64.to_radians().cos();
+        let s30 = 30.0_f64.to_radians().sin();
+        let directors = [[0.0, 0.0, 1.0], [s30, 0.0, c30], [0.0, s30, c30]];
+        let thicknesses = [0.3; 3];
+
+        // (ii.a) varies in ζ at a fixed in-plane point.
+        let (j_m, _) = degenerate_jacobian(
+            &nodes,
+            &directors,
+            &thicknesses,
+            ShellRefCoord3::new(1.0 / 3.0, 1.0 / 3.0, -0.5),
+        );
+        let (j_p, _) = degenerate_jacobian(
+            &nodes,
+            &directors,
+            &thicknesses,
+            ShellRefCoord3::new(1.0 / 3.0, 1.0 / 3.0, 0.5),
+        );
+        assert!(
+            mat3_max_abs_diff(&j_m, &j_p) > 1e-6,
+            "curved J must vary in ζ; max diff = {}",
+            mat3_max_abs_diff(&j_m, &j_p),
+        );
+
+        // (ii.b) varies in (ξ,η) at a fixed ζ (via the dX/dζ = Σ N_i (t/2) V_i
+        // column, which depends on the shape-function values).
+        let (j_a, _) = degenerate_jacobian(
+            &nodes,
+            &directors,
+            &thicknesses,
+            ShellRefCoord3::new(0.2, 0.2, 0.5),
+        );
+        let (j_b, _) = degenerate_jacobian(
+            &nodes,
+            &directors,
+            &thicknesses,
+            ShellRefCoord3::new(0.5, 0.3, 0.5),
+        );
+        assert!(
+            mat3_max_abs_diff(&j_a, &j_b) > 1e-6,
+            "curved J must vary in (ξ,η); max diff = {}",
+            mat3_max_abs_diff(&j_a, &j_b),
+        );
+    }
 }
