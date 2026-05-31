@@ -746,3 +746,86 @@ fn query_sub_edge_tangent_and_bbox_unit_cube() {
         "unit cube must have 6 face-diagonal edges; got {diagonals}",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Topology adjacency: AdjacentFaces (steps 9 + 10), SharedEdges (steps 11 + 12)
+// ---------------------------------------------------------------------------
+
+/// Decode an `Ok(Value::List)` of `Value::Int` into `Vec<i64>`, panicking with
+/// a descriptive message on any other shape. Shared by the `AdjacentFaces` and
+/// `SharedEdges` tests (both mirror OCCT's `Value::List<Value::Int>` wire
+/// format: `crates/reify-kernel-occt/src/lib.rs`).
+fn query_int_list(kernel: &ManifoldKernel, q: &GeometryQuery) -> Vec<i64> {
+    match kernel.query(q) {
+        Ok(Value::List(items)) => items
+            .iter()
+            .map(|v| match v {
+                Value::Int(i) => *i,
+                other => panic!("AdjacentFaces/SharedEdges list must hold Value::Int; got {other:?}"),
+            })
+            .collect(),
+        other => panic!("query({q:?}) must return Ok(Value::List(_)); got {other:?}"),
+    }
+}
+
+/// `AdjacentFaces` over the unit cube: every mesh triangle has exactly 3
+/// edge-adjacent neighbours.
+///
+/// Closed-2-manifold invariant: the cube mesh has 12 triangles and 18 edges,
+/// each edge shared by exactly 2 triangles (`12·3 = 36 = 18·2`). Two distinct
+/// triangles cannot share two edges without being identical, so each triangle's
+/// 3 edges reach 3 *distinct* neighbours — exactly 3, for **every** triangle
+/// index (the assertion is therefore triangle-order-independent). The query
+/// excludes the triangle itself and returns the neighbour indices as an
+/// ascending `Value::List<Value::Int>`, mirroring OCCT's wire format.
+///
+/// RED (step-9): `query()` returns `Err(QueryFailed(STUB_MSG))` for
+/// `AdjacentFaces`. GREEN is step-10.
+#[test]
+fn query_adjacent_faces_unit_cube_exactly_three_neighbours() {
+    let mut kernel = ManifoldKernel::new();
+    let shape = ingest(&mut kernel, [0.0, 0.0, 0.0]);
+    // Pin the 12-triangle face count the `0..12` range below rests on.
+    let faces = kernel
+        .extract_faces(shape)
+        .expect("extract_faces must succeed");
+    assert_eq!(faces.len(), 12, "unit cube must have 12 mesh triangles");
+
+    // A spread of triangle indices — the "exactly 3" invariant holds for all.
+    for &face_index in &[0usize, 1, 6, 11] {
+        let neighbours =
+            query_int_list(&kernel, &GeometryQuery::AdjacentFaces { shape, face_index });
+        assert_eq!(
+            neighbours.len(),
+            3,
+            "triangle {face_index} must have exactly 3 edge-adjacent neighbours \
+             (closed-2-manifold); got {neighbours:?}",
+        );
+        // Self excluded.
+        assert!(
+            !neighbours.contains(&(face_index as i64)),
+            "AdjacentFaces({face_index}) must exclude the queried triangle; got {neighbours:?}",
+        );
+        // All entries are valid triangle indices in 0..12.
+        for &n in &neighbours {
+            assert!(
+                (0..12).contains(&n),
+                "neighbour {n} of triangle {face_index} out of range 0..12",
+            );
+        }
+        // Ascending and distinct.
+        let mut sorted = neighbours.clone();
+        sorted.sort_unstable();
+        assert_eq!(
+            neighbours, sorted,
+            "AdjacentFaces({face_index}) must be ascending; got {neighbours:?}",
+        );
+        let mut deduped = sorted.clone();
+        deduped.dedup();
+        assert_eq!(
+            deduped.len(),
+            neighbours.len(),
+            "AdjacentFaces({face_index}) must have distinct entries; got {neighbours:?}",
+        );
+    }
+}
