@@ -372,7 +372,7 @@ impl Engine {
     #[cfg(any(test, feature = "test-instrumentation"))]
     pub fn realization_cache(
         &self,
-    ) -> &crate::realization_cache::RealizationCache<reify_ir::GeometryHandleId> {
+    ) -> &crate::realization_cache::RealizationCache<reify_ir::KernelHandle> {
         &self.realization_cache
     }
 

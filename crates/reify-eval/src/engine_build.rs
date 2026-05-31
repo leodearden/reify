@@ -11,7 +11,7 @@ use reify_solver_elastic::{
     Mesh2d, Mesh2dError, Mesh2dReport, MpcRow, SweepError, SweepParams, SweptMesh3d,
 };
 use reify_core::{Diagnostic, DiagnosticLabel, RealizationNodeId, SourceSpan, VersionId};
-use reify_ir::{AttributeHistory, CapabilityDescriptor, CompiledFunction, ElementOrderTag, ErrorRef, ExportFormat, FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, LoftOpHistoryRecords, Mesh, Operation, ReprKind, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable, ValueMap, VolumeMesh};
+use reify_ir::{AttributeHistory, CapabilityDescriptor, CompiledFunction, ElementOrderTag, ErrorRef, ExportFormat, FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelHandle, KernelId, LoftOpHistoryRecords, Mesh, Operation, ReprKind, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable, ValueMap, VolumeMesh};
 use reify_shell_extract::{MidSurfaceMesh, ShellTetInterface};
 
 use crate::cache::{CacheStore, CachedResult, FAILED_REALIZATION_STUB_HANDLE, NodeCache, NodeId};
@@ -30,6 +30,20 @@ use crate::topology_attribute_propagation::{
     populate_sweep_attributes,
 };
 use crate::{BuildResult, Engine, TessellateResult};
+
+/// Map a kernel registry name to the [`KernelId`] used to tag the handles that
+/// kernel produces (task 4048).
+///
+/// Canonical inventory names (`"occt"`, `"manifold"`, …) map directly via
+/// [`KernelId::from_registry_name`]. The synthetic backward-compat sentinel
+/// [`Engine::DEFAULT_KERNEL_NAME`] — and any other non-canonical name — falls
+/// back to [`KernelId::Occt`], the v0.2 single-kernel BRep default: a handle
+/// tagged on that path exists only for step-index alignment / metadata and is
+/// never re-routed by `.kernel` (per-kernel trait calls project `.id` and use
+/// the resolved per-op kernel directly), so the tag is informational only.
+fn kernel_id_for_registry_name(name: &str) -> KernelId {
+    KernelId::from_registry_name(name).unwrap_or(KernelId::Occt)
+}
 
 /// Per-op kind for `populate_single_parent_sweep_op` — the three single-
 /// parent sweep variants (extrude, revolve, sweep) that share the
@@ -62,8 +76,8 @@ enum SingleParentSweepKind {
 /// `self.eval_state.snapshot.graph.realizations[id].produced_repr` via
 /// disjoint-field borrows immediately after `execute_realization_ops` returns.
 struct RealizationOutputs<'a> {
-    step_handles: &'a mut Vec<GeometryHandleId>,
-    named_steps: &'a mut HashMap<String, GeometryHandleId>,
+    step_handles: &'a mut Vec<KernelHandle>,
+    named_steps: &'a mut HashMap<String, KernelHandle>,
     feature_tag_table: &'a mut FeatureTagTable,
     topology_attribute_table: &'a mut TopologyAttributeTable,
     swept_kind_table: &'a mut SweptKindTable,
@@ -82,8 +96,8 @@ impl<'a> RealizationOutputs<'a> {
     /// is fewer redundant identifiers vs. the named-field self-documentation
     /// of struct-literal syntax.
     fn new(
-        step_handles: &'a mut Vec<GeometryHandleId>,
-        named_steps: &'a mut HashMap<String, GeometryHandleId>,
+        step_handles: &'a mut Vec<KernelHandle>,
+        named_steps: &'a mut HashMap<String, KernelHandle>,
         feature_tag_table: &'a mut FeatureTagTable,
         topology_attribute_table: &'a mut TopologyAttributeTable,
         swept_kind_table: &'a mut SweptKindTable,
@@ -162,8 +176,8 @@ impl<'a> RealizationOutputs<'a> {
 #[allow(clippy::too_many_arguments)]
 fn seed_cross_sub_named_steps(
     template: &reify_compiler::TopologyTemplate,
-    module_named_steps: &HashMap<String, HashMap<String, GeometryHandleId>>,
-    named_steps: &mut HashMap<String, GeometryHandleId>,
+    module_named_steps: &HashMap<String, HashMap<String, KernelHandle>>,
+    named_steps: &mut HashMap<String, KernelHandle>,
     kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
     default_kernel_name: &str,
     values: &ValueMap,
@@ -180,7 +194,7 @@ fn seed_cross_sub_named_steps(
     // `sub.args` (a `Vec<(String, CompiledExpr)>`) as the fingerprint — safe
     // because two syntactically-identical declarations always produce the same
     // effective override values via `elaborate_child_instance`.
-    let mut per_call_dedup: HashMap<(String, String, String), GeometryHandleId> = HashMap::new();
+    let mut per_call_dedup: HashMap<(String, String, String), KernelHandle> = HashMap::new();
 
     for sub in &template.sub_components {
         if sub.is_collection {
@@ -358,6 +372,14 @@ fn seed_cross_sub_named_steps(
                 if realization_ok
                     && let Some(&final_handle) = per_instance_step_handles.last()
                 {
+                    // Override-path handles are produced by `default_kernel_name`
+                    // (the kernel borrowed above), so tag them with that kernel's
+                    // KernelId. (The no-args path copies child-snapshot handles
+                    // verbatim, preserving whichever kernel produced each one.)
+                    let final_handle = KernelHandle {
+                        kernel: kernel_id_for_registry_name(default_kernel_name),
+                        id: final_handle,
+                    };
                     named_steps.insert(
                         format!("{}.{}", sub.name, realization_name),
                         final_handle,
@@ -380,8 +402,8 @@ fn seed_cross_sub_named_steps(
 /// shared reference and do not need the local binding afterwards.
 fn snapshot_named_steps(
     template: &reify_compiler::TopologyTemplate,
-    named_steps: HashMap<String, GeometryHandleId>,
-    module_named_steps: &mut HashMap<String, HashMap<String, GeometryHandleId>>,
+    named_steps: HashMap<String, KernelHandle>,
+    module_named_steps: &mut HashMap<String, HashMap<String, KernelHandle>>,
 ) {
     module_named_steps.insert(template.name.clone(), named_steps);
 }
@@ -1424,7 +1446,7 @@ impl Engine {
         let geometry_output = if let Some(name) = default_kernel_name.as_deref()
             && self.geometry_kernels.contains_key(name)
         {
-            let mut step_handles: Vec<GeometryHandleId> = Vec::new();
+            let mut step_handles: Vec<KernelHandle> = Vec::new();
             let had_realization_ops = module
                 .templates
                 .iter()
@@ -1449,7 +1471,7 @@ impl Engine {
             // Helper invocations (`seed_cross_sub_named_steps`,
             // `snapshot_named_steps`) factor the per-template seed/snapshot
             // logic out so the three eval loop sites stay in sync.
-            let mut module_named_steps: HashMap<String, HashMap<String, GeometryHandleId>> =
+            let mut module_named_steps: HashMap<String, HashMap<String, KernelHandle>> =
                 HashMap::new();
             for (t_idx, template) in module.templates.iter().enumerate() {
                 // `named_steps` is scoped per-template so that two structures
@@ -1460,7 +1482,7 @@ impl Engine {
                 // collection-sub geometry composition remains deferred (the
                 // compile-side diagnostic in `expr.rs::try_emit_cross_sub_geometry`
                 // continues to fire for those call sites).
-                let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
+                let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
                 seed_cross_sub_named_steps(
                     template,
                     &module_named_steps,
@@ -1558,6 +1580,12 @@ impl Engine {
                     .geometry_kernels
                     .get_mut(name)
                     .expect("default kernel must remain in the map across the per-realization loop");
+                // Task 4048: project the per-template `named_steps` (now
+                // `KernelHandle`-valued) to bare `GeometryHandleId` for the
+                // post-process query/selector helpers, which resolve names to
+                // bare ids. `named_steps` itself is moved into the snapshot below.
+                let named_steps_ids: HashMap<String, GeometryHandleId> =
+                    named_steps.iter().map(|(k, h)| (k.clone(), h.id)).collect();
                 // GHR-γ step-6: mirror of the build() hydration — stamp
                 // Type::Geometry value cells with real kernel handles so
                 // build_snapshot callers see the same GeometryHandle values.
@@ -1565,7 +1593,7 @@ impl Engine {
                 // freshness-bearing cache nodes (esc-3606-37 ruling step 1).
                 Engine::post_process_geometry_handle_cells(
                     template,
-                    &named_steps,
+                    &named_steps_ids,
                     &mut values,
                     &self.functions,
                     &self.meta_map,
@@ -1580,7 +1608,7 @@ impl Engine {
                 // realization-loop duplication is tracked separately).
                 Engine::post_process_conformance_queries(
                     template,
-                    &named_steps,
+                    &named_steps_ids,
                     &mut values,
                     default_kernel.as_ref(),
                     &mut diagnostics,
@@ -1592,14 +1620,14 @@ impl Engine {
                 // a `GeometryHandleId`.
                 Engine::post_process_kinematic_queries(
                     template,
-                    &named_steps,
+                    &named_steps_ids,
                     &mut values,
                     default_kernel.as_ref(),
                     &mut diagnostics,
                 );
                 Engine::run_post_processes(
                     template,
-                    &named_steps,
+                    &named_steps_ids,
                     &mut values,
                     default_kernel.as_mut(),
                     &self.topology_attribute_table,
@@ -1635,7 +1663,7 @@ impl Engine {
                     .geometry_kernels
                     .get(name)
                     .expect("default kernel must remain in the map for export");
-                match default_kernel.export(export_handle, format, &mut output) {
+                match default_kernel.export(export_handle.id, format, &mut output) {
                     Ok(()) => Some(output),
                     Err(e) => {
                         diagnostics.push(Diagnostic::error(format!("export error: {}", e)));
@@ -1762,7 +1790,7 @@ impl Engine {
             && self.geometry_kernels.contains_key(name)
         {
             // Execute geometry operations from realizations
-            let mut step_handles: Vec<GeometryHandleId> = Vec::new();
+            let mut step_handles: Vec<KernelHandle> = Vec::new();
             let had_realization_ops = module
                 .templates
                 .iter()
@@ -1787,7 +1815,7 @@ impl Engine {
             // Helper invocations (`seed_cross_sub_named_steps`,
             // `snapshot_named_steps`) factor the per-template seed/snapshot
             // logic out so the three eval loop sites stay in sync.
-            let mut module_named_steps: HashMap<String, HashMap<String, GeometryHandleId>> =
+            let mut module_named_steps: HashMap<String, HashMap<String, KernelHandle>> =
                 HashMap::new();
             for (t_idx, template) in module.templates.iter().enumerate() {
                 // `named_steps` is scoped per-template so that two structures
@@ -1798,7 +1826,7 @@ impl Engine {
                 // collection-sub geometry composition remains deferred (the
                 // compile-side diagnostic in `expr.rs::try_emit_cross_sub_geometry`
                 // continues to fire for those call sites).
-                let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
+                let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
                 seed_cross_sub_named_steps(
                     template,
                     &module_named_steps,
@@ -1884,6 +1912,12 @@ impl Engine {
                     .geometry_kernels
                     .get_mut(name)
                     .expect("default kernel must remain in the map across the per-realization loop");
+                // Task 4048: project the per-template `named_steps` (now
+                // `KernelHandle`-valued) to bare `GeometryHandleId` for the
+                // post-process query/selector helpers, which resolve names to
+                // bare ids. `named_steps` itself is moved into the snapshot below.
+                let named_steps_ids: HashMap<String, GeometryHandleId> =
+                    named_steps.iter().map(|(k, h)| (k.clone(), h.id)).collect();
                 // GHR-γ step-6: hydrate Type::Geometry value cells with real
                 // kernel handles before any downstream post-process that might
                 // read geometry-handle cells. GHR-δ: also records geometry-backed
@@ -1891,7 +1925,7 @@ impl Engine {
                 // ruling step 1).
                 Engine::post_process_geometry_handle_cells(
                     template,
-                    &named_steps,
+                    &named_steps_ids,
                     &mut values,
                     &self.functions,
                     &self.meta_map,
@@ -1907,7 +1941,7 @@ impl Engine {
                 // tracked separately).
                 Engine::post_process_conformance_queries(
                     template,
-                    &named_steps,
+                    &named_steps_ids,
                     &mut values,
                     default_kernel.as_ref(),
                     &mut diagnostics,
@@ -1919,14 +1953,14 @@ impl Engine {
                 // a `GeometryHandleId`.
                 Engine::post_process_kinematic_queries(
                     template,
-                    &named_steps,
+                    &named_steps_ids,
                     &mut values,
                     default_kernel.as_ref(),
                     &mut diagnostics,
                 );
                 Engine::run_post_processes(
                     template,
-                    &named_steps,
+                    &named_steps_ids,
                     &mut values,
                     default_kernel.as_mut(),
                     &self.topology_attribute_table,
@@ -1965,7 +1999,7 @@ impl Engine {
                     .geometry_kernels
                     .get(name)
                     .expect("default kernel must remain in the map for export");
-                match default_kernel.export(export_handle, format, &mut output) {
+                match default_kernel.export(export_handle.id, format, &mut output) {
                     Ok(()) => Some(output),
                     Err(e) => {
                         diagnostics.push(Diagnostic::error(format!("export error: {}", e)));
@@ -2413,7 +2447,7 @@ impl Engine {
         feature_tag_table: &mut FeatureTagTable,
         topology_attribute_table: &mut TopologyAttributeTable,
         swept_kind_table: &mut SweptKindTable,
-        realization_cache: &mut RealizationCache<GeometryHandleId>,
+        realization_cache: &mut RealizationCache<KernelHandle>,
         demanded_tols: &[Vec<Option<f64>>],
         tessellation_budgets: &[Vec<f64>],
         // Task ε (3436) step-12: per-build dispatch-count instrumentation
@@ -2437,7 +2471,7 @@ impl Engine {
             _ => return meshes,
         };
 
-        let mut step_handles: Vec<GeometryHandleId> = Vec::new();
+        let mut step_handles: Vec<KernelHandle> = Vec::new();
         // Task 3441: cross-template `GeomRef::Sub` threading.  As each
         // template's realizations complete, snapshot its `named_steps`
         // under the template name so a subsequent template that has
@@ -2453,7 +2487,7 @@ impl Engine {
         // Helper invocations (`seed_cross_sub_named_steps`,
         // `snapshot_named_steps`) factor the per-template seed/snapshot
         // logic out so the three eval loop sites stay in sync.
-        let mut module_named_steps: HashMap<String, HashMap<String, GeometryHandleId>> =
+        let mut module_named_steps: HashMap<String, HashMap<String, KernelHandle>> =
             HashMap::new();
 
         for (t_idx, template) in module.templates.iter().enumerate() {
@@ -2465,7 +2499,7 @@ impl Engine {
             // collection-sub geometry composition remains deferred (the
             // compile-side diagnostic in `expr.rs::try_emit_cross_sub_geometry`
             // continues to fire for those call sites).
-            let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
+            let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
             seed_cross_sub_named_steps(
                 template,
                 &module_named_steps,
@@ -2566,7 +2600,7 @@ impl Engine {
                     let default_kernel = geometry_kernels.get(default_kernel_name).expect(
                         "default kernel must remain in the map across the per-realization loop",
                     );
-                    match default_kernel.tessellate(last_handle, budget) {
+                    match default_kernel.tessellate(last_handle.id, budget) {
                         Ok(mesh) => {
                             meshes.push((realization.id.to_string(), mesh));
                         }
@@ -2582,6 +2616,12 @@ impl Engine {
             let default_kernel = geometry_kernels
                 .get_mut(default_kernel_name)
                 .expect("default kernel must remain in the map across the per-realization loop");
+            // Task 4048: project the per-template `named_steps` (now
+            // `KernelHandle`-valued) to bare `GeometryHandleId` for the
+            // post-process query/selector helpers, which resolve names to bare
+            // ids. `named_steps` itself is moved into the snapshot below.
+            let named_steps_ids: HashMap<String, GeometryHandleId> =
+                named_steps.iter().map(|(k, h)| (k.clone(), h.id)).collect();
             // Task 3616: hydrate geometry-handle value cells before any
             // post-process that reads them (topology selectors need the parent
             // Value::GeometryHandle in `values`). Mirrors the
@@ -2591,7 +2631,7 @@ impl Engine {
             // `self.cache` or `self.realization_handles`.
             Engine::hydrate_geometry_handles_into_values(
                 template,
-                &named_steps,
+                &named_steps_ids,
                 values,
                 functions,
                 meta_map,
@@ -2603,7 +2643,7 @@ impl Engine {
             // `Engine::post_process_conformance_queries` docstring.
             Engine::post_process_conformance_queries(
                 template,
-                &named_steps,
+                &named_steps_ids,
                 values,
                 default_kernel.as_ref(),
                 diagnostics,
@@ -2613,14 +2653,14 @@ impl Engine {
             // values as the build surface so GUI overlays stay consistent.
             Engine::post_process_kinematic_queries(
                 template,
-                &named_steps,
+                &named_steps_ids,
                 values,
                 default_kernel.as_ref(),
                 diagnostics,
             );
             Engine::run_post_processes(
                 template,
-                &named_steps,
+                &named_steps_ids,
                 values,
                 default_kernel.as_mut(),
                 topology_attribute_table,
@@ -2761,7 +2801,7 @@ impl Engine {
         realization_name: Option<&str>,
         realization_span: SourceSpan,
         kernel_error_out: &mut Option<ErrorRef>,
-        realization_cache: &mut RealizationCache<GeometryHandleId>,
+        realization_cache: &mut RealizationCache<KernelHandle>,
         demanded_tol: Option<f64>,
         // Task ε (3436) step-12: caller-write dispatch-count instrumentation
         // channel. Incremented once per `dispatch(...)` call inside the per-op
@@ -2827,14 +2867,14 @@ impl Engine {
             // during development rather than silently regressing attribute-
             // query results for cached handles.
             debug_assert!(
-                feature_tag_table.lookup(cached_handle).is_none(),
+                feature_tag_table.lookup(cached_handle.id).is_none(),
                 "feature_tag_table already has an entry for cached handle \
                  {:?} on cache-hit short-circuit — per-build reset invariant \
                  violated",
                 cached_handle,
             );
             debug_assert!(
-                topology_attribute_table.lookup(cached_handle).is_none(),
+                topology_attribute_table.lookup(cached_handle.id).is_none(),
                 "topology_attribute_table already has an entry for cached \
                  handle {:?} on cache-hit short-circuit — per-build reset \
                  invariant violated",
@@ -2920,14 +2960,27 @@ impl Engine {
         // the build hot path. Each successful op contributes exactly one entry,
         // so this is the upper bound on capacity needed.
         let mut realization_ops: Vec<GeometryOp> = Vec::with_capacity(operations.len());
+        // Task 4048: bare-id projections for the per-op compile boundary.
+        // `step_handles` / `named_steps` now hold `KernelHandle`, but
+        // `compile_geometry_op` (GeomRef::Step / GeomRef::Sub resolution) and
+        // `classify_swept_body` consume bare `GeometryHandleId`. `named_steps`
+        // is not mutated during this realization's op loop (the post-loop block
+        // performs the only insert), so it is projected once here. The
+        // `realization_step_ids` mirror tracks `step_handles[handle_start..]`:
+        // every `step_handles.push(...)` below pushes the same `.id` here, so
+        // the slice stays in lockstep without re-projecting per op.
+        let named_steps_ids: HashMap<String, GeometryHandleId> =
+            named_steps.iter().map(|(k, h)| (k.clone(), h.id)).collect();
+        let mut realization_step_ids: Vec<GeometryHandleId> =
+            Vec::with_capacity(operations.len());
         for (op_idx, op) in operations.iter().enumerate() {
             let geom_op = compile_geometry_op(
                 op,
                 values,
-                &step_handles[handle_start..],
+                &realization_step_ids,
                 functions,
                 meta_map,
-                named_steps,
+                &named_steps_ids,
                 diagnostics,
             );
             match geom_op {
@@ -3250,7 +3303,15 @@ impl Engine {
                                 )));
                             }
                             }
-                            step_handles.push(handle.id);
+                            // Task 4048: tag the produced handle with the
+                            // executing kernel's KernelId (the dispatcher-resolved
+                            // `resolved_kernel_name` for this op). `realization_step_ids`
+                            // mirrors the bare `.id` for the GeomRef::Step slice.
+                            step_handles.push(KernelHandle {
+                                kernel: kernel_id_for_registry_name(&resolved_kernel_name),
+                                id: handle.id,
+                            });
+                            realization_step_ids.push(handle.id);
                             // Capture the compiled op parallel to step_handles for
                             // post-loop classification (task 2982). Cleared on
                             // rollback below. Pushed last in this arm so all the
@@ -3305,7 +3366,15 @@ impl Engine {
                                 "in this realization",
                             )),
                     );
-                    step_handles.push(GeometryHandleId::INVALID);
+                    // Task 4048: index-alignment sentinel for a failed compile.
+                    // `resolved_kernel_name` is not yet bound in this pre-dispatch
+                    // arm, so tag with the default kernel's KernelId — the handle
+                    // is never read as a real handle (see `kernel_id_for_registry_name`).
+                    step_handles.push(KernelHandle {
+                        kernel: kernel_id_for_registry_name(default_kernel_name),
+                        id: GeometryHandleId::INVALID,
+                    });
+                    realization_step_ids.push(GeometryHandleId::INVALID);
                     had_failure = true;
                 }
             }
@@ -3355,10 +3424,10 @@ impl Engine {
             //    Pinned by
             //    `anonymous_realization_does_not_populate_realization_cache_when_lookup_gate_requires_name`
             //    in tests/tolerance_wiring_e2e.rs.
-            if let Some(kind) = classify_swept_body(&realization_ops, &step_handles[handle_start..])
-                && let Some(&last) = step_handles[handle_start..].last()
+            if let Some(kind) = classify_swept_body(&realization_ops, &realization_step_ids)
+                && let Some(&last_id) = realization_step_ids.last()
             {
-                swept_kind_table.record(last, kind);
+                swept_kind_table.record(last_id, kind);
             }
             // v0.2 persistent-naming-v2 (PRD task 4 / #2654): construction-time
             // fragility detection for local_index reassignment. The
@@ -4915,22 +4984,22 @@ mod tests {
     /// A future signature change to `Engine::execute_realization_ops` updates
     /// [`Self::run`] alone instead of every per-test call site.
     struct DispatchTestState {
-        step_handles: Vec<GeometryHandleId>,
+        step_handles: Vec<KernelHandle>,
         diagnostics: Vec<Diagnostic>,
-        named_steps: HashMap<String, GeometryHandleId>,
+        named_steps: HashMap<String, KernelHandle>,
         feature_tag_table: FeatureTagTable,
         topology_attribute_table: TopologyAttributeTable,
         swept_kind_table: SweptKindTable,
         kernel_error_out: Option<ErrorRef>,
-        realization_cache: RealizationCache<GeometryHandleId>,
+        realization_cache: RealizationCache<KernelHandle>,
         dispatch_count: usize,
         produced_repr_out: Option<ReprKind>,
     }
 
     // Hand-written `Default` instead of `#[derive(Default)]`: the inner
-    // `RealizationCache<GeometryHandleId>` does not satisfy the derive bound
-    // (`V: Default`) — `GeometryHandleId` is a `NewType(u32)` with no
-    // `Default` impl — but `RealizationCache::new()` constructs an empty cache
+    // `RealizationCache<KernelHandle>` does not satisfy the derive bound
+    // (`V: Default`) — `KernelHandle` pairs a `KernelId` with a `NewType(u64)`
+    // and has no `Default` impl — but `RealizationCache::new()` constructs an empty cache
     // without that bound. Mirrors how production code initialises the field
     // (engine_admin.rs `Engine::with_prelude_and_kernels`).
     impl Default for DispatchTestState {
@@ -5114,7 +5183,10 @@ mod tests {
         // Pre-seed with a sentinel so we can assert truncation went back to exactly
         // this pre-call length, distinguishing "INVALID pushed then truncated" from
         // "INVALID never pushed at all".
-        let pre_existing = GeometryHandleId(0xCAFE);
+        let pre_existing = KernelHandle {
+            kernel: KernelId::Occt,
+            id: GeometryHandleId(0xCAFE),
+        };
         let mut state = DispatchTestState::default();
         state.step_handles.push(pre_existing);
         state.run(
@@ -5238,7 +5310,10 @@ mod tests {
         let registry = dispatch_test_single_default_registry(&desc);
         // Pre-seed step_handles with a sentinel to verify truncation goes back
         // to exactly this pre-call length, not to zero.
-        let pre_existing = GeometryHandleId(0xBEEF);
+        let pre_existing = KernelHandle {
+            kernel: KernelId::Occt,
+            id: GeometryHandleId(0xBEEF),
+        };
         let mut state = DispatchTestState::default();
         state.step_handles.push(pre_existing);
         state.run(
@@ -7550,7 +7625,7 @@ mod tests {
         let mut feature_tag_table = FeatureTagTable::default();
         let mut topology_attribute_table = TopologyAttributeTable::default();
         let mut swept_kind_table = SweptKindTable::default();
-        let mut realization_cache: RealizationCache<GeometryHandleId> = RealizationCache::new();
+        let mut realization_cache: RealizationCache<KernelHandle> = RealizationCache::new();
 
         // `demanded_tols = &[]` is the OOB trigger: the producer would have
         // generated `&[vec![None]]` for a 1-template/1-realization module, but
@@ -7609,7 +7684,7 @@ mod tests {
         let mut feature_tag_table = FeatureTagTable::default();
         let mut topology_attribute_table = TopologyAttributeTable::default();
         let mut swept_kind_table = SweptKindTable::default();
-        let mut realization_cache: RealizationCache<GeometryHandleId> = RealizationCache::new();
+        let mut realization_cache: RealizationCache<KernelHandle> = RealizationCache::new();
 
         // `demanded_tols` is correctly shaped; `tessellation_budgets = &[]` is
         // the OOB trigger.  The Box primitive in module_with_one_box_realization

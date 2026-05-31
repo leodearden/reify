@@ -24,7 +24,7 @@ use reify_test_support::{
 };
 #[allow(unused_imports)]
 use reify_core::{ContentHash, DiagnosticCode, ModulePath, Severity, Type, ValueCellId};
-use reify_ir::{CapabilityDescriptor, CompiledExpr, ExportFormat, GeometryHandleId, Operation, ReprKind, Value};
+use reify_ir::{CapabilityDescriptor, CompiledExpr, ExportFormat, Operation, ReprKind, Value};
 #[allow(unused_imports)]
 use std::collections::{BTreeMap, HashSet};
 
@@ -1470,7 +1470,7 @@ fn cache_hit_short_circuit_leaves_feature_tag_table_empty_for_cached_handle() {
     );
 
     // Capture the handle that the first build stored in the RealizationCache.
-    let cached_handle: GeometryHandleId = *engine
+    let cached_handle: reify_ir::KernelHandle = *engine
         .realization_cache()
         .lookup("MyDesign", ReprKind::BRep, 1e-6, ContentHash(0))
         .expect(
@@ -1483,7 +1483,7 @@ fn cache_hit_short_circuit_leaves_feature_tag_table_empty_for_cached_handle() {
     // table were already empty after build #1, asserting it is empty after
     // build #2 would prove nothing.
     assert!(
-        engine.feature_tag_table().lookup(cached_handle).is_some(),
+        engine.feature_tag_table().lookup(cached_handle.id).is_some(),
         "sanity: expected feature_tag_table to contain an entry for \
          cached_handle {:?} after build #1 — the op-loop at \
          engine_build.rs:1547 must record the parent-solid handle. If this \
@@ -1549,7 +1549,7 @@ fn cache_hit_short_circuit_leaves_feature_tag_table_empty_for_cached_handle() {
     // and the per-build reset at the top of build() clears the table before the
     // short-circuit fires. Net effect: the cached handle has no entry.
     assert!(
-        engine.feature_tag_table().lookup(cached_handle).is_none(),
+        engine.feature_tag_table().lookup(cached_handle.id).is_none(),
         "regression PIN: expected feature_tag_table to have NO entry for \
          cached_handle {:?} on the second build — the cache-hit short-circuit \
          at engine_build.rs::execute_realization_ops deliberately skips per-op \

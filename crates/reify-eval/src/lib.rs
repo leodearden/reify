@@ -118,7 +118,7 @@ use std::sync::Arc;
 
 use reify_compiler::{CompiledModule, CompiledPurpose};
 use reify_core::{ConstraintNodeId, ContentHash, Diagnostic, ValueCellId};
-use reify_ir::{CompiledFunction, ConstraintChecker, ConstraintSolver, FeatureTagTable, GeometryHandleId, GeometryKernel, Mesh, OptimizationObjective, OptimizedImpl, Satisfaction, TopologyAttributeTable, ValueMap};
+use reify_ir::{CompiledFunction, ConstraintChecker, ConstraintSolver, FeatureTagTable, GeometryKernel, KernelHandle, Mesh, OptimizationObjective, OptimizedImpl, Satisfaction, TopologyAttributeTable, ValueMap};
 
 use crate::cache::{CacheStore, NodeId};
 use crate::demand::DemandRegistry;
@@ -750,7 +750,7 @@ pub struct Engine {
     /// code. Pinned by
     /// `anonymous_realization_does_not_populate_realization_cache_when_lookup_gate_requires_name`
     /// in `tests/tolerance_wiring_e2e.rs`.
-    realization_cache: crate::realization_cache::RealizationCache<GeometryHandleId>,
+    realization_cache: crate::realization_cache::RealizationCache<KernelHandle>,
     /// Test-instrumentation set of `ValueCellId`s whose let-binding evaluation
     /// should be force-panicked just before `reify_expr::eval_expr` runs.
     ///
