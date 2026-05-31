@@ -6,7 +6,10 @@
 //! linear-elastostatic solver against analytical references at both P1 and P2
 //! element orders. Three of the PRD's four reference cases are validated here:
 //!
-//! 1. Timoshenko cantilever beam tip deflection — ≤ 5% (P1) / ≤ 3% (P2)
+//! 1. Timoshenko cantilever beam tip deflection — ≤ 5% (P1) / ≤ 3% (P2, stocky
+//!    L/H=2) / **≤ 1% (P2, slender L/H=15)** — the aspirational 1% bound from
+//!    the PRD is now validated at the slender fixture; see
+//!    `cantilever_beam_p2_tip_deflection_slender_within_1pct_of_timoshenko`.
 //! 2. Simple shear uniform stress — interior σ_xy spread ≤ 1% / von Mises ≤ 1%,
 //!    both orders
 //! 3. Boussinesq half-space point load, subsurface σ_z — ≤ 10% near load (the
@@ -46,15 +49,16 @@
 //!   over 12³ → 24³; the 24×24×8 mesh used below sits at ~3.8 %. The survey
 //!   (§4.1) prescribes exactly this aspect-ratio pin so the bound stays inside
 //!   the P1-tet bending-lock floor — **no relaxation**.
-//! - **P2 ≤ 3 %** is the *reference-honest* bound, **not** the PRD's aspirational
-//!   1 %. The converged 3-D (P2) deflection sits ~2.1 % from the 1-D Timoshenko
-//!   reference — and that residual is **1-D beam theory's own inaccuracy vs 3-D
-//!   elasticity at a stocky beam**, not a solver error (P2 is the *accurate*
-//!   solution here). Reaching 1 % needs a slender fixture where 1-D theory is
-//!   1 %-accurate, which re-triggers P1 bending-lock *and* exceeds the solver's
-//!   hard-coded CG iteration cap. The aspirational 1 % is therefore **re-homed
-//!   to a follow-up task** (slender-fixture P2 + raised CG cap), mirroring the
-//!   3819 → 4066 relax-and-re-home precedent. Ratified by Leo (2026-05-31).
+//! - **P2 ≤ 3 %** is the *reference-honest* bound at a **stocky (L/H = 2)**
+//!   fixture. The converged 3-D (P2) deflection sits ~2.1 % from the 1-D
+//!   Timoshenko reference — and that residual is **1-D beam theory's own
+//!   inaccuracy vs 3-D elasticity at a stocky beam**, not a solver error (P2 is
+//!   the *accurate* solution here). The PRD's aspirational 1 % therefore requires
+//!   a **slender fixture (L/H = 15)** where 1-D theory is ~0.04 %-accurate, plus
+//!   a raised CG cap (slender beams are ill-conditioned, cond ∝ (L/H)²). This is
+//!   now **validated** by
+//!   `cantilever_beam_p2_tip_deflection_slender_within_1pct_of_timoshenko`
+//!   (task 4114), which uses `solve_p2_pipeline_with_opts` with `max_iter = 20_000`.
 //!
 //! Shear is P1-exact (constant-strain patch test) and Boussinesq's 10 % is
 //! generous near a known singularity, so neither carries a formulation-floor
@@ -1020,7 +1024,13 @@ fn cantilever_beam_p2_tip_deflection_slender_within_1pct_of_timoshenko() {
     let (p2_nodes, p2_conns, mut bcs, end) = cantilever_clamped_p2(L, H, B, NX, NY, NZ);
     let n_nodes = p2_nodes.len();
     let loads = distributed_tip_load(&end, F);
-    let u = solve_p2_pipeline(&p2_nodes, &p2_conns, &mut bcs, &loads, &mat);
+    let u = solve_p2_pipeline_with_opts(
+        &p2_nodes, &p2_conns, &mut bcs, &loads, &mat,
+        // Slender beams are ill-conditioned (cond ∝ (L/H)²); 20 000 iterations
+        // provides the head-room the default-1000 cap lacks at L/H=15.
+        // Tolerance stays at 1e-8 (same convergence criterion, only budget grows).
+        CgSolverOptions { tolerance: 1e-8, max_iter: 20_000 },
+    );
 
     let tip_disp = mean_tip_deflection(&u, &end);
     let delta_ref = timoshenko_tip_deflection(F, L, H, B, &mat);
