@@ -721,6 +721,115 @@ pub fn degenerate_transverse_shear_b(
     b_phys
 }
 
+/// Physical (lamina) assumed-natural-strain **membrane** B-matrix (`3 × 18`) at
+/// the mid-surface above the in-plane reference coordinate `coord` (the `ζ`
+/// component of `coord` is ignored — the membrane is a mid-surface quantity).
+///
+/// Rows are the physical lamina membrane strains `(ε'₁₁, ε'₂₂, 2ε'₁₂)` (lamina
+/// axes `e1, e2`); columns the 18 nodal DOFs. This is the assumed-natural-strain
+/// MEMBRANE field that cures membrane locking on the curved (varying-J)
+/// substrate — the membrane analogue of [`degenerate_transverse_shear_b`].
+///
+/// # Pipeline (mirrors the transverse-shear ANS pipeline)
+///
+/// 1. **Exact covariant samples.** Sample the exact covariant membrane strain
+///    ([`degenerate_exact_covariant_membrane_b`]) at the six interior tying
+///    points ([`Mitc3Plus::interior_tying_points`]), all at the mid-surface
+///    `ζ = 0`.
+/// 2. **Constant-state-consistent re-interpolation.** For a linear triangle the
+///    covariant membrane natural strain is element-CONSTANT at the mid-surface
+///    (constant `∇N_i`, `ζ`-independent in-plane base vectors, and the rotation
+///    term carries a `ζ` factor that vanishes at `ζ = 0`). The collocation
+///    re-interpolation therefore reduces to the common constant — implemented as
+///    the tying-point mean, which reproduces any constant covariant state exactly
+///    (the step-3 consistency prerequisite) and is the membrane analogue of the
+///    constant-reproduction property of `interpolate_assumed_shear_mitc3_plus`.
+/// 3. **Covariant→physical lamina map.** Map the (constant) covariant membrane
+///    tensor to the physical lamina membrane strain with the in-plane `2×2`
+///    sub-block `m2 = (q·J⁻ᵀ)[0..2, 0..2]` of the lamina contravariant projection
+///    (`q` from [`lamina_frame`]), via the rank-2 tensor transformation
+///    `ε'_pq = Σ_{a,b} m2[p][a] m2[q][b] ε_ab` (`a, b ∈ {ξ, η}`).
+///
+/// # The locking cure (esc-4068-127 mechanism, membrane analogue)
+///
+/// The displacement-based membrane ([`degenerate_membrane_bending_b`] at `ζ = 0`)
+/// projects the full velocity gradient into the lamina frame, so on a curved
+/// (tilted-director) element the OUT-OF-PLANE component of the lamina axes `e_p`
+/// (the director `e3` is not the surface normal there) leaks director-rotation
+/// energy into the membrane strain — the parasitic membrane lock. The ANS field
+/// instead maps the genuine covariant membrane tensor through the in-plane
+/// contravariant projection `m2`, which contracts `e_p` onto the tangent plane
+/// and filters that parasitic coupling. Because `m2 = q·J⁻ᵀ` co-rotates with the
+/// configuration and the covariant strain vanishes for any rigid mode, the field
+/// is frame-objective and rigid-body-compatible by construction.
+///
+/// # Flat reduction
+///
+/// On a flat facet the lamina axes lie in the tangent plane (`e3` ∥ facet normal),
+/// so the in-plane projection is exact and the ANS membrane B equals the
+/// displacement-based membrane B at `ζ = 0` (the flat-inertness anchor, step-5).
+pub fn degenerate_assumed_membrane_b(
+    nodes: &[[f64; 3]; 3],
+    directors: &[Director; 3],
+    thicknesses: &[f64; 3],
+    coord: ShellRefCoord3,
+) -> [[f64; 18]; 3] {
+    // The membrane is a mid-surface quantity: evaluate everything at ζ = 0 above
+    // the requested in-plane location.
+    let mid = ShellRefCoord3::new(coord.xi, coord.eta, 0.0);
+
+    // (1) Sample the exact covariant membrane strain at the six interior tying
+    // points, all at the mid-surface, and (2) accumulate for the constant-state-
+    // consistent mean re-interpolation.
+    let interior = Mitc3Plus.interior_tying_points();
+    let mut b_cov = [[0.0_f64; 18]; 3];
+    for tp in interior.iter() {
+        let c3 = ShellRefCoord3::new(tp.coord.xi, tp.coord.eta, 0.0);
+        let s = degenerate_exact_covariant_membrane_b(nodes, directors, thicknesses, c3);
+        for r in 0..3 {
+            for dof in 0..18 {
+                b_cov[r][dof] += s[r][dof];
+            }
+        }
+    }
+    let inv_n = 1.0 / (interior.len() as f64);
+    for row in b_cov.iter_mut() {
+        for v in row.iter_mut() {
+            *v *= inv_n;
+        }
+    }
+
+    // (3) Covariant→physical lamina map at (ξ, η, 0): ε'_pq = Σ m2[p][a] m2[q][b] ε_ab.
+    let (j, _det) = degenerate_jacobian(nodes, directors, thicknesses, mid);
+    let (j_inv, _) = mat3_inverse(&j);
+    let n = Mitc3Plus.shape_at(mid.in_plane());
+    let q = lamina_frame(&j, &n, directors);
+    // (q · J⁻ᵀ)[a][b] = Σ_k q[a][k] · J⁻¹[b][k].
+    let qjit = |a: usize, b: usize| -> f64 { (0..3).map(|k| q[a][k] * j_inv[b][k]).sum() };
+    let m2 = [[qjit(0, 0), qjit(0, 1)], [qjit(1, 0), qjit(1, 1)]];
+
+    let mut b_phys = [[0.0_f64; 18]; 3];
+    for dof in 0..18 {
+        let e_xx = b_cov[0][dof];
+        let e_yy = b_cov[1][dof];
+        let e_xy = 0.5 * b_cov[2][dof]; // tensor ε_ξη from engineering 2ε_ξη
+        // ε'_11 = Σ_{a,b} m2[0][a] m2[0][b] ε_ab
+        b_phys[0][dof] = m2[0][0] * m2[0][0] * e_xx
+            + m2[0][1] * m2[0][1] * e_yy
+            + 2.0 * m2[0][0] * m2[0][1] * e_xy;
+        // ε'_22
+        b_phys[1][dof] = m2[1][0] * m2[1][0] * e_xx
+            + m2[1][1] * m2[1][1] * e_yy
+            + 2.0 * m2[1][0] * m2[1][1] * e_xy;
+        // 2ε'_12
+        let e12 = m2[0][0] * m2[1][0] * e_xx
+            + m2[0][1] * m2[1][1] * e_yy
+            + (m2[0][0] * m2[1][1] + m2[0][1] * m2[1][0]) * e_xy;
+        b_phys[2][dof] = 2.0 * e12;
+    }
+    b_phys
+}
+
 /// A per-node shell **director**: the unit vector along the through-thickness
 /// fibre at a mesh vertex (the `V_i` of the degenerate-shell geometry map
 /// `X = Σ N_i x_i + (ζ/2) Σ N_i t_i V_i`).
