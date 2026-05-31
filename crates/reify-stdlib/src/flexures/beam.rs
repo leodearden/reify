@@ -89,9 +89,7 @@ fn parse_beam_inputs(args: &[Value]) -> Option<BeamInputs<'_>> {
         return None;
     }
     let axis = &args[5];
-    if crate::helpers::validate_dimensionless_unit_axis_vec3(axis).is_none() {
-        return None;
-    }
+    crate::helpers::validate_dimensionless_unit_axis_vec3(axis)?;
     Some(BeamInputs {
         length,
         thickness,
