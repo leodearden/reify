@@ -110,6 +110,11 @@ pub fn solve_modal_response(
     xi0: f64,
     v0: f64,
 ) -> ModalResponse {
+    assert_eq!(
+        times.len(),
+        forcing.len(),
+        "times and forcing must have equal length"
+    );
     let use_duhamel = omega > OMEGA_FLOOR
         && zeta < ZETA_CEILING
         && is_uniformly_sampled(times, 1e-9);
@@ -127,10 +132,6 @@ pub fn solve_modal_response(
         }
     }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Duhamel uniform-sampling integrator
-// ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Newmark-β integrator (average-acceleration, γ=1/2, β=1/4)
@@ -268,6 +269,10 @@ pub fn is_uniformly_sampled(times: &[f64], rel_tol: f64) -> bool {
     }
     true
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Duhamel uniform-sampling integrator
+// ─────────────────────────────────────────────────────────────────────────────
 
 /// Pre-computed per-timestep coefficients for the exact piecewise-linear
 /// Duhamel recurrence (Chopra Table 5.3.1).
@@ -721,6 +726,48 @@ mod tests {
         assert!(!is_uniformly_sampled(&decreasing, 1e-9));
     }
 
+    // ─── boundary cases: empty / single-element / length mismatch ────────────
+
+    /// Empty `forcing` (or `times`) returns an empty `Vec`; single-element returns `[xi0]`.
+    #[test]
+    fn empty_and_single_element_boundary() {
+        let omega = 10.0_f64;
+        let zeta  = 0.05_f64;
+
+        // duhamel_solve: empty forcing → empty Vec.
+        let result = duhamel_solve(omega, zeta, 0.001, &[], 0.0, 0.0);
+        assert_eq!(result.len(), 0, "duhamel_solve empty → empty Vec");
+
+        // duhamel_solve: single element → [xi0].
+        let result = duhamel_solve(omega, zeta, 0.001, &[5.0], 2.0, 1.0);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], 2.0_f64, "duhamel_solve single-element: index 0 must be xi0");
+
+        // newmark_solve: empty times/forcing → empty Vec.
+        let result = newmark_solve(omega, zeta, &[], &[], 0.0, 0.0);
+        assert_eq!(result.len(), 0, "newmark_solve empty → empty Vec");
+
+        // newmark_solve: single element → [xi0].
+        let result = newmark_solve(omega, zeta, &[0.0], &[5.0], 2.0, 1.0);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], 2.0_f64, "newmark_solve single-element: index 0 must be xi0");
+
+        // solve_modal_response on a single-point uniform-eligible grid routes to Newmark
+        // (is_uniformly_sampled returns false for len < 2) and returns [xi0].
+        let resp = solve_modal_response(omega, zeta, &[0.0], &[5.0], 2.0, 1.0);
+        assert_eq!(resp.coords.len(), 1);
+        assert_eq!(resp.coords[0], 2.0_f64);
+    }
+
+    /// Mismatched `times`/`forcing` lengths must panic with a descriptive message.
+    #[test]
+    #[should_panic(expected = "times and forcing must have equal length")]
+    fn mismatched_times_forcing_panics() {
+        let times   = vec![0.0_f64, 0.1, 0.2];
+        let forcing = vec![1.0_f64, 2.0];
+        let _ = solve_modal_response(10.0, 0.05, &times, &forcing, 0.0, 0.0);
+    }
+
     // ─── step 07: sine accuracy — SINE ACCURACY PIN ──────────────────────────
 
     /// Characterises the FOH recurrence for f(t) = sin(Ωt).
@@ -728,7 +775,9 @@ mod tests {
     /// Asserts:
     /// (a) Loose sanity bound: max relative error < 5e-2 (the honest
     ///     O((ΩΔt)²) method floor — NOT 1e-9).
-    /// (b) Authoritative 2nd-order convergence: error_50 / error_100 ≥ 3.5.
+    /// (b) Authoritative 2nd-order convergence: error_coarse / error_fine ≥ 3.5.
+    ///     Uses n_coarse=51 and n_fine=2*51-1=101 so every coarse point coincides
+    ///     with every other fine point (true Δt-halving comparison).
     ///     Passes under FOH (2nd-order); would fail under ZOH (1st-order).
     #[test]
     fn sine_response_accuracy_and_convergence() {
@@ -741,40 +790,52 @@ mod tests {
 
         let max_abs_analytic = {
             // Estimate peak response amplitude at many sample points.
-            let coarse: Vec<f64> = (0..1000)
+            let dense: Vec<f64> = (0..1000)
                 .map(|j| analytic_sine_response(f0, big_omega, omega, zeta, j as f64 * t_end / 999.0).abs())
                 .collect();
-            coarse.iter().cloned().fold(0.0_f64, f64::max)
+            dense.iter().cloned().fold(0.0_f64, f64::max)
         };
 
-        let run = |n: usize| -> f64 {
+        // n_coarse=51 and n_fine=2*51-1=101: coarse point j maps to fine point 2j,
+        // so comparing errors at shared points is a true Δt-halving test.
+        let n_coarse = 51_usize;
+        let n_fine   = 2 * n_coarse - 1;  // 101
+
+        // Run the integrator and return the max relative error measured only at
+        // every `stride`-th output index (to restrict comparison to shared grid).
+        let run = |n: usize, stride: usize| -> f64 {
             let dt = t_end / (n - 1) as f64;
             let forcing: Vec<f64> = (0..n)
                 .map(|j| f0 * (big_omega * j as f64 * dt).sin())
                 .collect();
             let got = duhamel_solve(omega, zeta, dt, &forcing, 0.0, 0.0);
-            let max_err = got.iter().enumerate().map(|(j, &g)| {
-                let t    = j as f64 * dt;
-                let want = analytic_sine_response(f0, big_omega, omega, zeta, t);
-                (g - want).abs()
-            }).fold(0.0_f64, f64::max);
-            max_err / max_abs_analytic   // relative to analytic amplitude
+            got.iter()
+                .enumerate()
+                .step_by(stride)
+                .map(|(j, &g)| {
+                    let t    = j as f64 * dt;
+                    let want = analytic_sine_response(f0, big_omega, omega, zeta, t);
+                    (g - want).abs()
+                })
+                .fold(0.0_f64, f64::max)
+                / max_abs_analytic
         };
 
-        let err_50  = run(50);
-        let err_100 = run(100);
+        // Coarse: all 51 points; fine: every 2nd of 101 points (= shared coarse grid).
+        let err_coarse = run(n_coarse, 1);
+        let err_fine   = run(n_fine, 2);
 
         // (a) Loose sanity bound — NOT 1e-9.
         assert!(
-            err_50 < 5e-2,
-            "coarse-grid (50 pt) relative error {err_50:.3e} ≥ 5e-2"
+            err_coarse < 5e-2,
+            "coarse-grid ({n_coarse} pt) relative error {err_coarse:.3e} ≥ 5e-2"
         );
 
-        // (b) Authoritative 2nd-order convergence-rate assertion.
-        let ratio = err_50 / err_100;
+        // (b) Authoritative 2nd-order convergence-rate assertion (Δt halved → error ÷4).
+        let ratio = err_coarse / err_fine;
         assert!(
             ratio >= 3.5,
-            "convergence ratio err_50/err_100 = {ratio:.2} < 3.5 (expected ≥ 4 for 2nd-order)"
+            "convergence ratio err_coarse/err_fine = {ratio:.2} < 3.5 (expected ≥ 4 for 2nd-order)"
         );
     }
 
