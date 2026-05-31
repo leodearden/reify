@@ -545,6 +545,13 @@ pub struct Engine {
     /// Active optimization objectives injected by purposes.
     /// Maps purpose name → optimization objective.
     active_objective_map: HashMap<String, OptimizationObjective>,
+    /// Injected let-cell ids for each active purpose.
+    /// Maps purpose name → ordered list of injected `ValueCellId`s (one per let
+    /// in declaration order). Populated by `activate_purpose*` alongside
+    /// `active_purposes`; cleared by `deactivate_purpose`. Used by
+    /// `check_constraints_with_values` to overlay the evaluated let-cell values
+    /// onto the incoming `values` map (task 4009 δ).
+    active_purpose_let_cells: HashMap<String, Vec<ValueCellId>>,
     /// Template meta entries from the last eval() call.
     /// Maps template name → meta key/value pairs from the template's meta block.
     /// Populated during eval() so that edit_param() and other incremental paths
