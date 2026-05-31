@@ -4255,6 +4255,76 @@ pub structure Rack {
         );
     }
 
+    /// RBD-β (task 3829, step-9). `body_mass_props` is a **name-recognised
+    /// compiler builtin** (registered in `units.rs` `DYNAMICS_QUERY_NAMES`),
+    /// NOT a `pub fn`. With an empty template + function registry it must lower
+    /// to a stdlib `FunctionCall` whose `result_type` is
+    /// `StructureRef("MassProperties")` — set up-front by the `is_dynamics_query`
+    /// arm in the `NoUserFunctions` ladder so the cell typechecks (avoiding the
+    /// first-arg fallback type, which would be the body's `Solid`/`Real` type
+    /// and trip `assert_value_cell_types_representable`). Mirrors
+    /// `builtin_call_not_perturbed_by_ctor_path` ("builtin `cos` must remain a
+    /// FunctionCall") and the `is_geometry_query_helper => Type::Bool` arm.
+    ///
+    /// Also pins that a **1-arg call stays 1-arg**: because no user fn declares
+    /// an optional `density` default for this name, the `NoUserFunctions` path
+    /// performs NO default-padding (the `NoMatch` `try_default_padding` branch
+    /// is only reached when same-named user fns exist). This is the load-bearing
+    /// reason the builtin approach — rather than a `pub fn` with an optional
+    /// `density` default — keeps the "no explicit density" rung (and thus the
+    /// `W_DynamicsDefaultDensity` observable) reachable.
+    #[test]
+    fn body_mass_props_resolves_to_function_call_returning_mass_properties() {
+        // Empty template registry → `body_mass_props` is not a structure-def →
+        // it must stay a stdlib FunctionCall, NOT a StructureInstanceCtor.
+        let registry: std::collections::HashMap<String, &crate::types::TopologyTemplate> =
+            std::collections::HashMap::new();
+        let mut scope = CompilationScope::new("Host");
+        scope.is_entity_scope = true;
+        scope.set_template_registry(&registry);
+
+        // No user functions (`functions = &[]`), so resolution lands in the
+        // `NoUserFunctions` arm — the only place the dynamics-query builtin is
+        // recognised.
+        let mut diags: Vec<Diagnostic> = vec![];
+        let result = compile_expr(
+            &call_expr("body_mass_props", vec![num_expr(0.0)]),
+            &scope,
+            &[],
+            &[],
+            &mut diags,
+        );
+
+        match &result.kind {
+            CompiledExprKind::FunctionCall { function, args } => {
+                assert_eq!(
+                    function.name, "body_mass_props",
+                    "body_mass_props must lower to a FunctionCall named body_mass_props"
+                );
+                assert_eq!(
+                    args.len(),
+                    1,
+                    "a 1-arg body_mass_props call must stay 1-arg — it is a NoUserFunctions \
+                     builtin, so the NoMatch default-padding branch (which would otherwise pad \
+                     an optional `density`) is never reached; got {} args",
+                    args.len()
+                );
+            }
+            other => panic!(
+                "body_mass_props must lower to a stdlib FunctionCall, got {:?}",
+                other
+            ),
+        }
+        assert_eq!(
+            result.result_type,
+            Type::StructureRef("MassProperties".to_string()),
+            "body_mass_props result_type must be StructureRef(MassProperties), set up-front \
+             by the is_dynamics_query arm in the NoUserFunctions ladder (not the first-arg \
+             fallback); got {:?}",
+            result.result_type
+        );
+    }
+
     /// `TraitStaticCall` dispatch arm (task η 3945) — after the placeholder is
     /// replaced with real dispatch, calling `C::make()` where trait `C` is unknown
     /// must emit exactly one unknown-trait-static-fn diagnostic.
