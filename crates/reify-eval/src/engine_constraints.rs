@@ -316,8 +316,9 @@ impl Engine {
 
         // Overlay injected let-cell values onto the incoming values so that
         // constraints referencing purpose let-cells can resolve them (task 4009 δ).
-        // When no let-bearing purpose is active, `effective_values` is an
-        // O(1)-ish clone (PersistentMap structural sharing) — purely additive.
+        // active_purpose_let_cells only contains entries for let-bearing purposes
+        // (let-less purposes are never inserted), so the fast-path is taken
+        // whenever no let-bearing purpose is active — O(1) map-empty check.
         let effective_values: ValueMap = if self.active_purpose_let_cells.is_empty() {
             values.clone()
         } else {

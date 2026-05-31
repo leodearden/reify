@@ -267,11 +267,17 @@ impl Engine {
         // injected `{purpose_entity}::__let_{name}`) so they resolve correctly.
 
         // Build a local values map from the current snapshot so eval_expr can
-        // resolve earlier lets and entity params.
-        let mut local_values = ValueMap::new();
-        for (id, (val, _det)) in state.snapshot.values.iter() {
-            local_values.insert(id.clone(), val.clone());
-        }
+        // resolve earlier lets and entity params.  Skip the O(n) copy when the
+        // purpose has no lets at all — local_values is only read inside the loop.
+        let mut local_values = if purpose.lets.is_empty() {
+            ValueMap::new()
+        } else {
+            let mut v = ValueMap::new();
+            for (id, (val, _det)) in state.snapshot.values.iter() {
+                v.insert(id.clone(), val.clone());
+            }
+            v
+        };
 
         // Accumulate (compile_id → injected_id) pairs for remap_cell below.
         let mut let_remaps: Vec<(ValueCellId, ValueCellId)> = Vec::new();
@@ -403,10 +409,15 @@ impl Engine {
             .insert(purpose_name.to_string(), bindings.to_vec());
 
         // Record injected let-cell ids for check_constraints_with_values overlay
-        // (task 4009 δ). Even if the purpose has no lets, insert an empty Vec so
-        // deactivate_purpose's remove() call is always a no-op rather than a missing-key.
-        self.active_purpose_let_cells
-            .insert(purpose_name.to_string(), injected_let_ids);
+        // (task 4009 δ).  Only insert when there are actual let cells; skipping
+        // the insert for let-less purposes keeps active_purpose_let_cells empty
+        // (fast-path in check_constraints_with_values) as long as no let-bearing
+        // purpose is active.  deactivate_purpose's unwrap_or_default() handles
+        // the missing-key case without panicking.
+        if !injected_let_ids.is_empty() {
+            self.active_purpose_let_cells
+                .insert(purpose_name.to_string(), injected_let_ids);
+        }
 
         true
     }
