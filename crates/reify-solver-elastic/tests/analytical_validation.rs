@@ -1063,6 +1063,67 @@ fn annular_p1_mesh(
     (nodes, connectivity, inner_faces)
 }
 
+/// Lamé closed-form stresses satisfy textbook invariants (non-circular check).
+///
+/// Tests `lame_stresses` and `lame_von_mises` against identities that are
+/// independently derivable from first principles:
+/// - σ_r(a) = −P_i (BC)
+/// - σ_r(b) = 0 (BC)
+/// - σ_r+σ_θ = 2·P_i·a²/(b²−a²) (constant in r)
+/// - σ_θ−σ_r = 2·P_i·a²·b²/((b²−a²)·r²)
+/// - σ_z = ν·(σ_r+σ_θ)  [plane-strain]
+/// - σ_vm(a) > σ_vm(b)  [peak at inner fibre]
+#[test]
+fn lame_reference_satisfies_known_invariants() {
+    const A: f64 = 1.0;
+    const B: f64 = 2.0;
+    const P_I: f64 = 1.0;
+    const NU: f64 = 0.3;
+    let tol = 1e-12;
+
+    // σ_r(a) = −P_i
+    let (sr_a, _, _) = lame_stresses(A, A, B, P_I, NU);
+    assert!(
+        (sr_a - (-P_I)).abs() < tol,
+        "σ_r(a) = {sr_a:.15}, expected {}", -P_I,
+    );
+
+    // σ_r(b) = 0
+    let (sr_b, _, _) = lame_stresses(B, A, B, P_I, NU);
+    assert!(sr_b.abs() < tol, "σ_r(b) = {sr_b:.15e}, expected 0");
+
+    // Constant sum and σ_z plane-strain at several r
+    let sum_const = 2.0 * P_I * A * A / (B * B - A * A);
+    for &r in &[A, 1.2_f64, 1.5_f64, 1.8_f64, B] {
+        let (sr, st, sz) = lame_stresses(r, A, B, P_I, NU);
+        assert!(
+            (sr + st - sum_const).abs() < tol,
+            "σ_r+σ_θ at r={r}: got {:.12}, expected {sum_const:.12}",
+            sr + st,
+        );
+        assert!(
+            (sz - NU * (sr + st)).abs() < tol,
+            "σ_z at r={r}: got {sz:.12}, expected {:.12}",
+            NU * (sr + st),
+        );
+        // σ_θ − σ_r = 2·P_i·a²·b²/((b²−a²)·r²)
+        let diff_expected = 2.0 * P_I * A * A * B * B / ((B * B - A * A) * r * r);
+        assert!(
+            (st - sr - diff_expected).abs() < tol,
+            "σ_θ−σ_r at r={r}: got {:.12}, expected {diff_expected:.12}",
+            st - sr,
+        );
+    }
+
+    // von Mises is higher at inner fibre than outer
+    let vm_inner = lame_von_mises(A, A, B, P_I, NU);
+    let vm_outer = lame_von_mises(B, A, B, P_I, NU);
+    assert!(
+        vm_inner > vm_outer,
+        "expected vm(a)={vm_inner:.6} > vm(b)={vm_outer:.6}",
+    );
+}
+
 /// Mesh validation: annular P1 quarter-cylinder mesh geometry.
 ///
 /// Checks node count, positive tet volumes (polar Kuhn-split orientation
