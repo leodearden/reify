@@ -1880,4 +1880,59 @@ mod tests {
             "non-rigid membrane strain magnitude {max_strain} too small to test objectivity",
         );
     }
+
+    // ── task 4069 step-9/10: parasitic-membrane-reduction witness ────────────
+
+    /// Parasitic-membrane-reduction witness (the locking-cure purpose). On the
+    /// curved tilted fixture under a curvature-coupled bending mode (uniform
+    /// director rotation, NO translation — an inextensional-type mode), the ANS
+    /// membrane strain magnitude `‖ANS·u‖` must be STRICTLY LESS than the
+    /// displacement-based membrane strain magnitude `‖disp·u‖` at the in-plane
+    /// integration points. RELATIVE inequality only — no absolute tolerance, hence
+    /// no numeric-bound premise.
+    ///
+    /// The displacement membrane spuriously couples director rotation into
+    /// membrane strain on a curved element (the parasitic lock); the ANS membrane,
+    /// being translation-only in covariant form at the mid-surface, carries none
+    /// of it (‖ANS·u‖ = 0 for a translation-free mode), so the inequality is
+    /// strict with ample margin.
+    #[test]
+    fn degenerate_assumed_membrane_b_filters_parasitic_membrane_on_curved_patch() {
+        let (nodes, directors, thicknesses) = tilted_fixture();
+        // Pure director-rotation mode (bending): θ_i = ω at every node, u_i = 0.
+        let omega = [0.01_f64, -0.02, 0.015];
+        let mut u = [0.0_f64; 18];
+        for i in 0..3 {
+            u[6 * i + 3] = omega[0];
+            u[6 * i + 4] = omega[1];
+            u[6 * i + 5] = omega[2];
+        }
+        let interior = Mitc3Plus.interior_tying_points();
+        let mag = |e: [f64; 3]| (e[0] * e[0] + e[1] * e[1] + e[2] * e[2]).sqrt();
+        for tp in interior.iter().take(3) {
+            let c = ShellRefCoord3::new(tp.coord.xi, tp.coord.eta, 0.0);
+            let ans = mag(b_times_u(
+                &degenerate_assumed_membrane_b(&nodes, &directors, &thicknesses, c),
+                &u,
+            ));
+            let disp = mag(b_times_u(
+                &degenerate_membrane_bending_b(&nodes, &directors, &thicknesses, c),
+                &u,
+            ));
+            assert!(
+                disp > 1e-6,
+                "displacement membrane strain {disp} must be a meaningful parasitic lock \
+                 @ ({},{})",
+                tp.coord.xi,
+                tp.coord.eta,
+            );
+            assert!(
+                ans < disp,
+                "ANS membrane strain {ans} must be strictly less than displacement \
+                 membrane {disp} @ ({},{}) — the locking cure",
+                tp.coord.xi,
+                tp.coord.eta,
+            );
+        }
+    }
 }
