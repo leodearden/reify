@@ -34,4 +34,11 @@ structure def IntersectsSmoke {
     // Query results — true when shapes intersect (d <= 0), false when apart.
     let overlapping = intersects(a, b_overlap)
     let apart       = intersects(a, b_far)
+
+    // Arg-shape invariant (§4 #1): the first arg here is an inline FunctionCall
+    // expression, not a ValueRef (let-bound cell).  resolve_geometry_handle_arg
+    // only matches CompiledExprKind::ValueRef; all other expr kinds return None,
+    // short-circuiting the dispatch arm so the cell stays at Value::Undef.
+    // This cell must NOT be Value::Bool — pinned in the integration test.
+    let undef_inline = intersects(box(10mm, 10mm, 10mm), b_overlap)
 }

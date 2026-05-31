@@ -102,4 +102,19 @@ fn intersects_smoke_evals_expected_booleans() {
     // b_far translated 100mm in X → spans 95..105mm in X, ~90mm face gap from a
     // → BRep min distance ≈ 0.09m > 0.0 → intersects = false.
     assert_bool("apart", false);
+
+    // Pin §4 invariant #1: an inline geometry arg (CompiledExprKind::FunctionCall,
+    // not ValueRef) is rejected by resolve_geometry_handle_arg → dispatch arm
+    // short-circuits (returns None) → cell stays at its compiled default
+    // (None or Value::Undef — never a Bool).  The short-circuit happens before
+    // any kernel call, but engine.build() still requires OCCT for the other
+    // geometry cells in this fixture, so the assertion lives here.
+    let undef_cell = ValueCellId::new("IntersectsSmoke", "undef_inline");
+    let undef_actual = result.values.get(&undef_cell);
+    assert!(
+        matches!(undef_actual, None | Some(&Value::Undef)),
+        "IntersectsSmoke.undef_inline must be None or Value::Undef (inline arg \
+         falls through resolve_geometry_handle_arg per §4 invariant #1), \
+         got: {undef_actual:?}"
+    );
 }
