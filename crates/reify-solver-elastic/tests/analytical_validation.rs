@@ -4,7 +4,7 @@
 //!
 //! PRD `docs/prds/v0_3/structural-analysis-fea.md` task #20: validate the
 //! linear-elastostatic solver against analytical references at both P1 and P2
-//! element orders. Three of the PRD's four reference cases are validated here:
+//! element orders. All four of the PRD's reference cases are validated here:
 //!
 //! 1. Timoshenko cantilever beam tip deflection — ≤ 5% (P1) / ≤ 3% (P2, stocky
 //!    L/H=2) / **≤ 1% (P2, slender L/H=15)** — the aspirational 1% bound from
@@ -15,15 +15,14 @@
 //! 3. Boussinesq half-space point load, subsurface σ_z — ≤ 10% near load (the
 //!    point-load singularity is probed off-axis at depth, not at the node),
 //!    both orders
-//!
-//! The fourth PRD case — the **pressurised thick-walled cylinder (Lamé)** — is
-//! split to a focused follow-up (**task 4113**): unlike the three cases here it
-//! cannot be built from the axis-aligned box mesher below; it needs a curved
-//! polar/annular tet mesh plus a pressure-as-traction inner-surface BC. See
-//! task 4113 and `docs/architecture-audit/fea-accuracy-achievability-survey-2026-05-29.md`
-//! (the survey rates the cylinder's 5%-P1 / 2%-P2 bounds ACHIEVABLE — smooth
-//! axisymmetric field, no bending lock — so the split is a tractability call,
-//! not a formulation-floor relaxation).
+//! 4. **Pressurised thick-walled cylinder (Lamé)** — max von Mises at inner fibre
+//!    ≤ 5% (P1) / ≤ 2% (P2). Quarter-annulus plane-strain model (a=1, b=2,
+//!    θ∈[0,π/2]): structured polar → Kuhn-tet mesh, pressure-as-traction inner-
+//!    surface BC (per-face centroid radial traction via `apply_traction_load`),
+//!    symmetry + plane-strain Dirichlet BCs suppress all 6 rigid-body modes
+//!    exactly. Survey (`docs/architecture-audit/fea-accuracy-achievability-survey-2026-05-29.md`)
+//!    rates both bounds ACHIEVABLE — smooth axisymmetric field, no bending lock
+//!    (task 4113).
 //!
 //! # Cantilever load / measurement convention (why not a single-node point load)
 //!
