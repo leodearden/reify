@@ -59,6 +59,111 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Newmark-β integrator (average-acceleration, γ=1/2, β=1/4)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Integrate the scalar SDOF modal ODE on an **arbitrary** (non-uniform) time
+/// grid via the Newmark-β average-acceleration method (γ = 1/2, β = 1/4,
+/// Chopra Table 5.4.2).
+///
+/// # Arguments
+/// * `omega`   — natural angular frequency ω (rad/s).
+/// * `zeta`    — modal damping ratio ζ (dimensionless).  Valid for any ζ ≥ 0.
+/// * `times`   — time sample points (s), monotonically increasing; length ≥ 1.
+/// * `forcing` — scalar modal forcing samples at each time point; same length
+///               as `times`.  `forcing[0]` is the force at `times[0]`.
+/// * `xi0`     — initial modal displacement ξ(t₀).
+/// * `v0`      — initial modal velocity ξ̇(t₀).
+///
+/// # Returns
+/// A `Vec<f64>` of length `times.len()` where index 0 = `xi0`.
+///
+/// # Notes
+/// * Unconditionally stable for any Δt.
+/// * 2nd-order accurate (globally O(Δt²)) for smooth forcing.
+/// * Per-step coefficients are recomputed at each step from that step's Δt,
+///   supporting arbitrary non-uniform time grids.
+/// * Well-defined for ω = 0 (rigid-body) and any ζ ≥ 0 (including ζ ≥ 1).
+pub fn newmark_solve(
+    omega: f64,
+    zeta: f64,
+    times: &[f64],
+    forcing: &[f64],
+    xi0: f64,
+    v0: f64,
+) -> Vec<f64> {
+    assert_eq!(times.len(), forcing.len(), "times and forcing must have equal length");
+    let n = times.len();
+    let mut out = Vec::with_capacity(n);
+    if n == 0 {
+        return out;
+    }
+
+    // SDOF equation:  m·ü + c·u̇ + k·u = p(t)   with m=1, c=2ζω, k=ω²
+    let k = omega * omega;
+    let c = 2.0 * zeta * omega;
+
+    // Newmark parameters: average-acceleration (unconditionally stable, 2nd-order)
+    let beta  = 0.25_f64;
+    let gamma = 0.5_f64;
+
+    // Initial state.
+    let mut u = xi0;
+    let mut v = v0;
+    // Seed acceleration from equation of motion: a₀ = p₀ − c·v₀ − k·u₀
+    let mut a = forcing[0] - c * v - k * u;
+    out.push(u);
+
+    for i in 1..n {
+        let dt = times[i] - times[i - 1];
+        let p_next = forcing[i];
+
+        // Effective stiffness (recomputed for each Δt).
+        //   k̂ = k + γ/(β·Δt)·c + 1/(β·Δt²)·m
+        let khat = k
+            + (gamma / (beta * dt)) * c
+            + 1.0 / (beta * dt * dt);
+
+        // Effective force at step i+1 (Chopra Table 5.4.2):
+        //   p̂ = p_{i+1}
+        //       + m·(a0·u_i + a2·v_i + a3·a_i)      [m = 1]
+        //       + c·(a1·u_i + a4·v_i + a5·a_i)
+        //
+        // with  a0=1/(β·Δt²),  a1=γ/(β·Δt),  a2=1/(β·Δt),
+        //       a3=1/(2β)−1,   a4=γ/β−1,      a5=Δt·(γ/(2β)−1)
+        //
+        // For average-acceleration (γ=1/2, β=1/4):
+        //   a0=4/Δt², a1=2/Δt, a2=4/Δt, a3=1, a4=1, a5=0
+        let a0 = 1.0 / (beta * dt * dt);
+        let a1 = gamma / (beta * dt);
+        let a2 = 1.0 / (beta * dt);
+        let a3 = 1.0 / (2.0 * beta) - 1.0;
+        let a4 = gamma / beta - 1.0;
+        let a5 = dt * (gamma / (2.0 * beta) - 1.0);
+        let phat = p_next
+            + a0 * u + a2 * v + a3 * a          // mass contribution (m = 1)
+            + c * (a1 * u + a4 * v + a5 * a);   // damping contribution
+
+        // Displacement corrector.
+        let u_next = phat / khat;
+
+        // Acceleration corrector (Chopra Table 5.4.2):
+        //   ü_{i+1} = a0·(u_{i+1} − u_i) − a2·u̇_i − a3·ü_i
+        let a_next = a0 * (u_next - u) - a2 * v - a3 * a;
+
+        // Velocity corrector.
+        let v_next = v + (1.0 - gamma) * dt * a + gamma * dt * a_next;
+
+        u = u_next;
+        v = v_next;
+        a = a_next;
+        out.push(u);
+    }
+
+    out
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Sampling-uniformity checker
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -381,9 +486,12 @@ mod tests {
         let t_end = 0.5_f64;
 
         // (a) Uniform grid — constant force from rest.
+        //     Choose N so that ω·Δt ≈ 0.05 for the coarse grid (per plan §11).
+        //     With T=0.5, ω=50: N_c=501 → Δt=0.001 → ω·Δt=0.05.
+        //     Halving Δt: N_f=1001 → ω·Δt=0.025.
         {
-            let n_c = 100_usize;  // coarse: ω·dt = 50·(0.5/99) ≈ 0.253
-            let n_f = 200_usize;  // fine:  ω·dt ≈ 0.126
+            let n_c = 501_usize;  // coarse: ω·dt ≈ 0.05
+            let n_f = 1001_usize; // fine:   ω·dt ≈ 0.025
             let make_times = |n: usize| -> Vec<f64> {
                 (0..n).map(|i| i as f64 * t_end / (n - 1) as f64).collect()
             };
@@ -407,13 +515,17 @@ mod tests {
         }
 
         // (b) Non-uniform (geometrically-stretched) grid — constant force.
+        //     Keep ω·Δt_max ≤ 0.25 so the 2nd-order Newmark error stays well
+        //     under 2%.  With dt_start=0.001 and ratio=1.02 over 79 steps:
+        //       dt_max ≈ 0.001 × 1.02^78 ≈ 0.00472 s
+        //       ω·dt_max ≈ 50 × 0.00472 ≈ 0.236  →  error ≈ (0.236)²/12 ≈ 0.5%
         {
             let n = 80_usize;
-            let ratio = 1.05_f64;  // stretch factor per step
+            let ratio = 1.02_f64;  // gentle stretch factor per step
             // Build times: t_0=0, t_{k+1} = t_k + dt_k where dt_{k+1} = ratio*dt_k.
             let mut times = Vec::with_capacity(n);
             times.push(0.0_f64);
-            let mut dt = 0.002_f64;
+            let mut dt = 0.001_f64;
             for _ in 1..n {
                 times.push(times.last().unwrap() + dt);
                 dt *= ratio;
