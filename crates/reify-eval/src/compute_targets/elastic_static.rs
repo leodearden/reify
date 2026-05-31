@@ -897,29 +897,6 @@ fn element_stress_anisotropic(
     ]
 }
 
-/// Compute von Mises stress for a P1 tet with a given 6×6 global D matrix.
-///
-/// Refactored (task 4084/α) to delegate to [`element_stress_anisotropic`]
-/// and derive the scalar vM from the returned 3×3 tensor.  vM is
-/// byte-identical to the pre-α implementation (same σ_voigt, same formula).
-///
-/// Von Mises: sqrt(½·[(σ_xx−σ_yy)²+(σ_yy−σ_zz)²+(σ_zz−σ_xx)²+6·(σ_xy²+σ_yz²+σ_zx²)])
-#[cfg(test)]
-fn element_von_mises_anisotropic(
-    phys_nodes: &[[f64; 3]; 4],
-    d_global: &[[f64; 6]; 6],
-    u_e: &[f64; 12],
-) -> f64 {
-    let sigma = element_stress_anisotropic(phys_nodes, d_global, u_e);
-    let (sxx, syy, szz) = (sigma[0][0], sigma[1][1], sigma[2][2]);
-    let (sxy, syz, szx) = (sigma[0][1], sigma[1][2], sigma[0][2]);
-    f64::sqrt(0.5 * (
-        (sxx - syy).powi(2)
-        + (syy - szz).powi(2)
-        + (szz - sxx).powi(2)
-        + 6.0 * (sxy * sxy + syz * syz + szx * szx)
-    ))
-}
 
 
 // ── helpers ───────────────────────────────────────────────────────────────────
