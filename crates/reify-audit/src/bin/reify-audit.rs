@@ -404,11 +404,11 @@ fn load_tasks_from_fused_memory(
 ///
 /// P1 is currently the only jcodemunch-backed detector the CLI dispatches.
 /// When downstream leaves (L-PDEAD, L-PUNTESTED, L-PLAYER) wire their
-/// patterns into the --pattern parser, this function must also return true
-/// for those pattern values.
+/// patterns into the --pattern parser, add those values here so the connect
+/// decision and the dispatch decision remain a single source of truth.
 ///
-/// The predicate mirrors the run_p1 computation in main() exactly so that
-/// the connect decision and the actual P1-runs decision can never diverge.
+/// main() derives run_p1 directly from this predicate, so the two cannot
+/// diverge even as new jcodemunch-backed patterns are added.
 fn needs_jcodemunch(args: &Args) -> bool {
     if args.pre_done {
         return false;
@@ -545,7 +545,9 @@ fn main() -> ExitCode {
         reify_audit::p5_phantom_done::check_pre_done(&ctx, task_id)
     } else {
         // Spot-check or window sweep: run selected detectors.
-        let run_p1 = args.pattern.as_deref().is_none_or(|p| p == "P1");
+        // run_p1 is derived from needs_jcodemunch so the connect decision and
+        // the dispatch decision always agree.
+        let run_p1 = needs_jcodemunch(&args);
         let run_p2 = args.pattern.as_deref().is_none_or(|p| p == "P2");
         let run_p5 = args.pattern.as_deref().is_none_or(|p| p == "P5");
 

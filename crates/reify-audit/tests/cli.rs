@@ -104,6 +104,20 @@ fn parse_findings_from_stderr(stderr: &str) -> Vec<serde_json::Value> {
     })
 }
 
+/// Bind an OS-assigned port, record it, then drop the listener so the port
+/// is closed before the binary connects. Returns a URL pointing at the freed
+/// port suitable for "connection refused" tests.
+///
+/// TOCTOU: another process could reclaim the freed port before the binary
+/// connects. In practice ephemeral ports are not immediately reused and this
+/// idiom is widely accepted for this purpose.
+fn closed_port_url() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let port = listener.local_addr().expect("local_addr").port();
+    drop(listener);
+    format!("http://127.0.0.1:{port}/mcp")
+}
+
 // -----------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------
@@ -710,9 +724,8 @@ mod cli {
     /// P1 with an unreachable jcodemunch endpoint exits 125 (fail-fast
     /// infra error).
     ///
-    /// After step-2 the flags parse but main still binds NoopJCodemunchOps,
-    /// so P1 runs without connecting and exits 0 ≠ 125 — this test is RED
-    /// until step-6 wires up RealJCodemunchOps.
+    /// RealJCodemunchOps connects in its constructor; an unreachable endpoint
+    /// returns Err immediately, which main() maps to exit 125.
     #[test]
     fn p1_unreachable_jcodemunch_exits_125() {
         let tmp = tempfile::tempdir().expect("create tempdir");
@@ -722,10 +735,7 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &tasks);
         let runs_db = write_empty_runs_db(dir);
 
-        let throwaway = TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = throwaway.local_addr().expect("addr").port();
-        drop(throwaway);
-        let closed_url = format!("http://127.0.0.1:{port}/mcp");
+        let closed_url = closed_port_url();
 
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
@@ -762,10 +772,7 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &tasks);
         let runs_db = write_empty_runs_db(dir);
 
-        let throwaway = TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = throwaway.local_addr().expect("addr").port();
-        drop(throwaway);
-        let closed_url = format!("http://127.0.0.1:{port}/mcp");
+        let closed_url = closed_port_url();
 
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
@@ -807,10 +814,7 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &tasks);
         let runs_db = write_empty_runs_db(dir);
 
-        let throwaway = TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = throwaway.local_addr().expect("addr").port();
-        drop(throwaway);
-        let closed_url = format!("http://127.0.0.1:{port}/mcp");
+        let closed_url = closed_port_url();
 
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
@@ -846,10 +850,7 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &tasks);
         let runs_db = write_empty_runs_db(dir);
 
-        let throwaway = TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = throwaway.local_addr().expect("addr").port();
-        drop(throwaway);
-        let closed_url = format!("http://127.0.0.1:{port}/mcp");
+        let closed_url = closed_port_url();
 
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
