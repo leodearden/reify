@@ -360,6 +360,21 @@ mod tests {
         )
     }
 
+    /// Like [`steel`] but carrying only `youngs_modulus` (no `yield_stress`),
+    /// to exercise the no-yield fallback branches of both beam constructors.
+    fn steel_no_yield() -> Value {
+        material(
+            "Steel_NoYield",
+            &[(
+                "youngs_modulus",
+                Value::Scalar {
+                    si_value: 205e9,
+                    dimension: DimensionVector::PRESSURE,
+                },
+            )],
+        )
+    }
+
     fn axis_y() -> Value {
         Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)])
     }
@@ -739,6 +754,17 @@ mod tests {
         assert!(up_si != 0.0, "range is non-zero (up={up_si})");
         let sym = (lo_si + up_si).abs() / up_si.abs();
         assert!(sym < 1e-9, "range is symmetric: lower {lo_si} == -upper {up_si}");
+
+        // Pin the yield-branch δ magnitude (closed-form reproduction, matching
+        // the rigor of the cantilever range tests): the fixed-guided
+        // surface-yield deflection δ = yield·L²/(3·E·t), from σ = 3·E·t·δ / L².
+        let yield_stress = 310e6_f64; // steel() fixture
+        let expected_delta = yield_stress * length.powi(2) / (3.0 * e * thickness);
+        let rel_delta = (up_si - expected_delta).abs() / expected_delta;
+        assert!(
+            rel_delta < 1e-9,
+            "fixed-fixed δ {up_si} vs analytic {expected_delta} (rel {rel_delta})"
+        );
     }
 
     #[test]
@@ -776,6 +802,109 @@ mod tests {
                 Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]),
             ),
             "axis is zero vector",
+        );
+    }
+
+    #[test]
+    fn prb_beams_fall_back_to_default_limits_without_yield_stress() {
+        // A material with no yield_stress drives both ctors onto their fallback
+        // validity-range branches (the `None` arms of theta_lim / delta), which
+        // the yield-carrying `steel()` fixture never reaches.
+        let length = 0.02_f64;
+        let call = |name: &str| {
+            crate::eval_builtin(
+                name,
+                &[
+                    Value::length(length),
+                    Value::length(0.005),
+                    Value::length(0.0005),
+                    steel_no_yield(),
+                    origin(),
+                    axis_y(),
+                ],
+            )
+        };
+
+        // (a) Cantilever: no yield ⇒ range is the ±5° PRB small-deflection cap.
+        let prb_limit = 5.0_f64 * std::f64::consts::PI / 180.0;
+        let cantilever = call("prb_cantilever_beam");
+        let (lo, up) =
+            range_lower_upper(map_get(&cantilever, "range").expect("range key present"));
+        assert_angle_close(lo, -prb_limit, "no-yield cantilever lower bound");
+        assert_angle_close(up, prb_limit, "no-yield cantilever upper bound");
+
+        // (b) Fixed-fixed: no yield ⇒ range falls back to ±(0.1·L).
+        let expected_delta = 0.1 * length;
+        let fixed_fixed = call("prb_fixed_fixed_beam");
+        let (lo, up) =
+            range_lower_upper(map_get(&fixed_fixed, "range").expect("range key present"));
+        let lo_si = length_scalar_si(lo, "no-yield fixed-fixed lower bound");
+        let up_si = length_scalar_si(up, "no-yield fixed-fixed upper bound");
+        let rel_up = (up_si - expected_delta).abs() / expected_delta;
+        assert!(
+            rel_up < 1e-9,
+            "no-yield fixed-fixed upper {up_si} vs {expected_delta} (rel {rel_up})"
+        );
+        let rel_lo = (lo_si + expected_delta).abs() / expected_delta;
+        assert!(
+            rel_lo < 1e-9,
+            "no-yield fixed-fixed lower {lo_si} vs -{expected_delta} (rel {rel_lo})"
+        );
+    }
+
+    /// Invoke `prb_fixed_fixed_beam` on the step-9 geometry, optionally appending
+    /// a 7th `neutral` (transverse offset) arg — the prismatic counterpart of
+    /// [`cantilever_with_neutral`].
+    fn fixed_fixed_with_neutral(neutral: Option<Value>) -> Value {
+        let mut args = vec![
+            Value::length(0.02),
+            Value::length(0.005),
+            Value::length(0.0005),
+            steel(),
+            origin(),
+            axis_y(),
+        ];
+        if let Some(n) = neutral {
+            args.push(n);
+        }
+        crate::eval_builtin("prb_fixed_fixed_beam", &args)
+    }
+
+    #[test]
+    fn prb_fixed_fixed_beam_neutral_length_handling() {
+        let offset = 0.001_f64; // 1 mm transverse neutral offset
+
+        // (a) 6-arg call → neutral defaults to length(0).
+        let six = fixed_fixed_with_neutral(None);
+        assert_eq!(
+            map_get(&six, "neutral"),
+            Some(&Value::length(0.0)),
+            "6-arg call defaults neutral to length(0)"
+        );
+
+        // (b) 7-arg call with a bare length → neutral == length(offset).
+        let seven = fixed_fixed_with_neutral(Some(Value::length(offset)));
+        assert_eq!(
+            map_get(&seven, "neutral"),
+            Some(&Value::length(offset)),
+            "7-arg bare-length neutral"
+        );
+
+        // (c) 7-arg call with Option(Some(length)) → unwraps to length(offset).
+        let seven_opt =
+            fixed_fixed_with_neutral(Some(Value::Option(Some(Box::new(Value::length(offset))))));
+        assert_eq!(
+            map_get(&seven_opt, "neutral"),
+            Some(&Value::length(offset)),
+            "7-arg optional-length neutral unwraps"
+        );
+
+        // (d) 7-arg call with Option(None) → falls back to length(0).
+        let seven_none = fixed_fixed_with_neutral(Some(Value::Option(None)));
+        assert_eq!(
+            map_get(&seven_none, "neutral"),
+            Some(&Value::length(0.0)),
+            "7-arg Option(None) neutral defaults to length(0)"
         );
     }
 }
