@@ -1120,6 +1120,14 @@ fn forcing_missing_outcome() -> ComputeOutcome {
 /// `None` if `val` is not a StructureInstance or lacks the field. The borrowing
 /// companion to [`field_or`], used by the transient trampolines to read forcing /
 /// mode sub-values without cloning the whole field map.
+///
+/// The `name.to_string()` allocates an owned key per lookup. This is forced by
+/// the map API, not an oversight (reviewer suggestion 2): `PersistentMap::get`
+/// (`reify-ir`) exposes only `get(&self, key: &K)` — i.e. `&String` — with no
+/// `Borrow<str>`-based overload, so passing a `&str` key does not type-check.
+/// Adding that overload means editing `reify-ir`, which is outside this task's
+/// lock scope; if/when it lands, this and the other `&"…".to_string()` field
+/// reads in this module can drop the allocation. Tracked as a follow-up.
 fn field_ref<'a>(val: &'a Value, name: &str) -> Option<&'a Value> {
     if let Value::StructureInstance(data) = val {
         return data.fields.get(&name.to_string());
@@ -1153,7 +1161,9 @@ fn read_real_list(val: &Value) -> Vec<f64> {
 }
 
 /// The `modes` list of a `ModalResult` StructureInstance, by reference; an empty
-/// slice if absent / mis-shaped.
+/// slice if absent / mis-shaped. The `"modes".to_string()` owned-key lookup is
+/// forced by `PersistentMap::get`'s `&K` signature — see [`field_ref`] (reviewer
+/// suggestion 2) for why a `&str` key is not yet possible.
 fn modal_result_modes(modal_result: &Value) -> &[Value] {
     if let Value::StructureInstance(data) = modal_result
         && let Some(Value::List(modes)) = data.fields.get(&"modes".to_string())
