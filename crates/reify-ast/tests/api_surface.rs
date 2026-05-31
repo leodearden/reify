@@ -140,3 +140,43 @@ fn type_expr_kind_cross_assignment_proves_same_type() {
     let flat: TypeExprKind = TypeExprKind::IntegerLiteral(3);
     let _same: TypeExprKindMod = flat;
 }
+
+/// Step-3 (task 3971 ιₐ) — RED until TypeExprKind::QualifiedAssoc variant exists.
+///
+/// Pins the new variant's shape and Display rendering:
+///   - bare form:  `Beam::Material`           (trait_name = None)
+///   - FORK-G:     `Beam::(HasMaterial::Material)` (trait_name = Some)
+#[test]
+fn qualified_assoc_type_expr_api_surface() {
+    let span = SourceSpan::new(0, 12);
+
+    // Bare form: Beam::Material
+    let base = Box::new(TypeExpr {
+        kind: TypeExprKind::Named { name: "Beam".into(), type_args: vec![] },
+        span,
+    });
+    let ty_bare: TypeExpr = TypeExpr {
+        kind: TypeExprKind::QualifiedAssoc {
+            base,
+            trait_name: None,
+            member: "Material".into(),
+        },
+        span,
+    };
+    assert_eq!(ty_bare.to_string(), "Beam::Material");
+
+    // FORK-G disambiguated form: Beam::(HasMaterial::Material)
+    let base2 = Box::new(TypeExpr {
+        kind: TypeExprKind::Named { name: "Beam".into(), type_args: vec![] },
+        span,
+    });
+    let ty_disambig: TypeExpr = TypeExpr {
+        kind: TypeExprKind::QualifiedAssoc {
+            base: base2,
+            trait_name: Some("HasMaterial".into()),
+            member: "Material".into(),
+        },
+        span,
+    };
+    assert_eq!(ty_disambig.to_string(), "Beam::(HasMaterial::Material)");
+}
