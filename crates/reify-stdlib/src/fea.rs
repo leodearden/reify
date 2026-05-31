@@ -4199,4 +4199,60 @@ mod tests {
             "linear_combine: weights map references unknown case 'operatng'. Available cases: [operating, overload]. Did you misspell the case name?"
         );
     }
+
+    // step-9 (RED): two cases whose displacement fields use incompatible meshes
+    // (different grid lengths → metadata_matches false) → MultiLoadIncompatibleMeshes.
+    // The first weighted case (BTreeMap key order → 'operating') is the reference
+    // (<name1>); the first case whose field metadata mismatches it ('overload')
+    // is named in <name2>. A grid-length mismatch is the structural proxy for
+    // differing mesh_size / element_order in ElasticOptions. RED until the
+    // incompatible-mesh arm lands in step-10.
+    #[test]
+    fn diagnose_linear_combine_incompatible_meshes() {
+        // 'operating' displacement/stress have 5 grid points; 'overload' has 4.
+        let op_disp = wrap_sampled_field(
+            make_sampled_1d(
+                "od",
+                vec![0.0, 1.0, 2.0, 3.0, 4.0],
+                vec![1.0, 2.0, 3.0, 4.0, 5.0],
+            ),
+            Type::Real,
+            Type::Real,
+        );
+        let op_stress = wrap_sampled_field(
+            make_sampled_1d(
+                "os",
+                vec![0.0, 1.0, 2.0, 3.0, 4.0],
+                vec![10.0, 20.0, 30.0, 40.0, 50.0],
+            ),
+            Type::Real,
+            Type::Real,
+        );
+        let ov_disp = wrap_sampled_field(
+            make_sampled_1d("vd", vec![0.0, 1.0, 2.0, 3.0], vec![1.0, 2.0, 3.0, 4.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let ov_stress = wrap_sampled_field(
+            make_sampled_1d("vs", vec![0.0, 1.0, 2.0, 3.0], vec![10.0, 20.0, 30.0, 40.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let operating = make_fixture_elastic_result_with_fields(op_disp, op_stress);
+        let overload = make_fixture_elastic_result_with_fields(ov_disp, ov_stress);
+        let mcr = multi_case_result_value(&[("operating", operating), ("overload", overload)]);
+        let mut weights = BTreeMap::new();
+        weights.insert(Value::String("operating".to_string()), Value::Real(1.0));
+        weights.insert(Value::String("overload".to_string()), Value::Real(1.0));
+        let diag = diagnose("linear_combine", &[mcr, Value::Map(weights)])
+            .expect("incompatible meshes must produce a diagnostic");
+        assert_eq!(
+            diag.code,
+            Some(reify_core::DiagnosticCode::MultiLoadIncompatibleMeshes)
+        );
+        assert_eq!(
+            diag.message,
+            "linear_combine: cases 'operating' and 'overload' use incompatible meshes (different mesh_size or element_order in their ElasticOptions). Superposition requires matching mesh / element-order layouts. Re-solve with consistent options or compute envelopes instead."
+        );
+    }
 }
