@@ -396,6 +396,7 @@ pub mod p2_tet;
 pub mod mesher;
 pub mod mpc;
 pub mod progressive;
+pub mod resample;
 pub mod result;
 pub mod shell_assembly;
 pub mod shell_boundary;
