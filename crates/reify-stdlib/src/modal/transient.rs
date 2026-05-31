@@ -536,6 +536,33 @@ pub fn impulse_force_at(impulse: f64, time: f64, t: f64, dt: f64) -> f64 {
     }
 }
 
+/// Geometry-free node resolver: the index of the node with the largest
+/// displacement norm in a mode shape — the modal **antinode**. Used when a
+/// `location` string is non-numeric (no `LocationId` topology has landed yet):
+/// the fundamental mode's antinode is the cantilever free-end tip, so "force at
+/// tip" / "query at tip" both resolve here against `modes[0].shape`
+/// (design-decision-3), keeping forcing projection and reconstruction
+/// self-consistent.
+///
+/// Argmax over nodes of `Σ_axis φ²` (the squared norm — monotonic in the norm,
+/// so the argmax is identical while avoiding a per-node `sqrt`). The tie-break is
+/// deterministic: a strict `>` keeps the FIRST (lowest-index) maximum, so equal
+/// norms never reorder. Empty input → `0` (a degenerate zero-node shape; the
+/// trampoline guards against it upstream — this is the safe floor). A `NaN`
+/// component never compares `>`, so a NaN node is never selected.
+pub fn dominant_antinode_index(shapes: &[[f64; 3]]) -> usize {
+    let mut best_idx = 0;
+    let mut best_sq = f64::NEG_INFINITY;
+    for (i, s) in shapes.iter().enumerate() {
+        let sq = s[0] * s[0] + s[1] * s[1] + s[2] * s[2];
+        if sq > best_sq {
+            best_sq = sq;
+            best_idx = i;
+        }
+    }
+    best_idx
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
