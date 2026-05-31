@@ -398,6 +398,8 @@ fn assert_all_type_variants_listed(t: &reify_core::Type) {
         Type::Orientation(_) | Type::Frame(_) | Type::Transform(_) => true,
         // Non-rigid affine map (task 3958 / α)
         Type::AffineMap(_) => true,
+        // Topology selector (task 4116 / α)
+        Type::Selector(_) => true,
         // 3D geometric primitives
         Type::Plane | Type::Axis | Type::BoundingBox => true,
         // Matrix

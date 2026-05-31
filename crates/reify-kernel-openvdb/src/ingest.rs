@@ -813,6 +813,7 @@ fn format_type_repr(t: &Type) -> String {
         Type::Frame(_) => "Frame",
         Type::Transform(_) => "Transform",
         Type::AffineMap(_) => "AffineMap",
+        Type::Selector(_) => "Selector",
         Type::Range(_) => "Range",
         Type::Plane => "Plane",
         Type::Axis => "Axis",
@@ -908,6 +909,10 @@ mod tests {
         assert_eq!(format_type_repr(&Type::Frame(3)), "Frame");
         assert_eq!(format_type_repr(&Type::Transform(3)), "Transform");
         assert_eq!(format_type_repr(&Type::AffineMap(3)), "AffineMap");
+        assert_eq!(
+            format_type_repr(&Type::Selector(reify_core::ty::SelectorKind::Face)),
+            "Selector"
+        );
         assert_eq!(format_type_repr(&Type::TypeParam("T".into())), "TypeParam");
         assert_eq!(
             format_type_repr(&Type::StructureRef("S".into())),

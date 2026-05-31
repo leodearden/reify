@@ -92,6 +92,7 @@ pub fn is_representable_cell_type(ty: &reify_core::Type) -> bool {
         | Type::Frame(_)
         | Type::Transform(_)
         | Type::AffineMap(_) // task 3958 / α: Value::AffineMap now exists
+        | Type::Selector(_) // task 4116 / α: Value::Selector now exists
         | Type::Range(_)
         | Type::Plane
         | Type::Axis

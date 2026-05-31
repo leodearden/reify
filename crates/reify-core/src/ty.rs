@@ -27,6 +27,47 @@
 
 use crate::dimension::DimensionVector;
 
+/// Identifies which geometry entity kind a selector targets.
+///
+/// Used by [`Type::Selector`] and [`crate::value::SelectorValue`] to enforce
+/// kind-closure at the constructor boundary (K1 invariant, PRD §4.3).
+///
+/// Dimensionality mapping (D2/§4.1): Face=2, Edge=1, Body=3.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SelectorKind {
+    /// Selects 2-manifold faces (dimensionality = 2).
+    Face,
+    /// Selects 1-manifold edges (dimensionality = 1).
+    Edge,
+    /// Selects volumetric bodies (dimensionality = 3).
+    Body,
+}
+
+impl SelectorKind {
+    /// Topological dimensionality of the selected entity kind.
+    ///
+    /// - `Face` → 2 (2-manifold surface)
+    /// - `Edge` → 1 (1-manifold curve)
+    /// - `Body` → 3 (volumetric solid)
+    pub fn dimensionality(&self) -> usize {
+        match self {
+            SelectorKind::Face => 2,
+            SelectorKind::Edge => 1,
+            SelectorKind::Body => 3,
+        }
+    }
+}
+
+impl std::fmt::Display for SelectorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SelectorKind::Face => write!(f, "FaceSelector"),
+            SelectorKind::Edge => write!(f, "EdgeSelector"),
+            SelectorKind::Body => write!(f, "BodySelector"),
+        }
+    }
+}
+
 /// Types in the Reify type system (M1 subset).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
@@ -134,6 +175,16 @@ pub enum Type {
     /// result type; consumer sites (binary operators, index access, member
     /// access, quantifiers, etc.) guard on `is_error()` and short-circuit.
     Error,
+    /// Topology selector: a first-class value that identifies a subset of
+    /// geometry entities of a given kind (face, edge, or body).
+    ///
+    /// The `SelectorKind` parameter encodes which entity dimension the selector
+    /// targets, enforcing kind-closure at the constructor boundary (K1 invariant,
+    /// PRD §4.3). All operations on a selector (union, intersect, difference)
+    /// must produce a result of the same kind.
+    ///
+    /// Introduced in task 4116 α.
+    Selector(SelectorKind),
     /// Compile-time-only union of mutually-exclusive arm types from a
     /// `match`-block decl cluster (PRD `match-block-decls.md` §6.4).
     ///
@@ -257,6 +308,11 @@ impl Type {
     /// Shorthand for a 3D bounding box type.
     pub fn bounding_box() -> Self {
         Type::BoundingBox
+    }
+
+    /// Shorthand for a topology selector type of the given kind.
+    pub fn selector(kind: SelectorKind) -> Self {
+        Type::Selector(kind)
     }
 
     /// Shorthand for an m×n matrix with a given quantity type.
@@ -390,6 +446,7 @@ impl std::fmt::Display for Type {
             Type::Axis => write!(f, "Axis"),
             Type::BoundingBox => write!(f, "BoundingBox"),
             Type::Matrix { m, n, quantity } => write!(f, "Matrix{}x{}<{}>", m, n, quantity),
+            Type::Selector(kind) => write!(f, "{}", kind),
             Type::Error => write!(f, "<error>"),
             Type::Union(arms) => write!(
                 f,
