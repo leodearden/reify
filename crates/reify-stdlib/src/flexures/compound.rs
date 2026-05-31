@@ -212,10 +212,11 @@ fn parse_cartwheel_inputs(args: &[Value]) -> Option<CartwheelInputs<'_>> {
     if args.len() != 7 && args.len() != 8 {
         return None;
     }
-    // Loose blade_count extraction (strict guards added in step-6).
+    // Strict blade_count: Int ≥ 1, or a whole finite Real ≥ 1.
+    // Mirrors parse_let_inputs n_blades arm (hinge.rs).
     let blade_count = match &args[0] {
-        Value::Int(n) => *n as f64,
-        Value::Real(r) if r.is_finite() => *r,
+        Value::Int(n) if *n >= 1 => *n as f64,
+        Value::Real(r) if r.is_finite() && *r >= 1.0 && r.fract() == 0.0 => *r,
         _ => return None,
     };
     let length = length_si(&args[1])?;
