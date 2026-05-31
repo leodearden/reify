@@ -17,7 +17,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use reify_ast::QuantifierKind;
-use reify_core::{Diagnostic, DimensionVector, FIELD_ENTITY_PREFIX, Type, ValueCellId};
+use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, FIELD_ENTITY_PREFIX, Type, ValueCellId};
 use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyPredicateKind, DeterminacyState, FieldSourceKind, PersistentMap, SelectorKind, StructureInstanceData, StructureTypeId, UnOp, Value, ValueMap, quaternion_is_finite};
 
 /// Maximum recursion depth for user-defined function calls.
@@ -1416,6 +1416,17 @@ fn eval_solve_load_cases(args: &[Value], ctx: &EvalContext) -> Value {
     };
 
     if cases.is_empty() {
+        // task #10 (multi-load-case FEA): empty cases is a user error, not a
+        // silent Undef. Emit MultiLoadEmptyCases into the runtime sink (when
+        // present) and still return Undef.
+        if let Some(sink) = ctx.diagnostics {
+            sink.borrow_mut().push(
+                Diagnostic::error(
+                    "Multi-load case analysis requires at least one LoadCase. Use solve_elastic_static for single-case analysis.",
+                )
+                .with_code(DiagnosticCode::MultiLoadEmptyCases),
+            );
+        }
         return Value::Undef;
     }
 
