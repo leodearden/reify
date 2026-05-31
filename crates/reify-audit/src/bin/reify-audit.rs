@@ -986,9 +986,24 @@ mod tests {
     fn parse_args_pattern_trims_whitespace_around_tokens() {
         let args = parse_args(&["--pattern".to_string(), "P1, P2 , P5".to_string()])
             .expect("--pattern with spaces around commas must parse successfully");
+        let pattern = args
+            .pattern
+            .as_deref()
+            .expect("pattern must be Some; whitespace-padded comma list must be accepted");
+        // The real reason trimming matters: the whitespace-padded tokens must be
+        // selectable at the dispatch layer. Without trimming, " P2 " would not
+        // match "P2" and the detector would silently not run.
         assert!(
-            args.pattern.is_some(),
-            "pattern must be Some; whitespace-padded comma list must be accepted"
+            pattern_selects(pattern, "P1"),
+            "padded token P1 must be selectable; got stored pattern {pattern:?}"
+        );
+        assert!(
+            pattern_selects(pattern, "P2"),
+            "padded token ' P2 ' must trim and be selectable as P2; got stored pattern {pattern:?}"
+        );
+        assert!(
+            pattern_selects(pattern, "P5"),
+            "padded token P5 must be selectable; got stored pattern {pattern:?}"
         );
     }
 
@@ -1051,6 +1066,46 @@ mod tests {
         assert!(
             needs_jcodemunch(&make_args(false, Some("P2,PUNTESTED"))),
             "P2,PUNTESTED must need jcodemunch (PUNTESTED present)"
+        );
+    }
+
+    /// The opt-in detectors PDEAD/PUNTESTED must be enabled when their token
+    /// appears anywhere in a comma-separated `--pattern`, and stay off when
+    /// absent or when no `--pattern` is given (they are not part of the default
+    /// sweep). This directly exercises the `is_some_and(pattern_selects(..))`
+    /// routing that replaced the old `== Some("PDEAD")` exact-equality, which a
+    /// whole-string comparison would have broken for any multi-token list.
+    #[test]
+    fn opt_in_detectors_selected_via_comma_list() {
+        // PDEAD reached as a non-leading token in a comma list.
+        assert!(
+            run_pdead(&make_args(false, Some("P2,PDEAD"))),
+            "P2,PDEAD must enable PDEAD"
+        );
+        assert!(
+            !run_pdead(&make_args(false, Some("P2,P5"))),
+            "P2,P5 must not enable PDEAD (token absent)"
+        );
+        assert!(
+            !run_pdead(&make_args(false, None)),
+            "no --pattern must not enable PDEAD (opt-in only)"
+        );
+
+        // PUNTESTED reached as a non-leading token in a comma list.
+        assert!(
+            run_puntested(&make_args(false, Some("P2,PUNTESTED"))),
+            "P2,PUNTESTED must enable PUNTESTED"
+        );
+        assert!(
+            !run_puntested(&make_args(false, Some("P1,PDEAD"))),
+            "P1,PDEAD must not enable PUNTESTED (token absent)"
+        );
+
+        // A mixed opt-in list must enable BOTH opt-in detectors at once.
+        assert!(
+            run_pdead(&make_args(false, Some("PDEAD,PUNTESTED")))
+                && run_puntested(&make_args(false, Some("PDEAD,PUNTESTED"))),
+            "PDEAD,PUNTESTED must enable both opt-in detectors"
         );
     }
 }
