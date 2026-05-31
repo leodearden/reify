@@ -60,6 +60,9 @@ pub struct GridSpec {
 /// - Row-major ordering: axis-0 (x) outermost, axis-2 (z) innermost;
 ///   the `stride` components are contiguous per grid point.
 /// - Grid points outside all elements carry `f64::NAN` for all `stride` components.
+///
+/// Prefer [`resample_multi_nodal_to_grid`] when sampling two or more fields
+/// (displacement + stress) on the same geometry — it halves the point-location cost.
 pub fn resample_nodal_to_grid(
     nodes: &[[f64; 3]],
     elems: &[[usize; 4]],
@@ -145,6 +148,118 @@ pub fn resample_nodal_to_grid(
         data,
         oob_emitted: AtomicBool::new(false),
     }
+}
+
+/// Resample **multiple** nodal fields onto the same Regular3D grid in a single
+/// geometry pass.
+///
+/// Semantically equivalent to calling [`resample_nodal_to_grid`] once per entry
+/// in `fields`, but the containing-tet + barycentric-weight computation is done
+/// **once per grid point** instead of once per *(grid point × field)*.  For the
+/// buckling trampoline (~13 k grid points × 61 k tets × 2 fields) this halves
+/// the O(grid·elems) point-location cost — the dominant non-CG step.
+///
+/// # Arguments
+///
+/// - `fields`: slice of `(&[f64], usize, &str)` tuples — each is
+///   `(nodal_values, stride, name)` for one field.
+///   `nodal_values` must have length `n_nodes × stride`.
+///
+/// All fields share the same `nodes`, `elems`, `grid`, and `tol`.
+/// Returns one [`SampledField`] per input entry, in the same order.
+pub fn resample_multi_nodal_to_grid(
+    nodes: &[[f64; 3]],
+    elems: &[[usize; 4]],
+    fields: &[(&[f64], usize, &str)],
+    grid: &GridSpec,
+    tol: f64,
+) -> Vec<SampledField> {
+    let [nx, ny, nz] = grid.counts;
+    let sx = (grid.bounds_max[0] - grid.bounds_min[0]) / nx.max(1) as f64;
+    let sy = (grid.bounds_max[1] - grid.bounds_min[1]) / ny.max(1) as f64;
+    let sz = (grid.bounds_max[2] - grid.bounds_min[2]) / nz.max(1) as f64;
+    let spacing = vec![sx, sy, sz];
+
+    let axis_grids: Vec<Vec<f64>> = (0..3)
+        .map(|i| {
+            let sp = spacing[i];
+            reify_ir::sampled::linspace_inclusive(grid.bounds_min[i], grid.bounds_max[i], sp)
+                .expect("resample_multi_nodal_to_grid: linspace_inclusive failed — \
+                         check that bounds_min < bounds_max and counts > 0")
+        })
+        .collect();
+
+    let nx1 = axis_grids[0].len();
+    let ny1 = axis_grids[1].len();
+    let nz1 = axis_grids[2].len();
+    let n_grid = nx1 * ny1 * nz1;
+
+    // Pre-allocate one output buffer per field.
+    let mut data_bufs: Vec<Vec<f64>> = fields
+        .iter()
+        .map(|(_, stride, _)| Vec::with_capacity(n_grid * stride))
+        .collect();
+
+    // Single geometry pass: locate the containing tet once per grid point,
+    // then apply the barycentric weights to every field simultaneously.
+    for ix in 0..nx1 {
+        for iy in 0..ny1 {
+            for iz in 0..nz1 {
+                let p = [axis_grids[0][ix], axis_grids[1][iy], axis_grids[2][iz]];
+
+                let mut hit = false;
+                'elem_scan: for conn in elems {
+                    let phys4: [[f64; 3]; 4] = [
+                        nodes[conn[0]],
+                        nodes[conn[1]],
+                        nodes[conn[2]],
+                        nodes[conn[3]],
+                    ];
+                    let bary = barycentric_p1(&phys4, p);
+                    if bary.iter().all(|&b| b >= -tol && b <= 1.0 + tol) {
+                        // Grid point is inside this tet — interpolate every field.
+                        for (fi, (nodal_vals, stride, _)) in fields.iter().enumerate() {
+                            for c in 0..*stride {
+                                let val = bary[0] * nodal_vals[conn[0] * stride + c]
+                                    + bary[1] * nodal_vals[conn[1] * stride + c]
+                                    + bary[2] * nodal_vals[conn[2] * stride + c]
+                                    + bary[3] * nodal_vals[conn[3] * stride + c];
+                                data_bufs[fi].push(val);
+                            }
+                        }
+                        hit = true;
+                        break 'elem_scan;
+                    }
+                }
+
+                if !hit {
+                    // Out-of-solid sentinel: NaN for every stride component of every field.
+                    for (fi, (_, stride, _)) in fields.iter().enumerate() {
+                        for _ in 0..*stride {
+                            data_bufs[fi].push(f64::NAN);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Assemble one SampledField per input field, sharing the same grid metadata.
+    fields
+        .iter()
+        .zip(data_bufs)
+        .map(|((_, _, name), data)| SampledField {
+            name: name.to_string(),
+            kind: SampledGridKind::Regular3D,
+            bounds_min: grid.bounds_min.to_vec(),
+            bounds_max: grid.bounds_max.to_vec(),
+            spacing: spacing.clone(),
+            axis_grids: axis_grids.clone(),
+            interpolation: InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        })
+        .collect()
 }
 
 #[cfg(test)]

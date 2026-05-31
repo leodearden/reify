@@ -131,7 +131,7 @@ use reify_solver_elastic::{
     element_stiffness, element_stiffness_p1_with_field, element_stress_p1,
     recover_nodal_stress_p1, StressElement, tet_volume_p1,
     solve_cg_with_warm_state,
-    GridSpec, resample_nodal_to_grid,
+    GridSpec, resample_multi_nodal_to_grid,
 };
 
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
@@ -283,53 +283,29 @@ pub fn solve_elastic_static_trampoline(
         counts: [fea.nx, fea.ny, fea.nz],
     };
 
-    // Flatten nodal stress [[f64;3];3] → stride-9 row-major
-    // (σ_xx,σ_xy,σ_xz, σ_yx,σ_yy,σ_yz, σ_zx,σ_zy,σ_zz per node).
-    let nodal_stress_flat: Vec<f64> = fea
-        .nodal_stress
-        .iter()
-        .flat_map(|s| {
-            [
-                s[0][0], s[0][1], s[0][2],
-                s[1][0], s[1][1], s[1][2],
-                s[2][0], s[2][1], s[2][2],
-            ]
-        })
-        .collect();
+    // Flatten nodal stress [[f64;3];3] → stride-9 row-major.
+    // Layout: σ_xx,σ_xy,σ_xz, σ_yx,σ_yy,σ_yz, σ_zx,σ_zy,σ_zz per node.
+    let nodal_stress_flat = super::flatten_nodal_stress(&fea.nodal_stress);
 
-    let disp_sf = resample_nodal_to_grid(
+    // Single geometry pass: locate the containing tet once per grid point,
+    // then interpolate both displacement (stride 3) and stress (stride 9).
+    // This halves the O(grid·elems) point-location cost vs. two separate calls.
+    let mut sampled = resample_multi_nodal_to_grid(
         &fea.coords,
         &fea.tet_connectivity,
-        &fea.u,   // Arc<Vec<f64>> → &[f64] via Deref
-        3,
+        &[
+            (&fea.u, 3, "displacement"),   // Arc<Vec<f64>> → &[f64] via Deref
+            (&nodal_stress_flat, 9, "stress"),
+        ],
         &grid,
-        "displacement",
         1e-9,
     );
-    let stress_sf = resample_nodal_to_grid(
-        &fea.coords,
-        &fea.tet_connectivity,
-        &nodal_stress_flat,
-        9,
-        &grid,
-        "stress",
-        1e-9,
-    );
+    debug_assert_eq!(sampled.len(), 2, "expected 2 sampled fields (displacement + stress)");
+    let stress_sf = sampled.pop().unwrap();  // index 1
+    let disp_sf   = sampled.pop().unwrap();  // index 0
 
-    let disp_field = Value::Field {
-        domain_type:   reify_core::Type::point3(reify_core::Type::length()),
-        codomain_type: reify_core::Type::vec3(reify_core::Type::length()),
-        source: FieldSourceKind::Sampled,
-        lambda: Arc::new(Value::SampledField(disp_sf)),
-    };
-    let stress_field = Value::Field {
-        domain_type:   reify_core::Type::point3(reify_core::Type::length()),
-        codomain_type: reify_core::Type::tensor(2, 3, reify_core::Type::Scalar {
-            dimension: DimensionVector::PRESSURE,
-        }),
-        source: FieldSourceKind::Sampled,
-        lambda: Arc::new(Value::SampledField(stress_sf)),
-    };
+    let disp_field   = super::sampled_disp_field(disp_sf);
+    let stress_field = super::sampled_stress_field(stress_sf);
 
     let fields: PersistentMap<String, Value> = [
         ("displacement".to_string(),   disp_field),
@@ -1378,11 +1354,14 @@ mod tests {
             0.0,    0.0,    1e-4,
         ];
 
-        // element_stress_anisotropic (new fn — compile-fails until step-4)
+        // ── Part A: non-degeneracy guard (orthotropic fixture) ───────────────────
+        // Verifies that element_stress_anisotropic returns a non-zero, finite
+        // tensor for a non-trivial D matrix and displacement field.
+        // NOTE: the pre-α test compared this vM against element_von_mises_anisotropic,
+        // but after the step-4 refactor that function is a thin wrapper that calls
+        // element_stress_anisotropic internally — making the comparison tautological.
+        // Only the finite/positive guard remains meaningful here.
         let sigma = element_stress_anisotropic(&phys, &d_global, &u_e);
-
-        // vM from the 3×3 tensor:
-        //   vM = sqrt(½·[(σxx-σyy)²+(σyy-σzz)²+(σzz-σxx)²+6·(σxy²+σyz²+σzx²)])
         let (sxx, syy, szz) = (sigma[0][0], sigma[1][1], sigma[2][2]);
         let (sxy, syz, szx) = (sigma[0][1], sigma[1][2], sigma[0][2]);
         let vm_from_tensor = f64::sqrt(0.5 * (
@@ -1391,20 +1370,45 @@ mod tests {
             + (szz - sxx).powi(2)
             + 6.0 * (sxy * sxy + syz * syz + szx * szx)
         ));
-
-        let vm_scalar = element_von_mises_anisotropic(&phys, &d_global, &u_e);
-
         assert!(
             vm_from_tensor.is_finite() && vm_from_tensor > 0.0,
-            "vM from tensor must be finite and positive; got {vm_from_tensor}"
+            "vM from tensor must be finite and positive (orthotropic fixture); got {vm_from_tensor}"
         );
-        let tol = 1e-9 * vm_scalar.abs().max(1.0);
-        assert!(
-            (vm_from_tensor - vm_scalar).abs() < tol,
-            "element_stress_anisotropic vM {vm_from_tensor:.6e} differs from \
-             element_von_mises_anisotropic {vm_scalar:.6e} by {:.3e} > tol {tol:.3e}",
-            (vm_from_tensor - vm_scalar).abs(),
-        );
+
+        // ── Part B: isotropic oracle — element_stress_anisotropic vs element_stress_p1 ─
+        // For an isotropic D matrix, element_stress_anisotropic (6×6 D·ε path) and
+        // element_stress_p1 (independent implementation using Lamé parameters) must
+        // produce bit-identical 3×3 tensors.  This is a genuine inter-implementation
+        // consistency check — not a comparison of the same code path to itself.
+        let e_iso  = 200e9_f64;
+        let nu_iso = 0.3_f64;
+        let g_iso  = e_iso / (2.0 * (1.0 + nu_iso));
+        let iso_orth = OrthotropicMaterial {
+            e1: e_iso, e2: e_iso, e3: e_iso,
+            g12: g_iso, g13: g_iso, g23: g_iso,
+            nu12: nu_iso, nu13: nu_iso, nu23: nu_iso,
+        };
+        let iso_aniso  = AnisotropicMaterial::from_law(&iso_orth, identity);
+        let d_iso      = iso_aniso.d_matrix_global();
+        let iso_mat    = IsotropicElastic { youngs_modulus: e_iso, poisson_ratio: nu_iso };
+
+        let sigma_aniso = element_stress_anisotropic(&phys, &d_iso, &u_e);
+        let sigma_p1    = element_stress_p1(&phys, &iso_mat, &u_e);
+
+        for r in 0..3 {
+            for c in 0..3 {
+                let a   = sigma_aniso[r][c];
+                let b   = sigma_p1[r][c];
+                let tol = 1e-9 * b.abs().max(1.0);
+                assert!(
+                    (a - b).abs() <= tol,
+                    "isotropic oracle mismatch σ[{r}][{c}]: \
+                     element_stress_anisotropic={a:.6e}, element_stress_p1={b:.6e}, \
+                     diff={:.3e} > tol={tol:.3e}",
+                    (a - b).abs(),
+                );
+            }
+        }
     }
 
     /// Extended CantileverFeaSolve exposes tet_connectivity, nodal_stress, nx/ny/nz.

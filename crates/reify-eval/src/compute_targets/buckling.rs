@@ -79,16 +79,15 @@
 //! in .task/plan.json and the non-blocking escalate_info filed at task 3454.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use reify_core::DimensionVector;
-use reify_ir::{FieldSourceKind, OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_solver_elastic::{
     DirichletBc, IsotropicElastic,
     apply_point_load,
     BucklingKernelOptions, solve_buckling_kernel,
     recover_nodal_stress_p1, StressElement, tet_volume_p1,
-    GridSpec, resample_nodal_to_grid,
+    GridSpec, resample_multi_nodal_to_grid,
 };
 
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
@@ -318,52 +317,30 @@ pub fn solve_buckling_trampoline(
         .collect();
     let ps_nodal_stress = recover_nodal_stress_p1(n_nodes, &ps_stress_elements);
 
-    // Flatten nodal stress [[f64;3];3] → stride-9 row-major
-    // (σ_xx,σ_xy,σ_xz, σ_yx,σ_yy,σ_yz, σ_zx,σ_zy,σ_zz per node).
-    let ps_nodal_stress_flat: Vec<f64> = ps_nodal_stress
-        .iter()
-        .flat_map(|s| {
-            [
-                s[0][0], s[0][1], s[0][2],
-                s[1][0], s[1][1], s[1][2],
-                s[2][0], s[2][1], s[2][2],
-            ]
-        })
-        .collect();
+    // Flatten nodal stress [[f64;3];3] → stride-9 row-major.
+    // Layout: σ_xx,σ_xy,σ_xz, σ_yx,σ_yy,σ_yz, σ_zx,σ_zy,σ_zz per node.
+    let ps_nodal_stress_flat = super::flatten_nodal_stress(&ps_nodal_stress);
 
-    let ps_disp_sf = resample_nodal_to_grid(
+    // Single geometry pass: locate the containing tet once per grid point,
+    // then interpolate both displacement (stride 3) and stress (stride 9).
+    // This halves the O(grid·elems) point-location cost vs. two separate calls —
+    // important for buckling (~13k grid points × 61k tets).
+    let mut sampled = resample_multi_nodal_to_grid(
         &nodes,
         &tets,
-        &kernel_result.pre_stress_displacement,
-        3,
+        &[
+            (&kernel_result.pre_stress_displacement, 3, "displacement"),
+            (&ps_nodal_stress_flat, 9, "stress"),
+        ],
         &pre_stress_grid,
-        "displacement",
         1e-9,
     );
-    let ps_stress_sf = resample_nodal_to_grid(
-        &nodes,
-        &tets,
-        &ps_nodal_stress_flat,
-        9,
-        &pre_stress_grid,
-        "stress",
-        1e-9,
-    );
+    debug_assert_eq!(sampled.len(), 2, "expected 2 sampled fields (displacement + stress)");
+    let ps_stress_sf = sampled.pop().unwrap();  // index 1
+    let ps_disp_sf   = sampled.pop().unwrap();  // index 0
 
-    let ps_disp_field = Value::Field {
-        domain_type:   reify_core::Type::point3(reify_core::Type::length()),
-        codomain_type: reify_core::Type::vec3(reify_core::Type::length()),
-        source: FieldSourceKind::Sampled,
-        lambda: Arc::new(Value::SampledField(ps_disp_sf)),
-    };
-    let ps_stress_field = Value::Field {
-        domain_type:   reify_core::Type::point3(reify_core::Type::length()),
-        codomain_type: reify_core::Type::tensor(2, 3, reify_core::Type::Scalar {
-            dimension: DimensionVector::PRESSURE,
-        }),
-        source: FieldSourceKind::Sampled,
-        lambda: Arc::new(Value::SampledField(ps_stress_sf)),
-    };
+    let ps_disp_field   = super::sampled_disp_field(ps_disp_sf);
+    let ps_stress_field = super::sampled_stress_field(ps_stress_sf);
 
     // ── (10) Build pre_stress ElasticResult StructureInstance ─────────────────
     let pre_stress_fields: PersistentMap<String, Value> = [
