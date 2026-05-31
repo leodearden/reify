@@ -24,6 +24,39 @@
 //! which short-circuits re-dispatch when all inputs AND the output VC are
 //! already `Freshness::Final` from a prior `Engine::eval()` call.
 //!
+//! # Field-population contract for `pre_stress` (task 4084/α)
+//!
+//! The `pre_stress` field of the returned `BucklingResult` is an `ElasticResult`-shaped
+//! `StructureInstance` with the following fields populated:
+//!
+//! - **`displacement`** — `Value::Field{source:Sampled, domain:point3<Length>,
+//!   codomain:vec3<Length>}` backed by `SampledField{kind:Regular3D}`.
+//!   `data.len() == grid_count × 3`; row-major x-outer/z-inner, 3 displacement
+//!   components (dx, dy, dz) contiguous per grid point.  Interior grid points of
+//!   the column solid have finite values; `f64::NAN` is the out-of-solid sentinel.
+//!
+//! - **`stress`** — `Value::Field{source:Sampled, domain:point3<Length>,
+//!   codomain:tensor(2,3,Pressure)}` backed by `SampledField{kind:Regular3D}`.
+//!   `data.len() == grid_count × 9`; row-major x-outer/z-inner,
+//!   components `σ_xx,σ_xy,σ_xz, σ_yx,σ_yy,σ_yz, σ_zx,σ_zy,σ_zz` per grid point.
+//!   Out-of-solid points carry `f64::NAN × 9`.
+//!
+//! - **`frame`** — `Value::Undef` (tet/solid, global Cartesian frame).
+//!
+//! - **`max_von_mises`** — `Value::Scalar{PRESSURE}` (element-max, unchanged by α).
+//!
+//! ## Grid-resolution rule
+//!
+//! Grid counts = solve-mesh element counts `(nx, ny, nz)` where `nx=ny=8` and
+//! `nz = round(lz / cross_elem_size)`.  Grid spans `[0,lx] × [0,ly] × [0,lz]`.
+//! `spacing[i] = (max[i] - min[i]) / counts[i]`.  For a fixed geometry, two
+//! `eval()` calls produce bit-identical grid metadata (`grids_equal` holds).
+//!
+//! ## Determinism
+//!
+//! Row-major index loops only; no `HashMap`, `Date`, or `random`.  The §8-η
+//! Final-gate preserves `DISPATCH_COUNT==1` across successive `eval()` calls.
+//!
 //! # StructureTypeId sentinel
 //!
 //! The trampoline carries no `StructureRegistry` access. All StructureInstances

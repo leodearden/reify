@@ -67,6 +67,49 @@
 //! The trampoline signature carries no `StructureRegistry` access. The returned
 //! `ElasticResult` StructureInstance uses `StructureTypeId(u32::MAX)` as a
 //! synthetic sentinel.
+//! # Field-population contract (task 4084/α)
+//!
+//! The returned `ElasticResult` StructureInstance populates the following fields:
+//!
+//! - **`displacement`** — `Value::Field{source:Sampled, domain:point3<Length>,
+//!   codomain:vec3<Length>}` backed by a `SampledField{kind:Regular3D}`.
+//!   `data.len() == grid_count × 3`; layout is row-major x-outer/z-inner, with
+//!   the 3 displacement components (dx, dy, dz) stored contiguously per grid point.
+//!   Every grid point lies inside the solid (prismatic box), so all samples are finite
+//!   (no NaN sentinels for the cantilever geometry).
+//!
+//! - **`stress`** — `Value::Field{source:Sampled, domain:point3<Length>,
+//!   codomain:tensor(2,3,Pressure)}` backed by a `SampledField{kind:Regular3D}`.
+//!   `data.len() == grid_count × 9`; layout is row-major x-outer/z-inner, with
+//!   the 9 stress components (σ_xx,σ_xy,σ_xz, σ_yx,σ_yy,σ_yz, σ_zx,σ_zy,σ_zz)
+//!   stored contiguously per grid point.  Out-of-solid grid points carry `f64::NAN`
+//!   for all 9 components (the PRD §3 outside-solid sentinel).
+//!
+//! - **`frame`** — `Value::Undef` (tet/solid: stress is in the global Cartesian
+//!   frame; no per-element local frame to report).
+//!
+//! - **`shell_channels`** — `Value::Undef` (solid elements have no through-thickness
+//!   top/mid/bottom channels; task #4067/δ populates this on the shell path).
+//!
+//! - **`max_von_mises`** — `Value::Scalar{dimension:PRESSURE}` holding the
+//!   ELEMENT-MAX von Mises (unchanged by α; loop over per-element stresses).
+//!
+//! ## Grid-resolution rule
+//!
+//! Grid counts = solve-mesh element counts `(nx, ny, nz)`, so grid nodes = `(nx+1, ny+1, nz+1)`.
+//! Grid spans body bounds `[0,length] × [0,width] × [0,height]`.
+//! `spacing[i] = (bounds_max[i] - bounds_min[i]) / counts[i]`; `axis_grids` built via
+//! `linspace_inclusive`.  For a fixed `(geometry, element_order, mesh_size)`, two
+//! `engine.eval()` calls produce bit-identical `bounds_min/max/spacing/axis_grids`
+//! (`grids_equal` holds), which is required by `envelope_*/linear_combine` (β/ζ/η).
+//!
+//! ## Determinism
+//!
+//! Field construction uses row-major index loops only (no `HashMap` iteration, no
+//! `Date`/`random`).  The §8-η Final-gate (engine_eval.rs) preserves `DISPATCH_COUNT==1`
+//! across successive `eval()` calls on the same module (the gate keys on
+//! `Freshness::Final` state, independent of output value shape).
+//!
 //! TODO: thread `StructureRegistry` through the trampoline signature (tracked
 //! as a future refinement) once ComputeFn/ComputeOutcome are moved into reify-ir.
 
