@@ -195,6 +195,54 @@ pub(crate) fn check_trait_arg_conformance(
     walk_param_against_arg(&cell.cell_type, compiled_arg, &mut ctx);
 }
 
+/// Verify that a compiled function-call argument conforms to a declared function
+/// parameter type when that type is `Type::TraitObject(trait_name)` or a wrapper
+/// thereof (`Type::Option(...)`, `Type::List(...)`, `Type::Set(...)`,
+/// `Type::Map(...)`).
+///
+/// This is the function-call analogue of [`check_trait_arg_conformance`]:
+/// whereas that entry point looks the callee up in the structure
+/// `template_registry` and reads the param type from a `ValueCellDecl`, this
+/// entry point receives the param type directly (from `CompiledFunction.params`)
+/// and delegates to the same shared recursive walker `walk_param_against_arg` —
+/// inheriting wrapper recursion, StructureRef bound-walking, TraitObject
+/// refinement, geometry-trait handling, and Type::Error anti-cascade unchanged.
+///
+/// The `arg_name` is used as the diagnostic's param label, matching reify's
+/// keyword-arg == param-name convention used by the structure path.
+///
+/// # Anti-cascade
+///
+/// If `compiled_arg.result_type == Type::Error` the call returns immediately
+/// without emitting any diagnostic — the root-cause diagnostic was already
+/// emitted by the expression that produced the error.
+///
+/// See task-4081 design decision §3 for rationale.
+pub(crate) fn check_fn_arg_conformance(
+    param_type: &Type,
+    arg_name: &str,
+    compiled_arg: &CompiledExpr,
+    span: SourceSpan,
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // Anti-cascade: if the arg itself had a compilation error, skip.
+    if matches!(compiled_arg.result_type, Type::Error) {
+        return;
+    }
+
+    // Recursively walk the param type against the compiled arg.
+    let mut ctx = WalkCtx {
+        arg_name,
+        span,
+        templates: template_registry,
+        traits: trait_registry,
+        diagnostics,
+    };
+    walk_param_against_arg(param_type, compiled_arg, &mut ctx);
+}
+
 /// Context bundle threaded through the four recursive walker helpers.
 ///
 /// Collects the five fields that were previously repeated as trailing arguments
