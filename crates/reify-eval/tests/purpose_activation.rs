@@ -2014,3 +2014,133 @@ fn activate_with_bindings_single_param_keeps_entity_prefix() {
         "single-binding activation must use '@{{entity}}' (C6 parity, no digest)"
     );
 }
+
+// ── §11: Purpose let-binding injection + constraint satisfaction (task 4009 δ) ─
+//
+// `activate_purpose` must inject a synthetic let-cell `__let_<name>` into the
+// evaluation graph, evaluate it against the bound entity's values, and seed the
+// result into `snapshot.values`.  `check_constraints_with_values` must then
+// overlay those injected let-cell values onto the incoming `values` map before
+// dispatching constraints, so that a constraint expression like `m > 0mm`
+// (where `m` is a let binding) can resolve `m` to its computed value.
+//
+// B3: let evaluates, constraint reads evaluated value → Satisfied / Violated.
+// B6/C4: covered in §12 (deactivate restores byte-identity).
+
+/// B3 (Satisfied) — `let m = subject.a - subject.b; constraint m > 0mm`
+/// with `a=80mm, b=50mm` → `m=30mm > 0mm` → Satisfied.
+///
+/// RED because `activate_purpose` does not yet inject/evaluate let cells and
+/// `check_constraints_with_values` does not yet overlay their values.
+#[test]
+fn let_binding_injected_cell_evaluates_and_feeds_constraint_satisfied() {
+    let source = r#"
+structure Bracket {
+    param a : Length = 80mm
+    param b : Length = 50mm
+}
+
+purpose marg(subject : Structure) {
+    let m = subject.a - subject.b
+    constraint m > 0mm
+}
+"#;
+    let compiled = parse_and_compile(source);
+    assert!(
+        compiled
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != Severity::Error),
+        "fixture must compile without errors: {:?}",
+        compiled.diagnostics
+    );
+
+    let mut engine = make_simple_engine();
+    let eval_result = engine.eval(&compiled);
+    engine.activate_purpose("marg", "Bracket");
+
+    let (constraint_results, _) = engine
+        .check_constraints_with_values(&eval_result.values)
+        .expect("check_constraints_with_values must not error");
+
+    let purpose_result = constraint_results
+        .iter()
+        .find(|e| e.id.entity.starts_with("purpose:marg@Bracket"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected injected constraint with entity prefix 'purpose:marg@Bracket'; \
+                 found: {:?}",
+                constraint_results.iter().map(|e| &e.id).collect::<Vec<_>>()
+            )
+        });
+
+    assert_eq!(
+        purpose_result.satisfaction,
+        reify_ir::Satisfaction::Satisfied,
+        "let m = 80mm - 50mm = 30mm; 30mm > 0mm → purpose constraint must be Satisfied"
+    );
+
+    // Also verify the injected let-cell is present in the graph.
+    let snapshot = engine.snapshot().expect("snapshot must exist after activation");
+    let let_cell_found = snapshot
+        .graph
+        .value_cells
+        .iter()
+        .any(|(id, _)| id.entity.starts_with("purpose:marg@Bracket") && id.member == "__let_m");
+    assert!(
+        let_cell_found,
+        "expected an injected value cell with entity prefix 'purpose:marg@Bracket' \
+         and member '__let_m' in graph.value_cells after activation"
+    );
+}
+
+/// B3 (Violated) — `let m = subject.a - subject.b; constraint m > 0mm`
+/// with `a=50mm, b=80mm` → `m=-30mm > 0mm` is false → Violated.
+#[test]
+fn let_binding_injected_cell_evaluates_and_feeds_constraint_violated() {
+    let source = r#"
+structure Bracket {
+    param a : Length = 50mm
+    param b : Length = 80mm
+}
+
+purpose marg(subject : Structure) {
+    let m = subject.a - subject.b
+    constraint m > 0mm
+}
+"#;
+    let compiled = parse_and_compile(source);
+    assert!(
+        compiled
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != Severity::Error),
+        "fixture must compile without errors: {:?}",
+        compiled.diagnostics
+    );
+
+    let mut engine = make_simple_engine();
+    let eval_result = engine.eval(&compiled);
+    engine.activate_purpose("marg", "Bracket");
+
+    let (constraint_results, _) = engine
+        .check_constraints_with_values(&eval_result.values)
+        .expect("check_constraints_with_values must not error");
+
+    let purpose_result = constraint_results
+        .iter()
+        .find(|e| e.id.entity.starts_with("purpose:marg@Bracket"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected injected constraint with entity prefix 'purpose:marg@Bracket'; \
+                 found: {:?}",
+                constraint_results.iter().map(|e| &e.id).collect::<Vec<_>>()
+            )
+        });
+
+    assert_eq!(
+        purpose_result.satisfaction,
+        reify_ir::Satisfaction::Violated,
+        "let m = 50mm - 80mm = -30mm; -30mm > 0mm is false → purpose constraint must be Violated"
+    );
+}
