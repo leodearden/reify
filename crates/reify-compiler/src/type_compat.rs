@@ -283,11 +283,40 @@ pub(crate) enum OverloadResolution<'a> {
     Ambiguous(Vec<&'a CompiledFunction>),
 }
 
+/// Returns `true` when `t` is, or recursively wraps, a `Type::TraitObject`.
+///
+/// Covers bare `TraitObject(name)` and the four generic wrappers
+/// `Option<T>`, `List<T>`, `Set<T>`, and `Map<K,V>`.  A `Map<TraitObject, V>`
+/// or `Map<K, TraitObject>` is also trait-carrying because both positions
+/// participate in conformance checking.
+///
+/// Used by `resolve_function_overload` to make trait-carrying params act as
+/// resolution wildcards (match any arg type), while concrete params keep
+/// exact-equality semantics.  Eval-builtins (bind/sweep/dim) have no `.ri`
+/// signature → their `named` vec is empty → `NoUserFunctions` arm → unaffected.
+pub(crate) fn type_carries_trait_object(t: &Type) -> bool {
+    match t {
+        Type::TraitObject(_) => true,
+        Type::Option(inner) => type_carries_trait_object(inner),
+        Type::List(inner) => type_carries_trait_object(inner),
+        Type::Set(inner) => type_carries_trait_object(inner),
+        Type::Map(key, val) => type_carries_trait_object(key) || type_carries_trait_object(val),
+        _ => false,
+    }
+}
+
 /// Resolve a function call against the list of compiled user functions.
 ///
-/// Uses **exact** type matching (param_ty == arg_ty). Int→Real widening is
-/// NOT applied during overload resolution so that `f(Int)` and `f(Real)` are
-/// treated as distinct overloads.
+/// Uses **exact** type matching for concrete params; trait-object-carrying params
+/// (`type_carries_trait_object`) act as resolution wildcards and match any arg
+/// type.  Int→Real widening is NOT applied during overload resolution so that
+/// `f(Int)` and `f(Real)` are treated as distinct overloads.
+///
+/// When both a concrete and a trait-object overload would match (the wildcard
+/// relaxation makes the trait param accept a concrete arg), exact full-equality
+/// matches win: the wildcard matches are discarded before Resolved/Ambiguous
+/// classification so a concrete arg resolves to its concrete overload rather
+/// than being reported as ambiguous.
 pub(crate) fn resolve_function_overload<'a>(
     name: &str,
     arg_types: &[Type],
@@ -300,7 +329,11 @@ pub(crate) fn resolve_function_overload<'a>(
         return OverloadResolution::NoUserFunctions;
     }
 
-    // Among named functions, filter by arity and exact param types.
+    // Among named functions, filter by arity and param-type compatibility.
+    // Trait-carrying params are resolution wildcards; concrete params keep
+    // exact equality.  This mirrors the structure-instantiation path where
+    // named-arg binding is not type-gated and conformance is validated
+    // separately (see task-4081 design decision §1).
     let matches: Vec<&CompiledFunction> = named
         .iter()
         .copied()
@@ -309,14 +342,41 @@ pub(crate) fn resolve_function_overload<'a>(
                 && f.params
                     .iter()
                     .zip(arg_types.iter())
-                    .all(|((_, param_ty), arg_ty)| param_ty == arg_ty)
+                    .all(|((_, param_ty), arg_ty)| {
+                        type_carries_trait_object(param_ty) || param_ty == arg_ty
+                    })
         })
         .collect();
 
-    match matches.len() {
-        1 => OverloadResolution::Resolved(matches[0]),
+    // Tie-break: prefer candidates that match ALL params by *exact* equality
+    // (no wildcard relaxation) over trait-carrying wildcard matches. Without
+    // this, a function with both a trait-object overload and a concrete
+    // overload — e.g. `couple(DrivingJoint)` + `couple(Real)` — would treat a
+    // concrete arg like `couple(2.0)` as matching BOTH (the trait param acts as
+    // a wildcard), yielding a spurious `Ambiguous` on previously-valid code.
+    // When at least one exact match exists, the wildcard matches are discarded
+    // before classification. (task-4081 overload-resolution regression fix.)
+    let exact_matches: Vec<&CompiledFunction> = matches
+        .iter()
+        .copied()
+        .filter(|f| {
+            f.params
+                .iter()
+                .zip(arg_types.iter())
+                .all(|((_, param_ty), arg_ty)| param_ty == arg_ty)
+        })
+        .collect();
+
+    let resolved = if exact_matches.is_empty() {
+        matches
+    } else {
+        exact_matches
+    };
+
+    match resolved.len() {
+        1 => OverloadResolution::Resolved(resolved[0]),
         0 => OverloadResolution::NoMatch(named),
-        _ => OverloadResolution::Ambiguous(matches),
+        _ => OverloadResolution::Ambiguous(resolved),
     }
 }
 
@@ -601,6 +661,104 @@ mod tests {
     //! Renamed from `infer_binop_type_error_tests` per amendment-round-2 S5
     //! to match the codebase-standard `mod tests` convention.
     use super::*;
+
+    // ── task-4081: resolve_function_overload trait-param wildcard ────────────
+
+    /// Helper: build a minimal stub body returning Real(0.0).
+    fn stub_body() -> CompiledFnBody {
+        CompiledFnBody {
+            let_bindings: vec![],
+            result_expr: CompiledExpr::literal(Value::Real(0.0), Type::Real),
+        }
+    }
+
+    /// Build a minimal `CompiledFunction` with the given name and params.
+    fn make_fn(name: &str, params: Vec<(&str, Type)>) -> CompiledFunction {
+        let params: Vec<(String, Type)> = params
+            .into_iter()
+            .map(|(n, t)| (n.to_string(), t))
+            .collect();
+        let param_defaults = CompiledFunction::no_defaults_for(&params);
+        CompiledFunction {
+            name: name.to_string(),
+            doc: None,
+            is_pub: false,
+            params,
+            param_defaults,
+            return_type: Type::Real,
+            body: stub_body(),
+            content_hash: ContentHash::of_str(name),
+            annotations: vec![],
+            optimized_target: None,
+        }
+    }
+
+    /// (a) A single TraitObject param matches any arg type (StructureRef).
+    /// RED until step-2: current exact-match makes this NoMatch.
+    #[test]
+    fn overload_trait_param_matches_any_structure_ref_arg() {
+        let fns = vec![make_fn("f", vec![("j", Type::TraitObject("DrivingJoint".to_string()))])];
+        let result = resolve_function_overload("f", &[Type::StructureRef("X".to_string())], &fns);
+        assert!(
+            matches!(result, OverloadResolution::Resolved(_)),
+            "trait-object param should resolve against any StructureRef arg"
+        );
+    }
+
+    /// (a2) A single TraitObject param also matches a different TraitObject arg.
+    /// RED until step-2.
+    #[test]
+    fn overload_trait_param_matches_any_trait_object_arg() {
+        let fns = vec![make_fn("f", vec![("j", Type::TraitObject("DrivingJoint".to_string()))])];
+        let result =
+            resolve_function_overload("f", &[Type::TraitObject("Other".to_string())], &fns);
+        assert!(
+            matches!(result, OverloadResolution::Resolved(_)),
+            "trait-object param should resolve against any TraitObject arg"
+        );
+    }
+
+    /// (b) Mixed fn: trait param is a wildcard, concrete param keeps exact equality.
+    /// `fn g(j: TraitObject("DrivingJoint"), k: Real)` — calling with (X, Int)
+    /// must NOT resolve because the concrete Real param doesn't accept Int.
+    /// RED until step-2 (currently both params fail exact-equality, same result).
+    #[test]
+    fn overload_mixed_fn_concrete_param_still_requires_exact_type() {
+        let fns = vec![make_fn(
+            "g",
+            vec![
+                ("j", Type::TraitObject("DrivingJoint".to_string())),
+                ("k", Type::Real),
+            ],
+        )];
+        // arg k is Int, not Real → no match
+        let result = resolve_function_overload(
+            "g",
+            &[Type::StructureRef("X".to_string()), Type::Int],
+            &fns,
+        );
+        assert!(
+            matches!(result, OverloadResolution::NoMatch(_)),
+            "concrete Real param must not accept Int; expected NoMatch"
+        );
+    }
+
+    /// (c) Baseline all-concrete fn is unchanged: Real matches, Int does not.
+    /// Must hold both before and after step-2 (no regression).
+    #[test]
+    fn overload_all_concrete_fn_unchanged() {
+        let fns = vec![make_fn("h", vec![("x", Type::Real)])];
+        let resolved = resolve_function_overload("h", &[Type::Real], &fns);
+        assert!(
+            matches!(resolved, OverloadResolution::Resolved(_)),
+            "h(Real) should resolve on Real arg"
+        );
+        let no_match = resolve_function_overload("h", &[Type::Int], &fns);
+        assert!(
+            matches!(no_match, OverloadResolution::NoMatch(_)),
+            "h(Real) should not resolve on Int arg"
+        );
+    }
 
     // --- format_dimension_mismatch_diagnostic tests (step-5) ---
 

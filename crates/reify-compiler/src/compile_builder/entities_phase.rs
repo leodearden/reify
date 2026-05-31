@@ -24,14 +24,15 @@
 use std::collections::{HashMap, HashSet};
 
 use reify_ast::ParsedModule;
-use reify_core::{Diagnostic, DiagnosticLabel};
-use reify_ir::{CompiledFunction, EnumDef};
+use reify_core::{Diagnostic, DiagnosticLabel, SourceSpan, Type};
+use reify_ir::{CompiledExpr, CompiledExprKind, CompiledFunction, EnumDef, OptimizationObjective};
 
 use crate::CompiledModule;
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::compile_builder::defs_phase::build_constraint_def_registry;
 use crate::compile_builder::traits_phase::build_trait_registry;
-use crate::conformance::check_trait_arg_conformance;
+use crate::conformance::{check_fn_arg_conformance, check_trait_arg_conformance};
+use crate::type_compat::{type_carries_trait_object, resolve_function_overload, OverloadResolution};
 use crate::entity::{
     AutoResolutionRequest, EntityDefRef, PendingBoundCheck, PendingSubOverrideAuto,
     check_type_param_bounds, compile_entity,
@@ -39,8 +40,8 @@ use crate::entity::{
 use crate::type_resolution::TypeAliasRegistry;
 use reify_core::ValueCellId;
 use crate::types::{
-    CompiledConstraintDef, CompiledField, CompiledImport, CompiledTrait, EntityKind,
-    TopologyTemplate, ValueCellDecl, ValueCellKind, Visibility,
+    CompiledConstraintDef, CompiledField, CompiledForallBody, CompiledGeometryOp, CompiledImport,
+    CompiledTrait, EntityKind, TopologyTemplate, ValueCellDecl, ValueCellKind, Visibility,
 };
 use crate::units::UnitRegistry;
 
@@ -463,6 +464,374 @@ pub(crate) fn phase_sub_override_autos(ctx: &mut CompilationCtx, prelude: &[&Com
                 // Auto sub-override cells are never aux declarations.
                 is_aux: false,
             });
+        }
+    }
+}
+
+/// Post-compilation pass: walk compiled IR looking for `UserFunctionCall` nodes
+/// whose function has trait-object params, and validate each arg against its
+/// declared param type via `check_fn_arg_conformance`.
+///
+/// ## Registry composition
+///
+/// Rebuilds `template_registry` and `trait_registry` using the same
+/// prelude-then-local composition as `phase_pending_bound_checks` so the
+/// conformance walker sees the same templates as the structure path does.
+///
+/// ## Scope coverage
+///
+/// Covers ALL `CompiledExpr`-bearing fields of every entity template — value-cell
+/// `default_expr`s, `constraints[*].expr`, `objective`,
+/// `realizations[*].operations[*]` geometry-op args, `ports[*]`
+/// members/constraints/frame_expr, `guarded_groups[*]`
+/// guard/members/constraints/else_*, `match_arm_groups[*]` arm guards,
+/// `sub_components[*]` args/pose, and `forall_templates[*]` bodies (enumerated by
+/// [`for_each_template_root_expr`]) — plus free-function bodies (`ctx.functions`:
+/// param_defaults + let-bindings + result_expr) and associated-function bodies
+/// (`ctx.templates[*].assoc_fns[*].function`, trait-default-injected or
+/// structure-override: param_defaults + let-bindings + result_expr).
+///
+/// This breadth deliberately matches the GLOBAL step-2 resolution relaxation:
+/// because a trait-carrying param acts as a resolution wildcard at EVERY call
+/// site, a non-conforming call must be diagnosed wherever it can appear, else the
+/// previously-existing "no matching overload" hard error is silently lost (a
+/// soundness regression). See task-4081 design decision §6.
+///
+/// Residual (documented, no silent cap): `connections` carry only
+/// `ConstraintNodeId` references + string `port_mappings` (no inline
+/// `CompiledExpr` to walk), and `compiled_purposes` are compiled AFTER this pass
+/// (lib.rs:382) — matching the existing structure-conformance baseline, which
+/// also runs before purposes.
+///
+/// ## Eval-builtin protection
+///
+/// Eval-builtins (bind/sweep/dim) have no `.ri` user-function signature, so
+/// their calls lower to `CompiledExprKind::FunctionCall` (not `UserFunctionCall`).
+/// For any remaining `UserFunctionCall`, we re-resolve the overload via
+/// `resolve_function_overload`; eval-builtins are absent from
+/// `ctx.resolution_functions` and produce `NoUserFunctions`, which is skipped.
+/// Calls that already produced `NoMatch` or `Ambiguous` at the original call
+/// site are also skipped here (they carry their own diagnostics).
+///
+/// ## Overload disambiguation (task-4081 design decision §5)
+///
+/// `resolution_functions` is a flat `Vec` that can contain multiple same-name
+/// overloads.  Collecting it into a `name → &CompiledFunction` HashMap would
+/// collapse overloads to the last-inserted entry, so conformance could target
+/// the wrong signature (e.g. `couple(DrivingJoint)` + `couple(Real)` → only
+/// `couple(Real)` checked → non-conformance silently missed).  Instead we
+/// re-resolve each call via `resolve_function_overload` using the args'
+/// `result_type`s, which reproduces exactly the overload selected at the
+/// original call site.
+///
+/// ## Diagnostic spans
+///
+/// Template-rooted diagnostics carry a representative span from the enclosing
+/// field / realization / sub-component (threaded through
+/// [`for_each_template_root_expr`]). Function-body diagnostics (param defaults,
+/// `let`-bindings, `result_expr`), however, use `SourceSpan::empty(0)`: neither
+/// `CompiledFunction` nor `CompiledFnBody` records per-binding spans, and
+/// `CompiledExpr` nodes carry no span of their own. A non-conforming call inside a
+/// function body therefore reports without a precise source location. This is a
+/// documented (not silent) gap; threading body spans is deferred until the IR
+/// records them (esc-4081 amend, reviewer_comprehensive diagnostics_quality).
+///
+/// ## Performance
+///
+/// Each `UserFunctionCall` node clones its args' `result_type`s into a fresh
+/// `Vec<Type>` and calls `resolve_function_overload`, which linearly scans the
+/// whole `resolution_functions` table — i.e. O(calls × functions) with a per-call
+/// allocation. This is fine for typical modules. A `name → Vec<&CompiledFunction>`
+/// index (built once, preserving all overloads — unlike the rejected collapsing
+/// HashMap of design decision §5) would avoid the full-table scan, but
+/// `resolve_function_overload` filters by name on a `&[CompiledFunction]` slice, so
+/// an index would require changing that shared signature; deferred pending
+/// profiling that warrants it (esc-4081 amend, reviewer_comprehensive performance).
+pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&CompiledModule]) {
+    // Build template registry (same composition as phase_pending_bound_checks).
+    let template_registry: HashMap<String, &TopologyTemplate> = prelude
+        .iter()
+        .flat_map(|m| m.templates.iter())
+        .filter(|t| t.entity_kind == EntityKind::Structure)
+        .map(|t: &TopologyTemplate| (t.name.clone(), t))
+        .chain(ctx.templates.iter().map(|t| (t.name.clone(), t)))
+        .collect();
+
+    // Build trait registry (same composition as phase_pending_bound_checks).
+    let trait_registry = build_trait_registry(&ctx.trait_defs, prelude);
+
+    // Take a reference to the full resolution_functions slice.  Re-resolution
+    // per call (see doc-comment) requires the full table, not a name-keyed map.
+    let resolution_functions: &[CompiledFunction] = &ctx.resolution_functions;
+
+    // Collect diagnostics into a local vec to avoid borrow-checker conflicts
+    // (we hold shared borrows on ctx.templates and ctx.resolution_functions via
+    // template_registry / resolution_functions while also needing &mut ctx.diagnostics).
+    let mut new_diagnostics: Vec<reify_core::Diagnostic> = Vec::new();
+
+    let walk = |expr: &CompiledExpr, span: SourceSpan, diags: &mut Vec<reify_core::Diagnostic>| {
+        check_expr_fn_arg_conformance(
+            expr,
+            resolution_functions,
+            &template_registry,
+            &trait_registry,
+            span,
+            diags,
+        );
+    };
+
+    // Walk EVERY CompiledExpr-bearing root field of each entity template via the
+    // centralized enumerator (value cells, constraints, objective, realizations,
+    // ports, guarded groups, match-arm guards, sub-components, forall bodies).
+    // Coverage deliberately matches the GLOBAL step-2 resolution relaxation so a
+    // non-conforming call is diagnosed wherever it can appear (see doc-comment).
+    for template in &ctx.templates {
+        for_each_template_root_expr(template, &mut |expr, span| {
+            walk(expr, span, &mut new_diagnostics);
+        });
+    }
+
+    // Walk function bodies: param defaults, let-bindings, result expr.
+    for f in &ctx.functions {
+        for default in f.param_defaults.iter().flatten() {
+            walk(default, SourceSpan::empty(0), &mut new_diagnostics);
+        }
+        for (_, expr) in &f.body.let_bindings {
+            walk(expr, SourceSpan::empty(0), &mut new_diagnostics);
+        }
+        walk(&f.body.result_expr, SourceSpan::empty(0), &mut new_diagnostics);
+    }
+
+    // Walk associated-function bodies on every LOCAL template (step-14).
+    //
+    // The step-2 wildcard relaxation is GLOBAL and also reaches assoc-fn bodies
+    // (compiled via compile_assoc_function -> compile_expr ->
+    // resolve_function_overload), so a non-conforming `couple(self)` inside an
+    // assoc fn now resolves to a `UserFunctionCall` instead of the previous
+    // `no matching overload` hard error. `assoc_fns` live on `TopologyTemplate`
+    // yet are NOT enumerated by `for_each_template_root_expr` and are NOT in
+    // `ctx.functions`, so without this loop that hard error would be silently
+    // lost (a soundness regression shipping in this same diff).
+    //
+    // Mirrors the free-function loop above exactly — assoc fns ARE
+    // `CompiledFunction`s. Only `ctx.templates` (local) assoc fns are walked, not
+    // prelude templates' assoc fns: those were checked when the prelude compiled,
+    // consistent with walking `ctx.functions` (local) rather than prelude fns.
+    //
+    // No double-count: assoc fns are disjoint from `value_cells`, the template
+    // root fields enumerated by `for_each_template_root_expr`, and `ctx.functions`
+    // (module/free fns); each expr tree is visited exactly once. `SourceSpan::empty(0)`
+    // because assoc-fn bodies carry no per-expr spans (same gap as free-fn bodies).
+    for template in &ctx.templates {
+        for af in &template.assoc_fns {
+            let f = &af.function;
+            for default in f.param_defaults.iter().flatten() {
+                walk(default, SourceSpan::empty(0), &mut new_diagnostics);
+            }
+            for (_, expr) in &f.body.let_bindings {
+                walk(expr, SourceSpan::empty(0), &mut new_diagnostics);
+            }
+            walk(&f.body.result_expr, SourceSpan::empty(0), &mut new_diagnostics);
+        }
+    }
+
+    ctx.diagnostics.extend(new_diagnostics);
+}
+
+/// Walk a single `CompiledExpr` tree, calling `check_fn_arg_conformance` for
+/// every `UserFunctionCall` node whose resolved overload has trait-object params.
+///
+/// Re-resolves each call via `resolve_function_overload` using the args'
+/// `result_type`s to pick the correct overload when multiple same-name functions
+/// exist.  Only `OverloadResolution::Resolved` is acted upon; `NoMatch`,
+/// `Ambiguous`, and `NoUserFunctions` are skipped (they carry their own
+/// diagnostics from the original call site, or indicate an eval-builtin).
+fn check_expr_fn_arg_conformance(
+    expr: &CompiledExpr,
+    functions: &[CompiledFunction],
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    representative_span: SourceSpan,
+    diagnostics: &mut Vec<reify_core::Diagnostic>,
+) {
+    expr.walk(&mut |node: &CompiledExpr| {
+        let CompiledExprKind::UserFunctionCall { function_name, args } = &node.kind else {
+            return;
+        };
+        // Re-resolve the overload using the args' result_types.
+        // This correctly disambiguates same-name overloads and skips
+        // eval-builtins (NoUserFunctions) and already-diagnosed failures
+        // (NoMatch / Ambiguous).
+        let arg_result_types: Vec<Type> =
+            args.iter().map(|a| a.result_type.clone()).collect();
+        let f = match resolve_function_overload(function_name, &arg_result_types, functions) {
+            OverloadResolution::Resolved(f) => f,
+            _ => return,
+        };
+        // Check each param whose type carries a trait object.
+        for ((param_name, param_ty), arg) in f.params.iter().zip(args.iter()) {
+            if !type_carries_trait_object(param_ty) {
+                continue;
+            }
+            check_fn_arg_conformance(
+                param_ty,
+                param_name,
+                arg,
+                representative_span,
+                template_registry,
+                trait_registry,
+                diagnostics,
+            );
+        }
+    });
+}
+
+/// Enumerate every ROOT `CompiledExpr` of `template` exactly once, invoking `f`
+/// with the expr and a representative `SourceSpan`.
+///
+/// "Root" means the top of a distinct expression tree; the recursive
+/// `CompiledExpr::walk` inside [`check_expr_fn_arg_conformance`] descends into
+/// nested calls, so callers must NOT pre-walk.
+///
+/// ## No double-count
+///
+/// Each field is visited once and the fields are mutually disjoint: geometry
+/// `let`s are excluded from `value_cells` (`is_geometry_let` `continue` at
+/// entity.rs:1175-1177) so realization args never overlap a value cell, and
+/// guard / port / forall / sub members live in their own vecs, never in
+/// `template.value_cells`.
+///
+/// ## Representative spans
+///
+/// Fields that carry their own span use it (value cells, constraints,
+/// realizations via `realization.span`, sub-components via `sub.span`); fields
+/// with no span of their own (objective, guard exprs, match-arm guards, port
+/// `frame_expr`, forall bodies) use `SourceSpan::empty(0)`. The span is purely
+/// diagnostic provenance — conformance correctness depends only on the
+/// param/arg types, not the span.
+///
+/// ## Walked separately (not by this enumerator)
+///
+/// Associated-function bodies (`template.assoc_fns[*].function`) are walked
+/// directly by [`phase_fn_arg_conformance`], mirroring its `ctx.functions`
+/// free-function loop — NOT by this template-root enumerator. They are excluded
+/// here so each expr tree is visited exactly once.
+///
+/// ## Residual (not walked at all)
+///
+/// `connections` carry only `ConstraintNodeId` references + string
+/// `port_mappings` (no inline `CompiledExpr`), and `compiled_purposes` are
+/// compiled after this pass (lib.rs:382). See `phase_fn_arg_conformance`
+/// doc-comment and task-4081 design decision §6/§7.
+fn for_each_template_root_expr(
+    template: &TopologyTemplate,
+    f: &mut impl FnMut(&CompiledExpr, SourceSpan),
+) {
+    // Value cells: param / let default expressions.
+    for vc in &template.value_cells {
+        if let Some(expr) = &vc.default_expr {
+            f(expr, vc.span);
+        }
+    }
+
+    // Constraints.
+    for constraint in &template.constraints {
+        f(&constraint.expr, constraint.span);
+    }
+
+    // Objective (the objective enum carries no span of its own).
+    if let Some(objective) = &template.objective {
+        match objective {
+            OptimizationObjective::Minimize(expr) | OptimizationObjective::Maximize(expr) => {
+                f(expr, SourceSpan::empty(0));
+            }
+        }
+    }
+
+    // Realizations: geometry-op argument expressions. The Boolean arm has no
+    // inline `CompiledExpr` args (its operands are `GeomRef`s).
+    for realization in &template.realizations {
+        for op in &realization.operations {
+            match op {
+                CompiledGeometryOp::Primitive { args, .. }
+                | CompiledGeometryOp::Modify { args, .. }
+                | CompiledGeometryOp::Transform { args, .. }
+                | CompiledGeometryOp::Pattern { args, .. }
+                | CompiledGeometryOp::Sweep { args, .. }
+                | CompiledGeometryOp::Curve { args, .. } => {
+                    for (_, arg) in args {
+                        f(arg, realization.span);
+                    }
+                }
+                CompiledGeometryOp::Boolean { .. } => {}
+            }
+        }
+    }
+
+    // Ports: member defaults, constraints, and optional frame expression.
+    for port in &template.ports {
+        for member in &port.members {
+            if let Some(expr) = &member.default_expr {
+                f(expr, member.span);
+            }
+        }
+        for constraint in &port.constraints {
+            f(&constraint.expr, constraint.span);
+        }
+        if let Some(frame_expr) = &port.frame_expr {
+            f(frame_expr, SourceSpan::empty(0));
+        }
+    }
+
+    // Guarded groups: guard expr + then/else members and constraints.
+    for group in &template.guarded_groups {
+        f(&group.guard_expr, SourceSpan::empty(0));
+        for member in &group.members {
+            if let Some(expr) = &member.default_expr {
+                f(expr, member.span);
+            }
+        }
+        for constraint in &group.constraints {
+            f(&constraint.expr, constraint.span);
+        }
+        for member in &group.else_members {
+            if let Some(expr) = &member.default_expr {
+                f(expr, member.span);
+            }
+        }
+        for constraint in &group.else_constraints {
+            f(&constraint.expr, constraint.span);
+        }
+    }
+
+    // Match-arm decl groups: per-arm guard expressions.
+    for group in &template.match_arm_groups {
+        for arm in &group.arms {
+            f(&arm.guard_expr, SourceSpan::empty(0));
+        }
+    }
+
+    // Sub-components: argument expressions and optional `at <pose>`.
+    for sub in &template.sub_components {
+        for (_, arg) in &sub.args {
+            f(arg, sub.span);
+        }
+        if let Some(pose) = &sub.pose {
+            f(pose, sub.span);
+        }
+    }
+
+    // Captured forall templates: per-element constraint / connect body exprs.
+    for forall in &template.forall_templates {
+        match &forall.body {
+            CompiledForallBody::Constraint { body_expr } => {
+                f(body_expr, SourceSpan::empty(0));
+            }
+            CompiledForallBody::Connect { params, .. } => {
+                for (_, expr) in params {
+                    f(expr, SourceSpan::empty(0));
+                }
+            }
         }
     }
 }
