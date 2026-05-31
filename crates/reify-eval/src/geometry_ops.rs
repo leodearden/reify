@@ -2185,6 +2185,11 @@ pub(crate) fn try_eval_topology_selector(
             // ≤ 0.0") and the kinematic interferes_with precedent
             // (geometry_ops.rs:1601: `Some(d) => Bool(d <= 0.0)`).
             //
+            // NOTE: d=0.0 (touching / face-coincident) → Bool(true) here.  The
+            // Manifold-side queries::intersects returns false for the same case
+            // (CSG boolean yields empty mesh for zero shared volume) — a known
+            // parity divergence to be resolved by KGQ-ο (Phase 5).
+            //
             // Both args must be Shape ValueRefs. Non-ValueRef/non-geometry args
             // return None from resolve_geometry_handle_arg → fall through to None
             // (invariants #1/#2). Kernel Err/non-numeric already emitted one
@@ -2839,6 +2844,14 @@ enum TopologySelectorHelper {
     /// wiring + `#kernel(manifold)` cross-kernel parity gate is KGQ-ο (Phase 5).
     /// This task ships the eval dispatch arm only; the Manifold standalone function
     /// ships alongside in `crates/reify-kernel-manifold/src/queries.rs`.
+    ///
+    /// KNOWN PARITY DIVERGENCE (KGQ-ο concern): The Manifold-side
+    /// `queries::intersects` uses strict CSG non-emptiness rather than `d ≤ 0.0`.
+    /// Two solids sharing only a coincident face (BRep distance = 0.0, zero shared
+    /// volume) return `true` here but `false` in the Manifold function (empty
+    /// CSG intersection mesh).  KGQ-ο must resolve canonical boundary semantics
+    /// before enabling the parity gate.  See also the "Known parity divergence"
+    /// section in `crates/reify-kernel-manifold/src/queries.rs::intersects`.
     Intersects,
 }
 

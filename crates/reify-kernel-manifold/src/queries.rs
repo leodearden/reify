@@ -102,6 +102,28 @@ pub(crate) fn distance(a: &Manifold, b: &Manifold) -> f64 {
 /// cross-kernel `#kernel(manifold)` parity gate by KGQ-ο (Phase 5).  This
 /// task (KGQ-γ/3612) ships the function + unit tests only; the `query()`
 /// wiring lives in `kernel.rs` which is out of this task's file scope.
+///
+/// # Known parity divergence (KGQ-ο concern)
+///
+/// The OCCT eval path (`geometry_ops.rs` `Intersects` arm) classifies
+/// `d ≤ 0.0` as intersecting, **including** solids that share only a
+/// coincident face (BRep min distance = 0.0, zero overlap volume).  This
+/// function uses a stricter definition — **positive shared volume** via the
+/// CSG boolean — so face-coincident solids produce an empty intersection mesh
+/// and return `false`.  These two semantics diverge at the touching/zero-volume
+/// boundary:
+///
+/// | Scenario | OCCT path (`d ≤ 0`) | Manifold path (CSG non-empty) |
+/// |---|---|---|
+/// | Clear overlap | `true` | `true` |
+/// | Face-coincident (d = 0, no volume) | `true` | `false` |
+/// | Gap (d > 0) | `false` | `false` |
+///
+/// When KGQ-ο wires this function into the cross-kernel parity gate, a
+/// face-coincident test case will **fail parity**.  The Phase-5 author must
+/// decide the canonical semantics before enabling the gate — likely: define
+/// `intersects` as `d ≤ 0` inclusive of touching, and update the Manifold
+/// side to use a distance-based predicate rather than strict CSG non-emptiness.
 #[allow(dead_code)] // wired into ManifoldKernel::query() by KGQ-ο (Phase 5)
 pub(crate) fn intersects(a: &Manifold, b: &Manifold) -> bool {
     !extract_xyz(&a.intersection(b)).is_empty()
