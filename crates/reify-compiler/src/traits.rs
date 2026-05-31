@@ -368,6 +368,7 @@ pub(crate) fn compile_purpose(
     let mut constraints = Vec::new();
     let mut constraint_index = 0u32;
     let mut objective = None;
+    let mut lets = Vec::new();
 
     for member in &purpose_def.members {
         match member {
@@ -396,22 +397,22 @@ pub(crate) fn compile_purpose(
                 objective = Some(OptimizationObjective::Maximize(compiled_expr));
             }
             reify_ast::MemberDecl::Let(let_decl) => {
-                // Let bindings in purpose bodies are not yet supported:
-                // CompiledPurpose has no storage for let expressions, and
-                // activate_purpose only injects constraints. Any constraint
-                // referencing a let-bound name would produce a ValueCellId
-                // with no backing node in the eval graph.
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "let bindings in purpose bodies are not yet supported: '{}'",
-                        let_decl.name
-                    ))
-                    .with_code(DiagnosticCode::PurposeLetUnsupported)
-                    .with_label(DiagnosticLabel::new(
-                        let_decl.span,
-                        "unsupported in purpose".to_string(),
-                    )),
-                );
+                // Compile the let expression in the current scope (purpose params
+                // + earlier lets are visible). Any forward reference to a name not
+                // yet registered produces an unknown-identifier diagnostic via the
+                // normal scope.resolve path — no special-casing needed.
+                // Mirrors entity-body let semantics (ordered, no forward refs).
+                let expr = compile_expr(&let_decl.value, &scope, enum_defs, functions, diagnostics);
+                let cell_id = ValueCellId::new(purpose_name.as_str(), let_decl.name.as_str());
+                lets.push(CompiledPurposeLet {
+                    name: let_decl.name.clone(),
+                    cell_id,
+                    expr: expr.clone(),
+                    span: let_decl.span,
+                });
+                // Register AFTER compiling the expr so the let name is not visible
+                // to its own initialiser (ordered semantics, no forward refs).
+                scope.register(&let_decl.name, expr.result_type);
             }
             reify_ast::MemberDecl::GuardedGroup(g) => {
                 diagnostics.push(
@@ -595,6 +596,7 @@ pub(crate) fn compile_purpose(
         name: purpose_def.name.clone(),
         is_pub: purpose_def.is_pub,
         params,
+        lets,
         constraints,
         objective,
         resolved_queries,

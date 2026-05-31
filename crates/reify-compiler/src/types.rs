@@ -180,6 +180,24 @@ pub struct CompiledPurposeParam {
     pub entity_kind: String,
 }
 
+/// A compiled let binding inside a purpose body — e.g., `let m = subject.a - subject.b`.
+///
+/// Stored in declaration order in `CompiledPurpose.lets`. At activation time each let
+/// is evaluated and injected as a `ValueCellNode` with entity `purpose:{name}@{token}`
+/// and member `__let_{name}` (task 4009 δ).
+#[derive(Debug, Clone)]
+pub struct CompiledPurposeLet {
+    /// The let name, e.g. `"m"` for `let m = …`.
+    pub name: String,
+    /// Compile-time cell id: `{ entity: purpose_name, member: name }`.
+    /// At activation this is remapped to the injected id via `remap_cell`.
+    pub cell_id: ValueCellId,
+    /// The compiled value expression.
+    pub expr: CompiledExpr,
+    /// Source span of the let declaration.
+    pub span: SourceSpan,
+}
+
 /// A resolved reflective schema query — e.g., `subject.params` resolved to concrete ValueCellIds.
 #[derive(Debug, Clone)]
 pub struct ResolvedSchemaQuery {
@@ -197,6 +215,10 @@ pub struct CompiledPurpose {
     pub name: String,
     pub is_pub: bool,
     pub params: Vec<CompiledPurposeParam>,
+    /// Let bindings declared in the purpose body, in declaration order.
+    /// At activation each let is evaluated and injected as a value-cell node
+    /// whose value feeds any constraints that reference it (task 4009 δ).
+    pub lets: Vec<CompiledPurposeLet>,
     pub constraints: Vec<CompiledConstraint>,
     pub objective: Option<OptimizationObjective>,
     /// Reflective schema queries resolved at compile time.

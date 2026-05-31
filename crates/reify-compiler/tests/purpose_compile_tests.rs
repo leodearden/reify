@@ -259,18 +259,17 @@ fn purpose_let_expr_contains_value_ref(expr: &CompiledExpr, id: &ValueCellId) ->
             purpose_let_expr_contains_value_ref(left, id)
                 || purpose_let_expr_contains_value_ref(right, id)
         }
-        CompiledExprKind::UnaryOp { expr: inner, .. } => {
-            purpose_let_expr_contains_value_ref(inner, id)
+        CompiledExprKind::UnOp { operand, .. } => {
+            purpose_let_expr_contains_value_ref(operand, id)
         }
-        CompiledExprKind::If {
-            cond, then, else_, ..
+        CompiledExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
         } => {
-            purpose_let_expr_contains_value_ref(cond, id)
-                || purpose_let_expr_contains_value_ref(then, id)
-                || else_
-                    .as_ref()
-                    .map(|e| purpose_let_expr_contains_value_ref(e, id))
-                    .unwrap_or(false)
+            purpose_let_expr_contains_value_ref(condition, id)
+                || purpose_let_expr_contains_value_ref(then_branch, id)
+                || purpose_let_expr_contains_value_ref(else_branch, id)
         }
         _ => false,
     }
