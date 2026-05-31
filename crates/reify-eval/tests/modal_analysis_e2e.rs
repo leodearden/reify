@@ -54,6 +54,19 @@ fn analytic_beam_frequency(beta_l: f64) -> f64 {
     beta_l.powi(2) / (2.0 * PI) * (e * i / (rho * a * l.powi(4))).sqrt()
 }
 
+/// Cantilever P2 first-mode rel-err tolerance — the calibrated honest P2 floor.
+/// Mirrors `modal_benchmarks.rs::CANTILEVER_P2_REL_TOL` (the step-4 kernel gate,
+/// MEASURED at nx=16, nz=2): the P2 quadratic tets resolve bending curvature and
+/// clear the 2% target, distinctly tighter than the P1 10% floor — so meeting it
+/// end-to-end proves the fixture runs at element_order = P2 (task 4066).
+const CANTILEVER_P2_REL_TOL: f64 = 0.02;
+
+/// Simply-supported P2 rel-err tolerance (per mode) — the calibrated honest P2
+/// floor. Mirrors `modal_benchmarks.rs::SS_P2_REL_TOL` (the step-6 kernel gate,
+/// MEASURED at nx=24, nz=2): P2 clears 2% on all three bending modes, replacing
+/// the prior looser P1 10%/12% bands (task 4066).
+const SS_P2_REL_TOL: f64 = 0.02;
+
 // ── step-13: RED — trampoline registration + seam pin ────────────────────────
 //
 // Compile-time seam pin: coerce
@@ -89,49 +102,47 @@ fn register_compute_fns_installs_modal_free_vibration() {
     );
 }
 
-// ── step-15: RED — cantilever first-mode-frequency e2e ───────────────────────
+// ── step-15 / step-11: cantilever first-mode-frequency e2e (P2 2% band) ───────
 //
 // Four observable signals on the cantilever fixture (examples/modal/
 // cantilever_beam_modes.ri):
 //   (a) no Error-severity diagnostics after parse + eval
 //   (b) a ComputeNode with target == "modal::free_vibration" in the graph
 //   (c) the `result` cell is a non-Undef StructureInstance/Map
-//   (d) the first-mode frequency `f1` is within 10% of the analytic
-//       Euler–Bernoulli cantilever fundamental f₁ = (1.875²/2π)·√(EI/ρAL⁴)
-//       ≈ 41.3 Hz — the committed PRD §1/§9.1 bound (NOT the aspirational 2%,
-//       moved to P2-tet follow-up 4066).
+//   (d) the first-mode frequency `f1` is within CANTILEVER_P2_REL_TOL (2%) of the
+//       analytic Euler–Bernoulli cantilever fundamental f₁ = (1.875²/2π)·
+//       √(EI/ρAL⁴) ≈ 41.3 Hz — the P2-tet bending-lock-free band (task 4066),
+//       distinctly tighter than the prior P1 10% floor, so it can only be met
+//       once the fixture runs at element_order = ElementOrder.P2.
 //
-// Gated like buckling: the modal solve assembles K + M on the slender-beam mesh
-// (~25k DOFs) and runs a generalized eigensolve — heavy in debug. The
-// registration pin above runs always; this e2e gate runs release-only.
+// Gated like buckling: the modal solve assembles K + M and runs a generalized
+// eigensolve — heavy in debug. The registration pin above runs always; this e2e
+// gate runs release-only.
 //
-// ── step-16: MEASURED P1 first-mode floor (the pinned tolerance) ─────────────
+// ── step-11 RED → step-12 GREEN ──────────────────────────────────────────────
 //
 // BC realization (build_dirichlet_bcs): the single FixedSupport(target:"x_min")
 // clamps ALL THREE translational DOFs on every root-face (x ≈ 0) node — the
-// cantilever clamped-free configuration.
+// cantilever clamped-free configuration (catching P2 edge-midpoints by
+// coordinate once the trampoline promotes the mesh).
 //
-// Mesh (build_beam_mesh, mirroring solve_cantilever_fea): nz = 6 through the
-// 2 mm height, nx = round(L/h·nz) = 600 near-cubic bending-plane (XZ) elements,
-// ny = 1. This is the CI-practical density: the shear-locking-aware near-cubic
-// aspect ratio is the anti-locking lever, not raw nz.
+// RED (step-11): the fixture is still P1 (no `element_order` field), so the P1
+// constant-strain solve biases the fundamental high — MEASURED f1 ≈ 44.715 Hz vs
+// analytic 41.271 Hz → +8.34% (P1 tets lock in bending → overestimate K → f ∝ √K
+// high), far outside the 2% P2 band, so the (d) assertion FAILS.
 //
-// MEASURED on this mesh: f1 = 44.715 Hz vs analytic 41.271 Hz → +8.34% error
-// (P1 constant-strain tets lock in bending → overestimate K → bias frequency
-// high, since f ∝ √K). 8.34% clears the committed 10% PRD §1/§9.1 gate with
-// ~1.66% headroom — no mesh refinement was required. Consistent with the
-// buckling Euler-column's validated ~9.2% P1 eigenvalue floor on a comparable
-// column (f ∝ √λ halves the eigenvalue error) and the 2026-05-29 achievability
-// survey (2% deferred to P2-tet follow-up 4066). The assertion stays at the
-// committed 10% bound (mirroring buckling_smoke.rs, which pins 10% while
-// documenting its 9.2% measured error): the ~1.66% headroom absorbs minor
-// cross-platform / faer-version numerical drift without false-failing CI.
+// GREEN (step-12): the fixture is re-authored to element_order = ElementOrder.P2
+// and the trampoline assembles K/M on the coarse example-practical P2 mesh
+// (matching the modal_benchmarks.rs cantilever gate, which clears 2% at nx=16,
+// nz=2). The quadratic tets resolve bending curvature, driving f1 under the
+// calibrated CANTILEVER_P2_REL_TOL (2%) floor — proving P2 is engaged end-to-end.
 
-/// Cantilever: first-mode frequency within 10% of the analytic value
-/// (MEASURED P1 floor +8.34%; see the step-16 note above).
+/// Cantilever: first-mode frequency within CANTILEVER_P2_REL_TOL (2%) of the
+/// analytic value — the P2-tet band (RED until step-12 re-authors the fixture to
+/// element_order = ElementOrder.P2; see the step-11/12 note above).
 #[cfg_attr(debug_assertions, ignore = "heavy modal solve; release-only")]
 #[test]
-fn e2e_cantilever_first_mode_within_ten_percent() {
+fn e2e_cantilever_first_mode_within_two_percent() {
     let source = cantilever_source();
     let compiled = parse_and_compile_with_stdlib(source);
 
@@ -182,7 +193,8 @@ fn e2e_cantilever_first_mode_within_ten_percent() {
         result_val
     );
 
-    // (d) `f1` within 10% of the analytic cantilever fundamental (βL = 1.875).
+    // (d) `f1` within the P2 2% band of the analytic cantilever fundamental
+    //     (βL = 1.875). RED at P1 (~8.34%); GREEN once the fixture runs at P2.
     let f1_cell = ValueCellId::new("CantileverBeamModes", "f1");
     let f1 = read_frequency(
         eval_result
@@ -195,64 +207,55 @@ fn e2e_cantilever_first_mode_within_ten_percent() {
     let f1_analytic = analytic_beam_frequency(1.875);
     let rel_err = (f1 - f1_analytic).abs() / f1_analytic;
     assert!(
-        rel_err < 0.10,
-        "cantilever f1 = {:.3} Hz, analytic = {:.3} Hz, rel_err = {:.2}% > 10%",
+        rel_err < CANTILEVER_P2_REL_TOL,
+        "cantilever f1 = {:.3} Hz, analytic = {:.3} Hz, rel_err = {:.2}% > {:.2}% (P2 band)",
         f1,
         f1_analytic,
-        rel_err * 100.0
+        rel_err * 100.0,
+        CANTILEVER_P2_REL_TOL * 100.0
     );
 }
 
-// ── step-17: RED — simply-supported first-mode + higher-mode band ────────────
+// ── step-17 / step-11: simply-supported first-mode + higher modes (P2 2%) ─────
 //
 // The simply-supported fixture (examples/modal/simply_supported_beam_modes.ri)
 // PINS BOTH end faces (x_min and x_max). Five observable signals:
 //   (a) no Error-severity diagnostics after parse + eval
 //   (b) a ComputeNode with target == "modal::free_vibration" in the graph
 //   (c) the `result` cell is a non-Undef StructureInstance/Map
-//   (d) the FIRST-mode frequency f1 is within 10% of the analytic Euler–Bernoulli
-//       simply-supported fundamental f₁ = (π²/2π)·√(EI/ρAL⁴) ≈ 115.8 Hz — the
-//       committed PRD §1/§9.1 bound, anchored on the fundamental (the task's
-//       headline signal).
-//   (e) f2, f3 are present, finite, positive, and strictly sorted ascending,
-//       each within a looser MEASURED band (documented; higher modes lock harder
-//       per PRD §9.1). The measured tolerances are pinned in step-18.
+//   (d) the FIRST-mode frequency f1 is within SS_P2_REL_TOL (2%) of the analytic
+//       Euler–Bernoulli simply-supported fundamental f₁ = (π²/2π)·√(EI/ρAL⁴)
+//       ≈ 115.9 Hz — the P2 band, anchored on the fundamental (the headline
+//       signal).
+//   (e) f2, f3 are present, finite, positive, strictly sorted ascending, and
+//       each within SS_P2_REL_TOL (2%) of their analytic (nπ)² values
+//       (f₂ ≈ 463.4 Hz, f₃ ≈ 1042.8 Hz) — the P2 band resolves all three
+//       bending modes uniformly, replacing the looser P1 higher-mode floor.
 //
-// Release-gated like the cantilever e2e: the same slender-beam mesh (~25k DOFs)
-// + generalized eigensolve — heavy in debug. The registration pin runs always;
-// this e2e gate runs release-only.
+// Release-gated like the cantilever e2e (heavy generalized eigensolve). The
+// registration pin runs always; this e2e gate runs release-only.
 //
-// ── step-18: MEASURED simply-supported floors (the pinned tolerances) ────────
+// ── step-11 RED → step-12 GREEN ──────────────────────────────────────────────
 //
 // BC realization (build_dirichlet_bcs → simply_supported_pin_pin_bcs): the two
 // FixedSupports targeting x_min AND x_max select the pin-pin branch — pin ONLY
 // the transverse Z DOF on both end faces (the bending rotation dw/dx stays free,
 // carried by the axial u(z)) + minimal axial/lateral anchors at the two end-face
 // neutral-axis nodes (z = h/2). This yields the (nπ)² simply-supported family
-// rather than the fixed-fixed family the prior all-DOF clamp produced.
+// rather than the fixed-fixed family the all-DOF clamp would produce. Selection
+// is by coordinate, so it catches the P2 edge-midpoint nodes once the trampoline
+// promotes the mesh.
 //
-// Mesh: the same build_beam_mesh as the cantilever (nz = 6, nx = round(L/h·nz) =
-// 600 near-cubic XZ elements, ny = 1) — the shared CI-practical density.
+// RED (step-11): the fixture is still P1, so the constant-strain solve biases
+// every bending mode high — MEASURED f1 = 125.752 Hz / f2 = 501.595 Hz /
+// f3 = 1117.190 Hz vs analytic 115.862 / 463.448 / 1042.759 → +8.54% / +8.23% /
+// +7.14% (P1 tets lock in bending, f ∝ √K). All three exceed the 2% P2 band, so
+// (d)/(e) FAIL.
 //
-// MEASURED on this mesh (release):
-//   mode 0 (Z1, symmetric half-sine):    f1 = 125.752 Hz vs 115.862 → +8.54%
-//   mode 1 (Z2, antisymmetric full-sine): f2 = 501.595 Hz vs 463.448 → +8.23%
-//   mode 2 (Z3, symmetric):              f3 = 1117.190 Hz vs 1042.759 → +7.14%
-// All three are the vertical bending family (P1 constant-strain tets lock in
-// bending → overestimate K → bias f high, f ∝ √K). Mode 1's ≈ 0 z-participation
-// (printed above) is the exact cancellation of an ANTISYMMETRIC shape against a
-// uniform reference direction — it confirms mode 1 is the vertical 2nd bending
-// mode, not a lateral/torsional intruder (which the ny = 1 mesh locks far above
-// f3). NOTE: the higher modes do NOT lock harder here — the near-cubic axial
-// mesh (nx = 600) resolves all three low modes comparably (~7-9%), so the
-// dominant error is the shared through-thickness (nz = 6) P1 floor, not a
-// per-mode wavelength effect.
-//
-// Pinned tolerances: f1 stays at the committed 10% PRD §1/§9.1 bound (measured
-// +8.54%, 1.46% headroom — matching the cantilever's +8.34%/10% precedent in
-// buckling_smoke.rs style). f2/f3 get a looser 12% band (measured +8.23% /
-// +7.14%, ~4-5% headroom) — the documented higher-mode allowance, here covering
-// numeric/platform drift rather than extra locking.
+// GREEN (step-12): the fixture is re-authored to element_order = ElementOrder.P2
+// and the trampoline assembles K/M on the coarse example-practical P2 mesh
+// (matching the modal_benchmarks.rs SS gate, which clears 2% on all three modes
+// at nx=24, nz=2). The quadratic tets drive f1/f2/f3 under SS_P2_REL_TOL (2%).
 
 /// Read each mode's `(frequency_hz, participation_mass)` from a ModalResult
 /// value — a measurement aid (printed under `--nocapture`) for telling vertical
@@ -389,20 +392,22 @@ fn e2e_simply_supported_modes_match_analytic() {
         eprintln!("[modal ss]   mode {i}: f={f:.3} Hz, participation_mass(z)={p:.6e}");
     }
 
-    // (d) f1 within 10% of the analytic simply-supported fundamental (βL = π).
+    // (d) f1 within the P2 2% band of the analytic simply-supported fundamental
+    //     (βL = π). RED at P1 (~8.54%); GREEN once the fixture runs at P2.
     assert!(f1.is_finite() && f1 > 0.0, "f1 must be finite and positive, got: {}", f1);
     let f1_err = (f1 - f1_analytic).abs() / f1_analytic;
     assert!(
-        f1_err < 0.10,
-        "ss f1 = {:.3} Hz, analytic = {:.3} Hz, rel_err = {:.2}% > 10%",
+        f1_err < SS_P2_REL_TOL,
+        "ss f1 = {:.3} Hz, analytic = {:.3} Hz, rel_err = {:.2}% > {:.2}% (P2 band)",
         f1,
         f1_analytic,
-        f1_err * 100.0
+        f1_err * 100.0,
+        SS_P2_REL_TOL * 100.0
     );
 
     // (e) f2, f3 present, finite, positive, strictly ascending, and within the
-    //     looser 12% measured higher-mode band of their analytic (nπ)² values
-    //     (measured +8.23% / +7.14%; see the step-18 note above).
+    //     same P2 2% band of their analytic (nπ)² values (P2 resolves all three
+    //     bending modes uniformly; RED at P1 ~+8.23% / +7.14%).
     for (name, f) in [("f2", f2), ("f3", f3)] {
         assert!(f.is_finite() && f > 0.0, "{} must be finite and positive, got: {}", name, f);
     }
@@ -416,18 +421,20 @@ fn e2e_simply_supported_modes_match_analytic() {
 
     let f2_err = (f2 - f2_analytic).abs() / f2_analytic;
     assert!(
-        f2_err < 0.12,
-        "ss f2 = {:.3} Hz, analytic = {:.3} Hz, rel_err = {:.2}% > 12% (measured band)",
+        f2_err < SS_P2_REL_TOL,
+        "ss f2 = {:.3} Hz, analytic = {:.3} Hz, rel_err = {:.2}% > {:.2}% (P2 band)",
         f2,
         f2_analytic,
-        f2_err * 100.0
+        f2_err * 100.0,
+        SS_P2_REL_TOL * 100.0
     );
     let f3_err = (f3 - f3_analytic).abs() / f3_analytic;
     assert!(
-        f3_err < 0.12,
-        "ss f3 = {:.3} Hz, analytic = {:.3} Hz, rel_err = {:.2}% > 12% (measured band)",
+        f3_err < SS_P2_REL_TOL,
+        "ss f3 = {:.3} Hz, analytic = {:.3} Hz, rel_err = {:.2}% > {:.2}% (P2 band)",
         f3,
         f3_analytic,
-        f3_err * 100.0
+        f3_err * 100.0,
+        SS_P2_REL_TOL * 100.0
     );
 }
