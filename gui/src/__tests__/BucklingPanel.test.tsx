@@ -27,6 +27,8 @@ let sceneAddSpy = vi.fn();
 let renderSpy = vi.fn();
 let rendererCtorSpy = vi.fn();
 let rendererDisposeSpy = vi.fn();
+let cameraPositionSetSpy = vi.fn();
+let cameraUpSetSpy = vi.fn();
 
 // Mock three.js — the panel imports bucklingAnimator which imports from 'three'.
 // jsdom has no WebGL context, so guard means the 3D path never executes for
@@ -64,8 +66,8 @@ vi.mock('three', () => ({
     remove = vi.fn();
   },
   PerspectiveCamera: class {
-    position = { set: vi.fn() };
-    up = { set: vi.fn() };
+    position = { set: (...args: unknown[]) => cameraPositionSetSpy(...args) };
+    up = { set: (...args: unknown[]) => cameraUpSetSpy(...args) };
     lookAt = vi.fn();
     updateProjectionMatrix = vi.fn();
     constructor(_fov?: number, _aspect?: number, _near?: number, _far?: number) {}
@@ -82,6 +84,7 @@ vi.mock('three', () => ({
 
 import { createBucklingStore } from '../stores/bucklingStore';
 import { BucklingPanel } from '../panels/BucklingPanel';
+import { computePointCloudBounds } from '../viewport/bucklingAnimator';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -96,6 +99,8 @@ beforeEach(() => {
   renderSpy = vi.fn();
   rendererCtorSpy = vi.fn();
   rendererDisposeSpy = vi.fn();
+  cameraPositionSetSpy = vi.fn();
+  cameraUpSetSpy = vi.fn();
 });
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -219,14 +224,24 @@ describe('BucklingPanel', () => {
     });
 
     it('(g) adds object3d and undeformedOverlay to scene, binds renderer to canvas, renders each frame', () => {
+      // Solid.js flushes effects AFTER the createRoot callback completes
+      // (runUpdates calls runEffects post-synchronously), so assertions must
+      // live OUTSIDE the callback.  We collect dispose() instead of calling it
+      // inside so the root stays alive when we invoke the frame callback —
+      // matching the production lifecycle order.
       let store: ReturnType<typeof createBucklingStore>;
+      let rootDispose!: () => void;
+
       createRoot((dispose) => {
+        rootDispose = dispose;
         store = createBucklingStore();
         // Seed base so the WebGL branch runs
         store.ingestFrame({ mode_index: 0, phase: 0.0, displaced_positions: BASE });
         render(() => <BucklingPanel store={store!} />);
-        dispose();
+        // No dispose() here — effects must flush before assertions.
       });
+
+      // After createRoot, onMount has run and built the scene/renderer.
 
       // scene.add should have been called with the two Points objects
       expect(sceneAddSpy).toHaveBeenCalledTimes(2);
@@ -236,10 +251,24 @@ describe('BucklingPanel', () => {
       const rendererOpts = rendererCtorSpy.mock.calls[0]![0] as { canvas: HTMLCanvasElement };
       expect(rendererOpts.canvas).toBeInstanceOf(HTMLCanvasElement);
 
-      // Invoke the captured frame callback and assert render was called
+      // Camera must use Z-up convention and be positioned at bounds-derived offset.
+      expect(cameraUpSetSpy).toHaveBeenCalledWith(0, 0, 1);
+      expect(cameraPositionSetSpy).toHaveBeenCalledTimes(1);
+      const { center, radius } = computePointCloudBounds(BASE);
+      const d = radius > 0 ? radius * 3 : 1;
+      expect(cameraPositionSetSpy).toHaveBeenCalledWith(
+        expect.closeTo(center[0] + d, 5),
+        expect.closeTo(center[1] + d, 5),
+        expect.closeTo(center[2] + d, 5),
+      );
+
+      // Invoke one frame while the root is still live (correct lifecycle order)
       expect(capturedFrame).not.toBeNull();
       capturedFrame!(100);
       expect(renderSpy).toHaveBeenCalledTimes(1);
+
+      // Dispose after all assertions — triggers onCleanup
+      rootDispose();
     });
 
     it('(h) disposes the renderer on root cleanup', () => {
