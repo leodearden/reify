@@ -552,6 +552,306 @@ mod tests {
         );
     }
 
+    // ── Task 3971: trait-assoc-type ιₐ — grammar tests ──────────────────────
+    // Two new CONSUMPTION surfaces:
+    //   (1) structure-body `type X = Concrete` — admitted via `associated_type` in `_member`
+    //   (2) qualified type-expr `Beam::Material` / `Beam::(Trait::Material)` in type position
+    //
+    // Tests (a)-(f) are RED before grammar step-2 lands.
+    // Test (g) REGRESSION PIN — trait-body associated-type — stays GREEN throughout.
+
+    /// (a) Structure-body associated type binding: `structure def Beam : HasMaterial { type Material = Steel }`
+    /// After grammar change: no ERROR, `associated_type` node directly under `structure_definition`.
+    #[test]
+    fn test_structure_body_assoc_type_binding_parses() {
+        let mut parser = make_parser();
+        let source = b"structure def Beam : HasMaterial { type Material = Steel }";
+        let tree = parser.parse(source, None).expect("parse failed");
+        let root = tree.root_node();
+        let kinds = collect_kinds(root);
+
+        // (1) No parse errors
+        assert!(
+            !root.has_error(),
+            "unexpected parse error in structure-body assoc-type binding: {kinds:?}"
+        );
+
+        // (2) associated_type node must exist in the tree
+        assert!(
+            kinds.contains(&"associated_type".to_string()),
+            "expected associated_type node in parse tree: {kinds:?}"
+        );
+
+        // (3) associated_type must appear under structure_definition (not wrapped in trait_member)
+        let struct_def = find_node_by_kind(root, "structure_definition")
+            .expect("structure_definition not found");
+        let assoc_type = find_node_by_kind(struct_def, "associated_type")
+            .expect("associated_type not found under structure_definition");
+
+        // (4) name field is present
+        let name = assoc_type
+            .child_by_field_name("name")
+            .expect("associated_type missing 'name' field");
+        assert_eq!(name.kind(), "identifier", "expected identifier for name, got: {}", name.kind());
+
+        // (5) default field is present (= Steel)
+        let default_type = assoc_type
+            .child_by_field_name("default")
+            .expect("associated_type missing 'default' field (= Steel)");
+        // default field is a type_expr
+        assert_eq!(
+            default_type.kind(),
+            "type_expr",
+            "expected type_expr for default, got: {}",
+            default_type.kind()
+        );
+    }
+
+    /// (b) Qualified type-expr bare form: `param m : Beam::Material` in structure body.
+    /// After grammar change: no ERROR, `qualified_type` node in type position.
+    #[test]
+    fn test_qualified_type_expr_bare_form_parses() {
+        let mut parser = make_parser();
+        let source = b"structure S { param m : Beam::Material }";
+        let tree = parser.parse(source, None).expect("parse failed");
+        let root = tree.root_node();
+        let kinds = collect_kinds(root);
+
+        // (1) No parse errors
+        assert!(
+            !root.has_error(),
+            "unexpected parse error in qualified type-expr (bare form): {kinds:?}"
+        );
+
+        // (2) qualified_type node must exist
+        assert!(
+            kinds.contains(&"qualified_type".to_string()),
+            "expected qualified_type node in parse tree: {kinds:?}"
+        );
+
+        // (3) qualified_type must be under type_expr (which is under param_declaration)
+        let param_decl = find_node_by_kind(root, "param_declaration")
+            .expect("param_declaration not found");
+        let type_expr = param_decl
+            .child_by_field_name("type")
+            .expect("param_declaration missing 'type' field");
+        assert_eq!(type_expr.kind(), "type_expr");
+        let qual_type = find_node_by_kind(type_expr, "qualified_type")
+            .expect("qualified_type not found under type_expr");
+
+        // (4) base field is an identifier
+        let base = qual_type
+            .child_by_field_name("base")
+            .expect("qualified_type missing 'base' field");
+        assert_eq!(base.kind(), "identifier");
+
+        // (5) member field is an identifier
+        let member = qual_type
+            .child_by_field_name("member")
+            .expect("qualified_type missing 'member' field");
+        assert_eq!(member.kind(), "identifier");
+
+        // (6) trait field must NOT be present (bare form, no parenthesized disambiguator)
+        assert!(
+            qual_type.child_by_field_name("trait").is_none(),
+            "bare form qualified_type must not have a 'trait' field"
+        );
+    }
+
+    /// (c) Qualified type-expr type-param base: `param y : T::Material`.
+    /// After grammar change: no ERROR, `qualified_type` with identifier base `T`.
+    #[test]
+    fn test_qualified_type_expr_type_param_base_parses() {
+        let mut parser = make_parser();
+        let source = b"structure S { param y : T::Material }";
+        let tree = parser.parse(source, None).expect("parse failed");
+        let root = tree.root_node();
+        let kinds = collect_kinds(root);
+
+        assert!(
+            !root.has_error(),
+            "unexpected parse error in qualified type-expr (type-param base): {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&"qualified_type".to_string()),
+            "expected qualified_type node in parse tree: {kinds:?}"
+        );
+    }
+
+    /// (d) FORK-G disambiguator: `param n : Beam::(HasMaterial::Material)`.
+    /// After grammar change: no ERROR, `qualified_type` with `trait` field present.
+    #[test]
+    fn test_qualified_type_expr_fork_g_disambiguator_parses() {
+        let mut parser = make_parser();
+        let source = b"structure S { param n : Beam::(HasMaterial::Material) }";
+        let tree = parser.parse(source, None).expect("parse failed");
+        let root = tree.root_node();
+        let kinds = collect_kinds(root);
+
+        // (1) No parse errors
+        assert!(
+            !root.has_error(),
+            "unexpected parse error in FORK-G disambiguated qualified type-expr: {kinds:?}"
+        );
+
+        // (2) qualified_type node must exist
+        assert!(
+            kinds.contains(&"qualified_type".to_string()),
+            "expected qualified_type node in parse tree: {kinds:?}"
+        );
+
+        // (3) qualified_type must have `trait` field (distinguishes FORK-G from bare form)
+        let param_decl = find_node_by_kind(root, "param_declaration")
+            .expect("param_declaration not found");
+        let type_expr = param_decl
+            .child_by_field_name("type")
+            .expect("param_declaration missing 'type' field");
+        let qual_type = find_node_by_kind(type_expr, "qualified_type")
+            .expect("qualified_type not found under type_expr");
+
+        let trait_field = qual_type
+            .child_by_field_name("trait")
+            .expect("qualified_type missing 'trait' field (FORK-G disambiguator must have trait name)");
+        assert_eq!(trait_field.kind(), "identifier");
+
+        let member_field = qual_type
+            .child_by_field_name("member")
+            .expect("qualified_type missing 'member' field");
+        assert_eq!(member_field.kind(), "identifier");
+    }
+
+    // ── Task 3971: fixture-driven tests ─────────────────────────────────────
+    // These two tests embed the fixture files via include_str! and are RED until
+    // the grammar change (step-2) lands.  They verify `!root.has_error()` for
+    // both fixture files as the integration-level parse signal.
+
+    /// (e) Fixture test: structure-body associated-type binding parses cleanly.
+    /// Embeds `test/fixtures/trait_assoc_type_bind.ri` via include_str!.
+    #[test]
+    fn test_trait_assoc_type_bind_fixture_parses_cleanly() {
+        let mut parser = make_parser();
+        let source = include_str!("../test/fixtures/trait_assoc_type_bind.ri");
+        let tree = parser
+            .parse(source.as_bytes(), None)
+            .expect("parse failed");
+        let root = tree.root_node();
+        let kinds = collect_kinds(root);
+
+        // No parse errors
+        assert!(
+            !root.has_error(),
+            "unexpected parse error in trait_assoc_type_bind.ri: {kinds:?}"
+        );
+
+        // Both trait_declaration (regression) and structure_definition (new) must appear
+        assert!(
+            kinds.contains(&"trait_declaration".to_string()),
+            "expected trait_declaration in bind fixture: {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&"structure_definition".to_string()),
+            "expected structure_definition in bind fixture: {kinds:?}"
+        );
+
+        // associated_type must appear (both under trait_member and under structure_definition)
+        assert!(
+            kinds.contains(&"associated_type".to_string()),
+            "expected associated_type node in bind fixture: {kinds:?}"
+        );
+    }
+
+    /// (f) Fixture test: qualified type-expr uses parse cleanly.
+    /// Embeds `test/fixtures/trait_assoc_type_qual.ri` via include_str!.
+    #[test]
+    fn test_trait_assoc_type_qual_fixture_parses_cleanly() {
+        let mut parser = make_parser();
+        let source = include_str!("../test/fixtures/trait_assoc_type_qual.ri");
+        let tree = parser
+            .parse(source.as_bytes(), None)
+            .expect("parse failed");
+        let root = tree.root_node();
+        let kinds = collect_kinds(root);
+
+        // No parse errors
+        assert!(
+            !root.has_error(),
+            "unexpected parse error in trait_assoc_type_qual.ri: {kinds:?}"
+        );
+
+        // qualified_type must appear in the tree
+        assert!(
+            kinds.contains(&"qualified_type".to_string()),
+            "expected qualified_type node in qual fixture: {kinds:?}"
+        );
+    }
+
+    // ── Task 3971: REGRESSION PIN ────────────────────────────────────────────
+    // Trait-body associated-type declaration already works; these tests must stay
+    // GREEN throughout the entire task (before and after grammar changes).
+
+    /// (g1) REGRESSION — trait-body associated type without default: `trait T { type Material }`.
+    /// Must parse as `associated_type` under `trait_member`, no ERROR.
+    #[test]
+    fn test_trait_body_assoc_type_no_default_regression() {
+        let mut parser = make_parser();
+        let source = b"trait T { type Material }";
+        let tree = parser.parse(source, None).expect("parse failed");
+        let root = tree.root_node();
+        let kinds = collect_kinds(root);
+
+        // No parse errors
+        assert!(
+            !root.has_error(),
+            "REGRESSION: trait-body `type Material` (no default) broke: {kinds:?}"
+        );
+
+        // trait_member must exist
+        let trait_member = find_node_by_kind(root, "trait_member")
+            .expect("REGRESSION: trait_member not found");
+
+        // associated_type must be under trait_member
+        let assoc_type = find_node_by_kind(trait_member, "associated_type")
+            .expect("REGRESSION: associated_type not found under trait_member");
+
+        // name field is present, default field is absent
+        assert!(
+            assoc_type.child_by_field_name("name").is_some(),
+            "REGRESSION: associated_type missing 'name' field"
+        );
+        assert!(
+            assoc_type.child_by_field_name("default").is_none(),
+            "REGRESSION: associated_type without default should not have 'default' field"
+        );
+    }
+
+    /// (g2) REGRESSION — trait-body associated type with default: `trait T { type Material = Steel }`.
+    /// Must parse as `associated_type` with `default` field under `trait_member`, no ERROR.
+    #[test]
+    fn test_trait_body_assoc_type_with_default_regression() {
+        let mut parser = make_parser();
+        let source = b"trait T { type Material = Steel }";
+        let tree = parser.parse(source, None).expect("parse failed");
+        let root = tree.root_node();
+        let kinds = collect_kinds(root);
+
+        // No parse errors
+        assert!(
+            !root.has_error(),
+            "REGRESSION: trait-body `type Material = Steel` broke: {kinds:?}"
+        );
+
+        // trait_member → associated_type → default field
+        let trait_member = find_node_by_kind(root, "trait_member")
+            .expect("REGRESSION: trait_member not found");
+        let assoc_type = find_node_by_kind(trait_member, "associated_type")
+            .expect("REGRESSION: associated_type not found under trait_member");
+
+        assert!(
+            assoc_type.child_by_field_name("default").is_some(),
+            "REGRESSION: associated_type with default must have 'default' field"
+        );
+    }
+
     /// (4) REGRESSION: top-level bodyless fn must still produce an ERROR.
     /// Source: `fn f(x: Int) -> Int` (no body, at source_file scope)
     /// function_signature is scoped to trait_member only (not in _declaration),
