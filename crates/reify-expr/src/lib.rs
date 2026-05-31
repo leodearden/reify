@@ -767,10 +767,20 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     // solver but not yet converged — "partially determined" most
                     // precisely describes this in-flux state. This gives each
                     // predicate a distinct, non-overlapping role:
-                    //   determined()           → resolved (Determined)
-                    //   undetermined()         → no value (Undetermined)
+                    //   determined()           → resolved (Determined + non-Undef value)
+                    //   undetermined()         → no value (Undetermined state)
                     //   constrained()          → solver variable (Auto/Provisional)
                     //   partially_determined() → solver in progress (Provisional)
+                    //
+                    // Note: a geometry-undef cell stored as (Undef, Determined) —
+                    // e.g. a param whose default depends on geometry not yet resolved
+                    // — falls into NEITHER the determined() nor the undetermined()
+                    // bucket. This is intentional: determined() requires a non-Undef
+                    // value (see its arm above), while undetermined() checks only for
+                    // Undetermined state. Callers written as
+                    //   `if undetermined(x) { … } else { /* treat as determined */ }`
+                    // are therefore unsound for geometry-undef params; the correct
+                    // pattern is `if determined(x) { … } else { /* not yet ready */ }`.
                     DeterminacyPredicateKind::PartiallyDetermined => {
                         state == DeterminacyState::Provisional
                     }
@@ -6006,5 +6016,31 @@ mod tests {
             "determined(concrete_param) must be true for a concrete resolved cell (got {:?})",
             concrete_result,
         );
+
+        // Table-driven falsy-but-concrete guards: Bool(false) and Option(None) are
+        // genuine resolved values — they must remain "determined" even though they
+        // are falsy. This locks in the over-correction boundary documented in the
+        // impl: Value::is_undef() is true ONLY for Value::Undef, not for any other
+        // variant. A future change to is_undef() (or a new Value variant gaining
+        // undef-like semantics) that breaks this would be caught here.
+        let falsy_cases: &[(&str, Value)] = &[
+            ("Bool(false)", Value::Bool(false)),
+            ("Option(None)", Value::Option(None)),
+        ];
+        for (label, falsy_value) in falsy_cases {
+            let cell = ValueCellId::new("S", *label);
+            det_map.insert(cell.clone(), (falsy_value.clone(), DeterminacyState::Determined));
+            let ctx2 = EvalContext::new(&values, &[]).with_determinacy(&det_map);
+            let pred =
+                CompiledExpr::determinacy_predicate(DeterminacyPredicateKind::Determined, cell);
+            let result = eval_expr(&pred, &ctx2);
+            assert_eq!(
+                result,
+                Value::Bool(true),
+                "determined() must be true for falsy-but-concrete value {} (got {:?})",
+                label,
+                result,
+            );
+        }
     }
 }
