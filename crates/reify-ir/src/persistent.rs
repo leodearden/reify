@@ -38,12 +38,23 @@ impl<K: Clone + Hash + Eq, V: Clone> PersistentMap<K, V> {
         self.inner.get(k)
     }
 
-    /// Look up a mutable reference to a value by key. Uses `im::HashMap`'s
-    /// copy-on-write semantics: if the underlying trie node is shared with
-    /// another (cloned) map, it is cloned before the mutable borrow is
-    /// returned, preserving structural-sharing invariants for siblings.
-    pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
-        self.inner.get_mut(key)
+    /// Look up a mutable reference to a value by key.
+    ///
+    /// Uses `im::HashMap`'s copy-on-write semantics: if the underlying trie
+    /// node is shared with another (cloned) map, it is cloned before the
+    /// mutable borrow is returned, preserving structural-sharing invariants
+    /// for siblings.
+    ///
+    /// Accepts any borrowed form of the key (e.g. `&str` on a
+    /// `PersistentMap<String, V>`) via the same `K: Borrow<Q>` bound as
+    /// `get`.  All existing `&K` / `&String` callers continue to compile
+    /// unchanged (Q=K via the blanket `impl<T:?Sized> Borrow<T> for T`).
+    pub fn get_mut<Q>(&mut self, k: &Q) -> Option<&mut V>
+    where
+        K: std::borrow::Borrow<Q>,
+        Q: std::hash::Hash + Eq + ?Sized,
+    {
+        self.inner.get_mut(k)
     }
 
     /// Insert a key-value pair, mutating in place (but sharing structure on clone).
