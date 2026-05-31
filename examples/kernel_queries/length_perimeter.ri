@@ -1,0 +1,53 @@
+// Smoke fixture for length(Curve) → Scalar<Length>
+//                and perimeter(Surface) → Scalar<Length>
+// (task 3622, KGQ-ν, PRD docs/prds/v0_3/kernel-geometry-queries.md §9)
+//
+// User-observable signals:
+//   length(edge_of_box(10mm,20mm,30mm)) ∈ {10mm, 20mm, 30mm}
+//   perimeter(face_of_box(10mm,10mm,10mm)) = 40mm  (4 × 10mm)
+//
+// Compile-time cell type: Scalar<Length> for both cells, via
+// geometry_query_result_type("length") and geometry_query_result_type("perimeter")
+// in crates/reify-compiler/src/units.rs (KGQ-α registration chain).
+//
+// Pre-Phase-3 runtime note (engine_build.rs:3942-3949):
+//   post_process_topology_selectors iterates value cells once and does NOT
+//   chain through intermediate cells. `an_edge = single(edges(curve_box))` and
+//   `a_face = single(faces(surf_box))` evaluate to Value::Undef at DSL eval time
+//   because the selector→sub-handle cells are not hydrated before the pass runs.
+//   `length(an_edge)` / `perimeter(a_face)` therefore also evaluate to Value::Undef
+//   (resolve_parent_geometry_handle_arg returns None for an Undef arg cell → no
+//   diagnostic). This is the same limitation documented for curvature_smoke.ri,
+//   normal_smoke.ri, and adjacent_faces.ri. Only Warnings are emitted, not Errors.
+//
+// The eval dispatch arms and the numeric signals are pinned separately:
+//   - Unit tests (mock kernel, manually-hydrated GeometryHandle cells):
+//       crates/reify-eval/src/geometry_ops.rs (dispatch unit tests, task 3622)
+//   - OCCT-gated integration test (direct OcctKernelHandle queries):
+//       crates/reify-eval/tests/kernel_queries_length_perimeter.rs
+
+structure def LengthPerimeter {
+    // ── length(Curve) ──────────────────────────────────────────────────────
+    let curve_box = box(10mm, 20mm, 30mm)
+
+    // Let-bound sub-handle — single(edges(solid)) is let-bound so `length`
+    // receives a ValueRef arg (inline calls fall through to None).
+    // Runtime: Value::Undef pre-Phase-3 (eval-chaining limitation).
+    let an_edge   = single(edges(curve_box))
+
+    // Compile-type: Scalar<Length> (units.rs KGQ-ν registration).
+    // Runtime: Value::Undef (an_edge is Undef → resolve returns None → no diag).
+    let edge_len  = length(an_edge)
+
+    // ── perimeter(Surface) ─────────────────────────────────────────────────
+    let surf_box  = box(10mm, 10mm, 10mm)
+
+    // Let-bound sub-handle — single(faces(solid)) is let-bound so `perimeter`
+    // receives a ValueRef arg.
+    // Runtime: Value::Undef pre-Phase-3.
+    let a_face    = single(faces(surf_box))
+
+    // Compile-type: Scalar<Length> (units.rs KGQ-ν registration).
+    // Runtime: Value::Undef (a_face is Undef → resolve returns None → no diag).
+    let face_perim = perimeter(a_face)
+}
