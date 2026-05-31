@@ -180,6 +180,7 @@ fn build_nested_guarded_members(depth: usize, target: &str) -> Vec<reify_ast::Me
         default: None,
         where_clause: None,
         annotations: Vec::new(),
+        is_priv: false,
         span: dummy_span,
         content_hash: dummy_hash,
     })];
@@ -278,6 +279,7 @@ fn find_named_member_span_hand_constructed_else_only_found() {
             default: None,
             where_clause: None,
             annotations: Vec::new(),
+            is_priv: false,
             span: param_span,
             content_hash: dummy_hash,
         })],

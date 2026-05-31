@@ -81,6 +81,7 @@ fn make_param(name: &str) -> MemberDecl {
         default: None,
         where_clause: None,
         annotations: Vec::new(),
+        is_priv: false,
         span: dummy_span(),
         content_hash: dummy_hash(),
     })
@@ -98,6 +99,7 @@ fn make_sub_with_body(name: &str, body: Option<Vec<MemberDecl>>) -> SubDecl {
         param_overrides: Vec::new(),
         keyed_members: Vec::new(),
         is_aux: false,
+        is_priv: false,
         pose_expr: None,
         span: dummy_span(),
         content_hash: dummy_hash(),

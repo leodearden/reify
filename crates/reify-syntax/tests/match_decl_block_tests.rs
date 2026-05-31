@@ -36,6 +36,7 @@ fn arm(patterns: Vec<&str>, sub_name: &str, structure_name: &str) -> MatchArmDec
             param_overrides: vec![],
             keyed_members: vec![],
             is_aux: false,
+            is_priv: false,
             pose_expr: None,
             span: dummy_span(),
             content_hash: dummy_hash(),
@@ -138,6 +139,7 @@ fn find_named_member_span_descends_into_match_arm_decl_group() {
                 default: None,
                 where_clause: None,
                 annotations: vec![],
+                is_priv: false,
                 span: param_span,
                 content_hash: dummy_hash(),
             });
@@ -179,6 +181,7 @@ fn walk_specialization_scope_members_visits_match_arm_decl_group_arms() {
         param_overrides: vec![],
         keyed_members: vec![],
         is_aux: false,
+        is_priv: false,
         pose_expr: None,
         span: dummy_span(),
         content_hash: dummy_hash(),
