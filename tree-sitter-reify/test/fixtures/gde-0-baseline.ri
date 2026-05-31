@@ -1,0 +1,4 @@
+/// Baseline: bare enum declaration — α regression floor.
+/// Parses with 0 ERROR nodes before and after the type-param grammar change.
+/// PRD §4.5 / task α.
+enum Dir { In, Out }
