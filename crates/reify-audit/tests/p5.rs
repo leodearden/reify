@@ -1413,6 +1413,123 @@ mod tests {
             f.evidence
         );
     }
+
+    /// H1 integration test: a done task whose file-level corroboration is clean
+    /// (diff covers metadata.files, task_completed event present) but whose added
+    /// test lines contain a placeholder-named fn with a vacuous empty assertion.
+    ///
+    /// Replicates the task 1638/1904/2199 phantom-done pattern:
+    /// the test fn `activate_expands_geometric_params_placeholder_to_empty_list`
+    /// asserts `is_empty()` — both the placeholder marker in the fn name AND the
+    /// empty-assertion signal are present → one P5TestsAssertEmpty Medium finding.
+    ///
+    /// RED until check_tests_assert_empty is implemented (step-4).
+    #[test]
+    fn h1_placeholder_empty_assertion_test_flags_phantom_done() {
+        let conn = seed_db();
+        insert_task_completed_event(&conn, "H1T1");
+
+        let mut git = MockGitOps::new();
+        // File-level corroboration is clean: diff covers both files.
+        git.set_diff_changed_paths(
+            "main",
+            "h1_commit",
+            vec![
+                "crates/reify-eval/src/expander.rs".to_string(),
+                "crates/reify-eval/tests/expander_tests.rs".to_string(),
+            ],
+        );
+        git.set_log_grep("main", "H1T1", vec![]);
+
+        // Seed the added lines in the test file: a placeholder fn with is_empty().
+        // The fn name contains "placeholder" (marker) and "empty_list" (vacuous hint);
+        // the body asserts is_empty() — both gates triggered.
+        git.set_diff_added_lines_in_commit(
+            "h1_commit",
+            "crates/reify-eval/tests/expander_tests.rs",
+            vec![
+                (10, "    #[test]".to_string()),
+                (11, "    fn activate_expands_geometric_params_placeholder_to_empty_list() {".to_string()),
+                (12, "        let result = activate_expands_geometric_params();".to_string()),
+                (13, "        assert!(result.is_empty());".to_string()),
+                (14, "    }".to_string()),
+            ],
+        );
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "H1T1".to_string(),
+            TaskMetadata {
+                task_id: "H1T1".to_string(),
+                status: "done".to_string(),
+                files: vec![
+                    "crates/reify-eval/src/expander.rs".to_string(),
+                    "crates/reify-eval/tests/expander_tests.rs".to_string(),
+                ],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("h1_commit".to_string()),
+                    note: None,
+                }),
+                title: "Activate geometric param expansion".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        let h1_findings: Vec<_> = findings
+            .iter()
+            .filter(|f| f.pattern == Pattern::P5TestsAssertEmpty)
+            .collect();
+        assert_eq!(
+            h1_findings.len(),
+            1,
+            "expected exactly one P5TestsAssertEmpty finding; got {:?}",
+            findings
+        );
+        let f = h1_findings[0];
+        assert_eq!(f.severity, Severity::Medium, "H1 must fire at Medium; got {:?}", f.severity);
+        assert_eq!(f.task_id, "H1T1");
+        // Evidence must cite the test file.
+        let file_ev = f.evidence.iter().find_map(|e| match e {
+            EvidenceRef::File { path } => Some(path.as_str()),
+            _ => None,
+        });
+        assert!(
+            file_ev.is_some_and(|p| p.contains("expander_tests.rs")),
+            "evidence must cite the test file; got {:?}",
+            f.evidence
+        );
+
+        // check_pre_done must also return the H1 finding (D-1 parity).
+        let pre_done = p5_phantom_done::check_pre_done(&ctx, "H1T1");
+        let h1_pre: Vec<_> = pre_done
+            .iter()
+            .filter(|f| f.pattern == Pattern::P5TestsAssertEmpty)
+            .collect();
+        assert_eq!(
+            h1_pre.len(),
+            1,
+            "check_pre_done must also find P5TestsAssertEmpty; got {:?}",
+            pre_done
+        );
+    }
 }
 
 } // mod p5
