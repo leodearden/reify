@@ -288,6 +288,65 @@ mod tests {
         ]
     }
 
+    // ── Scaling-ratio helpers ────────────────────────────────────────────────
+
+    /// Coefficient-independent functional-form scaling-ratio assertions for
+    /// bending-hinge ctors (living hinge and cross-spring pivot).
+    ///
+    /// k = γ · E · I / L  where  I = width · thickness³ / 12.
+    /// Tests four independent ratios: t³, 1/L, E (linear), width (linear).
+    /// γ cancels in all four ratios so the same helper covers both variants;
+    /// any mis-scaling in the formula (wrong exponent on t, width vs. length
+    /// swap, etc.) fails independently of the γ constant value.
+    fn assert_bending_hinge_scaling(ctor_name: &str) {
+        let length = 0.02_f64;
+        let width = 0.005_f64;
+        let thickness = 0.0005_f64;
+        let e = 205e9_f64;
+
+        // Inline k-extractor to keep call sites concise.
+        let k = |l: f64, w: f64, t: f64, e: f64| {
+            spring_rate_si(&crate::eval_builtin(
+                ctor_name,
+                &bending_hinge_args_6(l, w, t, steel_with_e(e)),
+            ))
+        };
+        let k_base = k(length, width, thickness, e);
+
+        // t³ scaling: double t → ×2³ = 8  (I = w·t³/12 ∝ t³).
+        // 2·thickness = 0.001 m < length = 0.02 m — constraint satisfied.
+        let ratio_t = k(length, width, 2.0 * thickness, e) / k_base;
+        let rel_t = (ratio_t - 8.0).abs() / 8.0;
+        assert!(
+            rel_t < 1e-9,
+            "{ctor_name}: t³ scaling: ratio {ratio_t} vs 8 (rel {rel_t})"
+        );
+
+        // 1/L scaling: double L → ×1/2.
+        let ratio_l = k(2.0 * length, width, thickness, e) / k_base;
+        let rel_l = (ratio_l - 0.5).abs() / 0.5;
+        assert!(
+            rel_l < 1e-9,
+            "{ctor_name}: 1/L scaling: ratio {ratio_l} vs 0.5 (rel {rel_l})"
+        );
+
+        // E linear scaling: double E → ×2  (k ∝ E·I/L).
+        let ratio_e = k(length, width, thickness, 2.0 * e) / k_base;
+        let rel_e = (ratio_e - 2.0).abs() / 2.0;
+        assert!(
+            rel_e < 1e-9,
+            "{ctor_name}: E scaling: ratio {ratio_e} vs 2 (rel {rel_e})"
+        );
+
+        // Width linear scaling: double width → ×2  (I = w·t³/12 ∝ w).
+        let ratio_w = k(length, 2.0 * width, thickness, e) / k_base;
+        let rel_w = (ratio_w - 2.0).abs() / 2.0;
+        assert!(
+            rel_w < 1e-9,
+            "{ctor_name}: width scaling: ratio {ratio_w} vs 2 (rel {rel_w})"
+        );
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // step-1: RED — prb_living_hinge test suite
     // ─────────────────────────────────────────────────────────────────────────
@@ -355,6 +414,13 @@ mod tests {
             }
             other => panic!("expected spring_rate Scalar, got {other:?}"),
         }
+    }
+
+    /// (b-scaling) Functional-form scaling-ratio assertions for living hinge:
+    /// k ∝ t³, ∝ 1/L, ∝ E, ∝ width — coefficient-independent of γ_lh=1.0.
+    #[test]
+    fn prb_living_hinge_scaling_ratios() {
+        assert_bending_hinge_scaling("prb_living_hinge");
     }
 
     /// (c) Range branches: yield-capped, PRB-capped, and no-yield fallback.
@@ -592,6 +658,14 @@ mod tests {
         }
     }
 
+    /// (b-scaling) Functional-form scaling-ratio assertions for cross-spring pivot:
+    /// k ∝ t³, ∝ 1/L, ∝ E, ∝ width — same formula structure as living hinge,
+    /// γ_cs=2.0 cancels in all ratios so this is coefficient-independent.
+    #[test]
+    fn prb_cross_spring_pivot_scaling_ratios() {
+        assert_bending_hinge_scaling("prb_cross_spring_pivot");
+    }
+
     /// (c) Range branches for cross-spring: same θ_yield = yield·L/(E·t/2) formula.
     #[test]
     fn prb_cross_spring_pivot_range_branches() {
@@ -778,6 +852,47 @@ mod tests {
                 other => panic!("n={n_blades}: expected spring_rate Scalar, got {other:?}"),
             }
         }
+    }
+
+    /// (b-scaling) Functional-form scaling-ratio assertions for LET joint:
+    /// k ∝ t³, ∝ 1/L, ∝ n_blades, ∝ G(E) — formula-structure checks independent
+    /// of the absolute closed-form value.
+    #[test]
+    fn prb_let_joint_scaling_ratios() {
+        let length = 0.02_f64;
+        let width = 0.005_f64;
+        let thickness = 0.0005_f64;
+        let e = 205e9_f64;
+        let n_base = 2_i64;
+
+        let k = |l: f64, w: f64, t: f64, n: i64, e: f64| {
+            spring_rate_si(&crate::eval_builtin(
+                "prb_let_joint",
+                &let_args_7(l, w, t, n, steel_with_e(e)),
+            ))
+        };
+        let k_base = k(length, width, thickness, n_base, e);
+
+        // t³ scaling: double t → ×2³ = 8  (J = w·t³/3 ∝ t³).
+        // 2·thickness = 0.001 m < length = 0.02 m — constraint satisfied.
+        let ratio_t = k(length, width, 2.0 * thickness, n_base, e) / k_base;
+        let rel_t = (ratio_t - 8.0).abs() / 8.0;
+        assert!(rel_t < 1e-9, "LET t³ scaling: ratio {ratio_t} vs 8 (rel {rel_t})");
+
+        // 1/L scaling: double L → ×1/2.
+        let ratio_l = k(2.0 * length, width, thickness, n_base, e) / k_base;
+        let rel_l = (ratio_l - 0.5).abs() / 0.5;
+        assert!(rel_l < 1e-9, "LET 1/L scaling: ratio {ratio_l} vs 0.5 (rel {rel_l})");
+
+        // n_blades linear: double n → ×2  (k = n·G·J/L ∝ n).
+        let ratio_n = k(length, width, thickness, 2 * n_base, e) / k_base;
+        let rel_n = (ratio_n - 2.0).abs() / 2.0;
+        assert!(rel_n < 1e-9, "LET n_blades scaling: ratio {ratio_n} vs 2 (rel {rel_n})");
+
+        // G(E) scaling: double E → G = E/(2(1+ν)) doubles (ν fixed) → ×2.
+        let ratio_e = k(length, width, thickness, n_base, 2.0 * e) / k_base;
+        let rel_e = (ratio_e - 2.0).abs() / 2.0;
+        assert!(rel_e < 1e-9, "LET E→G scaling: ratio {ratio_e} vs 2 (rel {rel_e})");
     }
 
     /// (c) Range branches for LET: torsional yield θ = σy·L/(√3·G·t).
