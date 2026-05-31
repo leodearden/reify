@@ -12,8 +12,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, RealizationReadHandle};
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
-use reify_core::{DimensionVector, Severity, ValueCellId};
-use reify_ir::{OpaqueState, Value};
+use reify_core::{DimensionVector, Severity, Type, ValueCellId};
+use reify_ir::{FieldSourceKind, OpaqueState, SampledGridKind, Value};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -440,16 +440,37 @@ fn tet_trampoline_shell_channels_is_undef() {
     );
 }
 
-/// I-1 (tet): `result.stress` must be `Value::Undef` — unchanged from the
-/// pre-task baseline (only a new key was added, not a restructure).
+// ── step-5/α: RED — B1/B2: displacement+stress as Regular3D Sampled Fields ───
+//
+// B1: result.displacement and result.stress are now Value::Field{Sampled,Regular3D},
+//     NOT Value::Undef.  tet_trampoline_stress_is_undef (added by sibling #4067/δ)
+//     is intentionally removed here because α's purpose is precisely to populate
+//     those fields.
+//
+// NOTE: tet_trampoline_stress_is_undef was removed (its Undef-premise is voided
+// by α).  tet_trampoline_shell_channels_is_undef is KEPT (shell_channels stays
+// Undef under α — only displacement and stress are populated).
+
+/// B1/B2 — displacement and stress are populated Sampled Regular3D Fields.
 ///
-/// This is a non-breaking guarantee: the existing `stress` value is preserved
-/// bit-for-bit; step-6 only ADDS `shell_channels`, it does NOT touch `stress`.
+/// B1 assertions (shape/metadata):
+/// - `displacement` is `Value::Field { source: Sampled, kind: Regular3D,
+///   domain: Point3<Length>, codomain: Vector3<Length> }` with
+///   `data.len() == grid_count × 3`; ALL samples finite.
+/// - `stress` is `Value::Field { source: Sampled, kind: Regular3D,
+///   domain: Point3<Length>, codomain: Tensor<2,3,Pressure> }` with
+///   `data.len() == grid_count × 9`; ALL samples finite.
+/// - Both fields share identical SampledField grid metadata.
+/// - `frame == Undef`; `shell_channels == Undef`.
 ///
-/// GREEN after step-4 (trampoline already emits stress=Undef); stays GREEN
-/// through step-6 (additive change).
+/// B2 assertions (von Mises consistency ratio):
+/// - `field_max_vm ≤ max_von_mises × (1+1e-6)` (provable upper bound —
+///   Kronecker-δ coincidence + convexity of vM + convex nodal averaging).
+/// - `field_max_vm ≥ 0.5 × max_von_mises` (recovery-quality floor).
+///
+/// RED until step-6 populates displacement/stress in the trampoline.
 #[test]
-fn tet_trampoline_stress_is_undef() {
+fn e2e_cantilever_b1_b2_displacement_stress_fields() {
     let source = cantilever_source();
     let compiled = parse_and_compile_with_stdlib(source);
 
@@ -457,16 +478,174 @@ fn tet_trampoline_stress_is_undef() {
     reify_eval::compute_targets::register_compute_fns(&mut engine);
     let eval_result = engine.eval(&compiled);
 
+    // No Error diagnostics.
+    let errors: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no Error diagnostics, got: {:?}", errors);
+
     let result_cell = ValueCellId::new("FeaCantileverSmoke", "result");
     let result_val = eval_result
         .values
         .get(&result_cell)
         .unwrap_or_else(|| panic!("cell FeaCantileverSmoke.result not found"));
 
+    // ── B1: displacement ──────────────────────────────────────────────────────
+    let disp_val = extract_field(result_val, "displacement")
+        .unwrap_or_else(|| panic!("displacement field missing from result"));
+
+    let (disp_domain, disp_codomain, disp_sf) = match &disp_val {
+        Value::Field { domain_type, codomain_type, source, lambda } => {
+            assert!(
+                matches!(source, FieldSourceKind::Sampled),
+                "displacement source must be Sampled, got: {:?}", source
+            );
+            let sf = match lambda.as_ref() {
+                Value::SampledField(sf) => sf.clone(),
+                other => panic!("displacement lambda must be SampledField, got: {:?}", other),
+            };
+            (domain_type.clone(), codomain_type.clone(), sf)
+        }
+        other => panic!("expected displacement to be Value::Field, got: {:?}", other),
+    };
+    assert_eq!(disp_sf.kind, SampledGridKind::Regular3D,
+        "displacement SampledField.kind must be Regular3D");
+    assert_eq!(disp_domain, Type::point3(Type::length()),
+        "displacement domain_type mismatch");
+    assert_eq!(disp_codomain, Type::vec3(Type::length()),
+        "displacement codomain_type mismatch");
+
+    // ── B1: stress ────────────────────────────────────────────────────────────
+    let stress_val = extract_field(result_val, "stress")
+        .unwrap_or_else(|| panic!("stress field missing from result"));
+
+    let (stress_codomain, stress_sf) = match &stress_val {
+        Value::Field { domain_type, codomain_type, source, lambda } => {
+            assert!(
+                matches!(source, FieldSourceKind::Sampled),
+                "stress source must be Sampled, got: {:?}", source
+            );
+            assert_eq!(*domain_type, Type::point3(Type::length()),
+                "stress domain_type mismatch");
+            let sf = match lambda.as_ref() {
+                Value::SampledField(sf) => sf.clone(),
+                other => panic!("stress lambda must be SampledField, got: {:?}", other),
+            };
+            (codomain_type.clone(), sf)
+        }
+        other => panic!("expected stress to be Value::Field, got: {:?}", other),
+    };
+    assert_eq!(stress_sf.kind, SampledGridKind::Regular3D,
+        "stress SampledField.kind must be Regular3D");
     assert_eq!(
-        extract_field(result_val, "stress"),
+        stress_codomain,
+        Type::tensor(2, 3, Type::Scalar { dimension: DimensionVector::PRESSURE }),
+        "stress codomain_type mismatch"
+    );
+
+    // ── B1: grid counts ───────────────────────────────────────────────────────
+    // Cantilever fixture: length=1.0m, height=0.1m, nz=6
+    //   nx = round(1.0/0.1 × 6) = round(60) = 60
+    //   ny = 1
+    //   grid_count = (nx+1)×(ny+1)×(nz+1) = 61×2×7 = 854
+    let nz: usize = 6;
+    let ny: usize = 1;
+    let nx: usize = ((1.0_f64 / 0.1_f64 * nz as f64).round() as usize).max(1);
+    let grid_count = (nx + 1) * (ny + 1) * (nz + 1);
+
+    assert_eq!(
+        disp_sf.data.len(),
+        grid_count * 3,
+        "displacement data.len() must be grid_count({})×3={}, got {}",
+        grid_count, grid_count * 3, disp_sf.data.len()
+    );
+    assert_eq!(
+        stress_sf.data.len(),
+        grid_count * 9,
+        "stress data.len() must be grid_count({})×9={}, got {}",
+        grid_count, grid_count * 9, stress_sf.data.len()
+    );
+
+    // ── B1: disp + stress share identical grid metadata ───────────────────────
+    assert_eq!(disp_sf.bounds_min, stress_sf.bounds_min, "grid bounds_min mismatch between disp and stress");
+    assert_eq!(disp_sf.bounds_max, stress_sf.bounds_max, "grid bounds_max mismatch between disp and stress");
+    assert_eq!(disp_sf.spacing, stress_sf.spacing, "grid spacing mismatch between disp and stress");
+    assert_eq!(disp_sf.axis_grids.len(), stress_sf.axis_grids.len(),
+        "axis_grids count mismatch between disp and stress");
+    for (i, (ag_d, ag_s)) in disp_sf.axis_grids.iter().zip(stress_sf.axis_grids.iter()).enumerate() {
+        assert_eq!(ag_d, ag_s, "axis_grids[{}] mismatch between disp and stress", i);
+    }
+
+    // ── B1: ALL grid samples finite (prismatic box → every point inside solid) ──
+    assert!(
+        disp_sf.data.iter().all(|v| v.is_finite()),
+        "displacement field has non-finite values; first non-finite index: {:?}",
+        disp_sf.data.iter().position(|v| !v.is_finite())
+    );
+    assert!(
+        stress_sf.data.iter().all(|v| v.is_finite()),
+        "stress field has non-finite values; first non-finite index: {:?}",
+        stress_sf.data.iter().position(|v| !v.is_finite())
+    );
+
+    // ── B1: frame and shell_channels remain Undef ─────────────────────────────
+    assert_eq!(
+        extract_field(result_val, "frame"),
         Some(Value::Undef),
-        "tet result.stress must be Undef (I-1 non-breaking); got: {:?}",
-        extract_field(result_val, "stress")
+        "result.frame must remain Undef (tet/solid: no per-element local frame)"
+    );
+    assert_eq!(
+        extract_field(result_val, "shell_channels"),
+        Some(Value::Undef),
+        "result.shell_channels must remain Undef (solid elements have no through-thickness data)"
+    );
+
+    // ── B2: field-max von Mises consistency ratio ─────────────────────────────
+    // Inline the standard vM formula (compute_von_mises_3x3 is pub(crate) in
+    // reify-stdlib, unreachable from this test crate).
+    // Layout: row-major [s00,s01,s02, s10,s11,s12, s20,s21,s22].
+    // σ_VM = sqrt(((s00-s11)²+(s11-s22)²+(s22-s00)²)/2 + 3·(s01²+s12²+s02²))
+    let mut field_max_vm: f64 = 0.0;
+    for chunk in stress_sf.data.chunks_exact(9) {
+        // Skip any window containing NaN (out-of-solid sentinel).
+        if chunk.iter().any(|v| !v.is_finite()) {
+            continue;
+        }
+        let (s00, s11, s22) = (chunk[0], chunk[4], chunk[8]);
+        let (s01, s12, s02) = (chunk[1], chunk[5], chunk[2]);
+        let vm = f64::sqrt(
+            0.5 * ((s00 - s11).powi(2) + (s11 - s22).powi(2) + (s22 - s00).powi(2))
+                + 3.0 * (s01.powi(2) + s12.powi(2) + s02.powi(2)),
+        );
+        if vm > field_max_vm {
+            field_max_vm = vm;
+        }
+    }
+
+    let max_von_mises = match extract_max_von_mises(result_val) {
+        Some(Value::Scalar { si_value, .. }) => si_value,
+        other => panic!("expected Scalar max_von_mises, got: {:?}", other),
+    };
+
+    assert!(
+        field_max_vm.is_finite() && field_max_vm > 0.0,
+        "field-max von Mises must be positive finite, got {:.3e}",
+        field_max_vm
+    );
+    // Upper bound: provable via Kronecker-δ + convexity of vM + convex nodal avg.
+    assert!(
+        field_max_vm <= max_von_mises * (1.0 + 1e-6),
+        "field-max vM {:.3e} Pa exceeds element-max {:.3e} Pa × (1+1e-6) — upper bound violated",
+        field_max_vm,
+        max_von_mises
+    );
+    // Lower bound: recovery-quality floor (0.5× is conservative; peak node ≳0.7× in practice).
+    assert!(
+        field_max_vm >= 0.5 * max_von_mises,
+        "field-max vM {:.3e} Pa < 0.5 × element-max {:.3e} Pa — recovery quality floor violated",
+        field_max_vm,
+        max_von_mises
     );
 }
