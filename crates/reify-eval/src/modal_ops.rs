@@ -3988,6 +3988,100 @@ mod tests {
         }
     }
 
+    /// Task 4131: a missing / degenerate `modal_result` input — either `Value::Undef`
+    /// (upstream modal analysis failed) or a well-formed `ModalResult` struct with an
+    /// empty `modes` list — is FLAGGED, not silent.
+    ///
+    /// With a valid non-empty forcing and a valid non-empty time grid (so neither the
+    /// empty-forcing nor the degenerate-grid guard can fire), a degenerate
+    /// `modal_result` must short-circuit to a *flagged* degenerate history: an `Error`
+    /// diagnostic containing `"E_TransientModalResultMissing"` plus an empty
+    /// `DisplacementTimeHistory` — so a silently zero-displacement result is never
+    /// fabricated by summing over zero modes.
+    ///
+    /// Both degenerate shapes route through the same
+    /// `modal_result_modes(&modal_result).is_empty()` branch.
+    ///
+    /// RED: the current trampoline loops over zero modes and returns an un-flagged
+    /// empty history with NO diagnostic, so assertion (a) fails.
+    #[test]
+    fn transient_response_missing_modal_result_emits_modal_result_missing() {
+        // Non-empty forcing — the empty-forcing guard must NOT fire.
+        let forcing = forcing_history(vec![step_force("tip", [0.0, 0.0, 1.0], 10.0, 0.0)]);
+        // Valid non-empty grid — the degenerate-grid guard must NOT fire.
+        let (t_start, t_end, dt) = (0.0_f64, 0.1_f64, 0.005_f64);
+        assert!(
+            uniform_time_grid(t_start, t_end, dt).len() > 1,
+            "fixture grid must be non-empty so neither the empty-forcing nor the \
+             degenerate-grid guard masks the missing-modal-result guard",
+        );
+
+        // Two degenerate modal_result shapes: Undef (upstream node errored) and a
+        // well-formed ModalResult struct with an empty `modes` list.
+        for (label, modal_result) in [
+            ("Value::Undef", Value::Undef),
+            ("modal_result_with_modes(vec![])", modal_result_with_modes(vec![])),
+        ] {
+            let value_inputs = vec![
+                modal_result,
+                forcing.clone(),
+                time_scalar(t_start),
+                time_scalar(t_end),
+                time_scalar(dt),
+            ];
+            let outcome = solve_transient_response_trampoline(
+                &value_inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            );
+            let ComputeOutcome::Completed { result, diagnostics, .. } = outcome else {
+                panic!("[{label}] expected a Completed outcome");
+            };
+
+            // (a) an Error diagnostic identifies the missing-modal-result condition.
+            let has_err = diagnostics.iter().any(|d| {
+                d.severity == Severity::Error
+                    && d.message.contains("E_TransientModalResultMissing")
+            });
+            assert!(
+                has_err,
+                "[{label}] expected an Error containing \"E_TransientModalResultMissing\"; \
+                 got {diagnostics:?}",
+            );
+
+            // (b) the result is a degenerate DisplacementTimeHistory: empty t_samples
+            //     and empty mode_coords (no transient was integrated).
+            let data = match &result {
+                Value::StructureInstance(d) => d,
+                other => panic!(
+                    "[{label}] expected a DisplacementTimeHistory StructureInstance; \
+                     got {other:?}"
+                ),
+            };
+            assert_eq!(data.type_name, "DisplacementTimeHistory");
+            match data.fields.get("t_samples") {
+                Some(Value::List(ts)) => assert!(
+                    ts.is_empty(),
+                    "[{label}] degenerate t_samples must be empty; got {} samples",
+                    ts.len(),
+                ),
+                other => panic!("[{label}] t_samples must be a Value::List; got {other:?}"),
+            }
+            match data.fields.get("mode_coords") {
+                Some(Value::List(mc)) => assert!(
+                    mc.is_empty(),
+                    "[{label}] degenerate mode_coords must be empty; got {} modes",
+                    mc.len(),
+                ),
+                other => {
+                    panic!("[{label}] mode_coords must be a Value::List; got {other:?}")
+                }
+            }
+        }
+    }
+
     /// step-15 (RED → GREEN in step-16): `displacement_at` reconstructs the exact
     /// Φ-projected single-location series u(tⱼ) = Σᵢ (Φᵢ[node]·dir)·mode_coords[i][j],
     /// returning a non-Undef `List<Real>` (PRD §5.2) — covering the task's
