@@ -339,14 +339,13 @@ mod tests {
         }))
     }
 
-    /// Extract an f64 from a numeric cell (`Real` / `Int` / `Scalar`).
+    /// Extract an f64 from a numeric cell (`Real` / `Int` / `Scalar`),
+    /// delegating to the module's `cell_f64` (shared via `use super::*`) so the
+    /// numeric-extraction logic is single-sourced within this module rather than
+    /// re-spelled in the tests. Panics on a non-numeric cell (the tests want a
+    /// hard failure, not the `None` the production helper returns).
     fn num(v: &Value) -> f64 {
-        match v {
-            Value::Real(r) => *r,
-            Value::Int(n) => *n as f64,
-            Value::Scalar { si_value, .. } => *si_value,
-            other => panic!("expected numeric value, got {other:?}"),
-        }
+        cell_f64(v).unwrap_or_else(|| panic!("expected numeric value, got {v:?}"))
     }
 
     /// Extract the three component magnitudes from a `Value::Point`.
