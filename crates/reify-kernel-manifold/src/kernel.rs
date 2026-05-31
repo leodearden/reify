@@ -171,6 +171,20 @@ impl GeometryKernel for ManifoldKernel {
                 }
                 Ok(Value::Real(d))
             }
+            // Point-in-solid via ray-cast crossing count.
+            // PRD §5.4 KGQ-β / task 3624 (KGQ-ο).
+            GeometryQuery::Contains {
+                handle,
+                px,
+                py,
+                pz,
+                tolerance,
+            } => {
+                let m = self
+                    .get_manifold(*handle)
+                    .map_err(|e| QueryError::QueryFailed(format!("{e:?}")))?;
+                Ok(Value::Bool(crate::queries::contains(m, *px, *py, *pz, *tolerance)))
+            }
             // All other queries remain follow-up work (see STUB_MSG).
             _ => Err(QueryError::QueryFailed(STUB_MSG.into())),
         }

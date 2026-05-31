@@ -94,6 +94,68 @@ pub(crate) fn distance(a: &Manifold, b: &Manifold) -> f64 {
     a.min_gap(b, search_length)
 }
 
+/// Test whether a 3-D point `(px, py, pz)` lies inside a closed solid
+/// [`Manifold`] using a ray-cast crossing-count (Jordan curve theorem in 3-D).
+///
+/// # Algorithm
+///
+/// 1. Obtain the bounding box of `m`; if absent (empty/degenerate manifold)
+///    return `false` — an empty solid contains nothing.
+/// 2. Choose a fixed **non-axis-aligned** unit direction
+///    `d = normalize([0.7, 0.5, 0.3])`.  A non-axis-aligned direction avoids
+///    the measure-zero degeneracies that occur when a ray hits an edge or
+///    vertex exactly — on axis-aligned cube fixtures an axis-parallel ray can
+///    graze a shared edge, producing 0 or 2 hits for a single face crossing.
+/// 3. Set the far endpoint `end = point + d * L` where
+///    `L = 2 × (bbox diagonal + point-to-bbox-corner distance)`, guaranteeing
+///    `end` lies outside the solid's bounding box.
+/// 4. Cast `m.ray_cast(origin, end)` to obtain all boundary crossings.
+/// 5. **Odd** crossing count → inside; **even** → outside (Jordan criterion).
+///
+/// # Boundary behaviour
+///
+/// Points exactly on the mesh surface have approximate (mesh-dependent)
+/// results — the crossing count depends on whether the ray enters or exits the
+/// face exactly at the query point.  For well-separated interior/exterior
+/// test points this is not an issue.  The `tolerance` parameter is accepted
+/// for API parity with the OCCT path but does not affect the ray-cast logic;
+/// exact ON-boundary classification is outside the scope of the Mesh kernel.
+///
+/// # Returns
+///
+/// `true` if the crossing count is odd (inside), `false` otherwise.
+pub(crate) fn contains(m: &Manifold, px: f64, py: f64, pz: f64, _tolerance: f64) -> bool {
+    // Step 1: bounding box guard.
+    let bb = match m.bounding_box() {
+        Some(bb) => bb,
+        None => return false, // empty / degenerate manifold contains nothing
+    };
+
+    // Step 2: fixed non-axis-aligned direction (avoids cube-face degeneracies).
+    // Normalise [0.7, 0.5, 0.3].
+    let len = (0.7_f64 * 0.7 + 0.5 * 0.5 + 0.3 * 0.3).sqrt();
+    let dx = 0.7 / len;
+    let dy = 0.5 / len;
+    let dz = 0.3 / len;
+
+    // Step 3: far endpoint guaranteed outside bbox.
+    let [bx0, by0, bz0] = bb.min();
+    let [bx1, by1, bz1] = bb.max();
+    let bbox_diag = ((bx1 - bx0).powi(2) + (by1 - by0).powi(2) + (bz1 - bz0).powi(2)).sqrt();
+    // Also include query-point-to-bbox distance for points far outside.
+    let to_corner = ((px - bx0).powi(2) + (py - by0).powi(2) + (pz - bz0).powi(2)).sqrt();
+    let l = 2.0 * (bbox_diag + to_corner) + 1.0; // +1 avoids zero for tiny bbox
+
+    let end = [px + dx * l, py + dy * l, pz + dz * l];
+    let origin = [px, py, pz];
+
+    // Step 4: ray cast.
+    let hits = m.ray_cast(origin, end);
+
+    // Step 5: odd crossing count → inside.
+    hits.len() % 2 == 1
+}
+
 /// Test whether two [`Manifold`] meshes intersect (have non-empty boolean
 /// intersection).
 ///
