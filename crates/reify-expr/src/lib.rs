@@ -3028,16 +3028,22 @@ fn eval_pow(lv: &Value, rv: &Value) -> Value {
         (Value::Real(base), Value::Int(exp)) => Value::Real(base.powi(*exp as i32)),
         (Value::Real(base), Value::Real(exp)) => Value::Real(base.powf(*exp)),
         (Value::Int(base), Value::Real(exp)) => Value::Real((*base as f64).powf(*exp)),
-        // Scalar ^ Int: raise value, multiply dimension exponents
+        // Scalar ^ Int: raise value, multiply dimension exponents.
+        // Guard with i8::try_from: out-of-range exponents return Undef (defense-in-depth;
+        // the compile guard from task-4106 step-2 normally rejects these first).
+        // Mirrors units.rs:680-681 (`i8::try_from` pattern).
         (
             Value::Scalar {
                 si_value,
                 dimension,
             },
             Value::Int(n),
-        ) => Value::Scalar {
-            si_value: si_value.powi(*n as i32),
-            dimension: dimension.pow(*n as i8),
+        ) => match i8::try_from(*n) {
+            Ok(n_i8) => Value::Scalar {
+                si_value: si_value.powi(*n as i32),
+                dimension: dimension.pow(n_i8),
+            },
+            Err(_) => Value::Undef,
         },
         _ => Value::Undef,
     }
