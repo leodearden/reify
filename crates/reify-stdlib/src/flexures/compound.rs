@@ -107,6 +107,13 @@ fn delta_max(c: &CompoundInputs<'_>) -> f64 {
     }
 }
 
+/// Compute the single-stage Roberts-approximation parasitic error.
+///
+/// δ_rot = L·(1 − cos(δ_max/L))  (arc height of the Roberts circle, PRD §6.1)
+fn parasitic_single(length: f64, delta: f64) -> f64 {
+    length * (1.0 - (delta / length).cos())
+}
+
 /// Evaluate a compound-flexure constructor by name.
 ///
 /// Returns `Some(Value)` for recognised names (including `Some(Value::Undef)` on
@@ -126,6 +133,7 @@ pub(crate) fn eval_compound(name: &str, args: &[Value]) -> Option<Value> {
 /// - `spring_rate` = k_stage = 48·E·I/L³ (TRANSLATIONAL_STIFFNESS)
 /// - `transverse_stiffness` = 4·E·(b·t)/L (axial blade stretching)
 /// - `range` = ±δ_max (symmetric LENGTH-bounded range)
+/// - `parasitic_error` = Option(Some(Length(δ_rot))) where δ_rot = L·(1−cos(δ_max/L))
 ///
 /// Returns `Value::Undef` on the invalid-input classes in [`parse_compound_inputs`].
 fn prb_parallelogram_flexure(args: &[Value]) -> Value {
@@ -150,6 +158,9 @@ fn prb_parallelogram_flexure(args: &[Value]) -> Value {
         true,
     );
 
+    // Roberts-approximation parasitic error (§6.1).
+    let delta_rot = parasitic_single(c.length, delta);
+
     // Build the standard joint base then add the compound-specific extra keys.
     let base = make_flexure_joint(
         "prismatic",
@@ -172,6 +183,10 @@ fn prb_parallelogram_flexure(args: &[Value]) -> Value {
             si_value: k_transverse,
             dimension: DimensionVector::TRANSLATIONAL_STIFFNESS,
         },
+    );
+    m.insert(
+        Value::String("parasitic_error".to_string()),
+        Value::Option(Some(Box::new(Value::length(delta_rot)))),
     );
     Value::Map(m)
 }
