@@ -256,6 +256,22 @@ pub enum TypeExprKind {
     /// Actual auto-type resolution semantics are deferred to task 3477/3558
     /// (B1 grammar-fiction chain). Task 3665 wires the lowering extension only.
     Auto { free: bool, bound: String },
+    /// A qualified associated-type reference in type position: `Beam::Material`,
+    /// `T::Material` (type-param base), or the FORK-G trait-disambiguated form
+    /// `Beam::(HasMaterial::Material)` (trait_name = Some("HasMaterial")).
+    ///
+    /// Type-side analogue of `ExprKind::QualifiedAccess { qualifier, member }`.
+    /// `base` is lowered from a bare identifier (structure name or type param);
+    /// `trait_name` is Some only for the parenthesized disambiguator.
+    ///
+    /// Resolution to a concrete `Type` (and E_AMBIGUOUS_ASSOC_TYPE) is deferred
+    /// to task ιₑ — new compiler arms MUST NOT resolve; they return
+    /// None / Type::Error / the existing unresolved-type diagnostic path.
+    QualifiedAssoc {
+        base: Box<TypeExpr>,
+        trait_name: Option<String>,
+        member: String,
+    },
 }
 
 /// A type expression in the AST (e.g., `Scalar`, `Bool`, `Box<T>`, `Force / Area`).
@@ -288,6 +304,12 @@ impl fmt::Display for TypeExpr {
             TypeExprKind::IntegerLiteral(n) => write!(f, "{}", n),
             TypeExprKind::Auto { free, bound } => {
                 write!(f, "auto{}: {}", if *free { "(free)" } else { "" }, bound)
+            }
+            TypeExprKind::QualifiedAssoc { base, trait_name, member } => {
+                match trait_name {
+                    None => write!(f, "{}::{}", base, member),
+                    Some(t) => write!(f, "{}::({}::{})", base, t, member),
+                }
             }
         }
     }

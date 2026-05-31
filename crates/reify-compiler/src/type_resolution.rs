@@ -244,6 +244,9 @@ pub(crate) fn resolve_dimension_type(
         // Auto type-args (e.g. `auto: Seal`) cannot be resolved to a dimension;
         // resolution semantics are deferred to task 3477/3558.
         reify_ast::TypeExprKind::Auto { .. } => return None,
+        // Qualified assoc-type refs (e.g. `Beam::Material`) cannot be resolved to
+        // a dimension here; resolution deferred to task ιₑ.
+        reify_ast::TypeExprKind::QualifiedAssoc { .. } => return None,
     };
     // Scan the shared table (name → dimension direction).
     if let Some((dim, _)) = reify_core::NAMED_DIMENSIONS
@@ -824,6 +827,9 @@ pub(crate) fn resolve_type_alias_expr(
         // Auto type-args (e.g. `auto: Seal`) cannot be resolved to a concrete type here;
         // resolution semantics are deferred to task 3477/3558.
         reify_ast::TypeExprKind::Auto { .. } => None,
+        // Qualified assoc-type refs (e.g. `Beam::Material`) cannot be resolved here;
+        // resolution deferred to task ιₑ.
+        reify_ast::TypeExprKind::QualifiedAssoc { .. } => None,
     }
 }
 
@@ -884,6 +890,9 @@ pub(crate) fn resolve_type_alias_expr_to_dimension(
         // Auto type-args cannot be resolved to a dimension;
         // resolution semantics are deferred to task 3477/3558.
         reify_ast::TypeExprKind::Auto { .. } => None,
+        // Qualified assoc-type refs cannot be resolved to a dimension here;
+        // resolution deferred to task ιₑ.
+        reify_ast::TypeExprKind::QualifiedAssoc { .. } => None,
     }
 }
 
@@ -918,6 +927,9 @@ pub(crate) fn resolve_type_expr_with_aliases(
         // Auto type-args cannot be resolved to a concrete type here;
         // resolution semantics are deferred to task 3477/3558.
         reify_ast::TypeExprKind::Auto { .. } => return None,
+        // Qualified assoc-type refs cannot be resolved here;
+        // resolution deferred to task ιₑ.
+        reify_ast::TypeExprKind::QualifiedAssoc { .. } => return None,
     };
     // Check parameterized builtins (List<T>, Set<T>, Map<K,V>, Option<T>)
     if !type_args.is_empty()
@@ -1212,6 +1224,9 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
         // Auto type-args cannot be resolved to a concrete type here;
         // resolution semantics are deferred to task 3477/3558.
         reify_ast::TypeExprKind::Auto { .. } => None,
+        // Qualified assoc-type refs cannot be resolved here;
+        // resolution deferred to task ιₑ.
+        reify_ast::TypeExprKind::QualifiedAssoc { .. } => None,
     }
 }
 
@@ -1660,6 +1675,9 @@ pub(crate) fn resolve_type_alias_expr_to_dim_with_subst(
         // Auto type-args cannot be resolved to a dimension;
         // resolution semantics are deferred to task 3477/3558.
         reify_ast::TypeExprKind::Auto { .. } => None,
+        // Qualified assoc-type refs cannot be resolved to a dimension here;
+        // resolution deferred to task ιₑ.
+        reify_ast::TypeExprKind::QualifiedAssoc { .. } => None,
     }
 }
 
@@ -1683,6 +1701,17 @@ pub(crate) fn collect_type_expr_names(type_expr: &reify_ast::TypeExpr) -> Vec<St
         // trait/type-name references are preserved in dependency graphs.
         // Resolution semantics are deferred to task 3477/3558; only the name is surfaced here.
         reify_ast::TypeExprKind::Auto { bound, .. } => vec![bound.clone()],
+        // Qualified assoc-type refs contribute the base names (recursed), the member name,
+        // and the trait disambiguator name (if present) so that dep-graph edges are preserved.
+        // Resolution is deferred to task ιₑ.
+        reify_ast::TypeExprKind::QualifiedAssoc { base, trait_name, member } => {
+            let mut names = collect_type_expr_names(base);
+            names.push(member.clone());
+            if let Some(t) = trait_name {
+                names.push(t.clone());
+            }
+            names
+        }
     }
 }
 
@@ -1807,6 +1836,14 @@ pub(crate) fn convert_type_params(
                     unreachable!(
                         "auto type-arg cannot appear as a type-parameter default; \
                              the grammar restricts auto_type_arg to type_arg_list slots"
+                    )
+                }
+                // Qualified assoc-type refs cannot appear as a type-parameter default
+                // in current grammar; resolution deferred to task ιₑ.
+                reify_ast::TypeExprKind::QualifiedAssoc { .. } => {
+                    unreachable!(
+                        "qualified assoc-type ref cannot appear as a type-parameter default; \
+                             the grammar restricts type-param defaults to Named nodes"
                     )
                 }
             });

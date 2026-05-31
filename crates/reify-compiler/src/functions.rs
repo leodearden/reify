@@ -512,6 +512,19 @@ pub(crate) fn compile_field(
             );
             Type::Real
         }
+        // Qualified assoc-type refs cannot appear as a field domain type here;
+        // resolution deferred to task ιₑ.
+        reify_ast::TypeExprKind::QualifiedAssoc { .. } => {
+            diagnostics.push(
+                Diagnostic::error(format!("unresolved field type: {}", field_def.domain_type))
+                    .with_code(DiagnosticCode::UnresolvedType)
+                    .with_label(DiagnosticLabel::new(
+                        field_def.domain_type.span,
+                        "associated type not yet resolved in this position",
+                    )),
+            );
+            Type::Real
+        }
     };
     let codomain_type = match &field_def.codomain_type.kind {
         reify_ast::TypeExprKind::Named { name, .. } => resolve_field_type_name(
@@ -559,6 +572,22 @@ pub(crate) fn compile_field(
                 .with_label(DiagnosticLabel::new(
                     field_def.codomain_type.span,
                     "auto type-arg not allowed in this position",
+                )),
+            );
+            Type::Real
+        }
+        // Qualified assoc-type refs cannot appear as a field codomain type here;
+        // resolution deferred to task ιₑ.
+        reify_ast::TypeExprKind::QualifiedAssoc { .. } => {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "unresolved field type: {}",
+                    field_def.codomain_type
+                ))
+                .with_code(DiagnosticCode::UnresolvedType)
+                .with_label(DiagnosticLabel::new(
+                    field_def.codomain_type.span,
+                    "associated type not yet resolved in this position",
                 )),
             );
             Type::Real
