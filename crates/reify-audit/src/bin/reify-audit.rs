@@ -578,6 +578,11 @@ mod tests {
         assert!(args.tasks_file.is_none());
         assert_eq!(args.runs_db, "data/orchestrator/runs.db");
         assert_eq!(args.project_root, ".");
+        // New jcodemunch flags: no_jcodemunch and jcodemunch_repo have
+        // deterministic defaults; jcodemunch_url is env-dependent (JCODEMUNCH_URL
+        // fallback) so we do not assert its exact value here.
+        assert!(!args.no_jcodemunch);
+        assert_eq!(args.jcodemunch_repo, "leodearden/reify");
     }
 
     #[test]
@@ -600,6 +605,8 @@ mod tests {
             "--tasks-file",
             "--runs-db",
             "--project-root",
+            "--jcodemunch-url",
+            "--jcodemunch-repo",
         ] {
             let err = unwrap_err(parse_args(&[flag.to_string()]));
             assert!(
@@ -642,6 +649,11 @@ mod tests {
             "/tmp/runs.db",
             "--project-root",
             "/tmp/repo",
+            "--jcodemunch-url",
+            "http://127.0.0.1:9/mcp",
+            "--jcodemunch-repo",
+            "my/repo",
+            "--no-jcodemunch",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -654,5 +666,8 @@ mod tests {
         assert_eq!(args.tasks_file.as_deref(), Some("/tmp/tasks.json"));
         assert_eq!(args.runs_db, "/tmp/runs.db");
         assert_eq!(args.project_root, "/tmp/repo");
+        assert_eq!(args.jcodemunch_url, "http://127.0.0.1:9/mcp");
+        assert_eq!(args.jcodemunch_repo, "my/repo");
+        assert!(args.no_jcodemunch);
     }
 }
