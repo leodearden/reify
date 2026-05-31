@@ -844,16 +844,27 @@ pub fn shell_element_stiffness_mitc3_plus(
 /// activating the bubble on the director substrate is task 4065's ANS-membrane).
 /// So the closed-form condensation is a no-op and `K* = K_NN`, structurally
 /// identical to the flat MITC3+ path.
+///
+/// # Shared core for the displacement-membrane and ANS-membrane variants
+///
+/// `use_ans_membrane` selects the membrane strain–displacement operator: `false`
+/// is the displacement-based membrane (the task 4068 substrate, exposed verbatim
+/// as [`shell_element_stiffness_degenerate`]); `true` swaps ONLY the membrane
+/// (`ζ=0`) part of `B_mb` for the assumed-natural-strain membrane field
+/// ([`shell_element_stiffness_degenerate_ans`], task 4069). Everything else —
+/// transverse shear, the bubble skeleton (`K_NB ≡ 0`), and the quadrature — is
+/// identical for both, so the non-ANS path is behaviourally unchanged.
 #[allow(clippy::needless_range_loop)]
-pub fn shell_element_stiffness_degenerate(
+fn degenerate_stiffness_core(
     nodes: &[[f64; 3]; 3],
     directors: &[crate::elements::degenerate_shell::Director; 3],
     thicknesses: &[f64; 3],
     material: &IsotropicElastic,
+    use_ans_membrane: bool,
 ) -> ElementStiffness {
     use crate::elements::degenerate_shell::{
-        ShellRefCoord3, degenerate_jacobian, degenerate_membrane_bending_b,
-        degenerate_transverse_shear_b,
+        ShellRefCoord3, degenerate_assumed_membrane_b, degenerate_jacobian,
+        degenerate_membrane_bending_b, degenerate_transverse_shear_b,
     };
     use crate::elements::mitc3_plus::Mitc3Plus;
 
@@ -891,7 +902,28 @@ pub fn shell_element_stiffness_degenerate(
         for &zeta in zeta_gauss.iter() {
             let c3 = ShellRefCoord3::new(ip.xi, ip.eta, zeta);
             let (_jm, det) = degenerate_jacobian(nodes, directors, thicknesses, c3);
-            let b_mb = degenerate_membrane_bending_b(nodes, directors, thicknesses, c3);
+            let b_mb = if use_ans_membrane {
+                // ANS membrane + displacement bending remainder: swap ONLY the
+                // membrane (ζ=0) part of B_mb for the assumed-natural-strain
+                // field, keeping the displacement bending and transverse shear
+                // exactly as the 4068 substrate built them:
+                //   B_ans(ζ) = B_mem_ANS + B_full(ζ) − B_mem_disp(ζ=0)
+                // On a flat facet B_mem_ANS = B_mem_disp(ζ=0), so B_ans = B_full
+                // (zero change to the flat element).
+                let mid = ShellRefCoord3::new(ip.xi, ip.eta, 0.0);
+                let b_full = degenerate_membrane_bending_b(nodes, directors, thicknesses, c3);
+                let b_mem_disp = degenerate_membrane_bending_b(nodes, directors, thicknesses, mid);
+                let b_mem_ans = degenerate_assumed_membrane_b(nodes, directors, thicknesses, mid);
+                let mut b = [[0.0_f64; NDOF]; 3];
+                for r in 0..3 {
+                    for col in 0..NDOF {
+                        b[r][col] = b_mem_ans[r][col] + b_full[r][col] - b_mem_disp[r][col];
+                    }
+                }
+                b
+            } else {
+                degenerate_membrane_bending_b(nodes, directors, thicknesses, c3)
+            };
             let b_s = degenerate_transverse_shear_b(nodes, directors, thicknesses, c3);
             let scale = w_inplane * w_zeta * det;
 
@@ -1016,6 +1048,41 @@ pub fn shell_element_stiffness_degenerate(
         }
     }
     k_e
+}
+
+/// Degenerated (continuum-based) shell element stiffness with the
+/// **displacement-based** membrane operator — the task 4068 substrate. Thin
+/// wrapper over [`degenerate_stiffness_core`] with the assumed-membrane field
+/// DISABLED, so the element is behaviourally identical to the original 4068
+/// formulation and its patch / rigid-body / symmetry tests keep guarding the
+/// substrate unchanged. See the core's docs for the full formulation.
+pub fn shell_element_stiffness_degenerate(
+    nodes: &[[f64; 3]; 3],
+    directors: &[crate::elements::degenerate_shell::Director; 3],
+    thicknesses: &[f64; 3],
+    material: &IsotropicElastic,
+) -> ElementStiffness {
+    degenerate_stiffness_core(nodes, directors, thicknesses, material, false)
+}
+
+/// Degenerated shell element stiffness with the assumed-natural-strain
+/// **membrane** field active — the task 4069 membrane-locking cure. Identical to
+/// [`shell_element_stiffness_degenerate`] except the membrane part of `B_mb` is
+/// replaced by
+/// [`degenerate_assumed_membrane_b`](crate::elements::degenerate_shell::degenerate_assumed_membrane_b)
+/// (ANS membrane + displacement bending remainder); the transverse shear, the
+/// cubic bubble (`K_NB ≡ 0`), and the quadrature are unchanged. The ANS membrane
+/// filters the curvature-induced parasitic membrane energy the displacement field
+/// carries on a curved (tilted-director) element, softening the over-stiff
+/// response toward the reference. On a flat facet it reduces exactly to
+/// [`shell_element_stiffness_degenerate`].
+pub fn shell_element_stiffness_degenerate_ans(
+    nodes: &[[f64; 3]; 3],
+    directors: &[crate::elements::degenerate_shell::Director; 3],
+    thicknesses: &[f64; 3],
+    material: &IsotropicElastic,
+) -> ElementStiffness {
+    degenerate_stiffness_core(nodes, directors, thicknesses, material, true)
 }
 
 /// Rotation matrix Q = Ry(45°) · Rz(30°) used as a shared test fixture by
