@@ -23,6 +23,8 @@ Pick from the user's invocation and context:
 
 `--task`, `--since`, and `--pattern` compose. `--pre-done` is reserved for the dark-factory D-1 pre-done hook and is **not callable from this skill**. See `references/modes.md` §6 (Mode composition).
 
+**jcodemunch resilience:** The default sweep and `--pattern P1` are resilient to a down jcodemunch substrate. When jcodemunch-serve is unreachable, P1 degrades to zero findings (a `reify-audit: jcodemunch unreachable …` breadcrumb appears on stderr) while P2/P5 still run normally — the sweep does **not** exit 125. Use `--no-jcodemunch` to force the inert stub and silence the breadcrumb. See `references/cli-invocation.md` §4.1 for failure-mode detail and recovery hints.
+
 ## Severity ladder
 
 Route each finding by its `severity` field immediately after parsing the CLI's JSON output:
