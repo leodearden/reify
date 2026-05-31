@@ -1181,4 +1181,41 @@ mod tests {
         let empty: [[f64; 3]; 0] = [];
         assert_eq!(dominant_antinode_index(&empty), 0);
     }
+
+    // ─── step-7: reconstruct_series (RED) ────────────────────────────────────
+
+    /// `reconstruct_series(coeffs, mode_coords)` computes the per-timestep
+    /// weighted sum u_j = Σ_i coeffs[i]·mode_coords[i][j] — the lazy single-
+    /// location modal-superposition core used by displacement_at. Mismatched /
+    /// empty inputs degrade gracefully (zeros of the time length, never a panic).
+    /// RED: function absent — fails to compile.
+    #[test]
+    fn reconstruct_series_cases() {
+        // 2 modes × 3 timesteps, coeffs = [2, −1]:
+        //   u_j = 2·[1,2,3] − 1·[10,20,30] = [2−10, 4−20, 6−30] = [−8, −16, −24].
+        let coeffs = [2.0, -1.0];
+        let mode_coords = vec![vec![1.0, 2.0, 3.0], vec![10.0, 20.0, 30.0]];
+        assert_eq!(reconstruct_series(&coeffs, &mode_coords), vec![-8.0, -16.0, -24.0]);
+
+        // Single mode, identity coeff → echoes the series.
+        assert_eq!(reconstruct_series(&[1.0], &[vec![5.0, 6.0]]), vec![5.0, 6.0]);
+
+        // Empty mode_coords → empty (no time dimension defined).
+        assert!(reconstruct_series(&[1.0, 2.0], &[]).is_empty(), "no modes → empty series");
+
+        // Empty coeffs, non-empty mode_coords → zeros of the time length.
+        assert_eq!(
+            reconstruct_series(&[], &[vec![1.0, 2.0, 3.0]]),
+            vec![0.0, 0.0, 0.0],
+            "no coeffs → zero contribution, time length preserved"
+        );
+
+        // Mismatched: more modes than coeffs → only the first coeffs.len() modes
+        // contribute (extras dropped, no panic).
+        assert_eq!(
+            reconstruct_series(&[1.0], &[vec![4.0, 5.0], vec![100.0, 200.0]]),
+            vec![4.0, 5.0],
+            "modes beyond coeffs are ignored"
+        );
+    }
 }
