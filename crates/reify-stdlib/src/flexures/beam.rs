@@ -272,4 +272,94 @@ mod tests {
             other => panic!("expected spring_rate Scalar, got {other:?}"),
         }
     }
+
+    /// Destructure a bounded `Value::Range` into its inner `(lower, upper)`
+    /// values, panicking if either bound is absent.
+    fn range_lower_upper(v: &Value) -> (&Value, &Value) {
+        match v {
+            Value::Range {
+                lower: Some(lo),
+                upper: Some(up),
+                ..
+            } => (lo.as_ref(), up.as_ref()),
+            other => panic!("expected a both-bounded Range, got {other:?}"),
+        }
+    }
+
+    /// Assert `actual` is an ANGLE-dimensioned Scalar whose si_value matches
+    /// `expected_rad` to a relative tolerance of 1e-9 (closed-form reproduction).
+    fn assert_angle_close(actual: &Value, expected_rad: f64, label: &str) {
+        match actual {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::ANGLE,
+                    "{label}: bound carries ANGLE dimension"
+                );
+                let rel = (si_value - expected_rad).abs() / expected_rad.abs();
+                assert!(
+                    rel < 1e-9,
+                    "{label}: {si_value} vs {expected_rad} (rel {rel})"
+                );
+            }
+            other => panic!("{label}: expected angle Scalar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prb_cantilever_beam_range_is_yield_capped_when_yield_dominates() {
+        // Short/thick fixture (L/t = 10) so θ_yield < 5°, exercising the
+        // yield-capped branch of the prb_validity range.
+        let length = 0.005_f64;
+        let width = 0.005_f64;
+        let thickness = 0.0005_f64;
+        let e = 205e9_f64;
+        let yield_stress = 310e6_f64;
+        let theta_yield = yield_stress * length / (e * thickness / 2.0);
+        let prb_limit = 5.0_f64 * std::f64::consts::PI / 180.0;
+        assert!(
+            theta_yield < prb_limit,
+            "fixture must exercise the yield-capped branch: θ_yield={theta_yield} ≥ 5°"
+        );
+        let result = crate::eval_builtin(
+            "prb_cantilever_beam",
+            &[
+                Value::length(length),
+                Value::length(width),
+                Value::length(thickness),
+                steel(),
+                origin(),
+                axis_y(),
+            ],
+        );
+        let range = map_get(&result, "range").expect("range key present");
+        let (lo, up) = range_lower_upper(range);
+        assert_angle_close(lo, -theta_yield, "yield-capped lower bound");
+        assert_angle_close(up, theta_yield, "yield-capped upper bound");
+    }
+
+    #[test]
+    fn prb_cantilever_beam_range_is_prb_limited_when_5deg_dominates() {
+        // step-1 fixture (L=20mm, t=0.5mm): θ_yield ≈ 6.93° > 5°, so the ±5°
+        // PRB validity cap dominates.
+        let prb_limit = 5.0_f64 * std::f64::consts::PI / 180.0;
+        let result = crate::eval_builtin(
+            "prb_cantilever_beam",
+            &[
+                Value::length(0.02),
+                Value::length(0.005),
+                Value::length(0.0005),
+                steel(),
+                origin(),
+                axis_y(),
+            ],
+        );
+        let range = map_get(&result, "range").expect("range key present");
+        let (lo, up) = range_lower_upper(range);
+        assert_angle_close(lo, -prb_limit, "prb-limited lower bound");
+        assert_angle_close(up, prb_limit, "prb-limited upper bound");
+    }
 }
