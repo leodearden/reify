@@ -80,7 +80,7 @@ impl std::error::Error for LoadError {}
 ///
 /// Returns `Err(LoadError::Protocol(...))` if the header is missing, the
 /// `__tables` declaration is absent, or a row cannot be parsed.
-pub fn munch_decode(text: &str) -> Result<Value, LoadError> {
+fn munch_decode(text: &str) -> Result<Value, LoadError> {
     // 1. Verify header
     let first_line = text.lines().next().unwrap_or("");
     if !first_line.starts_with("#MUNCH/") {
@@ -190,9 +190,8 @@ fn parse_tables_decl(meta_line: &str) -> Result<Vec<TableSpec>, String> {
     let after = &meta_line[idx + "__tables=".len()..];
 
     // The value may be `"..."`-wrapped (with `""` escaping inside)
-    let raw_value = if after.starts_with('"') {
+    let raw_value = if let Some(inner) = after.strip_prefix('"') {
         // Extract quoted value: scan for the closing `"` (not `""`)
-        let inner = &after[1..];
         let mut chars = inner.char_indices().peekable();
         let mut out = String::new();
         loop {
@@ -378,29 +377,29 @@ fn coerce_value(s: &str, col_type: &ColType) -> Value {
 ///
 /// This resolves the non-uniform wire shape described in the fixtures README:
 /// some tools return MUNCH, others return plain JSON.
-pub fn decode_tool_result(result: &Value) -> Result<Value, LoadError> {
+fn decode_tool_result(result: &Value) -> Result<Value, LoadError> {
     // Prefer structuredContent
-    if let Some(sc) = result.get("structuredContent") {
-        if !sc.is_null() {
-            return Ok(sc.clone());
-        }
+    if let Some(sc) = result.get("structuredContent")
+        && !sc.is_null()
+    {
+        return Ok(sc.clone());
     }
 
     // Fall back to content[0].text
     if let Some(content) = result.get("content").and_then(|c| c.as_array()) {
         for entry in content {
-            if entry.get("type").and_then(|t| t.as_str()) == Some("text") {
-                if let Some(text) = entry.get("text").and_then(|t| t.as_str()) {
-                    if text.starts_with("#MUNCH/") {
-                        return munch_decode(text);
-                    } else {
-                        return serde_json::from_str(text).map_err(|e| {
-                            LoadError::Protocol(format!(
-                                "decode_tool_result: content text not JSON: {e}; text={:?}",
-                                &text[..text.len().min(80)]
-                            ))
-                        });
-                    }
+            if entry.get("type").and_then(|t| t.as_str()) == Some("text")
+                && let Some(text) = entry.get("text").and_then(|t| t.as_str())
+            {
+                if text.starts_with("#MUNCH/") {
+                    return munch_decode(text);
+                } else {
+                    return serde_json::from_str(text).map_err(|e| {
+                        LoadError::Protocol(format!(
+                            "decode_tool_result: content text not JSON: {e}; text={:?}",
+                            &text[..text.len().min(80)]
+                        ))
+                    });
                 }
             }
         }
@@ -418,7 +417,7 @@ pub fn decode_tool_result(result: &Value) -> Result<Value, LoadError> {
 ///
 /// Strips surrounding `[`/`]`, splits on `,`, trims whitespace and surrounding
 /// `'` or `"` quotes from each element.
-pub fn parse_signals_list(s: &str) -> Vec<String> {
+fn parse_signals_list(s: &str) -> Vec<String> {
     let trimmed = s.trim();
     let inner = trimmed
         .strip_prefix('[')
@@ -449,7 +448,7 @@ pub fn parse_signals_list(s: &str) -> Vec<String> {
 ///
 /// Reads the `dead_symbols` table; maps `id/name/kind/file/line/confidence`
 /// by column name; parses `signals` via [`parse_signals_list`].
-pub fn dead_symbols_from_wire(decoded: &Value) -> Vec<DeadSymbol> {
+fn dead_symbols_from_wire(decoded: &Value) -> Vec<DeadSymbol> {
     let rows = match decoded
         .get("dead_symbols")
         .and_then(|v| v.as_array())
@@ -487,7 +486,7 @@ pub fn dead_symbols_from_wire(decoded: &Value) -> Vec<DeadSymbol> {
 ///
 /// Reads the `symbols` table; maps `symbol_id/name/file/confidence` by column
 /// name; derives `reached = (wire reason != "unreached")`.
-pub fn untested_symbols_from_wire(decoded: &Value) -> Vec<UntestedSymbol> {
+fn untested_symbols_from_wire(decoded: &Value) -> Vec<UntestedSymbol> {
     let rows = match decoded.get("symbols").and_then(|v| v.as_array()) {
         Some(a) => a,
         None => return Vec::new(),
@@ -517,7 +516,7 @@ pub fn untested_symbols_from_wire(decoded: &Value) -> Vec<UntestedSymbol> {
 /// decoded but ignored). Maps `name/file/line` by column name; suppression
 /// flags are defaulted to `false/false/None` — enrichment happens later in
 /// [`RealJCodemunchOps::get_changed_symbols`].
-pub fn changed_symbols_from_wire(decoded: &Value) -> Vec<ChangedSymbol> {
+fn changed_symbols_from_wire(decoded: &Value) -> Vec<ChangedSymbol> {
     let rows = match decoded
         .get("added_symbols")
         .and_then(|v| v.as_array())
@@ -547,7 +546,7 @@ pub fn changed_symbols_from_wire(decoded: &Value) -> Vec<ChangedSymbol> {
 /// Reads the `violations` array; maps `from_file=from`, `to_file=to`;
 /// synthesizes `rule` from `rule_index + from_symbol + to_symbol`.
 /// Skips records where `allowed == true`.
-pub fn layer_violations_from_wire(decoded: &Value) -> Vec<LayerViolation> {
+fn layer_violations_from_wire(decoded: &Value) -> Vec<LayerViolation> {
     let violations = match decoded.get("violations").and_then(|v| v.as_array()) {
         Some(a) => a,
         None => return Vec::new(),
@@ -589,7 +588,7 @@ pub fn layer_violations_from_wire(decoded: &Value) -> Vec<LayerViolation> {
 /// Finds the first table whose rows carry both `file` and `line` fields;
 /// returns an empty vec when absent (no captured fixture exists for
 /// `find_references` — end-to-end validation is L-SMOKE's job).
-pub fn find_references_from_wire(decoded: &Value) -> Vec<SymbolReference> {
+fn find_references_from_wire(decoded: &Value) -> Vec<SymbolReference> {
     let obj = match decoded.as_object() {
         Some(o) => o,
         None => return Vec::new(),
@@ -628,7 +627,7 @@ pub fn find_references_from_wire(decoded: &Value) -> Vec<SymbolReference> {
 /// - `has_allow_dead_code` — an attribute contains `allow(` and `dead_code`
 /// - `has_cfg_test` — an attribute contains `cfg(test)`
 /// - `g_allow_marker` — first `// G-allow: <reason>` with non-blank reason
-pub fn extract_suppression(
+fn extract_suppression(
     lines: &[&str],
     decl_line_1based: usize,
 ) -> (bool, bool, Option<String>) {
@@ -658,10 +657,10 @@ pub fn extract_suppression(
                 has_cfg_test = true;
             }
             // Check for G-allow marker
-            if g_allow_marker.is_none() {
-                if let Some(reason) = extract_g_allow(line) {
-                    g_allow_marker = Some(reason);
-                }
+            if g_allow_marker.is_none()
+                && let Some(reason) = extract_g_allow(line)
+            {
+                g_allow_marker = Some(reason);
             }
         } else {
             break;
@@ -700,7 +699,7 @@ fn extract_g_allow(line: &str) -> Option<String> {
 ///
 /// This is the key client-side scoping step: jcodemunch's `find_references`
 /// API has no server-side file-scope parameter, so filtering is done here.
-pub fn filter_refs_to_file(refs: Vec<SymbolReference>, file: &str) -> Vec<SymbolReference> {
+fn filter_refs_to_file(refs: Vec<SymbolReference>, file: &str) -> Vec<SymbolReference> {
     refs.into_iter().filter(|r| r.file == file).collect()
 }
 
