@@ -1,0 +1,64 @@
+================================================================================
+priv param — visibility modifier on param_declaration
+================================================================================
+
+structure S { priv param w : Length = 1mm }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier))
+      default: (quantity_literal
+        value: (number_literal)
+        unit: (unit_expr
+          (unit_name))))))
+
+================================================================================
+priv sub — visibility modifier on sub_declaration (instantiation form)
+================================================================================
+
+structure S { priv sub inner = Inner() }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (identifier))))
+
+================================================================================
+priv port — visibility modifier on port_declaration
+================================================================================
+
+structure S { priv port hidden : MechPort }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (port_declaration
+      name: (identifier)
+      type: (identifier))))
+
+================================================================================
+priv aux sub — combined visibility and aux modifiers on sub_declaration
+================================================================================
+
+structure S { priv aux sub a : T }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (identifier))))
