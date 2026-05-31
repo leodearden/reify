@@ -829,3 +829,97 @@ fn query_adjacent_faces_unit_cube_exactly_three_neighbours() {
         );
     }
 }
+
+/// `SharedEdges` over the unit cube, cross-validated against `AdjacentFaces`.
+///
+/// Two distinct triangles cannot share two undirected edges without coinciding,
+/// so every *edge-adjacent* pair shares **exactly one** canonical edge, and
+/// every *non-adjacent* pair shares **none**. Driving the pairs off
+/// `AdjacentFaces(0)` keeps the test independent of the fixture's triangle
+/// winding/order while pinning the SharedEdges contract:
+/// - (a) each of triangle 0's 3 neighbours shares exactly one edge, a valid
+///   index in `0..18` (the canonical `extract_edges` enumeration), and the
+///   three shared indices are triangle 0's own 3 distinct edges;
+/// - (b) `face_a == face_b` returns an empty list (design decision);
+/// - (c) a non-adjacent triangle shares no edge (empty list).
+///
+/// RED (step-11): `query()` returns `Err(QueryFailed(STUB_MSG))` for
+/// `SharedEdges`. GREEN is step-12.
+#[test]
+fn query_shared_edges_unit_cube() {
+    let mut kernel = ManifoldKernel::new();
+    let shape = ingest(&mut kernel, [0.0, 0.0, 0.0]);
+    // 12 triangles; the SharedEdges index space is the 18 canonical edges.
+    let faces = kernel
+        .extract_faces(shape)
+        .expect("extract_faces must succeed");
+    assert_eq!(faces.len(), 12, "unit cube must have 12 mesh triangles");
+
+    // (a) Every edge-adjacent pair shares exactly one canonical edge.
+    let neighbours =
+        query_int_list(&kernel, &GeometryQuery::AdjacentFaces { shape, face_index: 0 });
+    assert_eq!(neighbours.len(), 3, "triangle 0 must have 3 neighbours");
+    let mut shared_ids = Vec::new();
+    for &nb in &neighbours {
+        let shared = query_int_list(
+            &kernel,
+            &GeometryQuery::SharedEdges {
+                shape,
+                face_a: 0,
+                face_b: nb as usize,
+            },
+        );
+        assert_eq!(
+            shared.len(),
+            1,
+            "edge-adjacent triangles 0 and {nb} must share exactly one edge; got {shared:?}",
+        );
+        let e = shared[0];
+        assert!(
+            (0..18).contains(&e),
+            "shared edge index {e} (triangles 0,{nb}) out of range 0..18",
+        );
+        shared_ids.push(e);
+    }
+    // Triangle 0's three shared edges are its own three *distinct* edges.
+    shared_ids.sort_unstable();
+    let before = shared_ids.len();
+    shared_ids.dedup();
+    assert_eq!(
+        shared_ids.len(),
+        before,
+        "triangle 0's three shared edges must be distinct; got {shared_ids:?}",
+    );
+
+    // (b) face_a == face_b => empty list (design decision).
+    let self_shared = query_int_list(
+        &kernel,
+        &GeometryQuery::SharedEdges {
+            shape,
+            face_a: 3,
+            face_b: 3,
+        },
+    );
+    assert!(
+        self_shared.is_empty(),
+        "SharedEdges(f, f) must be empty; got {self_shared:?}",
+    );
+
+    // (c) A non-adjacent triangle (neither 0 nor a neighbour of 0) shares no
+    //     edge — 3 neighbours < 11 others, so one always exists.
+    let non_adjacent = (1..12i64)
+        .find(|i| !neighbours.contains(i))
+        .expect("a non-adjacent triangle must exist");
+    let none_shared = query_int_list(
+        &kernel,
+        &GeometryQuery::SharedEdges {
+            shape,
+            face_a: 0,
+            face_b: non_adjacent as usize,
+        },
+    );
+    assert!(
+        none_shared.is_empty(),
+        "non-adjacent triangles 0 and {non_adjacent} must share no edge; got {none_shared:?}",
+    );
+}
