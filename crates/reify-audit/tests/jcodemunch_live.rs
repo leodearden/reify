@@ -76,6 +76,161 @@ fn is_pdead_finding(v: &serde_json::Value) -> bool {
 }
 
 // -----------------------------------------------------------------------
+// Pinned live constants
+// -----------------------------------------------------------------------
+//
+// Commit used for the P1 leg.  The commit is a real reify commit whose diff
+// touched Rust source; the range PINNED_P1_COMMIT^1..PINNED_P1_COMMIT feeds
+// jcodemunch get_changed_symbols and is expected to contain ≥1 still-orphaned
+// public symbol.
+//
+// Resolved on-demand against the running jcodemunch serve.  Update this SHA
+// if the commit's diff no longer contains any orphan symbol after corpus churn
+// (pick a later commit that introduced new public Rust symbols):
+//
+//   git log --oneline --no-merges HEAD~20..HEAD -- crates/
+//
+// ff1cb80c31 = merge of task/4097 (L-PDEAD) which added pdead_dead_code.rs,
+// a new Rust source file with new public symbols.
+const PINNED_P1_COMMIT: &str = "ff1cb80c31";
+const JCODEMUNCH_REPO: &str = "leodearden/reify";
+const DEFAULT_SERVE_URL: &str = "http://127.0.0.1:8901/mcp";
+
+// -----------------------------------------------------------------------
+// Capstone live integration test (#[ignore]-gated; requires serve up)
+// -----------------------------------------------------------------------
+
+/// End-to-end smoke: real `reify-audit` binary → live jcodemunch serve.
+///
+/// Asserts ≥1 `PDeadCode` finding (P-DEAD leg, repo-wide) and ≥1
+/// `P1ProducerOrphan` finding (P1 leg, over a pinned real reify commit).
+///
+/// **Graceful skip**: if the serve is not reachable the test prints a note to
+/// stderr and returns without failing (mirrors `baseline_report_freshness`).
+///
+/// Run with the serve up:
+/// ```sh
+/// cargo test -p reify-audit --test jcodemunch_live -- --ignored
+/// ```
+#[ignore = "live integration: requires jcodemunch-serve up on default or $JCODEMUNCH_URL; run via --ignored"]
+#[test]
+fn live_audit_produces_p1_and_pdead_findings() {
+    let serve_url = std::env::var("JCODEMUNCH_URL")
+        .unwrap_or_else(|_| DEFAULT_SERVE_URL.to_string());
+
+    // Preflight: skip gracefully if serve is not running.
+    if !jcodemunch_serve_reachable(&serve_url) {
+        eprintln!(
+            "live_audit_produces_p1_and_pdead_findings: jcodemunch-serve not reachable \
+             at {serve_url} — skipping (run with serve up to exercise live assertions)"
+        );
+        return;
+    }
+
+    // Resolve repo root from CARGO_MANIFEST_DIR (crates/reify-audit → two parents).
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let project_root = std::path::Path::new(manifest_dir)
+        .parent()
+        .expect("crates/reify-audit has a parent")
+        .parent()
+        .expect("crates/ has a parent (repo root)")
+        .to_str()
+        .expect("project root is valid UTF-8")
+        .to_string();
+
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let dir = tmp.path();
+    let runs_db = write_empty_runs_db(dir);
+
+    // -------------------------------------------------------------------
+    // P-DEAD leg: --pattern PDEAD (repo-wide; serve-only; no tasks needed)
+    // -------------------------------------------------------------------
+    let empty_tasks = write_empty_tasks_file(dir);
+    let (pdead_code, pdead_findings) = run_reify_audit(&[
+        "--pattern",
+        "PDEAD",
+        "--jcodemunch-url",
+        &serve_url,
+        "--jcodemunch-repo",
+        JCODEMUNCH_REPO,
+        "--tasks-file",
+        empty_tasks.to_str().unwrap(),
+        "--runs-db",
+        runs_db.to_str().unwrap(),
+        "--project-root",
+        &project_root,
+    ]);
+    assert_ne!(
+        pdead_code,
+        Some(125),
+        "PDEAD leg: exit 125 = infra/connection error; serve may have dropped\n\
+         all findings: {:#}",
+        serde_json::Value::Array(pdead_findings.clone())
+    );
+    let pdead_matched: Vec<&serde_json::Value> =
+        pdead_findings.iter().filter(|f| is_pdead_finding(f)).collect();
+    assert!(
+        !pdead_matched.is_empty(),
+        "PDEAD leg: expected ≥1 PDeadCode finding from get_dead_code_v2 over reify corpus; \
+         got 0\nAll findings: {:#}",
+        serde_json::Value::Array(pdead_findings.clone())
+    );
+    println!(
+        "PDEAD leg: {} PDeadCode finding(s) matched — first:\n{:#}",
+        pdead_matched.len(),
+        pdead_matched[0]
+    );
+
+    // -------------------------------------------------------------------
+    // P1 leg: --pattern P1 over ONE pinned done-task commit
+    //
+    // The synthetic --tasks-file contains a single done task with
+    // done_at set (so P1 does not skip it) and done_provenance.commit
+    // pointing at PINNED_P1_COMMIT. P1 maps this to the range
+    // PINNED_P1_COMMIT^1..PINNED_P1_COMMIT via get_changed_symbols.
+    // -------------------------------------------------------------------
+    // done_at_epoch ≈ 2025-05-23 (any non-zero epoch is fine; P1 only
+    // checks that done_at is Some, not the exact value).
+    let synthetic_tasks = write_synthetic_done_task(dir, PINNED_P1_COMMIT, 1_748_000_000);
+    let (p1_code, p1_findings) = run_reify_audit(&[
+        "--pattern",
+        "P1",
+        "--jcodemunch-url",
+        &serve_url,
+        "--jcodemunch-repo",
+        JCODEMUNCH_REPO,
+        "--tasks-file",
+        synthetic_tasks.to_str().unwrap(),
+        "--runs-db",
+        runs_db.to_str().unwrap(),
+        "--project-root",
+        &project_root,
+    ]);
+    assert_ne!(
+        p1_code,
+        Some(125),
+        "P1 leg: exit 125 = infra/connection error; serve may have dropped\n\
+         all findings: {:#}",
+        serde_json::Value::Array(p1_findings.clone())
+    );
+    let p1_matched: Vec<&serde_json::Value> =
+        p1_findings.iter().filter(|f| is_p1_finding(f)).collect();
+    assert!(
+        !p1_matched.is_empty(),
+        "P1 leg: expected ≥1 P1ProducerOrphan finding for pinned commit {PINNED_P1_COMMIT}; \
+         got 0\nAll findings: {:#}\n\
+         Hint: if the pinned commit's diff has no orphan symbol after corpus churn, \
+         update PINNED_P1_COMMIT to a later reify commit that introduced new public symbols.",
+        serde_json::Value::Array(p1_findings.clone())
+    );
+    println!(
+        "P1 leg: {} P1ProducerOrphan finding(s) matched — first:\n{:#}",
+        p1_matched.len(),
+        p1_matched[0]
+    );
+}
+
+// -----------------------------------------------------------------------
 // Finding-shape predicate unit tests (hermetic; always run — no serve needed)
 // -----------------------------------------------------------------------
 
