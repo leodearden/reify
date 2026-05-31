@@ -671,3 +671,111 @@ structure TGuardOk {{
         conformance_errors
     );
 }
+
+// ── Step-13: associated-function body coverage (soundness) ───────────────────
+//
+// The step-2 trait-object wildcard relaxation in `resolve_function_overload` is
+// GLOBAL and ALSO reaches associated-function bodies: they are compiled through
+// `compile_assoc_function -> compile_expr -> resolve_function_overload`
+// (functions.rs:365), so a non-conforming `couple(self)` inside an assoc fn now
+// resolves to a `UserFunctionCall` instead of the pre-change `no matching
+// overload` hard error. But `phase_fn_arg_conformance` (step-12) walks ONLY
+// `for_each_template_root_expr` (template ROOT exprs) + `ctx.functions` (free
+// fns); it never walks `template.assoc_fns[*].function`, so that hard error is
+// silently lost — a soundness REGRESSION shipping in this same diff.
+//
+// VEHICLE: `couple(self)`, NOT `couple(FixedThing())`. `compile_assoc_function`
+// registers `self` as `Type::StructureRef(conformer)` (functions.rs:278/286/
+// 348-351), giving the arg a clean `StructureRef` with NO dependency on the body
+// scope's template registry — whereas a structure-ctor arg does NOT acquire a
+// `StructureRef` in function/assoc-fn scope (the local template registry is set
+// only in entity scope, entity.rs:401). Both cases use the trait DEFAULT-body
+// injection form (proven by `default_assoc_fn_populates_template_table_end_to_end`
+// in trait_assoc_fn_conformance_tests.rs): the default `measure` body lands in
+// the conformer's `assoc_fns` with `self = StructureRef(conformer)`.
+
+/// (a) A non-conforming `couple(self)` in a trait-default assoc-fn body injected
+/// onto a NON-DrivingJoint conformer emits TypeNotConformingToTrait.
+///
+/// `trait Sized { fn measure(self) -> Real { couple(self) } }` provides the
+/// default; `structure def Holder : Sized` injects it with `self =
+/// StructureRef("Holder")`. `Holder` conforms only to `Sized` (not
+/// `DrivingJoint`), so `couple(self)` is non-conforming.
+///
+/// RED until step-14: `template.assoc_fns[*].function` bodies are not walked by
+/// step-12 (assoc-fn bodies are neither template root exprs nor in
+/// `ctx.functions`), so the call is checked NOWHERE → got 0, expected 1.
+#[test]
+fn assoc_fn_body_bad_arg_emits_type_not_conforming_to_trait() {
+    let source = format!(
+        r#"{}
+trait Sized {{
+    fn measure(self) -> Real {{ couple(self) }}
+}}
+
+structure def Holder : Sized {{
+    param y : Real = 0.0
+}}
+"#,
+        preamble()
+    );
+    let module = compile_source(&source);
+
+    let conformance_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
+        .collect();
+
+    assert_eq!(
+        conformance_errors.len(),
+        1,
+        "expected exactly 1 TypeNotConformingToTrait in assoc-fn body, got {}: {:?}",
+        conformance_errors.len(),
+        module.diagnostics
+    );
+    let msg = &conformance_errors[0].message;
+    assert!(
+        msg.contains("Holder") && msg.contains("DrivingJoint"),
+        "diagnostic should mention 'Holder' and 'DrivingJoint'; got: {}",
+        msg
+    );
+}
+
+/// (b) Positive guard: a CONFORMING `couple(self)` in an assoc-fn body produces
+/// NO TypeNotConformingToTrait error.
+///
+/// `trait DrivingSized : DrivingJoint { fn measure(self) -> Real { couple(self) } }`
+/// refines `DrivingJoint`; `structure def Spinner : DrivingSized` conforms to
+/// `DrivingSized` and therefore transitively to `DrivingJoint` (exercising
+/// `satisfies_trait_bound`), so `couple(self)` with `self = StructureRef("Spinner")`
+/// is conforming. Must hold both before and after step-14.
+#[test]
+fn assoc_fn_body_conforming_self_no_error() {
+    let source = format!(
+        r#"{}
+trait DrivingSized : DrivingJoint {{
+    fn measure(self) -> Real {{ couple(self) }}
+}}
+
+structure def Spinner : DrivingSized {{
+    param x : Real = 0.0
+}}
+"#,
+        preamble()
+    );
+    let module = compile_source(&source);
+
+    let conformance_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
+        .collect();
+
+    assert!(
+        conformance_errors.is_empty(),
+        "conforming assoc-fn `couple(self)` must produce no TypeNotConformingToTrait \
+         errors; got: {:?}",
+        conformance_errors
+    );
+}
