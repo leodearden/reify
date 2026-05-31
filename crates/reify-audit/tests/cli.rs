@@ -721,13 +721,15 @@ mod cli {
         );
     }
 
-    /// P1 with an unreachable jcodemunch endpoint exits 125 (fail-fast
-    /// infra error).
+    /// P1 with an unreachable jcodemunch endpoint fails soft to Noop:
+    /// exits 0, produces zero findings, and emits a fallback breadcrumb.
     ///
-    /// RealJCodemunchOps connects in its constructor; an unreachable endpoint
-    /// returns Err immediately, which main() maps to exit 125.
+    /// The old contract (exit 125) is inverted: jcodemunch is an optional
+    /// substrate, so an unreachable endpoint degrades P1 to zero findings
+    /// while still running P2/P5. Exit 125 is reserved for genuine arg/IO
+    /// misconfiguration (e.g. unreadable tasks-file, bad runs-db).
     #[test]
-    fn p1_unreachable_jcodemunch_exits_125() {
+    fn p1_unreachable_jcodemunch_fails_soft_to_noop() {
         let tmp = tempfile::tempdir().expect("create tempdir");
         let dir = tmp.path();
 
@@ -749,13 +751,92 @@ mod cli {
             .output()
             .expect("invoke reify-audit --pattern P1 unreachable jcodemunch");
 
+        let stderr = String::from_utf8_lossy(&out.stderr);
         assert_eq!(
             out.status.code(),
-            Some(125),
-            "--pattern P1 with unreachable jcodemunch must exit 125; got {:?}\nstdout: {}\nstderr: {}",
+            Some(0),
+            "--pattern P1 with unreachable jcodemunch must fail-soft to exit 0; got {:?}\nstdout: {}\nstderr: {}",
             out.status.code(),
             String::from_utf8_lossy(&out.stdout),
+            stderr
+        );
+
+        // Zero findings (P1 degrades to Noop).
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.is_empty(),
+            "P1 with unreachable jcodemunch must produce zero findings; got:\n{:#}",
+            serde_json::Value::Array(findings)
+        );
+
+        // Fallback breadcrumb must appear on stderr.
+        assert!(
+            stderr.contains("jcodemunch"),
+            "stderr must contain fallback breadcrumb mentioning 'jcodemunch'; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("degrad") || stderr.contains("unreachable") || stderr.contains("Noop"),
+            "stderr breadcrumb must describe fail-soft degradation; stderr:\n{stderr}"
+        );
+    }
+
+    /// Default sweep (no --pattern/--task/--since) survives an unreachable
+    /// jcodemunch endpoint: P5 still runs and detects phantom-done tasks, exit
+    /// code is non-zero (findings found), and the fallback breadcrumb appears.
+    #[test]
+    fn default_sweep_survives_unreachable_jcodemunch() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+
+        // Phantom-done fixture: done/merged with no runs.db corroboration.
+        let tasks = vec![task_fixture("3242", "done", Some("merged"), Some("deadbeef"))];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+
+        let closed_url = closed_port_url();
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--jcodemunch-url", &closed_url,
+                "--tasks-file", tasks_file.to_str().unwrap(),
+                "--runs-db", runs_db.to_str().unwrap(),
+                "--project-root", dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit default sweep unreachable jcodemunch");
+
+        let code = out.status.code().unwrap_or(99);
+        assert_ne!(
+            code, 125,
+            "default sweep must NOT exit 125 when jcodemunch is unreachable; got {code}\nstderr: {}",
             String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            code >= 1,
+            "default sweep must exit non-zero (P5 finding expected); got {code}\nstderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        // P5 must have fired and found the phantom-done task.
+        let findings = parse_findings_from_stderr(&stderr);
+        let p5_high = findings.iter().find(|f| {
+            f["pattern"].as_str() == Some("P5PhantomDone")
+                && f["severity"].as_str() == Some("High")
+                && f["task_id"].as_str() == Some("3242")
+        });
+        assert!(
+            p5_high.is_some(),
+            "default sweep must include P5PhantomDone/High/3242 even when jcodemunch is down; findings:\n{:#}",
+            serde_json::Value::Array(findings)
+        );
+
+        // Fallback breadcrumb must appear on stderr.
+        assert!(
+            stderr.contains("jcodemunch"),
+            "stderr must contain fallback breadcrumb mentioning 'jcodemunch'; stderr:\n{stderr}"
         );
     }
 
