@@ -797,9 +797,13 @@ impl ModalAnalysisCache {
     /// Wrap this cache in an [`OpaqueState`] for donation to the warm-state
     /// pool, sized by [`estimated_size_bytes`](Self::estimated_size_bytes) so
     /// the pool's LRU budget accounts for the assembled `(K, M)` it holds.
-    fn into_opaque_state(self) -> OpaqueState {
+    ///
+    /// Returns that `size_bytes` alongside the state so the caller can derive
+    /// `cost_per_byte` from the same measurement — the CSR payload is walked
+    /// exactly once per donation instead of again inside this method.
+    fn into_opaque_state(self) -> (OpaqueState, usize) {
         let size = self.estimated_size_bytes();
-        OpaqueState::new(self, size)
+        (OpaqueState::new(self, size), size)
     }
 }
 
@@ -1019,12 +1023,14 @@ pub(crate) fn run_modal_analysis(
     // `Copy` ModalCacheKey, so reusing it from the (5) match guard is fine.
     // `cost_per_byte` is the reciprocal of the cache's estimated byte size — a
     // bigger cached (K, M) is pricier to retain in the warm-state pool (mirrors
-    // elastic_static.rs). `size_bytes` always includes the flat key (> 0), so
-    // the `None` branch is unreachable for a real assembly but kept for parity.
+    // elastic_static.rs). `into_opaque_state` walks the CSR payload once and hands
+    // back that `size_bytes`, so `cost_per_byte` reuses the single measurement
+    // rather than recomputing it. `size_bytes` always includes the flat key (> 0),
+    // so the `None` branch is unreachable for a real assembly but kept for parity.
     let cache = ModalAnalysisCache { key, assembly };
-    let size_bytes = cache.estimated_size_bytes();
+    let (state, size_bytes) = cache.into_opaque_state();
     let cost_per_byte = if size_bytes > 0 { Some(1.0 / size_bytes as f64) } else { None };
-    let new_warm_state = Some(cache.into_opaque_state());
+    let new_warm_state = Some(state);
     let outcome = ComputeOutcome::Completed {
         result,
         new_warm_state,
@@ -1711,7 +1717,7 @@ mod tests {
         );
 
         // ── (2) feed the cache back, differing only in n_modes → HIT ──────────
-        let prior = cache.clone().into_opaque_state();
+        let prior = cache.clone().into_opaque_state().0;
         let inputs4 = modal_inputs(0.02, 0.05, 0.1, STEEL_DENSITY, 4, None);
         let run2 = run_modal_analysis(&inputs4, Some(&prior), &handle);
         assert!(
@@ -1754,7 +1760,8 @@ mod tests {
             .downcast_ref::<ModalAnalysisCache>()
             .expect("donated state must be a ModalAnalysisCache")
             .clone()
-            .into_opaque_state();
+            .into_opaque_state()
+            .0;
 
         // (a) different length → MISS (re-assembled).
         let a = run_modal_analysis(
