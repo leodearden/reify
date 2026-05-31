@@ -198,49 +198,63 @@ pub(crate) struct ModalCoreResult {
     pub(crate) diagnostics: Vec<Diagnostic>,
 }
 
-/// Core free-vibration FEA eigensolve over a prebuilt [`BeamMesh`]: assemble `K`
-/// and the consistent mass `M`, project to the free-DOF subspace, solve
-/// `K_free φ = λ M_free φ`, and scatter the mode shapes back to the full DOF
-/// space.
+/// The assembled, BC- and `n_modes`-independent product of the modal solve: the
+/// global stiffness `K` and consistent mass `M` (at the discretization's element
+/// order), plus the `‖K‖_F`/`‖M‖_F` Frobenius norms and the node count.
 ///
-/// Takes the discretization as a [`ModalMesh`] rather than rebuilding it from
-/// geometry scalars, so the caller builds (and, for P2, promotes) it once and
-/// shares it with the BC realization ([`build_dirichlet_bcs`]); both then index
-/// DOFs against the same node numbering, with no redundant rebuild or
-/// re-promotion. The element order is encoded in the `ModalMesh` variant (P1 ⇒
-/// the 4-node mesh used directly; P2 ⇒ a pre-promoted 10-node mesh). The unit
-/// tests likewise build their fixture mesh once and pass it here.
+/// This is exactly the expensive part the task-κ warm-state cache holds: it
+/// depends only on the geometry + material + element order (the `ModalCacheKey`
+/// inputs, in reify-stdlib), NOT on the boundary conditions, `n_modes`, or any
+/// eigen knob — so one `ModalAssembly` is reused by [`eigensolve_modal`] across
+/// calls that differ only in those. Deliberately omits node coordinates: a cache
+/// HIT rebuilds the cheap mesh solely to realize the Dirichlet BCs by coordinate
+/// (geometry + element order are in the key, so the rebuilt node count always
+/// matches the cached assembly).
 ///
-/// Operates in the free-DOF subspace (extracting `K_free` / `M_free` over the
-/// non-Dirichlet DOFs) rather than via row elimination, which would inject
-/// spurious unit-diagonal eigenpairs (design_decision #3, mirroring
-/// `buckling_kernel`). Homogeneous Dirichlet BCs only; `DirichletBc.value` is
-/// ignored.
+/// Holds faer `SparseRowMat<usize, f64>` directly — Vec-backed, hence
+/// `Send + Sync + Clone + 'static`, so the cache wrapper stores it in an
+/// `OpaqueState` with no CSR-component round-trip. `Clone` is the faer matrix
+/// clone, used when recovering the cached assembly for reuse.
+#[derive(Clone)]
+pub(crate) struct ModalAssembly {
+    /// Global stiffness matrix `K` over the full DOF set.
+    pub(crate) k_full: SparseRowMat<usize, f64>,
+    /// Global consistent mass matrix `M` over the full DOF set.
+    pub(crate) m_full: SparseRowMat<usize, f64>,
+    /// Frobenius norm `‖M‖_F` of the full consistent mass matrix (BC-independent
+    /// conditioning diagnostic; copied onto `ModalResult.mass_matrix_norm`).
+    pub(crate) mass_matrix_norm: f64,
+    /// Frobenius norm `‖K‖_F` of the full stiffness matrix
+    /// (`ModalResult.stiffness_matrix_norm`).
+    pub(crate) stiffness_matrix_norm: f64,
+    /// Mesh node count (P1 4-node, or P2 promoted 10-node); `K`/`M` order = 3·it.
+    pub(crate) n_nodes: usize,
+}
+
+/// Assemble the global stiffness `K` and consistent mass `M` over a prebuilt
+/// [`ModalMesh`] at its element order, returning a [`ModalAssembly`] (the
+/// matrices plus their `‖K‖_F`/`‖M‖_F` norms and the node count).
 ///
-/// `reference_direction` is the (unit) direction along which the per-mode
-/// effective participation mass `m_eff,i = (φ_iᵀ·M_free·d_free)²` is computed;
-/// it is broadcast to every free node's three translational DOFs to form
-/// `d_free` (the caller is responsible for supplying a unit vector — see the
-/// trampoline). It does not affect the eigensolve, only the participation field.
-pub(crate) fn solve_modal_core(
+/// The expensive, BC-/`n_modes`-independent half of [`solve_modal_core`] — the
+/// product the task-κ warm-state cache holds so it can be amortized across calls
+/// that change only the eigensolve inputs. The assembly logic is MOVED verbatim
+/// from the original `solve_modal_core`, so its output is bit-identical.
+///
+/// P1 keeps the original constant-strain path bit-for-bit. P2 receives a
+/// pre-promoted 10-node mesh (edge-midpoint nodes already inserted by the
+/// caller) and assembles the quadratic stiffness + the exact
+/// (degree-4-integrated) consistent mass over it — the lever that resolves
+/// bending curvature and removes the P1 lock (task 4066). Both orders route
+/// through the shared generic `assemble_global_matrix` (K and M differ only in
+/// the per-element kernel). Everything downstream (free-DOF projection,
+/// participation metric, eigensolve, scatter-back) is DOF-index based and
+/// element-order agnostic, so it consumes the resulting `(n_nodes, k_full,
+/// m_full)` unchanged regardless of order.
+pub(crate) fn assemble_modal_km(
     mesh: ModalMesh<'_>,
     density: f64,
     material: &IsotropicElastic,
-    reference_direction: [f64; 3],
-    bcs: &[DirichletBc],
-    eigen_opts: &EigenSolverOptions,
-) -> ModalCoreResult {
-    // ---- Assemble (K, M) at the discretization's element order ------------
-    // P1 keeps the original constant-strain path bit-for-bit. P2 receives a
-    // pre-promoted 10-node mesh (edge-midpoint nodes already inserted by the
-    // caller) and assembles the quadratic stiffness + the exact
-    // (degree-4-integrated) consistent mass over it — the lever that resolves
-    // bending curvature and removes the P1 lock (task 4066). Both orders route
-    // through the shared generic `assemble_global_matrix` (K and M differ only in
-    // the per-element kernel). Everything downstream (free-DOF projection,
-    // participation metric, eigensolve, scatter-back) is DOF-index based and
-    // element-order agnostic, so it consumes the resulting `(n_nodes, k_full,
-    // m_full)` unchanged regardless of order.
+) -> ModalAssembly {
     let (n_nodes, k_full, m_full) = match mesh {
         ModalMesh::P1(mesh) => {
             let k_full = assemble_global_matrix(&mesh.nodes, &mesh.tets, |phys| {
@@ -261,14 +275,49 @@ pub(crate) fn solve_modal_core(
             (nodes.len(), k_full, m_full)
         }
     };
-    let n_dofs = 3 * n_nodes;
 
     // ---- Matrix-norm diagnostics (‖K‖_F, ‖M‖_F over the full assembly) -----
-    // Computed before the free-DOF projection consumes the matrices: these are
+    // Computed before any free-DOF projection consumes the matrices: these are
     // BC-independent conditioning diagnostics of the discretization itself
     // (surfaced on ModalResult.{stiffness,mass}_matrix_norm).
     let stiffness_matrix_norm = frobenius_norm(&k_full);
     let mass_matrix_norm = frobenius_norm(&m_full);
+
+    ModalAssembly { k_full, m_full, mass_matrix_norm, stiffness_matrix_norm, n_nodes }
+}
+
+/// Eigensolve over a prebuilt [`ModalAssembly`]: project `K`/`M` to the free-DOF
+/// subspace, solve `K_free φ = λ M_free φ`, and scatter the mode shapes back to
+/// the full DOF space.
+///
+/// The cheap, BC-/`n_modes`-dependent half of [`solve_modal_core`]: it consumes
+/// an assembly that [`assemble_modal_km`] (or the task-κ cache) produced, so the
+/// expensive assembly is never redone for a call that only changes the BCs or an
+/// eigen knob. `n_nodes` and the `‖K‖_F`/`‖M‖_F` norms are read straight off the
+/// assembly and forwarded onto the returned [`ModalCoreResult`].
+///
+/// Operates in the free-DOF subspace (extracting `K_free` / `M_free` over the
+/// non-Dirichlet DOFs) rather than via row elimination, which would inject
+/// spurious unit-diagonal eigenpairs (design_decision #3, mirroring
+/// `buckling_kernel`). Homogeneous Dirichlet BCs only; `DirichletBc.value` is
+/// ignored.
+///
+/// `reference_direction` is the (unit) direction along which the per-mode
+/// effective participation mass `m_eff,i = (φ_iᵀ·M_free·d_free)²` is computed;
+/// it is broadcast to every free node's three translational DOFs to form
+/// `d_free` (the caller is responsible for supplying a unit vector — see the
+/// trampoline). It does not affect the eigensolve, only the participation field.
+pub(crate) fn eigensolve_modal(
+    assembly: &ModalAssembly,
+    reference_direction: [f64; 3],
+    bcs: &[DirichletBc],
+    eigen_opts: &EigenSolverOptions,
+) -> ModalCoreResult {
+    let n_nodes = assembly.n_nodes;
+    let n_dofs = 3 * n_nodes;
+    // Forward the assembly's BC-independent norms onto the result unchanged.
+    let stiffness_matrix_norm = assembly.stiffness_matrix_norm;
+    let mass_matrix_norm = assembly.mass_matrix_norm;
 
     // ---- Free-DOF subspace map (Dirichlet-only; no MPC) -------------------
     let mut is_constrained = vec![false; n_dofs];
@@ -288,8 +337,8 @@ pub(crate) fn solve_modal_core(
     let n_free = full_of_free.len();
 
     // ---- Extract free×free submatrices ------------------------------------
-    let k_free = project_free(&k_full, &free_of_full, n_free);
-    let m_free = project_free(&m_full, &free_of_full, n_free);
+    let k_free = project_free(&assembly.k_full, &free_of_full, n_free);
+    let m_free = project_free(&assembly.m_full, &free_of_full, n_free);
 
     // ---- Participation metric  md = M_free · d_free -----------------------
     // d_free broadcasts the reference direction to every free node's three
@@ -424,6 +473,30 @@ pub(crate) fn solve_modal_core(
         stiffness_matrix_norm,
         diagnostics,
     }
+}
+
+/// Core free-vibration FEA eigensolve over a prebuilt [`ModalMesh`]: a thin
+/// composition of [`assemble_modal_km`] (assemble `K` + consistent `M` — the
+/// expensive, BC-/`n_modes`-independent step the task-κ warm-state cache reuses)
+/// and [`eigensolve_modal`] (free-DOF projection + generalized eigensolve +
+/// scatter-back).
+///
+/// Splitting the two lets the trampoline cache the assembled `(K, M)` across
+/// calls that differ only in `n_modes`/BCs (task κ); callers with no cache — the
+/// unit tests, and any non-caching path — compose them here and get behaviour
+/// bit-identical to the pre-split `solve_modal_core`. See [`assemble_modal_km`]
+/// for the P1/P2 assembly and [`eigensolve_modal`] for the `reference_direction`
+/// / free-DOF-subspace semantics.
+pub(crate) fn solve_modal_core(
+    mesh: ModalMesh<'_>,
+    density: f64,
+    material: &IsotropicElastic,
+    reference_direction: [f64; 3],
+    bcs: &[DirichletBc],
+    eigen_opts: &EigenSolverOptions,
+) -> ModalCoreResult {
+    let assembly = assemble_modal_km(mesh, density, material);
+    eigensolve_modal(&assembly, reference_direction, bcs, eigen_opts)
 }
 
 /// Promote a P1 [`BeamMesh`] to a P2 (10-node) tet mesh by inserting
