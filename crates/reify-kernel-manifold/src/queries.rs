@@ -341,6 +341,34 @@ pub(crate) fn geo_equiv(a: &Manifold, b: &Manifold, tolerance: f64) -> bool {
     true
 }
 
+/// Extract the xyz vertex triplets **and** the flat triangle-corner index
+/// list from a [`Manifold`]'s mesh in a single `to_mesh_f64` call.
+///
+/// Returns `(vertices, tri_indices)` where `vertices[i]` is the xyz of mesh
+/// vertex `i`, and `tri_indices` is the flat `3·T`-length array whose every
+/// consecutive triplet names one triangle's three corner vertices (the
+/// `to_mesh_f64` contract).  Returns `(empty, empty)` when the mesh is empty
+/// or degenerate (`n_props < 3`) — the same guard [`extract_xyz`] and
+/// `ManifoldKernel::tessellate` apply.
+///
+/// This is the single extraction entry-point shared by the topology
+/// selectors (`extract_faces` / `extract_edges`, `canonical_edges`,
+/// `triangles_of`) and the mass-property integrator (`mass_properties`),
+/// so every consumer indexes the same vertex/triangle data identically.
+pub(crate) fn mesh_geometry(m: &Manifold) -> (Vec<[f64; 3]>, Vec<u64>) {
+    let (vert_props, n_props, tri_indices) = m.to_mesh_f64();
+    if n_props < 3 || vert_props.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let n_verts = vert_props.len() / n_props;
+    let mut verts = Vec::with_capacity(n_verts);
+    for v in 0..n_verts {
+        let base = v * n_props;
+        verts.push([vert_props[base], vert_props[base + 1], vert_props[base + 2]]);
+    }
+    (verts, tri_indices)
+}
+
 /// Extract `xyz` vertex triplets from a [`Manifold`]'s mesh.
 ///
 /// Mirrors the `n_props` guard in [`crate::kernel::ManifoldKernel::tessellate`]

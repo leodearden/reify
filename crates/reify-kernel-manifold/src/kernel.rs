@@ -47,6 +47,25 @@ const STUB_MSG: &str = "Manifold query/export not yet implemented for v0.2; \
     boolean ops and tessellate are wired via manifold3d 0.1, but query/export \
     are follow-up work (see docs/prds/v0_2/multi-kernel.md).";
 
+/// A sub-element (face triangle or edge segment) extracted from a parent
+/// Manifold mesh by [`GeometryKernel::extract_faces`] /
+/// [`GeometryKernel::extract_edges`].
+///
+/// A single triangle or edge is **not** a closed [`Manifold`] and cannot live
+/// in the [`ManifoldKernel::shapes`] store, so extracted sub-elements are
+/// persisted in a parallel typed store ([`ManifoldKernel::sub_shapes`]) keyed
+/// by the same id space. `query()` distinguishes a sub-handle from a full-mesh
+/// handle by store membership: an id present in `sub_shapes` answers
+/// per-element property queries (`SurfaceArea`, `FaceNormal`, `EdgeTangent`,
+/// `BoundingBox`); an id present in `shapes` answers whole-mesh queries.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SubShape {
+    /// A mesh triangle: three xyz corner points in winding order.
+    Face([[f64; 3]; 3]),
+    /// A mesh edge: two xyz endpoints.
+    Edge([[f64; 3]; 2]),
+}
+
 /// Manifold mesh-Boolean kernel adapter, backed by `manifold3d` 0.1.
 ///
 /// Mirrors `OcctKernel`'s storage shape (`crates/reify-kernel-occt/src/lib.rs:456-466`):
@@ -60,6 +79,12 @@ pub struct ManifoldKernel {
     /// `execute` boolean arms and from the `test-fixtures` ingestion path);
     /// looked up by `tessellate` and the boolean arms.
     shapes: HashMap<u64, Manifold>,
+    /// Per-handle extracted sub-elements (face triangles / edge segments).
+    /// Inserted by [`Self::store_sub_shape`] (called from `extract_faces` /
+    /// `extract_edges`); looked up by the per-element `query()` arms. Keyed
+    /// in the same id space as [`Self::shapes`] (both mint from `next_id`),
+    /// so a sub-handle never aliases a full-mesh handle.
+    sub_shapes: HashMap<u64, SubShape>,
     /// Monotonic id counter; first allocated handle is `1` (matches OCCT).
     /// `0` and `u64::MAX` are reserved (the latter is `GeometryHandleId::INVALID`).
     next_id: u64,
@@ -70,6 +95,7 @@ impl ManifoldKernel {
     pub fn new() -> Self {
         Self {
             shapes: HashMap::new(),
+            sub_shapes: HashMap::new(),
             next_id: 1,
         }
     }
@@ -106,6 +132,20 @@ impl ManifoldKernel {
             .ok_or(GeometryError::InvalidReference(id))
     }
 
+    /// Store an extracted [`SubShape`] (face triangle / edge segment) under a
+    /// fresh handle id minted from the shared `next_id` counter, and return
+    /// that id.
+    ///
+    /// Sharing `next_id` with [`Self::store`] keeps sub-handle ids globally
+    /// unique so a sub-handle never aliases a full-mesh handle — `query()`
+    /// can therefore route by store membership (`sub_shapes` vs `shapes`)
+    /// without ambiguity.
+    fn store_sub_shape(&mut self, sub: SubShape) -> GeometryHandleId {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.sub_shapes.insert(id, sub);
+        GeometryHandleId(id)
+    }
 }
 
 impl Default for ManifoldKernel {
@@ -300,8 +340,51 @@ impl GeometryKernel for ManifoldKernel {
             normals: None,
         })
     }
-    // extract_edges, extract_faces, execute_with_history, query_many all use
-    // the trait defaults — they error in the standard "not supported" fashion.
+    /// Extract the mesh triangles of the stored Manifold as face sub-handles.
+    ///
+    /// # Manifold-face = mesh triangle (semantic gap)
+    ///
+    /// Unlike a B-rep kernel (where a "face" is a smooth parametric surface
+    /// patch), `manifold-csg` has no coalesced-surface concept — only mesh
+    /// facets. So this returns **one sub-handle per triangle**: the unit cube
+    /// yields 12 face handles, not the 6 a BRep box reports. See the
+    /// `queries` module-doc and PRD Open Question §10.5; `AdjacentFaces` /
+    /// `SharedEdges` therefore operate on triangle indices.
+    ///
+    /// Each triangle's three xyz corners (in mesh winding order) are stored as
+    /// a [`SubShape::Face`] via [`Self::store_sub_shape`]; the returned
+    /// `Vec<GeometryHandleId>` is in triangle order, so `result[i]` names
+    /// triangle `i` of `to_mesh_f64`'s index list. An empty or degenerate mesh
+    /// (e.g. the empty `Manifold` from a disjoint intersection) yields
+    /// `Ok(empty vec)`.
+    fn extract_faces(
+        &mut self,
+        handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        // Read the parent mesh, dropping the immutable borrow before the
+        // mutable store_sub_shape calls below.
+        let (verts, tris) = {
+            let m = self
+                .get_manifold(handle)
+                .map_err(|e| QueryError::QueryFailed(format!("{e:?}")))?;
+            crate::queries::mesh_geometry(m)
+        };
+        if verts.is_empty() || tris.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut faces = Vec::with_capacity(tris.len() / 3);
+        for tri in tris.chunks_exact(3) {
+            let v0 = verts[tri[0] as usize];
+            let v1 = verts[tri[1] as usize];
+            let v2 = verts[tri[2] as usize];
+            faces.push(self.store_sub_shape(SubShape::Face([v0, v1, v2])));
+        }
+        Ok(faces)
+    }
+
+    // extract_edges (step-4), extract_vertices, execute_with_history, and
+    // query_many use the trait defaults — they error in the standard
+    // "not supported" fashion.
 
     /// Ingest an externally-supplied [`Mesh`] into the kernel, converting it
     /// to a `Manifold` and storing it under a fresh handle.
