@@ -15,18 +15,18 @@ use reify_core::{DimensionVector, Severity, Type};
 use reify_ir::EnumDef;
 use reify_test_support::compile_source_with_stdlib;
 
-// ─── helpers (std/ports) ─────────────────────────────────────────────────────
+// ─── helpers ─────────────────────────────────────────────────────────────────
 
-/// Return the `std/ports` CompiledModule from the production stdlib loader.
-/// Panics if absent — which is the expected failure mode until step-2 registers
-/// the module.
-fn load_ports_module() -> &'static reify_compiler::CompiledModule {
+/// Return the `CompiledModule` for `path` from the production stdlib loader.
+/// Panics if the module is not registered in stdlib_loader.rs.
+fn load_module(path: &str) -> &'static reify_compiler::CompiledModule {
     stdlib_loader::load_stdlib()
         .iter()
-        .find(|m| m.path.to_string() == "std/ports")
+        .find(|m| m.path.to_string() == path)
         .unwrap_or_else(|| {
             panic!(
-                "stdlib should contain std/ports module; available paths: {:?}",
+                "stdlib should contain module '{}'; available paths: {:?}",
+                path,
                 stdlib_loader::load_stdlib()
                     .iter()
                     .map(|m| m.path.to_string())
@@ -35,48 +35,52 @@ fn load_ports_module() -> &'static reify_compiler::CompiledModule {
         })
 }
 
-/// Look up an enum definition by name within the `std/ports` module.
-fn find_enum_ports(name: &str) -> &'static EnumDef {
-    let module = load_ports_module();
+/// Look up an enum definition by name within the given stdlib module path.
+fn find_enum(module_path: &str, name: &str) -> &'static EnumDef {
+    let module = load_module(module_path);
     module
         .enum_defs
         .iter()
         .find(|e| e.name == name)
         .unwrap_or_else(|| {
             panic!(
-                "expected `enum {}` in std/ports, got enum_defs: {:?}",
+                "expected `enum {}` in {}, got enum_defs: {:?}",
                 name,
+                module_path,
                 module.enum_defs.iter().map(|e| &e.name).collect::<Vec<_>>()
             )
         })
 }
 
-/// Find a trait by name within the `std/ports` module.
-fn find_trait_ports(name: &str) -> &'static CompiledTrait {
-    let module = load_ports_module();
+/// Find a trait by name within the given stdlib module path.
+fn find_trait(module_path: &str, name: &str) -> &'static CompiledTrait {
+    let module = load_module(module_path);
     module
         .trait_defs
         .iter()
         .find(|t| t.name == name)
         .unwrap_or_else(|| {
             panic!(
-                "std/ports should contain trait '{}'; found: {:?}",
+                "module '{}' should contain trait '{}'; found: {:?}",
+                module_path,
                 name,
                 module.trait_defs.iter().map(|t| &t.name).collect::<Vec<_>>()
             )
         })
 }
 
-/// Get the Param type for a named required member of a `std/ports` trait or panic.
-fn param_type_ports(trait_name: &str, member: &str) -> Type {
-    let t = find_trait_ports(trait_name);
+/// Get the Param type for a named required member of a trait within the given
+/// stdlib module path, or panic.
+fn param_type(module_path: &str, trait_name: &str, member: &str) -> Type {
+    let t = find_trait(module_path, trait_name);
     let req = t
         .required_members
         .iter()
         .find(|r| r.name == member)
         .unwrap_or_else(|| {
             panic!(
-                "trait '{}' should have required member '{}'; found: {:?}",
+                "module '{}' trait '{}' should have required member '{}'; found: {:?}",
+                module_path,
                 trait_name,
                 member,
                 t.required_members
@@ -88,71 +92,8 @@ fn param_type_ports(trait_name: &str, member: &str) -> Type {
     match &req.kind {
         RequirementKind::Param(ty) => ty.clone(),
         other => panic!(
-            "trait '{}' member '{}' should be RequirementKind::Param, got {:?}",
-            trait_name, member, other
-        ),
-    }
-}
-
-// ─── helpers (std/ports/mechanical) ──────────────────────────────────────────
-
-/// Return the `std/ports/mechanical` CompiledModule from the production stdlib loader.
-/// Panics if absent — which is the expected failure mode until step-6 registers
-/// the module.
-fn load_mechanical_module() -> &'static reify_compiler::CompiledModule {
-    stdlib_loader::load_stdlib()
-        .iter()
-        .find(|m| m.path.to_string() == "std/ports/mechanical")
-        .unwrap_or_else(|| {
-            panic!(
-                "stdlib should contain std/ports/mechanical module; available paths: {:?}",
-                stdlib_loader::load_stdlib()
-                    .iter()
-                    .map(|m| m.path.to_string())
-                    .collect::<Vec<_>>()
-            )
-        })
-}
-
-/// Find a trait by name within the `std/ports/mechanical` module.
-fn find_trait_mechanical(name: &str) -> &'static CompiledTrait {
-    let module = load_mechanical_module();
-    module
-        .trait_defs
-        .iter()
-        .find(|t| t.name == name)
-        .unwrap_or_else(|| {
-            panic!(
-                "std/ports/mechanical should contain trait '{}'; found: {:?}",
-                name,
-                module.trait_defs.iter().map(|t| &t.name).collect::<Vec<_>>()
-            )
-        })
-}
-
-/// Get the Param type for a named required member of a `std/ports/mechanical` trait or panic.
-fn param_type_mechanical(trait_name: &str, member: &str) -> Type {
-    let t = find_trait_mechanical(trait_name);
-    let req = t
-        .required_members
-        .iter()
-        .find(|r| r.name == member)
-        .unwrap_or_else(|| {
-            panic!(
-                "trait '{}' should have required member '{}'; found: {:?}",
-                trait_name,
-                member,
-                t.required_members
-                    .iter()
-                    .map(|r| &r.name)
-                    .collect::<Vec<_>>()
-            )
-        });
-    match &req.kind {
-        RequirementKind::Param(ty) => ty.clone(),
-        other => panic!(
-            "trait '{}' member '{}' should be RequirementKind::Param, got {:?}",
-            trait_name, member, other
+            "module '{}' trait '{}' member '{}' should be RequirementKind::Param, got {:?}",
+            module_path, trait_name, member, other
         ),
     }
 }
@@ -164,7 +105,7 @@ fn param_type_mechanical(trait_name: &str, member: &str) -> Type {
 /// three variants [In, Out, Bidi] in that order.
 #[test]
 fn std_ports_loads_with_no_errors_and_directionality_enum() {
-    let module = load_ports_module();
+    let module = load_module("std/ports");
 
     let errors: Vec<_> = module
         .diagnostics
@@ -177,7 +118,7 @@ fn std_ports_loads_with_no_errors_and_directionality_enum() {
         errors
     );
 
-    let enum_def = find_enum_ports("Directionality");
+    let enum_def = find_enum("std/ports", "Directionality");
     assert_eq!(
         enum_def.variants,
         vec![
@@ -196,7 +137,7 @@ fn std_ports_loads_with_no_errors_and_directionality_enum() {
 /// direction : Directionality.
 #[test]
 fn port_base_trait_requires_direction_directionality() {
-    let t = find_trait_ports("Port");
+    let t = find_trait("std/ports", "Port");
 
     assert!(
         t.refinements.is_empty(),
@@ -219,7 +160,7 @@ fn port_base_trait_requires_direction_directionality() {
         t.required_members[0].name
     );
     assert_eq!(
-        param_type_ports("Port", "direction"),
+        param_type("std/ports", "Port", "direction"),
         Type::Enum("Directionality".into()),
         "Port.direction must be Type::Enum(\"Directionality\")"
     );
@@ -229,7 +170,7 @@ fn port_base_trait_requires_direction_directionality() {
 /// 0 structures.
 #[test]
 fn std_ports_module_cardinality_locked() {
-    let module = load_ports_module();
+    let module = load_module("std/ports");
 
     let enum_names: Vec<&str> = module.enum_defs.iter().map(|e| e.name.as_str()).collect();
     assert_eq!(
@@ -277,7 +218,7 @@ fn std_ports_module_cardinality_locked() {
 /// refine exactly ["MechanicalPort"] with empty own required_members.
 #[test]
 fn std_ports_mechanical_loads_with_no_errors_and_marker_traits() {
-    let module = load_mechanical_module();
+    let module = load_module("std/ports/mechanical");
 
     let errors: Vec<_> = module
         .diagnostics
@@ -290,7 +231,7 @@ fn std_ports_mechanical_loads_with_no_errors_and_marker_traits() {
         errors
     );
 
-    let mechanical_port = find_trait_mechanical("MechanicalPort");
+    let mechanical_port = find_trait("std/ports/mechanical", "MechanicalPort");
     assert_eq!(
         mechanical_port.refinements.as_slice(),
         ["Port".to_string()].as_slice(),
@@ -308,7 +249,7 @@ fn std_ports_mechanical_loads_with_no_errors_and_marker_traits() {
     );
 
     for name in &["Bore", "Shaft", "StructurePort"] {
-        let t = find_trait_mechanical(name);
+        let t = find_trait("std/ports/mechanical", name);
         assert_eq!(
             t.refinements.as_slice(),
             ["MechanicalPort".to_string()].as_slice(),
@@ -328,11 +269,18 @@ fn std_ports_mechanical_loads_with_no_errors_and_marker_traits() {
 // ─── step-7: RotaryPort/ThreadedPort + cardinality lock ──────────────────────
 
 /// RotaryPort refines [MechanicalPort] with required members [torque_capacity,
-/// max_speed] in order; max_speed resolves to Scalar<ANGULAR_VELOCITY>;
-/// torque_capacity resolves to Scalar<..> (the Torque alias resolved).
+/// max_speed] in order.
+///
+/// `torque_capacity` is asserted to the exact Torque dimension
+/// (Force·Length/Angle = kg·m²·s⁻²·rad⁻¹), which is distinct from Energy
+/// (kg·m²·s⁻²) via the Angle⁻¹ slot.  This locks the `Torque = Force *
+/// Length / Angle` deviation documented in ports_mechanical.ri and ensures
+/// that a regression to Energy or any other scalar would be caught.
+///
+/// `max_speed` is asserted to Scalar<ANGULAR_VELOCITY>.
 #[test]
 fn rotary_port_trait_surface() {
-    let t = find_trait_mechanical("RotaryPort");
+    let t = find_trait("std/ports/mechanical", "RotaryPort");
 
     assert_eq!(
         t.refinements.as_slice(),
@@ -356,15 +304,21 @@ fn rotary_port_trait_surface() {
         "RotaryPort required_members[1] should be 'max_speed'"
     );
 
-    let torque_ty = param_type_mechanical("RotaryPort", "torque_capacity");
-    assert!(
-        matches!(torque_ty, Type::Scalar { .. }),
-        "RotaryPort.torque_capacity must be Type::Scalar (Torque alias resolved), got {:?}",
-        torque_ty
+    // Torque = Force * Length / Angle (distinct from Energy by the Angle⁻¹ slot).
+    let expected_torque_dim = DimensionVector::FORCE
+        .mul(&DimensionVector::LENGTH)
+        .div(&DimensionVector::ANGLE);
+    assert_eq!(
+        param_type("std/ports/mechanical", "RotaryPort", "torque_capacity"),
+        Type::Scalar {
+            dimension: expected_torque_dim
+        },
+        "RotaryPort.torque_capacity must be Scalar<Force·Length/Angle> \
+         (Torque alias — distinct from Energy via Angle⁻¹ slot)"
     );
 
     assert_eq!(
-        param_type_mechanical("RotaryPort", "max_speed"),
+        param_type("std/ports/mechanical", "RotaryPort", "max_speed"),
         Type::Scalar {
             dimension: DimensionVector::ANGULAR_VELOCITY
         },
@@ -376,7 +330,7 @@ fn rotary_port_trait_surface() {
 /// pitch] in order; both resolve to Scalar<LENGTH>.
 #[test]
 fn threaded_port_trait_surface() {
-    let t = find_trait_mechanical("ThreadedPort");
+    let t = find_trait("std/ports/mechanical", "ThreadedPort");
 
     assert_eq!(
         t.refinements.as_slice(),
@@ -401,14 +355,14 @@ fn threaded_port_trait_surface() {
     );
 
     assert_eq!(
-        param_type_mechanical("ThreadedPort", "thread_diameter"),
+        param_type("std/ports/mechanical", "ThreadedPort", "thread_diameter"),
         Type::Scalar {
             dimension: DimensionVector::LENGTH
         },
         "ThreadedPort.thread_diameter must have DimensionVector::LENGTH"
     );
     assert_eq!(
-        param_type_mechanical("ThreadedPort", "pitch"),
+        param_type("std/ports/mechanical", "ThreadedPort", "pitch"),
         Type::Scalar {
             dimension: DimensionVector::LENGTH
         },
@@ -420,7 +374,7 @@ fn threaded_port_trait_surface() {
 /// Bore, Shaft, RotaryPort, ThreadedPort, StructurePort), 0 enums, 0 structures.
 #[test]
 fn std_ports_mechanical_module_cardinality_locked() {
-    let module = load_mechanical_module();
+    let module = load_module("std/ports/mechanical");
 
     assert_eq!(
         module.enum_defs.len(),
@@ -464,6 +418,12 @@ fn std_ports_mechanical_module_cardinality_locked() {
 
 /// examples/stdlib/ports_mechanical.ri must compile without errors and
 /// structurally declare a template named "Coupling" of EntityKind::Structure.
+///
+/// Note: direction/Bidi/StructurePort/Bore/Shaft and torque_capacity/max_speed
+/// params are not exercised through an actual conformance path in this example
+/// (no concrete RotaryPort conformer is instantiated per PRD §4 decision 4).
+/// A follow-up that adds a concrete conformer supplying torque_capacity /
+/// max_speed / direction literals would close that coverage gap end-to-end.
 #[test]
 fn example_ports_mechanical_ri_compiles_clean() {
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
