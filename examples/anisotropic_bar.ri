@@ -39,17 +39,18 @@ structure AnisotropicBar {
 
     // ── Isotropic baseline ────────────────────────────────────────────────────
     // AISI 1045 medium-carbon steel (E = 205 GPa, ν = 0.29 — isotropic).
-    // Provides the reference tip response against which the transverse-isotropic
-    // arm is compared.
+    // Provides the reference structural response against which the transverse-
+    // isotropic arm is compared.
     let iso_material = Steel_AISI_1045()
     let iso_ci       = ConstitutiveLawInput(law: iso_material)
     let iso_result   = solve_elastic_static(
         iso_ci.law, length, width, height, lc.loads, lc.supports, ElasticOptions()
     )
-    // Peak von Mises stress — compile-level proxy for tip structural response.
-    // At compile altitude this is Undef (solver runs only at runtime via the
-    // @optimized("solver::elastic_static") trampoline).
-    let iso_tip_deflection = iso_result.max_von_mises
+    // Peak von Mises stress — the only scalar structural response in ElasticResult.
+    // (ElasticResult exposes per-node displacement as a Field<Point3<Length>,
+    // Vector3<Length>>, not as a scalar `max_displacement : Length`.)
+    // At compile altitude this is Undef; the runtime FEA trampoline populates it.
+    let iso_peak_von_mises = iso_result.max_von_mises
 
     // ── Transverse-isotropic arm (weak build/z axis) ──────────────────────────
     // e_in_plane matches the iso baseline (205 GPa); e_axial is markedly weaker
@@ -89,6 +90,7 @@ structure AnisotropicBar {
     let ti_result = solve_elastic_static(
         ti_ci.law, length, width, height, lc.loads, lc.supports, ElasticOptions()
     )
-    // Larger tip response than the iso arm — weak axial dir aligned with bending.
-    let ti_tip_deflection = ti_result.max_von_mises
+    // Peak von Mises stress for the TI arm — materially larger than iso_peak_von_mises
+    // because the weak axial direction is aligned with the bending-loaded axis.
+    let ti_peak_von_mises = ti_result.max_von_mises
 }
