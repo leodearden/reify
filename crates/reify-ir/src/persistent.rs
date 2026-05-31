@@ -321,6 +321,17 @@ mod tests {
     }
 
     #[test]
+    fn get_mut_accepts_borrowed_str_key() {
+        // Verifies the Borrow-generic `get_mut<Q>` overload: a bare `&str` must
+        // be accepted as a key without any `to_string()` allocation.
+        let mut map: PersistentMap<String, i32> = PersistentMap::new();
+        map.insert("key".to_string(), 42);
+        *map.get_mut("key").unwrap() = 99;
+        assert_eq!(map.get("key"), Some(&99));
+        assert!(map.get_mut("missing").is_none());
+    }
+
+    #[test]
     fn get_accepts_borrowed_str_key() {
         // Verifies the Borrow-generic `get<Q>` overload: a bare `&str` must be
         // accepted as a key into a `PersistentMap<String, i32>` without any
