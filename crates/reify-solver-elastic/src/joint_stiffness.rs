@@ -93,8 +93,7 @@ mod tests {
         0.0
     }
 
-    // step-1 RED: empty contributions must be a no-op.
-    // Fails with "not yet implemented" until step-2 GREEN implements the body.
+    // step-1 RED / step-2 GREEN: empty contributions must be a no-op.
     #[test]
     fn empty_contributions_noop() {
         let k = small_2x2();
@@ -107,6 +106,82 @@ mod tests {
                     get_entry(&result, r, c),
                     get_entry(&k, r, c),
                     "entry ({r},{c}) changed after empty-contributions call"
+                );
+            }
+        }
+    }
+
+    // step-3 RED: additive semantics — fails because step-2 body ignores contributions.
+
+    // (a) += onto an existing nonzero diagonal: K[1,1]=3, add {dof:1, k:5} → 8.
+    #[test]
+    fn additive_onto_existing_diagonal() {
+        let k = small_2x2();
+        let result = add_joint_stiffness(&k, &[JointStiffness { dof: 1, stiffness: 5.0 }]);
+        assert_eq!(get_entry(&result, 1, 1), 8.0, "K[1,1] must be 3.0 + 5.0 = 8.0");
+        assert_eq!(get_entry(&result, 0, 0), 2.0, "K[0,0] must be unchanged");
+        assert_eq!(get_entry(&result, 0, 1), 1.0, "K[0,1] must be unchanged");
+        assert_eq!(get_entry(&result, 1, 0), 1.0, "K[1,0] must be unchanged");
+    }
+
+    // (b) Structurally-absent diagonal: K with no stored (0,0), add {dof:0, k:7} → 7.
+    #[test]
+    fn absent_diagonal_created() {
+        // K = [[0, 1], [1, 3]] — (0,0) entry intentionally absent from CSR.
+        let trips: Vec<Triplet<usize, usize, f64>> = vec![
+            Triplet::new(0, 1, 1.0),
+            Triplet::new(1, 0, 1.0),
+            Triplet::new(1, 1, 3.0),
+        ];
+        let k = SparseRowMat::try_new_from_triplets(2, 2, &trips).unwrap();
+        assert_eq!(get_entry(&k, 0, 0), 0.0, "fixture: (0,0) must be absent");
+        let result = add_joint_stiffness(&k, &[JointStiffness { dof: 0, stiffness: 7.0 }]);
+        assert_eq!(get_entry(&result, 0, 0), 7.0, "absent diagonal must become k");
+        assert_eq!(get_entry(&result, 0, 1), 1.0, "off-diagonal must be unchanged");
+        assert_eq!(get_entry(&result, 1, 1), 3.0, "other diagonal must be unchanged");
+    }
+
+    // (c) Multiple distinct DOFs each land additively.
+    #[test]
+    fn multiple_distinct_dofs() {
+        let k = small_2x2();
+        let contributions = vec![
+            JointStiffness { dof: 0, stiffness: 10.0 },
+            JointStiffness { dof: 1, stiffness: 20.0 },
+        ];
+        let result = add_joint_stiffness(&k, &contributions);
+        assert_eq!(get_entry(&result, 0, 0), 12.0, "K[0,0] = 2 + 10 = 12");
+        assert_eq!(get_entry(&result, 1, 1), 23.0, "K[1,1] = 3 + 20 = 23");
+        assert_eq!(get_entry(&result, 0, 1), 1.0, "off-diagonal unchanged");
+        assert_eq!(get_entry(&result, 1, 0), 1.0, "off-diagonal unchanged");
+    }
+
+    // (d) Two contributions to the same DOF accumulate (faer duplicate-summation contract).
+    #[test]
+    fn same_dof_accumulates() {
+        let k = small_2x2();
+        let contributions = vec![
+            JointStiffness { dof: 0, stiffness: 2.0 },
+            JointStiffness { dof: 0, stiffness: 3.0 },
+        ];
+        let result = add_joint_stiffness(&k, &contributions);
+        // K[0,0] was 2.0; two contributions add 2+3=5 → result must be 7.0.
+        assert_eq!(get_entry(&result, 0, 0), 7.0, "K[0,0] = 2 + 2 + 3 = 7");
+        assert_eq!(get_entry(&result, 1, 1), 3.0, "K[1,1] unchanged");
+    }
+
+    // (e) Symmetry preserved: result is symmetric within fp tolerance.
+    #[test]
+    fn symmetry_preserved() {
+        let k = small_2x2();
+        let result = add_joint_stiffness(&k, &[JointStiffness { dof: 0, stiffness: 4.0 }]);
+        for r in 0..2 {
+            for c in 0..2 {
+                let fwd = get_entry(&result, r, c);
+                let rev = get_entry(&result, c, r);
+                assert!(
+                    (fwd - rev).abs() < 1e-14,
+                    "result[{r},{c}]={fwd} != result[{c},{r}]={rev}: symmetry violated"
                 );
             }
         }
