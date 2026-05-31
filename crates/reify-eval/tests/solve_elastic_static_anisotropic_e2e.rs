@@ -197,18 +197,24 @@ fn orthotropic_trampoline_e2e_returns_elastic_result() {
             .unwrap_or_else(|| panic!("ElasticResult missing field {:?}", key))
     };
 
-    // ── displacement / stress / frame → Undef (tet convention) ───────────────
-    assert_eq!(
-        get("displacement"), &Value::Undef,
-        "displacement must be Undef (tet convention)"
+    // ── displacement / stress → Sampled Field (task 4084/α) ─────────────────
+    // α populates displacement + stress as Regular3D Sampled Value::Field;
+    // the old Undef assertions are voided (same rationale as removing
+    // tet_trampoline_stress_is_undef in solve_elastic_static_e2e.rs step-5).
+    assert!(
+        matches!(get("displacement"), Value::Field { .. }),
+        "displacement must be a Value::Field after task 4084/α, got: {:?}",
+        get("displacement")
     );
-    assert_eq!(
-        get("stress"), &Value::Undef,
-        "stress must be Undef (tet convention)"
+    assert!(
+        matches!(get("stress"), Value::Field { .. }),
+        "stress must be a Value::Field after task 4084/α, got: {:?}",
+        get("stress")
     );
+    // ── frame → Undef (tet convention, unchanged) ─────────────────────────────
     assert_eq!(
         get("frame"), &Value::Undef,
-        "frame must be Undef (tet convention)"
+        "frame must remain Undef (tet/solid: no per-element local frame)"
     );
 
     // ── converged → Bool(true) ────────────────────────────────────────────────

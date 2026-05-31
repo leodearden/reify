@@ -88,6 +88,7 @@ use reify_solver_elastic::{
     element_stiffness, element_stiffness_p1_with_field, element_stress_p1,
     recover_nodal_stress_p1, StressElement, tet_volume_p1,
     solve_cg_with_warm_state,
+    GridSpec, resample_nodal_to_grid,
 };
 
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
@@ -207,15 +208,13 @@ pub fn solve_elastic_static_trampoline(
     // ── (7) Build ElasticResult StructureInstance ────────────────────────────
     //
     // StructureTypeId(u32::MAX) is a synthetic sentinel for this slice.
-    // The four Field/ShellStress-typed slots (displacement, stress, frame,
-    // shell_channels) are Undef per the tet/solid convention:
-    //   - displacement/stress/frame: tet nodes have no per-element local frame.
-    //   - shell_channels: through-thickness top/mid/bottom is undefined for
-    //     solid elements (PRD DR-3, task #4067 I-3). Task 3594/δ replaces
-    //     shell_channels=Undef with shell_channels_to_value(Some(_), mid) on
-    //     the shell path.
-    // `cost_per_byte` is derived as 1/(warm-state size in bytes) — larger
-    // warm states are more expensive per byte to retain in the pool.
+    //   - displacement / stress: Regular3D Sampled Value::Field (task 4084/α).
+    //   - frame:         Undef — tet stress is in the global Cartesian frame;
+    //                    no per-element local frame exists for solid elements.
+    //   - shell_channels: Undef — through-thickness top/mid/bottom is undefined
+    //                    for solid elements (PRD DR-3, task #4067 I-3). Task
+    //                    3594/δ replaces this on the shell path.
+    // `cost_per_byte` is derived as 1/(warm-state size in bytes).
     let n_iters    = fea.iterations as i64;
     let converged  = fea.converged;
     let size_bytes = fresh_warm.estimated_size_bytes();
@@ -228,9 +227,70 @@ pub fn solve_elastic_static_trampoline(
     };
     let new_warm_state = Some(fresh_warm.into_opaque_state());
 
+    // ── (7a) Resample displacement + stress onto a Regular3D grid ────────────
+    //
+    // Grid counts = solve-mesh element counts (nx × ny × nz); grid nodes =
+    // counts + 1 per axis; bounds = [0, length] × [0, width] × [0, height].
+    // This mirrors the PRD §4.1 grid-metadata invariant and ensures grid points
+    // coincide with FEA nodes for the prismatic box (linspace(0,L,L/nx) = node
+    // coords) — enabling the Kronecker-δ accuracy proven in plan design_decision[1].
+    let grid = GridSpec {
+        bounds_min: [0.0, 0.0, 0.0],
+        bounds_max: [length, width, height],
+        counts: [fea.nx, fea.ny, fea.nz],
+    };
+
+    // Flatten nodal stress [[f64;3];3] → stride-9 row-major
+    // (σ_xx,σ_xy,σ_xz, σ_yx,σ_yy,σ_yz, σ_zx,σ_zy,σ_zz per node).
+    let nodal_stress_flat: Vec<f64> = fea
+        .nodal_stress
+        .iter()
+        .flat_map(|s| {
+            [
+                s[0][0], s[0][1], s[0][2],
+                s[1][0], s[1][1], s[1][2],
+                s[2][0], s[2][1], s[2][2],
+            ]
+        })
+        .collect();
+
+    let disp_sf = resample_nodal_to_grid(
+        &fea.coords,
+        &fea.tet_connectivity,
+        &fea.u,   // Arc<Vec<f64>> → &[f64] via Deref
+        3,
+        &grid,
+        "displacement",
+        1e-9,
+    );
+    let stress_sf = resample_nodal_to_grid(
+        &fea.coords,
+        &fea.tet_connectivity,
+        &nodal_stress_flat,
+        9,
+        &grid,
+        "stress",
+        1e-9,
+    );
+
+    let disp_field = Value::Field {
+        domain_type:   reify_core::Type::point3(reify_core::Type::length()),
+        codomain_type: reify_core::Type::vec3(reify_core::Type::length()),
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(disp_sf)),
+    };
+    let stress_field = Value::Field {
+        domain_type:   reify_core::Type::point3(reify_core::Type::length()),
+        codomain_type: reify_core::Type::tensor(2, 3, reify_core::Type::Scalar {
+            dimension: DimensionVector::PRESSURE,
+        }),
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(stress_sf)),
+    };
+
     let fields: PersistentMap<String, Value> = [
-        ("displacement".to_string(),   Value::Undef),
-        ("stress".to_string(),         Value::Undef),
+        ("displacement".to_string(),   disp_field),
+        ("stress".to_string(),         stress_field),
         ("frame".to_string(),          Value::Undef),
         // task #4067 (PRD S1 / DR-3 / I-3): tet/solid results always emit
         // shell_channels=Undef (through-thickness data is undefined for solid
