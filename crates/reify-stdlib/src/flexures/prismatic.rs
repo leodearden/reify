@@ -187,6 +187,14 @@ fn prb_prismatic_blade(args: &[Value]) -> Value {
 /// `spring_rate = Value::Option(None)`. Per-axis stiffness is surfaced only via
 /// `effective_stiffness` (FlexureCompliance, populated in task λ).
 ///
+/// **2-DOF vs 3-DOF representation.** A two-axis pivot is physically a 2-DOF
+/// (universal-style) joint. It is mapped to `kind = "spherical"` (conventionally
+/// 3-DOF) because the PRD §8.6 / §13.1 joint taxonomy recognises only
+/// `"prismatic"`, `"revolute"`, and `"spherical"` as scalar-stiffness kinds in
+/// γ scope; no `"universal"` kind exists in the taxonomy and no downstream
+/// dispatcher branches on it. This is an intentional design decision, not an
+/// oversight.
+///
 /// The `axis` argument is validated (finite, non-zero, dimensionless 3-vector)
 /// for parser symmetry with the 1-DOF constructors but is NOT stored in the map
 /// — the spherical joint is axis-isotropic and the canonical spherical Map has
@@ -349,6 +357,229 @@ mod tests {
         assert!(rel_w < 1e-9, "width scaling: ratio {ratio_w} vs 2 (rel {rel_w})");
     }
 
+    // ── suggestion-1: transverse validity range ±δ ───────────────────────────
+
+    /// Asserts that `prb_prismatic_blade` emits a symmetric, LENGTH-dimensioned
+    /// `range` key with the correct closed-form ±δ:
+    ///  - Steel (with yield_stress): δ_yield = 2·yield·L²/(3·E·t)
+    ///  - No-yield fallback: δ = 0.1·L
+    #[test]
+    fn prb_prismatic_blade_validity_range() {
+        let length = 0.02_f64;
+        let width = 0.005_f64;
+        let thickness = 0.0005_f64;
+        let e = 205e9_f64;
+        let yield_si = 310e6_f64;
+
+        // ── Case 1: steel() with yield_stress ────────────────────────────────
+        let result = crate::eval_builtin("prb_prismatic_blade", &prismatic_args());
+        let range = map_get(&result, "range").expect("range key must exist");
+        let (lower, upper) = range_lower_upper(range);
+
+        let delta_yield = 2.0 * yield_si * length.powi(2) / (3.0 * e * thickness);
+
+        match lower {
+            Value::Scalar { si_value, dimension } => {
+                assert_eq!(*dimension, DimensionVector::LENGTH, "yield lower: LENGTH dimension");
+                let rel = (si_value + delta_yield).abs() / delta_yield;
+                assert!(rel < 1e-9, "yield lower = {si_value} vs {} (rel {rel})", -delta_yield);
+            }
+            other => panic!("yield lower: expected Length Scalar, got {other:?}"),
+        }
+        match upper {
+            Value::Scalar { si_value, dimension } => {
+                assert_eq!(*dimension, DimensionVector::LENGTH, "yield upper: LENGTH dimension");
+                let rel = (si_value - delta_yield).abs() / delta_yield;
+                assert!(rel < 1e-9, "yield upper = {si_value} vs {delta_yield} (rel {rel})");
+            }
+            other => panic!("yield upper: expected Length Scalar, got {other:?}"),
+        }
+
+        // ── Case 2: steel_no_yield() → δ = 0.1·L fallback ───────────────────
+        let args_no_yield = vec![
+            Value::length(length),
+            Value::length(width),
+            Value::length(thickness),
+            steel_no_yield(),
+            origin(),
+            axis_y(),
+        ];
+        let result_ny = crate::eval_builtin("prb_prismatic_blade", &args_no_yield);
+        let range_ny = map_get(&result_ny, "range").expect("no-yield range key must exist");
+        let (lower_ny, upper_ny) = range_lower_upper(range_ny);
+
+        let delta_fallback = 0.1 * length;
+
+        match lower_ny {
+            Value::Scalar { si_value, dimension } => {
+                assert_eq!(*dimension, DimensionVector::LENGTH, "no-yield lower: LENGTH dimension");
+                let rel = (si_value + delta_fallback).abs() / delta_fallback;
+                assert!(
+                    rel < 1e-9,
+                    "no-yield lower = {si_value} vs {} (rel {rel})",
+                    -delta_fallback
+                );
+            }
+            other => panic!("no-yield lower: expected Length Scalar, got {other:?}"),
+        }
+        match upper_ny {
+            Value::Scalar { si_value, dimension } => {
+                assert_eq!(*dimension, DimensionVector::LENGTH, "no-yield upper: LENGTH dimension");
+                let rel = (si_value - delta_fallback).abs() / delta_fallback;
+                assert!(rel < 1e-9, "no-yield upper = {si_value} vs {delta_fallback} (rel {rel})");
+            }
+            other => panic!("no-yield upper: expected Length Scalar, got {other:?}"),
+        }
+    }
+
+    // ── suggestion-4: neutral (7th) argument ─────────────────────────────────
+
+    /// Verifies the optional 7th `neutral` argument of `prb_prismatic_blade`:
+    ///  - plain `Value::length(x)` → neutral SI = x
+    ///  - `Value::Option(Some(Value::length(x)))` → neutral SI = x
+    ///  - `Value::Option(None)` → neutral SI = 0.0 (default)
+    #[test]
+    fn prb_prismatic_blade_neutral_argument() {
+        let neutral_m = 0.001_f64;
+        let base = [
+            Value::length(0.02),
+            Value::length(0.005),
+            Value::length(0.0005),
+            steel(),
+            origin(),
+            axis_y(),
+        ];
+
+        // ── Case 1: plain Value::length ──────────────────────────────────────
+        let mut args1 = base.to_vec();
+        args1.push(Value::length(neutral_m));
+        let result1 = crate::eval_builtin("prb_prismatic_blade", &args1);
+        match map_get(&result1, "neutral") {
+            Some(Value::Scalar { si_value, dimension }) => {
+                assert_eq!(*dimension, DimensionVector::LENGTH, "plain neutral: LENGTH dimension");
+                let rel = (si_value - neutral_m).abs() / neutral_m;
+                assert!(rel < 1e-9, "plain neutral = {si_value} vs {neutral_m} (rel {rel})");
+            }
+            other => panic!("plain neutral: expected Scalar, got {other:?}"),
+        }
+
+        // ── Case 2: Value::Option(Some(Value::length(x))) ────────────────────
+        let mut args2 = base.to_vec();
+        args2.push(Value::Option(Some(Box::new(Value::length(neutral_m)))));
+        let result2 = crate::eval_builtin("prb_prismatic_blade", &args2);
+        match map_get(&result2, "neutral") {
+            Some(Value::Scalar { si_value, dimension }) => {
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::LENGTH,
+                    "Option(Some) neutral: LENGTH dimension"
+                );
+                let rel = (si_value - neutral_m).abs() / neutral_m;
+                assert!(
+                    rel < 1e-9,
+                    "Option(Some) neutral = {si_value} vs {neutral_m} (rel {rel})"
+                );
+            }
+            other => panic!("Option(Some) neutral: expected Scalar, got {other:?}"),
+        }
+
+        // ── Case 3: Value::Option(None) → 0.0 ────────────────────────────────
+        let mut args3 = base.to_vec();
+        args3.push(Value::Option(None));
+        let result3 = crate::eval_builtin("prb_prismatic_blade", &args3);
+        match map_get(&result3, "neutral") {
+            Some(Value::Scalar { si_value, dimension }) => {
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::LENGTH,
+                    "Option(None) neutral: LENGTH dimension"
+                );
+                assert!(
+                    si_value.abs() < 1e-12,
+                    "Option(None) neutral = {si_value}, expected 0.0"
+                );
+            }
+            other => panic!("Option(None) neutral: expected Scalar(0.0), got {other:?}"),
+        }
+    }
+
+    // ── suggestion-2: invalid-input rejection ────────────────────────────────
+
+    /// Verifies that `parse_prismatic_inputs` returns `None` (→ `Value::Undef`)
+    /// for representative invalid-input classes, for both constructors.
+    #[test]
+    fn prb_prismatic_inputs_invalid_yield_undef() {
+        // 5-arg call (arity ∉ {6, 7})
+        let five_args = vec![
+            Value::length(0.02),
+            Value::length(0.005),
+            Value::length(0.0005),
+            steel(),
+            origin(),
+        ];
+        assert_eq!(
+            crate::eval_builtin("prb_prismatic_blade", &five_args),
+            Value::Undef,
+            "blade: 5-arg call → Undef"
+        );
+        assert_eq!(
+            crate::eval_builtin("prb_two_axis_pivot", &five_args),
+            Value::Undef,
+            "pivot: 5-arg call → Undef"
+        );
+
+        // thickness ≥ length (thickness = 0.001 ≥ length = 0.0005)
+        let thick_args = vec![
+            Value::length(0.0005),
+            Value::length(0.005),
+            Value::length(0.001),
+            steel(),
+            origin(),
+            axis_y(),
+        ];
+        assert_eq!(
+            crate::eval_builtin("prb_prismatic_blade", &thick_args),
+            Value::Undef,
+            "blade: thickness ≥ length → Undef"
+        );
+
+        // material without youngs_modulus
+        let no_e = material("NoE", &[]);
+        let no_e_args = vec![
+            Value::length(0.02),
+            Value::length(0.005),
+            Value::length(0.0005),
+            no_e,
+            origin(),
+            axis_y(),
+        ];
+        assert_eq!(
+            crate::eval_builtin("prb_prismatic_blade", &no_e_args),
+            Value::Undef,
+            "blade: no youngs_modulus → Undef"
+        );
+
+        // dimensioned axis (LENGTH-dimensioned vector fails DIMENSIONLESS check)
+        let bad_axis = Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        let bad_axis_args = vec![
+            Value::length(0.02),
+            Value::length(0.005),
+            Value::length(0.0005),
+            steel(),
+            origin(),
+            bad_axis,
+        ];
+        assert_eq!(
+            crate::eval_builtin("prb_prismatic_blade", &bad_axis_args),
+            Value::Undef,
+            "blade: dimensioned axis → Undef"
+        );
+    }
+
     // ── step-3: RED — prb_two_axis_pivot smoke + multi-DOF invariant ─────────
 
     /// (a) kind, spring_rate invariant, damping, effective_stiffness closed-form.
@@ -400,5 +631,91 @@ mod tests {
             }
             other => panic!("expected effective_stiffness Scalar, got {other:?}"),
         }
+    }
+
+    // ── suggestion-3: spherical map structural invariants + θ_lim clamp ──────
+
+    /// Asserts the spherical-specific invariants of `prb_two_axis_pivot`:
+    ///  - no `axis` key (isotropic joint, not stored)
+    ///  - no `neutral` key (spherical map layout)
+    ///  - `pivot` is propagated
+    ///  - `range_angle` is a symmetric ANGLE range
+    ///  - θ_lim is clamped at PRB_ANGLE_LIMIT_RAD (5°) when θ_yield > 5°
+    ///  - θ_lim equals θ_yield when θ_yield < 5° (soft material)
+    #[test]
+    fn prb_two_axis_pivot_spherical_invariants() {
+        // PRB_ANGLE_LIMIT_RAD = 5° (reproduced inline — pub(super) not visible here)
+        let prb_limit = 5.0_f64 * std::f64::consts::PI / 180.0;
+
+        let length = 0.02_f64;
+        let width = 0.005_f64;
+        let thickness = 0.0005_f64;
+        let e = 205e9_f64;
+
+        // ── Structural invariants (steel() → θ_yield ≈ 0.121 rad > 5°) ───────
+        let result = crate::eval_builtin("prb_two_axis_pivot", &prismatic_args());
+
+        assert!(
+            map_get(&result, "axis").is_none(),
+            "spherical map must NOT carry an `axis` key (axis-isotropic)"
+        );
+        assert!(
+            map_get(&result, "neutral").is_none(),
+            "spherical map must NOT carry a `neutral` key"
+        );
+        assert!(
+            map_get(&result, "pivot").is_some(),
+            "`pivot` must be propagated"
+        );
+
+        // range_angle: symmetric ANGLE range clamped at PRB_ANGLE_LIMIT_RAD
+        let range_angle = map_get(&result, "range_angle").expect("`range_angle` key must exist");
+        let (lower, upper) = range_lower_upper(range_angle);
+        assert_angle_close(lower, -prb_limit, "steel θ_lim lower (capped at 5°)");
+        assert_angle_close(upper, prb_limit, "steel θ_lim upper (capped at 5°)");
+
+        // ── θ_lim below cap: soft material → θ_yield < 5° ────────────────────
+        // θ_yield = yield·L / (E·t/2);  with L=0.02, E=205e9, t=0.0005:
+        // θ_yield = 100e6 * 0.02 / (205e9 * 0.00025) ≈ 0.039 rad < 5°.
+        let small_yield = 100e6_f64;
+        let theta_yield = small_yield * length / (e * thickness / 2.0);
+        assert!(
+            theta_yield < prb_limit,
+            "pre-condition: theta_yield {theta_yield} must be < PRB limit {prb_limit}"
+        );
+
+        let soft = material(
+            "SoftMaterial",
+            &[
+                (
+                    "youngs_modulus",
+                    Value::Scalar {
+                        si_value: e,
+                        dimension: DimensionVector::PRESSURE,
+                    },
+                ),
+                (
+                    "yield_stress",
+                    Value::Option(Some(Box::new(Value::Scalar {
+                        si_value: small_yield,
+                        dimension: DimensionVector::PRESSURE,
+                    }))),
+                ),
+            ],
+        );
+        let soft_args = vec![
+            Value::length(length),
+            Value::length(width),
+            Value::length(thickness),
+            soft,
+            origin(),
+            axis_y(),
+        ];
+        let result_soft = crate::eval_builtin("prb_two_axis_pivot", &soft_args);
+        let range_soft =
+            map_get(&result_soft, "range_angle").expect("soft: `range_angle` key must exist");
+        let (lower_s, upper_s) = range_lower_upper(range_soft);
+        assert_angle_close(lower_s, -theta_yield, "soft θ_lim lower (uncapped = θ_yield)");
+        assert_angle_close(upper_s, theta_yield, "soft θ_lim upper (uncapped = θ_yield)");
     }
 }
