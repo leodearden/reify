@@ -1513,7 +1513,6 @@ mod tests {
 
     #[test]
     fn read_source_lines_for_enrichment_readable_file() {
-        use std::path::Path;
         let tmp = tempfile::NamedTempFile::new().expect("create tempfile");
         std::fs::write(tmp.path(), "line one\nline two\nline three\n")
             .expect("write tempfile");
