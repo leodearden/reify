@@ -4695,6 +4695,88 @@ fn arg_contains_cross_sub_geometry_ref(expr: &reify_ir::CompiledExpr) -> bool {
 mod tests {
     use super::*;
 
+    /// step-09 (RED): `seed_cross_sub_named_steps` must thread [`KernelHandle`]
+    /// (not bare [`GeometryHandleId`]) through `named_steps` /
+    /// `module_named_steps`.
+    ///
+    /// Exercises the no-args seeding path: a parent template with
+    /// `sub a = Inner()` copies the child template's completed `Inner.body`
+    /// snapshot entry into the parent's `named_steps` under the compound key
+    /// `a.body`. The seeded value is a [`KernelHandle`] carrying the producing
+    /// kernel's [`KernelId`] (Manifold here) alongside the kernel-local
+    /// [`GeometryHandleId`]; the no-args path copies it verbatim, so `a.body`
+    /// must resolve to exactly that [`KernelHandle`] — `.id` equal to the seeded
+    /// handle id and `.kernel` equal to the seeding kernel's [`KernelId`].
+    ///
+    /// RED on the pre-migration signature: `module_named_steps` / `named_steps`
+    /// are typed `…GeometryHandleId`, so passing `…KernelHandle` maps fails to
+    /// type-check until step-10 flips the value type.
+    #[test]
+    fn seed_cross_sub_named_steps_threads_kernel_handle_on_no_args_path() {
+        use reify_ir::{GeometryHandleId, KernelHandle, KernelId};
+        use reify_test_support::builders::TopologyTemplateBuilder;
+
+        // Parent template: `sub a = Inner()` — no args, non-collection.
+        let template = TopologyTemplateBuilder::new("Parent")
+            .sub_component("a", "Inner", Vec::new())
+            .build();
+
+        // Child snapshot: `Inner.body` was produced by the Manifold kernel as
+        // GeometryHandleId(5), recorded as a KernelHandle.
+        let seeded = KernelHandle {
+            kernel: KernelId::Manifold,
+            id: GeometryHandleId(5),
+        };
+        let mut inner_snapshot: HashMap<String, KernelHandle> = HashMap::new();
+        inner_snapshot.insert("body".to_string(), seeded);
+        let mut module_named_steps: HashMap<String, HashMap<String, KernelHandle>> = HashMap::new();
+        module_named_steps.insert("Inner".to_string(), inner_snapshot);
+
+        // The no-args path reads only `template.sub_components` +
+        // `module_named_steps`; the kernel/value/function/template inputs are
+        // unused on this path, so empty instances suffice.
+        let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
+        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        let values = ValueMap::new();
+        let functions: Vec<CompiledFunction> = Vec::new();
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let templates: Vec<TopologyTemplate> = Vec::new();
+
+        seed_cross_sub_named_steps(
+            &template,
+            &module_named_steps,
+            &mut named_steps,
+            &mut kernels,
+            "default",
+            &values,
+            &functions,
+            &meta_map,
+            &mut diagnostics,
+            &templates,
+        );
+
+        let got = named_steps
+            .get("a.body")
+            .copied()
+            .expect("no-args seeding must insert compound key `a.body`");
+        assert_eq!(
+            got, seeded,
+            "named_steps value type must be KernelHandle, copied verbatim from the child snapshot"
+        );
+        assert_eq!(
+            got.id,
+            GeometryHandleId(5),
+            ".id must equal the seeded GeometryHandleId"
+        );
+        assert_eq!(
+            got.kernel,
+            KernelId::Manifold,
+            ".kernel must equal the seeding kernel's KernelId"
+        );
+        assert!(diagnostics.is_empty(), "no-args path emits no diagnostics");
+    }
+
     /// `arg_contains_cross_sub_geometry_ref` must detect a `CrossSubGeometryRef`
     /// at the top level *and* nested inside a larger operator node, and must not
     /// false-positive on ref-free args. The nested case is the task-3616
