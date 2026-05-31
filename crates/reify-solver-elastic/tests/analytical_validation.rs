@@ -1258,6 +1258,7 @@ fn inner_pressure_loads_p2(
 /// code path and prevent the diagnostic study from diverging silently.
 ///
 /// Returns `(nodes, sigma, max_vm_inner)`.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn cylinder_p1_solve_and_recover(
     a: f64, b: f64, l: f64,
     nr: usize, ntheta: usize, nz: usize,
