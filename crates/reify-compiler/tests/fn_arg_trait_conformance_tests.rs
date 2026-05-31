@@ -22,7 +22,7 @@
 //! tests therefore drive conformance from an entity `let` body where the ctor arg
 //! acquires its `StructureRef` type.
 
-use reify_core::{DiagnosticCode, Severity};
+use reify_core::DiagnosticCode;
 use reify_test_support::compile_source;
 
 /// Common source preamble: trait, two structures, one fn.
