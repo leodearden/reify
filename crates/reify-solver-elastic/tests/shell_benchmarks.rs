@@ -64,7 +64,7 @@
 use reify_solver_elastic::{
     AssemblyElement, AssemblyMode, DirichletBc, ElementStiffness, IsotropicElastic,
     apply_dirichlet_row_elimination, assemble_global_stiffness, shell_element_stiffness,
-    shell_element_stiffness_mitc3_plus,
+    shell_element_stiffness_degenerate, shell_element_stiffness_mitc3_plus,
 };
 
 // ─── test-local helpers ──────────────────────────────────────────────────────
@@ -196,6 +196,45 @@ fn build_shell_stiffnesses_mitc3_plus(
             shell_element_stiffness_mitc3_plus(&elem_nodes, thickness, mat)
         })
         .collect()
+}
+
+/// Degenerate-shell counterpart of [`build_shell_stiffnesses_mitc3_plus`]: one
+/// per-element stiffness via the curved-substrate element
+/// [`shell_element_stiffness_degenerate`] (task 4068), fed per-node directors.
+///
+/// `directors[k]` is the unit through-thickness director (vertex normal) at
+/// global node `k`; each element reads the three directors of its nodes. Used
+/// to run a bending-dominated curved benchmark with both the flat MITC3+ and the
+/// degenerate substrate on the identical mesh / BCs / loads, so the
+/// geometric-fidelity improvement is observable end-to-end (mirroring the
+/// twisted-beam plus-vs-bare template).
+fn build_shell_stiffnesses_degenerate(
+    nodes: &[[f64; 3]],
+    connectivity: &[[usize; 3]],
+    directors: &[[f64; 3]],
+    thickness: f64,
+    mat: &IsotropicElastic,
+) -> Vec<ElementStiffness> {
+    connectivity
+        .iter()
+        .map(|conn| {
+            let elem_nodes = [nodes[conn[0]], nodes[conn[1]], nodes[conn[2]]];
+            let elem_dirs = [directors[conn[0]], directors[conn[1]], directors[conn[2]]];
+            let elem_th = [thickness; 3];
+            shell_element_stiffness_degenerate(&elem_nodes, &elem_dirs, &elem_th, mat)
+        })
+        .collect()
+}
+
+/// Unit-normalize a 3-vector (directors must be unit-norm for the degenerate
+/// element). Falls back to `+z` for a (near-)zero vector.
+fn normalize3(v: [f64; 3]) -> [f64; 3] {
+    let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if n > 1e-30 {
+        [v[0] / n, v[1] / n, v[2] / n]
+    } else {
+        [0.0, 0.0, 1.0]
+    }
 }
 
 /// Build the `AssemblyElement` handle slice for `assemble_global_stiffness`.
@@ -1657,5 +1696,121 @@ fn pinched_cylinder_octant_symmetry_bcs_pins_exact_dofs_on_1x1_mesh() {
          got:      {dofs:?}\n\
          expected: {expected:?}\n\
          (sorted, deduplicated, value=0 for all)"
+    );
+}
+
+/// **Observable signal (task 4068 step-21/22).** On the bending-dominated
+/// pinched-cylinder benchmark, the degenerate substrate — per-node ANALYTIC
+/// radial directors + the varying Jacobian — is STRICTLY closer to the
+/// MacNeal-Harder reference than flat-facet MITC3+ on the IDENTICAL mesh / BCs /
+/// loads. Mirrors the proven relative template
+/// `twisted_beam_mitc3_plus_tip_deflection_is_closer_to_reference_than_bare`
+/// (swapping bare-vs-plus for plus-vs-degenerate).
+///
+/// # Relative / directional ONLY — no absolute band is claimed
+///
+/// The absolute ~50% / 4×4 MacNeal-Harder accuracy target stays gated on task
+/// 4065's ANS-membrane. Per-node directors + a varying Jacobian REINTRODUCE
+/// membrane locking (design_decisions[3]; formulation-review s3), so both
+/// formulations still under-predict here — flat MITC3+ ~76× under, the
+/// degenerate substrate ~6.4× under. The geometric-fidelity / membrane-bending
+/// coupling the directors add is what moves the displacement toward the
+/// reference; the residual lock is 4065's job to remove.
+///
+/// # Why the pinched cylinder (bending-dominated) and not the roof / hemisphere
+///
+/// A bending/faceting-dominated benchmark is where directors-alone measurably
+/// help; on the membrane-dominated hemisphere (R/t=250) the reintroduced lock
+/// would mask the gain — reviewers should NOT expect improvement there. The
+/// Scordelis-Lo roof was evaluated empirically at 4×4 and REJECTED: under the
+/// degenerate substrate its free-edge mode is sign-reversed at this coarse mesh
+/// (no clean directional signal). The pinched cylinder is the more
+/// director-favourable of the two bending-dominated candidates.
+///
+/// # Observed (4×4 octant, t=3, R=300, E=3e6, ν=0.3)
+///
+/// | quantity              | value      |
+/// |-----------------------|------------|
+/// | flat MITC3+ radial    | 2.424e-7   |
+/// | degenerate radial     | 2.847e-6   |
+/// | MacNeal-Harder ref    | 1.8248e-5  |
+/// | err flat              | 1.8006e-5  |
+/// | err degenerate        | 1.5401e-5  |
+///
+/// The degenerate substrate moves the radial displacement ~11.7× toward the
+/// reference (~14.5% closer in absolute error) — correctly signed (inward), no
+/// overshoot.
+#[test]
+fn degenerate_shell_pinched_cylinder_is_closer_to_reference_than_flat_mitc3_plus() {
+    const R: f64 = 300.0;
+    const L: f64 = 600.0;
+    const T: f64 = 3.0;
+    const NX: usize = 4; // θ-direction divisions
+    const NY: usize = 4; // z-direction divisions
+    const P: f64 = 1.0;
+    const MACNEAL_HARDER_REF: f64 = 1.8248e-5;
+
+    let mat = IsotropicElastic {
+        youngs_modulus: 3e6,
+        poisson_ratio: 0.3,
+    };
+
+    let (nodes, connectivity) = cylinder_octant_mesh(NX, NY, R, L);
+    let n_nodes = nodes.len();
+
+    // Analytic per-node radial directors (the extraction-supplied stand-in): the
+    // cylinder axis is z, so the outward surface normal at (x, y, z) is
+    // (x/R, y/R, 0). This is the curvature the flat facet cannot see.
+    let directors: Vec<[f64; 3]> = nodes.iter().map(|n| normalize3([n[0], n[1], 0.0])).collect();
+
+    // Octant symmetry + rigid-diaphragm BCs (shared with the smoke test).
+    let tol = 1.0_f64;
+    let bcs = pinched_cylinder_octant_symmetry_bcs(&nodes, L, tol);
+
+    // Inward radial point load F_y = −P/4 at the loaded corner (0, R, 0).
+    let load_node = nodes
+        .iter()
+        .position(|n| n[0].abs() < tol && (n[1] - R).abs() < tol && n[2].abs() < tol)
+        .expect("load node (0, R, 0) not found in mesh");
+    let point_loads = vec![(load_node * 6 + 1, -P / 4.0)];
+
+    // Flat-facet MITC3+ (the baseline to beat).
+    let k_flat = build_shell_stiffnesses_mitc3_plus(&nodes, &connectivity, T, &mat);
+    let e_flat = assembly_elements_for(&connectivity, &k_flat);
+    let u_flat = solve_shell_system(&e_flat, n_nodes, &bcs, &point_loads);
+    let radial_flat = -u_flat[load_node * 6 + 1]; // inward = positive
+
+    // Degenerate substrate (same mesh / BCs / loads), analytic radial directors.
+    let k_deg = build_shell_stiffnesses_degenerate(&nodes, &connectivity, &directors, T, &mat);
+    let e_deg = assembly_elements_for(&connectivity, &k_deg);
+    let u_deg = solve_shell_system(&e_deg, n_nodes, &bcs, &point_loads);
+    let radial_deg = -u_deg[load_node * 6 + 1];
+
+    let err_flat = (radial_flat - MACNEAL_HARDER_REF).abs();
+    let err_deg = (radial_deg - MACNEAL_HARDER_REF).abs();
+
+    // Finite & physically signed (inward, positive).
+    assert!(
+        radial_flat.is_finite() && radial_deg.is_finite(),
+        "radial displacements must be finite: flat={radial_flat}, deg={radial_deg}"
+    );
+    assert!(
+        radial_deg > 0.0,
+        "degenerate radial displacement {radial_deg:.4e} must be positive (inward) \
+         under inward radial load; a sign reversal indicates a BC/load/director bug"
+    );
+    // Runaway ceiling (the reference is 1.8248e-5; degenerate still under-predicts).
+    assert!(
+        radial_deg < 1.0e-3,
+        "degenerate radial displacement {radial_deg:.4e} exceeds the runaway ceiling 1e-3"
+    );
+    // The substrate deliverable: the degenerate element is STRICTLY closer to the
+    // MacNeal-Harder reference than flat-facet MITC3+ on the identical mesh.
+    assert!(
+        err_deg < err_flat,
+        "degenerate substrate must be strictly closer to the MacNeal-Harder \
+         reference than flat MITC3+: |{radial_deg:.6e} − {MACNEAL_HARDER_REF:.6e}| = \
+         {err_deg:.6e} must be < |{radial_flat:.6e} − {MACNEAL_HARDER_REF:.6e}| = \
+         {err_flat:.6e}"
     );
 }
