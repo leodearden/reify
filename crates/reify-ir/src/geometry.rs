@@ -146,6 +146,29 @@ mod kernel_id_tests {
         sorted.sort();
         assert_eq!(sorted, KernelId::ALL.to_vec());
     }
+
+    /// step-03: `from_registry_name` is the exact inverse of `as_registry_name`.
+    /// Exhaustive round-trip over `KernelId::ALL` plus negative cases (unknown
+    /// name, empty string, wrong case) all map to `None`. (Identity holds by
+    /// construction — inverse map over distinct canonical strings.)
+    #[test]
+    fn registry_name_round_trips_exhaustively() {
+        for v in KernelId::ALL {
+            assert_eq!(
+                KernelId::from_registry_name(KernelId::as_registry_name(v)),
+                Some(v),
+                "round-trip must recover {v:?} from its registry name {:?}",
+                KernelId::as_registry_name(v),
+            );
+        }
+
+        // Negatives: nothing outside the canonical name set resolves.
+        assert_eq!(KernelId::from_registry_name("bogus"), None);
+        assert_eq!(KernelId::from_registry_name(""), None);
+        // Wrong case must not resolve (registry names are canonical lowercase).
+        assert_eq!(KernelId::from_registry_name("OCCT"), None);
+        assert_eq!(KernelId::from_registry_name("Manifold"), None);
+    }
 }
 
 /// An opaque handle to a geometry object managed by a kernel.
