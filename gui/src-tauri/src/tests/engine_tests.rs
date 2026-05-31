@@ -9843,3 +9843,125 @@ fn register_compute_fns_dispatch_yields_real_elastic_result() {
         "max_von_mises = {si_value:.3e} Pa is outside [{lo:.3e}, {hi:.3e}] (±50% of {analytical_sigma:.3e} Pa analytical)"
     );
 }
+
+// ── Task 4086 step-5: RED — producer lifecycle (session side) ──
+//
+// RecordingSolveCancelSink records the ordered sequence of
+// solve_started/solve_finished calls (and captures the published handle).
+//
+// Fails with compile error until step-6 introduces:
+//   - `pub trait SolveCancellationSink` in engine.rs
+//   - `solve_cancel_sink: Option<Arc<dyn SolveCancellationSink>>` field
+//   - `pub fn set_solve_cancel_sink` setter on EngineSession
+//   - the private check_with_solve_slot helper that fires the callbacks
+//     around engine.check()
+
+/// Events recorded by RecordingSolveCancelSink.
+///
+/// Mirrors the RecordingFeaCaseEmitter approach (line 8447) but for the
+/// solve-cancel lifecycle: one Started variant per solve (carries the handle)
+/// and one Finished variant at completion.
+#[derive(Debug)]
+enum SolveLifecycleEvent {
+    Started(reify_eval::CancellationHandle),
+    Finished,
+}
+
+/// Test double implementing SolveCancellationSink.
+///
+/// Records every solve_started/solve_finished call in the order received.
+/// Shares an Arc<Mutex<Vec>> so the test can read events while the session
+/// still holds its Arc<dyn SolveCancellationSink> reference.
+struct RecordingSolveCancelSink {
+    events: std::sync::Arc<std::sync::Mutex<Vec<SolveLifecycleEvent>>>,
+}
+
+impl RecordingSolveCancelSink {
+    fn new() -> Self {
+        Self {
+            events: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
+}
+
+impl crate::engine::SolveCancellationSink for RecordingSolveCancelSink {
+    fn solve_started(&self, handle: reify_eval::CancellationHandle) {
+        self.events
+            .lock()
+            .unwrap()
+            .push(SolveLifecycleEvent::Started(handle));
+    }
+
+    fn solve_finished(&self) {
+        self.events
+            .lock()
+            .unwrap()
+            .push(SolveLifecycleEvent::Finished);
+    }
+}
+
+/// B7 signal (session side): the solve-cancel slot lifecycle is
+/// publish-before / clear-after.
+///
+/// Installs a `RecordingSolveCancelSink` and loads `fea_cantilever_smoke.ri`.
+/// Asserts the recorder observed exactly `[Started(handle), Finished]` in
+/// that order — i.e. the handle is published before the solve completes and
+/// the slot is cleared after.
+#[test]
+fn solve_publishes_then_clears_cancel_handle() {
+    use std::sync::Arc;
+
+    let source = include_str!("../../../../examples/fea_cantilever_smoke.ri");
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let sink = RecordingSolveCancelSink::new();
+    let captured_events = Arc::clone(&sink.events);
+    session.set_solve_cancel_sink(Arc::new(sink));
+
+    session
+        .load_from_source(source, "FeaCantileverSmoke")
+        .expect("load_from_source must succeed for fea_cantilever_smoke.ri");
+
+    let events = captured_events.lock().unwrap();
+
+    assert_eq!(
+        events.len(),
+        2,
+        "expected exactly [Started(handle), Finished]; got {} events: {:?}",
+        events.len(),
+        events
+            .iter()
+            .map(|e| match e {
+                SolveLifecycleEvent::Started(_) => "Started",
+                SolveLifecycleEvent::Finished => "Finished",
+            })
+            .collect::<Vec<_>>()
+    );
+
+    // First event: Started — handle must not be cancelled at fire time.
+    let handle = match &events[0] {
+        SolveLifecycleEvent::Started(h) => {
+            assert!(
+                !h.is_cancelled(),
+                "handle must not be cancelled at solve_started time"
+            );
+            h.clone()
+        }
+        SolveLifecycleEvent::Finished => {
+            panic!("expected first event to be Started, got Finished")
+        }
+    };
+
+    // Second event: Finished.
+    assert!(
+        matches!(events[1], SolveLifecycleEvent::Finished),
+        "expected second event to be Finished"
+    );
+
+    // The handle was not cancelled (trampoline ignores _cancellation; solve is
+    // synchronous and blocking).  Drop it to avoid unused-variable warning.
+    let _ = handle;
+}
