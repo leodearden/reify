@@ -256,7 +256,14 @@ fn prb_double_parallelogram_flexure(args: &[Value]) -> Value {
             dimension: DimensionVector::TRANSLATIONAL_STIFFNESS,
         },
     );
-    // parasitic_error added in step-12.
+    // Mirror symmetry cancels the first-order parasitic; residual scales as (δ/L)³.
+    // δ_rot_double = δ_rot_single · (δ_max/L)²  (PRD §6.2 reduction factor).
+    let delta_rot_single = parasitic_single(c.length, delta);
+    let delta_rot_double = delta_rot_single * (delta / c.length).powi(2);
+    m.insert(
+        Value::String("parasitic_error".to_string()),
+        Value::Option(Some(Box::new(Value::length(delta_rot_double)))),
+    );
     Value::Map(m)
 }
 
