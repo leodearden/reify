@@ -283,11 +283,34 @@ pub(crate) enum OverloadResolution<'a> {
     Ambiguous(Vec<&'a CompiledFunction>),
 }
 
+/// Returns `true` when `t` is, or recursively wraps, a `Type::TraitObject`.
+///
+/// Covers bare `TraitObject(name)` and the four generic wrappers
+/// `Option<T>`, `List<T>`, `Set<T>`, and `Map<K,V>`.  A `Map<TraitObject, V>`
+/// or `Map<K, TraitObject>` is also trait-carrying because both positions
+/// participate in conformance checking.
+///
+/// Used by `resolve_function_overload` to make trait-carrying params act as
+/// resolution wildcards (match any arg type), while concrete params keep
+/// exact-equality semantics.  Eval-builtins (bind/sweep/dim) have no `.ri`
+/// signature → their `named` vec is empty → `NoUserFunctions` arm → unaffected.
+pub(crate) fn type_carries_trait_object(t: &Type) -> bool {
+    match t {
+        Type::TraitObject(_) => true,
+        Type::Option(inner) => type_carries_trait_object(inner),
+        Type::List(inner) => type_carries_trait_object(inner),
+        Type::Set(inner) => type_carries_trait_object(inner),
+        Type::Map(key, val) => type_carries_trait_object(key) || type_carries_trait_object(val),
+        _ => false,
+    }
+}
+
 /// Resolve a function call against the list of compiled user functions.
 ///
-/// Uses **exact** type matching (param_ty == arg_ty). Int→Real widening is
-/// NOT applied during overload resolution so that `f(Int)` and `f(Real)` are
-/// treated as distinct overloads.
+/// Uses **exact** type matching for concrete params; trait-object-carrying params
+/// (`type_carries_trait_object`) act as resolution wildcards and match any arg
+/// type.  Int→Real widening is NOT applied during overload resolution so that
+/// `f(Int)` and `f(Real)` are treated as distinct overloads.
 pub(crate) fn resolve_function_overload<'a>(
     name: &str,
     arg_types: &[Type],
@@ -300,7 +323,11 @@ pub(crate) fn resolve_function_overload<'a>(
         return OverloadResolution::NoUserFunctions;
     }
 
-    // Among named functions, filter by arity and exact param types.
+    // Among named functions, filter by arity and param-type compatibility.
+    // Trait-carrying params are resolution wildcards; concrete params keep
+    // exact equality.  This mirrors the structure-instantiation path where
+    // named-arg binding is not type-gated and conformance is validated
+    // separately (see task-4081 design decision §1).
     let matches: Vec<&CompiledFunction> = named
         .iter()
         .copied()
@@ -309,7 +336,9 @@ pub(crate) fn resolve_function_overload<'a>(
                 && f.params
                     .iter()
                     .zip(arg_types.iter())
-                    .all(|((_, param_ty), arg_ty)| param_ty == arg_ty)
+                    .all(|((_, param_ty), arg_ty)| {
+                        type_carries_trait_object(param_ty) || param_ty == arg_ty
+                    })
         })
         .collect();
 
