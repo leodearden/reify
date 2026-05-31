@@ -1397,3 +1397,129 @@ purpose fits_within(part : Structure, envelope : Structure) {
         other => panic!("expected ValueRef for right side of BinOp, got {:?}", other),
     }
 }
+
+// ── task-4012 ε: guarded blocks in purpose bodies lower to implication constraints ──
+
+/// Step-1 RED suite: guarded where-arm lowering tests.
+///
+/// All tests in this module are RED before the step-2 implementation because the
+/// current `MemberDecl::GuardedGroup` arm emits "guarded blocks in purpose bodies
+/// are not yet supported" for the entire group, so:
+///   - tests asserting `errors.is_empty()` fail (the group error fires), and
+///   - tests asserting a specific constraint count / structure fail (no constraints
+///     are produced when the whole group is rejected).
+mod guarded {
+    use super::*;
+
+    /// (a) A where-arm with a single constraint lowers to exactly one
+    /// `CompiledConstraint` whose top-level expression is `BinOp::Implies`.
+    ///
+    /// RED: `compile_module_with_diagnostics` returns the "guarded blocks not yet
+    /// supported" error → `assert!(errors.is_empty())` fails.
+    #[test]
+    fn guarded_where_arm_lowers_to_implies() {
+        let source = r#"
+structure Frame {
+    param material : Scalar = 1.0
+    param youngs_modulus : Scalar = 200.0
+}
+
+purpose p(subject : Structure) {
+    where subject.material > 0.0 {
+        constraint subject.youngs_modulus > 0.0
+    }
+}
+"#;
+        let module = compile_module_with_diagnostics(source);
+
+        let errors: Vec<_> = module
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "expected no compile errors for where-arm in purpose, got: {:#?}",
+            errors
+        );
+
+        let purpose = module
+            .compiled_purposes
+            .iter()
+            .find(|p| p.name == "p")
+            .expect("expected compiled purpose 'p'");
+
+        assert_eq!(
+            purpose.constraints.len(),
+            1,
+            "expected exactly 1 compiled constraint from the where-arm, got {}",
+            purpose.constraints.len()
+        );
+
+        let constraint = &purpose.constraints[0];
+        match &constraint.expr.kind {
+            CompiledExprKind::BinOp { op, .. } => {
+                assert_eq!(
+                    *op,
+                    BinOp::Implies,
+                    "guarded where-arm must lower to BinOp::Implies, got {:?}",
+                    op
+                );
+            }
+            other => panic!(
+                "expected BinOp::Implies as top-level constraint expr, got {:?}",
+                other
+            ),
+        }
+    }
+
+    /// (b) A guarded block containing an unsupported member kind (`param`) alongside
+    /// a valid constraint: the constraint must still compile to `BinOp::Implies` (1
+    /// constraint emitted) and an error must be produced for the unsupported member.
+    ///
+    /// RED: the current implementation rejects the entire GuardedGroup with a single
+    /// generic error → `assert_eq!(purpose.constraints.len(), 1)` fails (0 constraints).
+    #[test]
+    fn guarded_unsupported_member_kind_emits_error() {
+        let source = r#"
+structure Frame {
+    param material : Scalar = 1.0
+    param youngs_modulus : Scalar = 200.0
+}
+
+purpose p(subject : Structure) {
+    where subject.material > 0.0 {
+        constraint subject.youngs_modulus > 0.0
+        param x : Scalar = 1.0
+    }
+}
+"#;
+        let module = compile_module_with_diagnostics(source);
+
+        // After impl: exactly 1 constraint from the where-arm constraint (the param is
+        // rejected, but the constraint compiles to BinOp::Implies).
+        // RED before impl: the whole GuardedGroup is rejected → 0 constraints.
+        let purpose = module
+            .compiled_purposes
+            .iter()
+            .find(|p| p.name == "p")
+            .expect("expected compiled purpose 'p'");
+        assert_eq!(
+            purpose.constraints.len(),
+            1,
+            "expected 1 compiled constraint from the valid where-arm constraint \
+             (only the unsupported `param x` should emit an error)"
+        );
+
+        // The unsupported param inside the guarded block must emit a Severity::Error.
+        let errors: Vec<_> = module
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            !errors.is_empty(),
+            "expected a Severity::Error diagnostic for `param x` inside a guarded block"
+        );
+    }
+}

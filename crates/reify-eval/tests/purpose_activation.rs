@@ -2470,3 +2470,119 @@ purpose analysis(subject : Structure) {
         "injected __let_n cell must be present in graph.value_cells"
     );
 }
+
+// ── §13: Guarded blocks in purpose bodies (task-4012 ε) ──────────────────────
+//
+// Guarded `where C { ... } [else { ... }]` blocks in purpose bodies lower to
+// implication constraints at compile time (`C implies body`), not runtime
+// branching.  B4/B5 exercise the two key behaviors:
+//   B4 — condition is true (determined value) → active arm constraint is live and
+//        evaluates to Satisfied.
+//   B5 — condition is undef (`= auto` param) → implication is Undef via Kleene
+//        (U⇒U=U) → classified as Indeterminate, NOT Violated.
+//
+// Both tests use `parse_and_compile` (which panics on any Error-severity
+// diagnostic), so they are RED today: the compile error from the current
+// GuardedGroup reject arm fires before the test body can run.
+
+/// B4 — active guard arm: condition true, body satisfied.
+///
+/// Fixture: `Frame` with two positive params; purpose guards on `material > 0.0`
+/// (always true) and constrains `youngs_modulus > 0.0` (also true).
+/// `true implies true` = `true` → `Satisfaction::Satisfied`.
+///
+/// RED: `parse_and_compile` panics because the guarded block emits a compile
+/// error under the current implementation.
+#[test]
+fn guarded_where_arm_active_condition_is_satisfied() {
+    let source = r#"
+structure Frame {
+    param material : Scalar = 100.0
+    param youngs_modulus : Scalar = 200.0
+}
+
+purpose sim_ready(subject : Structure) {
+    where subject.material > 0.0 {
+        constraint subject.youngs_modulus > 0.0
+    }
+}
+"#;
+    // parse_and_compile panics on any Severity::Error — RED today.
+    let compiled = parse_and_compile(source);
+    let mut engine = make_simple_engine();
+    let eval_result = engine.eval(&compiled);
+    engine.activate_purpose("sim_ready", "Frame");
+
+    let (constraint_results, _) = engine
+        .check_constraints_with_values(&eval_result.values)
+        .expect("check_constraints_with_values must not error");
+
+    let purpose_result = constraint_results
+        .iter()
+        .find(|e| e.id.entity.starts_with("purpose:sim_ready@Frame"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a purpose-injected constraint with entity prefix \
+                 'purpose:sim_ready@Frame'; found: {:?}",
+                constraint_results.iter().map(|e| &e.id).collect::<Vec<_>>()
+            )
+        });
+
+    assert_eq!(
+        purpose_result.satisfaction,
+        Satisfaction::Satisfied,
+        "B4: where-arm with true condition and true body must be Satisfied \
+         (true implies true = true)"
+    );
+}
+
+/// B5 — undef guard condition: `= auto` param makes the condition Undef →
+/// `Undef implies Undef` = Undef → `Satisfaction::Indeterminate`, NOT Violated.
+///
+/// Kleene table: U⇒F=U, U⇒U=U (only U⇒T=T is non-Undef for a Undef antecedent).
+/// The constraint classifier maps Undef → Indeterminate, never Violated.
+///
+/// RED: `parse_and_compile` panics because the guarded block emits a compile
+/// error under the current implementation.
+#[test]
+fn guarded_where_arm_undef_condition_is_indeterminate() {
+    let source = r#"
+structure Frame {
+    param threshold : Scalar = auto
+    param value : Scalar = auto
+}
+
+purpose bounded(subject : Structure) {
+    where subject.threshold > 0.0 {
+        constraint subject.value > 0.0
+    }
+}
+"#;
+    // parse_and_compile panics on any Severity::Error — RED today.
+    let compiled = parse_and_compile(source);
+    let mut engine = make_simple_engine();
+    let eval_result = engine.eval(&compiled);
+    engine.activate_purpose("bounded", "Frame");
+
+    let (constraint_results, _) = engine
+        .check_constraints_with_values(&eval_result.values)
+        .expect("check_constraints_with_values must not error");
+
+    let purpose_result = constraint_results
+        .iter()
+        .find(|e| e.id.entity.starts_with("purpose:bounded@Frame"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a purpose-injected constraint with entity prefix \
+                 'purpose:bounded@Frame'; found: {:?}",
+                constraint_results.iter().map(|e| &e.id).collect::<Vec<_>>()
+            )
+        });
+
+    assert_eq!(
+        purpose_result.satisfaction,
+        Satisfaction::Indeterminate,
+        "B5: undef guard condition (= auto param) must yield Indeterminate via \
+         Kleene U⇒U=U, NOT Violated"
+    );
+}
