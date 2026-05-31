@@ -240,6 +240,49 @@ impl GeometryKernel for ManifoldKernel {
                     .map_err(|e| QueryError::QueryFailed(format!("{e:?}")))?;
                 Ok(Value::Bool(crate::queries::geo_equiv(l, r, *tolerance)))
             }
+            // Surface area. Mirrors OCCT's SurfaceArea -> Value::Real
+            // (KGQ-π / task 3625). A face sub-handle answers with its single
+            // triangle's area; a whole-mesh handle answers with the
+            // Manifold's total surface area.
+            GeometryQuery::SurfaceArea(id) => {
+                if let Some(sub) = self.sub_shapes.get(&id.0) {
+                    match sub {
+                        SubShape::Face(tri) => Ok(Value::Real(crate::queries::tri_area(tri))),
+                        SubShape::Edge(_) => Err(QueryError::QueryFailed(
+                            "SurfaceArea: handle names an edge sub-shape, which has no area"
+                                .into(),
+                        )),
+                    }
+                } else if let Some(m) = self.shapes.get(&id.0) {
+                    Ok(Value::Real(m.surface_area()))
+                } else {
+                    Err(QueryError::InvalidHandle(*id))
+                }
+            }
+            // Face normal as the OCCT-compatible {"x","y","z"} JSON string.
+            // Only a face sub-handle has a single normal; a whole mesh or an
+            // edge sub-shape has none (matches OCCT, which answers FaceNormal
+            // only for a Face). Sign follows triangle winding — the contract
+            // is sign-agnostic.
+            GeometryQuery::FaceNormal(id) => match self.sub_shapes.get(&id.0) {
+                Some(SubShape::Face(tri)) => Ok(Value::String(crate::queries::json_xyz(
+                    crate::queries::tri_unit_normal(tri),
+                ))),
+                Some(SubShape::Edge(_)) => Err(QueryError::QueryFailed(
+                    "FaceNormal: handle names an edge sub-shape (no face normal)".into(),
+                )),
+                None => {
+                    if self.shapes.contains_key(&id.0) {
+                        Err(QueryError::QueryFailed(
+                            "FaceNormal: handle names a whole mesh, which has no single face \
+                             normal; query an extracted face sub-handle instead"
+                                .into(),
+                        ))
+                    } else {
+                        Err(QueryError::InvalidHandle(*id))
+                    }
+                }
+            },
             // All other queries remain follow-up work (see STUB_MSG).
             _ => Err(QueryError::QueryFailed(STUB_MSG.into())),
         }

@@ -418,6 +418,67 @@ pub(crate) fn canonical_edges(
     (index_pairs, endpoints)
 }
 
+// ---------------------------------------------------------------------------
+// Sub-element geometry helpers + OCCT-compatible JSON wire formatters
+// ---------------------------------------------------------------------------
+
+/// `a − b` for two 3-vectors.
+#[inline]
+fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+/// Cross product `a × b`.
+#[inline]
+fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// Euclidean length `‖a‖`.
+#[inline]
+fn norm3(a: [f64; 3]) -> f64 {
+    (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt()
+}
+
+/// Area of a triangle from its three corners: `½‖(v1−v0)×(v2−v0)‖`.
+///
+/// Exact for a flat triangle. For the unit-cube fixture each facet is a right
+/// triangle with legs 1,1 → area `0.5`, and the 12 facets sum to `6.0`.
+pub(crate) fn tri_area(tri: &[[f64; 3]; 3]) -> f64 {
+    0.5 * norm3(cross3(sub3(tri[1], tri[0]), sub3(tri[2], tri[0])))
+}
+
+/// Unit normal of a triangle: `normalize((v1−v0)×(v2−v0))`.
+///
+/// Sign follows the triangle's winding order; the `FaceNormal` contract is
+/// sign-agnostic (callers needing a definite orientation must resolve it
+/// themselves). Returns `[0,0,0]` for a degenerate (zero-area) triangle so
+/// callers never divide by zero.
+pub(crate) fn tri_unit_normal(tri: &[[f64; 3]; 3]) -> [f64; 3] {
+    let n = cross3(sub3(tri[1], tri[0]), sub3(tri[2], tri[0]));
+    let len = norm3(n);
+    if len == 0.0 {
+        return [0.0, 0.0, 0.0];
+    }
+    [n[0] / len, n[1] / len, n[2] / len]
+}
+
+/// Format an xyz vector as the OCCT-compatible `{"x":_,"y":_,"z":_}` JSON
+/// wire string.
+///
+/// Reproduced here — rather than importing `reify-eval` (a dev-dep only) — so
+/// the Manifold `FaceNormal` / `EdgeTangent` / `CenterOfMass` arms emit a
+/// byte-identical wire format to OCCT's (`centroid_json` /
+/// `crates/reify-kernel-occt/src/lib.rs`). `reify-eval`'s `parse_xyz_value`
+/// decoder and KGQ-ρ's parity gate therefore read both kernels identically.
+pub(crate) fn json_xyz(v: [f64; 3]) -> String {
+    format!("{{\"x\":{},\"y\":{},\"z\":{}}}", v[0], v[1], v[2])
+}
+
 /// Extract `xyz` vertex triplets from a [`Manifold`]'s mesh.
 ///
 /// Mirrors the `n_props` guard in [`crate::kernel::ManifoldKernel::tessellate`]
