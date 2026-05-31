@@ -2138,8 +2138,25 @@ pub(crate) fn try_eval_topology_selector(
                         _ => None,
                     }
                 }
-                // (Shape, Shape) and (Point, Point) — placeholder for step-5 RED test.
-                // Non-ValueRef / unresolvable args — fall through to None.
+                (Some(from), None, Some(to), None) => {
+                    // Shape × Shape: issue GeometryQuery::Distance{from,to} via
+                    // kernel_distance. Returns None on Err/non-numeric (already
+                    // warned); map None → Some(Value::Undef) per invariant #3.
+                    // Exactly one kernel query (invariant #4).
+                    match kernel_distance(kernel, from, to, diagnostics, &function.name) {
+                        Some(d) => Some(reify_ir::Value::length(d)),
+                        None => Some(reify_ir::Value::Undef),
+                    }
+                }
+                (None, Some(pa), None, Some(pb)) => {
+                    // Point × Point: pure Euclidean, no kernel call (invariant #4: 0 queries).
+                    let dx = pa[0] - pb[0];
+                    let dy = pa[1] - pb[1];
+                    let dz = pa[2] - pb[2];
+                    let d = (dx * dx + dy * dy + dz * dz).sqrt();
+                    Some(reify_ir::Value::length(d))
+                }
+                // Non-ValueRef / unresolvable args — fall through to None (invariants #1/#2).
                 _ => None,
             }
         }
