@@ -80,9 +80,10 @@ use reify_solver_elastic::{
     AssemblyElement, AssemblyMode, ElementOrder, ElementStiffness,
     assemble_global_stiffness,
     apply_dirichlet_row_elimination,
-    DirichletBc, IsotropicElastic,
+    DirichletBc, FaceOrder, IsotropicElastic,
     StressElement, element_stress_p1, element_stress_p2,
     recover_nodal_stress_p1, tet_volume_p1,
+    apply_traction_load,
     solve_cg, CgSolverOptions, SolverMode, CgResult,
 };
 
@@ -1151,6 +1152,102 @@ fn lame_reference_satisfies_known_invariants() {
     );
 }
 
+/// Build Dirichlet BCs for the quarter-annulus symmetry planes and
+/// plane-strain z-faces.
+///
+/// Per-axis constraints (not full 3-DOF clamp):
+/// - `u_y = 0` on the `θ=0` face (`y ≈ 0`) — symmetry BC
+/// - `u_x = 0` on the `θ=π/2` face (`x ≈ 0`) — symmetry BC
+/// - `u_z = 0` on `z = 0` and `z = l` — plane-strain constraint (ε_z = 0)
+///
+/// Shared edge/corner nodes may receive multiple BCs that are
+/// deduplicated by `dedup_bcs` before row elimination.
+fn annular_symmetry_plane_strain_bcs(
+    nodes: &[[f64; 3]],
+    l: f64,
+    tol: f64,
+) -> Vec<DirichletBc> {
+    let mut bcs = Vec::new();
+    for (node, &p) in nodes.iter().enumerate() {
+        // θ=0 face: y ≈ 0 → u_y = 0 (DOF 1)
+        if p[1].abs() < tol {
+            bcs.push(DirichletBc { dof: node * 3 + 1, value: 0.0 });
+        }
+        // θ=π/2 face: x ≈ 0 → u_x = 0 (DOF 0)
+        if p[0].abs() < tol {
+            bcs.push(DirichletBc { dof: node * 3 + 0, value: 0.0 });
+        }
+        // z=0 face: u_z = 0 (DOF 2)
+        if p[2].abs() < tol {
+            bcs.push(DirichletBc { dof: node * 3 + 2, value: 0.0 });
+        }
+        // z=l face: u_z = 0 (DOF 2)
+        if (p[2] - l).abs() < tol {
+            bcs.push(DirichletBc { dof: node * 3 + 2, value: 0.0 });
+        }
+    }
+    bcs
+}
+
+/// Assemble inner-pressure nodal loads for P1 inner-surface triangles.
+///
+/// For each P1 face `[v0, v1, v2]`:
+/// 1. Compute the centroid radial direction `r̂ = (cx, cy, 0) / ||(cx,cy)||`.
+/// 2. Apply traction `t = P_i · r̂` via `apply_traction_load` into a scratch
+///    vector (pressure on the inner wall = outward traction = inward normal
+///    sign times P_i in the +r̂ direction).
+///
+/// Returns nonzero `(dof, value)` pairs suitable for `solve_p1_pipeline`.
+fn inner_pressure_loads(
+    inner_faces: &[[usize; 3]],
+    nodes: &[[f64; 3]],
+    p_i: f64,
+) -> Vec<(usize, f64)> {
+    let ndof = 3 * nodes.len();
+    let mut f = vec![0.0_f64; ndof];
+    for face in inner_faces {
+        let face_phys = [nodes[face[0]], nodes[face[1]], nodes[face[2]]];
+        // Centroid radial unit direction
+        let cx = (face_phys[0][0] + face_phys[1][0] + face_phys[2][0]) / 3.0;
+        let cy = (face_phys[0][1] + face_phys[1][1] + face_phys[2][1]) / 3.0;
+        let r_c = (cx * cx + cy * cy).sqrt();
+        let traction = [p_i * cx / r_c, p_i * cy / r_c, 0.0];
+        apply_traction_load(&mut f, FaceOrder::P1Tri, &face[..], &face_phys, traction);
+    }
+    // Lower to (dof, value) pairs; drop exact zeros
+    f.iter().enumerate()
+        .filter(|(_, v)| v.abs() > 1e-15)
+        .map(|(i, v)| (i, *v))
+        .collect()
+}
+
+/// Assemble inner-pressure nodal loads for P2 inner-surface triangles.
+///
+/// Same centroid-radial traction as [`inner_pressure_loads`] but using the
+/// 6-node `FaceOrder::P2Tri` quadrature for consistent P2 force assembly.
+/// The corner-node centroid (`face[0..3]`) determines the traction direction.
+fn inner_pressure_loads_p2(
+    inner_faces: &[[usize; 6]],
+    nodes: &[[f64; 3]],
+    p_i: f64,
+) -> Vec<(usize, f64)> {
+    let ndof = 3 * nodes.len();
+    let mut f = vec![0.0_f64; ndof];
+    for face in inner_faces {
+        let face_phys: Vec<[f64; 3]> = face.iter().map(|&n| nodes[n]).collect();
+        // Centroid from corner nodes (first 3)
+        let cx = (face_phys[0][0] + face_phys[1][0] + face_phys[2][0]) / 3.0;
+        let cy = (face_phys[0][1] + face_phys[1][1] + face_phys[2][1]) / 3.0;
+        let r_c = (cx * cx + cy * cy).sqrt();
+        let traction = [p_i * cx / r_c, p_i * cy / r_c, 0.0];
+        apply_traction_load(&mut f, FaceOrder::P2Tri, &face[..], &face_phys, traction);
+    }
+    f.iter().enumerate()
+        .filter(|(_, v)| v.abs() > 1e-15)
+        .map(|(i, v)| (i, *v))
+        .collect()
+}
+
 /// Thick-walled cylinder (Lamé) P1 max von Mises ≤ 5 % of reference.
 ///
 /// Quarter-annulus model: `a=1, b=2, L=1.0`, `E=1, ν=0.3`, `P_i=1`.
@@ -1213,6 +1310,45 @@ fn thick_walled_cylinder_p1_max_von_mises_within_5pct_of_lame() {
         (min_sr_inner + P_I).abs() / P_I <= 0.20,
         "cylinder P1: min σ_r at inner surface {min_sr_inner:.6}, expected ≈ {}", -P_I,
     );
+}
+
+/// Cylinder Lamé convergence study (P1) — print von Mises error vs mesh.
+///
+/// Run with:
+/// `cargo test -p reify-solver-elastic --test analytical_validation \
+///   cylinder_lame_convergence_study -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn cylinder_lame_convergence_study() {
+    const A: f64 = 1.0;
+    const B: f64 = 2.0;
+    const L: f64 = 1.0;
+    const P_I: f64 = 1.0;
+    const NU: f64 = 0.3;
+    let tol_geom = 1e-9;
+    let mat = IsotropicElastic { youngs_modulus: 1.0, poisson_ratio: NU };
+    let lame_ref = lame_von_mises(A, A, B, P_I, NU);
+    println!("Lamé reference von Mises at r=a: {lame_ref:.6}");
+
+    for &(nr, ntheta, nz) in &[
+        (8usize, 8usize, 2usize),
+        (12, 12, 2),
+        (16, 16, 2),
+        (20, 20, 2),
+        (24, 24, 2),
+    ] {
+        let (nodes, conns, inner_faces) = annular_p1_mesh(A, B, L, nr, ntheta, nz);
+        let mut bcs = annular_symmetry_plane_strain_bcs(&nodes, L, tol_geom);
+        let loads = inner_pressure_loads(&inner_faces, &nodes, P_I);
+        let u = solve_p1_pipeline(&nodes, &conns, &mut bcs, &loads, &mat);
+        let sigma = recover_nodal_p1(&nodes, &conns, &u, &mat);
+        let max_vm = nodes.iter().enumerate()
+            .filter(|(_, p)| ((p[0]*p[0]+p[1]*p[1]).sqrt() - A).abs() < tol_geom)
+            .map(|(ni, _)| von_mises_of_tensor(&sigma[ni]))
+            .fold(0.0_f64, f64::max);
+        let err = (max_vm - lame_ref).abs() / lame_ref * 100.0;
+        println!("P1 {nr}×{ntheta}×{nz}: max_vm={max_vm:.6} err={err:.2}% n_nodes={}", nodes.len());
+    }
 }
 
 /// Mesh validation: annular P1 quarter-cylinder mesh geometry.
