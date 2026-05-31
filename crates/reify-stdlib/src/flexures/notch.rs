@@ -24,10 +24,18 @@ const CIRCULAR_K: f64 = 1.0;
 const CIRCULAR_SIGMA: f64 = 1.0;
 
 /// Shape factors for the elliptical notch flexure hinge (Smith et al. 1997,
-/// "Design of Elliptical Notch Flexure Hinges", Precision Engineering).
-/// For a 2:1 profile aspect ratio the elliptical hinge is softer (more
-/// compliant) than the circular case; κ → 1 as the semi-axes converge to
-/// equal radii (circular limit).
+/// "Design of Elliptical Notch Flexure Hinges", Precision Engineering 20(3)).
+/// For a 2:1 profile aspect ratio the elliptical hinge is more compliant than
+/// the circular case; κ → 1 as the semi-axes converge to equal radii (circular
+/// limit).
+///
+/// The stiffness shape factor (0.85) and stress shape factor (0.85) are set
+/// equal as a first-order PRB approximation consistent with PRD §8.5 fidelity.
+/// Physically, the same profile geometry that reduces rotational stiffness also
+/// reduces peak surface stress through a comparable geometric attenuation;
+/// decoupling them requires independently sourced values from the elliptic-
+/// integral correction terms (Smith et al. 1997, Table 1). A future fidelity
+/// pass (λ) may split them if dogfood demands greater accuracy.
 const ELLIPTICAL_K: f64 = 0.85;
 const ELLIPTICAL_SIGMA: f64 = 0.85;
 
@@ -35,6 +43,14 @@ const ELLIPTICAL_SIGMA: f64 = 0.85;
 /// flexure hinge (Paros & Weisbord 1965, toroidal variant). The full
 /// axisymmetric removal makes this the most compliant of the three profiles
 /// for the same (r, t, b) geometry; κ → 1 in the planar limit.
+///
+/// The stiffness shape factor (0.74) and stress shape factor (0.74) are set
+/// equal as a first-order PRB approximation consistent with PRD §8.5 fidelity.
+/// The toroidal profile distributes bending over a wider arc, attenuating both
+/// the effective rotational stiffness and the peak hinge-root stress through the
+/// same geometric factor. Decoupling them would require the full axisymmetric
+/// stress analysis from Paros-Weisbord's toroidal derivation; a future fidelity
+/// pass (λ) may provide independently verified values.
 const RIGHT_CIRCULAR_K: f64 = 0.74;
 const RIGHT_CIRCULAR_SIGMA: f64 = 0.74;
 
@@ -579,7 +595,7 @@ mod tests {
         );
     }
 
-    // ── step-11: elliptical structure + functional-form scaling ─────────────
+    // ── steps 11 + 13: elliptical + right-circular (parametrized) ──────────
 
     /// Call `prb_notch_elliptical` with explicit geometry and material.
     fn notch_elliptical(r: f64, t: f64, b: f64, mat: Value) -> Value {
@@ -596,93 +612,6 @@ mod tests {
         )
     }
 
-    #[test]
-    fn prb_notch_elliptical_structure_and_scaling() {
-        let r = 1e-3_f64;
-        let t = 2e-4_f64;
-        let b = 5e-3_f64;
-        let e = 205e9_f64;
-
-        let base = notch_elliptical(r, t, b, material_with_e(e));
-        assert_eq!(
-            map_get(&base, "kind"),
-            Some(&Value::String("revolute".to_string())),
-            "elliptical presents as revolute"
-        );
-        assert_eq!(
-            map_get(&base, "damping"),
-            Some(&Value::Option(None)),
-            "damping is None"
-        );
-        assert_eq!(
-            map_get(&base, "axis"),
-            Some(&axis_y()),
-            "axis preserved"
-        );
-        assert_eq!(
-            map_get(&base, "neutral"),
-            Some(&Value::angle(0.0)),
-            "neutral defaults to angle(0)"
-        );
-        let k_base = spring_rate_si(&base);
-        assert!(k_base.is_finite() && k_base > 0.0, "spring_rate is finite positive");
-        assert_eq!(
-            map_get(&base, "spring_rate").map(|v| match v {
-                Value::Scalar { dimension, .. } => *dimension,
-                _ => panic!(),
-            }),
-            Some(DimensionVector::ROTATIONAL_STIFFNESS),
-            "spring_rate carries ROTATIONAL_STIFFNESS"
-        );
-
-        // Coefficient-independent functional-form scaling (κ cancels in ratios).
-
-        // t^2.5 scaling: doubling t → ×2^2.5
-        let k_2t = spring_rate_si(&notch_elliptical(r, 2.0 * t, b, material_with_e(e)));
-        let ratio_t = k_2t / k_base;
-        let expected_t = 2.0_f64.powf(2.5);
-        let rel_t = (ratio_t - expected_t).abs() / expected_t;
-        assert!(rel_t < 1e-9, "t^2.5 scaling: ratio {ratio_t} vs {expected_t} (rel {rel_t})");
-
-        // r^-0.5 scaling: doubling r → ×2^-0.5
-        let k_2r = spring_rate_si(&notch_elliptical(2.0 * r, t, b, material_with_e(e)));
-        let ratio_r = k_2r / k_base;
-        let expected_r = 2.0_f64.powf(-0.5);
-        let rel_r = (ratio_r - expected_r).abs() / expected_r;
-        assert!(rel_r < 1e-9, "r^-0.5 scaling: ratio {ratio_r} vs {expected_r} (rel {rel_r})");
-
-        // b scaling: doubling b → ×2
-        let k_2b = spring_rate_si(&notch_elliptical(r, t, 2.0 * b, material_with_e(e)));
-        let ratio_b = k_2b / k_base;
-        let rel_b = (ratio_b - 2.0).abs() / 2.0;
-        assert!(rel_b < 1e-9, "b linear scaling: ratio {ratio_b} vs 2 (rel {rel_b})");
-
-        // E scaling: doubling E → ×2
-        let k_2e = spring_rate_si(&notch_elliptical(r, t, b, material_with_e(2.0 * e)));
-        let ratio_e = k_2e / k_base;
-        let rel_e = (ratio_e - 2.0).abs() / 2.0;
-        assert!(rel_e < 1e-9, "E linear scaling: ratio {ratio_e} vs 2 (rel {rel_e})");
-
-        // Invalid-input rejection: spot-check degenerate geometry.
-        let bad_t = crate::eval_builtin(
-            "prb_notch_elliptical",
-            &[
-                Value::length(r),
-                Value::length(2.0 * r),  // t >= 2r
-                Value::length(b),
-                material_with_e(e),
-                origin(),
-                axis_y(),
-            ],
-        );
-        assert!(bad_t.is_undef(), "elliptical degenerate t>=2r → Undef");
-
-        let bad_arity = crate::eval_builtin("prb_notch_elliptical", &[]);
-        assert!(bad_arity.is_undef(), "elliptical 0 args → Undef");
-    }
-
-    // ── step-13: right-circular structure + functional-form scaling ──────────
-
     /// Call `prb_notch_right_circular` with explicit geometry and material.
     fn notch_right_circular(r: f64, t: f64, b: f64, mat: Value) -> Value {
         crate::eval_builtin(
@@ -698,88 +627,181 @@ mod tests {
         )
     }
 
-    #[test]
-    fn prb_notch_right_circular_structure_and_scaling() {
+    /// Parametrized verification suite shared by the two non-circular variants.
+    ///
+    /// Covers five assertion classes:
+    ///  1. Structure: revolute kind, damping=None, axis/neutral preserved, k dim.
+    ///  2. Absolute spring_rate pin: k == k_factor · 2·E·b·t^2.5 / (9π·r^0.5)
+    ///     to relative 1e-9 — pins the named constant AND its application site in
+    ///     notch_revolute. (Swapping or mis-scaling the constant fails here.)
+    ///  3. Yield-capped range with non-unit sigma_factor: asserts range bounds equal
+    ///     ±theta_yield computed with the variant's sigma_factor to 1e-9, exercising
+    ///     the non-trivial sigma path in notch_revolute for both variants.
+    ///  4. Coefficient-independent scaling ratios (t^2.5, r^-0.5, b, E) to 1e-9.
+    ///  5. Rejection spot-checks (degenerate t≥2r, 0 args → Undef).
+    ///
+    /// `k_factor` and `sigma_factor` are passed as hard-coded numeric literals at
+    /// each call site so any change to the named constants breaks assertion 2 or 3.
+    fn assert_notch_variant_full<F>(
+        ctor_name: &str,
+        k_factor: f64,
+        sigma_factor: f64,
+        call_fn: F,
+    ) where
+        F: Fn(f64, f64, f64, Value) -> Value,
+    {
         let r = 1e-3_f64;
         let t = 2e-4_f64;
         let b = 5e-3_f64;
         let e = 205e9_f64;
+        // material_with_e always carries yield_stress = 310 MPa (hardcoded).
+        let yield_stress = 310e6_f64;
 
-        let base = notch_right_circular(r, t, b, material_with_e(e));
+        let base = call_fn(r, t, b, material_with_e(e));
+
+        // 1. Structure assertions.
         assert_eq!(
             map_get(&base, "kind"),
             Some(&Value::String("revolute".to_string())),
-            "right-circular presents as revolute"
+            "{ctor_name}: must present as revolute"
         );
         assert_eq!(
             map_get(&base, "damping"),
             Some(&Value::Option(None)),
-            "damping is None"
+            "{ctor_name}: damping is None in δ scope"
         );
         assert_eq!(
             map_get(&base, "axis"),
             Some(&axis_y()),
-            "axis preserved"
+            "{ctor_name}: axis preserved verbatim"
         );
         assert_eq!(
             map_get(&base, "neutral"),
             Some(&Value::angle(0.0)),
-            "neutral defaults to angle(0)"
+            "{ctor_name}: neutral defaults to angle(0)"
         );
         let k_base = spring_rate_si(&base);
-        assert!(k_base.is_finite() && k_base > 0.0, "spring_rate is finite positive");
+        assert!(
+            k_base.is_finite() && k_base > 0.0,
+            "{ctor_name}: spring_rate must be finite positive"
+        );
         assert_eq!(
             map_get(&base, "spring_rate").map(|v| match v {
                 Value::Scalar { dimension, .. } => *dimension,
-                _ => panic!(),
+                _ => panic!("{ctor_name}: spring_rate must be a Scalar"),
             }),
             Some(DimensionVector::ROTATIONAL_STIFFNESS),
-            "spring_rate carries ROTATIONAL_STIFFNESS"
+            "{ctor_name}: spring_rate carries ROTATIONAL_STIFFNESS"
         );
 
-        // Coefficient-independent functional-form scaling (κ cancels in ratios).
+        // 2. Absolute spring_rate pin: k = k_factor · 2·E·b·t^2.5 / (9π·r^0.5).
+        // Literal k_factor pins both the constant value and its wiring in notch_revolute:
+        // any change to ELLIPTICAL_K/RIGHT_CIRCULAR_K will fail here.
+        let k_circular_form = 2.0 * e * b * t.powf(2.5) / (9.0 * PI * r.sqrt());
+        let k_expected = k_factor * k_circular_form;
+        let rel_k = (k_base - k_expected).abs() / k_expected;
+        assert!(
+            rel_k < 1e-9,
+            "{ctor_name}: absolute spring_rate {k_base} vs \
+             k_factor({k_factor})·k_circ({k_circular_form}) = {k_expected} (rel {rel_k})"
+        );
 
-        // t^2.5 scaling
-        let k_2t = spring_rate_si(&notch_right_circular(r, 2.0 * t, b, material_with_e(e)));
+        // 3. Yield-capped range with non-unit sigma_factor.
+        // theta_yield = yield · 3π · (2r+t) / (sigma_factor · 4·E·t)  — PRD §5.2.
+        // For the standard fixture, theta_yield < 5° (yield-capped, not PRB-capped).
+        // material_with_e carries yield_stress = 310 MPa, matching `yield_stress` above.
+        let theta_yield =
+            yield_stress * 3.0 * PI * (2.0 * r + t) / (sigma_factor * 4.0 * e * t);
+        let prb_limit = 5.0_f64 * PI / 180.0;
+        assert!(
+            theta_yield < prb_limit,
+            "{ctor_name}: fixture must be yield-capped \
+             (θ_yield={theta_yield:.4} >= 5°={prb_limit:.4})"
+        );
+        let range = map_get(&base, "range").expect("range key present");
+        let (lo, up) = range_lower_upper(range);
+        assert_angle_close(
+            lo,
+            -theta_yield,
+            &format!("{ctor_name}: yield-capped lower bound (sigma_factor={sigma_factor})"),
+        );
+        assert_angle_close(
+            up,
+            theta_yield,
+            &format!("{ctor_name}: yield-capped upper bound (sigma_factor={sigma_factor})"),
+        );
+
+        // 4. Coefficient-independent functional-form scaling (κ cancels in ratios).
+
+        // t^2.5 scaling: doubling t → ×2^2.5
+        let k_2t = spring_rate_si(&call_fn(r, 2.0 * t, b, material_with_e(e)));
         let ratio_t = k_2t / k_base;
         let expected_t = 2.0_f64.powf(2.5);
         let rel_t = (ratio_t - expected_t).abs() / expected_t;
-        assert!(rel_t < 1e-9, "t^2.5 scaling: ratio {ratio_t} vs {expected_t} (rel {rel_t})");
+        assert!(
+            rel_t < 1e-9,
+            "{ctor_name}: t^2.5 scaling: ratio {ratio_t} vs {expected_t} (rel {rel_t})"
+        );
 
-        // r^-0.5 scaling
-        let k_2r = spring_rate_si(&notch_right_circular(2.0 * r, t, b, material_with_e(e)));
+        // r^-0.5 scaling: doubling r → ×2^-0.5
+        let k_2r = spring_rate_si(&call_fn(2.0 * r, t, b, material_with_e(e)));
         let ratio_r = k_2r / k_base;
         let expected_r = 2.0_f64.powf(-0.5);
         let rel_r = (ratio_r - expected_r).abs() / expected_r;
-        assert!(rel_r < 1e-9, "r^-0.5 scaling: ratio {ratio_r} vs {expected_r} (rel {rel_r})");
+        assert!(
+            rel_r < 1e-9,
+            "{ctor_name}: r^-0.5 scaling: ratio {ratio_r} vs {expected_r} (rel {rel_r})"
+        );
 
-        // b linear scaling
-        let k_2b = spring_rate_si(&notch_right_circular(r, t, 2.0 * b, material_with_e(e)));
+        // b scaling: doubling b → ×2
+        let k_2b = spring_rate_si(&call_fn(r, t, 2.0 * b, material_with_e(e)));
         let ratio_b = k_2b / k_base;
         let rel_b = (ratio_b - 2.0).abs() / 2.0;
-        assert!(rel_b < 1e-9, "b linear scaling: ratio {ratio_b} vs 2 (rel {rel_b})");
+        assert!(
+            rel_b < 1e-9,
+            "{ctor_name}: b linear scaling: ratio {ratio_b} vs 2 (rel {rel_b})"
+        );
 
-        // E linear scaling
-        let k_2e = spring_rate_si(&notch_right_circular(r, t, b, material_with_e(2.0 * e)));
+        // E scaling: doubling E → ×2
+        let k_2e = spring_rate_si(&call_fn(r, t, b, material_with_e(2.0 * e)));
         let ratio_e = k_2e / k_base;
         let rel_e = (ratio_e - 2.0).abs() / 2.0;
-        assert!(rel_e < 1e-9, "E linear scaling: ratio {ratio_e} vs 2 (rel {rel_e})");
+        assert!(
+            rel_e < 1e-9,
+            "{ctor_name}: E linear scaling: ratio {ratio_e} vs 2 (rel {rel_e})"
+        );
 
-        // Invalid-input rejection.
+        // 5. Rejection spot-checks.
         let bad_t = crate::eval_builtin(
-            "prb_notch_right_circular",
+            ctor_name,
             &[
                 Value::length(r),
-                Value::length(2.0 * r),  // t >= 2r
+                Value::length(2.0 * r), // t ≥ 2r → degenerate geometry
                 Value::length(b),
                 material_with_e(e),
                 origin(),
                 axis_y(),
             ],
         );
-        assert!(bad_t.is_undef(), "right-circular degenerate t>=2r → Undef");
+        assert!(bad_t.is_undef(), "{ctor_name}: degenerate t≥2r → Undef");
 
-        let bad_arity = crate::eval_builtin("prb_notch_right_circular", &[]);
-        assert!(bad_arity.is_undef(), "right-circular 0 args → Undef");
+        let bad_arity = crate::eval_builtin(ctor_name, &[]);
+        assert!(bad_arity.is_undef(), "{ctor_name}: 0 args → Undef");
+    }
+
+    #[test]
+    fn prb_notch_elliptical_structure_and_scaling() {
+        // k_factor=0.85 and sigma_factor=0.85 are hard-coded literals that pin
+        // ELLIPTICAL_K and ELLIPTICAL_SIGMA respectively (see assertion classes 2+3).
+        assert_notch_variant_full("prb_notch_elliptical", 0.85, 0.85, notch_elliptical);
+    }
+
+    // ── step-13: right-circular structure + functional-form scaling ──────────
+
+    #[test]
+    fn prb_notch_right_circular_structure_and_scaling() {
+        // k_factor=0.74 and sigma_factor=0.74 are hard-coded literals that pin
+        // RIGHT_CIRCULAR_K and RIGHT_CIRCULAR_SIGMA respectively (see assertion classes 2+3).
+        assert_notch_variant_full("prb_notch_right_circular", 0.74, 0.74, notch_right_circular);
     }
 }
