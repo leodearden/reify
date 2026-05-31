@@ -17,6 +17,169 @@
 //!     a `body_mass_props(...)` call cell, wiring the (currently unwired) KGQ
 //!     kernel seam (task 3620) before delegating to the core.
 
+use reify_core::dimension::DimensionVector;
+use reify_core::{Diagnostic, DiagnosticCode};
+use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use reify_stdlib::dynamics::mass_props::{DensitySource, resolve_density};
+
+/// Sentinel `StructureTypeId` for engine-assembled (registry-free) instances.
+/// Mirrors `modal_ops::degenerate_modal_result`: the nominal `type_name` is the
+/// source of truth for downstream hooks (the MassProperties PSD validator keys
+/// on `type_name == "MassProperties"`, not on the id).
+const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
+
+/// Extract an `f64` from a numeric value cell (`Int` / `Real` / dimensioned
+/// `Scalar`). Mirrors `dynamics_psd`'s `cell_f64`; non-numeric cells yield
+/// `None`.
+fn cell_f64(v: &Value) -> Option<f64> {
+    match v {
+        Value::Int(n) => Some(*n as f64),
+        Value::Real(r) => Some(*r),
+        Value::Scalar { si_value, .. } => Some(*si_value),
+        _ => None,
+    }
+}
+
+/// Read `body.material.density` as an `f64`, if the body is a StructureInstance
+/// whose `material` field is itself a StructureInstance carrying a numeric
+/// `density`. Any missing link (no `material`, non-structure material, no
+/// `density`, non-numeric density) yields `None` — the Material ladder rung is
+/// simply skipped.
+fn body_material_density(body: &Value) -> Option<f64> {
+    if let Value::StructureInstance(data) = body
+        && let Some(Value::StructureInstance(material)) =
+            data.fields.get(&"material".to_string())
+        && let Some(cell) = material.fields.get(&"density".to_string())
+    {
+        return cell_f64(cell);
+    }
+    None
+}
+
+/// A human-readable label for the body, used in the default-density warning.
+/// Prefers an explicit `name : String` field, falling back to the structure's
+/// nominal `type_name`, then a generic placeholder.
+fn body_label(body: &Value) -> String {
+    if let Value::StructureInstance(data) = body {
+        if let Some(Value::String(name)) = data.fields.get(&"name".to_string()) {
+            return name.clone();
+        }
+        return data.type_name.clone();
+    }
+    "<body>".to_string()
+}
+
+/// Run the fn-level density priority ladder for `body_mass_props` and emit the
+/// `W_DynamicsDefaultDensity` warning (once) when it falls through to the water
+/// default. Returns the resolved density (kg/m³).
+///
+/// Shared by [`eval_body_mass_props_core`] (concrete-geometry path) and
+/// `try_eval_body_mass_props` (deferred-kernel dispatch path) so the ladder and
+/// the diagnostic are single-sourced regardless of whether the geometric query
+/// is available.
+fn resolve_body_density(
+    body: &Value,
+    density_arg: Option<&Value>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> f64 {
+    let explicit = density_arg.and_then(cell_f64);
+    let material = body_material_density(body);
+    let (density, source) = resolve_density(explicit, material);
+    if source == DensitySource::DefaultWater {
+        diagnostics.push(
+            Diagnostic::warning(format!(
+                "body_mass_props('{}'): no explicit density and no Material density; \
+                 defaulting to 1000 kg/m³ (water)",
+                body_label(body),
+            ))
+            .with_code(DiagnosticCode::DynamicsDefaultDensity),
+        );
+    }
+    density
+}
+
+/// Mass `Value` for the `MassProperties.mass : Mass` field (dimensioned scalar).
+fn mass_value(mass: f64) -> Value {
+    Value::Scalar {
+        si_value: mass,
+        dimension: DimensionVector::MASS,
+    }
+}
+
+/// Centre-of-mass `Value` for `MassProperties.com : Point3<Length>` — a
+/// `Value::Point` of three Length-dimensioned scalars.
+fn com_value(com: [f64; 3]) -> Value {
+    Value::Point(
+        com.iter()
+            .map(|&x| Value::Scalar {
+                si_value: x,
+                dimension: DimensionVector::LENGTH,
+            })
+            .collect(),
+    )
+}
+
+/// Inertia `Value` for `MassProperties.inertia : Matrix<3,3,Real>` — a 3×3
+/// `Value::Matrix` of plain `Real` cells (so the existing
+/// `dynamics_psd::inertia_3x3_from_value` parser and the engine PSD hook read
+/// it unchanged).
+fn inertia_value(inertia: [[f64; 3]; 3]) -> Value {
+    Value::Matrix(
+        inertia
+            .iter()
+            .map(|row| row.iter().map(|&x| Value::Real(x)).collect())
+            .collect(),
+    )
+}
+
+/// Assemble a `MassProperties` `Value::StructureInstance` from its four field
+/// values. The geometric fields (`mass`, `com`, `inertia`) are passed as
+/// `Value`s so this single assembler serves both the concrete-geometry core and
+/// the deferred-kernel dispatch path (which passes `Value::Undef` for them).
+/// `origin` is the `Real` frame placeholder matching the structure_def.
+///
+/// Reuses the `modal_ops`/`StructureInstanceData` construction pattern (task
+/// 3822 MassProperties structure_def, `dynamics.ri`).
+fn assemble_mass_properties(mass: Value, com: Value, inertia: Value) -> Value {
+    let fields: PersistentMap<String, Value> = [
+        ("mass".to_string(), mass),
+        ("com".to_string(), com),
+        ("inertia".to_string(), inertia),
+        ("origin".to_string(), Value::Real(0.0)),
+    ]
+    .into_iter()
+    .collect();
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: REGISTRY_FREE_TYPE_ID,
+        type_name: "MassProperties".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
+/// Pure eval core for `body_mass_props`: resolve the density (emitting
+/// `W_DynamicsDefaultDensity` on water fallback), invoke the injected geometric
+/// query, and assemble the `MassProperties` instance.
+///
+/// `geom_query` is the kernel seam abstracted as a closure `density -> (mass,
+/// com, inertia)`; this keeps the core kernel-free and exactly unit-testable
+/// (the tests inject `reify_stdlib::dynamics::mass_props::uniform_box_inertia`).
+/// The deferred-kernel dispatch path (`try_eval_body_mass_props`) does NOT route
+/// geometry through here — it reuses [`resolve_body_density`] +
+/// [`assemble_mass_properties`] with `Undef` geometric fields until task 3620
+/// lands; once it does, the supervisor routes the real kernel query through this
+/// core.
+pub fn eval_body_mass_props_core(
+    body: &Value,
+    density_arg: Option<&Value>,
+    geom_query: impl Fn(f64) -> (f64, [f64; 3], [[f64; 3]; 3]),
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Value {
+    let density = resolve_body_density(body, density_arg, diagnostics);
+    let (mass, com, inertia) = geom_query(density);
+    assemble_mass_properties(mass_value(mass), com_value(com), inertia_value(inertia))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
