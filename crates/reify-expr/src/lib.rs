@@ -5654,4 +5654,48 @@ mod tests {
             "unexpected options shape should fall back to shared_options"
         );
     }
+
+    // ── task 3029 step-1: solve_load_cases empty-cases diagnostic (RED) ──────
+    //
+    // `eval_solve_load_cases` with an empty `cases` list (args[4]) must emit a
+    // `MultiLoadEmptyCases` error diagnostic into the runtime sink and still
+    // return `Value::Undef`. Before v0.3.x task #10 this path returned Undef
+    // silently (lib.rs empty-cases guard). White-box test: calls the private
+    // fn directly with a sink-bearing EvalContext — the FEA solve trampoline is
+    // irrelevant because the empty-cases guard fires before the solve loop.
+    #[test]
+    fn solve_load_cases_empty_cases_emits_diagnostic() {
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+
+        // 5-element args slice: material/length/width/height are irrelevant
+        // here because the empty-cases guard fires before they are used.
+        let args = [
+            Value::Undef,
+            Value::Undef,
+            Value::Undef,
+            Value::Undef,
+            Value::List(vec![]),
+        ];
+
+        let result = eval_solve_load_cases(&args, &ctx);
+
+        assert_eq!(result, Value::Undef, "empty cases must return Undef");
+
+        let diags = sink.borrow();
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly one diagnostic, got {diags:?}"
+        );
+        assert_eq!(
+            diags[0].code,
+            Some(reify_core::DiagnosticCode::MultiLoadEmptyCases)
+        );
+        assert_eq!(
+            diags[0].message,
+            "Multi-load case analysis requires at least one LoadCase. Use solve_elastic_static for single-case analysis."
+        );
+    }
 }
