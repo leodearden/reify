@@ -91,6 +91,13 @@ fn prb_cantilever_beam(args: &[Value]) -> Value {
         true,
     );
 
+    // Optional trailing neutral angle (default 0 for the 6-arg form).
+    let neutral_si = if args.len() == 7 {
+        neutral_angle_si(&args[6])
+    } else {
+        0.0
+    };
+
     make_flexure_joint(
         "revolute",
         axis.clone(),
@@ -99,9 +106,25 @@ fn prb_cantilever_beam(args: &[Value]) -> Value {
             si_value: k_theta,
             dimension: DimensionVector::ROTATIONAL_STIFFNESS,
         },
-        Value::angle(0.0),
+        Value::angle(neutral_si),
         pivot.clone(),
     )
+}
+
+/// Extract a neutral angle in radians from a trailing constructor argument.
+///
+/// Accepts an ANGLE-dimensioned `Value::Scalar` (e.g. `Value::angle`), a bare
+/// `Value::Real` / `Value::Int` interpreted as radians (via
+/// [`crate::helpers::trig_input`]), or a `Value::Option` wrapping any of those.
+/// `Option(None)` and any value that fails extraction default to `0.0` — the
+/// neutral angle is an optional offset, so an absent/unreadable value is the
+/// natural zero rather than a hard error.
+fn neutral_angle_si(v: &Value) -> f64 {
+    match v {
+        Value::Option(Some(inner)) => neutral_angle_si(inner),
+        Value::Option(None) => 0.0,
+        other => crate::helpers::trig_input(other).unwrap_or(0.0),
+    }
 }
 
 /// Extract a length in metres: a finite LENGTH-dimensioned `Value::Scalar`, or a
