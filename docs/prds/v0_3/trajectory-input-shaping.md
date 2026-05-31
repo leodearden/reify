@@ -616,8 +616,12 @@ dogfood + companion.
 - **ε — Impulse-shaping convolution implementation (ZV/ZVD/EI/
   cascaded).**
   - Crates: `reify-stdlib/src/trajectory/impulse_shaper.rs` (NEW).
-  - Observable signal: `examples/trajectory/zv_shaped_ramp.ri` runs
-    end-to-end; vibration peak ≥ 40 dB reduced vs unshaped.
+  - Observable signal: pure-Rust residual-vibration-ratio assertion
+    (`V_shaped ≤ 0.01·V_unshaped` at the design frequency); construction-only
+    `examples/trajectory/zv_shaped_ramp.ri`. NOTE (esc-3866-57): the literal
+    "runs end-to-end; ≥ 40 dB reduced" signal is RE-HOMED to θ — it requires
+    `input_shape` (ζ, downstream of ε) + `simulate_trajectory` (θ), so it
+    cannot be verified at ε's DAG position.
   - Prereqs: δ, β, modal-analysis modes available (compile-time).
 
 - **ζ — `input_shape(profile, shaper)` stdlib dispatcher + eval
@@ -639,7 +643,10 @@ dogfood + companion.
   - Crates: `reify-stdlib/src/trajectory/simulate.rs` (NEW).
   - Observable signal: unit test confirms zero vibration for
     static profile (constant pose); confirms expected vibration
-    for a step input on a single-mode oscillator.
+    for a step input on a single-mode oscillator. END-TO-END
+    (re-homed from ε per esc-3866-57): shape a ramp via `input_shape`
+    (ζ) → `simulate_trajectory` (θ) → assert ≥ 40 dB residual-vibration
+    reduction vs unshaped (`examples/trajectory/zv_shaped_ramp.ri`).
   - Prereqs: γ, η, rigid-body-dynamics η (inverse_dynamics),
     modal-analysis ι (transient_response).
 
