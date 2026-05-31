@@ -138,6 +138,7 @@ fn check_task(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Finding> {
         findings.push(f);
     }
     findings.extend(check_tests_assert_empty(ctx, meta));
+    findings.extend(check_live_path_stranded(ctx, meta));
     findings
 }
 
@@ -569,6 +570,53 @@ fn build_high_finding(meta: &TaskMetadata, missing: &[String], summary: &str) ->
             entries: missing.to_vec(),
         }],
     }
+}
+
+/// H2 — live-path-stranded pass (initial behavior, step-8).
+///
+/// For cross-crate tasks (metadata.files spanning >=2 distinct `crates/<name>/`
+/// roots), queries `JCodemunchOps::get_changed_symbols({commit}^1, commit)` and
+/// for each symbol calls `find_references` to determine whether a non-test
+/// workspace caller exists. Symbols with no non-test caller (stranded by a
+/// live-path relocation) emit a `P5LivePathStranded` `Medium` finding.
+///
+/// Initial version (step-8): fires whenever a changed symbol has no non-test
+/// caller in a cross-crate task. The cross-crate gate and per-symbol suppression
+/// guards (stdlib scope-exclude, `#[allow(dead_code)]`, `#[cfg(test)]`,
+/// non-blank `// G-allow:`) are added in step-10.
+///
+/// Skipped when `done_provenance.commit` is absent (no commit range to diff).
+fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Finding> {
+    let Some(commit) = meta.done_provenance.as_ref().and_then(|p| p.commit.as_deref()) else {
+        return vec![];
+    };
+    let since_sha = format!("{commit}^1");
+    let until_sha = commit;
+
+    let symbols = ctx.jcodemunch.get_changed_symbols(&since_sha, until_sha);
+    let mut findings = Vec::new();
+    for symbol in symbols {
+        let has_non_test_caller = ctx
+            .jcodemunch
+            .find_references(&symbol)
+            .iter()
+            .any(|r| !crate::is_test_path(&r.file));
+        if !has_non_test_caller {
+            findings.push(Finding {
+                pattern: Pattern::P5LivePathStranded,
+                severity: Severity::Medium,
+                task_id: meta.task_id.clone(),
+                summary: format!(
+                    "changed symbol `{}` at {}:{} has no non-test workspace caller — \
+                     possible live-path stranding from a cross-crate relocation \
+                     (task 4140 H2; cross-crate gate + suppression guards added in step-10)",
+                    symbol.name, symbol.file, symbol.line
+                ),
+                evidence: vec![EvidenceRef::File { path: symbol.file.clone() }],
+            });
+        }
+    }
+    findings
 }
 
 #[cfg(test)]
