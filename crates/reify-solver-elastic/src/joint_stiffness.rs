@@ -47,9 +47,22 @@ pub fn add_joint_stiffness(
     contributions: &[JointStiffness],
 ) -> SparseRowMat<usize, f64> {
     let _ = contributions;
-    unimplemented!(
-        "add_joint_stiffness: not yet implemented — step-2 GREEN will fill this in"
-    )
+    let n = k_global.nrows();
+    // Extract K's stored triplets — mirror project_free (modal_ops.rs:484-508) and
+    // m_matvec (modal_ops.rs:515-528): symbolic() gives the sparsity structure;
+    // col_idx_of_row_raw + val_of_row iterate the stored (col, value) pairs per row.
+    let sym = k_global.symbolic();
+    let mut trips: Vec<Triplet<usize, usize, f64>> = Vec::new();
+    for r in 0..n {
+        let cols = sym.col_idx_of_row_raw(r);
+        let vals = k_global.val_of_row(r);
+        for (col_raw, &val) in cols.iter().zip(vals.iter()) {
+            trips.push(Triplet::new(r, *col_raw, val));
+        }
+    }
+    // Joint diagonal contributions appended in step-4 GREEN.
+    SparseRowMat::try_new_from_triplets(n, n, &trips)
+        .expect("joint-stiffness triplet rebuild must not violate CSR invariants")
 }
 
 #[cfg(test)]
