@@ -283,6 +283,53 @@ impl GeometryKernel for ManifoldKernel {
                     }
                 }
             },
+            // Edge tangent as the OCCT-compatible {"x","y","z"} JSON string.
+            // Only an edge sub-handle has a tangent; a whole mesh or a face
+            // sub-shape has none. Sign follows the stored endpoint order — the
+            // contract is sign-agnostic.
+            GeometryQuery::EdgeTangent(id) => match self.sub_shapes.get(&id.0) {
+                Some(SubShape::Edge(edge)) => Ok(Value::String(crate::queries::json_xyz(
+                    crate::queries::edge_unit_tangent(edge),
+                ))),
+                Some(SubShape::Face(_)) => Err(QueryError::QueryFailed(
+                    "EdgeTangent: handle names a face sub-shape (no edge tangent)".into(),
+                )),
+                None => {
+                    if self.shapes.contains_key(&id.0) {
+                        Err(QueryError::QueryFailed(
+                            "EdgeTangent: handle names a whole mesh, not an edge; query an \
+                             extracted edge sub-handle instead"
+                                .into(),
+                        ))
+                    } else {
+                        Err(QueryError::InvalidHandle(*id))
+                    }
+                }
+            },
+            // Bounding box as the OCCT-compatible {"xmin"..."zmax"} JSON
+            // string. A sub-shape (face/edge) bounds its stored points; a
+            // whole mesh delegates to Manifold::bounding_box() (None =>
+            // empty/degenerate => QueryError).
+            GeometryQuery::BoundingBox(id) => {
+                if let Some(sub) = self.sub_shapes.get(&id.0) {
+                    let (min, max) = match sub {
+                        SubShape::Face(tri) => crate::queries::points_bbox(tri),
+                        SubShape::Edge(edge) => crate::queries::points_bbox(edge),
+                    };
+                    Ok(Value::String(crate::queries::json_bbox(min, max)))
+                } else if let Some(m) = self.shapes.get(&id.0) {
+                    match m.bounding_box() {
+                        Some(bb) => {
+                            Ok(Value::String(crate::queries::json_bbox(bb.min(), bb.max())))
+                        }
+                        None => Err(QueryError::QueryFailed(
+                            "BoundingBox: empty/degenerate manifold has no bounding box".into(),
+                        )),
+                    }
+                } else {
+                    Err(QueryError::InvalidHandle(*id))
+                }
+            }
             // All other queries remain follow-up work (see STUB_MSG).
             _ => Err(QueryError::QueryFailed(STUB_MSG.into())),
         }

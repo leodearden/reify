@@ -479,6 +479,49 @@ pub(crate) fn json_xyz(v: [f64; 3]) -> String {
     format!("{{\"x\":{},\"y\":{},\"z\":{}}}", v[0], v[1], v[2])
 }
 
+/// Unit tangent of an edge: `normalize(p1 − p0)`.
+///
+/// Sign follows the stored endpoint order (canonical `(min_idx, max_idx)`);
+/// the `EdgeTangent` contract is sign-agnostic. Returns `[0,0,0]` for a
+/// degenerate (zero-length) edge so callers never divide by zero.
+pub(crate) fn edge_unit_tangent(edge: &[[f64; 3]; 2]) -> [f64; 3] {
+    let d = sub3(edge[1], edge[0]);
+    let len = norm3(d);
+    if len == 0.0 {
+        return [0.0, 0.0, 0.0];
+    }
+    [d[0] / len, d[1] / len, d[2] / len]
+}
+
+/// Axis-aligned min/max corners over a set of points, as
+/// `([min_x,min_y,min_z], [max_x,max_y,max_z])`. Used to bound a sub-shape
+/// (a face's 3 points or an edge's 2). An empty slice yields
+/// `([+∞;3], [−∞;3])` (callers always pass a non-empty sub-shape).
+pub(crate) fn points_bbox(points: &[[f64; 3]]) -> ([f64; 3], [f64; 3]) {
+    let mut min = [f64::INFINITY; 3];
+    let mut max = [f64::NEG_INFINITY; 3];
+    for p in points {
+        for axis in 0..3 {
+            min[axis] = min[axis].min(p[axis]);
+            max[axis] = max[axis].max(p[axis]);
+        }
+    }
+    (min, max)
+}
+
+/// Format an axis-aligned bounding box as the OCCT-compatible
+/// `{"xmin":_,"ymin":_,"zmin":_,"xmax":_,"ymax":_,"zmax":_}` JSON wire string.
+///
+/// Byte-identical to OCCT's `BoundingBox` arm
+/// (`crates/reify-kernel-occt/src/lib.rs`) so reify-eval's bbox decoder and
+/// KGQ-ρ's parity gate read both kernels identically.
+pub(crate) fn json_bbox(min: [f64; 3], max: [f64; 3]) -> String {
+    format!(
+        "{{\"xmin\":{},\"ymin\":{},\"zmin\":{},\"xmax\":{},\"ymax\":{},\"zmax\":{}}}",
+        min[0], min[1], min[2], max[0], max[1], max[2]
+    )
+}
+
 /// Extract `xyz` vertex triplets from a [`Manifold`]'s mesh.
 ///
 /// Mirrors the `n_props` guard in [`crate::kernel::ManifoldKernel::tessellate`]
