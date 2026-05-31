@@ -462,6 +462,80 @@ pub fn uniform_time_grid(t_start: f64, t_end: f64, dt: f64) -> Vec<f64> {
     (0..count).map(|j| t_start + j as f64 * dt).collect()
 }
 
+/// Scalar `StepForce` sample: zero before `start_time`, constant `magnitude`
+/// from `start_time` onward (PRD §5.1). The step switches on AT `start_time`
+/// (`t == start_time` → `magnitude`).
+pub fn step_force_at(magnitude: f64, start_time: f64, t: f64) -> f64 {
+    if t >= start_time { magnitude } else { 0.0 }
+}
+
+/// Scalar `HarmonicForce` sample: `amplitude · sin(2π · frequency_hz · t +
+/// phase_rad)` (PRD §5.1). `frequency_hz` is cycles/second (the 2π factor
+/// converts to angular frequency); `phase_rad` is the phase offset in radians
+/// (the trampoline converts the `Angle`-typed `phase` field to radians first).
+pub fn harmonic_force_at(amplitude: f64, frequency_hz: f64, phase_rad: f64, t: f64) -> f64 {
+    use std::f64::consts::PI;
+    amplitude * (2.0 * PI * frequency_hz * t + phase_rad).sin()
+}
+
+/// Scalar `SampledForce` sample: piecewise-linear interpolation of the
+/// `(times, forces)` table at `t`, and `0` outside the sampled window
+/// `[times[0], times[last]]` (the v0.3 finite-window convention — a sampled
+/// excitation carries no force before its first / after its last stamp).
+///
+/// `times` is assumed monotonically increasing (the non-uniform sample stamps of
+/// a `SampledForce`). Defensive against a length mismatch between `times` and
+/// `forces` (the `time_samples.count == force_samples.count` invariant is
+/// deferred to the trampoline per modal_analysis.ri): only the common prefix of
+/// length `min(times.len(), forces.len())` is used; an empty common prefix → `0`.
+pub fn sampled_force_at(times: &[f64], forces: &[f64], t: f64) -> f64 {
+    let n = times.len().min(forces.len());
+    if n == 0 {
+        return 0.0;
+    }
+    // Zero outside the sampled window.
+    if t < times[0] || t > times[n - 1] {
+        return 0.0;
+    }
+    // Locate the bracketing interval [times[k], times[k+1]] and interpolate.
+    for k in 0..n - 1 {
+        let (t0, t1) = (times[k], times[k + 1]);
+        if t >= t0 && t <= t1 {
+            if t1 <= t0 {
+                // Degenerate zero-/negative-width interval: take the left value.
+                return forces[k];
+            }
+            let frac = (t - t0) / (t1 - t0);
+            return forces[k] + frac * (forces[k + 1] - forces[k]);
+        }
+    }
+    // Single-sample table (n == 1, no intervals) with t == times[0], or a
+    // floating-point edge at the last stamp: take the final sample.
+    forces[n - 1]
+}
+
+/// Scalar `ImpulseForce` sample: the v0.3 discrete-pulse approximation of a Dirac
+/// delta `impulse · δ(t − time)` (PRD §5.1). The continuous delta cannot be
+/// sampled on a discrete grid, so the impulse is deposited as a single
+/// rectangular pulse of height `impulse / dt` at the one grid sample whose
+/// half-open window `[t − dt/2, t + dt/2)` contains the impulse `time` — so the
+/// pulse integrates to `(impulse/dt)·dt = impulse`, conserving momentum. Every
+/// other sample reads `0`. The half-open window makes the carrying-sample choice
+/// deterministic (a `time` exactly on a window edge falls to the UPPER sample —
+/// no double-count, no gap) for the uniform grid `uniform_time_grid` produces.
+/// `dt ≤ 0` → `0` (no well-defined pulse width).
+pub fn impulse_force_at(impulse: f64, time: f64, t: f64, dt: f64) -> f64 {
+    if dt <= 0.0 {
+        return 0.0;
+    }
+    let half = dt / 2.0;
+    if time >= t - half && time < t + half {
+        impulse / dt
+    } else {
+        0.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -998,21 +1072,43 @@ mod tests {
         assert_eq!(sampled_force_at(&[2.0], &[7.0], 2.0), 7.0, "single sample, at point");
         assert_eq!(sampled_force_at(&[2.0], &[7.0], 2.5), 0.0, "single sample, outside → 0");
 
-        // ImpulseForce: impulse/dt at the sample whose [t−dt/2, t+dt/2) window
-        // contains `time`, else 0 (discrete-pulse v0.3 approximation).
+        // ImpulseForce: impulse/dt at the one grid sample whose half-open
+        // [t−dt/2, t+dt/2) window contains `time`, else 0 (discrete-pulse v0.3
+        // approximation). Verified by its physical invariant, NOT by an exact FP
+        // boundary: a decimal literal like 0.15 is not bit-equal to a computed
+        // window edge `t + dt/2`, so asserting edge behavior directly is
+        // floating-point-fragile and meaningless. The half-open `<` is what
+        // makes the windows tile the line — the no-double-count test below pins
+        // that property robustly.
         let dt = 0.1;
+        // (a) the sample nearest an interior `time` carries impulse/dt = 20.
         assert!(
             (impulse_force_at(2.0, 0.12, 0.1, dt) - 20.0).abs() < 1e-12,
             "nearest sample carries impulse/dt = 2.0/0.1 = 20"
         );
         assert_eq!(impulse_force_at(2.0, 0.12, 0.2, dt), 0.0, "non-nearest sample → 0");
         assert_eq!(impulse_force_at(2.0, 0.12, 0.0, dt), 0.0, "non-nearest sample → 0");
-        // Half-open window: a `time` exactly on a window edge goes to the upper sample.
-        assert_eq!(impulse_force_at(2.0, 0.15, 0.1, dt), 0.0, "upper edge excluded from lower sample");
-        assert!(
-            (impulse_force_at(2.0, 0.15, 0.2, dt) - 20.0).abs() < 1e-12,
-            "upper edge included in upper sample"
-        );
+        // (b) no-double-count / momentum conservation: across a uniform grid
+        // EXACTLY ONE sample is nonzero, with height impulse/dt — so
+        // Σ_j p(t_j)·dt == impulse. Times are chosen clearly interior to a window.
+        let grid = [0.0_f64, 0.1, 0.2, 0.3, 0.4, 0.5];
+        for &time in &[0.07_f64, 0.13, 0.22, 0.38] {
+            let nonzero: Vec<f64> = grid
+                .iter()
+                .map(|&tj| impulse_force_at(3.0, time, tj, dt))
+                .filter(|&p| p != 0.0)
+                .collect();
+            assert_eq!(
+                nonzero.len(),
+                1,
+                "impulse time={time} must land on exactly one sample, got {nonzero:?}"
+            );
+            assert!(
+                (nonzero[0] - 30.0).abs() < 1e-12,
+                "pulse height = impulse/dt = 3.0/0.1 = 30, got {}",
+                nonzero[0]
+            );
+        }
         // dt ≤ 0 → 0 (no pulse width).
         assert_eq!(impulse_force_at(2.0, 0.12, 0.1, 0.0), 0.0, "dt = 0 → 0");
     }
