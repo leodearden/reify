@@ -216,6 +216,16 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 "std.ports.mechanical",
                 include_str!("../stdlib/ports_mechanical.ri"),
             ),
+            // `std.ports.electrical` refines Port from std.ports and adds
+            // electrical port traits (ElectricalPort, PowerPort, SignalPort)
+            // plus the SignalKind enum.
+            // Must follow std.ports in the growing prelude sequence so Port is
+            // resolved when ElectricalPort : Port is compiled.
+            // Reconstruction of lost work per PRD task β.
+            (
+                "std.ports.electrical",
+                include_str!("../stdlib/ports_electrical.ri"),
+            ),
         ];
 
         // SEQUENTIAL COMPILATION WITH GROWING PRELUDE: each module is compiled
