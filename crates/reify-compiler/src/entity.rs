@@ -353,6 +353,7 @@ pub(crate) fn compile_entity(
     alias_registry: &TypeAliasRegistry,
     pending_bound_checks: &mut Vec<PendingBoundCheck>,
     pending_auto_resolutions: &mut Vec<AutoResolutionRequest>,
+    pending_sub_override_autos: &mut Vec<PendingSubOverrideAuto>,
     diagnostics: &mut Vec<Diagnostic>,
     compiled_templates: &[TopologyTemplate],
     prelude_template_registry: &HashMap<String, &TopologyTemplate>,
@@ -1503,38 +1504,64 @@ pub(crate) fn compile_entity(
                     let Some(free) = extract_auto_free(override_expr) else {
                         continue;
                     };
-                    // Resolve the member type from the child's pre-populated member-type map.
-                    let cell_type = match scope
-                        .sub_member_types
-                        .get(&sub.name)
-                        .and_then(|m| m.get(override_name))
-                    {
-                        Some(ty) => ty.clone(),
+                    // Three-case lookup (task 3806, step 10):
+                    //
+                    // Case 1 — forward-declared child: `sub_component_types` contains
+                    //   the sub name (registered unconditionally at line ~836) but
+                    //   `sub_member_types` does NOT (populated only when the child
+                    //   template is already in `compiled_templates`).  Defer: push a
+                    //   `PendingSubOverrideAuto` so the post-pass can re-resolve once
+                    //   all templates are compiled.  Emit NO error here.
+                    //
+                    // Case 2 — child present but member absent: `sub_member_types`
+                    //   has the child's map but the member name is not in it.  This is
+                    //   a genuine "no such param" error — emit it now.
+                    //
+                    // Case 3 — child present and member found: push the scoped Auto
+                    //   `ValueCellDecl` inline (original behavior from step 4).
+                    match scope.sub_member_types.get(&sub.name) {
                         None => {
-                            diagnostics.push(
-                                Diagnostic::error(format!(
-                                    "sub `{}`: override for `{}` — no such param in `{}`",
-                                    sub.name, override_name, sub.structure_name
-                                ))
-                                .with_label(DiagnosticLabel::new(
-                                    override_expr.span,
-                                    "this member does not exist in the child structure",
-                                )),
-                            );
-                            continue;
+                            // Case 1: forward-declared child — defer.
+                            pending_sub_override_autos.push(PendingSubOverrideAuto {
+                                parent_entity_name: entity_name.to_string(),
+                                sub_name: sub.name.clone(),
+                                sub_structure_name: sub.structure_name.clone(),
+                                override_member: override_name.clone(),
+                                free,
+                                span: override_expr.span,
+                            });
                         }
-                    };
-                    let scoped_entity = format!("{}.{}", entity_name, sub.name);
-                    let scoped_id = ValueCellId::new(&scoped_entity, override_name.as_str());
-                    value_cells.push(ValueCellDecl {
-                        id: scoped_id,
-                        kind: ValueCellKind::Auto { free },
-                        visibility: Visibility::Public,
-                        cell_type,
-                        default_expr: None,
-                        solver_hints: vec![],
-                        span: sub.span,
-                    });
+                        Some(member_map) => match member_map.get(override_name) {
+                            None => {
+                                // Case 2: child compiled but member genuinely absent.
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "sub `{}`: override for `{}` — no such param in `{}`",
+                                        sub.name, override_name, sub.structure_name
+                                    ))
+                                    .with_label(DiagnosticLabel::new(
+                                        override_expr.span,
+                                        "this member does not exist in the child structure",
+                                    )),
+                                );
+                            }
+                            Some(ty) => {
+                                // Case 3: child compiled, member found — push inline.
+                                let scoped_entity = format!("{}.{}", entity_name, sub.name);
+                                let scoped_id =
+                                    ValueCellId::new(&scoped_entity, override_name.as_str());
+                                value_cells.push(ValueCellDecl {
+                                    id: scoped_id,
+                                    kind: ValueCellKind::Auto { free },
+                                    visibility: Visibility::Public,
+                                    cell_type: ty.clone(),
+                                    default_expr: None,
+                                    solver_hints: vec![],
+                                    span: sub.span,
+                                });
+                            }
+                        },
+                    }
                 }
             }
             reify_ast::MemberDecl::Minimize(min_decl) => {
@@ -3080,6 +3107,35 @@ pub(crate) struct AutoClause {
     /// The required trait bound the resolved candidate must satisfy.
     pub(crate) bound: String,
     /// Span of the `auto:` clause, used for per-param diagnostic labels.
+    pub(crate) span: SourceSpan,
+}
+
+/// A deferred sub-instance-override `auto` / `auto(free)` registration raised
+/// when the **child structure is forward-declared** (parent compiled before
+/// child).
+///
+/// During `compile_entity`, `scope.sub_member_types` is only populated when the
+/// child template is already in `compiled_templates`.  When the child is
+/// forward-declared, the member-type lookup returns `None` — but this is NOT a
+/// "no such param" error: the child may well have that param once compiled.
+/// Deferring via this struct lets the post-pass `phase_sub_override_autos`
+/// re-run the lookup against the fully-populated template registry and push the
+/// scoped `ValueCellDecl` (or emit a genuine "no such param" error if the
+/// member is truly absent).
+///
+/// Mirrors `AutoResolutionRequest` / `PendingBoundCheck` in structure and lifecycle.
+pub(crate) struct PendingSubOverrideAuto {
+    /// Name of the parent structure that declares the sub (e.g. `"A"`).
+    pub(crate) parent_entity_name: String,
+    /// Local name of the sub instance inside the parent (e.g. `"b"`).
+    pub(crate) sub_name: String,
+    /// Name of the child structure being instantiated (e.g. `"Bearing"`).
+    pub(crate) sub_structure_name: String,
+    /// Name of the overridden member / param on the child (e.g. `"bore"`).
+    pub(crate) override_member: String,
+    /// `false` = strict `auto`; `true` = `auto(free)`.
+    pub(crate) free: bool,
+    /// Span of the `auto` / `auto(free)` expression in source; used for error labels.
     pub(crate) span: SourceSpan,
 }
 
