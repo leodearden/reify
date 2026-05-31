@@ -47,7 +47,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::time::Duration;
 
 use reify_core::{Diagnostic, DiagnosticCode};
-use reify_ir::{CapabilityDescriptor, Operation, ReprKind};
+use reify_ir::{CapabilityDescriptor, KernelId, Operation, ReprKind};
 
 use crate::tolerance_budget::per_stage_tolerance;
 
@@ -188,15 +188,17 @@ pub fn long_chain_diagnostic(
     if !is_long_chain_realization(plan, elapsed, threshold) {
         return None;
     }
-    // Render each conversion stage as "{kernel}: {from:?}→{to:?}" — Debug
-    // formatting on ReprKind / Operation already prints human-readable
-    // variant names (BRep / Mesh / Sdf / Voxel). PRD: "names the chain so
-    // users can see budget pressure" — each kernel + repr transition tells
-    // the user exactly where the conversion budget is going.
+    // Render each conversion stage as "{kernel}: {from:?}→{to:?}" — the stage
+    // kernel is named via `KernelId::as_registry_name` (the canonical
+    // lowercase inventory name, e.g. "occt"), and Debug formatting on ReprKind
+    // already prints human-readable variant names (BRep / Mesh / Sdf / Voxel).
+    // PRD: "names the chain so users can see budget pressure" — each kernel +
+    // repr transition tells the user exactly where the conversion budget is
+    // going.
     let stages_rendered = plan
         .conversions
         .iter()
-        .map(|(kernel, from, to)| format!("{kernel}: {from:?}→{to:?}"))
+        .map(|(kernel, from, to)| format!("{}: {from:?}→{to:?}", kernel.as_registry_name()))
         .collect::<Vec<_>>()
         .join(" → ");
     let message = format!(
@@ -551,15 +553,16 @@ pub fn per_stage_tolerance_for_plan(plan: &DispatchPlan, requested_tol: f64) -> 
 }
 
 /// Ordered sequence of conversion stages: each entry is
-/// `(kernel_name, from_repr, to_repr)`. Factored as a type alias to keep the
-/// internal BFS frontier type below clippy's `type_complexity` threshold and
-/// to give the conversion-chain shape a single named home.
-type ConversionChain = Vec<(String, ReprKind, ReprKind)>;
+/// `(kernel, from_repr, to_repr)`, where `kernel` is the [`KernelId`] that
+/// performs that stage. Factored as a type alias to keep the internal BFS
+/// frontier type below clippy's `type_complexity` threshold and to give the
+/// conversion-chain shape a single named home.
+type ConversionChain = Vec<(KernelId, ReprKind, ReprKind)>;
 
 /// A concrete plan returned by [`dispatch`]: which kernel runs the final op,
 /// preceded by zero or more conversion stages.
 ///
-/// Each conversion entry is `(kernel_name, from, to)`: the named kernel is
+/// Each conversion entry is `(kernel, from, to)`: the named [`KernelId`] is
 /// expected to convert from `from` to `to`. The conversions are ordered so
 /// the final entry's `to` matches the input repr expected by `kernel`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -567,8 +570,8 @@ pub struct DispatchPlan {
     /// Name of the kernel that runs the final (target) operation.
     pub kernel: String,
     /// Sequence of conversion stages to perform before invoking `kernel`.
-    /// Each tuple = `(kernel_name, from_repr, to_repr)`. Empty when the
-    /// demanded repr is already in `available`.
+    /// Each tuple = `(kernel, from_repr, to_repr)`, where `kernel` is a
+    /// [`KernelId`]. Empty when the demanded repr is already in `available`.
     pub conversions: ConversionChain,
 }
 
@@ -671,7 +674,17 @@ pub fn dispatch(
                 {
                     visited.insert(decl_to);
                     let mut new_chain = chain.clone();
-                    new_chain.push((kernel_name.clone(), current_repr, decl_to));
+                    // Bridge the registry name to its typed KernelId. Sound by
+                    // construction: conversion-emitting kernels come from the
+                    // inventory-built registry whose names are canonical
+                    // KernelIds, so a missing mapping is a programming error
+                    // that should fail loudly.
+                    new_chain.push((
+                        KernelId::from_registry_name(kernel_name)
+                            .expect("registered conversion kernel must have a KernelId"),
+                        current_repr,
+                        decl_to,
+                    ));
                     frontier.push_back((decl_to, new_chain));
                 }
             }

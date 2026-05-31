@@ -76,8 +76,11 @@ fn lib_re_exports_per_stage_tolerance_for_plan_and_dispatch_end_to_end() {
     };
 
     let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
-    registry.insert("alpha".to_string(), &alpha);
-    registry.insert("beta".to_string(), &beta);
+    // Registry keys must be real kernel names so dispatch()'s
+    // `KernelId::from_registry_name` bridge resolves each conversion stage
+    // (the `alpha`/`beta` locals retain their BRep→Sdf / Sdf→Mesh roles).
+    registry.insert("fidget".to_string(), &alpha);
+    registry.insert("gmsh".to_string(), &beta);
     registry.insert("manifold".to_string(), &manifold);
 
     let mut available: HashSet<ReprKind> = HashSet::new();
