@@ -145,16 +145,13 @@ pub(crate) fn compile_function(
 
     // Create a scope with function params registered.
     //
-    // The prelude template registry (passed from `phase_functions`) is threaded
-    // through here so that a same-stdlib-prelude structure-def referenced in
-    // the body — e.g. `pub fn flexure_compliance(...) -> FlexureCompliance
-    // { FlexureCompliance() }` where `FlexureCompliance` is defined in an
-    // earlier-loaded stdlib module — lowers to
+    // The template registry (passed from `phase_functions`) is threaded
+    // through here so that a structure-def referenced in the fn body via
+    // constructor syntax — e.g. `Widget()` — lowers to
     // `CompiledExprKind::StructureInstanceCtor` rather than a generic
-    // `FunctionCall` (esc-3851-32). Same-module structure_def bodies are still
-    // not constructible because `phase_functions` runs before `phase_entities`
-    // and `ctx.templates` is empty at this point — that follow-up is filed
-    // separately.
+    // `FunctionCall`.  The registry now includes both (a) prelude structure_defs
+    // (esc-3851-32) and (b) same-module structure_defs via skeleton templates
+    // built by `build_structure_def_skeleton` in `phase_functions` (task 3895).
     let mut scope = CompilationScope::new(&fn_def.name);
     if let Some(reg) = prelude_template_registry {
         scope.set_template_registry(reg);

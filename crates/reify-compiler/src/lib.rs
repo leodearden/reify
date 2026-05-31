@@ -340,6 +340,7 @@ pub fn compile_with_prelude_context(
         &mut compile_ctx,
         prelude_refs,
         &decl_refs.fn_refs,
+        &decl_refs.structure_refs,
     );
 
     let trait_names = compile_builder::traits_phase::phase_traits(

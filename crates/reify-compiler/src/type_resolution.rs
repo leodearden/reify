@@ -59,6 +59,7 @@ impl TypeAliasEntry {
 
 /// Registry mapping type alias names to compiled alias entries.
 /// Built during the pre-pass so type resolution can check aliases.
+#[derive(Clone)]
 pub(crate) struct TypeAliasRegistry {
     entries: HashMap<String, TypeAliasEntry>,
     /// Names of entries seeded from prelude modules (not user-declared).

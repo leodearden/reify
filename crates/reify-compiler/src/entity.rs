@@ -3672,6 +3672,157 @@ pub(crate) fn expand_constraint_inst(
     }
 }
 
+/// Build a skeleton [`TopologyTemplate`] for a `structure_def` that appears in
+/// the same module as a compiled function.
+///
+/// The skeleton is transient — it is never stored in the [`CompiledModule`].
+/// Its sole purpose is to make `Foo()` ctor expressions inside same-module
+/// fn bodies lower to [`CompiledExprKind::StructureInstanceCtor`] via the
+/// `prelude_template_registry` path in [`crate::functions::compile_function`].
+///
+/// Only three things are consumed by the
+/// [`CompiledExprKind::StructureInstanceCtor`] lowering site
+/// (`expr.rs:1070-1103`):
+///
+/// * `entity_kind == EntityKind::Structure`
+/// * the `Param`-kind `value_cells` (member name + `default_expr`)
+/// * `template.version()` (from annotations)
+///
+/// All other fields are empty / zero — `content_hash` is 0, no constraints,
+/// sub-components, ports, etc.
+///
+/// Default expressions are compiled in a **neutral scope** (no sibling params
+/// registered) with the unit registry set so quantity literals like `0Pa`
+/// resolve.  [`fixup_option_none_for_param`] is applied so `Option<T> = none`
+/// defaults match the authoritative template shape.  Diagnostics from skeleton
+/// compilation are discarded into a throwaway buffer —
+/// `entities_phase::phase_entities` later re-compiles the same `structure_def`s
+/// and emits the authoritative diagnostics, avoiding double-emission and
+/// spurious neutral-scope errors.
+///
+/// **Limitation** (accepted per task 3895 design decision #3): a param default
+/// that references a sibling param or a same-module function will not resolve
+/// in the neutral scope and will bake a poison literal into the skeleton —
+/// acceptable because the known stdlib consumers (`std/flexures`) and the
+/// acceptance test (`same_module_structure_ctor_compile.rs`) use only literal
+/// defaults.
+pub(crate) fn build_structure_def_skeleton(
+    structure: &reify_ast::StructureDef,
+    enum_defs: &[reify_ir::EnumDef],
+    functions: &[CompiledFunction],
+    alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
+    unit_registry: &UnitRegistry,
+) -> TopologyTemplate {
+    // Throwaway diagnostics — phase_entities re-compiles authoritatively.
+    let mut throwaway_diags: Vec<Diagnostic> = Vec::new();
+
+    // Clone the alias registry so skeleton type resolution does NOT consume
+    // span-dedup slots in the original registry.  TypeAliasRegistry maintains
+    // an interior-mutable `emitted_skipped_parametric_prelude_spans` dedup set
+    // (RefCell<HashSet<SourceSpan>>); resolving a parametric-alias type expression
+    // here records the span as "emitted" even though the diagnostic goes to
+    // `throwaway_diags`.  If we shared the original registry, phase_entities'
+    // authoritative re-compile of the same type expression would find the span
+    // already recorded and silently skip its Info diagnostic (task 3895 bugfix).
+    let local_alias_registry = alias_registry.clone();
+
+    // Neutral scope: unit registry set so quantity literals resolve;
+    // no sibling params registered (neutral-scope semantics).
+    let mut scope = CompilationScope::new(&structure.name);
+    scope.set_unit_registry(unit_registry);
+
+    // Type params from the structure declaration (needed by resolve_type_expr_with_aliases).
+    let type_param_names: HashSet<String> = structure
+        .type_params
+        .iter()
+        .map(|tp| tp.name.clone())
+        .collect();
+
+    let visibility = if structure.is_pub {
+        Visibility::Public
+    } else {
+        Visibility::Private
+    };
+
+    // Lower annotations so template.version() reflects @version(N) correctly.
+    let annotations = lower_annotations(&structure.annotations, &mut throwaway_diags);
+
+    // Build value_cells for Param members only; Lets and other member kinds
+    // are irrelevant to the StructureInstanceCtor lowering path.
+    let mut value_cells: Vec<ValueCellDecl> = Vec::new();
+    for member in &structure.members {
+        if let reify_ast::MemberDecl::Param(param) = member {
+            // Resolve cell_type; fall back to Real on None / unresolvable.
+            // cell_type is needed only by fixup_option_none_for_param to
+            // detect Type::Option; the ctor lowering itself does not use it.
+            let cell_type = param
+                .type_expr
+                .as_ref()
+                .and_then(|te| {
+                    resolve_type_expr_with_aliases(
+                        te,
+                        &type_param_names,
+                        &local_alias_registry,
+                        &mut throwaway_diags,
+                        structure_names,
+                        trait_names,
+                    )
+                })
+                .unwrap_or(Type::Real);
+
+            let default_expr = param.default.as_ref().map(|expr| {
+                let mut compiled =
+                    compile_expr(expr, &scope, enum_defs, functions, &mut throwaway_diags);
+                fixup_option_none_for_param(&mut compiled, &cell_type);
+                compiled
+            });
+
+            let id = ValueCellId::new(&structure.name, &param.name);
+            value_cells.push(ValueCellDecl {
+                id,
+                kind: ValueCellKind::Param,
+                visibility: Visibility::Public,
+                is_aux: false,
+                cell_type,
+                default_expr,
+                solver_hints: vec![],
+                span: param.span,
+            });
+        }
+    }
+
+    TopologyTemplate {
+        name: structure.name.to_string(),
+        doc: structure.doc.clone(),
+        entity_kind: EntityKind::Structure,
+        visibility,
+        // Skeleton does not carry type_params or trait_bounds —
+        // the ctor lowering path does not read them.
+        type_params: vec![],
+        trait_bounds: vec![],
+        value_cells,
+        constraints: vec![],
+        realizations: vec![],
+        sub_components: vec![],
+        ports: vec![],
+        connections: vec![],
+        guarded_groups: vec![],
+        structure_controlling: HashSet::new(),
+        objective: None,
+        meta: HashMap::new(),
+        // Skeleton is transient; content_hash=0 signals "not a real template".
+        content_hash: ContentHash(0),
+        is_recursive: false,
+        annotations,
+        pragmas: structure.pragmas.to_vec(),
+        match_arm_groups: vec![],
+        forall_templates: vec![],
+        assoc_fns: vec![],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

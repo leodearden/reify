@@ -5,7 +5,7 @@
 //! otherwise performing no compilation work — that happens in the later
 //! phase modules.
 
-use reify_ast::{Declaration, FieldDef, FnDef, ParsedModule, TraitDecl, TypeAliasDecl, UnitDecl};
+use reify_ast::{Declaration, FieldDef, FnDef, ParsedModule, StructureDef, TraitDecl, TypeAliasDecl, UnitDecl};
 use reify_core::{Diagnostic, DiagnosticLabel, ModulePath};
 
 use crate::CompiledModule;
@@ -95,6 +95,12 @@ pub(crate) struct DeclRefs<'a> {
     pub(crate) field_refs: Vec<&'a FieldDef>,
     pub(crate) unit_refs: Vec<&'a UnitDecl>,
     pub(crate) alias_refs: Vec<&'a TypeAliasDecl>,
+    /// Same-module `structure_def` declarations, in source order, first-def only.
+    ///
+    /// Used by `phase_functions` to build skeleton [`TopologyTemplate`]s so that
+    /// fn bodies can lower `Foo()` to `StructureInstanceCtor` before
+    /// `phase_entities` runs (task 3895).
+    pub(crate) structure_refs: Vec<&'a StructureDef>,
 }
 
 /// Single-pass scan over `parsed.declarations` that:
@@ -119,6 +125,7 @@ pub(crate) fn collect_decl_refs<'a>(
         field_refs: Vec::new(),
         unit_refs: Vec::new(),
         alias_refs: Vec::new(),
+        structure_refs: Vec::new(),
     };
 
     for decl in &parsed.declarations {
@@ -144,7 +151,9 @@ pub(crate) fn collect_decl_refs<'a>(
                 }
             }
             Declaration::Structure(structure) => {
-                ctx.record_or_report_duplicate(&structure.name, structure.span, "structure");
+                if ctx.record_or_report_duplicate(&structure.name, structure.span, "structure") {
+                    refs.structure_refs.push(structure);
+                }
             }
             Declaration::Occurrence(occurrence) => {
                 ctx.record_or_report_duplicate(&occurrence.name, occurrence.span, "occurrence");
