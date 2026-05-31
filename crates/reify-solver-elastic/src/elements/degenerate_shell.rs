@@ -875,4 +875,153 @@ mod tests {
             }
         }
     }
+
+    // ── step-9: carry MITC3+ assumed transverse-shear onto the varying J ─────
+
+    /// Contract a 2×18 transverse-shear B-matrix with an 18-DOF vector → the
+    /// 2-component `(γ_ξζ, γ_ηζ)` (covariant) or `(γ_1ζ', γ_2ζ')` (physical)
+    /// shear, depending on which B is passed.
+    fn shear_b_times_u(b: &[[f64; 18]; 2], u: &[f64; 18]) -> [f64; 2] {
+        let mut e = [0.0_f64; 2];
+        for (r, row) in b.iter().enumerate() {
+            for (c, &bc) in row.iter().enumerate() {
+                e[r] += bc * u[c];
+            }
+        }
+        e
+    }
+
+    /// Independently reconstruct the carried MITC3+ assumed **covariant** shear B
+    /// at `coord`, exactly as task 3392 does inline in
+    /// `shell_element_stiffness_mitc3_plus`: sample the bare-DISP3 covariant shear
+    /// ([`Mitc3Plus::covariant_shear_b_nodal`]) at the six interior tying points
+    /// and re-interpolate column-by-column via
+    /// [`Mitc3Plus::interpolate_assumed_shear_mitc3_plus`] (Eq. 9). Used to prove
+    /// the degenerate module carries the 3392 field VERBATIM (no new shear field).
+    fn mitc3_plus_covariant_shear_b_reference(coord: ShellReferenceCoord) -> [[f64; 18]; 2] {
+        use crate::elements::mitc3_plus::ShearStrain;
+        let interior = Mitc3Plus.interior_tying_points();
+        let mut b_tp = [[[0.0_f64; 18]; 2]; Mitc3Plus::N_INTERIOR_TYING_POINTS];
+        for (k, tp) in interior.iter().enumerate() {
+            b_tp[k] = Mitc3Plus.covariant_shear_b_nodal(tp.coord);
+        }
+        let mut b = [[0.0_f64; 18]; 2];
+        for dof in 0..18 {
+            let samples: [ShearStrain; Mitc3Plus::N_INTERIOR_TYING_POINTS] = [
+                ShearStrain { gamma_xi_zeta: b_tp[0][0][dof], gamma_eta_zeta: b_tp[0][1][dof] },
+                ShearStrain { gamma_xi_zeta: b_tp[1][0][dof], gamma_eta_zeta: b_tp[1][1][dof] },
+                ShearStrain { gamma_xi_zeta: b_tp[2][0][dof], gamma_eta_zeta: b_tp[2][1][dof] },
+                ShearStrain { gamma_xi_zeta: b_tp[3][0][dof], gamma_eta_zeta: b_tp[3][1][dof] },
+                ShearStrain { gamma_xi_zeta: b_tp[4][0][dof], gamma_eta_zeta: b_tp[4][1][dof] },
+                ShearStrain { gamma_xi_zeta: b_tp[5][0][dof], gamma_eta_zeta: b_tp[5][1][dof] },
+            ];
+            let proj = Mitc3Plus.interpolate_assumed_shear_mitc3_plus(&samples, coord);
+            b[0][dof] = proj.gamma_xi_zeta;
+            b[1][dof] = proj.gamma_eta_zeta;
+        }
+        b
+    }
+
+    /// (i) Patch-safety prerequisite: the carried assumed **covariant** shear
+    /// field reproduces a CONSTANT covariant transverse-shear state exactly at
+    /// every probe. Mirrors
+    /// `covariant_shear_b_nodal_plus_eq9_reproduces_constant_shear_state`: a
+    /// uniform `θ_y = α` (with `w = 0`, `θ_x = 0`) is the constant covariant
+    /// state `(γ_ξζ = α, γ_ηζ = 0)`, so Eq. 9 must return `(α, 0)` at any `(ξ,η)`.
+    #[test]
+    fn degenerate_assumed_covariant_shear_reproduces_constant_state() {
+        let alpha = 0.7_f64;
+        let mut u = [0.0_f64; 18];
+        for i in 0..3 {
+            u[6 * i + 4] = alpha; // θ_y at every node
+        }
+        for p in [
+            ShellReferenceCoord::new(1.0 / 3.0, 1.0 / 3.0),
+            ShellReferenceCoord::new(0.2, 0.3),
+            ShellReferenceCoord::new(0.5, 0.25),
+        ] {
+            let b = degenerate_assumed_covariant_shear_b(p);
+            let e = shear_b_times_u(&b, &u);
+            assert!((e[0] - alpha).abs() < TOL, "γ_ξζ at {p:?} = {} expected {alpha}", e[0]);
+            assert!(e[1].abs() < TOL, "γ_ηζ at {p:?} = {} expected 0", e[1]);
+        }
+    }
+
+    /// No NEW shear field is introduced: the degenerate module's assumed
+    /// covariant shear B is the 3392 MITC3+ field VERBATIM — equal entrywise (to
+    /// FP round-off) to an independent `covariant_shear_b_nodal` +
+    /// `interpolate_assumed_shear_mitc3_plus` reconstruction at every probe. Only
+    /// the covariant→physical map (below) is re-expressed for the varying J; the
+    /// natural-coordinate field is unchanged.
+    #[test]
+    fn degenerate_assumed_covariant_shear_is_carried_verbatim_from_mitc3_plus() {
+        for p in [
+            ShellReferenceCoord::new(1.0 / 3.0, 1.0 / 3.0),
+            ShellReferenceCoord::new(0.2, 0.3),
+            ShellReferenceCoord::new(0.45, 0.1),
+        ] {
+            let got = degenerate_assumed_covariant_shear_b(p);
+            let want = mitc3_plus_covariant_shear_b_reference(p);
+            for r in 0..2 {
+                for c in 0..18 {
+                    assert!(
+                        (got[r][c] - want[r][c]).abs() < 1e-15,
+                        "covariant shear B[{r}][{c}] = {} not carried verbatim (want {})",
+                        got[r][c],
+                        want[r][c],
+                    );
+                }
+            }
+        }
+    }
+
+    /// (ii) FLAT-facet reduction: the varying-J covariant→physical shear map
+    /// equals 3392's constant `J2⁻ᵀ` map. On a flat triangle in the xy-plane with
+    /// first edge along +x (so `build_shell_frame`'s lamina frame is the global
+    /// xyz frame), directors +z and uniform thickness, the physical
+    /// transverse-shear B from `degenerate_transverse_shear_b` must equal the
+    /// carried covariant field mapped by `shell_kinematics(...).jac2_inv_t` — at
+    /// every ζ (a flat facet has a ζ-invariant J), to 1e-12. This confirms the
+    /// carry-over reduces to the reviewed 3392 shear map when the element is flat.
+    #[test]
+    fn degenerate_transverse_shear_b_flat_reduces_to_mitc3_plus_j2_inv_t() {
+        let nodes = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 1.5, 0.0]];
+        let directors = [[0.0, 0.0, 1.0]; 3];
+        let thicknesses = [0.25; 3];
+
+        // 3392 covariant→physical map: J2⁻ᵀ from the shared shell kinematics.
+        let frame = build_shell_frame(&nodes);
+        let kin = crate::shell_kinematics::shell_kinematics(&nodes, &frame);
+        let inv_t = kin.jac2_inv_t;
+
+        let (pxi, peta) = (0.25_f64, 0.35_f64);
+        let b_cov = degenerate_assumed_covariant_shear_b(ShellReferenceCoord::new(pxi, peta));
+        // Reference physical B = J2⁻ᵀ · b_cov (3392's constant-J flat map).
+        let mut b_ref = [[0.0_f64; 18]; 2];
+        for dof in 0..18 {
+            b_ref[0][dof] = inv_t[0][0] * b_cov[0][dof] + inv_t[0][1] * b_cov[1][dof];
+            b_ref[1][dof] = inv_t[1][0] * b_cov[0][dof] + inv_t[1][1] * b_cov[1][dof];
+        }
+
+        // Varying-J degenerate map at several ζ (flat ⇒ ζ-invariant ⇒ equal to
+        // the constant-J 3392 map at all ζ).
+        for &zeta in &[-0.6, 0.0, 0.6] {
+            let b_deg = degenerate_transverse_shear_b(
+                &nodes,
+                &directors,
+                &thicknesses,
+                ShellRefCoord3::new(pxi, peta, zeta),
+            );
+            for r in 0..2 {
+                for c in 0..18 {
+                    assert!(
+                        (b_deg[r][c] - b_ref[r][c]).abs() < 1e-12,
+                        "flat shear B[{r}][{c}] @ ζ={zeta} = {} ≠ 3392 J2⁻ᵀ map {}",
+                        b_deg[r][c],
+                        b_ref[r][c],
+                    );
+                }
+            }
+        }
+    }
 }
