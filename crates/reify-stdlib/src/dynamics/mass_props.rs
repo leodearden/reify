@@ -92,4 +92,44 @@ mod tests {
         assert_eq!(rho, 1000.0, "must fall back to the 1000 kg/m³ water default");
         assert_eq!(src, DensitySource::DefaultWater);
     }
+
+    // ── uniform_box_inertia analytic ground truth ────────────────────────────
+
+    #[test]
+    fn uniform_box_inertia_matches_hand_computed_values() {
+        // Distinct extents so all three inertia diagonal entries differ.
+        // a=0.1, b=0.2, c=0.3 m; ρ=1000 kg/m³.
+        //
+        // Hand-computed expected values (independent of the impl, so this pins
+        // real numbers rather than impl==impl):
+        //   mass = ρ·a·b·c = 1000·0.1·0.2·0.3 = 6.0 kg
+        //   com  = [a/2, b/2, c/2] = [0.05, 0.10, 0.15] (corner-origin box)
+        //   Ixx  = m/12·(b²+c²) = 6/12·(0.04+0.09) = 0.5·0.13 = 0.065
+        //   Iyy  = m/12·(a²+c²) = 6/12·(0.01+0.09) = 0.5·0.10 = 0.05
+        //   Izz  = m/12·(a²+b²) = 6/12·(0.01+0.04) = 0.5·0.05 = 0.025
+        //   all products of inertia = 0
+        let (mass, com, inertia) = uniform_box_inertia([0.1, 0.2, 0.3], 1000.0);
+
+        assert!((mass - 6.0).abs() < 1e-12, "mass should be 6.0 kg, got {mass}");
+
+        let expected_com = [0.05, 0.10, 0.15];
+        for (i, (got, want)) in com.iter().zip(expected_com.iter()).enumerate() {
+            assert!(
+                (got - want).abs() < 1e-12,
+                "com[{i}] should be {want}, got {got}"
+            );
+        }
+
+        let expected_diag = [0.065, 0.05, 0.025];
+        for r in 0..3 {
+            for c in 0..3 {
+                let want = if r == c { expected_diag[r] } else { 0.0 };
+                assert!(
+                    (inertia[r][c] - want).abs() < 1e-12,
+                    "inertia[{r}][{c}] should be {want}, got {}",
+                    inertia[r][c]
+                );
+            }
+        }
+    }
 }
