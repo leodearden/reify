@@ -1202,28 +1202,69 @@ fn resolve_location_node(location: &str, mode0_shape: &[[f64; 3]]) -> usize {
     dominant_antinode_index(mode0_shape)
 }
 
-/// Scalar forcing `p_src(t)` for one source, dispatched by `type_name` to the
-/// θ-solver closed-form samplers (`reify-stdlib::modal::transient`). `dt` is the
-/// uniform grid step (only the `ImpulseForce` discrete-pulse approximation needs
-/// it). An unrecognised / non-struct source reads as `0`.
-fn sample_forcing_source(source: &Value, t: f64, dt: f64) -> f64 {
-    let type_name = match source {
-        Value::StructureInstance(data) => data.type_name.as_str(),
-        _ => return 0.0,
-    };
-    let scalar = |name: &str| field_ref(source, name).map(read_scalar_si).unwrap_or(0.0);
-    match type_name {
-        "StepForce" => step_force_at(scalar("magnitude"), scalar("start_time"), t),
-        "HarmonicForce" => {
-            harmonic_force_at(scalar("amplitude"), scalar("frequency"), scalar("phase"), t)
+/// A forcing source with its invariant (time-independent) fields pre-extracted
+/// once. Resolving each source into this form *before* the grid loop hoists the
+/// per-source `field_ref` reads — and, for `Sampled`, the `Vec<f64>` table clone
+/// — out of the per-timestep sampler, so [`ResolvedForcing::sample`] does only
+/// arithmetic. This removes the O(T) redundant field lookups/allocations per
+/// source that arose when the closed-form params were re-parsed on every one of
+/// the T timesteps.
+enum ResolvedForcing {
+    Step { magnitude: f64, start_time: f64 },
+    Harmonic { amplitude: f64, frequency: f64, phase: f64 },
+    Impulse { impulse: f64, time: f64 },
+    Sampled { times: Vec<f64>, forces: Vec<f64> },
+    /// Unrecognised / non-struct source — contributes no force at any `t`.
+    Zero,
+}
+
+impl ResolvedForcing {
+    /// Pre-extract a forcing source's invariant fields once, dispatched by
+    /// `type_name` to the θ-solver closed-form sampler family
+    /// (`reify-stdlib::modal::transient`). An unrecognised / non-struct source
+    /// resolves to [`ResolvedForcing::Zero`].
+    fn from_value(source: &Value) -> Self {
+        let type_name = match source {
+            Value::StructureInstance(data) => data.type_name.as_str(),
+            _ => return ResolvedForcing::Zero,
+        };
+        let scalar = |name: &str| field_ref(source, name).map(read_scalar_si).unwrap_or(0.0);
+        match type_name {
+            "StepForce" => ResolvedForcing::Step {
+                magnitude: scalar("magnitude"),
+                start_time: scalar("start_time"),
+            },
+            "HarmonicForce" => ResolvedForcing::Harmonic {
+                amplitude: scalar("amplitude"),
+                frequency: scalar("frequency"),
+                phase: scalar("phase"),
+            },
+            "ImpulseForce" => {
+                ResolvedForcing::Impulse { impulse: scalar("impulse"), time: scalar("time") }
+            }
+            "SampledForce" => ResolvedForcing::Sampled {
+                times: field_ref(source, "time_samples").map(read_real_list).unwrap_or_default(),
+                forces: field_ref(source, "force_samples").map(read_real_list).unwrap_or_default(),
+            },
+            _ => ResolvedForcing::Zero,
         }
-        "ImpulseForce" => impulse_force_at(scalar("impulse"), scalar("time"), t, dt),
-        "SampledForce" => {
-            let times = field_ref(source, "time_samples").map(read_real_list).unwrap_or_default();
-            let forces = field_ref(source, "force_samples").map(read_real_list).unwrap_or_default();
-            sampled_force_at(&times, &forces, t)
+    }
+
+    /// Scalar forcing `p_src(t)` from the pre-extracted fields — pure arithmetic
+    /// over the closed-form samplers, no field lookups. `dt` is the uniform grid
+    /// step (only the `Impulse` discrete-pulse approximation needs it).
+    fn sample(&self, t: f64, dt: f64) -> f64 {
+        match self {
+            ResolvedForcing::Step { magnitude, start_time } => {
+                step_force_at(*magnitude, *start_time, t)
+            }
+            ResolvedForcing::Harmonic { amplitude, frequency, phase } => {
+                harmonic_force_at(*amplitude, *frequency, *phase, t)
+            }
+            ResolvedForcing::Impulse { impulse, time } => impulse_force_at(*impulse, *time, t, dt),
+            ResolvedForcing::Sampled { times, forces } => sampled_force_at(times, forces, t),
+            ResolvedForcing::Zero => 0.0,
         }
-        _ => 0.0,
     }
 }
 
@@ -1234,7 +1275,8 @@ fn sample_forcing_source(source: &Value, t: f64, dt: f64) -> f64 {
 ///   1. read `t_start/t_end/dt`, build the uniform grid (`uniform_time_grid`);
 ///   2. read each mode's `(ω = 2π·frequency, ζ = damping_ratio, Φ shape)`;
 ///   3. per forcing source: resolve its node (`resolve_location_node`), read its
-///      direction, and sample its scalar `p_src(tⱼ)` (`sample_forcing_source`);
+///      direction, and sample its scalar `p_src(tⱼ)` (`ResolvedForcing::sample`,
+///      its invariant fields pre-resolved once per source);
 ///   4. project onto each mode: `f_i[j] = Σ_src (Φ_i[node]·dir)·p_src(tⱼ)`;
 ///   5. integrate each decoupled SDOF mode (`solve_modal_response`) → ξ_i(tⱼ);
 ///   6. shape the `DisplacementTimeHistory`, echoing the input `ModalResult` so
@@ -1298,7 +1340,10 @@ pub fn solve_transient_response_trampoline(
             };
             let node = resolve_location_node(at, mode0_shape);
             let dir = field_ref(src, "direction").map(read_vec3).unwrap_or([0.0; 3]);
-            let samples = grid.iter().map(|&t| sample_forcing_source(src, t, dt)).collect();
+            // Resolve the source's invariant fields ONCE, then sample pure
+            // arithmetic per timestep — no per-`t` field re-reads / table clones.
+            let resolved = ResolvedForcing::from_value(src);
+            let samples = grid.iter().map(|&t| resolved.sample(t, dt)).collect();
             SourceProjection { node, dir, samples }
         })
         .collect();
