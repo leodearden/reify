@@ -27,10 +27,14 @@
 /// baseline. A robust shaper keeps the *worst* residual across its insensitivity
 /// band small even as the true plant frequency drifts from the design point.
 ///
-/// STUB (prereq-2): always returns `1.0` (the unshaped baseline — a stub shaper
-/// is treated as providing no suppression). The real band sweep over
-/// `reify_stdlib::build_train_for_shaper` + `ImpulseTrain::residual_vibration`
-/// is implemented in step-8 and exercised by the step-7 unit tests.
+/// A non-`StructureInstance` / unrecognised shaper — one that
+/// [`reify_stdlib::build_train_for_shaper`] cannot resolve to an
+/// [`ImpulseTrain`](reify_stdlib::impulse_shaper::ImpulseTrain) — returns
+/// [`f64::INFINITY`]: a shaper that does not build a valid train must never read
+/// as "robust" (a small residual). The damping ratio ζ used in the residual
+/// evaluation is read from the shaper's `damping_ratio` field (default 0); the
+/// Hz→rad/s conversion (`ω = 2π·f`) matches `build_train_for_shaper`'s
+/// marshalling boundary, so the sweep evaluates the very train the shaper builds.
 ///
 /// `#[allow(dead_code)]`: this is an engine-side seam exposed ahead of its
 /// consumers (`simulate_trajectory` θ/ι, TOTS κ) and is meanwhile exercised only
@@ -44,8 +48,45 @@ pub fn worst_case_residual_fraction(
     f_hi_hz: f64,
     n_samples: usize,
 ) -> f64 {
-    let _ = (shaper, f_lo_hz, f_hi_hz, n_samples);
-    1.0
+    // A shaper that does not resolve to an impulse train must never read as
+    // robust — return +∞ so any "residual ≤ tolerance?" check fails for it.
+    let Some(train) = reify_stdlib::build_train_for_shaper(shaper) else {
+        return f64::INFINITY;
+    };
+
+    // ζ for the residual evaluation: read the shaper's `damping_ratio` field
+    // (default 0 when absent / non-numeric / not a StructureInstance), mirroring
+    // the numeric-field reading idiom in reify-stdlib's `input_shape` marshalling.
+    let zeta = match shaper {
+        reify_ir::Value::StructureInstance(data) => {
+            match data.fields.get(&"damping_ratio".to_string()) {
+                Some(reify_ir::Value::Scalar { si_value, .. }) => *si_value,
+                Some(reify_ir::Value::Real(r)) => *r,
+                Some(reify_ir::Value::Int(n)) => *n as f64,
+                _ => 0.0,
+            }
+        }
+        _ => 0.0,
+    };
+
+    // Sweep [f_lo_hz, f_hi_hz] uniformly at n_samples points, convert each Hz to
+    // rad/s (ω = 2π·f), evaluate the Singer–Seering residual, and keep the worst
+    // (largest) fraction — the quantity a robust shaper must hold small across
+    // its insensitivity band. (n_samples ≤ 1 samples only the low edge.)
+    let mut worst = 0.0_f64;
+    for i in 0..n_samples {
+        let frac = if n_samples > 1 {
+            i as f64 / (n_samples - 1) as f64
+        } else {
+            0.0
+        };
+        let f_hz = f_lo_hz + (f_hi_hz - f_lo_hz) * frac;
+        let v = train.residual_vibration(2.0 * std::f64::consts::PI * f_hz, zeta);
+        if v > worst {
+            worst = v;
+        }
+    }
+    worst
 }
 
 #[cfg(test)]
