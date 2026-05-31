@@ -5709,4 +5709,53 @@ mod tests {
             "Multi-load case analysis requires at least one LoadCase. Use solve_elastic_static for single-case analysis."
         );
     }
+
+    /// Build a minimal `LoadCase` `Value::StructureInstance` with the given
+    /// `name` and empty `loads`/`supports` lists (task 3029 multi-load tests).
+    fn load_case(name: &str) -> Value {
+        let mut fields: PersistentMap<String, Value> = PersistentMap::new();
+        fields.insert("name".to_string(), Value::String(name.to_string()));
+        fields.insert("loads".to_string(), Value::List(vec![]));
+        fields.insert("supports".to_string(), Value::List(vec![]));
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "LoadCase".to_string(),
+            version: 0,
+            fields,
+        }))
+    }
+
+    // ── task 3029 step-3: solve_load_cases duplicate-names diagnostic (RED) ──
+    //
+    // Two LoadCases sharing the same `name` must emit a
+    // MultiLoadDuplicateCaseName error diagnostic (naming the offending case)
+    // and return Value::Undef. Before task #10 duplicates were silently
+    // last-wins in the output BTreeMap with no diagnostic emitted.
+    #[test]
+    fn solve_load_cases_duplicate_names_emits_diagnostic() {
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+
+        let args = [
+            Value::Undef,
+            Value::Undef,
+            Value::Undef,
+            Value::Undef,
+            Value::List(vec![load_case("operating"), load_case("operating")]),
+        ];
+
+        let result = eval_solve_load_cases(&args, &ctx);
+
+        assert_eq!(result, Value::Undef, "duplicate names must return Undef");
+
+        let diags = sink.borrow();
+        assert!(
+            diags.iter().any(|d| d.code
+                == Some(reify_core::DiagnosticCode::MultiLoadDuplicateCaseName)
+                && d.message
+                    == "Duplicate load case name: 'operating'. Each LoadCase in a single solve_load_cases call must have a unique name."),
+            "expected a MultiLoadDuplicateCaseName diagnostic naming 'operating', got {diags:?}"
+        );
+    }
 }
