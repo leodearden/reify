@@ -526,13 +526,43 @@ module.exports = grammar({
     ),
 
     // ── Guarded block ─────────────────────────────────────
+    //
+    // Guarded blocks use `_guard_member` (not `_member`) so that
+    // `associated_type` bindings (`type X = Concrete`) are NOT admitted
+    // inside `where cond { ... }` blocks — they are only valid at structure/
+    // occurrence body level.  This mirrors the intent of the test
+    // `associated_type_in_block_guard_rejected_by_parser`.
     guarded_block: $ => seq(
       'where',
       field('condition', $._expression),
       '{',
-      repeat($._member),
+      repeat($._guard_member),
       '}',
-      optional(seq('else', '{', repeat($._member), '}')),
+      optional(seq('else', '{', repeat($._guard_member), '}')),
+    ),
+
+    // ── Guard-body member ─────────────────────────────────
+    // Same as `_member` but WITHOUT `$.associated_type`.
+    // `associated_type` is only valid in structure/occurrence bodies; guarded
+    // blocks are nested inside those bodies and must not admit type bindings.
+    _guard_member: $ => choice(
+      $.param_declaration,
+      $.let_declaration,
+      $.constraint_instantiation,
+      $.constraint_declaration,
+      $.sub_declaration,
+      $.minimize_declaration,
+      $.maximize_declaration,
+      $.guarded_block,
+      $.port_declaration,
+      $.connect_statement,
+      $.chain_statement,
+      $.forall_statement,
+      $.meta_block,
+      $.annotation,
+      $.pragma,
+      $.match_arm_decl_block,
+      // NOTE: $.associated_type is intentionally absent here.
     ),
 
     // ── Param ───────────────────────────────────────────────
