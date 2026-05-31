@@ -1837,6 +1837,7 @@ pub(crate) fn try_eval_topology_selector(
         "curvature" => TopologySelectorHelper::Curvature,
         "length" => TopologySelectorHelper::Length,
         "perimeter" => TopologySelectorHelper::Perimeter,
+        "distance" => TopologySelectorHelper::Distance,
         _ => return None,
     };
 
@@ -1906,7 +1907,8 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::Normal
                 | TopologySelectorHelper::Curvature
                 | TopologySelectorHelper::Length
-                | TopologySelectorHelper::Perimeter => {
+                | TopologySelectorHelper::Perimeter
+                | TopologySelectorHelper::Distance => {
                     unreachable!("ClosestPoint/IsOn outer match guarantees this")
                 }
             }
@@ -2046,6 +2048,74 @@ pub(crate) fn try_eval_topology_selector(
                 resolve_parent_geometry_handle_arg(&args[0], values)?;
             dispatch_perimeter(kernel, face_kh, &function.name, diagnostics)
         }
+        TopologySelectorHelper::Distance => {
+            // `distance(a, b) -> Scalar<Length>` (task 3610, KGQ-α, PRD §9).
+            //
+            // Resolve each arg as Shape (named_steps) else Point (values).
+            // Non-ValueRef args → None on that resolution, fall-through to None.
+            //
+            // 2×2 dispatch matrix:
+            //   (Shape, Point) / (Point, Shape) → ClosestPointOnShape + Euclidean
+            //   (Shape, Shape) / (Point, Point) → placeholder (step-5/6 RED/GREEN)
+            //
+            // Step-2: implement Shape×Point and Point×Shape with naive `.ok()?`
+            // error handling. The Err-downgrade contract is driven RED by step-3
+            // and hardened by step-4 (replacing `.ok()?` with
+            // `dispatch_point3_length_reply`).
+            let arg0_shape = resolve_geometry_handle_arg(&args[0], named_steps);
+            let arg0_point = if arg0_shape.is_none() {
+                resolve_point3_length_arg(&args[0], values)
+            } else {
+                None
+            };
+            let arg1_shape = resolve_geometry_handle_arg(&args[1], named_steps);
+            let arg1_point = if arg1_shape.is_none() {
+                resolve_point3_length_arg(&args[1], values)
+            } else {
+                None
+            };
+
+            match (arg0_shape, arg0_point, arg1_shape, arg1_point) {
+                (Some(handle), None, None, Some(point)) => {
+                    // Shape × Point: query ClosestPointOnShape on the shape for the point.
+                    let query = reify_ir::GeometryQuery::ClosestPointOnShape {
+                        handle,
+                        px: point[0],
+                        py: point[1],
+                        pz: point[2],
+                    };
+                    // Naive `.ok()?` — hardened to dispatch_point3_length_reply in step-4.
+                    let reply = kernel.query(&query).ok()?;
+                    let [cx, cy, cz] =
+                        crate::topology_selectors::parse_xyz_value(&reply, &function.name).ok()?;
+                    let dx = point[0] - cx;
+                    let dy = point[1] - cy;
+                    let dz = point[2] - cz;
+                    let d = (dx * dx + dy * dy + dz * dz).sqrt();
+                    Some(reify_ir::Value::length(d))
+                }
+                (None, Some(point), Some(handle), None) => {
+                    // Point × Shape: symmetric — issue ClosestPointOnShape on the shape.
+                    let query = reify_ir::GeometryQuery::ClosestPointOnShape {
+                        handle,
+                        px: point[0],
+                        py: point[1],
+                        pz: point[2],
+                    };
+                    let reply = kernel.query(&query).ok()?;
+                    let [cx, cy, cz] =
+                        crate::topology_selectors::parse_xyz_value(&reply, &function.name).ok()?;
+                    let dx = point[0] - cx;
+                    let dy = point[1] - cy;
+                    let dz = point[2] - cz;
+                    let d = (dx * dx + dy * dy + dz * dz).sqrt();
+                    Some(reify_ir::Value::length(d))
+                }
+                // (Shape, Shape) and (Point, Point) — placeholder for step-5 RED test.
+                // Non-ValueRef / unresolvable args — fall through to None.
+                _ => None,
+            }
+        }
         TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => {
             // args[0]: geometry ValueRef → values map → full parent GeometryHandle.
             // The parent's realization_ref + upstream_values_hash are needed to
@@ -2081,7 +2151,8 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::Normal
                 | TopologySelectorHelper::Curvature
                 | TopologySelectorHelper::Length
-                | TopologySelectorHelper::Perimeter => {
+                | TopologySelectorHelper::Perimeter
+                | TopologySelectorHelper::Distance => {
                     unreachable!("Edges/Faces outer match guarantees this")
                 }
             };
@@ -2652,6 +2723,21 @@ enum TopologySelectorHelper {
     /// Composes `extract_edges(face)` + per-edge `EdgeLength`. No new FFI.
     /// Arg: Surface=args[0] (values sub-handle).
     Perimeter,
+    /// `distance(a, b) -> Scalar<Length>` — Euclidean distance between two
+    /// geometry objects (task 3610, KGQ-α, PRD §9).
+    ///
+    /// Dispatches a 2×2 arg-kind matrix:
+    /// - Shape × Shape → `GeometryQuery::Distance{from,to}` via `kernel_distance`.
+    /// - Shape × Point / Point × Shape → `GeometryQuery::ClosestPointOnShape`
+    ///   on the shape + Euclidean to the query point.
+    /// - Point × Point → pure Euclidean, no kernel call.
+    ///
+    /// Each arg is resolved as Shape (named_steps via `resolve_geometry_handle_arg`)
+    /// else Point (`resolve_point3_length_arg` from values). Non-ValueRef args fall
+    /// through to `None` (PRD §4 invariant #1 / #2). Kernel errors downgrade to
+    /// `Some(Value::Undef)` + one Warning (invariant #3). At most one kernel
+    /// query per call (invariant #4).
+    Distance,
 }
 
 impl TopologySelectorHelper {
@@ -2673,7 +2759,8 @@ impl TopologySelectorHelper {
             | TopologySelectorHelper::Angle
             | TopologySelectorHelper::Contains
             | TopologySelectorHelper::Normal
-            | TopologySelectorHelper::Curvature => 2,
+            | TopologySelectorHelper::Curvature
+            | TopologySelectorHelper::Distance => 2,
             TopologySelectorHelper::Edges
             | TopologySelectorHelper::Faces
             | TopologySelectorHelper::Length
