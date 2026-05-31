@@ -839,6 +839,56 @@ mod cli {
         );
     }
 
+    /// `--pattern PDEAD --no-jcodemunch` exits 0 with an empty findings array.
+    ///
+    /// Confirms PDEAD is an accepted pattern (parser does not exit 125) and that
+    /// with NoopJCodemunchOps the tool exits cleanly with zero findings.
+    ///
+    /// Note: this cannot verify that the `if run_pdead { ... }` dispatch arm is
+    /// present in main() — NoopJCodemunchOps returns `vec![]` regardless, so a
+    /// dropped arm would still pass. Actual wiring is covered by the bin unit
+    /// tests (`parse_args_accepts_pdead_pattern`, `needs_jcodemunch_pattern_routing`).
+    #[test]
+    fn pdead_no_jcodemunch_exits_0_with_empty_findings() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+
+        let tasks_file = write_tasks_json(dir, &[]);
+        let runs_db = write_empty_runs_db(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--pattern",
+                "PDEAD",
+                "--no-jcodemunch",
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit --pattern PDEAD --no-jcodemunch");
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "--pattern PDEAD --no-jcodemunch must exit 0; got {:?}\nstderr: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.is_empty(),
+            "--pattern PDEAD --no-jcodemunch must yield zero findings; got:\n{:#}",
+            serde_json::Value::Array(findings)
+        );
+    }
+
     /// `--pattern P5` with an unreachable jcodemunch URL must NOT exit 125 —
     /// P5 never contacts jcodemunch.
     #[test]
