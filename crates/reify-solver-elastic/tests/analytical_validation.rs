@@ -1003,6 +1003,7 @@ fn boussinesq_subsurface_sigma_z_p2_within_10pct() {
 ///
 /// `(nodes, tet_connectivity, inner_p1_faces)` — `inner_p1_faces` are the
 /// `2·nθ·nz` P1 triangles on the inner surface (`r = a`).
+#[allow(clippy::type_complexity)]
 fn annular_p1_mesh(
     a: f64, b: f64, l: f64,
     nr: usize, ntheta: usize, nz: usize,
@@ -1174,7 +1175,7 @@ fn annular_symmetry_plane_strain_bcs(
         }
         // θ=π/2 face: x ≈ 0 → u_x = 0 (DOF 0)
         if p[0].abs() < tol {
-            bcs.push(DirichletBc { dof: node * 3 + 0, value: 0.0 });
+            bcs.push(DirichletBc { dof: node * 3, value: 0.0 });
         }
         // z=0 face: u_z = 0 (DOF 2)
         if p[2].abs() < tol {
