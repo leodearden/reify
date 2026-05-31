@@ -1073,6 +1073,58 @@ impl MockGeometryKernel {
         self
     }
 
+    /// Configure a `CurveCurvatureAt` query result for a specific
+    /// (edge handle, world query point) pair.
+    ///
+    /// `value` should be a `Value::Real(κ)` where κ is the signed Frenet curvature
+    /// in SI units (m⁻¹), matching the OCCT kernel's `curve_curvature_at` return.
+    /// Point coordinates are hashed via `density_bits` for stable keying.
+    ///
+    /// Powers the v0.3 stdlib `curvature(curve, point)` helper (task 3621, KGQ-μ).
+    pub fn with_curve_curvature_at_result(
+        mut self,
+        handle: GeometryHandleId,
+        point: [f64; 3],
+        value: Value,
+    ) -> Self {
+        self.typed_queries.insert(
+            QueryKey::CurveCurvatureAt {
+                handle,
+                px_bits: density_bits(point[0]),
+                py_bits: density_bits(point[1]),
+                pz_bits: density_bits(point[2]),
+            },
+            value,
+        );
+        self
+    }
+
+    /// Configure a `SurfaceCurvatureAt` query result for a specific
+    /// (face handle, parametric (u, v)) pair.
+    ///
+    /// `value` should be a nested `Value::List([[kappa_max, 0.0], [0.0, kappa_min]])`
+    /// matching the OCCT kernel's diagonal principal-curvature wire format for
+    /// `GeometryQuery::SurfaceCurvatureAt`. The (u, v) coordinates are hashed
+    /// via `density_bits` for stable keying.
+    ///
+    /// Powers the v0.3 stdlib `curvature(surface, point)` helper (task 3621, KGQ-μ).
+    pub fn with_surface_curvature_at_result(
+        mut self,
+        handle: GeometryHandleId,
+        uv: [f64; 2],
+        value: Value,
+    ) -> Self {
+        self.typed_queries.insert(
+            QueryKey::SurfaceCurvatureAt {
+                handle,
+                u_bits: density_bits(uv[0]),
+                v_bits: density_bits(uv[1]),
+            },
+            value,
+        );
+        self
+    }
+
     /// Configure a `ClosestPointOnShape` query result for a specific
     /// (geometry handle, query point) pair.
     ///

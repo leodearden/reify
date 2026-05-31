@@ -11310,4 +11310,254 @@ mod tests {
             "a Warning diagnostic must be emitted on SharedEdges query failure"
         );
     }
+
+    // ── try_eval_topology_selector curvature dispatch unit tests ─────────────
+    // (task 3621, KGQ-μ: curvature(Curve) + curvature(Surface))
+    //
+    // Step-5 RED: these tests compile but FAIL until step-6 adds the
+    // "curvature" → TopologySelectorHelper::Curvature arm to the dispatcher.
+    // Modelled on the `normal` tests above (lines ~10006-10319).
+
+    // DimensionVector for curvature = 1/Length = Length^-1.
+    // Constructed directly (from_exps is private); index-0 is the LENGTH basis.
+    const CURVATURE_DIM: reify_core::dimension::DimensionVector = {
+        let mut d = [reify_core::dimension::Rational::ZERO; 10];
+        d[0] = reify_core::dimension::Rational::new(-1, 1);
+        reify_core::dimension::DimensionVector(d)
+    };
+
+    /// `curvature(surface, point)` with a fake kernel staging a 2×2 nested-List
+    /// [[kappa_max, 0], [0, kappa_min]] must yield `Some(Value::Matrix(...))` where
+    /// every cell is a `Value::Scalar` with dimension = 1/Length (Curvature), and
+    /// the matrix diagonal mean (trace/2) equals the expected curvature.
+    #[test]
+    fn try_eval_topology_selector_curvature_surface_returns_matrix() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let face_handle = reify_ir::GeometryHandleId(55);
+        let kappa = 200.0_f64; // 1/(0.005 m) — sphere radius 5 mm
+        // Kernel wire: [[kappa, 0.0], [0.0, kappa]] (diagonal: kappa_max == kappa_min for sphere).
+        let row0 = reify_ir::Value::List(vec![
+            reify_ir::Value::Real(kappa),
+            reify_ir::Value::Real(0.0),
+        ]);
+        let row1 = reify_ir::Value::List(vec![
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(kappa),
+        ]);
+        // u = px = 0.005 m, v = py = 0.0 m  (eval maps DSL point3 coords → (u,v))
+        let mut kernel = MockGeometryKernel::new()
+            .with_surface_curvature_at_result(face_handle, [0.005, 0.0], reify_ir::Value::List(vec![row0, row1]));
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        named_steps.insert("face".to_string(), face_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            reify_core::ValueCellId::new("CurvatureSmoke", "pt"),
+            point3_length_value(0.005, 0.0, 0.0),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "curvature",
+            "CurvatureSmoke",
+            "face",
+            reify_core::Type::Geometry,
+            "pt",
+            reify_core::Type::point3(reify_core::Type::length()),
+            reify_core::Type::Real, // placeholder result type — unused on dispatch path
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        // Expect a 2×2 Value::Matrix of curvature-dimensioned scalars.
+        let expected_cell = reify_ir::Value::Scalar {
+            si_value: kappa,
+            dimension: CURVATURE_DIM,
+        };
+        let expected_zero = reify_ir::Value::Scalar {
+            si_value: 0.0,
+            dimension: CURVATURE_DIM,
+        };
+        let expected = Some(reify_ir::Value::Matrix(vec![
+            vec![expected_cell.clone(), expected_zero.clone()],
+            vec![expected_zero, expected_cell],
+        ]));
+        assert_eq!(
+            result, expected,
+            "curvature(surface, point) must return Some(Value::Matrix([[κ,0],[0,κ]])); got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "happy-path surface curvature must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// `curvature(curve, point)` with a fake kernel staging `Value::Real(κ)` must
+    /// yield `Some(Value::Scalar{ si_value: κ, dimension: 1/Length })`.
+    #[test]
+    fn try_eval_topology_selector_curvature_curve_returns_scalar() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let edge_handle = reify_ir::GeometryHandleId(77);
+        let kappa = 100.0_f64; // 1/(0.01 m) — circle radius 10 mm
+        // Kernel wire: Value::Real(κ).  Staged for CurveCurvatureAt at point (0.01, 0.0, 0.0).
+        let mut kernel = MockGeometryKernel::new()
+            .with_curve_curvature_at_result(edge_handle, [0.01, 0.0, 0.0], reify_ir::Value::Real(kappa));
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        named_steps.insert("edge".to_string(), edge_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            reify_core::ValueCellId::new("CurvatureSmoke", "pt"),
+            point3_length_value(0.01, 0.0, 0.0),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "curvature",
+            "CurvatureSmoke",
+            "edge",
+            reify_core::Type::Geometry,
+            "pt",
+            reify_core::Type::point3(reify_core::Type::length()),
+            reify_core::Type::Real,
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let expected = Some(reify_ir::Value::Scalar {
+            si_value: kappa,
+            dimension: CURVATURE_DIM,
+        });
+        assert_eq!(
+            result, expected,
+            "curvature(curve, point) must return Some(Value::Scalar{{κ, 1/m}}); got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "happy-path curve curvature must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// `curvature(surface, point)` with no staged kernel result must yield
+    /// `Some(Value::Undef)` + exactly one Warning diagnostic naming "curvature".
+    #[test]
+    fn try_eval_topology_selector_curvature_kernel_err_returns_undef_with_warning() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let face_handle = reify_ir::GeometryHandleId(55);
+        // No staging — both SurfaceCurvatureAt and CurveCurvatureAt fall through to
+        // the generic no-match error in the mock kernel, yielding QueryFailed.
+        let mut kernel = MockGeometryKernel::new();
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        named_steps.insert("face".to_string(), face_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            reify_core::ValueCellId::new("CurvatureSmoke", "pt"),
+            point3_length_value(0.005, 0.0, 0.0),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "curvature",
+            "CurvatureSmoke",
+            "face",
+            reify_core::Type::Geometry,
+            "pt",
+            reify_core::Type::point3(reify_core::Type::length()),
+            reify_core::Type::Real,
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "curvature(...) with kernel Err must yield Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "kernel Err must emit exactly one Warning; got {} diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Warning,
+            "diagnostic severity must be Warning, got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("curvature"),
+            "diagnostic must mention the helper name 'curvature', got: {}",
+            diag.message
+        );
+    }
+
+    /// `curvature(<literal>, <literal>)` must fall through to `None` without
+    /// consulting the kernel — both arg-shape guards reject non-ValueRef args.
+    #[test]
+    fn try_eval_topology_selector_curvature_literal_args_falls_through_to_none() {
+        use reify_test_support::mocks::CountingMockKernel;
+        let inner = reify_test_support::mocks::MockGeometryKernel::new();
+        let mut kernel = CountingMockKernel::new(inner);
+
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let values = reify_ir::ValueMap::new();
+
+        let expr = topology_selector_call_literal_args("curvature");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "curvature(<literal>, <literal>) must return None, got {:?}",
+            result
+        );
+        assert_eq!(
+            kernel.total_query_count(),
+            0,
+            "kernel must NOT be consulted for non-ValueRef args; got {} queries",
+            kernel.total_query_count()
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "literal-arg fall-through must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
 }
