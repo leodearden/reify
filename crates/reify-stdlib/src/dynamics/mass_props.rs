@@ -62,6 +62,38 @@ pub fn resolve_density(explicit: Option<f64>, material: Option<f64>) -> (f64, De
     }
 }
 
+/// Closed-form mass/center-of-mass/inertia of a uniform-density axis-aligned
+/// box with edge lengths `dims = [a, b, c]` (metres) and the given `density`
+/// (kg/m³), expressed in a **corner-origin** body frame (one corner at the
+/// frame origin, edges along +x/+y/+z).
+///
+/// Returns `(mass, com, inertia)` where:
+///   * `mass = ρ·a·b·c`,
+///   * `com = [a/2, b/2, c/2]` (the box's geometric centre relative to the
+///     corner origin),
+///   * `inertia` is the 3×3 tensor **about the centre of mass** — a diagonal
+///     matrix `m/12 · diag(b²+c², a²+c², a²+b²)` with zero products of inertia
+///     (the principal axes of a box align with its edges).
+///
+/// This is the analytic ground truth referenced by the RBD PRD
+/// (`docs/prds/v0_3/rigid-body-dynamics.md` §10 Phase 1 β): the value the
+/// density-aware KGQ kernel query (task 3620 / KGQ-λ `moment_of_inertia`) will
+/// later be cross-checked against once it is wired into `body_mass_props`. It
+/// is `pub` so that future supervisor wiring and its cross-validation test can
+/// reuse the exact same closed form.
+pub fn uniform_box_inertia(dims: [f64; 3], density: f64) -> (f64, [f64; 3], [[f64; 3]; 3]) {
+    let [a, b, c] = dims;
+    let mass = density * a * b * c;
+    let com = [a / 2.0, b / 2.0, c / 2.0];
+    let coeff = mass / 12.0;
+    let inertia = [
+        [coeff * (b * b + c * c), 0.0, 0.0],
+        [0.0, coeff * (a * a + c * c), 0.0],
+        [0.0, 0.0, coeff * (a * a + b * b)],
+    ];
+    (mass, com, inertia)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
