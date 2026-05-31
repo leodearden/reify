@@ -3,14 +3,164 @@
 //!
 //! Scaffold stub — the constructor arms land in the γ implementation steps.
 
+use std::collections::BTreeMap;
+use std::f64::consts::PI;
+
+use reify_core::DimensionVector;
 use reify_ir::Value;
+
+/// Howell pseudo-rigid-body coefficient for a cantilever beam (Howell §5.1).
+const CANTILEVER_GAMMA: f64 = 2.65;
+
+/// PRB validity limit on flexure rotation: ±5°, expressed in radians. Beyond
+/// this the pseudo-rigid-body small-deflection model loses fidelity (Howell §5).
+const PRB_ANGLE_LIMIT_RAD: f64 = 5.0 * PI / 180.0;
 
 /// Evaluate a beam-flexure constructor by name.
 ///
-/// Returns `None` for every name until the constructor arms land, so all
-/// flexure names fall through to `Value::Undef` in `eval_builtin`.
-pub(crate) fn eval_beam(_name: &str, _args: &[Value]) -> Option<Value> {
-    None
+/// Returns `Some(Value)` for a recognised flexure name (including
+/// `Some(Value::Undef)` on validation failure) and `None` for any unknown
+/// name, so `eval_builtin` falls through to the next module.
+pub(crate) fn eval_beam(name: &str, args: &[Value]) -> Option<Value> {
+    match name {
+        "prb_cantilever_beam" => Some(prb_cantilever_beam(args)),
+        _ => None,
+    }
+}
+
+/// `prb_cantilever_beam(length, width, thickness, material, pivot, axis[, neutral])`
+/// — a Howell pseudo-rigid-body cantilever flexure presented as a revolute joint.
+///
+/// Returns a joint `Value::Map` (`kind == "revolute"`) whose rotational
+/// stiffness is the closed-form `k_θ = γ·E·I / L` (Howell §5.1, γ = 2.65), with
+/// `I = width·thickness³/12` the rectangular-section second moment of area.
+///
+/// Returns `Value::Undef` on arity ≠ {6, 7} or when any geometry / material /
+/// axis argument fails extraction. (Comprehensive geometry guards land in a
+/// later step; the yield-capped validity range likewise lands later — this
+/// step uses a placeholder symmetric ±5° range.)
+fn prb_cantilever_beam(args: &[Value]) -> Value {
+    // Uniform 6/7-arg signature (the optional 7th arg is the neutral angle,
+    // wired in a later step): (length, width, thickness, material, pivot, axis).
+    if args.len() != 6 && args.len() != 7 {
+        return Value::Undef;
+    }
+    let (Some(length), Some(width), Some(thickness)) = (
+        length_si(&args[0]),
+        length_si(&args[1]),
+        length_si(&args[2]),
+    ) else {
+        return Value::Undef;
+    };
+    let material = &args[3];
+    let pivot = &args[4];
+    let axis = &args[5];
+
+    let Some(e) = material_field_si(material, "youngs_modulus") else {
+        return Value::Undef;
+    };
+    // Axis must be a finite, non-zero, dimensionless 3-vector; stored verbatim.
+    if crate::helpers::validate_dimensionless_unit_axis_vec3(axis).is_none() {
+        return Value::Undef;
+    }
+
+    // Rectangular-section second moment of area and the Howell PRB rotational
+    // stiffness k_θ = γ·E·I / L (Howell §5.1).
+    let i = width * thickness.powi(3) / 12.0;
+    let k_theta = CANTILEVER_GAMMA * e * i / length;
+
+    // Placeholder symmetric ±5° validity range — the yield cap lands in a
+    // later step.
+    let range = Value::range(
+        Some(Value::angle(-PRB_ANGLE_LIMIT_RAD)),
+        Some(Value::angle(PRB_ANGLE_LIMIT_RAD)),
+        true,
+        true,
+    );
+
+    make_flexure_joint(
+        "revolute",
+        axis.clone(),
+        range,
+        Value::Scalar {
+            si_value: k_theta,
+            dimension: DimensionVector::ROTATIONAL_STIFFNESS,
+        },
+        Value::angle(0.0),
+        pivot.clone(),
+    )
+}
+
+/// Extract a length in metres: a finite LENGTH-dimensioned `Value::Scalar`, or a
+/// bare finite `Value::Real` / `Value::Int` interpreted as metres. Mirrors
+/// `joints::length_input`. Returns `None` for any other variant.
+fn length_si(v: &Value) -> Option<f64> {
+    match v {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } if *dimension == DimensionVector::LENGTH && si_value.is_finite() => Some(*si_value),
+        Value::Real(r) if r.is_finite() => Some(*r),
+        Value::Int(i) => Some(*i as f64),
+        _ => None,
+    }
+}
+
+/// Extract a finite Scalar `si_value` for `key` from a material
+/// `Value::StructureInstance`'s fields.
+///
+/// The field may be stored either as a bare `Value::Scalar` or wrapped in
+/// `Value::Option(Some(Scalar))` (mirroring the `ElasticMaterial` contract,
+/// where `yield_stress` is `Option<Pressure>`). Returns `None` if `material` is
+/// not a `StructureInstance`, the field is absent, the option is `None`, or the
+/// stored value is not a finite Scalar — so an absent or `None` field reads the
+/// same as "not provided".
+fn material_field_si(material: &Value, key: &str) -> Option<f64> {
+    let fields = match material {
+        Value::StructureInstance(data) => &data.fields,
+        _ => return None,
+    };
+    scalar_si(fields.get(&key.to_string())?)
+}
+
+/// Unwrap a finite Scalar `si_value` from a `Value::Scalar` or a
+/// `Value::Option(Some(Scalar))`.
+fn scalar_si(v: &Value) -> Option<f64> {
+    match v {
+        Value::Scalar { si_value, .. } if si_value.is_finite() => Some(*si_value),
+        Value::Option(Some(inner)) => scalar_si(inner),
+        _ => None,
+    }
+}
+
+/// Assemble a flexure joint `Value::Map`: the standard `{kind, axis, range}`
+/// joint layout (mirroring `joints::make_joint`) extended with the
+/// flexure-specific keys `spring_rate`, `damping`, `neutral`, and `pivot`.
+///
+/// `damping` is always `Value::Option(None)` in γ scope (PRD §8.7). The
+/// mechanism / sweep / snapshot engines dispatch on the `kind` string and
+/// ignore the extra keys (PRD §8.2), so a flexure plugs into them exactly like
+/// a plain revolute / prismatic joint.
+fn make_flexure_joint(
+    kind: &str,
+    axis: Value,
+    range: Value,
+    spring_rate: Value,
+    neutral: Value,
+    pivot: Value,
+) -> Value {
+    let mut m = BTreeMap::new();
+    m.insert(
+        Value::String("kind".to_string()),
+        Value::String(kind.to_string()),
+    );
+    m.insert(Value::String("axis".to_string()), axis);
+    m.insert(Value::String("range".to_string()), range);
+    m.insert(Value::String("spring_rate".to_string()), spring_rate);
+    m.insert(Value::String("damping".to_string()), Value::Option(None));
+    m.insert(Value::String("neutral".to_string()), neutral);
+    m.insert(Value::String("pivot".to_string()), pivot);
+    Value::Map(m)
 }
 
 #[cfg(test)]
