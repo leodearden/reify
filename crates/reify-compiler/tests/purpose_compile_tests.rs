@@ -1602,4 +1602,161 @@ purpose p(subject : Structure) {
             ),
         }
     }
+
+    /// (d) A guard-scoped `let` binding inside a where-arm: the let is appended to
+    /// `CompiledPurpose.lets` and the guarded constraint's right side references the
+    /// let's value cell via a ValueRef.
+    ///
+    /// RED (step-5): same note as (c) — step-2 impl already handles guarded lets, so
+    /// this test is GREEN at write-time (not RED-first per plan intent; deviation
+    /// logged in esc-4012-147).
+    #[test]
+    fn guarded_let_binding_appended_and_referenced_in_constraint() {
+        let source = r#"
+structure Widget {
+    param a : Length = 80mm
+    param b : Length = 50mm
+}
+
+purpose marg(subject : Structure) {
+    where subject.a > 0mm {
+        let m = subject.a - subject.b
+        constraint m > 0mm
+    }
+}
+"#;
+        let module = compile_module_with_diagnostics(source);
+
+        let errors: Vec<_> = module
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "expected no compile errors for guard-scoped let, got: {:#?}",
+            errors
+        );
+
+        let purpose = module
+            .compiled_purposes
+            .iter()
+            .find(|p| p.name == "marg")
+            .expect("expected compiled purpose 'marg'");
+
+        // The let binding must be appended to purpose.lets.
+        assert_eq!(purpose.lets.len(), 1, "expected 1 let in purpose.lets");
+        assert_eq!(purpose.lets[0].name, "m");
+        assert_eq!(
+            purpose.lets[0].cell_id,
+            ValueCellId::new("marg", "m"),
+            "let cell_id should be {{marg, m}}"
+        );
+
+        // The constraint from the where-arm must exist and be BinOp::Implies.
+        assert_eq!(
+            purpose.constraints.len(),
+            1,
+            "expected 1 constraint from the where-arm"
+        );
+        let constraint = &purpose.constraints[0];
+        match &constraint.expr.kind {
+            CompiledExprKind::BinOp { op, .. } => {
+                assert_eq!(*op, BinOp::Implies, "where-arm must lower to BinOp::Implies");
+            }
+            other => panic!("expected BinOp::Implies, got {:?}", other),
+        }
+
+        // The right side of the implication (the body) must reference the let
+        // cell `m` via a ValueRef(marg, m).
+        let right = match &constraint.expr.kind {
+            CompiledExprKind::BinOp { right, .. } => right.as_ref(),
+            _ => unreachable!(),
+        };
+        let let_cell_id = ValueCellId::new("marg", "m");
+        assert!(
+            purpose_let_expr_contains_value_ref(right, &let_cell_id),
+            "constraint body (right side of implication) must reference the \
+             guard-scoped let 'm' via ValueRef(marg, m); got {:?}",
+            right
+        );
+    }
+
+    /// (e) Duplicate let name in where-arm and else-arm: both entries are pushed to
+    /// `CompiledPurpose.lets`, producing two entries with the same `cell_id`.
+    ///
+    /// This pins the accepted v1 last-writer-wins behaviour documented in the NOTE
+    /// comment in traits.rs: the injection loop in engine_purposes.rs seeds the same
+    /// `ValueCellId` twice, and the second write wins in `snapshot.values`.
+    ///
+    /// If a future task adds a "duplicate let name" diagnostic, update this test to
+    /// assert the diagnostic and expect a single `lets` entry instead.
+    #[test]
+    fn guarded_duplicate_let_name_in_arms_produces_two_lets_entries() {
+        let source = r#"
+structure Widget {
+    param a : Length = 80mm
+    param b : Length = 50mm
+}
+
+purpose p(subject : Structure) {
+    where subject.a > 0mm {
+        let v = subject.a
+        constraint v > 0mm
+    } else {
+        let v = subject.b
+        constraint v > 0mm
+    }
+}
+"#;
+        let module = compile_module_with_diagnostics(source);
+
+        // Both arms compile without errors.
+        let errors: Vec<_> = module
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "expected no compile errors for duplicate guard-scoped let name in arms, \
+             got: {:#?}",
+            errors
+        );
+
+        let purpose = module
+            .compiled_purposes
+            .iter()
+            .find(|p| p.name == "p")
+            .expect("expected compiled purpose 'p'");
+
+        // V1 contract: both lets are pushed — two entries, each with the same cell_id.
+        // The injection loop seeds the same ValueCellId twice; last-writer-wins.
+        assert_eq!(
+            purpose.lets.len(),
+            2,
+            "expected 2 let entries (one per arm, both named 'v'), got {}",
+            purpose.lets.len()
+        );
+        assert_eq!(purpose.lets[0].name, "v");
+        assert_eq!(purpose.lets[1].name, "v");
+
+        let expected_cell_id = ValueCellId::new("p", "v");
+        assert_eq!(
+            purpose.lets[0].cell_id, expected_cell_id,
+            "lets[0] cell_id must be {{p, v}}"
+        );
+        assert_eq!(
+            purpose.lets[1].cell_id, expected_cell_id,
+            "lets[1] cell_id must be {{p, v}}"
+        );
+
+        // Two constraints: one per arm, both BinOp::Implies (where-arm + else-arm).
+        assert_eq!(
+            purpose.constraints.len(),
+            2,
+            "expected 2 constraints (where-arm + else-arm), got {}",
+            purpose.constraints.len()
+        );
+    }
 }

@@ -459,122 +459,102 @@ pub(crate) fn compile_purpose(
                         *idx += 1;
                     };
 
-                // ── where-arm members ──────────────────────────────────────
-                for m in &g.members {
-                    match m {
-                        reify_ast::MemberDecl::Constraint(c) => {
-                            let body = compile_expr(
-                                &c.expr,
-                                &scope,
-                                enum_defs,
-                                functions,
-                                diagnostics,
-                            );
-                            emit_implies(
-                                cond.clone(),
-                                body,
-                                c.label.clone(),
-                                c.span,
-                                &mut constraints,
-                                &mut constraint_index,
-                            );
-                        }
-                        reify_ast::MemberDecl::Let(let_decl) => {
-                            // Guard-scoped lets: mirror the top-level Let arm (traits.rs:399-416).
-                            // Name is registered in scope after compiling so no forward refs are
-                            // possible within the same block (ordered semantics).
-                            // NOTE: The name leaks past the guard block into the enclosing scope
-                            // because CompilationScope has no cheap unregister; this is an accepted
-                            // v1 limitation (task ε design decisions).
-                            let expr = compile_expr(
-                                &let_decl.value,
-                                &scope,
-                                enum_defs,
-                                functions,
-                                diagnostics,
-                            );
-                            let cell_id = ValueCellId::new(
-                                purpose_name.as_str(),
-                                let_decl.name.as_str(),
-                            );
-                            lets.push(CompiledPurposeLet {
-                                name: let_decl.name.clone(),
-                                cell_id,
-                                expr: expr.clone(),
-                                span: let_decl.span,
-                            });
-                            scope.register(&let_decl.name, expr.result_type);
-                        }
-                        unsupported => {
-                            // Any member kind that is not Constraint or Let is unsupported
-                            // inside a purpose guarded block; emit the same pattern used by
-                            // the sibling top-level reject arms.
-                            let (msg, span) = unsupported_purpose_member_info(unsupported);
-                            diagnostics.push(
-                                Diagnostic::error(msg)
-                                    .with_label(DiagnosticLabel::new(
-                                        span,
-                                        "unsupported in purpose".to_string(),
-                                    )),
-                            );
-                        }
-                    }
-                }
-
-                // ── else-arm members ───────────────────────────────────────
-                for m in &g.else_members {
-                    match m {
-                        reify_ast::MemberDecl::Constraint(c) => {
-                            let body = compile_expr(
-                                &c.expr,
-                                &scope,
-                                enum_defs,
-                                functions,
-                                diagnostics,
-                            );
-                            let not_cond = CompiledExpr::unop(
-                                UnOp::Not,
-                                cond.clone(),
-                                Type::Bool,
-                            );
-                            emit_implies(
-                                not_cond,
-                                body,
-                                c.label.clone(),
-                                c.span,
-                                &mut constraints,
-                                &mut constraint_index,
-                            );
-                        }
-                        reify_ast::MemberDecl::Let(let_decl) => {
-                            let expr = compile_expr(
-                                &let_decl.value,
-                                &scope,
-                                enum_defs,
-                                functions,
-                                diagnostics,
-                            );
-                            let cell_id = ValueCellId::new(
-                                purpose_name.as_str(),
-                                let_decl.name.as_str(),
-                            );
-                            lets.push(CompiledPurposeLet {
-                                name: let_decl.name.clone(),
-                                cell_id,
-                                expr: expr.clone(),
-                                span: let_decl.span,
-                            });
-                            scope.register(&let_decl.name, expr.result_type);
-                        }
-                        unsupported => {
-                            let (msg, span) = unsupported_purpose_member_info(unsupported);
-                            diagnostics.push(
-                                Diagnostic::error(msg)
-                                    .with_label(DiagnosticLabel::new(
-                                        span,
-                                        "unsupported in purpose".to_string(),
-                                    )),
-                            );
+                // Process both where-arm (g.members) and else-arm (g.else_members) through
+                // the same per-member logic.  The only difference between the two arms is
+                // the constraint antecedent:
+                //   where-arm: C as-is
+                //   else-arm:  (not C)
+                // Encoding this as a `(members, negate)` pair eliminates duplication of
+                // the Let and unsupported arms across the two loops.
+                let arms: [(&[reify_ast::MemberDecl], bool); 2] = [
+                    (g.members.as_slice(), false),     // ── where-arm ──
+                    (g.else_members.as_slice(), true),  // ── else-arm  ──
+                ];
+                for (members, negate) in &arms {
+                    for m in *members {
+                        match m {
+                            reify_ast::MemberDecl::Constraint(c) => {
+                                let antecedent = if *negate {
+                                    CompiledExpr::unop(UnOp::Not, cond.clone(), Type::Bool)
+                                } else {
+                                    cond.clone()
+                                };
+                                let body = compile_expr(
+                                    &c.expr,
+                                    &scope,
+                                    enum_defs,
+                                    functions,
+                                    diagnostics,
+                                );
+                                emit_implies(
+                                    antecedent,
+                                    body,
+                                    c.label.clone(),
+                                    c.span,
+                                    &mut constraints,
+                                    &mut constraint_index,
+                                );
+                            }
+                            reify_ast::MemberDecl::Let(let_decl) => {
+                                // Guard-scoped lets: mirror the top-level Let arm (traits.rs:399-416).
+                                // Name is registered in scope after compiling so no forward refs are
+                                // possible within the same block (ordered semantics).
+                                //
+                                // NOTE (design coherence): the let *value* is always evaluated
+                                // unconditionally — it is appended to CompiledPurpose.lets and
+                                // injected at activation time regardless of whether the guard
+                                // condition C holds.  Constraints referencing the let rely on the
+                                // `C implies (let_ref op ...)` wrapper for vacuity when C is false;
+                                // the let cell is evaluated but its value is never directly
+                                // asserted without the implication guard.  See test
+                                // `guarded_let_undef_value_when_cond_false_no_spurious_violation`
+                                // in purpose_activation.rs for the no-spurious-violation pin.
+                                //
+                                // NOTE (name scoping): the let name leaks past the guard block
+                                // into the enclosing purpose scope because CompilationScope has no
+                                // cheap unregister; this is an accepted v1 limitation (task ε
+                                // design decisions).
+                                //
+                                // NOTE (duplicate cell_ids): a let with the same name in both the
+                                // where-arm and else-arm (or shadowing a top-level let) produces
+                                // two CompiledPurposeLet entries with the same cell_id.  The
+                                // injection loop in engine_purposes.rs seeds the same ValueCellId
+                                // twice; the second write wins (last-writer-wins in
+                                // snapshot.values).  This is the accepted v1 behaviour; see
+                                // `guarded_duplicate_let_name_in_arms_produces_two_lets_entries`
+                                // in purpose_compile_tests.rs for the pinning test.
+                                let expr = compile_expr(
+                                    &let_decl.value,
+                                    &scope,
+                                    enum_defs,
+                                    functions,
+                                    diagnostics,
+                                );
+                                let cell_id = ValueCellId::new(
+                                    purpose_name.as_str(),
+                                    let_decl.name.as_str(),
+                                );
+                                lets.push(CompiledPurposeLet {
+                                    name: let_decl.name.clone(),
+                                    cell_id,
+                                    expr: expr.clone(),
+                                    span: let_decl.span,
+                                });
+                                scope.register(&let_decl.name, expr.result_type);
+                            }
+                            unsupported => {
+                                // Any member kind that is not Constraint or Let is unsupported
+                                // inside a purpose guarded block; emit the same pattern used by
+                                // the sibling top-level reject arms.
+                                let (msg, span) = unsupported_purpose_member_info(unsupported);
+                                diagnostics.push(
+                                    Diagnostic::error(msg)
+                                        .with_label(DiagnosticLabel::new(
+                                            span,
+                                            "unsupported in purpose".to_string(),
+                                        )),
+                                );
+                            }
                         }
                     }
                 }

@@ -2686,3 +2686,133 @@ purpose bounded(subject : Structure) {
         "E2: condition true → else-arm vacuous: (not true) implies B = false implies B = Satisfied"
     );
 }
+
+/// F1 — guard-scoped let: let cell injected, constraint reads it, Satisfied.
+///
+/// `let m = subject.a - subject.b` compiles to a `CompiledPurposeLet` appended
+/// to `purpose.lets`.  At activation the let cell is injected into the graph
+/// and the guard constraint `m > 0mm` resolves via the let cell.
+///
+/// With a=80mm, b=50mm → m=30mm > 0mm → Satisfied.
+/// Condition `subject.a > 0mm` is true (80mm > 0) → where-arm active.
+///
+/// RED (step-5): same note as E1/E2 — step-2 impl already handles guarded
+/// lets, so this test is GREEN at write-time.
+#[test]
+fn guarded_let_binding_in_where_arm_evaluates_and_constraint_satisfied() {
+    let source = r#"
+structure Widget {
+    param a : Length = 80mm
+    param b : Length = 50mm
+}
+
+purpose marg(subject : Structure) {
+    where subject.a > 0mm {
+        let m = subject.a - subject.b
+        constraint m > 0mm
+    }
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_simple_engine();
+    let eval_result = engine.eval(&compiled);
+    engine.activate_purpose("marg", "Widget");
+
+    let (constraint_results, _) = engine
+        .check_constraints_with_values(&eval_result.values)
+        .expect("check_constraints_with_values must not error");
+
+    let purpose_result = constraint_results
+        .iter()
+        .find(|e| e.id.entity.starts_with("purpose:marg@Widget"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a purpose-injected constraint with entity prefix \
+                 'purpose:marg@Widget'; found: {:?}",
+                constraint_results.iter().map(|e| &e.id).collect::<Vec<_>>()
+            )
+        });
+
+    // a=80mm, b=50mm → m=30mm; condition 80mm>0mm=true; true implies 30mm>0mm = true → Satisfied.
+    assert_eq!(
+        purpose_result.satisfaction,
+        Satisfaction::Satisfied,
+        "F1: guard-scoped let m=a-b=30mm; condition true; constraint m>0mm → Satisfied"
+    );
+
+    // Verify the injected let cell is present in the graph.
+    let snapshot = engine.snapshot().expect("snapshot must exist after activation");
+    let let_cell_found = snapshot
+        .graph
+        .value_cells
+        .iter()
+        .any(|(id, _)| id.entity.starts_with("purpose:marg@Widget") && id.member == "__let_m");
+    assert!(
+        let_cell_found,
+        "F1: expected an injected value cell with entity prefix 'purpose:marg@Widget' \
+         and member '__let_m' in graph.value_cells after activation"
+    );
+}
+
+/// F2 — guard-scoped let value is undef when condition is false: no spurious violation.
+///
+/// Design-coherence pin: guard-scoped let values are evaluated *unconditionally* at
+/// activation time (not gated on C).  When C evaluates to false, the let cell may
+/// hold `Undef` (if it depends on an `= auto` param), but the implication wrapper
+/// `false implies (m > 0.0)` = `true` (vacuously Satisfied via Kleene F⇒x=T)
+/// prevents any spurious `Violated` result from the undef let value.
+///
+/// Fixture: `a = auto` → `determined(subject.a)` = false = C.
+/// `let m = subject.a + 1.0` → m = Undef (a is undetermined).
+/// Guarded constraint `m > 0.0`: `C implies (m > 0.0)` = `false implies Undef` = T.
+///
+/// Expected: the injected constraint is `Satisfaction::Satisfied` (NOT Violated or
+/// Indeterminate), confirming the unconditional let evaluation cannot produce a
+/// spurious violation.
+#[test]
+fn guarded_let_undef_value_when_cond_false_no_spurious_violation() {
+    let source = r#"
+structure Widget {
+    param a : Scalar = auto
+}
+
+purpose p(subject : Structure) {
+    where determined(subject.a) {
+        let m = subject.a + 1.0
+        constraint m > 0.0
+    }
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_simple_engine();
+    let eval_result = engine.eval(&compiled);
+    engine.activate_purpose("p", "Widget");
+
+    let (constraint_results, _) = engine
+        .check_constraints_with_values(&eval_result.values)
+        .expect("check_constraints_with_values must not error");
+
+    let purpose_result = constraint_results
+        .iter()
+        .find(|e| e.id.entity.starts_with("purpose:p@Widget"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a purpose-injected constraint with entity prefix \
+                 'purpose:p@Widget'; found: {:?}",
+                constraint_results.iter().map(|e| &e.id).collect::<Vec<_>>()
+            )
+        });
+
+    // C = determined(auto) = false.
+    // m = auto + 1.0 = Undef (unconditionally evaluated).
+    // false implies Undef = T (Kleene F⇒x=T) → Satisfied.
+    // Must NOT be Violated or Indeterminate.
+    assert_eq!(
+        purpose_result.satisfaction,
+        Satisfaction::Satisfied,
+        "F2: guard-scoped let with Undef value when C=false must be Satisfied \
+         (false implies Undef = T via Kleene F⇒x=T), NOT Violated or Indeterminate; \
+         got {:?}",
+        purpose_result.satisfaction
+    );
+}
