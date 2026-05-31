@@ -9404,6 +9404,90 @@ mod tests {
         );
     }
 
+    // ── distance unit tests (task 3610, KGQ-α) ──────────────────────────────
+    //
+    // Tests for `try_eval_topology_selector` with the `distance` helper (step-1
+    // RED driver and step-3/5 contract pins).
+    //
+    // Step-1a (RED driver): Shape×Point happy path. Asserts that
+    // `distance(shape_ref, point_ref)` with a canned ClosestPointOnShape
+    // mock reply returns `Some(Value::Scalar{LENGTH, si_value ≈ 0.015})`.
+    // RED before step-2 because `distance` is absent from the name-match
+    // (the function returns `None` immediately at the `_ => return None` arm).
+
+    #[test]
+    fn try_eval_topology_selector_distance_shape_point_happy_path() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        // Box handle inserted into named_steps under member "b".
+        let box_handle = reify_ir::GeometryHandleId(99);
+        // Mock: ClosestPointOnShape query for (box_handle, point=(0.02,0,0))
+        // replies with the closest surface point (0.005, 0.0, 0.0) as JSON.
+        // Euclidean distance = |(0.02,0,0) - (0.005,0,0)| = 0.015 m.
+        let mut kernel = MockGeometryKernel::new().with_closest_point_on_shape_result(
+            box_handle,
+            [0.02, 0.0, 0.0],
+            reify_ir::Value::String("{\"x\":0.005,\"y\":0.0,\"z\":0.0}".to_string()),
+        );
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        // args[0] = b (Shape) → named_steps by member name "b"
+        named_steps.insert("b".to_string(), box_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        // args[1] = p (Point3<Length>) → values by ValueCellId
+        // 20mm = 0.02m in SI
+        values.insert(
+            reify_core::ValueCellId::new("DistanceBoxPoint", "p"),
+            point3_length_value(0.02, 0.0, 0.0),
+        );
+
+        // distance(b, p): args[0]=b (Geometry), args[1]=p (Point3<Length>)
+        let expr = topology_selector_call_two_value_refs(
+            "distance",
+            "DistanceBoxPoint",
+            "b",
+            reify_core::Type::Geometry,
+            "p",
+            reify_core::Type::point3(reify_core::Type::length()),
+            reify_core::Type::length(),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        // Expected: Some(Value::Scalar{ dimension: LENGTH, si_value ≈ 0.015 })
+        match result {
+            Some(reify_ir::Value::Scalar { si_value, dimension })
+                if dimension == reify_core::DimensionVector::LENGTH =>
+            {
+                let expected = 0.015_f64;
+                let epsilon = 1e-12;
+                assert!(
+                    (si_value - expected).abs() < epsilon,
+                    "distance(box, point) si_value should be 0.015 (≈{expected:.15}), \
+                     got {si_value:.15} (delta {delta:.3e})",
+                    delta = (si_value - expected).abs()
+                );
+            }
+            other => panic!(
+                "distance(shape, point) with canned ClosestPointOnShape reply must return \
+                 Some(Value::Scalar{{LENGTH, ≈0.015}}); got {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "happy-path distance must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
     // ── gate_query_capability unit tests (task 3623) ─────────────────────────
     //
     // These tests pin the §5.4 four-branch policy contract of
