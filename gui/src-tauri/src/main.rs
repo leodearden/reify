@@ -645,6 +645,13 @@ fn main() {
     let engine_arc = Arc::new(Mutex::new(session));
     let selection_arc = Arc::new(RwLock::new(reify_mcp::SelectionInfo::default()));
 
+    // Shared slot for in-flight FEA solve handle (task γ/4086).
+    // PendingSolveCancelSink (installed below in setup()) writes this slot;
+    // cancel_solve_impl reads it via AppState.pending_solve_cancel.
+    // Both hold an Arc clone — same underlying Mutex.
+    let solve_cancel_slot: Arc<Mutex<Option<reify_eval::CancellationHandle>>> =
+        Arc::new(Mutex::new(None));
+
     let app_state = AppState {
         engine: Arc::clone(&engine_arc),
         last_state: std::sync::Mutex::new(None),
@@ -652,7 +659,7 @@ fn main() {
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::clone(&selection_arc),
         initial_file: Mutex::new(initial_file.clone()),
-        pending_solve_cancel: Arc::new(Mutex::new(None)),
+        pending_solve_cancel: Arc::clone(&solve_cancel_slot),
     };
 
     tauri::Builder::default()
@@ -705,6 +712,16 @@ fn main() {
             });
             if let Ok(mut session) = engine_arc.lock() {
                 session.set_mode_shape_frame_emitter(mode_shape_frame_emitter);
+            }
+
+            // Install the solve-cancellation sink so cancel_solve_impl can reach
+            // the in-flight FEA handle (task γ/4086).  The sink holds the same
+            // Arc as AppState.pending_solve_cancel — writes are visible to reads.
+            let solve_cancel_sink = Arc::new(
+                reify_gui::commands::PendingSolveCancelSink::new(Arc::clone(&solve_cancel_slot)),
+            );
+            if let Ok(mut session) = engine_arc.lock() {
+                session.set_solve_cancel_sink(solve_cancel_sink);
             }
 
             // Always create DebugBridge (inert when debug disabled — no JS listener, no HTTP server)

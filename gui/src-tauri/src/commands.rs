@@ -316,6 +316,45 @@ pub fn get_mechanism_descriptors_impl(
     crate::engine_lock::with_engine_lock(engine, |s| s.get_mechanism_descriptors())
 }
 
+/// Production [`crate::engine::SolveCancellationSink`] that writes the
+/// in-flight handle into `AppState::pending_solve_cancel` (task γ/4086).
+///
+/// Constructed in `main.rs::setup()` with the same `Arc<Mutex<...>>` that is
+/// stored in `AppState.pending_solve_cancel`, so `cancel_solve_impl` (the
+/// consumer) reads the exact slot the engine-side producer writes.
+///
+/// **Invariant:** `solve_started` fires a `debug_assert!(slot.is_none())`
+/// before inserting — holds because publishing is serialized under the
+/// session mutex (`with_engine_lock`).  `cancel_solve_impl` always clears
+/// via `.take()`, so a successful cancel also resets the slot.
+pub struct PendingSolveCancelSink {
+    slot: Arc<Mutex<Option<CancellationHandle>>>,
+}
+
+impl PendingSolveCancelSink {
+    pub fn new(slot: Arc<Mutex<Option<CancellationHandle>>>) -> Self {
+        Self { slot }
+    }
+}
+
+impl crate::engine::SolveCancellationSink for PendingSolveCancelSink {
+    fn solve_started(&self, handle: CancellationHandle) {
+        let mut guard = self.slot.lock().expect("pending_solve_cancel mutex poisoned");
+        debug_assert!(
+            guard.is_none(),
+            "solve_started called while a handle is already in the slot — stale handle invariant violated"
+        );
+        *guard = Some(handle);
+    }
+
+    fn solve_finished(&self) {
+        self.slot
+            .lock()
+            .expect("pending_solve_cancel mutex poisoned")
+            .take();
+    }
+}
+
 /// Cancel an in-flight FEA solve (GR-016 ζ).
 ///
 /// Reads `state.pending_solve_cancel`, calls `.cancel()` on the
@@ -323,8 +362,6 @@ pub fn get_mechanism_descriptors_impl(
 /// Returns `Ok(())` in both the "cancelled" and "no-op" cases — there is
 /// nothing to cancel when the slot is empty, and that is a valid outcome.
 ///
-/// The engine-side wiring that publishes the handle into the slot is a
-/// follow-on task; this function is the command infrastructure seam.
 /// PRD §11 Q2 / compute-node-contract §2 SLA.
 pub fn cancel_solve_impl(state: &AppState) -> Result<(), String> {
     let handle = state
