@@ -226,6 +226,16 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 "std.ports.electrical",
                 include_str!("../stdlib/ports_electrical.ri"),
             ),
+            // `std.ports.thermal` refines Port from std.ports and adds the
+            // lumped-thermal-port trait ThermalPort (Modelica HeatPort convention:
+            // temperature potential + heat_flow through variable).
+            // Must follow std.ports in the growing prelude sequence so Port is
+            // resolved when ThermalPort : Port is compiled.
+            // Reconstruction of lost work per PRD task β.
+            (
+                "std.ports.thermal",
+                include_str!("../stdlib/ports_thermal.ri"),
+            ),
         ];
 
         // SEQUENTIAL COMPILATION WITH GROWING PRELUDE: each module is compiled
