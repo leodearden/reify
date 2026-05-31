@@ -11,8 +11,10 @@
 //!   step-9  — trampoline-unit tests (crafted Values, no compile pipeline)
 //!   step-11 — end-to-end + cache-hit + CLI smoke over the cable-net example
 
-use reify_core::{DimensionVector, ValueCellId};
-use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
+use std::sync::atomic::{AtomicU32, Ordering};
+
+use reify_core::{DimensionVector, Severity, ValueCellId};
+use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, RealizationReadHandle};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_test_support::{collect_errors, compile_source_with_stdlib, make_simple_engine};
 
@@ -256,4 +258,189 @@ fn trampoline_sign_violation_is_failed_with_diagnostic() {
         ),
         other => panic!("expected ComputeOutcome::Failed for a sign violation, got {other:?}"),
     }
+}
+
+// ── step-11: e2e + cache-hit + CLI over examples/tensegrity_cable_net.ri ──────
+
+/// The committed anchored cable-net example. `include_str!` makes a *missing*
+/// file a compile error — the step-11 RED signal until step-12 creates it.
+fn cable_net_source() -> &'static str {
+    include_str!("../../../examples/tensegrity_cable_net.ri")
+}
+
+/// Crack a `CableNet.form` FormFindResult cell into solved `[f64;3]` node
+/// coordinates and its `converged` flag.
+fn form_nodes_and_converged(form: &Value) -> (Vec<[f64; 3]>, bool) {
+    let data = match form {
+        Value::StructureInstance(d) => d,
+        other => panic!("CableNet.form must be a FormFindResult StructureInstance, got {other:?}"),
+    };
+    assert_eq!(
+        data.type_name, "FormFindResult",
+        "CableNet.form should be a FormFindResult, got {:?}",
+        data.type_name
+    );
+    let nodes = match data.fields.get(&"nodes".to_string()) {
+        Some(Value::List(ns)) => ns
+            .iter()
+            .map(|p| match p {
+                Value::Point(c) if c.len() == 3 => [coord(&c[0]), coord(&c[1]), coord(&c[2])],
+                other => panic!("FormFindResult.nodes entry must be a 3-Point, got {other:?}"),
+            })
+            .collect(),
+        other => panic!("FormFindResult.nodes must be a List, got {other:?}"),
+    };
+    let converged = matches!(
+        data.fields.get(&"converged".to_string()),
+        Some(Value::Bool(true))
+    );
+    (nodes, converged)
+}
+
+/// (a) End-to-end: the example compiles, `@optimized("solver::form_find")`
+/// lowers to a ComputeNode (no body inlining), and the trampoline solves node 0
+/// to the anchor centroid (0,0,0.5) with `converged == true`.
+#[test]
+fn e2e_cable_net_lowers_to_compute_node_and_solves() {
+    let compiled = compile_source_with_stdlib(cable_net_source());
+
+    let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    let eval_result = engine.eval(&compiled);
+
+    // No Error-severity diagnostics from the full compile + eval pipeline.
+    let errors: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no Error diagnostics, got: {errors:#?}");
+
+    // A ComputeNode with target == "solver::form_find" must be in the graph —
+    // proof the @optimized call lowered to a ComputeNode and was NOT inlined.
+    let snapshot = engine
+        .eval_state()
+        .expect("eval_state must be Some after eval()")
+        .snapshot
+        .clone();
+    let targets: Vec<&str> = snapshot
+        .graph
+        .compute_nodes
+        .iter()
+        .map(|(_, d)| d.target.as_str())
+        .collect();
+    assert!(
+        targets.contains(&"solver::form_find"),
+        "expected a ComputeNode with target==\"solver::form_find\"; found {targets:?}"
+    );
+
+    // The result cell solves to the anchor centroid and reports convergence.
+    let form = eval_result
+        .values
+        .get(&ValueCellId::new("CableNet", "form"))
+        .unwrap_or_else(|| panic!("CableNet.form cell missing from eval result"));
+    let (nodes, converged) = form_nodes_and_converged(form);
+    assert_eq!(nodes.len(), 5, "expected 5 solved nodes (1 free + 4 anchors)");
+    let expected = [0.0, 0.0, 0.5];
+    for (i, (got, exp)) in nodes[0].iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (got - exp).abs() < 1e-9,
+            "nodes[0][{i}] = {got}, expected anchor-centroid component {exp}"
+        );
+    }
+    assert!(converged, "a well-posed solve must report converged == true");
+}
+
+/// Dispatch counter for the cache-hit counting wrapper.
+static DISPATCH_COUNT: AtomicU32 = AtomicU32::new(0);
+
+/// Counting wrapper around the production trampoline — increments DISPATCH_COUNT
+/// then delegates, so a re-dispatch is observable.
+fn counting_wrapper(
+    value_inputs: &[Value],
+    realization_inputs: &[RealizationReadHandle],
+    options: &Value,
+    prior_warm_state: Option<&OpaqueState>,
+    cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    DISPATCH_COUNT.fetch_add(1, Ordering::SeqCst);
+    reify_eval::compute_targets::form_find::solve_form_find_trampoline(
+        value_inputs,
+        realization_inputs,
+        options,
+        prior_warm_state,
+        cancellation,
+    )
+}
+
+/// (b) Cache hit: a second `eval()` of the same compiled module must NOT
+/// re-dispatch the trampoline — the §8-η Final-gate (engine_eval.rs)
+/// short-circuits when all inputs and the output VC are already Final.
+#[test]
+fn e2e_cable_net_second_eval_hits_cache() {
+    DISPATCH_COUNT.store(0, Ordering::SeqCst);
+
+    let compiled = compile_source_with_stdlib(cable_net_source());
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn("solver::form_find", counting_wrapper as ComputeFn);
+
+    // First eval: cold start — exactly one dispatch.
+    let eval1 = engine.eval(&compiled);
+    let errors1: Vec<_> = eval1
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors1.is_empty(), "first eval must have no Error diagnostics, got: {errors1:#?}");
+    assert_eq!(
+        DISPATCH_COUNT.load(Ordering::SeqCst),
+        1,
+        "first eval must dispatch the trampoline exactly once"
+    );
+
+    // Second eval on the same module: Final-gate cache hit — no re-dispatch.
+    let eval2 = engine.eval(&compiled);
+    let errors2: Vec<_> = eval2
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors2.is_empty(), "second eval must have no Error diagnostics, got: {errors2:#?}");
+    assert_eq!(
+        DISPATCH_COUNT.load(Ordering::SeqCst),
+        1,
+        "second eval must hit the cache and NOT re-dispatch (DISPATCH_COUNT must stay at 1)"
+    );
+}
+
+/// (c) CLI smoke: `reify eval examples/tensegrity_cable_net.ri` exits zero and
+/// prints the solved z (0.5) — the user-observable `result.nodes` signal.
+#[test]
+fn cli_cable_net_prints_solved_z() {
+    let manifest = env!("CARGO_MANIFEST_DIR"); // .../crates/reify-eval
+    let workspace_root = std::path::Path::new(manifest)
+        .ancestors()
+        .nth(2)
+        .expect("workspace root is two levels above crates/reify-eval")
+        .to_path_buf();
+    let example = workspace_root.join("examples/tensegrity_cable_net.ri");
+
+    let output = std::process::Command::new(env!("CARGO"))
+        .current_dir(&workspace_root)
+        .args(["run", "-q", "-p", "reify-cli", "--bin", "reify", "--", "eval"])
+        .arg(&example)
+        .output()
+        .expect("failed to spawn `cargo run -p reify-cli -- eval`");
+
+    assert!(
+        output.status.success(),
+        "`reify eval examples/tensegrity_cable_net.ri` exited non-zero.\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout must be valid UTF-8");
+    assert!(
+        stdout.contains("0.5"),
+        "expected the solved z (0.5) in `reify eval` stdout; got:\n{stdout}"
+    );
 }
