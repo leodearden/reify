@@ -59,6 +59,69 @@ fn compile_and_eval() -> (
     (compiled, engine, eval_result)
 }
 
+/// Assert that a named param's `default_expr` in a compiled template folds to a
+/// single `CompiledExprKind::Literal(Value::Scalar)` with the given SI value
+/// and dimension.
+///
+/// * For **non-zero** expected values a 1 ppm relative tolerance is used.
+/// * For **zero** expected values `assert_eq!` is used — `0.0 * factor` is
+///   exactly 0.0 in IEEE 754, so a tolerance check would be misleading.
+fn assert_param_folds_to_scalar(
+    compiled: &reify_compiler::CompiledModule,
+    template_name: &str,
+    member: &str,
+    expected_si: f64,
+    expected_dim: DimensionVector,
+) {
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == template_name)
+        .unwrap_or_else(|| panic!("{} template should exist", template_name));
+
+    let vc = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == member)
+        .unwrap_or_else(|| panic!("{} should have a {} value cell", template_name, member));
+
+    let default_expr = vc
+        .default_expr
+        .as_ref()
+        .unwrap_or_else(|| {
+            panic!("{}.{} must have a default expression", template_name, member)
+        });
+
+    match &default_expr.kind {
+        CompiledExprKind::Literal(Value::Scalar { si_value, dimension }) => {
+            if expected_si == 0.0 {
+                assert_eq!(
+                    *si_value, 0.0f64,
+                    "{}.{} si_value should be exactly 0.0, got {}",
+                    template_name, member, si_value
+                );
+            } else {
+                assert!(
+                    (si_value - expected_si).abs() < expected_si.abs() * 1e-6,
+                    "{}.{} si_value should be ≈{} (within 1 ppm), got {}",
+                    template_name, member, expected_si, si_value
+                );
+            }
+            assert_eq!(
+                *dimension,
+                expected_dim,
+                "{}.{} dimension should be {:?}, got {:?}",
+                template_name, member, expected_dim, dimension
+            );
+        }
+        other => panic!(
+            "{}.{} default_expr should be Literal(Scalar) after compound-literal migration, \
+             got {:?}",
+            template_name, member, other
+        ),
+    }
+}
+
 // ── (a) smoke: parses, compiles, ≥5 templates ────────────────────────────────
 
 /// The example must compile with zero error diagnostics and produce at least 5
@@ -288,45 +351,7 @@ fn copper_resistivity_si_value_is_1_7e_minus_8() {
 #[test]
 fn ceramicliner_thermal_conductivity_folds_to_scalar_30() {
     let (compiled, _engine, _eval) = compile_and_eval();
-
-    let template = compiled
-        .templates
-        .iter()
-        .find(|t| t.name == "CeramicLiner")
-        .expect("CeramicLiner template should exist");
-
-    let vc = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "thermal_conductivity")
-        .expect("CeramicLiner should have a thermal_conductivity value cell");
-
-    let default_expr = vc
-        .default_expr
-        .as_ref()
-        .expect("CeramicLiner.thermal_conductivity must have a default expression");
-
-    match &default_expr.kind {
-        CompiledExprKind::Literal(Value::Scalar { si_value, dimension }) => {
-            assert!(
-                (si_value - 30.0).abs() < 30.0 * 1e-6,
-                "CeramicLiner.thermal_conductivity si_value should be ≈30.0 W/(m·K), got {}",
-                si_value
-            );
-            assert_eq!(
-                *dimension,
-                DimensionVector::THERMAL_CONDUCTIVITY,
-                "CeramicLiner.thermal_conductivity dimension should be THERMAL_CONDUCTIVITY, \
-                 got {:?}",
-                dimension
-            );
-        }
-        other => panic!(
-            "CeramicLiner.thermal_conductivity default_expr should be \
-             Literal(Scalar) after compound-literal migration, got {:?}",
-            other
-        ),
-    }
+    assert_param_folds_to_scalar(&compiled, "CeramicLiner", "thermal_conductivity", 30.0, DimensionVector::THERMAL_CONDUCTIVITY);
 }
 
 // ── (g) CeramicLiner.specific_heat compile-time fold pin ─────────────────────
@@ -341,44 +366,7 @@ fn ceramicliner_thermal_conductivity_folds_to_scalar_30() {
 #[test]
 fn ceramicliner_specific_heat_folds_to_scalar_880() {
     let (compiled, _engine, _eval) = compile_and_eval();
-
-    let template = compiled
-        .templates
-        .iter()
-        .find(|t| t.name == "CeramicLiner")
-        .expect("CeramicLiner template should exist");
-
-    let vc = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "specific_heat")
-        .expect("CeramicLiner should have a specific_heat value cell");
-
-    let default_expr = vc
-        .default_expr
-        .as_ref()
-        .expect("CeramicLiner.specific_heat must have a default expression");
-
-    match &default_expr.kind {
-        CompiledExprKind::Literal(Value::Scalar { si_value, dimension }) => {
-            assert!(
-                (si_value - 880.0).abs() < 880.0 * 1e-6,
-                "CeramicLiner.specific_heat si_value should be ≈880.0 J/(kg·K), got {}",
-                si_value
-            );
-            assert_eq!(
-                *dimension,
-                DimensionVector::SPECIFIC_HEAT,
-                "CeramicLiner.specific_heat dimension should be SPECIFIC_HEAT, got {:?}",
-                dimension
-            );
-        }
-        other => panic!(
-            "CeramicLiner.specific_heat default_expr should be \
-             Literal(Scalar) after compound-literal migration, got {:?}",
-            other
-        ),
-    }
+    assert_param_folds_to_scalar(&compiled, "CeramicLiner", "specific_heat", 880.0, DimensionVector::SPECIFIC_HEAT);
 }
 
 // ── (h) Copper.dielectric_strength compile-time fold pin ─────────────────────
@@ -393,43 +381,5 @@ fn ceramicliner_specific_heat_folds_to_scalar_880() {
 #[test]
 fn copper_dielectric_strength_folds_to_scalar_zero() {
     let (compiled, _engine, _eval) = compile_and_eval();
-
-    let template = compiled
-        .templates
-        .iter()
-        .find(|t| t.name == "Copper")
-        .expect("Copper template should exist");
-
-    let vc = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "dielectric_strength")
-        .expect("Copper should have a dielectric_strength value cell");
-
-    let default_expr = vc
-        .default_expr
-        .as_ref()
-        .expect("Copper.dielectric_strength must have a default expression");
-
-    match &default_expr.kind {
-        CompiledExprKind::Literal(Value::Scalar { si_value, dimension }) => {
-            assert!(
-                si_value.abs() < 1e-12,
-                "Copper.dielectric_strength si_value should be exactly 0.0, got {}",
-                si_value
-            );
-            assert_eq!(
-                *dimension,
-                DimensionVector::DIELECTRIC_STRENGTH,
-                "Copper.dielectric_strength dimension should be DIELECTRIC_STRENGTH, \
-                 got {:?}",
-                dimension
-            );
-        }
-        other => panic!(
-            "Copper.dielectric_strength default_expr should be \
-             Literal(Scalar) after compound-literal migration, got {:?}",
-            other
-        ),
-    }
+    assert_param_folds_to_scalar(&compiled, "Copper", "dielectric_strength", 0.0, DimensionVector::DIELECTRIC_STRENGTH);
 }
