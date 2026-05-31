@@ -12625,4 +12625,158 @@ mod tests {
             other => panic!("expected Value::Transform for None pose; got {:?}", other),
         }
     }
+
+    /// `eval_sub_pose(Some(&transform_expr), ...)` must return the Transform unchanged
+    /// (passthrough) and push no diagnostics.
+    ///
+    /// Pins the step-3/4 contract: a pose that is already a Transform is not altered.
+    #[test]
+    fn eval_sub_pose_transform_passthrough() {
+        let s = std::f64::consts::FRAC_1_SQRT_2; // 90° about Z: (s, 0, 0, s)
+        let input_transform = reify_ir::Value::Transform {
+            rotation: Box::new(reify_ir::Value::Orientation {
+                w: s,
+                x: 0.0,
+                y: 0.0,
+                z: s,
+            }),
+            translation: Box::new(reify_ir::Value::Vector(vec![
+                reify_ir::Value::length(10.0),
+                reify_ir::Value::length(20.0),
+                reify_ir::Value::length(30.0),
+            ])),
+        };
+        let expr = reify_ir::CompiledExpr::literal(
+            input_transform.clone(),
+            reify_core::Type::transform(3),
+        );
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = super::eval_sub_pose(
+            Some(&expr),
+            &ValueMap::new(),
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            diagnostics.is_empty(),
+            "Transform passthrough must not push diagnostics; got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            result, input_transform,
+            "Transform passthrough must return the input unchanged"
+        );
+    }
+
+    /// `eval_sub_pose` with a `Frame { origin: Point([1m, 2m, 3m]), basis: 90°Z }` must
+    /// lower to `Transform { rotation: 90°Z, translation: Vector([1m, 2m, 3m]) }`.
+    ///
+    /// This is the PRD §11 Q1 convention-pinning numeric test (step-5/6).
+    /// Derivation: Transform{Q,t} maps child-local p to parent Q·p + t.
+    /// Carrying identity frame onto Frame{o, R} forces t = o and Q = R.
+    #[test]
+    fn eval_sub_pose_frame_lowers_to_transform_convention() {
+        let s = std::f64::consts::FRAC_1_SQRT_2; // 90° about Z
+        let input_frame = reify_ir::Value::Frame {
+            origin: Box::new(reify_ir::Value::Point(vec![
+                reify_ir::Value::length(1.0),
+                reify_ir::Value::length(2.0),
+                reify_ir::Value::length(3.0),
+            ])),
+            basis: Box::new(reify_ir::Value::Orientation {
+                w: s,
+                x: 0.0,
+                y: 0.0,
+                z: s,
+            }),
+        };
+        let expr = reify_ir::CompiledExpr::literal(
+            input_frame,
+            reify_core::Type::frame(3),
+        );
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = super::eval_sub_pose(
+            Some(&expr),
+            &ValueMap::new(),
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            diagnostics.is_empty(),
+            "Frame lowering must not push diagnostics; got: {:?}",
+            diagnostics
+        );
+
+        match result {
+            reify_ir::Value::Transform { rotation, translation } => {
+                // Convention: rotation == Frame.basis (exact copy, no normalization)
+                assert_eq!(
+                    *rotation,
+                    reify_ir::Value::Orientation { w: s, x: 0.0, y: 0.0, z: s },
+                    "lowered rotation must equal Frame basis; got {:?}",
+                    rotation
+                );
+                // Convention: translation == Frame.origin components as Vector
+                match *translation {
+                    reify_ir::Value::Vector(ref components) => {
+                        assert_eq!(components.len(), 3);
+                        assert_eq!(components[0], reify_ir::Value::length(1.0));
+                        assert_eq!(components[1], reify_ir::Value::length(2.0));
+                        assert_eq!(components[2], reify_ir::Value::length(3.0));
+                    }
+                    ref other => panic!(
+                        "lowered translation must be a Vector; got {:?}",
+                        other
+                    ),
+                }
+            }
+            other => panic!("expected Value::Transform after Frame lowering; got {:?}", other),
+        }
+    }
+
+    /// `eval_sub_pose(Some(&non_pose_expr), ...)` must return `Value::Undef` and
+    /// push exactly one `Diagnostic::error`.
+    ///
+    /// T4 owns pose type-validation (T2 deferred it). Pins the step-7/8 contract.
+    #[test]
+    fn eval_sub_pose_non_pose_value_returns_undef_with_diagnostic() {
+        let expr = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Real(5.0),
+            reify_core::Type::Real,
+        );
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = super::eval_sub_pose(
+            Some(&expr),
+            &ValueMap::new(),
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_undef(),
+            "non-pose value must return Value::Undef; got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "non-pose value must push exactly one diagnostic; got {} diags: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_core::Severity::Error,
+            "diagnostic must be Error severity; got {:?}",
+            diagnostics[0].severity
+        );
+    }
 }
