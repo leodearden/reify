@@ -92,16 +92,16 @@ reify-audit \
 
 ---
 
-## §4 Pattern-restricted mode (`--pattern P1|P2|P5`)
+## §4 Pattern-restricted mode (`--pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER`)
 
-**When to use:** User wants to run only one detector, e.g. `/audit --pattern P5`.
+**When to use:** User wants to run only one detector, e.g. `/audit --pattern P5` or `/audit --pattern PDEAD`.
 
 **Argv produced** (after `$SNAPSHOT` is materialized per `cli-invocation.md` §2):
 
 ```bash
 reify-audit \
   --since <14d-ago-iso> \
-  --pattern <P1|P2|P5> \
+  --pattern <P1|P2|P5|PDEAD|PUNTESTED|PLAYER> \
   --tasks-file "$SNAPSHOT" \
   --runs-db    "$REPO_ROOT/data/orchestrator/runs.db" \
   --project-root "$REPO_ROOT"
@@ -112,10 +112,21 @@ reify-audit \
 **Scope object in per-run JSON:**
 
 ```json
-{ "patterns": ["P1"] }   // or ["P2"] or ["P5"]
+{ "patterns": ["P1"] }        // or ["P2"] or ["P5"]
+{ "patterns": ["PDEAD"] }     // advisory: dead code
+{ "patterns": ["PUNTESTED"] } // advisory: untested symbols
+{ "patterns": ["PLAYER"] }    // advisory: layer/import-boundary violations
 ```
 
 **Detectors run:** The named detector only.
+
+### Advisory P-* patterns (PDEAD / PUNTESTED / PLAYER) — notes
+
+These three patterns are **opt-in only** — they are NOT part of the default all-detector sweep (which runs P1/P2/P5). They fire only when named explicitly via `--pattern`.
+
+- **Severity:** All three emit Severity Low — log-only, advisory, **never auto-filed** as a follow-up task. See `references/severity-routing.md` for routing details.
+- **Serve dependency:** PDEAD, PUNTESTED, and PLAYER all require `jcodemunch-serve` to be running. When the serve is unreachable, they degrade to **zero findings** (same fail-soft path as P1; P2/P5 are unaffected — NOT exit 125). See `references/cli-invocation.md` §4.1 for the fail-soft behaviour and `--jcodemunch-url` flag.
+- **Activation:** For serve startup instructions see `docs/architecture-audit/jcodemunch-serve-activation.md`.
 
 ---
 
@@ -149,6 +160,7 @@ Slice-2 deeper rendering (per-finding evidence expansion, links to task URLs) is
 |---|---|
 | `--task <id> --pattern P5` | Spot-check task `<id>`, P5 only |
 | `--since <date> --pattern P1` | Window sweep from `<date>`, P1 only |
+| `--since <date> --pattern PDEAD` | Window sweep from `<date>`, PDEAD advisory only (Low/log) |
 | `--task <id> --since <date>` | Both flags accepted; `AuditContext` receives both `target_task_id` and `window` (CLI source: `reify-audit.rs` lines 333–342). Whether detectors treat this as a strict scope intersection depends on the detector implementation — verify against the detector source or CLI `--help` if exact semantics matter. |
 | `--format markdown` | Adds markdown output to **any** of the above |
 
