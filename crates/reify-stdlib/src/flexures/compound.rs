@@ -19,6 +19,8 @@
 //! term; the residual scales as (δ/L)³ instead of (δ/L):
 //!   δ_rot_double = δ_rot_single · (δ_max/L)²
 
+use std::collections::BTreeMap;
+
 use reify_core::DimensionVector;
 use reify_ir::Value;
 
@@ -122,6 +124,7 @@ pub(crate) fn eval_compound(name: &str, args: &[Value]) -> Option<Value> {
 ///
 /// Returns a joint `Value::Map` (`kind == "prismatic"`) with:
 /// - `spring_rate` = k_stage = 48·E·I/L³ (TRANSLATIONAL_STIFFNESS)
+/// - `transverse_stiffness` = 4·E·(b·t)/L (axial blade stretching)
 /// - `range` = ±δ_max (symmetric LENGTH-bounded range)
 ///
 /// Returns `Value::Undef` on the invalid-input classes in [`parse_compound_inputs`].
@@ -134,6 +137,10 @@ fn prb_parallelogram_flexure(args: &[Value]) -> Value {
     let k_blade = FIXED_GUIDED_GAMMA * c.e * c.i / c.length.powi(3);
     let k_stage = 4.0 * k_blade;
 
+    // Transverse (orthogonal DOF) stiffness: axial stretching of 4 blades.
+    // k_transverse = 4·E·(b·t)/L;  ratio = k_transverse/k_stage = (L/t)².
+    let k_transverse = 4.0 * c.e * (c.width * c.thickness) / c.length;
+
     // Validity range ±δ_max (symmetric LENGTH-bounded range).
     let delta = delta_max(&c);
     let range = Value::range(
@@ -143,7 +150,8 @@ fn prb_parallelogram_flexure(args: &[Value]) -> Value {
         true,
     );
 
-    make_flexure_joint(
+    // Build the standard joint base then add the compound-specific extra keys.
+    let base = make_flexure_joint(
         "prismatic",
         c.axis.clone(),
         range,
@@ -153,7 +161,19 @@ fn prb_parallelogram_flexure(args: &[Value]) -> Value {
         },
         Value::length(0.0),
         c.pivot.clone(),
-    )
+    );
+    let mut m: BTreeMap<Value, Value> = match base {
+        Value::Map(m) => m,
+        _ => unreachable!("make_flexure_joint always returns a Map"),
+    };
+    m.insert(
+        Value::String("transverse_stiffness".to_string()),
+        Value::Scalar {
+            si_value: k_transverse,
+            dimension: DimensionVector::TRANSLATIONAL_STIFFNESS,
+        },
+    );
+    Value::Map(m)
 }
 
 #[cfg(test)]
