@@ -1030,6 +1030,7 @@ mod tests {
     // ------------------------------------------------------------------
     // step-1 / step-2: munch_decode mechanics
     // ------------------------------------------------------------------
+    #[allow(clippy::approx_constant)] // 3.14 is a fixture value, not an approximation of π
     #[test]
     fn munch_decode_mechanics_on_inline_string() {
         // Controlled MUNCH/1 payload: @N ref table, one table spec,
