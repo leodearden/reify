@@ -202,10 +202,11 @@ fn check_tests_assert_empty(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
             }
 
             // Within a fn, check for vacuous assertions.
-            if current_fn_name.is_some() && fn_has_placeholder {
-                if EMPTY_ASSERTION_PATTERNS.iter().any(|pat| line.contains(pat)) {
-                    fn_has_empty_assertion = true;
-                }
+            if current_fn_name.is_some()
+                && fn_has_placeholder
+                && EMPTY_ASSERTION_PATTERNS.iter().any(|pat| line.contains(pat))
+            {
+                fn_has_empty_assertion = true;
             }
         }
         // Flush the last fn.
