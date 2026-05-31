@@ -2637,7 +2637,6 @@ fn dispatch_shared_edges(
     )
 }
 
-
 /// Run a pre-computed filtered-selector result and emit a `Value::List` of
 /// `Value::GeometryHandle` sub-handles whose `upstream_values_hash` encodes the
 /// canonical TopExp index of each retained sub-shape (PRD §4 iii/iv).
@@ -2715,7 +2714,6 @@ fn dispatch_filtered_subhandles(
     }
     Some(reify_ir::Value::List(elements))
 }
-
 
 #[derive(Clone, Copy)]
 enum TopologySelectorHelper {
@@ -8023,17 +8021,16 @@ mod tests {
         }
     }
 
-    // ── step-5 (task 3616): edges/faces dispatch RED unit tests ─────────────
+    // ── step-5 (task 3616): edges/faces dispatch unit tests ─────────────────
     //
-    // These tests are RED because the current arm returns Value::List(Value::Int)
-    // via handle_list_value instead of Value::List(Value::GeometryHandle).
+    // These tests verify that the arm emits Value::List(Value::GeometryHandle)
+    // via dispatch_filtered_subhandles.
 
     /// `edges` dispatch returns `Value::List` of three `Value::GeometryHandle`
     /// elements when the mock kernel returns [GHId(2),GHId(3),GHId(4)] and the
     /// `values` map carries the parent `Value::GeometryHandle`. Each element
     /// must carry the parent's `realization_ref`, and the three
     /// `upstream_values_hash` fields must be pairwise distinct (PRD §4 iii).
-    /// RED: current arm returns `Value::Int` via `handle_list_value`.
     #[test]
     fn edges_dispatch_returns_geometry_handle_list() {
         use reify_test_support::mocks::MockGeometryKernel;
@@ -11952,10 +11949,10 @@ mod tests {
         );
     }
 
-    // ── step-1 (task 3619): adjacent_faces dispatch RED unit tests ───────────
+    // ── step-1 (task 3619): adjacent_faces dispatch unit tests ──────────────
     //
-    // These tests are RED because the current arm returns Value::List(Value::Int)
-    // via dispatch_filtered_list instead of Value::List(Value::GeometryHandle).
+    // These tests verify that the arm emits Value::List(Value::GeometryHandle)
+    // via dispatch_filtered_subhandles.
 
     /// `adjacent_faces` dispatch returns `Value::List` of one
     /// `Value::GeometryHandle` when the mock kernel returns the adjacent face
@@ -12105,11 +12102,10 @@ mod tests {
         );
     }
 
-    // ── step-3 (task 3619): shared_edges dispatch RED unit tests ─────────────
+    // ── step-3 (task 3619): shared_edges dispatch unit tests ─────────────────
     //
-    // These tests are RED because the current arm returns Value::List(Value::Int)
-    // via handle_list_value (inside dispatch_shared_edges) instead of
-    // Value::List(Value::GeometryHandle).
+    // These tests verify that the arm emits Value::List(Value::GeometryHandle)
+    // via dispatch_filtered_subhandles.
 
     /// `shared_edges` dispatch returns `Value::List` of one
     /// `Value::GeometryHandle` (kernel_handle GHId(4)) when the mock kernel
