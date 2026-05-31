@@ -330,6 +330,17 @@ impl GeometryKernel for ManifoldKernel {
                     Err(QueryError::InvalidHandle(*id))
                 }
             }
+            // Performance note — per-query re-extraction (accepted v0.2 cost).
+            // The four topology/mass arms below each call `mesh_geometry` (a
+            // full `to_mesh_f64` + vertex copy) on every invocation, and
+            // `SharedEdges` additionally rebuilds the `canonical_edges` BTreeSet
+            // per call; iterating queries over many face/edge pairs of one shape
+            // is therefore O(pairs · mesh_size) with repeated full-mesh
+            // re-extraction. This mirrors OCCT's per-query model and is left
+            // un-memoized intentionally for v0.2. If profiling shows these hot,
+            // cache `(verts, triangles, canonical_edges)` alongside `shapes`,
+            // invalidated whenever a handle's mesh is (re)stored.
+            //
             // Faces (mesh triangles) sharing at least one edge with triangle
             // `face_index`, self excluded, ascending — Value::List<Value::Int>
             // mirroring OCCT's AdjacentFaces wire format. On the closed cube
