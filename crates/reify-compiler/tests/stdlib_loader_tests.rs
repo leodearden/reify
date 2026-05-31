@@ -442,6 +442,7 @@ fn prelude_modules_carry_no_prelude_pragma() {
         "std/materials/mechanical",
         "std/analysis",
         "std/tolerancing",
+        "std/fields",
     ];
 
     assert_no_prelude_pragma_invariant_bidirectional(modules, &targets);
