@@ -1,14 +1,20 @@
-//! Headline acceptance test for task 3868 (κ): PRD compliant-joints-flexures.md §10.1 row 8.
+//! K-assembly + eigensolve integration test for task 3868 (κ):
+//! PRD compliant-joints-flexures.md §10.1 row 8 assembly seam.
 //!
-//! A lumped mass `m` on a Howell-cantilever flexure of stiffness `k` has first-mode
-//! frequency `f₁ = (1/2π)·√(k/m)` within the PRD's 2% band.
+//! Verifies that `add_joint_stiffness` correctly injects diagonal spring rates into the
+//! global K and that `solve_eigen_dense` recovers the expected eigenvalue.  For the
+//! 2-DOF uncoupled block-diagonal system used here, λ₀ = k/m_load is closed-form exact
+//! (det(K − λM) = 0 ⟹ k − λm = 0), so the recovered frequency equals `f_expected`
+//! to machine precision (~1e-10 relative).
+//!
+//! Note: this test exercises the K-assembly → eigensolve plumbing; it does NOT validate
+//! the Howell cantilever stiffness formula (k = 2.65·E·I/L) against an independent
+//! reference — that validation belongs in the γ cantilever-ctor task.
 //!
 //! Implementation note: faer's dense QZ algorithm (used by `solve_eigen_dense`) requires
 //! n ≥ 2 for its scratch-buffer allocation. The test therefore uses a 2-DOF uncoupled
 //! spring-mass system: DOF 0 is the Howell-cantilever mass (lower frequency), DOF 1 is
-//! a stiff "anchor" DOF with much higher frequency. For a block-diagonal K = diag(k, k₁)
-//! and M = diag(m, m₁) the eigenvalues are still closed-form exact: λᵢ = kᵢ/mᵢ,
-//! so the PRD 2% band is met with ~machine-precision margin.
+//! a stiff "anchor" DOF with much higher frequency.
 
 use std::f64::consts::PI;
 
@@ -73,10 +79,12 @@ fn howell_cantilever_first_mode_frequency() {
     let f_computed = lambda.sqrt() / (2.0 * PI);
     let f_expected = (k / m_load).sqrt() / (2.0 * PI);
 
+    // For the uncoupled diagonal system λ₀ = k/m_load is closed-form exact; the
+    // eigensolve should agree to machine precision (~1e-10 relative).
     let rel_err = ((f_computed - f_expected) / f_expected).abs();
     assert!(
-        rel_err <= 0.02,
-        "first-mode frequency relative error {rel_err:.2e} exceeds PRD 2% band: \
+        rel_err <= 1e-6,
+        "first-mode frequency relative error {rel_err:.2e} exceeds tolerance: \
          f_computed = {f_computed:.6} Hz, f_expected = {f_expected:.6} Hz \
          (k = {k:.4e} N/m, m = {m_load} kg)",
     );

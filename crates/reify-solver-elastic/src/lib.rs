@@ -368,11 +368,11 @@ pub mod buckling_kernel;
 pub mod constitutive;
 pub mod eigensolve;
 pub mod elements;
-// Task 3868: κ — additive joint-stiffness kernel (PRD compliant-joints-flexures.md §7.2).
-pub mod joint_stiffness;
 pub mod error_estimator;
 pub mod geometric_stiffness;
 pub mod interpolation;
+// Task 3868: κ — additive joint-stiffness kernel (PRD compliant-joints-flexures.md §7.2).
+pub mod joint_stiffness;
 pub mod mass_matrix;
 pub mod material_field;
 pub mod math;

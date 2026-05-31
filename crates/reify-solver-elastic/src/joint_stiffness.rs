@@ -14,6 +14,7 @@
 use faer::sparse::{SparseRowMat, Triplet};
 
 /// One additive diagonal contribution to the global stiffness matrix.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct JointStiffness {
     /// Global DOF index of the joint's spring degree of freedom.
     pub dof: usize,
@@ -47,12 +48,32 @@ pub fn add_joint_stiffness(
     contributions: &[JointStiffness],
 ) -> SparseRowMat<usize, f64> {
     let n = k_global.nrows();
-    // Public-surface contract checks. Unconditional `assert!` (not `debug_assert!`)
-    // per the project's Task-2544 contract-explicitness convention (see
-    // assembly/global.rs:345-346 and the per-entry guards at :363-401).
-    // The kernel is sign-agnostic: negative but finite stiffness is allowed; SPD-ness
-    // of the resulting K is the caller's/eigensolve's contract, mirroring how
-    // `solve_eigen_shift_invert` documents its own SPD precondition.
+    // Fast path: no contributions → return a structurally identical clone cheaply,
+    // without any triplet extraction or CSR rebuild.
+    if contributions.is_empty() {
+        return k_global.clone();
+    }
+    // Extract K's stored triplets — mirror project_free (modal_ops.rs:484-508) and
+    // m_matvec (modal_ops.rs:515-528): symbolic() gives the sparsity structure;
+    // col_idx_of_row_raw + val_of_row iterate the stored (col, value) pairs per row.
+    let sym = k_global.symbolic();
+    let mut trips: Vec<Triplet<usize, usize, f64>> = Vec::new();
+    for r in 0..n {
+        let cols = sym.col_idx_of_row_raw(r);
+        let vals = k_global.val_of_row(r);
+        for (col_raw, &val) in cols.iter().zip(vals.iter()) {
+            trips.push(Triplet::new(r, *col_raw, val));
+        }
+    }
+    // Validate and append each contribution in a single pass. Guards are unconditional
+    // `assert!` (not `debug_assert!`) per the Task-2544 contract-explicitness convention
+    // (see assembly/global.rs:345-346). The kernel is sign-agnostic: negative but finite
+    // stiffness is allowed; SPD-ness of the resulting K is the caller's/eigensolve's
+    // contract, mirroring how `solve_eigen_shift_invert` documents its own SPD precondition.
+    // faer sums duplicate (row, col) triplets in encounter order (assembly/global.rs:60-64),
+    // so an existing K[dof,dof] entry and the appended triplet sum to K[dof,dof] += k;
+    // a structurally-absent diagonal entry is created with value k; repeated same-dof
+    // contributions accumulate by the same mechanism.
     for c in contributions {
         assert!(
             c.dof < n,
@@ -67,25 +88,6 @@ pub fn add_joint_stiffness(
              the downstream generalized eigenproblem",
             c.stiffness,
         );
-    }
-    // Extract K's stored triplets — mirror project_free (modal_ops.rs:484-508) and
-    // m_matvec (modal_ops.rs:515-528): symbolic() gives the sparsity structure;
-    // col_idx_of_row_raw + val_of_row iterate the stored (col, value) pairs per row.
-    let sym = k_global.symbolic();
-    let mut trips: Vec<Triplet<usize, usize, f64>> = Vec::new();
-    for r in 0..n {
-        let cols = sym.col_idx_of_row_raw(r);
-        let vals = k_global.val_of_row(r);
-        for (col_raw, &val) in cols.iter().zip(vals.iter()) {
-            trips.push(Triplet::new(r, *col_raw, val));
-        }
-    }
-    // Append one (dof, dof, k) triplet per contribution. faer sums duplicate
-    // (row, col) triplets in encounter order (assembly/global.rs:60-64), so an
-    // existing K[dof,dof] entry and this appended triplet sum to K[dof,dof] += k;
-    // a structurally-absent diagonal entry is created with value k; two contributions
-    // to the same dof accumulate by the same mechanism.
-    for c in contributions {
         trips.push(Triplet::new(c.dof, c.dof, c.stiffness));
     }
     SparseRowMat::try_new_from_triplets(n, n, &trips)
