@@ -4130,4 +4130,27 @@ mod tests {
             "linear_combine: weights map is empty. Specify at least one weighted base case."
         );
     }
+
+    // step-7 (RED): weights map references an unknown (misspelled) case →
+    // MultiLoadUnknownCaseInWeights, with the available case names sorted and
+    // comma-space joined. RED until the unknown-case arm lands in step-8.
+    #[test]
+    fn diagnose_linear_combine_unknown_case() {
+        let mcr = multi_case_result_value(&[
+            ("operating", make_fixture_elastic_result(0)),
+            ("overload", make_fixture_elastic_result(0)),
+        ]);
+        let mut weights = BTreeMap::new();
+        weights.insert(Value::String("operatng".to_string()), Value::Real(1.0));
+        let diag = diagnose("linear_combine", &[mcr, Value::Map(weights)])
+            .expect("unknown case must produce a diagnostic");
+        assert_eq!(
+            diag.code,
+            Some(reify_core::DiagnosticCode::MultiLoadUnknownCaseInWeights)
+        );
+        assert_eq!(
+            diag.message,
+            "linear_combine: weights map references unknown case 'operatng'. Available cases: [operating, overload]. Did you misspell the case name?"
+        );
+    }
 }
