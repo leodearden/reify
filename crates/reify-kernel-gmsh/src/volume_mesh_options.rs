@@ -105,6 +105,20 @@ mod tests {
         );
     }
 
+    /// Two options differing only in `require_hex_wedge` must produce different
+    /// hashes — confirms require_hex_wedge is included in the hash input.
+    #[test]
+    fn require_hex_wedge_sensitivity() {
+        let a = VolumeMeshOptions { force_tet: false, require_hex_wedge: true };
+        let b = VolumeMeshOptions { force_tet: false, require_hex_wedge: false };
+        assert_ne!(
+            a.content_hash(),
+            b.content_hash(),
+            "VolumeMeshOptions with different require_hex_wedge must produce different \
+             content_hash values — require_hex_wedge not hashed",
+        );
+    }
+
     /// Identical `VolumeMeshOptions` must produce equal hashes (determinism).
     /// Confirms the hash is purely a function of the field values — no
     /// timestamp, no RNG, no pointer identity.
