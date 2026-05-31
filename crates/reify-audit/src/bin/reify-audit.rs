@@ -8,7 +8,7 @@
 //! - `reify-audit --task <id> --pre-done`  P5 only; exit non-zero on detection.
 //! - `reify-audit --task <id>`             Spot-check, all three detectors.
 //! - `reify-audit --since <iso-date>`      Window sweep, all three detectors.
-//! - `--pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER`  Restrict which detector(s) run.
+//! - `--pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER`  Restrict which detector(s) run; comma-separated for multi-detector union (e.g. `--pattern P1,P2,P5`).
 //!
 //! ## Output
 //!
@@ -102,7 +102,7 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  --task <id>              Spot-check a single task (all detectors)");
     let _ = writeln!(out, "  --pre-done               With --task: run P5 pre-done check only");
     let _ = writeln!(out, "  --since <iso-date>       Window sweep from ISO date (all detectors)");
-    let _ = writeln!(out, "  --pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER Restrict to one detector");
+    let _ = writeln!(out, "  --pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER Restrict to detector(s); comma-separated for union (e.g. --pattern P1,P2,P5)");
     let _ = writeln!(out, "  --tasks-file <path>      JSON array of TaskMetadata (overrides live loader; for tests)");
     let _ = writeln!(out, "  --fused-memory-url <url> MCP endpoint (default: $FUSED_MEMORY_URL or http://localhost:8002/mcp)");
     let _ = writeln!(out, "  --runs-db <path>         SQLite runs.db path (default: data/orchestrator/runs.db)");
@@ -167,6 +167,10 @@ struct Args {
     task_id: Option<String>,
     pre_done: bool,
     since: Option<String>,
+    /// Validated comma-separated detector token list (e.g. `"P1,P2,P5"`).
+    /// Each token is one of `P1`, `P2`, `P5`, `PDEAD`, `PUNTESTED`.
+    /// `None` means no restriction — all default-sweep detectors run.
+    /// Use `pattern_selects(val, token)` to test membership.
     pattern: Option<String>,
     /// `Some(path)` → load TaskMetadata from a JSON fixture (test path).
     /// `None` → load live from fused-memory MCP at `fused_memory_url`.
@@ -245,17 +249,24 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             "--pattern" => {
                 i += 1;
                 let p = argv.get(i).ok_or("--pattern requires a value")?.as_str();
-                match p {
-                    "P1" | "P2" | "P5" | "PDEAD" | "PUNTESTED" | "PLAYER" => {
-                        pattern = Some(p.to_string())
+                // Validate each comma-separated token individually.
+                for tok in p.split(',') {
+                    let tok = tok.trim();
+                    if tok.is_empty() {
+                        return Err(
+                            "empty --pattern token; remove the stray comma \
+                             (e.g. use 'P1,P2' not 'P1,P2,')"
+                                .to_string(),
+                        );
                     }
-                    other => {
+                    if !matches!(tok, "P1" | "P2" | "P5" | "PDEAD" | "PUNTESTED" | "PLAYER") {
                         return Err(format!(
                             "unknown --pattern value '{}'; expected P1, P2, P5, PDEAD, PUNTESTED, or PLAYER",
-                            other
-                        ))
+                            tok
+                        ));
                     }
                 }
+                pattern = Some(p.to_string());
             }
             "--tasks-file" => {
                 i += 1;
@@ -401,6 +412,14 @@ fn load_tasks_from_fused_memory(
 // Dispatch helpers
 // -----------------------------------------------------------------------
 
+/// Return true when the validated comma-separated `pattern` value selects `token`.
+///
+/// `pattern` is the raw stored value (e.g. `"P1,P2,P5"`); callers pass
+/// `args.pattern.as_deref()` and handle `None` (no restriction) themselves.
+fn pattern_selects(pattern: &str, token: &str) -> bool {
+    pattern.split(',').map(str::trim).any(|t| t == token)
+}
+
 /// Return true when at least one jcodemunch-backed detector (P1) is in the
 /// run set for the given args.
 ///
@@ -415,25 +434,30 @@ fn needs_jcodemunch(args: &Args) -> bool {
     if args.pre_done {
         return false;
     }
-    args.pattern.as_deref().is_none_or(|p| p == "P1" || p == "PDEAD" || p == "PUNTESTED" || p == "PLAYER")
+    args.pattern.as_deref().is_none_or(|p| {
+        pattern_selects(p, "P1")
+            || pattern_selects(p, "PDEAD")
+            || pattern_selects(p, "PUNTESTED")
+            || pattern_selects(p, "PLAYER")
+    })
 }
 
-/// Opt-in dispatch predicate for PDEAD: true only when `--pattern PDEAD` is
-/// given explicitly (not part of the default all-detector sweep).
+/// Opt-in dispatch predicate for PDEAD: true only when `PDEAD` is in the
+/// comma-separated `--pattern` set (not part of the default all-detector sweep).
 fn run_pdead(args: &Args) -> bool {
-    args.pattern.as_deref() == Some("PDEAD")
+    args.pattern.as_deref().is_some_and(|p| pattern_selects(p, "PDEAD"))
 }
 
-/// Opt-in dispatch predicate for PUNTESTED: true only when `--pattern PUNTESTED`
-/// is given explicitly (not part of the default all-detector sweep).
+/// Opt-in dispatch predicate for PUNTESTED: true only when `PUNTESTED` is in the
+/// comma-separated `--pattern` set (not part of the default all-detector sweep).
 fn run_puntested(args: &Args) -> bool {
-    args.pattern.as_deref() == Some("PUNTESTED")
+    args.pattern.as_deref().is_some_and(|p| pattern_selects(p, "PUNTESTED"))
 }
 
-/// Opt-in dispatch predicate for PLAYER: true only when `--pattern PLAYER` is
-/// given explicitly (not part of the default all-detector sweep).
+/// Opt-in dispatch predicate for PLAYER: true only when `PLAYER` is in the
+/// comma-separated `--pattern` set (not part of the default all-detector sweep).
 fn run_player(args: &Args) -> bool {
-    args.pattern.as_deref() == Some("PLAYER")
+    args.pattern.as_deref().is_some_and(|p| pattern_selects(p, "PLAYER"))
 }
 
 // -----------------------------------------------------------------------
@@ -572,9 +596,9 @@ fn main() -> ExitCode {
         // run_p1 is DECOUPLED from needs_jcodemunch: needs_jcodemunch now also
         // covers PDEAD (which needs the live server), but run_p1 must not fire
         // on `--pattern PDEAD`. Each detector has its own explicit predicate.
-        let run_p1 = args.pattern.as_deref().is_none_or(|p| p == "P1");
-        let run_p2 = args.pattern.as_deref().is_none_or(|p| p == "P2");
-        let run_p5 = args.pattern.as_deref().is_none_or(|p| p == "P5");
+        let run_p1 = args.pattern.as_deref().is_none_or(|p| pattern_selects(p, "P1"));
+        let run_p2 = args.pattern.as_deref().is_none_or(|p| pattern_selects(p, "P2"));
+        let run_p5 = args.pattern.as_deref().is_none_or(|p| pattern_selects(p, "P5"));
         // PDEAD, PUNTESTED, and PLAYER are opt-in only — not part of the default all-detector sweep.
         let run_pdead = run_pdead(&args);
         let run_puntested = run_puntested(&args);
@@ -936,6 +960,97 @@ mod tests {
         assert!(
             run_player(&make_args(false, Some("PLAYER"))),
             "PLAYER must activate when --pattern PLAYER is given"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // comma-separated --pattern tests (step-1 RED, step-2 GREEN)
+    // -------------------------------------------------------------------
+
+    /// `--pattern P1,P2,P5` must be accepted; the stored value must contain
+    /// all three tokens when split on ','.
+    #[test]
+    fn parse_args_pattern_accepts_comma_list() {
+        let args = parse_args(&["--pattern".to_string(), "P1,P2,P5".to_string()])
+            .expect("--pattern P1,P2,P5 must parse successfully");
+        let val = args.pattern.as_deref().expect("pattern must be Some");
+        let tokens: Vec<&str> = val.split(',').map(str::trim).collect();
+        assert!(tokens.contains(&"P1"), "tokens must contain P1; got: {tokens:?}");
+        assert!(tokens.contains(&"P2"), "tokens must contain P2; got: {tokens:?}");
+        assert!(tokens.contains(&"P5"), "tokens must contain P5; got: {tokens:?}");
+    }
+
+    /// `--pattern P1, P2 , P5` (with spaces around commas) must be accepted —
+    /// per-token whitespace trimming during validation must not reject valid tokens.
+    #[test]
+    fn parse_args_pattern_trims_whitespace_around_tokens() {
+        let args = parse_args(&["--pattern".to_string(), "P1, P2 , P5".to_string()])
+            .expect("--pattern with spaces around commas must parse successfully");
+        assert!(
+            args.pattern.is_some(),
+            "pattern must be Some; whitespace-padded comma list must be accepted"
+        );
+    }
+
+    /// `--pattern P1,BOGUS` must fail with an error that names `BOGUS` (the
+    /// specific bad token) and contains the known-token expected wording, but
+    /// does NOT contain the whole `P1,BOGUS` string.
+    #[test]
+    fn parse_args_pattern_unknown_token_in_list_names_token() {
+        let err = unwrap_err(parse_args(&["--pattern".to_string(), "P1,BOGUS".to_string()]));
+        assert!(
+            err.contains("'BOGUS'"),
+            "error must name the offending token 'BOGUS' (with surrounding quotes); got: {err}"
+        );
+        assert!(
+            err.contains("expected P1, P2, P5, PDEAD, PUNTESTED, or PLAYER"),
+            "error must list all known tokens; got: {err}"
+        );
+        // NOTE: we do not assert !err.contains("P1,BOGUS") — a future message
+        // that echoes the input but still names BOGUS would be equally valid.
+        // The positive assertions above (token named + known-token list) are
+        // the meaningful contract.
+    }
+
+    /// Trailing or leading commas (`--pattern P1,` / `--pattern ,P2`) produce
+    /// a dedicated "empty --pattern token" diagnostic rather than the generic
+    /// `unknown --pattern value ''` message.
+    #[test]
+    fn parse_args_pattern_empty_token_gives_clear_error() {
+        let err = unwrap_err(parse_args(&["--pattern".to_string(), "P1,".to_string()]));
+        assert!(
+            err.contains("empty --pattern token"),
+            "trailing comma must produce empty-token diagnostic; got: {err}"
+        );
+        let err2 = unwrap_err(parse_args(&["--pattern".to_string(), ",P2".to_string()]));
+        assert!(
+            err2.contains("empty --pattern token"),
+            "leading comma must produce empty-token diagnostic; got: {err2}"
+        );
+    }
+
+    /// needs_jcodemunch must route comma-separated patterns correctly:
+    /// - P2,P5 → false (neither P1/PDEAD/PUNTESTED present)
+    /// - P2,P1 → true  (P1 present)
+    /// - P5,PDEAD → true (PDEAD present)
+    /// - P2,PUNTESTED → true (PUNTESTED present)
+    #[test]
+    fn needs_jcodemunch_comma_pattern_routing() {
+        assert!(
+            !needs_jcodemunch(&make_args(false, Some("P2,P5"))),
+            "P2,P5 must not need jcodemunch"
+        );
+        assert!(
+            needs_jcodemunch(&make_args(false, Some("P2,P1"))),
+            "P2,P1 must need jcodemunch (P1 present)"
+        );
+        assert!(
+            needs_jcodemunch(&make_args(false, Some("P5,PDEAD"))),
+            "P5,PDEAD must need jcodemunch (PDEAD present)"
+        );
+        assert!(
+            needs_jcodemunch(&make_args(false, Some("P2,PUNTESTED"))),
+            "P2,PUNTESTED must need jcodemunch (PUNTESTED present)"
         );
     }
 }

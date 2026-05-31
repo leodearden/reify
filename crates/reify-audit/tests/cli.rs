@@ -1055,6 +1055,117 @@ mod cli {
             String::from_utf8_lossy(&out.stderr)
         );
     }
+
+    // -------------------------------------------------------------------
+    // comma-separated --pattern integration tests (step-1 RED, step-2 GREEN)
+    // -------------------------------------------------------------------
+
+    /// `--pattern P1,P2,P5` must be accepted (not exit 125) and must run the
+    /// union of P1+P2+P5 detectors. With the phantom-done fixture, P5 fires and
+    /// the exit code is non-zero with a P5PhantomDone/High finding for task 3242.
+    #[test]
+    fn pattern_comma_list_runs_union_of_detectors() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+
+        let tasks = vec![task_fixture("3242", "done", Some("merged"), Some("deadbeef"))];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task",
+                "3242",
+                "--pattern",
+                "P1,P2,P5",
+                "--no-jcodemunch",
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit --pattern P1,P2,P5");
+
+        // First assert: must NOT exit 125 (the bug: current binary exits 125 for comma patterns).
+        assert_ne!(
+            out.status.code(),
+            Some(125),
+            "--pattern P1,P2,P5 must not exit 125 (comma list must be accepted); \
+             stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        // Second assert: exit code must be >= 1 (at least one High finding).
+        let code = out.status.code().unwrap_or(0);
+        assert!(
+            code >= 1,
+            "--pattern P1,P2,P5 with phantom-done fixture must exit non-zero; got {code}\nstderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        // Third assert: parse findings and verify P5PhantomDone/High/3242 is present.
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        let p5_high = findings.iter().find(|f| {
+            f["pattern"].as_str() == Some("P5PhantomDone")
+                && f["severity"].as_str() == Some("High")
+                && f["task_id"].as_str() == Some("3242")
+        });
+        assert!(
+            p5_high.is_some(),
+            "--pattern P1,P2,P5 must dispatch P5 and find P5PhantomDone/High/3242; findings:\n{:#}",
+            serde_json::Value::Array(findings)
+        );
+    }
+
+    /// `--pattern P1,BOGUS` must exit 125 with a clear error naming `BOGUS`
+    /// and listing the known tokens.
+    #[test]
+    fn pattern_comma_list_unknown_token_exits_125() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+
+        let tasks_file = write_tasks_json(dir, &[]);
+        let runs_db = write_empty_runs_db(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--pattern",
+                "P1,BOGUS",
+                "--no-jcodemunch",
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit --pattern P1,BOGUS");
+
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "--pattern P1,BOGUS must exit 125 (unknown token); got {:?}\nstderr: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("'BOGUS'"),
+            "stderr must name the offending token 'BOGUS' (with surrounding quotes); stderr: {stderr}"
+        );
+        assert!(
+            stderr.contains("expected P1, P2, P5, PDEAD, PUNTESTED, or PLAYER"),
+            "stderr must list the known tokens; stderr: {stderr}"
+        );
+    }
 }
 
 // -----------------------------------------------------------------------
