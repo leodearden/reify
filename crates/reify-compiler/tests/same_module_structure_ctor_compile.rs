@@ -10,7 +10,6 @@
 //! overload → poison diagnostic + error.  Step-2 (GREEN) adds the skeleton pre-pass.
 
 use reify_ir::*;
-use reify_compiler::*;
 use reify_core::*;
 
 // ─── source fixture ───────────────────────────────────────────────────────────
