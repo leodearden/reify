@@ -26,7 +26,7 @@
 //! field. On a flat, constant-Jacobian facet it is inert in transverse shear
 //! (`K_NB^shear ≡ 0`; esc-3392, DD#2 retracted) — so the flat-facet shear cure
 //! is the nodal interior-tying assumed field above, not the bubble, which
-//! becomes live only on the curved director substrate (task 4065).
+//! becomes live only on the curved director substrate (task 4068).
 
 /// A point in the local 2D mid-surface reference-triangle `(ξ, η)` space.
 ///
@@ -135,7 +135,7 @@ const TYING_OFFSET_D: f64 = 1.0 / 10000.0;
 /// divergence-theorem result of task 3349, re-derived for the flat-facet shear
 /// field in the esc-3392 corrected resolution; DD#2 retracted). The bubble
 /// enriches **bending** only and becomes live in transverse shear solely on the
-/// curved director substrate (task 4065).
+/// curved director substrate (task 4068).
 const INTERIOR_TYING_POINTS: &[TyingPoint] = &[
     // A = (1/6, 2/3)
     TyingPoint {
@@ -410,7 +410,7 @@ impl Mitc3Plus {
     /// [`Mitc3Plus::interpolate_assumed_shear_mitc3_plus`] (Eq. 9), which is a
     /// softer field than bare MITC3's edge-midpoint Eq. 5. The cubic bubble
     /// enriches **bending** only and becomes live in transverse shear only on the
-    /// curved director substrate (task 4065) — hence this B-matrix carries no
+    /// curved director substrate (task 4068) — hence this B-matrix carries no
     /// bubble columns.
     pub fn covariant_shear_b_nodal(
         &self,

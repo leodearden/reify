@@ -33,6 +33,8 @@
 //!     Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement, TetP1, TetP2, HexP1, WedgeP1,
 //!     Mitc3Plus, ShellReferenceCoord, TyingPoint,
 //!     ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness,
+//!     // Task 4068: degenerate-shell substrate public surface
+//!     shell_element_stiffness_degenerate, Director, ShellRefCoord3, directors_from_facets,
 //!     IsotropicElastic,
 //!     ShellStress,
 //!     ShellElementStress, shell_element_stress,
@@ -90,6 +92,18 @@
 //! let k = shell_element_stiffness(&nodes, 0.05, &mat);
 //! assert_eq!(k.n_dofs, 18);
 //! assert_eq!(k.data.len(), 324);
+//!
+//! // Degenerate-shell substrate smoke test (Task 4068): the element consumes
+//! // explicit per-node directors + the 3D (ξ,η,ζ) reference coordinate, and the
+//! // neighbour-averaged facet-normal fallback supplies directors when no
+//! // extraction normals exist. A flat facet with +z directors reduces to flat
+//! // MITC3+, so the element matrix is the same 18×18 container.
+//! let _ = ShellRefCoord3::new(1.0 / 3.0, 1.0 / 3.0, 0.0);
+//! let dirs: Vec<Director> = directors_from_facets(&nodes, &[[0, 1, 2]]);
+//! assert_eq!(dirs.len(), 3);
+//! let k_deg = shell_element_stiffness_degenerate(&nodes, &[dirs[0], dirs[1], dirs[2]], &[0.05; 3], &mat);
+//! assert_eq!(k_deg.n_dofs, 18);
+//! assert_eq!(k_deg.data.len(), 324);
 //!
 //! // ShellStress smoke test (T16): use a non-trivial value so a regression where
 //! // one channel is left default would surface here.
@@ -420,6 +434,7 @@ pub use constitutive::{
 pub use material_field::{AnisotropicMaterial, ConstantField, DiscreteCellField, MaterialField};
 pub use elements::{
     Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement,
+    degenerate_shell::{Director, ShellRefCoord3, directors_from_facets},
     hex_p1::HexP1,
     mitc3_plus::{Mitc3Plus, ShellReferenceCoord, TyingPoint},
     tet_p1::TetP1,

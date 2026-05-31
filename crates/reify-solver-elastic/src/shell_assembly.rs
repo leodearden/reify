@@ -53,7 +53,8 @@
 //! a softer field than the bare edge-midpoint Eq. 5. The bubble (carried through
 //! the retained 20×20 skeleton + 2×2 condensation, a no-op here since `K_NB = 0`)
 //! enriches bending only and becomes live in shear/membrane on the curved
-//! director substrate of task 4065. See the doc comment on
+//! director substrate of task 4068 (its ANS-membrane companion is task 4065).
+//! See the doc comment on
 //! [`shell_element_stiffness_mitc3_plus`] for the full block breakdown.
 
 use crate::assembly::ElementStiffness;
@@ -565,7 +566,7 @@ pub fn shell_element_stiffness(
 ///   condensation correction `K_NB·K_BB⁻¹·K_BN` is therefore zero and
 ///   `K* = K_NN` exactly. The 20×20 skeleton + 2×2 condensation are retained for
 ///   faithfulness to the formulation and as the substrate the curved/director
-///   element (task 4065) activates — there `K_NB ≠ 0` and the bubble does work.
+///   element (task 4068) activates — there `K_NB ≠ 0` and the bubble does work.
 ///
 /// ## Patch-test consistency
 ///
@@ -652,7 +653,7 @@ pub fn shell_element_stiffness_mitc3_plus(
     // — so K_BB's only consumer is the `det_bb > 0` SPD `debug_assert`. The
     // six-interior-point sum below is therefore NOT an exact quadrature rule for
     // the degree-4 integrand ∇f_b·D_b·∇f_b; it only needs to preserve positive
-    // definiteness (sign), which it does. Task 4065 — where the curved/director
+    // definiteness (sign), which it does. Task 4068 — where the curved/director
     // substrate makes K_NB ≠ 0 and K_BB's value actually feeds K* — must replace
     // this with an exact rule before trusting the numeric block.
     for tp in interior.iter() {
@@ -735,7 +736,7 @@ pub fn shell_element_stiffness_mitc3_plus(
     // self-term writes only the (BX,BY) block, and the bubble is inert in shear
     // (K_NB^shear ≡ 0; DD#2 retracted). So K_NB ≡ 0 (bit-zero), the correction
     // K_NB·K_BB⁻¹·K_BN is identically zero, and K* = K_NN exactly. The full 2×2
-    // condensation is retained as faithful scaffolding for task 4065, where the
+    // condensation is retained as faithful scaffolding for task 4068, where the
     // curved/director substrate makes K_NB ≠ 0 and the bubble does work.
     debug_assert!(
         (0..NDOF).all(|i| {
@@ -966,7 +967,7 @@ pub fn shell_element_stiffness_degenerate(
     // K* = K_NN − K_NB · K_BB⁻¹ · K_BN. The nodal B-matrices never write the
     // bubble columns, so K_NB/K_BN are bit-zero and the correction vanishes
     // (K* = K_NN). The full 2×2 condensation is retained as faithful scaffolding
-    // for task 4065, where the bubble couples (K_NB ≠ 0) and does work.
+    // for task 4068, where the bubble couples (K_NB ≠ 0) and does work.
     debug_assert!(
         (0..NDOF).all(|i| {
             k[i][BX].to_bits() == 0
