@@ -199,6 +199,13 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 "std.kinematic",
                 include_str!("../stdlib/kinematic.ri"),
             ),
+            // `std.ports` declares the Directionality enum and Port base trait.
+            // No inter-module dependencies beyond built-in types.
+            // Reconstruction of lost work per PRD task α.
+            (
+                "std.ports",
+                include_str!("../stdlib/ports.ri"),
+            ),
         ];
 
         // SEQUENTIAL COMPILATION WITH GROWING PRELUDE: each module is compiled
