@@ -1151,6 +1151,70 @@ fn lame_reference_satisfies_known_invariants() {
     );
 }
 
+/// Thick-walled cylinder (Lamé) P1 max von Mises ≤ 5 % of reference.
+///
+/// Quarter-annulus model: `a=1, b=2, L=1.0`, `E=1, ν=0.3`, `P_i=1`.
+/// Symmetry + plane-strain BCs suppress all 6 rigid-body modes; inner
+/// pressure applied via per-face centroid-radial traction, lowered to
+/// nodal point loads and fed into `solve_p1_pipeline`.
+/// Secondary check: recovered σ_r at inner nodes ≈ −P_i.
+#[test]
+fn thick_walled_cylinder_p1_max_von_mises_within_5pct_of_lame() {
+    const A: f64 = 1.0;
+    const B: f64 = 2.0;
+    const L: f64 = 1.0;
+    const P_I: f64 = 1.0;
+    const NR: usize = 24;
+    const NTHETA: usize = 24;
+    const NZ: usize = 2;
+    const E: f64 = 1.0;
+    const NU: f64 = 0.3;
+    let tol_geom: f64 = 1e-9;
+
+    let mat = IsotropicElastic { youngs_modulus: E, poisson_ratio: NU };
+    let (nodes, conns, inner_faces) = annular_p1_mesh(A, B, L, NR, NTHETA, NZ);
+    let n_nodes = nodes.len();
+
+    let mut bcs = annular_symmetry_plane_strain_bcs(&nodes, L, tol_geom);
+    let loads = inner_pressure_loads(&inner_faces, &nodes, P_I);
+    let u = solve_p1_pipeline(&nodes, &conns, &mut bcs, &loads, &mat);
+
+    // Recover nodal stress + von Mises over inner-ring nodes (r ≈ a)
+    let sigma = recover_nodal_p1(&nodes, &conns, &u, &mat);
+    let lame_ref = lame_von_mises(A, A, B, P_I, NU);
+    let mut max_vm = 0.0_f64;
+    let mut min_sr_inner = f64::INFINITY;
+    for (ni, &p) in nodes.iter().enumerate() {
+        let r = (p[0] * p[0] + p[1] * p[1]).sqrt();
+        if (r - A).abs() < tol_geom {
+            let vm = von_mises_of_tensor(&sigma[ni]);
+            max_vm = max_vm.max(vm);
+            // σ_r at inner node: radial components from cylindrical coords
+            let costh = p[0] / r;
+            let sinth = p[1] / r;
+            let s = &sigma[ni];
+            let sr = costh * costh * s[0][0]
+                + 2.0 * costh * sinth * s[0][1]
+                + sinth * sinth * s[1][1];
+            min_sr_inner = min_sr_inner.min(sr);
+        }
+    }
+
+    let rel_err = (max_vm - lame_ref).abs() / lame_ref;
+    assert!(
+        rel_err <= 0.05,
+        "cylinder P1: max von Mises {max_vm:.6} vs Lamé ref {lame_ref:.6} \
+         — rel err {:.2}% > 5% (mesh: {NR}×{NTHETA}×{NZ}, n_nodes={n_nodes})",
+        rel_err * 100.0,
+    );
+
+    // Secondary: σ_r at inner surface ≈ −P_i (BC sanity, loose 20%)
+    assert!(
+        (min_sr_inner + P_I).abs() / P_I <= 0.20,
+        "cylinder P1: min σ_r at inner surface {min_sr_inner:.6}, expected ≈ {}", -P_I,
+    );
+}
+
 /// Mesh validation: annular P1 quarter-cylinder mesh geometry.
 ///
 /// Checks node count, positive tet volumes (polar Kuhn-split orientation
