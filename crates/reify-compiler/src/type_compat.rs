@@ -926,6 +926,50 @@ mod tests {
     /// the legacy empty form that violates the invariant.
     ///
     /// task-3702 (tighten try_default_padding signature)
+    // ── modulo_operands_are_int predicate (task-3916) ────────────────────────
+
+    /// `(Int, Int)` is the one valid modulo shape → `true`.
+    #[test]
+    fn modulo_operands_int_int_is_true() {
+        assert!(modulo_operands_are_int(&Type::Int, &Type::Int));
+    }
+
+    /// `(Real, Int)` is rejected (left is Real) → `false`.
+    #[test]
+    fn modulo_operands_real_int_is_false() {
+        assert!(!modulo_operands_are_int(&Type::Real, &Type::Int));
+    }
+
+    /// `(Int, Real)` is rejected (right is Real) → `false`.
+    #[test]
+    fn modulo_operands_int_real_is_false() {
+        assert!(!modulo_operands_are_int(&Type::Int, &Type::Real));
+    }
+
+    /// `(Real, Real)` — both wrong → `false`.
+    #[test]
+    fn modulo_operands_real_real_is_false() {
+        assert!(!modulo_operands_are_int(&Type::Real, &Type::Real));
+    }
+
+    /// `(Scalar{LENGTH}, Scalar{LENGTH})` — dimensioned types are not Int → `false`.
+    #[test]
+    fn modulo_operands_scalar_scalar_is_false() {
+        assert!(!modulo_operands_are_int(&length_ty(), &length_ty()));
+    }
+
+    /// `(Scalar{LENGTH}, Int)` — left is dimensioned → `false`.
+    #[test]
+    fn modulo_operands_scalar_int_is_false() {
+        assert!(!modulo_operands_are_int(&length_ty(), &Type::Int));
+    }
+
+    /// `(Bool, Int)` — Bool is not Int → `false`.
+    #[test]
+    fn modulo_operands_bool_int_is_false() {
+        assert!(!modulo_operands_are_int(&Type::Bool, &Type::Int));
+    }
+
     #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "param_defaults.len() == params.len()")]
