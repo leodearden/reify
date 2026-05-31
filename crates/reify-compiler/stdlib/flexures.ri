@@ -1,28 +1,27 @@
-// Stdlib: Compliant Joints + Flexures accessor  (`std.flexures`)
+// Stdlib: Compliant Joints + Flexures  (`std.flexures`)
 //
 // PRD: docs/prds/v0_3/compliant-joints-flexures.md §4.2, §11 task β.
 //
-// Holds the **accessor surface** for the v0.3 compliant-joints-flexures
-// PRD: `flexure_compliance(joint) -> FlexureCompliance`. The value types
-// (`RotationalStiffness` alias + `FlexureCompliance` structure_def) live in
-// the sibling module `std.flexures.types`, loaded immediately before this
-// module — see SPLIT RATIONALE in `flexures_types.ri`.
+// Holds the full value-type substrate and accessor surface for the v0.3
+// compliant-joints-flexures PRD:
+//   - `RotationalStiffness` alias placeholder
+//   - `FlexureCompliance` structure_def (seven-field PRD §4.2 contract)
+//   - `flexure_compliance(joint) -> FlexureCompliance` accessor
 //
-// SPLIT RATIONALE (esc-3851-32; brief):
-//   `compile_function` reads structure-def templates from a
-//   `prelude_template_registry` built only from earlier-loaded modules
-//   (functions_phase.rs). Same-module structure_defs are NOT visible
-//   because `phase_functions` runs before `phase_entities`. Putting the
-//   structure_def in `std.flexures.types` and the accessor here lets the
-//   accessor body `FlexureCompliance()` lower to
-//   `CompiledExprKind::StructureInstanceCtor`. A follow-up task may add a
-//   pre-pass that collects skeleton templates from parsed same-module
-//   structure_defs so the two modules can be re-merged.
+// The structure_def and accessor live in the same module, enabled by the
+// skeleton pre-pass added in task 3895: `phase_functions` now builds
+// transient `TopologyTemplate` skeletons from parsed same-module
+// `structure_def`s so fn bodies can lower `Foo()` ctor expressions to
+// `CompiledExprKind::StructureInstanceCtor` without waiting for
+// `phase_entities` to run. This replaces the previous split into
+// `std.flexures.types` + `std.flexures` (esc-3851-32 workaround — now
+// retired).
 //
-// Module placement: registered in `stdlib_loader.rs` immediately after
-// `std.flexures.types` — `std.flexures` references the FlexureCompliance
-// structure_def via the prelude, plus language primitives (Real). Zero
-// cross-module dependencies on materials / structural / solver modules.
+// Module placement: registered in `stdlib_loader.rs` after `std.fdm.*`
+// modules. Depends on language primitives (Real, Pressure, Length, Bool)
+// and the standard prelude units (Pa, N, m, etc.) from `std.units` and
+// `std.si_units`. Zero cross-module dependencies on materials / structural
+// / solver modules.
 //
 // Encoding notes (placeholder retargets):
 //   `flexure_compliance(joint: Real)` uses `Real` for the joint parameter
@@ -46,6 +45,134 @@
 //   reserved-name namespacing keeps the cache key discoverable and out of
 //   user-namespace collision.
 
+// ── Type aliases ──────────────────────────────────────────────────────────
+
+// RotationalStiffness — torsional spring constant relating angular
+// displacement to restoring torque (N·m/rad in SI). PRD §4.2 names this as
+// the canonical type for `FlexureCompliance.effective_stiffness`.
+//
+// The proper dimensioned `RotationalStiffness` type lives in the compliant-
+// joints-flexures α task (Joint surface extension; PRD §3 + §11 Phase 1
+// row α), which has not been filed yet. β's only formal prereq is SIR-α
+// 3540 (REPORT-ONLY), so we ship the placeholder spelling now and retarget
+// later — exact mirror of the trajectory.ri:56 convention
+// (`pub type JointValue = Real` with `TODO(joint-value-type)` retargeting
+// comment), and analysis.ri:13 (`pub type Stress = Pressure`).
+//
+// `pub` so downstream modules and user code can reference the canonical
+// spelling at flexure call sites without re-aliasing. Retargeting this one
+// line propagates the type tightening to every consumer (in-file +
+// downstream) without touching any structure_def or fn body.
+//
+// TODO(stiffness-type): retarget to the proper `RotationalStiffness` (and
+// add the sibling `TranslationalStiffness` / `RotationalDamping` /
+// `TranslationalDamping` aliases) as dimensioned types when the compliant-
+// joints-flexures α task lands the Joint surface extension.
+pub type RotationalStiffness = Real
+
+// ── FlexureCompliance ─────────────────────────────────────────────────────
+
+// FlexureCompliance — the seven-field PRD §4.2 contract surfacing every
+// flexure compliance metric a user (or downstream GUI panel) cares about
+// when inspecting a flexure-emitted joint. The PRB ctors (γ / δ / ε / ζ /
+// η / θ in PRD §11) populate one of these records per ctor call and cache
+// it on the joint Map under the reserved hidden field
+// `__flexure_compliance`; the `flexure_compliance(joint)` accessor below
+// surfaces it.
+//
+// Field semantics (PRD §4.2):
+//   effective_stiffness   — the equivalent linear-spring rate of the
+//                           flexure-emitted joint (γ·E·I/L for a cantilever
+//                           per Howell §5.2; analogous closed-form for each
+//                           PRB primitive in PRD §5). `RotationalStiffness`
+//                           alias resolves to Real today; retargets to the
+//                           dimensioned type when the compliant-joints-
+//                           flexures α task lands (see TODO(stiffness-type)
+//                           on the alias declaration).
+//   max_stress            — peak bending stress at the declared range
+//                           endpoint (PRD §5.1: σ_max = E·(t/2)·θ/L for a
+//                           cantilever; analogous formula per PRB primitive).
+//                           Pressure-typed because bending stress is force
+//                           per unit area.
+//   max_stress_at_neutral — peak stress at the joint's neutral position
+//                           (rest). Zero unless preloaded (PRD §4.2);
+//                           Pressure-typed for the same reason.
+//   yield_margin          — dimensionless safety ratio
+//                           `(material.yield_stress - max_stress) /
+//                           material.yield_stress`. Bounded above by 1
+//                           (max_stress = 0 → margin = 1); unbounded below
+//                           (max_stress > yield → margin < 0 →
+//                           `at_yield = true`). The structure-level
+//                           constraint `yield_margin <= 1` encodes the
+//                           upper bound as an explicit contract — see PRD
+//                           §5.3 stress-check rationale.
+//   parasitic_error       — orthogonal-DOF motion produced by the flexure
+//                           at the declared range endpoint. Set on compound
+//                           flexures (parallelogram, double-parallelogram —
+//                           PRD §6.1, §6.2) where Roberts-approximation
+//                           parasitic rotation is meaningful; `none` for
+//                           single-blade flexures (PRD §5) where the
+//                           parasitic-error notion doesn't apply.
+//                           `Option<Length>` because the metric vanishes
+//                           rather than going to zero for single-blade
+//                           cases.
+//   prb_validity_range    — angular range where the PRB approximation is
+//                           accurate (~5% per PRD §5.1's
+//                           `theta_prb_limit = 5deg`). Encoded as `Real`
+//                           placeholder for `Range<Angle>` because the
+//                           `Range<Angle>` parameterized type has no arm in
+//                           `type_resolution.rs::resolve_parameterized_
+//                           builtin_type` today; same placeholder posture
+//                           as `fea_multi_case.ri:90 loads : List<Real>`
+//                           with TODO(load-trait). See TODO(range-angle-type)
+//                           below.
+//   at_yield              — true iff `max_stress >= material.yield_stress`.
+//                           PRB ctors emit `W_FlexureYielding` (PRD §5.3)
+//                           when this flips true; the field stays on the
+//                           record so user-side strict checks can read it
+//                           without re-running the comparison.
+//
+// Defaults are deliberately "sentinel-zero" so the stub
+// `flexure_compliance(joint)` accessor below — which currently returns a
+// default `FlexureCompliance()` until λ wires real cache lookup — has a
+// well-typed value to return. PRB ctors (γ / δ / ε / ζ / η / θ) override
+// every field with computed values via named-field ctor syntax
+// `FlexureCompliance(effective_stiffness: ..., max_stress: ..., ...)`, so
+// the defaults never leak into populated records. Same posture as
+// `solver_elastic.ri::ElasticOptions` (every default-bearing field
+// overridable at call time).
+//
+// TODO(range-angle-type): tighten `prb_validity_range : Real` to
+// `Range<Angle>` when `type_resolution.rs::resolve_parameterized_builtin_
+// type` grows a Range arm (out of scope for β per the task description).
+structure def FlexureCompliance {
+    param effective_stiffness : RotationalStiffness = 0.0
+    param max_stress : Pressure = 0Pa
+    param max_stress_at_neutral : Pressure = 0Pa
+    param yield_margin : Real = 0.0
+    param parasitic_error : Option<Length> = none
+    param prb_validity_range : Real = 0.0
+    param at_yield : Bool = false
+
+    // Defense-in-depth: `yield_margin = (yield - max_stress) / yield` is
+    // mathematically bounded above by 1 (max attained at max_stress = 0).
+    // It is unbounded below (becomes negative when max_stress > yield,
+    // which is the "at_yield" regime per PRD §5.3 where PRB ctors emit
+    // `W_FlexureYielding` and set `at_yield = true`). A populated record
+    // with yield_margin > 1 indicates a PRB-ctor bug (e.g. swapped
+    // numerator/denominator) — declaring the upper bound at the
+    // structure-def level makes the contract explicit in production code
+    // rather than relying solely on test coverage (task 2544 convention;
+    // mirrors `BucklingOptions.n_modes > 0` in solver_buckling.ri:87 and
+    // `PiecewisePolynomialProfile.waypoints.count > 0` in
+    // trajectory.ri:230).
+    //
+    // SIR-α's `check_constraints_against_templates` machinery (task 3540,
+    // landed) evaluates structure-level constraints at the eval path, so
+    // this fires at construction with no further plumbing in β.
+    constraint yield_margin <= 1
+}
+
 // ── flexure_compliance accessor ───────────────────────────────────────────
 
 // flexure_compliance(joint) — the PRD §4.2 FREE-function accessor that
@@ -60,17 +187,13 @@
 //
 // Stub semantics (β — this task):
 //   The body returns `FlexureCompliance()` — a bare ctor call relying on
-//   every param's sentinel-zero default (set in `flexures_types.ri`).
-//   `FlexureCompliance` is visible because `std.flexures.types` is loaded
-//   immediately before `std.flexures` in `stdlib_loader.rs`, so it appears
-//   in the prelude template registry built by
-//   `functions_phase::phase_functions`. This gives downstream β-consumers
-//   (the test file flexures_stdlib_compile.rs and any future PRD-§4.2
-//   reference user code) a well-typed value to chain off even before PRB
-//   ctors exist. PRB ctors override every field via named-field ctor
-//   syntax `FlexureCompliance(effective_stiffness: ..., max_stress: ...,
-//   ...)`, so the defaults never leak into populated records once γ / δ /
-//   ε / ζ / η / θ land. Exact precedent: the bare `Steel_AISI_1045()`
+//   every param's sentinel-zero default. The same-module skeleton pre-pass
+//   (task 3895, functions_phase.rs) makes `FlexureCompliance` visible to
+//   this fn body without needing a separate prelude module. PRB ctors
+//   override every field via named-field ctor syntax
+//   `FlexureCompliance(effective_stiffness: ..., max_stress: ..., ...)`,
+//   so the defaults never leak into populated records once γ / δ / ε / ζ /
+//   η / θ land. Exact precedent: the bare `Steel_AISI_1045()`
 //   instantiation pattern in `materials_fea.ri:132+` (every field
 //   defaulted at the structure_def level, ctor call is bare).
 //

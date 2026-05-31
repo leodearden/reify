@@ -141,15 +141,11 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 "std.fdm.correlations",
                 include_str!("../stdlib/fdm_correlations.ri"),
             ),
-            // `std.flexures.types` MUST precede `std.flexures` — the
-            // accessor fn body in `std.flexures` references the
-            // `FlexureCompliance` structure-def declared here via the
-            // prelude template registry built by
-            // functions_phase::phase_functions. esc-3851-32.
-            (
-                "std.flexures.types",
-                include_str!("../stdlib/flexures_types.ri"),
-            ),
+            // `std.flexures` — single module containing the RotationalStiffness
+            // alias, FlexureCompliance structure_def, and flexure_compliance()
+            // accessor. The same-module skeleton pre-pass (task 3895) makes
+            // the structure_def visible to the accessor fn body in the same
+            // module, so no split is needed.
             (
                 "std.flexures",
                 include_str!("../stdlib/flexures.ri"),
