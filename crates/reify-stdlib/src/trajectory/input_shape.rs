@@ -21,20 +21,92 @@
 //!    stand-in that echoes the input profile (a valid `Shaper` is still
 //!    required — an unrecognised shaper ⇒ `Value::Undef`).
 
-use reify_ir::Value;
+use std::f64::consts::PI;
+
+use reify_ir::{StructureInstanceData, Value};
 
 use super::impulse_shaper::ImpulseTrain;
 
+/// Read a numeric stdlib field as `f64`, accepting any spelling a shaper param
+/// takes: a dimensioned `Scalar { si_value }` (`target_frequency`, whose SI
+/// magnitude is Hz), a `Real` (`damping_ratio` / `vibration_tolerance`), or an
+/// `Int`. Any other variant yields `None` so the caller can apply its default.
+/// Mirrors `modal_ops::read_scalar_si`.
+fn read_scalar_si(val: &Value) -> Option<f64> {
+    match val {
+        Value::Scalar { si_value, .. } => Some(*si_value),
+        Value::Real(r) => Some(*r),
+        Value::Int(n) => Some(*n as f64),
+        _ => None,
+    }
+}
+
+/// Read numeric field `name` from `data`'s fields as `f64`, falling back to
+/// `default` when the field is absent or non-numeric.
+fn field_f64(data: &StructureInstanceData, name: &str, default: f64) -> f64 {
+    data.fields
+        .get(&name.to_string())
+        .and_then(read_scalar_si)
+        .unwrap_or(default)
+}
+
 /// Build the [`ImpulseTrain`] for a `Shaper` `Value::StructureInstance`.
 ///
-/// STUB (prereq-1): always returns `None`. The real dispatch (ZVShaper /
-/// ZVDShaper / EIShaper → impulse convolution; CascadedShaper → fold) is wired
-/// in step-4.
+/// Dispatches on the structure `type_name` (the eval path has no
+/// `StructureRegistry`, so the nominal tag is read directly):
 ///
-/// `pub` (re-exported at the crate root as `reify_stdlib::build_train_for_shaper`)
-/// so `reify-eval/src/trajectory_ops.rs` can reach it across the crate boundary.
-pub fn build_train_for_shaper(_shaper: &Value) -> Option<ImpulseTrain> {
-    None
+/// - `ZVShaper`  → [`ImpulseTrain::zv`]`(2π·f, ζ)` — ζ defaults to 0 (ZVShaper's
+///   `.ri` default) when the `damping_ratio` field is absent.
+/// - `ZVDShaper` → [`ImpulseTrain::zvd`]`(2π·f, ζ)`.
+/// - `EIShaper`  → [`ImpulseTrain::ei`]`(2π·f, ζ, v_tol)`.
+/// - `CascadedShaper` → recurse over the `shapers` `List<Shaper>`, build each
+///   child train (dropping any that fail to resolve), and fold via
+///   [`ImpulseTrain::cascade`]; an empty / missing list yields the identity
+///   unit-impulse train (a no-op shaping, per `CascadedShaper.ri`).
+///
+/// The Hz→rad/s conversion `ω_n = 2π·f` happens here — this is ζ's marshalling
+/// boundary; `impulse_shaper`'s entire API is in angular frequency (rad/s).
+///
+/// Returns `None` for a non-`StructureInstance` argument or an unrecognised
+/// `type_name`. `pub` (re-exported at the crate root as
+/// `reify_stdlib::build_train_for_shaper`) so `reify-eval/src/trajectory_ops.rs`
+/// can reach it across the crate boundary.
+pub fn build_train_for_shaper(shaper: &Value) -> Option<ImpulseTrain> {
+    let Value::StructureInstance(data) = shaper else {
+        return None;
+    };
+
+    match data.type_name.as_str() {
+        "ZVShaper" => {
+            let omega_n = 2.0 * PI * field_f64(data, "target_frequency", 0.0);
+            let zeta = field_f64(data, "damping_ratio", 0.0);
+            Some(ImpulseTrain::zv(omega_n, zeta))
+        }
+        "ZVDShaper" => {
+            let omega_n = 2.0 * PI * field_f64(data, "target_frequency", 0.0);
+            let zeta = field_f64(data, "damping_ratio", 0.0);
+            Some(ImpulseTrain::zvd(omega_n, zeta))
+        }
+        "EIShaper" => {
+            let omega_n = 2.0 * PI * field_f64(data, "target_frequency", 0.0);
+            let zeta = field_f64(data, "damping_ratio", 0.0);
+            let v_tol = field_f64(data, "vibration_tolerance", 0.0);
+            Some(ImpulseTrain::ei(omega_n, zeta, v_tol))
+        }
+        "CascadedShaper" => {
+            // Recurse over the child shapers, dropping any that fail to resolve;
+            // a missing / non-List `shapers` field is treated as the empty
+            // cascade (→ identity unit impulse).
+            let trains: Vec<ImpulseTrain> = match data.fields.get(&"shapers".to_string()) {
+                Some(Value::List(items)) => {
+                    items.iter().filter_map(build_train_for_shaper).collect()
+                }
+                _ => Vec::new(),
+            };
+            Some(ImpulseTrain::cascade(&trains))
+        }
+        _ => None,
+    }
 }
 
 /// Evaluate `input_shape(profile, shaper)`.
