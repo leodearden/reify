@@ -451,6 +451,11 @@ pub use progressive::{
     TerminationReason, coarse_pass_tuning, near_constraint_boundary, refinement_pass_tuning,
     should_refine,
 };
+// Task 4084: FEA result-model α — Regular3D Sampled Field population.
+// GridSpec + resample_nodal_to_grid compose the 2920 P1-tet primitives
+// (barycentric_p1, recover_nodal_stress_p1, tet_volume_p1) into a
+// reify_ir::SampledField for displacement (stride 3) and stress (stride 9).
+pub use resample::{GridSpec, resample_nodal_to_grid};
 pub use result::{
     StressElement, element_stress_p1, element_stress_p2, recover_nodal_stress_p1, tet_volume_p1,
 };

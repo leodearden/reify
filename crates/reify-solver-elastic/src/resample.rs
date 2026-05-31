@@ -15,6 +15,138 @@
 //! - Data ordering: row-major axis-0(x) outermost → axis-2(z) innermost,
 //!   with stride components contiguous per grid point.
 
+use std::sync::atomic::AtomicBool;
+
+use reify_ir::{InterpolationKind, SampledField, SampledGridKind};
+
+use crate::interpolation::barycentric_p1;
+
+/// Element-count grid specification for a regular 3D axis-aligned grid.
+///
+/// `counts[i]` is the number of **element** intervals along axis i; the
+/// grid has `counts[i]+1` nodes along axis i.  The physical extent of the
+/// grid is `[bounds_min[i], bounds_max[i]]` with uniform spacing
+/// `spacing[i] = (bounds_max[i] - bounds_min[i]) / counts[i]`.
+#[derive(Debug, Clone, Copy)]
+pub struct GridSpec {
+    /// Lower bound of the grid along each axis (SI units).
+    pub bounds_min: [f64; 3],
+    /// Upper bound of the grid along each axis (SI units).
+    pub bounds_max: [f64; 3],
+    /// Number of element intervals along each axis (grid nodes = counts+1).
+    pub counts: [usize; 3],
+}
+
+/// Resample a nodal field defined on a P1-tet mesh onto a regular 3D grid.
+///
+/// # Arguments
+///
+/// - `nodes`: node coordinates (length n_nodes), `nodes[n] = [x, y, z]`.
+/// - `elems`: element connectivity (length n_elems), `elems[e] = [n0,n1,n2,n3]`.
+/// - `nodal_values`: flat array of length `n_nodes × stride`.  Node `n`'s
+///   values are `nodal_values[n*stride .. n*stride+stride]`.
+/// - `stride`: number of scalar components per node (3 for displacement, 9 for stress).
+/// - `grid`: specifies bounds, element counts (→ node counts = counts+1), and spacing.
+/// - `name`: field name embedded in the returned [`SampledField`].
+/// - `tol`: absolute barycentric tolerance for point-in-tet containment.
+///   A value of `1e-9` accepts points within round-off of an element face.
+///
+/// # Returns
+///
+/// A [`SampledField`] with:
+/// - `kind = Regular3D`
+/// - `interpolation = Linear`
+/// - `data.len() == (nx+1)*(ny+1)*(nz+1)*stride`
+/// - Row-major ordering: axis-0 (x) outermost, axis-2 (z) innermost;
+///   the `stride` components are contiguous per grid point.
+/// - Grid points outside all elements carry `f64::NAN` for all `stride` components.
+pub fn resample_nodal_to_grid(
+    nodes: &[[f64; 3]],
+    elems: &[[usize; 4]],
+    nodal_values: &[f64],
+    stride: usize,
+    grid: &GridSpec,
+    name: &str,
+    tol: f64,
+) -> SampledField {
+    let [nx, ny, nz] = grid.counts;
+    // Spacing per axis: (max-min)/count
+    let sx = (grid.bounds_max[0] - grid.bounds_min[0]) / nx.max(1) as f64;
+    let sy = (grid.bounds_max[1] - grid.bounds_min[1]) / ny.max(1) as f64;
+    let sz = (grid.bounds_max[2] - grid.bounds_min[2]) / nz.max(1) as f64;
+    let spacing = vec![sx, sy, sz];
+
+    // Build per-axis grid coordinates via linspace_inclusive.
+    // Preconditions: finite bounds + spacing > 0 ⇒ always Ok.
+    let axis_grids: Vec<Vec<f64>> = (0..3)
+        .map(|i| {
+            let sp = spacing[i];
+            reify_ir::sampled::linspace_inclusive(grid.bounds_min[i], grid.bounds_max[i], sp)
+                .expect("resample_nodal_to_grid: linspace_inclusive failed — check that bounds_min < bounds_max and counts > 0")
+        })
+        .collect();
+
+    let nx1 = axis_grids[0].len();
+    let ny1 = axis_grids[1].len();
+    let nz1 = axis_grids[2].len();
+    let n_grid = nx1 * ny1 * nz1;
+
+    let mut data = Vec::with_capacity(n_grid * stride);
+
+    // Row-major iteration: axis-0(x) outermost → axis-2(z) innermost.
+    for ix in 0..nx1 {
+        for iy in 0..ny1 {
+            for iz in 0..nz1 {
+                let p = [axis_grids[0][ix], axis_grids[1][iy], axis_grids[2][iz]];
+
+                // Linear scan: find first element containing p.
+                let mut found = false;
+                'elem_scan: for conn in elems {
+                    let phys4: [[f64; 3]; 4] = [
+                        nodes[conn[0]],
+                        nodes[conn[1]],
+                        nodes[conn[2]],
+                        nodes[conn[3]],
+                    ];
+                    let bary = barycentric_p1(&phys4, p);
+                    // Accept if all four barycentric coords in [-tol, 1+tol].
+                    if bary.iter().all(|&b| b >= -tol && b <= 1.0 + tol) {
+                        // Weighted sum over stride components.
+                        for c in 0..stride {
+                            let val = bary[0] * nodal_values[conn[0] * stride + c]
+                                + bary[1] * nodal_values[conn[1] * stride + c]
+                                + bary[2] * nodal_values[conn[2] * stride + c]
+                                + bary[3] * nodal_values[conn[3] * stride + c];
+                            data.push(val);
+                        }
+                        found = true;
+                        break 'elem_scan;
+                    }
+                }
+
+                if !found {
+                    // Out-of-solid sentinel: NaN per stride component.
+                    for _ in 0..stride {
+                        data.push(f64::NAN);
+                    }
+                }
+            }
+        }
+    }
+
+    SampledField {
+        name: name.to_string(),
+        kind: SampledGridKind::Regular3D,
+        bounds_min: grid.bounds_min.to_vec(),
+        bounds_max: grid.bounds_max.to_vec(),
+        spacing,
+        axis_grids,
+        interpolation: InterpolationKind::Linear,
+        data,
+        oob_emitted: AtomicBool::new(false),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{GridSpec, resample_nodal_to_grid};
