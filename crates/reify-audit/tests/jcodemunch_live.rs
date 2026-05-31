@@ -34,6 +34,103 @@
 // -----------------------------------------------------------------------
 
 // -----------------------------------------------------------------------
+// Invocation + fixture helpers (used by the capstone live test)
+// -----------------------------------------------------------------------
+
+/// Invoke the `reify-audit` binary with the given arguments.
+///
+/// Returns `(exit_code, findings)` where `findings` is the JSON array parsed
+/// from the binary's stderr output (adapting cli.rs's `parse_findings_from_stderr`
+/// idiom: `rfind("\n[")` to skip any git-diagnostic preamble).
+///
+/// An exit code of `None` means the binary was killed by a signal.
+fn run_reify_audit(args: &[&str]) -> (Option<i32>, Vec<serde_json::Value>) {
+    let bin = env!("CARGO_BIN_EXE_reify-audit");
+    let out = std::process::Command::new(bin)
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("failed to invoke reify-audit: {e}"));
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let findings = parse_findings_from_stderr(&stderr);
+    (out.status.code(), findings)
+}
+
+/// Parse the JSON findings array from binary stderr.
+///
+/// Local copy of cli.rs's `parse_findings_from_stderr`: searches for the
+/// LAST `\n[` in the output (to skip any git-diagnostic lines that precede
+/// the JSON block) and deserializes the JSON from that position onward.
+fn parse_findings_from_stderr(stderr: &str) -> Vec<serde_json::Value> {
+    let json_start = stderr
+        .rfind("\n[")
+        .map(|pos| pos + 1)
+        .or_else(|| {
+            if stderr.starts_with('[') { Some(0) } else { None }
+        })
+        .unwrap_or_else(|| panic!("no JSON array found in stderr; full stderr:\n{stderr}"));
+    serde_json::from_str(&stderr[json_start..]).unwrap_or_else(|e| {
+        panic!(
+            "stderr does not contain valid JSON after '[': {e}\nstderr:\n{stderr}"
+        )
+    })
+}
+
+/// Write an empty `tasks.json` (JSON array `[]`) to `dir/tasks.json`.
+/// Returns the path.
+fn write_empty_tasks_file(dir: &std::path::Path) -> std::path::PathBuf {
+    let path = dir.join("tasks.json");
+    std::fs::write(&path, "[]").expect("write empty tasks.json");
+    path
+}
+
+/// Create a minimal SQLite `runs.db` in `dir` with just the `events` table
+/// (adapts cli.rs's `write_empty_runs_db`). Returns the path.
+fn write_empty_runs_db(dir: &std::path::Path) -> std::path::PathBuf {
+    let path = dir.join("runs.db");
+    let conn = rusqlite::Connection::open(&path).expect("open runs.db");
+    conn.execute_batch("CREATE TABLE events (task_id TEXT, event_type TEXT);")
+        .expect("create events table");
+    path
+}
+
+/// Write a `tasks.json` containing ONE synthetic done task whose
+/// `done_provenance.commit` is `commit` and `done_at` is set to
+/// `done_at_epoch` (Unix seconds, encoded as a JSON number).
+///
+/// Adapts cli.rs's `task_fixture` + `write_tasks_json`, but MUST set
+/// `done_at` (cli.rs leaves it `null`, which P1 skips) and
+/// `done_provenance.commit` to a real reify commit.
+///
+/// The task has `files: ["crates/reify-audit/src/lib.rs"]` (a real file in
+/// the reify corpus), `status: "done"`, `done_provenance.kind: "merged"`.
+fn write_synthetic_done_task(
+    dir: &std::path::Path,
+    commit: &str,
+    done_at_epoch: u64,
+) -> std::path::PathBuf {
+    let task = serde_json::json!([{
+        "task_id": "synthetic-smoke-p1",
+        "status": "done",
+        "files": ["crates/reify-audit/src/lib.rs"],
+        "done_provenance": {
+            "kind": "merged",
+            "commit": commit,
+            "note": null
+        },
+        "title": "Synthetic done task for L-SMOKE P1 leg",
+        "prd": null,
+        "consumer_ref": null,
+        "audit_foundation": null,
+        "done_at": done_at_epoch
+    }]);
+    let path = dir.join("synthetic_done_task.json");
+    let content = serde_json::to_string_pretty(&task).expect("serialize synthetic task");
+    std::fs::write(&path, content).expect("write synthetic_done_task.json");
+    path
+}
+
+// -----------------------------------------------------------------------
 // Serve-availability preflight (pure TCP connect; no MCP handshake)
 // -----------------------------------------------------------------------
 
