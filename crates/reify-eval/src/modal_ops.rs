@@ -31,10 +31,11 @@ use reify_stdlib::modal::free_vibration::{
     eigenvalue_to_frequency_hz, is_rigid_body_mode, mass_normalization_scale,
     modal_participation_mass, rayleigh_damping_ratio,
 };
-use reify_stdlib::modal::trampoline::ModalCacheKey;
+use reify_stdlib::modal::trampoline::{ModalCacheKey, TransientCacheKey};
 use reify_stdlib::modal::transient::{
-    dominant_antinode_index, harmonic_force_at, impulse_force_at, reconstruct_series,
-    sampled_force_at, solve_modal_response, step_force_at, uniform_time_grid,
+    PreparedIntegrator, dominant_antinode_index, harmonic_force_at, impulse_force_at,
+    integrate_prepared, prepare_modal_integrator, reconstruct_series, sampled_force_at,
+    solve_modal_response, step_force_at, uniform_time_grid,
 };
 
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
@@ -1277,6 +1278,294 @@ impl ResolvedForcing {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Task λ: TransientCache warm-state (mirrors ModalAnalysisCache / κ pattern)
+// ---------------------------------------------------------------------------
+
+/// Warm-state payload donated by the transient-response trampoline (task λ):
+/// the cache key plus the forcing-independent setup it certifies — the uniform
+/// time grid and per-mode prepared integrators. Recovered on the next
+/// invocation via `downcast_ref` and reused only when the incoming request's
+/// [`TransientCacheKey`] matches — i.e. the cached grid and integrator
+/// coefficients are still valid for the new `(t_start, t_end, dt, modes)`.
+///
+/// Caching the prepared integrators lets a forcing-only re-evaluation (the
+/// PRD §7.8 / §9.1 input-shaping workload) skip coefficient derivation and
+/// run only the forcing projection + ODE recurrence — "only re-integrate the
+/// ODE" in the PRD §9.1 sense.
+#[derive(Clone)]
+pub(crate) struct TransientCache {
+    /// The forcing-independent determinants the cached `grid` + `prepared`
+    /// were built for.
+    pub(crate) key: TransientCacheKey,
+    /// Uniform time grid `[t_start, t_start+dt, …]` — rebuilt from `key`
+    /// determinants but cached to avoid re-deriving the `floor` count.
+    pub(crate) grid: Vec<f64>,
+    /// Per-mode prepared integrators, one per mode in the cached `ModalResult`.
+    /// Each carries the Duhamel coefficients or the Newmark `(ω, ζ)` marker.
+    pub(crate) prepared: Vec<PreparedIntegrator>,
+}
+
+impl TransientCache {
+    /// Estimated retained size of this cache in bytes: the grid `f64`s plus
+    /// per-mode `PreparedIntegrator` structs (each ≈ `DuhamelCoeffs` at 64 B)
+    /// plus the flat key scalars + Vec overhead. Drives both the
+    /// [`OpaqueState`] size hint (pool LRU budgeting) and the donated
+    /// `cost_per_byte`. Always > 0, so the `cost_per_byte` reciprocal is
+    /// well-defined.
+    fn estimated_size_bytes(&self) -> usize {
+        let grid_bytes = self.grid.len() * std::mem::size_of::<f64>();
+        let prepared_bytes = self.prepared.len() * std::mem::size_of::<PreparedIntegrator>();
+        // key: 3 f64s + Vec<(f64,f64)> — approximate the Vec payload.
+        let key_bytes = 3 * std::mem::size_of::<f64>()
+            + self.key.modes.len() * 2 * std::mem::size_of::<f64>();
+        (grid_bytes + prepared_bytes + key_bytes).max(1)
+    }
+
+    /// Wrap this cache in an [`OpaqueState`] for donation to the warm-state
+    /// pool, sized by [`estimated_size_bytes`](Self::estimated_size_bytes).
+    ///
+    /// Returns that `size_bytes` alongside the state so the caller can derive
+    /// `cost_per_byte` from the same measurement — the payload is walked
+    /// exactly once per donation rather than again inside this method.
+    pub(crate) fn into_opaque_state(self) -> (OpaqueState, usize) {
+        let size = self.estimated_size_bytes();
+        (OpaqueState::new(self, size), size)
+    }
+}
+
+/// Result of the in-crate transient core [`run_transient_response`]: the
+/// engine-facing [`ComputeOutcome`] plus a white-box `reused_setup` flag the
+/// unit tests assert cache amortization against (the public `ComputeFn`
+/// returns only the outcome). Mirrors [`ModalTrampolineRun`].
+pub(crate) struct TransientTrampolineRun {
+    /// The compute outcome the public trampoline returns.
+    pub(crate) outcome: ComputeOutcome,
+    /// `true` iff this run reused a cached [`TransientCache`] grid + prepared
+    /// integrators rather than recomputing them. Observable only in-crate
+    /// (amortization tests); the public `ComputeFn` discards it, hence
+    /// `allow(dead_code)`.
+    #[allow(dead_code)]
+    pub(crate) reused_setup: bool,
+}
+
+/// In-crate transient core behind [`solve_transient_response_trampoline`],
+/// adding the task-λ warm-state cache — reuse the pre-derived grid + per-mode
+/// integrators across calls whose [`TransientCacheKey`] matches — on top of
+/// the forcing-projection + mode-superposition pipeline. Returns a
+/// [`TransientTrampolineRun`] so in-crate tests can also observe whether the
+/// setup was reused; the public trampoline takes only `.outcome`.
+///
+/// Cache behaviour (mirrors `run_modal_analysis` / task κ):
+/// - Empty-forcing guard and degenerate-grid guard short-circuit WITHOUT
+///   donating a cache (those paths cannot form a valid `TransientCache`).
+/// - A cold call (no prior, or a key MISS) builds the grid + prepared
+///   integrators fresh and donates them.
+/// - A warm hit (key HIT) reuses the cached `grid + prepared` and re-runs
+///   only the forcing projection + ODE recurrence for each mode.
+///
+/// Cancellation (between-modes granularity, PRD §6):
+/// - Entry checkpoint — cancel before any work.
+/// - Per-mode poll at the top of each integration loop step.
+///
+/// Finer within-mode per-timestep polling is a localized future refinement
+/// (would thread a probe closure into `integrate_prepared`, keeping
+/// `reify-stdlib` dependency-free).
+///
+/// CONVENTION (post-32218afeb6): all field reads use borrowed `&str` literal
+/// keys (e.g. `field_ref(mode, "frequency")`), NOT `.get(&"x".to_string())`.
+pub(crate) fn run_transient_response(
+    value_inputs: &[Value],
+    prior_warm_state: Option<&OpaqueState>,
+    cancellation: &CancellationHandle,
+) -> TransientTrampolineRun {
+    // ── (0) entry cancellation checkpoint ────────────────────────────────────
+    // Coarse cooperative cancellation (PRD §6): poll at entry + per-mode, mirroring
+    // run_modal_analysis's entry + pre-eigensolve polls. Finer within-mode
+    // per-timestep polling would require threading a probe closure into
+    // integrate_prepared (keeping reify-stdlib dependency-free) — a localized
+    // future refinement.
+    if cancellation.is_cancelled() {
+        return TransientTrampolineRun {
+            outcome: ComputeOutcome::Cancelled,
+            reused_setup: false,
+        };
+    }
+
+    // value_inputs = [modal_result, forcing, t_start, t_end, dt]
+    let modal_result = value_inputs.first().cloned().unwrap_or(Value::Undef);
+    let forcing = value_inputs.get(1).cloned().unwrap_or(Value::Undef);
+    let t_start = value_inputs.get(2).map(read_scalar_si).unwrap_or(0.0);
+    let t_end = value_inputs.get(3).map(read_scalar_si).unwrap_or(0.0);
+    let dt = value_inputs.get(4).map(read_scalar_si).unwrap_or(0.0);
+
+    // ── (1) empty-forcing guard (no cache — mirrors density guard) ────────────
+    let sources = extract_forcing_sources(&forcing);
+    if sources.is_empty() {
+        return TransientTrampolineRun {
+            outcome: forcing_missing_outcome(),
+            reused_setup: false,
+        };
+    }
+
+    // ── (2) extract per-mode (frequency_hz, damping_ratio, shape) ────────────
+    // Shapes are extracted fresh every call (they feed only the always-recomputed
+    // forcing projection, not the cached coefficients; the echoed modal_result
+    // supplies them, so a key match over (freq, zeta, dt, t_range) fully certifies
+    // the cached payload — mode shapes are explicitly excluded from the key).
+    let modes = modal_result_modes(&modal_result);
+    let shapes = extract_mode_shapes(&modal_result);
+
+    // Collect (frequency_hz, damping_ratio) pairs for the cache key; also used
+    // to compute omega below. Borrowed from the modal_result via field_ref.
+    let mode_params: Vec<(f64, f64)> = modes
+        .iter()
+        .map(|mode| {
+            let freq = field_ref(mode, "frequency").map(read_scalar_si).unwrap_or(0.0);
+            let zeta = field_ref(mode, "damping_ratio").map(read_scalar_si).unwrap_or(0.0);
+            (freq, zeta)
+        })
+        .collect();
+
+    // ── (3) cache lookup: try to reuse the grid + prepared integrators ────────
+    // Key excludes `forcing` (cheap-varying) and mode shapes (not needed by
+    // the coefficients); see TransientCacheKey docs.
+    let key = TransientCacheKey::new(t_start, t_end, dt, mode_params.clone());
+    let prior_cache =
+        prior_warm_state.and_then(|s| s.downcast_ref::<TransientCache>());
+    let (grid, prepared, reused_setup) = match prior_cache {
+        Some(cache) if cache.key.matches(&key) => {
+            // HIT: reuse the cached grid + integrators (Clone only on confirmed hit).
+            (cache.grid.clone(), cache.prepared.clone(), true)
+        }
+        _ => {
+            // MISS (or no prior): build grid + prepare integrators fresh.
+            let grid = uniform_time_grid(t_start, t_end, dt);
+            // Degenerate-grid guard (no cache — grid is empty if params are malformed).
+            if grid.is_empty() {
+                let diagnostic = Diagnostic::error(format!(
+                    "E_TransientTimeGridDegenerate: the transient time parameters are \
+                     degenerate (t_start = {t_start}, t_end = {t_end}, dt = {dt}); a \
+                     uniform time grid requires dt > 0 and t_end ≥ t_start, so no \
+                     timesteps were generated and an empty displacement history is \
+                     returned.",
+                ));
+                return TransientTrampolineRun {
+                    outcome: ComputeOutcome::Completed {
+                        result: degenerate_displacement_history(),
+                        new_warm_state: None,
+                        cost_per_byte: None,
+                        diagnostics: vec![diagnostic],
+                    },
+                    reused_setup: false,
+                };
+            }
+            let prepared: Vec<PreparedIntegrator> = mode_params
+                .iter()
+                .map(|&(freq, zeta)| {
+                    let omega = 2.0 * PI * freq;
+                    prepare_modal_integrator(omega, zeta, &grid)
+                })
+                .collect();
+            (grid, prepared, false)
+        }
+    };
+
+    // ── (4) forcing projection (always, even on a cache HIT) ─────────────────
+    // Per source: resolve node, direction, sample p_src(tⱼ) over the grid.
+    let mode0_shape: &[[f64; 3]] = shapes.first().map(Vec::as_slice).unwrap_or(&[]);
+    struct SourceProjection {
+        node: usize,
+        dir: [f64; 3],
+        samples: Vec<f64>,
+    }
+    let projections: Vec<SourceProjection> = sources
+        .iter()
+        .map(|src| {
+            let at = match field_ref(src, "at") {
+                Some(Value::String(s)) => s.as_str(),
+                _ => "",
+            };
+            let node = resolve_location_node(at, mode0_shape);
+            let dir = field_ref(src, "direction").map(read_vec3).unwrap_or([0.0; 3]);
+            let resolved = ResolvedForcing::from_value(src);
+            let samples = grid.iter().map(|&t| resolved.sample(t, dt)).collect();
+            SourceProjection { node, dir, samples }
+        })
+        .collect();
+
+    // ── (5) per-mode integration (+ cancellation poll between modes) ──────────
+    let mut mode_coords: Vec<Value> = Vec::with_capacity(modes.len());
+    for (i, (_freq, zeta)) in mode_params.iter().enumerate() {
+        // Between-modes cancellation poll (PRD §6 "between modes (per timestep)").
+        if cancellation.is_cancelled() {
+            return TransientTrampolineRun {
+                outcome: ComputeOutcome::Cancelled,
+                reused_setup: false,
+            };
+        }
+
+        let shape_i: &[[f64; 3]] = shapes.get(i).map(Vec::as_slice).unwrap_or(&[]);
+        let omega = 2.0 * PI * mode_params[i].0;
+        let _ = (zeta, omega); // used via prepared[i] below
+
+        let mut f_i = vec![0.0_f64; grid.len()];
+        for p in &projections {
+            let phi = shape_i.get(p.node).copied().unwrap_or([0.0; 3]);
+            let coeff = phi[0] * p.dir[0] + phi[1] * p.dir[1] + phi[2] * p.dir[2];
+            if coeff == 0.0 {
+                continue;
+            }
+            for (slot, &p_t) in f_i.iter_mut().zip(p.samples.iter()) {
+                *slot += coeff * p_t;
+            }
+        }
+
+        // Use the (reused or fresh) prepared integrator — no coefficient re-derivation.
+        let coords = if let Some(prep) = prepared.get(i) {
+            integrate_prepared(prep, &grid, &f_i, 0.0, 0.0)
+        } else {
+            // Fallback for a mode count mismatch (shouldn't happen on a proper HIT,
+            // but degrade gracefully rather than panic).
+            solve_modal_response(omega, mode_params[i].1, &grid, &f_i, 0.0, 0.0).coords
+        };
+        mode_coords.push(Value::List(coords.into_iter().map(Value::Real).collect()));
+    }
+
+    // ── (6) shape the DisplacementTimeHistory ────────────────────────────────
+    let t_samples = Value::List(
+        grid.iter()
+            .map(|&t| Value::Scalar { si_value: t, dimension: DimensionVector::TIME })
+            .collect(),
+    );
+    let fields: PersistentMap<String, Value> = [
+        ("part".to_string(), Value::String(String::new())),
+        ("modal_result".to_string(), modal_result),
+        ("t_samples".to_string(), t_samples),
+        ("mode_coords".to_string(), Value::List(mode_coords)),
+    ]
+    .into_iter()
+    .collect();
+    let result = Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "DisplacementTimeHistory".to_string(),
+        version: 1,
+        fields,
+    }));
+
+    // ── (7) donate the grid + prepared integrators as warm state (task λ) ─────
+    let cache = TransientCache { key, grid, prepared };
+    let (state, size_bytes) = cache.into_opaque_state();
+    let cost_per_byte = if size_bytes > 0 { Some(1.0 / size_bytes as f64) } else { None };
+    let outcome = ComputeOutcome::Completed {
+        result,
+        new_warm_state: Some(state),
+        cost_per_byte,
+        diagnostics: Vec::new(),
+    };
+    TransientTrampolineRun { outcome, reused_setup }
+}
+
 /// `@optimized("modal::transient_response")` public `ComputeFn` (task ι;
 /// registered in `compute_targets::mod`).
 ///
@@ -1298,129 +1587,10 @@ pub fn solve_transient_response_trampoline(
     value_inputs: &[Value],
     _realization_inputs: &[RealizationReadHandle],
     _options: &Value,
-    _prior_warm_state: Option<&OpaqueState>,
-    _cancellation: &CancellationHandle,
+    prior_warm_state: Option<&OpaqueState>,
+    cancellation: &CancellationHandle,
 ) -> ComputeOutcome {
-    // value_inputs = [modal_result, forcing, t_start, t_end, dt] (pre-2 signature).
-    let modal_result = value_inputs.first().cloned().unwrap_or(Value::Undef);
-    let forcing = value_inputs.get(1).cloned().unwrap_or(Value::Undef);
-    let t_start = value_inputs.get(2).map(read_scalar_si).unwrap_or(0.0);
-    let t_end = value_inputs.get(3).map(read_scalar_si).unwrap_or(0.0);
-    let dt = value_inputs.get(4).map(read_scalar_si).unwrap_or(0.0);
-
-    // First guard (mirrors the density guard `no_mass_matrix_outcome`): a forcing
-    // time-history with no sources carries no load to project onto the modes, so
-    // short-circuit with E_TransientForcingMissing + a degenerate history rather
-    // than silently integrate a zero forcing over the grid.
-    let sources = extract_forcing_sources(&forcing);
-    if sources.is_empty() {
-        return forcing_missing_outcome();
-    }
-
-    let grid = uniform_time_grid(t_start, t_end, dt);
-    // Degenerate time params (dt ≤ 0 or t_end < t_start) → no grid → empty history
-    // (keeps t_samples / mode_coords mutually consistent and avoids the solver's
-    // 1-sample floor on an empty grid). Flag it: unlike a legitimately small but
-    // valid window, an empty grid means the (t_start, t_end, dt) triple is itself
-    // malformed (a uniform grid needs dt > 0 and t_end ≥ t_start), so emit an
-    // Error rather than silently return an empty history — note the params also
-    // default to 0.0 when inputs are absent, collapsing a malformed call here.
-    // Mirrors the message-based E_TransientForcingMissing pattern.
-    if grid.is_empty() {
-        let diagnostic = Diagnostic::error(format!(
-            "E_TransientTimeGridDegenerate: the transient time parameters are \
-             degenerate (t_start = {t_start}, t_end = {t_end}, dt = {dt}); a \
-             uniform time grid requires dt > 0 and t_end ≥ t_start, so no \
-             timesteps were generated and an empty displacement history is \
-             returned.",
-        ));
-        return ComputeOutcome::Completed {
-            result: degenerate_displacement_history(),
-            new_warm_state: None,
-            cost_per_byte: None,
-            diagnostics: vec![diagnostic],
-        };
-    }
-
-    let shapes = extract_mode_shapes(&modal_result);
-    let mode0_shape: &[[f64; 3]] = shapes.first().map(Vec::as_slice).unwrap_or(&[]);
-
-    // Per source: resolved node, direction unit-vector, and the scalar p_src(tⱼ)
-    // series (sampled once over the grid — independent of mode).
-    struct SourceProjection {
-        node: usize,
-        dir: [f64; 3],
-        samples: Vec<f64>,
-    }
-    let projections: Vec<SourceProjection> = sources
-        .iter()
-        .map(|src| {
-            let at = match field_ref(src, "at") {
-                Some(Value::String(s)) => s.as_str(),
-                _ => "",
-            };
-            let node = resolve_location_node(at, mode0_shape);
-            let dir = field_ref(src, "direction").map(read_vec3).unwrap_or([0.0; 3]);
-            // Resolve the source's invariant fields ONCE, then sample pure
-            // arithmetic per timestep — no per-`t` field re-reads / table clones.
-            let resolved = ResolvedForcing::from_value(src);
-            let samples = grid.iter().map(|&t| resolved.sample(t, dt)).collect();
-            SourceProjection { node, dir, samples }
-        })
-        .collect();
-
-    // Per mode: assemble the projected modal forcing f_i[j], integrate the
-    // decoupled SDOF ODE, and collect ξ_i(tⱼ) as a List<Real>.
-    let modes = modal_result_modes(&modal_result);
-    let mut mode_coords: Vec<Value> = Vec::with_capacity(modes.len());
-    for (i, mode) in modes.iter().enumerate() {
-        let frequency_hz = field_ref(mode, "frequency").map(read_scalar_si).unwrap_or(0.0);
-        let omega = 2.0 * PI * frequency_hz;
-        let zeta = field_ref(mode, "damping_ratio").map(read_scalar_si).unwrap_or(0.0);
-        let shape_i: &[[f64; 3]] = shapes.get(i).map(Vec::as_slice).unwrap_or(&[]);
-
-        let mut f_i = vec![0.0_f64; grid.len()];
-        for p in &projections {
-            let phi = shape_i.get(p.node).copied().unwrap_or([0.0; 3]);
-            let coeff = phi[0] * p.dir[0] + phi[1] * p.dir[1] + phi[2] * p.dir[2];
-            if coeff == 0.0 {
-                continue;
-            }
-            for (slot, &p_t) in f_i.iter_mut().zip(p.samples.iter()) {
-                *slot += coeff * p_t;
-            }
-        }
-
-        let response = solve_modal_response(omega, zeta, &grid, &f_i, 0.0, 0.0);
-        mode_coords.push(Value::List(response.coords.into_iter().map(Value::Real).collect()));
-    }
-
-    // Shape the DisplacementTimeHistory (part = "" placeholder; ModalResult echoed
-    // verbatim; t_samples as a List<Scalar{TIME}>; mode_coords as List<List<Real>>).
-    let t_samples = Value::List(
-        grid.iter()
-            .map(|&t| Value::Scalar { si_value: t, dimension: DimensionVector::TIME })
-            .collect(),
-    );
-    let fields: PersistentMap<String, Value> = [
-        ("part".to_string(), Value::String(String::new())),
-        ("modal_result".to_string(), modal_result),
-        ("t_samples".to_string(), t_samples),
-        ("mode_coords".to_string(), Value::List(mode_coords)),
-    ]
-    .into_iter()
-    .collect();
-    ComputeOutcome::Completed {
-        result: Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: StructureTypeId(u32::MAX),
-            type_name: "DisplacementTimeHistory".to_string(),
-            version: 1,
-            fields,
-        })),
-        new_warm_state: None,
-        cost_per_byte: None,
-        diagnostics: Vec::new(),
-    }
+    run_transient_response(value_inputs, prior_warm_state, cancellation).outcome
 }
 
 /// `@optimized("modal::displacement_at")` public `ComputeFn` (task ι; registered
@@ -1832,15 +2002,17 @@ mod tests {
     use reify_solver_elastic::assembly::test_support::promote_tets_to_p2;
     use reify_solver_elastic::{DirichletBc, EigenSolverOptions, IsotropicElastic};
     use reify_stdlib::modal::free_vibration::{is_rigid_body_mode, rayleigh_damping_ratio};
-    use reify_stdlib::modal::trampoline::ModalCacheKey;
+    use reify_stdlib::modal::trampoline::{ModalCacheKey, TransientCacheKey};
     use reify_stdlib::modal::transient::uniform_time_grid;
 
     use super::{
         ModalAnalysisCache, ModalAssembly, ModalCoreResult, ModalMesh, ModalTrampolineRun,
+        TransientCache,
         assemble_modal_km, build_beam_mesh, build_dirichlet_bcs, displacement_at_trampoline,
         eigensolve_modal, extract_damping,
         extract_density_or_degenerate, extract_eigen_knobs, extract_reference_direction,
-        mode_shape_value, read_scalar_si, resolve_location_node, run_modal_analysis,
+        mode_shape_value, read_real_list, read_scalar_si, resolve_location_node,
+        run_modal_analysis, run_transient_response,
         simply_supported_pin_pin_bcs, solve_modal_analysis_trampoline, solve_modal_core,
         solve_transient_response_trampoline,
     };
@@ -3930,5 +4102,214 @@ mod tests {
 
         // Empty shape: the saturating clamp floor is 0 (no panic / underflow).
         assert_eq!(resolve_location_node("5", &[]), 0, "empty shape clamps to 0 without panic");
+    }
+
+    // ── task λ: run_transient_response cache-hit tests (RED → GREEN step-6) ──
+
+    /// Build a `value_inputs` slice for `run_transient_response` / `solve_transient_response_trampoline`:
+    /// `[modal_result, forcing, t_start, t_end, dt]`.
+    fn transient_inputs(
+        modal_result: Value,
+        forcing: Value,
+        t_start: f64,
+        t_end: f64,
+        dt: f64,
+    ) -> Vec<Value> {
+        vec![modal_result, forcing, time_scalar(t_start), time_scalar(t_end), time_scalar(dt)]
+    }
+
+    /// Extract the per-mode `Vec<Vec<f64>>` modal-coordinate matrix from a
+    /// `Completed` `DisplacementTimeHistory` outcome.
+    fn mode_coords_from_outcome(outcome: &ComputeOutcome) -> Vec<Vec<f64>> {
+        let ComputeOutcome::Completed { result, .. } = outcome else {
+            panic!("expected Completed outcome");
+        };
+        match result {
+            Value::StructureInstance(d) => match d.fields.get("mode_coords") {
+                Some(Value::List(series)) => series.iter().map(read_real_list).collect(),
+                other => panic!("mode_coords must be a Value::List; got {other:?}"),
+            },
+            other => panic!("expected a DisplacementTimeHistory StructureInstance; got {other:?}"),
+        }
+    }
+
+    /// step-5λ (RED → GREEN in step-6): cache-hit test for `run_transient_response`.
+    ///
+    /// (1) Cold call (prior=None) → `reused_setup == false`, Completes, donates a
+    ///     `new_warm_state` that `downcast_ref::<TransientCache>()` and whose
+    ///     `key.matches` the inputs' `TransientCacheKey`.
+    /// (2) Feed that cache back with SAME modal_result + t_range + dt but DIFFERENT
+    ///     forcing → `reused_setup == true`, Completes, and the returned `mode_coords`
+    ///     DIFFER from the cold call's (the ODE was re-integrated against the new
+    ///     forcing) AND are within 1e-12 of a fresh cold run with the same f2 (the
+    ///     cached setup produces the correct reference result).
+    /// Discrimination: with the F1 cache as prior, (a) different mode `frequency_hz`
+    /// → MISS (`reused_setup == false`); (b) different `dt` → MISS; (c) different
+    /// `t_end` → MISS.
+    ///
+    /// RED: `run_transient_response` / `TransientTrampolineRun` / `TransientCache`
+    /// are absent — fails to compile.
+    #[test]
+    fn run_transient_response_caches_and_reuses_setup() {
+        // 2-mode ModalResult: 3-node shapes, node 2 is the tip antinode.
+        let mode0 = mode_struct(40.0, 0.01, &[0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 1.0]);
+        let mode1 = mode_struct(250.0, 0.02, &[0.0, 0.0, 0.0, 0.0, 0.0, -0.7, 0.0, 0.0, 0.4]);
+        let modal = modal_result_with_modes(vec![mode0, mode1]);
+
+        let (t_start, t_end, dt) = (0.0_f64, 0.1_f64, 0.005_f64);
+        let f1 = forcing_history(vec![step_force("tip", [0.0, 0.0, 1.0], 10.0, 0.0)]);
+        let f2 = forcing_history(vec![step_force("tip", [0.0, 0.0, 1.0], 20.0, 0.0)]);
+
+        // ── (1) cold call ──
+        let handle = CancellationHandle::new();
+        let cold = run_transient_response(
+            &transient_inputs(modal.clone(), f1.clone(), t_start, t_end, dt),
+            None,
+            &handle,
+        );
+        assert!(!cold.reused_setup, "cold call (prior=None) must report reused_setup = false");
+        let ComputeOutcome::Completed { new_warm_state: ref ws1, .. } = cold.outcome else {
+            panic!("cold call must Complete; got {:?}", cold.outcome);
+        };
+        // Donated warm state must be a TransientCache with the correct key.
+        let cache1: &TransientCache = ws1
+            .as_ref()
+            .expect("cold Completed must donate a warm state")
+            .downcast_ref::<TransientCache>()
+            .expect("donated state must be a TransientCache");
+        let expected_key = TransientCacheKey::new(
+            t_start, t_end, dt, vec![(40.0, 0.01), (250.0, 0.02)],
+        );
+        assert!(
+            cache1.key.matches(&expected_key),
+            "donated cache key must match (t_start, t_end, dt, modes)",
+        );
+        let coords_f1 = mode_coords_from_outcome(&cold.outcome);
+
+        // ── (2) warm re-call with different forcing → HIT, different result ──
+        let prior = cache1.clone().into_opaque_state().0;
+        let warm = run_transient_response(
+            &transient_inputs(modal.clone(), f2.clone(), t_start, t_end, dt),
+            Some(&prior),
+            &handle,
+        );
+        assert!(warm.reused_setup, "call with same modal_result/t_range/dt but different forcing must HIT");
+        assert!(
+            matches!(warm.outcome, ComputeOutcome::Completed { .. }),
+            "warm hit must Completed; got {:?}", warm.outcome,
+        );
+        let coords_f2 = mode_coords_from_outcome(&warm.outcome);
+        // The ODE was re-integrated against f2 (magnitude 20 vs 10): at least one
+        // coordinate must differ.
+        assert!(
+            coords_f1.iter().zip(coords_f2.iter()).any(|(v1, v2)| {
+                v1.iter().zip(v2.iter()).any(|(a, b)| (a - b).abs() > 1e-15)
+            }),
+            "forcing-only re-integration must change the mode_coords",
+        );
+
+        // The warm-hit result must equal a fresh cold run with f2 (prior=None).
+        // This pins that the cached setup (grid + prepared integrators) produces
+        // the correct reference answer, not just a result that happens to differ
+        // from the f1 cold run.
+        let cold_f2 = run_transient_response(
+            &transient_inputs(modal.clone(), f2.clone(), t_start, t_end, dt),
+            None,
+            &handle,
+        );
+        let coords_f2_cold = mode_coords_from_outcome(&cold_f2.outcome);
+        assert_eq!(
+            coords_f2.len(), coords_f2_cold.len(),
+            "warm-hit and cold-f2 must produce the same number of modes",
+        );
+        for (i, (warm_mode, cold_mode)) in coords_f2.iter().zip(coords_f2_cold.iter()).enumerate() {
+            assert_eq!(
+                warm_mode.len(), cold_mode.len(),
+                "mode {i}: warm-hit and cold-f2 must produce the same number of time steps",
+            );
+            for (j, (w, c)) in warm_mode.iter().zip(cold_mode.iter()).enumerate() {
+                assert!(
+                    (w - c).abs() < 1e-12,
+                    "mode {i} step {j}: warm-hit coord {w:.6e} differs from cold-f2 ref \
+                     {c:.6e} by {:.6e} (must be < 1e-12 — cached setup must reproduce \
+                     the from-scratch result)",
+                    (w - c).abs(),
+                );
+            }
+        }
+
+        // ── discrimination: cache MISS for changed inputs ──
+
+        // (a) different frequency_hz → MISS
+        let mode0_alt = mode_struct(45.0, 0.01, &[0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 1.0]);
+        let mode1_alt = mode_struct(250.0, 0.02, &[0.0, 0.0, 0.0, 0.0, 0.0, -0.7, 0.0, 0.0, 0.4]);
+        let modal_alt_freq = modal_result_with_modes(vec![mode0_alt, mode1_alt]);
+        let prior2 = cache1.clone().into_opaque_state().0;
+        let miss_freq = run_transient_response(
+            &transient_inputs(modal_alt_freq, f1.clone(), t_start, t_end, dt),
+            Some(&prior2),
+            &handle,
+        );
+        assert!(!miss_freq.reused_setup, "changed frequency_hz must be a cache MISS");
+
+        // (b) different dt → MISS
+        let prior3 = cache1.clone().into_opaque_state().0;
+        let miss_dt = run_transient_response(
+            &transient_inputs(modal.clone(), f1.clone(), t_start, t_end, 0.010),
+            Some(&prior3),
+            &handle,
+        );
+        assert!(!miss_dt.reused_setup, "changed dt must be a cache MISS");
+
+        // (c) different t_end → MISS
+        let prior4 = cache1.clone().into_opaque_state().0;
+        let miss_tend = run_transient_response(
+            &transient_inputs(modal.clone(), f1.clone(), t_start, 0.2, dt),
+            Some(&prior4),
+            &handle,
+        );
+        assert!(!miss_tend.reused_setup, "changed t_end must be a cache MISS");
+    }
+
+    // ── task λ step-7: cancellation tests (RED → GREEN in step-8) ────────────
+
+    /// step-7λ (RED → GREEN in step-8): cooperative cancellation in
+    /// `run_transient_response`.
+    ///
+    /// (a) A pre-cancelled `CancellationHandle` with valid 2-mode ModalResult
+    ///     + non-empty forcing + valid grid yields `ComputeOutcome::Cancelled`
+    ///     and `reused_setup == false` (a cancelled run reuses nothing).
+    /// (b) Regression: a fresh handle still yields `ComputeOutcome::Completed`
+    ///     (the added polls leave the happy path intact).
+    ///
+    /// RED: step-6's core ignores the handle at entry, so a pre-cancelled run
+    /// still Completes (assertion (a) fails).
+    #[test]
+    fn run_transient_response_honors_cancellation() {
+        let mode0 = mode_struct(40.0, 0.01, &[0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 1.0]);
+        let mode1 = mode_struct(250.0, 0.02, &[0.0, 0.0, 0.0, 0.0, 0.0, -0.7, 0.0, 0.0, 0.4]);
+        let modal = modal_result_with_modes(vec![mode0, mode1]);
+        let forcing = forcing_history(vec![step_force("tip", [0.0, 0.0, 1.0], 10.0, 0.0)]);
+        let (t_start, t_end, dt) = (0.0_f64, 0.1_f64, 0.005_f64);
+        let inputs = transient_inputs(modal, forcing, t_start, t_end, dt);
+
+        // (a) pre-cancelled → Cancelled, reused_setup = false
+        let cancelled = CancellationHandle::new();
+        cancelled.cancel();
+        let run = run_transient_response(&inputs, None, &cancelled);
+        assert!(
+            matches!(run.outcome, ComputeOutcome::Cancelled),
+            "a pre-cancelled handle must yield ComputeOutcome::Cancelled; got {:?}",
+            run.outcome,
+        );
+        assert!(!run.reused_setup, "a cancelled run must report reused_setup = false");
+
+        // (b) fresh handle → Completed (happy path unaffected by the added polls)
+        let fresh = CancellationHandle::new();
+        let ok = run_transient_response(&inputs, None, &fresh);
+        assert!(
+            matches!(ok.outcome, ComputeOutcome::Completed { .. }),
+            "a fresh handle must Complete; got {:?}", ok.outcome,
+        );
     }
 }
