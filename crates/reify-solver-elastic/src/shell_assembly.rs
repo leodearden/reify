@@ -899,6 +899,22 @@ fn degenerate_stiffness_core(
     let w_zeta = 1.0_f64;
 
     for ip in inplane.iter() {
+        // For the ANS variant, the membrane reference (displacement membrane at
+        // ζ=0) and the ANS membrane field depend ONLY on the in-plane point — not
+        // on the through-thickness Gauss point ζ — so hoist them out of the ζ loop
+        // and evaluate them once per `ip`. degenerate_assumed_membrane_b is the
+        // expensive term (a covariant tying-point evaluation + a Jacobian inverse +
+        // lamina frame), and the ζ loop runs twice, so this halves the per-`ip` ANS
+        // overhead. The non-ANS path never evaluates these (no extra cost).
+        let (b_mem_ans, b_mem_disp) = if use_ans_membrane {
+            let mid = ShellRefCoord3::new(ip.xi, ip.eta, 0.0);
+            (
+                degenerate_assumed_membrane_b(nodes, directors, thicknesses, mid),
+                degenerate_membrane_bending_b(nodes, directors, thicknesses, mid),
+            )
+        } else {
+            ([[0.0_f64; NDOF]; 3], [[0.0_f64; NDOF]; 3])
+        };
         for &zeta in zeta_gauss.iter() {
             let c3 = ShellRefCoord3::new(ip.xi, ip.eta, zeta);
             let (_jm, det) = degenerate_jacobian(nodes, directors, thicknesses, c3);
@@ -909,11 +925,9 @@ fn degenerate_stiffness_core(
                 // exactly as the 4068 substrate built them:
                 //   B_ans(ζ) = B_mem_ANS + B_full(ζ) − B_mem_disp(ζ=0)
                 // On a flat facet B_mem_ANS = B_mem_disp(ζ=0), so B_ans = B_full
-                // (zero change to the flat element).
-                let mid = ShellRefCoord3::new(ip.xi, ip.eta, 0.0);
+                // (zero change to the flat element). B_mem_ANS and B_mem_disp are
+                // ζ-independent (hoisted above); only B_full(ζ) varies with ζ.
                 let b_full = degenerate_membrane_bending_b(nodes, directors, thicknesses, c3);
-                let b_mem_disp = degenerate_membrane_bending_b(nodes, directors, thicknesses, mid);
-                let b_mem_ans = degenerate_assumed_membrane_b(nodes, directors, thicknesses, mid);
                 let mut b = [[0.0_f64; NDOF]; 3];
                 for r in 0..3 {
                     for col in 0..NDOF {
