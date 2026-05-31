@@ -8,7 +8,7 @@
 //! - `reify-audit --task <id> --pre-done`  P5 only; exit non-zero on detection.
 //! - `reify-audit --task <id>`             Spot-check, all three detectors.
 //! - `reify-audit --since <iso-date>`      Window sweep, all three detectors.
-//! - `--pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER`  Restrict which detector(s) run.
+//! - `--pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER`  Restrict which detector(s) run; comma-separated for multi-detector union (e.g. `--pattern P1,P2,P5`).
 //!
 //! ## Output
 //!
@@ -102,7 +102,7 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  --task <id>              Spot-check a single task (all detectors)");
     let _ = writeln!(out, "  --pre-done               With --task: run P5 pre-done check only");
     let _ = writeln!(out, "  --since <iso-date>       Window sweep from ISO date (all detectors)");
-    let _ = writeln!(out, "  --pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER Restrict to one detector");
+    let _ = writeln!(out, "  --pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER Restrict to detector(s); comma-separated for union (e.g. --pattern P1,P2,P5)");
     let _ = writeln!(out, "  --tasks-file <path>      JSON array of TaskMetadata (overrides live loader; for tests)");
     let _ = writeln!(out, "  --fused-memory-url <url> MCP endpoint (default: $FUSED_MEMORY_URL or http://localhost:8002/mcp)");
     let _ = writeln!(out, "  --runs-db <path>         SQLite runs.db path (default: data/orchestrator/runs.db)");
@@ -167,6 +167,10 @@ struct Args {
     task_id: Option<String>,
     pre_done: bool,
     since: Option<String>,
+    /// Validated comma-separated detector token list (e.g. `"P1,P2,P5"`).
+    /// Each token is one of `P1`, `P2`, `P5`, `PDEAD`, `PUNTESTED`.
+    /// `None` means no restriction — all default-sweep detectors run.
+    /// Use `pattern_selects(val, token)` to test membership.
     pattern: Option<String>,
     /// `Some(path)` → load TaskMetadata from a JSON fixture (test path).
     /// `None` → load live from fused-memory MCP at `fused_memory_url`.
@@ -245,17 +249,17 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             "--pattern" => {
                 i += 1;
                 let p = argv.get(i).ok_or("--pattern requires a value")?.as_str();
-                match p {
-                    "P1" | "P2" | "P5" | "PDEAD" | "PUNTESTED" | "PLAYER" => {
-                        pattern = Some(p.to_string())
-                    }
-                    other => {
+                // Validate each comma-separated token individually.
+                for tok in p.split(',') {
+                    let tok = tok.trim();
+                    if !matches!(tok, "P1" | "P2" | "P5" | "PDEAD" | "PUNTESTED" | "PLAYER") {
                         return Err(format!(
                             "unknown --pattern value '{}'; expected P1, P2, P5, PDEAD, PUNTESTED, or PLAYER",
-                            other
-                        ))
+                            tok
+                        ));
                     }
                 }
+                pattern = Some(p.to_string());
             }
             "--tasks-file" => {
                 i += 1;
@@ -401,6 +405,14 @@ fn load_tasks_from_fused_memory(
 // Dispatch helpers
 // -----------------------------------------------------------------------
 
+/// Return true when the validated comma-separated `pattern` value selects `token`.
+///
+/// `pattern` is the raw stored value (e.g. `"P1,P2,P5"`); callers pass
+/// `args.pattern.as_deref()` and handle `None` (no restriction) themselves.
+fn pattern_selects(pattern: &str, token: &str) -> bool {
+    pattern.split(',').map(str::trim).any(|t| t == token)
+}
+
 /// Return true when at least one jcodemunch-backed detector (P1) is in the
 /// run set for the given args.
 ///
@@ -415,25 +427,30 @@ fn needs_jcodemunch(args: &Args) -> bool {
     if args.pre_done {
         return false;
     }
-    args.pattern.as_deref().is_none_or(|p| p == "P1" || p == "PDEAD" || p == "PUNTESTED" || p == "PLAYER")
+    args.pattern.as_deref().is_none_or(|p| {
+        pattern_selects(p, "P1")
+            || pattern_selects(p, "PDEAD")
+            || pattern_selects(p, "PUNTESTED")
+            || pattern_selects(p, "PLAYER")
+    })
 }
 
-/// Opt-in dispatch predicate for PDEAD: true only when `--pattern PDEAD` is
-/// given explicitly (not part of the default all-detector sweep).
+/// Opt-in dispatch predicate for PDEAD: true only when `PDEAD` is in the
+/// comma-separated `--pattern` set (not part of the default all-detector sweep).
 fn run_pdead(args: &Args) -> bool {
-    args.pattern.as_deref() == Some("PDEAD")
+    args.pattern.as_deref().is_some_and(|p| pattern_selects(p, "PDEAD"))
 }
 
-/// Opt-in dispatch predicate for PUNTESTED: true only when `--pattern PUNTESTED`
-/// is given explicitly (not part of the default all-detector sweep).
+/// Opt-in dispatch predicate for PUNTESTED: true only when `PUNTESTED` is in the
+/// comma-separated `--pattern` set (not part of the default all-detector sweep).
 fn run_puntested(args: &Args) -> bool {
-    args.pattern.as_deref() == Some("PUNTESTED")
+    args.pattern.as_deref().is_some_and(|p| pattern_selects(p, "PUNTESTED"))
 }
 
-/// Opt-in dispatch predicate for PLAYER: true only when `--pattern PLAYER` is
-/// given explicitly (not part of the default all-detector sweep).
+/// Opt-in dispatch predicate for PLAYER: true only when `PLAYER` is in the
+/// comma-separated `--pattern` set (not part of the default all-detector sweep).
 fn run_player(args: &Args) -> bool {
-    args.pattern.as_deref() == Some("PLAYER")
+    args.pattern.as_deref().is_some_and(|p| pattern_selects(p, "PLAYER"))
 }
 
 // -----------------------------------------------------------------------
@@ -572,9 +589,9 @@ fn main() -> ExitCode {
         // run_p1 is DECOUPLED from needs_jcodemunch: needs_jcodemunch now also
         // covers PDEAD (which needs the live server), but run_p1 must not fire
         // on `--pattern PDEAD`. Each detector has its own explicit predicate.
-        let run_p1 = args.pattern.as_deref().is_none_or(|p| p == "P1");
-        let run_p2 = args.pattern.as_deref().is_none_or(|p| p == "P2");
-        let run_p5 = args.pattern.as_deref().is_none_or(|p| p == "P5");
+        let run_p1 = args.pattern.as_deref().is_none_or(|p| pattern_selects(p, "P1"));
+        let run_p2 = args.pattern.as_deref().is_none_or(|p| pattern_selects(p, "P2"));
+        let run_p5 = args.pattern.as_deref().is_none_or(|p| pattern_selects(p, "P5"));
         // PDEAD, PUNTESTED, and PLAYER are opt-in only — not part of the default all-detector sweep.
         let run_pdead = run_pdead(&args);
         let run_puntested = run_puntested(&args);
