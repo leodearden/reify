@@ -4141,7 +4141,8 @@ mod tests {
     /// (2) Feed that cache back with SAME modal_result + t_range + dt but DIFFERENT
     ///     forcing → `reused_setup == true`, Completes, and the returned `mode_coords`
     ///     DIFFER from the cold call's (the ODE was re-integrated against the new
-    ///     forcing).
+    ///     forcing) AND are within 1e-12 of a fresh cold run with the same f2 (the
+    ///     cached setup produces the correct reference result).
     /// Discrimination: with the F1 cache as prior, (a) different mode `frequency_hz`
     /// → MISS (`reused_setup == false`); (b) different `dt` → MISS; (c) different
     /// `t_end` → MISS.
@@ -4206,6 +4207,36 @@ mod tests {
             }),
             "forcing-only re-integration must change the mode_coords",
         );
+
+        // The warm-hit result must equal a fresh cold run with f2 (prior=None).
+        // This pins that the cached setup (grid + prepared integrators) produces
+        // the correct reference answer, not just a result that happens to differ
+        // from the f1 cold run.
+        let cold_f2 = run_transient_response(
+            &transient_inputs(modal.clone(), f2.clone(), t_start, t_end, dt),
+            None,
+            &handle,
+        );
+        let coords_f2_cold = mode_coords_from_outcome(&cold_f2.outcome);
+        assert_eq!(
+            coords_f2.len(), coords_f2_cold.len(),
+            "warm-hit and cold-f2 must produce the same number of modes",
+        );
+        for (i, (warm_mode, cold_mode)) in coords_f2.iter().zip(coords_f2_cold.iter()).enumerate() {
+            assert_eq!(
+                warm_mode.len(), cold_mode.len(),
+                "mode {i}: warm-hit and cold-f2 must produce the same number of time steps",
+            );
+            for (j, (w, c)) in warm_mode.iter().zip(cold_mode.iter()).enumerate() {
+                assert!(
+                    (w - c).abs() < 1e-12,
+                    "mode {i} step {j}: warm-hit coord {w:.6e} differs from cold-f2 ref \
+                     {c:.6e} by {:.6e} (must be < 1e-12 — cached setup must reproduce \
+                     the from-scratch result)",
+                    (w - c).abs(),
+                );
+            }
+        }
 
         // ── discrimination: cache MISS for changed inputs ──
 
