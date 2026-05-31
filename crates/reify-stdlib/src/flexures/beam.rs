@@ -10,23 +10,12 @@ use reify_core::DimensionVector;
 use reify_ir::Value;
 
 use super::common::{
-    length_si, make_flexure_joint, material_field_si, neutral_angle_si, symmetric_angle_range,
-    PRB_ANGLE_LIMIT_RAD,
+    fixed_guided_delta_max, length_si, make_flexure_joint, material_field_si, neutral_angle_si,
+    symmetric_angle_range, FIXED_GUIDED_GAMMA, PRB_ANGLE_LIMIT_RAD,
 };
 
 /// Howell pseudo-rigid-body coefficient for a cantilever beam (Howell §5.1).
 const CANTILEVER_GAMMA: f64 = 2.65;
-
-/// Transverse stiffness coefficient for a fixed-guided (fixed-fixed) beam:
-/// `k_trans = γ_ff·E·I / L³` with γ_ff = 12. This matches the PRD §6.1
-/// parallelogram-blade fixed-guided coefficient (γ_pp = 12) — the standard model
-/// for a beam translating transversely while both ends remain oriented.
-const FIXED_FIXED_GAMMA: f64 = 12.0;
-
-/// Fallback transverse-displacement validity limit as a fraction of beam length,
-/// used for the fixed-fixed beam when the material carries no `yield_stress`.
-/// The PRB transverse small-deflection model degrades past ~0.1·L.
-const SMALL_DEFLECTION_FRACTION: f64 = 0.1;
 
 /// Evaluate a beam-flexure constructor by name.
 ///
@@ -174,16 +163,13 @@ fn prb_fixed_fixed_beam(args: &[Value]) -> Value {
     };
 
     // Fixed-guided transverse stiffness k_trans = γ_ff·E·I / L³ (γ_ff = 12).
-    let k_trans = FIXED_FIXED_GAMMA * b.e * b.i / b.length.powi(3);
+    let k_trans = FIXED_GUIDED_GAMMA * b.e * b.i / b.length.powi(3);
 
     // Symmetric transverse-displacement validity range = ±δ. Fixed-guided
     // bending stress σ = 3·E·t·δ / L² ⇒ δ_yield = yield·L² / (3·E·t). With no
     // material yield_stress, fall back to a documented small-deflection fraction
     // of the beam length.
-    let delta = match b.yield_si {
-        Some(yield_si) => yield_si * b.length.powi(2) / (3.0 * b.e * b.thickness),
-        None => SMALL_DEFLECTION_FRACTION * b.length,
-    };
+    let delta = fixed_guided_delta_max(b.length, b.thickness, b.e, b.yield_si);
     let range = Value::range(
         Some(Value::length(-delta)),
         Some(Value::length(delta)),

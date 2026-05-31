@@ -13,6 +13,17 @@ use reify_ir::Value;
 /// this the pseudo-rigid-body small-deflection model loses fidelity (Howell §5).
 pub(super) const PRB_ANGLE_LIMIT_RAD: f64 = 5.0 * PI / 180.0;
 
+/// Fixed-guided (fixed-fixed) stiffness coefficient γ_ff = 12 (Howell §5 /
+/// PRD §6.1). Used by `beam::prb_fixed_fixed_beam` (transverse prismatic joint)
+/// and `compound::{prb_parallelogram_flexure, prb_double_parallelogram_flexure}`
+/// (parallelogram blade — same fixed-guided boundary condition).
+pub(super) const FIXED_GUIDED_GAMMA: f64 = 12.0;
+
+/// Fallback transverse-displacement validity limit as a fraction of beam length,
+/// used when the material carries no `yield_stress`. The PRB transverse
+/// small-deflection model degrades past ~0.1·L.
+pub(super) const SMALL_DEFLECTION_FRACTION: f64 = 0.1;
+
 /// Return a both-inclusive symmetric angle range `[−h, +h]` centred on zero.
 pub(super) fn symmetric_angle_range(half_width_rad: f64) -> Value {
     Value::range(
@@ -124,6 +135,27 @@ fn numeric_from_value(v: &Value) -> Option<f64> {
         Value::Real(r) if r.is_finite() => Some(*r),
         Value::Int(i) => Some(*i as f64),
         _ => None,
+    }
+}
+
+/// Compute the fixed-guided surface-yield deflection half-width δ_max.
+///
+/// Fixed-guided bending stress σ = 3·E·t·δ / L²
+/// ⇒ δ_yield = yield·L²/(3·E·t).
+/// No `yield_stress` ⇒ small-deflection fallback δ = [`SMALL_DEFLECTION_FRACTION`]·L.
+///
+/// Shared by `beam::prb_fixed_fixed_beam` and `compound::{prb_parallelogram_flexure,
+/// prb_double_parallelogram_flexure}` — a single definition prevents the two
+/// modules drifting on the bending-stress model.
+pub(super) fn fixed_guided_delta_max(
+    length: f64,
+    thickness: f64,
+    e: f64,
+    yield_si: Option<f64>,
+) -> f64 {
+    match yield_si {
+        Some(y) => y * length.powi(2) / (3.0 * e * thickness),
+        None => SMALL_DEFLECTION_FRACTION * length,
     }
 }
 

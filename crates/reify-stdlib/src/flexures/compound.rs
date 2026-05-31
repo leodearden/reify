@@ -24,15 +24,9 @@ use std::collections::BTreeMap;
 use reify_core::DimensionVector;
 use reify_ir::Value;
 
-use super::common::{length_si, make_flexure_joint, material_field_si};
-
-/// Fixed-guided stiffness coefficient γ_pp = 12 (Howell §5 / PRD §6.1 parallelogram
-/// blade). Identical to `beam::FIXED_FIXED_GAMMA` — the same boundary condition.
-const FIXED_GUIDED_GAMMA: f64 = 12.0;
-
-/// Fallback transverse-displacement validity limit as a fraction of beam length,
-/// used when the material carries no `yield_stress`.
-const SMALL_DEFLECTION_FRACTION: f64 = 0.1;
+use super::common::{
+    fixed_guided_delta_max, length_si, make_flexure_joint, material_field_si, FIXED_GUIDED_GAMMA,
+};
 
 /// Shared validated inputs for compound-flexure constructors.
 ///
@@ -72,10 +66,11 @@ fn parse_compound_inputs(args: &[Value]) -> Option<CompoundInputs<'_>> {
     let length = length_si(&args[0])?;
     let width = length_si(&args[1])?;
     let thickness = length_si(&args[2])?;
-    // blade_spacing validated (positive, finite, LENGTH) but does NOT enter
-    // §6.1/§6.2 closed forms — accepted for signature fidelity (PRD §6.1).
-    let blade_spacing = length_si(&args[3])?;
-    if length <= 0.0 || width <= 0.0 || thickness <= 0.0 || blade_spacing <= 0.0 {
+    // `_blade_spacing`: validated (positive, finite, LENGTH) for signature fidelity
+    // (PRD §6.1 prescribes the argument) but intentionally does NOT enter the
+    // §6.1/§6.2 closed forms — stiffness and parasitic depend only on L,b,t,E.
+    let _blade_spacing = length_si(&args[3])?;
+    if length <= 0.0 || width <= 0.0 || thickness <= 0.0 || _blade_spacing <= 0.0 {
         return None;
     }
     if thickness >= length {
@@ -100,63 +95,25 @@ fn parse_compound_inputs(args: &[Value]) -> Option<CompoundInputs<'_>> {
     })
 }
 
-/// Compute the fixed-guided transverse displacement validity half-width δ_max.
+/// Shared builder for both compound-flexure constructors.
 ///
-/// Fixed-guided bending stress σ = 3·E·t·δ / L²
-/// ⇒ δ_yield = yield·L²/(3·E·t).
-/// No `yield_stress` ⇒ small-deflection fallback δ = 0.1·L.
-fn delta_max(c: &CompoundInputs<'_>) -> f64 {
-    match c.yield_si {
-        Some(yield_si) => yield_si * c.length.powi(2) / (3.0 * c.e * c.thickness),
-        None => SMALL_DEFLECTION_FRACTION * c.length,
-    }
-}
-
-/// Compute the single-stage Roberts-approximation parasitic error.
+/// `series_divisor` is 1.0 for the single-stage parallelogram (no series
+/// composition) and 2.0 for the double-parallelogram (two stages in series →
+/// stiffness halves for both DOFs).
 ///
-/// δ_rot = L·(1 − cos(δ_max/L))  (arc height of the Roberts circle, PRD §6.1)
-fn parasitic_single(length: f64, delta: f64) -> f64 {
-    length * (1.0 - (delta / length).cos())
-}
-
-/// Evaluate a compound-flexure constructor by name.
-///
-/// Returns `Some(Value)` for recognised names (including `Some(Value::Undef)` on
-/// validation failure) and `None` for any unknown name, so `eval_builtin` falls
-/// through to the next module.
-pub(crate) fn eval_compound(name: &str, args: &[Value]) -> Option<Value> {
-    match name {
-        "prb_parallelogram_flexure" => Some(prb_parallelogram_flexure(args)),
-        "prb_double_parallelogram_flexure" => Some(prb_double_parallelogram_flexure(args)),
-        _ => None,
-    }
-}
-
-/// `prb_parallelogram_flexure(length, width, thickness, blade_spacing, material, motion_axis, pivot)`
-/// — PRB parallelogram flexure stage presented as a prismatic joint.
-///
-/// Returns a joint `Value::Map` (`kind == "prismatic"`) with:
-/// - `spring_rate` = k_stage = 48·E·I/L³ (TRANSLATIONAL_STIFFNESS)
-/// - `transverse_stiffness` = 4·E·(b·t)/L (axial blade stretching)
-/// - `range` = ±δ_max (symmetric LENGTH-bounded range)
-/// - `parasitic_error` = Option(Some(Length(δ_rot))) where δ_rot = L·(1−cos(δ_max/L))
-///
-/// Returns `Value::Undef` on the invalid-input classes in [`parse_compound_inputs`].
-fn prb_parallelogram_flexure(args: &[Value]) -> Value {
-    let Some(c) = parse_compound_inputs(args) else {
-        return Value::Undef;
-    };
-
-    // Motion stiffness: k_blade = 12·E·I/L³ (fixed-guided, γ_pp=12), k_stage = 4 blades.
+/// `parasitic_of(delta_rot_single, delta, length)` maps the single-stage
+/// Roberts-approximation arc height to the final `parasitic_error` value:
+/// - Single stage: identity — return `delta_rot_single` unchanged.
+/// - Double stage: multiply by `(δ/L)²` (mirror-cancellation residual, PRD §6.2).
+fn build_compound_joint<F>(c: &CompoundInputs<'_>, series_divisor: f64, parasitic_of: F) -> Value
+where
+    F: Fn(f64, f64, f64) -> f64,
+{
     let k_blade = FIXED_GUIDED_GAMMA * c.e * c.i / c.length.powi(3);
-    let k_stage = 4.0 * k_blade;
+    let k_stage = 4.0 * k_blade / series_divisor;
+    let k_transverse = 4.0 * c.e * (c.width * c.thickness) / c.length / series_divisor;
 
-    // Transverse (orthogonal DOF) stiffness: axial stretching of 4 blades.
-    // k_transverse = 4·E·(b·t)/L;  ratio = k_transverse/k_stage = (L/t)².
-    let k_transverse = 4.0 * c.e * (c.width * c.thickness) / c.length;
-
-    // Validity range ±δ_max (symmetric LENGTH-bounded range).
-    let delta = delta_max(&c);
+    let delta = fixed_guided_delta_max(c.length, c.thickness, c.e, c.yield_si);
     let range = Value::range(
         Some(Value::length(-delta)),
         Some(Value::length(delta)),
@@ -164,10 +121,9 @@ fn prb_parallelogram_flexure(args: &[Value]) -> Value {
         true,
     );
 
-    // Roberts-approximation parasitic error (§6.1).
-    let delta_rot = parasitic_single(c.length, delta);
+    let delta_rot_single = c.length * (1.0 - (delta / c.length).cos());
+    let delta_rot = parasitic_of(delta_rot_single, delta, c.length);
 
-    // Build the standard joint base then add the compound-specific extra keys.
     let base = make_flexure_joint(
         "prismatic",
         c.axis.clone(),
@@ -197,6 +153,36 @@ fn prb_parallelogram_flexure(args: &[Value]) -> Value {
     Value::Map(m)
 }
 
+/// Evaluate a compound-flexure constructor by name.
+///
+/// Returns `Some(Value)` for recognised names (including `Some(Value::Undef)` on
+/// validation failure) and `None` for any unknown name, so `eval_builtin` falls
+/// through to the next module.
+pub(crate) fn eval_compound(name: &str, args: &[Value]) -> Option<Value> {
+    match name {
+        "prb_parallelogram_flexure" => Some(prb_parallelogram_flexure(args)),
+        "prb_double_parallelogram_flexure" => Some(prb_double_parallelogram_flexure(args)),
+        _ => None,
+    }
+}
+
+/// `prb_parallelogram_flexure(length, width, thickness, blade_spacing, material, motion_axis, pivot)`
+/// — PRB parallelogram flexure stage presented as a prismatic joint.
+///
+/// Returns a joint `Value::Map` (`kind == "prismatic"`) with:
+/// - `spring_rate` = k_stage = 48·E·I/L³ (TRANSLATIONAL_STIFFNESS)
+/// - `transverse_stiffness` = 4·E·(b·t)/L (axial blade stretching)
+/// - `range` = ±δ_max (symmetric LENGTH-bounded range)
+/// - `parasitic_error` = Option(Some(Length(δ_rot))) where δ_rot = L·(1−cos(δ_max/L))
+///
+/// Returns `Value::Undef` on the invalid-input classes in [`parse_compound_inputs`].
+fn prb_parallelogram_flexure(args: &[Value]) -> Value {
+    let Some(c) = parse_compound_inputs(args) else {
+        return Value::Undef;
+    };
+    build_compound_joint(&c, 1.0, |delta_rot_single, _delta, _length| delta_rot_single)
+}
+
 /// `prb_double_parallelogram_flexure(length, width, thickness, blade_spacing, material, motion_axis, pivot)`
 /// — PRB double-parallelogram flexure stage: two single stages in mirror-symmetric series.
 ///
@@ -214,57 +200,11 @@ fn prb_double_parallelogram_flexure(args: &[Value]) -> Value {
     let Some(c) = parse_compound_inputs(args) else {
         return Value::Undef;
     };
-
-    // Single-stage stiffnesses.
-    let k_blade = FIXED_GUIDED_GAMMA * c.e * c.i / c.length.powi(3);
-    let k_stage_single = 4.0 * k_blade;
-    let k_transverse_single = 4.0 * c.e * (c.width * c.thickness) / c.length;
-
-    // Series composition: two stages in series → stiffness halves for both DOFs.
-    let k_stage = k_stage_single / 2.0;
-    let k_transverse = k_transverse_single / 2.0;
-
-    // Same per-stage δ_max for apples-to-apples §10.1 row-4 comparison.
-    let delta = delta_max(&c);
-    let range = Value::range(
-        Some(Value::length(-delta)),
-        Some(Value::length(delta)),
-        true,
-        true,
-    );
-
-    // Build the joint Map.
-    let base = make_flexure_joint(
-        "prismatic",
-        c.axis.clone(),
-        range,
-        Value::Scalar {
-            si_value: k_stage,
-            dimension: DimensionVector::TRANSLATIONAL_STIFFNESS,
-        },
-        Value::length(0.0),
-        c.pivot.clone(),
-    );
-    let mut m: BTreeMap<Value, Value> = match base {
-        Value::Map(m) => m,
-        _ => unreachable!("make_flexure_joint always returns a Map"),
-    };
-    m.insert(
-        Value::String("transverse_stiffness".to_string()),
-        Value::Scalar {
-            si_value: k_transverse,
-            dimension: DimensionVector::TRANSLATIONAL_STIFFNESS,
-        },
-    );
-    // Mirror symmetry cancels the first-order parasitic; residual scales as (δ/L)³.
-    // δ_rot_double = δ_rot_single · (δ_max/L)²  (PRD §6.2 reduction factor).
-    let delta_rot_single = parasitic_single(c.length, delta);
-    let delta_rot_double = delta_rot_single * (delta / c.length).powi(2);
-    m.insert(
-        Value::String("parasitic_error".to_string()),
-        Value::Option(Some(Box::new(Value::length(delta_rot_double)))),
-    );
-    Value::Map(m)
+    // Mirror symmetry cancels the first-order parasitic; residual scales as (δ/L)³
+    // instead of (δ/L) — reduction factor (δ_max/L)² (PRD §6.2).
+    build_compound_joint(&c, 2.0, |delta_rot_single, delta, length| {
+        delta_rot_single * (delta / length).powi(2)
+    })
 }
 
 #[cfg(test)]
@@ -686,10 +626,14 @@ mod tests {
                             "double parasitic {si_value} < L/100000 = {} (§10.1 row 4)",
                             length / 100_000.0
                         );
-                        // double is significantly smaller than single (4+ orders better)
+                        // Reduction factor: δ_rot_double / δ_rot_single == (δ_max/L)²
+                        // (mirror-cancellation claim made precise).
+                        let reduction = *si_value / delta_rot_single;
+                        let expected_reduction = (delta_max_val / length).powi(2);
+                        let rel_rf = (reduction - expected_reduction).abs() / expected_reduction;
                         assert!(
-                            *si_value < delta_rot_single,
-                            "double parasitic {si_value} < single {delta_rot_single}"
+                            rel_rf < 1e-9,
+                            "reduction factor {reduction} vs (δ_max/L)² = {expected_reduction} (rel {rel_rf})"
                         );
                     }
                     other => panic!("double parasitic inner: expected Scalar, got {other:?}"),
@@ -697,6 +641,37 @@ mod tests {
             }
             other => {
                 panic!("expected double parasitic_error Option(Some(Scalar)), got {other:?}")
+            }
+        }
+
+        // ── Case 2: steel_no_yield() → δ_max = 0.1·L fallback ───────────────
+        let width = 0.005_f64;
+        let args_ny = vec![
+            Value::length(length),
+            Value::length(width),
+            Value::length(thick),
+            Value::length(0.010),
+            steel_no_yield(),
+            axis_y(),
+            origin(),
+        ];
+        let result_ny = crate::eval_builtin("prb_double_parallelogram_flexure", &args_ny);
+        let delta_fallback = 0.1 * length;
+        let delta_rot_single_ny = length * (1.0 - (delta_fallback / length).cos());
+        let delta_rot_double_ny = delta_rot_single_ny * (delta_fallback / length).powi(2);
+        match map_get(&result_ny, "parasitic_error") {
+            Some(Value::Option(Some(inner))) => match inner.as_ref() {
+                Value::Scalar { si_value, .. } => {
+                    let rel = (si_value - delta_rot_double_ny).abs() / delta_rot_double_ny;
+                    assert!(
+                        rel < 1e-9,
+                        "no-yield double parasitic {si_value} vs {delta_rot_double_ny} (rel {rel})"
+                    );
+                }
+                other => panic!("no-yield double parasitic inner: expected Scalar, got {other:?}"),
+            },
+            other => {
+                panic!("no-yield: expected double parasitic Option(Some(_)), got {other:?}")
             }
         }
     }

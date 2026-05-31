@@ -271,16 +271,37 @@ fn double_parallelogram_runs_end_to_end() {
 
     // spring_rate within 1% of k_stage/2 = 24·E·I/L³ (two stages in series).
     let k_expected = 24.0 * e * i / length.powi(3);
-    match map_get(flexure, "spring_rate") {
+    let spring_rate_si = match map_get(flexure, "spring_rate") {
         Some(Value::Scalar { si_value, .. }) => {
             let rel = (si_value - k_expected).abs() / k_expected;
             assert!(
                 rel < 0.01,
                 "spring_rate {si_value} within 1% of analytic {k_expected} (rel {rel})"
             );
+            *si_value
         }
         other => panic!("expected spring_rate Scalar, got {other:?}"),
-    }
+    };
+
+    // §10.1 row 4: transverse_stiffness == (single-stage k_transverse)/2,
+    // and ratio transverse/spring = (L/t)² (preserved across series composition).
+    let k_transverse_expected = 2.0 * e * (width * thickness) / length; // (4·E·b·t/L)/2
+    let transverse_si = match map_get(flexure, "transverse_stiffness") {
+        Some(Value::Scalar { si_value, .. }) => {
+            let rel = (si_value - k_transverse_expected).abs() / k_transverse_expected;
+            assert!(
+                rel < 0.01,
+                "transverse_stiffness {si_value} within 1% of {k_transverse_expected} (rel {rel})"
+            );
+            *si_value
+        }
+        other => panic!("expected transverse_stiffness Scalar, got {other:?}"),
+    };
+    let ratio = transverse_si / spring_rate_si;
+    assert!(
+        ratio >= 1000.0,
+        "transverse/spring ratio {ratio} ≥ 1000 (§10.1 row 4: ratio preserved)"
+    );
 
     // §10.1 row 4: parasitic_error is Option(Some(Length)) with si_value < L/100000
     // (mirror-cancellation residual, approximately 4 orders better than single stage).
