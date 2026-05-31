@@ -3931,4 +3931,140 @@ mod tests {
         // Empty shape: the saturating clamp floor is 0 (no panic / underflow).
         assert_eq!(resolve_location_node("5", &[]), 0, "empty shape clamps to 0 without panic");
     }
+
+    // ── task λ: run_transient_response cache-hit tests (RED → GREEN step-6) ──
+
+    /// Build a `value_inputs` slice for `run_transient_response` / `solve_transient_response_trampoline`:
+    /// `[modal_result, forcing, t_start, t_end, dt]`.
+    fn transient_inputs(
+        modal_result: Value,
+        forcing: Value,
+        t_start: f64,
+        t_end: f64,
+        dt: f64,
+    ) -> Vec<Value> {
+        vec![modal_result, forcing, time_scalar(t_start), time_scalar(t_end), time_scalar(dt)]
+    }
+
+    /// Extract the per-mode `Vec<Vec<f64>>` modal-coordinate matrix from a
+    /// `Completed` `DisplacementTimeHistory` outcome.
+    fn mode_coords_from_outcome(outcome: &ComputeOutcome) -> Vec<Vec<f64>> {
+        let ComputeOutcome::Completed { result, .. } = outcome else {
+            panic!("expected Completed outcome");
+        };
+        match result {
+            Value::StructureInstance(d) => match d.fields.get("mode_coords") {
+                Some(Value::List(series)) => series.iter().map(read_real_list).collect(),
+                other => panic!("mode_coords must be a Value::List; got {other:?}"),
+            },
+            other => panic!("expected a DisplacementTimeHistory StructureInstance; got {other:?}"),
+        }
+    }
+
+    /// step-5λ (RED → GREEN in step-6): cache-hit test for `run_transient_response`.
+    ///
+    /// (1) Cold call (prior=None) → `reused_setup == false`, Completes, donates a
+    ///     `new_warm_state` that `downcast_ref::<TransientCache>()` and whose
+    ///     `key.matches` the inputs' `TransientCacheKey`.
+    /// (2) Feed that cache back with SAME modal_result + t_range + dt but DIFFERENT
+    ///     forcing → `reused_setup == true`, Completes, and the returned `mode_coords`
+    ///     DIFFER from the cold call's (the ODE was re-integrated against the new
+    ///     forcing).
+    /// Discrimination: with the F1 cache as prior, (a) different mode `frequency_hz`
+    /// → MISS (`reused_setup == false`); (b) different `dt` → MISS; (c) different
+    /// `t_end` → MISS.
+    ///
+    /// RED: `run_transient_response` / `TransientTrampolineRun` / `TransientCache`
+    /// are absent — fails to compile.
+    #[test]
+    fn run_transient_response_caches_and_reuses_setup() {
+        // 2-mode ModalResult: 3-node shapes, node 2 is the tip antinode.
+        let mode0 = mode_struct(40.0, 0.01, &[0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 1.0]);
+        let mode1 = mode_struct(250.0, 0.02, &[0.0, 0.0, 0.0, 0.0, 0.0, -0.7, 0.0, 0.0, 0.4]);
+        let modal = modal_result_with_modes(vec![mode0, mode1]);
+
+        let (t_start, t_end, dt) = (0.0_f64, 0.1_f64, 0.005_f64);
+        let f1 = forcing_history(vec![step_force("tip", [0.0, 0.0, 1.0], 10.0, 0.0)]);
+        let f2 = forcing_history(vec![step_force("tip", [0.0, 0.0, 1.0], 20.0, 0.0)]);
+
+        // ── (1) cold call ──
+        let handle = CancellationHandle::new();
+        let cold = run_transient_response(
+            &transient_inputs(modal.clone(), f1.clone(), t_start, t_end, dt),
+            None,
+            &handle,
+        );
+        assert!(!cold.reused_setup, "cold call (prior=None) must report reused_setup = false");
+        let ComputeOutcome::Completed { new_warm_state: ref ws1, .. } = cold.outcome else {
+            panic!("cold call must Complete; got {:?}", cold.outcome);
+        };
+        // Donated warm state must be a TransientCache with the correct key.
+        let cache1: &TransientCache = ws1
+            .as_ref()
+            .expect("cold Completed must donate a warm state")
+            .downcast_ref::<TransientCache>()
+            .expect("donated state must be a TransientCache");
+        let expected_key = TransientCacheKey::new(
+            t_start, t_end, dt, vec![(40.0, 0.01), (250.0, 0.02)],
+        );
+        assert!(
+            cache1.key.matches(&expected_key),
+            "donated cache key must match (t_start, t_end, dt, modes)",
+        );
+        let coords_f1 = mode_coords_from_outcome(&cold.outcome);
+
+        // ── (2) warm re-call with different forcing → HIT, different result ──
+        let prior = cache1.clone().into_opaque_state().0;
+        let warm = run_transient_response(
+            &transient_inputs(modal.clone(), f2.clone(), t_start, t_end, dt),
+            Some(&prior),
+            &handle,
+        );
+        assert!(warm.reused_setup, "call with same modal_result/t_range/dt but different forcing must HIT");
+        assert!(
+            matches!(warm.outcome, ComputeOutcome::Completed { .. }),
+            "warm hit must Completed; got {:?}", warm.outcome,
+        );
+        let coords_f2 = mode_coords_from_outcome(&warm.outcome);
+        // The ODE was re-integrated against f2 (magnitude 20 vs 10): at least one
+        // coordinate must differ.
+        assert!(
+            coords_f1.iter().zip(coords_f2.iter()).any(|(v1, v2)| {
+                v1.iter().zip(v2.iter()).any(|(a, b)| (a - b).abs() > 1e-15)
+            }),
+            "forcing-only re-integration must change the mode_coords",
+        );
+
+        // ── discrimination: cache MISS for changed inputs ──
+
+        // (a) different frequency_hz → MISS
+        let mode0_alt = mode_struct(45.0, 0.01, &[0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 1.0]);
+        let mode1_alt = mode_struct(250.0, 0.02, &[0.0, 0.0, 0.0, 0.0, 0.0, -0.7, 0.0, 0.0, 0.4]);
+        let modal_alt_freq = modal_result_with_modes(vec![mode0_alt, mode1_alt]);
+        let prior2 = cache1.clone().into_opaque_state().0;
+        let miss_freq = run_transient_response(
+            &transient_inputs(modal_alt_freq, f1.clone(), t_start, t_end, dt),
+            Some(&prior2),
+            &handle,
+        );
+        assert!(!miss_freq.reused_setup, "changed frequency_hz must be a cache MISS");
+
+        // (b) different dt → MISS
+        let prior3 = cache1.clone().into_opaque_state().0;
+        let miss_dt = run_transient_response(
+            &transient_inputs(modal.clone(), f1.clone(), t_start, t_end, 0.010),
+            Some(&prior3),
+            &handle,
+        );
+        assert!(!miss_dt.reused_setup, "changed dt must be a cache MISS");
+
+        // (c) different t_end → MISS
+        let prior4 = cache1.clone().into_opaque_state().0;
+        let miss_tend = run_transient_response(
+            &transient_inputs(modal.clone(), f1.clone(), t_start, 0.2, dt),
+            Some(&prior4),
+            &handle,
+        );
+        assert!(!miss_tend.reused_setup, "changed t_end must be a cache MISS");
+    }
 }
