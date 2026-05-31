@@ -939,7 +939,16 @@ fn degenerate_stiffness_core(
                 degenerate_membrane_bending_b(nodes, directors, thicknesses, c3)
             };
             let b_s = degenerate_transverse_shear_b(nodes, directors, thicknesses, c3);
-            let scale = w_inplane * w_zeta * det;
+            // The physical volume element is dV = |det J| dξ dη dζ, so the
+            // integration measure must be |det|.  Using the signed det negates
+            // the entire BᵀDB contribution when per-node directors oppose the
+            // in-plane mesh winding (det(J) = (g_ξ×g_η)·g_ζ < 0), flipping K
+            // to negative-definite (task 4068 bug; hemisphere sign-reversal).
+            // |det| makes the element PSD and orientation-robust — invariant to
+            // a global director sign flip and to mesh winding direction.
+            // Where det>0 already (all flat-facet unit tests, pinched-cylinder /
+            // ANS-cylinder benchmarks), det.abs() is a bitwise no-op.
+            let scale = w_inplane * w_zeta * det.abs();
 
             // D_pl · B_mb (3×18), reused across the symmetric outer product.
             let mut db = [[0.0_f64; NDOF]; 3];
