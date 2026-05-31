@@ -298,3 +298,57 @@ structure TOk {
         conformance_errors
     );
 }
+
+/// Regression (task-4081 overload-resolution fix): with both a trait-object
+/// overload `couple(DrivingJoint)` and a concrete overload `couple(Real)`, a
+/// call with a concrete `Real` literal must resolve to `couple(Real)` and NOT
+/// be reported as ambiguous.
+///
+/// Before the tie-break fix, the trait-object param acted as a wildcard that
+/// also matched the `Real` arg, so `couple(2.0)` matched BOTH overloads →
+/// `OverloadResolution::Ambiguous` → spurious "ambiguous function call"
+/// compile error on previously-valid code. The fix prefers exact full-equality
+/// matches over wildcard (trait-carrying) matches.
+#[test]
+fn concrete_arg_resolves_to_concrete_overload_not_ambiguous() {
+    let source = r#"
+trait DrivingJoint {}
+
+structure RevoluteJoint : DrivingJoint {
+    param x : Real = 0.0
+}
+
+fn couple(joint : DrivingJoint) -> Real { 0.0 }
+fn couple(n : Real) -> Real { n }
+
+structure Test {
+    let r = couple(2.0)
+}
+"#;
+    let module = compile_source(source);
+
+    let ambiguous_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("ambiguous function call"))
+        .collect();
+
+    assert!(
+        ambiguous_errors.is_empty(),
+        "concrete `couple(2.0)` must resolve to couple(Real), not Ambiguous; \
+         got ambiguous diagnostics: {:?}",
+        ambiguous_errors
+    );
+
+    // And the conforming concrete call must not trip any conformance error.
+    let conformance_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
+        .collect();
+    assert!(
+        conformance_errors.is_empty(),
+        "concrete `couple(2.0)` must produce no TypeNotConformingToTrait errors; got: {:?}",
+        conformance_errors
+    );
+}

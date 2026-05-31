@@ -311,6 +311,12 @@ pub(crate) fn type_carries_trait_object(t: &Type) -> bool {
 /// (`type_carries_trait_object`) act as resolution wildcards and match any arg
 /// type.  Int→Real widening is NOT applied during overload resolution so that
 /// `f(Int)` and `f(Real)` are treated as distinct overloads.
+///
+/// When both a concrete and a trait-object overload would match (the wildcard
+/// relaxation makes the trait param accept a concrete arg), exact full-equality
+/// matches win: the wildcard matches are discarded before Resolved/Ambiguous
+/// classification so a concrete arg resolves to its concrete overload rather
+/// than being reported as ambiguous.
 pub(crate) fn resolve_function_overload<'a>(
     name: &str,
     arg_types: &[Type],
@@ -342,10 +348,35 @@ pub(crate) fn resolve_function_overload<'a>(
         })
         .collect();
 
-    match matches.len() {
-        1 => OverloadResolution::Resolved(matches[0]),
+    // Tie-break: prefer candidates that match ALL params by *exact* equality
+    // (no wildcard relaxation) over trait-carrying wildcard matches. Without
+    // this, a function with both a trait-object overload and a concrete
+    // overload — e.g. `couple(DrivingJoint)` + `couple(Real)` — would treat a
+    // concrete arg like `couple(2.0)` as matching BOTH (the trait param acts as
+    // a wildcard), yielding a spurious `Ambiguous` on previously-valid code.
+    // When at least one exact match exists, the wildcard matches are discarded
+    // before classification. (task-4081 overload-resolution regression fix.)
+    let exact_matches: Vec<&CompiledFunction> = matches
+        .iter()
+        .copied()
+        .filter(|f| {
+            f.params
+                .iter()
+                .zip(arg_types.iter())
+                .all(|((_, param_ty), arg_ty)| param_ty == arg_ty)
+        })
+        .collect();
+
+    let resolved = if exact_matches.is_empty() {
+        matches
+    } else {
+        exact_matches
+    };
+
+    match resolved.len() {
+        1 => OverloadResolution::Resolved(resolved[0]),
         0 => OverloadResolution::NoMatch(named),
-        _ => OverloadResolution::Ambiguous(matches),
+        _ => OverloadResolution::Ambiguous(resolved),
     }
 }
 
