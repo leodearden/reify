@@ -1387,16 +1387,18 @@ fn resolve_load_case_options(fields: &PersistentMap<String, Value>, shared_optio
 /// no actual ComputeNode realization occurs — mesh-reuse verification requires
 /// routing through the engine's @optimized dispatch (future work; see step-5 test).
 ///
-/// Failure modes (silent-Undef per PRD task #10 deferral):
-/// - `args.len() < 5`: wrong arity (guarded by dispatch arm; defensive here)
-/// - `cases` arg is not `Value::List`: Undef
-/// - cases list is empty: Undef
-/// - any case is not `Value::StructureInstance`: Undef
-/// - any `LoadCase.name` is not `Value::String`: Undef
-/// - duplicate case names: last-wins (the second case silently overwrites the
-///   first in the output `BTreeMap`; not diagnosticated — per silent-Undef
-///   discipline, the observable contract is that `case_names` / `result_for`
-///   see the final state of the map; tracking is PRD task #10 scope)
+/// Failure modes (PRD task #10 now diagnoses empty-cases and duplicate-names;
+/// the remaining shape mismatches stay silent-Undef):
+/// - `args.len() < 5`: wrong arity (guarded by dispatch arm; defensive here) → Undef
+/// - `cases` arg is not `Value::List`: Undef (silent)
+/// - cases list is empty: Undef + `MultiLoadEmptyCases` diagnostic (task #10)
+/// - duplicate case names: Undef + `MultiLoadDuplicateCaseName` diagnostic
+///   naming the offending case (task #10). An up-front uniqueness pre-pass
+///   rejects the second occurrence — no longer the silent last-wins overwrite
+///   it was while task #10 was deferred.
+/// - any case is not `Value::StructureInstance`: Undef (silent)
+/// - any `LoadCase.name` is not `Value::String`: Undef (silent; such cases are
+///   skipped by the duplicate pre-pass and rejected by the main solve loop)
 fn eval_solve_load_cases(args: &[Value], ctx: &EvalContext) -> Value {
     if args.len() < 5 {
         return Value::Undef;
@@ -1428,6 +1430,30 @@ fn eval_solve_load_cases(args: &[Value], ctx: &EvalContext) -> Value {
             );
         }
         return Value::Undef;
+    }
+
+    // task #10 (multi-load-case FEA): reject duplicate case names up front.
+    // Each LoadCase in a single solve_load_cases call must have a unique name
+    // so downstream linear_combine weight maps can reference cases
+    // unambiguously. This pre-pass runs before any solve invocation, so the
+    // diagnostic fires with zero solver work. Cases lacking a `Value::String`
+    // name are skipped here and handled as before by the main loop below.
+    let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for case_val in cases.iter() {
+        if let Value::StructureInstance(data) = case_val
+            && let Some(Value::String(name)) = data.fields.get(&"name".to_string())
+            && !seen_names.insert(name.clone())
+        {
+            if let Some(sink) = ctx.diagnostics {
+                sink.borrow_mut().push(
+                    Diagnostic::error(format!(
+                        "Duplicate load case name: '{name}'. Each LoadCase in a single solve_load_cases call must have a unique name."
+                    ))
+                    .with_code(DiagnosticCode::MultiLoadDuplicateCaseName),
+                );
+            }
+            return Value::Undef;
+        }
     }
 
     let mut out: std::collections::BTreeMap<Value, Value> = std::collections::BTreeMap::new();
