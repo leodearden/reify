@@ -25,7 +25,7 @@ use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeI
 use reify_solver_elastic::{
     AssemblyElement, AssemblyMode, DirichletBc, EigenSolverOptions, EigenSolverResult, ElementOrder,
     ElementStiffness, IsotropicElastic, assemble_global_stiffness, consistent_element_mass_tet_p1,
-    element_stiffness, solve_eigen_dense, solve_eigen_shift_invert,
+    consistent_element_mass_tet_p2, element_stiffness, solve_eigen_dense, solve_eigen_shift_invert,
 };
 use reify_stdlib::modal::free_vibration::{
     eigenvalue_to_frequency_hz, is_rigid_body_mode, mass_normalization_scale,
@@ -196,47 +196,31 @@ pub(crate) fn solve_modal_core(
     reference_direction: [f64; 3],
     bcs: &[DirichletBc],
     eigen_opts: &EigenSolverOptions,
+    element_order: ElementOrder,
 ) -> ModalCoreResult {
-    let n_nodes = mesh.nodes.len();
+    // ---- Assemble (K, M) at the requested element order -------------------
+    // P1 keeps the original constant-strain path bit-for-bit. P2 promotes the
+    // beam mesh to 10-node tets (inserting edge-midpoint nodes) and assembles the
+    // quadratic stiffness + the exact (degree-4-integrated) consistent mass over
+    // the promoted node set — the lever that resolves bending curvature and
+    // removes the P1 lock (task 4066). Everything downstream (free-DOF
+    // projection, participation metric, eigensolve, scatter-back) is DOF-index
+    // based and element-order agnostic, so it consumes the resulting
+    // `(n_nodes, k_full, m_full)` unchanged regardless of order.
+    let (n_nodes, k_full, m_full) = match element_order {
+        ElementOrder::P1 => {
+            let n_nodes = mesh.nodes.len();
+            let (k_full, m_full) = assemble_p1_k_m(&mesh.nodes, &mesh.tets, material, density);
+            (n_nodes, k_full, m_full)
+        }
+        ElementOrder::P2 => {
+            let (nodes_p2, tets_p2) = promote_beam_mesh_to_p2(mesh);
+            let n_nodes = nodes_p2.len();
+            let (k_full, m_full) = assemble_p2_k_m(&nodes_p2, &tets_p2, material, density);
+            (n_nodes, k_full, m_full)
+        }
+    };
     let n_dofs = 3 * n_nodes;
-
-    // ---- Assemble K (P1 element stiffness) --------------------------------
-    let k_elems: Vec<ElementStiffness> = mesh
-        .tets
-        .iter()
-        .map(|tet| {
-            let phys: [[f64; 3]; 4] =
-                [mesh.nodes[tet[0]], mesh.nodes[tet[1]], mesh.nodes[tet[2]], mesh.nodes[tet[3]]];
-            element_stiffness(ElementOrder::P1, &phys[..], material)
-        })
-        .collect();
-    let k_assembly: Vec<AssemblyElement<'_>> = mesh
-        .tets
-        .iter()
-        .zip(k_elems.iter())
-        .enumerate()
-        .map(|(id, (conn, k_e))| AssemblyElement { id, connectivity: conn, k_e })
-        .collect();
-    let k_full = assemble_global_stiffness(n_nodes, &k_assembly, AssemblyMode::Deterministic);
-
-    // ---- Assemble M (consistent P1 mass) ----------------------------------
-    let m_elems: Vec<ElementStiffness> = mesh
-        .tets
-        .iter()
-        .map(|tet| {
-            let phys: [[f64; 3]; 4] =
-                [mesh.nodes[tet[0]], mesh.nodes[tet[1]], mesh.nodes[tet[2]], mesh.nodes[tet[3]]];
-            consistent_element_mass_tet_p1(&phys, density)
-        })
-        .collect();
-    let m_assembly: Vec<AssemblyElement<'_>> = mesh
-        .tets
-        .iter()
-        .zip(m_elems.iter())
-        .enumerate()
-        .map(|(id, (conn, m_e))| AssemblyElement { id, connectivity: conn, k_e: m_e })
-        .collect();
-    let m_full = assemble_global_stiffness(n_nodes, &m_assembly, AssemblyMode::Deterministic);
 
     // ---- Matrix-norm diagnostics (‖K‖_F, ‖M‖_F over the full assembly) -----
     // Computed before the free-DOF projection consumes the matrices: these are
@@ -399,6 +383,111 @@ pub(crate) fn solve_modal_core(
         stiffness_matrix_norm,
         diagnostics,
     }
+}
+
+/// Promote a P1 [`BeamMesh`] to a P2 (10-node) tet mesh by inserting
+/// edge-midpoint nodes, returning the promoted `(nodes, tets)`.
+///
+/// Delegates to the shared `assembly::test_support::promote_tets_to_p2` — the
+/// single source of truth for P1→P2 promotion (also driving the kernel-side
+/// `tests/modal_benchmarks.rs` accuracy gate and the euler P2 buckling test) — so
+/// the eval-side P2 modal path and the kernel-side benchmark promote with
+/// identical node numbering. The trampoline reuses this to realize the Dirichlet
+/// BCs against the promoted node set (step 10), keeping the BC DOF indices
+/// aligned with the numbering [`solve_modal_core`] assembles `K`/`M` against here.
+fn promote_beam_mesh_to_p2(mesh: &BeamMesh) -> (Vec<[f64; 3]>, Vec<[usize; 10]>) {
+    reify_solver_elastic::assembly::test_support::promote_tets_to_p2(&mesh.nodes, &mesh.tets)
+}
+
+/// Assemble the global stiffness `K` and consistent mass `M` for a P1 (4-node)
+/// tet mesh — the original constant-strain path factored out of
+/// [`solve_modal_core`] verbatim, so the P1 result is bit-for-bit unchanged.
+fn assemble_p1_k_m(
+    nodes: &[[f64; 3]],
+    tets: &[[usize; 4]],
+    material: &IsotropicElastic,
+    density: f64,
+) -> (SparseRowMat<usize, f64>, SparseRowMat<usize, f64>) {
+    let n_nodes = nodes.len();
+
+    let k_elems: Vec<ElementStiffness> = tets
+        .iter()
+        .map(|tet| {
+            let phys: [[f64; 3]; 4] = std::array::from_fn(|i| nodes[tet[i]]);
+            element_stiffness(ElementOrder::P1, &phys[..], material)
+        })
+        .collect();
+    let k_assembly: Vec<AssemblyElement<'_>> = tets
+        .iter()
+        .zip(k_elems.iter())
+        .enumerate()
+        .map(|(id, (conn, k_e))| AssemblyElement { id, connectivity: conn, k_e })
+        .collect();
+    let k_full = assemble_global_stiffness(n_nodes, &k_assembly, AssemblyMode::Deterministic);
+
+    let m_elems: Vec<ElementStiffness> = tets
+        .iter()
+        .map(|tet| {
+            let phys: [[f64; 3]; 4] = std::array::from_fn(|i| nodes[tet[i]]);
+            consistent_element_mass_tet_p1(&phys, density)
+        })
+        .collect();
+    let m_assembly: Vec<AssemblyElement<'_>> = tets
+        .iter()
+        .zip(m_elems.iter())
+        .enumerate()
+        .map(|(id, (conn, m_e))| AssemblyElement { id, connectivity: conn, k_e: m_e })
+        .collect();
+    let m_full = assemble_global_stiffness(n_nodes, &m_assembly, AssemblyMode::Deterministic);
+
+    (k_full, m_full)
+}
+
+/// Assemble the global stiffness `K` and consistent mass `M` for a promoted P2
+/// (10-node) tet mesh: quadratic `element_stiffness(ElementOrder::P2, …)` and the
+/// exact degree-4-integrated `consistent_element_mass_tet_p2`, the per-element
+/// 10-node `phys` gathered via `std::array::from_fn` over the connectivity (the
+/// buckling-kernel / modal-benchmark P2 idiom). The assembler treats each element
+/// matrix opaquely, so `K` and `M` scatter through the identical path.
+fn assemble_p2_k_m(
+    nodes_p2: &[[f64; 3]],
+    tets_p2: &[[usize; 10]],
+    material: &IsotropicElastic,
+    density: f64,
+) -> (SparseRowMat<usize, f64>, SparseRowMat<usize, f64>) {
+    let n_nodes = nodes_p2.len();
+
+    let k_elems: Vec<ElementStiffness> = tets_p2
+        .iter()
+        .map(|tet| {
+            let phys: [[f64; 3]; 10] = std::array::from_fn(|i| nodes_p2[tet[i]]);
+            element_stiffness(ElementOrder::P2, &phys[..], material)
+        })
+        .collect();
+    let k_assembly: Vec<AssemblyElement<'_>> = tets_p2
+        .iter()
+        .zip(k_elems.iter())
+        .enumerate()
+        .map(|(id, (conn, k_e))| AssemblyElement { id, connectivity: conn, k_e })
+        .collect();
+    let k_full = assemble_global_stiffness(n_nodes, &k_assembly, AssemblyMode::Deterministic);
+
+    let m_elems: Vec<ElementStiffness> = tets_p2
+        .iter()
+        .map(|tet| {
+            let phys: [[f64; 3]; 10] = std::array::from_fn(|i| nodes_p2[tet[i]]);
+            consistent_element_mass_tet_p2(&phys, density)
+        })
+        .collect();
+    let m_assembly: Vec<AssemblyElement<'_>> = tets_p2
+        .iter()
+        .zip(m_elems.iter())
+        .enumerate()
+        .map(|(id, (conn, m_e))| AssemblyElement { id, connectivity: conn, k_e: m_e })
+        .collect();
+    let m_full = assemble_global_stiffness(n_nodes, &m_assembly, AssemblyMode::Deterministic);
+
+    (k_full, m_full)
 }
 
 /// Extract the free×free submatrix of `full` over the non-Dirichlet DOFs.
@@ -673,6 +762,9 @@ pub fn solve_modal_analysis_trampoline(
         reference_direction,
         &bcs,
         &eigen_opts,
+        // P1 for now; step 10 reads `element_order` from ModalOptions and threads
+        // it (with a promoted-node-set BC realization) through here.
+        ElementOrder::P1,
     );
 
     // ── (6) modes list: one Mode StructureInstance per returned mode ─────────
@@ -1137,6 +1229,7 @@ mod tests {
             [0.0, 0.0, 1.0], // reference_direction; unused by this assertion
             &bcs,
             &eigen_opts,
+            ElementOrder::P1,
         );
 
         // (a) n_nodes matches the shared mesh; ≥ 1 mode returned.
@@ -1342,6 +1435,7 @@ mod tests {
             [0.0, 0.0, 1.0], // reference_direction; unused by this assertion
             &bcs,
             &eigen_opts,
+            ElementOrder::P1,
         );
 
         assert!(!result.phi_free.is_empty(), "expect at least 1 mode");
@@ -1416,6 +1510,7 @@ mod tests {
             reference_direction,
             &bcs,
             &eigen_opts,
+            ElementOrder::P1,
         );
 
         // Precondition: the dense path returned the entire free spectrum (so the
@@ -1491,6 +1586,7 @@ mod tests {
             [0.0, 0.0, 1.0],
             &[], // unconstrained
             &eigen_opts,
+            ElementOrder::P1,
         );
 
         // (a) at least one returned mode is a rigid-body mode (ω ≈ 0).
@@ -1549,6 +1645,7 @@ mod tests {
             [0.0, 0.0, 1.0],
             &bcs,
             &eigen_opts,
+            ElementOrder::P1,
         );
 
         assert!(
@@ -1603,6 +1700,7 @@ mod tests {
             [0.0, 0.0, 1.0],
             &[], // unconstrained → singular K_free
             &eigen_opts,
+            ElementOrder::P1,
         );
 
         // Graceful: ≥ 1 mode returned (no panic) and the rigid-body warning fires.
@@ -2171,6 +2269,7 @@ mod tests {
             [0.0, 0.0, 1.0],
             &bcs,
             &eigen_opts,
+            ElementOrder::P1,
         );
         assert!(!core.phi_full.is_empty(), "oracle must return ≥ 1 phi_full vector");
 
