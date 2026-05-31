@@ -3891,6 +3891,64 @@ impl Engine {
         }
     }
 
+    /// Post-process value cells for a template, dispatching the RBD-β
+    /// `body_mass_props(body, density?)` dynamics-query builtin (task 3829;
+    /// PRD `docs/prds/v0_3/rigid-body-dynamics.md` §2.1/§5.4).
+    ///
+    /// Sibling to `post_process_conformance_queries` /
+    /// `post_process_kinematic_queries`. For each `ValueCellDecl` whose
+    /// `default_expr` is a recognised `body_mass_props(...)` call,
+    /// [`crate::dynamics_ops::try_eval_body_mass_props`] runs the density
+    /// priority ladder (emitting `W_DynamicsDefaultDensity` on the water-default
+    /// fallback) and writes the assembled `MassProperties` `StructureInstance`
+    /// into `values`, overwriting the `Value::Undef` left by the pure
+    /// `eval_expr` path (the builtin `FunctionCall` has no pure-eval rule).
+    /// Cells whose dispatch returns `None` (non-call expr, a different function
+    /// name, an unresolvable body arg) are left untouched — the geometry_ops
+    /// `None`-means-skip contract.
+    ///
+    /// The geometric fields (`mass`/`com`/`inertia`) stay the deferred
+    /// `Value::Undef` sentinel until the KGQ kernel query
+    /// (`moment_of_inertia`, task 3620) is wired by the supervisor — see
+    /// `try_eval_body_mass_props`'s `TODO(3620)`. The existing MassProperties
+    /// PSD hook (engine_eval.rs) classifies an `Undef` inertia as `Skip`, so
+    /// the deferred instance is neither clobbered nor flagged.
+    ///
+    /// Takes `kernel: &dyn GeometryKernel` (immutable — the dispatch only holds
+    /// the kernel for the future geometric query and does not mutate it);
+    /// `run_post_processes` reborrows its `&mut dyn` kernel as `&*kernel`.
+    /// Called from `run_post_processes` so build / build_snapshot /
+    /// tessellate_from_values agree on the patched value (task 3745).
+    fn post_process_body_mass_props(
+        template: &reify_compiler::TopologyTemplate,
+        values: &mut ValueMap,
+        kernel: &dyn GeometryKernel,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        // Iterate `values` directly without snapshotting (parallels the
+        // `post_process_kinematic_queries` sibling above). Safe because
+        // `body_mass_props` does not chain through value cells — its body arg
+        // resolves to a let-bound `Value` already populated by `eval_expr`,
+        // never to another `body_mass_props` cell, so an earlier patch in this
+        // loop cannot influence a later dispatch's input. The immutable
+        // `values` borrow taken by `try_eval_body_mass_props` ends before the
+        // owned `Value` is inserted.
+        for cell in &template.value_cells {
+            let default_expr = match &cell.default_expr {
+                Some(e) => e,
+                None => continue,
+            };
+            if let Some(value) = crate::dynamics_ops::try_eval_body_mass_props(
+                default_expr,
+                values,
+                kernel,
+                diagnostics,
+            ) {
+                values.insert(cell.id.clone(), value);
+            }
+        }
+    }
+
     /// Run all selector / AdHocSelector post-process passes for a template
     /// after `execute_realization_ops` has populated `named_steps`.
     ///
@@ -3908,6 +3966,26 @@ impl Engine {
         table: &TopologyAttributeTable,
         diagnostics: &mut Vec<Diagnostic>,
     ) {
+        // RBD-β (task 3829): body_mass_props dispatch. Added here — rather than
+        // a fourth explicit call at each build / build_snapshot /
+        // tessellate_from_values site — so all three sites pick it up
+        // automatically (task 3745 consolidation contract). Reborrows the
+        // `&mut` kernel as `&dyn`: the dispatch only holds the kernel for the
+        // (deferred, task 3620) geometric query and does not mutate it.
+        //
+        // ORDERING — TODO(3620): this pass runs BEFORE the selector passes
+        // (`post_process_topology_selectors` / `post_process_ad_hoc_selectors`).
+        // That is safe ONLY while the geometric mass/com/inertia query is
+        // deferred: `body_mass_props`'s body arg resolves to an already-eval'd
+        // let-bound `Value` and the geometric fields are the `Undef` sentinel,
+        // so reading the body before the selector passes cannot observe a stale
+        // value. When the KGQ kernel seam (task 3620) is wired and geometry stops
+        // being deferred, RE-EVALUATE this position: a body produced by a
+        // selector post-process would not yet be populated when this pass reads
+        // it, yielding incorrect geometry — at which point this call likely must
+        // move AFTER the selector passes (or gain an explicit dependency
+        // ordering). Do not wire 3620 without revisiting this ordering.
+        Engine::post_process_body_mass_props(template, values, &*kernel, diagnostics);
         Engine::post_process_topology_selectors(template, named_steps, values, kernel, diagnostics);
         Engine::post_process_ad_hoc_selectors(
             template,
