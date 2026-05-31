@@ -9,7 +9,28 @@
 //! Validation failure → `Value::Undef` with NO diagnostic emission
 //! (W_Flexure*/E_Flexure* emission is λ/task-3821's responsibility).
 
+use reify_core::DimensionVector;
 use reify_ir::Value;
+
+use super::common::{
+    length_si, make_flexure_joint, material_field_si, neutral_angle_si, symmetric_angle_range,
+    PRB_ANGLE_LIMIT_RAD,
+};
+
+/// Howell §5.7 small-length flexural pivot (SLFP) stiffness coefficient.
+///
+/// k_θ = γ_lh · E · I / L with γ_lh = 1.0. Unlike the cantilever PRB model
+/// (γ = 2.65), the SLFP concentrates all compliance into a single torsional
+/// spring with no characteristic-radius amplification — the segment IS the
+/// spring (Howell §5.7, PRD §2.2 Phase-2 task ε).
+const LIVING_HINGE_GAMMA: f64 = 1.0;
+
+/// Haringx (1949) crossed-leaf pivot stiffness coefficient.
+///
+/// k_θ = γ_cs · E · I / L with γ_cs = 2.0. Two crossed leaves intersecting
+/// at mid-length λ = 0.5, each contributing EI/L to the first-order linear
+/// rotational stiffness (PRD §2.2 Phase-2 task ε).
+const CROSS_SPRING_GAMMA: f64 = 2.0;
 
 /// Evaluate a hinge-flexure constructor by name.
 ///
@@ -25,29 +46,242 @@ pub(crate) fn eval_hinge(name: &str, args: &[Value]) -> Option<Value> {
     }
 }
 
+/// Shared, validated inputs for the bending-hinge constructors (living hinge
+/// and cross-spring pivot). Both share the same positional argument layout
+/// `(length, width, thickness, material, pivot, axis[, neutral])` and the same
+/// surface-bending stress/yield formula — they differ only in the k_γ constant.
+struct BendingHingeInputs<'a> {
+    length: f64,
+    thickness: f64,
+    e: f64,
+    /// Rectangular-section second moment of area `I = width·thickness³/12`.
+    i: f64,
+    yield_si: Option<f64>,
+    axis: &'a Value,
+    pivot: &'a Value,
+    neutral_arg: Option<&'a Value>,
+}
+
+/// Parse and validate the shared bending-hinge argument layout:
+/// `(length, width, thickness, material, pivot, axis[, neutral])`.
+///
+/// Returns `None` (⇒ `Value::Undef`) on: arity ∉ {6, 7}; non-positive or
+/// non-finite geometry; thickness ≥ length; missing or non-positive
+/// `youngs_modulus`; or an invalid axis.
+fn parse_bending_hinge_inputs(args: &[Value]) -> Option<BendingHingeInputs<'_>> {
+    if args.len() != 6 && args.len() != 7 {
+        return None;
+    }
+    let length = length_si(&args[0])?;
+    let width = length_si(&args[1])?;
+    let thickness = length_si(&args[2])?;
+    if length <= 0.0 || width <= 0.0 || thickness <= 0.0 || thickness >= length {
+        return None;
+    }
+    let material = &args[3];
+    let e = material_field_si(material, "youngs_modulus")?;
+    if e <= 0.0 {
+        return None;
+    }
+    let axis = &args[5];
+    crate::helpers::validate_dimensionless_unit_axis_vec3(axis)?;
+    Some(BendingHingeInputs {
+        length,
+        thickness,
+        e,
+        i: width * thickness.powi(3) / 12.0,
+        yield_si: material_field_si(material, "yield_stress"),
+        axis,
+        pivot: &args[4],
+        neutral_arg: if args.len() == 7 { Some(&args[6]) } else { None },
+    })
+}
+
+/// Parametrized core for living hinge and cross-spring pivot.
+///
+/// Closed form (PRD §2.2):
+///   k_θ = k_gamma · E · I / L
+///
+/// Surface-bending yield rotation:
+///   σ(θ) = E · (t/2) · θ / L  ⇒  θ_yield = yield · L / (E · t/2)
+///
+/// Validity range = ±min(θ_yield, 5°); no yield_stress ⇒ ±5°.
+fn bending_hinge_revolute(b: &BendingHingeInputs<'_>, k_gamma: f64) -> Value {
+    let k_theta = k_gamma * b.e * b.i / b.length;
+
+    let theta_lim = match b.yield_si {
+        Some(yield_si) => {
+            let theta_yield = yield_si * b.length / (b.e * b.thickness / 2.0);
+            theta_yield.min(PRB_ANGLE_LIMIT_RAD)
+        }
+        None => PRB_ANGLE_LIMIT_RAD,
+    };
+    let range = symmetric_angle_range(theta_lim);
+
+    let neutral_si = b.neutral_arg.map(neutral_angle_si).unwrap_or(0.0);
+
+    make_flexure_joint(
+        "revolute",
+        b.axis.clone(),
+        range,
+        Value::Scalar {
+            si_value: k_theta,
+            dimension: DimensionVector::ROTATIONAL_STIFFNESS,
+        },
+        Value::angle(neutral_si),
+        b.pivot.clone(),
+    )
+}
+
 /// `prb_living_hinge(length, width, thickness, material, pivot, axis[, neutral])`
 /// — Howell §5.7 small-length flexural pivot (SLFP) as a revolute joint.
 ///
-/// Stub — returns `Value::Undef` until step-2 implements the closed form.
-fn prb_living_hinge(_args: &[Value]) -> Value {
-    Value::Undef
+/// Returns a joint `Value::Map` (`kind == "revolute"`) with rotational
+/// stiffness `k_θ = E·I/L` (γ_lh = 1.0 — no PRB characteristic-radius
+/// amplification; the SLFP segment IS the torsional spring). Validity range
+/// `±min(θ_yield, 5°)` where `θ_yield = yield·L/(E·t/2)`.
+fn prb_living_hinge(args: &[Value]) -> Value {
+    match parse_bending_hinge_inputs(args) {
+        Some(b) => bending_hinge_revolute(&b, LIVING_HINGE_GAMMA),
+        None => Value::Undef,
+    }
 }
 
 /// `prb_cross_spring_pivot(length, width, thickness, material, pivot, axis[, neutral])`
 /// — Haringx 1949 crossed-leaf pivot as a revolute joint.
 ///
-/// Stub — returns `Value::Undef` until step-4 implements the closed form.
-fn prb_cross_spring_pivot(_args: &[Value]) -> Value {
-    Value::Undef
+/// Same closed-form structure as `prb_living_hinge` but with `γ_cs = 2.0`
+/// (two crossed leaves each contributing EI/L at the mid-length intersection).
+fn prb_cross_spring_pivot(args: &[Value]) -> Value {
+    match parse_bending_hinge_inputs(args) {
+        Some(b) => bending_hinge_revolute(&b, CROSS_SPRING_GAMMA),
+        None => Value::Undef,
+    }
+}
+
+/// Extract an f64 from a material `Value::StructureInstance` field, accepting
+/// `Value::Scalar{si_value}`, `Value::Real`, or `Value::Int` — the
+/// `read_scalar_si` pattern (reify-eval/src/modal_ops.rs:839). Used for
+/// `poisson_ratio`, which is a bare `Value::Real` at runtime (unlike
+/// `youngs_modulus`, which arrives as a `Value::Scalar`).
+fn material_real_field(material: &Value, key: &str) -> Option<f64> {
+    let fields = match material {
+        Value::StructureInstance(data) => &data.fields,
+        _ => return None,
+    };
+    let v = fields.get(&key.to_string())?;
+    match v {
+        Value::Scalar { si_value, .. } if si_value.is_finite() => Some(*si_value),
+        Value::Real(r) if r.is_finite() => Some(*r),
+        Value::Int(i) => Some(*i as f64),
+        _ => None,
+    }
+}
+
+/// Validated inputs for `prb_let_joint`.
+struct LetInputs<'a> {
+    length: f64,
+    thickness: f64,
+    width: f64,
+    n_blades: f64,
+    /// Shear modulus G = E / (2·(1+ν)) derived from youngs_modulus + poisson_ratio.
+    g: f64,
+    yield_si: Option<f64>,
+    axis: &'a Value,
+    pivot: &'a Value,
+    neutral_arg: Option<&'a Value>,
+}
+
+/// Parse and validate LET joint arguments:
+/// `(length, width, thickness, n_blades, material, pivot, axis[, neutral])`.
+///
+/// Returns `None` on: arity ∉ {7, 8}; non-positive or non-finite geometry;
+/// thickness ≥ length; n_blades < 1 or non-integer; missing/non-positive
+/// `youngs_modulus`; missing `poisson_ratio` or ν ∉ [0, 0.5); invalid axis.
+fn parse_let_inputs(args: &[Value]) -> Option<LetInputs<'_>> {
+    if args.len() != 7 && args.len() != 8 {
+        return None;
+    }
+    let length = length_si(&args[0])?;
+    let width = length_si(&args[1])?;
+    let thickness = length_si(&args[2])?;
+    if length <= 0.0 || width <= 0.0 || thickness <= 0.0 || thickness >= length {
+        return None;
+    }
+    // n_blades: positive integer (Int or whole-valued finite Real).
+    let n_blades = match &args[3] {
+        Value::Int(n) if *n >= 1 => *n as f64,
+        Value::Real(r) if r.is_finite() && *r >= 1.0 && r.fract() == 0.0 => *r,
+        _ => return None,
+    };
+    let material = &args[4];
+    let e = material_field_si(material, "youngs_modulus")?;
+    if e <= 0.0 {
+        return None;
+    }
+    let nu = material_real_field(material, "poisson_ratio")?;
+    if !(0.0..0.5).contains(&nu) {
+        return None;
+    }
+    let g = e / (2.0 * (1.0 + nu));
+    let axis = &args[6];
+    crate::helpers::validate_dimensionless_unit_axis_vec3(axis)?;
+    Some(LetInputs {
+        length,
+        thickness,
+        width,
+        n_blades,
+        g,
+        yield_si: material_field_si(material, "yield_stress"),
+        axis,
+        pivot: &args[5],
+        neutral_arg: if args.len() == 8 { Some(&args[7]) } else { None },
+    })
 }
 
 /// `prb_let_joint(length, width, thickness, n_blades, material, pivot, axis[, neutral])`
 /// — Jacobsen et al. 2009 lamina-emergent torsion (multi-blade torsion) as a
 /// revolute joint.
 ///
-/// Stub — returns `Value::Undef` until step-6 implements the closed form.
-fn prb_let_joint(_args: &[Value]) -> Value {
-    Value::Undef
+/// Closed form:
+///   G = E / (2·(1+ν))   (isotropic shear modulus)
+///   J = width·thickness³ / 3   (thin-strip St. Venant torsion constant)
+///   k_θ = n_blades · G · J / L
+///
+/// Torsional yield rotation:
+///   τ(θ) = G·t·θ/L  ⇒  τ_y = σy/√3  ⇒  θ_yield = σy·L/(√3·G·t)
+///
+/// Validity range = ±min(θ_yield, 5°); no yield_stress ⇒ ±5°.
+fn prb_let_joint(args: &[Value]) -> Value {
+    let Some(l) = parse_let_inputs(args) else {
+        return Value::Undef;
+    };
+
+    let j = l.width * l.thickness.powi(3) / 3.0;
+    let k_theta = l.n_blades * l.g * j / l.length;
+
+    let theta_lim = match l.yield_si {
+        Some(yield_si) => {
+            let theta_yield = yield_si * l.length / (3.0_f64.sqrt() * l.g * l.thickness);
+            theta_yield.min(PRB_ANGLE_LIMIT_RAD)
+        }
+        None => PRB_ANGLE_LIMIT_RAD,
+    };
+    let range = symmetric_angle_range(theta_lim);
+
+    let neutral_si = l.neutral_arg.map(neutral_angle_si).unwrap_or(0.0);
+
+    make_flexure_joint(
+        "revolute",
+        l.axis.clone(),
+        range,
+        Value::Scalar {
+            si_value: k_theta,
+            dimension: DimensionVector::ROTATIONAL_STIFFNESS,
+        },
+        Value::angle(neutral_si),
+        l.pivot.clone(),
+    )
 }
 
 #[cfg(test)]
