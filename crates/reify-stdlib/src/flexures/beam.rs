@@ -1,7 +1,10 @@
 //! Beam-flexure PRB constructors (Howell §5): cantilever beam (revolute) and
 //! fixed-fixed beam (transverse prismatic).
 //!
-//! Scaffold stub — the constructor arms land in the γ implementation steps.
+//! Both constructors share the positional argument layout
+//! `(length, width, thickness, material, pivot, axis[, neutral])` and the
+//! [`parse_beam_inputs`] validation path; they differ only in the closed-form
+//! stiffness, the validity range, and the joint kind.
 
 use std::collections::BTreeMap;
 use std::f64::consts::PI;
@@ -16,6 +19,17 @@ const CANTILEVER_GAMMA: f64 = 2.65;
 /// this the pseudo-rigid-body small-deflection model loses fidelity (Howell §5).
 const PRB_ANGLE_LIMIT_RAD: f64 = 5.0 * PI / 180.0;
 
+/// Transverse stiffness coefficient for a fixed-guided (fixed-fixed) beam:
+/// `k_trans = γ_ff·E·I / L³` with γ_ff = 12. This matches the PRD §6.1
+/// parallelogram-blade fixed-guided coefficient (γ_pp = 12) — the standard model
+/// for a beam translating transversely while both ends remain oriented.
+const FIXED_FIXED_GAMMA: f64 = 12.0;
+
+/// Fallback transverse-displacement validity limit as a fraction of beam length,
+/// used for the fixed-fixed beam when the material carries no `yield_stress`.
+/// The PRB transverse small-deflection model degrades past ~0.1·L.
+const SMALL_DEFLECTION_FRACTION: f64 = 0.1;
+
 /// Evaluate a beam-flexure constructor by name.
 ///
 /// Returns `Some(Value)` for a recognised flexure name (including
@@ -24,8 +38,70 @@ const PRB_ANGLE_LIMIT_RAD: f64 = 5.0 * PI / 180.0;
 pub(crate) fn eval_beam(name: &str, args: &[Value]) -> Option<Value> {
     match name {
         "prb_cantilever_beam" => Some(prb_cantilever_beam(args)),
+        "prb_fixed_fixed_beam" => Some(prb_fixed_fixed_beam(args)),
         _ => None,
     }
+}
+
+/// Shared, validated inputs for both beam-flexure constructors.
+struct BeamInputs<'a> {
+    /// Beam length L (metres).
+    length: f64,
+    /// Beam thickness t in the bending direction (metres).
+    thickness: f64,
+    /// Young's modulus E (Pa).
+    e: f64,
+    /// Rectangular-section second moment of area `I = width·thickness³/12`.
+    i: f64,
+    /// Material yield stress (Pa), if the material carries one.
+    yield_si: Option<f64>,
+    /// The raw axis argument, stored verbatim on the joint Map.
+    axis: &'a Value,
+    /// The raw pivot argument, stored verbatim on the joint Map.
+    pivot: &'a Value,
+    /// The optional trailing `neutral` argument (present only in the 7-arg form).
+    neutral_arg: Option<&'a Value>,
+}
+
+/// Parse and validate the shared positional argument layout of both
+/// beam-flexure constructors: `(length, width, thickness, material, pivot,
+/// axis[, neutral])`.
+///
+/// Returns `None` (⇒ the caller returns `Value::Undef`) on: arity ∉ {6, 7};
+/// non-positive or non-finite geometry; a degenerate beam (thickness ≥ length —
+/// the `E_FlexureGeometryInvalid` regime, whose diagnostic task λ (3821) owns);
+/// a material that is not a `Value::StructureInstance` with a finite
+/// `youngs_modulus` > 0; or an axis that is not a finite, non-zero,
+/// dimensionless 3-vector.
+fn parse_beam_inputs(args: &[Value]) -> Option<BeamInputs<'_>> {
+    if args.len() != 6 && args.len() != 7 {
+        return None;
+    }
+    let length = length_si(&args[0])?;
+    let width = length_si(&args[1])?;
+    let thickness = length_si(&args[2])?;
+    if length <= 0.0 || width <= 0.0 || thickness <= 0.0 || thickness >= length {
+        return None;
+    }
+    let material = &args[3];
+    let e = material_field_si(material, "youngs_modulus")?;
+    if e <= 0.0 {
+        return None;
+    }
+    let axis = &args[5];
+    if crate::helpers::validate_dimensionless_unit_axis_vec3(axis).is_none() {
+        return None;
+    }
+    Some(BeamInputs {
+        length,
+        thickness,
+        e,
+        i: width * thickness.powi(3) / 12.0,
+        yield_si: material_field_si(material, "yield_stress"),
+        axis,
+        pivot: &args[4],
+        neutral_arg: if args.len() == 7 { Some(&args[6]) } else { None },
+    })
 }
 
 /// `prb_cantilever_beam(length, width, thickness, material, pivot, axis[, neutral])`
@@ -40,56 +116,23 @@ pub(crate) fn eval_beam(name: &str, args: &[Value]) -> Option<Value> {
 /// small-deflection limit. When the material carries no `yield_stress`, only
 /// the 5° PRB limit applies.
 ///
-/// Returns `Value::Undef` on arity ≠ {6, 7} or when any geometry / material /
-/// axis argument fails extraction. (Comprehensive geometry guards land in a
-/// later step.)
+/// Returns `Value::Undef` on the invalid-input classes enumerated in
+/// [`parse_beam_inputs`].
 fn prb_cantilever_beam(args: &[Value]) -> Value {
-    // Uniform 6/7-arg signature (the optional 7th arg is the neutral angle,
-    // wired in a later step): (length, width, thickness, material, pivot, axis).
-    if args.len() != 6 && args.len() != 7 {
-        return Value::Undef;
-    }
-    let (Some(length), Some(width), Some(thickness)) = (
-        length_si(&args[0]),
-        length_si(&args[1]),
-        length_si(&args[2]),
-    ) else {
+    let Some(b) = parse_beam_inputs(args) else {
         return Value::Undef;
     };
-    // Geometry must be physically positive and the beam non-degenerate
-    // (thickness < length). The thickness ≥ length case is the
-    // E_FlexureGeometryInvalid regime — γ returns Undef here without emitting
-    // the diagnostic, which task λ (3821) owns.
-    if length <= 0.0 || width <= 0.0 || thickness <= 0.0 || thickness >= length {
-        return Value::Undef;
-    }
-    let material = &args[3];
-    let pivot = &args[4];
-    let axis = &args[5];
 
-    let Some(e) = material_field_si(material, "youngs_modulus") else {
-        return Value::Undef;
-    };
-    if e <= 0.0 {
-        return Value::Undef;
-    }
-    // Axis must be a finite, non-zero, dimensionless 3-vector; stored verbatim.
-    if crate::helpers::validate_dimensionless_unit_axis_vec3(axis).is_none() {
-        return Value::Undef;
-    }
-
-    // Rectangular-section second moment of area and the Howell PRB rotational
-    // stiffness k_θ = γ·E·I / L (Howell §5.1).
-    let i = width * thickness.powi(3) / 12.0;
-    let k_theta = CANTILEVER_GAMMA * e * i / length;
+    // Howell PRB rotational stiffness k_θ = γ·E·I / L (Howell §5.1, γ = 2.65).
+    let k_theta = CANTILEVER_GAMMA * b.e * b.i / b.length;
 
     // Symmetric prb_validity range = ±min(θ_yield, 5°). θ_yield is the
     // surface-yield rotation (Howell §5.1: σ(θ) = E·(t/2)·θ/L ⇒
     // θ_yield = yield·L/(E·t/2)); the 5° PRB limit bounds small-deflection
     // fidelity. A material without a yield_stress contributes only the 5° cap.
-    let theta_lim = match material_field_si(material, "yield_stress") {
+    let theta_lim = match b.yield_si {
         Some(yield_si) => {
-            let theta_yield = yield_si * length / (e * thickness / 2.0);
+            let theta_yield = yield_si * b.length / (b.e * b.thickness / 2.0);
             theta_yield.min(PRB_ANGLE_LIMIT_RAD)
         }
         None => PRB_ANGLE_LIMIT_RAD,
@@ -102,22 +145,74 @@ fn prb_cantilever_beam(args: &[Value]) -> Value {
     );
 
     // Optional trailing neutral angle (default 0 for the 6-arg form).
-    let neutral_si = if args.len() == 7 {
-        neutral_angle_si(&args[6])
-    } else {
-        0.0
-    };
+    let neutral_si = b.neutral_arg.map(neutral_angle_si).unwrap_or(0.0);
 
     make_flexure_joint(
         "revolute",
-        axis.clone(),
+        b.axis.clone(),
         range,
         Value::Scalar {
             si_value: k_theta,
             dimension: DimensionVector::ROTATIONAL_STIFFNESS,
         },
         Value::angle(neutral_si),
-        pivot.clone(),
+        b.pivot.clone(),
+    )
+}
+
+/// `prb_fixed_fixed_beam(length, width, thickness, material, pivot, axis[, neutral])`
+/// — a Howell pseudo-rigid-body fixed-fixed (fixed-guided) beam flexure presented
+/// as a transverse prismatic joint.
+///
+/// Returns a joint `Value::Map` (`kind == "prismatic"`) whose transverse
+/// stiffness is the closed-form `k_trans = γ_ff·E·I / L³` (γ_ff = 12; Howell
+/// §5 / PRD §6.1 fixed-guided bending), with `I = width·thickness³/12`.
+///
+/// The symmetric transverse-displacement validity range is `±δ`, where
+/// `δ = yield·L²/(3·E·t)` is the fixed-guided surface-yield deflection
+/// (σ = 3·E·t·δ / L²); a material without a `yield_stress` falls back to a
+/// documented 10%-of-length small-deflection limit. The range is exercised for
+/// shape (finite, symmetric, LENGTH-dimensioned) — its magnitude is a design
+/// choice, not an externally-validated bound.
+///
+/// Returns `Value::Undef` on the same invalid-input classes as
+/// [`prb_cantilever_beam`] (see [`parse_beam_inputs`]).
+fn prb_fixed_fixed_beam(args: &[Value]) -> Value {
+    let Some(b) = parse_beam_inputs(args) else {
+        return Value::Undef;
+    };
+
+    // Fixed-guided transverse stiffness k_trans = γ_ff·E·I / L³ (γ_ff = 12).
+    let k_trans = FIXED_FIXED_GAMMA * b.e * b.i / b.length.powi(3);
+
+    // Symmetric transverse-displacement validity range = ±δ. Fixed-guided
+    // bending stress σ = 3·E·t·δ / L² ⇒ δ_yield = yield·L² / (3·E·t). With no
+    // material yield_stress, fall back to a documented small-deflection fraction
+    // of the beam length.
+    let delta = match b.yield_si {
+        Some(yield_si) => yield_si * b.length.powi(2) / (3.0 * b.e * b.thickness),
+        None => SMALL_DEFLECTION_FRACTION * b.length,
+    };
+    let range = Value::range(
+        Some(Value::length(-delta)),
+        Some(Value::length(delta)),
+        true,
+        true,
+    );
+
+    // Optional trailing neutral transverse offset (default 0 for the 6-arg form).
+    let neutral_si = b.neutral_arg.map(neutral_length_si).unwrap_or(0.0);
+
+    make_flexure_joint(
+        "prismatic",
+        b.axis.clone(),
+        range,
+        Value::Scalar {
+            si_value: k_trans,
+            dimension: DimensionVector::TRANSLATIONAL_STIFFNESS,
+        },
+        Value::length(neutral_si),
+        b.pivot.clone(),
     )
 }
 
@@ -134,6 +229,21 @@ fn neutral_angle_si(v: &Value) -> f64 {
         Value::Option(Some(inner)) => neutral_angle_si(inner),
         Value::Option(None) => 0.0,
         other => crate::helpers::trig_input(other).unwrap_or(0.0),
+    }
+}
+
+/// Extract a neutral transverse offset in metres from a trailing constructor
+/// argument (the prismatic counterpart of [`neutral_angle_si`]).
+///
+/// Accepts a LENGTH-dimensioned `Value::Scalar` (e.g. `Value::length`), a bare
+/// `Value::Real` / `Value::Int` interpreted as metres (via [`length_si`]), or a
+/// `Value::Option` wrapping any of those. `Option(None)` and any value that
+/// fails extraction default to `0.0`.
+fn neutral_length_si(v: &Value) -> f64 {
+    match v {
+        Value::Option(Some(inner)) => neutral_length_si(inner),
+        Value::Option(None) => 0.0,
+        other => length_si(other).unwrap_or(0.0),
     }
 }
 
