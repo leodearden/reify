@@ -1075,8 +1075,9 @@ mod cli {
     /// violation produces exactly one `PLayerViolation/Low` finding.
     ///
     /// This is the first end-to-end test proving the `if run_player { player::check }`
-    /// dispatch arm (bin:599-601) forwards through the real jcodemunch seam. The noop
-    /// smoke test above cannot cover this gap (cli.rs:933-937): with `--no-jcodemunch`,
+    /// dispatch arm (the `run_player` predicate in the binary) forwards through the
+    /// real jcodemunch seam. The noop smoke test above cannot cover this gap (see
+    /// `player_no_jcodemunch_exits_0_with_empty_findings` above): with `--no-jcodemunch`,
     /// a dropped dispatch arm also yields zero findings and exit 0. Here the decisive
     /// assertion is that exactly one `PLayerViolation/Low` finding surfaces with the
     /// from/to files threaded through `player::check`'s summary and evidence.
@@ -1153,8 +1154,9 @@ mod cli {
         );
         let summary = f["summary"].as_str().unwrap_or("");
         assert!(
-            summary.contains("crates/reify-cli") && summary.contains("crates/reify-kernel"),
-            "finding summary must mention from and to files; got: {summary:?}"
+            summary.starts_with("crates/reify-cli imports crates/reify-kernel"),
+            "finding summary must begin 'crates/reify-cli imports crates/reify-kernel' \
+             (directional from→to); got: {summary:?}"
         );
         assert_eq!(
             f["evidence"][0]["File"]["path"].as_str(),
