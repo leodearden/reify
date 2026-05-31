@@ -2698,6 +2698,20 @@ impl OcctKernel {
                 let [x, y, z] = self.surface_normal_at_point(*handle, *px, *py, *pz)?;
                 Ok(Value::String(format!("{{\"x\":{x},\"y\":{y},\"z\":{z}}}")))
             }
+            // KGQ-μ: curve curvature at a world point — implementation added by step-4.
+            GeometryQuery::CurveCurvatureAt { handle, px, py, pz } => {
+                self.curve_curvature_at(*handle, *px, *py, *pz).map(Value::Real)
+            }
+            // KGQ-μ: surface principal curvatures at (u,v) — returns nested
+            // Value::List [[kappa_max, 0.0], [0.0, kappa_min]] (InertiaTensor wire format).
+            GeometryQuery::SurfaceCurvatureAt { handle, u, v } => {
+                let c = self.curvature_at(*handle, *u, *v)?;
+                // Diagonal principal-curvature matrix: trace/2 = mean H, det = Gaussian K.
+                // Encoding: outer List of rows, each row a List of Values.
+                let row0 = Value::List(vec![Value::Real(c.kappa_max), Value::Real(0.0)]);
+                let row1 = Value::List(vec![Value::Real(0.0), Value::Real(c.kappa_min)]);
+                Ok(Value::List(vec![row0, row1]))
+            }
         }
     }
 
