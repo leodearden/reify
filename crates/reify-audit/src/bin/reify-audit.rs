@@ -403,7 +403,7 @@ fn load_tasks_from_fused_memory(
 /// run set for the given args.
 ///
 /// Returns true when the selected pattern(s) require a live jcodemunch server.
-/// Currently: no pattern (all detectors include P1), P1, or PDEAD.
+/// Currently: no pattern (all detectors include P1), P1, PDEAD, or PUNTESTED.
 /// P2/P5 run without jcodemunch; pre_done always skips it.
 ///
 /// The connect decision (RealJCodemunchOps vs NoopJCodemunchOps) is separated
@@ -555,8 +555,9 @@ fn main() -> ExitCode {
         let run_p1 = args.pattern.as_deref().is_none_or(|p| p == "P1");
         let run_p2 = args.pattern.as_deref().is_none_or(|p| p == "P2");
         let run_p5 = args.pattern.as_deref().is_none_or(|p| p == "P5");
-        // PDEAD is opt-in only — not part of the default all-detector sweep.
+        // PDEAD and PUNTESTED are opt-in only — not part of the default all-detector sweep.
         let run_pdead = args.pattern.as_deref() == Some("PDEAD");
+        let run_puntested = args.pattern.as_deref() == Some("PUNTESTED");
 
         let mut all = Vec::new();
         if run_p1 {
@@ -571,7 +572,6 @@ fn main() -> ExitCode {
         if run_pdead {
             all.extend(reify_audit::pdead_dead_code::check(&ctx));
         }
-        let run_puntested = args.pattern.as_deref() == Some("PUNTESTED");
         if run_puntested {
             all.extend(reify_audit::puntested::check(&ctx));
         }
@@ -845,6 +845,22 @@ mod tests {
         assert!(
             needs_jcodemunch(&make_args(false, Some("PUNTESTED"))),
             "PUNTESTED must require jcodemunch (needs live server)"
+        );
+    }
+
+    /// Guard: PDEAD and PUNTESTED are opt-in only — neither may run in the
+    /// default (no --pattern) all-detector sweep.  A future refactor that
+    /// accidentally folds either into the default run will trip this test.
+    #[test]
+    fn pdead_and_puntested_not_in_default_sweep() {
+        let default_args = make_args(false, None);
+        assert!(
+            default_args.pattern.as_deref() != Some("PDEAD"),
+            "PDEAD must be opt-in only (not part of the default sweep)"
+        );
+        assert!(
+            default_args.pattern.as_deref() != Some("PUNTESTED"),
+            "PUNTESTED must be opt-in only (not part of the default sweep)"
         );
     }
 }
