@@ -2007,7 +2007,7 @@ mod tests {
 
     use super::{
         ModalAnalysisCache, ModalAssembly, ModalCoreResult, ModalMesh, ModalTrampolineRun,
-        TransientCache, TransientTrampolineRun,
+        TransientCache,
         assemble_modal_km, build_beam_mesh, build_dirichlet_bcs, displacement_at_trampoline,
         eigensolve_modal, extract_damping,
         extract_density_or_degenerate, extract_eigen_knobs, extract_reference_direction,
