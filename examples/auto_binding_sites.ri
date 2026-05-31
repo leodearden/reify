@@ -1,0 +1,55 @@
+// auto_binding_sites.ri — γ integration-gate slice for sub-instance-override `auto`
+//
+// PRD reference: §8.2 (sub-override `auto` binding site), §4.4 (resolution invariant)
+// Task: 3806 (γ — the vertical-slice integration gate before task ε fans out)
+//
+// This file exercises the **param_assignment binding site** for `auto` /
+// `auto(free)`:
+//
+//   sub b : Bearing { bore = auto }
+//
+// The overridden cell adopts DeterminacyState::Auto and resolves via the parent
+// structure's equality constraint — identical resolution semantics to the
+// equivalent param-default `auto` (the §4.4 invariant).
+//
+// ## What is wired here
+//
+//   - AST carrier: SubDecl.param_overrides (task 3806 step-2)
+//   - Lowering: lower_sub collects param_assignment values (step-2)
+//   - Compiler producer: entity.rs emits a scoped ValueCellKind::Auto cell
+//     for each auto sub-override (step-4)
+//   - Eval reconciliation: graph.rs / unfold.rs precedence rule lets the
+//     parent's override cell win over the child-default-derived node (step-6)
+//   - Resolution: existing M3 DimensionalSolver resolves the scoped Auto cell
+//     via the parent's equality constraint (unchanged)
+//
+// ## Other binding sites
+//
+// Construction named-arg, `let`, and connect-param sites land in task ε.
+
+// ── Child structure: Bearing ──────────────────────────────────────────────────
+//
+// `bore` has a concrete default (10mm) so that when the sub-override sets
+// `bore = auto` the solver must resolve via the parent's constraint rather
+// than inheriting the child default.  The resolved value should equal 10mm
+// (same as the default here) because the determining constraint pins it to
+// 10mm, but the resolution path goes through the M3 solver — not the child
+// default copy.
+
+structure Bearing {
+    param bore : Length = 10mm
+}
+
+// ── Assembly: AutoBindingSites ────────────────────────────────────────────────
+//
+// `bore = auto` marks the sub-member cell as DeterminacyState::Auto (strict).
+// The equality constraint `self.b.bore == 10mm` uniquely determines it.
+//
+// Expected outcome:
+//   - No error-severity diagnostics (the strict auto is uniquely determined)
+//   - AutoBindingSites.b.bore resolved to (10mm, DeterminacyState::Determined)
+
+structure AutoBindingSites {
+    sub b : Bearing { bore = auto }
+    constraint self.b.bore == 10mm
+}

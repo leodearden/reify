@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use reify_ast::ParsedModule;
 use reify_core::{ContentHash, Diagnostic, DiagnosticLabel, SourceSpan};
 
-use crate::entity::{AutoResolutionRequest, PendingBoundCheck};
+use crate::entity::{AutoResolutionRequest, PendingBoundCheck, PendingSubOverrideAuto};
 use crate::type_resolution::TypeAliasRegistry;
 use crate::types::{
     AutoTypeSubstitution, CompiledConstraintDef, CompiledField, CompiledImport, CompiledModule,
@@ -51,6 +51,11 @@ pub(crate) struct CompilationCtx {
     /// drained by `auto_type_param_phase::phase_auto_type_param_resolution` once
     /// `ctx.templates` is fully populated. Parallel to `pending_bound_checks`.
     pub(crate) pending_auto_resolutions: Vec<AutoResolutionRequest>,
+    /// Deferred sub-instance-override `auto` / `auto(free)` registrations raised
+    /// when the child structure is forward-declared (parent compiled before child).
+    /// Drained by `entities_phase::phase_sub_override_autos` once all templates
+    /// are compiled. Mirrors `pending_auto_resolutions` in lifecycle.
+    pub(crate) pending_sub_override_autos: Vec<PendingSubOverrideAuto>,
     /// Resolved `auto:` type-parameter substitutions for the module, written by
     /// `phase_auto_type_param_resolution` and moved into
     /// `CompiledModule.auto_type_substitution` by `into_compiled_module`. Empty
@@ -102,6 +107,7 @@ impl CompilationCtx {
             compiled_units: Vec::new(),
             pending_bound_checks: Vec::new(),
             pending_auto_resolutions: Vec::new(),
+            pending_sub_override_autos: Vec::new(),
             auto_type_substitution: AutoTypeSubstitution::default(),
             seen_entity_names: HashMap::new(),
             unit_registry: UnitRegistry::new(),
@@ -364,6 +370,10 @@ mod tests {
         assert!(
             ctx.pending_auto_resolutions.is_empty(),
             "pending_auto_resolutions should be empty"
+        );
+        assert!(
+            ctx.pending_sub_override_autos.is_empty(),
+            "pending_sub_override_autos should be empty"
         );
         assert!(
             ctx.auto_type_substitution.as_slice().is_empty(),

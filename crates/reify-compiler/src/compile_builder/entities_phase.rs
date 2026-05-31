@@ -12,7 +12,9 @@
 //!
 //! Also hosts the post-pass `phase_pending_bound_checks` that drains
 //! `ctx.pending_bound_checks` once all entities are compiled and the
-//! template registry is complete.
+//! template registry is complete, and `phase_sub_override_autos` that drains
+//! `ctx.pending_sub_override_autos` for forward-declared-child sub-override
+//! `auto` cells (task 3806, step 10).
 //!
 //! Both functions rebuild `trait_registry`, `field_registry`, and
 //! `constraint_def_registry` phase-locally from `ctx` + `prelude`. The
@@ -31,12 +33,14 @@ use crate::compile_builder::defs_phase::build_constraint_def_registry;
 use crate::compile_builder::traits_phase::build_trait_registry;
 use crate::conformance::check_trait_arg_conformance;
 use crate::entity::{
-    AutoResolutionRequest, EntityDefRef, PendingBoundCheck, check_type_param_bounds, compile_entity,
+    AutoResolutionRequest, EntityDefRef, PendingBoundCheck, PendingSubOverrideAuto,
+    check_type_param_bounds, compile_entity,
 };
 use crate::type_resolution::TypeAliasRegistry;
+use reify_core::ValueCellId;
 use crate::types::{
     CompiledConstraintDef, CompiledField, CompiledImport, CompiledTrait, EntityKind,
-    TopologyTemplate,
+    TopologyTemplate, ValueCellDecl, ValueCellKind, Visibility,
 };
 use crate::units::UnitRegistry;
 
@@ -122,6 +126,7 @@ pub(crate) fn phase_entities(
                         &ctx.alias_registry,
                         &mut ctx.pending_bound_checks,
                         &mut ctx.pending_auto_resolutions,
+                        &mut ctx.pending_sub_override_autos,
                         &mut ctx.diagnostics,
                         &mut ctx.templates,
                         &prelude_template_registry,
@@ -182,6 +187,7 @@ pub(crate) fn phase_entities(
                         &ctx.alias_registry,
                         &mut ctx.pending_bound_checks,
                         &mut ctx.pending_auto_resolutions,
+                        &mut ctx.pending_sub_override_autos,
                         &mut ctx.diagnostics,
                         &mut ctx.templates,
                         &prelude_template_registry,
@@ -238,6 +244,7 @@ fn compile_entity_decl(
     alias_registry: &TypeAliasRegistry,
     pending_bound_checks: &mut Vec<PendingBoundCheck>,
     pending_auto_resolutions: &mut Vec<AutoResolutionRequest>,
+    pending_sub_override_autos: &mut Vec<PendingSubOverrideAuto>,
     diagnostics: &mut Vec<Diagnostic>,
     templates: &mut Vec<TopologyTemplate>,
     prelude_template_registry: &HashMap<String, &TopologyTemplate>,
@@ -256,6 +263,7 @@ fn compile_entity_decl(
         alias_registry,
         pending_bound_checks,
         pending_auto_resolutions,
+        pending_sub_override_autos,
         diagnostics,
         templates,
         prelude_template_registry,
@@ -358,6 +366,103 @@ pub(crate) fn phase_pending_bound_checks(ctx: &mut CompilationCtx, prelude: &[&C
                     &mut ctx.diagnostics,
                 );
             }
+        }
+    }
+}
+
+/// Post-compilation pass: drain `ctx.pending_sub_override_autos` and resolve
+/// each deferred sub-instance-override `auto` / `auto(free)` registration now
+/// that all templates are compiled and the template registry is complete.
+///
+/// For each deferred entry:
+/// - Look up the child template in the registry.
+/// - If the member is found: push a scoped `ValueCellDecl { kind: Auto { free } }`
+///   into the PARENT template's `value_cells`.
+/// - If the member is absent: emit a "no such param" error (genuine missing member).
+/// - If the child template itself is not found: emit a warning and skip
+///   (the structure-reference error is handled elsewhere).
+///
+/// This mirrors the shape of `phase_pending_bound_checks` and runs between
+/// `phase_auto_type_param_resolution` and `phase_pending_bound_checks` in lib.rs.
+pub(crate) fn phase_sub_override_autos(ctx: &mut CompilationCtx, prelude: &[&CompiledModule]) {
+    if ctx.pending_sub_override_autos.is_empty() {
+        return;
+    }
+
+    // Build a template registry covering prelude + local compiled templates,
+    // identical composition to `phase_pending_bound_checks`.
+    let template_registry: HashMap<String, &TopologyTemplate> = prelude
+        .iter()
+        .flat_map(|m| m.templates.iter())
+        .filter(|t| t.entity_kind == EntityKind::Structure)
+        .map(|t: &TopologyTemplate| (t.name.clone(), t))
+        .chain(ctx.templates.iter().map(|t| (t.name.clone(), t)))
+        .collect();
+
+    let pending = std::mem::take(&mut ctx.pending_sub_override_autos);
+
+    // Collect (parent_entity_name, scoped_id, cell_type, free, span) for push;
+    // collect diagnostics separately so we can mutably borrow ctx.templates below.
+    let mut cells_to_push: Vec<(String, ValueCellId, reify_core::Type, bool, reify_core::SourceSpan)> = Vec::new();
+
+    for req in &pending {
+        // Look up the child template.
+        let child_tmpl = match template_registry.get(req.sub_structure_name.as_str()) {
+            Some(t) => *t,
+            None => {
+                // Child structure unknown even after all templates are compiled.
+                // The structure-reference error is raised elsewhere (bound-check
+                // pass); skip silently here to avoid a confusing second error.
+                continue;
+            }
+        };
+
+        // Look up the member in the child template's value_cells.
+        let cell_type = match child_tmpl
+            .value_cells
+            .iter()
+            .find(|vc| vc.id.member == req.override_member)
+            .map(|vc| vc.cell_type.clone())
+        {
+            Some(ty) => ty,
+            None => {
+                // Genuinely absent member — emit the error (same wording as the
+                // inline path in entity.rs; the label span comes from req.span
+                // which points to the `auto` / `auto(free)` expression).
+                ctx.diagnostics.push(
+                    Diagnostic::error(format!(
+                        "sub `{}`: override for `{}` — no such param in `{}`",
+                        req.sub_name, req.override_member, req.sub_structure_name
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        req.span,
+                        "this member does not exist in the child structure",
+                    )),
+                );
+                continue;
+            }
+        };
+
+        let scoped_entity = format!("{}.{}", req.parent_entity_name, req.sub_name);
+        let scoped_id = ValueCellId::new(&scoped_entity, req.override_member.as_str());
+        cells_to_push.push((req.parent_entity_name.clone(), scoped_id, cell_type, req.free, req.span));
+    }
+
+    // Apply the collected cell pushes.  We look up the parent template by name
+    // and push into its `value_cells`.
+    for (parent_name, scoped_id, cell_type, free, span) in cells_to_push {
+        if let Some(parent_tmpl) = ctx.templates.iter_mut().find(|t| t.name == parent_name) {
+            parent_tmpl.value_cells.push(ValueCellDecl {
+                id: scoped_id,
+                kind: ValueCellKind::Auto { free },
+                visibility: Visibility::Public,
+                cell_type,
+                default_expr: None,
+                solver_hints: vec![],
+                span,
+                // Auto sub-override cells are never aux declarations.
+                is_aux: false,
+            });
         }
     }
 }

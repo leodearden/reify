@@ -373,6 +373,13 @@ pub fn compile_with_prelude_context(
         prelude_refs,
     );
 
+    // Resolve deferred sub-instance-override `auto` / `auto(free)` cells raised
+    // for forward-declared child structures (task 3806, step 10).  Runs after
+    // `phase_auto_type_param_resolution` (all `type_args` placeholders are
+    // concrete) and before `phase_pending_bound_checks` (same template-registry
+    // composition; consistent ordering with other post-passes).
+    compile_builder::entities_phase::phase_sub_override_autos(&mut compile_ctx, prelude_refs);
+
     compile_builder::entities_phase::phase_pending_bound_checks(&mut compile_ctx, prelude_refs);
 
     compile_builder::post_passes::phase_recursion_detection(&mut compile_ctx);
