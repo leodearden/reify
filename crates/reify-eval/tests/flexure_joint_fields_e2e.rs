@@ -179,7 +179,7 @@ fn prismatic_neutral_some_round_trips_as_length() {
     const SOURCE: &str = r#"
 structure def Probe {
     param ref_len : Length = 1000mm
-    let p = Prismatic(axis: 0.0, neutral: some(ref_len))
+    let p = Prismatic(axis: 0.0, spring_rate: none, damping: none, neutral: some(ref_len))
 }
 "#;
     let compiled = parse_and_compile_with_stdlib(SOURCE);
