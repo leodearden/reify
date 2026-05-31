@@ -14,7 +14,7 @@
 
 use reify_core::{DiagnosticCode, Severity};
 use reify_ir::CompiledExprKind;
-use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only};
+use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only, warnings_only};
 
 // ── Step-1 producer tests (RED until step-2) ────────────────────────────────
 
@@ -203,5 +203,140 @@ pub structure def Spacer {
         errors.is_empty(),
         "expected no Error diagnostics with Length type; got: {:?}",
         errors
+    );
+}
+
+// ── Amendment: additional branch-coverage tests (reviewer suggestions) ────────
+
+/// Calling a self-receiver (instance) method as a static call on a known trait
+/// must produce the 'requires a receiver' diagnostic (not 'unknown trait').
+///
+/// This exercises the `scope.trait_members` refinement path where the trait is
+/// known and the member name is found (but the fn was not registered as static
+/// because it has a self param).
+#[test]
+fn instance_method_called_statically_emits_receiver_required_diagnostic() {
+    let source = r#"
+trait Shape {
+    fn area(self) -> Real { 1.0 }
+}
+pub structure def Box {
+    let s : Real = Shape::area()
+}
+"#;
+    let compiled = compile_source(source);
+    let errors = errors_only(&compiled);
+
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one Error; got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    assert!(
+        errors[0].message.contains("requires a receiver"),
+        "expected 'requires a receiver' in message; got: {:?}",
+        errors[0].message
+    );
+
+    // Must mention the trait and method to aid diagnosis.
+    assert!(
+        errors[0].message.contains("Shape") && errors[0].message.contains("area"),
+        "expected trait 'Shape' and method 'area' in message; got: {:?}",
+        errors[0].message
+    );
+}
+
+/// Calling a non-existent method on a known trait must produce the
+/// 'has no static function' diagnostic (not 'unknown trait').
+///
+/// This exercises the `scope.trait_members` refinement path where the trait is
+/// known but the method name is absent from its members.
+#[test]
+fn known_trait_unknown_method_emits_no_static_function_diagnostic() {
+    let source = r#"
+trait Known {
+    fn make_default() -> Real { 1.0 }
+}
+pub structure def Box {
+    let s : Real = Known::nonexistent()
+}
+"#;
+    let compiled = compile_source(source);
+    let errors = errors_only(&compiled);
+
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one Error; got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    assert!(
+        errors[0].message.contains("has no static function"),
+        "expected 'has no static function' in message; got: {:?}",
+        errors[0].message
+    );
+
+    // Must name both the trait and the missing method.
+    assert!(
+        errors[0].message.contains("Known") && errors[0].message.contains("nonexistent"),
+        "expected 'Known' and 'nonexistent' in message; got: {:?}",
+        errors[0].message
+    );
+}
+
+/// The `TraitStaticCall` dispatch arm checks `matched_fn.annotations` for
+/// `@deprecated` and emits a Warning if present.  The grammar's `trait_member`
+/// rule does not currently include `annotation` as a choice (grammar.js), so
+/// `@deprecated fn make_old() …` inside a trait body is a parse error.  As a
+/// result, `fn_def.annotations` is always empty for trait-defined static fns,
+/// and the deprecation warning path inside the `Resolved` branch is currently
+/// unreachable via source compilation.
+///
+/// This test verifies:
+/// (a) no spurious deprecation Warning is emitted when calling a non-annotated
+///     trait static fn — the guard does not fire when `annotations` is empty.
+/// (b) documents the grammar limitation so a future grammar extension can be
+///     paired with a positive warning test here.
+///
+/// TODO: when grammar.js `trait_member` is extended to allow `annotation`
+/// nodes, add a second variant here that calls an `@deprecated` trait static
+/// fn and asserts exactly one Warning mentioning the deprecation message.
+#[test]
+fn trait_static_fn_call_emits_no_spurious_deprecation_warning() {
+    let source = r#"
+trait Factory {
+    fn make_item() -> Real { 1.0 }
+}
+pub structure def Box {
+    let s : Real = Factory::make_item()
+}
+"#;
+    let compiled = compile_source(source);
+
+    // Must compile with no errors.
+    let errors = errors_only(&compiled);
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics; got: {:?}",
+        errors
+    );
+
+    // No spurious deprecation warnings from the dispatch arm.
+    let warns = warnings_only(&compiled);
+    let deprecation_warns: Vec<_> = warns
+        .iter()
+        .filter(|d| d.message.contains("deprecated"))
+        .collect();
+    assert!(
+        deprecation_warns.is_empty(),
+        "expected no spurious deprecation warnings for non-annotated trait static fn; \
+         got: {:?}",
+        deprecation_warns
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }

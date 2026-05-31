@@ -138,6 +138,12 @@ pub(crate) fn phase_traits(
     // Name-drift guard: both producer (here) and consumer (expr.rs TraitStaticCall arm)
     // call the shared `trait_static_fn_symbol` helper, so the mangled name is always
     // byte-for-byte identical.
+    //
+    // Performance note: `ctx.resolution_functions` is only rebuilt when at least one
+    // static fn is actually registered. For modules that declare no traits or no
+    // body-carrying static assoc fns, resolution_functions is already correct from
+    // phase_functions and the O(prelude) clone+merge is skipped entirely.
+    let mut any_static_fn_registered = false;
     for compiled_trait in &ctx.trait_defs {
         for default in &compiled_trait.defaults {
             if let DefaultKind::Fn(fn_def) = &default.kind {
@@ -171,6 +177,7 @@ pub(crate) fn phase_traits(
                 );
                 if let Some(f) = compiled_fn {
                     ctx.functions.push(f);
+                    any_static_fn_registered = true;
                 }
             }
         }
@@ -182,11 +189,16 @@ pub(crate) fn phase_traits(
     // then prelude functions for distinct (name, arity, param_types) triples.
     // Note: `ctx.functions` (user-only, includes newly registered static fns) flows
     // to the final `CompiledModule.functions` (ctx.rs:181) used by the eval engine.
-    let prelude_fns: Vec<CompiledFunction> = prelude
-        .iter()
-        .flat_map(|m| m.functions.iter().cloned())
-        .collect();
-    ctx.resolution_functions = merge_prelude_functions(&ctx.functions, &prelude_fns);
+    //
+    // Skipped entirely when no static fns were registered: resolution_functions is
+    // already correct from phase_functions and the O(prelude) clone+merge is redundant.
+    if any_static_fn_registered {
+        let prelude_fns: Vec<CompiledFunction> = prelude
+            .iter()
+            .flat_map(|m| m.functions.iter().cloned())
+            .collect();
+        ctx.resolution_functions = merge_prelude_functions(&ctx.functions, &prelude_fns);
+    }
 
     trait_names
 }
