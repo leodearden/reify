@@ -16,15 +16,157 @@
 //!
 //! Dispatch via [`eval_prismatic`], mirroring the sibling modules.
 
+use reify_core::DimensionVector;
 use reify_ir::Value;
+
+use super::common::{length_si, make_flexure_joint, material_field_si};
+
+/// Single-cantilever-blade PRB transverse stiffness coefficient (Howell §6.2).
+///
+/// `k_trans = γ_pb · E · I / L³` with `γ_pb = 3.0`. Intentionally distinct
+/// from `beam::FIXED_FIXED_GAMMA = 12.0` (fixed-guided boundary condition, where
+/// both ends are oriented). The cantilever has one free end that both translates
+/// and rotates, yielding the smaller coefficient.
+const PRISMATIC_BLADE_GAMMA: f64 = 3.0;
+
+/// Fallback cantilever transverse-displacement validity limit as a fraction of
+/// beam length. Used when the material carries no `yield_stress`. The PRB
+/// small-deflection model degrades past ~0.1·L for a cantilever.
+const SMALL_DEFLECTION_FRACTION: f64 = 0.1;
 
 /// Evaluate a prismatic-flexure constructor by name.
 ///
 /// Returns `Some(Value)` for recognised names (including
 /// `Some(Value::Undef)` on validation failure) and `None` for any unknown
 /// name, so `eval_builtin` falls through to the next module.
-pub(crate) fn eval_prismatic(_name: &str, _args: &[Value]) -> Option<Value> {
-    None
+pub(crate) fn eval_prismatic(name: &str, args: &[Value]) -> Option<Value> {
+    match name {
+        "prb_prismatic_blade" => Some(prb_prismatic_blade(args)),
+        _ => None,
+    }
+}
+
+/// Shared validated inputs for prismatic-flexure constructors.
+struct PrismaticInputs<'a> {
+    /// Beam length L (metres).
+    length: f64,
+    /// Beam thickness t in the bending direction (metres).
+    thickness: f64,
+    /// Young's modulus E (Pa).
+    e: f64,
+    /// Rectangular-section second moment of area `I = width·thickness³/12`.
+    i: f64,
+    /// Material yield stress (Pa), if the material carries one.
+    yield_si: Option<f64>,
+    /// The raw axis argument, stored verbatim on 1-DOF joint Maps.
+    axis: &'a Value,
+    /// The raw pivot argument.
+    pivot: &'a Value,
+    /// Optional trailing `neutral` argument (present in the 7-arg form).
+    neutral_arg: Option<&'a Value>,
+}
+
+/// Parse and validate the shared positional argument layout:
+/// `(length, width, thickness, material, pivot, axis[, neutral])`.
+///
+/// Returns `None` (⇒ `Value::Undef`) on: arity ∉ {6, 7}; non-positive or
+/// non-finite geometry; thickness ≥ length; missing or non-positive
+/// `youngs_modulus`; or an invalid axis.
+fn parse_prismatic_inputs(args: &[Value]) -> Option<PrismaticInputs<'_>> {
+    if args.len() != 6 && args.len() != 7 {
+        return None;
+    }
+    let length = length_si(&args[0])?;
+    let width = length_si(&args[1])?;
+    let thickness = length_si(&args[2])?;
+    if length <= 0.0 || width <= 0.0 || thickness <= 0.0 || thickness >= length {
+        return None;
+    }
+    let material = &args[3];
+    let e = material_field_si(material, "youngs_modulus")?;
+    if e <= 0.0 {
+        return None;
+    }
+    let axis = &args[5];
+    crate::helpers::validate_dimensionless_unit_axis_vec3(axis)?;
+    Some(PrismaticInputs {
+        length,
+        thickness,
+        e,
+        i: width * thickness.powi(3) / 12.0,
+        yield_si: material_field_si(material, "yield_stress"),
+        axis,
+        pivot: &args[4],
+        neutral_arg: if args.len() == 7 { Some(&args[6]) } else { None },
+    })
+}
+
+/// Extract a neutral transverse offset in metres from a trailing constructor
+/// argument (the prismatic counterpart of `common::neutral_angle_si`).
+///
+/// Accepts a LENGTH-dimensioned `Value::Scalar` (e.g. `Value::length`), a bare
+/// `Value::Real` / `Value::Int` interpreted as metres, or a `Value::Option`
+/// wrapping any of those. `Option(None)` and any value that fails extraction
+/// default to `0.0`.
+fn neutral_length_si(v: &Value) -> f64 {
+    match v {
+        Value::Option(Some(inner)) => neutral_length_si(inner),
+        Value::Option(None) => 0.0,
+        other => length_si(other).unwrap_or(0.0),
+    }
+}
+
+/// `prb_prismatic_blade(length, width, thickness, material, pivot, axis[, neutral])`
+/// — Howell §6.2 single-cantilever-blade flexure presented as a prismatic joint.
+///
+/// Returns a joint `Value::Map` (`kind == "prismatic"`) whose transverse
+/// stiffness is `k_trans = 3·E·I/L³` (γ = 3), with `I = width·thickness³/12`.
+///
+/// Transverse validity range `±δ`:
+/// - With `yield_stress`: cantilever surface stress `σ = 1.5·E·t·δ/L²` ⇒
+///   `δ_yield = 2·yield·L²/(3·E·t)`.
+/// - No `yield_stress`: fallback `±0.1·L` small-deflection limit.
+///
+/// The range shape (finite, LENGTH-dimensioned, symmetric, non-zero) is tested;
+/// its magnitude is a design choice, not an externally-validated bound.
+///
+/// Returns `Value::Undef` on the invalid-input classes in [`parse_prismatic_inputs`].
+fn prb_prismatic_blade(args: &[Value]) -> Value {
+    let Some(b) = parse_prismatic_inputs(args) else {
+        return Value::Undef;
+    };
+
+    // Cantilever transverse stiffness k_trans = γ_pb · E · I / L³ (γ = 3, Howell §6.2).
+    let k_trans = PRISMATIC_BLADE_GAMMA * b.e * b.i / b.length.powi(3);
+
+    // Cantilever transverse-displacement validity range ±δ.
+    // Surface stress σ = 1.5·E·t·δ / L²  ⇒  δ_yield = 2·yield·L² / (3·E·t).
+    // No yield_stress ⇒ small-deflection fallback ±0.1·L.
+    let delta = match b.yield_si {
+        Some(yield_si) => 2.0 * yield_si * b.length.powi(2) / (3.0 * b.e * b.thickness),
+        None => SMALL_DEFLECTION_FRACTION * b.length,
+    };
+    let range = Value::range(
+        Some(Value::length(-delta)),
+        Some(Value::length(delta)),
+        true,
+        true,
+    );
+
+    // Optional trailing neutral transverse offset (default 0 for the 6-arg form).
+    let neutral_si = b.neutral_arg.map(neutral_length_si).unwrap_or(0.0);
+
+    make_flexure_joint(
+        "prismatic",
+        b.axis.clone(),
+        range,
+        Value::Scalar {
+            si_value: k_trans,
+            dimension: DimensionVector::TRANSLATIONAL_STIFFNESS,
+        },
+        Value::length(neutral_si),
+        b.pivot.clone(),
+    )
 }
 
 #[cfg(test)]
