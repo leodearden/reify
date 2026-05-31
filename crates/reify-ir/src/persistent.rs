@@ -23,8 +23,19 @@ impl<K: Clone + Hash + Eq, V: Clone> PersistentMap<K, V> {
     }
 
     /// Look up a value by key.
-    pub fn get(&self, key: &K) -> Option<&V> {
-        self.inner.get(key)
+    ///
+    /// Accepts any borrowed form of the key: `get("name")` works on a
+    /// `PersistentMap<String, V>` without allocating a temporary `String`,
+    /// exactly as `std::collections::HashMap::get` does.  The bound
+    /// `K: Borrow<Q>` is satisfied for `Q = K` by the standard blanket
+    /// `impl<T: ?Sized> Borrow<T> for T`, so all existing `&K` / `&String`
+    /// callers continue to compile unchanged.
+    pub fn get<Q>(&self, k: &Q) -> Option<&V>
+    where
+        K: std::borrow::Borrow<Q>,
+        Q: std::hash::Hash + Eq + ?Sized,
+    {
+        self.inner.get(k)
     }
 
     /// Look up a mutable reference to a value by key. Uses `im::HashMap`'s
