@@ -1,6 +1,6 @@
 ---
 name: audit
-description: "Periodic architecture-audit sweep for the Reify codebase. ALWAYS use this skill for: /audit commands, running the architecture-audit detector CLI against live task state, filing follow-up tasks for phantom-done or orphan-symbol findings, and producing per-run JSON artifacts under data/audit-runs/. Triggers on: '/audit', '/audit --task <id>', '/audit --since <date>', '/audit --pattern P1|P2|P5', '/audit --format markdown', or any request to run the F-infra audit sweep. This is NOT for: editing audit findings or gap-register.md (that is manual curation), running tasks (/orchestrate), reviewing landed code (/review), unblocking tasks (/unblock)."
+description: "Periodic architecture-audit sweep for the Reify codebase. ALWAYS use this skill for: /audit commands, running the architecture-audit detector CLI against live task state, filing follow-up tasks for phantom-done or orphan-symbol findings, and producing per-run JSON artifacts under data/audit-runs/. Triggers on: '/audit', '/audit --task <id>', '/audit --since <date>', '/audit --pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER', '/audit --format markdown', or any request to run the F-infra audit sweep. This is NOT for: editing audit findings or gap-register.md (that is manual curation), running tasks (/orchestrate), reviewing landed code (/review), unblocking tasks (/unblock)."
 ---
 
 # Architecture Audit Sweep (`/audit`)
@@ -18,12 +18,31 @@ Pick from the user's invocation and context:
 | `/audit` (default) | Window sweep over the last 14 days — all three detectors (P1, P2, P5) | `references/modes.md` §1 |
 | `/audit --task <id>` | Spot-check a single task — all three detectors | `references/modes.md` §2 |
 | `/audit --since <iso-date>` | Window sweep from a given date to now | `references/modes.md` §3 |
-| `/audit --pattern P1\|P2\|P5` | Restrict to one detector | `references/modes.md` §4 |
+| `/audit --pattern P1\|P2\|P5` | Restrict to one of the standard detectors | `references/modes.md` §4 |
+| `/audit --pattern PDEAD\|PUNTESTED\|PLAYER` | Run one advisory jcodemunch detector (opt-in, Severity Low, serve-dependent) | `references/modes.md` §4 |
 | `/audit --format markdown` | Any mode + emit a fenced markdown report in addition to the JSON artifact | `references/modes.md` §5 |
 
 `--task`, `--since`, and `--pattern` compose. `--pre-done` is reserved for the dark-factory D-1 pre-done hook and is **not callable from this skill**. See `references/modes.md` §6 (Mode composition).
 
-**jcodemunch resilience:** The default sweep and `--pattern P1` are resilient to a down jcodemunch substrate. When jcodemunch-serve is unreachable, P1 degrades to zero findings (a `reify-audit: jcodemunch unreachable …` breadcrumb appears on stderr) while P2/P5 still run normally — the sweep does **not** exit 125. Use `--no-jcodemunch` to force the inert stub and silence the breadcrumb. See `references/cli-invocation.md` §4.1 for failure-mode detail and recovery hints.
+**jcodemunch resilience:** The default sweep, `--pattern P1`, and the advisory patterns (`--pattern PDEAD|PUNTESTED|PLAYER`) are resilient to a down jcodemunch substrate. When jcodemunch-serve is unreachable, P1 and all three advisory P-* patterns degrade to **zero findings** (a `reify-audit: jcodemunch unreachable …` breadcrumb appears on stderr) while P2/P5 still run normally — the sweep does **not** exit 125. Use `--no-jcodemunch` to force the inert stub and silence the breadcrumb. See `references/cli-invocation.md` §4.1 for failure-mode detail and recovery hints.
+
+## Advisory jcodemunch patterns (PDEAD / PUNTESTED / PLAYER)
+
+Three opt-in detectors backed by jcodemunch — invoked only when named explicitly via `--pattern`:
+
+| Pattern | What it detects |
+|---|---|
+| `PDEAD` | Dead code — exported or public symbols with no callers/references (as observed by jcodemunch) |
+| `PUNTESTED` | Untested symbols — public symbols with no corresponding test coverage paths |
+| `PLAYER` | Layer/import-boundary violations — modules importing from layers they should not depend on |
+
+**Severity and routing:** All three patterns emit Severity **Low** only — log-only, advisory, **never auto-filed** as a follow-up task, and never promoted to Medium. See `references/severity-routing.md` for the Low row routing details.
+
+**Serve prerequisite:** These patterns require `jcodemunch-serve` to be running and reachable at the configured URL to produce real findings. When unreachable they degrade gracefully to zero findings (same fail-soft path as P1; P2/P5 are unaffected). For activation instructions (port 8901, unit name, enable/status commands) see `docs/architecture-audit/jcodemunch-serve-activation.md` — that document is the single source of truth for serve operational identifiers.
+
+**Key flags:** `--jcodemunch-url <url>` (default: `$JCODEMUNCH_URL` or `http://127.0.0.1:8901/mcp`), `--jcodemunch-repo <id>` (default: `leodearden/reify`), `--no-jcodemunch` (force inert stub, offline/test). See `references/cli-invocation.md` §2 and §4.1 for full flag documentation and the trailing-slash gotcha.
+
+**Not part of the default sweep:** PDEAD/PUNTESTED/PLAYER fire **only** when named explicitly via `--pattern`. Running `/audit` without a `--pattern` flag runs P1/P2/P5 (the three standard detectors), not the advisory P-* patterns.
 
 ## Severity ladder
 
