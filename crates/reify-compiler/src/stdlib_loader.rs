@@ -216,6 +216,37 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 "std.ports.mechanical",
                 include_str!("../stdlib/ports_mechanical.ri"),
             ),
+            // `std.ports.electrical` refines Port from std.ports and adds
+            // electrical port traits (ElectricalPort, PowerPort, SignalPort)
+            // plus the SignalKind enum.
+            // Must follow std.ports in the growing prelude sequence so Port is
+            // resolved when ElectricalPort : Port is compiled.
+            // Reconstruction of lost work per PRD task β.
+            (
+                "std.ports.electrical",
+                include_str!("../stdlib/ports_electrical.ri"),
+            ),
+            // `std.ports.thermal` refines Port from std.ports and adds the
+            // lumped-thermal-port trait ThermalPort (Modelica HeatPort convention:
+            // temperature potential + heat_flow through variable).
+            // Must follow std.ports in the growing prelude sequence so Port is
+            // resolved when ThermalPort : Port is compiled.
+            // Reconstruction of lost work per PRD task β.
+            (
+                "std.ports.thermal",
+                include_str!("../stdlib/ports_thermal.ri"),
+            ),
+            // `std.ports.fluid` refines Port from std.ports and adds the fluid
+            // port trait FluidPort (pressure + VolumetricFlowRate + medium).
+            // VolumetricFlowRate = Volume / Time type alias is pub (mirrors
+            // units.ri Velocity); binary dim-op requires alias indirection.
+            // Must follow std.ports in the growing prelude sequence so Port is
+            // resolved when FluidPort : Port is compiled.
+            // Reconstruction of lost work per PRD task β.
+            (
+                "std.ports.fluid",
+                include_str!("../stdlib/ports_fluid.ri"),
+            ),
         ];
 
         // SEQUENTIAL COMPILATION WITH GROWING PRELUDE: each module is compiled
