@@ -104,9 +104,20 @@ pub enum BRepKind {
 /// `BRep < Mesh < Sdf < Voxel` ordering stays unchanged for callers that
 /// pass legacy four-variant `available` sets — kernel selection on the
 /// surface-mesh path remains bit-identical.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub enum ReprKind {
     /// Boundary-representation solid (OCCT / OpenCASCADE B-rep kernel).
+    ///
+    /// `Default` is implemented with `BRep` as the `#[default]` variant
+    /// (the v0.2 baseline) so that `strum::EnumIter` can synthesise the
+    /// data-carrying `Operation::Convert { from: ReprKind }` variant via
+    /// `ReprKind::default()` when iterating over `Operation` variants
+    /// (classifier completeness test, task 4049).
+    ///
+    /// **Do not use `ReprKind::default()` in production demand or kernel-
+    /// selection logic.** A silent default to BRep there would mask a
+    /// missing-repr case rather than surfacing it as a diagnostic.
+    #[default]
     BRep,
     /// Surface mesh (triangle or quad mesh, e.g. Manifold).
     Mesh,
@@ -165,7 +176,7 @@ pub enum ReprKind {
 /// per call site (e.g. fillet radius, sphere centre) live on
 /// [`GeometryOp`], not here. This enum is `Hash + Eq + Copy + Debug` so it
 /// can act as a `HashMap`/`BTreeMap` key in the dispatcher.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::EnumIter)]
 pub enum Operation {
     // ── Booleans ─────────────────────────────────────────────────────────────
     /// Boolean union of two solids/meshes/SDFs.
@@ -723,6 +734,27 @@ impl GeometryOp {
 /// no-tolerance-argument default.
 pub const DEFAULT_POINT_ON_SHAPE_TOLERANCE_M: f64 = 1e-7;
 
+/// Default tolerance for the `contains` classifier query.
+///
+/// Equal to `DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` (= OCCT `Precision::Confusion()`, ~1e-7 m)
+/// per PRD §5.2 — both predicates use the same confusion threshold as their default.
+/// Pulled at dispatch time in `geometry_ops::try_eval_topology_selector`; a future
+/// explicit-tolerance `contains(solid, point, tol)` overload will pass user-supplied
+/// tolerance instead.
+pub const DEFAULT_CONTAINS_TOLERANCE_M: f64 = 1e-7;
+
+/// Default number of parameter-space sample points per face / edge for
+/// the `geo_equiv` topology-hash + sampled-vertex equivalence check.
+///
+/// Threaded from the eval-side dispatcher into `OcctKernel::geo_equiv`
+/// → `ffi::geo_equiv_topo_sample(…, DEFAULT_GEO_EQUIV_SAMPLE_COUNT)`
+/// so this constant remains the single authoritative source.
+/// `GeometryQuery::GeoEquiv` has no `sample_count` field; the eval arm
+/// reads this const at dispatch time.
+///
+/// Per PRD §5.2 (KGQ-δ): "geo_equiv samples N=8 points per face / edge."
+pub const DEFAULT_GEO_EQUIV_SAMPLE_COUNT: usize = 8;
+
 /// Queries against geometry handles.
 #[derive(Debug, Clone)]
 pub enum GeometryQuery {
@@ -954,6 +986,50 @@ pub enum GeometryQuery {
         pz: f64,
         tolerance: f64,
     },
+    /// Test whether a 3D point `(px, py, pz)` is inside or on the boundary of
+    /// the closed solid identified by `handle`.
+    ///
+    /// Backed by `BRepClass3d_SolidClassifier(shape).Perform(gp_Pnt, tolerance)`.
+    /// Returns `true` when `State() == TopAbs_IN || State() == TopAbs_ON`
+    /// (closed-solid membership: interior and boundary points are both "contained").
+    ///
+    /// The default `tolerance` is [`DEFAULT_CONTAINS_TOLERANCE_M`] (= OCCT
+    /// `Precision::Confusion()`, ~1e-7 m), supplied by the dispatcher per §5.2.
+    ///
+    /// Powers the v0.1 stdlib helper
+    /// `contains(solid: Geometry, point: Point3<Length>) -> Bool` (PRD §9 KGQ-β).
+    Contains {
+        handle: GeometryHandleId,
+        px: f64,
+        py: f64,
+        pz: f64,
+        tolerance: f64,
+    },
+    /// Test whether two shapes `left` and `right` are geometrically equivalent
+    /// within `tolerance` using topology-count matching and sampled-vertex
+    /// proximity.
+    ///
+    /// Algorithm (§5.1): (1) compare per-kind (vertex/edge/face) counts via
+    /// `TopExp::MapShapes` for both shapes — a count mismatch returns `false`
+    /// immediately; (2) evaluate [`DEFAULT_GEO_EQUIV_SAMPLE_COUNT`] (= 8)
+    /// uniform parameter points per face / edge in canonical order and require
+    /// every `|p_left − p_right| < tolerance`.
+    ///
+    /// The tolerance is supplied by the caller (explicit user arg per §5.2;
+    /// no default-tolerance const for geo_equiv).
+    ///
+    /// Capability: [`QueryCapability::BRepAndMesh`] (§5.4).
+    ///
+    /// STRICT-VARIANT NOTE: A future `geo_equiv_strict` using symmetric
+    /// Hausdorff distance is deferred to v0.4 per PRD §5.1 + Open Question §10.
+    ///
+    /// Powers the v0.1 stdlib helper
+    /// `geo_equiv(a: Geometry, b: Geometry, tol: Length) -> Bool` (PRD §9 KGQ-δ).
+    GeoEquiv {
+        left: GeometryHandleId,
+        right: GeometryHandleId,
+        tolerance: f64,
+    },
     /// Compute the unsigned dihedral angle between two surfaces (faces) of a
     /// solid (or two distinct solids) in radians ∈ `[0, π]`.
     ///
@@ -967,6 +1043,94 @@ pub enum GeometryQuery {
     SurfaceAngle {
         face_a: GeometryHandleId,
         face_b: GeometryHandleId,
+    },
+    /// Compute the outward unit normal of a face at a Cartesian query point
+    /// `(px, py, pz)` (in metres).
+    ///
+    /// The query point is projected onto the face's underlying surface via
+    /// `ShapeAnalysis_Surface::ValueOfUV(point, 1e-9)` to obtain parametric
+    /// coordinates `(u, v)`, then the orientation-aware outward normal is
+    /// computed via `BRepAdaptor_Surface::D1` at `(u, v)` with a
+    /// `TopAbs_REVERSED` flip to produce the topologically-outward direction.
+    ///
+    /// This is the at-point variant of [`GeometryQuery::FaceNormal`] (centroid):
+    /// while `FaceNormal` evaluates at the face's centroid (correct for flat
+    /// faces), `FaceNormalAt` evaluates at the caller-supplied world-space
+    /// point — required for curved surfaces (future KGQ-μ) where the
+    /// centroid normal diverges from the local normal at the query point.
+    ///
+    /// Returns `Value::String` with JSON encoding `{"x":_,"y":_,"z":_}` of
+    /// the outward unit normal, identical to the `FaceNormal` wire format.
+    /// The eval-side dispatcher decodes this into
+    /// `Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)])`.
+    ///
+    /// Powers the v0.3 stdlib helper
+    /// `normal(surface: Surface, point: Point3<Length>) -> Vector3<Dimensionless>`
+    /// (PRD `docs/prds/v0_3/kernel-geometry-queries.md` §9 KGQ-ζ).
+    FaceNormalAt {
+        handle: GeometryHandleId,
+        px: f64,
+        py: f64,
+        pz: f64,
+    },
+    /// Compute the signed curvature of an edge (curve) at the closest point on
+    /// the curve to the Cartesian query point `(px, py, pz)` (in metres).
+    ///
+    /// The query point is projected onto the underlying curve via
+    /// `GeomAPI_ProjectPointOnCurve` to obtain the curve parameter `t`, then
+    /// curvature is evaluated via `BRepLProp_CLProps(...).Curvature()`. The
+    /// sign convention follows the Frenet frame: positive curvature bends
+    /// toward the principal normal.
+    ///
+    /// Returns `Value::Real` (SI units: 1/m = m⁻¹, i.e. the `Curvature`
+    /// dimension = 1/Length). The eval-side dispatcher wraps this in
+    /// `Value::Scalar { si_value, dimension: Dimension::Curvature }`.
+    ///
+    /// Powers the v0.3 stdlib helper
+    /// `curvature(curve: Curve, point: Point3<Length>) -> Scalar<Curvature>`
+    /// (PRD `docs/prds/v0_3/kernel-geometry-queries.md` §9 KGQ-μ).
+    ///
+    /// # Wire format
+    /// `Value::Real(kappa)` where `kappa` is in SI units (1/m).
+    ///
+    /// # Capability
+    /// `BRepOnly` — requires a BRep (OCCT) edge; mesh-only representations
+    /// do not support differential curve properties.
+    CurveCurvatureAt {
+        handle: GeometryHandleId,
+        px: f64,
+        py: f64,
+        pz: f64,
+    },
+    /// Compute the principal curvatures of a face (surface) at the parametric
+    /// point `(u, v)`.
+    ///
+    /// Delegates to the existing `OcctKernel::curvature_at(handle, u, v)`
+    /// safe wrapper, which calls `BRepAdaptor_Surface::D2` to compute the
+    /// first and second fundamental forms, then extracts the principal
+    /// curvatures via `BRepLProp_SLProps`.
+    ///
+    /// Returns a 2×2 diagonal principal-curvature matrix encoded as nested
+    /// `Value::List`: `[[kappa_max, 0.0], [0.0, kappa_min]]` where both
+    /// values are in SI units (1/m). The trace/2 equals the mean curvature H
+    /// and the det equals the Gaussian curvature K = kappa_max * kappa_min.
+    /// The eval-side dispatcher repackages this as `Value::Matrix`.
+    ///
+    /// Powers the v0.3 stdlib helper
+    /// `curvature(surface: Surface, point: Point3<Length>) -> Matrix<2,2,Curvature>`
+    /// (PRD `docs/prds/v0_3/kernel-geometry-queries.md` §9 KGQ-μ).
+    ///
+    /// # Wire format
+    /// `Value::List([Value::List([Value::Real(kappa_max), Value::Real(0.0)]),
+    ///               Value::List([Value::Real(0.0), Value::Real(kappa_min)])])`
+    ///
+    /// # Capability
+    /// `BRepOnly` — requires a BRep (OCCT) face; mesh-only representations
+    /// do not support differential surface properties.
+    SurfaceCurvatureAt {
+        handle: GeometryHandleId,
+        u: f64,
+        v: f64,
     },
 }
 
@@ -1003,7 +1167,12 @@ impl GeometryQuery {
             GeometryQuery::OwnerBody(_) => "OwnerBody",
             GeometryQuery::ClosestPointOnShape { .. } => "ClosestPointOnShape",
             GeometryQuery::PointOnShape { .. } => "PointOnShape",
+            GeometryQuery::Contains { .. } => "Contains",
+            GeometryQuery::GeoEquiv { .. } => "GeoEquiv",
             GeometryQuery::SurfaceAngle { .. } => "SurfaceAngle",
+            GeometryQuery::FaceNormalAt { .. } => "FaceNormalAt",
+            GeometryQuery::CurveCurvatureAt { .. } => "CurveCurvatureAt",
+            GeometryQuery::SurfaceCurvatureAt { .. } => "SurfaceCurvatureAt",
         }
     }
 }
@@ -1060,9 +1229,12 @@ impl GeometryQuery {
     // G-allow: task #3623 QueryCapability enum mapping; consumer is the capability-dispatch arm in subsequent #3623 steps
     pub fn capability_kind(&self) -> QueryCapability {
         match self {
-            // §5.4 BRepOnly set (extant as of this commit; KGQ-μ adds
-            // CurveCurvatureAt + SurfaceCurvatureAt; KGQ-ν adds Perimeter)
+            // §5.4 BRepOnly set (extant as of this commit; KGQ-ν adds Perimeter)
             GeometryQuery::EdgeLength(_) => QueryCapability::BRepOnly,
+            // KGQ-μ: curvature of a curve or surface requires OCCT differential
+            // property evaluation — not available on Mesh representations.
+            GeometryQuery::CurveCurvatureAt { .. } => QueryCapability::BRepOnly,
+            GeometryQuery::SurfaceCurvatureAt { .. } => QueryCapability::BRepOnly,
 
             // All other extant variants default to BRepAndMesh.
             GeometryQuery::Volume(_) => QueryCapability::BRepAndMesh,
@@ -1086,7 +1258,10 @@ impl GeometryQuery {
             GeometryQuery::OwnerBody(_) => QueryCapability::BRepAndMesh,
             GeometryQuery::ClosestPointOnShape { .. } => QueryCapability::BRepAndMesh,
             GeometryQuery::PointOnShape { .. } => QueryCapability::BRepAndMesh,
+            GeometryQuery::Contains { .. } => QueryCapability::BRepAndMesh,
+            GeometryQuery::GeoEquiv { .. } => QueryCapability::BRepAndMesh,
             GeometryQuery::SurfaceAngle { .. } => QueryCapability::BRepAndMesh,
+            GeometryQuery::FaceNormalAt { .. } => QueryCapability::BRepAndMesh,
         }
     }
 }
@@ -1707,6 +1882,49 @@ pub trait GeometryKernel: Send + Sync {
         Err(QueryError::QueryFailed(
             "topology extraction not supported by this kernel".into(),
         ))
+    }
+
+    /// Ingest an externally-supplied [`Mesh`] and return a handle to the stored
+    /// geometry.
+    ///
+    /// # Producer-side-only mesh ingest
+    ///
+    /// This method is the **structural enforcement** of "producer-side-only"
+    /// mesh ingest: kernels whose geometry model is _not_ based on triangle
+    /// meshes (Fidget's implicit SDF representations, OpenVDB's voxel grids,
+    /// OCCT's B-rep topology, mocks, stubs) inherit this default unchanged, and
+    /// the `Err(OperationFailed)` return is the observable contract for that
+    /// absence.  The pattern is exactly analogous to [`attribute_hook`]'s
+    /// `None` default (geometry.rs ~line 1735): the absence of an override IS
+    /// the "not supported" contract — no per-kernel opt-out code is needed.
+    ///
+    /// `ManifoldKernel` is the only current override; it accepts closed
+    /// orientable triangle meshes and stores them as `Manifold` values (see
+    /// `crates/reify-kernel-manifold/src/kernel.rs`).
+    ///
+    /// # Object safety
+    ///
+    /// The trait remains object-safe — `Self` appears only in the `&mut self`
+    /// receiver.  The `type_name::<Self>()` call lives in the method *body*;
+    /// object safety is determined by the *signature* alone, so
+    /// `Box<dyn GeometryKernel>` upcasts (e.g. `register.rs:58`,
+    /// `kernel.rs:353`) keep compiling.  When invoked through a trait object,
+    /// `Self = dyn GeometryKernel` and `type_name` yields `"dyn GeometryKernel"`
+    /// (acceptable for the not-supported path); when called on a concrete kernel
+    /// directly, `type_name` yields the concrete kernel's fully-qualified name.
+    ///
+    /// # This is intentionally additive
+    ///
+    /// Following the established pattern at
+    /// [`GeometryKernel::execute_with_history`] (default
+    /// `AttributeHistory::None`) and [`GeometryKernel::attribute_hook`] (default
+    /// `None`), this default allows all existing kernels to continue compiling
+    /// without per-impl changes.
+    fn ingest_mesh(&mut self, _mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
+        Err(GeometryError::OperationFailed(format!(
+            "{} does not accept Mesh inputs",
+            std::any::type_name::<Self>()
+        )))
     }
 
     /// Optional best-effort `TopologyAttribute` propagation hook for non-OCCT
@@ -3194,6 +3412,49 @@ mod tests {
         }
     }
 
+    /// Pins the §5.2 tolerance-default value invariant for `contains`:
+    /// `DEFAULT_CONTAINS_TOLERANCE_M` must equal `1e-7` AND equal
+    /// `DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` (same OCCT `Precision::Confusion()` origin).
+    ///
+    /// RED until step-4 adds `DEFAULT_CONTAINS_TOLERANCE_M` to this file.
+    #[test]
+    fn default_contains_tolerance_m_equals_1e_7_and_matches_point_on_shape_tolerance() {
+        assert_eq!(
+            super::DEFAULT_CONTAINS_TOLERANCE_M,
+            1e-7,
+            "DEFAULT_CONTAINS_TOLERANCE_M must be 1e-7 (OCCT Precision::Confusion)"
+        );
+        assert_eq!(
+            super::DEFAULT_CONTAINS_TOLERANCE_M,
+            super::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
+            "DEFAULT_CONTAINS_TOLERANCE_M must equal DEFAULT_POINT_ON_SHAPE_TOLERANCE_M \
+             per §5.2 tolerance precedent"
+        );
+    }
+
+    /// Pins the §5.4 capability mapping and stable label for the
+    /// `GeoEquiv` variant (task 3613, KGQ-δ, PRD §5.1 + §5.4).
+    ///
+    /// RED until step-4 adds the `GeometryQuery::GeoEquiv` variant.
+    #[test]
+    fn geo_equiv_variant_has_brep_and_mesh_capability_and_stable_kind_name() {
+        let q = GeometryQuery::GeoEquiv {
+            left: GeometryHandleId(1),
+            right: GeometryHandleId(2),
+            tolerance: 1e-7,
+        };
+        assert_eq!(
+            q.capability_kind(),
+            QueryCapability::BRepAndMesh,
+            "GeoEquiv must map to QueryCapability::BRepAndMesh per PRD §5.4"
+        );
+        assert_eq!(
+            q.kind_name(),
+            "GeoEquiv",
+            "kind_name() for GeoEquiv must be the stable token \"GeoEquiv\""
+        );
+    }
+
     #[test]
     fn surface_angle_variant_is_constructible_and_matchable() {
         // Pin the shape of the new SurfaceAngle variant — kernel returns
@@ -3209,6 +3470,57 @@ mod tests {
             }
             _ => panic!("expected SurfaceAngle variant"),
         }
+    }
+
+    /// RED until step-2 adds `GeometryQuery::CurveCurvatureAt` variant,
+    /// `kind_name()` arm, and `capability_kind()` arm.
+    ///
+    /// Pins (a) `kind_name() == "CurveCurvatureAt"` and (b)
+    /// `capability_kind() == QueryCapability::BRepOnly` per PRD §5.4 (KGQ-μ).
+    /// World-point at-point form `{handle, px, py, pz}` mirrors FaceNormalAt.
+    #[test]
+    fn curve_curvature_at_variant_has_brep_only_capability_and_stable_kind_name() {
+        let q = GeometryQuery::CurveCurvatureAt {
+            handle: GeometryHandleId(1),
+            px: 0.0,
+            py: 0.0,
+            pz: 0.0,
+        };
+        assert_eq!(
+            q.capability_kind(),
+            QueryCapability::BRepOnly,
+            "CurveCurvatureAt must map to QueryCapability::BRepOnly per PRD §5.4"
+        );
+        assert_eq!(
+            q.kind_name(),
+            "CurveCurvatureAt",
+            "kind_name() for CurveCurvatureAt must be the stable token \"CurveCurvatureAt\""
+        );
+    }
+
+    /// RED until step-2 adds `GeometryQuery::SurfaceCurvatureAt` variant,
+    /// `kind_name()` arm, and `capability_kind()` arm.
+    ///
+    /// Pins (a) `kind_name() == "SurfaceCurvatureAt"` and (b)
+    /// `capability_kind() == QueryCapability::BRepOnly` per PRD §5.4 (KGQ-μ).
+    /// Parametric form `{handle, u, v}` mirrors the existing curvature_at(face,u,v).
+    #[test]
+    fn surface_curvature_at_variant_has_brep_only_capability_and_stable_kind_name() {
+        let q = GeometryQuery::SurfaceCurvatureAt {
+            handle: GeometryHandleId(1),
+            u: 0.0,
+            v: 0.0,
+        };
+        assert_eq!(
+            q.capability_kind(),
+            QueryCapability::BRepOnly,
+            "SurfaceCurvatureAt must map to QueryCapability::BRepOnly per PRD §5.4"
+        );
+        assert_eq!(
+            q.kind_name(),
+            "SurfaceCurvatureAt",
+            "kind_name() for SurfaceCurvatureAt must be the stable token \"SurfaceCurvatureAt\""
+        );
     }
 
     #[test]
@@ -5674,10 +5986,54 @@ mod tests {
                 },
             ),
             (
+                "Contains",
+                GeometryQuery::Contains {
+                    handle: GeometryHandleId(1),
+                    px: 0.0,
+                    py: 0.0,
+                    pz: 0.0,
+                    tolerance: super::DEFAULT_CONTAINS_TOLERANCE_M,
+                },
+            ),
+            (
+                "GeoEquiv",
+                GeometryQuery::GeoEquiv {
+                    left: GeometryHandleId(1),
+                    right: GeometryHandleId(2),
+                    tolerance: 1e-7,
+                },
+            ),
+            (
                 "SurfaceAngle",
                 GeometryQuery::SurfaceAngle {
                     face_a: GeometryHandleId(1),
                     face_b: GeometryHandleId(2),
+                },
+            ),
+            (
+                "FaceNormalAt",
+                GeometryQuery::FaceNormalAt {
+                    handle: GeometryHandleId(1),
+                    px: 0.0,
+                    py: 0.0,
+                    pz: 0.0,
+                },
+            ),
+            (
+                "CurveCurvatureAt",
+                GeometryQuery::CurveCurvatureAt {
+                    handle: GeometryHandleId(1),
+                    px: 0.0,
+                    py: 0.0,
+                    pz: 0.0,
+                },
+            ),
+            (
+                "SurfaceCurvatureAt",
+                GeometryQuery::SurfaceCurvatureAt {
+                    handle: GeometryHandleId(1),
+                    u: 0.0,
+                    v: 0.0,
                 },
             ),
         ];
@@ -5685,7 +6041,7 @@ mod tests {
         // variant is added or removed from GeometryQuery — compile-time
         // exhaustiveness on kind_name() guarantees correctness, this assertion
         // guarantees the token list here stays in sync.
-        const GEOMETRY_QUERY_VARIANT_COUNT: usize = 23;
+        const GEOMETRY_QUERY_VARIANT_COUNT: usize = 28;
         assert_eq!(
             cases.len(),
             GEOMETRY_QUERY_VARIANT_COUNT,
@@ -5767,5 +6123,52 @@ mod tests {
         assert_eq!(mesh.vertex_f64(0), Some([1.0_f64, 2.0, 3.0]));
         // out-of-range — None passes through from vertex
         assert_eq!(mesh.vertex_f64(1), None);
+    }
+
+    /// Pins the trait-object branch of `ingest_mesh`'s default impl: when
+    /// called through a `Box<dyn GeometryKernel>`, `type_name::<Self>()`
+    /// resolves to `"dyn GeometryKernel"` rather than the concrete kernel
+    /// name.  The observable contract the executor cares about is that the
+    /// error payload still contains "does not accept Mesh inputs".
+    #[test]
+    fn ingest_mesh_default_returns_does_not_accept_via_trait_object() {
+        struct StubKernel;
+        impl GeometryKernel for StubKernel {
+            fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+                Err(GeometryError::OperationFailed("stub".into()))
+            }
+            fn query(&self, _q: &GeometryQuery) -> Result<Value, QueryError> {
+                Err(QueryError::QueryFailed("stub".into()))
+            }
+            fn export(
+                &self,
+                _h: GeometryHandleId,
+                _f: ExportFormat,
+                _w: &mut dyn std::io::Write,
+            ) -> Result<(), ExportError> {
+                Err(ExportError::FormatError("stub".into()))
+            }
+            fn tessellate(
+                &self,
+                _h: GeometryHandleId,
+                _t: f64,
+            ) -> Result<Mesh, TessError> {
+                Err(TessError::TessellationFailed("stub".into()))
+            }
+        }
+
+        let mut boxed: Box<dyn GeometryKernel> = Box::new(StubKernel);
+        let mesh = Mesh { vertices: vec![], indices: vec![], normals: None };
+        match boxed.ingest_mesh(&mesh) {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("does not accept Mesh inputs"),
+                    "error payload must contain 'does not accept Mesh inputs'; got: {msg:?}",
+                );
+            }
+            other => panic!(
+                "expected Err(OperationFailed(_)) from trait-object ingest_mesh; got {other:?}"
+            ),
+        }
     }
 }

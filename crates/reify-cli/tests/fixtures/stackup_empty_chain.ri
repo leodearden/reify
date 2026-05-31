@@ -1,0 +1,12 @@
+// stackup_empty_chain.ri — CLI test fixture for E_StackupEmptyChain diagnostic.
+//
+// An empty chain argument to stackup_rss must emit:
+//   error: E_StackupEmptyChain: tolerance chain must be non-empty
+// on stderr, and `reify eval` must exit with a non-zero status code.
+//
+// Lives in tests/fixtures/ (NOT examples/) to keep examples_smoke.rs green,
+// since this file intentionally triggers a runtime Error diagnostic.
+
+structure def StackupEmptyChain {
+    let result = stackup_rss([])
+}

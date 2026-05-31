@@ -402,8 +402,8 @@ echo "--- Test 16: POSIX fallback: no orphan sleep after fast-exit command ---"
 #
 # Test 16a (positive spawn check): proves the test setup is valid — the timer
 # must actually start its inner sleep $_SENT_16 before Test 16b's cleanup check
-# is meaningful.  Runs portable_timeout in the background, 5 checks separated
-# by 4×200ms sleeps (~0.8s worst case) for the sentinel sleep to appear, then
+# is meaningful.  Runs portable_timeout in the background, 15 checks separated
+# by 14×200ms sleeps (~2.8s worst case) for the sentinel sleep to appear, then
 # asserts it was found.
 #
 # Test 16b (orphan cleanup check): verifies the timer's sleep $_SENT_16 is gone
@@ -429,10 +429,10 @@ assert "POSIX fallback: timer actually spawns sentinel sleep \$_SENT_16 (positiv
         portable_timeout "$_SENT_16" sleep 2 &
         pt_pid=$!
 
-        # Poll up to 5×200ms for the sentinel to appear (robust under CI load).
+        # Poll up to 15×200ms for the sentinel to appear (robust under CI load).
         # On fast systems this returns on the first iteration (~0ms wait).
         found=1
-        for _attempt in 1 2 3 4 5; do
+        for _attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
             if "$_abs_ps" -A -o pid,args 2>/dev/null \
                     | "$_abs_grep" -qE "[[:space:]]sleep ${_SENT_16}$"; then
                 found=0

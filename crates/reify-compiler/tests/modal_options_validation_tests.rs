@@ -545,8 +545,9 @@ fn modal_result_struct_has_correct_param_shape() {
 // ─── step-13: ModalOptions param shape ───────────────────────────────────────
 
 /// `ModalOptions` is the modal-analysis solver-input knob bundle (PRD §4.3).
-/// It must declare exactly the seven PRD §4.3 params with the canonical
-/// types, in declaration order:
+/// It must declare exactly the eight params (the seven PRD §4.3 params plus the
+/// task-4066 `element_order` selector) with the canonical types, in declaration
+/// order:
 ///
 ///   - `n_modes             : Int`                       (# modes to extract)
 ///   - `boundary_conditions  : List<Support>`             (`Support` marker
@@ -566,6 +567,12 @@ fn modal_result_struct_has_correct_param_shape() {
 ///                                                        mathematically
 ///                                                        accurate, NOT a
 ///                                                        placeholder)
+///   - `element_order        : ElementOrder`               (P1/P2 finite-element
+///                                                        order for the (K, M)
+///                                                        assembly; task 4066 —
+///                                                        `Type::Enum("ElementOrder")`,
+///                                                        same as
+///                                                        `ElasticOptions.element_order`)
 ///
 /// `reference_direction` uses `Vector3<Dimensionless>` — identical to the
 /// `Mode.shape : List<Vector3<Dimensionless>>` encoding. `Vector3<Real>` is
@@ -589,10 +596,10 @@ fn modal_options_struct_has_correct_param_shape() {
     // (a) tight count
     assert_eq!(
         params.len(),
-        7,
-        "ModalOptions should have exactly 7 param cells (n_modes, \
+        8,
+        "ModalOptions should have exactly 8 param cells (n_modes, \
          boundary_conditions, damping, sigma, tol, max_iters, \
-         reference_direction), got: {:?}",
+         reference_direction, element_order), got: {:?}",
         names
     );
 
@@ -614,6 +621,10 @@ fn modal_options_struct_has_correct_param_shape() {
             "reference_direction",
             Type::vec3(Type::dimensionless_scalar()),
         ),
+        // task 4066 — P1/P2 finite-element-order selector for the (K, M)
+        // assembly; `Type::Enum("ElementOrder")`, exactly like
+        // `ElasticOptions.element_order` (solver_elastic_tests.rs:204).
+        ("element_order", Type::Enum("ElementOrder".to_string())),
     ];
 
     let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
@@ -621,7 +632,7 @@ fn modal_options_struct_has_correct_param_shape() {
         names, expected_names,
         "ModalOptions params must be declared in canonical order \
          (n_modes, boundary_conditions, damping, sigma, tol, max_iters, \
-         reference_direction); got: {:?}",
+         reference_direction, element_order); got: {:?}",
         names
     );
 

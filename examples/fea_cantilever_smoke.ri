@@ -1,0 +1,105 @@
+// Cantilever beam smoke test for `fn solve_elastic_static`.
+//
+// PRD reference: docs/prds/v0_3/compute-node-contract.md §8 task η
+//
+// Analytical reference (Euler–Bernoulli beam theory, rectangular cross-section):
+//
+//   σ_max = 6 · P · L / (b · h²)
+//
+// Where:
+//   P = 1000 N   (tip point load magnitude)
+//   L = 1.0 m    (beam length, along x-axis)
+//   b = 0.1 m    (cross-section width)
+//   h = 0.1 m    (cross-section height)
+//
+//   σ_max = 6 × 1000 × 1.0 / (0.1 × 0.01) = 6 × 10⁶ Pa = 6 MPa
+//
+// The integration test at `crates/reify-eval/tests/solve_elastic_static_e2e.rs`
+// asserts `result.max_von_mises` is within ±50% of 6 MPa — the documented
+// method-error budget for a coarse P1-tet mesh at this element count.
+//
+// The `@optimized("solver::elastic_static")` annotation on `solve_elastic_static`
+// causes the engine to insert a ComputeNode with target == "solver::elastic_static"
+// (not body-inline) when the trampoline is registered via
+// `reify_eval::compute_targets::register_compute_fns`.
+//
+// Type-coercion notes:
+//
+//   Material (updated task δ/3780):
+//     `solve_elastic_static` declares `material: ConstitutiveLaw` (generalised
+//     in task δ/3780 from the original `ElasticMaterial`). The Reify overload
+//     resolver uses exact type equality; `Steel_AISI_1045()` has compile-time
+//     type `StructureRef("Steel_AISI_1045")`, which does not match
+//     `TraitObject("ConstitutiveLaw")` at the call site.
+//
+//     Workaround: wrap the material in `ConstitutiveLawInput(law: mat)` — a
+//     structure ctor whose `law` param is declared `ConstitutiveLaw`. Accessing
+//     `ci.law` returns compile-time type `ConstitutiveLaw`, satisfying the
+//     overload resolver. The runtime value is still the `Steel_AISI_1045`
+//     StructureInstance; the trampoline reads it via `Value::StructureInstance`
+//     pattern matching and dispatches on `youngs_modulus` / `poisson_ratio`
+//     fields to the isotropic solve path (byte-identical to the pre-δ path).
+//
+//     See `solver_elastic.ri` for the `ConstitutiveLawInput` doc comment.
+//     TODO(trait-coerce): remove the ConstitutiveLawInput wrapper once trait
+//     subtype coercion is supported at fn call sites.
+//
+//   Loads / supports:
+//     `solve_elastic_static` declares `loads: List<Real>` and `supports: List<Real>`
+//     as placeholder types (see solver_elastic.ri header note, esc-3851-32 /
+//     TODO(load-trait)). The Reify overload resolver requires an exact type match
+//     for fn-call arguments; `[tip_load]` (typed `List<PointLoad>`) does not match
+//     `List<Real>` directly.
+//
+//     The idiomatic workaround is to bundle loads + supports via a `LoadCase` ctor
+//     (whose params are also `List<Real>` placeholders — fea_multi_case.ri note 1).
+//     Member-access on the resulting StructureInstance resolves to the declared
+//     param type `List<Real>`, satisfying the overload resolver.  The runtime
+//     values remain the original StructureInstances — the trampoline reads them
+//     via `Value::StructureInstance` pattern-matching.
+//
+//     TODO(load-trait): once trait declarations are moved earlier in the stdlib
+//     load order, `solve_elastic_static` can be tightened to
+//     `loads: List<Load>, supports: List<Support>` and the LoadCase bundle below
+//     can be removed.
+
+structure FeaCantileverSmoke {
+    // Geometry: 1 m long beam with 100 mm × 100 mm square cross-section.
+    param length : Length = 1000mm
+    param width  : Length = 100mm
+    param height : Length = 100mm
+
+    // Material: AISI 1045 hot-rolled medium-carbon steel (E = 205 GPa, ν = 0.29).
+    let material = Steel_AISI_1045()
+
+    // Loads: 1000 N point load applied at the beam tip.
+    let tip_load = PointLoad(point: "tip", force: 1000.0)
+
+    // Supports: fully clamped (fixed) at the beam root.
+    let mount = FixedSupport(target: "root")
+
+    // Bundle loads + supports via LoadCase so that member-access .loads / .supports
+    // has compile-time type `List<Real>` (matching the fn param type).
+    // At runtime the list values are still Value::StructureInstance items —
+    // the trampoline reads them via pattern-matching on their fields.
+    let lc = LoadCase(name: "cantilever", loads: [tip_load], supports: [mount])
+
+    // Wrap material in ConstitutiveLawInput so that member-access .law has
+    // compile-time type ConstitutiveLaw (matching the fn param type, task δ/3780).
+    // Structure ctors accept any value — no call-site type check — so
+    // Steel_AISI_1045() is accepted and stored; ci.law returns ConstitutiveLaw.
+    // See solver_elastic.ri ConstitutiveLawInput doc for the wrapper-coercion rationale.
+    let ci = ConstitutiveLawInput(law: material)
+
+    // FEA solve: the @optimized dispatcher routes this call to the
+    // `solver::elastic_static` trampoline in
+    //   crates/reify-eval/src/compute_targets/elastic_static.rs
+    //
+    // `options` is passed explicitly — fn-param defaults for same-module
+    // structure ctors are not yet supported (esc-3851-32 / TODO(phase-order)
+    // in solver_elastic.ri).  Bare `ElasticOptions()` uses all solver defaults
+    // (P1 elements, max_iter=1000, tolerance=1e-6, …).
+    let result = solve_elastic_static(
+        ci.law, length, width, height, lc.loads, lc.supports, ElasticOptions()
+    )
+}

@@ -246,6 +246,9 @@ impl Engine {
             last_param_override_dimension_rejections: 0,
             last_sub_component_unknown_structure_errors: 0,
             last_dispatch_count: 0,
+            // GHR-δ §5: empty until the first build() populates it.
+            realization_handles: HashMap::new(),
+            geometry_revalidation_slow_path: std::sync::atomic::AtomicUsize::new(0),
             journal: EventJournal::new(),
             functions: Vec::<CompiledFunction>::new().into(),
             compiled_purposes: Vec::new(),
@@ -253,6 +256,7 @@ impl Engine {
             active_purpose_bindings: HashMap::new(),
             active_tolerance_scope: HashMap::new(),
             active_objective_map: HashMap::new(),
+            active_purpose_let_cells: HashMap::new(),
             objectives: HashMap::new(),
             compiled_fields: Arc::new(Vec::new()),
             meta_map: Arc::new(HashMap::new()),
@@ -1193,6 +1197,40 @@ impl Engine {
         self.last_dispatch_count
     }
 
+    /// GHR-δ §5: reset the geometry-handle revalidation slow-path counter to 0.
+    ///
+    /// Called at the start of every `build()` / `build_snapshot()` (alongside
+    /// clearing `realization_handles`), so the count reported afterwards
+    /// reflects only the revalidation reads since the most recent build —
+    /// mirroring the reset-at-operation-start discipline of the `last_*`
+    /// counters. Takes `&self` because the counter is an `AtomicUsize`
+    /// (interior mutability); the reader below observes it. Always available
+    /// (NOT test-gated) since the reset site in `engine_build.rs` is production
+    /// code.
+    pub(crate) fn reset_geometry_revalidation_slow_path_count(&self) {
+        self.geometry_revalidation_slow_path
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Returns the number of geometry-handle revalidation SLOW-PATH firings
+    /// (stale-handle re-resolution OR absent-realization → `Undef`) since the
+    /// last `build()` / `build_snapshot()`. The fast path (handle already
+    /// matches, or non-handle value) does NOT increment it.
+    ///
+    /// GHR-δ §5 / §9 Q4 — gives the integration test (S15) a deterministic
+    /// "slow path fires exactly once per boundary" signal (exact `==`, since a
+    /// stale read both re-resolves AND writes the fresh handle back, so the
+    /// immediately-following read takes the fast path).
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    /// Integration tests reach this method via the self-dev-dep with the
+    /// `test-instrumentation` feature enabled (see `crates/reify-eval/Cargo.toml`).
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn geometry_revalidation_slow_path_count(&self) -> usize {
+        self.geometry_revalidation_slow_path
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Access the event journal (for testing/inspection).
     pub fn journal(&self) -> &EventJournal {
         &self.journal
@@ -1431,6 +1469,25 @@ impl Engine {
     #[cfg(test)]
     pub fn journal_event_count(&self) -> usize {
         self.journal.len()
+    }
+
+    /// **Test-instrumentation only — not a stable public metric.**
+    ///
+    /// Returns the most-recently-recorded content-hash for an imported field
+    /// source file path, or `None` if no hash has been recorded yet for `path`
+    /// (cold start or after a `cache.clear()`).
+    ///
+    /// Used by cache-invalidation integration tests (task 3576 step-9/10) to
+    /// assert that `Engine::eval` records the file's content-hash after each
+    /// elaboration of an `Imported` field and that the hash updates when the
+    /// file's content changes between evals on the same engine.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    /// Integration tests reach this method via the self-dev-dep with the
+    /// `test-instrumentation` feature enabled (see `crates/reify-eval/Cargo.toml`).
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn imported_file_content_hash(&self, path: &str) -> Option<reify_core::ContentHash> {
+        self.cache.get_imported_file_hash(path)
     }
 }
 

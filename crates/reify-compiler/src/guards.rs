@@ -179,13 +179,15 @@ pub(crate) fn register_guarded_names<'a>(
                     Type::Real
                 };
                 // Solid-typed params with a geometry-call default are treated
-                // symmetrically to geometry lets (mirrors entity.rs pre-pass, step-4).
-                if is_solid_geometry_param(
-                    &ty,
-                    param.default.as_ref(),
-                    functions,
-                    known_geometry_lets,
-                ) {
+                // symmetrically to geometry lets (mirrors entity.rs pre-pass).
+                // (is_solid_geometry_param inlined here — retired in GHR-γ, task 3605)
+                if ty == Type::Geometry
+                    && param
+                        .default
+                        .as_ref()
+                        .map(|e| is_geometry_let(e, functions, known_geometry_lets))
+                        .unwrap_or(false)
+                {
                     scope.has_geometry = true;
                     known_geometry_lets.insert(param.name.as_str());
                 }
@@ -376,17 +378,6 @@ pub(crate) fn compile_guarded_members(
                     .map(|(_, ty)| ty.clone())
                     .unwrap_or_else(|| emit_ice_unresolved(UnresolvedKind::GuardedMember, &param.name, param.span, diagnostics));
 
-                // Solid-typed params with a geometry-call default are lowered as
-                // realizations (not scalar cells) — mirrors entity.rs main loop (step-6).
-                if is_solid_geometry_param(
-                    &cell_type,
-                    param.default.as_ref(),
-                    functions,
-                    known_geometry_lets,
-                ) {
-                    continue;
-                }
-
                 let auto_free = param.default.as_ref().and_then(extract_auto_free);
 
                 // Lower and validate annotations on this guarded param
@@ -400,6 +391,7 @@ pub(crate) fn compile_guarded_members(
                         id,
                         kind: ValueCellKind::Auto { free },
                         visibility: Visibility::Public,
+                        is_aux: false,
                         cell_type,
                         default_expr: None,
                         solver_hints,
@@ -424,6 +416,7 @@ pub(crate) fn compile_guarded_members(
                         id,
                         kind: ValueCellKind::Param,
                         visibility: Visibility::Public,
+                        is_aux: false,
                         cell_type,
                         default_expr,
                         solver_hints,
@@ -476,6 +469,7 @@ pub(crate) fn compile_guarded_members(
                     id,
                     kind: ValueCellKind::Let,
                     visibility,
+                    is_aux: let_decl.is_aux,
                     cell_type,
                     default_expr: Some(compiled_expr),
                     solver_hints,
@@ -578,6 +572,8 @@ pub(crate) fn compile_guarded_members(
             | reify_ast::MemberDecl::Connect(_)
             | reify_ast::MemberDecl::Chain(_)
             | reify_ast::MemberDecl::AssociatedType(_)
+            // Trait fn members inside a where{} guard: deferred to task δ/ζ.
+            | reify_ast::MemberDecl::Fn(_)
             | reify_ast::MemberDecl::MetaBlock(_)
             | reify_ast::MemberDecl::ConstraintInst(_)
             // task 2372: match-arm decl group members inside a where{} guard are

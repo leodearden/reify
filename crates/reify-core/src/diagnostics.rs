@@ -34,7 +34,7 @@ impl SourceSpan {
     ///
     /// Equals `u32::MAX as usize` — the value you get when casting
     /// `SourceSpan::prelude().start` or `SourceSpan::prelude().end` to `usize`.
-    /// Both `reify_types::byte_offset_to_line_col` and
+    /// Both `reify_core::byte_offset_to_line_col` and
     /// `gui::engine::offset_to_line_col_fast` check for this exact value and
     /// return `(1, 1)` without further computation.
     ///
@@ -251,6 +251,18 @@ pub enum DiagnosticCode {
     /// Emitted when a field declaration uses the `imported { ... }` source form,
     /// which is deferred to v0.2 (v0.1 supports `analytical` and `composed` only).
     FieldImportedV02,
+    /// Origin: `crates/reify-eval/src/engine_eval.rs::elaborate_field` (Imported arm).
+    /// Emitted as a `Severity::Error` at eval time when an `imported` field's
+    /// source file cannot be read (file not found, wrong grid name, FFI not
+    /// compiled in, etc.).  The field's lambda becomes `Value::Undef` and any
+    /// subsequent `sample(...)` call returns `Undef`.
+    ///
+    /// Canonical message form:
+    /// `"field '<name>': failed to import VDB file: <detail>"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_FIELD_IMPORT_FAILED`.
+    /// Registered in task 3576 (PRD §9 / GR-003 task θ step-8).
+    FieldImportFailed,
     /// Origin: `crates/reify-expr/src/sampled.rs::sample_at_point`.
     /// Emitted as a `Severity::Warning` once per Sampled field per session
     /// when a `sample(field, point)` query falls outside the configured
@@ -1115,6 +1127,236 @@ pub enum DiagnosticCode {
     ///
     /// The PRD-prose mnemonic for this code is `E_SHELL_BAD_THRESHOLD`.
     ShellBadThreshold,
+    /// Origin: `crates/reify-stdlib/src/stackup.rs` (classifier) +
+    ///          `crates/reify-expr/src/lib.rs` (emission site).
+    ///
+    /// Emitted as `Severity::Error` when `stackup_worst_case`, `stackup_rss`,
+    /// or `monte_carlo_stackup` receives an empty list (`[]`) as the chain
+    /// argument.  An empty chain yields no contributors and no meaningful gap
+    /// statistics.
+    ///
+    /// Canonical message form:
+    /// `"E_StackupEmptyChain: tolerance chain must be non-empty"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_StackupEmptyChain`
+    /// (see `docs/prds/v0_6/tolerance-stackup-analysis.md` §4.4).
+    StackupEmptyChain,
+    /// Origin: `crates/reify-stdlib/src/stackup.rs` (classifier) +
+    ///          `crates/reify-expr/src/lib.rs` (emission site).
+    ///
+    /// Emitted as `Severity::Error` when a contributor entry in the chain
+    /// is not a `Value::Map`, or when the `nominal`, `plus_tol`, or
+    /// `minus_tol` field of a contributor map is not a finite LENGTH scalar.
+    ///
+    /// Canonical message form:
+    /// `"E_StackupDimMismatch: contributor field must be a finite LENGTH scalar"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_StackupDimMismatch`
+    /// (see `docs/prds/v0_6/tolerance-stackup-analysis.md` §4.4).
+    StackupDimMismatch,
+    /// Origin: `crates/reify-stdlib/src/stackup.rs` (classifier) +
+    ///          `crates/reify-expr/src/lib.rs` (emission site).
+    ///
+    /// Emitted as `Severity::Error` when the `sign` field of a contributor
+    /// map is not `Value::Int(1)` or `Value::Int(-1)`.
+    ///
+    /// Canonical message form:
+    /// `"E_StackupBadSign: contributor sign must be Int(+1) or Int(-1)"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_StackupBadSign`
+    /// (see `docs/prds/v0_6/tolerance-stackup-analysis.md` §4.4).
+    StackupBadSign,
+    /// Origin: `crates/reify-stdlib/src/stackup.rs` (classifier) +
+    ///          `crates/reify-expr/src/lib.rs` (emission site).
+    ///
+    /// Emitted as `Severity::Error` when the `samples` argument to
+    /// `monte_carlo_stackup` is not a positive `Value::Int` (i.e. ≤ 0
+    /// or not an integer type).
+    ///
+    /// Canonical message form:
+    /// `"E_StackupBadSamples: samples must be a positive integer"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_StackupBadSamples`
+    /// (see `docs/prds/v0_6/tolerance-stackup-analysis.md` §4.4).
+    StackupBadSamples,
+    /// Origin: `crates/reify-expr/src/lib.rs` (`eval_solve_load_cases` emission
+    /// site).
+    ///
+    /// Emitted as `Severity::Error` when `solve_load_cases` receives an empty
+    /// `cases` list (`[]`). Multi-load-case analysis requires at least one
+    /// `LoadCase`; single-case analysis should use `solve_elastic_static`.
+    ///
+    /// Canonical message form:
+    /// `"Multi-load case analysis requires at least one LoadCase. Use solve_elastic_static for single-case analysis."`.
+    ///
+    /// Maps the PRD's illustrative `multi-load-case::empty-cases` code
+    /// (v0.3.x multi-load-case FEA PRD task #10).
+    MultiLoadEmptyCases,
+    /// Origin: `crates/reify-expr/src/lib.rs` (`eval_solve_load_cases` emission
+    /// site).
+    ///
+    /// Emitted as `Severity::Error` when two `LoadCase` values passed to a
+    /// single `solve_load_cases` call share the same `name` field. Each load
+    /// case must have a unique name so that downstream `linear_combine` weight
+    /// maps can reference cases unambiguously.
+    ///
+    /// Canonical message form:
+    /// `"Duplicate load case name: '<name>'. Each LoadCase in a single solve_load_cases call must have a unique name."`.
+    ///
+    /// Maps the PRD's illustrative `multi-load-case::duplicate-case-name` code
+    /// (v0.3.x multi-load-case FEA PRD task #10).
+    MultiLoadDuplicateCaseName,
+    /// Origin: `crates/reify-stdlib/src/fea.rs` (`diagnose` classifier) +
+    ///          `crates/reify-expr/src/lib.rs` (Undef-site emission).
+    ///
+    /// Emitted as `Severity::Error` when a `linear_combine` weights map
+    /// references a case name that is not present in the `MultiCaseResult`
+    /// being combined (typically a misspelled case name).
+    ///
+    /// Canonical message form:
+    /// `"linear_combine: weights map references unknown case '<name>'. Available cases: [<list>]. Did you misspell the case name?"`.
+    ///
+    /// Maps the PRD's illustrative `multi-load-case::unknown-case-in-weights`
+    /// code (v0.3.x multi-load-case FEA PRD task #10).
+    MultiLoadUnknownCaseInWeights,
+    /// Origin: `crates/reify-stdlib/src/fea.rs` (`diagnose` classifier) +
+    ///          `crates/reify-expr/src/lib.rs` (Undef-site emission).
+    ///
+    /// Emitted as `Severity::Error` when two cases combined by
+    /// `linear_combine` use incompatible meshes (different `mesh_size` or
+    /// `element_order` in their `ElasticOptions`), detected structurally via a
+    /// sampled-field grid/domain/codomain mismatch. Superposition requires
+    /// matching mesh / element-order layouts.
+    ///
+    /// Canonical message form:
+    /// `"linear_combine: cases '<name1>' and '<name2>' use incompatible meshes (different mesh_size or element_order in their ElasticOptions). Superposition requires matching mesh / element-order layouts. Re-solve with consistent options or compute envelopes instead."`.
+    ///
+    /// Maps the PRD's illustrative `multi-load-case::incompatible-meshes` code
+    /// (v0.3.x multi-load-case FEA PRD task #10).
+    MultiLoadIncompatibleMeshes,
+    /// Origin: `crates/reify-stdlib/src/fea.rs` (`diagnose` classifier) +
+    ///          `crates/reify-expr/src/lib.rs` (Undef-site emission).
+    ///
+    /// Emitted as `Severity::Error` when a `linear_combine` weights map is
+    /// empty (`{}`). At least one weighted base case must be specified.
+    ///
+    /// Canonical message form:
+    /// `"linear_combine: weights map is empty. Specify at least one weighted base case."`.
+    ///
+    /// Maps the PRD's illustrative `multi-load-case::empty-weights` code
+    /// (v0.3.x multi-load-case FEA PRD task #10).
+    MultiLoadEmptyWeights,
+    /// Origin: `crates/reify-compiler/src/entity.rs` (main sub-lowering arm).
+    ///
+    /// Canonical message form:
+    /// `"'at' placement is not supported on collection subs; per-element placement is out of scope in v1"`.
+    ///
+    /// Emitted as `Severity::Error` when a `sub` declaration marked as a
+    /// collection (`sub name : List<T>`) also carries an `at <pose>` clause.
+    /// Per PRD §10 and the AST doc-comment on `SubDecl.pose_expr`, per-element
+    /// placement of collection subs requires per-instance realization handles
+    /// deferred to spec §8.3; the grammar admits the syntax but the compiler
+    /// rejects the combination semantically.
+    ///
+    /// The `at` clause's span is attached as a primary label
+    /// (`"'at' not allowed on collection sub"`). The invalid pose expression
+    /// is discarded (`SubComponentDecl.pose` is set to `None`); `aux` on the
+    /// same collection sub remains valid and is lowered normally.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_AT_ON_COLLECTION_SUB`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    AtOnCollectionSub,
+    /// Origin: `crates/reify-compiler/src/expr.rs`, BinOp Pow+Scalar branch.
+    ///
+    /// Emitted as `Severity::Error` when a dimensioned (`Scalar<Q>`) value is
+    /// raised to an exponent that is NOT an integer literal.  PRD §4.3 requires
+    /// an integer LITERAL for `Scalar<Q> ^ n → Scalar<Q^n>` because the
+    /// dimension vector `Q^n` must be computed at compile time; a runtime value
+    /// or a real-valued literal cannot provide this.
+    ///
+    /// Accepted exponent forms:
+    ///   - `ExprKind::NumberLiteral { is_real: false, .. }` (positive integer literal)
+    ///   - `ExprKind::UnOp { op: "-", operand: NumberLiteral { is_real: false, .. } }`
+    ///     (negative integer literal — `^` binds tighter than unary `-`)
+    ///
+    /// Rejected exponent forms (all produce this code):
+    ///   - Real literals (`is_real: true`), even when integer-valued (e.g. `2.0`)
+    ///   - Identifier references or any other non-literal expression
+    ///
+    /// Canonical message form:
+    ///   `"non-integer exponent on dimensioned value `T`; only integer-literal
+    ///    exponents are allowed (use sqrt for roots)"`
+    /// with a label `"exponent must be an integer literal"` on the exponent span.
+    ///
+    /// Per PRD §11.2 Q2: a dedicated code is minted rather than reusing the
+    /// Add/Sub-specific `DimensionMismatch` code, whose semantics ("dimension
+    /// mismatch in op: L vs R") do not fit this case.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_NONINT_EXP_ON_DIMENSIONED`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    NonIntegerExponentOnDimensioned,
+    /// Origin: `crates/reify-eval/src/engine_eval.rs` (post-eval MassProperties
+    /// PSD hook in the RBD-α dynamics foundation pass).
+    ///
+    /// Emitted as a `Severity::Error` in two situations, both replacing the
+    /// cell with `Value::Undef` so downstream dynamics consumers never operate
+    /// on a physically invalid or unresolvable inertia tensor:
+    ///
+    /// 1. The `inertia` field is present but cannot be parsed as a 3×3 numeric
+    ///    matrix (wrong shape, non-numeric cell).  Canonical message form:
+    ///    `"MassProperties '<name>': inertia field cannot be parsed as a 3×3 numeric matrix"`.
+    ///
+    /// 2. The symmetric part `(M + Mᵀ)/2` has a minimum eigenvalue below −tol,
+    ///    i.e. the inertia tensor is not positive semi-definite.  Canonical
+    ///    message form:
+    ///    `"MassProperties '<name>': inertia tensor is not positive semi-definite (min eigenvalue ≈ <λ_min>)"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_DynamicsInertiaNotPSD`.
+    /// Registered in task 3822 (RBD-α, PRD §dynamics).
+    DynamicsInertiaNotPSD,
+    /// Origin: `crates/reify-compiler/src/conformance` (assoc-fn satisfaction
+    /// phase) and `crates/reify-compiler/src/trait_requirements.rs`.
+    ///
+    /// Canonical message form:
+    /// `"trait '<Trait>' requires associated function '<fn>', but '<Structure>' does not provide it"`.
+    ///
+    /// Emitted as a `Severity::Error` when a structure declares conformance to a
+    /// trait that has a bodyless required associated function
+    /// (`RequirementKind::Fn`), the structure does not declare a `fn` member of
+    /// that name, and the trait provides no default body (`DefaultKind::Fn`) for
+    /// it. A single label is attached at the structure span naming the missing
+    /// associated function.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_TRAIT_FN_NOT_SATISFIED`
+    /// (see `docs/prds/v0_6/trait-associated-functions.md` §5.4 / §8 Phase 3).
+    TraitFnNotSatisfied,
+    /// Origin: `crates/reify-compiler/src/conformance` (assoc-fn satisfaction
+    /// phase, override check) and `crates/reify-compiler/src/trait_requirements.rs`
+    /// (refinement signature-lock in `collect_all_requirements`).
+    ///
+    /// Canonical message form:
+    /// `"associated function '<fn>' signature mismatch: trait requires <expected>, found <actual>"`
+    /// (override case) or
+    /// `"refining trait may not change inherited associated-function signature for '<fn>'"`
+    /// (refinement case).
+    ///
+    /// Emitted as a `Severity::Error` in two situations, both PRD §5.4 / §8.8
+    /// (associated-function signatures match exactly — self-ness, parameter
+    /// types, and return type — with no subtyping):
+    ///
+    /// 1. A structure provides a `fn` of the required/default name but with a
+    ///    different signature than the trait declares (override mismatch).
+    /// 2. A refining trait re-declares an inherited associated function with a
+    ///    different signature than the trait it refines (refinement
+    ///    signature-lock).
+    ///
+    /// Distinct from [`TraitFnNotSatisfied`] (which covers the absent-fn case):
+    /// here the function is present, just mis-typed. A dedicated code rather than
+    /// reusing [`TypeMismatchForTraitMember`] gives the override-mismatch and
+    /// refinement signature-lock tests an unambiguous signal.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_TRAIT_FN_SIGNATURE_MISMATCH`.
+    TraitFnSignatureMismatch,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -1128,7 +1370,7 @@ pub enum DiagnosticCode {
 /// Direct struct-literal construction is not supported for external crates:
 ///
 /// ```compile_fail,E0639
-/// use reify_types::{Diagnostic, Severity};
+/// use reify_core::{Diagnostic, Severity};
 /// let _ = Diagnostic {
 ///     severity: Severity::Error,
 ///     message: String::new(),
@@ -2006,6 +2248,70 @@ mod tests {
                 "severity mismatch for {code:?}",
             );
             assert_eq!(d.code, Some(code), "code mismatch for {code:?}");
+        }
+    }
+
+    // --- Stackup DiagnosticCode tests (task 4007) ---
+
+    /// All four §4.4 stackup codes round-trip through
+    /// `Diagnostic::error(...).with_code(...)` with `Severity::Error`.
+    /// Mirrors the `diagnostic_code_multi_kernel_variants_with_code_round_trip` style.
+    #[test]
+    fn diagnostic_code_stackup_variants_constructible() {
+        use super::Severity;
+        let codes = [
+            DiagnosticCode::StackupEmptyChain,
+            DiagnosticCode::StackupDimMismatch,
+            DiagnosticCode::StackupBadSign,
+            DiagnosticCode::StackupBadSamples,
+        ];
+        for code in codes {
+            let d = Diagnostic::error("x").with_code(code);
+            assert_eq!(d.severity, Severity::Error, "severity mismatch for {code:?}");
+            assert_eq!(d.code, Some(code), "code mismatch for {code:?}");
+        }
+    }
+
+    // --- FieldImportFailed tests (task 3576 step-8) ---
+
+    /// `DiagnosticCode::FieldImportFailed` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` and Debug-prints as
+    /// `"FieldImportFailed"`. Shape mirrors
+    /// `diagnostic_code_geometry_unbounded_with_code_round_trips`.
+    #[test]
+    fn diagnostic_code_field_import_failed_with_code_round_trips() {
+        let d = Diagnostic::error("field 'x': failed to import VDB file: not found")
+            .with_code(DiagnosticCode::FieldImportFailed);
+        assert_eq!(d.code, Some(DiagnosticCode::FieldImportFailed));
+        assert_eq!(
+            format!("{:?}", DiagnosticCode::FieldImportFailed),
+            "FieldImportFailed"
+        );
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::FieldImportFailed` serializes
+    /// as `"FieldImportFailed"` (PascalCase).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_field_import_failed_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::FieldImportFailed).unwrap();
+        assert_eq!(s, "\"FieldImportFailed\"");
+    }
+
+    /// Under `feature = "serde"`, each §4.4 stackup code serializes to its
+    /// PascalCase wire string (from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_stackup_variants_serde_pascal_case() {
+        let cases = [
+            (DiagnosticCode::StackupEmptyChain,  "\"StackupEmptyChain\""),
+            (DiagnosticCode::StackupDimMismatch, "\"StackupDimMismatch\""),
+            (DiagnosticCode::StackupBadSign,     "\"StackupBadSign\""),
+            (DiagnosticCode::StackupBadSamples,  "\"StackupBadSamples\""),
+        ];
+        for (code, expected) in cases {
+            let s = serde_json::to_string(&code).unwrap();
+            assert_eq!(s, expected, "serde mismatch for {code:?}");
         }
     }
 }

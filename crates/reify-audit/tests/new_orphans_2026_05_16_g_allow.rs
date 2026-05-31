@@ -1,8 +1,8 @@
-//! Pin: the 15 remaining `pub fn` surfaced as new-since-baseline orphans by the
+//! Pin: the 14 remaining `pub fn` surfaced as new-since-baseline orphans by the
 //! 2026-05-16 G-tool audit must each carry a `// G-allow:` marker citing
-//! the tracked owner task.  The 15 functions span 5 crates:
+//! the tracked owner task.  The 14 functions span 5 crates:
 //! reify-compiler, reify-eval, reify-kernel-occt, reify-solver-elastic,
-//! reify-types.
+//! reify-ir.
 //!
 //! User-observable signal:
 //!   `cargo test -p reify-audit --test new_orphans_2026_05_16_g_allow`

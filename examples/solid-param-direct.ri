@@ -1,0 +1,6 @@
+// Minimal fixture for GHR-γ: a structure with a Solid-typed geometry param.
+// After the bypass retirement, `reify eval solid-param-direct.ri` prints:
+//   Widget.body = <Geometry: Widget#realization[0]>
+structure def Widget {
+    param body : Solid = box(10mm, 20mm, 30mm)
+}

@@ -1,0 +1,28 @@
+// Fixture: edges(Solid) sub-handle selector for a parametric box
+// PRD: docs/prds/v0_3/kernel-geometry-queries.md §4/§9 KGQ-η
+//
+// A 10×20×30 mm box has 12 unique edges (4 edges × 3 axis directions).
+// `param width` is the editable scalar that drives the freshness-cascade test
+// (PRD §4 invariant v): width → R0 → b (geometry cell) → es (selector cell).
+//
+// `param b : Solid` (not `let b`) is required for the freshness-cascade test:
+// geometry `let` bindings do NOT have a compiler-generated Type::Geometry value
+// cell, so the graph's `geometry_cell` link on R0 is None and
+// `realization_reads` never gets wired into the b-cell cache entry.
+// `param b` creates a proper value cell → geometry_cell link → realization_reads=[R0]
+// → the freshness walk propagates width → R0 → b → es as expected (PRD §4 v).
+//
+// `param b : Solid` still satisfies the arg-shape contract: edges(b) compiles
+// `b` as ValueRef(BoxEdges.b), not an inline call; the dispatcher resolves it
+// via values.get(cell_id) which is populated by post_process_geometry_handle_cells.
+//
+// Pinning tests:
+//   crates/reify-eval/tests/topology_selectors_tests.rs::
+//     box_edges_integration_test  (OCCT-gated, asserts 12 Value::GeometryHandle)
+//     box_edges_freshness_cascade (OCCT-gated, asserts es goes Pending on width edit)
+
+structure def BoxEdges {
+    param width : Length = 10mm
+    param b : Solid = box(width, 20mm, 30mm)
+    let es = edges(b)
+}

@@ -1,0 +1,49 @@
+// Smoke fixture for normal(Surface, Point3<Length>) -> Vector3<Dimensionless>
+// (task 3615, KGQ-ζ)
+// PRD: docs/prds/v0_3/kernel-geometry-queries.md §9
+//
+// User-observable signal:
+//   normal(faces(box(10mm,10mm,10mm))[0], point3(0mm,0mm,5mm)) ≈ (0, 0, 1)
+//   (analytic outward unit normal of the +Z face of an axis-aligned box)
+//
+// The ergonomic `faces(solid)[i]` RUNTIME form is deferred to KGQ-ρ once
+// Phase-3 sub-handle lowering lands.  Pre-Phase-3, `faces()` yields a
+// Value::List of Value::Int handle-ids and an indexed element is not a
+// named_steps-resolvable Surface arg, so the `n` cell evaluates to
+// Value::Undef at engine runtime.  This is expected and does not regress —
+// Value::Undef typechecks against any cell type.
+//
+// The compile-time cell type IS pinned: `geometry_query_result_type("normal")`
+// returns `Type::vec3(Type::Real)` (units.rs KGQ-ζ registration), so the
+// compiler assigns that type to the `n` cell regardless of arg runtime values.
+//
+// Arg-shape contract:
+//   Both args to normal() must be let-bound ValueRefs, NOT inline calls.
+//   Inline calls fall through to None → Value::Undef.
+//
+// Unit-qualification contract:
+//   resolve_point3_length_arg requires every point component to carry a
+//   LENGTH dimension.  Use unit-qualified literals (0mm, 5mm) — bare
+//   dimensionless 0 would fail the check and yield Value::Undef.
+//
+// Pinning tests:
+//   crates/reify-eval/tests/kernel_queries_normal_smoke.rs::
+//     normal_smoke_compiles_as_vec3_real_and_face_normal_at_ffis
+//     (compile-type assertion + OCCT FaceNormalAt FFI reachability)
+//   crates/reify-kernel-occt/tests/face_differential_integration.rs::
+//     geometry_query_face_normal_at_on_top_face_of_box_encodes_z_normal
+//     (numeric pin: x≈0, y≈0, z≈1 within 1e-9 for the +Z face)
+
+structure def NormalSmoke {
+    let solid = box(10mm, 10mm, 10mm)
+
+    // Query point — let-bound so normal() receives a ValueRef.
+    // Point on the +Z face (z = +5mm = half the 10mm box height).
+    let pt    = point3(0mm, 0mm, 5mm)
+
+    // Outward unit normal at `pt` on the nearest face of `solid`.
+    // Compile-type: Type::vec3(Type::Real) (dimensionless Vector3).
+    // Runtime: Value::Undef pre-Phase-3 (solid arg is TopAbs_SOLID; C++ FFI
+    // rejects non-FACE; see notes above).
+    let n     = normal(solid, pt)
+}

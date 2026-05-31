@@ -516,13 +516,13 @@ pub use reify_core::persistent_cache::PersistentlyCacheable;
 /// `top` / `bottom` are flattened per-element scalar/vector layouts aligned
 /// with the existing `ElasticResult.stress` (which aliases the mid layer);
 /// `frame` is the per-element row-major 3×3 local→global rotation matrix,
-/// matching the [`shell_element_frame`] convention at
-/// `crates/reify-solver-elastic/src/shell_result.rs:41`.
+/// matching the [`ShellFrame::local_to_global`] convention at
+/// `crates/reify-solver-elastic/src/shell_assembly.rs`.
 ///
 /// PRD §11 OQ-1 (per-element vs per-vertex) is tactically resolved as
 /// per-element here; nodal conversion lives in PRD task θ (GUI populator).
 ///
-/// [`shell_element_frame`]: ../../reify-solver-elastic/src/shell_result.rs
+/// [`ShellFrame::local_to_global`]: ../../reify-solver-elastic/src/shell_assembly.rs
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShellChannels {
     /// Per-element stress at z = +t/2 (outer fibre), flattened to match the

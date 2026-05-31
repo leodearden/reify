@@ -12,6 +12,7 @@
 mod common;
 
 use common::assert_trait_constraint_binop;
+use reify_ast::{ExprKind, UnitExpr};
 use reify_ir::*;
 use reify_compiler::*;
 use reify_test_support::compile_source_with_stdlib;
@@ -303,27 +304,31 @@ structure def Copper : Conductive {
                 &left.kind,
                 CompiledExprKind::ValueRef(id) if id.member == "resistivity"
             );
-            // chain_match is defense-in-depth: it is logically subsumed by
+            // shape_match is defense-in-depth: it is logically subsumed by
             // dim_match (a bare Real RHS can never carry an ELECTRIC_RESISTIVITY
             // result_type), but kept deliberately as an explicit shape check so
-            // the expected `Mul/Div unit chain` structure is self-documenting at
-            // the assertion site. dim_match is the load-bearing contract.
-            let chain_match = matches!(
+            // the expected RHS structure is self-documenting at the assertion
+            // site. dim_match is the load-bearing contract. Post-task-ζ the
+            // migrated Conductive bound `0.0001ohm*m` folds to a single
+            // Literal(Scalar); the legacy `0.0001 * 1ohm * 1m` form was a Mul/Div
+            // chain — accept either shape.
+            let shape_match = matches!(
                 &right.kind,
                 CompiledExprKind::BinOp { op: BinOp::Mul | BinOp::Div, .. }
+                    | CompiledExprKind::Literal(Value::Scalar { .. })
             );
             let dim_match = right.result_type
                 == Type::Scalar {
                     dimension: DimensionVector::ELECTRIC_RESISTIVITY,
                 };
-            left_match && chain_match && dim_match
+            left_match && shape_match && dim_match
         } else {
             false
         }
     });
     assert!(
         resistivity_constraint.is_some(),
-        "expected dimensioned constraint `resistivity < 0.0001 * 1ohm * 1m` in Copper \
+        "expected dimensioned constraint `resistivity < 0.0001ohm*m` in Copper \
          template — Lt with RHS typed Scalar{{ dimension: ELECTRIC_RESISTIVITY }}, not \
          bare Real; got constraints: {:?}",
         template.constraints
@@ -422,6 +427,11 @@ structure def Glass : Insulating {
         loop {
             match &cursor.kind {
                 CompiledExprKind::Literal(Value::Real(v)) => return Some(*v),
+                // Migrated compound literal (`1000000ohm*m`, task ζ) folds to a
+                // single Scalar whose si_value is the coefficient.
+                CompiledExprKind::Literal(Value::Scalar { si_value, .. }) => {
+                    return Some(*si_value)
+                }
                 CompiledExprKind::BinOp { op: BinOp::Mul | BinOp::Div, left, .. } => {
                     cursor = left;
                 }
@@ -437,27 +447,32 @@ structure def Glass : Insulating {
                     let coeff_match = rhs_coefficient(right)
                         .map(|v| (v - rhs_real).abs() <= epsilon)
                         .unwrap_or(false);
-                    // chain_match is defense-in-depth: logically subsumed by
+                    // shape_match is defense-in-depth: logically subsumed by
                     // dim_match below (a bare Real RHS can never carry the
                     // expected_dim result_type), but kept as an explicit shape
-                    // check so the expected Mul/Div unit-chain structure is
-                    // self-documenting here. dim_match is the load-bearing pin.
-                    let chain_match = matches!(
+                    // check so the expected RHS structure is self-documenting
+                    // here. dim_match is the load-bearing pin. Post-task-ζ the
+                    // migrated resistivity bound `1000000ohm*m` folds to a single
+                    // Literal(Scalar); the non-migrated dielectric_strength bound
+                    // `0.0 * 1V / 1m` is still a Mul/Div chain — accept either.
+                    let shape_match = matches!(
                         &right.kind,
                         CompiledExprKind::BinOp { op: BinOp::Mul | BinOp::Div, .. }
+                            | CompiledExprKind::Literal(Value::Scalar { .. })
                     );
                     let dim_match =
                         right.result_type == Type::Scalar { dimension: expected_dim };
-                    left_match && coeff_match && chain_match && dim_match
+                    left_match && coeff_match && shape_match && dim_match
                 } else {
                     false
                 }
             });
             assert!(
                 found.is_some(),
-                "expected dimensioned constraint `{member} > {rhs_real} * <units>` injected \
-                 into Glass template — RHS must be a Mul/Div unit chain typed \
-                 Scalar{{ dimension: {expected_dim:?} }}, not bare Real; got: {:?}",
+                "expected dimensioned constraint `{member} > {rhs_real}<units>` injected \
+                 into Glass template — RHS must be a folded Scalar literal or a Mul/Div \
+                 unit chain typed Scalar{{ dimension: {expected_dim:?} }}, not bare Real; \
+                 got: {:?}",
                 template.constraints
             );
         };
@@ -475,5 +490,120 @@ structure def Glass : Insulating {
         1_000_000.0,
         0.0,
         DimensionVector::ELECTRIC_RESISTIVITY,
-    ); // resistivity > 1000000.0 * 1ohm * 1m
+    ); // resistivity > 1000000ohm*m
+}
+
+// ─── (g) assert_trait_constraint_binop accepts a compound-literal RHS ────────
+
+/// Pins the `assert_trait_constraint_binop` helper contract for a constraint
+/// whose RHS is a COMPOUND quantity literal (`0.0001ohm*m`) — the exact form
+/// the stdlib electrical migration (step-5) produces. A compound literal folds
+/// to a single `ExprKind::QuantityLiteral` node, whereas the legacy
+/// `0.0001 * 1ohm * 1m` is a `BinOp(*)` spine.
+///
+/// Genuinely RED before step-4: the helper's RHS spine-walk matches only
+/// `NumberLiteral`/`BinOp(*|/)` and panics on `QuantityLiteral`. Step-4 adds
+/// the `QuantityLiteral { value, .. } => break *value` arm, turning this GREEN.
+/// The extracted coefficient (0.0001) equals the SI value because `ohm` and `m`
+/// have SI factor 1 — consistent with the existing `NumberLiteral` path.
+#[test]
+fn helper_accepts_compound_quantity_literal_constraint_rhs() {
+    let source = r#"
+trait CompoundRhsProbe {
+    param r : ElectricResistivity
+    constraint r < 0.0001ohm*m
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "CompoundRhsProbe trait should compile cleanly, got errors: {:?}",
+        errors
+    );
+
+    let probe = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "CompoundRhsProbe")
+        .expect("expected 'CompoundRhsProbe' trait def in compiled module");
+
+    assert_trait_constraint_binop(probe, "CompoundRhsProbe", "r", "<", 1.0e-4, 1.0e-16);
+}
+
+// ─── (h) Insulating.dielectric_strength constraint RHS is compound QuantityLiteral ─
+
+/// After step-2 migrates `0.0 * 1V / 1m` → `0.0V/m`, the Insulating
+/// trait's `dielectric_strength > 0.0V/m` constraint must have its comparison
+/// RHS as a single `ExprKind::QuantityLiteral { value: 0.0,
+/// unit: UnitExpr::Div(Unit("V"), Unit("m")) }`.
+///
+/// RED before step-2: the RHS is the `0.0 * 1V / 1m` BinOp(Mul/Div) spine, so
+/// the QuantityLiteral match fails.
+/// GREEN after step-2: compound literal `0.0V/m` folds to a single QuantityLiteral.
+#[test]
+fn insulating_dielectric_strength_constraint_rhs_is_compound_literal() {
+    let module = load_stdlib_module();
+
+    let insulating = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "Insulating")
+        .expect("expected 'Insulating' trait in std/materials/electrical");
+
+    // Find the constraint default whose expression is `dielectric_strength > ...`
+    let constraint_default = insulating
+        .defaults
+        .iter()
+        .find(|d| {
+            if let DefaultKind::Constraint(decl) = &d.kind {
+                matches!(&decl.expr.kind, ExprKind::BinOp { left, .. }
+                    if matches!(&left.kind, ExprKind::Ident(n) if n == "dielectric_strength"))
+            } else {
+                false
+            }
+        })
+        .expect("Insulating must have a dielectric_strength constraint default");
+
+    let DefaultKind::Constraint(decl) = &constraint_default.kind else {
+        unreachable!(
+            "dielectric_strength constraint default must be DefaultKind::Constraint"
+        )
+    };
+    let ExprKind::BinOp { right, .. } = &decl.expr.kind else {
+        unreachable!(
+            "dielectric_strength constraint expr must be ExprKind::BinOp, got {:?}",
+            decl.expr.kind
+        )
+    };
+
+    // After migration to `0.0V/m`, the RHS must be a single compound QuantityLiteral.
+    // RED today: the RHS is BinOp(Div, BinOp(Mul, 0.0, QuantityLiteral(1.0,V)), QuantityLiteral(1.0,m)).
+    let expected_unit = UnitExpr::Div(
+        Box::new(UnitExpr::Unit("V".to_string())),
+        Box::new(UnitExpr::Unit("m".to_string())),
+    );
+    match &right.kind {
+        ExprKind::QuantityLiteral { value, unit } => {
+            assert_eq!(
+                *value, 0.0,
+                "Insulating dielectric_strength constraint RHS value should be 0.0, got {}",
+                value
+            );
+            assert_eq!(
+                unit, &expected_unit,
+                "Insulating dielectric_strength constraint RHS unit should be Div(V,m), got {:?}",
+                unit
+            );
+        }
+        other => panic!(
+            "Insulating dielectric_strength constraint RHS should be compound \
+             QuantityLiteral `0.0V/m` after migration, got: {:?}",
+            other
+        ),
+    }
 }

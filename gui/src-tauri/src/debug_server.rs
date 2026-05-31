@@ -8,8 +8,9 @@
 // The REST endpoint (`POST /debug/{command}`) provides the same tools via plain JSON
 // for manual `curl` testing.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -273,6 +274,30 @@ fn tool_defs() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
+            name: "mesh_morph_stats",
+            description: "Session diagnostic counter snapshot from the mesh-morph engine \
+                          (morphed, remeshed_quality_hard_fail, remeshed_quality_soft_fail, \
+                          ineligible_structural_change, ineligible_bijection_failure, \
+                          ineligible_naming_error, panicked) plus session_start_unix_ms \
+                          (debug-server spawn time, or the last reset time). Pass reset:true \
+                          to zero all counters and restart the measurement clock before \
+                          returning the post-reset snapshot — useful for benchmark sequences. \
+                          Concurrent recorders active during the reset window may produce \
+                          non-zero post-reset counters. Per mesh-morphing PRD #12 / \
+                          docs/prds/v0_3/mesh-morphing.md.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "reset": {
+                        "type": "boolean",
+                        "description": "When true, zero all diagnostic counters and restart \
+                                        the measurement clock before returning the post-reset \
+                                        snapshot. Defaults to false."
+                    }
+                }
+            }),
+        },
+        ToolDef {
             name: "wait_for_idle",
             description: "Block until the engine is idle (no in-flight evaluation) and one frame has rendered. Returns {ok: true, idle_after_ms: N} or {error: 'timeout'}. Used by the visual-regression harness to replace engine_state polling.",
             input_schema: json!({
@@ -357,6 +382,7 @@ async fn dispatch_stateless_tool(name: &str, params: &Value) -> Option<Result<Va
     match name {
         "health" => Some(Ok(json!({"ok": true}))),
         "morph_stats" => Some(handle_morph_stats(params.clone()).await),
+        "mesh_morph_stats" => Some(handle_mesh_morph_stats(params.clone()).await),
         _ => None,
     }
 }
@@ -484,6 +510,80 @@ async fn handle_mesh_stats(state: &DebugServerState) -> Result<Value, String> {
 async fn handle_morph_stats(_params: Value) -> Result<Value, String> {
     let stats = reify_mesh_morph::stats::snapshot();
     serde_json::to_value(&stats).map_err(|e| format!("failed to serialize MorphStats: {e}"))
+}
+
+// --- Session-start / measurement-window timestamp (process-global) ---
+
+/// Unix-epoch-milliseconds captured at debug-server spawn (see [`spawn_debug_server`]).
+/// Zero before server spawn; falls back to lazy first-call init for direct handler
+/// calls in tests. Rolls forward when [`reset_session_start`] is called (i.e. when a
+/// caller passes `reset:true` to restart the measurement window).
+static SESSION_START_UNIX_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Returns the measurement-window start timestamp.
+///
+/// Normally initialized at server spawn via [`spawn_debug_server`] so the value
+/// reflects the true debug-server start time. Falls back to lazy compare-exchange
+/// init (0 → now) so direct handler calls in tests work correctly without a running
+/// server. Subsequent calls return the same value until [`reset_session_start`] is
+/// called.
+fn session_start_unix_ms() -> u64 {
+    let current = SESSION_START_UNIX_MS.load(Ordering::Relaxed);
+    if current != 0 {
+        return current;
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    // CAS: only set if still 0 (first caller wins; harmless race).
+    match SESSION_START_UNIX_MS.compare_exchange(0, now, Ordering::Relaxed, Ordering::Relaxed) {
+        Ok(_) => now,
+        Err(actual) => actual, // another thread raced and won
+    }
+}
+
+/// Restart the session clock to "now". Called by handle_mesh_morph_stats when
+/// reset:true is requested, so the timestamp reflects the post-reset window start.
+fn reset_session_start() {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    SESSION_START_UNIX_MS.store(now, Ordering::Relaxed);
+}
+
+/// `mesh_morph_stats` debug-MCP RPC handler.
+///
+/// Returns a flat JSON object containing all seven diagnostic counters from
+/// `reify_mesh_morph::diagnostics::snapshot()` (morphed,
+/// remeshed_quality_hard_fail, remeshed_quality_soft_fail,
+/// ineligible_structural_change, ineligible_bijection_failure,
+/// ineligible_naming_error, panicked) plus a `session_start_unix_ms` field
+/// (debug-server spawn time, or the last reset time).
+///
+/// When `params["reset"]` is `true`, zeros all counters via
+/// `diagnostics::reset()` and refreshes the measurement clock before taking the
+/// snapshot — the response reflects the post-reset state. Note: the counter
+/// stores are independent (not one atomic operation), so a concurrent recorder
+/// active during the reset window may produce non-zero post-reset counters.
+///
+/// State-free: both the counters and the session timestamp are process-globals,
+/// so no DebugServerState / engine lock is needed.
+async fn handle_mesh_morph_stats(params: Value) -> Result<Value, String> {
+    let reset = params.get("reset").and_then(Value::as_bool).unwrap_or(false);
+    if reset {
+        reify_mesh_morph::diagnostics::reset();
+        reset_session_start();
+    }
+    let ts = session_start_unix_ms();
+    let snapshot = reify_mesh_morph::diagnostics::snapshot();
+    let mut obj = serde_json::to_value(&snapshot)
+        .map_err(|e| format!("failed to serialize DiagnosticSnapshot: {e}"))?;
+    if let Some(map) = obj.as_object_mut() {
+        map.insert("session_start_unix_ms".to_string(), serde_json::Value::Number(ts.into()));
+    }
+    Ok(obj)
 }
 
 async fn handle_open_file(state: &DebugServerState, params: Value) -> Result<Value, String> {
@@ -689,6 +789,11 @@ pub async fn spawn_debug_server(
     selection: Arc<RwLock<SelectionInfo>>,
     debug_bridge: Arc<DebugBridge>,
 ) -> Result<(), String> {
+    // Initialize the measurement-window clock at server spawn so
+    // session_start_unix_ms reports the true debug-server start time
+    // rather than the first-query time.
+    session_start_unix_ms();
+
     let state = DebugServerState {
         engine,
         selection,
@@ -714,6 +819,11 @@ pub async fn spawn_debug_server(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Process-global lock for tests that touch the global diagnostics counters.
+    // Acquire this before reset_for_test() + handler call so parallel test
+    // threads do not race on the shared AtomicU64 counters.
+    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[tokio::test]
     async fn run_on_engine_does_not_poison_mutex_when_closure_panics() {
@@ -836,6 +946,34 @@ mod tests {
     }
 
     #[test]
+    fn tool_defs_registers_mesh_morph_stats() {
+        let defs = tool_defs();
+        let entry = defs
+            .iter()
+            .find(|t| t.name == "mesh_morph_stats")
+            .expect("mesh_morph_stats must be present in tool_defs()");
+
+        let schema = &entry.input_schema;
+        assert_eq!(
+            schema["type"].as_str(),
+            Some("object"),
+            "input_schema.type must be 'object'"
+        );
+        assert!(
+            !entry.description.is_empty(),
+            "mesh_morph_stats must have a non-empty description"
+        );
+        // `reset` is optional — required may be absent entirely; if present it
+        // must not list `reset`.
+        if let Some(required) = schema["required"].as_array() {
+            assert!(
+                !required.iter().any(|v| v.as_str() == Some("reset")),
+                "'reset' must NOT be listed in required (it is optional)"
+            );
+        }
+    }
+
+    #[test]
     fn tool_defs_registers_morph_stats() {
         let defs = tool_defs();
         let entry = defs
@@ -949,6 +1087,139 @@ mod tests {
             .expect("morph_stats handler must succeed");
 
         assert_eq!(via_dispatch, direct, "dispatch_stateless_tool must delegate to handle_morph_stats");
+    }
+
+    #[tokio::test]
+    async fn handle_mesh_morph_stats_reset_true_zeros_counters() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        // --- (a) reset:true path: counter recorded, then handler zeros it ---
+        reify_mesh_morph::diagnostics::reset_for_test();
+        reify_mesh_morph::diagnostics::record_morphed();
+        // Pre-condition: morphed == 1 before the call.
+        assert_eq!(reify_mesh_morph::diagnostics::snapshot().morphed, 1);
+
+        // Capture the session clock before reset to verify reset:true restarts it.
+        // A plain (no-reset) call initializes the clock if not yet set.
+        let ts_before = super::handle_mesh_morph_stats(serde_json::json!({}))
+            .await
+            .expect("baseline read before reset must succeed")["session_start_unix_ms"]
+            .as_u64()
+            .expect("session_start_unix_ms must be present in baseline read");
+
+        let result = super::handle_mesh_morph_stats(serde_json::json!({"reset": true}))
+            .await
+            .expect("handle_mesh_morph_stats({reset:true}) must succeed");
+
+        // Response must show post-reset zeros.
+        assert_eq!(
+            result["morphed"].as_u64(),
+            Some(0),
+            "reset:true — response.morphed must be 0 after reset"
+        );
+        // Process-global counter must actually be zeroed.
+        assert_eq!(
+            reify_mesh_morph::diagnostics::snapshot().morphed,
+            0,
+            "reset:true — process-global morphed counter must be 0 after reset"
+        );
+        // Session clock must have been restarted (>= allows same-millisecond granularity).
+        let ts_after = result["session_start_unix_ms"]
+            .as_u64()
+            .expect("session_start_unix_ms must be present in reset:true response");
+        assert!(
+            ts_after >= ts_before,
+            "reset:true must restart the measurement clock: \
+             ts_after ({ts_after}) must be >= ts_before ({ts_before})"
+        );
+
+        // --- (b) control: no reset flag — counter must survive ---
+        reify_mesh_morph::diagnostics::reset_for_test();
+        reify_mesh_morph::diagnostics::record_morphed();
+
+        let result_no_reset = super::handle_mesh_morph_stats(serde_json::json!({}))
+            .await
+            .expect("handle_mesh_morph_stats({}) must succeed");
+
+        // Response must preserve the non-zero value.
+        assert_eq!(
+            result_no_reset["morphed"].as_u64(),
+            Some(1),
+            "omitted reset — response.morphed must be 1 (unchanged)"
+        );
+        // Process-global counter must not be zeroed.
+        assert_eq!(
+            reify_mesh_morph::diagnostics::snapshot().morphed,
+            1,
+            "omitted reset — process-global morphed counter must remain 1"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_stateless_tool_handles_mesh_morph_stats_arm() {
+        // Unique coverage: the exact "mesh_morph_stats" match-arm string in
+        // dispatch_stateless_tool. A typo or deletion returns None, caught
+        // by the unwrap. Shape assertions live in
+        // handle_mesh_morph_stats_returns_counters_and_session_start.
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reify_mesh_morph::diagnostics::reset_for_test();
+
+        let direct = super::handle_mesh_morph_stats(serde_json::json!({}))
+            .await
+            .expect("handle_mesh_morph_stats must succeed");
+
+        let via_dispatch =
+            super::dispatch_stateless_tool("mesh_morph_stats", &serde_json::json!({}))
+                .await
+                .expect("dispatch_stateless_tool must return Some for 'mesh_morph_stats'")
+                .expect("mesh_morph_stats handler must succeed");
+
+        assert_eq!(
+            via_dispatch, direct,
+            "dispatch_stateless_tool must delegate to handle_mesh_morph_stats"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_mesh_morph_stats_returns_counters_and_session_start() {
+        // Acquire process-global lock so no concurrent test races on counters.
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Reset all 7 diagnostic counters to zero for a clean baseline.
+        reify_mesh_morph::diagnostics::reset_for_test();
+
+        let result = super::handle_mesh_morph_stats(serde_json::json!({}))
+            .await
+            .expect("handle_mesh_morph_stats must succeed");
+
+        assert!(result.is_object(), "response must be a JSON object");
+
+        // All seven named buckets must be present and zero after reset.
+        let buckets = [
+            "morphed",
+            "remeshed_quality_hard_fail",
+            "remeshed_quality_soft_fail",
+            "ineligible_structural_change",
+            "ineligible_bijection_failure",
+            "ineligible_naming_error",
+            "panicked",
+        ];
+        for bucket in buckets {
+            assert_eq!(
+                result[bucket].as_u64(),
+                Some(0),
+                "bucket '{bucket}' must be present and 0 after reset"
+            );
+        }
+
+        // session_start_unix_ms must be present and non-zero
+        // (epoch-millis in 2026 is ~1.7e12, so > 0 is a safe non-flaky assertion).
+        let session_start = result["session_start_unix_ms"]
+            .as_u64()
+            .expect("session_start_unix_ms must be a non-null u64");
+        assert!(
+            session_start > 0,
+            "session_start_unix_ms must be > 0; got {session_start}"
+        );
     }
 
     // step-5 RED → GREEN: all five viewport-aware tools must expose an optional

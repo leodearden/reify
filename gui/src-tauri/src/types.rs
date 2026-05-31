@@ -102,6 +102,30 @@ where
     }
 }
 
+/// IPC wire-format descriptor for a single tensegrity wire (strut or cable).
+///
+/// Produced by `build_tensegrity_wires` in `engine.rs` by scanning the value
+/// cells of the loaded module for `TensegrityWire` instances emitted by the
+/// `tensegrity_wires()` builtin (T0a).  Serialized over the Tauri IPC channel
+/// as part of `GuiState`.
+///
+/// # Field semantics
+/// - `entity_path`: owning entity name (e.g. `"TPrism"`), from `cell.id.entity`.
+/// - `kind`: `"strut"` or `"cable"` — the member-type tag T0a emits.
+/// - `x1/y1/z1`, `x2/y2/z2`: endpoint coordinates in SI metres (direct passthrough
+///   from `Value::Scalar{si_value}` or `Value::Real`; no unit conversion).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TensegrityWireData {
+    pub entity_path: String,
+    pub kind: String,
+    pub x1: f64,
+    pub y1: f64,
+    pub z1: f64,
+    pub x2: f64,
+    pub y2: f64,
+    pub z2: f64,
+}
+
 /// Full GUI state snapshot sent to the frontend after each operation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GuiState {
@@ -135,6 +159,17 @@ pub struct GuiState {
     ///    of `build_gui_state` (appended after `get_diagnostics()` output so
     ///    warnings from the prior good state remain visible alongside the error).
     pub compile_diagnostics: Vec<DiagnosticInfo>,
+    /// Tensegrity wire descriptors extracted from the current module's value cells.
+    ///
+    /// Populated by `build_tensegrity_wires` from cells that evaluate to a
+    /// `List<TensegrityWire>` or a standalone `TensegrityWire` (as emitted by the
+    /// `tensegrity_wires()` builtin, T0a).  Empty on preview snapshots, early-return
+    /// (no compile), and modules without any tensegrity wires.
+    ///
+    /// `#[serde(default)]` ensures existing payloads without this field deserialize
+    /// as an empty vec (forward-compat for older backend → newer frontend).
+    #[serde(default)]
+    pub tensegrity_wires: Vec<TensegrityWireData>,
 }
 
 // ---------------------------------------------------------------------------
@@ -885,6 +920,67 @@ pub struct FeaCaseChanged {
     pub active_case_id: String,
     /// All available case names, sorted (BTreeMap iteration order from the inner map).
     pub available_cases: Vec<String>,
+}
+
+/// IPC payload for the `mode-shape-frame` Tauri event channel (GR-024 Phase 9, task ι/3458).
+///
+/// One frame is emitted per mode on solve completion: a phase=0.0 undeformed base
+/// frame and a phase=1.0 peak (unit-scale) displaced frame.  The frontend
+/// reconstructs the animated shape for any phase ∈ [−1, +1] via:
+///
+///   `pos(phase, scale) = base + phase·scale·(peak − base)`
+///
+/// Field names match the TypeScript `ModeShapeFrame` interface in `gui/src/types.ts`
+/// exactly — no `serde(rename_all)` (PRD §3.2 field-name-exactness convention).
+///
+/// `displaced_positions` is a flat `Vec<f32>` of length `3·n_nodes` (xyz per node).
+/// `f32` (not `f64`) matches the existing FEA mesh wire precision in `MeshData.vertices`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModeShapeFrame {
+    /// Index of the buckling mode (0-based, ascending |λ|).
+    pub mode_index: u8,
+    /// Animation phase: 0.0 = undeformed base, 1.0 = unit-scale peak displacement.
+    pub phase: f32,
+    /// Flat xyz displaced positions, length `3·n_nodes`.
+    pub displaced_positions: Vec<f32>,
+    /// Per-mode buckling load multiplier λ (task 4072, GR-016).
+    ///
+    /// `None` on the undeformed base frame (phase ≈ 0.0); `Some(λ)` on each
+    /// peak frame (phase ≈ 1.0).  Field name matches the TypeScript
+    /// `ModeShapeFrame.eigenvalue` interface exactly (no `rename_all`).
+    ///
+    /// Omitted from the wire when `None` so the base frame retains its existing
+    /// 3-key shape — mirrors the `eta_ms: Option<u64>` precedent on
+    /// `SolverProgress`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eigenvalue: Option<f64>,
+}
+
+/// IPC payload for the `solver-progress` Tauri event channel (GR-016 ζ).
+///
+/// Emitted at the end of each CG iteration (after the residual-norm update,
+/// before the convergence check) by the `solve_cg_with_progress` kernel callback.
+/// The engine-boundary emit-call wiring (populating `app.emit`) is a follow-on
+/// task; this struct is the type-definition seam.
+///
+/// Field names match the TypeScript `SolverProgress` interface in `gui/src/types.ts`
+/// exactly — no `serde(rename_all)` (PRD `docs/prds/v0_3/gui-event-channel-inventory.md`
+/// §2.2 task ζ / §3.2 field-name-exactness convention).
+///
+/// `eta_ms` is omitted from the wire format when `None` (ETA not yet estimable,
+/// e.g. on the first iteration before a residual history is available).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SolverProgress {
+    /// Solver algorithm identifier, e.g. `"cg"` for Jacobi-preconditioned CG.
+    pub solver_kind: String,
+    /// 1-indexed iteration number just completed.
+    pub iter: u32,
+    /// L2 residual norm at this iteration.
+    pub residual: f64,
+    /// Estimated time to completion in milliseconds; absent when ETA cannot be
+    /// estimated (residual history too short).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eta_ms: Option<u64>,
 }
 
 #[cfg(test)]

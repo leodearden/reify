@@ -21,6 +21,16 @@ pub struct ParsedModule {
     pub content_hash: ContentHash,
     /// Module-level pragmas (e.g., `#optimize` at the top of a file).
     pub pragmas: Vec<Pragma>,
+    /// Declared module path from a top-of-file `module a.b.c` declaration, if present.
+    ///
+    /// `None` for files without a module declaration (the entire existing corpus).
+    /// `Some(path)` when the parser found a `module_declaration` node at the top.
+    /// This is the structured form of `ModuleDecl.path`; the raw dotted string is
+    /// stored in `Declaration::Module(ModuleDecl)` in the declarations list.
+    ///
+    /// Left untouched for task γ (path-vs-location enforcement); `ParsedModule.path`
+    /// (the resolver-derived path) is the authoritative module identity (PRD D-6).
+    pub declared_module_path: Option<ModulePath>,
 }
 
 /// A top-level declaration in a module.
@@ -37,6 +47,25 @@ pub enum Declaration {
     Constraint(ConstraintDef),
     Unit(UnitDecl),
     TypeAlias(TypeAliasDecl),
+    /// A `module a.b.c` declaration at the top of a file.
+    ///
+    /// Positional: placed via the grammar's `source_file: seq(optional($.module_declaration),
+    /// repeat($._declaration))` rule, so a `module` decl after any other declaration is a
+    /// parse ERROR. No enforcement semantics here — task γ reads `declared_module_path`.
+    Module(ModuleDecl),
+}
+
+/// `module company.products.actuators` — a top-of-file module path declaration.
+///
+/// Mirrors `ImportDecl.path` in using a raw dotted `String` as the wire
+/// representation. The structured form `ModulePath` is stored alongside in
+/// `ParsedModule.declared_module_path` (parsed via `ModulePath::from_dotted`).
+#[derive(Debug, Clone)]
+pub struct ModuleDecl {
+    /// Dot-separated module path string exactly as written in source (e.g., "a.b.c").
+    pub path: String,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
 }
 
 /// A structure definition (the primary entity type in Reify).
@@ -94,6 +123,10 @@ pub enum MemberDecl {
     Maximize(MaximizeDecl),
     GuardedGroup(GuardedGroupDecl),
     AssociatedType(AssociatedTypeDecl),
+    /// An associated function declared inside a trait body:
+    /// `fn area(self) -> Scalar { ... }` (with body) or
+    /// `fn req(self) -> Real` (bodyless / required, `body = None`).
+    Fn(FnDef),
     Port(PortDecl),
     Connect(ConnectDecl),
     Chain(ChainDecl),
@@ -178,6 +211,10 @@ pub struct LetDecl {
     pub name: String,
     pub doc: Option<String>,
     pub is_pub: bool,
+    /// Whether this binding is marked `aux` (PRD §2.1: auxiliary geometry).
+    /// `aux let` declares a derived binding that is not surfaced in the public
+    /// interface but participates in constraint solving.
+    pub is_aux: bool,
     pub type_expr: Option<TypeExpr>,
     pub value: Expr,
     pub where_clause: Option<WhereClause>,
@@ -209,6 +246,27 @@ pub struct ConstraintInstDecl {
     pub where_clause: Option<WhereClause>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
+}
+
+/// A single entry in a keyed sub-member block (task 3929, PRD §2.2).
+///
+/// Represents one `"key" => { overrides }` entry inside a
+/// `sub name : Keyed<T> { "k1" => { … }  "k2" => { … } }` declaration.
+///
+/// `key` is the unquoted string key (e.g. `"intake"` in the source becomes
+/// `key = "intake"` here, with the surrounding double-quotes stripped).
+/// `overrides` reuses the same `Vec<MemberDecl>` shape as a specialization
+/// body (PRD §2.2/§9-Q4 — no new override grammar).
+///
+/// Keyed TYPE kind recognition, NodeId identity, E_DUP_MEMBER_KEY,
+/// resolution, eval, connect, and structural-classifier are deferred to
+/// downstream tasks (PRD tasks β/γ/δ/ε); only the grammar + AST shape +
+/// lowering are in scope here.
+#[derive(Debug, Clone)]
+pub struct KeyedSubMemberEntry {
+    pub key: String,
+    pub overrides: Vec<MemberDecl>,
+    pub span: SourceSpan,
 }
 
 /// `sub mount_hole = Hole(diameter: 6mm)` or `sub part = Box<Bolt>()`
@@ -243,6 +301,33 @@ pub struct SubDecl {
     /// resolution is deferred to task ε.  Empty for bare instantiation, the
     /// paren-arg form, or any sub with no param_assignment overrides.
     pub param_overrides: Vec<(String, Expr)>,
+    /// Keyed sub-member entries when this `sub` uses a keyed block
+    /// `{ "k" => { overrides } }` (task 3929, PRD §2.2).
+    ///
+    /// Empty when the sub is NOT a keyed block (instantiation, collection,
+    /// bare-colon-no-body, or specialization-body forms). Non-empty only when
+    /// the `body` field child in the CST was a `keyed_member_block`.
+    ///
+    /// `body` is `None` when `keyed_members` is non-empty (the two
+    /// discriminators are mutually exclusive by construction in `lower_sub`).
+    pub keyed_members: Vec<KeyedSubMemberEntry>,
+    /// Whether this sub-component is marked `aux` (PRD §2.1: auxiliary placement).
+    /// `aux sub` declares a sub-component used for internal geometry only,
+    /// not surfaced in the public component interface.
+    ///
+    /// Parsed and stored here (task 3899); first consumed by the T2
+    /// sub-placement compiler lowering task.
+    pub is_aux: bool,
+    /// Optional placement pose expression from the `at <expr>` clause (PRD §2.2).
+    /// `None` when no `at` clause is present; `Some(expr)` when the sub-component
+    /// carries an explicit placement frame or transform.
+    ///
+    /// Parsed and stored here (task 3899); first consumed by the T2
+    /// sub-placement compiler lowering task. Note: `pose_expr.is_some()` on a
+    /// collection-form `SubDecl` (`is_collection == true`) is grammatically
+    /// accepted but semantically invalid — the compiler (T2) must reject it
+    /// with a diagnostic (PRD §10).
+    pub pose_expr: Option<Expr>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }
@@ -509,7 +594,7 @@ pub struct ForallConnectDecl {
 #[derive(Debug, Clone)]
 pub enum ForallConnectBody {
     /// `forall v in coll: connect v.a -> b.c`
-    Connect(ConnectDecl),
+    Connect(Box<ConnectDecl>),
     /// `forall v in coll: chain v.a -> b -> c`
     Chain(ChainDecl),
 }
@@ -568,13 +653,65 @@ pub struct ImportDecl {
     pub annotations: Vec<Annotation>,
 }
 
+/// A single variant inside an `enum` declaration.
+///
+/// Bare variants (e.g. `Point`) carry `payload: VariantPayload::Unit`.
+/// Named-field variants (e.g. `Circle { radius: Length }`) carry
+/// `payload: VariantPayload::Named(vec![("radius", <TypeExpr>)])`.
+///
+/// Helpers:
+/// - `EnumVariantDecl::unit(name)` — construct a unit variant by name.
+/// - `From<&str>` / `From<String>` — shorthand for `unit(name)`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumVariantDecl {
+    pub name: String,
+    pub payload: VariantPayload,
+    pub span: SourceSpan,
+}
+
+impl EnumVariantDecl {
+    /// Construct a unit (bare) variant with an empty span.
+    pub fn unit(name: impl Into<String>) -> Self {
+        EnumVariantDecl {
+            name: name.into(),
+            payload: VariantPayload::Unit,
+            span: SourceSpan::empty(0),
+        }
+    }
+}
+
+impl From<&str> for EnumVariantDecl {
+    fn from(name: &str) -> Self {
+        EnumVariantDecl::unit(name)
+    }
+}
+
+impl From<String> for EnumVariantDecl {
+    fn from(name: String) -> Self {
+        EnumVariantDecl::unit(name)
+    }
+}
+
+/// The optional payload of an [`EnumVariantDecl`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum VariantPayload {
+    /// Bare variant with no fields: `Point`.
+    Unit,
+    /// Named-field variant: `Circle { radius: Length }`.
+    /// Fields are stored in source-declaration order.
+    Named(Vec<(String, TypeExpr)>),
+}
+
 /// `enum Direction { In, Out, Bidi }`
 #[derive(Debug, Clone)]
 pub struct EnumDecl {
     pub name: String,
     pub doc: Option<String>,
     pub is_pub: bool,
-    pub variants: Vec<String>,
+    /// Type parameters declared on the enum head: `enum Maybe<T>` → `[T]`.
+    /// Empty for non-generic enums (invariant INV-6). Mirrors `StructureDef.type_params`.
+    pub type_params: Vec<TypeParamDecl>,
+    pub variants: Vec<EnumVariantDecl>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
     /// Annotations preceding this declaration.
@@ -590,7 +727,10 @@ pub struct FnDef {
     pub type_params: Vec<TypeParamDecl>,
     pub params: Vec<FnParam>,
     pub return_type: Option<TypeExpr>,
-    pub body: FnBody,
+    /// The function body. `Some` for a defined function; `None` for a
+    /// bodyless required associated function inside a trait
+    /// (`fn req(self) -> Real` with no `{ ... }`).
+    pub body: Option<FnBody>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
     /// Annotations preceding this declaration.
@@ -767,6 +907,12 @@ pub struct TypeParamDecl {
 #[derive(Debug, Clone)]
 pub struct FnParam {
     pub name: String,
+    /// `true` when this parameter is the implicit `self` receiver of a
+    /// trait-associated function. The `type_expr` in that case is a sentinel
+    /// `TypeExprKind::Named { name: "self", .. }` — `is_self` is the source
+    /// of truth and the sentinel type is replaced by the concrete receiver
+    /// type during dispatch in later task δ/ζ.
+    pub is_self: bool,
     pub type_expr: TypeExpr,
     pub default: Option<Expr>,
     pub span: SourceSpan,

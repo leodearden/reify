@@ -239,11 +239,6 @@ pub fn should_refine(
     demand: RefinementDemand,
 ) -> AdvanceDecision {
     debug_assert!(
-        opts.max_refinements > 0,
-        "max_refinements must be > 0, got {}",
-        opts.max_refinements
-    );
-    debug_assert!(
         opts.target_tolerance > 0.0,
         "target_tolerance must be positive, got {}",
         opts.target_tolerance
@@ -495,6 +490,25 @@ mod tests {
     }
 
     #[test]
+    fn should_refine_with_zero_max_refinements_terminates_budget_exhausted() {
+        // max_refinements == 0 is a legitimate "coarse-pass-only" configuration:
+        // the caller wants exactly one coarse pass with no refinements.
+        // should_refine must return Terminate(BudgetExhausted) immediately rather
+        // than panicking — the debug_assert!(opts.max_refinements > 0) footgun
+        // made this crash in debug/test builds while release returned the correct
+        // value.
+        let opts = ProgressiveOptions {
+            max_refinements: 0,
+            ..Default::default()
+        };
+        assert_eq!(
+            should_refine(&opts, 0, &make_result(0.0), RefinementDemand::More),
+            AdvanceDecision::Terminate(TerminationReason::BudgetExhausted),
+            "max_refinements==0 (coarse-only config) must yield BudgetExhausted, not panic"
+        );
+    }
+
+    #[test]
     fn should_refine_terminates_when_budget_exhausted() {
         // max_refinements = 3, current_level = 3 → budget exhausted, even with More demand.
         let opts = ProgressiveOptions {
@@ -527,6 +541,38 @@ mod tests {
             should_refine(&opts, 3, &result, RefinementDemand::None),
             AdvanceDecision::Terminate(TerminationReason::BudgetExhausted),
             "budget exhausted must override auto-trigger (near_constraint_boundary)"
+        );
+    }
+
+    #[test]
+    fn refinement_pass_tuning_level_0_equals_coarse_pass_tuning() {
+        // Contract (rustdoc at progressive.rs:66-70/83):
+        //   "level = 0 gives the same result as coarse_pass_tuning"
+        // The equivalence is bit-exact: 0.5^0 == 1.0 and 0.1^0 == 1.0,
+        // so mesh_tol = target_tolerance * 4.0 * 1.0 and cg_tol = 1e-3 * 1.0
+        // are identical in both code paths.  assert_eq! is correct here;
+        // a tolerance-based check would be strictly weaker and mask divergence.
+        //
+        // Two distinct opts are tested so a regression that hardcodes a specific
+        // tolerance would not accidentally pass.
+        let opts_a = ProgressiveOptions {
+            target_tolerance: 0.05,
+            ..Default::default()
+        };
+        assert_eq!(
+            refinement_pass_tuning(&opts_a, 0),
+            coarse_pass_tuning(&opts_a),
+            "level=0 must be bit-exact equal to coarse_pass_tuning (opts_a: tol=0.05)"
+        );
+
+        let opts_b = ProgressiveOptions {
+            target_tolerance: 0.01,
+            ..Default::default()
+        };
+        assert_eq!(
+            refinement_pass_tuning(&opts_b, 0),
+            coarse_pass_tuning(&opts_b),
+            "level=0 must be bit-exact equal to coarse_pass_tuning (opts_b: tol=0.01)"
         );
     }
 

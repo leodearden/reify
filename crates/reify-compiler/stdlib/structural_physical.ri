@@ -117,7 +117,7 @@ trait ThermallyConductive : Physical {
     param max_service_temp : Real
     // RHS dimensioned (W/(m·K) = ThermalConductivity) — see Flexible above for
     // rationale (esc-3115-112).
-    constraint thermal_conductivity > 0.0 * 1W / (1m * 1K)
+    constraint thermal_conductivity > 0W/(m*K)
 }
 
 // ── Electrical conductivity ─────────────────────────────────────────────────

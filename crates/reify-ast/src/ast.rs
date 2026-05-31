@@ -24,8 +24,9 @@ pub enum ExprKind {
     /// `false` for bare integer tokens (e.g. `42`, `0`). Used by the compiler
     /// to distinguish `1.0 : Real` from `1 : Int` without re-inspecting source text.
     NumberLiteral { value: f64, is_real: bool },
-    /// Quantity literal: `80mm`, `45deg`
-    QuantityLiteral { value: f64, unit: String },
+    /// Quantity literal: `80mm`, `45deg`, `7850kg/m^3`. The `unit` is a
+    /// structured [`UnitExpr`] tree (a bare `mm` lowers to `UnitExpr::Unit("mm")`).
+    QuantityLiteral { value: f64, unit: UnitExpr },
     /// String literal: `"hello"`
     StringLiteral(String),
     /// Boolean literal: `true`, `false`
@@ -103,12 +104,88 @@ pub enum ExprKind {
         lower_inclusive: bool,
         upper_inclusive: bool,
     },
+    /// Trait-associated function call on an instance: `obj.(Trait::method)(args)`.
+    /// Produced by a `trait_method_call` CST node whose callee is
+    /// `instance_qualified_access`.  The `self` receiver is `object`; dispatch
+    /// to the concrete implementation is deferred to task δ.
+    TraitMethodCall {
+        object: Box<Expr>,
+        trait_name: String,
+        method: String,
+        args: Vec<Expr>,
+    },
+    /// Trait-associated static-function call: `Trait::method(args)`.
+    /// Produced by a `trait_method_call` CST node whose callee is
+    /// `qualified_access`.  No receiver; dispatch deferred to task δ.
+    TraitStaticCall {
+        trait_name: String,
+        method: String,
+        args: Vec<Expr>,
+    },
+    /// Named-field variant construction: `Circle { radius: 5mm }`.
+    /// Produced by a `variant_construction` CST node (grammar task α).
+    /// Resolution (is `name` a known enum variant? do fields match the decl?)
+    /// and `Value::Enum` construction are deferred to task δ (3942).
+    /// Fields are in source-declaration order.
+    VariantConstruct {
+        name: String,
+        fields: Vec<(String, Expr)>,
+    },
+}
+
+/// A unit expression attached to a [`ExprKind::QuantityLiteral`] — the
+/// structured form of a compound unit like `kg/m^3` or `m/s^2`, as well as a
+/// bare unit like `mm`.
+///
+/// Produced by `lower_unit_expr` in `reify-syntax` from the `unit_expr` CST
+/// (grammar task α; PRD `docs/prds/unit-expressions.md` §4.1). Parens carry no
+/// semantic content — they only steer parse precedence — so they are unwrapped
+/// during lowering and there is no `Paren` variant. The signed exponent is an
+/// `i32` (PRD §11.3): no realistic SI/derived unit needs a magnitude beyond
+/// ~±10, and it matches `f64::powi` natively for the resolver.
+///
+/// Registry-fold semantics (resolving a `UnitExpr` to an SI factor + dimension
+/// vector) are owned by task γ (3803); at this parsed-AST layer the type is
+/// purely structural.
+#[derive(Debug, Clone, PartialEq)]
+pub enum UnitExpr {
+    /// A bare unit name: `mm`, `kg`, `MPa`.
+    Unit(String),
+    /// Multiplication: `kN*m`.
+    Mul(Box<UnitExpr>, Box<UnitExpr>),
+    /// Division: `kg/m` (left-associative).
+    Div(Box<UnitExpr>, Box<UnitExpr>),
+    /// Exponentiation by a signed integer: `m^3`, `s^-2`.
+    Pow(Box<UnitExpr>, i32),
+}
+
+/// A single alternative in a match pattern.
+///
+/// Mirrors the PRD §7.1 IR `CompiledPattern` shape so γ/ε get a 1:1 lowering
+/// target.  The outer `Vec<MatchPattern>` in `MatchArm.patterns` still encodes
+/// pipe-alternation (each alternative is a `Variant`) and the wildcard (a
+/// single `Wildcard` element).
+///
+/// `VariantBind` binders are dropped at the reify-compiler β boundary
+/// (lossy bridge); γ/ε/ζ widen `CompiledMatchArm` to carry them.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MatchPattern {
+    /// `_` wildcard arm.
+    Wildcard,
+    /// A bare variant name: `In`, `Circle`, etc.
+    Variant(String),
+    /// A named-field payload-binding pattern: `Circle { radius: r }`.
+    /// `binders` is ordered by source declaration order.
+    VariantBind {
+        name: String,
+        binders: Vec<(String, String)>,
+    },
 }
 
 /// A match arm: `Pattern1 | Pattern2 => body`
 #[derive(Debug, Clone, PartialEq)]
 pub struct MatchArm {
-    pub patterns: Vec<String>,
+    pub patterns: Vec<MatchPattern>,
     pub body: Expr,
     pub span: SourceSpan,
 }

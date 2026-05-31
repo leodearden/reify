@@ -14,8 +14,8 @@
 use reify_test_support::{
     assert_no_eval_errors, make_simple_engine, parse_and_compile_with_stdlib,
 };
-use reify_core::{Severity, ValueCellId};
-use reify_ir::{Satisfaction, Value};
+use reify_core::{DimensionVector, Severity, ValueCellId};
+use reify_ir::{CompiledExprKind, Satisfaction, Value};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(
@@ -57,6 +57,69 @@ fn compile_and_eval() -> (
     assert_no_eval_errors(&eval_result);
 
     (compiled, engine, eval_result)
+}
+
+/// Assert that a named param's `default_expr` in a compiled template folds to a
+/// single `CompiledExprKind::Literal(Value::Scalar)` with the given SI value
+/// and dimension.
+///
+/// * For **non-zero** expected values a 1 ppm relative tolerance is used.
+/// * For **zero** expected values `assert_eq!` is used — `0.0 * factor` is
+///   exactly 0.0 in IEEE 754, so a tolerance check would be misleading.
+fn assert_param_folds_to_scalar(
+    compiled: &reify_compiler::CompiledModule,
+    template_name: &str,
+    member: &str,
+    expected_si: f64,
+    expected_dim: DimensionVector,
+) {
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == template_name)
+        .unwrap_or_else(|| panic!("{} template should exist", template_name));
+
+    let vc = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == member)
+        .unwrap_or_else(|| panic!("{} should have a {} value cell", template_name, member));
+
+    let default_expr = vc
+        .default_expr
+        .as_ref()
+        .unwrap_or_else(|| {
+            panic!("{}.{} must have a default expression", template_name, member)
+        });
+
+    match &default_expr.kind {
+        CompiledExprKind::Literal(Value::Scalar { si_value, dimension }) => {
+            if expected_si == 0.0 {
+                assert_eq!(
+                    *si_value, 0.0f64,
+                    "{}.{} si_value should be exactly 0.0, got {}",
+                    template_name, member, si_value
+                );
+            } else {
+                assert!(
+                    (si_value - expected_si).abs() < expected_si.abs() * 1e-6,
+                    "{}.{} si_value should be ≈{} (within 1 ppm), got {}",
+                    template_name, member, expected_si, si_value
+                );
+            }
+            assert_eq!(
+                *dimension,
+                expected_dim,
+                "{}.{} dimension should be {:?}, got {:?}",
+                template_name, member, expected_dim, dimension
+            );
+        }
+        other => panic!(
+            "{}.{} default_expr should be Literal(Scalar) after compound-literal migration, \
+             got {:?}",
+            template_name, member, other
+        ),
+    }
 }
 
 // ── (a) smoke: parses, compiles, ≥5 templates ────────────────────────────────
@@ -233,4 +296,90 @@ fn all_constraints_satisfied_for_all_entities() {
             );
         }
     }
+}
+
+// ── (e) Copper.resistivity exact SI value pin ────────────────────────────────
+
+/// Copper.resistivity must resolve to exactly 1.7e-8 Ω·m (dimension
+/// ELECTRIC_RESISTIVITY).  `all_constraints_satisfied_for_all_entities` only
+/// proves the Conductive guard (`resistivity < 1e-4`) holds — a value mistyped
+/// by a factor of ten would still satisfy that.  This pin locks the exact
+/// coefficient so the step-11 migration of the `0.000000017 * 1ohm * 1m`
+/// workaround to the `0.000000017ohm*m` compound literal is guarded against a
+/// zero-count transcription error.
+#[test]
+fn copper_resistivity_si_value_is_1_7e_minus_8() {
+    let (_compiled, _engine, eval) = compile_and_eval();
+    let id = ValueCellId::new("Copper", "resistivity");
+    let val = eval
+        .values
+        .get(&id)
+        .expect("Copper.resistivity not found in eval result");
+    match val {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert!(
+                (si_value - 1.7e-8).abs() < 1.7e-8 * 1e-6,
+                "Copper.resistivity si_value should be ≈1.7e-8 Ω·m, got {}",
+                si_value
+            );
+            assert_eq!(
+                *dimension,
+                DimensionVector::ELECTRIC_RESISTIVITY,
+                "Copper.resistivity dimension should be ELECTRIC_RESISTIVITY, got {:?}",
+                dimension
+            );
+        }
+        other => panic!(
+            "Copper.resistivity should be Value::Scalar, got {:?}",
+            other
+        ),
+    }
+}
+
+// ── (f) CeramicLiner.thermal_conductivity compile-time fold pin ──────────────
+
+/// After step-4 migrates `30.0 * 1W / (1m * 1K)` → `30.0W/(m*K)`, the
+/// CeramicLiner template's thermal_conductivity param default must fold at
+/// compile time to a single `CompiledExprKind::Literal(Value::Scalar { .. })`
+/// with si_value ≈ 30.0 and dimension == THERMAL_CONDUCTIVITY.
+///
+/// RED before step-4: the default is the `30.0 * 1W / (1m * 1K)` BinOp tree,
+/// so the Literal(Scalar) match fails.
+#[test]
+fn ceramicliner_thermal_conductivity_folds_to_scalar_30() {
+    let (compiled, _engine, _eval) = compile_and_eval();
+    assert_param_folds_to_scalar(&compiled, "CeramicLiner", "thermal_conductivity", 30.0, DimensionVector::THERMAL_CONDUCTIVITY);
+}
+
+// ── (g) CeramicLiner.specific_heat compile-time fold pin ─────────────────────
+
+/// After step-6 migrates `880.0 * 1J / (1kg * 1K)` → `880.0J/(kg*K)`, the
+/// CeramicLiner template's specific_heat param default must fold at compile
+/// time to a single `CompiledExprKind::Literal(Value::Scalar { .. })`
+/// with si_value ≈ 880.0 and dimension == SPECIFIC_HEAT.
+///
+/// RED before step-6: the default is the `880.0 * 1J / (1kg * 1K)` BinOp tree,
+/// so the Literal(Scalar) match fails.
+#[test]
+fn ceramicliner_specific_heat_folds_to_scalar_880() {
+    let (compiled, _engine, _eval) = compile_and_eval();
+    assert_param_folds_to_scalar(&compiled, "CeramicLiner", "specific_heat", 880.0, DimensionVector::SPECIFIC_HEAT);
+}
+
+// ── (h) Copper.dielectric_strength compile-time fold pin ─────────────────────
+
+/// After step-8 migrates `0.0 * 1V / 1m` → `0.0V/m`, the Copper template's
+/// dielectric_strength param default must fold at compile time to a single
+/// `CompiledExprKind::Literal(Value::Scalar { .. })` with si_value exactly 0.0
+/// and dimension == DIELECTRIC_STRENGTH.
+///
+/// RED before step-8: the default is the `0.0 * 1V / 1m` BinOp tree,
+/// so the Literal(Scalar) match fails.
+#[test]
+fn copper_dielectric_strength_folds_to_scalar_zero() {
+    let (compiled, _engine, _eval) = compile_and_eval();
+    assert_param_folds_to_scalar(&compiled, "Copper", "dielectric_strength", 0.0, DimensionVector::DIELECTRIC_STRENGTH);
 }

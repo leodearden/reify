@@ -222,6 +222,7 @@ pub enum BinOp {
     Ge,
     And,
     Or,
+    Implies,
 }
 
 /// Unary operators.

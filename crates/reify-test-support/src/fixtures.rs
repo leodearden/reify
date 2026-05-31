@@ -97,7 +97,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 default: Some(Expr {
                     kind: ExprKind::QuantityLiteral {
                         value: 80.0,
-                        unit: "mm".into(),
+                        unit: UnitExpr::Unit("mm".to_string()),
                     },
                     span: SourceSpan::new(38, 42),
                 }),
@@ -119,7 +119,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 default: Some(Expr {
                     kind: ExprKind::QuantityLiteral {
                         value: 100.0,
-                        unit: "mm".into(),
+                        unit: UnitExpr::Unit("mm".to_string()),
                     },
                     span: SourceSpan::new(69, 74),
                 }),
@@ -141,7 +141,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 default: Some(Expr {
                     kind: ExprKind::QuantityLiteral {
                         value: 5.0,
-                        unit: "mm".into(),
+                        unit: UnitExpr::Unit("mm".to_string()),
                     },
                     span: SourceSpan::new(104, 107),
                 }),
@@ -163,7 +163,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 default: Some(Expr {
                     kind: ExprKind::QuantityLiteral {
                         value: 3.0,
-                        unit: "mm".into(),
+                        unit: UnitExpr::Unit("mm".to_string()),
                     },
                     span: SourceSpan::new(141, 144),
                 }),
@@ -185,7 +185,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 default: Some(Expr {
                     kind: ExprKind::QuantityLiteral {
                         value: 6.0,
-                        unit: "mm".into(),
+                        unit: UnitExpr::Unit("mm".to_string()),
                     },
                     span: SourceSpan::new(178, 181),
                 }),
@@ -198,6 +198,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 name: "volume".into(),
                 doc: None,
                 is_pub: false,
+                is_aux: false,
                 type_expr: None,
                 value: Expr {
                     kind: ExprKind::BinOp {
@@ -240,7 +241,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                         right: Box::new(Expr {
                             kind: ExprKind::QuantityLiteral {
                                 value: 2.0,
-                                unit: "mm".into(),
+                                unit: UnitExpr::Unit("mm".to_string()),
                             },
                             span: SourceSpan::new(255, 258),
                         }),
@@ -322,6 +323,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 name: "body".into(),
                 doc: None,
                 is_pub: false,
+                is_aux: false,
                 type_expr: None,
                 value: Expr {
                     kind: ExprKind::FunctionCall {
@@ -361,6 +363,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
         errors: vec![],
         content_hash,
         pragmas: vec![],
+        declared_module_path: None,
     }
 }
 
@@ -552,7 +555,7 @@ pub fn generic_container_module() -> CompiledModule {
 /// Used to test trait conformance checking.
 pub fn rigid_trait_module() -> CompiledModule {
     use reify_compiler::DefaultKind;
-    use reify_ast::{ConstraintDecl, Expr, ExprKind};
+    use reify_ast::{ConstraintDecl, Expr, ExprKind, UnitExpr};
     use reify_core::DimensionVector;
 
     let mass_type = Type::Scalar {
@@ -572,7 +575,7 @@ pub fn rigid_trait_module() -> CompiledModule {
                 right: Box::new(Expr {
                     kind: ExprKind::QuantityLiteral {
                         value: 0.0,
-                        unit: "kg".to_string(),
+                        unit: UnitExpr::Unit("kg".to_string()),
                     },
                     span: SourceSpan::new(0, 0),
                 }),
@@ -1057,6 +1060,7 @@ pub fn wave2_flip_fixture() -> Wave2FlipFixture {
         id: m_id.clone(),
         kind: ValueCellKind::Let,
         visibility: Visibility::Private,
+        is_aux: false,
         cell_type: Type::length(),
         default_expr: Some(value_ref("S", "depth")),
         solver_hints: Vec::new(),

@@ -3,15 +3,19 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Instant;
 
-use reify_compiler::CompiledModule;
+use reify_compiler::{
+    BooleanOp, CompiledGeometryOp, CompiledModule, CurveKind, GeomRef, ModifyKind, PatternKind,
+    PrimitiveKind, SweepKind, TopologyTemplate, TransformKind,
+};
 use reify_solver_elastic::{
-    Mesh2d, Mesh2dError, Mesh2dReport, SweepError, SweepParams, SweptMesh3d,
+    Mesh2d, Mesh2dError, Mesh2dReport, MpcRow, SweepError, SweepParams, SweptMesh3d,
 };
 use reify_core::{Diagnostic, DiagnosticLabel, RealizationNodeId, SourceSpan, VersionId};
-use reify_ir::{AttributeHistory, CapabilityDescriptor, CompiledFunction, ErrorRef, ExportFormat, FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, LoftOpHistoryRecords, Mesh, Operation, ReprKind, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable, ValueMap, VolumeMesh};
+use reify_ir::{AttributeHistory, CapabilityDescriptor, CompiledFunction, ElementOrderTag, ErrorRef, ExportFormat, FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, LoftOpHistoryRecords, Mesh, Operation, ReprKind, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable, ValueMap, VolumeMesh};
+use reify_shell_extract::{MidSurfaceMesh, ShellTetInterface};
 
 use crate::cache::{CacheStore, CachedResult, FAILED_REALIZATION_STUB_HANDLE, NodeCache, NodeId};
-use crate::deps::DependencyTrace;
+use crate::deps::{DependencyTrace, extract_realization_dependencies};
 use crate::dispatcher::{DispatchPlan, dispatch, per_stage_tolerance_for_plan};
 use crate::geometry_ops::compile_geometry_op;
 use crate::journal::{EvalEvent, EventJournal, EventKind};
@@ -953,6 +957,333 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
     }
 }
 
+/// Return the set of [`ReprKind`]s an [`Operation`] accepts as its geometric
+/// input, per the PRD §3a.4 classifier table (task 4049).
+///
+/// Returns `None` for variants not yet classified — the conservative fallback
+/// `op_accepts_repr` returns `false` (does not accept Mesh) for unclassified
+/// ops. The `_ => None` catch-all is intentionally unreachable for all current
+/// variants once step-4 is landed; it exists to handle genuinely-new future
+/// variants conservatively until they are explicitly classified.
+///
+/// **Intentional asymmetry with `compiled_geometry_op_to_operation`**: that
+/// function uses an exhaustive match (compile error on new variant), while this
+/// function uses a `_ => None` catch-all (runtime miss → conservative BRep,
+/// surfaced by the strum completeness test). Together they provide two
+/// independent forcing functions — compile-time for structural mapping,
+/// test-time for demand classification — so a new variant fails loudly on both
+/// axes without coupling the two concerns.
+///
+/// Table (PRD §3a.4):
+/// - Boolean* / Transform* / Pattern* → `[BRep, Mesh]`
+/// - Modify* / Sweep*                 → `[BRep]` (BRep-only consumers)
+/// - Convert { from }                 → `[BRep, Mesh]`
+/// - Primitive* / Curve*              → `[BRep]` (sources; classified to
+///   document the 'not a Mesh-accepting consumer' decision; step-4 adds arms)
+#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
+fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
+    use Operation::*;
+    use ReprKind::{BRep, Mesh};
+    const BREP_MESH: &[ReprKind] = &[BRep, Mesh];
+    const BREP_ONLY: &[ReprKind] = &[BRep];
+    match op {
+        // Booleans — accept both reprs
+        BooleanUnion | BooleanDifference | BooleanIntersection => Some(BREP_MESH),
+
+        // Modify — BRep-only consumers
+        ModifyFillet | ModifyChamfer | ModifyShell | ModifyDraft | ModifyThicken => {
+            Some(BREP_ONLY)
+        }
+
+        // Transform — accept both reprs
+        TransformTranslate | TransformRotate | TransformScale | TransformRotateAround => {
+            Some(BREP_MESH)
+        }
+
+        // Pattern — accept both reprs
+        PatternLinear | PatternCircular | PatternMirror | PatternLinear2D | PatternArbitrary => {
+            Some(BREP_MESH)
+        }
+
+        // Sweep — BRep-only consumers
+        SweepLoft
+        | SweepExtrude
+        | SweepRevolve
+        | SweepSweep
+        | SweepExtrudeSymmetric
+        | SweepSweepGuided
+        | SweepLoftGuided
+        | SweepPipe => Some(BREP_ONLY),
+
+        // Convert — accepts both reprs (source repr is `from`, dest is the
+        // second element of the capability tuple — not relevant here)
+        Convert { .. } => Some(BREP_MESH),
+
+        // Primitives — sources (no geometric input); classified as BRep to
+        // document the conscious 'not a Mesh-accepting consumer' decision and
+        // satisfy the strum-completeness test (test d, step-3).
+        PrimitiveBox | PrimitiveCylinder | PrimitiveSphere | PrimitiveTube => Some(BREP_ONLY),
+
+        // Curves — sources (no geometric input); same rationale as Primitives.
+        CurveLineSegment
+        | CurveArc
+        | CurveHelix
+        | CurveInterpCurve
+        | CurveBezierCurve
+        | CurveNurbsCurve => Some(BREP_ONLY),
+
+        // Catch-all: genuinely-new future variants → conservative (None).
+        // Unreachable for all current variants (strum test above enforces this).
+        #[allow(unreachable_patterns)]
+        _ => None,
+    }
+}
+
+/// Return `true` if `op` accepts `repr` as a geometric input.
+///
+/// Unclassified ops (`classify_op_input_reprs` returns `None`) return `false`,
+/// making them conservative: they do not accept Mesh, which forces their
+/// producers to demand BRep.
+#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
+fn op_accepts_repr(op: &Operation, repr: ReprKind) -> bool {
+    classify_op_input_reprs(op).is_some_and(|s| s.contains(&repr))
+}
+
+/// Map a compiled geometry op to its `Operation` classifier key.
+///
+/// Exhaustive match over `CompiledGeometryOp`/kind sub-enums so a new variant
+/// fails to compile until mapped — same discipline as `geometry_op_to_operation`
+/// at :902, but over the compiled-IR form rather than the runtime `GeometryOp`.
+#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
+fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
+    match op {
+        CompiledGeometryOp::Primitive { kind, .. } => match kind {
+            PrimitiveKind::Box => Operation::PrimitiveBox,
+            PrimitiveKind::Cylinder => Operation::PrimitiveCylinder,
+            PrimitiveKind::Sphere => Operation::PrimitiveSphere,
+            PrimitiveKind::Tube => Operation::PrimitiveTube,
+        },
+        CompiledGeometryOp::Boolean { op, .. } => match op {
+            BooleanOp::Union => Operation::BooleanUnion,
+            BooleanOp::Difference => Operation::BooleanDifference,
+            BooleanOp::Intersection => Operation::BooleanIntersection,
+        },
+        CompiledGeometryOp::Modify { kind, .. } => match kind {
+            ModifyKind::Fillet => Operation::ModifyFillet,
+            ModifyKind::Chamfer => Operation::ModifyChamfer,
+            ModifyKind::Shell => Operation::ModifyShell,
+            ModifyKind::Draft => Operation::ModifyDraft,
+            ModifyKind::Thicken => Operation::ModifyThicken,
+        },
+        CompiledGeometryOp::Transform { kind, .. } => match kind {
+            TransformKind::Translate => Operation::TransformTranslate,
+            TransformKind::Rotate => Operation::TransformRotate,
+            TransformKind::Scale => Operation::TransformScale,
+            TransformKind::RotateAround => Operation::TransformRotateAround,
+        },
+        CompiledGeometryOp::Pattern { kind, .. } => match kind {
+            PatternKind::Linear => Operation::PatternLinear,
+            PatternKind::Circular => Operation::PatternCircular,
+            PatternKind::Mirror => Operation::PatternMirror,
+            PatternKind::Linear2D => Operation::PatternLinear2D,
+            PatternKind::Arbitrary => Operation::PatternArbitrary,
+        },
+        CompiledGeometryOp::Sweep { kind, .. } => match kind {
+            SweepKind::Loft => Operation::SweepLoft,
+            SweepKind::Extrude => Operation::SweepExtrude,
+            SweepKind::Revolve => Operation::SweepRevolve,
+            SweepKind::Sweep => Operation::SweepSweep,
+            SweepKind::ExtrudeSymmetric => Operation::SweepExtrudeSymmetric,
+            SweepKind::SweepGuided => Operation::SweepSweepGuided,
+            SweepKind::LoftGuided => Operation::SweepLoftGuided,
+            SweepKind::Pipe => Operation::SweepPipe,
+        },
+        CompiledGeometryOp::Curve { kind, .. } => match kind {
+            CurveKind::LineSegment => Operation::CurveLineSegment,
+            CurveKind::Arc => Operation::CurveArc,
+            CurveKind::Helix => Operation::CurveHelix,
+            CurveKind::InterpCurve => Operation::CurveInterpCurve,
+            CurveKind::BezierCurve => Operation::CurveBezierCurve,
+            CurveKind::NurbsCurve => Operation::CurveNurbsCurve,
+        },
+    }
+}
+
+/// Collect all `GeomRef::Sub` operands referenced by a compiled geometry op.
+#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
+fn sub_refs_in_op(op: &CompiledGeometryOp) -> Vec<&str> {
+    let mut refs = Vec::new();
+    match op {
+        CompiledGeometryOp::Boolean { left, right, .. } => {
+            if let GeomRef::Sub(n) = left {
+                refs.push(n.as_str());
+            }
+            if let GeomRef::Sub(n) = right {
+                refs.push(n.as_str());
+            }
+        }
+        CompiledGeometryOp::Modify { target, .. }
+        | CompiledGeometryOp::Transform { target, .. }
+        | CompiledGeometryOp::Pattern { target, .. } => {
+            if let GeomRef::Sub(n) = target {
+                refs.push(n.as_str());
+            }
+        }
+        CompiledGeometryOp::Sweep { profiles, .. } => {
+            for p in profiles {
+                if let GeomRef::Sub(n) = p {
+                    refs.push(n.as_str());
+                }
+            }
+        }
+        CompiledGeometryOp::Primitive { .. } | CompiledGeometryOp::Curve { .. } => {}
+    }
+    refs
+}
+
+impl Engine {
+    /// Compute the per-realization demanded [`ReprKind`] for each template in
+    /// `module`, given the build's output `format` (Stl/Obj → mesh sink;
+    /// Step → BRep sink).
+    ///
+    /// Returns a positionally-indexed `Vec<Vec<ReprKind>>` aligned with
+    /// `module.templates × realizations` — same `[t_idx][r_idx]` indexing as
+    /// [`Self::compute_demanded_tols`].
+    ///
+    /// **Demand rule** (PRD §3a.4): a realization's OWN op kind does NOT factor
+    /// into its own demand — only its consumers and (if terminal) its export-
+    /// format sink do. Terminal realizations get Mesh for Stl/Obj, BRep for
+    /// Step. Non-terminal realizations get Mesh unless a consumer op does not
+    /// accept Mesh or a consumer already demands BRep (transitive). A single
+    /// reverse-index pass computes transitive demand with no fixpoint loop
+    /// because bindings reference only earlier bindings (producer-before-
+    /// consumer ordering).
+    ///
+    /// **Consumer-edge encoding**: cross-realization dependencies are encoded
+    /// as `GeomRef::Sub(name)` operands inside compiled ops; consumer edges are
+    /// built by scanning ops and resolving name → realization index. Compound
+    /// `"sub.member"` names (cross-template, Task 3441) are always routed to
+    /// the conservative path (BRep) regardless of whether the base component
+    /// coincidentally matches a local realization name — see step-8 for the
+    /// debug log.
+    #[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
+    pub(crate) fn compute_demanded_reprs(
+        &self,
+        module: &CompiledModule,
+        format: ExportFormat,
+    ) -> Vec<Vec<ReprKind>> {
+        module
+            .templates
+            .iter()
+            .map(|t| demanded_reprs_for_template(t, format))
+            .collect()
+    }
+}
+
+#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
+fn demanded_reprs_for_template(template: &TopologyTemplate, format: ExportFormat) -> Vec<ReprKind> {
+    let n = template.realizations.len();
+    if n == 0 {
+        return vec![];
+    }
+
+    // Map realization name → index (only named realizations participate).
+    let name_to_idx: HashMap<&str, usize> = template
+        .realizations
+        .iter()
+        .enumerate()
+        .filter_map(|(i, r)| r.name.as_deref().map(|name| (name, i)))
+        .collect();
+
+    // consumer_ops[p_idx] = list of (consumer_idx, consuming_Operation) pairs.
+    // conservative_producers[p_idx] = true when a downstream reference to p_idx
+    // could not be resolved (absent name / cross-template). Forces BRep on p_idx.
+    let mut consumer_ops: Vec<Vec<(usize, Operation)>> = vec![vec![]; n];
+    let mut conservative_producers: Vec<bool> = vec![false; n];
+
+    for (c_idx, realization) in template.realizations.iter().enumerate() {
+        for op in &realization.operations {
+            let consuming_op = compiled_geometry_op_to_operation(op);
+            for sub_name in sub_refs_in_op(op) {
+                if sub_name.contains('.') {
+                    // Compound "sub.member" names reference cross-template
+                    // producers (Task 3441). Always conservative: even if the
+                    // base component coincidentally matches a local realization
+                    // name, the producer being referenced is a different
+                    // template's output whose consumer requirements are unknown.
+                    conservative_producers[c_idx] = true;
+                    tracing::debug!(
+                        target: "reify_eval::demanded_reprs",
+                        unresolved_ref = sub_name,
+                        realization_idx = c_idx,
+                        "compound GeomRef::Sub '{}' in consumer realization \
+                         (cross-template, Task 3441); defaulting realization and \
+                         its producers to BRep demand (conservative)",
+                        sub_name
+                    );
+                } else if let Some(&p_idx) = name_to_idx.get(sub_name) {
+                    // Producer-before-consumer ordering: bindings reference only
+                    // earlier bindings, so c_idx must exceed p_idx. A violation
+                    // would yield an over-conservative result (demand[p_idx]
+                    // still BRep-default when the reverse pass reaches it).
+                    debug_assert!(
+                        c_idx > p_idx,
+                        "producer-before-consumer ordering violated: realization \
+                         {c_idx} (consumer) references realization {p_idx} \
+                         (producer) at same or earlier index; transitive demand \
+                         pass may produce over-conservative (BRep) results"
+                    );
+                    consumer_ops[p_idx].push((c_idx, consuming_op));
+                } else {
+                    // Unresolved: name absent from this template.
+                    conservative_producers[c_idx] = true;
+                    tracing::debug!(
+                        target: "reify_eval::demanded_reprs",
+                        unresolved_ref = sub_name,
+                        realization_idx = c_idx,
+                        "unresolved GeomRef::Sub '{}' in consumer realization; \
+                         defaulting realization and its producers to BRep demand (conservative)",
+                        sub_name
+                    );
+                }
+            }
+        }
+    }
+
+    // Compute demand by iterating realization indices in REVERSE order so
+    // consumer demand is always resolved before its producers.
+    let mut demand = vec![ReprKind::BRep; n];
+
+    for r_idx in (0..n).rev() {
+        // If this realization itself has an unresolved downstream ref, force BRep.
+        if conservative_producers[r_idx] {
+            demand[r_idx] = ReprKind::BRep;
+        } else if consumer_ops[r_idx].is_empty() {
+            // Terminal realization: sink determines demand.
+            demand[r_idx] = match format {
+                ExportFormat::Stl | ExportFormat::Obj => ReprKind::Mesh,
+                ExportFormat::Step => ReprKind::BRep,
+            };
+        } else {
+            // Non-terminal: Mesh unless a disqualifier forces BRep.
+            // `demand[*c_idx] == ReprKind::BRep` subsumes the conservative case:
+            // any c_idx with conservative_producers[c_idx]==true had demand[c_idx]
+            // set to BRep in the first branch above, and c_idx > r_idx so it was
+            // resolved before this point in the reverse pass.
+            let needs_brep = consumer_ops[r_idx].iter().any(|(c_idx, op)| {
+                !op_accepts_repr(op, ReprKind::Mesh) || demand[*c_idx] == ReprKind::BRep
+            });
+            demand[r_idx] = if needs_brep {
+                ReprKind::BRep
+            } else {
+                ReprKind::Mesh
+            };
+        }
+    }
+
+    demand
+}
+
 /// Derive the output [`ReprKind`] for a dispatched op by reading the chosen
 /// kernel's capability descriptor (task ε / 3436, PRD §8 step-6).
 ///
@@ -1030,6 +1361,12 @@ impl Engine {
         // build of the same module reports its own per-build dispatch tally
         // (and reports 0 when fully served from the RealizationCache).
         self.last_dispatch_count = 0;
+        // GHR-δ §5: clear the realization→handle validity map and reset the
+        // revalidation slow-path counter at the start of every build surface;
+        // the per-template `post_process_geometry_handle_cells` below
+        // repopulates the map with this build's resolved handles.
+        self.realization_handles.clear();
+        self.reset_geometry_revalidation_slow_path_count();
         let state = self.eval_state.as_ref()?;
 
         // Build ValueMap from snapshot values
@@ -1214,6 +1551,21 @@ impl Engine {
                     .geometry_kernels
                     .get_mut(name)
                     .expect("default kernel must remain in the map across the per-realization loop");
+                // GHR-γ step-6: mirror of the build() hydration — stamp
+                // Type::Geometry value cells with real kernel handles so
+                // build_snapshot callers see the same GeometryHandle values.
+                // GHR-δ: also records geometry-backed Realizations as
+                // freshness-bearing cache nodes (esc-3606-37 ruling step 1).
+                Engine::post_process_geometry_handle_cells(
+                    template,
+                    &named_steps,
+                    &mut values,
+                    &self.functions,
+                    &self.meta_map,
+                    &mut self.cache,
+                    &mut self.realization_handles,
+                    version_id,
+                );
                 // Task 2320: see `Engine::post_process_conformance_queries`
                 // docstring for the full contract. Mirrored in `build` and
                 // `tessellate_from_values` — keep all four call sites in
@@ -1347,6 +1699,12 @@ impl Engine {
         // dispatcher call should be counted against the build that hasn't
         // entered the per-realization op loop yet.
         self.last_dispatch_count = 0;
+        // GHR-δ §5: clear the realization→handle validity map and reset the
+        // revalidation slow-path counter at the start of the build; the
+        // per-template `post_process_geometry_handle_cells` below repopulates
+        // the map with this build's resolved handles.
+        self.realization_handles.clear();
+        self.reset_geometry_revalidation_slow_path_count();
         // PLACEMENT: AFTER check() — task 3103 consolidated the lifecycle so
         // eval() preserves active_purpose_bindings across the call, making the
         // pre-check workaround obsolete. All four surfaces (build /
@@ -1519,6 +1877,21 @@ impl Engine {
                     .geometry_kernels
                     .get_mut(name)
                     .expect("default kernel must remain in the map across the per-realization loop");
+                // GHR-γ step-6: hydrate Type::Geometry value cells with real
+                // kernel handles before any downstream post-process that might
+                // read geometry-handle cells. GHR-δ: also records geometry-backed
+                // Realizations as freshness-bearing cache nodes (esc-3606-37
+                // ruling step 1).
+                Engine::post_process_geometry_handle_cells(
+                    template,
+                    &named_steps,
+                    &mut values,
+                    &self.functions,
+                    &self.meta_map,
+                    &mut self.cache,
+                    &mut self.realization_handles,
+                    version_id,
+                );
                 // Task 2320: see `Engine::post_process_conformance_queries`
                 // docstring for the full contract. Mirrored in
                 // `build_snapshot` and `tessellate_from_values` — keep all
@@ -2202,6 +2575,20 @@ impl Engine {
             let default_kernel = geometry_kernels
                 .get_mut(default_kernel_name)
                 .expect("default kernel must remain in the map across the per-realization loop");
+            // Task 3616: hydrate geometry-handle value cells before any
+            // post-process that reads them (topology selectors need the parent
+            // Value::GeometryHandle in `values`). Mirrors the
+            // `post_process_geometry_handle_cells` call in `build`/
+            // `build_snapshot` but without cache/freshness recording, since
+            // `tessellate_from_values` is a static fn without access to
+            // `self.cache` or `self.realization_handles`.
+            Engine::hydrate_geometry_handles_into_values(
+                template,
+                &named_steps,
+                values,
+                functions,
+                meta_map,
+            );
             // Task 2320 amendment: mirrors the `build` / `build_snapshot`
             // wire-up so `TessellateResult.values` exposes the same
             // kernel-resolved `Bool` for conformance-query cells as
@@ -3160,6 +3547,244 @@ impl Engine {
         });
     }
 
+    /// Hydrate `Type::Geometry` value cells from the realization-execution
+    /// path (GHR-γ step-6).
+    ///
+    /// For each named [`RealizationDecl`] whose name matches a
+    /// `ValueCellDecl` with `cell_type == Type::Geometry` in `template`,
+    /// constructs `Value::GeometryHandle { realization_ref, upstream_values_hash,
+    /// kernel_handle }` and writes it into `values`.
+    ///
+    /// `upstream_values_hash` is a deterministic 32-byte digest derived by
+    /// folding the `content_hash()` of each scalar arg value across all ops
+    /// in the realization (using `reify_core::hash::ContentHash` / XXH3-128).
+    /// The first 16 bytes hold the combined hash; the second 16 bytes hold a
+    /// salted variant to avoid all-zero output for empty arg lists.
+    ///
+    /// Runs in `build` and `build_snapshot` immediately before the
+    /// conformance- and kinematic-query post-processes, so downstream value
+    /// cells that read a `GeometryHandle` see the hydrated value.
+    ///
+    /// **GHR-δ (esc-3606-37 ruling step 1):** in addition to hydrating the GH
+    /// cell value, this records each geometry-backed Realization as a
+    /// freshness-bearing eval-cache node under `NodeId::Realization(rid)` with
+    /// `Freshness::Final` and a trace of its scalar reads
+    /// ([`extract_realization_dependencies`]). The PRD §5/§7.1 contract — "the
+    /// cell's freshness is the meet of (VC-input freshness, all referenced
+    /// Realization freshness)" — presupposes the referenced Realization carries
+    /// a freshness value in the cache; on the success path nothing else creates
+    /// that entry (the failure path uses [`Engine::mark_realization_failed`]).
+    /// Only geometry-backed realizations are recorded here; non-geometry
+    /// realizations continue to use the synthetic-insert test helper.
+    // GHR-δ added `realization_handles`, pushing this to 8 distinct inputs;
+    // matches the sibling post-process helpers' allow (e.g. lines 158/2065/2396).
+    #[allow(clippy::too_many_arguments)]
+    fn post_process_geometry_handle_cells(
+        template: &reify_compiler::TopologyTemplate,
+        named_steps: &HashMap<String, GeometryHandleId>,
+        values: &mut ValueMap,
+        functions: &[CompiledFunction],
+        meta_map: &HashMap<String, HashMap<String, String>>,
+        cache: &mut CacheStore,
+        // GHR-δ §5: the per-Engine `realization_ref → handle` validity map.
+        // Each geometry-backed realization records the handle it resolved to,
+        // so a later read can revalidate a cell's `kernel_handle` against the
+        // current Engine. Disjoint from `cache` / `values` (separate fields).
+        realization_handles: &mut HashMap<reify_core::RealizationNodeId, GeometryHandleId>,
+        version: VersionId,
+    ) {
+        use reify_core::{hash::ContentHash, identity::ValueCellId};
+        use reify_ir::Value;
+
+        // Two-phase approach: collect entries while holding a &ValueMap borrow
+        // (via eval_ctx), then write them back via &mut ValueMap. This avoids a
+        // split-borrow conflict between the read and write phases.
+        let mut entries: Vec<(ValueCellId, Value)> = Vec::new();
+
+        {
+            let ctx = crate::eval_ctx_with_meta(values, functions, meta_map);
+
+            for realization in &template.realizations {
+                let name = match &realization.name {
+                    Some(n) => n.as_str(),
+                    None => continue,
+                };
+                let kernel_handle = match named_steps.get(name) {
+                    Some(&h) => h,
+                    None => continue,
+                };
+                // Hydrate all named realizations — geometry params AND geometry
+                // lets. The compiler skips creating value cells for geometry lets
+                // (entity.rs:1138), but topology selectors (post-process tier)
+                // need to look up parent GeometryHandle via values.get(). Omitting
+                // the old `has_geometry_cell` guard ensures both lets and params
+                // are present in `values` before `run_post_processes` fires.
+
+                // GHR-δ §5: record this realization's resolved handle in the
+                // Engine's validity map (the read-time revalidation oracle).
+                // `named_steps` already mapped this realization's name to the
+                // handle the kernel produced for this build.
+                realization_handles.insert(realization.id.clone(), kernel_handle);
+
+                // GHR-δ / esc-3606-37 ruling step 1: record this geometry-backed
+                // Realization as a freshness-bearing eval-cache node on the build
+                // success path. The PRD §5/§7.1 realization_reads meet (folded by
+                // `derive_output_freshness_from_trace_with_cause`) and the
+                // freshness walk's `width → Realization → GH-cell` cascade both
+                // require a markable `NodeId::Realization` entry here; previously
+                // only the failure path created one (`mark_realization_failed`).
+                // The trace records the realization's scalar reads (e.g. `width`)
+                // so a dirtied scalar input re-derives R0 Pending. `cache` is a
+                // disjoint Engine field from the `values`/`functions`/`meta_map`
+                // borrows held by `ctx`.
+                cache.record_evaluation_with_freshness(
+                    NodeId::Realization(realization.id.clone()),
+                    CachedResult::GeometryHandle(kernel_handle),
+                    version,
+                    extract_realization_dependencies(&realization.operations),
+                    Freshness::Final,
+                );
+
+                // Fold content_hashes of all scalar-arg values across the
+                // realization's ops to form upstream_values_hash. Boolean
+                // ops (left/right GeomRefs) carry no scalar args and are
+                // skipped. Domain separator `b"uvh2"` ensures non-zero
+                // output even when all arg lists are empty (e.g. a zero-arg
+                // primitive that still needs a non-zero hash tag).
+                let mut h = ContentHash::of(b"uvh1");
+                for op in &realization.operations {
+                    let args: &[(String, reify_ir::CompiledExpr)] = match op {
+                        reify_compiler::CompiledGeometryOp::Primitive { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Modify { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Transform { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Pattern { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Sweep { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Curve { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Boolean { .. } => &[],
+                    };
+                    for (arg_name, expr) in args {
+                        // A CrossSubGeometryRef (`self.<sub>.<member>`) is a
+                        // geometry-ref arg compiled into the scalar args list
+                        // by compile_expr (geometry.rs:749). eval_expr would
+                        // panic on it (unreachable! in reify-expr). It may be
+                        // the top-level arg OR nested inside a larger operator
+                        // node (e.g. `translate(rotate(self.inner.body, …), …)`),
+                        // so walk the whole arg tree. Its identity is already
+                        // captured in the GeomRef `target`/`profiles` field —
+                        // skip the arg for hash purposes.
+                        if arg_contains_cross_sub_geometry_ref(expr) {
+                            continue;
+                        }
+                        let v = reify_expr::eval_expr(expr, &ctx);
+                        h = h
+                            .combine(ContentHash::of_str(arg_name))
+                            .combine(v.content_hash());
+                    }
+                }
+                // Pack the 128-bit XXH3 hash into a 32-byte field:
+                // bytes [0..16]  = h (the main combined hash)
+                // bytes [16..32] = h salted with "uvh2" (distinct second half)
+                let lo = h.0.to_le_bytes();
+                let hi = h.combine(ContentHash::of(b"uvh2")).0.to_le_bytes();
+                let mut upstream_values_hash = [0u8; 32];
+                upstream_values_hash[..16].copy_from_slice(&lo);
+                upstream_values_hash[16..].copy_from_slice(&hi);
+
+                entries.push((
+                    ValueCellId::new(realization.id.entity.as_str(), name),
+                    Value::GeometryHandle {
+                        realization_ref: realization.id.clone(),
+                        upstream_values_hash,
+                        kernel_handle,
+                    },
+                ));
+            }
+        } // ctx dropped — &ValueMap borrow released
+
+        for (cell_id, value) in entries {
+            values.insert(cell_id, value);
+        }
+    }
+
+    /// Lightweight geometry-handle hydration for the tessellate path.
+    ///
+    /// Inserts `Value::GeometryHandle` entries into `values` for every named
+    /// realization that has a resolved kernel handle in `named_steps`. This is
+    /// the values-only subset of `post_process_geometry_handle_cells` — it does
+    /// NOT touch `cache` or `realization_handles` (which are unavailable in the
+    /// static `tessellate_from_values` function).
+    ///
+    /// Must run before `run_post_processes` so that topology selectors can
+    /// resolve the parent `Value::GeometryHandle` via `values.get(arg_cell_id)`.
+    fn hydrate_geometry_handles_into_values(
+        template: &reify_compiler::TopologyTemplate,
+        named_steps: &HashMap<String, GeometryHandleId>,
+        values: &mut ValueMap,
+        functions: &[CompiledFunction],
+        meta_map: &HashMap<String, HashMap<String, String>>,
+    ) {
+        use reify_core::{hash::ContentHash, identity::ValueCellId};
+        use reify_ir::Value;
+
+        let mut entries: Vec<(ValueCellId, Value)> = Vec::new();
+        {
+            let ctx = crate::eval_ctx_with_meta(values, functions, meta_map);
+            for realization in &template.realizations {
+                let name = match &realization.name {
+                    Some(n) => n.as_str(),
+                    None => continue,
+                };
+                let kernel_handle = match named_steps.get(name) {
+                    Some(&h) => h,
+                    None => continue,
+                };
+                let mut h = ContentHash::of(b"uvh1");
+                for op in &realization.operations {
+                    let args: &[(String, reify_ir::CompiledExpr)] = match op {
+                        reify_compiler::CompiledGeometryOp::Primitive { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Modify { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Transform { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Pattern { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Sweep { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Curve { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Boolean { .. } => &[],
+                    };
+                    for (arg_name, expr) in args {
+                        // A CrossSubGeometryRef (`self.<sub>.<member>`) is a geometry-ref
+                        // arg compiled into the scalar args list (geometry.rs). eval_expr
+                        // would panic on it (unreachable! in reify-expr); it may be the
+                        // top-level arg OR nested inside a larger operator node, so walk
+                        // the whole arg tree. Its identity is already captured in the
+                        // GeomRef target/profiles. Skip the arg for hashing.
+                        if arg_contains_cross_sub_geometry_ref(expr) {
+                            continue;
+                        }
+                        let v = reify_expr::eval_expr(expr, &ctx);
+                        h = h
+                            .combine(ContentHash::of_str(arg_name))
+                            .combine(v.content_hash());
+                    }
+                }
+                let lo = h.0.to_le_bytes();
+                let hi = h.combine(ContentHash::of(b"uvh2")).0.to_le_bytes();
+                let mut upstream_values_hash = [0u8; 32];
+                upstream_values_hash[..16].copy_from_slice(&lo);
+                upstream_values_hash[16..].copy_from_slice(&hi);
+                entries.push((
+                    ValueCellId::new(realization.id.entity.as_str(), name),
+                    Value::GeometryHandle {
+                        realization_ref: realization.id.clone(),
+                        upstream_values_hash,
+                        kernel_handle,
+                    },
+                ));
+            }
+        }
+        for (cell_id, value) in entries {
+            values.insert(cell_id, value);
+        }
+    }
+
     /// Post-process value cells for a template after `execute_realization_ops`
     /// has populated `named_steps`.
     ///
@@ -3618,6 +4243,7 @@ pub(crate) enum VolumeMeshOutcome {
 /// | `Some(_)`    | false       | true                | `Err`     | skip         | `Err("swept hex/wedge path failed: …")` |
 /// | `Some(_)`    | false       | true                | `Ok`      | `Err`        | `Err("swept hex/wedge path failed: …")` |
 #[allow(dead_code, clippy::too_many_arguments)]
+// G-allow: §3.2 realization-kind dispatch seam (VolumeMesh) per engine-integration-norm §3.2; consumer pending task #3429 (CN-contract §8 task κ — adds execute_realization_ops call edge) / mesh-morph #2947
 pub(crate) fn dispatch_volume_mesh<G, S, T>(
     swept_kind: Option<&SweptKind>,
     force_tet: bool,
@@ -3679,9 +4305,347 @@ where
     }
 }
 
+// ── build_mixed_region_mesh (T12 layer B) ─────────────────────────────────────
+//
+// Routing + merge + MPC wiring for a mixed shell/tet body (PRD v0.4
+// structural-analysis-shells.md §124). Consumes already-meshed inputs (a
+// shell `MidSurfaceMesh` from T9 + a tet `VolumeMesh` from the existing
+// `dispatch_volume_mesh` tet seam) plus the kernel-agnostic
+// `ShellTetInterface` descriptors from `reify_shell_extract::partition`, and
+// produces a unified node/element list tagged per element (shell vs. tet)
+// together with the interface `MpcRow` constraint set. It does NOT invoke
+// Gmsh, build element stiffness, or run the solve — those live in the existing
+// tet seam, T6, and the engine-bridge PRD (δ/ε) respectively.
+//
+// The whole seam is `#[allow(dead_code)]` because its consumer — the
+// engine-bridge mixed solve wiring — is a future task; this mirrors the
+// `dispatch_volume_mesh` G-allow pattern above.
+
+/// Per-element kind tag in a [`MixedRegionMesh`].
+#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UnifiedElementKind {
+    /// A mid-surface shell element (one per shell triangle, 6 DOF/node).
+    Shell,
+    /// A volumetric tet element (one per tet, 3 DOF/node).
+    Tet,
+}
+
+/// One element of the unified mixed mesh, referencing unified node ids.
+#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct UnifiedElement {
+    /// Whether this element is meshed as a shell or a tet.
+    pub kind: UnifiedElementKind,
+    /// Unified node indices (shell nodes first, tet nodes offset by the shell
+    /// node count). Length 3 for a shell triangle, 4/10 for a P1/P2 tet.
+    pub connectivity: Vec<usize>,
+}
+
+/// Unified mixed shell/tet mesh: a single node list, per-element kind tags, and
+/// the shell↔tet interface MPC constraint rows.
+#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[derive(Debug, Clone)]
+pub(crate) struct MixedRegionMesh {
+    /// Unified node positions (world, f64). Shell vertices first, then tet
+    /// vertices (f32 → f64) appended at offset `n_shell_nodes`.
+    pub nodes: Vec<[f64; 3]>,
+    /// Unified elements, both shell and tet, referencing `nodes` indices.
+    pub elements: Vec<UnifiedElement>,
+    /// Interface tying constraints under the global D=6 DOF layout (see
+    /// [`build_mixed_region_mesh`]). Empty when there are no interfaces.
+    pub mpc_rows: Vec<MpcRow>,
+}
+
+/// Errors returned by [`build_mixed_region_mesh`].
+#[allow(dead_code)] // variants constructed in the interface-wiring path (step-12 + amendment)
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum MixedRegionError {
+    /// An interface could not be tied because a required tie node was missing
+    /// — the shell side has no vertices, or the tet side has no nodes, so the
+    /// nearest-node resolution has no candidate.
+    InterfaceResolutionFailed {
+        /// Index of the offending interface in the input `interfaces` slice.
+        interface_index: usize,
+    },
+    /// An interface's tie geometry violates `MpcRow::shell_tet_tying`'s
+    /// preconditions — a non-unit `normal` or a non-positive `thickness`, both
+    /// of which that builder asserts on (and would panic). `partition_body`
+    /// guarantees these invariants, so this only arises for an interface
+    /// constructed directly by a caller that bypasses the partition layer.
+    InvalidInterfaceGeometry {
+        /// Index of the offending interface in the input `interfaces` slice.
+        interface_index: usize,
+    },
+}
+
+impl std::fmt::Display for MixedRegionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MixedRegionError::InterfaceResolutionFailed { interface_index } => write!(
+                f,
+                "interface {interface_index} could not be tied: the shell or tet side \
+                 has no candidate tie node (empty mesh on one side)"
+            ),
+            MixedRegionError::InvalidInterfaceGeometry { interface_index } => write!(
+                f,
+                "interface {interface_index} has invalid tie geometry: `normal` must be \
+                 a unit vector and `thickness` must be positive \
+                 (MpcRow::shell_tet_tying preconditions)"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for MixedRegionError {}
+
+/// Merge a shell [`MidSurfaceMesh`] and a tet [`VolumeMesh`] into one unified
+/// mesh and wire the shell↔tet interface MPC rows (PRD T12).
+///
+/// # Node numbering
+///
+/// Shell vertices are numbered first (`0..n_shell`), keeping their index; tet
+/// vertices are appended (`f32 → f64`) at offset `n_shell`, so tet local node
+/// `m` becomes unified node `n_shell + m`. This deterministic offset map is
+/// shared by the element connectivity and the MPC DOF wiring.
+///
+/// # Elements
+///
+/// One [`UnifiedElementKind::Shell`] element per shell triangle (connectivity =
+/// the triangle's vertex indices) and one [`UnifiedElementKind::Tet`] per tet
+/// (connectivity chunked from `tet.tet_indices` by the per-element node count
+/// from `element_order`, offset by `n_shell`).
+///
+/// # Errors
+///
+/// Returns [`MixedRegionError::InterfaceResolutionFailed`] if an interface
+/// cannot be resolved to tie nodes (empty shell or tet mesh on one side).
+#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+pub(crate) fn build_mixed_region_mesh(
+    shell: &MidSurfaceMesh,
+    tet: &VolumeMesh,
+    interfaces: &[ShellTetInterface],
+) -> Result<MixedRegionMesh, MixedRegionError> {
+    // ── Merge nodes: shell vertices first, then tet vertices (f32 → f64) ──────
+    let n_shell = shell.vertices.len();
+    let mut nodes: Vec<[f64; 3]> = Vec::with_capacity(n_shell + tet.vertices.len() / 3);
+    nodes.extend_from_slice(&shell.vertices);
+    for chunk in tet.vertices.chunks_exact(3) {
+        nodes.push([chunk[0] as f64, chunk[1] as f64, chunk[2] as f64]);
+    }
+
+    // ── Elements: one shell element per triangle, one tet element per tet ─────
+    let mut elements: Vec<UnifiedElement> =
+        Vec::with_capacity(shell.triangles.len() + tet.tet_indices.len());
+    for tri in &shell.triangles {
+        elements.push(UnifiedElement {
+            kind: UnifiedElementKind::Shell,
+            connectivity: vec![tri[0] as usize, tri[1] as usize, tri[2] as usize],
+        });
+    }
+    // Per-tet node count from the element order (P1 = 4, P2 = 10); tet local
+    // node `m` → unified node `n_shell + m`.
+    let nodes_per_tet = match tet.element_order {
+        ElementOrderTag::P1 => 4,
+        ElementOrderTag::P2 => 10,
+    };
+    for tet_conn in tet.tet_indices.chunks_exact(nodes_per_tet) {
+        elements.push(UnifiedElement {
+            kind: UnifiedElementKind::Tet,
+            connectivity: tet_conn.iter().map(|&i| n_shell + i as usize).collect(),
+        });
+    }
+
+    // ── Interface → MPC wiring (D=6 unified DOF layout) ───────────────────────
+    //
+    // Shell elements force the global DOFs-per-node to 6 (shell dominates, as
+    // assemble_global_stiffness derives D = max d_e), so the tie rows are
+    // emitted in D=6 from the start. Under `6·node + axis`: shell tie node `n` →
+    // disp `[6n+0,1,2]` / rot `[6n+3,4,5]`; tet node `m` (unified) → disp
+    // `[6m+0,1,2]`. Downstream T11 assembly / the engine bridge consume these
+    // rows directly, so they reference the same DOF space the solve will use.
+    let n_tet = nodes.len() - n_shell;
+    let mut mpc_rows: Vec<MpcRow> = Vec::new();
+    for (interface_index, iface) in interfaces.iter().enumerate() {
+        // Validate the tie geometry up front. `MpcRow::shell_tet_tying` asserts a
+        // unit `normal` and a positive `thickness` (mpc.rs) and would panic
+        // otherwise. `partition_body` guarantees both invariants, but this seam
+        // is reachable directly — and its `Result` return type implies graceful
+        // handling — so a violating interface is surfaced as a structured error
+        // instead of a panic. The accept conditions mirror the downstream asserts
+        // exactly, so any interface passing here also passes `shell_tet_tying`;
+        // binding to booleans first keeps a NaN normal/thickness rejected (NaN
+        // comparisons are false) without tripping clippy::neg_cmp_op_on_partial_ord.
+        let normal_mag = (iface.normal[0] * iface.normal[0]
+            + iface.normal[1] * iface.normal[1]
+            + iface.normal[2] * iface.normal[2])
+            .sqrt();
+        let thickness_ok = iface.thickness > 0.0;
+        let normal_is_unit = (normal_mag - 1.0).abs() < 1e-9;
+        if !thickness_ok || !normal_is_unit {
+            return Err(MixedRegionError::InvalidInterfaceGeometry { interface_index });
+        }
+
+        // Shell tie node: nearest shell vertex to the interface location. Its
+        // unified index equals the shell vertex index (shell nodes are first).
+        let shell_n = nearest_node_index(&nodes[..n_shell], iface.location).ok_or(
+            MixedRegionError::InterfaceResolutionFailed { interface_index },
+        )?;
+        // The through-thickness tie needs 3 distinct tet nodes (top/mid/bot);
+        // fewer means the interface cannot be resolved.
+        if n_tet < 3 {
+            return Err(MixedRegionError::InterfaceResolutionFailed { interface_index });
+        }
+        // 3 tet nodes nearest the location (local indices into the tet block),
+        // ordered by projection onto the normal: top (max) … bot (min).
+        //
+        // CAVEAT (load-bearing geometric assumption): the 3 Euclidean-nearest tet
+        // nodes are assumed to form a through-thickness column — one above / near
+        // / below the mid-surface. On a dense volumetric mesh they can instead
+        // cluster on the near face, so `mid` (used for the displacement tie) may
+        // not be the true through-thickness midpoint the MPC assumes; the
+        // single-column tie fixtures here mask this. When the engine-bridge
+        // consumer lands, prefer selecting by signed projection distance along
+        // `normal` (one node above, one near, one below `location`) over pure
+        // nearest-3. Tracked as a T12 follow-up.
+        let mut nearest3 = three_nearest_node_indices(&nodes[n_shell..], iface.location);
+        nearest3.sort_by(|&m1, &m2| {
+            let p1 = dot3(nodes[n_shell + m1], iface.normal);
+            let p2 = dot3(nodes[n_shell + m2], iface.normal);
+            p2.partial_cmp(&p1).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let tet_top = n_shell + nearest3[0];
+        let tet_mid = n_shell + nearest3[1];
+        let tet_bot = n_shell + nearest3[2];
+
+        let dofs = |node: usize| [6 * node, 6 * node + 1, 6 * node + 2];
+        let shell_rot = [6 * shell_n + 3, 6 * shell_n + 4, 6 * shell_n + 5];
+
+        mpc_rows.extend(MpcRow::shell_tet_tying(
+            dofs(shell_n),
+            shell_rot,
+            dofs(tet_top),
+            dofs(tet_mid),
+            dofs(tet_bot),
+            iface.normal,
+            iface.thickness,
+        ));
+    }
+
+    Ok(MixedRegionMesh {
+        nodes,
+        elements,
+        mpc_rows,
+    })
+}
+
+/// Dot product of two 3-vectors.
+#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// Squared Euclidean distance between two 3-vectors.
+#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+fn dist3_sq(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let dx = a[0] - b[0];
+    let dy = a[1] - b[1];
+    let dz = a[2] - b[2];
+    dx * dx + dy * dy + dz * dz
+}
+
+/// Index of the node in `nodes` nearest (Euclidean) to `target`; `None` if
+/// `nodes` is empty. Ties resolve to the lowest index (deterministic).
+#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+fn nearest_node_index(nodes: &[[f64; 3]], target: [f64; 3]) -> Option<usize> {
+    let mut best: Option<(usize, f64)> = None;
+    for (i, &p) in nodes.iter().enumerate() {
+        let d_sq = dist3_sq(p, target);
+        if best.is_none_or(|(_, bd)| d_sq < bd) {
+            best = Some((i, d_sq));
+        }
+    }
+    best.map(|(i, _)| i)
+}
+
+/// The 3 indices of `nodes` nearest `target`, nearest first. The caller
+/// guarantees `nodes.len() >= 3`.
+#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+fn three_nearest_node_indices(nodes: &[[f64; 3]], target: [f64; 3]) -> Vec<usize> {
+    let mut idx: Vec<usize> = (0..nodes.len()).collect();
+    idx.sort_by(|&a, &b| {
+        dist3_sq(nodes[a], target)
+            .partial_cmp(&dist3_sq(nodes[b], target))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    idx.truncate(3);
+    idx
+}
+
+/// Returns `true` if `expr`'s compiled tree contains a `CrossSubGeometryRef`
+/// at any depth.
+///
+/// The `upstream_values_hash` fold (in `post_process_geometry_handle_cells`
+/// and `hydrate_geometry_handles_into_values`) evaluates each realization-op
+/// scalar arg via `reify_expr::eval_expr`, which `unreachable!()`s on a
+/// `CrossSubGeometryRef` (`reify-expr/src/lib.rs:177`). Such a geometry-ref can
+/// be the top-level arg (`rotate(self.inner.body, …)`) *or* nested inside a
+/// larger operator node (`translate(rotate(self.inner.body, …), …)`), so a
+/// top-level `matches!` is insufficient — we walk the whole tree via the
+/// canonical [`reify_ir::CompiledExpr::walk`]. A geometry-ref's identity is
+/// already captured by the op's `GeomRef` target/profiles, so any arg
+/// containing one is skipped from hashing entirely (task 3616; regression
+/// pinned by `cross_sub_geometry_anti_cascade_no_spurious_errors_in_translate_chain`).
+fn arg_contains_cross_sub_geometry_ref(expr: &reify_ir::CompiledExpr) -> bool {
+    let mut found = false;
+    expr.walk(&mut |e| {
+        if matches!(e.kind, reify_ir::CompiledExprKind::CrossSubGeometryRef(_)) {
+            found = true;
+        }
+    });
+    found
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `arg_contains_cross_sub_geometry_ref` must detect a `CrossSubGeometryRef`
+    /// at the top level *and* nested inside a larger operator node, and must not
+    /// false-positive on ref-free args. The nested case is the task-3616
+    /// regression: the old top-level-only `matches!` guard let a
+    /// `CrossSubGeometryRef` nested in a transform-chain arg
+    /// (`translate(rotate(self.inner.body, …), …)`) reach `eval_expr`'s
+    /// `unreachable!()` — pinned end-to-end by
+    /// `cross_sub_geometry_anti_cascade_no_spurious_errors_in_translate_chain`.
+    #[test]
+    fn arg_contains_cross_sub_geometry_ref_walks_nested_refs() {
+        use reify_core::Type;
+        use reify_core::identity::ValueCellId;
+        use reify_ir::{BinOp, CompiledExpr};
+
+        // Top-level cross-sub ref → detected.
+        let xref = CompiledExpr::cross_sub_geometry_ref(
+            ValueCellId::new("Parent.sub", "body"),
+            Type::Geometry,
+        );
+        assert!(arg_contains_cross_sub_geometry_ref(&xref));
+
+        // Cross-sub ref nested inside an operator node → detected (the case the
+        // old top-level `matches!` missed).
+        let scalar = CompiledExpr::value_ref(ValueCellId::new("E", "width"), Type::Bool);
+        let nested = CompiledExpr::binop(BinOp::Gt, xref.clone(), scalar, Type::Bool);
+        assert!(arg_contains_cross_sub_geometry_ref(&nested));
+
+        // Ref-free arg → not skipped.
+        let plain = CompiledExpr::binop(
+            BinOp::Gt,
+            CompiledExpr::value_ref(ValueCellId::new("E", "a"), Type::Bool),
+            CompiledExpr::value_ref(ValueCellId::new("E", "b"), Type::Bool),
+            Type::Bool,
+        );
+        assert!(!arg_contains_cross_sub_geometry_ref(&plain));
+    }
 
     // ── shared test helpers (task ε / 3436, step-8) ───────────────────────────
 
@@ -7271,5 +8235,706 @@ mod p2_substitution_diagnostic_tests {
             expected_msg("SweptBar"),
             "SweepLinear diagnostic must match PRD wording verbatim"
         );
+    }
+}
+
+// ── build_mixed_region_mesh unit tests (T12 layer B) ──────────────────────────
+
+#[cfg(test)]
+mod mixed_region_tests {
+    use super::*;
+    use reify_ir::{ElementOrderTag, VolumeMesh};
+    use reify_shell_extract::{MidSurfaceMesh, ShellTetInterface};
+
+    /// Small shell mesh: 3 vertices, 1 triangle, thickness len 3. Vertex 0 sits
+    /// at the origin (the unique nearest vertex to `location = [0,0,0]`).
+    fn make_shell_mesh() -> MidSurfaceMesh {
+        MidSurfaceMesh {
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            triangles: vec![[0, 1, 2]],
+            thickness: vec![0.1, 0.1, 0.1],
+        }
+    }
+
+    /// Tet mesh for interface tying: a through-thickness triple straddling the
+    /// origin along +z (top z=+1, mid z=0, bot z=−1) plus a far 4th node that
+    /// is excluded from the 3 nearest to `location`.
+    fn make_tie_tet_mesh() -> VolumeMesh {
+        VolumeMesh {
+            vertices: vec![
+                0.0, 0.0, 1.0, // node 0 — top (z = +1)
+                0.0, 0.0, 0.0, // node 1 — mid (z =  0, at location)
+                0.0, 0.0, -1.0, // node 2 — bot (z = −1)
+                9.0, 9.0, 9.0, // node 3 — far (not among the 3 nearest)
+            ],
+            tet_indices: vec![0, 1, 2, 3],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        }
+    }
+
+    /// Small P1 tet mesh: 4 vertices = 1 tet (placed a unit above the shell).
+    fn make_p1_tet_mesh() -> VolumeMesh {
+        VolumeMesh {
+            vertices: vec![
+                0.0, 0.0, 1.0, // node 0
+                1.0, 0.0, 1.0, // node 1
+                0.0, 1.0, 1.0, // node 2
+                0.0, 0.0, 2.0, // node 3
+            ],
+            tet_indices: vec![0, 1, 2, 3],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        }
+    }
+
+    // ── Step 9: unified-mesh merge (no MPCs) ─────────────────────────────────
+
+    /// Merging a shell mesh and a tet mesh with no interfaces concatenates the
+    /// node lists (shell first, tet appended as f64), emits one `Shell` element
+    /// per triangle and one `Tet` element per tet (connectivity offset by the
+    /// shell node count), and produces no MPC rows.
+    #[test]
+    fn build_mixed_region_mesh_merges_shell_then_tet_nodes_and_elements() {
+        let shell = make_shell_mesh();
+        let tet = make_p1_tet_mesh();
+        let result = build_mixed_region_mesh(&shell, &tet, &[])
+            .expect("merge with no interfaces should succeed");
+
+        let n_shell = shell.vertices.len(); // 3
+        let n_tet = tet.vertices.len() / 3; // 4
+        assert_eq!(
+            result.nodes.len(),
+            n_shell + n_tet,
+            "merged node count = shell vertices + tet vertices"
+        );
+        // Shell nodes preserved verbatim, first.
+        assert_eq!(result.nodes[0], [0.0, 0.0, 0.0]);
+        assert_eq!(result.nodes[1], [1.0, 0.0, 0.0]);
+        assert_eq!(result.nodes[2], [0.0, 1.0, 0.0]);
+        // Tet vertices appended (f32 → f64) after the shell nodes.
+        assert_eq!(result.nodes[n_shell], [0.0, 0.0, 1.0]);
+        assert_eq!(result.nodes[n_shell + 3], [0.0, 0.0, 2.0]);
+
+        // Elements: 1 shell triangle + 1 tet.
+        assert_eq!(result.elements.len(), 2, "one shell + one tet element");
+        let shell_elems: Vec<&UnifiedElement> = result
+            .elements
+            .iter()
+            .filter(|e| e.kind == UnifiedElementKind::Shell)
+            .collect();
+        assert_eq!(shell_elems.len(), 1, "one shell element");
+        assert_eq!(
+            shell_elems[0].connectivity,
+            vec![0usize, 1, 2],
+            "shell connectivity = triangle vertex indices"
+        );
+        let tet_elems: Vec<&UnifiedElement> = result
+            .elements
+            .iter()
+            .filter(|e| e.kind == UnifiedElementKind::Tet)
+            .collect();
+        assert_eq!(tet_elems.len(), 1, "one tet element");
+        assert_eq!(
+            tet_elems[0].connectivity,
+            vec![n_shell, n_shell + 1, n_shell + 2, n_shell + 3],
+            "tet connectivity offset by n_shell_nodes"
+        );
+
+        // No interfaces → no MPC rows.
+        assert!(result.mpc_rows.is_empty(), "no interfaces → no MPC rows");
+    }
+
+    /// Empty shell + empty tet + no interfaces → an all-empty `MixedRegionMesh`.
+    #[test]
+    fn build_mixed_region_mesh_on_empty_inputs_is_all_empty() {
+        let empty_shell = MidSurfaceMesh {
+            vertices: vec![],
+            triangles: vec![],
+            thickness: vec![],
+        };
+        let empty_tet = VolumeMesh {
+            vertices: vec![],
+            tet_indices: vec![],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        let result = build_mixed_region_mesh(&empty_shell, &empty_tet, &[])
+            .expect("empty merge should succeed");
+        assert!(result.nodes.is_empty(), "no nodes");
+        assert!(result.elements.is_empty(), "no elements");
+        assert!(result.mpc_rows.is_empty(), "no MPC rows");
+    }
+
+    // ── Step 11: interface MPC wiring (D=6 layout) ───────────────────────────
+
+    /// One interface ties the nearest shell vertex to the resolved tet
+    /// top/mid/bot triple, producing `MpcRow::shell_tet_tying`'s 6 rows under
+    /// the global D=6 DOF layout (`6·node + axis`, shell nodes first, tet nodes
+    /// offset by `n_shell`).
+    #[test]
+    fn build_mixed_region_mesh_wires_interface_mpc_rows_in_d6_layout() {
+        let shell = make_shell_mesh();
+        let tet = make_tie_tet_mesh();
+        let n_shell = shell.vertices.len(); // 3
+        let interface = ShellTetInterface {
+            shell_region: 0,
+            tet_region: 1,
+            normal: [0.0, 0.0, 1.0],
+            thickness: 0.1,
+            location: [0.0, 0.0, 0.0],
+        };
+
+        let result = build_mixed_region_mesh(&shell, &tet, std::slice::from_ref(&interface))
+            .expect("interface wiring should succeed");
+
+        // shell_tet_tying emits exactly 6 rows.
+        assert_eq!(result.mpc_rows.len(), 6, "one interface → 6 MPC rows");
+
+        // Resolved tie nodes (unified indices) under the fixture geometry:
+        //   shell tie node = nearest shell vertex to [0,0,0] = shell node 0.
+        //   tet top/mid/bot = tet locals 0/1/2 (z = +1/0/−1) → unified 3/4/5.
+        let shell_n = 0usize;
+        let tet_mid = n_shell + 1; // 4
+
+        // The three displacement-matching rows: u_shell_a − u_tet_mid_a = 0,
+        // pivot at the shell disp DOF (6·shell_n + a) with coeffs [1, −1] and
+        // the tet-mid disp DOF (6·tet_mid + a) as the second term.
+        for a in 0..3 {
+            let shell_disp = 6 * shell_n + a; // 0,1,2
+            let tet_mid_dof = 6 * tet_mid + a; // 24,25,26
+            let row = result
+                .mpc_rows
+                .iter()
+                .find(|r| r.dofs == vec![shell_disp, tet_mid_dof])
+                .unwrap_or_else(|| {
+                    panic!("missing displacement row for axis {a}: dofs [{shell_disp}, {tet_mid_dof}]")
+                });
+            assert_eq!(
+                row.coeffs,
+                vec![1.0, -1.0],
+                "displacement-matching row coeffs for axis {a}"
+            );
+            assert_eq!(row.rhs, 0.0, "homogeneous tie (rhs = 0) for axis {a}");
+        }
+
+        // D=6 sanity: every DOF index lies in the unified 6·node space.
+        let n_total = result.nodes.len(); // 7
+        for row in &result.mpc_rows {
+            for &d in &row.dofs {
+                assert!(
+                    d < 6 * n_total,
+                    "DOF {d} must lie within the D=6 space (6 · {n_total} nodes)"
+                );
+            }
+        }
+
+        // The rotation rows must reference the shell tie node's rotation DOFs
+        // (6·shell_n + 3..5) — confirming the shell side contributes rotations.
+        let shell_rot: Vec<usize> = (3..6).map(|axis| 6 * shell_n + axis).collect(); // [3,4,5]
+        assert!(
+            result
+                .mpc_rows
+                .iter()
+                .any(|r| r.dofs.iter().any(|d| shell_rot.contains(d))),
+            "a rotation row must reference a shell rotation DOF (6·n + 3..5)"
+        );
+    }
+
+    /// An interface whose tet side has no nodes cannot resolve its tie nodes →
+    /// `InterfaceResolutionFailed` tagged with the interface index.
+    #[test]
+    fn build_mixed_region_mesh_errors_when_interface_tie_nodes_unresolvable() {
+        let shell = make_shell_mesh();
+        let empty_tet = VolumeMesh {
+            vertices: vec![],
+            tet_indices: vec![],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        let interface = ShellTetInterface {
+            shell_region: 0,
+            tet_region: 1,
+            normal: [0.0, 0.0, 1.0],
+            thickness: 0.1,
+            location: [0.0, 0.0, 0.0],
+        };
+
+        let err = build_mixed_region_mesh(&shell, &empty_tet, std::slice::from_ref(&interface))
+            .expect_err("an interface against an empty tet mesh must fail to resolve");
+        assert_eq!(
+            err,
+            MixedRegionError::InterfaceResolutionFailed { interface_index: 0 },
+            "error must name the offending interface index"
+        );
+    }
+
+    // ── Amendment: P2 chunking + additional error-path coverage ──────────────
+
+    /// A P2 tet (10 nodes/element) is chunked by 10 and offset by `n_shell`,
+    /// exercising the `ElementOrderTag::P2` branch of `nodes_per_tet` that the
+    /// P1 fixtures leave uncovered. Two tets confirm both the chunk size and the
+    /// per-element offset.
+    #[test]
+    fn build_mixed_region_mesh_chunks_p2_tet_by_ten_nodes() {
+        let shell = make_shell_mesh();
+        let n_shell = shell.vertices.len(); // 3
+        // 20 tet vertices = two P2 tets; the positions are irrelevant to the
+        // connectivity chunking under test (kept clear of any interface).
+        let mut vertices = Vec::new();
+        for i in 0..20 {
+            vertices.push(i as f32);
+            vertices.push(0.0);
+            vertices.push(5.0);
+        }
+        let tet = VolumeMesh {
+            vertices,
+            tet_indices: (0..20u32).collect(),
+            element_order: ElementOrderTag::P2,
+            normals: None,
+        };
+
+        let result = build_mixed_region_mesh(&shell, &tet, &[])
+            .expect("P2 merge with no interfaces should succeed");
+
+        assert_eq!(result.nodes.len(), n_shell + 20, "3 shell + 20 tet nodes");
+        let tet_elems: Vec<&UnifiedElement> = result
+            .elements
+            .iter()
+            .filter(|e| e.kind == UnifiedElementKind::Tet)
+            .collect();
+        assert_eq!(tet_elems.len(), 2, "20 P2 indices → two 10-node tets");
+        assert_eq!(
+            tet_elems[0].connectivity,
+            (0..10).map(|m| n_shell + m).collect::<Vec<usize>>(),
+            "first P2 tet: local nodes 0..10 offset by n_shell",
+        );
+        assert_eq!(
+            tet_elems[1].connectivity,
+            (10..20).map(|m| n_shell + m).collect::<Vec<usize>>(),
+            "second P2 tet: local nodes 10..20 offset by n_shell",
+        );
+    }
+
+    /// An interface against an empty-shell + non-empty-tet mesh cannot resolve
+    /// its shell tie node (`nearest_node_index` over zero shell nodes is `None`)
+    /// → `InterfaceResolutionFailed`. Complements the empty-tet case by covering
+    /// the shell-side `None` branch.
+    #[test]
+    fn build_mixed_region_mesh_errors_when_shell_side_empty() {
+        let empty_shell = MidSurfaceMesh {
+            vertices: vec![],
+            triangles: vec![],
+            thickness: vec![],
+        };
+        let tet = make_tie_tet_mesh();
+        let interface = ShellTetInterface {
+            shell_region: 0,
+            tet_region: 1,
+            normal: [0.0, 0.0, 1.0],
+            thickness: 0.1,
+            location: [0.0, 0.0, 0.0],
+        };
+
+        let err = build_mixed_region_mesh(&empty_shell, &tet, std::slice::from_ref(&interface))
+            .expect_err("an interface against an empty shell mesh must fail to resolve");
+        assert_eq!(
+            err,
+            MixedRegionError::InterfaceResolutionFailed { interface_index: 0 },
+            "empty shell side → no candidate tie node",
+        );
+    }
+
+    /// An interface whose geometry violates `MpcRow::shell_tet_tying`'s
+    /// preconditions (non-unit `normal`, or non-positive `thickness`) is
+    /// surfaced as `InvalidInterfaceGeometry` instead of panicking in the
+    /// downstream assertion. Guards the seam's direct-call contract — the
+    /// partition layer normally guarantees these invariants, but the seam is
+    /// `pub(crate)` and reachable with an arbitrary `ShellTetInterface`.
+    #[test]
+    fn build_mixed_region_mesh_errors_on_invalid_interface_geometry() {
+        let shell = make_shell_mesh();
+        let tet = make_tie_tet_mesh();
+
+        // Case 1: non-unit normal (|n| = 2) — would trip the unit-normal assert.
+        let non_unit = ShellTetInterface {
+            shell_region: 0,
+            tet_region: 1,
+            normal: [0.0, 0.0, 2.0],
+            thickness: 0.1,
+            location: [0.0, 0.0, 0.0],
+        };
+        let err = build_mixed_region_mesh(&shell, &tet, std::slice::from_ref(&non_unit))
+            .expect_err("a non-unit interface normal must be rejected");
+        assert_eq!(
+            err,
+            MixedRegionError::InvalidInterfaceGeometry { interface_index: 0 },
+            "non-unit normal → InvalidInterfaceGeometry",
+        );
+
+        // Case 2: non-positive thickness — would trip the positive-thickness assert.
+        let bad_thickness = ShellTetInterface {
+            shell_region: 0,
+            tet_region: 1,
+            normal: [0.0, 0.0, 1.0],
+            thickness: 0.0,
+            location: [0.0, 0.0, 0.0],
+        };
+        let err = build_mixed_region_mesh(&shell, &tet, std::slice::from_ref(&bad_thickness))
+            .expect_err("a non-positive interface thickness must be rejected");
+        assert_eq!(
+            err,
+            MixedRegionError::InvalidInterfaceGeometry { interface_index: 0 },
+            "non-positive thickness → InvalidInterfaceGeometry",
+        );
+    }
+
+    // ── op_accepts_repr / classify_op_input_reprs unit tests (task 4049) ────────
+
+    /// Pins the `(Operation, ReprKind)` input-repr classifier table for the
+    /// consumer-demand backward pass (PRD §3a.4, task 4049).
+    ///
+    /// Asserts the following classifier contract:
+    ///
+    /// - Boolean* and Transform* and Pattern* accept BOTH BRep and Mesh.
+    /// - Modify* (Fillet/Chamfer/Shell/Draft/Thicken) and Sweep* (8 variants)
+    ///   accept BRep but NOT Mesh.
+    /// - `Operation::Convert { from: ReprKind::BRep }` is classified (accepts
+    ///   at least one repr).
+    ///
+    /// RED before step-2 impl: `op_accepts_repr` / `classify_op_input_reprs`
+    /// do not exist yet.
+    #[test]
+    fn op_accepts_repr_classifier_table() {
+        use reify_ir::{Operation, ReprKind};
+
+        // ── Boolean* ─────────────────────────────────────────────────────────
+        for bool_op in [
+            Operation::BooleanUnion,
+            Operation::BooleanDifference,
+            Operation::BooleanIntersection,
+        ] {
+            assert!(
+                op_accepts_repr(&bool_op, ReprKind::BRep),
+                "{bool_op:?} must accept BRep"
+            );
+            assert!(
+                op_accepts_repr(&bool_op, ReprKind::Mesh),
+                "{bool_op:?} must accept Mesh"
+            );
+        }
+
+        // ── Modify* — BRep-only consumer ─────────────────────────────────────
+        for mod_op in [
+            Operation::ModifyFillet,
+            Operation::ModifyChamfer,
+            Operation::ModifyShell,
+            Operation::ModifyDraft,
+            Operation::ModifyThicken,
+        ] {
+            assert!(
+                op_accepts_repr(&mod_op, ReprKind::BRep),
+                "{mod_op:?} must accept BRep"
+            );
+            assert!(
+                !op_accepts_repr(&mod_op, ReprKind::Mesh),
+                "{mod_op:?} must NOT accept Mesh (BRep-only consumer)"
+            );
+        }
+
+        // ── Sweep* — BRep-only consumer ──────────────────────────────────────
+        for sweep_op in [
+            Operation::SweepLoft,
+            Operation::SweepExtrude,
+            Operation::SweepRevolve,
+            Operation::SweepSweep,
+            Operation::SweepExtrudeSymmetric,
+            Operation::SweepSweepGuided,
+            Operation::SweepLoftGuided,
+            Operation::SweepPipe,
+        ] {
+            assert!(
+                op_accepts_repr(&sweep_op, ReprKind::BRep),
+                "{sweep_op:?} must accept BRep"
+            );
+            assert!(
+                !op_accepts_repr(&sweep_op, ReprKind::Mesh),
+                "{sweep_op:?} must NOT accept Mesh (BRep-only consumer)"
+            );
+        }
+
+        // ── Transform* ───────────────────────────────────────────────────────
+        for transform_op in [
+            Operation::TransformTranslate,
+            Operation::TransformRotate,
+            Operation::TransformScale,
+            Operation::TransformRotateAround,
+        ] {
+            assert!(
+                op_accepts_repr(&transform_op, ReprKind::BRep),
+                "{transform_op:?} must accept BRep"
+            );
+            assert!(
+                op_accepts_repr(&transform_op, ReprKind::Mesh),
+                "{transform_op:?} must accept Mesh"
+            );
+        }
+
+        // ── Pattern* ─────────────────────────────────────────────────────────
+        for pattern_op in [
+            Operation::PatternLinear,
+            Operation::PatternCircular,
+            Operation::PatternMirror,
+            Operation::PatternLinear2D,
+            Operation::PatternArbitrary,
+        ] {
+            assert!(
+                op_accepts_repr(&pattern_op, ReprKind::BRep),
+                "{pattern_op:?} must accept BRep"
+            );
+            assert!(
+                op_accepts_repr(&pattern_op, ReprKind::Mesh),
+                "{pattern_op:?} must accept Mesh"
+            );
+        }
+
+        // ── Convert — classified (accepts at least one repr) ─────────────────
+        let convert_op = Operation::Convert {
+            from: ReprKind::BRep,
+        };
+        assert!(
+            classify_op_input_reprs(&convert_op).is_some(),
+            "Convert{{from:BRep}} must be classified (Some)"
+        );
+    }
+
+    /// Backward-pass tests "a" and "b" for `compute_demanded_reprs`
+    /// (PRD §3a.4, task 4049).
+    ///
+    /// Fixture A (test a): mesh-terminal BooleanUnion → Mesh demand.
+    /// One template with three named realizations:
+    ///   realization "a" — Primitive Box (producer)
+    ///   realization "b" — Primitive Box (producer)
+    ///   realization "u" — Boolean{Union, left:Sub("a"), right:Sub("b")} (terminal)
+    /// ExportFormat::Stl (mesh sink) → demand[0][2] == Mesh.
+    ///
+    /// Fixture B (test b): union-then-Fillet → BRep on union, Mesh on fillet.
+    /// Extends fixture A by adding:
+    ///   realization "f" — Modify{Fillet, target:Sub("u")} (terminal, mesh sink)
+    /// demand[0][2] (union) == BRep (its consumer Fillet is BRep-only).
+    /// demand[0][3] (fillet) == Mesh (terminal, mesh sink).
+    ///
+    /// Also asserts shape alignment with compute_demanded_tols (same
+    /// [t_idx][r_idx] outer/inner lengths).
+    ///
+    /// RED before step-6: `compute_demanded_reprs` does not exist.
+    #[test]
+    fn compute_demanded_reprs_mesh_terminal_and_fillet_consumer() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, ModifyKind, PrimitiveKind};
+        use reify_core::ModulePath;
+        use reify_ir::{ExportFormat, ReprKind};
+        use reify_test_support::{CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder};
+
+        let engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        // Shared primitive op used as a leaf source.
+        let prim_box = || CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        };
+
+        // ── Fixture A: single template, three realizations (a, b, u) ─────────
+        let template_a = TopologyTemplateBuilder::new("EntityA")
+            .realization_named("EntityA_a", 0, "a", vec![prim_box()])
+            .realization_named("EntityA_b", 1, "b", vec![prim_box()])
+            .realization_named(
+                "EntityA_u",
+                2,
+                "u",
+                vec![CompiledGeometryOp::Boolean {
+                    op: BooleanOp::Union,
+                    left: GeomRef::Sub("a".to_string()),
+                    right: GeomRef::Sub("b".to_string()),
+                }],
+            )
+            .build();
+        let module_a = CompiledModuleBuilder::new(ModulePath::single("test_demanded_reprs_a"))
+            .template(template_a)
+            .build();
+
+        // ── Test a: mesh sink → terminal BooleanUnion demands Mesh ───────────
+        let result_a = engine.compute_demanded_reprs(&module_a, ExportFormat::Stl);
+        assert_eq!(result_a.len(), 1, "outer Vec must have one entry per template");
+        assert_eq!(result_a[0].len(), 3, "template has 3 realizations");
+        // demanded_tols alignment: same shape
+        assert_eq!(
+            result_a.len(),
+            engine.compute_demanded_tols(&module_a).len(),
+            "outer length must match compute_demanded_tols"
+        );
+        assert_eq!(
+            result_a[0].len(),
+            engine.compute_demanded_tols(&module_a)[0].len(),
+            "inner length must match compute_demanded_tols"
+        );
+        assert_eq!(
+            result_a[0][2],
+            ReprKind::Mesh,
+            "terminal BooleanUnion under Stl (mesh sink) must demand Mesh"
+        );
+
+        // ── Fixture B: extend with Fillet consuming the union ─────────────────
+        let template_b = TopologyTemplateBuilder::new("EntityB")
+            .realization_named("EntityB_a", 0, "a", vec![prim_box()])
+            .realization_named("EntityB_b", 1, "b", vec![prim_box()])
+            .realization_named(
+                "EntityB_u",
+                2,
+                "u",
+                vec![CompiledGeometryOp::Boolean {
+                    op: BooleanOp::Union,
+                    left: GeomRef::Sub("a".to_string()),
+                    right: GeomRef::Sub("b".to_string()),
+                }],
+            )
+            .realization_named(
+                "EntityB_f",
+                3,
+                "f",
+                vec![CompiledGeometryOp::Modify {
+                    kind: ModifyKind::Fillet,
+                    target: GeomRef::Sub("u".to_string()),
+                    args: vec![],
+                }],
+            )
+            .build();
+        let module_b = CompiledModuleBuilder::new(ModulePath::single("test_demanded_reprs_b"))
+            .template(template_b)
+            .build();
+
+        // ── Test b ────────────────────────────────────────────────────────────
+        let result_b = engine.compute_demanded_reprs(&module_b, ExportFormat::Stl);
+        assert_eq!(result_b.len(), 1, "outer Vec must have one entry per template");
+        assert_eq!(result_b[0].len(), 4, "template has 4 realizations");
+        assert_eq!(
+            result_b[0][2],
+            ReprKind::BRep,
+            "BooleanUnion whose consumer (Fillet) is BRep-only must demand BRep"
+        );
+        assert_eq!(
+            result_b[0][3],
+            ReprKind::Mesh,
+            "terminal Fillet under Stl (mesh sink) must demand Mesh"
+        );
+    }
+
+    /// Conservative-default test (task 4049 test "c", PRD §3a.4).
+    ///
+    /// Fixture: one template with two named realizations:
+    ///   realization "a" — Primitive Box (producer)
+    ///   realization "consumer" — Boolean{Union, left:Sub("a"), right:Sub("missing")}
+    ///
+    /// "missing" names no realization → unresolvable downstream reference.
+    /// This exercises the PRD §3a.4 "Default-rule conservatism" trigger
+    /// (downstream realization absent from graph snapshot), which is lumped with
+    /// the unclassified-op trigger in the shared conservative code path.
+    ///
+    /// Expected: realization "a" demands BRep (conservative), and a
+    /// `tracing::debug!` event is emitted naming the unresolved reference.
+    ///
+    /// RED before step-8: step-6 skips unresolved refs without emitting the
+    /// debug log, and realization "a" is seen as terminal → incorrectly gets
+    /// Mesh demand rather than BRep.
+    #[test]
+    fn compute_demanded_reprs_conservative_on_unresolved_sub() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+        use reify_core::ModulePath;
+        use reify_ir::{ExportFormat, ReprKind};
+        use reify_test_support::{
+            CapturingSubscriberBuilder, CompiledModuleBuilder, MockConstraintChecker,
+            TopologyTemplateBuilder, prime_tracing_callsite_cache,
+        };
+
+        prime_tracing_callsite_cache();
+
+        let engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        let prim_box = CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        };
+        // "missing" is not the name of any realization → unresolved reference.
+        let template = TopologyTemplateBuilder::new("EntityC")
+            .realization_named("EntityC_a", 0, "a", vec![prim_box])
+            .realization_named(
+                "EntityC_consumer",
+                1,
+                "consumer",
+                vec![CompiledGeometryOp::Boolean {
+                    op: BooleanOp::Union,
+                    left: GeomRef::Sub("a".to_string()),
+                    right: GeomRef::Sub("missing".to_string()),
+                }],
+            )
+            .build();
+        let module = CompiledModuleBuilder::new(ModulePath::single("test_demanded_reprs_c"))
+            .template(template)
+            .build();
+
+        let (subscriber, capture) = CapturingSubscriberBuilder::new(tracing::Level::DEBUG)
+            .target_prefix("reify_eval::demanded_reprs")
+            .build();
+
+        let result = tracing::subscriber::with_default(subscriber, || {
+            engine.compute_demanded_reprs(&module, ExportFormat::Stl)
+        });
+
+        // Realization "a" has an unresolved downstream consumer → conservative BRep.
+        assert_eq!(
+            result[0][0],
+            ReprKind::BRep,
+            "realization 'a' has an unresolved downstream ref 'missing'; \
+             must demand BRep (conservative)"
+        );
+
+        // A debug event must have been emitted naming the unresolved reference.
+        assert!(
+            capture.count() >= 1,
+            "expected at least one DEBUG event for the unresolved 'missing' reference; \
+             got {count}",
+            count = capture.count()
+        );
+        let msgs = capture.messages();
+        assert!(
+            msgs.iter().any(|m| m.contains("missing")),
+            "DEBUG message must mention the unresolved reference name 'missing'; \
+             messages: {msgs:?}"
+        );
+    }
+
+    /// Strum-iterate completeness test (task 4049 test "d", PRD §9 Q10).
+    ///
+    /// Iterates ALL current `Operation` variants via `strum::IntoEnumIterator`
+    /// and asserts every one has an explicit classifier entry. This is the
+    /// standing forcing function: a future `Operation` variant auto-appears in
+    /// `Operation::iter()` (via the `EnumIter` derive added in pre-1) and
+    /// fails this test until consciously classified, making silent omission
+    /// impossible.
+    ///
+    /// RED before step-4: `PrimitiveBox/Cylinder/Sphere/Tube` and
+    /// `CurveLineSegment/Arc/Helix/InterpCurve/BezierCurve/NurbsCurve`
+    /// hit the `_ => None` catch-all in step-2's impl.
+    #[test]
+    fn classify_op_all_variants_are_classified() {
+        use reify_ir::Operation;
+        use strum::IntoEnumIterator;
+
+        for op in Operation::iter() {
+            assert!(
+                classify_op_input_reprs(&op).is_some(),
+                "Operation::{op:?} has no explicit classifier entry — \
+                 classify it BRep-vs-Mesh per PRD §3a.4 (task 4049)"
+            );
+        }
     }
 }

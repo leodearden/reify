@@ -232,6 +232,33 @@ pub(crate) fn substitute_expr(
                 qualified: Box::new(substitute_expr(qualified, bindings)),
             }
         }
+        ExprKind::TraitMethodCall {
+            object,
+            trait_name,
+            method,
+            args,
+        } => ExprKind::TraitMethodCall {
+            object: Box::new(substitute_expr(object, bindings)),
+            trait_name: trait_name.clone(),
+            method: method.clone(),
+            args: args.iter().map(|a| substitute_expr(a, bindings)).collect(),
+        },
+        ExprKind::TraitStaticCall {
+            trait_name,
+            method,
+            args,
+        } => ExprKind::TraitStaticCall {
+            trait_name: trait_name.clone(),
+            method: method.clone(),
+            args: args.iter().map(|a| substitute_expr(a, bindings)).collect(),
+        },
+        ExprKind::VariantConstruct { name, fields } => ExprKind::VariantConstruct {
+            name: name.clone(),
+            fields: fields
+                .iter()
+                .map(|(f, v)| (f.clone(), substitute_expr(v, bindings)))
+                .collect(),
+        },
     };
     Expr {
         kind: new_kind,
@@ -569,12 +596,14 @@ pub(crate) fn compile_entity(
                 // symmetrically to geometry lets: register as Type::Geometry,
                 // mark scope as having geometry, and track in known_geometry_lets
                 // so subsequent members can reference this param as a geometry source.
-                if is_solid_geometry_param(
-                    &ty,
-                    param.default.as_ref(),
-                    functions,
-                    &known_geometry_lets,
-                ) {
+                // (is_solid_geometry_param inlined here — retired in GHR-γ, task 3605)
+                if ty == Type::Geometry
+                    && param
+                        .default
+                        .as_ref()
+                        .map(|e| is_geometry_let(e, functions, &known_geometry_lets))
+                        .unwrap_or(false)
+                {
                     scope.has_geometry = true;
                     known_geometry_lets.insert(param.name.as_str());
                 }
@@ -854,14 +883,13 @@ pub(crate) fn compile_entity(
                         .sub_structure_traits
                         .insert(sub.structure_name.clone(), child_tmpl.trait_bounds.clone());
                     // Populate sub_member_types for self.sub.member resolution.
-                    let member_types: BTreeMap<String, Type> = child_tmpl
-                        .value_cells
-                        .iter()
-                        .map(|vc| (vc.id.member.clone(), vc.cell_type.clone()))
-                        .collect();
+                    // After GHR-γ (task 3605): geometry-typed params now appear in
+                    // member_type_map_from_template (they have ValueCellDecls), so
+                    // non-collection sub access to a Solid param resolves via the normal
+                    // ValueRef path.  See member_type_map_from_template for details.
                     scope
                         .sub_member_types
-                        .insert(sub.name.clone(), member_types);
+                        .insert(sub.name.clone(), member_type_map_from_template(child_tmpl));
                     // Populate sub_realization_names for cross-sub geometry diagnostic.
                     scope.sub_realization_names.insert(
                         sub.name.clone(),
@@ -953,6 +981,11 @@ pub(crate) fn compile_entity(
         }
     }
 
+    // task 3939 δ (step-12): accumulates the override-or-injected-default
+    // assoc-fn table resolved by conformance, stored onto this conformer's
+    // TopologyTemplate below. Declared before the trait-bounds guard so it is
+    // in scope at the struct literal (and stays empty for bound-less entities).
+    let mut structure_assoc_fns: Vec<CompiledAssocFn> = Vec::new();
     // Trait conformance checking: verify structure satisfies all trait bounds.
     if !structure.trait_bounds.is_empty() {
         check_trait_conformance(
@@ -968,6 +1001,7 @@ pub(crate) fn compile_entity(
             functions,
             alias_registry,
             diagnostics,
+            &mut structure_assoc_fns,
         );
 
         // Trait-bound checks: deprecation warning and parameterized type-argument deferral.
@@ -1080,18 +1114,6 @@ pub(crate) fn compile_entity(
                         )
                     });
 
-                // Solid-typed params with a geometry-call default are lowered as
-                // realizations (third pass), not as scalar ValueCellDecls.
-                // Symmetric with the geometry-let early-continue in the Let branch.
-                if is_solid_geometry_param(
-                    &cell_type,
-                    param.default.as_ref(),
-                    functions,
-                    &known_geometry_lets,
-                ) {
-                    continue;
-                }
-
                 let auto_free = param.default.as_ref().and_then(extract_auto_free);
 
                 // Lower and validate annotations on this param
@@ -1105,6 +1127,7 @@ pub(crate) fn compile_entity(
                         id,
                         kind: ValueCellKind::Auto { free },
                         visibility: Visibility::Public,
+                        is_aux: false,
                         cell_type,
                         default_expr: None,
                         solver_hints,
@@ -1122,6 +1145,7 @@ pub(crate) fn compile_entity(
                         id,
                         kind: ValueCellKind::Param,
                         visibility: Visibility::Public,
+                        is_aux: false,
                         cell_type,
                         default_expr,
                         solver_hints,
@@ -1164,64 +1188,6 @@ pub(crate) fn compile_entity(
                     diagnostics,
                 );
 
-                // Cross-sub bare geometry access (task 3441):
-                // `let copy = self.<sub>.<geom>` produces a CompiledExpr of kind
-                // `CompiledExprKind::CrossSubGeometryRef` (task 3508) with
-                // `Type::Geometry` via `try_resolve_cross_sub_geometry_value_ref`
-                // (expr.rs).  Value cells with Type::Geometry are unrepresentable
-                // (rejected by `value_type_kind_matches` in reify-eval; runtime
-                // invariant `assert_value_cell_types_representable`).  Skip the
-                // value cell creation in this specific case: the bare access
-                // produces no realisation op (a bare `MemberAccess` doesn't
-                // pass `is_geometry_let`) and no kernel op — the working path
-                // is designed for use *inside* a geometry call where the
-                // parallel `try_resolve_cross_sub_geom_ref` in geometry.rs
-                // lowers the access to a `GeomRef::Sub`.
-                //
-                // The check matches the typed `CompiledExprKind::CrossSubGeometryRef`
-                // marker emitted exclusively by
-                // `expr.rs::try_resolve_cross_sub_geometry_value_ref` (task 3508),
-                // so that other expressions that happen to inferentially resolve to
-                // Type::Geometry — e.g. an ident alias to a geometry let used in a
-                // BinaryOp like `alias + 1` — remain compiled as value cells.
-                // Pinned by `let_scope_tests::ident_alias_scope_type_is_geometry`
-                // (must create a value cell for `x`) and by
-                // `crates/reify-eval/tests/cross_sub_geometry_e2e.rs::bare_cross_sub_geometry_access_is_documented_v01_value_cell_only`
-                // (must NOT create a value cell for `copy`).
-                //
-                // Task 3454: emit a Warning at the drop site so the user knows
-                // the binding is a no-op.  Task 3508: replaced fragile heuristic
-                // (`ValueRef + entity.contains('.')`) with the typed variant tag.
-                // Dual regression guards:
-                // - `cross_sub_geometry_diagnostic_tests.rs::bare_cross_sub_geometry_let_emits_v01_no_op_warning`
-                //   (compiler-side; asserts Warning severity + keywords)
-                // - `cross_sub_geometry_e2e.rs::bare_cross_sub_geometry_access_is_documented_v01_value_cell_only`
-                //   (eval-side; filters by Severity::Error only — Warning is invisible to it)
-                if let reify_ir::CompiledExprKind::CrossSubGeometryRef(vid) = &compiled_expr.kind
-                {
-                    // Extract `<sub>` from the synthetic entity stamp `"<parent>.<sub>"`.
-                    // Entity names cannot contain '.' (the parser's identifier rule rejects
-                    // dots), so split_once is unambiguous for the current stamp format.
-                    // `unwrap_or` degrades gracefully if the stamp format ever changes
-                    // (e.g. a future task uses '::' as a separator) — the warning still
-                    // fires but names the full entity string instead of just the sub.
-                    let sub_name = vid.entity.split_once('.').map(|(_, s)| s).unwrap_or(&vid.entity);
-                    diagnostics.push(
-                        Diagnostic::warning(format!(
-                            "bare `let {} = self.{}.{}` produces no value cell in v0.1 \
-                             (cross-sub geometry must be used inside a geometry call — \
-                             wrap with translate/union/etc., or move the alias into the \
-                             child template's body)",
-                            let_decl.name, sub_name, vid.member
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            let_decl.span,
-                            "no-op in v0.1; binding silently dropped",
-                        )),
-                    );
-                    continue;
-                }
-
                 let cell_type = compiled_expr.result_type.clone();
                 let id = ValueCellId::new(entity_name, &let_decl.name);
 
@@ -1244,6 +1210,7 @@ pub(crate) fn compile_entity(
                     id,
                     kind: ValueCellKind::Let,
                     visibility,
+                    is_aux: let_decl.is_aux,
                     cell_type,
                     default_expr: Some(compiled_expr),
                     solver_hints,
@@ -1281,6 +1248,7 @@ pub(crate) fn compile_entity(
                         id: count_id.clone(),
                         kind: ValueCellKind::Let,
                         visibility: Visibility::Private,
+                        is_aux: false,
                         cell_type: Type::Int,
                         default_expr: Some(compiled_rhs),
                         solver_hints: Vec::new(),
@@ -1477,6 +1445,33 @@ pub(crate) fn compile_entity(
                     }
                 };
 
+                // Compile the optional `at <pose>` clause.  For a collection
+                // sub, carrying a pose is semantically invalid (per-element
+                // placement is out of scope in v1, PRD §10): emit an error and
+                // discard the pose so the IR is not left with a bad expression.
+                // For a single sub, the compiled expression is stored as-is;
+                // evaluation / type-checking as Transform is T4's responsibility.
+                let pose = if sub.is_collection {
+                    if let Some(pose_expr) = &sub.pose_expr {
+                        diagnostics.push(
+                            Diagnostic::error(
+                                "'at' placement is not supported on collection subs; \
+                                 per-element placement is out of scope in v1",
+                            )
+                            .with_code(DiagnosticCode::AtOnCollectionSub)
+                            .with_label(DiagnosticLabel::new(
+                                pose_expr.span,
+                                "'at' not allowed on collection sub",
+                            )),
+                        );
+                    }
+                    None
+                } else {
+                    sub.pose_expr
+                        .as_ref()
+                        .map(|e| compile_expr(e, &scope, enum_defs, functions, diagnostics))
+                };
+
                 sub_components.push(SubComponentDecl {
                     name: sub.name.clone(),
                     structure_name: sub.structure_name.clone(),
@@ -1486,6 +1481,8 @@ pub(crate) fn compile_entity(
                     is_collection: sub.is_collection,
                     count_cell: None,
                     guard_state,
+                    pose,
+                    is_aux: sub.is_aux,
                     span: sub.span,
                     content_hash: sub.content_hash,
                 });
@@ -1558,6 +1555,8 @@ pub(crate) fn compile_entity(
                                     default_expr: None,
                                     solver_hints: vec![],
                                     span: sub.span,
+                                    // Auto sub-override cells are never aux declarations.
+                                    is_aux: false,
                                 });
                             }
                         },
@@ -1596,6 +1595,14 @@ pub(crate) fn compile_entity(
             }
             reify_ast::MemberDecl::AssociatedType(_) => {
                 // Associated type compilation deferred to a later milestone.
+            }
+            reify_ast::MemberDecl::Fn(_) => {
+                // task 3939 δ: structure-body assoc fns are recognized as
+                // trait-fn overrides by `check_trait_conformance` (which scans
+                // `structure.members` directly) and compiled into the conformer's
+                // `assoc_fns` table. They lower to no value cell here, so this
+                // member-compilation arm intentionally remains a no-op.
+                // Instance dispatch (`self.member` resolution) is task ζ (3941).
             }
             reify_ast::MemberDecl::Port(port_decl) => {
                 // Skip duplicate port names (already reported in first pass).
@@ -1652,6 +1659,7 @@ pub(crate) fn compile_entity(
                                     id,
                                     kind: ValueCellKind::Auto { free },
                                     visibility: Visibility::Public,
+                                    is_aux: false,
                                     cell_type,
                                     default_expr: None,
                                     solver_hints: Vec::new(),
@@ -1674,6 +1682,7 @@ pub(crate) fn compile_entity(
                                     id,
                                     kind: ValueCellKind::Param,
                                     visibility: Visibility::Public,
+                                    is_aux: false,
                                     cell_type,
                                     default_expr,
                                     solver_hints: Vec::new(),
@@ -1717,6 +1726,12 @@ pub(crate) fn compile_entity(
                                 id,
                                 kind: ValueCellKind::Let,
                                 visibility,
+                                // Propagate `is_aux` from the AST consistently with the
+                                // structure-level Let path (entity.rs ~1179) and the guarded-member
+                                // path (guards.rs ~469).  If `aux` turns out to be semantically
+                                // invalid inside ports, the validator/T4 can emit a diagnostic
+                                // rather than silently dropping the flag here.
+                                is_aux: let_decl.is_aux,
                                 cell_type,
                                 default_expr: Some(compiled_expr),
                                 solver_hints: Vec::new(),
@@ -2426,6 +2441,11 @@ pub(crate) fn compile_entity(
         // statement-form `forall` over deferred-count collection subs.
         // Empty when no such forall exists.
         forall_templates: forall_templates_out,
+        // task 3939 δ (step-12): the override-or-injected-default assoc-fn table
+        // resolved by `check_trait_conformance` above. Deliberately excluded from
+        // `content_hash` (see plan design decision); ζ (3941) looks this up by
+        // (trait_name, fn_name) for `TraitMethodCall` dispatch.
+        assoc_fns: structure_assoc_fns,
     }
 }
 
@@ -2438,6 +2458,20 @@ pub(crate) fn compile_entity(
 /// sites and ensures future changes to the mapping (e.g. filtering hidden members)
 /// only need to be applied once. (task 2872)
 fn member_type_map_from_template(tmpl: &TopologyTemplate) -> BTreeMap<String, Type> {
+    // GHR-γ (task 3605): after bypass retirement, geometry-typed params
+    // (`param x : Solid = <geom>`) now produce a ValueCellDecl AND are included
+    // here.  For non-collection subs, this means `self.<sub>.<geom-param>`
+    // resolves through the normal `ValueRef` path (Type::Geometry cell) rather
+    // than the `CrossSubGeometryRef` bypass — the bypass only fires for geometry
+    // LETS which remain realization-only (no ValueCellDecl) and therefore still
+    // miss in `sub_member_types`.
+    //
+    // Note: for collection subs, including geometry cells means the "recommend
+    // indexed access" diagnostic fires instead of the geometry-specific cross-sub
+    // diagnostic for `self.<collection_sub>.<geom_param>` access.  The
+    // geometry-specific collection-sub diagnostic tests are therefore `#[ignore]`
+    // until GHR-δ+ provides a better routing strategy.  This is an accepted v0.1
+    // limitation; the "recommend indexed access" message is still informative.
     tmpl.value_cells
         .iter()
         .map(|vc| (vc.id.member.clone(), vc.cell_type.clone()))
@@ -2446,12 +2480,16 @@ fn member_type_map_from_template(tmpl: &TopologyTemplate) -> BTreeMap<String, Ty
 
 /// Collect the names of all named `RealizationDecl`s from a child `TopologyTemplate`.
 ///
-/// Geometry-typed params (`param x : Solid = <geom>`) and geometry lets
-/// (`let x = box(...)`) are BOTH lowered as `RealizationDecl`s (never as
-/// `ValueCellDecl`s), so neither ever appears in `member_type_map_from_template`
-/// output.  This helper captures those names so that `expr.rs` can distinguish
-/// "genuinely missing member" from "member exists as a realization — cross-sub
-/// geometry access not yet supported in v0.1".
+/// Geometry-typed params (`param x : Solid = <geom>`) are lowered as BOTH a
+/// `ValueCellDecl` (GHR-γ) AND a `RealizationDecl`.  Geometry lets
+/// (`let x = box(...)`) are lowered as `RealizationDecl`s only (no value cell).
+///
+/// Geometry params appear in BOTH `member_type_map_from_template` output AND here.
+/// Geometry lets appear here ONLY.  This lets `expr.rs` distinguish the two cases:
+/// - Solid param: member IS in `sub_member_types` → `ValueRef` path (step-2+).
+/// - Geometry let: member NOT in `sub_member_types` but IS in `sub_realization_names`
+///   → `CrossSubGeometryRef` path → bypass warning (until step-4 retires the bypass).
+/// - Genuinely missing: not in either map → "unknown member" error.
 ///
 /// Called side-by-side with `member_type_map_from_template` in the two Sub
 /// pre-pass sites (regular Sub at entity.rs ~line 766; match-arm Sub at ~line
@@ -2830,6 +2868,32 @@ fn compile_match_arm_decl_group(
                 });
             }
 
+            // Mirror the collection+`at` rejection from the main sub-lowering path
+            // (entity.rs ~1420) so the semantic rule is enforced uniformly.
+            // Although the grammar currently hardcodes `is_collection: false` for
+            // match-arm subs, the AST field may be true if the module was
+            // hand-constructed; guarding on `sub.is_collection` is defensive.
+            let pose = if sub.is_collection {
+                if let Some(pose_expr) = &sub.pose_expr {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "'at' placement is not supported on collection subs; \
+                             per-element placement is out of scope in v1",
+                        )
+                        .with_code(DiagnosticCode::AtOnCollectionSub)
+                        .with_label(DiagnosticLabel::new(
+                            pose_expr.span,
+                            "'at' not allowed on collection sub",
+                        )),
+                    );
+                }
+                None
+            } else {
+                sub.pose_expr
+                    .as_ref()
+                    .map(|e| compile_expr(e, scope, enum_defs, functions, diagnostics))
+            };
+
             sub_components.push(SubComponentDecl {
                 name: sub.name.clone(),
                 structure_name: sub.structure_name.clone(),
@@ -2839,6 +2903,8 @@ fn compile_match_arm_decl_group(
                 is_collection: false,
                 count_cell: None,
                 guard_state: GuardState::Compiled(Box::new(arm_guard_expr.clone())),
+                pose,
+                is_aux: sub.is_aux,
                 span: sub.span,
                 content_hash: sub.content_hash,
             });
@@ -3645,6 +3711,7 @@ mod tests {
                     name: "x".to_string(),
                     doc: None,
                     is_pub: false,
+                    is_aux: false,
                     type_expr: None,
                     value: reify_ast::Expr {
                         kind: reify_ast::ExprKind::Ident("dummy".to_string()),

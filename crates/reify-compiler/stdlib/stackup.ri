@@ -1,0 +1,70 @@
+// Stdlib: Tolerance Stack-up Authoring Types
+// PRD v0_6 T6 — task 4004.
+// Scope (PRD §0): design DIMENSIONAL tolerancing. Zero contact with the kernel
+// realization-tolerance budget machinery (reify-eval/src/tolerance_budget.rs).
+// Read-only conceptual sibling to stdlib/tolerancing.ri.
+//
+// Field/variant names are aligned with the T1 Value::Map shape (PRD §4.1/§4.2):
+// reify-stdlib/src/stackup.rs (task 3996 DONE @ a416709) emits and consumes
+// maps keyed by {nominal, plus_tol, minus_tol, sign, distribution} and
+// Value::Enum{type_name:"Distribution", variant:"Normal"|"Uniform"|"Triangular"}.
+//
+// Depends only on Length/Int (built-in dimension types) and the mm literal
+// (available via the sequential growing prelude from std.si_units).
+
+// ── Distribution of dimensional variation ─────────────────────────────────────
+
+// Statistical distribution assumed for a contributor's tolerance.
+// Variant names match the Value::Enum variants emitted by the T1 builtins
+// (contributor / contributor_asym in reify-stdlib/src/stackup.rs, PRD §4.1).
+enum Distribution { Normal, Uniform, Triangular }
+
+// ── Stack-up computation method ────────────────────────────────────────────────
+
+// Method used to compute the assembly stack-up gap distribution.
+// Variants correspond to the three free-function builtins in T1:
+//   WorstCase  → stackup_worst_case
+//   Rss        → stackup_rss
+//   MonteCarlo → monte_carlo_stackup
+enum StackupMethod { WorstCase, Rss, MonteCarlo }
+
+// ── Contributor authoring front ────────────────────────────────────────────────
+
+// Declaration-only authoring template for a stack-up contributor.
+// Param names mirror the T1 Value::Map keys (PRD §4.1): the builtins in
+// reify-stdlib/src/stackup.rs emit and decode maps keyed by these exact names.
+// No struct-constructor runtime evaluation is required (PRD §2) — this is a
+// declaration template; the contributor/contributor_asym builtins read the
+// primitive map directly.
+structure def Contributor {
+    param nominal      : Length
+    param plus_tol     : Length
+    param minus_tol    : Length
+    param sign         : Int = 1
+    param distribution : Distribution = Distribution.Normal
+}
+
+// ── StackupResult result contract ─────────────────────────────────────────────
+
+// Aggregate authoring trait describing the outputs of a tolerance stack-up
+// computation. The four members span the two T1 builtin result shapes (PRD §4.2):
+//
+//   stackup_worst_case → nominal_gap / worst_case_min / worst_case_max
+//                        (no rss_sigma — reify-stdlib/src/stackup.rs lines 355-358)
+//   stackup_rss        → nominal_gap / rss_sigma
+//                        (no worst_case_min / worst_case_max — lines 414-418)
+//
+// IMPORTANT: this is an AGGREGATE authoring view. No single T1 builtin result
+// Map satisfies all four fields simultaneously — worst_case and rss results
+// carry disjoint sub-keys. Conforming structures are expected to be user-authored
+// wrappers (e.g. a combined summary structure) that aggregate values from both
+// computation paths, NOT direct conformance targets for a single builtin output.
+//
+// rss_sigma is a standard deviation, so non-negativity is a meaningful invariant.
+trait StackupResult {
+    param nominal_gap     : Length
+    param worst_case_min  : Length
+    param worst_case_max  : Length
+    param rss_sigma       : Length
+    constraint rss_sigma >= 0mm
+}

@@ -20,8 +20,8 @@ use reify_core::{Diagnostic, DiagnosticInfo, DiagnosticLabel, SourceLocationInfo
 use crate::types::{
     AutoResolveConstraintProgress, AutoResolveIteration, AutoResolveParameterValue, ConstraintData,
     DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState, JointBinding, JointDescriptor,
-    MechanismDescriptor, MeshData, SourceSpanInfo, ValueData, format_determinacy, format_freshness,
-    format_value,
+    MechanismDescriptor, MeshData, SourceSpanInfo, TensegrityWireData, ValueData,
+    format_determinacy, format_freshness, format_value,
 };
 
 // ── Persistent-cache startup sweep (task 3698) ────────────────────────────────
@@ -495,6 +495,13 @@ pub struct EngineSession {
     /// first match. When `None` (the default), all emit paths are no-ops.
     /// Fire-every-commit semantics: no engine-side dedup (mirrors `emit_auto_resolve_if_any`).
     fea_case_emitter: Option<Arc<dyn FeaCaseEmitter>>,
+    /// Optional mode-shape-frame event sink installed by the GUI layer.
+    ///
+    /// When `Some`, `emit_mode_shape_frames_if_any` scans `CheckResult.values` for a
+    /// `BucklingResult`-shaped cell and fires `frame(ModeShapeFrame)` for each
+    /// reference frame (one undeformed base + one peak per mode).
+    /// When `None` (the default), all emit paths are no-ops.
+    mode_shape_frame_emitter: Option<Arc<dyn ModeShapeFrameEmitter>>,
 }
 
 /// Trait for sinking auto-resolve loop events to the GUI transport layer.
@@ -528,6 +535,18 @@ pub trait WarmPoolEventEmitter: Send + Sync {
 /// The trait is object-safe: no method takes or returns `Self`.
 pub trait FeaCaseEmitter: Send + Sync {
     fn changed(&self, payload: crate::types::FeaCaseChanged);
+}
+
+/// Trait for sinking mode-shape-frame events to the GUI transport layer (task ι/3458).
+///
+/// Implemented by `TauriModeShapeFrameEmitter` in `main.rs` for the production path
+/// (calls `event_bus::emit_typed` with channel `"mode-shape-frame"`), and by
+/// `RecordingModeShapeFrameEmitter` in engine tests.
+///
+/// The trait is object-safe: no method takes or returns `Self`.
+pub trait ModeShapeFrameEmitter: Send + Sync {
+    /// Deliver a single reference frame for the mode-shape animator.
+    fn frame(&self, payload: crate::types::ModeShapeFrame);
 }
 
 /// Build the normalized source-map key for a module name: `"{name}.ri"`.
@@ -883,6 +902,7 @@ impl EngineSession {
             auto_resolve_emitter: None,
             warm_pool_event_emitter: None,
             fea_case_emitter: None,
+            mode_shape_frame_emitter: None,
         }
     }
 
@@ -915,6 +935,15 @@ impl EngineSession {
         self.fea_case_emitter = Some(emitter);
     }
 
+    /// Install a mode-shape-frame event emitter on this session.
+    ///
+    /// After installation, every `emit_mode_shape_frames_if_any` call fires
+    /// `frame(ModeShapeFrame)` when a `BucklingResult`-shaped value is detected
+    /// in `CheckResult.values`. Replaces any previously installed emitter.
+    pub fn set_mode_shape_frame_emitter(&mut self, emitter: Arc<dyn ModeShapeFrameEmitter>) {
+        self.mode_shape_frame_emitter = Some(emitter);
+    }
+
     /// Install a constraint solver into the underlying Engine for testing.
     ///
     /// Mirrors [`Engine::with_solver`] at the session level.  Keeps production
@@ -939,6 +968,7 @@ impl EngineSession {
         let r = self.core.engine_mut().check(compiled);
         self.emit_auto_resolve_if_any(&r);
         self.emit_fea_case_if_any(&r);
+        self.emit_mode_shape_frames_if_any(&r);
         self.drain_and_emit_warm_pool_events();
     }
 
@@ -950,6 +980,16 @@ impl EngineSession {
     #[cfg(test)]
     pub(crate) fn emit_fea_case_for_test_with_result(&self, check: &CheckResult) {
         self.emit_fea_case_if_any(check);
+    }
+
+    /// Drive `emit_mode_shape_frames_if_any` with a pre-built `CheckResult` in tests.
+    ///
+    /// Lets tests inject a hand-constructed `CheckResult` containing a
+    /// `BucklingResult`-shaped cell without needing a full engine eval.
+    /// Not callable from production code.
+    #[cfg(test)]
+    pub(crate) fn emit_mode_shape_frames_for_test_with_result(&self, check: &CheckResult) {
+        self.emit_mode_shape_frames_if_any(check);
     }
 
     /// Expose the engine's warm pool for test-only manipulation (e.g. pre-populating
@@ -1064,6 +1104,196 @@ impl EngineSession {
                 available_cases: detected.available_cases,
             };
             emitter.changed(payload);
+        }
+    }
+
+    /// Detect a `BucklingResult`-shaped value in `check.values` and emit one
+    /// undeformed base frame (phase=0.0) plus one peak frame per mode (phase=1.0).
+    ///
+    /// Frame ordering: base frame first, then peak frames in ascending mode_index order.
+    /// mode_index is the 0-based position of each mode in the modes list.
+    ///
+    /// Scale normalization (PRD §8): peak nodal displacement is scaled to ~10% of
+    /// the node-set bounding-box diagonal so the deformed shape is always visible
+    /// regardless of how the eigensolver normalizes eigenvectors.
+    ///
+    /// Early-returns silently when no emitter is installed or when `check.values`
+    /// contains no `BucklingResult`-shaped cell.
+    fn emit_mode_shape_frames_if_any(&self, check: &CheckResult) {
+        let emitter = match &self.mode_shape_frame_emitter {
+            Some(e) => e,
+            None => return,
+        };
+
+        // Find the first BucklingResult StructureInstance in check.values.
+        let (base_f64, modes_displaced, eigenvalues) = match Self::extract_buckling_data(&check.values) {
+            Some(d) => d,
+            None => return,
+        };
+
+        let n = base_f64.len(); // 3 · n_nodes
+
+        // Emit undeformed base frame (phase=0.0, mode_index=0).
+        //
+        // NOTE: the base frame and the first peak frame (mode 0) intentionally
+        // share mode_index=0.  `phase` is the sole discriminator: phase=0.0
+        // identifies the undeformed reference; phase=1.0 identifies a mode-peak.
+        // Consumers must key on `phase`, not `mode_index`, to distinguish them.
+        let base_f32: Vec<f32> = base_f64.iter().map(|&v| v as f32).collect();
+        emitter.frame(crate::types::ModeShapeFrame {
+            mode_index: 0,
+            phase: 0.0_f32,
+            displaced_positions: base_f32.clone(),
+            eigenvalue: None, // base frame has no associated mode eigenvalue
+        });
+
+        // Emit one peak frame per mode (phase=1.0).
+        for (k, mode_disp) in modes_displaced.iter().enumerate() {
+            // mode_index is u8 on the wire; assert no silent wrapping for large
+            // n_modes values (normal buckling analyses are ≤ ~20 modes).
+            debug_assert!(k < 256, "mode_index would overflow u8: n_modes={}", k + 1);
+
+            // Displacement vector: displaced − base (per DOF).
+            let displacement: Vec<f64> = base_f64
+                .iter()
+                .zip(mode_disp.iter())
+                .map(|(&b, &d)| d - b)
+                .collect();
+
+            // Scale factor: normalize max nodal displacement to ~10% of bbox diagonal.
+            let scale = Self::mode_shape_scale(&base_f64, &displacement);
+
+            // Scaled peak positions: base + scale · displacement.
+            let peak_f32: Vec<f32> = (0..n)
+                .map(|i| (base_f64[i] + scale * displacement[i]) as f32)
+                .collect();
+
+            emitter.frame(crate::types::ModeShapeFrame {
+                mode_index: k as u8,
+                phase: 1.0_f32,
+                displaced_positions: peak_f32,
+                eigenvalue: Some(eigenvalues[k]), // per-mode buckling load multiplier λ
+            });
+        }
+    }
+
+    /// Extract `(base_node_positions: Vec<f64>, modes_displaced_positions: Vec<Vec<f64>>,
+    /// eigenvalues: Vec<f64>)` from the first `BucklingResult`-shaped
+    /// `Value::StructureInstance` in `values`.
+    ///
+    /// Returns `None` when:
+    /// - no `StructureInstance` with `type_name == "BucklingResult"` is found, or
+    /// - `base_node_positions` is absent/malformed, or
+    /// - `modes` list is absent/malformed, or
+    /// - any mode's `eigenvalue` field is absent or not `Value::Real`.
+    #[allow(clippy::type_complexity)]
+    fn extract_buckling_data(
+        values: &reify_ir::ValueMap,
+    ) -> Option<(Vec<f64>, Vec<Vec<f64>>, Vec<f64>)> {
+        use reify_ir::Value;
+
+        for (_, value) in values.iter() {
+            let data = match value {
+                Value::StructureInstance(d) if d.type_name == "BucklingResult" => d,
+                _ => continue,
+            };
+
+            // Extract base_node_positions.
+            let base_list = match data.fields.get(&"base_node_positions".to_string()) {
+                Some(Value::List(v)) => v,
+                _ => continue,
+            };
+            let base_f64: Vec<f64> = base_list.iter().filter_map(|v| {
+                if let Value::Real(r) = v { Some(*r) } else { None }
+            }).collect();
+            if base_f64.len() != base_list.len() || base_f64.is_empty() {
+                continue;
+            }
+
+            // Extract modes list.
+            let modes_list = match data.fields.get(&"modes".to_string()) {
+                Some(Value::List(v)) => v,
+                _ => continue,
+            };
+
+            // Extract displaced_positions and eigenvalue for each mode.
+            let mut modes_displaced = Vec::with_capacity(modes_list.len());
+            let mut eigenvalues = Vec::with_capacity(modes_list.len());
+            let mut all_ok = true;
+            for mode_val in modes_list.iter() {
+                let mode_data = match mode_val {
+                    Value::StructureInstance(d) => d,
+                    _ => { all_ok = false; break; }
+                };
+                // Extract eigenvalue (task 4072): must be Value::Real.
+                let eigenvalue = match mode_data.fields.get(&"eigenvalue".to_string()) {
+                    Some(Value::Real(r)) => *r,
+                    _ => { all_ok = false; break; }
+                };
+                let mode_shape_map = match mode_data.fields.get(&"mode_shape".to_string()) {
+                    Some(Value::Map(m)) => m,
+                    _ => { all_ok = false; break; }
+                };
+                let disp_list = match mode_shape_map.get(&Value::String("displaced_positions".to_string())) {
+                    Some(Value::List(v)) => v,
+                    _ => { all_ok = false; break; }
+                };
+                let disp_f64: Vec<f64> = disp_list.iter().filter_map(|v| {
+                    if let Value::Real(r) = v { Some(*r) } else { None }
+                }).collect();
+                if disp_f64.len() != base_f64.len() {
+                    all_ok = false;
+                    break;
+                }
+                eigenvalues.push(eigenvalue);
+                modes_displaced.push(disp_f64);
+            }
+            if !all_ok || modes_displaced.is_empty() {
+                continue;
+            }
+
+            return Some((base_f64, modes_displaced, eigenvalues));
+        }
+        None
+    }
+
+    /// Compute the mode-shape scale factor: normalize peak nodal displacement to
+    /// ~10% of the node-set bounding-box diagonal (PRD §8).
+    ///
+    /// Falls back to `1.0` for degenerate inputs (all-zero displacement or
+    /// degenerate / single-node bbox).
+    fn mode_shape_scale(base: &[f64], displacement: &[f64]) -> f64 {
+        // Bounding box of the undeformed node positions.
+        let (mut min_x, mut min_y, mut min_z) = (f64::MAX, f64::MAX, f64::MAX);
+        let (mut max_x, mut max_y, mut max_z) = (f64::MIN, f64::MIN, f64::MIN);
+        for chunk in base.chunks(3) {
+            if chunk.len() < 3 { continue; }
+            min_x = min_x.min(chunk[0]); max_x = max_x.max(chunk[0]);
+            min_y = min_y.min(chunk[1]); max_y = max_y.max(chunk[1]);
+            min_z = min_z.min(chunk[2]); max_z = max_z.max(chunk[2]);
+        }
+        let dx = max_x - min_x;
+        let dy = max_y - min_y;
+        let dz = max_z - min_z;
+        let bbox_diag = (dx * dx + dy * dy + dz * dz).sqrt();
+
+        // Max nodal displacement magnitude (L2 norm per node).
+        let max_disp = displacement
+            .chunks(3)
+            .map(|d| {
+                let v = if d.len() >= 3 {
+                    d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
+                } else {
+                    d.iter().map(|x| x * x).sum()
+                };
+                v.sqrt()
+            })
+            .fold(0.0_f64, f64::max);
+
+        if max_disp > 0.0 && bbox_diag > 0.0 {
+            0.1 * bbox_diag / max_disp
+        } else {
+            1.0 // degenerate fallback
         }
     }
 
@@ -1206,6 +1436,9 @@ impl EngineSession {
         self.emit_fea_case_if_any(self.core.last_check().expect(
             "emit_fea_case_if_any: last_check must be Some after commit_state — see ordering invariant",
         ));
+        self.emit_mode_shape_frames_if_any(self.core.last_check().expect(
+            "emit_mode_shape_frames_if_any: last_check must be Some after commit_state — see ordering invariant",
+        ));
         self.drain_and_emit_warm_pool_events();
 
         self.build_gui_state()
@@ -1251,6 +1484,9 @@ impl EngineSession {
         self.emit_fea_case_if_any(self.core.last_check().expect(
             "emit_fea_case_if_any: last_check must be Some after commit_check — see ordering invariant",
         ));
+        self.emit_mode_shape_frames_if_any(self.core.last_check().expect(
+            "emit_mode_shape_frames_if_any: last_check must be Some after commit_check — see ordering invariant",
+        ));
         self.drain_and_emit_warm_pool_events();
         self.build_gui_state()
     }
@@ -1289,6 +1525,9 @@ impl EngineSession {
         ));
         self.emit_fea_case_if_any(self.core.last_check().expect(
             "emit_fea_case_if_any: last_check must be Some after commit_state — see ordering invariant",
+        ));
+        self.emit_mode_shape_frames_if_any(self.core.last_check().expect(
+            "emit_mode_shape_frames_if_any: last_check must be Some after commit_state — see ordering invariant",
         ));
         self.drain_and_emit_warm_pool_events();
         self.build_gui_state()
@@ -1365,6 +1604,9 @@ impl EngineSession {
         ));
         self.emit_fea_case_if_any(self.core.last_check().expect(
             "emit_fea_case_if_any: last_check must be Some after commit_state — see ordering invariant",
+        ));
+        self.emit_mode_shape_frames_if_any(self.core.last_check().expect(
+            "emit_mode_shape_frames_if_any: last_check must be Some after commit_state — see ordering invariant",
         ));
         self.drain_and_emit_warm_pool_events();
 
@@ -1622,6 +1864,7 @@ impl EngineSession {
                     }
                     None => Vec::new(),
                 },
+                tensegrity_wires: Vec::new(),
             });
         }
 
@@ -1730,6 +1973,14 @@ impl EngineSession {
             compile_diagnostics.extend(f.diags.iter().cloned());
         }
 
+        // Extract tensegrity wire descriptors from value cells.
+        // Scoped borrow released before GuiState construction.
+        let tensegrity_wires = {
+            let compiled = self.core.compiled().unwrap();
+            let check = self.core.last_check().unwrap();
+            build_tensegrity_wires(compiled, check)
+        };
+
         Ok(GuiState {
             meshes,
             values,
@@ -1737,6 +1988,7 @@ impl EngineSession {
             files,
             tessellation_diagnostics,
             compile_diagnostics,
+            tensegrity_wires,
         })
     }
 
@@ -2382,6 +2634,129 @@ fn build_constraints(
     constraints
 }
 
+// ---- Tensegrity wire extraction (T0b) ----------------------------------------
+
+/// Extract `TensegrityWireData` records from every value cell in `compiled`.
+///
+/// Iterates the same cell loop as `build_values`, reads the post-eval `Value`
+/// for each cell, and collects every `Value::StructureInstance` with
+/// `type_name == "TensegrityWire"` found either:
+/// - directly as the cell's value (standalone wire), or
+/// - as elements of a `Value::List` (the typical `tensegrity_wires()` output).
+///
+/// For each wire instance, the six endpoint coords are flattened from
+/// `Value::Scalar{si_value, ..}` or `Value::Real(v)` to `f64` SI.  Wires
+/// with malformed or missing fields are skipped and logged at `warn!` level so
+/// silent drops are observable in logs without changing the no-panic contract.
+///
+/// The owning entity is taken from `cell.id.entity` (e.g. `"TPrism"`).
+///
+/// # Limitations (T0b scope)
+///
+/// **Template-level extraction only**: `entity_path` is the *template* name
+/// (e.g. `"TPrism"`), not a per-instance path.  If a `TPrism` is instantiated
+/// multiple times in an assembly, all instances contribute wires with the same
+/// `entity_path` and local-frame coordinates — per-instance placement/transforms
+/// are NOT applied.  A future instancing task must address this.
+///
+/// **Aliased-cell double-counting**: if the same wire list is reachable via two
+/// value cells (e.g. `let w2 = wires`), wires are extracted twice.  This is
+/// unlikely in practice because T0a binds the wire list to one cell; if it
+/// becomes an issue, deduplicate by `(entity_path, x1, y1, z1, x2, y2, z2)`.
+///
+/// **Second iteration over value cells**: this function walks the same
+/// `compiled.templates → template.value_cells` loop and calls
+/// `check.values.get_or_undef` for each cell, independently of `build_values`.
+/// For large modules this means each cell's `Value` is cloned twice per
+/// `build_gui_state` call.  The separation is intentional for clarity and
+/// matches the T0b scope boundary; fold into `build_values` if profiling shows
+/// the duplication as a bottleneck.
+fn build_tensegrity_wires(
+    compiled: &reify_compiler::CompiledModule,
+    check: &CheckResult,
+) -> Vec<TensegrityWireData> {
+    let mut wires = Vec::new();
+    for template in &compiled.templates {
+        for cell in &template.value_cells {
+            let val = check.values.get_or_undef(&cell.id);
+            let entity_path = &cell.id.entity;
+            collect_wires_from_value(&val, entity_path, &mut wires);
+        }
+    }
+    wires
+}
+
+/// Collect `TensegrityWireData` records from a single cell `Value`.
+///
+/// Matches either a standalone `TensegrityWire` instance or a
+/// `List` of `TensegrityWire` instances (the output of `tensegrity_wires()`).
+/// All other variants are silently ignored.
+///
+/// Logs a `warn!` when a `TensegrityWire` instance is found but has malformed
+/// or missing fields (i.e. `wire_data_from_instance` returns `None`), so silent
+/// drops are observable in logs without changing the no-panic contract.
+fn collect_wires_from_value(val: &Value, entity_path: &str, out: &mut Vec<TensegrityWireData>) {
+    match val {
+        Value::StructureInstance(data) if data.type_name == "TensegrityWire" => {
+            if let Some(wire) = wire_data_from_instance(&data.fields, entity_path) {
+                out.push(wire);
+            } else {
+                warn!(
+                    entity = %entity_path,
+                    "skipping malformed TensegrityWire instance (missing or non-numeric field)"
+                );
+            }
+        }
+        Value::List(items) => {
+            for item in items.iter() {
+                if let Value::StructureInstance(data) = item
+                    && data.type_name == "TensegrityWire"
+                {
+                    if let Some(wire) = wire_data_from_instance(&data.fields, entity_path) {
+                        out.push(wire);
+                    } else {
+                        warn!(
+                            entity = %entity_path,
+                            "skipping malformed TensegrityWire instance in list (missing or non-numeric field)"
+                        );
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Extract a `TensegrityWireData` from a `TensegrityWire` instance's fields.
+///
+/// Returns `None` if `kind` is missing/non-string or any coordinate field is
+/// missing/non-numeric — the caller silently drops malformed wires.
+fn wire_data_from_instance(
+    fields: &reify_ir::PersistentMap<String, Value>,
+    entity_path: &str,
+) -> Option<TensegrityWireData> {
+    let kind = match fields.get(&"kind".to_string()) {
+        Some(Value::String(s)) => s.clone(),
+        _ => return None,
+    };
+    let x1 = scalar_to_f64(fields.get(&"x1".to_string())?)?;
+    let y1 = scalar_to_f64(fields.get(&"y1".to_string())?)?;
+    let z1 = scalar_to_f64(fields.get(&"z1".to_string())?)?;
+    let x2 = scalar_to_f64(fields.get(&"x2".to_string())?)?;
+    let y2 = scalar_to_f64(fields.get(&"y2".to_string())?)?;
+    let z2 = scalar_to_f64(fields.get(&"z2".to_string())?)?;
+    Some(TensegrityWireData {
+        entity_path: entity_path.to_string(),
+        kind,
+        x1,
+        y1,
+        z1,
+        x2,
+        y2,
+        z2,
+    })
+}
+
 // ---- Mechanism descriptor helpers -------------------------------------------
 
 /// Extract joint descriptors and their identity sequence from a valid (non-errored) mechanism Map.
@@ -2727,18 +3102,36 @@ fn resolve_driving_params_from_ast(
                     use reify_ast::ExprKind;
                     let initial_value_si = match &literal_expr.kind {
                         ExprKind::QuantityLiteral { value, unit } => {
-                            // Look up the unit in UNIT_TABLE for SI scale.
-                            match UNIT_TABLE.iter().find(|(u, _, _)| *u == unit.as_str()) {
-                                Some((_, scale, _)) => Some(value * scale),
-                                None => {
-                                    // Unknown unit: emit debug so the silent value-loss is observable.
-                                    // Supported units: mm, cm, m, deg, rad.
+                            // Only bare units resolve here; compound unit expressions
+                            // (Mul/Div/Pow) get their registry resolver in task γ (3803).
+                            match unit {
+                                reify_ast::UnitExpr::Unit(unit) => {
+                                    // Look up the unit in UNIT_TABLE for SI scale.
+                                    match UNIT_TABLE.iter().find(|(u, _, _)| *u == unit.as_str()) {
+                                        Some((_, scale, _)) => Some(value * scale),
+                                        None => {
+                                            // Unknown unit: emit debug so the silent value-loss is observable.
+                                            // Supported units: mm, cm, m, deg, rad.
+                                            tracing::debug!(
+                                                target: "reify_gui::engine::literal_bind",
+                                                joint = %joint_cell_name,
+                                                unit = %unit,
+                                                "bind(joint, <quantity>) with unsupported unit — not in UNIT_TABLE; \
+                                                 initial_value_si will be None (supported units: mm, cm, m, deg, rad)"
+                                            );
+                                            None
+                                        }
+                                    }
+                                }
+                                reify_ast::UnitExpr::Mul(..)
+                                | reify_ast::UnitExpr::Div(..)
+                                | reify_ast::UnitExpr::Pow(..) => {
                                     tracing::debug!(
                                         target: "reify_gui::engine::literal_bind",
                                         joint = %joint_cell_name,
-                                        unit = %unit,
-                                        "bind(joint, <quantity>) with unsupported unit — not in UNIT_TABLE; \
-                                         initial_value_si will be None (supported units: mm, cm, m, deg, rad)"
+                                        "bind(joint, <quantity>) with a compound unit expression — \
+                                         not yet supported; resolver lands in task γ (3803); \
+                                         initial_value_si will be None"
                                     );
                                     None
                                 }
@@ -3008,6 +3401,7 @@ fn build_preview_gui_state(
         files: Vec::new(),
         tessellation_diagnostics: Vec::new(),
         compile_diagnostics: Vec::new(),
+        tensegrity_wires: Vec::new(),
     }
 }
 
@@ -3534,6 +3928,7 @@ fn format_expr(expr: &reify_ir::CompiledExpr) -> String {
                 reify_ir::BinOp::Ge => ">=",
                 reify_ir::BinOp::And => "&&",
                 reify_ir::BinOp::Or => "||",
+                reify_ir::BinOp::Implies => "implies",
             };
             format!("{} {} {}", format_expr(left), op_str, format_expr(right))
         }

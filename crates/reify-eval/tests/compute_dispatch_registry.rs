@@ -67,7 +67,7 @@ fn identity_fn(
     _cancellation: &CancellationHandle,
 ) -> ComputeOutcome {
     ComputeOutcome::Completed {
-        result: value_inputs[0].clone(),
+        result: value_inputs.first().cloned().unwrap_or(Value::Undef),
         new_warm_state: None,
         cost_per_byte: None,
         diagnostics: vec![],
@@ -84,6 +84,56 @@ fn failing_fn(
     ComputeOutcome::Failed {
         diagnostics: vec![reify_core::Diagnostic::error("test trampoline failed")],
     }
+}
+
+// ── e2e: zero-arg @optimized call drives trampoline with empty arg slice ─────
+//
+// This exercises the actual engine path that the empty-slice guard in
+// identity_fn protects: a zero-argument @optimized call produces an empty
+// arg_values vector when the engine evaluates the call. The trampoline
+// receives &[] as its `value_inputs` parameter (which is the evaluated
+// arg_values, not the ComputeNodeData.value_inputs graph field). The guard
+// `value_inputs.first().cloned().unwrap_or(Value::Undef)` prevents a panic;
+// the result written to the cell is Value::Undef.
+
+/// e2e: a zero-argument @optimized call invokes the trampoline with an empty
+/// arg_values slice, triggering the empty-slice guard in identity_fn and
+/// writing Value::Undef to the output cell.
+#[test]
+fn e2e_optimized_zero_arg_call_invokes_trampoline_with_empty_inputs() {
+    let source = r#"
+        @optimized("test::identity")
+        fn zero_arg_compute() -> Int {
+            42
+        }
+
+        structure ZeroArgFixture {
+            let result = zero_arg_compute()
+        }
+    "#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn("test::identity", identity_fn as ComputeFn);
+
+    let eval_result = engine.eval(&compiled);
+
+    // The trampoline received &[] (zero args → empty arg_values) and returned
+    // Value::Undef via the empty-slice guard. The function body literal `42`
+    // is NOT returned because for a registered trampoline the engine uses the
+    // trampoline's ComputeOutcome directly (no body-inlining fallback).
+    let result_cell = ValueCellId::new("ZeroArgFixture", "result");
+    let result_val = eval_result
+        .values
+        .get(&result_cell)
+        .unwrap_or_else(|| panic!("cell ZeroArgFixture.result not found in eval result"));
+    assert_eq!(
+        *result_val,
+        Value::Undef,
+        "expected ZeroArgFixture.result == Value::Undef (empty-slice guard fired) \
+         for zero-arg @optimized call, got {:?}",
+        result_val
+    );
 }
 
 // ── step-3: RED — dispatch helper contract ───────────────────────────────────
@@ -509,5 +559,84 @@ fn e2e_registered_failed_trampoline_does_not_silently_body_inline() {
         !inlined,
         "expected the cell to NOT be silently body-inlined to Int(42); got {:?}",
         eval_result.values.get(&result_cell)
+    );
+}
+
+// ── step-5: e2e regression-pin — non-ValueRef arg leaves value_inputs empty ──
+// CHARACTERIZATION TEST — intentionally GREEN on first write.
+//
+// γ contract: the shallow walk in engine_eval.rs that populates
+// `ComputeNodeData::value_inputs` collects ONLY direct `ValueRef(cell)` args.
+// A BinOp (or any non-ValueRef sub-expression), even one that transitively
+// references a param cell, contributes NO entries.
+//
+// The trampoline is invoked with `arg_values` (the *evaluated* argument
+// values), NOT with `value_inputs`. So a call `identity_compute_test(2 + input)`
+// still evaluates correctly (2 + 40 = 42 via arg_values) even though
+// `value_inputs` is empty.
+//
+// This pin guards the γ contract against P3.2's planned transitive-dependency
+// walk: if P3.2 changes the shallow walk to include transitive refs,
+// `data.value_inputs.is_empty()` here will turn RED and alert the reviewer
+// that the γ/P3.2 boundary has shifted.
+
+/// Regression-pin (step-5): a non-ValueRef arg (`2 + input`) evaluates to the
+/// correct value via `arg_values` (Int(42)) while leaving `value_inputs` EMPTY
+/// in the ComputeNode — the γ shallow-walk contract.
+#[test]
+fn e2e_optimized_non_valueref_arg_yields_empty_value_inputs() {
+    // Inline fixture: the @optimized call takes a BinOp arg `2 + input`
+    // (param input = 40), so the result is 42 but `value_inputs` is empty.
+    let source = r#"
+        @optimized("test::identity")
+        fn identity_compute_test(x: Int) -> Int {
+            x
+        }
+
+        structure NonValueRefFixture {
+            param input: Int = 40
+            let result = identity_compute_test(2 + input)
+        }
+    "#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn("test::identity", identity_fn as ComputeFn);
+
+    let eval_result = engine.eval(&compiled);
+
+    // (a) The trampoline evaluated the BinOp argument correctly via arg_values:
+    //     2 + 40 == 42.
+    let result_cell = ValueCellId::new("NonValueRefFixture", "result");
+    let result_val = eval_result
+        .values
+        .get(&result_cell)
+        .unwrap_or_else(|| panic!("cell NonValueRefFixture.result not found in eval result"));
+    assert_eq!(
+        *result_val,
+        Value::Int(42),
+        "expected NonValueRefFixture.result == Int(42) (2+40 via arg_values), got {:?}",
+        result_val
+    );
+
+    // (b) The ComputeNode's value_inputs field is EMPTY — the γ shallow walk
+    //     only captures direct ValueRef args; the BinOp `2 + input` is NOT a
+    //     ValueRef, so input is NOT included even transitively.
+    let snapshot = engine
+        .eval_state()
+        .expect("eval_state must be Some after eval()")
+        .snapshot
+        .clone();
+    let (_id, data) = snapshot
+        .graph
+        .compute_nodes
+        .iter()
+        .find(|(_, d)| d.target == "test::identity")
+        .expect("expected a ComputeNode with target == \"test::identity\"");
+    assert!(
+        data.value_inputs.is_empty(),
+        "expected value_inputs to be empty for non-ValueRef arg (γ shallow-walk contract), \
+         got: {:?}",
+        data.value_inputs
     );
 }

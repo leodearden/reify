@@ -23,3 +23,7 @@ export { AutoResolvePanel } from './AutoResolvePanel';
 export type { AutoResolvePanelProps } from './AutoResolvePanel';
 export { FeaCasePickerDropdown } from './FeaCasePickerDropdown';
 export type { FeaCasePickerDropdownProps } from './FeaCasePickerDropdown';
+export { SolverProgressOverlay } from './SolverProgressOverlay';
+export type { SolverProgressOverlayProps } from './SolverProgressOverlay';
+export { BucklingPanel } from './BucklingPanel';
+export type { BucklingPanelProps } from './BucklingPanel';

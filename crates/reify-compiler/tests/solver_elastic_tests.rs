@@ -881,9 +881,10 @@ fn elastic_result_struct_has_correct_param_shape() {
 
     assert_eq!(
         params.len(),
-        6,
-        "ElasticResult should have exactly 6 param cells \
-         (displacement, stress, frame, max_von_mises, converged, iterations), got: {:?}",
+        7,
+        "ElasticResult should have exactly 7 param cells \
+         (displacement, stress, frame, shell_channels, max_von_mises, converged, iterations), \
+         got: {:?}",
         names
     );
 
@@ -930,6 +931,10 @@ fn elastic_result_struct_has_correct_param_shape() {
                 }),
             },
         ),
+        // task #4067 step-2: `param shell_channels : ShellStress` added here.
+        // Type resolves to StructureRef("ShellStress") — the same pattern used by
+        // `param material : Material` → StructureRef("Material") in material_struct_tests.rs.
+        ("shell_channels", Type::StructureRef("ShellStress".to_string())),
         (
             "max_von_mises",
             Type::Scalar {

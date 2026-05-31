@@ -1,0 +1,110 @@
+// Stdlib: Tensegrity Structure Types
+//
+// Provides the typed-element network types for tensegrity structures:
+// Strut, Cable, Tensegrity, and TensegrityWire.
+//
+// PRD reference: docs/prds/v0_6/tensegrity-structures.md
+//   §3 — Representation contract
+//   §9 — Tier-0 leaf (T0a)
+//
+// Module exports:
+//   - `Strut`          — compression member: cross-section area + material
+//   - `Cable`          — tension member: cross-section area + material + pretension
+//   - `Tensegrity`     — typed network: node positions + member connectivity
+//   - `TensegrityWire` — emitted wire record: kind tag + endpoint geometry
+//
+// Open typed-element-groups seam (Design Decision 2):
+//   `struts` and `cables` are explicit named fields on `Tensegrity`; the
+//   generic `tensegrity_wires(t)` builtin is the seam layers 2–4 consume.
+//   Adding a future `surfaces` group (§10 / T4) is two-line additive:
+//   (i) add `param surfaces : List<List<Int>>` to Tensegrity,
+//   (ii) add a sibling `tensegrity_surfaces(t)` accessor — existing
+//   wire-consuming call sites do not change.
+//
+// Dependencies (all earlier in the growing-prelude sequence):
+//   - std.units        — Length, Area, Force dimensions
+//   - std.si_units     — 0N, mm², etc.
+//   - std.materials.fea — ElasticMaterial trait
+
+// ── Strut ─────────────────────────────────────────────────────────────────────
+//
+// A compression member in the tensegrity network. Carries the minimum
+// constitutive data needed by the form-finder and structural solver:
+//   section_area — cross-sectional area (determines axial stiffness EA)
+//   material     — elastic properties (E, ν, ρ, σy) from ElasticMaterial
+//
+// Both params are required (no defaults) because a bare Strut() is
+// meaningless — a strut without geometry or material has no structural
+// identity. Matches the no-default discipline of LoadCase in fea_multi_case.ri.
+structure def Strut {
+    param section_area : Area
+    param material : ElasticMaterial
+}
+
+// ── Cable ──────────────────────────────────────────────────────────────────────
+//
+// A tension-only member in the tensegrity network. Like Strut but adds a
+// pretension force (initial tension to maintain form in the unloaded state).
+//   section_area — cross-sectional area (determines axial stiffness EA)
+//   material     — elastic properties from ElasticMaterial
+//   pretension   — initial axial tension force; defaults to 0N per PRD §3
+//
+// section_area and material are required (no defaults); pretension defaults
+// to 0N so a Cable can be constructed with only its geometry and material
+// when pretension is unknown or irrelevant (e.g. pure topology enumeration).
+structure def Cable {
+    param section_area : Area
+    param material : ElasticMaterial
+    param pretension : Force = 0 * 1N
+}
+
+// ── Tensegrity ────────────────────────────────────────────────────────────────
+//
+// The typed network binding node positions to member connectivity. All three
+// params are required; no defaults — a bare Tensegrity() is structurally
+// meaningless (no nodes, no members, no topology).
+//
+//   nodes  — ordered list of 3D node positions (Length-typed points)
+//   struts — connectivity index pairs [[from, to], ...] into nodes list
+//   cables — connectivity index pairs [[from, to], ...] into nodes list
+//
+// Index convention: each inner list is exactly [from_index, to_index] where
+// both are 0-based indices into `nodes`. The `tensegrity_wires(t)` builtin
+// validates each pair against nodes.len() and emits Value::Undef on violation.
+structure def Tensegrity {
+    param nodes : List<Point3<Length>>
+    param struts : List<List<Int>>
+    param cables : List<List<Int>>
+}
+
+// ── TensegrityWire ────────────────────────────────────────────────────────────
+//
+// Emitted by the `tensegrity_wires(t)` builtin for each strut/cable member.
+// Carries both index metadata (for topology consumers) and inline endpoint
+// coordinates (for direct rendering without a second nodes-table dereference).
+//
+//   kind       — "strut" or "cable" (member type tag for viewport styling)
+//   from_index — 0-based index of the start node in the Tensegrity.nodes list
+//   to_index   — 0-based index of the end node in the Tensegrity.nodes list
+//   x1,y1,z1  — start-node coordinates (Length-typed scalars, SI metres)
+//   x2,y2,z2  — end-node coordinates   (Length-typed scalars, SI metres)
+//
+// This structure_def exists so the CLI dump shows
+//   TensegrityWire { kind: "strut", from_index: 0, to_index: 3, x1: ..., ... }
+// rather than an opaque map. The Rust-side `tensegrity_wires` builtin
+// constructs TensegrityWire instances directly using StructureTypeId(0) as
+// placeholder (SIR-α convention, engine_eval.rs:1789).
+//
+// All params are required — TensegrityWire instances are never user-constructed;
+// the builtin always supplies all nine fields.
+structure def TensegrityWire {
+    param kind : String
+    param from_index : Int
+    param to_index : Int
+    param x1 : Length
+    param y1 : Length
+    param z1 : Length
+    param x2 : Length
+    param y2 : Length
+    param z2 : Length
+}

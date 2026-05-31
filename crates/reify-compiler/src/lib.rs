@@ -41,6 +41,7 @@ mod type_resolution;
 mod types;
 mod units;
 
+pub use compile_builder::pre_pass::check_module_path_decl;
 pub use geometry::derive_feature_tags;
 pub use prelude_context::PreludeContext;
 pub use type_compat::{implicitly_converts_to, type_compatible};
@@ -75,7 +76,7 @@ pub(crate) use traits::*;
 pub(crate) use type_compat::*;
 pub(crate) use type_resolution::*;
 pub(crate) use units::*;
-pub use units::{GEOMETRY_FUNCTION_NAMES, UnitEntry, UnitRegistry};
+pub use units::{GEOMETRY_FUNCTION_NAMES, UnitEntry, UnitRegistry, UnitResolveError, resolve_unit_expr};
 
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;

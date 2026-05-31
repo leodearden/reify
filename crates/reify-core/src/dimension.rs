@@ -256,6 +256,35 @@ impl DimensionVector {
     pub const FRACTURE_TOUGHNESS: DimensionVector =
         DimensionVector::from_rational_exps(&[(0, -1, 2), (1, 1, 1), (2, -2, 1)]);
 
+    // ─── Compliant-joint / flexure dimensioned types (task 3849 / Phase-1) ──────
+    //
+    // Added for the Compliant-Joints/Flexures PRD (v0.3, task α).
+    // Index layout reminder: 0=Length 1=Mass 2=Time 7=Angle(rad).
+
+    /// Rotational stiffness: N·m/rad = kg·m²·s⁻²·rad⁻¹
+    ///
+    /// Spring coefficient for revolute joints (spring_force = -k·Δθ gives N·m torque).
+    pub const ROTATIONAL_STIFFNESS: DimensionVector =
+        DimensionVector::from_exps(&[(0, 2), (1, 1), (2, -2), (7, -1)]);
+    /// Rotational damping: N·m·s/rad = kg·m²·s⁻¹·rad⁻¹
+    ///
+    /// Damping coefficient for revolute joints (damping_force = -c·θ̇ gives N·m torque).
+    pub const ROTATIONAL_DAMPING: DimensionVector =
+        DimensionVector::from_exps(&[(0, 2), (1, 1), (2, -1), (7, -1)]);
+    /// Translational stiffness: N/m = kg·s⁻² — dimensionally identical to `STIFFNESS`.
+    ///
+    /// Spring coefficient for prismatic joints (spring_force = -k·Δx gives N force).
+    /// Name alias: `canonical_name()` returns `"Stiffness"` (first-match scan order;
+    /// see `STIFFNESS` above). The `"TranslationalStiffness"` name resolves in the
+    /// name→dim direction via `resolve_dimension_type`. Mirrors the Curvature/AbsorptionCoeff
+    /// alias precedent (task 3603 / GHR-α).
+    pub const TRANSLATIONAL_STIFFNESS: DimensionVector = DimensionVector::STIFFNESS;
+    /// Translational damping: N·s/m = kg·s⁻¹
+    ///
+    /// Damping coefficient for prismatic joints (damping_force = -c·ẋ gives N force).
+    pub const TRANSLATIONAL_DAMPING: DimensionVector =
+        DimensionVector::from_exps(&[(1, 1), (2, -1)]);
+
     const fn basis(index: usize) -> DimensionVector {
         let mut v = [Rational::ZERO; 10];
         v[index] = Rational::ONE;
@@ -489,6 +518,17 @@ pub static NAMED_DIMENSIONS: &[(DimensionVector, &str)] = &[
     ),
     (DimensionVector::DIELECTRIC_STRENGTH, "DielectricStrength"),
     (DimensionVector::STIFFNESS, "Stiffness"),
+    // Task 3849 / flexure Phase-1: TranslationalStiffness is dimensionally identical
+    // to STIFFNESS (N/m = kg·s⁻²). Placed AFTER "Stiffness" so first-match
+    // canonical_name() continues to return "Stiffness" for the shared dim
+    // (preserves materials golden behaviour). The name→dim direction
+    // (resolve_dimension_type / resolve_type_name) finds this entry when source
+    // syntax says `TranslationalStiffness`. Mirrors the Curvature/AbsorptionCoeff
+    // alias precedent (task 3603 / GHR-α).
+    (DimensionVector::TRANSLATIONAL_STIFFNESS, "TranslationalStiffness"),
+    (DimensionVector::ROTATIONAL_STIFFNESS, "RotationalStiffness"),
+    (DimensionVector::ROTATIONAL_DAMPING, "RotationalDamping"),
+    (DimensionVector::TRANSLATIONAL_DAMPING, "TranslationalDamping"),
     (DimensionVector::ABSORPTION_COEFF, "AbsorptionCoeff"),
     // Task 3603 / GHR-α: `Curvature` is dimensionally identical to
     // `AbsorptionCoeff` (both `1/Length`). The entry is placed AFTER
@@ -1606,5 +1646,170 @@ mod tests {
                 i
             );
         }
+    }
+
+    // ─── Step-1 (task 3849): flexure dimensioned-type const existence + exponents ──
+    //
+    // Four new pub const DimensionVectors for compliant-joint/flexure types (task α,
+    // Phase-1 of docs/prds/v0_3/compliant-joints-flexures.md):
+    //
+    //   ROTATIONAL_STIFFNESS  = N·m/rad   = kg·m²·s⁻²·rad⁻¹  (index: 0=+2,1=+1,2=-2,7=-1)
+    //   ROTATIONAL_DAMPING    = N·m·s/rad = kg·m²·s⁻¹·rad⁻¹  (index: 0=+2,1=+1,2=-1,7=-1)
+    //   TRANSLATIONAL_STIFFNESS = N/m     = kg·s⁻²             (index: 1=+1,2=-2; == STIFFNESS)
+    //   TRANSLATIONAL_DAMPING = N·s/m     = kg·s⁻¹             (index: 1=+1,2=-1)
+
+    #[test]
+    fn rotational_stiffness_has_correct_exponents() {
+        // N·m/rad = kg·m²·s⁻²·rad⁻¹
+        assert_eq!(
+            DimensionVector::ROTATIONAL_STIFFNESS,
+            DimensionVector::from_exps(&[(0, 2), (1, 1), (2, -2), (7, -1)])
+        );
+    }
+
+    #[test]
+    fn rotational_damping_has_correct_exponents() {
+        // N·m·s/rad = kg·m²·s⁻¹·rad⁻¹
+        assert_eq!(
+            DimensionVector::ROTATIONAL_DAMPING,
+            DimensionVector::from_exps(&[(0, 2), (1, 1), (2, -1), (7, -1)])
+        );
+    }
+
+    #[test]
+    fn translational_stiffness_equals_stiffness_alias() {
+        // N/m = kg·s⁻² — identical to the existing STIFFNESS constant.
+        assert_eq!(
+            DimensionVector::TRANSLATIONAL_STIFFNESS,
+            DimensionVector::from_exps(&[(1, 1), (2, -2)])
+        );
+        assert_eq!(
+            DimensionVector::TRANSLATIONAL_STIFFNESS,
+            DimensionVector::STIFFNESS,
+            "TRANSLATIONAL_STIFFNESS must equal STIFFNESS (same N/m physics)"
+        );
+    }
+
+    #[test]
+    fn translational_damping_has_correct_exponents() {
+        // N·s/m = kg·s⁻¹
+        assert_eq!(
+            DimensionVector::TRANSLATIONAL_DAMPING,
+            DimensionVector::from_exps(&[(1, 1), (2, -1)])
+        );
+    }
+
+    #[test]
+    fn flexure_dims_are_mutually_distinct_except_documented_alias() {
+        // ROTATIONAL_STIFFNESS ≠ ROTATIONAL_DAMPING (time exponent differs: -2 vs -1)
+        assert_ne!(
+            DimensionVector::ROTATIONAL_STIFFNESS,
+            DimensionVector::ROTATIONAL_DAMPING
+        );
+        // ROTATIONAL_STIFFNESS ≠ TRANSLATIONAL_STIFFNESS (length and angle slots differ)
+        assert_ne!(
+            DimensionVector::ROTATIONAL_STIFFNESS,
+            DimensionVector::TRANSLATIONAL_STIFFNESS
+        );
+        // ROTATIONAL_STIFFNESS ≠ TRANSLATIONAL_DAMPING
+        assert_ne!(
+            DimensionVector::ROTATIONAL_STIFFNESS,
+            DimensionVector::TRANSLATIONAL_DAMPING
+        );
+        // ROTATIONAL_DAMPING ≠ TRANSLATIONAL_STIFFNESS
+        assert_ne!(
+            DimensionVector::ROTATIONAL_DAMPING,
+            DimensionVector::TRANSLATIONAL_STIFFNESS
+        );
+        // ROTATIONAL_DAMPING ≠ TRANSLATIONAL_DAMPING
+        assert_ne!(
+            DimensionVector::ROTATIONAL_DAMPING,
+            DimensionVector::TRANSLATIONAL_DAMPING
+        );
+        // TRANSLATIONAL_STIFFNESS == STIFFNESS (documented alias — NOT an error)
+        assert_eq!(
+            DimensionVector::TRANSLATIONAL_STIFFNESS,
+            DimensionVector::STIFFNESS
+        );
+        // TRANSLATIONAL_DAMPING ≠ TRANSLATIONAL_STIFFNESS
+        assert_ne!(
+            DimensionVector::TRANSLATIONAL_DAMPING,
+            DimensionVector::TRANSLATIONAL_STIFFNESS
+        );
+    }
+
+    #[test]
+    fn flexure_dims_distinct_from_energy_and_dynamic_viscosity() {
+        // ROTATIONAL_STIFFNESS (kg·m²·s⁻²·rad⁻¹) ≠ ENERGY (kg·m²·s⁻²) — differs by angle slot.
+        assert_ne!(DimensionVector::ROTATIONAL_STIFFNESS, DimensionVector::ENERGY);
+        // ROTATIONAL_DAMPING (kg·m²·s⁻¹·rad⁻¹) ≠ ENERGY (kg·m²·s⁻²) — time AND angle differ.
+        assert_ne!(DimensionVector::ROTATIONAL_DAMPING, DimensionVector::ENERGY);
+        // TRANSLATIONAL_DAMPING (kg·s⁻¹) ≠ DYNAMIC_VISCOSITY (kg·m⁻¹·s⁻¹) — length slot differs.
+        assert_ne!(
+            DimensionVector::TRANSLATIONAL_DAMPING,
+            DimensionVector::DYNAMIC_VISCOSITY
+        );
+    }
+
+    // ─── Step-3 (task 3849): NAMED_DIMENSIONS table registration for flexure types ──
+    //
+    // Table-driven: asserts both directions (dim→entry and name→dim) for all four
+    // flexure types in one pass.  The canonical_name direction (dim→first-match name)
+    // is tested separately below because it also covers the Stiffness/TranslationalStiffness
+    // alias ordering.
+
+    #[test]
+    fn flexure_dims_registered_and_resolve_by_name() {
+        let cases: &[(DimensionVector, &str)] = &[
+            (DimensionVector::ROTATIONAL_STIFFNESS, "RotationalStiffness"),
+            (DimensionVector::ROTATIONAL_DAMPING, "RotationalDamping"),
+            (DimensionVector::TRANSLATIONAL_STIFFNESS, "TranslationalStiffness"),
+            (DimensionVector::TRANSLATIONAL_DAMPING, "TranslationalDamping"),
+        ];
+        for &(dim, name) in cases {
+            // (a) forward: (dim, name) entry exists in the table
+            let registered = super::NAMED_DIMENSIONS
+                .iter()
+                .any(|(d, n)| *n == name && *d == dim);
+            assert!(
+                registered,
+                "NAMED_DIMENSIONS must contain an entry with dim={dim:?} and name=\"{name}\""
+            );
+            // (b) name→dim: the name resolves to the expected dim
+            let found_dim = super::NAMED_DIMENSIONS
+                .iter()
+                .find(|(_, n)| *n == name)
+                .map(|(d, _)| *d);
+            assert_eq!(
+                found_dim,
+                Some(dim),
+                "NAMED_DIMENSIONS name→dim lookup for \"{name}\" must return {dim:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn flexure_dims_have_correct_canonical_names() {
+        // RotationalStiffness and RotationalDamping are distinct dims — canonical_name is unambiguous.
+        assert_eq!(
+            DimensionVector::ROTATIONAL_STIFFNESS.canonical_name(),
+            Some("RotationalStiffness")
+        );
+        assert_eq!(
+            DimensionVector::ROTATIONAL_DAMPING.canonical_name(),
+            Some("RotationalDamping")
+        );
+        // TranslationalDamping is a distinct dim — canonical_name is unambiguous.
+        assert_eq!(
+            DimensionVector::TRANSLATIONAL_DAMPING.canonical_name(),
+            Some("TranslationalDamping")
+        );
+        // STIFFNESS canonical name must STILL be "Stiffness" (TranslationalStiffness alias
+        // placed AFTER Stiffness in table — first-match unchanged).
+        assert_eq!(
+            DimensionVector::STIFFNESS.canonical_name(),
+            Some("Stiffness"),
+            "STIFFNESS canonical_name must remain 'Stiffness' after TranslationalStiffness alias is added"
+        );
     }
 }

@@ -209,6 +209,9 @@ pub(crate) fn phase_entities(
             reify_ast::Declaration::TypeAlias(_) => {
                 // Already compiled by aliases_phase::phase_aliases.
             }
+            reify_ast::Declaration::Module(_) => {
+                // No entity to build from a module declaration.
+            }
         }
     }
 }
@@ -457,6 +460,8 @@ pub(crate) fn phase_sub_override_autos(ctx: &mut CompilationCtx, prelude: &[&Com
                 default_expr: None,
                 solver_hints: vec![],
                 span,
+                // Auto sub-override cells are never aux declarations.
+                is_aux: false,
             });
         }
     }

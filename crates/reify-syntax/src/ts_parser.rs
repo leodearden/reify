@@ -75,6 +75,7 @@ pub fn parse_with_prelude_enums(
         errors: lowering.errors.into_inner(),
         content_hash,
         pragmas: lowering.module_pragmas,
+        declared_module_path: lowering.declared_module_path,
     }
 }
 
@@ -141,6 +142,9 @@ struct Lowering<'a> {
     known_enums: HashSet<&'a str>,
     /// Module-level pragmas collected during source-file lowering.
     module_pragmas: Vec<Pragma>,
+    /// Structured module path from a top-of-file `module a.b.c` declaration.
+    /// `None` if no module declaration was present in the source file.
+    declared_module_path: Option<ModulePath>,
 }
 
 impl<'a> Lowering<'a> {
@@ -168,6 +172,7 @@ impl<'a> Lowering<'a> {
             errors: RefCell::new(Vec::new()),
             known_enums,
             module_pragmas: Vec::new(),
+            declared_module_path: None,
         }
     }
 
@@ -241,6 +246,20 @@ impl<'a> Lowering<'a> {
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if !child.is_named() && self.node_text(child) == "pub" {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Check if a node has an anonymous 'aux' keyword child.
+    ///
+    /// Mirrors `has_pub_keyword`. Used by `lower_let` and `lower_sub` to set
+    /// `is_aux` (PRD §2.1/§2.2, task 3899 step-6).
+    fn has_aux_keyword(&self, node: tree_sitter::Node) -> bool {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if !child.is_named() && self.node_text(child) == "aux" {
                 return true;
             }
         }
@@ -355,6 +374,49 @@ impl<'a> Lowering<'a> {
                         self.module_pragmas.push(pragma);
                     }
                 }
+                "module_declaration" => {
+                    // Top-of-file `module a.b.c` declaration.
+                    // Extract the dotted path by collecting `identifier` children
+                    // of the `path` (import_path) field — mirrors lower_import's
+                    // segment-collection loop.
+                    if let Some(path_node) = child.child_by_field_name("path") {
+                        let mut segments = Vec::new();
+                        let mut seg_cursor = path_node.walk();
+                        for seg in path_node.children(&mut seg_cursor) {
+                            if seg.kind() == "identifier" {
+                                segments.push(self.node_text(seg).to_string());
+                            }
+                        }
+                        let dotted = segments.join(".");
+                        let span = self.span(child);
+                        // Only treat this as a valid top-of-file declaration if
+                        // no declarations or errors have been accumulated yet.
+                        // When tree-sitter error-recovers by wrapping preceding
+                        // content in an ERROR node, that ERROR arm runs first and
+                        // pushes a parse error, so `errors` is non-empty here —
+                        // in that case we emit an error for the misplaced decl
+                        // and leave `declared_module_path` as `None`.
+                        let is_at_top = self.declarations.is_empty()
+                            && self.errors.borrow().is_empty();
+                        if is_at_top {
+                            let module_decl = ModuleDecl {
+                                path: dotted.clone(),
+                                span,
+                                content_hash: self.content_hash(child),
+                            };
+                            self.declarations.push(Declaration::Module(module_decl));
+                            self.declared_module_path = ModulePath::from_dotted(&dotted).ok();
+                        } else {
+                            self.push_error(
+                                format!(
+                                    "module declaration must be at the top of the file: {}",
+                                    dotted
+                                ),
+                                span,
+                            );
+                        }
+                    }
+                }
                 "ERROR" => {
                     // Consume any pending annotations so they don't leak past a
                     // syntax error to the next successfully-parsed declaration.
@@ -455,26 +517,77 @@ impl<'a> Lowering<'a> {
         // Detect 'pub' keyword by checking anonymous children
         let is_pub = self.has_pub_keyword(node);
 
-        // Collect variant identifiers — skip 'enum', name, '{', '}', ','
+        // Iterate enum_variant children (grammar production introduced in task α,
+        // step-4).  Each enum_variant holds a name field and optionally
+        // variant_field_decl children for named-field payloads.
         let mut variants = Vec::new();
         let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() == "identifier" && child.id() != name_node.id() {
-                variants.push(self.node_text(child).to_string());
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "enum_variant"
+                && let Some(variant) = self.lower_enum_variant(child)
+            {
+                variants.push(variant);
             }
         }
 
         let doc = self.extract_doc_comment(node);
 
+        let type_params = self.lower_type_parameters(node);
+
         Some(EnumDecl {
             name,
             doc,
             is_pub,
+            type_params,
             variants,
             span: self.span(node),
             content_hash: self.content_hash(node),
             annotations: vec![],
         })
+    }
+
+    /// Lower a single `enum_variant` CST node to an `EnumVariantDecl`.
+    ///
+    /// Bare variants (`Point`) produce `VariantPayload::Unit`.
+    /// Named-field variants (`Circle { radius: Length }`) produce
+    /// `VariantPayload::Named` with fields in source-declaration order.
+    fn lower_enum_variant(&self, node: tree_sitter::Node) -> Option<EnumVariantDecl> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+        let span = self.span(node);
+
+        // Collect variant_field_decl children for named-field payloads.
+        let mut fields: Vec<(String, TypeExpr)> = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "variant_field_decl" {
+                let field_name_node = match child.child_by_field_name("field") {
+                    Some(n) => n,
+                    // TODO(δ/3942): tree-sitter error-recovery may produce a
+                    // `variant_field_decl` without the expected 'field' child.
+                    // Silently elide the affected field rather than panic; a
+                    // Named variant whose fields all elide collapses to Unit —
+                    // task δ will add a diagnostic for this case.
+                    None => continue,
+                };
+                let type_node = match child.child_by_field_name("type") {
+                    Some(n) => n,
+                    // TODO(δ/3942): same — missing 'type' child from error recovery.
+                    None => continue,
+                };
+                let field_name = self.node_text(field_name_node).to_string();
+                let type_expr = self.lower_type_expr_node(type_node);
+                fields.push((field_name, type_expr));
+            }
+        }
+
+        let payload = if fields.is_empty() {
+            VariantPayload::Unit
+        } else {
+            VariantPayload::Named(fields)
+        };
+
+        Some(EnumVariantDecl { name, payload, span })
     }
 
     /// Extract identifiers from a trait_bound_list node (e.g., `Rigid + Printable`).
@@ -738,12 +851,39 @@ impl<'a> Lowering<'a> {
         // Extract optional type parameters
         let type_params = self.lower_type_parameters(node);
 
-        // Extract function params from fn_param_list
+        // Extract function params from fn_param_list.
+        //
+        // When `fn_param_list` has a `receiver` field (the `self` keyword),
+        // prepend a synthetic FnParam with `is_self = true` and a sentinel
+        // `TypeExprKind::Named { name: "self" }` type (placeholder, replaced by
+        // the concrete receiver type during dispatch in task δ/ζ).  Typed params
+        // that follow `self` are lowered as normal (is_self = false).
+        //
+        // Top-level `Declaration::Function` never has a receiver field; only
+        // trait-member `function_definition`/`function_signature` nodes do.
         let params = {
             let mut cursor = node.walk();
             let mut params = Vec::new();
             for child in node.children(&mut cursor) {
                 if child.kind() == "fn_param_list" {
+                    // Check for a `self` receiver field.
+                    if let Some(receiver_node) = child.child_by_field_name("receiver") {
+                        let receiver_span = self.span(receiver_node);
+                        params.push(FnParam {
+                            name: "self".to_string(),
+                            is_self: true,
+                            type_expr: TypeExpr {
+                                kind: TypeExprKind::Named {
+                                    name: "self".to_string(),
+                                    type_args: vec![],
+                                },
+                                span: receiver_span,
+                            },
+                            default: None,
+                            span: receiver_span,
+                        });
+                    }
+                    // Collect typed fn_param children (is_self = false via lower_fn_param).
                     let mut param_cursor = child.walk();
                     for param_child in child.children(&mut param_cursor) {
                         if param_child.kind() == "fn_param"
@@ -763,7 +903,8 @@ impl<'a> Lowering<'a> {
             .child_by_field_name("return_type")
             .map(|t| self.lower_type_expr_node(t));
 
-        // Extract fn_body
+        // Extract fn_body — `Some` for function_definition (has a body block),
+        // `None` for function_signature (bodyless required trait fn).
         let body = {
             let mut cursor = node.walk();
             let mut body = None;
@@ -773,7 +914,7 @@ impl<'a> Lowering<'a> {
                     break;
                 }
             }
-            body?
+            body
         };
 
         Some(FnDef {
@@ -1197,12 +1338,12 @@ impl<'a> Lowering<'a> {
             "identifier" => Some(PragmaValue::Ident(self.node_text(node).to_string())),
             "number_literal" => {
                 let text = self.node_text(node);
-                text.parse::<f64>().ok().map(PragmaValue::Number)
+                Self::strip_underscores_and_parse(text).map(PragmaValue::Number)
             }
             "quantity_literal" => {
                 let value_node = node.child_by_field_name("value")?;
                 let unit_node = node.child_by_field_name("unit")?;
-                let value: f64 = self.node_text(value_node).parse().ok()?;
+                let value: f64 = Self::strip_underscores_and_parse(self.node_text(value_node))?;
                 let unit = self.node_text(unit_node).to_string();
                 Some(PragmaValue::Quantity { value, unit })
             }
@@ -1308,6 +1449,7 @@ impl<'a> Lowering<'a> {
 
         Some(FnParam {
             name,
+            is_self: false,
             type_expr,
             default,
             span: self.span(node),
@@ -1315,9 +1457,26 @@ impl<'a> Lowering<'a> {
     }
 
     fn lower_fn_body(&self, node: tree_sitter::Node) -> Option<FnBody> {
+        // Desugar contract (task 3919, spec §18 #10):
+        //
+        // `fn_body` has two grammar arms:
+        //   block form:      `{ [fn_let_binding*]  result:<expr> }`
+        //   expression form: `= result:<expr>`
+        //
+        // Both arms share the `result` field name.  This function therefore
+        // handles both arms uniformly:
+        //   - Block form: collects fn_let_binding children (may be empty), then
+        //     reads `result`.  Yields FnBody { let_bindings, result_expr }.
+        //   - Expression form: the loop below finds zero fn_let_binding children
+        //     (there are none), so let_bindings = vec![].  `child_by_field_name("result")`
+        //     resolves the `= expr` arm's result field identically.
+        //     Yields FnBody { let_bindings: vec![], result_expr } — structurally
+        //     identical to a block body with no let bindings.  Pure desugar.
+        //
+        // No branching on grammar arm is required.
         let mut let_bindings = Vec::new();
 
-        // Collect fn_let_binding children
+        // Collect fn_let_binding children (zero for the expression form).
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "fn_let_binding"
@@ -1327,7 +1486,7 @@ impl<'a> Lowering<'a> {
             }
         }
 
-        // The result expression is the 'result' field
+        // The result expression is the 'result' field — present in both arms.
         let result_node = node.child_by_field_name("result")?;
         let result_expr = self.lower_expr(result_node)?;
 
@@ -1353,6 +1512,7 @@ impl<'a> Lowering<'a> {
             doc: None, // fn let bindings don't have doc comments
             type_expr,
             is_pub: false,
+            is_aux: false,
             value,
             where_clause: None, // fn let bindings have no where clause
             annotations: Vec::new(),
@@ -1447,6 +1607,11 @@ impl<'a> Lowering<'a> {
             "associated_type" => self
                 .lower_associated_type(child)
                 .map(MemberDecl::AssociatedType),
+            // Trait-body fn members: `fn f(self) -> T { ... }` (function_definition)
+            // or `fn req(self) -> T` (bodyless function_signature).
+            "function_definition" | "function_signature" => {
+                self.lower_function(child).map(MemberDecl::Fn)
+            }
             "port_declaration" => check_and_lower!(
                 self,
                 child,
@@ -1762,6 +1927,8 @@ impl<'a> Lowering<'a> {
 
         // Detect 'pub' keyword by checking anonymous children
         let is_pub = self.has_pub_keyword(node);
+        // Detect 'aux' modifier (PRD §2.1, task 3899 step-6).
+        let is_aux = self.has_aux_keyword(node);
 
         let type_expr = node
             .child_by_field_name("type")
@@ -1776,6 +1943,7 @@ impl<'a> Lowering<'a> {
             name,
             doc,
             is_pub,
+            is_aux,
             type_expr,
             value,
             where_clause,
@@ -1874,41 +2042,82 @@ impl<'a> Lowering<'a> {
 
         let where_clause = self.lower_where_clause(node);
 
-        // Lower the optional `specialization_body` field (task 3571).
-        // The grammar (task 3569) admits `sub name : StructName { body }` where
-        // `specialization_body` contains `repeat(choice($.param_assignment, $._member))`.
+        // Lower the optional body field: either `specialization_body` or
+        // `keyed_member_block` (task 3929, PRD §2.2).
         //
-        // Dispatch strategy:
-        // - `_member` children → `lower_member` (single source of truth; inherits all
-        //   current and future variants automatically, including ERROR-node handling).
-        // - `param_assignment` children → silently skipped for now.
-        //   TODO(task 3573): lower param_assignment once a MemberDecl variant or
-        //   let-rewrite is decided for the `name = value where?` form.
-        // - Absent body field (instantiation/collection/bare-colon forms) → `None`.
-        //
-        // Note: this loop intentionally does NOT run the annotation/pragma machinery
-        // (`pending_annotations` / `pragmas`) used by `lower_members`. Pragmas or
-        // `@annotation` markers written inside a specialization body are silently
-        // dropped. This is acceptable in practice because the validator forbids
-        // `param`/`port`/`sub` (the only members that carry annotations in normal
-        // structures) and `let`/`constraint` (the permitted members) do not
-        // conventionally carry annotations. If future usage demands annotation
-        // propagation here, replace this loop with a call to `lower_members` and
-        // filter the result.
+        // γ = task 3806: a specialization_body's param_assignment children are
+        // collected into `param_overrides` (PRD §4.2) so an overridden auto-binding
+        // resolves identically to a param-default auto. Populated in the
+        // specialization_body arm of the match below. `lower_binding_value` is pure,
+        // so collecting here alongside the helper's member lowering has no double
+        // side effect.
         let mut param_overrides: Vec<(String, Expr)> = Vec::new();
-        let body = node.child_by_field_name("body").map(|body_node| {
-            let mut members = Vec::new();
-            let mut cursor = body_node.walk();
-            for child in body_node.children(&mut cursor) {
-                if child.kind() == "param_assignment" {
-                    // γ = task 3806: collect each param_assignment as (name, value_expr)
-                    // into `param_overrides` using the shared `lower_binding_value` helper
-                    // (grammar slot 3, grammar.js:595) — the single source of truth for
-                    // auto_keyword lowering at all five _binding_value slots (PRD §4.2).
-                    // Both auto and non-auto values are captured so the AST is complete;
-                    // the compiler acts only on ExprKind::Auto entries this task (ε handles
-                    // non-auto resolution).
-                    if let Some(name_node) = child.child_by_field_name("name")
+        // The two body kinds are mutually exclusive by construction:
+        //   specialization_body → body: Some(_), keyed_members: empty
+        //   keyed_member_block  → body: None,    keyed_members: non-empty
+        //   no body field       → body: None,    keyed_members: empty
+        let (body, keyed_members) = match node.child_by_field_name("body") {
+            None => (None, Vec::new()),
+            Some(body_node) if body_node.kind() == "keyed_member_block" => {
+                // Keyed block: `{ "k1" => { overrides }  "k2" => { overrides } }`
+                // Iterate the named keyed_member_entry children; anonymous `{`/`}`
+                // tokens are skipped by `named_children`.
+                let mut entries = Vec::new();
+                let mut cursor = body_node.walk();
+                for entry in body_node.named_children(&mut cursor) {
+                    if entry.kind() != "keyed_member_entry" {
+                        continue;
+                    }
+                    let key_node = match entry.child_by_field_name("key") {
+                        Some(n) => n,
+                        // Missing `key` or `overrides` field can only occur on
+                        // ERROR CST nodes (the grammar makes both fields mandatory).
+                        // The ERROR node itself surfaces a diagnostic to the user;
+                        // silently skipping the entry here keeps downstream consumers
+                        // from seeing a half-populated keyed_members Vec.
+                        None => continue,
+                    };
+                    let overrides_node = match entry.child_by_field_name("overrides") {
+                        Some(n) => n,
+                        None => continue, // same rationale as the `key` arm above
+                    };
+                    // Unquote the key string_literal.
+                    // Reuses the strip-quotes pattern from lower_pragma_value (~lines 1224-1231).
+                    //
+                    // NOTE: escape sequences (e.g. `"in\"take"`, `"a\nb"`) are NOT
+                    // decoded — the raw text between the outer quotes is stored as-is.
+                    // This is intentional for v1 (keys are expected to be plain
+                    // identifier-like strings with no escapes).  If/when a shared
+                    // string-literal unescape helper is introduced, both this site and
+                    // lower_pragma_value should route through it; the downstream
+                    // E_DUP_MEMBER_KEY / key-comparison work (PRD tasks β/γ) must also
+                    // handle escape-decoded vs raw equality.
+                    let raw_key = self.node_text(key_node);
+                    let key = raw_key
+                        .strip_prefix('"')
+                        .and_then(|s| s.strip_suffix('"'))
+                        .unwrap_or(raw_key)
+                        .to_string();
+                    // Lower the override specialization_body via the shared helper.
+                    let overrides = self.lower_specialization_body_members(overrides_node);
+                    let span = self.span(entry);
+                    entries.push(KeyedSubMemberEntry { key, overrides, span });
+                }
+                (None, entries)
+            }
+            Some(body_node) => {
+                // specialization_body: `{ repeat(param_assignment | _member) }`
+                // γ = task 3806: collect each param_assignment as (name, value_expr)
+                // into `param_overrides` via the shared `lower_binding_value` helper
+                // (PRD §4.2). Both auto and non-auto values are captured so the AST is
+                // complete; the compiler acts only on ExprKind::Auto entries this task
+                // (ε handles non-auto resolution). The helper below independently lowers
+                // the `_member` children; `lower_binding_value` is pure so this second
+                // walk over param_assignment children has no double side effect.
+                let mut value_cursor = body_node.walk();
+                for child in body_node.children(&mut value_cursor) {
+                    if child.kind() == "param_assignment"
+                        && let Some(name_node) = child.child_by_field_name("name")
                         && let Some(value_node) = child.child_by_field_name("value")
                     {
                         let param_name = self.node_text(name_node).to_string();
@@ -1916,14 +2125,21 @@ impl<'a> Lowering<'a> {
                             param_overrides.push((param_name, expr));
                         }
                     }
-                    continue;
                 }
-                if let Some(member) = self.lower_member(child) {
-                    members.push(member);
-                }
+                let members = self.lower_specialization_body_members(body_node);
+                (Some(members), Vec::new())
             }
-            members
-        });
+        };
+
+        // Detect 'aux' modifier (PRD §2.2, task 3899 step-6).
+        let is_aux = self.has_aux_keyword(node);
+        // Lower the optional `at <pose>` clause. The grammar exposes the pose
+        // expression as a named field "pose" on the sub_declaration node
+        // (grammar.js task 3899 step-2). Pattern mirrors other optional-expr
+        // members (e.g. lower_port frame_expr, lower_param default).
+        let pose_expr = node
+            .child_by_field_name("pose")
+            .and_then(|n| self.lower_expr(n));
 
         Some(SubDecl {
             name,
@@ -1934,9 +2150,46 @@ impl<'a> Lowering<'a> {
             where_clause,
             body,
             param_overrides,
+            keyed_members,
+            is_aux,
+            pose_expr,
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
+    }
+
+    /// Lower a `specialization_body` CST node (`{ repeat(param_assignment | _member) }`)
+    /// into a `Vec<MemberDecl>`.
+    ///
+    /// Shared by the `specialization_body` path and the per-entry `overrides` path in
+    /// `keyed_member_block` lowering (task 3929) — both block forms parse via the same
+    /// `specialization_body` grammar rule and both lower via this helper.
+    ///
+    /// Dispatch strategy (mirrors the pre-extracted inline logic in `lower_sub`):
+    /// - `_member` children → `lower_member` (single source of truth).
+    /// - `param_assignment` children → silently skipped for now.
+    ///   TODO(task 3573): lower param_assignment once a MemberDecl variant or
+    ///   let-rewrite is decided for the `name = value where?` form.
+    ///   Exception: `auto_keyword` values invoke `lower_binding_value` for
+    ///   centralised auto-keyword tracking (β = task 3804, PRD §4.2), but
+    ///   the result is discarded until γ = task 3806 wires the AST plumbing.
+    fn lower_specialization_body_members(&mut self, body_node: tree_sitter::Node) -> Vec<MemberDecl> {
+        let mut members = Vec::new();
+        let mut cursor = body_node.walk();
+        for child in body_node.children(&mut cursor) {
+            if child.kind() == "param_assignment" {
+                if let Some(v) = child.child_by_field_name("value")
+                    && v.kind() == "auto_keyword"
+                {
+                    let _ = self.lower_binding_value(v);
+                }
+                continue;
+            }
+            if let Some(member) = self.lower_member(child) {
+                members.push(member);
+            }
+        }
+        members
     }
 
     fn lower_port(&mut self, node: tree_sitter::Node) -> Option<PortDecl> {
@@ -2273,7 +2526,7 @@ impl<'a> Lowering<'a> {
                 Some(MemberDecl::ForallConnect(ForallConnectDecl {
                     variable,
                     collection,
-                    body: ForallConnectBody::Connect(connect),
+                    body: ForallConnectBody::Connect(Box::new(connect)),
                     span: self.span(node),
                     content_hash: self.content_hash(node),
                 }))
@@ -2376,6 +2629,7 @@ impl<'a> Lowering<'a> {
             "lambda_expression" => self.lower_lambda_expression(node),
             "quantifier_expression" => self.lower_quantifier_expression(node),
             "quantity_literal" => self.lower_quantity_literal(node),
+            "imaginary_literal" => self.lower_imaginary_literal(node),
             "number_literal" => self.lower_number_literal(node),
             "string_literal" => self.lower_string_literal(node),
             "bool_literal" => self.lower_bool_literal(node),
@@ -2389,6 +2643,8 @@ impl<'a> Lowering<'a> {
             "member_access" => self.lower_member_access(node),
             "qualified_access" => self.lower_qualified_access(node),
             "instance_qualified_access" => self.lower_instance_qualified_access(node),
+            "trait_method_call" => self.lower_trait_method_call(node),
+            "variant_construction" => self.lower_variant_construction(node),
             "parenthesized_expression" => {
                 // Unwrap parenthesized expression — find the inner expression
                 let mut cursor = node.walk();
@@ -2621,19 +2877,49 @@ impl<'a> Lowering<'a> {
 
         let body = self.lower_expr(body_node)?;
 
-        // Collect patterns from the match_pattern node.
-        // Pattern is either '_' (wildcard) or one or more identifiers separated by '|'.
-        let mut patterns = Vec::new();
+        // Collect structured MatchPattern values from the match_pattern node.
+        // Choices:
+        //   '_'                              → [Wildcard]
+        //   variant_binding_pattern child    → [VariantBind { name, binders }]
+        //   identifier(s) separated by '|'  → [Variant(n), ...] one per identifier
+        let mut patterns: Vec<MatchPattern> = Vec::new();
         let pattern_text = self.node_text(pattern_node).trim();
 
         if pattern_text == "_" {
-            patterns.push("_".to_string());
+            patterns.push(MatchPattern::Wildcard);
         } else {
-            // Iterate named children (identifiers) of the match_pattern node
             let mut cursor = pattern_node.walk();
             for child in pattern_node.children(&mut cursor) {
-                if child.kind() == "identifier" {
-                    patterns.push(self.node_text(child).to_string());
+                match child.kind() {
+                    "variant_binding_pattern" => {
+                        // Named-field payload binding: `Circle { radius: r }`.
+                        let variant_node =
+                            child.child_by_field_name("variant")?;
+                        let name = self.node_text(variant_node).to_string();
+
+                        // Collect (field, binder) pairs from field_binding children.
+                        let mut binders: Vec<(String, String)> = Vec::new();
+                        let mut fb_cursor = child.walk();
+                        for fb_child in child.children(&mut fb_cursor) {
+                            if fb_child.kind() == "field_binding" {
+                                let field_node =
+                                    fb_child.child_by_field_name("field")?;
+                                let binder_node =
+                                    fb_child.child_by_field_name("binder")?;
+                                binders.push((
+                                    self.node_text(field_node).to_string(),
+                                    self.node_text(binder_node).to_string(),
+                                ));
+                            }
+                        }
+                        patterns.push(MatchPattern::VariantBind { name, binders });
+                    }
+                    "identifier" => {
+                        patterns.push(MatchPattern::Variant(
+                            self.node_text(child).to_string(),
+                        ));
+                    }
+                    _ => {}
                 }
             }
         }
@@ -2675,16 +2961,40 @@ impl<'a> Lowering<'a> {
                 match self.lower_match_arm_decl_arm(child) {
                     Some(arm) => arms.push(arm),
                     None if !child.has_error() => {
-                        // Arm has no CST error but lowering failed — grammar/lowering
-                        // mismatch.  Push a diagnostic so the mismatch surfaces rather
-                        // than producing a silent non-exhaustive match.
-                        self.push_error(
-                            format!(
-                                "unable to lower match arm: {}",
-                                self.node_text(child)
-                            ),
-                            self.span(child),
-                        );
+                        // Check whether the pattern contains a variant_binding_pattern
+                        // (e.g. `Circle { radius: r } => sub x : Foo`).  The broadened
+                        // grammar accepts this form at the decl level, but decl-level
+                        // named-field binding is out of scope for β — emit a targeted
+                        // message rather than the generic lowering-mismatch fallback.
+                        let has_named_bind = child
+                            .child_by_field_name("pattern")
+                            .map(|pattern_node| {
+                                let mut c = pattern_node.walk();
+                                pattern_node
+                                    .children(&mut c)
+                                    .any(|ch| ch.kind() == "variant_binding_pattern")
+                            })
+                            .unwrap_or(false);
+
+                        if has_named_bind {
+                            self.push_error(
+                                "named-field binding patterns are not supported in \
+                                 decl-level match arms"
+                                    .to_string(),
+                                self.span(child),
+                            );
+                        } else {
+                            // Arm has no CST error but lowering failed — grammar/lowering
+                            // mismatch.  Push a diagnostic so the mismatch surfaces rather
+                            // than producing a silent non-exhaustive match.
+                            self.push_error(
+                                format!(
+                                    "unable to lower match arm: {}",
+                                    self.node_text(child)
+                                ),
+                                self.span(child),
+                            );
+                        }
                     }
                     None => {} // child.has_error() — already caught by check_and_lower! at dispatch
                 }
@@ -2742,6 +3052,9 @@ impl<'a> Lowering<'a> {
             where_clause: None,
             body: None,
             param_overrides: vec![],
+            keyed_members: Vec::new(),
+            is_aux: false,
+            pose_expr: None,
             span: self.span(member_node),
             content_hash: self.content_hash(member_node),
         };
@@ -2753,12 +3066,111 @@ impl<'a> Lowering<'a> {
         })
     }
 
+    /// Strip `_` digit-separator characters from a numeric literal token and
+    /// parse the result as `f64`.
+    ///
+    /// The grammar (`tree-sitter-reify/grammar.js`) accepts `_` between digit
+    /// groups (e.g. `1_000_000`, `0.000_001`, `1_000e1_0`), but `f64::from_str`
+    /// rejects `_` in raw form.  This helper strips them before parsing so all
+    /// three lowering sites — `lower_number_literal`, `lower_quantity_literal`,
+    /// and `lower_pragma_value` — share the same path and cannot diverge.
+    ///
+    /// The `is_real` classification (`.`/`e`/`E` scan) in `lower_number_literal`
+    /// is unaffected: `_` is never `.`, `e`, or `E`, so the scan result is
+    /// identical whether run on the original or stripped text.
+    fn strip_underscores_and_parse(text: &str) -> Option<f64> {
+        if text.contains('_') {
+            text.replace('_', "").parse().ok()
+        } else {
+            text.parse().ok()
+        }
+    }
+
+    /// Parse a `number_literal` token text into `(value, is_real)`.
+    ///
+    /// Dispatches on the radix prefix before attempting `f64` conversion:
+    ///
+    /// - **Hex** (`0x`/`0X`): strips the prefix and any `_` separators, parses
+    ///   via `u64::from_str_radix(.., 16)`, returns `(n as f64, false)`.
+    /// - **Binary** (`0b`/`0B`): same, with radix 2.
+    /// - **Decimal** (everything else): delegates to
+    ///   [`Self::strip_underscores_and_parse`] for `f64::from_str` (preserving
+    ///   β/3912 `_`-separator support), then classifies `is_real` by scanning
+    ///   the *original* text for `.`, `e`, or `E`.
+    ///
+    /// # D4 is_real guard
+    ///
+    /// `is_real` is forced `false` on both radix branches regardless of the
+    /// token text.  Without this guard, `0xBEEF` / `0xe` would false-positive
+    /// as `Real` due to the `E`/`e` in their hex digits.  Hex/binary literals
+    /// are integer-only by grammar (no fractional/exponent form), so
+    /// `is_real = false` is always correct on the radix branches.
+    ///
+    /// # Precision
+    ///
+    /// Values up to `u64::MAX` are parsed via `u64::from_str_radix`; values
+    /// exceeding `u64::MAX` are accumulated as `f64` directly (matching the
+    /// decimal path's `f64::parse` approach) so they flow through
+    /// `classify_number_literal`'s `LossyReal` path rather than returning
+    /// `None` and silently dropping the expression.
+    ///
+    /// Values beyond 2^53 are stored as `(n as f64)` — a lossy conversion.
+    ///
+    /// **i64 round-trip boundary:** `classify_number_literal`
+    /// (`reify-ast/src/decl.rs`) tests `value == (value as i64) as f64`.
+    /// Rust's `as i64` saturates at `i64::MAX`, and `(i64::MAX) as f64`
+    /// rounds back to 2^63, so values ≥ 2^63 pass the round-trip check
+    /// falsely and are classified as `Int(i64::MAX)` instead of `LossyReal`.
+    /// This is a pre-existing limitation in `reify-ast` outside this task's
+    /// scope; the `0x8000000000000000` lowering test only validates that this
+    /// function itself does not return `None` for that value.
+    fn parse_number_literal_text(text: &str) -> Option<(f64, bool)> {
+        let parse_radix = |digits: &str, radix: u32| -> Option<f64> {
+            let stripped: String = digits.chars().filter(|c| *c != '_').collect();
+            if let Ok(n) = u64::from_str_radix(&stripped, radix) {
+                Some(n as f64)
+            } else {
+                // Value exceeds u64::MAX — accumulate as f64 so over-range
+                // radix literals flow to classify_number_literal's LossyReal
+                // path rather than silently returning None (matches the decimal
+                // path, which accepts arbitrary magnitude via f64::parse →
+                // finite or f64::INFINITY).
+                let radix_f = radix as f64;
+                let mut acc = 0.0_f64;
+                for ch in stripped.chars() {
+                    let digit = ch.to_digit(radix)? as f64;
+                    acc = acc * radix_f + digit;
+                }
+                Some(acc)
+            }
+        };
+
+        if let Some(digits) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+            return Some((parse_radix(digits, 16)?, false));
+        }
+        if let Some(digits) = text.strip_prefix("0b").or_else(|| text.strip_prefix("0B")) {
+            return Some((parse_radix(digits, 2)?, false));
+        }
+
+        // Decimal branch: preserve `_`-separator support via the shared helper.
+        let value = Self::strip_underscores_and_parse(text)?;
+        let is_real = text.contains('.') || text.contains('e') || text.contains('E');
+        Some((value, is_real))
+    }
+
     fn lower_quantity_literal(&self, node: tree_sitter::Node) -> Option<Expr> {
         let value_node = node.child_by_field_name("value")?;
         let unit_node = node.child_by_field_name("unit")?;
 
-        let value: f64 = self.node_text(value_node).parse().ok()?;
-        let unit = self.node_text(unit_node).to_string();
+        // Use the shared radix-aware helper so that hex/binary quantity values
+        // (e.g. `0xFFmm`, `0b1010mm`) lower correctly (PRD D3/D4, task 3913/δ).
+        // strip_underscores_and_parse returns None for "0xFF", so using it here
+        // would silently drop radix quantity literals — the exact gap the γ
+        // grammar (task 3910) opened when it made `0xFFmm` parse as
+        // quantity_literal(number_literal "0xFF", unit_expr "mm").
+        // The `_is_real` component is discarded: QuantityLiteral has no is_real field.
+        let (value, _is_real) = Self::parse_number_literal_text(self.node_text(value_node))?;
+        let unit = self.lower_unit_expr(unit_node)?;
 
         Some(Expr {
             kind: ExprKind::QuantityLiteral { value, unit },
@@ -2766,17 +3178,123 @@ impl<'a> Lowering<'a> {
         })
     }
 
+    /// Lower a `unit_expr` CST node into a structured [`UnitExpr`] tree.
+    ///
+    /// Probe order mirrors the grammar's precedence (PRD
+    /// `docs/prds/unit-expressions.md` §3.2/§4.1; task α corpus
+    /// `tree-sitter-reify/test/corpus/unit_expr.txt`):
+    ///   1. **Pow** — `base ^ exponent`. Probed first because the pow arm also
+    ///      carries an `op` field (the `^`), but is uniquely identified by the
+    ///      presence of `base` + `exponent` fields.
+    ///   2. **Mul/Div** — `left (*|/) right`, left-associative. Dispatch on the
+    ///      operator's source TEXT, not node kind: the `op` field aliases the two
+    ///      external-scanner tokens (`_unit_mul_op` / `_unit_div_op`).
+    ///   3. **Paren / bare unit** — a parenthesised `unit_expr` is unwrapped
+    ///      transparently (no `Paren` variant — parens carry no semantics); a
+    ///      `unit_name` child becomes [`UnitExpr::Unit`].
+    ///
+    /// Returns `None` on a malformed CST so `?` propagates a parse failure
+    /// cleanly, matching the other `lower_*` helpers.
+    fn lower_unit_expr(&self, node: tree_sitter::Node) -> Option<UnitExpr> {
+        // 1. Pow: `base ^ exponent`.
+        if let (Some(base_node), Some(exp_node)) = (
+            node.child_by_field_name("base"),
+            node.child_by_field_name("exponent"),
+        ) {
+            let base = self.lower_unit_expr(base_node)?;
+            // grammar's `signed_integer` is `-?\d+`, so this parse is total in practice.
+            let exponent: i32 = self.node_text(exp_node).parse().ok()?;
+            return Some(UnitExpr::Pow(Box::new(base), exponent));
+        }
+
+        // 2. Mul/Div: `left (*|/) right`, left-associative. The `op` field aliases
+        //    the external-scanner tokens (`_unit_mul_op` / `_unit_div_op`), which
+        //    `child_by_field_name` does NOT expose — so detect the arm by the
+        //    `left`+`right` fields and read the operator from the source slice
+        //    between the two operands. Units are contiguous (no whitespace inside
+        //    a unit_expr), so that slice is exactly `*` or `/`.
+        if let (Some(left_node), Some(right_node)) = (
+            node.child_by_field_name("left"),
+            node.child_by_field_name("right"),
+        ) {
+            let left = self.lower_unit_expr(left_node)?;
+            let right = self.lower_unit_expr(right_node)?;
+            let op_text = self
+                .source
+                .get(left_node.end_byte()..right_node.start_byte())?;
+            return if op_text.contains('/') {
+                Some(UnitExpr::Div(Box::new(left), Box::new(right)))
+            } else if op_text.contains('*') {
+                Some(UnitExpr::Mul(Box::new(left), Box::new(right)))
+            } else {
+                None
+            };
+        }
+
+        // 3. Paren or bare unit: walk named children. A `unit_name` child is a
+        //    bare unit; an inner `unit_expr` child is a parenthesised group that
+        //    we unwrap by recursing (parens are anonymous tokens, not children).
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            match child.kind() {
+                "unit_name" => {
+                    return Some(UnitExpr::Unit(self.node_text(child).to_string()));
+                }
+                "unit_expr" => return self.lower_unit_expr(child),
+                _ => {}
+            }
+        }
+        None
+    }
+
     fn lower_number_literal(&self, node: tree_sitter::Node) -> Option<Expr> {
         let text = self.node_text(node);
-        let value: f64 = text.parse().ok()?;
-        // Classify as Real when the token contains the fractional or exponent part of
-        // the grammar's `number_literal` rule: `\d+(\.\d+)?([eE][+-]?\d+)?`
-        // (tree-sitter-reify/grammar.js).  This scan must stay in sync with that regex —
-        // if the grammar gains new number-literal forms (e.g. hex floats, `_` separators),
-        // update both the grammar and this classification.
-        let is_real = text.contains('.') || text.contains('e') || text.contains('E');
+        // Dispatch through the radix-aware helper (task 3913 / δ).
+        //
+        // `parse_number_literal_text` handles:
+        //   - Hex (0x/0X): u64::from_str_radix(.., 16), is_real = false
+        //   - Binary (0b/0B): u64::from_str_radix(.., 2), is_real = false
+        //   - Decimal: strip_underscores_and_parse + `.`/`e`/`E` scan
+        //
+        // is_real is forced false on radix branches (D4 guard) so that hex
+        // tokens containing `e`/`E` (e.g. 0xBEEF, 0xe) do not false-positive
+        // as Real literals.  The decimal branch preserves β/3912 `_`-separator
+        // support and the `.`/`e`/`E` is_real scan on the original text.
+        let (value, is_real) = Self::parse_number_literal_text(text)?;
         Some(Expr {
             kind: ExprKind::NumberLiteral { value, is_real },
+            span: self.span(node),
+        })
+    }
+
+    /// Desugar an `imaginary_literal` CST node to `complex(0.0, x)`.
+    ///
+    /// Grammar: `imaginary_literal = seq(field('value', $.number_literal), token.immediate('j'))`.
+    /// The `value` child is the mantissa `number_literal`; the `j` suffix is anonymous.
+    ///
+    /// Desugars to `ExprKind::FunctionCall { name: "complex", args: [re, im] }` where:
+    /// - `re` = `NumberLiteral { value: 0.0, is_real: true }` (synthetic zero real part)
+    /// - `im` = the lowered mantissa via `lower_number_literal`
+    ///
+    /// This avoids introducing a new `ExprKind::ImaginaryLiteral` variant (which would
+    /// require exhaustive match updates across ~12 files in reify-compiler/eval/lsp).
+    fn lower_imaginary_literal(&self, node: tree_sitter::Node) -> Option<Expr> {
+        let value_node = node.child_by_field_name("value")?;
+        // Lower the mantissa number_literal to get the imaginary-part Expr.
+        let im_expr = self.lower_number_literal(value_node)?;
+        // Build a synthetic real-part literal: NumberLiteral { value: 0.0, is_real: true }.
+        let re_expr = Expr {
+            kind: ExprKind::NumberLiteral {
+                value: 0.0,
+                is_real: true,
+            },
+            span: self.span(node),
+        };
+        Some(Expr {
+            kind: ExprKind::FunctionCall {
+                name: "complex".to_string(),
+                args: vec![re_expr, im_expr],
+            },
             span: self.span(node),
         })
     }
@@ -3009,6 +3527,138 @@ impl<'a> Lowering<'a> {
         })
     }
 
+    /// Lower a `trait_method_call` CST node to either `TraitStaticCall` or
+    /// `TraitMethodCall`, depending on whether the `callee` field is a
+    /// `qualified_access` (static) or `instance_qualified_access` (instance).
+    ///
+    /// Grammar: `trait_method_call` has:
+    /// - field `callee`: `choice(qualified_access, instance_qualified_access)`
+    /// - child `argument_list` (shared with `function_call`)
+    fn lower_trait_method_call(&self, node: tree_sitter::Node) -> Option<Expr> {
+        let callee_node = node.child_by_field_name("callee")?;
+
+        // Collect positional args from the `argument_list` child (same logic as
+        // `lower_function_call`, reusing the existing `lower_call_argument` helper).
+        let mut args = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "argument_list" {
+                let mut arg_cursor = child.walk();
+                for arg_child in child.children(&mut arg_cursor) {
+                    if let Some(expr) = self.lower_call_argument(arg_child) {
+                        args.push(expr);
+                    }
+                }
+            }
+        }
+
+        match callee_node.kind() {
+            "qualified_access" => {
+                // Static form: `Trait::method(args)` — callee is bare qualified_access.
+                let qualifier_node = callee_node.child_by_field_name("qualifier")?;
+                let member_node = callee_node.child_by_field_name("member")?;
+                let trait_name = self.node_text(qualifier_node).to_string();
+                let method = self.node_text(member_node).to_string();
+                Some(Expr {
+                    kind: ExprKind::TraitStaticCall {
+                        trait_name,
+                        method,
+                        args,
+                    },
+                    span: self.span(node),
+                })
+            }
+            "instance_qualified_access" => {
+                // Instance form: `obj.(Trait::method)(args)`.
+                let object_node = callee_node.child_by_field_name("object")?;
+                let qualified_node = callee_node.child_by_field_name("qualified")?;
+
+                // The inner `qualified` must be a `qualified_access` — validated by grammar,
+                // but guarded defensively.
+                if qualified_node.kind() != "qualified_access" {
+                    self.push_error(
+                        "trait method call: expected 'Trait::method' form inside parentheses"
+                            .to_string(),
+                        self.span(callee_node),
+                    );
+                    return None;
+                }
+                let inner_qualifier = qualified_node.child_by_field_name("qualifier")?;
+                let inner_member = qualified_node.child_by_field_name("member")?;
+                let trait_name = self.node_text(inner_qualifier).to_string();
+                let method = self.node_text(inner_member).to_string();
+
+                let object = self.lower_expr(object_node)?;
+                Some(Expr {
+                    kind: ExprKind::TraitMethodCall {
+                        object: Box::new(object),
+                        trait_name,
+                        method,
+                        args,
+                    },
+                    span: self.span(node),
+                })
+            }
+            other => {
+                self.push_error(
+                    format!(
+                        "trait_method_call: unexpected callee kind '{}'; \
+                         expected qualified_access or instance_qualified_access",
+                        other
+                    ),
+                    self.span(callee_node),
+                );
+                None
+            }
+        }
+    }
+
+    /// Lower a `variant_construction` CST node to `ExprKind::VariantConstruct`.
+    ///
+    /// Grammar (task α, step-6):
+    ///   `Name { field: value, ... }` — ≥1 named field, optional trailing comma.
+    ///
+    /// The lowered node carries the variant name and a Vec of (field_name, Expr)
+    /// in source-declaration order.  No `known_enums` gating — whether `Name` is
+    /// a real enum variant is resolved by task δ (3942).  At α the compiler emits
+    /// a "not yet supported" poison literal for every VariantConstruct node.
+    fn lower_variant_construction(&self, node: tree_sitter::Node) -> Option<Expr> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        let mut fields: Vec<(String, Expr)> = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "variant_construction_field" {
+                let field_name_node = match child.child_by_field_name("field") {
+                    Some(n) => n,
+                    // TODO(δ/3942): error-recovery node missing 'field' child — elide.
+                    None => continue,
+                };
+                let value_node = match child.child_by_field_name("value") {
+                    Some(n) => n,
+                    // TODO(δ/3942): error-recovery node missing 'value' child — elide.
+                    None => continue,
+                };
+                let field_name = self.node_text(field_name_node).to_string();
+                let value_expr = match self.lower_expr(value_node) {
+                    Some(e) => e,
+                    // TODO(δ/3942): lower_expr returned None for the field value
+                    // (unsupported or error-recovery expression kind) — elide rather
+                    // than panic; task δ adds a diagnostic once VariantConstruct is
+                    // fully resolved.
+                    None => continue,
+                };
+                fields.push((field_name, value_expr));
+            }
+        }
+
+        Some(Expr {
+            kind: ExprKind::VariantConstruct { name, fields },
+            span: self.span(node),
+        })
+    }
+
     fn lower_member_access(&self, node: tree_sitter::Node) -> Option<Expr> {
         let object_node = node.child_by_field_name("object")?;
         let member_node = node.child_by_field_name("member")?;
@@ -3125,6 +3775,8 @@ mod tests {
                 MemberDecl::ForallConstraint(_) => "forall_constraint".into(),
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(_) => "match_arm_decl_group".into(),
+                // Produced by lower_function (task 3937).
+                MemberDecl::Fn(f) => format!("fn:{}", f.name),
             })
             .collect();
         assert_eq!(
@@ -3164,7 +3816,7 @@ mod tests {
         match &width.default.as_ref().unwrap().kind {
             ExprKind::QuantityLiteral { value, unit } => {
                 assert!((value - 80.0).abs() < f64::EPSILON);
-                assert_eq!(unit, "mm");
+                assert_eq!(unit, &UnitExpr::Unit("mm".to_string()));
             }
             other => panic!("expected QuantityLiteral, got {:?}", other),
         }
@@ -3268,7 +3920,7 @@ mod tests {
                 match &right.kind {
                     ExprKind::QuantityLiteral { value, unit } => {
                         assert!((value - 2.0).abs() < f64::EPSILON);
-                        assert_eq!(unit, "mm");
+                        assert_eq!(unit, &UnitExpr::Unit("mm".to_string()));
                     }
                     other => panic!("expected QuantityLiteral, got {:?}", other),
                 }
@@ -3311,6 +3963,8 @@ mod tests {
                 MemberDecl::ForallConstraint(f) => f.span,
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => g.span,
+                // Produced by lower_function (task 3937).
+                MemberDecl::Fn(f) => f.span,
             };
             assert!(span.start < span.end, "member {} span empty", i);
             assert!(
@@ -3443,6 +4097,16 @@ mod tests {
                 }
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(_) => {}
+                // Produced by lower_function (task 3937).
+                MemberDecl::Fn(f) => {
+                    assert!(
+                        text.starts_with("fn"),
+                        "fn member {} text: {:?}",
+                        i,
+                        text
+                    );
+                    assert!(text.contains(&f.name), "fn {} name in text", i);
+                }
             }
         }
 
@@ -3502,6 +4166,8 @@ mod tests {
                 MemberDecl::ForallConstraint(f) => (f.span, f.content_hash),
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.span, g.content_hash),
+                // Produced by lower_function (task 3937).
+                MemberDecl::Fn(f) => (f.span, f.content_hash),
             };
             let text = &source[span.start as usize..span.end as usize];
             assert_eq!(
@@ -3615,6 +4281,8 @@ mod tests {
                 MemberDecl::ForallConstraint(f) => (f.content_hash, f.span),
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.content_hash, g.span),
+                // Produced by lower_function (task 3937).
+                MemberDecl::Fn(f) => (f.content_hash, f.span),
             };
             let (hash_b, span_b) = match m_b {
                 MemberDecl::Param(p) => (p.content_hash, p.span),
@@ -3634,6 +4302,8 @@ mod tests {
                 MemberDecl::ForallConstraint(f) => (f.content_hash, f.span),
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.content_hash, g.span),
+                // Produced by lower_function (task 3937).
+                MemberDecl::Fn(f) => (f.content_hash, f.span),
             };
             assert_eq!(hash_a, hash_b, "member {} hash determinism", i);
             assert_eq!(span_a, span_b, "member {} span determinism", i);
@@ -3820,7 +4490,9 @@ mod tests {
         match &module.declarations[0] {
             Declaration::Enum(e) => {
                 assert_eq!(e.name, "Direction");
-                assert_eq!(e.variants, vec!["In", "Out", "Bidi"]);
+                let variant_names: Vec<&str> =
+                    e.variants.iter().map(|v| v.name.as_str()).collect();
+                assert_eq!(variant_names, vec!["In", "Out", "Bidi"]);
             }
             other => panic!("expected Enum, got {:?}", other),
         }
@@ -4355,8 +5027,8 @@ mod tests {
         assert!(
             matches!(&f.return_type.as_ref().unwrap().kind, TypeExprKind::Named { name, .. } if name == "Scalar")
         );
-        assert!(f.body.let_bindings.is_empty());
-        assert!(matches!(&f.body.result_expr.kind, ExprKind::BinOp { op, .. } if op == "*"));
+        assert!(f.body.as_ref().unwrap().let_bindings.is_empty());
+        assert!(matches!(&f.body.as_ref().unwrap().result_expr.kind, ExprKind::BinOp { op, .. } if op == "*"));
     }
 
     #[test]
@@ -4388,7 +5060,7 @@ mod tests {
             matches!(&f.return_type.as_ref().unwrap().kind, TypeExprKind::Named { name, .. } if name == "Real")
         );
         assert!(matches!(
-            &f.body.result_expr.kind,
+            &f.body.as_ref().unwrap().result_expr.kind,
             ExprKind::Conditional { .. }
         ));
     }
@@ -4409,12 +5081,12 @@ mod tests {
             other => panic!("expected Function, got {:?}", other),
         };
         assert_eq!(f.params.len(), 1);
-        assert_eq!(f.body.let_bindings.len(), 1);
-        assert_eq!(f.body.let_bindings[0].name, "y");
+        assert_eq!(f.body.as_ref().unwrap().let_bindings.len(), 1);
+        assert_eq!(f.body.as_ref().unwrap().let_bindings[0].name, "y");
         assert!(
-            matches!(&f.body.let_bindings[0].value.kind, ExprKind::BinOp { op, .. } if op == "*")
+            matches!(&f.body.as_ref().unwrap().let_bindings[0].value.kind, ExprKind::BinOp { op, .. } if op == "*")
         );
-        assert!(matches!(&f.body.result_expr.kind, ExprKind::BinOp { op, .. } if op == "+"));
+        assert!(matches!(&f.body.as_ref().unwrap().result_expr.kind, ExprKind::BinOp { op, .. } if op == "+"));
     }
 
     #[test]
@@ -4618,8 +5290,17 @@ mod tests {
     fn lower_connect_body_error_node_emits_diagnostic() {
         // `{ >= }` produces an ERROR child inside connect_body.
         // When lower_connect_body is called directly, the ERROR arm fires.
+        // NOTE: we use `: BoltSet` to specify a connector_type before the brace
+        // block, making `{` unambiguously the start of connect_body.  Without
+        // the connector_type, the new variant_construction GLR fork (task α,
+        // data-carrying-enums) keeps both a variant_construction fork and the
+        // connect_body fork alive after `b {`; even though `>=` immediately
+        // kills the variant_construction fork, GLR error recovery may orphan
+        // `{ … }` as a member-level ERROR node rather than a connect_body,
+        // causing `find_node_by_kind("connect_body")` to fail.  The connector
+        // type `: BoltSet` consumes the `b :` prefix so the `{` is unambiguous.
         let errors = lower_body_with_errors(
-            "structure S { port a : out T  port b : in T  connect a -> b { >= } }",
+            "structure S { port a : out T  port b : in T  connect a -> b : BoltSet { >= } }",
         );
         assert!(
             !errors.is_empty(),
@@ -5048,7 +5729,7 @@ mod tests {
                 match lower_expr.kind {
                     ExprKind::QuantityLiteral { value, unit } => {
                         assert!((value - 2.0).abs() < f64::EPSILON);
-                        assert_eq!(unit, "mm");
+                        assert_eq!(unit, UnitExpr::Unit("mm".to_string()));
                     }
                     other => panic!("expected QuantityLiteral for bound, got {:?}", other),
                 }
@@ -5075,7 +5756,7 @@ mod tests {
                 match lower_expr.kind {
                     ExprKind::QuantityLiteral { value, unit } => {
                         assert!((value - 2.0).abs() < f64::EPSILON);
-                        assert_eq!(unit, "mm");
+                        assert_eq!(unit, UnitExpr::Unit("mm".to_string()));
                     }
                     other => panic!("expected QuantityLiteral for bound, got {:?}", other),
                 }
@@ -5102,7 +5783,7 @@ mod tests {
                 match upper_expr.kind {
                     ExprKind::QuantityLiteral { value, unit } => {
                         assert!((value - 100.0).abs() < f64::EPSILON);
-                        assert_eq!(unit, "MPa");
+                        assert_eq!(unit, UnitExpr::Unit("MPa".to_string()));
                     }
                     other => panic!("expected QuantityLiteral for bound, got {:?}", other),
                 }
@@ -5129,7 +5810,7 @@ mod tests {
                 match upper_expr.kind {
                     ExprKind::QuantityLiteral { value, unit } => {
                         assert!((value - 100.0).abs() < f64::EPSILON);
-                        assert_eq!(unit, "MPa");
+                        assert_eq!(unit, UnitExpr::Unit("MPa".to_string()));
                     }
                     other => panic!("expected QuantityLiteral for bound, got {:?}", other),
                 }

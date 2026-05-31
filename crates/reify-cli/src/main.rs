@@ -141,6 +141,10 @@ fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitC
         }
     };
 
+    // file_stem() strips only the last extension: "foo.ri" → "foo". Dotted stems
+    // like "v1.2" (from a file named "v1.2.ri") yield a single-segment ModulePath
+    // ["v1.2"], which will mismatch a `module v1.2` declaration (parsed as ["v1","2"]).
+    // This is a known limitation: Reify module names are expected to be bare identifiers.
     let module_name = std::path::Path::new(path)
         .file_stem()
         .and_then(|s| s.to_str())
@@ -155,7 +159,16 @@ fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitC
         return Err(ExitCode::FAILURE);
     }
 
-    let compiled = reify_compiler::compile_with_stdlib(&parsed);
+    let mut compiled = reify_compiler::compile_with_stdlib(&parsed);
+
+    // Enforce module-path declaration (spec §7.1/§7.2, task γ).
+    // parsed.path == ModulePath::single(module_name) by construction (PRD D-6).
+    if let Some(diag) = reify_compiler::check_module_path_decl(
+        parsed.declared_module_path.as_ref(),
+        &parsed.path,
+    ) {
+        compiled.diagnostics.push(diag);
+    }
 
     for diag in &compiled.diagnostics {
         eprintln!("{}: {}", diag.severity, diag.message);
@@ -164,13 +177,137 @@ fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitC
     Ok(compiled)
 }
 
-fn cmd_check(args: &[String]) -> ExitCode {
-    if args.is_empty() {
-        eprintln!("Usage: reify check <file>");
-        return ExitCode::FAILURE;
+/// One per-param binding parsed from a `--purpose` flag value.
+///
+/// `param` is the per-param name in the multi-pair form (`p:A`), or `None`
+/// in the single-pair form (`name=entity`). `entity` is the structure ref.
+#[derive(Debug, PartialEq)]
+struct PurposeBinding {
+    param: Option<String>,
+    entity: String,
+}
+
+/// A single `--purpose <value>` activation: a purpose name and its bindings.
+#[derive(Debug, PartialEq)]
+struct PurposeActivation {
+    name: String,
+    bindings: Vec<PurposeBinding>,
+}
+
+/// Parse a `--purpose <value>` flag value.
+///
+/// Grammar:
+/// - single-pair: `name=entity` → one binding `{ param: None, entity }`.
+/// - multi-pair:  `name=p:A,q:B` → ordered bindings, each `{ param: Some(p), entity: A }`.
+///
+/// Errors on: missing `=`, empty name, empty binding list, empty segment
+/// (e.g. trailing `,`), malformed `p:` / `:e` (empty side of `:`), or
+/// multi-segment values where any segment lacks its `param:` name.
+fn parse_purpose_flag(value: &str) -> Result<PurposeActivation, String> {
+    let (name, rest) = value
+        .split_once('=')
+        .ok_or_else(|| format!("--purpose value '{}' is missing '='", value))?;
+    if name.is_empty() {
+        return Err(format!(
+            "--purpose value '{}' has an empty purpose name",
+            value
+        ));
+    }
+    if rest.is_empty() {
+        return Err(format!("--purpose value '{}' has no binding", value));
     }
 
-    let compiled = match parse_and_compile(&args[0]) {
+    let mut bindings: Vec<PurposeBinding> = Vec::new();
+    for segment in rest.split(',') {
+        if segment.is_empty() {
+            return Err(format!(
+                "--purpose value '{}' has an empty binding segment",
+                value
+            ));
+        }
+        let binding = match segment.split_once(':') {
+            Some((param, entity)) => {
+                if param.is_empty() || entity.is_empty() {
+                    return Err(format!(
+                        "--purpose value '{}' has a malformed binding segment '{}'",
+                        value, segment
+                    ));
+                }
+                PurposeBinding {
+                    param: Some(param.to_string()),
+                    entity: entity.to_string(),
+                }
+            }
+            None => PurposeBinding {
+                param: None,
+                entity: segment.to_string(),
+            },
+        };
+        bindings.push(binding);
+    }
+
+    // Multi-binding values must use named bindings (per-param `p:E` form) so
+    // each binding knows which purpose param it targets. Allowing
+    // `name=A,B` would silently rely on positional order against a
+    // user-declared param list, which is too brittle.
+    if bindings.len() >= 2 && bindings.iter().any(|b| b.param.is_none()) {
+        return Err(format!(
+            "--purpose value '{}' has multiple bindings but at least one is missing its 'param:' name",
+            value
+        ));
+    }
+
+    Ok(PurposeActivation {
+        name: name.to_string(),
+        bindings,
+    })
+}
+
+/// Usage line printed to stderr for any `reify check` usage error.
+const CHECK_USAGE: &str = "Usage: reify check [--purpose <name>=<binding>]... <file>";
+
+fn cmd_check(args: &[String]) -> ExitCode {
+    // Flag walk modeled on cmd_doc/cmd_gui: explicit handling of known flags
+    // and explicit rejection of unknown `--`-prefixed tokens so a typo like
+    // `--purpouse` fails loud instead of being silently treated as a file path.
+    let mut purpose_values: Vec<String> = Vec::new();
+    let mut file: Option<&str> = None;
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        match a {
+            "--purpose" => {
+                if i + 1 >= args.len() {
+                    eprintln!("Error: --purpose requires a value");
+                    eprintln!("{}", CHECK_USAGE);
+                    return ExitCode::FAILURE;
+                }
+                purpose_values.push(args[i + 1].clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--") => {
+                eprintln!("Error: unknown flag for `check`: {}", flag);
+                eprintln!("{}", CHECK_USAGE);
+                return ExitCode::FAILURE;
+            }
+            _ => {
+                if file.is_none() {
+                    file = Some(a);
+                }
+                i += 1;
+            }
+        }
+    }
+
+    let file = match file {
+        Some(f) => f,
+        None => {
+            eprintln!("{}", CHECK_USAGE);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let compiled = match parse_and_compile(file) {
         Ok(c) => c,
         Err(code) => return code,
     };
@@ -183,29 +320,149 @@ fn cmd_check(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-    let result = engine.check(&compiled);
+    if purpose_values.is_empty() {
+        // No --purpose flag: existing engine.check() path, byte-for-byte.
+        let checker = SimpleConstraintChecker;
+        let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+        let result = engine.check(&compiled);
 
-    let outcome = report_eval_output(
-        &result.constraint_results,
-        &result.diagnostics,
-        &mut std::io::stdout(),
-        &mut std::io::stderr(),
-    );
+        let outcome = report_eval_output(
+            &result.constraint_results,
+            &result.diagnostics,
+            &mut std::io::stdout(),
+            &mut std::io::stderr(),
+        );
 
-    match outcome {
-        ConstraintOutcome::AllSatisfied => {
-            println!("All constraints satisfied.");
-            ExitCode::SUCCESS
+        match outcome {
+            ConstraintOutcome::AllSatisfied => {
+                println!("All constraints satisfied.");
+                ExitCode::SUCCESS
+            }
+            ConstraintOutcome::SomeIndeterminate(n) => {
+                println!("No constraints violated ({n} indeterminate).");
+                ExitCode::SUCCESS
+            }
+            ConstraintOutcome::SomeViolated => {
+                println!("Some constraints violated.");
+                ExitCode::FAILURE
+            }
         }
-        ConstraintOutcome::SomeIndeterminate(n) => {
-            println!("No constraints violated ({n} indeterminate).");
-            ExitCode::SUCCESS
+    } else {
+        // --purpose path: replicates the canonical
+        // eval → activate_purpose → check_constraints_with_values sequence
+        // (see crates/reify-eval/tests/purpose_activation.rs:1151-1177).
+        // engine.check() does NOT visit purpose-injected constraints —
+        // they live in snapshot.graph.constraints, visited only by
+        // check_constraints_with_values.
+
+        // Parse all --purpose values up front so a malformed value fails
+        // before we touch the engine.
+        let mut activations: Vec<PurposeActivation> = Vec::with_capacity(purpose_values.len());
+        for value in &purpose_values {
+            match parse_purpose_flag(value) {
+                Ok(a) => activations.push(a),
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    return ExitCode::FAILURE;
+                }
+            }
         }
-        ConstraintOutcome::SomeViolated => {
-            println!("Some constraints violated.");
-            ExitCode::FAILURE
+
+        let checker = SimpleConstraintChecker;
+        let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+        let eval_result = engine.eval(&compiled);
+
+        // Activate each purpose in flag order; one check_constraints_with_values
+        // call after the loop collects results for ALL injected constraints.
+        for activation in &activations {
+            // Single-binding form (name=entity, param==None): route through the
+            // activate_purpose(name, entity) shim — byte-identical @entity prefix,
+            // preserves existing single-param CLI tests (C6).
+            // Everything else (len>=2, or len==1 with a named param like part:PartA):
+            // route through activate_purpose_with_bindings for C2/C3 validation.
+            let is_bare_single = activation.bindings.len() == 1
+                && activation.bindings[0].param.is_none();
+
+            if is_bare_single {
+                engine.activate_purpose(&activation.name, &activation.bindings[0].entity);
+
+                // activate_purpose is silent on unknown-purpose, missing eval_state,
+                // and the C2 multi-param refusal. is_purpose_active is the only
+                // programmatic signal — a false result surfaces all failure modes.
+                if !engine.is_purpose_active(&activation.name) {
+                    eprintln!(
+                        "Error: could not activate purpose '{}' (no such purpose in the file, or it requires per-param bindings)",
+                        activation.name
+                    );
+                    return ExitCode::FAILURE;
+                }
+            } else {
+                // Multi-binding requires every binding to name its param
+                // (`part:PartA`). A bare segment mixed in (`PartA,envelope:BoxB`)
+                // — or an all-bare multi value (`PartA,BoxB`) — would forward an
+                // empty param string below and surface as the unactionable
+                // "has no parameter ''" engine diagnostic. parse_purpose_flag is
+                // the first line of defense (it rejects a bare segment in a
+                // len>=2 value), so this is currently unreachable via the CLI;
+                // we guard here too so cmd_check stays self-consistent and never
+                // forwards an empty param if the parser is ever loosened.
+                if activation.bindings.iter().any(|b| b.param.is_none()) {
+                    eprintln!(
+                        "Error: purpose '{}' has multiple bindings; name every parameter (e.g. 'part:PartA,envelope:BoxB')",
+                        activation.name
+                    );
+                    return ExitCode::FAILURE;
+                }
+                let pairs: Vec<(String, String)> = activation
+                    .bindings
+                    .iter()
+                    .map(|b| (b.param.clone().unwrap_or_default(), b.entity.clone()))
+                    .collect();
+                if let Err(e) =
+                    engine.activate_purpose_with_bindings(&activation.name, &pairs)
+                {
+                    eprintln!("Error: {e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+
+        let (constraint_results, check_diags) =
+            match engine.check_constraints_with_values(&eval_result.values) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    return ExitCode::FAILURE;
+                }
+            };
+
+        // Eval diagnostics first, then check diagnostics — chronological order.
+        let mut diagnostics = eval_result.diagnostics.clone();
+        diagnostics.extend(check_diags);
+
+        let outcome = report_eval_output(
+            &constraint_results,
+            &diagnostics,
+            &mut std::io::stdout(),
+            &mut std::io::stderr(),
+        );
+
+        // Same outcome → summary + exit-code mapping as the no-purpose path,
+        // so a purpose-injected violation behaves identically to a structure
+        // constraint violation in stdout and shell exit semantics.
+        match outcome {
+            ConstraintOutcome::AllSatisfied => {
+                println!("All constraints satisfied.");
+                ExitCode::SUCCESS
+            }
+            ConstraintOutcome::SomeIndeterminate(n) => {
+                println!("No constraints violated ({n} indeterminate).");
+                ExitCode::SUCCESS
+            }
+            ConstraintOutcome::SomeViolated => {
+                println!("Some constraints violated.");
+                ExitCode::FAILURE
+            }
         }
     }
 }
@@ -1176,6 +1433,44 @@ mod tests {
             !has_reify_debug,
             "REIFY_DEBUG must NOT be set in Command env when debug=false"
         );
+    }
+
+    #[test]
+    fn parse_purpose_flag_accepts_single_pair() {
+        // `name=entity` is the single-binding form: one binding with no
+        // per-param name and the entity as the structure ref.
+        let activation =
+            parse_purpose_flag("mfg_ready=Bracket").expect("single-pair form should parse");
+        assert_eq!(activation.name, "mfg_ready");
+        assert_eq!(activation.bindings.len(), 1);
+        assert_eq!(activation.bindings[0].param, None);
+        assert_eq!(activation.bindings[0].entity, "Bracket");
+    }
+
+    #[test]
+    fn parse_purpose_flag_accepts_multi_pair_named_bindings() {
+        // `name=p:A,q:B` is the multi-pair form: ordered, each segment carries
+        // its per-param name.
+        let activation = parse_purpose_flag("fits_within=part:A,envelope:B")
+            .expect("multi-pair form should parse");
+        assert_eq!(activation.name, "fits_within");
+        assert_eq!(activation.bindings.len(), 2);
+        assert_eq!(activation.bindings[0].param.as_deref(), Some("part"));
+        assert_eq!(activation.bindings[0].entity, "A");
+        assert_eq!(activation.bindings[1].param.as_deref(), Some("envelope"));
+        assert_eq!(activation.bindings[1].entity, "B");
+    }
+
+    #[test]
+    fn parse_purpose_flag_rejects_malformed_values() {
+        // Missing `=` — no purpose name vs. binding-list separator.
+        assert!(parse_purpose_flag("noequals").is_err());
+        // Empty purpose name.
+        assert!(parse_purpose_flag("=Bracket").is_err());
+        // Empty binding list.
+        assert!(parse_purpose_flag("mfg_ready=").is_err());
+        // Trailing empty segment after a comma (`p=a,`).
+        assert!(parse_purpose_flag("p=a,").is_err());
     }
 
     #[test]

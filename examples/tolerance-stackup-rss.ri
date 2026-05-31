@@ -1,0 +1,45 @@
+// tolerance-stackup-rss.ri — demonstrate tolerance stack-up analysis builtins.
+//
+// PRD docs/prds/v0_6/tolerance-stackup-analysis.md §0–3 (T3 integration).
+//
+// Design intent: a 3-part tolerance chain for a shaft-in-bore assembly gap.
+//   c1: shaft body       nominal=10mm, symmetric tol=±0.10mm, sign=+1
+//   c2: housing bore     nominal= 5mm, symmetric tol=±0.05mm, sign=-1
+//   c3: retainer clip    nominal= 3mm, symmetric tol=±0.20mm, sign=+1
+//
+// gap_nominal = +10 - 5 + 3 = 8 mm
+//
+// Worst-case (extreme-value) stack-up:
+//   sum_plus  = 0.10 + 0.05 + 0.20 = 0.35 mm  (same for sum_minus, symmetric)
+//   worst_case_band = (0.35 + 0.35) / 2 = 0.35 mm
+//   worst_case_max  = 8 + 0.35 = 8.35 mm
+//   worst_case_min  = 8 - 0.35 = 7.65 mm
+//
+// RSS (root-sum-square) at 3σ (default sigma_level):
+//   t1=0.10mm, t2=0.05mm, t3=0.20mm
+//   rss_sigma = sqrt(t1²+t2²+t3²) / 3 = sqrt(5.25e-8) / 3 ≈ 2.426e-5 m
+//   rss_band  = 3 × rss_sigma ≈ 7.279e-5 m = 0.0728 mm
+//
+// Expected `reify eval` output (BTreeMap display order, SI meters):
+//   worst.worst_case_band = <~3.5e-4 m LENGTH>
+//   rss.rss_sigma         = <~2.4e-5 m LENGTH>
+
+structure def ToleranceStackupRss {
+    // ── contributors ────────────────────────────────────────────────────────
+    // contributor(nominal, tolerance[, sign]) — sign defaults to +1
+    let c1 = contributor(10mm, 0.1mm, 1)    // shaft body,    sign=+1
+    let c2 = contributor(5mm, 0.05mm, -1)   // housing bore,  sign=-1
+    let c3 = contributor(3mm, 0.2mm, 1)     // retainer clip, sign=+1
+
+    // ── chain (ordered list of contributor maps) ─────────────────────────
+    let chain = [c1, c2, c3]
+
+    // ── stack-up analyses ────────────────────────────────────────────────
+    // stackup_worst_case: extreme-value (linear worst-case) analysis.
+    // Returns Map with keys: nominal_gap, worst_case_band, worst_case_max, worst_case_min.
+    let worst = stackup_worst_case(chain)
+
+    // stackup_rss: root-sum-square (statistical) analysis at default 3σ.
+    // Returns Map with keys: nominal_gap, rss_band, rss_max, rss_min, rss_sigma, sigma_level.
+    let rss = stackup_rss(chain)
+}

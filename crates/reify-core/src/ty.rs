@@ -102,6 +102,11 @@ pub enum Type {
     Frame(usize),
     /// Rigid-body transformation in N-dimensional space: a rotation (Orientation) + translation (Vector).
     Transform(usize),
+    /// General (non-rigid) affine map in N-dimensional space: a linear part + translation.
+    ///
+    /// Unlike `Transform(usize)` (rigid: rotation+translation), the linear part may scale/shear.
+    /// Stored as inline arrays `linear: [[f64;3];3]` + `translation: [f64;3]` in `Value::AffineMap`.
+    AffineMap(usize),
     /// Range over a comparable element type (e.g., Range<Int>, Range<Scalar[m]>).
     Range(Box<Type>),
     /// 3D plane: an origin point and a unit normal vector.
@@ -227,6 +232,11 @@ impl Type {
     /// Shorthand for a rigid-body transformation in N-dimensional space.
     pub fn transform(n: usize) -> Self {
         Type::Transform(n)
+    }
+
+    /// Shorthand for a general (non-rigid) affine map in N-dimensional space.
+    pub fn affine_map(n: usize) -> Self {
+        Type::AffineMap(n)
     }
 
     /// Shorthand for a range over a given element type.
@@ -374,6 +384,7 @@ impl std::fmt::Display for Type {
             Type::Orientation(n) => write!(f, "Orientation{}", n),
             Type::Frame(n) => write!(f, "Frame{}", n),
             Type::Transform(n) => write!(f, "Transform{}", n),
+            Type::AffineMap(n) => write!(f, "AffineMap{}", n),
             Type::Range(inner) => write!(f, "Range<{}>", inner),
             Type::Plane => write!(f, "Plane"),
             Type::Axis => write!(f, "Axis"),
@@ -1454,5 +1465,74 @@ mod tests {
             Type::StructureRef("SocketHead".into()),
         ]);
         assert_eq!(format!("{}", union), "Union<HexHead | SocketHead>");
+    }
+
+    // ── AffineMap tests (step-1 RED / task 3958 α) ───────────────────────────
+
+    #[test]
+    fn type_affine_map_construction() {
+        // Same dimension equals itself
+        assert_eq!(Type::AffineMap(3), Type::AffineMap(3));
+        // Distinct dimensions are not equal
+        assert_ne!(Type::AffineMap(3), Type::AffineMap(2));
+    }
+
+    #[test]
+    fn type_affine_map_display() {
+        assert_eq!(format!("{}", Type::AffineMap(3)), "AffineMap3");
+        assert_eq!(format!("{}", Type::AffineMap(2)), "AffineMap2");
+    }
+
+    #[test]
+    fn type_affine_map_factory() {
+        assert_eq!(Type::affine_map(3), Type::AffineMap(3));
+        assert_eq!(Type::affine_map(2), Type::AffineMap(2));
+    }
+
+    #[test]
+    fn type_affine_map_eq_and_hash() {
+        use std::collections::HashMap;
+
+        let a3a = Type::AffineMap(3);
+        let a3b = Type::AffineMap(3);
+        let a2 = Type::AffineMap(2);
+
+        assert_eq!(a3a, a3b);
+        assert_ne!(a3a, a2);
+        // AffineMap != other types
+        assert_ne!(a3a, Type::Real);
+
+        // Hash consistency
+        let mut map: HashMap<Type, &str> = HashMap::new();
+        map.insert(a3a.clone(), "a3");
+        assert_eq!(map.get(&a3b), Some(&"a3"));
+        assert_eq!(map.get(&a2), None);
+    }
+
+    #[test]
+    fn type_affine_map_not_numeric() {
+        assert!(!Type::AffineMap(3).is_numeric());
+        assert!(!Type::AffineMap(2).is_numeric());
+    }
+
+    #[test]
+    fn type_affine_map_as_name_none() {
+        assert_eq!(Type::AffineMap(3).as_name(), None);
+    }
+
+    #[test]
+    fn type_affine_map_ne_transform() {
+        // AffineMap(3) and Transform(3) are semantically distinct (non-rigid vs rigid)
+        assert_ne!(Type::AffineMap(3), Type::Transform(3));
+    }
+
+    #[test]
+    fn type_affine_map_ne_frame() {
+        assert_ne!(Type::AffineMap(3), Type::Frame(3));
+    }
+
+    #[test]
+    fn type_affine_map_ne_orientation() {
+        assert_ne!(Type::AffineMap(3), Type::Orientation(3));
     }
 }

@@ -18,19 +18,20 @@
 //!
 //! OpenVDB operates on Voxel (volumetric grid) representations. It does NOT
 //! tessellate B-rep (OCCT's territory), perform mesh Booleans (Manifold's
-//! territory), or evaluate SDFs (Fidget's territory). The descriptor therefore
-//! declares exactly three entries:
+//! territory), or evaluate SDFs (Fidget's territory). The descriptor declares
+//! four entries:
 //! - `(BooleanUnion, Voxel)`
 //! - `(BooleanDifference, Voxel)`
 //! - `(BooleanIntersection, Voxel)`
+//! - `(Convert { from: Mesh }, Voxel)` — Mesh→Voxel via `meshToVolume` (task η)
 //!
-//! Deliberately excluded from the v0.2 descriptor:
+//! Deliberately excluded from the v0.3 descriptor:
 //! - Voxel primitives: deferred to avoid routing `field def` evaluations
 //!   through the stub kernel on every primitive build.
 //! - Voxel→Mesh surfacing (`Convert { from: Voxel } → Mesh`): marching-cubes
 //!   / level-set surfacing, Fidget's signature feature (arch §10.8), deferred
 //!   as a follow-up task gated by the imported-field-source PRD.
-//! - BRep→Voxel sampling: deferred to a separate follow-up.
+//! - BRep→Voxel direct sampling: deferred to a separate follow-up.
 //!
 //! # `cfg(any(has_openvdb, feature = "stub_register"))` gate on `inventory::submit!`
 //!
@@ -88,22 +89,36 @@ pub const OPENVDB_KERNEL_NAME: &str = "openvdb";
 
 /// Construct the OpenVDB [`CapabilityDescriptor`].
 ///
-/// Enumerates the three Voxel-Boolean operations OpenVDB supports:
-/// `BooleanUnion`, `BooleanDifference`, and `BooleanIntersection`, all paired
-/// with `ReprKind::Voxel`. Called by the `KernelRegistration::descriptor`
-/// function pointer at engine startup (once per `collect_registry()` call,
-/// not per geometry op).
+/// Enumerates the four operations OpenVDB supports: the three Voxel-Boolean
+/// operations (`BooleanUnion`, `BooleanDifference`, `BooleanIntersection`) plus
+/// `Convert{from:Mesh}→Voxel` (Mesh→Voxel via `meshToVolume`, added in task η).
+/// Called by the `KernelRegistration::descriptor` function pointer at engine
+/// startup (once per `collect_registry()` call, not per geometry op).
 ///
 /// Owned return (`CapabilityDescriptor` by value) because the descriptor's
 /// `supports: Vec<...>` field is non-const-constructible — see
 /// `reify_types::KernelRegistration` doc for the full rationale.
+///
+/// # Planning vs execution contract
+///
+/// The `(Convert{from:Mesh}, Voxel)` entry is a **PLANNING** declaration that
+/// lets the dispatcher BFS reach Voxel from a BRep input via a two-stage chain
+/// `BRep --occt--> Mesh --openvdb--> Voxel`. The executable Mesh→Voxel primitive
+/// is `OpenVdbKernel::realize_voxel_from_mesh_with_options` (kernel_real.rs).
+/// Trait-`execute()` of the terminal Voxel op intentionally returns
+/// `GeometryError::OperationFailed` (graceful degradation, pinned by
+/// `tests/dispatcher_integration.rs::openvdb_two_stage_chain_terminal_op_execute_degrades_gracefully`)
+/// until task ε wires the wrapper into engine dispatch (no `GeometryOp`
+/// Mesh-input variant exists, so trait-execute routing is structurally deferred).
 pub fn openvdb_capability_descriptor() -> CapabilityDescriptor {
     use Operation::*;
     let supports = vec![
-        // Voxel Booleans ×3 — OpenVDB's complete capability surface in v0.2.
+        // Voxel Booleans ×3.
         (BooleanUnion, ReprKind::Voxel),
         (BooleanDifference, ReprKind::Voxel),
         (BooleanIntersection, ReprKind::Voxel),
+        // Mesh→Voxel conversion via openvdb::tools::meshToVolume (task η).
+        (Convert { from: ReprKind::Mesh }, ReprKind::Voxel),
     ];
     CapabilityDescriptor { supports }
 }

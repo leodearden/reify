@@ -9044,3 +9044,665 @@ fn get_mechanism_descriptors_bind_on_fixed_joint_does_not_promote_binding() {
     // fixed joints even though binding is FixedNoMotion.
     // (Not asserting a specific value here — the best-effort nature is the point.)
 }
+
+// ── T0b: tensegrity_wires extraction via build_gui_state ─────────────────────
+
+/// Inline T-prism topology source — mirrors `examples/tensegrity_t_prism.ri`.
+///
+/// 6 nodes (top equilateral triangle z=1m + bottom triangle z=0m 30° twist).
+/// 3 struts (cross-members [0,3],[1,4],[2,5]) then 3 cables (perimeter [0,1],[1,2],[2,0]).
+fn t_prism_source() -> &'static str {
+    r#"
+structure def TPrism {
+    let prism = Tensegrity(
+        nodes: [
+            point3(1m, 0m, 1m),
+            point3(-0.5m, 0.866m, 1m),
+            point3(-0.5m, -0.866m, 1m),
+            point3(0.866m, 0.5m, 0m),
+            point3(-0.866m, 0.5m, 0m),
+            point3(0m, -1m, 0m)
+        ],
+        struts: [[0, 3], [1, 4], [2, 5]],
+        cables: [[0, 1], [1, 2], [2, 0]]
+    )
+    let wires = tensegrity_wires(self.prism)
+}
+"#
+}
+
+/// `build_gui_state()` (via `load_from_source()`) must extract 6 tensegrity wires
+/// from the T-prism module: 3 struts followed by 3 cables (T0a DD2 order).
+///
+/// Asserts:
+/// - `tensegrity_wires.len() == 6`
+/// - wires[0..3] have `kind == "strut"`, wires[3..6] have `kind == "cable"`
+/// - first strut endpoints match node 0 (1,0,1) → node 3 (0.866, 0.5, 0)
+/// - `entity_path == "TPrism"` for all wires (owning template name)
+///
+/// RED until `build_tensegrity_wires` is implemented (field is always empty).
+#[test]
+fn build_gui_state_extracts_tensegrity_wires_from_t_prism() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(t_prism_source(), "t_prism")
+        .expect("T-prism load_from_source should succeed");
+
+    assert_eq!(
+        state.tensegrity_wires.len(),
+        6,
+        "T-prism must produce 6 wires (3 struts + 3 cables); got {}",
+        state.tensegrity_wires.len()
+    );
+
+    // Struts precede cables (T0a DD2 / tensegrity_wires output order).
+    for i in 0..3 {
+        assert_eq!(
+            state.tensegrity_wires[i].kind, "strut",
+            "wire[{}] must be a strut; got '{}'",
+            i, state.tensegrity_wires[i].kind
+        );
+    }
+    for i in 3..6 {
+        assert_eq!(
+            state.tensegrity_wires[i].kind, "cable",
+            "wire[{}] must be a cable; got '{}'",
+            i, state.tensegrity_wires[i].kind
+        );
+    }
+
+    // All wires belong to the TPrism template.
+    for wire in &state.tensegrity_wires {
+        assert_eq!(
+            wire.entity_path, "TPrism",
+            "entity_path must be 'TPrism'; got '{}'",
+            wire.entity_path
+        );
+    }
+
+    // First strut: node 0 (1m, 0m, 1m) → node 3 (0.866m, 0.5m, 0m).
+    // SI passthrough: values are the raw float stored in Value::Scalar.si_value.
+    let strut0 = &state.tensegrity_wires[0];
+    assert_eq!(strut0.x1, 1.0, "strut0.x1 must be 1.0 (node 0 x)");
+    assert_eq!(strut0.y1, 0.0, "strut0.y1 must be 0.0 (node 0 y)");
+    assert_eq!(strut0.z1, 1.0, "strut0.z1 must be 1.0 (node 0 z)");
+    assert_eq!(strut0.x2, 0.866, "strut0.x2 must be 0.866 (node 3 x)");
+    assert_eq!(strut0.y2, 0.5, "strut0.y2 must be 0.5 (node 3 y)");
+    assert_eq!(strut0.z2, 0.0, "strut0.z2 must be 0.0 (node 3 z)");
+}
+
+/// A module with no tensegrity wires (the bracket module) must yield an empty
+/// `tensegrity_wires` vec — not a panic or stale data from a prior load.
+///
+/// RED until build_tensegrity_wires is implemented (though technically the empty
+/// case passes since the field is initialised to Vec::new(); the real RED is the
+/// T-prism extraction test above).
+#[test]
+fn build_gui_state_yields_empty_wires_for_non_tensegrity_module() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("bracket load_from_source should succeed");
+
+    assert!(
+        state.tensegrity_wires.is_empty(),
+        "non-tensegrity module must produce no tensegrity wires; got {}",
+        state.tensegrity_wires.len()
+    );
+}
+
+/// A Reify module that binds a `Tensegrity(...)` struct to a value cell but does
+/// NOT call `tensegrity_wires()`.  Value cells therefore contain a
+/// `Value::StructureInstance { type_name: "Tensegrity", .. }` — a non-TensegrityWire
+/// struct — which `build_tensegrity_wires` must actively filter out.
+fn tensegrity_struct_no_wires_source() -> &'static str {
+    r#"
+structure def TOnly {
+    let prism = Tensegrity(
+        nodes: [
+            point3(1m, 0m, 1m),
+            point3(-0.5m, 0.866m, 1m),
+            point3(0.866m, 0.5m, 0m)
+        ],
+        struts: [[0, 1]],
+        cables: [[1, 2]]
+    )
+}
+"#
+}
+
+/// `build_tensegrity_wires` must NOT extract records from `StructureInstance`
+/// values whose `type_name` is not `"TensegrityWire"`.
+///
+/// Uses a module whose value cells hold a `Tensegrity` StructureInstance
+/// (`type_name == "Tensegrity"`) but no `TensegrityWire` instances (because
+/// `tensegrity_wires()` is never called).  This exercises the type-name filter
+/// branch: the Tensegrity value must be ignored, yielding `tensegrity_wires: []`.
+///
+/// This is a stronger guard than `build_gui_state_yields_empty_wires_for_non_tensegrity_module`
+/// because the bracket module has no StructureInstances at all (only scalar params),
+/// so it cannot catch a regression where the filter is dropped.
+#[test]
+fn build_tensegrity_wires_filters_non_tensegrity_wire_struct_instances() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(tensegrity_struct_no_wires_source(), "tonly")
+        .expect("tonly load_from_source should succeed");
+
+    assert!(
+        state.tensegrity_wires.is_empty(),
+        "a Tensegrity StructureInstance (type_name='Tensegrity') must not be extracted as a wire; got {} wire(s)",
+        state.tensegrity_wires.len()
+    );
+}
+
+// ── task-3458 step-5: ModeShapeFrameEmitter engine tests ─────────────────────
+
+/// Recording emitter for `ModeShapeFrame` events.
+///
+/// Mirrors `RecordingFeaCaseEmitter` (line 8447) for the mode-shape-frame channel.
+///
+/// **RED at step-5**: compile-fails because `crate::engine::ModeShapeFrameEmitter`
+/// does not exist yet. GREEN after step-6 adds the trait and wiring to engine.rs.
+struct RecordingModeShapeFrameEmitter {
+    frames: std::sync::Arc<std::sync::Mutex<Vec<crate::types::ModeShapeFrame>>>,
+}
+
+impl RecordingModeShapeFrameEmitter {
+    fn new() -> Self {
+        Self {
+            frames: std::sync::Arc::new(std::sync::Mutex::new(vec![])),
+        }
+    }
+}
+
+impl crate::engine::ModeShapeFrameEmitter for RecordingModeShapeFrameEmitter {
+    fn frame(&self, payload: crate::types::ModeShapeFrame) {
+        self.frames.lock().unwrap().push(payload);
+    }
+}
+
+/// Helper: build a BucklingResult-shaped Value::StructureInstance with `n_modes` modes.
+///
+/// n_nodes = 2 (6 positions each), base_node_positions = [0,0,0, 1,0,0].
+/// Mode k displaced_positions: base shifted by +0.1 in coordinate k (k=0→x, 1→y).
+fn make_buckling_result_value(n_modes: usize) -> reify_ir::Value {
+    use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+    use std::collections::BTreeMap;
+
+    let base_positions = [0.0_f64, 0.0, 0.0, 1.0, 0.0, 0.0];
+
+    let modes_list: Vec<Value> = (0..n_modes)
+        .map(|k| {
+            // Displace coordinate k by 0.1 for each node.
+            let displaced: Vec<Value> = base_positions
+                .iter()
+                .enumerate()
+                .map(|(coord_idx, &base)| {
+                    let delta = if coord_idx % 3 == k { 0.1 } else { 0.0 };
+                    Value::Real(base + delta)
+                })
+                .collect();
+            let mode_shape_map: BTreeMap<Value, Value> = [(
+                Value::String("displaced_positions".to_string()),
+                Value::List(displaced),
+            )]
+            .into_iter()
+            .collect();
+            let mode_fields: PersistentMap<String, Value> = [
+                ("eigenvalue".to_string(), Value::Real((k + 1) as f64 * 1000.0)),
+                ("mode_shape".to_string(), Value::Map(mode_shape_map)),
+            ]
+            .into_iter()
+            .collect();
+            Value::StructureInstance(Box::new(StructureInstanceData {
+                type_id: StructureTypeId(u32::MAX),
+                type_name: "Mode".to_string(),
+                version: 1,
+                fields: mode_fields,
+            }))
+        })
+        .collect();
+
+    let base_val: Vec<Value> = base_positions.iter().map(|&v| Value::Real(v)).collect();
+
+    let result_fields: PersistentMap<String, Value> = [
+        ("modes".to_string(),               Value::List(modes_list)),
+        ("converged".to_string(),           Value::Bool(true)),
+        ("iterations".to_string(),          Value::Int(0)),
+        ("pre_stress".to_string(),          Value::Undef),
+        ("base_node_positions".to_string(), Value::List(base_val)),
+    ]
+    .into_iter()
+    .collect();
+
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "BucklingResult".to_string(),
+        version: 1,
+        fields: result_fields,
+    }))
+}
+
+/// (a) mode_shape_frame_emitter_fires_for_buckling_result_two_modes.
+///
+/// CheckResult contains a BucklingResult with 2 modes and n_nodes=2.
+/// emit_mode_shape_frames_for_test_with_result must emit:
+///   - 1 base frame (phase=0.0)
+///   - 2 peak frames (phase=1.0, mode_index ascending 0, 1)
+///     Total = 3 frames.
+///
+/// Also asserts: each frame's displaced_positions.len() == 6 (= 3·n_nodes),
+/// and peak frames differ from the base frame's positions.
+///
+/// **RED at step-5**: compile-fails because ModeShapeFrameEmitter,
+/// set_mode_shape_frame_emitter, and emit_mode_shape_frames_for_test_with_result
+/// do not exist yet.
+#[test]
+fn mode_shape_frame_emitter_fires_for_buckling_result_two_modes() {
+    use std::sync::Arc;
+    use reify_eval::CheckResult;
+    use reify_core::ValueCellId;
+    use reify_ir::ValueMap;
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let recorder = RecordingModeShapeFrameEmitter::new();
+    let captured = Arc::clone(&recorder.frames);
+    session.set_mode_shape_frame_emitter(Arc::new(recorder));
+
+    // Build a CheckResult with a BucklingResult (2 modes, n_nodes=2).
+    let mut values = ValueMap::new();
+    values.insert(
+        ValueCellId::new("BucklingColumnSmoke", "result"),
+        make_buckling_result_value(2),
+    );
+    let check = CheckResult {
+        values,
+        constraint_results: vec![],
+        diagnostics: vec![],
+        resolved_params: std::collections::HashMap::new(),
+    };
+
+    session.emit_mode_shape_frames_for_test_with_result(&check);
+
+    let frames = captured.lock().unwrap();
+
+    // 1 base frame + 2 peak frames = 3 total.
+    assert_eq!(
+        frames.len(),
+        3,
+        "expected 3 frames (1 base + 2 peak) for 2-mode BucklingResult; got {}",
+        frames.len()
+    );
+
+    // Exactly one base frame (phase == 0.0).
+    let base_frames: Vec<_> = frames.iter().filter(|f| f.phase == 0.0).collect();
+    assert_eq!(base_frames.len(), 1, "expected exactly 1 base frame (phase=0.0)");
+    assert_eq!(
+        base_frames[0].displaced_positions.len(),
+        6,
+        "base frame displaced_positions must have length 6 (3·n_nodes)"
+    );
+
+    // Two peak frames (phase == 1.0), mode_index ascending 0, 1.
+    let mut peak_frames: Vec<_> = frames.iter().filter(|f| f.phase == 1.0).collect();
+    peak_frames.sort_by_key(|f| f.mode_index);
+    assert_eq!(peak_frames.len(), 2, "expected exactly 2 peak frames (phase=1.0)");
+    assert_eq!(peak_frames[0].mode_index, 0, "first peak frame must have mode_index=0");
+    assert_eq!(peak_frames[1].mode_index, 1, "second peak frame must have mode_index=1");
+
+    // Each peak frame has the right length and differs from base frame.
+    let base_pos = &base_frames[0].displaced_positions;
+    for (i, peak) in peak_frames.iter().enumerate() {
+        assert_eq!(
+            peak.displaced_positions.len(),
+            6,
+            "peak frame {i} displaced_positions must have length 6"
+        );
+        assert!(
+            peak.displaced_positions != *base_pos,
+            "peak frame {i} must differ from the base frame"
+        );
+    }
+
+    // ── task-4072 step-3: eigenvalue threading assertions ──────────────────
+    // (e) Base frame eigenvalue must be None.
+    assert_eq!(
+        base_frames[0].eigenvalue,
+        None,
+        "base frame (phase=0.0) must have eigenvalue=None"
+    );
+
+    // (f) Peak frame k must carry eigenvalue = Some((k+1)*1000.0).
+    // make_buckling_result_value sets mode k eigenvalue = (k+1)*1000.0.
+    // RED at step-3: currently peaks have eigenvalue=None from the placeholder;
+    // GREEN after step-4 threads eigenvalues from extract_buckling_data.
+    assert_eq!(
+        peak_frames[0].eigenvalue,
+        Some(1000.0_f64),
+        "peak frame 0 must carry eigenvalue=Some(1000.0)"
+    );
+    assert_eq!(
+        peak_frames[1].eigenvalue,
+        Some(2000.0_f64),
+        "peak frame 1 must carry eigenvalue=Some(2000.0)"
+    );
+}
+
+/// (b) mode_shape_frame_emitter_no_fire_when_no_emitter.
+///
+/// No emitter installed → calling emit_mode_shape_frames_for_test_with_result
+/// must not panic (the `emit_*_if_any` guard prevents the dispatch).
+///
+/// **RED at step-5**: compile-fails for the same reason as (a).
+#[test]
+fn mode_shape_frame_emitter_no_fire_when_no_emitter() {
+    use reify_eval::CheckResult;
+    use reify_core::ValueCellId;
+    use reify_ir::ValueMap;
+
+    let checker = SimpleConstraintChecker;
+    let session = EngineSession::new(Box::new(checker), None);
+    // No emitter installed.
+
+    let mut values = ValueMap::new();
+    values.insert(
+        ValueCellId::new("BucklingColumnSmoke", "result"),
+        make_buckling_result_value(1),
+    );
+    let check = CheckResult {
+        values,
+        constraint_results: vec![],
+        diagnostics: vec![],
+        resolved_params: std::collections::HashMap::new(),
+    };
+
+    // Must not panic.
+    session.emit_mode_shape_frames_for_test_with_result(&check);
+}
+
+/// (c) mode_shape_frame_emitter_no_fire_when_no_buckling_result.
+///
+/// CheckResult contains no BucklingResult → zero frames emitted.
+///
+/// **RED at step-5**: compile-fails for the same reason as (a).
+#[test]
+fn mode_shape_frame_emitter_no_fire_when_no_buckling_result() {
+    use std::sync::Arc;
+    use reify_eval::CheckResult;
+    use reify_core::ValueCellId;
+    use reify_ir::{ValueMap, Value};
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let recorder = RecordingModeShapeFrameEmitter::new();
+    let captured = Arc::clone(&recorder.frames);
+    session.set_mode_shape_frame_emitter(Arc::new(recorder));
+
+    // Ordinary (non-BucklingResult) value.
+    let mut values = ValueMap::new();
+    values.insert(ValueCellId::new("S", "width"), Value::Int(42));
+    let check = CheckResult {
+        values,
+        constraint_results: vec![],
+        diagnostics: vec![],
+        resolved_params: std::collections::HashMap::new(),
+    };
+
+    session.emit_mode_shape_frames_for_test_with_result(&check);
+
+    let frames = captured.lock().unwrap();
+    assert!(
+        frames.is_empty(),
+        "no frames should be emitted when values contains no BucklingResult; got {}",
+        frames.len()
+    );
+}
+
+// ── task-3458 amend: mode_shape_scale regression tests ───────────────────────
+
+/// Build a BucklingResult Value with explicit base positions and per-mode
+/// displaced positions.  Mirrors `make_buckling_result_value` but lets tests
+/// supply arbitrary geometry for precise scale assertions.
+fn make_buckling_result_custom(
+    base_positions: &[f64],
+    displaced_per_mode: &[Vec<f64>],
+) -> reify_ir::Value {
+    use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+    use std::collections::BTreeMap;
+
+    let modes_list: Vec<Value> = displaced_per_mode
+        .iter()
+        .enumerate()
+        .map(|(k, displaced)| {
+            let displaced_vals: Vec<Value> = displaced.iter().map(|&v| Value::Real(v)).collect();
+            let mode_shape_map: BTreeMap<Value, Value> = [(
+                Value::String("displaced_positions".to_string()),
+                Value::List(displaced_vals),
+            )]
+            .into_iter()
+            .collect();
+            let mode_fields: PersistentMap<String, Value> = [
+                ("eigenvalue".to_string(), Value::Real((k + 1) as f64 * 1000.0)),
+                ("mode_shape".to_string(), Value::Map(mode_shape_map)),
+            ]
+            .into_iter()
+            .collect();
+            Value::StructureInstance(Box::new(StructureInstanceData {
+                type_id: StructureTypeId(u32::MAX),
+                type_name: "Mode".to_string(),
+                version: 1,
+                fields: mode_fields,
+            }))
+        })
+        .collect();
+
+    let base_val: Vec<Value> = base_positions.iter().map(|&v| Value::Real(v)).collect();
+
+    let result_fields: PersistentMap<String, Value> = [
+        ("modes".to_string(),               Value::List(modes_list)),
+        ("converged".to_string(),           Value::Bool(true)),
+        ("iterations".to_string(),          Value::Int(0)),
+        ("pre_stress".to_string(),          Value::Undef),
+        ("base_node_positions".to_string(), Value::List(base_val)),
+    ]
+    .into_iter()
+    .collect();
+
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "BucklingResult".to_string(),
+        version: 1,
+        fields: result_fields,
+    }))
+}
+
+/// (d) mode_shape_scale_verified_geometry — hand-computed scale assertion.
+///
+/// Geometry: 2 nodes at (0,0,0) and (4,0,0).
+///   bbox_diag = sqrt(4² + 0 + 0) = 4.0
+///
+/// Mode 0 displaced_positions: [1,0,0, 5,0,0] (each node shifted +1 in x).
+///   displacement = [1,0,0, 1,0,0]
+///   max_disp = L2‖[1,0,0]‖ = 1.0
+///   scale = 0.1 × 4.0 / 1.0 = 0.4
+///
+/// Expected peak = base + 0.4 × displacement = [0.4, 0, 0, 4.4, 0, 0].
+///
+/// This test locks in the 0.1 factor, the bbox computation, and the max-disp
+/// calculation so a regression in any of them fails loudly rather than silently.
+#[test]
+fn mode_shape_scale_verified_geometry_matches_hand_computed() {
+    use std::sync::Arc;
+    use reify_eval::CheckResult;
+    use reify_core::ValueCellId;
+    use reify_ir::ValueMap;
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let recorder = RecordingModeShapeFrameEmitter::new();
+    let captured = Arc::clone(&recorder.frames);
+    session.set_mode_shape_frame_emitter(Arc::new(recorder));
+
+    // 2 nodes at (0,0,0) and (4,0,0).  bbox_diag = 4.0.
+    let base = vec![0.0_f64, 0.0, 0.0, 4.0, 0.0, 0.0];
+    // Mode 0: each node shifted +1 in x → displacement magnitude = 1.0.
+    // scale = 0.1 × 4.0 / 1.0 = 0.4.
+    let disp0 = vec![1.0_f64, 0.0, 0.0, 5.0, 0.0, 0.0];
+
+    let mut values = ValueMap::new();
+    values.insert(
+        ValueCellId::new("Test", "result"),
+        make_buckling_result_custom(&base, &[disp0]),
+    );
+    let check = CheckResult {
+        values,
+        constraint_results: vec![],
+        diagnostics: vec![],
+        resolved_params: std::collections::HashMap::new(),
+    };
+
+    session.emit_mode_shape_frames_for_test_with_result(&check);
+    let frames = captured.lock().unwrap();
+
+    // 1 base frame + 1 peak frame = 2 total.
+    assert_eq!(frames.len(), 2, "expected 2 frames (1 base + 1 peak)");
+
+    let base_frame  = frames.iter().find(|f| f.phase == 0.0).expect("base frame missing");
+    let peak_frame  = frames.iter().find(|f| f.phase == 1.0).expect("peak frame missing");
+
+    // Base frame carries the undeformed positions verbatim.
+    let expected_base: Vec<f32> = base.iter().map(|&v| v as f32).collect();
+    assert_eq!(
+        base_frame.displaced_positions, expected_base,
+        "base frame positions must equal undeformed node positions"
+    );
+
+    // Peak frame: base + 0.4 × displacement = [0.4, 0.0, 0.0, 4.4, 0.0, 0.0].
+    let expected_peak: Vec<f32> = vec![0.4_f32, 0.0, 0.0, 4.4, 0.0, 0.0];
+    let eps = 1e-5_f32;
+    for (i, (&got, &want)) in peak_frame
+        .displaced_positions
+        .iter()
+        .zip(expected_peak.iter())
+        .enumerate()
+    {
+        assert!(
+            (got - want).abs() < eps,
+            "peak_frame.displaced_positions[{i}]: got {got}, want {want} (tol {eps})"
+        );
+    }
+}
+
+/// (e) mode_shape_scale_degenerate_fallback — zero-displacement and single-node.
+///
+/// Case A: zero displacement.
+///   displacement = [0,0,0, ...] → max_disp = 0.0 → scale fallback = 1.0.
+///   Expected peak = base + 1.0 × 0 = base (positions unchanged).
+///
+/// Case B: single node (bbox_diag = 0).
+///   1 node at (5,5,5), displaced to (6,5,5) → displacement = (1,0,0).
+///   bbox: single point → dx=dy=dz=0 → bbox_diag = 0.0 → scale fallback = 1.0.
+///   Expected peak = base + 1.0 × displacement = (6,5,5).
+#[test]
+fn mode_shape_scale_degenerate_fallback() {
+    use std::sync::Arc;
+    use reify_eval::CheckResult;
+    use reify_core::ValueCellId;
+    use reify_ir::ValueMap;
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    // ── Case A: zero displacement ───────────────────────────────────────────
+    {
+        let recorder = RecordingModeShapeFrameEmitter::new();
+        let captured = Arc::clone(&recorder.frames);
+        // Re-use the same session; install a fresh recorder.
+        session.set_mode_shape_frame_emitter(Arc::new(recorder));
+
+        let base = vec![0.0_f64, 0.0, 0.0, 4.0, 0.0, 0.0];
+        // displaced == base → displacement = [0,0,0, 0,0,0] → scale = 1.0 (fallback).
+        let disp0 = base.clone();
+
+        let mut values = ValueMap::new();
+        values.insert(
+            ValueCellId::new("Test", "result"),
+            make_buckling_result_custom(&base, &[disp0]),
+        );
+        let check = CheckResult {
+            values,
+            constraint_results: vec![],
+            diagnostics: vec![],
+            resolved_params: std::collections::HashMap::new(),
+        };
+
+        session.emit_mode_shape_frames_for_test_with_result(&check);
+        let frames = captured.lock().unwrap();
+        assert_eq!(frames.len(), 2, "zero-disp: expected 2 frames");
+
+        let peak_frame = frames.iter().find(|f| f.phase == 1.0).expect("peak frame missing");
+        // With scale=1.0 and displacement=0, peak == base.
+        let expected: Vec<f32> = base.iter().map(|&v| v as f32).collect();
+        assert_eq!(
+            peak_frame.displaced_positions, expected,
+            "zero-displacement: peak frame must equal base positions (scale=1.0 fallback)"
+        );
+    }
+
+    // ── Case B: single node → bbox_diag = 0 → scale fallback = 1.0 ─────────
+    {
+        let recorder = RecordingModeShapeFrameEmitter::new();
+        let captured = Arc::clone(&recorder.frames);
+        session.set_mode_shape_frame_emitter(Arc::new(recorder));
+
+        // 1 node at (5,5,5).  bbox: single point → diagonal = 0.  scale → 1.0.
+        let base = vec![5.0_f64, 5.0, 5.0];
+        let disp0 = vec![6.0_f64, 5.0, 5.0]; // displacement = [1,0,0]
+
+        let mut values = ValueMap::new();
+        values.insert(
+            ValueCellId::new("Test", "result"),
+            make_buckling_result_custom(&base, std::slice::from_ref(&disp0)),
+        );
+        let check = CheckResult {
+            values,
+            constraint_results: vec![],
+            diagnostics: vec![],
+            resolved_params: std::collections::HashMap::new(),
+        };
+
+        session.emit_mode_shape_frames_for_test_with_result(&check);
+        let frames = captured.lock().unwrap();
+        assert_eq!(frames.len(), 2, "single-node: expected 2 frames");
+
+        let peak_frame = frames.iter().find(|f| f.phase == 1.0).expect("peak frame missing");
+        // scale=1.0 fallback → peak = base + 1.0 × [1,0,0] = [6,5,5].
+        let expected: Vec<f32> = disp0.iter().map(|&v| v as f32).collect();
+        let eps = 1e-5_f32;
+        for (i, (&got, &want)) in peak_frame
+            .displaced_positions
+            .iter()
+            .zip(expected.iter())
+            .enumerate()
+        {
+            assert!(
+                (got - want).abs() < eps,
+                "single-node peak[{i}]: got {got}, want {want}"
+            );
+        }
+    }
+}

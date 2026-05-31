@@ -44,8 +44,8 @@ echo ""
 echo "--- hooks/pre-merge-commit delegates to verify.sh (full scope, main only) ---"
 assert "hooks/pre-merge-commit exists" test -f "$PRE_MERGE"
 assert "hooks/pre-merge-commit is executable" test -x "$PRE_MERGE"
-assert "pre-merge-commit execs verify.sh all --profile debug --scope all" \
-    bash -c "grep -qE 'scripts/verify\.sh\" all --profile debug --scope all' '$PRE_MERGE'"
+assert "pre-merge-commit execs verify.sh all --profile both --scope all" \
+    bash -c "grep -qE 'scripts/verify\.sh\" all --profile both --scope all' '$PRE_MERGE'"
 assert "pre-merge-commit gates main only (branch != main -> exit 0)" \
     bash -c "grep -q 'branch' '$PRE_MERGE' && grep -q '!= \"main\"' '$PRE_MERGE'"
 
@@ -54,10 +54,20 @@ echo ""
 echo "--- orchestrator.yaml command keys delegate to verify.sh ---"
 assert "test_command calls ./scripts/verify.sh test" \
     bash -c "grep '^test_command:' '$ORCH' | grep -qF './scripts/verify.sh test'"
+# The orchestrator merge path runs test_command verbatim with DF_VERIFY_ROLE=merge
+# injected. verify.sh's role-based default (merge=>both) must govern the profile;
+# an explicit --profile in test_command would override it and pin the merge path
+# to that profile, defeating the task-4078 fix.
+assert "test_command relies on the role-based profile default (no explicit --profile so merge=>both)" \
+    bash -c "grep '^test_command:' '$ORCH' | grep -vq -- '--profile'"
 assert "lint_command calls ./scripts/verify.sh lint" \
     bash -c "grep '^lint_command:' '$ORCH' | grep -qF './scripts/verify.sh lint'"
-assert "type_check_command calls ./scripts/verify.sh typecheck" \
-    bash -c "grep '^type_check_command:' '$ORCH' | grep -qF './scripts/verify.sh typecheck'"
+# Single positive assertion: requires the key to exist AND hold the value 'true' — cannot
+# pass vacuously if the key is deleted (unlike a pure negation). Implicitly covers the
+# "no longer invokes verify.sh typecheck" property: if the value is 'true', it is not
+# the old './scripts/verify.sh typecheck --scope all' string.
+assert "type_check_command is the passing no-op 'true' (redundant cargo check dropped; clippy supersets it)" \
+    bash -c "grep -qE '^type_check_command:[[:space:]]+\"?true\"?[[:space:]]*(#.*)?$' '$ORCH'"
 # verify_env must remain (verify.sh re-bakes it, but the orchestrator still injects it).
 assert "orchestrator.yaml still defines verify_env" \
     bash -c "grep -q '^verify_env:' '$ORCH'"

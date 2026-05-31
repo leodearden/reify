@@ -106,18 +106,24 @@ mod tests {
             }
         }
 
-        // Pattern: all FOUR variants; adding another must force this test to gain arms.
+        // Pattern: all SEVEN variants; adding another must force this test to gain arms.
         for p in [
             Pattern::P5PhantomDone,
             Pattern::P2ConsumerStub,
             Pattern::P1ProducerOrphan,
             Pattern::P5MetadataFilesGitignored,
+            Pattern::PDeadCode,
+            Pattern::PUntested,
+            Pattern::PLayerViolation,
         ] {
             match p {
                 Pattern::P5PhantomDone => {}
                 Pattern::P2ConsumerStub => {}
                 Pattern::P1ProducerOrphan => {}
                 Pattern::P5MetadataFilesGitignored => {}
+                Pattern::PDeadCode => {}
+                Pattern::PUntested => {}
+                Pattern::PLayerViolation => {}
             }
         }
 
@@ -1023,6 +1029,385 @@ mod tests {
         // future field added to `Finding` is automatically included in this pin;
         // field-by-field comparisons would silently miss newly added fields.
         assert_eq!(pre_done_findings, scoped_findings);
+    }
+
+    /// Fix 1 downgrade (RED — S1): when the claimed provenance commit is
+    /// unreachable AND no sibling-FF covers the missing set, but every
+    /// metadata.files entry resolves to a tracked path on main (dir-aware,
+    /// via path_tracked_on), the deliverable landed and only the provenance
+    /// pointer is stale — downgrade High → Low.
+    ///
+    /// This FAILS on current code, which returns Severity::High
+    /// "metadata.files mismatch / commit not reachable from main".
+    #[test]
+    fn deliverable_present_on_main_downgrades_to_low() {
+        let conn = seed_db();
+        insert_task_completed_event(&conn, "4100");
+
+        let mut git = MockGitOps::new();
+        // Claimed commit covers nothing → everything in metadata.files is "missing".
+        git.set_diff_changed_paths("main", "stale_sha", vec![]);
+        // No sibling-FF rescue.
+        git.set_log_grep("main", "4100", vec![]);
+        // Both metadata.files entries are present on main: one is a regular
+        // file, the other exercises the dir-aware case (a directory that
+        // contains tracked files → git ls-tree returns non-empty).
+        git.set_path_tracked_on("main", "crates/reify-x/src/foo.rs", true);
+        git.set_path_tracked_on("main", "gui/src-tauri/src/tests", true);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "4100".to_string(),
+            TaskMetadata {
+                task_id: "4100".to_string(),
+                status: "done".to_string(),
+                files: vec![
+                    "crates/reify-x/src/foo.rs".to_string(),
+                    "gui/src-tauri/src/tests".to_string(),
+                ],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("stale_sha".to_string()),
+                    note: None,
+                }),
+                title: "Fix 1 downgrade test task".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one finding; got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::P5PhantomDone);
+        assert_eq!(
+            f.severity,
+            Severity::Low,
+            "all entries present on main → must downgrade to Low; got {:?}",
+            f.severity
+        );
+        let s = f.summary.to_lowercase();
+        assert!(
+            s.contains("deliverable") && s.contains("present"),
+            "summary should mention 'deliverable' and 'present'; got {:?}",
+            f.summary
+        );
+        let metadata_files_evidence = f.evidence.iter().find_map(|e| match e {
+            EvidenceRef::MetadataFiles { entries } => Some(entries),
+            _ => None,
+        });
+        let entries = metadata_files_evidence
+            .expect("MetadataFiles evidence must be present");
+        assert!(
+            !entries.is_empty(),
+            "MetadataFiles evidence must be non-empty (the missing set); got {:?}",
+            entries
+        );
+    }
+
+    /// Fix 1 true-positive guard (RED — S3): when one metadata.files entry IS
+    /// present on main but another is genuinely absent, the finding must stay
+    /// High and the MetadataFiles evidence must cite ONLY the absent entry,
+    /// not the present one.
+    ///
+    /// This FAILS after S2, whose surviving High finding still cites the full
+    /// `missing` set (both present.rs and absent.rs), so the "must not contain
+    /// present.rs" assertion fails.
+    #[test]
+    fn partially_absent_deliverable_stays_high_and_cites_only_absent() {
+        let conn = seed_db();
+        insert_task_completed_event(&conn, "4101");
+
+        let mut git = MockGitOps::new();
+        // Empty primary diff → everything in metadata.files is in `missing`.
+        git.set_diff_changed_paths("main", "stale_sha_2", vec![]);
+        // No sibling-FF rescue.
+        git.set_log_grep("main", "4101", vec![]);
+        // present.rs is on main; absent.rs is NOT (defaults to false).
+        git.set_path_tracked_on("main", "crates/reify-x/src/present.rs", true);
+        // crates/reify-x/src/absent.rs → not set → defaults false (genuinely absent).
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "4101".to_string(),
+            TaskMetadata {
+                task_id: "4101".to_string(),
+                status: "done".to_string(),
+                files: vec![
+                    "crates/reify-x/src/present.rs".to_string(),
+                    "crates/reify-x/src/absent.rs".to_string(),
+                ],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("stale_sha_2".to_string()),
+                    note: None,
+                }),
+                title: "Partially-absent deliverable test task".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one finding; got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::P5PhantomDone);
+        assert_eq!(
+            f.severity,
+            Severity::High,
+            "absent entry remains → must stay High; got {:?}",
+            f.severity
+        );
+        let s = f.summary.to_lowercase();
+        assert!(
+            s.contains("mismatch") || s.contains("not reachable"),
+            "summary should mention 'mismatch' or 'not reachable'; got {:?}",
+            f.summary
+        );
+        let metadata_files_evidence = f.evidence.iter().find_map(|e| match e {
+            EvidenceRef::MetadataFiles { entries } => Some(entries),
+            _ => None,
+        });
+        let entries = metadata_files_evidence.expect("MetadataFiles evidence must be present");
+        assert!(
+            entries.iter().any(|p| p == "crates/reify-x/src/absent.rs"),
+            "absent.rs must appear in evidence; got {:?}",
+            entries
+        );
+        assert!(
+            !entries.iter().any(|p| p == "crates/reify-x/src/present.rs"),
+            "present.rs must NOT appear in evidence (it is on main); got {:?}",
+            entries
+        );
+    }
+
+    /// Fix 2 downgrade + true-positive preservation (RED — S5): a merged task
+    /// with NO task_completed event in runs.db but whose claimed commit IS an
+    /// ancestor of main must downgrade to Low (rebuild coverage gap, not a
+    /// defect). A sibling task with a non-ancestor commit must stay High.
+    ///
+    /// On current code BOTH tasks are High, so the 4200 "must be Low" assertion
+    /// FAILS (red-first); the 4201 High assertion locks the true-positive after
+    /// the fix.
+    #[test]
+    fn merged_no_event_but_commit_ancestor_downgrades_to_low() {
+        let conn = seed_db();
+        // Deliberately DO NOT insert task_completed events for 4200 or 4201
+        // so the runs.db Ok(false) arm fires for both.
+
+        let mut git = MockGitOps::new();
+        // Task 4200: ancestor_sha is an ancestor of main → eligible for Low.
+        git.set_is_ancestor("ancestor_sha", "main", true);
+        // Task 4201: orphan_sha is NOT an ancestor of main → must stay High.
+        // (not set → defaults false)
+
+        // Provide empty diffs/log-greps so other legs don't rescue these tasks.
+        git.set_diff_changed_paths("main", "ancestor_sha", vec![]);
+        git.set_diff_changed_paths("main", "orphan_sha", vec![]);
+        git.set_log_grep("main", "4200", vec![]);
+        git.set_log_grep("main", "4201", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "4200".to_string(),
+            TaskMetadata {
+                task_id: "4200".to_string(),
+                status: "done".to_string(),
+                files: vec!["crates/x/foo.rs".to_string()],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("ancestor_sha".to_string()),
+                    note: None,
+                }),
+                title: "Ancestor-corroborated task".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+        task_metadata.insert(
+            "4201".to_string(),
+            TaskMetadata {
+                task_id: "4201".to_string(),
+                status: "done".to_string(),
+                files: vec!["crates/x/bar.rs".to_string()],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("orphan_sha".to_string()),
+                    note: None,
+                }),
+                title: "Orphan-commit task".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        // Find findings for each task.
+        let f4200 = findings.iter().find(|f| f.task_id == "4200")
+            .expect("finding for task 4200 must exist");
+        let f4201 = findings.iter().find(|f| f.task_id == "4201")
+            .expect("finding for task 4201 must exist");
+
+        assert_eq!(
+            f4200.severity,
+            Severity::Low,
+            "ancestor commit → must downgrade to Low; got {:?}",
+            f4200.severity
+        );
+        let s4200 = f4200.summary.to_lowercase();
+        assert!(
+            s4200.contains("deliverable") && s4200.contains("ancestor"),
+            "summary should mention 'deliverable' and 'ancestor'; got {:?}",
+            f4200.summary
+        );
+
+        assert_eq!(
+            f4201.severity,
+            Severity::High,
+            "non-ancestor commit → must stay High; got {:?}",
+            f4201.severity
+        );
+        let s4201 = f4201.summary.to_lowercase();
+        assert!(
+            s4201.contains("no task_completed event") || s4201.contains("task_completed"),
+            "summary should mention 'no task_completed event'; got {:?}",
+            f4201.summary
+        );
+    }
+
+    /// Fix 2 Low finding must cite the corroborating ancestor commit (RED — S7):
+    /// the evidence must include an EvidenceRef::Commit whose sha equals the
+    /// claimed commit.
+    ///
+    /// This FAILS after S6, whose Low finding carries only EvidenceRef::RunsDb
+    /// evidence and no Commit ref.
+    #[test]
+    fn ancestor_corroboration_cites_commit_evidence() {
+        let conn = seed_db();
+        // No task_completed event → Ok(false) arm fires.
+
+        let mut git = MockGitOps::new();
+        git.set_is_ancestor("ancestor_sha2", "main", true);
+        // Provide empty diffs/log-greps so other legs don't rescue.
+        git.set_diff_changed_paths("main", "ancestor_sha2", vec![]);
+        git.set_log_grep("main", "4202", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "4202".to_string(),
+            TaskMetadata {
+                task_id: "4202".to_string(),
+                status: "done".to_string(),
+                files: vec!["crates/x/foo.rs".to_string()],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("ancestor_sha2".to_string()),
+                    note: None,
+                }),
+                title: "Ancestor commit evidence test task".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one finding; got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::P5PhantomDone);
+        assert_eq!(
+            f.severity,
+            Severity::Low,
+            "ancestor commit → must be Low; got {:?}",
+            f.severity
+        );
+        // The evidence must include an EvidenceRef::Commit citing the ancestor sha.
+        let cited_commit = f.evidence.iter().find_map(|e| match e {
+            EvidenceRef::Commit { sha, .. } => Some(sha.as_str()),
+            _ => None,
+        });
+        assert_eq!(
+            cited_commit,
+            Some("ancestor_sha2"),
+            "Low finding must include EvidenceRef::Commit {{ sha: 'ancestor_sha2' }}; got {:?}",
+            f.evidence
+        );
     }
 }
 

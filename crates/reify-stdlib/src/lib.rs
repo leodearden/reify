@@ -12,6 +12,21 @@ mod helpers;
 /// path can call the same implementation used by the stdlib builtin path.
 pub use helpers::complex_phase;
 
+/// Public re-export of the tolerance stack-up error classifier.
+///
+/// Called by `crates/reify-expr/src/lib.rs` at the builtin fallthrough arm to
+/// push `Severity::Error` diagnostics into the `EvalContext` sink when a
+/// stackup builtin returns `Value::Undef`.
+pub use stackup::diagnose as stackup_diagnose;
+
+/// Public re-export of the multi-load-case FEA error classifier.
+///
+/// Called by `crates/reify-expr/src/lib.rs` at the builtin fallthrough arm to
+/// push `Severity::Error` diagnostics into the `EvalContext` sink when
+/// `linear_combine` returns `Value::Undef` for a task-#10 failure mode
+/// (empty/unknown-case weights or incompatible meshes).
+pub use fea::diagnose as fea_diagnose;
+
 #[cfg(test)]
 #[macro_use]
 mod test_macros;
@@ -22,6 +37,7 @@ mod test_fixtures;
 mod analysis;
 mod complex;
 mod fea;
+mod flexures;
 mod geometry;
 mod joints;
 mod linalg;
@@ -33,12 +49,14 @@ pub mod loop_closure_solver;
 pub mod loop_closure_value;
 mod matrix;
 mod mechanism;
+pub mod modal;
 mod numeric;
 mod orientation;
 mod snapshot;
 mod stackup;
 mod supports;
 mod sweep;
+mod tensegrity;
 mod trajectory;
 mod trig;
 
@@ -76,6 +94,9 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
     if let Some(v) = joints::eval_joints(name, args) {
         return v;
     }
+    if let Some(v) = flexures::eval_flexures(name, args) {
+        return v;
+    }
     if let Some(v) = loads::eval_loads(name, args) {
         return v;
     }
@@ -98,6 +119,9 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         return v;
     }
     if let Some(v) = trajectory::eval_trajectory(name, args) {
+        return v;
+    }
+    if let Some(v) = tensegrity::eval_tensegrity(name, args) {
         return v;
     }
     Value::Undef

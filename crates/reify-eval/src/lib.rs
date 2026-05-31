@@ -6,6 +6,7 @@
 
 pub mod cache;
 pub mod compute_cache_key;
+pub mod compute_targets;
 pub use compute_cache_key::compute_cache_key;
 mod concurrent;
 pub use concurrent::{ConcurrentEditResult, ConcurrentEditSetup, ConcurrentNodeResult};
@@ -21,6 +22,7 @@ pub use engine_compute::{
     ComputeDispatchRegistry, ComputeFn, ComputeOutcome, DispatchError, RealizationReadHandle,
 };
 pub use graph::CancellationHandle;
+mod dynamics_psd;
 mod engine_constraints;
 mod engine_edit;
 mod engine_eval;
@@ -46,6 +48,7 @@ pub use source_location::resolve_entity_at_source_position;
 pub use source_location::resolve_entity_source_location;
 pub(crate) mod engine_hash_algo;
 pub mod field_import_provenance;
+pub mod modal_ops;
 pub mod morph_stage_b;
 pub mod multi_load_dispatch;
 pub mod persistent_cache;
@@ -294,6 +297,7 @@ fn value_type_kind_matches(
         // assertion `assert_value_cell_types_representable` is relaxed in
         // step-6 so Geometry cells are accepted.
         Value::GeometryHandle { .. } => matches!(ty, Type::Geometry),
+        Value::AffineMap { .. } => matches!(ty, Type::AffineMap(_)), // task 3958 / α
         // If a future `Value::TraitObjectInstance` variant is added, add a
         // matching arm here AND relax the runtime assertion so the compiler
         // enforces completeness.
@@ -474,6 +478,37 @@ pub struct Engine {
     /// itself is always present (module-private, no `pub`) so that the
     /// reset / increment sites in `engine_build.rs` need no cfg-gating.
     last_dispatch_count: usize,
+    /// GHR-δ §5 lazy-revalidation validity oracle: maps each geometry-backed
+    /// `RealizationNodeId` to the kernel handle it currently resolves to.
+    ///
+    /// This is the SOLE source of truth for whether a `Value::GeometryHandle`
+    /// cell's `kernel_handle` is still valid: the `GeometryKernel` trait has no
+    /// `is_valid` API and snapshots carry no kernel reference (plan.json design
+    /// decision), so a dedicated `realization_ref → handle` map is the precise,
+    /// cheap (HashMap) identity to compare against. Cleared and rebuilt at the
+    /// start of every `build()` / `build_snapshot()` and populated by
+    /// `post_process_geometry_handle_cells`; empty before the first build.
+    /// Consulted by `engine_eval::revalidate_geometry_handle` on read (S16).
+    realization_handles: HashMap<reify_core::RealizationNodeId, reify_ir::GeometryHandleId>,
+    /// GHR-δ §5 instrumentation: count of geometry-handle revalidation
+    /// SLOW-PATH firings (stale-handle re-resolution OR absent-realization →
+    /// `Undef`) since the last reset. Reset to 0 at the start of each `build()`
+    /// / `build_snapshot()`; incremented by the `&self` read entry point
+    /// `read_value_revalidated` (S16) on every non-`Fresh` outcome.
+    ///
+    /// `AtomicUsize` (not a plain `usize` like the sibling `last_*` counters)
+    /// because the read entry point borrows `&self`: interior mutability lets it
+    /// bump the counter without `&mut self`, and `AtomicUsize: Sync` preserves
+    /// `Engine: Sync` (the kernel/checker trait objects are `Send + Sync`). Read
+    /// via `geometry_revalidation_slow_path_count` and reset via
+    /// `reset_geometry_revalidation_slow_path_count` (engine_admin.rs; reader
+    /// test-gated, mirroring the `last_*` reset+reader pair).
+    ///
+    /// NOTE (GHR-δ): the only thing that bumps this counter today is the
+    /// integration suite — `read_value_revalidated` has no production caller yet
+    /// (see its docstring), so in a live run this stays at 0. Wiring lazy
+    /// revalidation into the real read path is deferred to a follow-up task.
+    geometry_revalidation_slow_path: std::sync::atomic::AtomicUsize,
     /// Event journal recording evaluation events.
     journal: EventJournal,
     /// User-defined functions from the last eval() call.
@@ -489,15 +524,16 @@ pub struct Engine {
     /// Currently active purposes: maps purpose name → injected constraint IDs.
     /// Used by deactivate_purpose to remove the injected constraints.
     active_purposes: HashMap<String, Vec<ConstraintNodeId>>,
-    /// Per-purpose entity bindings: maps purpose name → bound entity_ref.
+    /// Per-purpose param bindings: maps purpose name → ordered list of `(param, entity)` pairs.
     /// Populated/cleared in lockstep with `active_purposes`. Required for
-    /// `recompute_tolerance_scope` (task 2647) — `active_purposes` only
+    /// `recompute_tolerance_scope` (task 2647 / task 4070) — `active_purposes` only
     /// records injected ConstraintNodeIds, but the tolerance-scope rebuild
-    /// needs the original `(purpose_name → entity_ref)` mapping. See
-    /// `crates/reify-eval/src/tolerance_scope.rs` and the design decision
-    /// "Track per-purpose bound entity_ref via a new sibling HashMap" in
-    /// `.task/plan.json`.
-    active_purpose_bindings: HashMap<String, String>,
+    /// needs the original per-param `(param → entity)` mapping. Storing the full
+    /// bindings slice (not a single entity) enables multi-param purposes to route
+    /// each `RepresentationWithin` constraint's tolerance to its own bound entity.
+    /// See `crates/reify-eval/src/tolerance_scope.rs` and the design decision
+    /// "Generalize to per-param Vec<(String,String)>" in `.task/plan.json`.
+    active_purpose_bindings: HashMap<String, Vec<(String, String)>>,
     /// Active tolerance scope: maps entity_ref → SI tolerance (metres).
     /// Rebuilt from scratch on every `activate_purpose` / `deactivate_purpose`
     /// call. The map's value at `entity_ref` is the *minimum* tolerance
@@ -509,6 +545,13 @@ pub struct Engine {
     /// Active optimization objectives injected by purposes.
     /// Maps purpose name → optimization objective.
     active_objective_map: HashMap<String, OptimizationObjective>,
+    /// Injected let-cell ids for each active purpose.
+    /// Maps purpose name → ordered list of injected `ValueCellId`s (one per let
+    /// in declaration order). Populated by `activate_purpose*` alongside
+    /// `active_purposes`; cleared by `deactivate_purpose`. Used by
+    /// `check_constraints_with_values` to overlay the evaluated let-cell values
+    /// onto the incoming `values` map (task 4009 δ).
+    active_purpose_let_cells: HashMap<String, Vec<ValueCellId>>,
     /// Template meta entries from the last eval() call.
     /// Maps template name → meta key/value pairs from the template's meta block.
     /// Populated during eval() so that edit_param() and other incremental paths

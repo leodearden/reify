@@ -23,8 +23,11 @@ import {
   structuralMatch,
   // feaModeStore exports (task 2961, step-9)
   createFeaModeStore,
+  // probeStore exports (task 2964, step-23/24)
+  createProbeStore,
 } from '../stores';
 import type { FeaModeStore } from '../stores';
+import type { ProbeStore, PinnedProbe, ProbeSample, BarycentricUV } from '../stores';
 
 // Type-level assertion: FeaModeStore type re-exports and is assignable.
 const _feaModeStoreTypeCheck: FeaModeStore | null = null;
@@ -82,5 +85,32 @@ describe('stores barrel — feaModeStore exports (task 2961, step-9)', () => {
     expect(typeof store.setRange).toBe('function');
     expect(typeof store.lockCurrent).toBe('function');
     expect(typeof store.tryAutoEnable).toBe('function');
+  });
+});
+
+// Type-level assertions: ProbeStore/PinnedProbe/ProbeSample/BarycentricUV re-export and are assignable.
+const _probeStoreTypeCheck: ProbeStore | null = null;
+void _probeStoreTypeCheck;
+const _pinnedProbeTypeCheck: PinnedProbe | null = null;
+void _pinnedProbeTypeCheck;
+const _probeSampleTypeCheck: ProbeSample | null = null;
+void _probeSampleTypeCheck;
+const _barycentricUVTypeCheck: BarycentricUV | null = null;
+void _barycentricUVTypeCheck;
+
+describe('stores barrel — probeStore exports (task 2964, step-23/24)', () => {
+  it('createProbeStore is a function', () => {
+    expect(typeof createProbeStore).toBe('function');
+  });
+
+  it('createProbeStore() returns an object with state and mutation methods', () => {
+    const store = createProbeStore();
+    expect(store).toHaveProperty('state');
+    expect(Array.isArray(store.state.probes)).toBe(true);
+    expect(typeof store.addProbe).toBe('function');
+    expect(typeof store.removeProbe).toBe('function');
+    expect(typeof store.clear).toBe('function');
+    expect(typeof store.updateSample).toBe('function');
+    expect(typeof store.markStale).toBe('function');
   });
 });

@@ -21,9 +21,9 @@
 //! 3. **[`JCodemunchOps`] trait** — production uses a jcodemunch-MCP-backed
 //!    impl supplied by the T-4 CLI (#3672); tests use [`MockJCodemunchOps`]
 //!    (gated behind `feature = "test-support"`) with HashMap-backed canned
-//!    answers keyed on `(branch, since_epoch)` for changed-symbol queries and
-//!    `(file, name)` for reference queries, enabling file-level disambiguation.
-//!    Per `f-infra-design.md` §5 P1.
+//!    answers keyed on `(since_sha, until_sha)` for changed-symbol queries
+//!    and `(file, name)` for reference queries, enabling per-commit and
+//!    file-level disambiguation. Per `f-infra-design.md` §5 P1.
 //!
 //! All three seams let the integration tests in `tests/{p1,p2,p5}.rs` exercise
 //! every code path (happy path + false-positive guards + `check_pre_done`
@@ -38,7 +38,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub mod p5_phantom_done;
 pub mod p2_consumer_stub;
 pub mod p1_producer_orphan;
+pub mod pdead_dead_code;
 pub mod fused_memory_client;
+pub mod jcodemunch_client;
 
 // -----------------------------------------------------------------------
 // Public surface — finding shape
@@ -95,6 +97,18 @@ pub enum Pattern {
     /// gitignored paths that should be stripped. Distinct from `P5PhantomDone`
     /// (medium-severity cleanliness signal, not a phantom-done).
     P5MetadataFilesGitignored,
+    /// P-dead-code — public symbol with no callers above a minimum confidence
+    /// threshold, as reported by `mcp__jcodemunch__get_dead_code_v2`.
+    /// See `docs/prds/reify-audit-p1-jcodemunch-substrate.md` §3.
+    PDeadCode,
+    /// P-untested — symbol not reached by any test above a minimum confidence
+    /// threshold, as reported by `mcp__jcodemunch__get_untested_symbols`.
+    /// See `docs/prds/reify-audit-p1-jcodemunch-substrate.md` §3.
+    PUntested,
+    /// P-layer-violation — an import that violates the project's layer rules,
+    /// as reported by `mcp__jcodemunch__get_layer_violations`.
+    /// See `docs/prds/reify-audit-p1-jcodemunch-substrate.md` §3.
+    PLayerViolation,
 }
 
 /// A pointer to forensic evidence supporting a [`Finding`]. Renders verbatim
@@ -217,11 +231,11 @@ pub struct AuditContext<'a> {
     /// boundaries are deterministic. Epoch-seconds keeps the crate's dep-set
     /// minimal (no chrono/time) per `f-infra-design.md` §12.
     pub now: Option<i64>,
-    /// Branch P1 queries via `get_changed_symbols`. `None` defaults to
-    /// `"main"` inside the P1 detector (via `.as_deref().unwrap_or("main")`),
-    /// keeping all existing fixtures unchanged. The periodic-sweep CLI (T-4
-    /// #3672) sets this when running against a non-main branch. Per
-    /// `f-infra-design.md` §5 P1.
+    /// Reserved for future sweep CLI use (T-4 #3672). P1 no longer reads this
+    /// field — it now resolves symbols via `done_provenance.commit` (commit-range
+    /// `{commit}^1..{commit}`) rather than a branch+timestamp query. Kept pub
+    /// because ~50 construction sites set it to `None`; removing it is outside
+    /// the scope of L-TRAIT and deferred to a later cleanup pass.
     pub producer_branch: Option<String>,
 }
 
@@ -266,6 +280,13 @@ pub trait GitOps {
     /// (or matches a negated rule that re-ignores).
     fn is_gitignored(&self, path: &str) -> bool;
 
+    /// Returns `true` iff `path` resolves on `branch` to a tracked file OR a
+    /// directory containing tracked files (git does not track empty dirs),
+    /// equivalent to `git ls-tree <branch> -- <path>` returning non-empty.
+    /// Used by P5's deliverable-presence rescue. Fail-safe: returns `false`
+    /// on any git error (missing repo/ref, unknown path).
+    fn path_tracked_on(&self, branch: &str, path: &str) -> bool;
+
     /// Returns the added lines in `git diff <from>..<to> -- <path>` as
     /// `(new_side_line_no, content)` pairs — one entry per `+` line in the
     /// unified diff, with the leading `+` stripped. Line numbers track the
@@ -273,6 +294,38 @@ pub trait GitOps {
     /// Returns an empty vec when the branch does not exist or the path has no
     /// added lines.
     fn diff_added_lines(&self, from: &str, to: &str, path: &str) -> Vec<(usize, String)>;
+
+    /// Returns the added lines introduced by commit `commit` into `path`, i.e.
+    /// `git diff <commit>^1..<commit> -- <path>`. For a standard `--no-ff` merge
+    /// commit M (first parent M^1 = pre-merge main tip, result = M), this yields
+    /// exactly the task's net delta on the given path. Fail-safe: returns an empty
+    /// vec on any git error, including an unreachable or recycled commit SHA.
+    ///
+    /// Used by P2's reaped-branch recall path: when `done_provenance.commit` is
+    /// set and reachable from `main`, the task's `task/N` branch has typically
+    /// been reaped by the orchestrator — but the merge commit M survives on
+    /// `main`, so `git diff M^1..M` recovers the exact task delta.
+    fn diff_added_lines_in_commit(&self, commit: &str, path: &str) -> Vec<(usize, String)>;
+
+    /// Returns all lines of `path` at `reference` (e.g. `"main"`, `"HEAD"`) as
+    /// `(1-based_line_no, content)` pairs, equivalent to `git show
+    /// <reference>:<path>` split on `\n`. Fail-safe: returns an empty vec when
+    /// the path is missing on that ref or any git error occurs. Trailing
+    /// newlines produce no spurious empty entry (a file ending with `\n` returns
+    /// the same line count as its logical line count).
+    ///
+    /// Used by P2's recycled-commit fallback: when `done_provenance.commit` is
+    /// set but NOT reachable from `main` (gc'd / recycled SHA), the full-file
+    /// content scan on `main` serves as a last-resort recall path.
+    fn file_lines_on(&self, reference: &str, path: &str) -> Vec<(usize, String)>;
+
+    /// Returns `true` iff `commit` is a valid ancestor of `branch` (reachable
+    /// from it), equivalent to `git merge-base --is-ancestor <commit> <branch>`
+    /// (exit 0 = ancestor, exit 1 = not). Used by P5's scope-extension to
+    /// corroborate a merged task whose runs.db task_completed event is missing.
+    /// Fail-safe: returns `false` on any git error or spawn failure (exit 128
+    /// from an unknown commit correctly maps to "not an ancestor").
+    fn is_ancestor(&self, commit: &str, branch: &str) -> bool;
 }
 
 /// Production [`GitOps`] impl that shells out to `git`. Untested by the
@@ -315,6 +368,44 @@ pub struct RealGitOps {
     /// single-instance construction requirement that makes this budget
     /// meaningful in production.
     gitignore_unavailable: AtomicBool,
+}
+
+/// Parse the `+` lines from a unified diff (`git diff` stdout) into
+/// `(new_side_line_no, content)` pairs, with the leading `+` stripped.
+/// Line numbers track the new-file side (the `+c` field of each
+/// `@@ -a,b +c,d @@` hunk header). Shared by [`RealGitOps::diff_added_lines`]
+/// and [`RealGitOps::diff_added_lines_in_commit`] to avoid duplicating ~20 lines.
+fn parse_added_lines(stdout: &str) -> Vec<(usize, String)> {
+    let mut result = Vec::new();
+    let mut new_line: usize = 0;
+    let mut in_hunk = false;
+    for line in stdout.lines() {
+        if line.starts_with("@@ ") {
+            in_hunk = true;
+            // Parse "@@ -a,b +c,d @@" to extract c (new-file start line).
+            if let Some(plus_pos) = line.find(" +") {
+                let rest = &line[plus_pos + 2..];
+                let delim = rest.find([',', ' ']).unwrap_or(rest.len());
+                if let Ok(c) = rest[..delim].parse::<usize>() {
+                    // Set counter so first context/+ line yields c.
+                    new_line = c.saturating_sub(1);
+                }
+            }
+        } else if !in_hunk {
+            // Pre-hunk header lines (diff/index/---/+++ headers): skip.
+        } else if let Some(stripped) = line.strip_prefix('+') {
+            new_line += 1;
+            result.push((new_line, stripped.to_string()));
+        } else if line.starts_with('-') {
+            // Removed line: new-side counter does not advance.
+        } else if line.starts_with('\\') {
+            // "\ No newline at end of file" — ignore.
+        } else {
+            // Context line (starts with ' '): both sides advance.
+            new_line += 1;
+        }
+    }
+    result
 }
 
 impl RealGitOps {
@@ -446,6 +537,30 @@ impl GitOps for RealGitOps {
         }
     }
 
+    fn path_tracked_on(&self, branch: &str, path: &str) -> bool {
+        match self.run_or_warn("ls-tree", &["ls-tree", branch, "--", path]) {
+            Some(stdout) => !stdout.trim().is_empty(),
+            None => false,
+        }
+    }
+
+    fn is_ancestor(&self, commit: &str, branch: &str) -> bool {
+        // Use .output() (not .status()) so git's stderr ("fatal: not a git
+        // repository", "fatal: Not a valid commit name", etc.) is captured and
+        // does not leak to our process's stderr / corrupt JSON output.
+        // exit 0 = ancestor; exit 1 = not an ancestor; exit 128 = bad object
+        // or not-a-repo — all non-zero cases correctly map to false (fail-safe).
+        match std::process::Command::new("git")
+            .arg("-C")
+            .arg(&self.project_root)
+            .args(["merge-base", "--is-ancestor", commit, branch])
+            .output()
+        {
+            Ok(out) => out.status.code() == Some(0),
+            Err(_) => false,
+        }
+    }
+
     fn diff_added_lines(&self, from: &str, to: &str, path: &str) -> Vec<(usize, String)> {
         let Some(stdout) = self.run_or_warn(
             "diff",
@@ -453,36 +568,35 @@ impl GitOps for RealGitOps {
         ) else {
             return vec![];
         };
-        let mut result = Vec::new();
-        let mut new_line: usize = 0;
-        let mut in_hunk = false;
-        for line in stdout.lines() {
-            if line.starts_with("@@ ") {
-                in_hunk = true;
-                // Parse "@@ -a,b +c,d @@" to extract c (new-file start line).
-                if let Some(plus_pos) = line.find(" +") {
-                    let rest = &line[plus_pos + 2..];
-                    let delim = rest.find([',', ' ']).unwrap_or(rest.len());
-                    if let Ok(c) = rest[..delim].parse::<usize>() {
-                        // Set counter so first context/+ line yields c.
-                        new_line = c.saturating_sub(1);
-                    }
-                }
-            } else if !in_hunk {
-                // Pre-hunk header lines (diff/index/---/+++ headers): skip.
-            } else if let Some(stripped) = line.strip_prefix('+') {
-                new_line += 1;
-                result.push((new_line, stripped.to_string()));
-            } else if line.starts_with('-') {
-                // Removed line: new-side counter does not advance.
-            } else if line.starts_with('\\') {
-                // "\ No newline at end of file" — ignore.
-            } else {
-                // Context line (starts with ' '): both sides advance.
-                new_line += 1;
-            }
-        }
-        result
+        parse_added_lines(&stdout)
+    }
+
+    fn diff_added_lines_in_commit(&self, commit: &str, path: &str) -> Vec<(usize, String)> {
+        // `<commit>^1..<commit>` is the first-parent diff of the merge commit:
+        //   - M^1 = pre-merge main tip
+        //   - M   = merged result
+        // This yields exactly the task's net delta on `path`.
+        let range = format!("{}^1..{}", commit, commit);
+        let Some(stdout) = self.run_or_warn(
+            "diff (commit)",
+            &["diff", &range, "--", path],
+        ) else {
+            return vec![];
+        };
+        parse_added_lines(&stdout)
+    }
+
+    fn file_lines_on(&self, reference: &str, path: &str) -> Vec<(usize, String)> {
+        // `git show <reference>:<path>` prints the file at that ref.
+        let spec = format!("{}:{}", reference, path);
+        let Some(stdout) = self.run_or_warn("show", &["show", &spec]) else {
+            return vec![];
+        };
+        stdout
+            .lines()
+            .enumerate()
+            .map(|(i, l)| (i + 1, l.to_string()))
+            .collect()
     }
 }
 
@@ -502,6 +616,10 @@ pub struct MockGitOps {
     diff_changed_paths: HashMap<(String, String), Vec<String>>,
     is_gitignored: HashMap<String, bool>,
     diff_added_lines: HashMap<(String, String, String), Vec<(usize, String)>>,
+    diff_added_lines_in_commit: HashMap<(String, String), Vec<(usize, String)>>,
+    file_lines_on: HashMap<(String, String), Vec<(usize, String)>>,
+    path_tracked_on: HashMap<(String, String), bool>,
+    is_ancestor: HashMap<(String, String), bool>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -539,6 +657,40 @@ impl MockGitOps {
         self.diff_added_lines
             .insert((from.to_string(), to.to_string(), path.to_string()), added);
     }
+
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn set_path_tracked_on(&mut self, branch: &str, path: &str, present: bool) {
+        self.path_tracked_on
+            .insert((branch.to_string(), path.to_string()), present);
+    }
+
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn set_is_ancestor(&mut self, commit: &str, branch: &str, ancestor: bool) {
+        self.is_ancestor
+            .insert((commit.to_string(), branch.to_string()), ancestor);
+    }
+
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn set_diff_added_lines_in_commit(
+        &mut self,
+        commit: &str,
+        path: &str,
+        added: Vec<(usize, String)>,
+    ) {
+        self.diff_added_lines_in_commit
+            .insert((commit.to_string(), path.to_string()), added);
+    }
+
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn set_file_lines_on(
+        &mut self,
+        reference: &str,
+        path: &str,
+        lines: Vec<(usize, String)>,
+    ) {
+        self.file_lines_on
+            .insert((reference.to_string(), path.to_string()), lines);
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -566,6 +718,34 @@ impl GitOps for MockGitOps {
             .get(&(from.to_string(), to.to_string(), path.to_string()))
             .cloned()
             .unwrap_or_default()
+    }
+
+    fn diff_added_lines_in_commit(&self, commit: &str, path: &str) -> Vec<(usize, String)> {
+        self.diff_added_lines_in_commit
+            .get(&(commit.to_string(), path.to_string()))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn file_lines_on(&self, reference: &str, path: &str) -> Vec<(usize, String)> {
+        self.file_lines_on
+            .get(&(reference.to_string(), path.to_string()))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn path_tracked_on(&self, branch: &str, path: &str) -> bool {
+        self.path_tracked_on
+            .get(&(branch.to_string(), path.to_string()))
+            .copied()
+            .unwrap_or(false)
+    }
+
+    fn is_ancestor(&self, commit: &str, branch: &str) -> bool {
+        self.is_ancestor
+            .get(&(commit.to_string(), branch.to_string()))
+            .copied()
+            .unwrap_or(false)
     }
 }
 
@@ -611,20 +791,90 @@ pub struct SymbolReference {
     pub line: usize,
 }
 
+/// A symbol with no callers above a given confidence, as reported by
+/// `mcp__jcodemunch__get_dead_code_v2`. Mirrors the jcodemunch tool's response
+/// shape for use by the L-PDEAD detector leaf.
+///
+/// Note: `confidence` is `f64` (IEEE 754), so `Eq` and `Hash` are intentionally
+/// NOT derived — floating-point equality semantics are unsuitable for collection
+/// key use. This deviates from [`ChangedSymbol`]'s derive set by design.
+/// Per `docs/prds/reify-audit-p1-jcodemunch-substrate.md` §3.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeadSymbol {
+    /// Unique identifier for the symbol as assigned by jcodemunch.
+    pub id: String,
+    /// The symbol's declared name.
+    pub name: String,
+    /// The kind of symbol (e.g. `"function"`, `"struct"`, `"const"`).
+    pub kind: String,
+    /// Workspace-relative path of the file declaring the symbol.
+    pub file: String,
+    /// 1-based line of the declaration.
+    pub line: usize,
+    /// Jcodemunch's confidence score that the symbol is truly unreachable
+    /// (0.0 = uncertain; 1.0 = certain). Filtered by `min_confidence` in
+    /// [`JCodemunchOps::get_dead_code`].
+    pub confidence: f64,
+    /// Diagnostic signals contributing to the confidence score
+    /// (e.g. `"no_callers"`, `"private_module"`).
+    pub signals: Vec<String>,
+}
+
+/// A symbol not reached by any test, as reported by
+/// `mcp__jcodemunch__get_untested_symbols`. Mirrors the jcodemunch tool's
+/// response shape for use by the L-PUNTESTED detector leaf.
+///
+/// Note: `confidence` is `f64` — `Eq`/`Hash` not derived. See [`DeadSymbol`].
+/// Per `docs/prds/reify-audit-p1-jcodemunch-substrate.md` §3.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UntestedSymbol {
+    /// Unique identifier for the symbol as assigned by jcodemunch.
+    pub symbol_id: String,
+    /// The symbol's declared name.
+    pub name: String,
+    /// Workspace-relative path of the file declaring the symbol.
+    pub file: String,
+    /// `false` when no test path reaches the symbol.
+    pub reached: bool,
+    /// Confidence score (0.0–1.0) that the symbol is genuinely untested.
+    /// Filtered by `min_confidence` in [`JCodemunchOps::get_untested_symbols`].
+    pub confidence: f64,
+}
+
+/// A layer-violation: an import that is forbidden by the project's layering
+/// rules, as reported by `mcp__jcodemunch__get_layer_violations`. Mirrors the
+/// jcodemunch tool's response shape for use by the L-PLAYER detector leaf.
+///
+/// Per `docs/prds/reify-audit-p1-jcodemunch-substrate.md` §3.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LayerViolation {
+    /// Workspace-relative path of the file containing the violating import.
+    pub from_file: String,
+    /// Workspace-relative path of the file (or crate root) being imported.
+    pub to_file: String,
+    /// Human-readable name of the layer rule that was violated
+    /// (e.g. `"gui-must-not-depend-on-kernel"`).
+    pub rule: String,
+}
+
 /// Source-introspection operations the P1 detector needs. Production: a
 /// jcodemunch-MCP-backed impl supplied by the T-4 CLI. Tests:
 /// [`MockJCodemunchOps`] (gated behind `feature = "test-support"`) holds
-/// canned answers.
+/// canned answers keyed on `(since_sha, until_sha)` for changed-symbol
+/// queries and `(file, name)` for reference queries, enabling per-commit and
+/// file-level disambiguation. Per `f-infra-design.md` §3 and §5 P1.
 ///
 /// Object-safe by design — `AuditContext` holds `&'a dyn JCodemunchOps` so
 /// the production and mock impls coexist behind the same vtable (mirrors
 /// [`GitOps`]).
 pub trait JCodemunchOps {
-    /// Equivalent of `mcp__jcodemunch__get_changed_symbols(branch, since)`:
-    /// the public symbols introduced/changed on `branch` since the
-    /// `since_epoch` (epoch-seconds) cutoff. Returns an empty vec when
-    /// nothing changed or the branch does not exist.
-    fn get_changed_symbols(&self, branch: &str, since_epoch: i64) -> Vec<ChangedSymbol>;
+    /// Equivalent of `mcp__jcodemunch__get_changed_symbols(since_sha, until_sha)`
+    /// (jcodemunch v1.108.27+): the public symbols introduced/changed in the
+    /// commit range `since_sha..until_sha`. Typically `since_sha = "{commit}^1"`
+    /// and `until_sha = "{commit}"` for a single merged commit (mirrors the
+    /// `^1..commit` convention from `RealGitOps::diff_added_lines_in_commit`).
+    /// Returns an empty vec when the range is empty or the commits are not found.
+    fn get_changed_symbols(&self, since_sha: &str, until_sha: &str) -> Vec<ChangedSymbol>;
 
     /// Equivalent of `mcp__jcodemunch__find_references(symbol)`: every
     /// non-declaration reference of the symbol across the workspace, scoped
@@ -635,17 +885,45 @@ pub trait JCodemunchOps {
     /// Returns an empty vec when the symbol has no callers (an orphan
     /// candidate). Per `f-infra-design.md` §5 P1.
     fn find_references(&self, symbol: &ChangedSymbol) -> Vec<SymbolReference>;
+
+    /// Equivalent of `mcp__jcodemunch__get_dead_code_v2(min_confidence)`:
+    /// public symbols with no callers whose confidence score meets or exceeds
+    /// `min_confidence` (0.0–1.0). Returns an empty vec when none found.
+    /// Per `docs/prds/reify-audit-p1-jcodemunch-substrate.md` §4-b.
+    fn get_dead_code(&self, min_confidence: f64) -> Vec<DeadSymbol>;
+
+    /// Equivalent of `mcp__jcodemunch__get_untested_symbols(min_confidence)`:
+    /// symbols not reached by any test whose confidence score meets or exceeds
+    /// `min_confidence`. Returns an empty vec when none found. Per PRD §4-b.
+    fn get_untested_symbols(&self, min_confidence: f64) -> Vec<UntestedSymbol>;
+
+    /// Equivalent of `mcp__jcodemunch__get_layer_violations()`: all detected
+    /// imports that violate the project's layering rules. Returns an empty vec
+    /// when none found. Per PRD §4-b.
+    fn get_layer_violations(&self) -> Vec<LayerViolation>;
 }
 
 /// HashMap-backed [`JCodemunchOps`] for tests. Gated behind
 /// `feature = "test-support"` so it never pollutes the production public API
 /// (mirrors [`MockGitOps`]). The crate self-pulls this feature in its own
 /// `[dev-dependencies]` so integration tests in `tests/p1.rs` see it.
+///
+/// Changed-symbol queries are keyed on `(since_sha, until_sha)` (the
+/// commit-range surface per jcodemunch v1.108.27+); reference queries are
+/// keyed on `(file, name)` for file-level disambiguation.
+/// Dead-code / untested-symbol data is stored as a flat Vec and filtered by
+/// `min_confidence` at query time (mirrors the real tool's semantics).
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Default)]
 pub struct MockJCodemunchOps {
-    get_changed_symbols: HashMap<(String, i64), Vec<ChangedSymbol>>,
+    get_changed_symbols: HashMap<(String, String), Vec<ChangedSymbol>>,
     find_references: HashMap<(String, String), Vec<SymbolReference>>,
+    dead_code: Vec<DeadSymbol>,
+    untested: Vec<UntestedSymbol>,
+    layer_violations: Vec<LayerViolation>,
+    // Records the min_confidence last passed to get_dead_code() so tests can
+    // assert the detector passes the intended threshold to the seam.
+    last_dead_code_min_confidence: std::cell::Cell<Option<f64>>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -658,25 +936,45 @@ impl MockJCodemunchOps {
     // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
     pub fn set_changed_symbols(
         &mut self,
-        branch: &str,
-        since_epoch: i64,
+        since_sha: &str,
+        until_sha: &str,
         symbols: Vec<ChangedSymbol>,
     ) {
         self.get_changed_symbols
-            .insert((branch.to_string(), since_epoch), symbols);
+            .insert((since_sha.to_string(), until_sha.to_string()), symbols);
     }
 
     // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
     pub fn set_find_references(&mut self, file: &str, name: &str, refs: Vec<SymbolReference>) {
         self.find_references.insert((file.to_string(), name.to_string()), refs);
     }
+
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn set_dead_code(&mut self, symbols: Vec<DeadSymbol>) {
+        self.dead_code = symbols;
+    }
+
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn last_dead_code_min_confidence(&self) -> Option<f64> {
+        self.last_dead_code_min_confidence.get()
+    }
+
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn set_untested_symbols(&mut self, symbols: Vec<UntestedSymbol>) {
+        self.untested = symbols;
+    }
+
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn set_layer_violations(&mut self, violations: Vec<LayerViolation>) {
+        self.layer_violations = violations;
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
 impl JCodemunchOps for MockJCodemunchOps {
-    fn get_changed_symbols(&self, branch: &str, since_epoch: i64) -> Vec<ChangedSymbol> {
+    fn get_changed_symbols(&self, since_sha: &str, until_sha: &str) -> Vec<ChangedSymbol> {
         self.get_changed_symbols
-            .get(&(branch.to_string(), since_epoch))
+            .get(&(since_sha.to_string(), until_sha.to_string()))
             .cloned()
             .unwrap_or_default()
     }
@@ -686,6 +984,27 @@ impl JCodemunchOps for MockJCodemunchOps {
             .get(&(symbol.file.clone(), symbol.name.clone()))
             .cloned()
             .unwrap_or_default()
+    }
+
+    fn get_dead_code(&self, min_confidence: f64) -> Vec<DeadSymbol> {
+        self.last_dead_code_min_confidence.set(Some(min_confidence));
+        self.dead_code
+            .iter()
+            .filter(|s| s.confidence >= min_confidence)
+            .cloned()
+            .collect()
+    }
+
+    fn get_untested_symbols(&self, min_confidence: f64) -> Vec<UntestedSymbol> {
+        self.untested
+            .iter()
+            .filter(|s| s.confidence >= min_confidence)
+            .cloned()
+            .collect()
+    }
+
+    fn get_layer_violations(&self) -> Vec<LayerViolation> {
+        self.layer_violations.clone()
     }
 }
 

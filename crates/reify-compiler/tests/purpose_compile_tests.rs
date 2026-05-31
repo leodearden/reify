@@ -113,27 +113,166 @@ purpose broken(subject : Structure) {
     let _module = parse_and_compile(source);
 }
 
-// ── Step 23: let bindings in purposes should emit error ───────────────
+// ── Step 23 / task 4009 δ: let bindings in purposes compile + storage ────────
 
+/// (a) Single let: compiles with no error, lets populated, name/cell_id/expr correct.
 #[test]
-#[should_panic(expected = "compile errors")]
-fn compile_purpose_rejects_let_bindings() {
-    // Let bindings in purpose bodies are not yet supported: the compiled
-    // expression is discarded and constraints referencing let-bound names
-    // would produce ValueCellIds with no backing eval graph node.
-    // The compiler should emit a Severity::Error diagnostic.
+fn purpose_let_storage_single_let() {
     let source = r#"
-structure Bracket {
-    param width : Length = 80mm
+structure Widget {
+    param a : Length = 80mm
+    param b : Length = 50mm
 }
 
-purpose check(subject : Structure) {
-    let half_w = 80mm / 2
-    constraint half_w > 10mm
+purpose marg(subject : Widget) {
+    let m = subject.a - subject.b
+    constraint m > 0mm
 }
 "#;
 
+    let module = compile_module_with_diagnostics(source);
+
+    // No PurposeLetUnsupported error
+    let unsupported: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::PurposeLetUnsupported))
+        .collect();
+    assert!(
+        unsupported.is_empty(),
+        "expected no PurposeLetUnsupported diagnostics, got: {:?}",
+        unsupported
+    );
+
+    // No Severity::Error diagnostics
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Severity::Error diagnostics, got: {:?}",
+        errors
+    );
+
+    let purpose = module
+        .compiled_purposes
+        .iter()
+        .find(|p| p.name == "marg")
+        .expect("expected purpose 'marg'");
+
+    assert_eq!(purpose.lets.len(), 1, "expected 1 let binding");
+    assert_eq!(purpose.lets[0].name, "m");
+    assert_eq!(
+        purpose.lets[0].cell_id,
+        ValueCellId::new("marg", "m"),
+        "cell_id should be {{entity:marg, member:m}}"
+    );
+
+    // expr should be BinOp(Sub, ...) for `subject.a - subject.b`
+    match &purpose.lets[0].expr.kind {
+        CompiledExprKind::BinOp { op, .. } => {
+            assert_eq!(
+                *op,
+                BinOp::Sub,
+                "expected BinOp::Sub for 'subject.a - subject.b'"
+            );
+        }
+        other => panic!("expected BinOp for let expr, got {:?}", other),
+    }
+}
+
+/// (b) Multi-let ordering: lets.len()==2, lets[1].expr references ValueCellId::new("marg","m").
+#[test]
+fn purpose_let_multi_let_earlier_let_visibility() {
+    let source = r#"
+structure Widget {
+    param a : Length = 80mm
+    param b : Length = 50mm
+}
+
+purpose marg(subject : Widget) {
+    let m = subject.a - subject.b
+    let n = m * 2
+    constraint n > 0mm
+}
+"#;
+
+    let module = compile_module_with_diagnostics(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Severity::Error diagnostics, got: {:?}",
+        errors
+    );
+
+    let purpose = module
+        .compiled_purposes
+        .iter()
+        .find(|p| p.name == "marg")
+        .expect("expected purpose 'marg'");
+
+    assert_eq!(purpose.lets.len(), 2, "expected 2 let bindings");
+    assert_eq!(purpose.lets[0].name, "m");
+    assert_eq!(purpose.lets[1].name, "n");
+
+    // lets[1].expr should reference ValueCellId::new("marg","m")
+    let earlier_let_id = ValueCellId::new("marg", "m");
+    let n_expr = &purpose.lets[1].expr;
+    assert!(
+        purpose_let_expr_contains_value_ref(n_expr, &earlier_let_id),
+        "expected lets[1].expr to contain ValueRef(marg.m) from earlier let, got {:?}",
+        n_expr
+    );
+}
+
+/// (c) Forward-ref still rejected: `let p = q + 1mm  let q = subject.a`
+///     → q is unknown when p compiles → compile error.
+#[test]
+#[should_panic(expected = "compile errors")]
+fn purpose_let_forward_ref_rejected() {
+    let source = r#"
+structure Widget {
+    param a : Length = 80mm
+}
+
+purpose marg(subject : Widget) {
+    let p = q + 1mm
+    let q = subject.a
+    constraint p > 0mm
+}
+"#;
     let _module = parse_and_compile(source);
+}
+
+/// Helper: recursively check if a `CompiledExpr` contains a `ValueRef` pointing at `id`.
+fn purpose_let_expr_contains_value_ref(expr: &CompiledExpr, id: &ValueCellId) -> bool {
+    match &expr.kind {
+        CompiledExprKind::ValueRef(ref_id) => ref_id == id,
+        CompiledExprKind::BinOp { left, right, .. } => {
+            purpose_let_expr_contains_value_ref(left, id)
+                || purpose_let_expr_contains_value_ref(right, id)
+        }
+        CompiledExprKind::UnOp { operand, .. } => {
+            purpose_let_expr_contains_value_ref(operand, id)
+        }
+        CompiledExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            purpose_let_expr_contains_value_ref(condition, id)
+                || purpose_let_expr_contains_value_ref(then_branch, id)
+                || purpose_let_expr_contains_value_ref(else_branch, id)
+        }
+        _ => false,
+    }
 }
 
 // ── Step 25: unsupported member variants should emit error ───────────────

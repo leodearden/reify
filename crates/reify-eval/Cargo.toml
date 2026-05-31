@@ -14,17 +14,34 @@ reify-syntax.workspace = true
 reify-compiler.workspace = true
 reify-shell-extract.workspace = true
 reify-solver-elastic.workspace = true
+reify-kernel-openvdb.workspace = true
+# Task 3819 (Modal ζ): modal_ops.rs assembles K/M, extracts the free×free
+# subspace as faer sparse matrices, and calls
+# reify_solver_elastic::solve_eigen_shift_invert on the (K_free, M_free) pair
+# (per the FEA-solve-in-reify-eval placement, design_decision #2). faer is
+# already a workspace dep (used by reify-solver-elastic); naming it here is
+# unavoidable because the solver crate exposes no public free-DOF projection
+# helper or all-in-one modal kernel.
+faer.workspace = true
+# Promoted from [dev-dependencies] for task 3819: modal_ops.rs (library code,
+# not just tests) reuses the pure scalar helpers in
+# reify_stdlib::modal::free_vibration (eigenvalue_to_frequency_hz etc.). No
+# dependency cycle — reify-stdlib does not depend on reify-eval (same direction
+# as the existing transitive reify-eval -> reify-expr -> reify-stdlib edge).
+reify-stdlib.workspace = true
 bincode.workspace = true
 bytemuck.workspace = true
 inventory.workspace = true
 serde = { workspace = true, features = ["derive"] }
 tracing.workspace = true
 xxhash-rust = { workspace = true }
+rustc-hash = "2"
 zstd.workspace = true
 tempfile.workspace = true
 
 [build-dependencies]
 xxhash-rust = { workspace = true }
+reify-build-utils.workspace = true
 
 [features]
 test-instrumentation = []
@@ -46,10 +63,11 @@ reify-test-support = { workspace = true, features = ["eval-helpers"] }
 reify-kernel-occt.workspace = true
 reify-constraints.workspace = true
 reify-geometry.workspace = true
-# Task 3843 (KCC-γ): integration tests in `kinematic_loop_closure_machinery.rs`
-# call `reify_stdlib::loop_closure::{chain_transform, loop_residual_twist}` to
-# verify the closed-chain residual at convergence on the planar e2e fixture.
-reify-stdlib.workspace = true
+# NOTE (task 3819): reify-stdlib was promoted to a normal [dependencies] entry
+# above (modal_ops.rs uses it as library code). It remains available to the
+# integration tests here — e.g. task 3843 (KCC-γ) tests in
+# `kinematic_loop_closure_machinery.rs` call
+# `reify_stdlib::loop_closure::{chain_transform, loop_residual_twist}`.
 # Task 3579 (PRD §5 B5 / I-3): T5 boundary tests in
 # `tests/node_traits_boundary.rs` need `reify_runtime::concurrent::{
 # SchedulerConfig, ConcurrentScheduler}` plus a tokio runtime. This is the
@@ -58,3 +76,12 @@ reify-stdlib.workspace = true
 # reify-eval's own test binaries.
 reify-runtime.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+# Task 3035 (T22): shell↔tet MPC validation — dense LU solve requires faer;
+# MPC row-elimination produces a NON-symmetric reduced matrix so CG (SPD-only)
+# is wrong. faer is a workspace dep; reify-eval currently lacks it.
+faer = { workspace = true }
+# Task 4049: strum dev-dep for `use strum::IntoEnumIterator` in the
+# classifier-completeness test (test d / PRD §9 Q10).  reify-ir is already a
+# reify-eval dev-dep, so `reify_ir::Operation::iter()` is reachable; the trait
+# `IntoEnumIterator` lives in `strum`, which is why strum must also appear here.
+strum.workspace = true

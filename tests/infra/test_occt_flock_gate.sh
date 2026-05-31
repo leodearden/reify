@@ -12,6 +12,9 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
+[ -f "$SCRIPT_DIR/occt_flock_gate_lib.sh" ] || { echo "ERROR: occt_flock_gate_lib.sh not found at $SCRIPT_DIR/occt_flock_gate_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/occt_flock_gate_lib.sh"
+
 WRAPPER="$REPO_ROOT/scripts/cargo-test-occt-gated.sh"
 
 echo "=== OCCT flock gate tests ==="
@@ -336,7 +339,15 @@ assert "Test 19: two 0.4s sleep invocations run in parallel with N=2 (elapsed < 
 # -- Test 20: N=2, three concurrent invocations serializes the third ----------
 # With only 2 slots, a third concurrent wrapper invocation must wait until one
 # slot is released. Measured elapsed must be >= 700ms (two parallel rounds of
-# ~400ms) and <= 1200ms (to catch a regression to fully-serial ~1200ms).
+# ~400ms — proves serialization) and <= 2000ms (load-tolerant sanity ceiling,
+# raised 1200->2000 per esc-3939-94: verify-pipeline load inflated the
+# serialized 3rd invocation to 1473ms in one run with no logic defect).
+# At 2000ms the upper bound no longer discriminates N=2 (~800ms) from fully-serial
+# N=1 (~1200ms); the >=700ms lower bound guards against under-serialization only.
+# COVERAGE GAP (accepted tradeoff per esc-3939-94): a fully-serial regression
+# (N->1) produces ~1200ms for three invocations — inside [700,2000], undetected.
+# Test 19 does NOT guard this: two fully-serial invocations complete in ~800ms,
+# below Test 19's <900ms threshold (both pass under a fully-serial regression).
 # This validates that the acquire-loop bounds N strictly (not ">=N" slots).
 echo ""
 echo "--- Test 20: REIFY_OCCT_CONCURRENCY=2 serializes the 3rd invocation when both slots are busy ---"
@@ -359,15 +370,16 @@ _ELAPSED20_MS=$(( (_END20_NS - _START20_NS) / 1000000 ))
 rm -f "$_LOCK20" "${_LOCK20}.slot-1" "${_LOCK20}.slot-2"
 
 # Two slots: two run in parallel (~400ms), third waits and runs (~800ms total).
-# Lower bound >= 700ms proves the third was serialized.
-# Upper bound <= 1200ms ensures we are not fully serial (which would be ~1200ms).
-assert "Test 20: 3 invocations with N=2 complete in [700,1200]ms — 3rd is serialized (got ${_ELAPSED20_MS}ms)" \
-    bash -c "test '$_ELAPSED20_MS' -ge 700 && test '$_ELAPSED20_MS' -le 1200"
+# Lower bound >= 700ms proves the third was serialized (all-parallel ~400ms).
+# Upper bound <= 2000ms is a load-tolerant sanity ceiling (esc-3939-94).
+assert "Test 20: 3 invocations with N=2 complete in [${OCCT_SERIAL3_N2_LOW_MS},${OCCT_SERIAL3_N2_HIGH_MS}]ms — 3rd is serialized (got ${_ELAPSED20_MS}ms)" \
+    occt_serial3_n2_within_bounds "$_ELAPSED20_MS"
 
 # -- Test 21: REIFY_OCCT_MAX_CONCURRENCY sets N when CONCURRENCY is unset ------
 # With REIFY_OCCT_CONCURRENCY unset, N falls back to REIFY_OCCT_MAX_CONCURRENCY.
 # Sub-test A: two concurrent wrappers → parallel (<900ms).
-# Sub-test B: three concurrent wrappers → third serialized ([700,1200]ms).
+# Sub-test B: three concurrent wrappers → third serialized ([700,2000]ms,
+#   load-tolerant ceiling per esc-3939-94; shared with Test 20 via occt_flock_gate_lib.sh).
 #
 # Historical note: a prior implementation auto-detected N as
 # clamp(nproc - load_1m_int, 1, MAX_CAP) and was retired (esc-4000-39, 2026-05-28)
@@ -412,8 +424,8 @@ rm -f "$_LOCK21B" "${_LOCK21B}.slot-1" "${_LOCK21B}.slot-2"
 assert "Test 21A: 2 invocations with MAX_CONCURRENCY=2 run in parallel (<900ms, got ${_ELAPSED21A_MS}ms)" \
     test "$_ELAPSED21A_MS" -lt 900
 
-assert "Test 21B: 3 invocations with MAX_CONCURRENCY=2 have 3rd serialized ([700,1200]ms, got ${_ELAPSED21B_MS}ms)" \
-    bash -c "test '$_ELAPSED21B_MS' -ge 700 && test '$_ELAPSED21B_MS' -le 1200"
+assert "Test 21B: 3 invocations with MAX_CONCURRENCY=2 have 3rd serialized ([${OCCT_SERIAL3_N2_LOW_MS},${OCCT_SERIAL3_N2_HIGH_MS}]ms, got ${_ELAPSED21B_MS}ms)" \
+    occt_serial3_n2_within_bounds "$_ELAPSED21B_MS"
 
 # -- Test 22: LOCK_WAIT bound fires when ALL N slots are externally held ------
 # Mirrors Test 14's pattern but with N=2 (full contention across all slots).

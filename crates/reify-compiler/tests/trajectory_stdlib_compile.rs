@@ -2036,3 +2036,460 @@ fn cascaded_shaper_struct_has_correct_param_shape() {
             .collect::<Vec<_>>()
     );
 }
+
+// ─── η (task 3859): EndEffectorTrack lazy-accessor helpers + tests ───────────
+
+/// Generic name-lookup helper used by [`find_trait`], [`find_enum`], and
+/// [`find_function`]. Returns the first item in `items` where
+/// `key(item) == name`, or panics with a descriptive message listing the
+/// available names.
+///
+/// `kind` labels the item type in the error string (e.g. `"fn"`, `"trait"`).
+/// `key` extracts the name string for comparison and error display.
+///
+/// Not used by [`find_structure`] — that helper additionally filters on
+/// `entity_kind` and emits `(name, entity_kind)` pairs in its error message.
+fn find_named<T>(
+    items: &'static [T],
+    name: &str,
+    kind: &str,
+    key: impl Fn(&T) -> &str,
+) -> &'static T {
+    let result = items.iter().find(|item| key(item) == name);
+    result.unwrap_or_else(|| {
+        panic!(
+            "expected `{kind} {name}` in std/trajectory, got: {:?}",
+            items.iter().map(&key).collect::<Vec<_>>()
+        )
+    })
+}
+
+/// Look up a compiled function by name within the `std/trajectory` module.
+fn find_function(name: &str) -> &'static CompiledFunction {
+    find_named(&load_stdlib_module().functions, name, "fn", |f| {
+        f.name.as_str()
+    })
+}
+
+// ─── step-29: EndEffectorTrack structure param shape ─────────────────────────
+
+/// `EndEffectorTrack` is the forward-pass simulator's output value type
+/// (PRD §6.2). It carries six params that capture the full time-history of
+/// end-effector poses across every monitored location:
+///
+///   - `mechanism        : Real`                    (TODO(mechanism-type) placeholder)
+///   - `modal_result     : Real`                    (TODO(modal-result-type) placeholder)
+///   - `t_samples        : List<Time>`              (sampling instants)
+///   - `nominal_pose     : List<List<Pose3>>`       (outer: time, inner: locations)
+///   - `vibration_offset : List<List<Vec3>>`        (outer: time, inner: locations)
+///   - `combined_pose    : List<List<Pose3>>`       (outer: time, inner: locations)
+///
+/// `Pose3` and `Vec3` are module-level aliases for `Real`; so all three nested
+/// list params compile to `Type::List(Box::new(Type::List(Box::new(Type::Real))))`.
+/// `t_samples : List<Time>` compiles to `Type::List(Box::new(Type::Scalar
+/// { dimension: DimensionVector::TIME }))`.
+///
+/// Test pins four invariants: (a) no trait bound (plain value-type output —
+/// NOT a Profile/BoundaryCondition variant); (b) exactly 6 params in canonical
+/// order; (c) every param has no default (simulator fully determines output);
+/// (d) no structure-level constraint (simulator output — no caller invariant).
+#[test]
+fn end_effector_track_struct_has_correct_param_shape() {
+    let template = find_structure("EndEffectorTrack");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    // (a) Plain value type — no trait bound.
+    assert!(
+        template.trait_bounds.is_empty(),
+        "EndEffectorTrack should have no trait bounds (plain simulator output, \
+         not a Profile/BoundaryCondition variant); got: {:?}",
+        template.trait_bounds
+    );
+
+    // (b) Exactly 6 params in canonical order.
+    assert_eq!(
+        params.len(),
+        6,
+        "EndEffectorTrack should have exactly 6 param cells; got: {:?}",
+        names
+    );
+
+    let expected: &[(&str, Type)] = &[
+        ("mechanism", Type::Real),
+        ("modal_result", Type::Real),
+        (
+            "t_samples",
+            Type::List(Box::new(Type::Scalar {
+                dimension: DimensionVector::TIME,
+            })),
+        ),
+        (
+            "nominal_pose",
+            Type::List(Box::new(Type::List(Box::new(Type::Real)))),
+        ),
+        (
+            "vibration_offset",
+            Type::List(Box::new(Type::List(Box::new(Type::Real)))),
+        ),
+        (
+            "combined_pose",
+            Type::List(Box::new(Type::List(Box::new(Type::Real)))),
+        ),
+    ];
+
+    let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
+    assert_eq!(
+        names, expected_names,
+        "EndEffectorTrack params must be declared in canonical order \
+         (mechanism, modal_result, t_samples, nominal_pose, vibration_offset, \
+         combined_pose); got: {:?}",
+        names
+    );
+
+    for (member, expected_ty) in expected {
+        let cell = params
+            .iter()
+            .find(|vc| vc.id.member == *member)
+            .unwrap_or_else(|| {
+                panic!(
+                    "EndEffectorTrack missing required param '{}'; got: {:?}",
+                    member, names
+                )
+            });
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "EndEffectorTrack.{} should be {:?}, got {:?}",
+            member, expected_ty, cell.cell_type
+        );
+    }
+
+    // (c) Simulator output — every param fully determined, no defaults.
+    for cell in &params {
+        assert!(
+            cell.default_expr.is_none(),
+            "EndEffectorTrack.{} should have no default_expr (simulator output, \
+             fully determined); got: {:?}",
+            cell.id.member,
+            cell.default_expr
+        );
+    }
+
+    // (d) No structure-level constraint (no caller-authored invariant to enforce).
+    assert!(
+        template.constraints.is_empty(),
+        "EndEffectorTrack should declare no structure-level constraints \
+         (simulator output — no caller invariant); got: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+}
+
+// ─── step-31: end_effector_track fn signature ────────────────────────────────
+
+/// `end_effector_track` is the lazy accessor that extracts the per-time-sample
+/// combined pose list for a single named location (PRD §6.2).
+///
+/// Signature: `pub fn end_effector_track(track: EndEffectorTrack, location: LocationId) -> List<Pose3>`
+///
+/// `track : EndEffectorTrack` resolves to `Type::StructureRef("EndEffectorTrack")`
+/// — the structure_def is in the same module (same name-resolution path as
+/// `List<Waypoint>` in PiecewisePolynomialProfile.waypoints).
+/// `location : LocationId` resolves to `Type::Real` (LocationId = Real alias).
+/// Return type `List<Pose3>` = `List<Real>` via the Pose3 = Real alias.
+///
+/// Param order is part of the contract — (track, location), not (location, track).
+/// `is_pub == true` because downstream tasks (θ/ι/ξ) call this fn from user .ri
+/// code.
+#[test]
+fn end_effector_track_fn_has_correct_signature() {
+    let func = find_function("end_effector_track");
+
+    assert!(func.is_pub, "end_effector_track should be pub");
+
+    assert_eq!(
+        func.params.len(),
+        2,
+        "end_effector_track should take exactly 2 params (track, location); \
+         got: {:?}",
+        func.params
+    );
+
+    assert_eq!(
+        func.params[0],
+        (
+            "track".to_string(),
+            Type::StructureRef("EndEffectorTrack".to_string())
+        ),
+        "end_effector_track param[0] should be (\"track\", StructureRef(\
+         \"EndEffectorTrack\")); got: {:?}",
+        func.params[0]
+    );
+    assert_eq!(
+        func.params[1],
+        ("location".to_string(), Type::Real),
+        "end_effector_track param[1] should be (\"location\", Real) \
+         (LocationId = Real alias); got: {:?}",
+        func.params[1]
+    );
+
+    assert_eq!(
+        func.return_type,
+        Type::List(Box::new(Type::Real)),
+        "end_effector_track return type should be List<Real> (= List<Pose3>); \
+         got: {:?}",
+        func.return_type
+    );
+}
+
+// ─── step-33: deviation_from_nominal fn signature ────────────────────────────
+
+/// `deviation_from_nominal` is the lazy accessor that computes per-time-sample
+/// Euclidean distance between the combined pose and the nominal pose at a
+/// single named location (PRD §6.2).
+///
+/// Signature: `pub fn deviation_from_nominal(track: EndEffectorTrack, location: LocationId) -> List<Length>`
+///
+/// Params are identical to `end_effector_track`: `(track: EndEffectorTrack,
+/// location: LocationId)` — same StructureRef + Real pair, same order.
+/// Return type `List<Length>` = `Type::List(Box::new(Type::Scalar {
+/// dimension: DimensionVector::LENGTH }))` — one Length scalar per time sample.
+#[test]
+fn deviation_from_nominal_fn_has_correct_signature() {
+    let func = find_function("deviation_from_nominal");
+
+    assert!(func.is_pub, "deviation_from_nominal should be pub");
+
+    assert_eq!(
+        func.params.len(),
+        2,
+        "deviation_from_nominal should take exactly 2 params (track, location); \
+         got: {:?}",
+        func.params
+    );
+
+    assert_eq!(
+        func.params[0],
+        (
+            "track".to_string(),
+            Type::StructureRef("EndEffectorTrack".to_string())
+        ),
+        "deviation_from_nominal param[0] should be (\"track\", StructureRef(\
+         \"EndEffectorTrack\")); got: {:?}",
+        func.params[0]
+    );
+    assert_eq!(
+        func.params[1],
+        ("location".to_string(), Type::Real),
+        "deviation_from_nominal param[1] should be (\"location\", Real) \
+         (LocationId = Real alias); got: {:?}",
+        func.params[1]
+    );
+
+    assert_eq!(
+        func.return_type,
+        Type::List(Box::new(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        })),
+        "deviation_from_nominal return type should be List<Scalar<LENGTH>> \
+         (= List<Length>); got: {:?}",
+        func.return_type
+    );
+}
+
+// ─── step-35: peak_deviation fn signature ────────────────────────────────────
+
+/// `peak_deviation` is the lazy accessor that returns the maximum Euclidean
+/// deviation from nominal across all time samples at a single named location
+/// (PRD §6.2).
+///
+/// Signature: `pub fn peak_deviation(track: EndEffectorTrack, location: LocationId) -> Length`
+///
+/// Params are identical to the other two η accessors: `(track:
+/// EndEffectorTrack, location: LocationId)` — same StructureRef + Real pair.
+/// Return type `Length` = `Type::Scalar { dimension: DimensionVector::LENGTH }`
+/// — a scalar (NOT a list); this is the single peak value over all time
+/// samples (contrast with `deviation_from_nominal` which returns one value per
+/// time sample).
+#[test]
+fn peak_deviation_fn_has_correct_signature() {
+    let func = find_function("peak_deviation");
+
+    assert!(func.is_pub, "peak_deviation should be pub");
+
+    assert_eq!(
+        func.params.len(),
+        2,
+        "peak_deviation should take exactly 2 params (track, location); \
+         got: {:?}",
+        func.params
+    );
+
+    assert_eq!(
+        func.params[0],
+        (
+            "track".to_string(),
+            Type::StructureRef("EndEffectorTrack".to_string())
+        ),
+        "peak_deviation param[0] should be (\"track\", StructureRef(\
+         \"EndEffectorTrack\")); got: {:?}",
+        func.params[0]
+    );
+    assert_eq!(
+        func.params[1],
+        ("location".to_string(), Type::Real),
+        "peak_deviation param[1] should be (\"location\", Real) \
+         (LocationId = Real alias); got: {:?}",
+        func.params[1]
+    );
+
+    assert_eq!(
+        func.return_type,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "peak_deviation return type should be Scalar<LENGTH> (= Length, scalar); \
+         got: {:?}",
+        func.return_type
+    );
+}
+
+// ─── step-49: GcodeDialect marker trait ──────────────────────────────────────
+
+/// `GcodeDialect` is the marker trait for G-code dialect selectors (PRD §7.2).
+/// Concrete dialects (`MarlinDialect`, `KlipperDialect`) refine it. The trait
+/// exists only to give the `gcode_import` dispatcher's `dialect : GcodeDialect`
+/// param a single nominal type so the SIR-α nominal type-tag dispatches on the
+/// concrete dialect variant.
+///
+/// Empty by design — the semantic behavior lives in the consumer ο
+/// (`gcode_import` parser), not as authoring-time params.
+///
+/// Test pins three invariants: (a) the trait is found, (b) it has zero
+/// required members + zero defaults (marker trait), (c) it has no
+/// refinements (top-level marker, no parent trait).
+/// Mirrors `shaper_trait_exists_with_no_params` (step-29).
+#[test]
+fn gcode_dialect_trait_exists_with_no_params() {
+    let trait_def = find_trait("GcodeDialect");
+
+    assert!(
+        trait_def.required_members.is_empty(),
+        "GcodeDialect should declare zero required members (marker trait); \
+         got: {:?}",
+        trait_def
+            .required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        trait_def.defaults.is_empty(),
+        "GcodeDialect should declare zero defaults (marker trait); got: {:?}",
+        trait_def
+            .defaults
+            .iter()
+            .map(|d| &d.name)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        trait_def.refinements.is_empty(),
+        "GcodeDialect should declare zero refinements (top-level marker, no \
+         parent trait); got: {:?}",
+        trait_def.refinements
+    );
+}
+
+// ─── step-51: MarlinDialect refines GcodeDialect ──────────────────────────────
+
+/// `MarlinDialect` is the zero-DOF marker for the Marlin G-code dialect
+/// (PRD §7.1/§7.2). It refines `GcodeDialect` and carries no authoring-time
+/// params: the semantic behaviour (G0/G1/G2/G3/G92/F, M-commands ignored)
+/// lives in the consumer ο (`gcode_import` parser dispatch), not here.
+///
+/// Test pins three invariants: (a) the structure refines `GcodeDialect`
+/// (via `template.trait_bounds`), (b) it has zero params (marker), (c) it
+/// declares no constraints.
+/// Mirrors `natural_spline_refines_boundary_condition_with_no_params` (step-11).
+#[test]
+fn marlin_dialect_refines_gcode_dialect_with_no_params() {
+    let template = find_structure("MarlinDialect");
+
+    assert_eq!(
+        template.trait_bounds,
+        vec!["GcodeDialect".to_string()],
+        "MarlinDialect must refine GcodeDialect; got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+
+    let params = param_cells(template);
+    assert!(
+        params.is_empty(),
+        "MarlinDialect should declare zero params (marker structure); \
+         got: {:?}",
+        params
+            .iter()
+            .map(|vc| vc.id.member.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    assert!(
+        template.constraints.is_empty(),
+        "MarlinDialect should declare no constraints (semantic behaviour \
+         is consumer-ο-enforced); got: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+}
+
+// ─── step-53: KlipperDialect refines GcodeDialect ────────────────────────────
+
+/// `KlipperDialect` is the zero-DOF marker for the Klipper G-code dialect
+/// (PRD §7.1/§7.2). It refines `GcodeDialect` and carries no authoring-time
+/// params: the semantic behaviour (same core G-codes as Marlin plus
+/// SET_VELOCITY_LIMIT / INPUT_SHAPER directives) lives in the consumer ο
+/// (`gcode_import` parser dispatch), not here.
+///
+/// Test pins three invariants: (a) the structure refines `GcodeDialect`
+/// (via `template.trait_bounds`), (b) it has zero params (marker), (c) it
+/// declares no constraints.
+/// Mirrors `periodic_spline_refines_boundary_condition_with_no_params` (step-15).
+#[test]
+fn klipper_dialect_refines_gcode_dialect_with_no_params() {
+    let template = find_structure("KlipperDialect");
+
+    assert_eq!(
+        template.trait_bounds,
+        vec!["GcodeDialect".to_string()],
+        "KlipperDialect must refine GcodeDialect; got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+
+    let params = param_cells(template);
+    assert!(
+        params.is_empty(),
+        "KlipperDialect should declare zero params (marker structure); \
+         got: {:?}",
+        params
+            .iter()
+            .map(|vc| vc.id.member.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    assert!(
+        template.constraints.is_empty(),
+        "KlipperDialect should declare no constraints (semantic behaviour \
+         is consumer-ο-enforced); got: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+}

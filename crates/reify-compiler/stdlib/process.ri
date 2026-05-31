@@ -1,0 +1,79 @@
+// Stdlib: Manufacturing Processes — Process, DFMRule, and process-category traits
+// Provides the trait surface for representing manufacturing process constraints
+// and design-for-manufacturability (DFM) rules on parametric structures.
+//
+// Reference: docs/prds/v0_6/stdlib-reconstruction.md §Slice B.
+//
+// TRAIT SURFACE ONLY — DFM-rule evaluation (running a rule against geometry)
+// is OUT OF SCOPE for this module. This module declares the types that let a
+// designer annotate a structure with process constraints and DFM rules; it does
+// not provide any rule-evaluation engine or geometry checker. A future task
+// will add an evaluation seam here.
+//
+// DFMSeverity note: this module declares its own `DFMSeverity` enum for use as
+// a DSL type. This is distinct from the Rust type `reify_core::Severity` used
+// for compiler diagnostics — there is no namespace clash at the DSL level.
+
+// ── Enumerations ─────────────────────────────────────────────────────────────
+
+// Severity level of a DFM rule finding.
+// Info — informational; no action required.
+// Warning — potential manufacturability concern; review recommended.
+// Error — serious manufacturability violation; action required.
+enum DFMSeverity { Info, Warning, Error }
+
+// ── Base process trait ────────────────────────────────────────────────────────
+
+// Base trait for any manufacturing process.
+// duration: how long the process takes (Time — e.g. 30min).
+// cost: per-part process cost (Money — e.g. 50USD).
+// Params carry no defaults so they appear in required_members and must be
+// supplied by every conforming structure (matching io.ri Buy/Input convention).
+trait Process {
+    param duration : Time
+    param cost : Money
+}
+
+// ── Process-category marker traits ───────────────────────────────────────────
+// Each refines Process and inherits duration + cost as required members.
+// Bodies are empty — conformers supply Process's requirements directly.
+// Geometry_traits Watertight precedent: empty refining traits inherit the
+// parent's requirements via refinement, not by re-declaring them.
+
+// PRD §11.3 primary categories (Subtracting, Adding, Forming, Joining):
+// Material-removal processes (milling, turning, drilling, EDM, water-jet, …).
+trait Subtracting : Process {}
+
+// Additive manufacturing (FDM, SLA, SLS, metal AM, …).
+trait Adding : Process {}
+
+// Material-deformation processes (forging, stamping, rolling, extrusion, …).
+trait Forming : Process {}
+
+// Assembly / bonding processes (welding, brazing, adhesive, fastening, …).
+trait Joining : Process {}
+
+// Additional categories from task #333 scope:
+// Parting / separation (sawing, shearing, blanking, …).
+trait Parting : Process {}
+
+// Surface finishing and coating (anodising, painting, plating, polishing, …).
+trait SurfaceTreating : Process {}
+
+// Thermal treatment (annealing, quenching, case-hardening, …).
+trait HeatTreating : Process {}
+
+// ── DFM rule trait ────────────────────────────────────────────────────────────
+// TRAIT SURFACE ONLY — this trait declares the interface for a DFM rule;
+// it does NOT provide any evaluation engine or geometry-checking capability.
+// A future evaluation task will add the seam for running rules against geometry.
+//
+// applies_to is the process-applicability marker: it names the process (or
+// process category) to which this rule applies. Conformers supply a concrete
+// Process value (e.g. MilledPart()), mirroring fdm.ri's
+// `material : ElasticMaterial = ABS_Plastic()` pattern.
+trait DFMRule {
+    param rule_name : String
+    param severity : DFMSeverity
+    param applies_to : Process
+}

@@ -96,6 +96,9 @@ fn make_sub_with_body(name: &str, body: Option<Vec<MemberDecl>>) -> SubDecl {
         where_clause: None,
         body,
         param_overrides: Vec::new(),
+        keyed_members: Vec::new(),
+        is_aux: false,
+        pose_expr: None,
         span: dummy_span(),
         content_hash: dummy_hash(),
     }
@@ -113,6 +116,7 @@ fn make_let(name: &str) -> MemberDecl {
         name: name.to_string(),
         doc: None,
         is_pub: false,
+        is_aux: false,
         type_expr: None,
         value: dummy_expr(),
         where_clause: None,

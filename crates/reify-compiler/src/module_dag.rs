@@ -224,6 +224,23 @@ fn partial_overlay_diag(
     }
 }
 
+/// Attach a module-path declaration diagnostic (§7.1/§7.2) to `compiled` if warranted.
+///
+/// Encapsulates the `check_module_path_decl` call and diagnostic push shared by the
+/// user-module entry points in this file. Call sites that can receive stdlib modules
+/// (i.e. `compile_module`) must guard with `!is_std_path` before calling this.
+fn attach_module_path_diag(
+    compiled: &mut CompiledModule,
+    parsed: &reify_ast::ParsedModule,
+) {
+    if let Some(diag) = crate::compile_builder::pre_pass::check_module_path_decl(
+        parsed.declared_module_path.as_ref(),
+        &parsed.path,
+    ) {
+        compiled.diagnostics.push(diag);
+    }
+}
+
 impl Default for ModuleDag {
     fn default() -> Self {
         Self::new()
@@ -457,7 +474,7 @@ impl ModuleDag {
         self.in_progress.shift_remove(module_path);
 
         // Propagate error after cleanup
-        let compiled = result?;
+        let mut compiled = result?;
 
         // Commit filesystem mode now that the module has compiled successfully.
         // Deferred from the Ok-and-std match arm above so that a parse/compile
@@ -481,6 +498,15 @@ impl ModuleDag {
                 )]);
             }
             self.stdlib_mode = Some(StdlibMode::FileSystem);
+        }
+
+        // Enforce module-path declaration (spec §7.1/§7.2, task γ).
+        // Skip stdlib modules: none of the stdlib .ri files declare `module`, so
+        // emitting W_MODULE_DECL_MISSING for every std.* import would be spurious
+        // noise under the FileSystem stdlib path. The embedded path is unaffected
+        // (stdlib modules are inserted directly; they never reach this branch).
+        if !is_std_path {
+            attach_module_path_diag(&mut compiled, &parsed);
         }
 
         // Record in post-order (only on success)
@@ -671,6 +697,11 @@ pub fn compile_project_with_entry_source(
             .collect();
         crate::compile_with_prelude_refs(&parsed, &preludes)
     };
+    // Enforce module-path declaration (spec §7.1/§7.2, task γ).
+    // parsed.path == ModulePath::single(entry_name) by construction (D-6).
+    // Entry source is always a user module, so no stdlib exclusion needed.
+    let mut compiled_entry = compiled_entry;
+    attach_module_path_diag(&mut compiled_entry, &parsed);
     let entry_key = entry_name.to_string();
     dag.topo_order.push(entry_key.clone());
     dag.modules.insert(entry_key, compiled_entry);

@@ -128,8 +128,11 @@ fn corner_cases_parses_and_compiles() {
 
 // ── step-3: type alias, trait, vacuous constraint def ────────────────────────
 
-/// Verify JerkDemo.j has the correct Jerk dimension (Length·Time⁻³).
-/// This confirms the 3-deep alias chain (Velocity → Acceleration → Jerk) resolves correctly.
+/// Verify JerkDemo.j has the correct Jerk dimension (Length·Time⁻³) AND SI
+/// value (0.001 = 1mm/s³). This confirms the 3-deep alias chain
+/// (Velocity → Acceleration → Jerk) resolves correctly, and pins the value the
+/// step-9 compound-literal migration (`1mm / (1s*1s*1s)` -> `1mm/s^3`) must
+/// preserve — the prior version pinned the dimension only.
 #[test]
 fn type_alias_three_deep_resolves() {
     let result = eval_ri_file();
@@ -142,11 +145,18 @@ fn type_alias_three_deep_resolves() {
     // Jerk = Length / Time³  →  DimensionVector: L¹·T⁻³
     let expected_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME.pow(3));
     match j_val {
-        Value::Scalar { dimension, .. } => {
+        Value::Scalar { si_value, dimension } => {
             assert_eq!(
                 dimension, &expected_dim,
                 "JerkDemo.j dimension should be Length/Time^3 (Jerk), got: {:?}",
                 dimension
+            );
+            // Value pin: 1mm/s³ = 0.001 m/s³ in SI. Guards the step-9 migration
+            // against a value drift, not just a dimension drift.
+            assert!(
+                (si_value - 0.001).abs() < 1e-9,
+                "JerkDemo.j SI value should be 0.001 (1mm/s³), got: {}",
+                si_value
             );
         }
         other => panic!(

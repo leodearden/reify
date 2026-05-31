@@ -1,0 +1,56 @@
+// Shell channels surfacing fixture (task #4067, PRD S1).
+//
+// Tests ElasticResult.shell_channels : ShellStress (added in task step-2).
+//
+// Invariants tested:
+//   I-2 (shell_channels.mid == stress, by object identity of mid_f)
+//   I-3 (shell_channels is a StructureInstance, not Undef, after step-2)
+//
+// Design note — field lambda body scope (discovered during step-2 implementation):
+//   Reify field lambda bodies evaluate in a restricted scope that only supports
+//   scalar-valued expressions. Tensor-typed codomains (Field<..., Tensor<2,3,Pressure>>)
+//   cannot be produced from DSL-authored field lambdas. Real -> Real fields compile
+//   correctly and produce valid Value::Field instances, which is sufficient to test
+//   the shell_channels struct wiring.
+//   The von_mises FIELD path (I-4 invariant) is covered by field_analysis_tests.rs
+//   via Rust-constructed analytical tensor fields; no DSL fixture is needed for it.
+//
+// SIR-alpha: structure ctors accept any value for typed params. Passing a
+// Real->Real field for stress/displacement/frame params is accepted. The
+// test asserts that the ctor DID store shell_channels correctly.
+
+// ── Analytical scalar fields (Real -> Real) ───────────────────────────────────
+
+field def top_layer : Real -> Real { source = analytical { |x| 100.0 } }
+field def mid_layer : Real -> Real { source = analytical { |x| 100.0 } }
+field def bot_layer : Real -> Real { source = analytical { |x| 100.0 } }
+
+// ── Main structure ─────────────────────────────────────────────────────────────
+
+structure def FeaShellChannels {
+    // mid_f is the SAME field object passed to both `stress` and
+    // `shell_channels.mid` so that I-2 (shell_channels.mid == stress) holds
+    // by value identity.
+    let mid_f = mid_layer
+
+    // Build a ShellStress with three scalar analytical fields.
+    let channels = ShellStress(top: top_layer, mid: mid_f, bottom: bot_layer)
+
+    // Build an ElasticResult with shell_channels populated.
+    // `stress: mid_f` and `shell_channels.mid = mid_f` by construction (I-2).
+    // Other fields use mid_f as placeholder (SIR-alpha accepts any value).
+    //
+    // Note: ElasticResult requires `param shell_channels : ShellStress`
+    // (added by task #4067 step-2). Until step-2 lands, shell_channels is
+    // silently dropped via SIR-alpha ctor acceptance and the Rust eval test
+    // asserts its presence (catching the RED failure cleanly).
+    let result = ElasticResult(
+        displacement: mid_f,
+        stress: mid_f,
+        frame: mid_f,
+        shell_channels: channels,
+        max_von_mises: 0Pa,
+        converged: true,
+        iterations: 0
+    )
+}

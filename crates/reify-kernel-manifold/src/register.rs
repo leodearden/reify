@@ -49,12 +49,12 @@ use reify_ir::{CapabilityDescriptor, GeometryKernel, KernelRegistration, Operati
 /// [`ManifoldKernel`](crate::kernel::ManifoldKernel) backed by the
 /// `manifold3d` C++ FFI.
 ///
-/// Test code that needs to reach the `test-fixtures`-gated
-/// [`crate::kernel::ManifoldKernel::store_mesh_for_test`] ingestion
-/// path constructs a concrete kernel directly via
-/// [`crate::kernel::ManifoldKernel::new`] rather than going through this
-/// boxed factory — boxing erases the concrete type and would hide the
-/// test-only API.
+/// `ingest_mesh` is now a production trait method on [`reify_ir::GeometryKernel`]
+/// and is reachable through this boxed factory. Test code that needs
+/// the `test-fixtures`-gated fixtures (`unit_cube_mesh`,
+/// `manifold_factory_for_test`) may still construct a concrete kernel
+/// directly via [`crate::kernel::ManifoldKernel::new`] for clarity, but
+/// the production `ingest_mesh` path is no longer hidden behind boxing.
 pub fn manifold_factory() -> Box<dyn GeometryKernel> {
     Box::new(crate::kernel::ManifoldKernel::new())
 }

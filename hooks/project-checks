@@ -5,8 +5,10 @@
 # orchestrator.yaml. --scope staged scopes the gate by `git diff --cached`, so a
 # docs-only or empty stage produces an empty plan and exits 0 (the previous
 # "no source changes — skipping" fast path is now subsumed by the scope picker).
-# --profile debug keeps the per-commit gate fast (release coverage is the
-# orchestrator's job — the one deliberate hook↔orchestrator divergence).
+# --profile debug keeps the per-commit gate fast. Release coverage is the
+# MERGE GATE's job (hooks/pre-merge-commit runs --profile both --scope all);
+# per-task verify (orchestrator.yaml) and this per-commit gate both stay
+# debug-only so the common, high-frequency path gives fast feedback.
 # verify.sh bakes in the cargo env, sccache/jobserver, and OCCT LD_LIBRARY_PATH,
 # so the hook no longer depends on the caller's ambient environment.
 #

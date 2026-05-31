@@ -24,6 +24,8 @@ import type {
   AutoResolveIteration,
   WarmPoolEvent,
   FeaCaseChanged,
+  SolverProgress,
+  ModeShapeFrame,
 } from './types';
 import { convertRawMesh, convertRawGuiState } from './types';
 import type {
@@ -712,4 +714,81 @@ export async function onFeaCaseChanged(
     }
     callback(p as unknown as FeaCaseChanged);
   });
+}
+
+/**
+ * Subscribe to `solver-progress` Tauri events (GR-016 ζ).
+ *
+ * Emitted at the end of each CG iteration by `solve_cg_with_progress` in
+ * `crates/reify-solver-elastic/src/solver.rs`. The engine-boundary `app.emit`
+ * wiring is a follow-on task; this listener is the GUI-side subscription seam.
+ *
+ * Uses the inline structural-shape-guard idiom (listen<unknown> +
+ * isPlainObject + per-field type checks + console.warn drop on malformed),
+ * mirroring `onFeaCaseChanged` (bridge.ts:699-715). `eta_ms` is optional and
+ * not asserted — its absence from the wire shape is a valid case (first
+ * iteration before residual history is available).
+ *
+ * Per-channel spec: docs/gui-event-channels/solver-progress.md
+ */
+export async function onSolverProgress(
+  callback: (payload: SolverProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<unknown>('solver-progress', (event) => {
+    const p = event.payload;
+    if (
+      !isPlainObject(p) ||
+      typeof p['solver_kind'] !== 'string' ||
+      typeof p['iter'] !== 'number' ||
+      typeof p['residual'] !== 'number'
+    ) {
+      console.warn('[solver-progress] malformed payload; dropping event', p);
+      return;
+    }
+    callback(p as unknown as SolverProgress);
+  });
+}
+
+/**
+ * Subscribe to mode-shape-frame events from the backend (task ι/3458).
+ *
+ * The backend emits one undeformed base frame (phase=0.0) and one peak frame
+ * per mode (phase=1.0) on each solve completion that produces a BucklingResult.
+ * Applies the inline structural-shape-guard idiom (listen<unknown> +
+ * isPlainObject + per-field type checks + console.warn drop on malformed),
+ * mirroring `onSolverProgress`.
+ *
+ * Per-channel spec: docs/gui-event-channels.md §2 (mode-shape-frame row, ACTIVE)
+ */
+export async function onModeShapeFrame(
+  callback: (payload: ModeShapeFrame) => void,
+): Promise<UnlistenFn> {
+  return listen<unknown>('mode-shape-frame', (event) => {
+    const p = event.payload;
+    if (
+      !isPlainObject(p) ||
+      typeof p['mode_index'] !== 'number' ||
+      typeof p['phase'] !== 'number' ||
+      !Array.isArray(p['displaced_positions']) ||
+      !(p['displaced_positions'] as unknown[]).every(n => typeof n === 'number') ||
+      ('eigenvalue' in p && typeof (p as Record<string, unknown>)['eigenvalue'] !== 'number')
+    ) {
+      console.warn('[mode-shape-frame] malformed payload; dropping event', p);
+      return;
+    }
+    callback(p as unknown as ModeShapeFrame);
+  });
+}
+
+/**
+ * Cancel an in-flight FEA solve (GR-016 ζ).
+ *
+ * Invokes the `cancel_solve` Tauri command which calls `.cancel()` on the
+ * `CancellationHandle` stored in `AppState::pending_solve_cancel`, if any.
+ * A no-op (returns Ok) when no solve is currently in flight.
+ *
+ * PRD §11 Q2 resolution: command, not event.
+ */
+export async function cancelSolve(): Promise<void> {
+  return invoke('cancel_solve');
 }

@@ -1277,8 +1277,9 @@ fn user_fn_safety_factor() {
 /// Verify:
 /// - BoltFlange declares the `Rigid` trait bound
 /// - At least 4 realizations: body cylinder, translate(hole), circular_pattern, difference
-/// - `geometry` is NOT emitted as a scalar value cell (it is a Solid-typed param
-///   lowered to a realization)
+/// - `geometry` IS emitted as a `ValueCellDecl` with `cell_type == Type::Geometry`
+///   (GHR-γ step-2 retired the `is_solid_geometry_param` skip; both a ValueCellDecl
+///   and the parallel RealizationDecl chain are now produced)
 /// - Build produces valid STEP output with ISO-10303-21 header
 /// - All constraints satisfied
 ///
@@ -1317,13 +1318,24 @@ fn geometry_flange_with_pattern() {
         flange.realizations.len()
     );
 
-    // (d) `geometry` must NOT appear as a scalar value cell — it is a Solid-typed param
-    // lowered to a RealizationDecl, not a ValueCellDecl.
-    assert!(
-        !flange.value_cells.iter().any(|c| c.id.member == "geometry"),
-        "`geometry` must not be a ValueCellDecl; Solid-typed params with geometry defaults \
-         should be lowered as realizations"
-    );
+    // (d) `geometry` MUST appear as a Type::Geometry value cell (GHR-γ step-2 retired
+    // the is_solid_geometry_param skip; Solid-typed params now emit both a ValueCellDecl
+    // with cell_type == Type::Geometry AND the parallel RealizationDecl chain).
+    {
+        use reify_core::Type;
+        assert!(
+            flange
+                .value_cells
+                .iter()
+                .any(|c| c.id.member == "geometry" && c.cell_type == Type::Geometry),
+            "`geometry` must be a ValueCellDecl with cell_type=Type::Geometry (GHR-γ); got: {:?}",
+            flange
+                .value_cells
+                .iter()
+                .map(|c| (&c.id.member, &c.cell_type))
+                .collect::<Vec<_>>()
+        );
+    }
 
     // Build with real constraint checker and OCCT kernel
     let checker = reify_constraints::SimpleConstraintChecker;

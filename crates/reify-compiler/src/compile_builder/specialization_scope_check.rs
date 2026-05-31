@@ -118,7 +118,8 @@ where
             | Declaration::Enum(_)
             | Declaration::Unit(_)
             | Declaration::TypeAlias(_)
-            | Declaration::Import(_) => continue,
+            | Declaration::Import(_)
+            | Declaration::Module(_) => continue,
         };
         find_specialization_scopes(members, visitor, 0);
     }

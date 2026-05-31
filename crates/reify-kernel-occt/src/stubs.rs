@@ -189,6 +189,19 @@ impl OcctKernel {
         Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
     }
 
+    /// Stub surface-normal-at-point probe — always errors because OCCT is unavailable.
+    /// Mirrors the real `OcctKernel::surface_normal_at_point` signature so call sites
+    /// compile under both `has_occt` and `!has_occt`.
+    pub fn surface_normal_at_point(
+        &self,
+        _handle: GeometryHandleId,
+        _px: f64,
+        _py: f64,
+        _pz: f64,
+    ) -> Result<[f64; 3], QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
+    }
+
     /// Stub curvature-at probe — always errors because OCCT is unavailable.
     /// Mirrors the real `OcctKernel::curvature_at` signature so call sites
     /// compile under both `has_occt` and `!has_occt`.
@@ -198,6 +211,19 @@ impl OcctKernel {
         _u: f64,
         _v: f64,
     ) -> Result<Curvature, QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
+    }
+
+    /// Stub curve-curvature-at probe — always errors because OCCT is unavailable.
+    /// Mirrors the real `OcctKernel::curve_curvature_at` signature so call sites
+    /// compile under both `has_occt` and `!has_occt`.
+    pub fn curve_curvature_at(
+        &self,
+        _handle: GeometryHandleId,
+        _px: f64,
+        _py: f64,
+        _pz: f64,
+    ) -> Result<f64, QueryError> {
         Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
     }
 
@@ -213,6 +239,25 @@ impl OcctKernel {
     /// `f64`); and the naming caveat that this primitive cannot distinguish on-surface
     /// from inside-solid for `TopoDS_Solid` inputs.
     pub fn point_on_shape(
+        &self,
+        _handle: GeometryHandleId,
+        _px: f64,
+        _py: f64,
+        _pz: f64,
+        _tolerance: f64,
+    ) -> Result<bool, QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
+    }
+
+    /// Stub contains-solid membership probe — always errors because OCCT is unavailable.
+    /// Mirrors the real `OcctKernel::contains` signature so call sites compile
+    /// under both `has_occt` and `!has_occt`.
+    ///
+    /// The real implementation uses `BRepClass3d_SolidClassifier(shape).Perform(pnt, tol)`
+    /// and returns `true` for `TopAbs_IN || TopAbs_ON`. See `lib.rs` for the full contract,
+    /// including the tolerance precondition (non-negative finite `f64`) and the
+    /// `DEFAULT_CONTAINS_TOLERANCE_M` (= `DEFAULT_POINT_ON_SHAPE_TOLERANCE_M`, ~1e-7) default.
+    pub fn contains(
         &self,
         _handle: GeometryHandleId,
         _px: f64,
@@ -691,6 +736,20 @@ mod tests {
             reify_ir::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
         );
         let err = result.expect_err("stub point_on_shape should error");
+        assert_stub_message(&format!("{err:?}"));
+    }
+
+    #[test]
+    fn stub_kernel_contains_returns_error() {
+        let kernel = OcctKernel::new();
+        let result = kernel.contains(
+            GeometryHandleId(1),
+            0.0,
+            0.0,
+            0.0,
+            reify_ir::DEFAULT_CONTAINS_TOLERANCE_M,
+        );
+        let err = result.expect_err("stub contains should error");
         assert_stub_message(&format!("{err:?}"));
     }
 }

@@ -215,3 +215,61 @@ fn check_nonexistent_file_exits_failure() {
         "stderr should contain error message about reading, got: {stderr}"
     );
 }
+
+// ── Task γ: module-path declaration enforcement (CLI, step-7) ──────
+
+#[test]
+fn check_mod_decl_mismatch_exits_failure_with_error_diagnostic() {
+    // mod_decl_mismatch.ri: `module wrong.path.here` != stem "mod_decl_mismatch"
+    let (status, _stdout, stderr) =
+        common::run_subcommand("check", &common::fixture_path("mod_decl_mismatch.ri"));
+
+    assert!(
+        !status.success(),
+        "reify check should exit non-zero for path mismatch.\nstdout: {_stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("E_MODULE_PATH_MISMATCH"),
+        "stderr should contain 'E_MODULE_PATH_MISMATCH', got: {stderr}"
+    );
+}
+
+#[test]
+fn check_mod_decl_match_exits_success_no_path_diagnostic() {
+    // mod_decl_match.ri: `module mod_decl_match` (correct)
+    let (status, stdout, stderr) =
+        common::run_subcommand("check", &common::fixture_path("mod_decl_match.ri"));
+
+    assert!(
+        status.success(),
+        "reify check should exit 0 for correct module declaration.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("All constraints satisfied"),
+        "stdout should contain 'All constraints satisfied', got: {stdout}"
+    );
+    assert!(
+        !stderr.contains("E_MODULE_PATH_MISMATCH"),
+        "stderr should not contain 'E_MODULE_PATH_MISMATCH', got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("W_MODULE_DECL_MISSING"),
+        "stderr should not contain 'W_MODULE_DECL_MISSING', got: {stderr}"
+    );
+}
+
+#[test]
+fn check_absent_module_decl_exits_success_with_warning() {
+    // bracket.ri has no module declaration → W_MODULE_DECL_MISSING warning, exit 0
+    let (status, stdout, stderr) =
+        common::run_subcommand("check", &common::fixture_path("bracket.ri"));
+
+    assert!(
+        status.success(),
+        "reify check should exit 0 when module declaration is absent (warning only).\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("W_MODULE_DECL_MISSING"),
+        "stderr should contain 'W_MODULE_DECL_MISSING', got: {stderr}"
+    );
+}

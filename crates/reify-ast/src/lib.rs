@@ -27,7 +27,10 @@ pub mod decl;
 // ── flat root re-exports ─────────────────────────────────────────────────────
 // Flat re-export so code using `reify_ast::Expr` (etc.) resolves alongside the
 // module-path form `reify_ast::ast::Expr`.
-pub use ast::{DimOp, Expr, ExprKind, LambdaParam, MatchArm, QuantifierKind, TypeExpr, TypeExprKind};
+pub use ast::{
+    DimOp, Expr, ExprKind, LambdaParam, MatchArm, MatchPattern, QuantifierKind, TypeExpr,
+    TypeExprKind, UnitExpr,
+};
 
 // ── declaration AST flat re-exports ─────────────────────────────────────────
 // Mirrors the flat surface previously in reify-syntax::lib so that code using
@@ -35,13 +38,14 @@ pub use ast::{DimOp, Expr, ExprKind, LambdaParam, MatchArm, QuantifierKind, Type
 // form `reify_ast::decl::ParsedModule`.
 pub use decl::{
     Annotation, AssociatedTypeDecl, ChainDecl, ConnectDecl, ConnectOp, ConstraintDecl,
-    ConstraintDef, ConstraintInstDecl, Declaration, EnumDecl, FieldDef, FieldSource, FnBody,
-    FnDef, FnParam, ForallConnectBody, ForallConnectDecl, ForallConstraintBody,
-    ForallConstraintDecl, GuardedGroupDecl, ImportDecl, ImportKind, LetDecl,
-    MAX_MEMBER_NESTING_DEPTH, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MaximizeDecl,
-    MemberDecl, MemberSpanInfo, MetaBlockDecl, MinimizeDecl, NumberClass, OccurrenceDef,
-    ParamDecl, ParseError, ParsedModule, PortDecl, PortRef, Pragma, PragmaArg, PragmaValue,
-    PurposeDef, PurposeParam, StructureDef, SubDecl, TraitBoundRef, TraitDecl, TypeAliasDecl,
-    TypeParamDecl, UnitDecl, WhereClause, classify_number_literal, find_named_member_span,
-    has_test_annotation, walk_specialization_scope_members,
+    ConstraintDef, ConstraintInstDecl, Declaration, EnumDecl, EnumVariantDecl, FieldDef,
+    FieldSource, FnBody, FnDef, FnParam, ForallConnectBody, ForallConnectDecl,
+    ForallConstraintBody, ForallConstraintDecl, GuardedGroupDecl, ImportDecl, ImportKind,
+    LetDecl, MAX_MEMBER_NESTING_DEPTH, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MaximizeDecl,
+    MemberDecl, MemberSpanInfo, MetaBlockDecl, MinimizeDecl, ModuleDecl, NumberClass,
+    OccurrenceDef, ParamDecl, ParseError, ParsedModule, PortDecl, PortRef, Pragma, PragmaArg,
+    PragmaValue, KeyedSubMemberEntry, PurposeDef, PurposeParam, StructureDef, SubDecl,
+    TraitBoundRef, TraitDecl, TypeAliasDecl, TypeParamDecl, UnitDecl, VariantPayload, WhereClause,
+    classify_number_literal, find_named_member_span, has_test_annotation,
+    walk_specialization_scope_members,
 };

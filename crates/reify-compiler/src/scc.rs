@@ -292,6 +292,8 @@ mod tests {
             is_collection: false,
             count_cell: None,
             guard_state: GuardState::None,
+            pose: None,
+            is_aux: false,
             span: SourceSpan::new(0, 0),
             content_hash: ContentHash(0),
         }
@@ -322,6 +324,7 @@ mod tests {
             pragmas: vec![],
             match_arm_groups: vec![],
             forall_templates: vec![],
+            assoc_fns: vec![],
         }
     }
 

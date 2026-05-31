@@ -215,3 +215,202 @@ fn sample_sdf_at_skipped_without_cfg() {
     println!("sample_sdf_at_returns_signed_distance: has_openvdb cfg not set, skip");
     assert!(true);
 }
+
+// ---------------------------------------------------------------------------
+// realize_voxel_from_mesh_with_options tests (task η wrapper)
+// ---------------------------------------------------------------------------
+
+/// Build a flat Mesh from the thin-slab triplets for use in the options-wrapper test.
+#[cfg(has_openvdb)]
+fn thin_slab_flat_mesh() -> reify_ir::Mesh {
+    let (verts, tris) = thin_slab_mesh();
+    reify_ir::Mesh {
+        vertices: verts.iter().flat_map(|v| v.iter().copied()).collect(),
+        indices: tris.iter().flat_map(|t| t.iter().copied()).collect(),
+        normals: None,
+    }
+}
+
+/// Verify that `realize_voxel_from_mesh_with_options` produces active voxels
+/// and returns a count consistent with a direct `realize_voxel_from_mesh` call
+/// on the same geometry (same FFI path, deterministic).
+#[cfg(has_openvdb)]
+#[test]
+fn realize_voxel_from_mesh_with_options_produces_active_voxels() {
+    use reify_kernel_openvdb::{MeshToVoxelOptions, OpenVdbKernel};
+
+    let mesh = thin_slab_flat_mesh();
+    let opts = MeshToVoxelOptions {
+        voxel_size: 0.1,
+        narrow_band: 3.0,
+    };
+
+    let mut kernel = OpenVdbKernel::new();
+
+    // Call the wrapper.
+    let handle = kernel
+        .realize_voxel_from_mesh_with_options(&mesh, &opts)
+        .expect("realize_voxel_from_mesh_with_options should succeed for a valid slab mesh");
+
+    use reify_ir::GeometryHandleId;
+    assert!(
+        handle != GeometryHandleId::INVALID,
+        "expected a valid GeometryHandleId, got INVALID"
+    );
+
+    let wrapper_count = kernel
+        .active_voxel_count(handle)
+        .expect("active_voxel_count should succeed for a registered handle");
+    assert!(wrapper_count > 0, "active voxel count must be non-zero");
+
+    // Consistency: direct call must produce the same count (same FFI, same params).
+    let (verts, tris) = thin_slab_mesh();
+    let direct_handle = kernel
+        .realize_voxel_from_mesh(&verts, &tris, opts.voxel_size, opts.narrow_band)
+        .expect("direct realize_voxel_from_mesh should succeed");
+    let direct_count = kernel
+        .active_voxel_count(direct_handle)
+        .expect("active_voxel_count should succeed for direct handle");
+
+    assert_eq!(
+        wrapper_count, direct_count,
+        "realize_voxel_from_mesh_with_options must produce the same active voxel count \
+         as a direct realize_voxel_from_mesh call with the same parameters; \
+         wrapper={wrapper_count}, direct={direct_count}",
+    );
+}
+
+/// `cfg(not(has_openvdb))` skip-stub for the options-wrapper test.
+#[cfg(not(has_openvdb))]
+#[test]
+fn realize_voxel_from_mesh_with_options_skipped_without_cfg() {
+    println!("realize_voxel_from_mesh_with_options: has_openvdb cfg not set, skip");
+    assert!(true);
+}
+
+// ---------------------------------------------------------------------------
+// realize_voxel_from_mesh_with_options — pre-FFI validation tests
+// ---------------------------------------------------------------------------
+//
+// The validation in `realize_voxel_from_mesh_with_options` (malformed buffers,
+// non-positive/non-finite opts) runs before any FFI call, so it is logically
+// cfg-independent. However the method only exists on the real kernel
+// (`kernel_real.rs`, `cfg(has_openvdb)`); making these tests unconditionally
+// available would require adding `realize_voxel_from_mesh_with_options` to the
+// stub kernel (`kernel.rs`) — outside this task's scope. They are therefore
+// gated `cfg(has_openvdb)` with a single companion skip-stub below.
+
+/// `vertices.len()` not divisible by 3 must return `OperationFailed`.
+#[cfg(has_openvdb)]
+#[test]
+fn realize_voxel_with_options_rejects_malformed_vertex_buffer() {
+    use reify_ir::{GeometryError, Mesh};
+    use reify_kernel_openvdb::{MeshToVoxelOptions, OpenVdbKernel};
+
+    let mesh = Mesh {
+        vertices: vec![0.0_f32; 7], // 7 is not a multiple of 3
+        indices: vec![0_u32, 1, 2],
+        normals: None,
+    };
+    let opts = MeshToVoxelOptions::default();
+    let mut kernel = OpenVdbKernel::new();
+    let result = kernel.realize_voxel_from_mesh_with_options(&mesh, &opts);
+    assert!(
+        matches!(result, Err(GeometryError::OperationFailed(_))),
+        "expected OperationFailed for vertices.len() % 3 != 0, got {result:?}",
+    );
+}
+
+/// `indices.len()` not divisible by 3 must return `OperationFailed`.
+#[cfg(has_openvdb)]
+#[test]
+fn realize_voxel_with_options_rejects_malformed_index_buffer() {
+    use reify_ir::{GeometryError, Mesh};
+    use reify_kernel_openvdb::{MeshToVoxelOptions, OpenVdbKernel};
+
+    let mesh = Mesh {
+        vertices: vec![0.0_f32; 9],
+        indices: vec![0_u32, 1, 2, 3, 4], // 5 is not a multiple of 3
+        normals: None,
+    };
+    let opts = MeshToVoxelOptions::default();
+    let mut kernel = OpenVdbKernel::new();
+    let result = kernel.realize_voxel_from_mesh_with_options(&mesh, &opts);
+    assert!(
+        matches!(result, Err(GeometryError::OperationFailed(_))),
+        "expected OperationFailed for indices.len() % 3 != 0, got {result:?}",
+    );
+}
+
+/// `opts.voxel_size == 0.0` (not positive) must return `OperationFailed`.
+#[cfg(has_openvdb)]
+#[test]
+fn realize_voxel_with_options_rejects_zero_voxel_size() {
+    use reify_ir::{GeometryError, Mesh};
+    use reify_kernel_openvdb::{MeshToVoxelOptions, OpenVdbKernel};
+
+    let mesh = Mesh {
+        vertices: vec![0.0_f32; 9],
+        indices: vec![0_u32, 1, 2],
+        normals: None,
+    };
+    let opts = MeshToVoxelOptions { voxel_size: 0.0, narrow_band: 3.0 };
+    let mut kernel = OpenVdbKernel::new();
+    let result = kernel.realize_voxel_from_mesh_with_options(&mesh, &opts);
+    assert!(
+        matches!(result, Err(GeometryError::OperationFailed(_))),
+        "expected OperationFailed for voxel_size=0.0, got {result:?}",
+    );
+}
+
+/// `opts.voxel_size < 0.0` (negative) must return `OperationFailed`.
+#[cfg(has_openvdb)]
+#[test]
+fn realize_voxel_with_options_rejects_negative_voxel_size() {
+    use reify_ir::{GeometryError, Mesh};
+    use reify_kernel_openvdb::{MeshToVoxelOptions, OpenVdbKernel};
+
+    let mesh = Mesh {
+        vertices: vec![0.0_f32; 9],
+        indices: vec![0_u32, 1, 2],
+        normals: None,
+    };
+    let opts = MeshToVoxelOptions { voxel_size: -0.1, narrow_band: 3.0 };
+    let mut kernel = OpenVdbKernel::new();
+    let result = kernel.realize_voxel_from_mesh_with_options(&mesh, &opts);
+    assert!(
+        matches!(result, Err(GeometryError::OperationFailed(_))),
+        "expected OperationFailed for voxel_size=-0.1, got {result:?}",
+    );
+}
+
+/// `opts.narrow_band == f64::NAN` must return `OperationFailed`.
+#[cfg(has_openvdb)]
+#[test]
+fn realize_voxel_with_options_rejects_nan_narrow_band() {
+    use reify_ir::{GeometryError, Mesh};
+    use reify_kernel_openvdb::{MeshToVoxelOptions, OpenVdbKernel};
+
+    let mesh = Mesh {
+        vertices: vec![0.0_f32; 9],
+        indices: vec![0_u32, 1, 2],
+        normals: None,
+    };
+    let opts = MeshToVoxelOptions { voxel_size: 0.1, narrow_band: f64::NAN };
+    let mut kernel = OpenVdbKernel::new();
+    let result = kernel.realize_voxel_from_mesh_with_options(&mesh, &opts);
+    assert!(
+        matches!(result, Err(GeometryError::OperationFailed(_))),
+        "expected OperationFailed for narrow_band=NaN, got {result:?}",
+    );
+}
+
+/// `cfg(not(has_openvdb))` skip-stub for the pre-FFI validation tests above.
+#[cfg(not(has_openvdb))]
+#[test]
+fn realize_voxel_with_options_validation_skipped_without_cfg() {
+    println!(
+        "realize_voxel_with_options validation tests: has_openvdb cfg not set, skip"
+    );
+    assert!(true);
+}

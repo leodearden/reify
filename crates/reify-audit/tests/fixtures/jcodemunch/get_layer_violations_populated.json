@@ -1,0 +1,15 @@
+{
+  "repo": "leodearden/reify",
+  "layer_count": 1,
+  "violation_count": 1,
+  "violations": [
+    {
+      "from": "crates/reify-cli",
+      "to": "crates/reify-kernel",
+      "from_symbol": "reify_cli::main",
+      "to_symbol": "reify_kernel::solver::Solver::solve",
+      "allowed": false,
+      "rule_index": 0
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+// Unit-expression examples (PRD §1 goal example).
+//
+// Exercises the compound-unit and value-level-^ surfaces introduced by the
+// unit-expressions PRD (tasks α/β/γ/δ).  Each param uses a compound-unit
+// literal; the type annotation names the expected quantity type.
+//
+// SI value derivations (for the e2e assertions in unit_expressions_e2e.rs):
+//   density      7850kg/m^3     → 7850.0    kg·m⁻³      (MASS_DENSITY)
+//   gravity      9.81m/s^2      → 9.81      m·s⁻²       (ACCELERATION)
+//   torque       5kN*m          → 5000.0    kg·m²·s⁻²   (ENERGY; Torque not a named alias)
+//   area         25mm^2         → 2.5e-5    m²           (AREA)
+//   viscosity    0.001kg/m/s    → 0.001     kg·m⁻¹·s⁻¹  (DYNAMIC_VISCOSITY)
+//   conductivity 0.5W/(m*K)     → 0.5       kg·m·s⁻³·K⁻¹ (THERMAL_CONDUCTIVITY)
+//   stress_sq    (5mm^2)/(1mm^2)→ 25.0      dimensionless (value-level ^)
+
+structure def UnitExpressions {
+    param density      : Density             = 7850kg/m^3
+    param gravity      : Acceleration        = 9.81m/s^2
+    param torque       : Energy              = 5kN*m
+    param area         : Area                = 25mm^2
+    param viscosity    : DynamicViscosity    = 0.001kg/m/s
+    param conductivity : ThermalConductivity = 0.5W/(m*K)
+    param stress_sq    : Real                = (5mm ^ 2) / (1mm ^ 2)
+}

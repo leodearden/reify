@@ -1,0 +1,33 @@
+// Stdlib: Thermal Port Interface — ThermalPort
+// Provides the trait surface for thermal connection interfaces using the
+// lumped-thermal-port model (Modelica HeatPort convention).
+//
+// Reference: docs/prds/v0_6/stdlib-reconstruction.md task β, §11.5.
+// Resolves PRD open question Q3.
+//
+// Deviations from §11 spec (forced by current language scope):
+//   1. Across/through variable choice: `temperature` (potential, K) +
+//      `heat_flow` (Q̇, W). This is the canonical Modelica HeatPort
+//      abstraction: temperature is the across variable (potential difference
+//      drives flow) and heat_flow is the through variable (power transferred).
+//      The PRD Q3 suggestion (heat-transfer-coefficient h = Power/(Area·Temp))
+//      was not adopted: h is a material/geometry property rather than a port-
+//      interface quantity, and would require a 3-way composite type alias not
+//      admissible in param position. Temperature and Power are both NAMED_DIMENSIONS
+//      (reify-core/src/dimension.rs:124,148) — no alias indirection needed.
+//   2. Traits are NOT `pub`, matching the io.ri/process.ri convention.
+//   3. No `#no_prelude` pragma. std.ports.thermal refines Port from std.ports
+//      (inter-stdlib dependency), so the growing-prelude sequence in
+//      stdlib_loader.rs must include std.ports before this module. Adding
+//      `#no_prelude` would break both the refinement resolution and the
+//      stdlib_loader_tests bidirectional invariant test.
+
+// ── Thermal port ──────────────────────────────────────────────────────────────
+
+// Lumped thermal connection port (Modelica HeatPort convention).
+// temperature : Temperature — port temperature potential (K).
+// heat_flow   : Power      — heat flow rate through the port (W, Q̇).
+trait ThermalPort : Port {
+    param temperature : Temperature
+    param heat_flow : Power
+}

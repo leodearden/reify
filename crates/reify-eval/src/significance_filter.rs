@@ -105,6 +105,70 @@ static NON_DISPLACEMENT_KEY_VALUES: std::sync::LazyLock<[reify_ir::Value; 4]> =
         NON_DISPLACEMENT_KEYS.map(|k| reify_ir::Value::String(k.to_string()))
     });
 
+/// Compare two [`reify_ir::Value::GeometryHandle`] values for cache-key significance.
+///
+/// Returns [`FilterOutcome::Equivalent`] when the two handles represent the
+/// same realized geometry from the caller's caching perspective — i.e. when
+/// **both** their `realization_ref` (entity + index) and `upstream_values_hash`
+/// are identical.  Returns [`FilterOutcome::Different`] in all other cases,
+/// including the conservative fallback when either input is not a
+/// `Value::GeometryHandle`.
+///
+/// # Kernel-handle exclusion (load-bearing)
+///
+/// `kernel_handle` is intentionally **excluded** from the comparison.  It is an
+/// ephemeral session-scoped id: re-realizing the same geometry in a new Engine
+/// session assigns a fresh handle while the semantic identity of the geometry is
+/// unchanged.  Excluding it means a cached downstream computation is NOT
+/// invalidated when the geometry is re-realized to a different handle with
+/// identical parameters — the correct behaviour per PRD §1 / §5 and the
+/// GHR-β design decision recorded in `crates/reify-ir/src/value.rs`.
+///
+/// # Conservative-fallback policy
+///
+/// If either `old` or `new` is not a `Value::GeometryHandle`, the function
+/// returns `Different`.  This mirrors the general over-invalidate-rather-than-
+/// under-invalidate posture used by [`significance_filter`].
+///
+/// See also [`significance_filter`] for the tolerance-bearing ElasticResult
+/// path; geometry handles use exact equality (no tolerance class), which is
+/// why this is a standalone function rather than an arm of that one.
+///
+/// # Wiring status
+///
+/// Currently **not called by any production code** — wiring into the
+/// compute-node caching path is deferred to GHR-ζ, where geometry persistence
+/// and the active-kernel selection land alongside the call site.  Kept
+/// crate-private until then to prevent premature API surface drift.
+#[allow(dead_code)] // wiring deferred to GHR-ζ; used in tests only for now
+pub(crate) fn geometry_handle_significance(
+    old: &reify_ir::Value,
+    new: &reify_ir::Value,
+) -> FilterOutcome {
+    match (old, new) {
+        (
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr_old,
+                upstream_values_hash: h_old,
+                ..
+            },
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr_new,
+                upstream_values_hash: h_new,
+                ..
+            },
+        ) => {
+            if rr_old == rr_new && h_old == h_new {
+                FilterOutcome::Equivalent
+            } else {
+                FilterOutcome::Different
+            }
+        }
+        // Conservative fallback: non-GeometryHandle inputs → Different.
+        _ => FilterOutcome::Different,
+    }
+}
+
 /// Compare a compute node's previous and new result with per-purpose tolerance.
 ///
 /// # Arguments
@@ -251,6 +315,109 @@ pub fn significance_filter(
 #[cfg(test)]
 mod tests {
     use super::{FilterOutcome, is_opted_in, significance_filter};
+
+    // ── geometry_handle_significance tests (step-1 RED) ──────────────────────
+    mod geometry_handle {
+        use super::super::{geometry_handle_significance, FilterOutcome};
+        use reify_core::identity::RealizationNodeId;
+        use reify_ir::{GeometryHandleId, Value};
+
+        /// Build a `Value::GeometryHandle` with the given entity, realization
+        /// index, upstream_values_hash, and kernel_handle id.
+        fn gh(entity: &str, index: u32, hash: [u8; 32], kernel_id: u64) -> Value {
+            Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new(entity, index),
+                upstream_values_hash: hash,
+                kernel_handle: GeometryHandleId(kernel_id),
+            }
+        }
+
+        /// (1) Equal realization_ref + equal upstream_values_hash → Equivalent.
+        #[test]
+        fn equal_rr_and_hash_yields_equivalent() {
+            let a = gh("Widget", 0, [0xAAu8; 32], 1);
+            let b = gh("Widget", 0, [0xAAu8; 32], 1);
+            assert_eq!(
+                geometry_handle_significance(&a, &b),
+                FilterOutcome::Equivalent,
+                "same rr + same hash must be Equivalent",
+            );
+        }
+
+        /// (2) Equal realization_ref + DIFFERENT upstream_values_hash → Different.
+        #[test]
+        fn different_hash_yields_different() {
+            let a = gh("Widget", 0, [0xAAu8; 32], 1);
+            let b = gh("Widget", 0, [0xBBu8; 32], 1);
+            assert_eq!(
+                geometry_handle_significance(&a, &b),
+                FilterOutcome::Different,
+                "same rr but different hash must be Different",
+            );
+        }
+
+        /// (3a) DIFFERENT realization_ref entity + equal hash → Different.
+        #[test]
+        fn different_entity_yields_different() {
+            let a = gh("Widget", 0, [0xAAu8; 32], 1);
+            let b = gh("Gadget", 0, [0xAAu8; 32], 1);
+            assert_eq!(
+                geometry_handle_significance(&a, &b),
+                FilterOutcome::Different,
+                "different entity in rr must be Different",
+            );
+        }
+
+        /// (3b) DIFFERENT realization_ref index + equal hash → Different.
+        #[test]
+        fn different_index_yields_different() {
+            let a = gh("Widget", 0, [0xAAu8; 32], 1);
+            let b = gh("Widget", 1, [0xAAu8; 32], 1);
+            assert_eq!(
+                geometry_handle_significance(&a, &b),
+                FilterOutcome::Different,
+                "different realization index in rr must be Different",
+            );
+        }
+
+        /// (4) Equal rr + equal hash but DIFFERENT kernel_handle → Equivalent.
+        /// kernel_handle is intentionally excluded from significance comparison
+        /// (re-realization to a new handle for semantically-identical geometry
+        /// must NOT invalidate downstream per GHR-β §DD / PRD §1).
+        #[test]
+        fn different_kernel_handle_yields_equivalent() {
+            let a = gh("Widget", 0, [0xAAu8; 32], 1);
+            let b = gh("Widget", 0, [0xAAu8; 32], 999);
+            assert_eq!(
+                geometry_handle_significance(&a, &b),
+                FilterOutcome::Equivalent,
+                "kernel_handle difference must NOT cause Different (excluded from comparison)",
+            );
+        }
+
+        /// (5) Non-GeometryHandle input on either or both sides → Different
+        /// (conservative fallback).
+        #[test]
+        fn non_geometry_handle_input_yields_different() {
+            let gh_val = gh("Widget", 0, [0xAAu8; 32], 1);
+            let other = Value::Undef;
+            assert_eq!(
+                geometry_handle_significance(&other, &gh_val),
+                FilterOutcome::Different,
+                "non-GH old must yield Different",
+            );
+            assert_eq!(
+                geometry_handle_significance(&gh_val, &other),
+                FilterOutcome::Different,
+                "non-GH new must yield Different",
+            );
+            assert_eq!(
+                geometry_handle_significance(&other, &other),
+                FilterOutcome::Different,
+                "both non-GH must yield Different",
+            );
+        }
+    }
     use reify_core::Type;
     use reify_ir::{FieldSourceKind, InterpolationKind, SampledField, SampledGridKind, Value};
     use std::collections::BTreeMap;

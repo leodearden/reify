@@ -1120,18 +1120,29 @@ structure def Beam : Rigid {
         cell_names
     );
 
-    // From Physical: `geometry : Solid` lowers to a realization (Type::Geometry
-    // is unrepresentable per `is_representable_cell_type`), so it does NOT
-    // appear in value_cells. Pin the realization-side presence instead.
+    // After GHR-γ (task 3605): `geometry : Solid` lowers to BOTH a RealizationDecl
+    // AND a ValueCellDecl{cell_type: Type::Geometry} — the bypass that previously
+    // skipped value-cell creation has been retired.
     assert!(
         !template.realizations.is_empty(),
         "expected at least one realization from `param geometry : Solid` on Beam; got none"
     );
     assert!(
-        !cell_names.contains(&"geometry"),
-        "geometry must NOT appear in value_cells (Solid params lower to realizations); \
+        cell_names.contains(&"geometry"),
+        "After GHR-γ: geometry MUST appear in value_cells with Type::Geometry; \
          cells: {:?}",
         cell_names
+    );
+    let geom_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "geometry")
+        .expect("geometry ValueCellDecl must exist after GHR-γ");
+    assert_eq!(
+        geom_cell.cell_type,
+        Type::Geometry,
+        "expected cell_type=Type::Geometry for 'geometry', got {:?}",
+        geom_cell.cell_type
     );
 }
 

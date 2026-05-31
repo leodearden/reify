@@ -1,0 +1,84 @@
+// Stdlib: `fn modal_analysis` + result-interpretation helpers
+// (`std.modal.analysis.fns`)
+//
+// PRD: docs/prds/v0_3/modal-analysis.md §1, §4, §10 task ζ.
+//
+// WHY this is a separate module (esc-3851-32 / phase-order):
+//   In the Reify compiler, `phase_functions` runs before `phase_entities`
+//   within a single module. The helpers below field-access a `ModalResult`
+//   parameter (`result.modes[n].frequency`), which requires
+//   `ModalResult.modes : List<Mode>` and `Mode.frequency : Real` to already be
+//   resolved. When these functions live alongside the struct definitions in
+//   `std.modal.analysis`, that resolution fails (`modes` resolves to the
+//   phase-functions `Real` default and indexing fails).
+//
+//   Solution: declare the struct types in `std.modal.analysis` (loaded first),
+//   then declare the functions here in `std.modal.analysis.fns` (loaded
+//   second). By the time `phase_functions` processes this file, `ModalResult`,
+//   `Mode`, and `ModalOptions` are all in the prelude template registry and
+//   field access resolves. Mirrors the `std.solver.buckling` /
+//   `std.solver.buckling.fns` split (solver_buckling_fns.ri).
+
+// ── modal_analysis ────────────────────────────────────────────────────────────
+
+// `@optimized("modal::free_vibration")` causes the engine to insert a
+// ComputeNode with target == "modal::free_vibration" rather than body-inlining.
+// The trampoline lives at crates/reify-eval/src/modal_ops.rs.
+//
+// Signature deviation from PRD §1 `(part, opts)`:
+//   The `Part` topology type has not landed in v0.3 (`ModalResult.part` is a
+//   String placeholder — modal_analysis.ri:241). There is no Body→trampoline
+//   geometry channel, so — exactly like `solve_buckling` — the @optimized
+//   trampoline receives flat value_inputs and reconstructs the beam mesh from
+//   length/width/height. `boundary_conditions`, `damping`, `n_modes`, `tol`,
+//   `max_iters`, `sigma`, and `reference_direction` are read from the single
+//   `options : ModalOptions` StructureInstance (matching the PRD §1 example,
+//   which bundles the BCs inside ModalOptions). See plan design-decision-1.
+//
+// Signature notes:
+//   `material : ElasticMaterial` (the trait from std.materials.fea):
+//     Callers wrap a concrete material via `FEAMaterialInput(material: mat)`
+//     and pass `mi.material` (compile-time type `ElasticMaterial`) — the same
+//     coercion shim `solve_buckling` uses (solver_buckling_fns.ri:51,
+//     solver_elastic.ri:389). The trampoline reads `youngs_modulus`,
+//     `poisson_ratio`, and `density` off the runtime StructureInstance.
+//
+//   `options : ModalOptions` (no default):
+//     Even though `ModalOptions` is now in the prelude (loaded earlier via
+//     `std.modal.analysis`), the TODO(phase-order) ctor-default is deferred to
+//     a follow-up — callers must pass `ModalOptions(...)` explicitly. Same
+//     limitation as `BucklingOptions` (solver_buckling_fns.ri:44-48).
+//     TODO(phase-order): add `= ModalOptions()` default once confirmed safe.
+@optimized("modal::free_vibration")
+pub fn modal_analysis(
+    material : ElasticMaterial,
+    length   : Length,
+    width    : Length,
+    height   : Length,
+    options  : ModalOptions
+) -> ModalResult {
+    ModalResult()
+}
+
+// ── Result-interpretation helpers ────────────────────────────────────────────
+
+// `first_frequency` — natural frequency of the fundamental (lowest) mode, in Hz.
+//
+// `ModalResult.modes` is ordered ascending by frequency (producer-enforced by
+// the trampoline), so `modes[0]` is the fundamental mode. `Mode.frequency` is a
+// `Real` placeholder for `Scalar<Frequency>` (modal_analysis.ri:188), so this
+// returns `Real`. This is the task's headline user-observable signal (PRD §1).
+pub fn first_frequency(result : ModalResult) -> Real {
+    result.modes[0].frequency
+}
+
+// `mode_frequency` — natural frequency of mode `n` (0-based), in Hz.
+//
+// Returns `result.modes[n].frequency`. Mirrors buckling's `mode_shape(result, n)`
+// dynamic-index accessor (solver_buckling_fns.ri:99-104).
+pub fn mode_frequency(
+    result : ModalResult,
+    n      : Int
+) -> Real {
+    result.modes[n].frequency
+}

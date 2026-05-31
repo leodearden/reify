@@ -1755,6 +1755,8 @@ fn kernel_distance(
 //   `is_on(point, geometry)`         → `GeometryQuery::PointOnShape`
 //   `angle_between_surfaces(a, b)`   → `GeometryQuery::SurfaceAngle`
 //   `angle(a, b)`                    → pure-math acos (task 3614, KGQ-ε)
+//   `contains(solid, point)`         → `GeometryQuery::Contains` (task 3611, KGQ-β)
+//   `geo_equiv(left, right, tol)`   → `GeometryQuery::GeoEquiv`  (task 3613, KGQ-δ)
 //
 // ── Which names are compile-time typed but NOT eval-dispatched (task 2699) ──
 //
@@ -1829,6 +1831,12 @@ pub(crate) fn try_eval_topology_selector(
         "adjacent_faces" => TopologySelectorHelper::AdjacentFaces,
         "shared_edges" => TopologySelectorHelper::SharedEdges,
         "angle" => TopologySelectorHelper::Angle,
+        "contains" => TopologySelectorHelper::Contains,
+        "geo_equiv" => TopologySelectorHelper::GeoEquiv,
+        "normal" => TopologySelectorHelper::Normal,
+        "curvature" => TopologySelectorHelper::Curvature,
+        "length" => TopologySelectorHelper::Length,
+        "perimeter" => TopologySelectorHelper::Perimeter,
         _ => return None,
     };
 
@@ -1892,7 +1900,13 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::EdgesAtHeight
                 | TopologySelectorHelper::AdjacentFaces
                 | TopologySelectorHelper::SharedEdges
-                | TopologySelectorHelper::Angle => {
+                | TopologySelectorHelper::Angle
+                | TopologySelectorHelper::Contains
+                | TopologySelectorHelper::GeoEquiv
+                | TopologySelectorHelper::Normal
+                | TopologySelectorHelper::Curvature
+                | TopologySelectorHelper::Length
+                | TopologySelectorHelper::Perimeter => {
                     unreachable!("ClosestPoint/IsOn outer match guarantees this")
                 }
             }
@@ -1903,6 +1917,51 @@ pub(crate) fn try_eval_topology_selector(
             let face_b = resolve_geometry_handle_arg(&args[1], named_steps)?;
             let query = reify_ir::GeometryQuery::SurfaceAngle { face_a, face_b };
             dispatch_surface_angle(kernel, &query, &function.name, diagnostics)
+        }
+        TopologySelectorHelper::Contains => {
+            // args[0]: solid geometry ValueRef → named_steps map → GeometryHandleId.
+            // args[1]: point ValueRef → values map → Value::Point of three Length scalars.
+            // Arg order is solid-then-point (mirror of is_on: point-then-geometry).
+            let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            let point = resolve_point3_length_arg(&args[1], values)?;
+            // Use `reify_ir::DEFAULT_CONTAINS_TOLERANCE_M` (= OCCT's
+            // `Precision::Confusion()`, ~1e-7) as the default tolerance for the
+            // v0.1 2-arg `contains(solid, point)` form, matching the is_on
+            // precedent per §5.2. A future explicit-tolerance
+            // `contains(solid, point, tol)` overload will plumb the
+            // user-supplied tolerance through here.
+            let query = reify_ir::GeometryQuery::Contains {
+                handle,
+                px: point[0],
+                py: point[1],
+                pz: point[2],
+                tolerance: reify_ir::DEFAULT_CONTAINS_TOLERANCE_M,
+            };
+            // Reuse the Bool-unwrap helper from `is_on`: dispatches
+            // `kernel.query(&query)` and unwraps `Value::Bool`, downgrading
+            // non-Bool / Err replies to `Some(Value::Undef)` + Warning per §4.
+            dispatch_point_on_shape(kernel, &query, &function.name, diagnostics)
+        }
+        TopologySelectorHelper::GeoEquiv => {
+            // geo_equiv(left, right, tol) → Bool (task 3613, KGQ-δ, PRD §5.1).
+            // True iff BOTH topology equivalence (canonical TopExp::MapShapes
+            // per-kind counts match) AND sampled-vertex tolerance (N=8 uniform
+            // parameter points per face/edge; |p_a - p_b| < tol) hold.
+            //
+            // FUTURE: geo_equiv_strict(a, b, tol) — symmetric Hausdorff distance
+            // variant deferred to v0.4 (PRD §5.1, Open Question §10).
+            //
+            // args[0]: left geometry ValueRef → named_steps → GeometryHandleId.
+            // args[1]: right geometry ValueRef → named_steps → GeometryHandleId.
+            // args[2]: tolerance ValueRef → values → Value::length(m) → SI metres.
+            let left = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            let right = resolve_geometry_handle_arg(&args[1], named_steps)?;
+            let tolerance = resolve_length_scalar_arg(&args[2], values)?;
+            let query = reify_ir::GeometryQuery::GeoEquiv { left, right, tolerance };
+            // Reuse the Bool-unwrap helper: dispatches kernel.query(&query) and
+            // unwraps Value::Bool, downgrading non-Bool / Err replies to
+            // Some(Value::Undef) + Warning (function.name = "geo_equiv").
+            dispatch_point_on_shape(kernel, &query, &function.name, diagnostics)
         }
         TopologySelectorHelper::Angle => {
             // Both args: value-flow Vec3 ValueRefs → values map → [f64; 3].
@@ -1945,12 +2004,60 @@ pub(crate) fn try_eval_topology_selector(
             let theta = cos_theta.acos();
             Some(reify_ir::Value::angle(theta))
         }
-        TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => {
-            // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
+        TopologySelectorHelper::Normal => {
+            // `normal(surface, point) -> Vector3<Dimensionless>` (task 3615, KGQ-ζ).
+            // Arg order mirrors `contains`: Surface=args[0], Point3<Length>=args[1].
+            // args[0]: surface geometry ValueRef → named_steps → GeometryHandleId.
+            // args[1]: point ValueRef → values → Value::Point of three Length scalars → [f64;3] SI metres.
             let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
-            let kind = match helper {
-                TopologySelectorHelper::Edges => ExtractKind::Edges,
-                TopologySelectorHelper::Faces => ExtractKind::Faces,
+            let point = resolve_point3_length_arg(&args[1], values)?;
+            let query = reify_ir::GeometryQuery::FaceNormalAt {
+                handle,
+                px: point[0],
+                py: point[1],
+                pz: point[2],
+            };
+            dispatch_normal_vector3(kernel, &query, &function.name, diagnostics)
+        }
+        TopologySelectorHelper::Curvature => {
+            // `curvature(shape, point) -> Scalar<Curvature>|Matrix<2,2,Curvature>` (task 3621, KGQ-μ).
+            // Arg order: Shape=args[0], Point3<Length>=args[1].
+            // args[0]: geometry ValueRef → named_steps → GeometryHandleId.
+            // args[1]: point ValueRef → values → [f64;3] SI metres (px, py, pz).
+            let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            let point = resolve_point3_length_arg(&args[1], values)?;
+            dispatch_curvature(kernel, handle, point, &function.name, diagnostics)
+        }
+        TopologySelectorHelper::Length => {
+            // `length(curve) -> Scalar<Length>` (task 3622, KGQ-ν).
+            // arg[0]: edge sub-handle ValueRef → values → kernel_handle.
+            // Falls through (None) when arg is not a hydrated Value::GeometryHandle
+            // (PRD invariant #2).
+            let (_, _, kernel_handle) =
+                resolve_parent_geometry_handle_arg(&args[0], values)?;
+            dispatch_edge_length(kernel, kernel_handle, &function.name, diagnostics)
+        }
+        TopologySelectorHelper::Perimeter => {
+            // `perimeter(surface) -> Scalar<Length>` (task 3622, KGQ-ν).
+            // arg[0]: face sub-handle ValueRef → values → kernel_handle.
+            // Falls through (None) when arg is not a hydrated Value::GeometryHandle
+            // (PRD invariant #2).
+            let (_, _, face_kh) =
+                resolve_parent_geometry_handle_arg(&args[0], values)?;
+            dispatch_perimeter(kernel, face_kh, &function.name, diagnostics)
+        }
+        TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => {
+            // args[0]: geometry ValueRef → values map → full parent GeometryHandle.
+            // The parent's realization_ref + upstream_values_hash are needed to
+            // construct well-formed sub-handle values (PRD §4). Fall through when
+            // the arg cell is not yet a hydrated Value::GeometryHandle (PRD invariant
+            // #2: do not partially construct a sub-handle; cell retains its compiled
+            // default, i.e. stays at Value::Undef).
+            let (parent_rr, parent_hash, parent_kernel_handle) =
+                resolve_parent_geometry_handle_arg(&args[0], values)?;
+            let sub_kind = match helper {
+                TopologySelectorHelper::Edges => crate::topology_selectors::SubKind::Edge,
+                TopologySelectorHelper::Faces => crate::topology_selectors::SubKind::Face,
                 // Enumerate the complement explicitly (rather than `_`) so that
                 // adding a new `TopologySelectorHelper` variant and grouping it
                 // into the outer `Edges | Faces` or-pattern forces the compiler
@@ -1968,17 +2075,36 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::EdgesAtHeight
                 | TopologySelectorHelper::AdjacentFaces
                 | TopologySelectorHelper::SharedEdges
-                | TopologySelectorHelper::Angle => {
+                | TopologySelectorHelper::Angle
+                | TopologySelectorHelper::Contains
+                | TopologySelectorHelper::GeoEquiv
+                | TopologySelectorHelper::Normal
+                | TopologySelectorHelper::Curvature
+                | TopologySelectorHelper::Length
+                | TopologySelectorHelper::Perimeter => {
                     unreachable!("Edges/Faces outer match guarantees this")
                 }
             };
-            dispatch_extract_subshapes(kernel, handle, kind, &function.name, diagnostics)
+            dispatch_extract_subshapes(
+                kernel,
+                parent_kernel_handle,
+                sub_kind,
+                &parent_rr,
+                &parent_hash,
+                &function.name,
+                diagnostics,
+            )
         }
         TopologySelectorHelper::CenterOfMass => {
             // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
             let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
             // args[1]: density ValueRef → values map → Real / dimensionless Scalar.
-            let density = resolve_real_scalar_arg(&args[1], values)?;
+            // Uses resolve_density_arg (same as MomentOfInertia) so a dimensioned
+            // density arg emits a Severity::Warning instead of silently resolving
+            // to undefined — consistent diagnostic experience for both density-taking
+            // queries.
+            let density =
+                resolve_density_arg(&args[1], values, &function.name, diagnostics)?;
             let query = reify_ir::GeometryQuery::CenterOfMass { handle, density };
             dispatch_point3_length_reply(kernel, &query, &function.name, diagnostics)
         }
@@ -1986,7 +2112,12 @@ pub(crate) fn try_eval_topology_selector(
             // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
             let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
             // args[1]: density ValueRef → values map → Real / dimensionless Scalar.
-            let density = resolve_real_scalar_arg(&args[1], values)?;
+            // Uses resolve_density_arg (not resolve_real_scalar_arg) to emit a
+            // Severity::Warning when the caller passes a dimensioned value
+            // (e.g. kg/m³ literal) — the v0.3 grammar does not yet support
+            // compound-unit density literals, so bare-numeric Real is required.
+            let density =
+                resolve_density_arg(&args[1], values, &function.name, diagnostics)?;
             let query = reify_ir::GeometryQuery::InertiaTensor { handle, density };
             dispatch_inertia_tensor(kernel, &query, &function.name, diagnostics)
         }
@@ -2016,29 +2147,55 @@ pub(crate) fn try_eval_topology_selector(
             )
         }
         TopologySelectorHelper::FacesByNormal => {
-            // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
-            let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            // args[0]: parent geometry ValueRef → values map → full Value::GeometryHandle.
+            // Must resolve from `values` (not `named_steps`) so we get the parent's
+            // realization_ref + upstream_values_hash for sub-handle construction (PRD §4).
+            // Falls through to None when the arg cell is not a hydrated Value::GeometryHandle
+            // (PRD invariant #2: never partially construct a sub-handle).
+            let (parent_rr, parent_hash, parent_kernel_handle) =
+                resolve_parent_geometry_handle_arg(&args[0], values)?;
             // args[1]: Vec3 direction ValueRef → values map → [f64; 3].
             let dir = resolve_vec3_arg(&args[1], values)?;
             // args[2]: angular tolerance ValueRef → values map → ANGLE Scalar
             // (SI radians — `topology_selectors::faces_by_normal` expects rad).
             let tol = resolve_angle_scalar_arg(&args[2], values)?;
-            dispatch_filtered_list(
-                crate::topology_selectors::faces_by_normal(kernel, handle, dir, tol),
+            let filter_result =
+                crate::topology_selectors::faces_by_normal(kernel, parent_kernel_handle, dir, tol);
+            dispatch_filtered_subhandles(
+                kernel,
+                parent_kernel_handle,
+                crate::topology_selectors::SubKind::Face,
+                &parent_rr,
+                &parent_hash,
+                filter_result,
                 &function.name,
                 diagnostics,
             )
         }
         TopologySelectorHelper::EdgesParallelTo => {
-            // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
-            let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            // args[0]: parent geometry ValueRef → values map → full Value::GeometryHandle.
+            // Must resolve from `values` (not `named_steps`) — same rationale as
+            // FacesByNormal (PRD §4 invariant #2).
+            let (parent_rr, parent_hash, parent_kernel_handle) =
+                resolve_parent_geometry_handle_arg(&args[0], values)?;
             // args[1]: Vec3 axis ValueRef → values map → [f64; 3].
             let axis = resolve_vec3_arg(&args[1], values)?;
             // args[2]: angular tolerance ValueRef → values map → ANGLE Scalar
             // (SI radians — `topology_selectors::edges_parallel_to` expects rad).
             let tol = resolve_angle_scalar_arg(&args[2], values)?;
-            dispatch_filtered_list(
-                crate::topology_selectors::edges_parallel_to(kernel, handle, axis, tol),
+            let filter_result = crate::topology_selectors::edges_parallel_to(
+                kernel,
+                parent_kernel_handle,
+                axis,
+                tol,
+            );
+            dispatch_filtered_subhandles(
+                kernel,
+                parent_kernel_handle,
+                crate::topology_selectors::SubKind::Edge,
+                &parent_rr,
+                &parent_hash,
+                filter_result,
                 &function.name,
                 diagnostics,
             )
@@ -2057,26 +2214,43 @@ pub(crate) fn try_eval_topology_selector(
             )
         }
         TopologySelectorHelper::AdjacentFaces => {
-            // args[0]: parent solid ValueRef → named_steps map → GeometryHandleId.
-            let parent = resolve_geometry_handle_arg(&args[0], named_steps)?;
-            // args[1]: face sub-handle ValueRef → named_steps map → GeometryHandleId.
-            let face_handle = resolve_geometry_handle_arg(&args[1], named_steps)?;
-            // `adjacent_to_face` internally recovers the 0-based face index via
+            // args[0]: parent solid ValueRef → values map → full Value::GeometryHandle.
+            // Must resolve from `values` (not `named_steps`) so we get the parent's
+            // realization_ref + upstream_values_hash for sub-handle construction (PRD §4).
+            // Falls through to None when the arg cell is not a hydrated Value::GeometryHandle
+            // (PRD invariant #2: never partially construct a sub-handle).
+            let (parent_rr, parent_hash, parent_kh) =
+                resolve_parent_geometry_handle_arg(&args[0], values)?;
+            // args[1]: face sub-handle ValueRef → values map → kernel_handle only.
+            // Real face sub-handles (e.g. from faces(b) / single(faces_by_normal(...)))
+            // live in `values` as Value::GeometryHandle, not in named_steps (design §4).
+            let (_, _, face_kh) = resolve_parent_geometry_handle_arg(&args[1], values)?;
+            // `adjacent_to_face` recovers the 0-based face index via
             // `extract_faces(parent)`, dispatches `GeometryQuery::AdjacentFaces`,
-            // and maps the reply indices back to face handles. Same
-            // Ok→List / Err→warning+Undef contract as the filtered helpers.
-            dispatch_filtered_list(
-                crate::selector_vocabulary_v2::adjacent_to_face(kernel, parent, face_handle),
+            // and maps the reply indices back to face handles.
+            // Result saved before dispatch to avoid a double-mutable-borrow on kernel.
+            // Output: List<Value::GeometryHandle> sub-handles per PRD §4 (KGQ-κ).
+            let filter_result =
+                crate::selector_vocabulary_v2::adjacent_to_face(kernel, parent_kh, face_kh);
+            dispatch_filtered_subhandles(
+                kernel,
+                parent_kh,
+                crate::topology_selectors::SubKind::Face,
+                &parent_rr,
+                &parent_hash,
+                filter_result,
                 &function.name,
                 diagnostics,
             )
         }
         TopologySelectorHelper::SharedEdges => {
-            // args[0]: face_a ValueRef → named_steps map → GeometryHandleId.
-            let face_a = resolve_geometry_handle_arg(&args[0], named_steps)?;
-            // args[1]: face_b ValueRef → named_steps map → GeometryHandleId.
-            let face_b = resolve_geometry_handle_arg(&args[1], named_steps)?;
-            dispatch_shared_edges(kernel, face_a, face_b, &function.name, diagnostics)
+            // args[0]: face_a ValueRef → values map → kernel_handle only.
+            // Face sub-handles live in `values` as Value::GeometryHandle.
+            // Falls through to None when not hydrated (PRD invariant #2).
+            let (_, _, face_a) = resolve_parent_geometry_handle_arg(&args[0], values)?;
+            // args[1]: face_b ValueRef → values map → kernel_handle only.
+            let (_, _, face_b) = resolve_parent_geometry_handle_arg(&args[1], values)?;
+            dispatch_shared_edges(kernel, face_a, face_b, &function.name, diagnostics, values)
         }
     }
 }
@@ -2100,13 +2274,17 @@ pub(crate) fn try_eval_topology_selector(
 ///      `extract_edges(parent)`. Skip indices that fall outside the edge
 ///      enumeration (defensive against a kernel bug rather than a hard
 ///      failure mode — see design-doc §4.3 for the rationale).
-///   6. Return `Value::List(Vec<Value::Int>)` of edge handle ids.
+///   6. Recover the parent solid's `(realization_ref, upstream_values_hash)` via
+///      `resolve_owner_solid_handle(values, parent_a)`. Falls through to `None`
+///      when the parent solid is not hydrated in `values` (PRD invariant #2).
+///   7. Return `Value::List(Vec<Value::GeometryHandle>)` edge sub-handles per PRD §4 (KGQ-κ).
 fn dispatch_shared_edges(
     kernel: &mut dyn reify_ir::GeometryKernel,
     face_a: GeometryHandleId,
     face_b: GeometryHandleId,
     helper_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
+    values: &reify_ir::ValueMap,
 ) -> Option<reify_ir::Value> {
     // (1) Derive parents via OwnerBody.
     let parent_a = match crate::selector_vocabulary_v2::owner_body_of(kernel, face_a) {
@@ -2239,14 +2417,38 @@ fn dispatch_shared_edges(
         }
     }
 
-    // (6) Wrap as Value::List of Int handle ids.
-    Some(handle_list_value(out))
+    // (6) Recover the parent solid's realization_ref + upstream_values_hash from
+    //     `values`. Edge sub-handles must compose from the parent solid's hash
+    //     (PRD §4 cache coherence), not from a face sub-handle hash.
+    //     Falls through to None when the parent solid cell is absent (e.g. unnamed
+    //     inline solid), per PRD invariant #2 (never partial-construct sub-handles).
+    let (parent_rr, parent_hash) = resolve_owner_solid_handle(values, parent_a)?;
+
+    // (7) Emit List<Value::GeometryHandle> edge sub-handles via dispatch_filtered_subhandles,
+    //     which re-extracts extract_edges(parent) to map retained ids → TopExp indices and
+    //     builds make_sub_handle entries per PRD §4 iii/iv.
+    dispatch_filtered_subhandles(
+        kernel,
+        parent_a,
+        crate::topology_selectors::SubKind::Edge,
+        &parent_rr,
+        &parent_hash,
+        Ok(out),
+        helper_name,
+        diagnostics,
+    )
 }
 
 /// Map a filtered-selector helper `Result<Vec<GeometryHandleId>, QueryError>`
 /// onto the dispatcher's `Option<Value>` contract: `Ok` → `Value::List` of
 /// Int handle ids; `Err` → Warning diagnostic + `Value::Undef`. Shared by all
 /// `topology_selectors::*` delegating arms (task 3560).
+///
+/// NOTE: arms using this helper emit `Value::List([Value::Int])` (raw kernel-handle ids),
+/// NOT the canonical `List<Geometry>` = `List<Value::GeometryHandle>` contract required by
+/// PRD §4. They must be migrated to `dispatch_filtered_subhandles` in KGQ-θ (edges_by_length,
+/// faces_by_area, edges_at_height) and subsequent tasks; do not mistake the Int-list output
+/// for the intended final shape.
 fn dispatch_filtered_list(
     result: Result<Vec<GeometryHandleId>, reify_ir::QueryError>,
     helper_name: &str,
@@ -2262,6 +2464,84 @@ fn dispatch_filtered_list(
             Some(reify_ir::Value::Undef)
         }
     }
+}
+
+/// Run a pre-computed filtered-selector result and emit a `Value::List` of
+/// `Value::GeometryHandle` sub-handles whose `upstream_values_hash` encodes the
+/// canonical TopExp index of each retained sub-shape (PRD §4 iii/iv).
+///
+/// After the filter returns the retained `Vec<GeometryHandleId>`, we
+/// re-extract the canonical sub-shape list and map each retained id to its
+/// 0-based position, so `faces_by_normal(box,+z,1°)[0]` hashes identically to
+/// `faces(box)[k]` for the same physical face.  Relies on PRD §4 intra-session
+/// handle persistence (extract_* yields stable ids within a session).
+///
+/// Defensively warns + skips any retained id absent from the canonical list
+/// rather than crashing — surfaces a malformed kernel state as a
+/// shorter-than-expected list rather than total cell collapse.
+#[allow(clippy::too_many_arguments)]
+fn dispatch_filtered_subhandles(
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    parent_kernel_handle: GeometryHandleId,
+    sub_kind: crate::topology_selectors::SubKind,
+    parent_rr: &reify_core::identity::RealizationNodeId,
+    parent_hash: &[u8; 32],
+    filter_result: Result<Vec<GeometryHandleId>, reify_ir::QueryError>,
+    helper_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    let retained = match filter_result {
+        Ok(ids) => ids,
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} kernel query failed: {}",
+                helper_name, err
+            )));
+            return Some(reify_ir::Value::Undef);
+        }
+    };
+
+    // Re-extract the canonical list to recover each retained id's TopExp index.
+    // The filter helper already called extract_* once; this second call is safe
+    // because PRD §4 intra-session handle persistence guarantees stable ids+order.
+    let canonical = match sub_kind {
+        crate::topology_selectors::SubKind::Edge => kernel.extract_edges(parent_kernel_handle),
+        crate::topology_selectors::SubKind::Face => kernel.extract_faces(parent_kernel_handle),
+    };
+    let canonical = match canonical {
+        Ok(ids) => ids,
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{}: canonical re-extract failed: {}",
+                helper_name, err
+            )));
+            return Some(reify_ir::Value::Undef);
+        }
+    };
+
+    let canonical_index_map: std::collections::HashMap<GeometryHandleId, usize> =
+        canonical.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+    let mut elements: Vec<reify_ir::Value> = Vec::with_capacity(retained.len());
+    for retained_id in retained {
+        match canonical_index_map.get(&retained_id) {
+            Some(&canonical_index) => {
+                elements.push(crate::topology_selectors::make_sub_handle(
+                    parent_rr,
+                    parent_hash,
+                    sub_kind,
+                    canonical_index as u32,
+                    retained_id,
+                ));
+            }
+            None => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "{}: retained handle {:?} absent from canonical list; skipping",
+                    helper_name, retained_id
+                )));
+            }
+        }
+    }
+    Some(reify_ir::Value::List(elements))
 }
 
 /// Wrap a `Vec<GeometryHandleId>` as `Value::List(Vec<Value::Int>)` whose
@@ -2326,6 +2606,52 @@ enum TopologySelectorHelper {
     /// Args are value-flow `Vector<3>` resolved from `values`; zero-length
     /// or non-finite input emits a Warning and returns `Some(Value::Undef)`.
     Angle,
+    /// `contains(solid, point) -> Bool` — test whether `point` is inside or
+    /// on the boundary of the closed solid `solid` (task 3611, KGQ-β, PRD §9).
+    /// Backed by `GeometryQuery::Contains` → `BRepClass3d_SolidClassifier`
+    /// (IN || ON → true, OUT → false). Arg order is solid-then-point, mirroring
+    /// `is_on` with args swapped. Default tolerance from
+    /// `DEFAULT_CONTAINS_TOLERANCE_M` per §5.2.
+    Contains,
+    /// `geo_equiv(left, right, tol) -> Bool` — topology hash + N=8 parameter
+    /// sample per §5.1 (task 3613, KGQ-δ, PRD §9). True iff BOTH topology
+    /// (per-kind shape count) AND sampled-vertex tolerance hold.
+    /// Uses `QueryCapability::BRepAndMesh`; sample count from
+    /// `DEFAULT_GEO_EQUIV_SAMPLE_COUNT` (§5.2). Tolerance is an explicit
+    /// user-supplied Length arg (no default constant per §5.2).
+    ///
+    /// FUTURE: `geo_equiv_strict(a, b, tol) -> Bool` — symmetric Hausdorff
+    /// distance variant deferred to v0.4 (PRD §5.1, Open Question §10).
+    GeoEquiv,
+    /// `normal(surface, point) -> Vector3<Dimensionless>` — at-point outward
+    /// unit surface normal (task 3615, KGQ-ζ, PRD §9). Projects the Cartesian
+    /// `point` onto the face's parametric surface via `ShapeAnalysis_Surface::
+    /// ValueOfUV` then returns the orientation-aware outward normal at the
+    /// projected (u,v) — the REVERSED-flip convention shared with `FaceNormal`
+    /// and `surface_normal_at`. Backed by `GeometryQuery::FaceNormalAt` →
+    /// `surface_normal_at_point` in crates/reify-kernel-occt/src/lib.rs.
+    /// Arg order: Surface=args[0] (named_steps), Point3<Length>=args[1] (values).
+    Normal,
+    /// `curvature(shape, point) -> Scalar<Curvature>|Matrix<2,2,Curvature>` —
+    /// at-point curvature (task 3621, KGQ-μ, PRD §9). For a surface (face),
+    /// returns a 2×2 `Value::Matrix` of principal curvatures [[κ_max,0],[0,κ_min]]
+    /// as `Value::Scalar{ dimension: 1/Length }` cells; for a curve (edge),
+    /// returns `Value::Scalar{ si_value: κ, dimension: 1/Length }`. Dispatches
+    /// `GeometryQuery::SurfaceCurvatureAt` first; on error retries as
+    /// `GeometryQuery::CurveCurvatureAt`. Backed by `OcctKernel::curvature_at`
+    /// (surface) and `OcctKernel::curve_curvature_at` (curve).
+    /// Arg order: Shape=args[0] (named_steps), Point3<Length>=args[1] (values).
+    Curvature,
+    /// `length(curve) -> Scalar<Length>` — arc length of a single-edge
+    /// sub-handle (task 3622, KGQ-ν, PRD §9 Phase 4). Backed by
+    /// `GeometryQuery::EdgeLength`. Arg: Curve=args[0] (values sub-handle).
+    /// Multi-edge Curve composition deferred per PRD Open Question §10.6.
+    Length,
+    /// `perimeter(surface) -> Scalar<Length>` — sum of all boundary-edge
+    /// lengths of a face sub-handle (task 3622, KGQ-ν, PRD §9 Phase 4).
+    /// Composes `extract_edges(face)` + per-edge `EdgeLength`. No new FFI.
+    /// Arg: Surface=args[0] (values sub-handle).
+    Perimeter,
 }
 
 impl TopologySelectorHelper {
@@ -2344,49 +2670,66 @@ impl TopologySelectorHelper {
             | TopologySelectorHelper::FacesByArea
             | TopologySelectorHelper::AdjacentFaces
             | TopologySelectorHelper::SharedEdges
-            | TopologySelectorHelper::Angle => 2,
-            TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => 1,
+            | TopologySelectorHelper::Angle
+            | TopologySelectorHelper::Contains
+            | TopologySelectorHelper::Normal
+            | TopologySelectorHelper::Curvature => 2,
+            TopologySelectorHelper::Edges
+            | TopologySelectorHelper::Faces
+            | TopologySelectorHelper::Length
+            | TopologySelectorHelper::Perimeter => 1,
             TopologySelectorHelper::FacesByNormal
             | TopologySelectorHelper::EdgesParallelTo
-            | TopologySelectorHelper::EdgesAtHeight => 3,
+            | TopologySelectorHelper::EdgesAtHeight
+            | TopologySelectorHelper::GeoEquiv => 3,
         }
     }
 }
 
-/// Which sub-shape kind to extract: edges or faces. Drives
-/// `dispatch_extract_subshapes` to route into `extract_edges` /
-/// `extract_faces` on the kernel while keeping a single shared
-/// kernel-error → diagnostic + `Value::Undef` downgrade path.
-#[derive(Clone, Copy)]
-enum ExtractKind {
-    Edges,
-    Faces,
-}
-
-/// Issue `extract_edges(handle)` (or `extract_faces` per `kind`) and wrap the
-/// resulting `Vec<GeometryHandleId>` as `Value::List(Vec<Value::Int>)` whose
-/// elements are the raw u64 handle ids cast to `i64`. Returns
-/// `Some(Value::Undef)` (with a Warning diagnostic) on kernel error.
+/// Issue `extract_edges` (or `extract_faces`, per `sub_kind`) for the given
+/// parent kernel handle and return a `Value::List` of `Value::GeometryHandle`
+/// sub-handles (PRD §4). Each element carries:
+/// - `realization_ref` — cloned from the parent (unchanged per PRD §4).
+/// - `upstream_values_hash` — `compose_sub_handle_hash(parent_hash, sub_kind, index)`.
+/// - `kernel_handle` — the kernel id returned by `extract_edges`/`extract_faces`.
 ///
-/// Sibling to `dispatch_point3_length_reply` / `dispatch_point_on_shape` /
-/// `dispatch_surface_angle` — same defensive-downgrade contract.
+/// Returns `Some(Value::Undef)` (with a Warning diagnostic) on kernel error —
+/// preserving the same defensive-downgrade contract as the sibling dispatchers
+/// (`dispatch_point3_length_reply`, `dispatch_point_on_shape`, etc.).
 fn dispatch_extract_subshapes(
     kernel: &mut dyn reify_ir::GeometryKernel,
-    handle: GeometryHandleId,
-    kind: ExtractKind,
+    parent_kernel_handle: GeometryHandleId,
+    sub_kind: crate::topology_selectors::SubKind,
+    parent_realization_ref: &reify_core::identity::RealizationNodeId,
+    parent_hash: &[u8; 32],
     helper_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_ir::Value> {
-    let result = match kind {
-        ExtractKind::Edges => kernel.extract_edges(handle),
-        ExtractKind::Faces => kernel.extract_faces(handle),
+    let result = match sub_kind {
+        crate::topology_selectors::SubKind::Edge => kernel.extract_edges(parent_kernel_handle),
+        crate::topology_selectors::SubKind::Face => kernel.extract_faces(parent_kernel_handle),
     };
     match result {
-        Ok(sub_handles) => Some(handle_list_value(sub_handles)),
+        Ok(sub_ids) => {
+            let elements = sub_ids
+                .into_iter()
+                .enumerate()
+                .map(|(i, sub_kernel_id)| {
+                    crate::topology_selectors::make_sub_handle(
+                        parent_realization_ref,
+                        parent_hash,
+                        sub_kind,
+                        i as u32,
+                        sub_kernel_id,
+                    )
+                })
+                .collect();
+            Some(reify_ir::Value::List(elements))
+        }
         Err(err) => {
             diagnostics.push(Diagnostic::warning(format!(
                 "{}({:?}): kernel error: {}",
-                helper_name, handle, err
+                helper_name, parent_kernel_handle, err
             )));
             Some(reify_ir::Value::Undef)
         }
@@ -2447,13 +2790,59 @@ fn resolve_point3_length_arg(
     Some(out)
 }
 
-/// Resolve a `CompiledExprKind::ValueRef` arg to a raw f64 from a
-/// `Value::Real` or a dimensionless `Value::Scalar`. Used for the `density`
-/// argument of `center_of_mass` / `moment_of_inertia` (a dimensionless
-/// numeric in v0.1 — the kernel multiplies OCCT's volume-weighted result by
-/// this scalar). Returns `None` for any non-`ValueRef` shape, missing cell,
-/// or a dimensioned Scalar — caller maps to the "unsupported arg shape →
-/// fall through" behaviour.
+/// Resolve the `density` argument of `center_of_mass` and `moment_of_inertia`
+/// to a raw `f64`, emitting a `Severity::Warning` when the caller passes a
+/// dimensioned or non-numeric `Value`.
+///
+/// Delegates the accept-logic (Real / dimensionless Scalar) to
+/// [`resolve_real_scalar_arg`] and only owns the diagnostic-on-wrong-type
+/// behavior, keeping the type-acceptance contract in a single place:
+///
+/// | arg expr / resolved value        | return       | diagnostic pushed?           |
+/// |----------------------------------|--------------|------------------------------|
+/// | non-`ValueRef` expr              | `None`       | no (silent fall-through)     |
+/// | `ValueRef` → missing cell        | `None`       | no                           |
+/// | `ValueRef` → `Value::Real(v)`    | `Some(v)`    | no                           |
+/// | `ValueRef` → dimensionless       | `Some(si_v)` | no                           |
+/// |   `Value::Scalar`                |              |                              |
+/// | `ValueRef` → dimensioned Scalar  | `None`       | yes — `Severity::Warning`    |
+/// |   or any non-numeric `Value`     |              | naming `helper_name` +       |
+/// |                                  |              | "density" + "dimensionless"  |
+fn resolve_density_arg(
+    expr: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
+    helper_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<f64> {
+    // Delegate accept-logic to the shared resolver (Real / dimensionless Scalar).
+    if let Some(v) = resolve_real_scalar_arg(expr, values) {
+        return Some(v);
+    }
+    // resolve_real_scalar_arg returned None. Emit a diagnostic only when expr
+    // is a ValueRef pointing to a *present* value of the wrong type —
+    // a non-ValueRef shape or a missing cell falls through silently
+    // (the established "unsupported arg shape → silent" contract).
+    let id = match &expr.kind {
+        reify_ir::CompiledExprKind::ValueRef(id) => id,
+        _ => return None,
+    };
+    if let Some(other) = values.get(id) {
+        diagnostics.push(Diagnostic::warning(format!(
+            "{helper_name}: density argument must be a bare numeric Real or \
+             dimensionless value in v0.3 (compound-unit literals are not yet \
+             supported as a density arg); got {other:?} — treating as undefined"
+        )));
+    }
+    None
+}
+
+/// Shared accept-logic for a density-style argument: resolves a
+/// `CompiledExprKind::ValueRef` to a raw `f64` from a `Value::Real` or a
+/// dimensionless `Value::Scalar`. Called internally by [`resolve_density_arg`]
+/// — not invoked directly from dispatch arms. Returns `None` (no diagnostic)
+/// for any non-`ValueRef` shape, a missing cell, or a dimensioned Scalar;
+/// callers that need a `Severity::Warning` for the wrong-type case should use
+/// [`resolve_density_arg`] instead.
 fn resolve_real_scalar_arg(
     expr: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,
@@ -2623,6 +3012,42 @@ fn resolve_range_dim_arg(
     }
 }
 
+/// Scan `values` for the `Value::GeometryHandle` whose `kernel_handle ==
+/// parent_body_kh` and return its `(realization_ref, upstream_values_hash)`.
+///
+/// Used by `dispatch_shared_edges` to recover the parent solid's hash for edge
+/// sub-handle construction (PRD §4 cache coherence): edge sub-handles must
+/// compose from the parent solid's `upstream_values_hash`, not from a face
+/// sub-handle's hash. The parent solid cell is hydrated into `values` by
+/// `post_process_geometry_handle_cells` (engine_build.rs:3693-3700).
+///
+/// Returns `None` when no matching cell is found (e.g. unnamed inline solid),
+/// causing the caller to fall through per PRD invariant #2 (never
+/// partial-construct sub-handles from a non-hydrated geometry cell).
+///
+/// # Uniqueness assumption
+/// Kernel handles are unique per shape within a session (PRD §4 intra-session
+/// handle persistence), so at most one `Value::GeometryHandle` in `values`
+/// carries any given `kernel_handle`. The linear scan returns on the first
+/// match; that match is expected to be the only one.
+fn resolve_owner_solid_handle(
+    values: &reify_ir::ValueMap,
+    parent_body_kh: GeometryHandleId,
+) -> Option<(reify_core::identity::RealizationNodeId, [u8; 32])> {
+    for (_, value) in values.iter() {
+        if let reify_ir::Value::GeometryHandle {
+            realization_ref,
+            upstream_values_hash,
+            kernel_handle,
+        } = value
+            && *kernel_handle == parent_body_kh
+        {
+            return Some((realization_ref.clone(), *upstream_values_hash));
+        }
+    }
+    None
+}
+
 /// Resolve a `CompiledExprKind::ValueRef` geometry-arg to a `GeometryHandleId`
 /// via `named_steps`. Returns `None` for any non-`ValueRef` shape or missing
 /// `named_steps` entry — caller maps to the "unsupported arg shape → fall
@@ -2636,6 +3061,33 @@ fn resolve_geometry_handle_arg(
         _ => return None,
     };
     named_steps.get(&cell_id.member).copied()
+}
+
+/// Resolve a `CompiledExprKind::ValueRef` arg to the full parent
+/// `Value::GeometryHandle` fields: `(realization_ref, upstream_values_hash,
+/// kernel_handle)`. Returns `None` for any non-`ValueRef` shape, a missing
+/// cell, or a cell that is not a `Value::GeometryHandle` — the caller falls
+/// through, leaving the selector cell at its compiled default (`Value::Undef`).
+///
+/// PRD §4 invariant #2: sub-handles must never be partially constructed from
+/// a non-hydrated geometry cell. This gate enforces that contract at the
+/// dispatch boundary.
+fn resolve_parent_geometry_handle_arg(
+    expr: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
+) -> Option<(reify_core::identity::RealizationNodeId, [u8; 32], GeometryHandleId)> {
+    let cell_id = match &expr.kind {
+        reify_ir::CompiledExprKind::ValueRef(id) => id,
+        _ => return None,
+    };
+    match values.get(cell_id)? {
+        reify_ir::Value::GeometryHandle {
+            realization_ref,
+            upstream_values_hash,
+            kernel_handle,
+        } => Some((realization_ref.clone(), *upstream_values_hash, *kernel_handle)),
+        _ => None,
+    }
 }
 
 /// Issue a query whose kernel reply is the canonical JSON-Point3
@@ -2675,6 +3127,253 @@ fn dispatch_point3_length_reply(
             Some(reify_ir::Value::Undef)
         }
     }
+}
+
+/// Issue a `FaceNormalAt` query and unwrap the kernel's JSON-Point3 reply
+/// (`{"x":_,"y":_,"z":_}`) into a dimensionless `Value::Vector([Real, Real,
+/// Real])` — the canonical unit normal representation (matches `vec3()` output
+/// and `resolve_vec3_arg` expectations).
+///
+/// Models the same defensive-downgrade contract as `dispatch_point3_length_reply`:
+/// - Kernel `Err` → one Warning ("`normal` kernel query failed: …") + `Some(Value::Undef)`
+/// - Malformed reply (non-String or bad JSON) → one Warning ("`normal` kernel reply parse
+///   failed: …") + `Some(Value::Undef)`
+///
+/// Powers `TopologySelectorHelper::Normal` (task 3615, KGQ-ζ).
+fn dispatch_normal_vector3(
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    query: &reify_ir::GeometryQuery,
+    helper_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    match kernel.query(query) {
+        Ok(value) => match crate::topology_selectors::parse_xyz_value(&value, helper_name) {
+            Ok([x, y, z]) => Some(reify_ir::Value::Vector(vec![
+                reify_ir::Value::Real(x),
+                reify_ir::Value::Real(y),
+                reify_ir::Value::Real(z),
+            ])),
+            Err(err) => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "{} kernel reply parse failed: {}",
+                    helper_name, err
+                )));
+                Some(reify_ir::Value::Undef)
+            }
+        },
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} kernel query failed: {}",
+                helper_name, err
+            )));
+            Some(reify_ir::Value::Undef)
+        }
+    }
+}
+
+/// Curvature dimension constant: 1/Length = Length^-1 (m⁻¹ in SI).
+/// Used by `dispatch_curvature` to tag scalar and matrix cells.
+/// The curvature dimension is LENGTH^-1. index 0 = LENGTH in DimensionVector.
+const CURVATURE_DIM: reify_core::dimension::DimensionVector = {
+    let mut d = [reify_core::dimension::Rational::ZERO; 10];
+    d[0] = reify_core::dimension::Rational::new(-1, 1);
+    reify_core::dimension::DimensionVector(d)
+};
+
+/// Dispatch a `length(curve)` query for `TopologySelectorHelper::Length`
+/// (task 3622, KGQ-ν).
+///
+/// Issues `GeometryQuery::EdgeLength(handle)` and wraps the reply as
+/// `Value::length(metres)`. Returns `Some(Value::Undef)` + one Warning on
+/// Err or an unexpected kernel reply type (PRD §4 defensive-downgrade contract).
+fn dispatch_edge_length(
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    handle: reify_ir::GeometryHandleId,
+    helper_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    match kernel.query(&reify_ir::GeometryQuery::EdgeLength(handle)) {
+        Ok(reify_ir::Value::Real(l)) => Some(reify_ir::Value::length(l)),
+        Ok(reify_ir::Value::Scalar { si_value, .. }) => Some(reify_ir::Value::length(si_value)),
+        Ok(unexpected) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{helper_name} kernel reply has unexpected type (expected Real, got {unexpected:?}); \
+                 cell left at Undef",
+            )));
+            Some(reify_ir::Value::Undef)
+        }
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{helper_name} kernel query failed: {err}",
+            )));
+            Some(reify_ir::Value::Undef)
+        }
+    }
+}
+
+/// Dispatch a `perimeter(surface)` query for `TopologySelectorHelper::Perimeter`
+/// (task 3622, KGQ-ν).
+///
+/// Composes `kernel.extract_edges(face_kh)` + per-edge `EdgeLength`. On any
+/// extract error or per-edge non-Real reply, emits exactly one Warning and
+/// returns `Some(Value::Undef)` (PRD §4 defensive-downgrade contract).
+fn dispatch_perimeter(
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    face_kh: reify_ir::GeometryHandleId,
+    helper_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    let edges = match kernel.extract_edges(face_kh) {
+        Ok(e) => e,
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{helper_name} extract_edges failed: {err}",
+            )));
+            return Some(reify_ir::Value::Undef);
+        }
+    };
+    // Degenerate face: no boundary edges → silent 0.0 would mask a real kernel
+    // problem; downgrade like the other failure modes instead.
+    if edges.is_empty() {
+        diagnostics.push(Diagnostic::warning(format!(
+            "{helper_name} extract_edges returned no boundary edges for face \
+             {face_kh:?}; degenerate geometry; cell left at Undef",
+        )));
+        return Some(reify_ir::Value::Undef);
+    }
+    let mut total_m = 0.0_f64;
+    for edge_id in &edges {
+        match kernel.query(&reify_ir::GeometryQuery::EdgeLength(*edge_id)) {
+            Ok(reify_ir::Value::Real(l)) => total_m += l,
+            Ok(reify_ir::Value::Scalar { si_value, .. }) => total_m += si_value,
+            Ok(unexpected) => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "{helper_name} EdgeLength for edge {edge_id:?} has unexpected type \
+                     (expected Real, got {unexpected:?}); cell left at Undef",
+                )));
+                return Some(reify_ir::Value::Undef);
+            }
+            Err(err) => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "{helper_name} EdgeLength for edge {edge_id:?} failed: {err}",
+                )));
+                return Some(reify_ir::Value::Undef);
+            }
+        }
+    }
+    Some(reify_ir::Value::length(total_m))
+}
+
+/// Dispatch a `curvature(shape, point)` query for `TopologySelectorHelper::Curvature`
+/// (task 3621, KGQ-μ).
+///
+/// Strategy: try `SurfaceCurvatureAt{handle, u=px, v=py}` first. If the kernel
+/// returns Ok, decode the `[[κ_max,0],[0,κ_min]]` nested-List wire value into a
+/// `Value::Matrix` of `Value::Scalar{si_value, dimension: 1/Length}` cells. If
+/// the kernel returns Err, retry as `CurveCurvatureAt{handle,px,py,pz}` and
+/// return `Value::Scalar{si_value: κ, dimension: 1/Length}`. If both fail, emit
+/// exactly one Warning naming `helper_name` and return `Some(Value::Undef)`.
+///
+/// The surface wire note: the kernel encodes the principal-curvature matrix as a
+/// diagonal `[[kappa_max, 0.0], [0.0, kappa_min]]` (InertiaTensor wire convention)
+/// so trace/2 = mean curvature H and det = Gaussian curvature K.
+fn dispatch_curvature(
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    handle: reify_ir::GeometryHandleId,
+    point: [f64; 3],
+    helper_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    // Try surface first: (px, py) → (u, v) per design decision §3.
+    let surface_query = reify_ir::GeometryQuery::SurfaceCurvatureAt {
+        handle,
+        u: point[0],
+        v: point[1],
+    };
+    if let Ok(value) = kernel.query(&surface_query) {
+        return Some(parse_curvature_matrix_reply(&value, helper_name, diagnostics));
+    }
+    // Err(_): fall through to curve form
+
+    // Retry as curve: full 3D world point.
+    let curve_query = reify_ir::GeometryQuery::CurveCurvatureAt {
+        handle,
+        px: point[0],
+        py: point[1],
+        pz: point[2],
+    };
+    match kernel.query(&curve_query) {
+        Ok(reify_ir::Value::Real(kappa)) => Some(reify_ir::Value::Scalar {
+            si_value: kappa,
+            dimension: CURVATURE_DIM,
+        }),
+        Ok(unexpected) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{helper_name} kernel reply has unexpected type (expected Real for curve curvature, \
+                 got {unexpected:?}); cell left at Undef",
+            )));
+            Some(reify_ir::Value::Undef)
+        }
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{helper_name} kernel query failed: {err}",
+            )));
+            Some(reify_ir::Value::Undef)
+        }
+    }
+}
+
+/// Decode the kernel's `[[κ_max, 0.0], [0.0, κ_min]]` nested-List reply into a
+/// `Value::Matrix` of `Value::Scalar{si_value, dimension: 1/Length}` cells.
+///
+/// On any parse failure emits a Warning and returns `Value::Undef` (same
+/// defensive-downgrade contract as `dispatch_normal_vector3`).
+fn parse_curvature_matrix_reply(
+    value: &reify_ir::Value,
+    helper_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> reify_ir::Value {
+    let rows = match value {
+        reify_ir::Value::List(rows) if rows.len() == 2 => rows,
+        other => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{helper_name} kernel reply parse failed: expected 2-row List, got {other:?}",
+            )));
+            return reify_ir::Value::Undef;
+        }
+    };
+    let mut matrix_rows: Vec<Vec<reify_ir::Value>> = Vec::with_capacity(2);
+    for (i, row) in rows.iter().enumerate() {
+        let cells = match row {
+            reify_ir::Value::List(cells) if cells.len() == 2 => cells,
+            other => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "{helper_name} kernel reply parse failed: row {i} is not a 2-element List, \
+                     got {other:?}",
+                )));
+                return reify_ir::Value::Undef;
+            }
+        };
+        let mut matrix_row: Vec<reify_ir::Value> = Vec::with_capacity(2);
+        for (j, cell) in cells.iter().enumerate() {
+            let si_value = match cell {
+                reify_ir::Value::Real(v) => *v,
+                other => {
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "{helper_name} kernel reply parse failed: cell [{i}][{j}] is not Real, \
+                         got {other:?}",
+                    )));
+                    return reify_ir::Value::Undef;
+                }
+            };
+            matrix_row.push(reify_ir::Value::Scalar {
+                si_value,
+                dimension: CURVATURE_DIM,
+            });
+        }
+        matrix_rows.push(matrix_row);
+    }
+    reify_ir::Value::Matrix(matrix_rows)
 }
 
 /// Issue an `InertiaTensor` query and re-wrap the kernel's row-of-row
@@ -3277,6 +3976,158 @@ mod tests {
              boundary, hence the function must return None (caller falls \
              through to 'unsupported arg shape')"
         );
+    }
+
+    /// Tests for `resolve_density_arg`: diagnostic behavior for wrong-typed density
+    /// arguments to `moment_of_inertia`.
+    ///
+    /// Contract under test:
+    ///   (a) ValueRef → LENGTH-dimensioned Scalar → None + exactly 1 Warning whose
+    ///       message names "density" and "real" or "dimensionless" (case-insensitive).
+    ///   (b) ValueRef → non-numeric Value (e.g. `Value::Bool`) → None + 1 Warning.
+    ///   (c) ValueRef → `Value::Real(7850.0)` → Some(7850.0), empty diagnostics.
+    ///       ValueRef → dimensionless `Value::Scalar` → Some(si_value), empty diagnostics.
+    ///   (d) Non-ValueRef expr (Literal) → None, empty diagnostics (silent fall-through,
+    ///       matching the established "unsupported arg shape → silent fall-through"
+    ///       contract that every sibling resolver follows).
+    ///
+    /// Modelled on `resolve_point3_length_arg_bare_real_components_return_none` above
+    /// (line 3254) — build a `value_ref` expr + a `ValueMap`, call the helper directly,
+    /// assert the return value and diagnostic side-effect, compiler-independently.
+    #[test]
+    fn resolve_density_arg_diagnostics() {
+        fn make_value_ref(cell: reify_core::ValueCellId) -> reify_ir::CompiledExpr {
+            reify_ir::CompiledExpr::value_ref(cell, reify_core::Type::Real)
+        }
+
+        // (a) ValueRef → LENGTH Scalar → None + 1 Warning
+        {
+            let cell = reify_core::ValueCellId::new("TestDef", "rho");
+            let expr = make_value_ref(cell.clone());
+            let mut values = reify_ir::ValueMap::new();
+            values.insert(
+                cell,
+                reify_ir::Value::Scalar {
+                    si_value: 1.0,
+                    dimension: reify_core::DimensionVector::LENGTH,
+                },
+            );
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result =
+                super::resolve_density_arg(&expr, &values, "moment_of_inertia", &mut diags);
+            assert_eq!(result, None, "(a) LENGTH Scalar must return None");
+            assert_eq!(
+                diags.len(),
+                1,
+                "(a) LENGTH Scalar must push exactly 1 diagnostic, got: {:?}",
+                diags
+            );
+            assert_eq!(
+                diags[0].severity,
+                reify_core::Severity::Warning,
+                "(a) diagnostic must be Warning severity"
+            );
+            let msg = diags[0].message.to_lowercase();
+            assert!(
+                msg.contains("density"),
+                "(a) warning must name 'density', got: {:?}",
+                diags[0].message
+            );
+            assert!(
+                msg.contains("real") || msg.contains("dimensionless"),
+                "(a) warning must mention 'real' or 'dimensionless', got: {:?}",
+                diags[0].message
+            );
+        }
+
+        // (b) ValueRef → Value::Bool(true) → None + 1 Warning
+        {
+            let cell = reify_core::ValueCellId::new("TestDef", "rho2");
+            let expr = make_value_ref(cell.clone());
+            let mut values = reify_ir::ValueMap::new();
+            values.insert(cell, reify_ir::Value::Bool(true));
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result =
+                super::resolve_density_arg(&expr, &values, "moment_of_inertia", &mut diags);
+            assert_eq!(result, None, "(b) Bool must return None");
+            assert_eq!(
+                diags.len(),
+                1,
+                "(b) Bool must push exactly 1 diagnostic, got: {:?}",
+                diags
+            );
+            assert_eq!(
+                diags[0].severity,
+                reify_core::Severity::Warning,
+                "(b) diagnostic must be Warning severity"
+            );
+        }
+
+        // (c-i) ValueRef → Value::Real(7850.0) → Some(7850.0), empty diagnostics
+        {
+            let cell = reify_core::ValueCellId::new("TestDef", "rho3");
+            let expr = make_value_ref(cell.clone());
+            let mut values = reify_ir::ValueMap::new();
+            values.insert(cell, reify_ir::Value::Real(7850.0));
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result =
+                super::resolve_density_arg(&expr, &values, "moment_of_inertia", &mut diags);
+            assert_eq!(
+                result,
+                Some(7850.0),
+                "(c-i) Value::Real(7850.0) must return Some(7850.0)"
+            );
+            assert!(
+                diags.is_empty(),
+                "(c-i) Value::Real must produce no diagnostics, got: {:?}",
+                diags
+            );
+        }
+
+        // (c-ii) ValueRef → dimensionless Scalar → Some(si_value), empty diagnostics
+        {
+            let cell = reify_core::ValueCellId::new("TestDef", "rho4");
+            let expr = make_value_ref(cell.clone());
+            let mut values = reify_ir::ValueMap::new();
+            values.insert(
+                cell,
+                reify_ir::Value::Scalar {
+                    si_value: 7850.0,
+                    dimension: reify_core::DimensionVector::DIMENSIONLESS,
+                },
+            );
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result =
+                super::resolve_density_arg(&expr, &values, "moment_of_inertia", &mut diags);
+            assert_eq!(
+                result,
+                Some(7850.0),
+                "(c-ii) dimensionless Scalar must return Some(si_value)"
+            );
+            assert!(
+                diags.is_empty(),
+                "(c-ii) dimensionless Scalar must produce no diagnostics, got: {:?}",
+                diags
+            );
+        }
+
+        // (d) Non-ValueRef (literal_f64) → None, empty diagnostics (silent fall-through)
+        {
+            let expr = literal_f64(7850.0);
+            let values = reify_ir::ValueMap::new();
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result =
+                super::resolve_density_arg(&expr, &values, "moment_of_inertia", &mut diags);
+            assert_eq!(
+                result, None,
+                "(d) Literal expr must return None (silent fall-through)"
+            );
+            assert!(
+                diags.is_empty(),
+                "(d) Literal expr must produce no diagnostics, got: {:?}",
+                diags
+            );
+        }
     }
 
     // Constants `DEGENERATE_LENGTH_M`, `DEGENERATE_ANGLE_RAD`, and
@@ -6835,6 +7686,177 @@ mod tests {
     // `eval_expr`) because the build pipeline owns both the kernel and the
     // per-realization name → handle map (`named_steps`).
 
+    /// Build a `CompiledExpr` for a stdlib call `helper(<entity>.<member>)` with
+    /// a single `ValueRef` arg. Used for the `edges(b)` / `faces(b)` dispatch
+    /// unit tests (task 3616 step-5).
+    fn topology_selector_call_one_value_ref(
+        helper_name: &str,
+        entity: &str,
+        member: &str,
+        arg_type: reify_core::Type,
+        result_type: reify_core::Type,
+    ) -> reify_ir::CompiledExpr {
+        let arg = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new(entity, member),
+            arg_type,
+        );
+        let content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str(helper_name))
+            .combine(arg.content_hash);
+        reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: helper_name.to_string(),
+                    qualified_name: helper_name.to_string(),
+                },
+                args: vec![arg],
+            },
+            result_type,
+            content_hash,
+        }
+    }
+
+    // ── step-5 (task 3616): edges/faces dispatch RED unit tests ─────────────
+    //
+    // These tests are RED because the current arm returns Value::List(Value::Int)
+    // via handle_list_value instead of Value::List(Value::GeometryHandle).
+
+    /// `edges` dispatch returns `Value::List` of three `Value::GeometryHandle`
+    /// elements when the mock kernel returns [GHId(2),GHId(3),GHId(4)] and the
+    /// `values` map carries the parent `Value::GeometryHandle`. Each element
+    /// must carry the parent's `realization_ref`, and the three
+    /// `upstream_values_hash` fields must be pairwise distinct (PRD §4 iii).
+    /// RED: current arm returns `Value::Int` via `handle_list_value`.
+    #[test]
+    fn edges_dispatch_returns_geometry_handle_list() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+
+        let parent_handle = GeometryHandleId(1);
+        let parent_rr = RealizationNodeId::new("BoxEdges", 0);
+        let parent_hash: [u8; 32] = [0x77; 32];
+
+        let mut kernel = MockGeometryKernel::new().with_extracted_edges(
+            parent_handle,
+            vec![GeometryHandleId(2), GeometryHandleId(3), GeometryHandleId(4)],
+        );
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("b".to_string(), parent_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("BoxEdges", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: parent_handle,
+            },
+        );
+
+        let expr = topology_selector_call_one_value_ref(
+            "edges",
+            "BoxEdges",
+            "b",
+            Type::Geometry,
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let mut diagnostics = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let list = match result {
+            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+            other => panic!(
+                "expected Some(Value::List(..)), got {:?}; diagnostics: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(list.len(), 3, "expected 3 edge sub-handles");
+
+        let expected_ids = [GeometryHandleId(2), GeometryHandleId(3), GeometryHandleId(4)];
+        let mut hashes: Vec<[u8; 32]> = Vec::new();
+        for (i, (elem, expected_id)) in list.iter().zip(&expected_ids).enumerate() {
+            match elem {
+                reify_ir::Value::GeometryHandle { realization_ref, upstream_values_hash, kernel_handle } => {
+                    assert_eq!(
+                        realization_ref.entity, parent_rr.entity,
+                        "elem[{i}] realization_ref.entity must match parent"
+                    );
+                    assert_eq!(
+                        realization_ref.index, parent_rr.index,
+                        "elem[{i}] realization_ref.index must match parent"
+                    );
+                    assert_eq!(
+                        kernel_handle, expected_id,
+                        "elem[{i}] kernel_handle must be {expected_id:?}"
+                    );
+                    hashes.push(*upstream_values_hash);
+                }
+                other => panic!("elem[{i}] is not Value::GeometryHandle: {:?}", other),
+            }
+        }
+        // All three upstream_values_hashes must be pairwise distinct (PRD §4 iii).
+        assert_ne!(hashes[0], hashes[1], "edge 0 and 1 hashes must differ");
+        assert_ne!(hashes[1], hashes[2], "edge 1 and 2 hashes must differ");
+        assert_ne!(hashes[0], hashes[2], "edge 0 and 2 hashes must differ");
+    }
+
+    /// When the `values` map does not carry a `Value::GeometryHandle` for the
+    /// arg cell, the `edges` arm must fall through to `None` (cell stays Undef)
+    /// rather than partially constructing a sub-handle (PRD invariant #2).
+    /// RED: current arm dispatches via `named_steps` regardless of `values` and
+    /// returns `Some(Value::List(Value::Int))`.
+    #[test]
+    fn edges_dispatch_falls_through_to_none_when_parent_not_hydrated() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::Type;
+
+        let parent_handle = GeometryHandleId(1);
+        let mut kernel = MockGeometryKernel::new().with_extracted_edges(
+            parent_handle,
+            vec![GeometryHandleId(2), GeometryHandleId(3)],
+        );
+
+        // named_steps has the handle so the kernel could serve the call …
+        let mut named_steps = HashMap::new();
+        named_steps.insert("b".to_string(), parent_handle);
+
+        // … but values has NO Value::GeometryHandle for the arg cell.
+        let values = reify_ir::ValueMap::new();
+
+        let expr = topology_selector_call_one_value_ref(
+            "edges",
+            "BoxEdges",
+            "b",
+            Type::Geometry,
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let mut diagnostics = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "must fall through to None when parent is not a hydrated Value::GeometryHandle, \
+             got {:?}",
+            result
+        );
+    }
+
     /// Build a `CompiledExpr` for a stdlib call `helper(<entity>.<member_a>,
     /// <entity>.<member_b>)` with two `ValueRef` args resolving to let-bound
     /// cells. Mirrors `conformance_call` above.
@@ -8022,6 +9044,265 @@ mod tests {
         }
     }
 
+    // ── try_eval_topology_selector `contains` unit tests (task 3611, KGQ-β) ────
+    //
+    // These tests pin the `contains(solid, point) -> Bool` dispatch contract
+    // (PRD §9 KGQ-β). Arg order is solid-then-point (args[0]=geometry,
+    // args[1]=point3<Length>), mirroring `is_on` with args swapped. The
+    // dispatcher reuses `dispatch_point_on_shape` (Bool unwrapper) and
+    // `DEFAULT_CONTAINS_TOLERANCE_M` per §5.2.
+    //
+    // Three contracts:
+    //   (a) happy path: kernel Bool(true) reply → Some(Value::Bool(true))
+    //   (b) literal-arg fall-through: non-ValueRef args → None, no kernel call
+    //   (c) non-Bool kernel reply → Some(Value::Undef) + exactly-one Warning
+    //       naming "contains"
+    //
+    // All three FAIL (RED) until step-6 wires the `contains` arm in
+    // try_eval_topology_selector / TopologySelectorHelper.
+
+    #[test]
+    fn try_eval_topology_selector_contains_kernel_reply_returns_bool_with_default_tolerance() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let body_handle = reify_ir::GeometryHandleId(42);
+        // Record the mock under DEFAULT_CONTAINS_TOLERANCE_M — pins that the
+        // dispatcher uses this constant and not some ad-hoc value.
+        let mut kernel = MockGeometryKernel::new().with_contains_result(
+            body_handle,
+            [0.0, 0.0, 0.0],
+            reify_ir::DEFAULT_CONTAINS_TOLERANCE_M,
+            reify_ir::Value::Bool(true),
+        );
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        // args[0] = solid → resolved via named_steps by member name "solid"
+        named_steps.insert("solid".to_string(), body_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        // args[1] = point → resolved via values by ValueCellId
+        values.insert(
+            reify_core::ValueCellId::new("ContainsBox", "center"),
+            point3_length_value(0.0, 0.0, 0.0),
+        );
+
+        // contains(solid, center): args[0]=solid (Geometry), args[1]=center (Point3<Length>)
+        let expr = topology_selector_call_two_value_refs(
+            "contains",
+            "ContainsBox",
+            "solid",
+            reify_core::Type::Geometry,
+            "center",
+            reify_core::Type::point3(reify_core::Type::length()),
+            reify_core::Type::Bool,
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Bool(true)),
+            "contains(solid, center) with kernel reply Bool(true) must produce \
+             Some(Value::Bool(true)) (default tolerance DEFAULT_CONTAINS_TOLERANCE_M); \
+             got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "happy-path contains must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_contains_literal_args_falls_through_to_none() {
+        use reify_test_support::mocks::CountingMockKernel;
+        // `contains(<literal>, <literal>)` — non-ValueRef args, so both
+        // resolve_geometry_handle_arg and resolve_point3_length_arg return None,
+        // and the dispatcher must return None without consulting the kernel.
+        let inner = reify_test_support::mocks::MockGeometryKernel::new();
+        let mut kernel = CountingMockKernel::new(inner);
+
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let values = reify_ir::ValueMap::new();
+
+        let expr = topology_selector_call_literal_args("contains");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "contains(<literal>, <literal>) must return None, got {:?}",
+            result
+        );
+        assert_eq!(
+            kernel.total_query_count(),
+            0,
+            "kernel must NOT be consulted for non-ValueRef args"
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_contains_non_bool_kernel_reply_emits_warning_and_returns_undef()
+    {
+        use reify_test_support::mocks::MockGeometryKernel;
+        // Pin the `Ok(other)` warning arm of `dispatch_point_on_shape` (reused for
+        // `contains`): a kernel reply that is not `Value::Bool(_)` must produce
+        // `Some(Value::Undef)` with a Warning diagnostic naming "contains".
+        let body_handle = reify_ir::GeometryHandleId(42);
+        let mut kernel = MockGeometryKernel::new().with_contains_result(
+            body_handle,
+            [0.0, 0.0, 0.0],
+            reify_ir::DEFAULT_CONTAINS_TOLERANCE_M,
+            // Wrong type — should trigger the non-Bool warning arm.
+            reify_ir::Value::Real(0.5),
+        );
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        named_steps.insert("solid".to_string(), body_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            reify_core::ValueCellId::new("ContainsBox", "center"),
+            point3_length_value(0.0, 0.0, 0.0),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "contains",
+            "ContainsBox",
+            "solid",
+            reify_core::Type::Geometry,
+            "center",
+            reify_core::Type::point3(reify_core::Type::length()),
+            reify_core::Type::Bool,
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "contains(...) with non-Bool kernel reply must yield Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "non-Bool reply must emit exactly one Warning, got {} diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Warning,
+            "diagnostic severity must be Warning, got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("contains"),
+            "diagnostic must mention the helper name 'contains', got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("non-Bool"),
+            "diagnostic must indicate the non-Bool reply, got: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_contains_kernel_err_returns_undef_with_warning() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        // No `with_contains_result` seeding — MockGeometryKernel.query() falls
+        // through to the generic handle-only map which also has no entry for
+        // this handle, so it returns `Err(QueryError::QueryFailed(...))`.
+        // `dispatch_point_on_shape` must downgrade this to `Some(Value::Undef)`
+        // and emit exactly one Warning diagnostic naming "contains" and
+        // "kernel query failed". Pins the `Err(err)` arm of that helper.
+        let body_handle = reify_ir::GeometryHandleId(42);
+        let mut kernel = MockGeometryKernel::new();
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        named_steps.insert("solid".to_string(), body_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            reify_core::ValueCellId::new("ContainsBox", "center"),
+            point3_length_value(0.0, 0.0, 0.0),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "contains",
+            "ContainsBox",
+            "solid",
+            reify_core::Type::Geometry,
+            "center",
+            reify_core::Type::point3(reify_core::Type::length()),
+            reify_core::Type::Bool,
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "contains(...) with kernel Err must yield Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "kernel Err must emit exactly one Warning, got {} diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Warning,
+            "diagnostic severity must be Warning, got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("contains"),
+            "diagnostic must mention the helper name 'contains', got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("kernel query failed"),
+            "diagnostic must indicate the kernel failure, got: {}",
+            diag.message
+        );
+    }
+
     // ── gate_query_capability unit tests (task 3623) ─────────────────────────
     //
     // These tests pin the §5.4 four-branch policy contract of
@@ -8612,5 +9893,2582 @@ mod tests {
                 expected
             );
         }
+    }
+
+    // ── try_eval_topology_selector `geo_equiv` unit tests (task 3613, KGQ-δ) ──
+    //
+    // These tests pin the `geo_equiv(left, right, tol) -> Bool` dispatch
+    // contract (PRD §9 KGQ-δ). Args[0]/args[1] are Geometry ValueRefs resolved
+    // via named_steps; args[2] is a Length scalar ValueRef resolved via values
+    // to SI metres. The dispatcher reuses `dispatch_point_on_shape`
+    // (Bool unwrapper), threading `DEFAULT_GEO_EQUIV_SAMPLE_COUNT` to the FFI.
+    //
+    // Four contracts (mirror the four `try_eval_topology_selector_contains_*`):
+    //   (a) happy path: kernel Bool(true) reply → Some(Value::Bool(true)), no diags
+    //   (b) literal-arg fall-through: 3 literal args → None, zero kernel calls
+    //   (c) non-Bool kernel reply → Some(Value::Undef) + exactly-one Warning
+    //       naming "geo_equiv" and "non-Bool"
+    //   (d) kernel-Err: no seeding → Some(Value::Undef) + exactly-one Warning
+    //       naming "geo_equiv" and "kernel query failed"
+    //
+    // All four FAIL (RED) until step-6 wires the `geo_equiv` arm in
+    // try_eval_topology_selector / TopologySelectorHelper.
+
+    /// Build a `CompiledExpr` for `helper(member_a, member_b, member_c)` where
+    /// all three args are ValueRefs. Mirrors `topology_selector_call_two_value_refs`
+    /// but with a third arg — used by the geo_equiv 3-arg dispatch tests.
+    #[allow(clippy::too_many_arguments)]
+    fn topology_selector_call_three_value_refs(
+        helper_name: &str,
+        entity: &str,
+        member_a: &str,
+        type_a: reify_core::Type,
+        member_b: &str,
+        type_b: reify_core::Type,
+        member_c: &str,
+        type_c: reify_core::Type,
+        result_type: reify_core::Type,
+    ) -> reify_ir::CompiledExpr {
+        let arg_a = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new(entity, member_a),
+            type_a,
+        );
+        let arg_b = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new(entity, member_b),
+            type_b,
+        );
+        let arg_c = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new(entity, member_c),
+            type_c,
+        );
+        let mut content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str(helper_name));
+        content_hash = content_hash.combine(arg_a.content_hash);
+        content_hash = content_hash.combine(arg_b.content_hash);
+        content_hash = content_hash.combine(arg_c.content_hash);
+        reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: helper_name.to_string(),
+                    qualified_name: helper_name.to_string(),
+                },
+                args: vec![arg_a, arg_b, arg_c],
+            },
+            result_type,
+            content_hash,
+        }
+    }
+
+    /// Build a `CompiledExpr` for `helper(<literal>, <literal>, <literal>)` —
+    /// used for 3-arg literal fall-through defensive tests. Mirrors
+    /// `topology_selector_call_literal_args` but with three args so the arity
+    /// gate for arity-3 helpers (like `geo_equiv`) passes.
+    fn topology_selector_call_three_literal_args(helper_name: &str) -> reify_ir::CompiledExpr {
+        let arg_a = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Real(1.0),
+            reify_core::Type::Real,
+        );
+        let arg_b = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Real(2.0),
+            reify_core::Type::Real,
+        );
+        let arg_c = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Real(3.0),
+            reify_core::Type::Real,
+        );
+        let mut content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str(helper_name));
+        content_hash = content_hash.combine(arg_a.content_hash);
+        content_hash = content_hash.combine(arg_b.content_hash);
+        content_hash = content_hash.combine(arg_c.content_hash);
+        reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: helper_name.to_string(),
+                    qualified_name: helper_name.to_string(),
+                },
+                args: vec![arg_a, arg_b, arg_c],
+            },
+            result_type: reify_core::Type::Bool,
+            content_hash,
+        }
+    }
+
+    #[test]
+    fn try_eval_topology_selector_geo_equiv_kernel_reply_returns_bool() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let left_handle = reify_ir::GeometryHandleId(41);
+        let right_handle = reify_ir::GeometryHandleId(42);
+        let tol = 1e-6_f64;
+        // Record the mock using `with_geo_equiv_result` — pins that the
+        // dispatcher builds `GeometryQuery::GeoEquiv { left, right, tolerance }`.
+        let mut kernel = MockGeometryKernel::new().with_geo_equiv_result(
+            left_handle,
+            right_handle,
+            tol,
+            reify_ir::Value::Bool(true),
+        );
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        // args[0] = left geometry → resolved via named_steps by member "left"
+        named_steps.insert("left".to_string(), left_handle);
+        // args[1] = right geometry → resolved via named_steps by member "right"
+        named_steps.insert("right".to_string(), right_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        // args[2] = tolerance → resolved via values by ValueCellId
+        values.insert(
+            reify_core::ValueCellId::new("GeoEquivSmoke", "tol"),
+            reify_ir::Value::length(tol),
+        );
+
+        // geo_equiv(left, right, tol): args[0]=left (Geometry), args[1]=right (Geometry),
+        //                              args[2]=tol (Scalar<Length>)
+        let expr = topology_selector_call_three_value_refs(
+            "geo_equiv",
+            "GeoEquivSmoke",
+            "left",
+            reify_core::Type::Geometry,
+            "right",
+            reify_core::Type::Geometry,
+            "tol",
+            reify_core::Type::length(),
+            reify_core::Type::Bool,
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Bool(true)),
+            "geo_equiv(left, right, tol) with kernel reply Bool(true) must produce \
+             Some(Value::Bool(true)); got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "happy-path geo_equiv must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_geo_equiv_literal_args_falls_through_to_none() {
+        use reify_test_support::mocks::CountingMockKernel;
+        // `geo_equiv(<literal>, <literal>, <literal>)` — non-ValueRef args, so
+        // resolve_geometry_handle_arg returns None on args[0], and the dispatcher
+        // must return None without consulting the kernel.
+        let inner = reify_test_support::mocks::MockGeometryKernel::new();
+        let mut kernel = CountingMockKernel::new(inner);
+
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let values = reify_ir::ValueMap::new();
+
+        let expr = topology_selector_call_three_literal_args("geo_equiv");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "geo_equiv(<literal>, <literal>, <literal>) must return None, got {:?}",
+            result
+        );
+        assert_eq!(
+            kernel.total_query_count(),
+            0,
+            "kernel must NOT be consulted for non-ValueRef args"
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_geo_equiv_non_bool_kernel_reply_emits_warning_and_returns_undef()
+    {
+        use reify_test_support::mocks::MockGeometryKernel;
+        // Pin the `Ok(other)` warning arm of `dispatch_point_on_shape` (reused
+        // for `geo_equiv`): a kernel reply that is not `Value::Bool(_)` must
+        // produce `Some(Value::Undef)` with a Warning diagnostic naming
+        // "geo_equiv" and "non-Bool".
+        let left_handle = reify_ir::GeometryHandleId(41);
+        let right_handle = reify_ir::GeometryHandleId(42);
+        let tol = 1e-6_f64;
+        let mut kernel = MockGeometryKernel::new().with_geo_equiv_result(
+            left_handle,
+            right_handle,
+            tol,
+            reify_ir::Value::Real(0.5), // Wrong type — triggers non-Bool warning arm
+        );
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        named_steps.insert("left".to_string(), left_handle);
+        named_steps.insert("right".to_string(), right_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            reify_core::ValueCellId::new("GeoEquivSmoke", "tol"),
+            reify_ir::Value::length(tol),
+        );
+
+        let expr = topology_selector_call_three_value_refs(
+            "geo_equiv",
+            "GeoEquivSmoke",
+            "left",
+            reify_core::Type::Geometry,
+            "right",
+            reify_core::Type::Geometry,
+            "tol",
+            reify_core::Type::length(),
+            reify_core::Type::Bool,
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "geo_equiv(...) with non-Bool kernel reply must yield Some(Value::Undef); \
+             got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "non-Bool reply must emit exactly one Warning, got {} diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Warning,
+            "diagnostic severity must be Warning, got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("geo_equiv"),
+            "diagnostic must mention the helper name 'geo_equiv', got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("non-Bool"),
+            "diagnostic must indicate the non-Bool reply, got: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_geo_equiv_kernel_err_returns_undef_with_warning() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        // No `with_geo_equiv_result` seeding — MockGeometryKernel.query() falls
+        // through to the generic handle-only map which also has no entry for
+        // this handle, so it returns `Err(QueryError::QueryFailed(...))`.
+        // `dispatch_point_on_shape` must downgrade this to `Some(Value::Undef)`
+        // and emit exactly one Warning diagnostic naming "geo_equiv" and
+        // "kernel query failed". Pins the `Err(err)` arm of that helper.
+        let left_handle = reify_ir::GeometryHandleId(41);
+        let right_handle = reify_ir::GeometryHandleId(42);
+        let tol = 1e-6_f64;
+        let mut kernel = MockGeometryKernel::new();
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        named_steps.insert("left".to_string(), left_handle);
+        named_steps.insert("right".to_string(), right_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            reify_core::ValueCellId::new("GeoEquivSmoke", "tol"),
+            reify_ir::Value::length(tol),
+        );
+
+        let expr = topology_selector_call_three_value_refs(
+            "geo_equiv",
+            "GeoEquivSmoke",
+            "left",
+            reify_core::Type::Geometry,
+            "right",
+            reify_core::Type::Geometry,
+            "tol",
+            reify_core::Type::length(),
+            reify_core::Type::Bool,
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "geo_equiv(...) with kernel Err must yield Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "kernel Err must emit exactly one Warning, got {} diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Warning,
+            "diagnostic severity must be Warning, got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("geo_equiv"),
+            "diagnostic must mention the helper name 'geo_equiv', got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("kernel query failed"),
+            "diagnostic must indicate the kernel failure, got: {}",
+            diag.message
+        );
+    }
+
+    // ── try_eval_topology_selector — `normal` dispatch unit tests (task 3615, KGQ-ζ) ─────────
+    //
+    // Four contracts (mirrors the four `try_eval_topology_selector_contains_*` tests):
+    //   (a) HAPPY        — kernel reply `Value::String("{\"x\":0,\"y\":0,\"z\":1}")` → `Some(Value::Vector([Real(0), Real(0), Real(1)]))`
+    //   (b) FALL-THROUGH — non-ValueRef literal args → `None` with zero kernel calls
+    //   (c) ERROR        — kernel `Err` → `Some(Value::Undef)` + exactly one Warning mentioning "normal" + "kernel query failed"
+    //   (d) MALFORMED    — non-`Value::String` kernel reply → `Some(Value::Undef)` + exactly one Warning
+    //
+    // Arg order: Surface = args[0] (resolved via named_steps["surface"]),
+    //            Point3  = args[1] (resolved via values[(entity, "pt")]).
+    // This mirrors the `contains(solid, point)` precedent (KGQ-β), NOT closest_point.
+    //
+    // Depends on `MockGeometryKernel::with_face_normal_at_result` (pre-1, task 3615).
+
+    #[test]
+    fn try_eval_topology_selector_normal_kernel_reply_returns_vec3_real() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let face_handle = reify_ir::GeometryHandleId(55);
+        // Stage the mock: point (0m, 0m, 0.005m) ≈ (0, 0, 5mm) in SI.
+        // The kernel wire format for FaceNormalAt is the same JSON-Point3 encoding
+        // as FaceNormal / surface_normal_at: {"x":_,"y":_,"z":_}.
+        let mut kernel = MockGeometryKernel::new().with_face_normal_at_result(
+            face_handle,
+            [0.0, 0.0, 0.005],
+            reify_ir::Value::String("{\"x\":0,\"y\":0,\"z\":1}".to_string()),
+        );
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        // args[0] = surface → resolved via named_steps by member name "surface"
+        named_steps.insert("surface".to_string(), face_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        // args[1] = point3 → resolved via values by ValueCellId
+        values.insert(
+            reify_core::ValueCellId::new("NormalSmoke", "pt"),
+            point3_length_value(0.0, 0.0, 0.005),
+        );
+
+        // normal(surface_ref, point3_ref) — Surface=args[0], Point3=args[1]
+        let expr = topology_selector_call_two_value_refs(
+            "normal",
+            "NormalSmoke",
+            "surface",
+            reify_core::Type::Geometry,
+            "pt",
+            reify_core::Type::point3(reify_core::Type::length()),
+            reify_core::Type::vec3(reify_core::Type::Real),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Vector(vec![
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(1.0),
+            ])),
+            "normal(surface, point3) with kernel reply {{x:0,y:0,z:1}} must produce \
+             Some(Value::Vector([Real(0),Real(0),Real(1)])); got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "happy-path normal must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_normal_literal_args_falls_through_to_none() {
+        use reify_test_support::mocks::CountingMockKernel;
+        // `normal(<literal>, <literal>)` — non-ValueRef args: both
+        // resolve_geometry_handle_arg (args[0]) and resolve_point3_length_arg (args[1])
+        // return None, so the dispatcher must return None without consulting the kernel.
+        let inner = reify_test_support::mocks::MockGeometryKernel::new();
+        let mut kernel = CountingMockKernel::new(inner);
+
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let values = reify_ir::ValueMap::new();
+
+        let expr = topology_selector_call_literal_args("normal");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "normal(<literal>, <literal>) must return None, got {:?}",
+            result
+        );
+        assert_eq!(
+            kernel.total_query_count(),
+            0,
+            "kernel must NOT be consulted for non-ValueRef args"
+        );
+    }
+
+    /// Guard the point-arg LENGTH-qualification contract end-to-end through the
+    /// dispatcher.  Even when args[0] (surface) resolves successfully via
+    /// `named_steps`, a non-LENGTH-qualified point arg[1] must cause
+    /// `resolve_point3_length_arg` to return `None`, which propagates as a
+    /// silent fall-through (`None`) — zero kernel calls, zero diagnostics.
+    ///
+    /// Complements `try_eval_topology_selector_normal_literal_args_falls_through_to_none`
+    /// (which tests BOTH args failing at the arg-shape level) by exercising the
+    /// case where the SURFACE resolves but the POINT fails its unit-qualification
+    /// check.  Locks the split-arg fall-through path.
+    #[test]
+    fn try_eval_topology_selector_normal_dimensionless_point_falls_through_to_none() {
+        use reify_test_support::mocks::{CountingMockKernel, MockGeometryKernel};
+        let face_handle = reify_ir::GeometryHandleId(55);
+
+        // Wrap in a counting mock so we can assert zero kernel queries.
+        let inner = MockGeometryKernel::new();
+        let mut kernel = CountingMockKernel::new(inner);
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        // args[0] = surface → present in named_steps, so resolve_geometry_handle_arg
+        // returns Some(face_handle).
+        named_steps.insert("surface".to_string(), face_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        // args[1] = point → bare Value::Real components, NOT Value::Scalar with
+        // DimensionVector::LENGTH.  resolve_point3_length_arg must return None for
+        // this shape (the `_ => return None` arm on the component match).
+        values.insert(
+            reify_core::ValueCellId::new("NormalSmoke", "pt"),
+            reify_ir::Value::Point(vec![
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(5.0),
+            ]),
+        );
+
+        // normal(surface_ref, pt_ref) — same arg shape as the happy-path test,
+        // but with a dimensionless-Real point value.
+        let expr = topology_selector_call_two_value_refs(
+            "normal",
+            "NormalSmoke",
+            "surface",
+            reify_core::Type::Geometry,
+            "pt",
+            reify_core::Type::point3(reify_core::Type::length()),
+            reify_core::Type::vec3(reify_core::Type::Real),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "normal(surface, dimensionless_point) must return None (silent fall-through); \
+             got {:?}",
+            result
+        );
+        assert_eq!(
+            kernel.total_query_count(),
+            0,
+            "kernel must NOT be consulted when point arg is not LENGTH-qualified; \
+             got {} query calls",
+            kernel.total_query_count()
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "dimensionless-point fall-through must emit zero diagnostics; \
+             got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_normal_kernel_err_returns_undef_with_warning() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        // No `with_face_normal_at_result` staging — MockGeometryKernel.query() falls
+        // through to the generic handle-only map which also has no entry for this
+        // handle, so it returns `Err(QueryError::QueryFailed(...))`.
+        // `dispatch_normal_vector3` must downgrade this to `Some(Value::Undef)`
+        // and emit exactly one Warning diagnostic naming "normal" + "kernel query failed".
+        let face_handle = reify_ir::GeometryHandleId(55);
+        let mut kernel = MockGeometryKernel::new();
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        named_steps.insert("surface".to_string(), face_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            reify_core::ValueCellId::new("NormalSmoke", "pt"),
+            point3_length_value(0.0, 0.0, 0.005),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "normal",
+            "NormalSmoke",
+            "surface",
+            reify_core::Type::Geometry,
+            "pt",
+            reify_core::Type::point3(reify_core::Type::length()),
+            reify_core::Type::vec3(reify_core::Type::Real),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "normal(...) with kernel Err must yield Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "kernel Err must emit exactly one Warning, got {} diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Warning,
+            "diagnostic severity must be Warning, got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("normal"),
+            "diagnostic must mention the helper name 'normal', got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("kernel query failed"),
+            "diagnostic must indicate the kernel failure, got: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_normal_malformed_kernel_reply_emits_warning_and_returns_undef() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        // Stage a non-`Value::String` reply (Value::Real) — parse_xyz_value rejects
+        // non-String replies, so dispatch_normal_vector3 must produce
+        // `Some(Value::Undef)` with a Warning diagnostic naming "normal".
+        let face_handle = reify_ir::GeometryHandleId(55);
+        let mut kernel = MockGeometryKernel::new().with_face_normal_at_result(
+            face_handle,
+            [0.0, 0.0, 0.005],
+            // Wrong type: a Real, not the expected JSON String.
+            reify_ir::Value::Real(42.0),
+        );
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        named_steps.insert("surface".to_string(), face_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            reify_core::ValueCellId::new("NormalSmoke", "pt"),
+            point3_length_value(0.0, 0.0, 0.005),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "normal",
+            "NormalSmoke",
+            "surface",
+            reify_core::Type::Geometry,
+            "pt",
+            reify_core::Type::point3(reify_core::Type::length()),
+            reify_core::Type::vec3(reify_core::Type::Real),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "normal(...) with malformed kernel reply must yield Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "malformed reply must emit exactly one Warning, got {} diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Warning,
+            "diagnostic severity must be Warning, got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("normal"),
+            "diagnostic must mention the helper name 'normal', got: {}",
+            diag.message
+        );
+    }
+
+    // ── try_eval_topology_selector directional-selector dispatch unit tests ───
+    // (task 3618, KGQ-ι: faces_by_normal + edges_parallel_to)
+    //
+    // These tests pin that the rewired arms resolve arg[0] via `values` (not
+    // `named_steps`), run the filter helper, recover canonical TopExp indices,
+    // and emit Value::List([Value::GeometryHandle]) — not Value::Int.
+    //
+    // The canonical-index correctness requirement: faces_by_normal(box,+z,1°)[0]
+    // must hash identically to faces(box)[k] for the same physical face.
+    // Each test places the retained face/edge at a NON-ZERO canonical index to
+    // exercise the index recovery (if the arm hardcoded index 0 it would pass a
+    // trivial index-0-only case but fail these).
+
+    /// `faces_by_normal` dispatch emits `Value::List([Value::GeometryHandle])`
+    /// with the retained face's canonical TopExp index (not filtered position).
+    ///
+    /// Setup: canonical list [GHId(2), GHId(3), GHId(4)]; only GHId(3) (index 1)
+    /// has a +z normal within 1°; GHId(2) (+x) and GHId(4) (−z, sign-sensitive)
+    /// are rejected. The result must carry canonical index 1, not position 0.
+    #[test]
+    fn faces_by_normal_dispatch_returns_geometry_handle_sub_handles() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{DimensionVector, Type, ValueCellId};
+
+        let parent_handle = GeometryHandleId(1);
+        let parent_rr = RealizationNodeId::new("Directional", 0);
+        let parent_hash: [u8; 32] = [0xAA; 32];
+
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_faces(
+                parent_handle,
+                vec![GeometryHandleId(2), GeometryHandleId(3), GeometryHandleId(4)],
+            )
+            .with_face_normal_result(
+                GeometryHandleId(2),
+                reify_ir::Value::String("{\"x\":1.0,\"y\":0.0,\"z\":0.0}".to_string()),
+            )
+            .with_face_normal_result(
+                GeometryHandleId(3),
+                reify_ir::Value::String("{\"x\":0.0,\"y\":0.0,\"z\":1.0}".to_string()),
+            )
+            .with_face_normal_result(
+                GeometryHandleId(4),
+                reify_ir::Value::String("{\"x\":0.0,\"y\":0.0,\"z\":-1.0}".to_string()),
+            );
+
+        // named_steps carries a different handle id to prove the arm reads from
+        // values, not named_steps.
+        let mut named_steps = HashMap::new();
+        named_steps.insert("b".to_string(), GeometryHandleId(99));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("Directional", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: parent_handle,
+            },
+        );
+        values.insert(
+            ValueCellId::new("Directional", "dir"),
+            reify_ir::Value::Vector(vec![
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(1.0),
+            ]),
+        );
+        let tol_rad = std::f64::consts::PI / 180.0; // 1°
+        values.insert(
+            ValueCellId::new("Directional", "tol"),
+            reify_ir::Value::Scalar {
+                si_value: tol_rad,
+                dimension: DimensionVector::ANGLE,
+            },
+        );
+
+        let expr = topology_selector_call_three_value_refs(
+            "faces_by_normal",
+            "Directional",
+            "b",
+            Type::Geometry,
+            "dir",
+            Type::vec3(Type::Real),
+            "tol",
+            Type::angle(),
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let mut diagnostics = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let list = match result {
+            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+            other => panic!(
+                "faces_by_normal(..) must yield Some(Value::List(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(
+            list.len(),
+            1,
+            "exactly 1 face matches +z within 1° (index 1); got {} elements; diags: {:?}",
+            list.len(),
+            diagnostics
+        );
+
+        // Expected hash: canonical index 1 (GHId(3) is at position 1 in the list).
+        let expected_hash = crate::topology_selectors::compose_sub_handle_hash(
+            &parent_hash,
+            crate::topology_selectors::SubKind::Face,
+            1,
+        );
+
+        match &list[0] {
+            reify_ir::Value::GeometryHandle {
+                realization_ref,
+                upstream_values_hash,
+                kernel_handle,
+            } => {
+                assert_eq!(
+                    realization_ref, &parent_rr,
+                    "realization_ref must equal parent (full struct)"
+                );
+                assert_eq!(
+                    *kernel_handle,
+                    GeometryHandleId(3),
+                    "retained face must be GHId(3)"
+                );
+                assert_eq!(
+                    upstream_values_hash, &expected_hash,
+                    "upstream_values_hash must be compose_sub_handle_hash(parent_hash, Face, 1) \
+                     — canonical index 1, NOT filtered position 0"
+                );
+            }
+            other => panic!(
+                "faces_by_normal result[0] must be Value::GeometryHandle, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "happy-path faces_by_normal must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// `faces_by_normal` falls through to `None` when the parent arg is not a
+    /// hydrated `Value::GeometryHandle` in `values` (PRD §4 invariant #2).
+    #[test]
+    fn faces_by_normal_dispatch_falls_through_when_parent_not_hydrated() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::{DimensionVector, Type, ValueCellId};
+
+        let mut kernel = MockGeometryKernel::new();
+        let named_steps = HashMap::new();
+
+        // values has NO Value::GeometryHandle for the arg cell.
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("Directional", "dir"),
+            reify_ir::Value::Vector(vec![
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(1.0),
+            ]),
+        );
+        values.insert(
+            ValueCellId::new("Directional", "tol"),
+            reify_ir::Value::Scalar {
+                si_value: std::f64::consts::PI / 180.0,
+                dimension: DimensionVector::ANGLE,
+            },
+        );
+
+        let expr = topology_selector_call_three_value_refs(
+            "faces_by_normal",
+            "Directional",
+            "b",
+            Type::Geometry,
+            "dir",
+            Type::vec3(Type::Real),
+            "tol",
+            Type::angle(),
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let mut diagnostics = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "must fall through to None when parent is not a hydrated Value::GeometryHandle; \
+             got {:?}",
+            result
+        );
+    }
+
+    /// `edges_parallel_to` dispatch emits `Value::List([Value::GeometryHandle])`
+    /// with the retained edge's canonical TopExp index (not filtered position).
+    ///
+    /// Setup: canonical list [GHId(2), GHId(3), GHId(4)]; only GHId(4) (index 2)
+    /// is (anti-)parallel to +z within 1° (tangent = −z; sign-tolerant predicate).
+    /// GHId(2) and GHId(3) have +x tangents and are rejected. The result must
+    /// carry canonical index 2, not position 0.
+    #[test]
+    fn edges_parallel_to_dispatch_returns_geometry_handle_sub_handles() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{DimensionVector, Type, ValueCellId};
+
+        let parent_handle = GeometryHandleId(1);
+        let parent_rr = RealizationNodeId::new("Directional", 0);
+        let parent_hash: [u8; 32] = [0xBB; 32];
+
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_edges(
+                parent_handle,
+                vec![GeometryHandleId(2), GeometryHandleId(3), GeometryHandleId(4)],
+            )
+            .with_edge_tangent_result(
+                GeometryHandleId(2),
+                reify_ir::Value::String("{\"x\":1.0,\"y\":0.0,\"z\":0.0}".to_string()),
+            )
+            .with_edge_tangent_result(
+                GeometryHandleId(3),
+                reify_ir::Value::String("{\"x\":1.0,\"y\":0.0,\"z\":0.0}".to_string()),
+            )
+            // GHId(4) has tangent −z: sign-tolerant |dot(−z, +z)| = 1 ≥ cos(1°), retained.
+            .with_edge_tangent_result(
+                GeometryHandleId(4),
+                reify_ir::Value::String("{\"x\":0.0,\"y\":0.0,\"z\":-1.0}".to_string()),
+            );
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("b".to_string(), GeometryHandleId(99));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("Directional", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: parent_handle,
+            },
+        );
+        values.insert(
+            ValueCellId::new("Directional", "axis"),
+            reify_ir::Value::Vector(vec![
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(1.0),
+            ]),
+        );
+        let tol_rad = std::f64::consts::PI / 180.0; // 1°
+        values.insert(
+            ValueCellId::new("Directional", "tol"),
+            reify_ir::Value::Scalar {
+                si_value: tol_rad,
+                dimension: DimensionVector::ANGLE,
+            },
+        );
+
+        let expr = topology_selector_call_three_value_refs(
+            "edges_parallel_to",
+            "Directional",
+            "b",
+            Type::Geometry,
+            "axis",
+            Type::vec3(Type::Real),
+            "tol",
+            Type::angle(),
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let mut diagnostics = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let list = match result {
+            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+            other => panic!(
+                "edges_parallel_to(..) must yield Some(Value::List(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(
+            list.len(),
+            1,
+            "exactly 1 edge is (anti-)parallel to +z (index 2, tangent −z); got {}; diags: {:?}",
+            list.len(),
+            diagnostics
+        );
+
+        // Expected hash: canonical index 2 (GHId(4) is at position 2 in the list).
+        let expected_hash = crate::topology_selectors::compose_sub_handle_hash(
+            &parent_hash,
+            crate::topology_selectors::SubKind::Edge,
+            2,
+        );
+
+        match &list[0] {
+            reify_ir::Value::GeometryHandle {
+                realization_ref,
+                upstream_values_hash,
+                kernel_handle,
+            } => {
+                assert_eq!(
+                    realization_ref, &parent_rr,
+                    "realization_ref must equal parent (full struct)"
+                );
+                assert_eq!(
+                    *kernel_handle,
+                    GeometryHandleId(4),
+                    "retained edge must be GHId(4)"
+                );
+                assert_eq!(
+                    upstream_values_hash, &expected_hash,
+                    "upstream_values_hash must be compose_sub_handle_hash(parent_hash, Edge, 2) \
+                     — canonical index 2, NOT filtered position 0"
+                );
+            }
+            other => panic!(
+                "edges_parallel_to result[0] must be Value::GeometryHandle, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "happy-path edges_parallel_to must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
+    // --- dispatch_filtered_subhandles defensive-branch tests ---
+
+    /// Branch (a): filter_result is Err → dispatch emits a Warning and returns Value::Undef.
+    #[test]
+    fn dispatch_filtered_subhandles_filter_error_yields_undef_and_warning() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+
+        let parent_rr = RealizationNodeId::new("Def", 0);
+        let parent_hash: [u8; 32] = [0x01; 32];
+        let mut kernel = MockGeometryKernel::new();
+        let mut diagnostics = Vec::new();
+
+        let result = super::dispatch_filtered_subhandles(
+            &mut kernel,
+            GeometryHandleId(1),
+            crate::topology_selectors::SubKind::Face,
+            &parent_rr,
+            &parent_hash,
+            Err(reify_ir::QueryError::QueryFailed(
+                "mock filter failure".to_string(),
+            )),
+            "faces_by_normal",
+            &mut diagnostics,
+        );
+
+        assert!(
+            matches!(result, Some(reify_ir::Value::Undef)),
+            "filter Err must yield Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(diagnostics.len(), 1, "must emit exactly one warning");
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_core::Severity::Warning,
+            "diagnostic must be Warning severity, got {:?}",
+            diagnostics[0]
+        );
+    }
+
+    /// Branch (b): filter_result is Ok but canonical re-extract fails → Warning + Value::Undef.
+    #[test]
+    fn dispatch_filtered_subhandles_canonical_reextract_error_yields_undef_and_warning() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+
+        let parent_rr = RealizationNodeId::new("Def", 0);
+        let parent_hash: [u8; 32] = [0x02; 32];
+        // Kernel has no extract_faces entry for the parent → extract_faces returns QueryError.
+        let mut kernel = MockGeometryKernel::new();
+        let mut diagnostics = Vec::new();
+
+        // Filter returned Ok with a retained id, but the re-extract below will fail.
+        let result = super::dispatch_filtered_subhandles(
+            &mut kernel,
+            GeometryHandleId(1),
+            crate::topology_selectors::SubKind::Face,
+            &parent_rr,
+            &parent_hash,
+            Ok(vec![GeometryHandleId(2)]),
+            "faces_by_normal",
+            &mut diagnostics,
+        );
+
+        assert!(
+            matches!(result, Some(reify_ir::Value::Undef)),
+            "canonical re-extract Err must yield Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(diagnostics.len(), 1, "must emit exactly one warning");
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_core::Severity::Warning,
+            "diagnostic must be Warning severity, got {:?}",
+            diagnostics[0]
+        );
+    }
+
+    /// Branch (c): a retained id is absent from the canonical list → that element is silently
+    /// skipped (list is shorter than retained), and a Warning is emitted for the missing id.
+    #[test]
+    fn dispatch_filtered_subhandles_absent_retained_id_is_skipped_with_warning() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+
+        let parent_rr = RealizationNodeId::new("Def", 0);
+        let parent_hash: [u8; 32] = [0x03; 32];
+        let parent_handle = GeometryHandleId(1);
+        // Canonical list: [GHId(2), GHId(3)] — GHId(99) is NOT present.
+        let mut kernel = MockGeometryKernel::new().with_extracted_faces(
+            parent_handle,
+            vec![GeometryHandleId(2), GeometryHandleId(3)],
+        );
+        let mut diagnostics = Vec::new();
+
+        // Retained contains one present id (GHId(2)) and one absent id (GHId(99)).
+        let result = super::dispatch_filtered_subhandles(
+            &mut kernel,
+            parent_handle,
+            crate::topology_selectors::SubKind::Face,
+            &parent_rr,
+            &parent_hash,
+            Ok(vec![GeometryHandleId(2), GeometryHandleId(99)]),
+            "faces_by_normal",
+            &mut diagnostics,
+        );
+
+        let list = match result {
+            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+            other => panic!(
+                "must yield Some(Value::List(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        // GHId(2) at canonical index 0 is included; GHId(99) is absent → skipped.
+        assert_eq!(
+            list.len(),
+            1,
+            "absent retained id must be skipped; expected 1 element, got {}; diags: {:?}",
+            list.len(),
+            diagnostics
+        );
+        assert_eq!(diagnostics.len(), 1, "must emit one warning for the absent id");
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_core::Severity::Warning,
+            "diagnostic must be Warning severity, got {:?}",
+            diagnostics[0]
+        );
+        assert!(
+            diagnostics[0].message.contains("absent from canonical list"),
+            "warning must mention 'absent from canonical list'; got: {}",
+            diagnostics[0].message
+        );
+    }
+
+    // ── step-1 (task 3619): adjacent_faces dispatch RED unit tests ───────────
+    //
+    // These tests are RED because the current arm returns Value::List(Value::Int)
+    // via dispatch_filtered_list instead of Value::List(Value::GeometryHandle).
+
+    /// `adjacent_faces` dispatch returns `Value::List` of one
+    /// `Value::GeometryHandle` when the mock kernel returns the adjacent face
+    /// at index 0. The element must carry the parent's `realization_ref` and
+    /// an `upstream_values_hash` equal to
+    /// `compose_sub_handle_hash(parent_hash, SubKind::Face, 0)`.
+    #[test]
+    fn adjacent_faces_dispatch_returns_geometry_handle_list() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+
+        let parent_handle = GeometryHandleId(1);
+        let parent_rr = RealizationNodeId::new("Solid", 0);
+        let parent_hash: [u8; 32] = [0x77; 32];
+
+        // args[0]: parent solid; args[1]: face sub-handle (same handle in mock)
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_faces(parent_handle, vec![GeometryHandleId(1)])
+            .with_adjacent_faces_result(
+                parent_handle,
+                0,
+                reify_ir::Value::List(vec![reify_ir::Value::Int(0)]),
+            );
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("b".to_string(), parent_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        // Seed parent solid (args[0])
+        values.insert(
+            ValueCellId::new("Solid", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: parent_handle,
+            },
+        );
+        // Seed face arg (args[1]) — same kernel handle for the mock
+        values.insert(
+            ValueCellId::new("Solid", "face"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: parent_handle,
+            },
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "adjacent_faces",
+            "Solid",
+            "b",
+            Type::Geometry,
+            "face",
+            Type::Geometry,
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let mut diagnostics = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let list = match result {
+            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+            other => panic!(
+                "expected Some(Value::List(..)), got {:?}; diagnostics: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(list.len(), 1, "expected 1 adjacent face sub-handle; diags: {:?}", diagnostics);
+
+        let expected_hash = crate::topology_selectors::compose_sub_handle_hash(
+            &parent_hash,
+            crate::topology_selectors::SubKind::Face,
+            0,
+        );
+        match &list[0] {
+            reify_ir::Value::GeometryHandle { realization_ref, upstream_values_hash, kernel_handle } => {
+                assert_eq!(realization_ref.entity, parent_rr.entity, "realization_ref.entity must match parent");
+                assert_eq!(realization_ref.index, parent_rr.index, "realization_ref.index must match parent");
+                assert_eq!(*kernel_handle, GeometryHandleId(1), "kernel_handle must be GHId(1)");
+                assert_eq!(*upstream_values_hash, expected_hash, "upstream_values_hash must be compose_sub_handle_hash(parent_hash, Face, 0)");
+            }
+            other => panic!("elem[0] is not Value::GeometryHandle: {:?}", other),
+        }
+    }
+
+    /// When args[1]'s cell is absent from `values`, the `adjacent_faces` arm
+    /// must fall through to `None` (PRD invariant #2: never partial-construct).
+    #[test]
+    fn adjacent_faces_dispatch_falls_through_when_face_arg_not_hydrated() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+
+        let parent_handle = GeometryHandleId(1);
+        let parent_rr = RealizationNodeId::new("Solid", 0);
+        let parent_hash: [u8; 32] = [0x77; 32];
+
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_faces(parent_handle, vec![GeometryHandleId(1)]);
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("b".to_string(), parent_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        // Only the parent is seeded; the face cell is absent
+        values.insert(
+            ValueCellId::new("Solid", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: parent_handle,
+            },
+        );
+        // "face" cell intentionally absent from values
+
+        let expr = topology_selector_call_two_value_refs(
+            "adjacent_faces",
+            "Solid",
+            "b",
+            Type::Geometry,
+            "face",
+            Type::Geometry,
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let mut diagnostics = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "must fall through to None when face arg is not a hydrated Value::GeometryHandle, \
+             got {:?}",
+            result
+        );
+    }
+
+    // ── step-3 (task 3619): shared_edges dispatch RED unit tests ─────────────
+    //
+    // These tests are RED because the current arm returns Value::List(Value::Int)
+    // via handle_list_value (inside dispatch_shared_edges) instead of
+    // Value::List(Value::GeometryHandle).
+
+    /// `shared_edges` dispatch returns `Value::List` of one
+    /// `Value::GeometryHandle` (kernel_handle GHId(4)) when the mock kernel
+    /// stages two faces (GHId(2), GHId(3)) sharing one edge (GHId(4)).
+    /// The element must carry the parent solid's `realization_ref` and an
+    /// `upstream_values_hash` equal to
+    /// `compose_sub_handle_hash(parent_hash, SubKind::Edge, 0)`.
+    #[test]
+    fn shared_edges_dispatch_returns_geometry_handle_list() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+
+        let parent_handle = GeometryHandleId(1);
+        let face_a_handle = GeometryHandleId(2);
+        let face_b_handle = GeometryHandleId(3);
+        let edge_handle = GeometryHandleId(4);
+        let parent_rr = RealizationNodeId::new("Solid", 0);
+        let parent_hash: [u8; 32] = [0x77; 32];
+
+        let mut kernel = MockGeometryKernel::new()
+            .with_owner_body_result(face_a_handle, parent_handle)
+            .with_owner_body_result(face_b_handle, parent_handle)
+            .with_extracted_faces(parent_handle, vec![face_a_handle, face_b_handle])
+            .with_extracted_edges(parent_handle, vec![edge_handle])
+            .with_shared_edges_result(
+                parent_handle,
+                0,
+                1,
+                reify_ir::Value::List(vec![reify_ir::Value::Int(0)]),
+            );
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("fa".to_string(), face_a_handle);
+        named_steps.insert("fb".to_string(), face_b_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        // Parent solid — found by resolve_owner_solid_handle scanning values
+        values.insert(
+            ValueCellId::new("Solid", "body"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: parent_handle,
+            },
+        );
+        // Face args — resolved by resolve_parent_geometry_handle_arg for the arm
+        values.insert(
+            ValueCellId::new("Solid", "fa"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: face_a_handle,
+            },
+        );
+        values.insert(
+            ValueCellId::new("Solid", "fb"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: face_b_handle,
+            },
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "shared_edges",
+            "Solid",
+            "fa",
+            Type::Geometry,
+            "fb",
+            Type::Geometry,
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let mut diagnostics = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let list = match result {
+            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+            other => panic!(
+                "expected Some(Value::List(..)), got {:?}; diagnostics: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(list.len(), 1, "expected 1 shared edge sub-handle; diags: {:?}", diagnostics);
+
+        let expected_hash = crate::topology_selectors::compose_sub_handle_hash(
+            &parent_hash,
+            crate::topology_selectors::SubKind::Edge,
+            0,
+        );
+        match &list[0] {
+            reify_ir::Value::GeometryHandle { realization_ref, upstream_values_hash, kernel_handle } => {
+                assert_eq!(realization_ref.entity, parent_rr.entity, "realization_ref.entity must match parent solid");
+                assert_eq!(realization_ref.index, parent_rr.index, "realization_ref.index must match parent solid");
+                assert_eq!(*kernel_handle, edge_handle, "kernel_handle must be the edge GHId(4)");
+                assert_eq!(*upstream_values_hash, expected_hash, "upstream_values_hash must be compose_sub_handle_hash(parent_hash, Edge, 0)");
+            }
+            other => panic!("elem[0] is not Value::GeometryHandle: {:?}", other),
+        }
+    }
+
+    /// When the parent solid is not hydrated in `values`, the `shared_edges`
+    /// arm must fall through to `None` (PRD invariant #2: never partial-construct).
+    #[test]
+    fn shared_edges_dispatch_falls_through_when_parent_not_hydrated() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+
+        let parent_handle = GeometryHandleId(1);
+        let face_a_handle = GeometryHandleId(2);
+        let face_b_handle = GeometryHandleId(3);
+        let edge_handle = GeometryHandleId(4);
+        let parent_rr = RealizationNodeId::new("Solid", 0);
+        let parent_hash: [u8; 32] = [0x77; 32];
+
+        let mut kernel = MockGeometryKernel::new()
+            .with_owner_body_result(face_a_handle, parent_handle)
+            .with_owner_body_result(face_b_handle, parent_handle)
+            .with_extracted_faces(parent_handle, vec![face_a_handle, face_b_handle])
+            .with_extracted_edges(parent_handle, vec![edge_handle])
+            .with_shared_edges_result(
+                parent_handle,
+                0,
+                1,
+                reify_ir::Value::List(vec![reify_ir::Value::Int(0)]),
+            );
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("fa".to_string(), face_a_handle);
+        named_steps.insert("fb".to_string(), face_b_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        // Face args present — arm resolves them, then hits dispatch_shared_edges
+        values.insert(
+            ValueCellId::new("Solid", "fa"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: face_a_handle,
+            },
+        );
+        values.insert(
+            ValueCellId::new("Solid", "fb"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: face_b_handle,
+            },
+        );
+        // Parent solid (kernel_handle=GHId(1)) intentionally absent from values
+        // so resolve_owner_solid_handle returns None → arm falls through.
+
+        let expr = topology_selector_call_two_value_refs(
+            "shared_edges",
+            "Solid",
+            "fa",
+            Type::Geometry,
+            "fb",
+            Type::Geometry,
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let mut diagnostics = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "must fall through to None when parent solid is not hydrated in values, got {:?}",
+            result
+        );
+    }
+
+    // ── error-path coverage for dispatch_filtered_subhandles (suggestion 3) ──
+
+    /// When the `AdjacentFaces` kernel query is not staged, `adjacent_to_face`
+    /// returns `Err`; `dispatch_filtered_subhandles` receives `filter_result = Err`
+    /// and must return `Some(Value::Undef)` with a Warning diagnostic.
+    #[test]
+    fn adjacent_faces_dispatch_emits_warning_and_undef_on_kernel_query_failure() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+
+        let parent_handle = GeometryHandleId(1);
+        let face_handle = GeometryHandleId(1);
+        let parent_rr = RealizationNodeId::new("Solid", 0);
+        let parent_hash: [u8; 32] = [0x77; 32];
+
+        // Stage extract_faces so adjacent_to_face can find the face index (0),
+        // but omit the AdjacentFaces query result → kernel.query(...) returns Err
+        // → adjacent_to_face propagates Err → filter_result = Err in
+        // dispatch_filtered_subhandles → Warning + Value::Undef.
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_faces(parent_handle, vec![face_handle]);
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("b".to_string(), parent_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("Solid", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: parent_handle,
+            },
+        );
+        values.insert(
+            ValueCellId::new("Solid", "face"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: face_handle,
+            },
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "adjacent_faces",
+            "Solid",
+            "b",
+            Type::Geometry,
+            "face",
+            Type::Geometry,
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let mut diagnostics = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "kernel query failure must yield Value::Undef; got {:?}; diags: {:?}",
+            result,
+            diagnostics
+        );
+        assert!(
+            !diagnostics.is_empty(),
+            "a Warning diagnostic must be emitted on kernel query failure"
+        );
+    }
+
+    /// When the `SharedEdges` kernel query is not staged, `dispatch_shared_edges`
+    /// hits `Err` at step 4 (SharedEdges query) and must return
+    /// `Some(Value::Undef)` with a Warning diagnostic.
+    #[test]
+    fn shared_edges_dispatch_emits_warning_and_undef_on_shared_edges_query_failure() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+
+        let parent_handle = GeometryHandleId(1);
+        let face_a_handle = GeometryHandleId(2);
+        let face_b_handle = GeometryHandleId(3);
+        let parent_rr = RealizationNodeId::new("Solid", 0);
+        let parent_hash: [u8; 32] = [0x77; 32];
+
+        // Stage OwnerBody + extract_faces so the arm passes the cross-solid guard
+        // and face-index recovery, but omit the SharedEdges query result →
+        // kernel.query(SharedEdges { ... }) returns Err → Warning + Value::Undef.
+        let mut kernel = MockGeometryKernel::new()
+            .with_owner_body_result(face_a_handle, parent_handle)
+            .with_owner_body_result(face_b_handle, parent_handle)
+            .with_extracted_faces(parent_handle, vec![face_a_handle, face_b_handle]);
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("fa".to_string(), face_a_handle);
+        named_steps.insert("fb".to_string(), face_b_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("Solid", "body"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: parent_handle,
+            },
+        );
+        values.insert(
+            ValueCellId::new("Solid", "fa"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: face_a_handle,
+            },
+        );
+        values.insert(
+            ValueCellId::new("Solid", "fb"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: face_b_handle,
+            },
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "shared_edges",
+            "Solid",
+            "fa",
+            Type::Geometry,
+            "fb",
+            Type::Geometry,
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let mut diagnostics = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "SharedEdges query failure must yield Value::Undef; got {:?}; diags: {:?}",
+            result,
+            diagnostics
+        );
+        assert!(
+            !diagnostics.is_empty(),
+            "a Warning diagnostic must be emitted on SharedEdges query failure"
+        );
+    }
+
+    // ── try_eval_topology_selector curvature dispatch unit tests ─────────────
+    // (task 3621, KGQ-μ: curvature(Curve) + curvature(Surface))
+    //
+    // Step-5 RED: these tests compile but FAIL until step-6 adds the
+    // "curvature" → TopologySelectorHelper::Curvature arm to the dispatcher.
+    // Modelled on the `normal` tests above (lines ~10006-10319).
+
+    // DimensionVector for curvature = 1/Length = Length^-1.
+    // Constructed directly (from_exps is private); index-0 is the LENGTH basis.
+    const CURVATURE_DIM: reify_core::dimension::DimensionVector = {
+        let mut d = [reify_core::dimension::Rational::ZERO; 10];
+        d[0] = reify_core::dimension::Rational::new(-1, 1);
+        reify_core::dimension::DimensionVector(d)
+    };
+
+    /// `curvature(surface, point)` with a fake kernel staging a 2×2 nested-List
+    /// [[kappa_max, 0], [0, kappa_min]] must yield `Some(Value::Matrix(...))` where
+    /// every cell is a `Value::Scalar` with dimension = 1/Length (Curvature), and
+    /// the matrix diagonal mean (trace/2) equals the expected curvature.
+    #[test]
+    fn try_eval_topology_selector_curvature_surface_returns_matrix() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let face_handle = reify_ir::GeometryHandleId(55);
+        let kappa = 200.0_f64; // 1/(0.005 m) — sphere radius 5 mm
+        // Kernel wire: [[kappa, 0.0], [0.0, kappa]] (diagonal: kappa_max == kappa_min for sphere).
+        let row0 = reify_ir::Value::List(vec![
+            reify_ir::Value::Real(kappa),
+            reify_ir::Value::Real(0.0),
+        ]);
+        let row1 = reify_ir::Value::List(vec![
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(kappa),
+        ]);
+        // u = px = 0.005 m, v = py = 0.0 m  (eval maps DSL point3 coords → (u,v))
+        let mut kernel = MockGeometryKernel::new()
+            .with_surface_curvature_at_result(face_handle, [0.005, 0.0], reify_ir::Value::List(vec![row0, row1]));
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        named_steps.insert("face".to_string(), face_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            reify_core::ValueCellId::new("CurvatureSmoke", "pt"),
+            point3_length_value(0.005, 0.0, 0.0),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "curvature",
+            "CurvatureSmoke",
+            "face",
+            reify_core::Type::Geometry,
+            "pt",
+            reify_core::Type::point3(reify_core::Type::length()),
+            reify_core::Type::Real, // placeholder result type — unused on dispatch path
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        // Expect a 2×2 Value::Matrix of curvature-dimensioned scalars.
+        let expected_cell = reify_ir::Value::Scalar {
+            si_value: kappa,
+            dimension: CURVATURE_DIM,
+        };
+        let expected_zero = reify_ir::Value::Scalar {
+            si_value: 0.0,
+            dimension: CURVATURE_DIM,
+        };
+        let expected = Some(reify_ir::Value::Matrix(vec![
+            vec![expected_cell.clone(), expected_zero.clone()],
+            vec![expected_zero, expected_cell],
+        ]));
+        assert_eq!(
+            result, expected,
+            "curvature(surface, point) must return Some(Value::Matrix([[κ,0],[0,κ]])); got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "happy-path surface curvature must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// `curvature(curve, point)` with a fake kernel staging `Value::Real(κ)` must
+    /// yield `Some(Value::Scalar{ si_value: κ, dimension: 1/Length })`.
+    #[test]
+    fn try_eval_topology_selector_curvature_curve_returns_scalar() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let edge_handle = reify_ir::GeometryHandleId(77);
+        let kappa = 100.0_f64; // 1/(0.01 m) — circle radius 10 mm
+        // Kernel wire: Value::Real(κ).  Staged for CurveCurvatureAt at point (0.01, 0.0, 0.0).
+        let mut kernel = MockGeometryKernel::new()
+            .with_curve_curvature_at_result(edge_handle, [0.01, 0.0, 0.0], reify_ir::Value::Real(kappa));
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        named_steps.insert("edge".to_string(), edge_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            reify_core::ValueCellId::new("CurvatureSmoke", "pt"),
+            point3_length_value(0.01, 0.0, 0.0),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "curvature",
+            "CurvatureSmoke",
+            "edge",
+            reify_core::Type::Geometry,
+            "pt",
+            reify_core::Type::point3(reify_core::Type::length()),
+            reify_core::Type::Real,
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let expected = Some(reify_ir::Value::Scalar {
+            si_value: kappa,
+            dimension: CURVATURE_DIM,
+        });
+        assert_eq!(
+            result, expected,
+            "curvature(curve, point) must return Some(Value::Scalar{{κ, 1/m}}); got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "happy-path curve curvature must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// `curvature(surface, point)` with no staged kernel result must yield
+    /// `Some(Value::Undef)` + exactly one Warning diagnostic naming "curvature".
+    #[test]
+    fn try_eval_topology_selector_curvature_kernel_err_returns_undef_with_warning() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let face_handle = reify_ir::GeometryHandleId(55);
+        // No staging — both SurfaceCurvatureAt and CurveCurvatureAt fall through to
+        // the generic no-match error in the mock kernel, yielding QueryFailed.
+        let mut kernel = MockGeometryKernel::new();
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        named_steps.insert("face".to_string(), face_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            reify_core::ValueCellId::new("CurvatureSmoke", "pt"),
+            point3_length_value(0.005, 0.0, 0.0),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "curvature",
+            "CurvatureSmoke",
+            "face",
+            reify_core::Type::Geometry,
+            "pt",
+            reify_core::Type::point3(reify_core::Type::length()),
+            reify_core::Type::Real,
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "curvature(...) with kernel Err must yield Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "kernel Err must emit exactly one Warning; got {} diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Warning,
+            "diagnostic severity must be Warning, got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("curvature"),
+            "diagnostic must mention the helper name 'curvature', got: {}",
+            diag.message
+        );
+    }
+
+    /// `curvature(<literal>, <literal>)` must fall through to `None` without
+    /// consulting the kernel — both arg-shape guards reject non-ValueRef args.
+    #[test]
+    fn try_eval_topology_selector_curvature_literal_args_falls_through_to_none() {
+        use reify_test_support::mocks::CountingMockKernel;
+        let inner = reify_test_support::mocks::MockGeometryKernel::new();
+        let mut kernel = CountingMockKernel::new(inner);
+
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let values = reify_ir::ValueMap::new();
+
+        let expr = topology_selector_call_literal_args("curvature");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "curvature(<literal>, <literal>) must return None, got {:?}",
+            result
+        );
+        assert_eq!(
+            kernel.total_query_count(),
+            0,
+            "kernel must NOT be consulted for non-ValueRef args; got {} queries",
+            kernel.total_query_count()
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "literal-arg fall-through must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
+    // ── try_eval_topology_selector length dispatch unit tests ──────────────
+    // (task 3622, KGQ-ν: length(Curve) + perimeter(Surface))
+    //
+    // Step-1 RED: tests compile but FAIL until step-2 wires the
+    // "length" → TopologySelectorHelper::Length arm to the dispatcher.
+
+    /// Build a `CompiledExpr` for `helper(<literal_real>)` with a single
+    /// literal arg. Used for 1-arg literal fall-through tests.
+    fn topology_selector_call_one_literal_arg(helper_name: &str) -> reify_ir::CompiledExpr {
+        let arg = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Real(1.0),
+            reify_core::Type::Real,
+        );
+        let content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str(helper_name))
+            .combine(arg.content_hash);
+        reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: helper_name.to_string(),
+                    qualified_name: helper_name.to_string(),
+                },
+                args: vec![arg],
+            },
+            result_type: reify_core::Type::Real,
+            content_hash,
+        }
+    }
+
+    /// `length(edge_sub_handle)` with a staged `Value::Real(0.02)` EdgeLength
+    /// result must yield `Some(Value::length(0.02))` and zero diagnostics.
+    ///
+    /// PRIMARY RED assertion — pre-impl `length` hits the `_ => return None` arm.
+    #[test]
+    fn try_eval_topology_selector_length_edge_subhandle_returns_scalar_length() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+
+        let edge_kh = reify_ir::GeometryHandleId(10);
+        let parent_rr = RealizationNodeId::new("LengthTest", 0);
+        let parent_hash: [u8; 32] = [0x42; 32];
+        let mut kernel = MockGeometryKernel::new()
+            .with_edge_length_result(edge_kh, reify_ir::Value::Real(0.02));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("LengthTest", "e"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr,
+                upstream_values_hash: parent_hash,
+                kernel_handle: edge_kh,
+            },
+        );
+
+        let expr = topology_selector_call_one_value_ref(
+            "length",
+            "LengthTest",
+            "e",
+            Type::Geometry,
+            Type::length(),
+        );
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::length(0.02)),
+            "length(edge) must return Some(Value::length(0.02 m)); got {:?}; diags: {:?}",
+            result,
+            diagnostics
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "happy-path length must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// `length(<literal>)` must fall through to `None` without consulting the
+    /// kernel — the `resolve_parent_geometry_handle_arg` guard rejects non-ValueRef.
+    #[test]
+    fn try_eval_topology_selector_length_literal_arg_falls_through_to_none() {
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mut kernel = MockGeometryKernel::new();
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let values = reify_ir::ValueMap::new();
+
+        let expr = topology_selector_call_one_literal_arg("length");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "length(<literal>) must return None; got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "literal-arg fall-through must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// `length(edge_sub_handle)` with no staged EdgeLength result (mock returns
+    /// error) must yield `Some(Value::Undef)` + exactly one Warning mentioning
+    /// "length".
+    #[test]
+    fn try_eval_topology_selector_length_kernel_err_returns_undef_with_warning() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+
+        let edge_kh = reify_ir::GeometryHandleId(11);
+        let parent_rr = RealizationNodeId::new("LengthTest", 0);
+        let parent_hash: [u8; 32] = [0x43; 32];
+        // No EdgeLength staged → mock returns QueryFailed.
+        let mut kernel = MockGeometryKernel::new();
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("LengthTest", "e"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr,
+                upstream_values_hash: parent_hash,
+                kernel_handle: edge_kh,
+            },
+        );
+
+        let expr = topology_selector_call_one_value_ref(
+            "length",
+            "LengthTest",
+            "e",
+            Type::Geometry,
+            Type::length(),
+        );
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "length with kernel Err must yield Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "kernel Err must emit exactly one Warning; got {} diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Warning,
+            "diagnostic severity must be Warning; got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("length"),
+            "diagnostic must mention 'length'; got: {}",
+            diag.message
+        );
+    }
+
+    // ── try_eval_topology_selector perimeter dispatch unit tests ───────────
+    // (task 3622, KGQ-ν)
+    //
+    // Step-3 RED: tests compile but FAIL until step-4 wires the
+    // "perimeter" → TopologySelectorHelper::Perimeter arm to the dispatcher.
+
+    /// `perimeter(face_sub_handle)` where the mock kernel returns 4 edges with
+    /// exactly-representable lengths 1.0+2.0+3.0+4.0=10.0 must yield
+    /// `Some(Value::length(10.0))` and zero diagnostics.
+    ///
+    /// PRIMARY RED assertion — pre-impl `perimeter` hits the `_ => return None` arm.
+    #[test]
+    fn try_eval_topology_selector_perimeter_face_subhandle_sums_edge_lengths() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+
+        let face_kh = reify_ir::GeometryHandleId(20);
+        let e1 = reify_ir::GeometryHandleId(21);
+        let e2 = reify_ir::GeometryHandleId(22);
+        let e3 = reify_ir::GeometryHandleId(23);
+        let e4 = reify_ir::GeometryHandleId(24);
+        let parent_rr = RealizationNodeId::new("PerimTest", 0);
+        let parent_hash: [u8; 32] = [0x50; 32];
+        // Use exactly-representable lengths so summation is bit-exact.
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_edges(face_kh, vec![e1, e2, e3, e4])
+            .with_edge_length_result(e1, reify_ir::Value::Real(1.0))
+            .with_edge_length_result(e2, reify_ir::Value::Real(2.0))
+            .with_edge_length_result(e3, reify_ir::Value::Real(3.0))
+            .with_edge_length_result(e4, reify_ir::Value::Real(4.0));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("PerimTest", "f"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr,
+                upstream_values_hash: parent_hash,
+                kernel_handle: face_kh,
+            },
+        );
+
+        let expr = topology_selector_call_one_value_ref(
+            "perimeter",
+            "PerimTest",
+            "f",
+            Type::Geometry,
+            Type::length(),
+        );
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::length(10.0)),
+            "perimeter(face) must return Some(Value::length(10.0 m)); got {:?}; diags: {:?}",
+            result,
+            diagnostics
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "happy-path perimeter must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// `perimeter(<literal>)` must fall through to `None` — the
+    /// `resolve_parent_geometry_handle_arg` guard rejects non-ValueRef args.
+    #[test]
+    fn try_eval_topology_selector_perimeter_literal_arg_falls_through_to_none() {
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mut kernel = MockGeometryKernel::new();
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let values = reify_ir::ValueMap::new();
+
+        let expr = topology_selector_call_one_literal_arg("perimeter");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "perimeter(<literal>) must return None; got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "literal-arg fall-through must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// `perimeter(face_sub_handle)` when `extract_edges` returns an error must
+    /// yield `Some(Value::Undef)` + exactly one Warning mentioning "perimeter".
+    #[test]
+    fn try_eval_topology_selector_perimeter_extract_edges_error_returns_undef_with_warning() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+
+        let face_kh = reify_ir::GeometryHandleId(25);
+        let parent_rr = RealizationNodeId::new("PerimTest", 0);
+        let parent_hash: [u8; 32] = [0x51; 32];
+        let mut kernel = MockGeometryKernel::new()
+            .with_extract_edges_error(face_kh, reify_ir::QueryError::InvalidHandle(face_kh));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("PerimTest", "f"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr,
+                upstream_values_hash: parent_hash,
+                kernel_handle: face_kh,
+            },
+        );
+
+        let expr = topology_selector_call_one_value_ref(
+            "perimeter",
+            "PerimTest",
+            "f",
+            Type::Geometry,
+            Type::length(),
+        );
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "perimeter with extract_edges error must yield Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "extract_edges error must emit exactly one Warning; got {} diags: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Warning,
+            "diagnostic severity must be Warning; got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("perimeter"),
+            "diagnostic must mention 'perimeter'; got: {}",
+            diag.message
+        );
+    }
+
+    /// `perimeter(face_sub_handle)` when edges are staged but one `EdgeLength`
+    /// query returns a non-Real value must yield `Some(Value::Undef)` + one Warning.
+    #[test]
+    fn try_eval_topology_selector_perimeter_non_real_edge_length_returns_undef_with_warning() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+
+        let face_kh = reify_ir::GeometryHandleId(26);
+        let e1 = reify_ir::GeometryHandleId(27);
+        let e2 = reify_ir::GeometryHandleId(28);
+        let parent_rr = RealizationNodeId::new("PerimTest", 0);
+        let parent_hash: [u8; 32] = [0x52; 32];
+        // e1 returns Real(1.0) ok, e2 returns a non-Real value → should degrade.
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_edges(face_kh, vec![e1, e2])
+            .with_edge_length_result(e1, reify_ir::Value::Real(1.0))
+            .with_edge_length_result(e2, reify_ir::Value::Bool(true)); // unexpected type
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("PerimTest", "f"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr,
+                upstream_values_hash: parent_hash,
+                kernel_handle: face_kh,
+            },
+        );
+
+        let expr = topology_selector_call_one_value_ref(
+            "perimeter",
+            "PerimTest",
+            "f",
+            Type::Geometry,
+            Type::length(),
+        );
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "perimeter with non-Real EdgeLength must yield Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "non-Real EdgeLength must emit exactly one Warning; got {} diags: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_core::Severity::Warning,
+            "diagnostic severity must be Warning; got {:?}",
+            diagnostics[0].severity
+        );
+    }
+
+    // ── Scalar-branch coverage (suggestion from review, task 3622 amend) ────
+    //
+    // Both dispatch_edge_length and dispatch_perimeter accept
+    // `Ok(Value::Scalar { si_value, .. })` in addition to `Ok(Value::Real(_))`
+    // (following the kernel_distance Real-or-Scalar precedent). These tests
+    // verify that the Scalar arm accumulates correctly and is not dead code.
+
+    /// `length(edge_sub_handle)` when the kernel returns
+    /// `Value::Scalar{si_value: 0.03, dimension: LENGTH}` must accept it and
+    /// return `Some(Value::length(0.03))`.
+    #[test]
+    fn try_eval_topology_selector_length_scalar_reply_accepted_as_length() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+
+        let edge_kh = reify_ir::GeometryHandleId(30);
+        let parent_rr = RealizationNodeId::new("LengthScalarTest", 0);
+        let parent_hash: [u8; 32] = [0x60; 32];
+        // Stage a Scalar{LENGTH} reply instead of a plain Real.
+        let scalar_reply = reify_ir::Value::Scalar {
+            si_value: 0.03,
+            dimension: reify_core::DimensionVector::LENGTH,
+        };
+        let mut kernel = MockGeometryKernel::new()
+            .with_edge_length_result(edge_kh, scalar_reply);
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("LengthScalarTest", "e"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr,
+                upstream_values_hash: parent_hash,
+                kernel_handle: edge_kh,
+            },
+        );
+
+        let expr = topology_selector_call_one_value_ref(
+            "length",
+            "LengthScalarTest",
+            "e",
+            Type::Geometry,
+            Type::length(),
+        );
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::length(0.03)),
+            "length() with Scalar reply must return Some(Value::length(0.03)); \
+             got {:?}; diags: {:?}",
+            result,
+            diagnostics
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "Scalar-reply length must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// `perimeter(face_sub_handle)` where one edge returns `Value::Scalar{LENGTH}`
+    /// instead of `Value::Real` must accumulate `si_value` correctly and return
+    /// `Some(Value::length(total))` with zero diagnostics.
+    #[test]
+    fn try_eval_topology_selector_perimeter_scalar_edge_length_accepted_in_sum() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+
+        let face_kh = reify_ir::GeometryHandleId(31);
+        let e1 = reify_ir::GeometryHandleId(32);
+        let e2 = reify_ir::GeometryHandleId(33);
+        let parent_rr = RealizationNodeId::new("PerimScalarTest", 0);
+        let parent_hash: [u8; 32] = [0x61; 32];
+        // e1 returns Real(3.0); e2 returns Scalar{si_value: 7.0, LENGTH}.
+        // Sum = 10.0 exactly.
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_edges(face_kh, vec![e1, e2])
+            .with_edge_length_result(e1, reify_ir::Value::Real(3.0))
+            .with_edge_length_result(
+                e2,
+                reify_ir::Value::Scalar {
+                    si_value: 7.0,
+                    dimension: reify_core::DimensionVector::LENGTH,
+                },
+            );
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("PerimScalarTest", "f"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr,
+                upstream_values_hash: parent_hash,
+                kernel_handle: face_kh,
+            },
+        );
+
+        let expr = topology_selector_call_one_value_ref(
+            "perimeter",
+            "PerimScalarTest",
+            "f",
+            Type::Geometry,
+            Type::length(),
+        );
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::length(10.0)),
+            "perimeter() with mixed Real/Scalar edge lengths must return \
+             Some(Value::length(10.0)); got {:?}; diags: {:?}",
+            result,
+            diagnostics
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "Scalar-reply perimeter must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// `perimeter(face_sub_handle)` when `extract_edges` returns an empty list
+    /// must yield `Some(Value::Undef)` + exactly one Warning (degenerate face
+    /// guard, task 3622 amend).
+    #[test]
+    fn try_eval_topology_selector_perimeter_empty_edges_returns_undef_with_warning() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+
+        let face_kh = reify_ir::GeometryHandleId(34);
+        let parent_rr = RealizationNodeId::new("PerimEmptyTest", 0);
+        let parent_hash: [u8; 32] = [0x62; 32];
+        // Stage an empty edge list.
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_edges(face_kh, vec![]);
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("PerimEmptyTest", "f"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr,
+                upstream_values_hash: parent_hash,
+                kernel_handle: face_kh,
+            },
+        );
+
+        let expr = topology_selector_call_one_value_ref(
+            "perimeter",
+            "PerimEmptyTest",
+            "f",
+            Type::Geometry,
+            Type::length(),
+        );
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "perimeter() with empty edge list must yield Some(Value::Undef); \
+             got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "empty edge list must emit exactly one Warning; got {} diags: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Warning,
+            "diagnostic severity must be Warning; got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("perimeter"),
+            "diagnostic must mention 'perimeter'; got: {}",
+            diag.message
+        );
     }
 }

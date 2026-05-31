@@ -1,0 +1,7 @@
+{
+  "repo": "leodearden/reify",
+  "layer_count": 1,
+  "violation_count": 0,
+  "violations": [],
+  "budget_warning": "Turn budget exhausted (122731/20000 tokens). Consider stopping exploration and working with current context."
+}

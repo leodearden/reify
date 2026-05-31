@@ -108,6 +108,7 @@ impl CompiledPurposeBuilder {
             name: self.name,
             is_pub: self.is_pub,
             params: self.params,
+            lets: Vec::new(),
             constraints: self.constraints,
             objective: self.objective,
             resolved_queries: self.resolved_queries,

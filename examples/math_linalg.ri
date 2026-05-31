@@ -5,7 +5,11 @@
 
 structure def MathLinalg {
     // --- Force (Newton) unit helpers ---
-    // 1 Newton = 1 kg·m/s²  (no N literal in the language)
+    // 1 Newton = 1 kg·m/s²  (no N literal in the language).
+    // KEEP compositional form (not `1kg*m/s^2`): m8_stdlib_integration.rs
+    // compiles this fixture via the no-prelude `reify_compiler::compile` entry
+    // point, where no unit registry is in scope, so a compound-unit literal
+    // would fail to resolve. See esc-3809-89 / PRD §8 ζ.
     let n_unit = 1kg * 1m / (1s * 1s)
     let zero_n = 0.0 * n_unit
 

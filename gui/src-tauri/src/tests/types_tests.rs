@@ -15,6 +15,7 @@ fn gui_state_empty_serializes_with_expected_keys() {
         files: vec![],
         tessellation_diagnostics: vec![],
         compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(v.get("meshes").unwrap().is_array());
@@ -32,6 +33,7 @@ fn gui_state_serializes_tessellation_diagnostics_field() {
         files: vec![],
         tessellation_diagnostics: vec![],
         compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(
@@ -1647,6 +1649,7 @@ fn gui_state_serializes_compile_diagnostics_field() {
         files: vec![],
         tessellation_diagnostics: vec![],
         compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(
@@ -2319,4 +2322,332 @@ fn joint_binding_fixed_no_motion_round_trips() {
         back, binding,
         "FixedNoMotion must round-trip without data loss"
     );
+}
+
+// ── T0b: TensegrityWireData serde wire-shape tests ────────────────────────────
+
+/// `TensegrityWireData` must serialize to JSON with snake_case keys:
+/// `entity_path`, `kind`, `x1`, `y1`, `z1`, `x2`, `y2`, `z2` — all present and
+/// typed correctly (string for entity_path/kind, number for the six coords).
+///
+/// RED until `TensegrityWireData` is added to `types.rs`.
+#[test]
+fn tensegrity_wire_data_serializes_with_expected_keys() {
+    let wire = TensegrityWireData {
+        entity_path: "TPrism".to_string(),
+        kind: "strut".to_string(),
+        x1: 1.0,
+        y1: 0.0,
+        z1: 1.0,
+        x2: 0.866,
+        y2: 0.5,
+        z2: 0.0,
+    };
+    let v = serde_json::to_value(&wire).unwrap();
+    assert_eq!(v["entity_path"], json!("TPrism"), "entity_path must be 'TPrism'");
+    assert_eq!(v["kind"], json!("strut"), "kind must be 'strut'");
+    assert_eq!(v["x1"], json!(1.0), "x1 must be 1.0");
+    assert_eq!(v["y1"], json!(0.0), "y1 must be 0.0");
+    assert_eq!(v["z1"], json!(1.0), "z1 must be 1.0");
+    assert_eq!(v["x2"], json!(0.866), "x2 must be 0.866");
+    assert_eq!(v["y2"], json!(0.5), "y2 must be 0.5");
+    assert_eq!(v["z2"], json!(0.0), "z2 must be 0.0");
+}
+
+/// `GuiState.tensegrity_wires` must serialize as a JSON array.
+/// - Non-empty case: array length and element kind preserved.
+/// - Empty case: empty array (not absent).
+///
+/// RED until `GuiState.tensegrity_wires` field is added.
+#[test]
+fn gui_state_tensegrity_wires_serializes_as_array() {
+    // Non-empty case
+    let wire = TensegrityWireData {
+        entity_path: "TPrism".to_string(),
+        kind: "cable".to_string(),
+        x1: 1.0, y1: 0.0, z1: 1.0,
+        x2: -0.5, y2: 0.866, z2: 1.0,
+    };
+    let state = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![wire],
+    };
+    let v = serde_json::to_value(&state).unwrap();
+    assert!(
+        v.get("tensegrity_wires").unwrap().is_array(),
+        "tensegrity_wires must serialize as a JSON array"
+    );
+    assert_eq!(
+        v["tensegrity_wires"].as_array().unwrap().len(),
+        1,
+        "non-empty tensegrity_wires must have 1 element"
+    );
+    assert_eq!(
+        v["tensegrity_wires"][0]["kind"],
+        json!("cable"),
+        "wire kind must be 'cable'"
+    );
+
+    // Empty case — must serialize as [] not be absent
+    let empty_state = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+    };
+    let ev = serde_json::to_value(&empty_state).unwrap();
+    assert!(
+        ev.get("tensegrity_wires").unwrap().is_array(),
+        "empty tensegrity_wires must still serialize as a JSON array (not be absent)"
+    );
+    assert_eq!(
+        ev["tensegrity_wires"].as_array().unwrap().len(),
+        0,
+        "empty tensegrity_wires must be an empty array"
+    );
+}
+
+// ── GR-016 ζ step-5: SolverProgress IPC struct serialization ─────────────────
+
+/// Pin the PRD §2.2 / PRD §3.2 wire format for the `solver-progress` event channel.
+///
+/// Three sub-cases:
+/// (a) Full payload (eta_ms present) — exact JSON shape + 4-key assertion.
+/// (b) eta_ms-None payload — exact JSON shape + 3-key assertion (pins
+///     `skip_serializing_if = "Option::is_none"` directive).
+/// (c) Round-trip from the 3-key wire shape preserves None for eta_ms.
+///
+/// No `serde(rename_all)` — field names match the TS interface exactly
+/// (PRD §3.2 field-name-exactness convention).
+///
+/// Mirrors `warm_pool_event_serializes_with_expected_field_set` (line 2041).
+#[test]
+fn solver_progress_serializes_to_expected_json_shape() {
+    use crate::types::SolverProgress;
+    use serde_json::json;
+
+    // (a) Full payload: eta_ms present → 4 top-level keys.
+    let full = SolverProgress {
+        solver_kind: "cg".to_string(),
+        iter: 7,
+        residual: 1.234e-6_f64,
+        eta_ms: Some(2500),
+    };
+    let v = serde_json::to_value(&full).expect("SolverProgress (full) must serialize");
+    assert_eq!(
+        v,
+        json!({
+            "solver_kind": "cg",
+            "iter": 7,
+            "residual": 1.234e-6_f64,
+            "eta_ms": 2500
+        }),
+        "full payload: exact JSON shape mismatch"
+    );
+    let obj = v.as_object().unwrap();
+    assert_eq!(
+        obj.len(),
+        4,
+        "full payload must have exactly 4 top-level keys; got {:?}",
+        obj.keys().collect::<Vec<_>>()
+    );
+
+    // (b) eta_ms-None payload → 3 top-level keys (skip_serializing_if omits it).
+    let no_eta = SolverProgress {
+        solver_kind: "cg".to_string(),
+        iter: 3,
+        residual: 5.0e-4_f64,
+        eta_ms: None,
+    };
+    let v2 = serde_json::to_value(&no_eta).expect("SolverProgress (no eta_ms) must serialize");
+    assert_eq!(
+        v2,
+        json!({
+            "solver_kind": "cg",
+            "iter": 3,
+            "residual": 5.0e-4_f64
+        }),
+        "no-eta payload: exact JSON shape mismatch (eta_ms must be absent)"
+    );
+    let obj2 = v2.as_object().unwrap();
+    assert_eq!(
+        obj2.len(),
+        3,
+        "no-eta payload must have exactly 3 top-level keys; got {:?}",
+        obj2.keys().collect::<Vec<_>>()
+    );
+
+    // (c) Round-trip from the 3-key wire shape (no eta_ms) preserves None.
+    let rt: SolverProgress = serde_json::from_value(v2.clone()).expect("must deserialize 3-key shape");
+    assert_eq!(rt.solver_kind, "cg");
+    assert_eq!(rt.iter, 3);
+    assert!((rt.residual - 5.0e-4_f64).abs() < f64::EPSILON * 100.0,
+        "residual round-trip mismatch: {} vs {}", rt.residual, 5.0e-4_f64);
+    assert_eq!(rt.eta_ms, None, "eta_ms must be None when absent from wire shape");
+}
+
+// ── task-3458 step-3: ModeShapeFrame IPC struct serde round-trip ─────────────
+
+/// Pin the wire format for the `mode-shape-frame` Tauri event channel (GR-024 Phase 9).
+///
+/// Three assertions:
+/// (a) Serialize→deserialize identity: a `ModeShapeFrame` value must round-trip
+///     without data loss.
+/// (b) Exact JSON key names — `"mode_index"`, `"phase"`, `"displaced_positions"` —
+///     matching the TypeScript `ModeShapeFrame` interface verbatim.
+///     No `serde(rename_all)` on the struct (field names cross the wire unchanged).
+/// (c) Exactly 3 top-level keys in the serialized object (no hidden fields).
+///
+/// Mirrors `solver_progress_serializes_to_expected_json_shape` (line 2433).
+///
+/// **RED at step-3**: fails until `ModeShapeFrame` is added to `types.rs` in step-4.
+#[test]
+fn mode_shape_frame_serde_round_trip_with_exact_key_names() {
+    use crate::types::ModeShapeFrame;
+    use serde_json::json;
+
+    let frame = ModeShapeFrame {
+        mode_index: 2,
+        phase: 0.75_f32,
+        displaced_positions: vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0],
+        eigenvalue: None, // base-frame case; None must be omitted from wire (step-1)
+    };
+
+    // (a) Serialize.
+    let v = serde_json::to_value(&frame)
+        .expect("ModeShapeFrame must serialize without error");
+
+    // (b) Exact JSON key names (no rename_all).
+    assert_eq!(
+        v,
+        json!({
+            "mode_index": 2_u8,
+            "phase": 0.75_f32,
+            "displaced_positions": [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]
+        }),
+        "ModeShapeFrame JSON shape mismatch — check field names match TS interface"
+    );
+
+    // (c) Exactly 3 top-level keys.
+    let obj = v.as_object().unwrap();
+    assert_eq!(
+        obj.len(),
+        3,
+        "ModeShapeFrame must have exactly 3 top-level JSON keys; got {:?}",
+        obj.keys().collect::<Vec<_>>()
+    );
+
+    // Confirm each key is present with the exact name.
+    assert!(obj.contains_key("mode_index"),          "key 'mode_index' must be present");
+    assert!(obj.contains_key("phase"),               "key 'phase' must be present");
+    assert!(obj.contains_key("displaced_positions"), "key 'displaced_positions' must be present");
+
+    // (d) Deserialize back → identity.
+    let rt: ModeShapeFrame = serde_json::from_value(v.clone())
+        .expect("ModeShapeFrame must deserialize from its own JSON");
+    assert_eq!(rt.mode_index, 2, "mode_index must survive round-trip");
+    assert!((rt.phase - 0.75_f32).abs() < f32::EPSILON * 10.0,
+        "phase round-trip mismatch: {} vs 0.75", rt.phase);
+    assert_eq!(
+        rt.displaced_positions,
+        vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0],
+        "displaced_positions must survive round-trip"
+    );
+}
+
+// ── task-4072 step-1: ModeShapeFrame eigenvalue field serde contract ──────────
+
+/// (a) PEAK frame: `eigenvalue: Some(1234.5)` must serialize with the
+/// `"eigenvalue"` key present and the value must be exactly 4 top-level keys.
+/// Also round-trips back to an equal struct.
+///
+/// **RED at step-1**: compile-fails because `ModeShapeFrame` has no `eigenvalue`
+/// field yet. GREEN after step-2 adds the field to `types.rs`.
+#[test]
+fn mode_shape_frame_peak_eigenvalue_serializes_with_4_keys() {
+    use crate::types::ModeShapeFrame;
+    use serde_json::json;
+
+    let frame = ModeShapeFrame {
+        mode_index: 1,
+        phase: 1.0_f32,
+        displaced_positions: vec![0.1_f32, 0.0, 0.0],
+        eigenvalue: Some(1234.5_f64),
+    };
+
+    let v = serde_json::to_value(&frame)
+        .expect("ModeShapeFrame (peak) must serialize without error");
+
+    // "eigenvalue" key present with correct value.
+    assert_eq!(
+        v["eigenvalue"],
+        json!(1234.5_f64),
+        "eigenvalue must be serialized as a JSON number"
+    );
+
+    // Exactly 4 top-level keys (mode_index, phase, displaced_positions, eigenvalue).
+    let obj = v.as_object().unwrap();
+    assert_eq!(
+        obj.len(),
+        4,
+        "peak ModeShapeFrame must have exactly 4 JSON keys; got {:?}",
+        obj.keys().collect::<Vec<_>>()
+    );
+
+    // Round-trip.
+    let rt: ModeShapeFrame = serde_json::from_value(v)
+        .expect("peak ModeShapeFrame must deserialize from its own JSON");
+    assert_eq!(rt.eigenvalue, Some(1234.5_f64), "eigenvalue must survive round-trip");
+    assert_eq!(rt.mode_index, 1);
+    assert!((rt.phase - 1.0_f32).abs() < f32::EPSILON);
+}
+
+/// (b) BASE frame: `eigenvalue: None` must serialize WITHOUT the `"eigenvalue"`
+/// key (exactly 3 top-level keys) due to `#[serde(skip_serializing_if = "Option::is_none")]`.
+/// Deserializing a 3-key payload back must yield `eigenvalue: None` via
+/// `#[serde(default)]`.
+///
+/// **RED at step-1**: compile-fails for the same reason as (a).
+#[test]
+fn mode_shape_frame_base_eigenvalue_none_omits_key() {
+    use crate::types::ModeShapeFrame;
+
+    let frame = ModeShapeFrame {
+        mode_index: 0,
+        phase: 0.0_f32,
+        displaced_positions: vec![0.0_f32, 0.0, 0.0],
+        eigenvalue: None,
+    };
+
+    let v = serde_json::to_value(&frame)
+        .expect("base ModeShapeFrame must serialize without error");
+
+    // The "eigenvalue" key must be absent.
+    let obj = v.as_object().unwrap();
+    assert!(
+        !obj.contains_key("eigenvalue"),
+        "eigenvalue: None must be omitted from wire (skip_serializing_if); got keys: {:?}",
+        obj.keys().collect::<Vec<_>>()
+    );
+
+    // Exactly 3 keys.
+    assert_eq!(
+        obj.len(),
+        3,
+        "base ModeShapeFrame must have exactly 3 JSON keys; got {:?}",
+        obj.keys().collect::<Vec<_>>()
+    );
+
+    // Round-trip: a 3-key JSON payload must deserialize with eigenvalue=None.
+    let rt: ModeShapeFrame = serde_json::from_value(v)
+        .expect("base ModeShapeFrame must deserialize from 3-key JSON");
+    assert_eq!(rt.eigenvalue, None, "absent 'eigenvalue' key must deserialize to None");
 }

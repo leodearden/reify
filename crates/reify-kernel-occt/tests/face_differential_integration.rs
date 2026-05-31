@@ -1229,3 +1229,122 @@ fn curvature_at_on_placed_reversed_inner_cylinder_face_pairs_directions_with_rot
         "placed reversed cylinder dir_min and dir_max should be orthogonal: dot = {dot_dirs}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// surface_normal_at_point — at-point normal (KGQ-ζ, task 3615)
+// ---------------------------------------------------------------------------
+
+/// Helper: build a kernel with a centred box(10mm × 10mm × 10mm).
+/// Returns `(kernel, box_handle_id)`.
+fn box10mm_kernel() -> (OcctKernel, GeometryHandleId) {
+    let mut kernel = OcctKernel::new();
+    let handle = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(0.01),
+            height: Value::Real(0.01),
+            depth: Value::Real(0.01),
+        })
+        .expect("box creation should succeed");
+    (kernel, handle.id)
+}
+
+/// `surface_normal_at_point` on the +Z face of a box(10mm) centred at origin
+/// returns [0, 0, 1] within 1e-9.
+///
+/// Analytic ground truth: the +Z face is the plane z = +0.005 m with constant
+/// outward normal (0, 0, 1).  `ValueOfUV` projects (0, 0, 0.005) exactly onto
+/// that plane; `face_outward_unit_normal_at_uv` returns (0, 0, 1) to ~1e-15
+/// (planar face → constant Du × Dv; REVERSED-flip gives outward direction).
+///
+/// The query point px=0, py=0, pz=0.005 lies on the face, so the projection
+/// is exact (closed-form, no approximation error).
+#[test]
+fn surface_normal_at_point_on_top_face_of_box_yields_outward_z_normal() {
+    let (mut kernel, box_id) = box10mm_kernel();
+    let faces = kernel
+        .extract_faces(box_id)
+        .expect("extract_faces should succeed for box");
+    assert_eq!(faces.len(), 6, "box should have 6 faces");
+
+    // Select the +Z face: centroid normal n_z ≈ +1.
+    let top_face = faces
+        .iter()
+        .copied()
+        .find(|&f| {
+            kernel
+                .face_outward_unit_normal_for_test(f)
+                .expect("face_outward_unit_normal_for_test should succeed")[2]
+                > 0.9
+        })
+        .expect("box should have a +Z face");
+
+    // Query point on the +Z face: (0, 0, +5mm = 0.005 m).
+    let n = kernel
+        .surface_normal_at_point(top_face, 0.0, 0.0, 0.005)
+        .expect("surface_normal_at_point should succeed on +Z face of box");
+
+    // (a) Unit length.
+    let mag_sq = n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
+    assert!(
+        (mag_sq - 1.0).abs() < 1e-9,
+        "surface_normal_at_point: |n|² = {mag_sq}, expected 1.0"
+    );
+
+    // (b) Analytic: outward normal of +Z face is (0, 0, 1).
+    assert!(
+        n[0].abs() < 1e-9 && n[1].abs() < 1e-9 && (n[2] - 1.0).abs() < 1e-9,
+        "surface_normal_at_point on +Z face: expected (0, 0, 1), got {n:?}"
+    );
+}
+
+/// `GeometryQuery::FaceNormalAt` on the +Z face of a box(10mm) returns
+/// `Value::String` parseable as `{"x":≈0, "y":≈0, "z":≈1}`.
+///
+/// This exercises the `OcctKernel::query()` dispatch arm that wraps
+/// `surface_normal_at_point` and encodes the result as the same JSON-Point3
+/// wire format used by `FaceNormal` / `EdgeTangent` / `ClosestPointOnShape`.
+#[test]
+fn geometry_query_face_normal_at_on_top_face_of_box_encodes_z_normal() {
+    let (mut kernel, box_id) = box10mm_kernel();
+    let faces = kernel
+        .extract_faces(box_id)
+        .expect("extract_faces should succeed for box");
+
+    // Select the +Z face.
+    let top_face = faces
+        .iter()
+        .copied()
+        .find(|&f| {
+            kernel
+                .face_outward_unit_normal_for_test(f)
+                .expect("face_outward_unit_normal_for_test should succeed")[2]
+                > 0.9
+        })
+        .expect("box should have a +Z face");
+
+    // Drive through the GeometryQuery trait path.
+    let reply = kernel
+        .query(&GeometryQuery::FaceNormalAt {
+            handle: top_face,
+            px: 0.0,
+            py: 0.0,
+            pz: 0.005,
+        })
+        .expect("GeometryQuery::FaceNormalAt should succeed on +Z face");
+
+    // Decode the JSON-Point3 string.
+    let json = match reply {
+        Value::String(s) => s,
+        other => panic!("FaceNormalAt reply should be Value::String, got {other:?}"),
+    };
+    let parsed: serde_json::Value =
+        serde_json::from_str(&json).expect("FaceNormalAt reply should be valid JSON");
+    let x = parsed["x"].as_f64().expect("reply JSON should have 'x'");
+    let y = parsed["y"].as_f64().expect("reply JSON should have 'y'");
+    let z = parsed["z"].as_f64().expect("reply JSON should have 'z'");
+
+    assert!(
+        x.abs() < 1e-9 && y.abs() < 1e-9 && (z - 1.0).abs() < 1e-9,
+        "FaceNormalAt on +Z face: expected {{x:0, y:0, z:1}}, got {{x:{x}, y:{y}, z:{z}}}"
+    );
+}
