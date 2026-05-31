@@ -928,6 +928,7 @@ fn element_stress_anisotropic(
 /// byte-identical to the pre-α implementation (same σ_voigt, same formula).
 ///
 /// Von Mises: sqrt(½·[(σ_xx−σ_yy)²+(σ_yy−σ_zz)²+(σ_zz−σ_xx)²+6·(σ_xy²+σ_yz²+σ_zx²)])
+#[cfg(test)]
 fn element_von_mises_anisotropic(
     phys_nodes: &[[f64; 3]; 4],
     d_global: &[[f64; 6]; 6],

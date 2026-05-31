@@ -274,11 +274,11 @@ mod tests {
         // 8 grid nodes (2×2×2). Find at least one that's NaN (the corner at (2,2,2)).
         // Flat index of (ix=1,iy=1,iz=1) = (1*2+1)*2+1 = 5; data offset = 5*3 = 15
         let outside = &sf.data[15..18];
-        for c in 0..3 {
+        for (c, &val) in outside.iter().enumerate() {
             assert!(
-                outside[c].is_nan(),
+                val.is_nan(),
                 "outside[{c}] should be NaN, got {}",
-                outside[c]
+                val
             );
         }
     }
