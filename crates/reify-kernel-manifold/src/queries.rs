@@ -150,35 +150,44 @@ fn extract_xyz(m: &Manifold) -> Vec<[f64; 3]> {
     out
 }
 
+/// Build a [`Manifold`] directly from the `unit_cube_mesh` test fixture by
+/// replicating the exact f32→f64 / u32→u64 conversion that
+/// [`crate::kernel::ManifoldKernel::ingest_mesh`] performs (kernel.rs:295–313).
+///
+/// Exposed at module level (not confined to `mod tests`) so it is reusable
+/// across test modules within this crate without re-deriving the conversion.
+/// Ideally this helper would live in `crate::test_fixtures`; moving it there
+/// requires editing `crates/reify-kernel-manifold/src/test_fixtures.rs`, which
+/// is outside the file scope of task 3612 (KGQ-γ) — tracked as a follow-up by
+/// the KGQ-γ code review.
+///
+/// `offset` shifts the [0,1]³ unit cube by (dx, dy, dz) in each axis.
+#[cfg(test)]
+#[cfg(feature = "test-fixtures")]
+pub(crate) fn cube_manifold(offset: [f64; 3]) -> Manifold {
+    let mesh = crate::test_fixtures::unit_cube_mesh([
+        offset[0] as f32,
+        offset[1] as f32,
+        offset[2] as f32,
+    ]);
+    let vert_props_f64: Vec<f64> = mesh.vertices.iter().map(|&v| v as f64).collect();
+    let tri_indices_u64: Vec<u64> = mesh.indices.iter().map(|&i| i as u64).collect();
+    Manifold::from_mesh_f64(&vert_props_f64, 3, &tri_indices_u64)
+        .expect("unit_cube_mesh fixture must produce a valid manifold")
+}
+
 #[cfg(test)]
 mod tests {
     use super::intersects;
-    use manifold3d::Manifold;
-
-    // `unit_cube_mesh` test fixture shared with kernel.rs integration tests.
-    // Gated on `test-fixtures` feature (the self-dev-dep in Cargo.toml activates
-    // it for all `cargo test` builds of this crate, matching the kernel.rs pattern).
     #[cfg(feature = "test-fixtures")]
-    use crate::test_fixtures::unit_cube_mesh;
+    use super::cube_manifold;
 
-    /// Build a Manifold directly from the `unit_cube_mesh` test fixture by
-    /// replicating the exact f32→f64 / u32→u64 conversion that
-    /// `ManifoldKernel::ingest_mesh` performs (kernel.rs:295–313).
-    ///
-    /// `offset` shifts the [0,1]³ unit cube by (dx, dy, dz) in each axis —
-    /// the same semantics as `unit_cube_mesh([f32; 3])` but exposed as f64 for
-    /// convenient literal use in test assertions.
-    ///
-    /// Not gated on `test-fixtures` itself — callers are already in `cfg(test)`
-    /// and gate the `unit_cube_mesh` import separately.
-    #[cfg(feature = "test-fixtures")]
-    fn cube_manifold(offset: [f64; 3]) -> Manifold {
-        let mesh = unit_cube_mesh([offset[0] as f32, offset[1] as f32, offset[2] as f32]);
-        let vert_props_f64: Vec<f64> = mesh.vertices.iter().map(|&v| v as f64).collect();
-        let tri_indices_u64: Vec<u64> = mesh.indices.iter().map(|&i| i as u64).collect();
-        Manifold::from_mesh_f64(&vert_props_f64, 3, &tri_indices_u64)
-            .expect("unit_cube_mesh fixture must produce a valid manifold")
-    }
+    // NOTE: The touching/face-coincident boundary case (two cubes sharing exactly
+    // one face, zero volume overlap) is intentionally absent from this test module
+    // until KGQ-ο resolves the cross-kernel parity semantics.  The Manifold CSG
+    // boolean returns an empty mesh for face-coincident inputs → `false`; the
+    // OCCT path returns `true` (d = 0.0 ≤ 0.0).  See the "Known parity
+    // divergence" section in the `intersects` doc comment above.
 
     /// Pins that two unit cubes overlapping by 0.5 in X have a non-empty
     /// boolean intersection → `intersects` returns `true`.
@@ -211,6 +220,32 @@ mod tests {
         assert!(
             !intersects(&a, &b),
             "disjoint cubes (offset 5.0 in x) must not intersect"
+        );
+    }
+
+    /// Pins that `intersects` returns `false` (and does not panic) when one or
+    /// both inputs are empty/degenerate [`Manifold`]s.
+    ///
+    /// An empty Manifold is obtained by intersecting two widely-separated unit
+    /// cubes — the same contract established by
+    /// `tessellate_of_intersection_of_disjoint_cubes_returns_empty_mesh`
+    /// (kernel.rs:507).  `extract_xyz` catches the empty vertex array and
+    /// returns `Vec::new()`, so `!is_empty()` yields `false` without any
+    /// vertex-iteration or index panic.  This confirms the degenerate code path
+    /// in `intersects` is safe rather than latently panicking.
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn intersects_with_empty_manifold_returns_false() {
+        let a = cube_manifold([0.0, 0.0, 0.0]);
+        let b = cube_manifold([5.0, 0.0, 0.0]); // 4-unit gap → disjoint → empty intersection
+        let empty = a.intersection(&b);
+        assert!(
+            !intersects(&empty, &a),
+            "intersects(empty_manifold, cube) must be false"
+        );
+        assert!(
+            !intersects(&a, &empty),
+            "intersects(cube, empty_manifold) must be false"
         );
     }
 }
