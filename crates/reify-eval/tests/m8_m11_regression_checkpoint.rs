@@ -455,6 +455,8 @@ fn assert_all_value_variants_listed(v: &reify_ir::Value) {
         Value::GeometryHandle { .. } => true,
         // Non-rigid affine map (task 3958 / α)
         Value::AffineMap { .. } => true,
+        // Topology-selector value (task 4116 / α)
+        Value::Selector(_) => true,
         // Undefined
         Value::Undef => true,
     };

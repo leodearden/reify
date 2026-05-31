@@ -8,6 +8,7 @@ use reify_core::hash::ContentHash;
 use reify_core::identity::ValueCellId;
 use crate::persistent::PersistentMap;
 use crate::structure_registry::StructureTypeId;
+use reify_core::ty::SelectorKind;
 
 // ── Float ordering strategy ───────────────────────────────────────────────────
 //
@@ -361,6 +362,277 @@ pub enum FieldSourceKind {
     SafetyFactor,
 }
 
+// ── Topology-Selector substrate (task 4116 / α) ────────────────────────────
+
+/// Named reference to a realized geometry handle, carrying only the
+/// stable identity fields (realization_ref, upstream_values_hash) plus the
+/// ephemeral kernel_handle for convenience.
+///
+/// `kernel_handle` is **excluded** from [`SelectorValue::content_hash`] and
+/// from Value-level equality/ordering (GHR-β §DD: same geometry rebuilt in a
+/// new session must compare equal and hash identically).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GeometryHandleRef {
+    pub realization_ref: reify_core::identity::RealizationNodeId,
+    pub upstream_values_hash: [u8; 32],
+    pub kernel_handle: crate::geometry::GeometryHandleId,
+}
+
+impl GeometryHandleRef {
+    /// Extract a `GeometryHandleRef` from a `Value::GeometryHandle`.
+    /// Returns `None` for any other `Value` variant.
+    pub fn from_geometry_handle(v: &Value) -> Option<Self> {
+        match v {
+            Value::GeometryHandle {
+                realization_ref,
+                upstream_values_hash,
+                kernel_handle,
+            } => Some(Self {
+                realization_ref: realization_ref.clone(),
+                upstream_values_hash: *upstream_values_hash,
+                kernel_handle: *kernel_handle,
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// Query that selects geometry elements from a realized handle (§4.2).
+///
+/// `Named` / `All` accept any [`SelectorKind`].
+/// `ByNormal` / `ByArea` require [`SelectorKind::Face`].
+/// `ByLength` / `ByHeight` / `ByParallel` require [`SelectorKind::Edge`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum LeafQuery {
+    /// Select by user-assigned label.  Accepts any kind.
+    Named(String),
+    /// Select all elements of the target kind.
+    All,
+    /// Select faces whose outward normal is within `tol_rad` of `dir`.
+    ByNormal { dir: [f64; 3], tol_rad: f64 },
+    /// Select faces whose area is in `[min_m2, max_m2]` (m²).
+    ByArea { min_m2: f64, max_m2: f64 },
+    /// Select edges whose length is in `[min_m, max_m]` (m).
+    ByLength { min_m: f64, max_m: f64 },
+    /// Select edges whose centroid z-coordinate is within `tol_m` of `z_m`.
+    ByHeight { z_m: f64, tol_m: f64 },
+    /// Select edges parallel to `axis` within `tol_rad`.
+    ByParallel { axis: [f64; 3], tol_rad: f64 },
+}
+
+impl LeafQuery {
+    /// The [`SelectorKind`] this query requires, or `None` if it accepts any kind.
+    pub fn required_kind(&self) -> Option<SelectorKind> {
+        match self {
+            LeafQuery::ByNormal { .. } | LeafQuery::ByArea { .. } => Some(SelectorKind::Face),
+            LeafQuery::ByLength { .. }
+            | LeafQuery::ByHeight { .. }
+            | LeafQuery::ByParallel { .. } => Some(SelectorKind::Edge),
+            LeafQuery::Named(_) | LeafQuery::All => None,
+        }
+    }
+}
+
+/// Tree-shaped selector node composing geometry queries.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SelectorNode {
+    Leaf {
+        target: GeometryHandleRef,
+        query: LeafQuery,
+    },
+    Union(Vec<SelectorValue>),
+    Intersect(Vec<SelectorValue>),
+    Difference(Box<SelectorValue>, Box<SelectorValue>),
+}
+
+/// A first-class topology-selector value pairing a [`SelectorKind`] with a
+/// [`SelectorNode`] tree.  All constructors enforce kind-closure (K1).
+///
+/// `SelectorValue` derives `PartialEq` for ergonomic `assert_eq!` in tests.
+/// Value-level equality and ordering use [`content_hash`](Self::content_hash)
+/// instead (Lambda-body pattern; see `impl PartialEq for Value`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SelectorValue {
+    pub kind: SelectorKind,
+    pub node: SelectorNode,
+}
+
+impl SelectorValue {
+    /// Construct a leaf selector.
+    ///
+    /// Fails with [`SelectorError::KindMismatch`] when
+    /// `query.required_kind() == Some(k) && k != kind`.
+    pub fn leaf(
+        kind: SelectorKind,
+        target: GeometryHandleRef,
+        query: LeafQuery,
+    ) -> Result<Self, SelectorError> {
+        if let Some(required) = query.required_kind() {
+            if required != kind {
+                return Err(SelectorError::KindMismatch {
+                    expected: required,
+                    found: kind,
+                });
+            }
+        }
+        Ok(Self { kind, node: SelectorNode::Leaf { target, query } })
+    }
+
+    /// Construct a union of same-kind selectors.
+    ///
+    /// Fails with [`SelectorError::EmptyComposition`] if `children` is empty,
+    /// or [`SelectorError::KindMismatch`] if any child has a different kind.
+    pub fn union(children: Vec<SelectorValue>) -> Result<Self, SelectorError> {
+        let kind = Self::check_composition(&children)?;
+        Ok(Self { kind, node: SelectorNode::Union(children) })
+    }
+
+    /// Construct an intersection of same-kind selectors.
+    ///
+    /// Fails with [`SelectorError::EmptyComposition`] if `children` is empty,
+    /// or [`SelectorError::KindMismatch`] if any child has a different kind.
+    pub fn intersect(children: Vec<SelectorValue>) -> Result<Self, SelectorError> {
+        let kind = Self::check_composition(&children)?;
+        Ok(Self { kind, node: SelectorNode::Intersect(children) })
+    }
+
+    /// Construct a difference of two same-kind selectors.
+    ///
+    /// Fails with [`SelectorError::KindMismatch`] if `a.kind != b.kind`.
+    pub fn difference(a: SelectorValue, b: SelectorValue) -> Result<Self, SelectorError> {
+        if a.kind != b.kind {
+            return Err(SelectorError::KindMismatch {
+                expected: a.kind,
+                found: b.kind,
+            });
+        }
+        let kind = a.kind;
+        Ok(Self { kind, node: SelectorNode::Difference(Box::new(a), Box::new(b)) })
+    }
+
+    /// Validate that `children` is non-empty and all share the same kind.
+    fn check_composition(children: &[SelectorValue]) -> Result<SelectorKind, SelectorError> {
+        let first = children.first().ok_or(SelectorError::EmptyComposition)?;
+        let kind = first.kind;
+        for child in children.iter().skip(1) {
+            if child.kind != kind {
+                return Err(SelectorError::KindMismatch {
+                    expected: kind,
+                    found: child.kind,
+                });
+            }
+        }
+        Ok(kind)
+    }
+
+    /// Content-hash for this selector value.
+    ///
+    /// Tag 30 (after AffineMap=29).  All f64 fields are NaN-canonicalized.
+    /// `kernel_handle` inside leaf targets is excluded (GHR-β §DD).
+    pub fn content_hash(&self) -> ContentHash {
+        fn nan_bits(v: f64) -> u64 {
+            if v.is_nan() { f64::NAN.to_bits() } else { v.to_bits() }
+        }
+
+        fn hash_query(q: &LeafQuery) -> ContentHash {
+            match q {
+                LeafQuery::Named(s) => ContentHash::of(&[0u8]).combine(ContentHash::of_str(s)),
+                LeafQuery::All => ContentHash::of(&[1u8]),
+                LeafQuery::ByNormal { dir, tol_rad } => {
+                    let mut buf = [0u8; 33]; // 1 + 4×8
+                    buf[0] = 2;
+                    buf[1..9].copy_from_slice(&nan_bits(dir[0]).to_le_bytes());
+                    buf[9..17].copy_from_slice(&nan_bits(dir[1]).to_le_bytes());
+                    buf[17..25].copy_from_slice(&nan_bits(dir[2]).to_le_bytes());
+                    buf[25..33].copy_from_slice(&nan_bits(*tol_rad).to_le_bytes());
+                    ContentHash::of(&buf)
+                }
+                LeafQuery::ByArea { min_m2, max_m2 } => {
+                    let mut buf = [0u8; 17]; // 1 + 2×8
+                    buf[0] = 3;
+                    buf[1..9].copy_from_slice(&nan_bits(*min_m2).to_le_bytes());
+                    buf[9..17].copy_from_slice(&nan_bits(*max_m2).to_le_bytes());
+                    ContentHash::of(&buf)
+                }
+                LeafQuery::ByLength { min_m, max_m } => {
+                    let mut buf = [0u8; 17]; // 1 + 2×8
+                    buf[0] = 4;
+                    buf[1..9].copy_from_slice(&nan_bits(*min_m).to_le_bytes());
+                    buf[9..17].copy_from_slice(&nan_bits(*max_m).to_le_bytes());
+                    ContentHash::of(&buf)
+                }
+                LeafQuery::ByHeight { z_m, tol_m } => {
+                    let mut buf = [0u8; 17]; // 1 + 2×8
+                    buf[0] = 5;
+                    buf[1..9].copy_from_slice(&nan_bits(*z_m).to_le_bytes());
+                    buf[9..17].copy_from_slice(&nan_bits(*tol_m).to_le_bytes());
+                    ContentHash::of(&buf)
+                }
+                LeafQuery::ByParallel { axis, tol_rad } => {
+                    let mut buf = [0u8; 33]; // 1 + 4×8
+                    buf[0] = 6;
+                    buf[1..9].copy_from_slice(&nan_bits(axis[0]).to_le_bytes());
+                    buf[9..17].copy_from_slice(&nan_bits(axis[1]).to_le_bytes());
+                    buf[17..25].copy_from_slice(&nan_bits(axis[2]).to_le_bytes());
+                    buf[25..33].copy_from_slice(&nan_bits(*tol_rad).to_le_bytes());
+                    ContentHash::of(&buf)
+                }
+            }
+        }
+
+        fn hash_ghr(ghr: &GeometryHandleRef) -> ContentHash {
+            // kernel_handle excluded (ephemeral, GHR-β §DD).
+            ContentHash::of_str(&ghr.realization_ref.entity)
+                .combine(ContentHash::of(&ghr.realization_ref.index.to_le_bytes()))
+                .combine(ContentHash::of(&ghr.upstream_values_hash))
+        }
+
+        fn hash_node(node: &SelectorNode) -> ContentHash {
+            match node {
+                SelectorNode::Leaf { target, query } => ContentHash::of(&[0u8])
+                    .combine(hash_ghr(target))
+                    .combine(hash_query(query)),
+                SelectorNode::Union(children) => {
+                    let mut h = ContentHash::of(&[1u8]);
+                    h = h.combine(ContentHash::of(&(children.len() as u64).to_le_bytes()));
+                    for child in children {
+                        h = h.combine(child.content_hash());
+                    }
+                    h
+                }
+                SelectorNode::Intersect(children) => {
+                    let mut h = ContentHash::of(&[2u8]);
+                    h = h.combine(ContentHash::of(&(children.len() as u64).to_le_bytes()));
+                    for child in children {
+                        h = h.combine(child.content_hash());
+                    }
+                    h
+                }
+                SelectorNode::Difference(a, b) => ContentHash::of(&[3u8])
+                    .combine(a.content_hash())
+                    .combine(b.content_hash()),
+            }
+        }
+
+        let kind_byte: u8 = match self.kind {
+            SelectorKind::Face => 0,
+            SelectorKind::Edge => 1,
+            SelectorKind::Body => 2,
+        };
+        // tag=30
+        ContentHash::of(&[30, kind_byte]).combine(hash_node(&self.node))
+    }
+}
+
+/// Errors from K1 (kind-closure) constructor validation.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SelectorError {
+    /// The query requires `expected` but the selector has kind `found`.
+    KindMismatch { expected: SelectorKind, found: SelectorKind },
+    /// Union/Intersect was called with an empty children list.
+    EmptyComposition,
+}
+
 /// Runtime values in Reify (M1 subset).
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -603,6 +875,8 @@ pub enum Value {
         linear: [[f64; 3]; 3],
         translation: [f64; 3],
     },
+    /// A first-class topology selector — see [`SelectorValue`] (task 4116 / α).
+    Selector(SelectorValue),
     /// Undefined — not yet determined or computation failed.
     Undef,
 }
@@ -823,7 +1097,8 @@ impl Value {
         // 8=Set, 9=Map, 10=Satisfaction(reserved), 11=Option, 12=Lambda, 13=Field,
         // 14=Tensor, 15=Complex, 16=Orientation, 17=Range, 18=Point, 19=Vector,
         // 20=Frame, 21=Transform, 22=Plane, 23=Axis, 24=BoundingBox, 25=Matrix,
-        // 26=SampledField, 27=StructureInstance, 28=GeometryHandle, 29=AffineMap
+        // 26=SampledField, 27=StructureInstance, 28=GeometryHandle, 29=AffineMap,
+        // 30=Selector (task 4116 / α)
         match self {
             Value::Bool(b) => ContentHash::of(&[0, *b as u8]),
             Value::Int(i) => {
@@ -1136,6 +1411,7 @@ impl Value {
                 }
                 ContentHash::of(&buf)
             }
+            Value::Selector(sv) => sv.content_hash(), // tag=30; see SelectorValue::content_hash
             Value::Undef => ContentHash::of(&[5]),
         }
     }
@@ -1367,6 +1643,7 @@ impl Value {
             Value::GeometryHandle { .. } => Some(Type::Geometry),
             // Dimension is structurally 3 (fixed-size arrays) — deterministic, unlike Frame/Transform.
             Value::AffineMap { .. } => Some(Type::AffineMap(3)),
+            Value::Selector(sv) => Some(Type::Selector(sv.kind)), // task 4116 / α
             Value::Undef => Some(Type::Bool),
         }
     }
@@ -1552,6 +1829,7 @@ impl Value {
                     translation[0], translation[1], translation[2],
                 )
             }
+            Value::Selector(sv) => format!("Selector({})", sv.kind),
             Value::Undef => "(undefined)".to_string(),
         }
     }
@@ -1721,6 +1999,7 @@ impl Value {
                     translation[0], translation[1], translation[2],
                 )
             }
+            Value::Selector(sv) => format!("Selector({})", sv.kind),
             Value::Undef => "undefined".to_string(),
         }
     }
@@ -2063,6 +2342,12 @@ impl PartialEq for Value {
                     ra.iter().zip(rb.iter()).all(|(a, b)| a.to_bits() == b.to_bits())
                 }) && ta.iter().zip(tb.iter()).all(|(a, b)| a.to_bits() == b.to_bits())
             }
+            // Value::Selector equality goes through content_hash (Lambda-body pattern):
+            // LeafQuery carries f64, so derived PartialEq would make NaN-bearing selectors
+            // non-reflexive — breaking Value's `impl Eq`. content_hash canonicalizes NaN.
+            (Value::Selector(a), Value::Selector(b)) => {
+                a.content_hash() == b.content_hash() // task 4116 / α
+            }
             (Value::Undef, Value::Undef) => true,
             _ => false,
         }
@@ -2092,7 +2377,7 @@ impl Ord for Value {
         use std::cmp::Ordering;
 
         // Type-tag discriminant for cross-type ordering:
-        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10, Field=11, Lambda=12, Tensor=13, Complex=14, Orientation=15, Range=16, Point=17, Vector=18, Matrix=19, Frame=20, Transform=21, Plane=22, Axis=23, BoundingBox=24, SampledField=25, StructureInstance=26, GeometryHandle=27, AffineMap=28
+        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10, Field=11, Lambda=12, Tensor=13, Complex=14, Orientation=15, Range=16, Point=17, Vector=18, Matrix=19, Frame=20, Transform=21, Plane=22, Axis=23, BoundingBox=24, SampledField=25, StructureInstance=26, GeometryHandle=27, AffineMap=28, Selector=29
         fn type_tag(v: &Value) -> u8 {
             match v {
                 Value::Undef => 0,
@@ -2124,6 +2409,7 @@ impl Ord for Value {
                 Value::StructureInstance(_) => 26,
                 Value::GeometryHandle { .. } => 27,
                 Value::AffineMap { .. } => 28,
+                Value::Selector(_) => 29, // task 4116 / α
             }
         }
 
@@ -2380,6 +2666,11 @@ impl Ord for Value {
                 }
                 Ordering::Equal
             }
+            // Selector ordering: compare by content_hash bytes (same pattern as Lambda body).
+            // Eq/Ord contract: Equal iff == (both delegate to content_hash).
+            (Value::Selector(a), Value::Selector(b)) => {
+                a.content_hash().0.cmp(&b.content_hash().0) // task 4116 / α
+            }
             _ => unreachable!("same type tag but different variants"),
         }
     }
@@ -2616,6 +2907,10 @@ impl std::fmt::Display for Value {
                     linear[2][0], linear[2][1], linear[2][2],
                     translation[0], translation[1], translation[2],
                 )
+            }
+            Value::Selector(sv) => {
+                // Display: "Selector(<kind>:<hash>)" — non-empty, stable, deterministic.
+                write!(f, "Selector({}:{:032x})", sv.kind, sv.content_hash().0)
             }
             Value::Undef => write!(f, "undef"),
         }
