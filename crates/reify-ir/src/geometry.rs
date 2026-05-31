@@ -187,6 +187,53 @@ mod kernel_id_tests {
         assert_eq!(KernelId::from_registry_name("OCCT"), None);
         assert_eq!(KernelId::from_registry_name("Manifold"), None);
     }
+
+    /// step-05: `KernelHandle` pairs a `KernelId` with a `GeometryHandleId` and
+    /// is a `Copy + Eq + Hash` value (usable as a `HashMap` key).
+    #[test]
+    fn kernel_handle_pairs_kernel_and_id() {
+        use std::collections::HashMap;
+
+        let h = KernelHandle {
+            kernel: KernelId::Manifold,
+            id: GeometryHandleId(5),
+        };
+
+        // Field access projects both halves of the pair.
+        assert_eq!(h.kernel, KernelId::Manifold);
+        assert_eq!(h.id, GeometryHandleId(5));
+
+        // Copy semantics: `h` stays usable after being copied into `copy`.
+        let copy = h;
+        assert_eq!(copy, h);
+
+        // Two identical handles are equal.
+        let same = KernelHandle {
+            kernel: KernelId::Manifold,
+            id: GeometryHandleId(5),
+        };
+        assert_eq!(h, same);
+
+        // Differing kernel OR id breaks equality.
+        let diff_kernel = KernelHandle {
+            kernel: KernelId::Occt,
+            id: GeometryHandleId(5),
+        };
+        let diff_id = KernelHandle {
+            kernel: KernelId::Manifold,
+            id: GeometryHandleId(6),
+        };
+        assert_ne!(h, diff_kernel);
+        assert_ne!(h, diff_id);
+
+        // Usable as a HashMap key (Eq + Hash): lookup by an equal handle hits,
+        // a differing handle misses.
+        let mut map: HashMap<KernelHandle, &str> = HashMap::new();
+        map.insert(h, "bracket");
+        assert_eq!(map.get(&same), Some(&"bracket"));
+        assert_eq!(map.get(&diff_kernel), None);
+        assert_eq!(map.get(&diff_id), None);
+    }
 }
 
 /// An opaque handle to a geometry object managed by a kernel.
