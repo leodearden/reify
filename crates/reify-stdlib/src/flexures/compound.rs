@@ -516,6 +516,133 @@ mod tests {
         );
     }
 
+    // ── θ/step-1: RED -- prb_cartwheel_flexure structure + spring rate ──────────
+
+    /// 7-arg cartwheel argument list:
+    /// (blade_count:Int, L, b, t, material, pivot, axis)
+    fn cartwheel_args(blade_count: i64) -> Vec<Value> {
+        vec![
+            Value::Int(blade_count), // args[0] = N
+            Value::length(0.02),     // args[1] = L = 20 mm
+            Value::length(0.005),    // args[2] = b = 5 mm
+            Value::length(0.0005),   // args[3] = t = 0.5 mm
+            steel(),                 // args[4] = material
+            origin(),                // args[5] = pivot
+            axis_y(),                // args[6] = axis
+        ]
+    }
+
+    #[test]
+    fn prb_cartwheel_flexure_structure_and_spring_rate() {
+        let n = 4_i64;
+        let result = crate::eval_builtin("prb_cartwheel_flexure", &cartwheel_args(n));
+
+        // kind == "revolute"
+        assert_eq!(
+            map_get(&result, "kind"),
+            Some(&Value::String("revolute".to_string())),
+            "cartwheel flexure presents as a revolute joint; got {result:?}"
+        );
+
+        // axis and pivot are preserved verbatim
+        assert_eq!(map_get(&result, "axis"), Some(&axis_y()), "axis preserved verbatim");
+        assert_eq!(map_get(&result, "pivot"), Some(&origin()), "pivot preserved verbatim");
+
+        // damping == Value::Option(None) (γ-scope)
+        assert_eq!(
+            map_get(&result, "damping"),
+            Some(&Value::Option(None)),
+            "damping is None in γ scope"
+        );
+
+        // spring_rate: ROTATIONAL_STIFFNESS, si_value == N·γ·E·I/L (§6.3 k_pivot = N·k_blade)
+        let l: f64 = 0.02;
+        let b: f64 = 0.005;
+        let t: f64 = 0.0005;
+        let e: f64 = 205e9;
+        let i = b * t.powi(3) / 12.0;
+        let gamma: f64 = 2.65;
+        let k_blade = gamma * e * i / l;
+        let k_pivot_expected = n as f64 * k_blade;
+
+        match map_get(&result, "spring_rate") {
+            Some(Value::Scalar { si_value, dimension }) => {
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::ROTATIONAL_STIFFNESS,
+                    "spring_rate carries ROTATIONAL_STIFFNESS"
+                );
+                let rel = (si_value - k_pivot_expected).abs() / k_pivot_expected;
+                assert!(
+                    rel < 1e-9,
+                    "spring_rate {si_value} vs {k_pivot_expected} (rel {rel})"
+                );
+                // Pin the k_pivot = N·k_blade law (§6.3)
+                let rel_kb = (si_value - n as f64 * k_blade).abs() / k_pivot_expected;
+                assert!(
+                    rel_kb < 1e-9,
+                    "spring_rate must equal N×k_blade: {si_value} vs {} (rel {rel_kb})",
+                    n as f64 * k_blade
+                );
+            }
+            other => panic!("expected spring_rate Scalar, got {other:?}"),
+        }
+
+        // Coefficient-independent scaling checks:
+
+        // (a) Linear blade-count scaling: k(N=8) / k(N=4) == 2
+        let k8 = spring_rate_si(&crate::eval_builtin("prb_cartwheel_flexure", &cartwheel_args(8)));
+        let k4 = spring_rate_si(&crate::eval_builtin("prb_cartwheel_flexure", &cartwheel_args(4)));
+        let ratio_n = k8 / k4;
+        let rel_n = (ratio_n - 2.0).abs() / 2.0;
+        assert!(rel_n < 1e-9, "k(N=8)/k(N=4) should be 2, got {ratio_n} (rel {rel_n})");
+
+        // (b) Double thickness → ×8 (I ∝ t³)
+        let thick_args: Vec<Value> = vec![
+            Value::Int(4),
+            Value::length(0.02),
+            Value::length(0.005),
+            Value::length(0.001), // 2×t
+            steel(),
+            origin(),
+            axis_y(),
+        ];
+        let k_thick = spring_rate_si(&crate::eval_builtin("prb_cartwheel_flexure", &thick_args));
+        let ratio_t = k_thick / k4;
+        let rel_t = (ratio_t - 8.0).abs() / 8.0;
+        assert!(rel_t < 1e-9, "doubling t should give ×8 stiffness, got ×{ratio_t} (rel {rel_t})");
+
+        // (c) Double length → ×0.5 (k ∝ 1/L)
+        let long_args: Vec<Value> = vec![
+            Value::Int(4),
+            Value::length(0.04), // 2×L
+            Value::length(0.005),
+            Value::length(0.0005),
+            steel(),
+            origin(),
+            axis_y(),
+        ];
+        let k_long = spring_rate_si(&crate::eval_builtin("prb_cartwheel_flexure", &long_args));
+        let ratio_l = k_long / k4;
+        let rel_l = (ratio_l - 0.5).abs() / 0.5;
+        assert!(rel_l < 1e-9, "doubling L should give ×0.5 stiffness, got ×{ratio_l} (rel {rel_l})");
+
+        // (d) Double E → ×2
+        let e_args: Vec<Value> = vec![
+            Value::Int(4),
+            Value::length(0.02),
+            Value::length(0.005),
+            Value::length(0.0005),
+            steel_with_e(2.0 * e),
+            origin(),
+            axis_y(),
+        ];
+        let k_2e = spring_rate_si(&crate::eval_builtin("prb_cartwheel_flexure", &e_args));
+        let ratio_e = k_2e / k4;
+        let rel_e = (ratio_e - 2.0).abs() / 2.0;
+        assert!(rel_e < 1e-9, "doubling E should give ×2 stiffness, got ×{ratio_e} (rel {rel_e})");
+    }
+
     // ── step-9: RED -- prb_double_parallelogram_flexure series stiffness ───────
 
     #[test]
