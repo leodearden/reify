@@ -2272,4 +2272,100 @@ mod tests {
             );
         }
     }
+
+    // --- Degenerate patch tests (task 4068 step-13): the standard degenerated-
+    // shell consistency acceptance tests, on a FLAT patch (directors ∥ facet
+    // normal, uniform thickness) so the closed-form analytical energy is exact.
+    // Mirror the MITC3+ membrane patch test and the bare-MITC3 bending patch
+    // test — driving the degenerate element with constant in-plane strain and
+    // with a constant-curvature (linear-θ) field, respectively.
+
+    /// Flat-patch directors (∥ +z facet normal) + uniform thickness — the
+    /// constant-Jacobian configuration in which the degenerate element's
+    /// 2-point-Gauss-in-ζ through-thickness integral reproduces the closed-form
+    /// `t` (membrane) and `t³/12` (bending) factors exactly.
+    fn flat_patch_directors() -> [[f64; 3]; 3] {
+        [[0.0, 0.0, 1.0]; 3]
+    }
+
+    #[test]
+    fn degenerate_membrane_patch_test_matches_analytical_energy() {
+        // Uniform in-plane strain u_x = a·x, u_y = b·y → ε = (a, b, 0). The
+        // degenerate membrane B reproduces the constant strain and the in-plane
+        // rule × 2-pt Gauss in ζ integrates the (constant) membrane integrand
+        // exactly, so ½uᵀKu equals the analytical membrane energy.
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let a = 0.01_f64;
+        let b = -0.005_f64;
+        let directors = flat_patch_directors();
+        let thicknesses = [t; 3];
+        let k = shell_element_stiffness_degenerate(&UNIT_TRI, &directors, &thicknesses, &mat);
+
+        const NDP: usize = Mitc3Plus::N_DOFS_PER_NODE;
+        let mut u = [0.0_f64; Mitc3Plus::N_DOFS];
+        u[NDP] = a; // node1 at x=1 → u_x = a
+        u[NDP * 2 + 1] = b; // node2 at y=1 → u_y = b
+
+        let ku = matvec(&k, &u);
+        let u_k: f64 = 0.5 * ku.iter().zip(u.iter()).map(|(ki, ui)| ki * ui).sum::<f64>();
+
+        let d = plane_stress_d(&mat);
+        let eps = [a, b, 0.0_f64];
+        let d_eps = [
+            d[0][0] * eps[0] + d[0][1] * eps[1],
+            d[1][0] * eps[0] + d[1][1] * eps[1],
+            0.0,
+        ];
+        let area = 0.5_f64;
+        let u_analytical = 0.5 * (eps[0] * d_eps[0] + eps[1] * d_eps[1]) * t * area;
+        let scale = u_analytical.abs().max(1.0);
+        assert!(
+            (u_k - u_analytical).abs() < 1e-9 * scale,
+            "degenerate membrane patch: U_K={u_k}, U_analytical={u_analytical}",
+        );
+    }
+
+    #[test]
+    fn degenerate_bending_patch_test_linear_theta_y_matches_analytical_total_energy() {
+        // Constant-curvature field θ_y(node_i) = α·x_i (node0→0, node1→α,
+        // node2→0): uniform curvature κ_xx = α plus the carried MITC3+
+        // assumed-shear projection of the linear physical shear γ_xz = α·x to the
+        // constant α/2 (verified: the MITC3+ interior-tying field, like bare
+        // MITC3's edge field, averages a linear shear to its midpoint value). So
+        //   U_total = ½·α²·D_pl[0][0]·(t³/12)·A  +  ½·(α/2)²·κ·G·t·A
+        // and the degenerate element (which integrates bending via 2-pt Gauss in
+        // ζ, exact for the ζ² integrand) reproduces it. On this flat patch the
+        // element is numerically identical to flat MITC3+ for this mode.
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let alpha = 0.002_f64;
+        let directors = flat_patch_directors();
+        let thicknesses = [t; 3];
+        let k = shell_element_stiffness_degenerate(&UNIT_TRI, &directors, &thicknesses, &mat);
+
+        const NDP: usize = Mitc3Plus::N_DOFS_PER_NODE;
+        let mut u = [0.0_f64; Mitc3Plus::N_DOFS];
+        u[NDP + 4] = alpha; // θ_y = α at node1 (x=1) → θ_y = α·x
+
+        let ku = matvec(&k, &u);
+        let u_k: f64 = 0.5 * ku.iter().zip(u.iter()).map(|(ki, ui)| ki * ui).sum::<f64>();
+
+        let d = plane_stress_d(&mat);
+        let e = mat.youngs_modulus;
+        let nu = mat.poisson_ratio;
+        let g = e / (2.0 * (1.0 + nu));
+        let kappa = 5.0_f64 / 6.0;
+        let area = 0.5_f64;
+        let u_bending = 0.5 * alpha * alpha * d[0][0] * (t * t * t / 12.0) * area;
+        let u_shear = 0.5 * (alpha / 2.0) * (alpha / 2.0) * kappa * g * t * area;
+        let u_analytical = u_bending + u_shear;
+        let scale = u_analytical.abs().max(1.0);
+        assert!(
+            (u_k - u_analytical).abs() < 1e-9 * scale,
+            "degenerate bending patch: U_K={u_k}, U_analytical={u_analytical} \
+             (bending={u_bending}, shear={u_shear}), rel_err={}",
+            (u_k - u_analytical).abs() / scale,
+        );
+    }
 }
