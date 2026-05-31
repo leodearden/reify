@@ -982,6 +982,55 @@ fn boussinesq_subsurface_sigma_z_p2_within_10pct() {
     );
 }
 
+// ─── thick-walled cylinder (Lamé) validation ────────────────────────────────
+
+/// Mesh validation: annular P1 quarter-cylinder mesh geometry.
+///
+/// Checks node count, positive tet volumes (polar Kuhn-split orientation
+/// preserves right-handedness), and inner-face count + inner-radius
+/// constraint.
+#[test]
+fn annular_polar_mesh_is_valid() {
+    const A: f64 = 1.0;
+    const B: f64 = 2.0;
+    const L: f64 = 1.0;
+    const NR: usize = 4;
+    const NTHETA: usize = 4;
+    const NZ: usize = 2;
+
+    let (nodes, conns, inner_faces) = annular_p1_mesh(A, B, L, NR, NTHETA, NZ);
+
+    // (a) node count
+    assert_eq!(
+        nodes.len(), (NR + 1) * (NTHETA + 1) * (NZ + 1),
+        "node count mismatch",
+    );
+
+    // (b) every tet has positive volume
+    for (i, conn) in conns.iter().enumerate() {
+        let corners = [nodes[conn[0]], nodes[conn[1]], nodes[conn[2]], nodes[conn[3]]];
+        let vol = tet_volume_p1(&corners);
+        assert!(
+            vol > 0.0,
+            "tet {i} has non-positive volume {vol:.3e}",
+        );
+    }
+
+    // (c) inner-face count and all nodes at r ≈ a
+    assert_eq!(inner_faces.len(), 2 * NTHETA * NZ, "inner face count mismatch");
+    let tol = 1e-10;
+    for (fi, face) in inner_faces.iter().enumerate() {
+        for &node in face.iter() {
+            let p = nodes[node];
+            let r = (p[0] * p[0] + p[1] * p[1]).sqrt();
+            assert!(
+                (r - A).abs() < tol,
+                "inner face {fi}: node {node} at r={r:.6} not at a={A}",
+            );
+        }
+    }
+}
+
 // ─── slender cantilever P2 tip-deflection ≤1% validation ────────────────────
 
 /// Slender-cantilever P2 tip-deflection validation against Timoshenko (≤1%).
