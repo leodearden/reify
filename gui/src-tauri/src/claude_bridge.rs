@@ -1181,15 +1181,37 @@ mod tests {
         // Give the OS a moment to reap the process.
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        // Verify the process is no longer running.
+        // Verify the process is dead (no longer consuming resources).
+        //
+        // On Linux, kill -0 returns success for zombie processes (killed but not yet
+        // reaped by waitpid). Under heavy parallel test load the tokio SIGCHLD reaper
+        // may not drain within 100 ms. We therefore accept "zombie" as equivalent to
+        // "killed": the process DID receive SIGKILL (it is not running), it just has
+        // not been reaped from the process table yet.
         let probe = std::process::Command::new("kill")
             .arg("-0")
             .arg(pid.to_string())
             .status()
             .expect("kill -0 probe failed");
 
+        let process_is_dead_or_zombie = if !probe.success() {
+            // Process table entry is gone — truly dead.
+            true
+        } else {
+            // kill -0 succeeded → process still in process table.
+            // Distinguish zombie (State: Z) from alive (State: S/R/...).
+            std::fs::read_to_string(format!("/proc/{}/status", pid))
+                .ok()
+                .and_then(|s| {
+                    s.lines()
+                        .find(|l| l.starts_with("State:"))
+                        .map(|l| l.contains('Z'))
+                })
+                .unwrap_or(true) // can't read status → process entry gone
+        };
+
         assert!(
-            !probe.success(),
+            process_is_dead_or_zombie,
             "sleep process (pid {}) should have been killed by Drop but is still running",
             pid
         );
