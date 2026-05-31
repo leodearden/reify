@@ -1,18 +1,26 @@
 //! P1 — producer-orphan detector.
 //!
 //! For every public symbol a `done` task introduced (via
-//! [`JCodemunchOps::get_changed_symbols`] keyed on the task's done-flip
-//! timestamp), flags a Finding when the symbol has no non-test caller in the
-//! workspace and no pending/in-progress/review consumer task — Medium past the
-//! 14-day grace window, Low within it.
+//! [`JCodemunchOps::get_changed_symbols`] keyed on the task's merged commit
+//! range `{commit}^1..{commit}`), flags a Finding when the symbol has no
+//! non-test caller in the workspace and no pending/in-progress/review consumer
+//! task — Medium past the 14-day grace window, Low within it.
 //!
 //! Reference: `docs/architecture-audit/f-infra-design.md` §5 P1.
 //!
+//! The `done_provenance.commit` field (set by reify-orchestrator's resolution
+//! path) is used to form `since_sha = "{commit}^1"` and `until_sha = commit`,
+//! following the same `^1..commit` convention as
+//! `RealGitOps::diff_added_lines_in_commit` (established by task 4074 for P2).
+//! The `done_at` timestamp (epoch-seconds) still drives the 14-day grace-window
+//! age calc — the two fields are orthogonal. Tasks without a resolvable commit
+//! are skipped (jcodemunch has nothing to diff).
+//!
 //! False-positive guards, in firing order (each short-circuits the finding):
 //!
-//! - Per task: not `done`, or no `done_at` → skipped; `audit_foundation`
+//! - Per task: not `done`; no `done_at`; `audit_foundation`
 //!   (foundation/scaffold task); a pending/in-progress/review consumer task
-//!   whose `consumer_ref` matches this producer's `prd`.
+//!   whose `consumer_ref` matches this producer's `prd`; no `done_provenance.commit`.
 //! - Per symbol: `crates/reify-stdlib/` scope-exclude; `#[allow(dead_code)]`
 //!   / `#[cfg(test)]` attribute opt-out; a non-blank `// G-allow:` marker;
 //!   a non-test workspace caller.
@@ -110,8 +118,18 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
             continue;
         }
 
-        let branch = ctx.producer_branch.as_deref().unwrap_or("main");
-        for symbol in ctx.jcodemunch.get_changed_symbols(branch, done_at) {
+        // Commit-range resolution: derive (since_sha, until_sha) from
+        // done_provenance.commit using the `{commit}^1..{commit}` convention
+        // (same as RealGitOps::diff_added_lines_in_commit — established by
+        // task 4074 for P2). A task with no resolvable commit is skipped:
+        // jcodemunch has no range to diff, so no symbols can be reported.
+        let Some(commit) = meta.done_provenance.as_ref().and_then(|p| p.commit.as_deref()) else {
+            continue;
+        };
+        let since_sha = format!("{commit}^1");
+        let until_sha = commit;
+
+        for symbol in ctx.jcodemunch.get_changed_symbols(&since_sha, until_sha) {
             // Per-symbol guard: stdlib `.ri` defs are scope-excluded — every
             // `structure_def` is technically "orphan" until something calls
             // it (design §5 P1 invariant).

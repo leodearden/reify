@@ -51,8 +51,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use reify_audit::{
-    AuditContext, ChangedSymbol, Finding, JCodemunchOps, RealGitOps, Severity, SymbolReference,
-    TaskMetadata, TimeWindow,
+    AuditContext, ChangedSymbol, DeadSymbol, Finding, JCodemunchOps, LayerViolation, RealGitOps,
+    Severity, SymbolReference, TaskMetadata, TimeWindow, UntestedSymbol,
     fused_memory_client::FusedMemoryClient,
 };
 
@@ -69,10 +69,19 @@ use reify_audit::{
 struct NoopJCodemunchOps;
 
 impl JCodemunchOps for NoopJCodemunchOps {
-    fn get_changed_symbols(&self, _branch: &str, _since_epoch: i64) -> Vec<ChangedSymbol> {
+    fn get_changed_symbols(&self, _since_sha: &str, _until_sha: &str) -> Vec<ChangedSymbol> {
         vec![]
     }
     fn find_references(&self, _symbol: &ChangedSymbol) -> Vec<SymbolReference> {
+        vec![]
+    }
+    fn get_dead_code(&self, _min_confidence: f64) -> Vec<DeadSymbol> {
+        vec![]
+    }
+    fn get_untested_symbols(&self, _min_confidence: f64) -> Vec<UntestedSymbol> {
+        vec![]
+    }
+    fn get_layer_violations(&self) -> Vec<LayerViolation> {
         vec![]
     }
 }

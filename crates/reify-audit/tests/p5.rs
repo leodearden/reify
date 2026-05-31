@@ -106,18 +106,24 @@ mod tests {
             }
         }
 
-        // Pattern: all FOUR variants; adding another must force this test to gain arms.
+        // Pattern: all SEVEN variants; adding another must force this test to gain arms.
         for p in [
             Pattern::P5PhantomDone,
             Pattern::P2ConsumerStub,
             Pattern::P1ProducerOrphan,
             Pattern::P5MetadataFilesGitignored,
+            Pattern::PDeadCode,
+            Pattern::PUntested,
+            Pattern::PLayerViolation,
         ] {
             match p {
                 Pattern::P5PhantomDone => {}
                 Pattern::P2ConsumerStub => {}
                 Pattern::P1ProducerOrphan => {}
                 Pattern::P5MetadataFilesGitignored => {}
+                Pattern::PDeadCode => {}
+                Pattern::PUntested => {}
+                Pattern::PLayerViolation => {}
             }
         }
 
