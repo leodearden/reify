@@ -29,6 +29,7 @@
 //!   (0,1)` in local `(ξ, η)` mid-surface coordinates.  Use
 //!   [`mitc3_plus::ShellReferenceCoord`] for these elements.
 
+pub mod degenerate_shell;
 pub mod hex_p1;
 pub mod mitc3_plus;
 pub mod tet_p1;
