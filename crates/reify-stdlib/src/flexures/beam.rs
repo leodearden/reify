@@ -445,4 +445,88 @@ mod tests {
             "7-arg optional-angle neutral",
         );
     }
+
+    /// A valid 6-arg cantilever argument list (step-1 geometry).
+    fn valid_cantilever_args() -> Vec<Value> {
+        vec![
+            Value::length(0.02),
+            Value::length(0.005),
+            Value::length(0.0005),
+            steel(),
+            origin(),
+            axis_y(),
+        ]
+    }
+
+    #[test]
+    fn prb_cantilever_beam_rejects_invalid_inputs() {
+        let undef = |args: Vec<Value>, label: &str| {
+            let r = crate::eval_builtin("prb_cantilever_beam", &args);
+            assert!(r.is_undef(), "{label}: expected Undef, got {r:?}");
+        };
+        // Substitute one slot of the valid arg list.
+        let with = |idx: usize, v: Value| {
+            let mut a = valid_cantilever_args();
+            a[idx] = v;
+            a
+        };
+
+        // Wrong arity.
+        undef(vec![], "0 args");
+        {
+            let mut a = valid_cantilever_args();
+            a.truncate(3);
+            undef(a, "3 args");
+        }
+        {
+            let mut a = valid_cantilever_args();
+            a.push(Value::angle(0.0));
+            a.push(Value::angle(0.0));
+            undef(a, "8 args");
+        }
+
+        // Non-positive / non-finite geometry.
+        undef(with(0, Value::length(0.0)), "length = 0");
+        undef(with(0, Value::length(-0.02)), "length < 0");
+        undef(with(1, Value::length(0.0)), "width = 0");
+        undef(with(2, Value::length(f64::NAN)), "thickness = NaN");
+
+        // Degenerate beam: thickness ≥ length (E_FlexureGeometryInvalid regime;
+        // γ returns Undef without emitting the diagnostic, which λ owns).
+        undef(with(2, Value::length(0.02)), "thickness == length");
+        undef(
+            {
+                let mut a = valid_cantilever_args();
+                a[0] = Value::length(0.02);
+                a[2] = Value::length(0.03);
+                a
+            },
+            "thickness > length",
+        );
+
+        // Bad material.
+        undef(with(3, Value::Real(1.0)), "material not a StructureInstance");
+        undef(with(3, material("NoModulus", &[])), "material missing youngs_modulus");
+
+        // Bad axis.
+        undef(with(5, Value::Real(1.0)), "axis not a vector");
+        undef(
+            with(
+                5,
+                Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]),
+            ),
+            "axis is zero vector",
+        );
+        undef(
+            with(
+                5,
+                Value::Vector(vec![
+                    Value::length(0.0),
+                    Value::length(1.0),
+                    Value::length(0.0),
+                ]),
+            ),
+            "axis is length-dimensioned",
+        );
+    }
 }
