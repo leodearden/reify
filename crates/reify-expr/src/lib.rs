@@ -3017,7 +3017,24 @@ fn eval_mod(lv: &Value, rv: &Value) -> Value {
 }
 
 fn eval_pow(lv: &Value, rv: &Value) -> Value {
-    match (lv, rv) {
+    // Compute the raw result, then sanitize NaN/Inf → Undef.
+    //
+    // Rationale: the value-level `^` operator must satisfy the same
+    // "arithmetic produces Undef, not NaN/Inf" contract as the stdlib
+    // pow()/sqrt() helpers (which apply sanitize_value at the function-call
+    // boundary) and as eval_div/eval_mod (which return Undef on divide-by-zero).
+    // Non-finite results are a footgun: Real(NaN) and Real(+Inf) can propagate
+    // silently through downstream cells.
+    //
+    // The one existing no-sanitize exception is the Complex/Complex arm of
+    // eval_div (lib.rs:2868), which is separately pinned by the test
+    // `complex_div_complex_overflow_propagates_infinity`.  That exception does
+    // NOT generalise to scalar/real `^`.
+    //
+    // Int and other finite-only arms pass through sanitize_value bit-identically,
+    // so the wrapping is zero-cost for the common case.
+    // (task-4106 step-6)
+    let result = match (lv, rv) {
         (Value::Int(base), Value::Int(exp)) => {
             if *exp >= 0 && *exp <= i32::MAX as i64 {
                 Value::Int(base.pow(*exp as u32))
@@ -3046,7 +3063,8 @@ fn eval_pow(lv: &Value, rv: &Value) -> Value {
             Err(_) => Value::Undef,
         },
         _ => Value::Undef,
-    }
+    };
+    sanitize::sanitize_value(result)
 }
 
 fn eval_eq(lv: &Value, rv: &Value) -> Value {
