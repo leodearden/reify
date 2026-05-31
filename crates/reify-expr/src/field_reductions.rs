@@ -178,11 +178,19 @@ fn compute_extremum(field_val: &Value, find_min: bool) -> Value {
 /// # Projection
 ///
 /// Computes `grid_count = ∏ axis_grid lengths`, guards that
+/// `sf.axis_grids` is non-empty, `grid_count > 0`, and
 /// `sf.data.len() == grid_count * 9` (stride contract — mirrors
 /// `fea.rs::extract_per_case_sampled_field`), then for each `i` in
 /// `0..grid_count` pushes
 /// `reify_stdlib::compute_von_mises_3x3(&sf.data[i*9..i*9+9])` into a new
 /// scalar `Vec<f64>`.
+///
+/// Note: the `axis_grids.is_empty()` guard is technically redundant given
+/// the `SampledGridKind` invariant (`Regular1D`/`Regular2D`/`Regular3D` all
+/// carry at least one axis), but it prevents the empty-iterator identity
+/// (`product() == 1`) from producing `grid_count == 1` on a structurally
+/// impossible empty-axis field — symmetry with the documented stride
+/// contract.
 ///
 /// # Result
 ///
@@ -209,9 +217,13 @@ fn project_von_mises_sampled(lambda: &Value) -> Option<SampledField> {
         _ => return None,
     };
 
-    // Stride contract: data must be exactly grid_count * 9 floats.
+    // Shape + stride contract: axis_grids must be non-empty (SampledGridKind
+    // invariant guarantees this for Regular1D/2D/3D, but checked defensively
+    // for directly-constructed fields bypassing that gate; an empty axis_grids
+    // vec would yield product()==1, not 0, so it must be guarded separately),
+    // grid_count must be non-zero, and data must be exactly grid_count * 9 floats.
     let grid_count: usize = sf.axis_grids.iter().map(|g| g.len()).product();
-    if grid_count == 0 || sf.data.len() != grid_count * 9 {
+    if sf.axis_grids.is_empty() || grid_count == 0 || sf.data.len() != grid_count * 9 {
         return None;
     }
 
