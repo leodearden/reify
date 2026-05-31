@@ -83,6 +83,118 @@ const OMEGA_FLOOR: f64 = 1e-9;
 /// Damping margin below the critical value ζ=1 below which Duhamel is valid.
 const ZETA_CEILING: f64 = 1.0 - 1e-9;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Task λ: prepare/integrate split (cache seam)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// These types and functions expose a forcing-independent "setup" step that the
+// `reify-eval` transient-response cache (task λ) can store and reuse across
+// calls that differ only in `forcing`. The split exactly mirrors
+// `solve_modal_response`'s selection logic: callers that hold a
+// `PreparedIntegrator` skip coefficient derivation and run only the recurrence.
+
+/// Forcing-independent prepared integrator for one SDOF modal ODE mode.
+///
+/// Produced by [`prepare_modal_integrator`]; consumed by [`integrate_prepared`].
+///
+/// - `Duhamel { coeffs }` — the pre-derived per-timestep recurrence coefficients
+///   (Chopra Table 5.3.1), valid for the specific `(ω, ζ, dt)` triple.  The
+///   recurrence re-runs in O(n_times) per forcing vector with no coefficient
+///   re-derivation.
+/// - `Newmark { omega, zeta }` — the `(ω, ζ)` marker for modes routed to
+///   Newmark (ζ ≥ 1, ω ≈ 0, or non-uniform grid); per-step coefficients are
+///   re-derived from the local Δt inside [`newmark_solve`] (already O(n)).
+///
+/// `Copy + Clone + Debug + Send + Sync + 'static` — all fields are `f64` /
+/// [`DuhamelCoeffs`] (which is `Copy`).
+#[derive(Clone, Copy, Debug)]
+pub enum PreparedIntegrator {
+    /// Exact Duhamel recurrence for a uniform grid, underdamped mode.
+    Duhamel {
+        /// Pre-derived per-timestep coefficients (function of `(ω, ζ, dt)`).
+        coeffs: DuhamelCoeffs,
+    },
+    /// Newmark-β (γ=1/2, β=1/4) for non-uniform grids, ζ≥1, or ω≈0.
+    Newmark {
+        /// Natural angular frequency ω (rad/s).
+        omega: f64,
+        /// Modal damping ratio ζ (dimensionless).
+        zeta: f64,
+    },
+}
+
+impl PreparedIntegrator {
+    /// Which [`Integrator`] variant this prepared state will use.
+    pub fn integrator(&self) -> Integrator {
+        match self {
+            PreparedIntegrator::Duhamel { .. } => Integrator::DuhamelUniform,
+            PreparedIntegrator::Newmark { .. } => Integrator::Newmark,
+        }
+    }
+}
+
+/// Prepare the forcing-independent SDOF integrator for one mode, replicating
+/// [`solve_modal_response`]'s integrator-selection logic.
+///
+/// # Selection
+/// - If `times` is uniformly sampled (within 1 × 10⁻⁹ relative tolerance)
+///   **and** `omega > OMEGA_FLOOR` **and** `zeta < ZETA_CEILING`: returns
+///   `PreparedIntegrator::Duhamel { coeffs: duhamel_coefficients(omega, zeta, dt) }`
+///   where `dt = times[1] − times[0]`.
+/// - Otherwise: returns `PreparedIntegrator::Newmark { omega, zeta }`.
+///
+/// Returns `Newmark` for `times.len() < 2` (no spacing defined → not uniform).
+///
+/// The selection is identical to `solve_modal_response`'s dispatcher; the
+/// resulting `PreparedIntegrator` can be passed to [`integrate_prepared`] to
+/// reproduce the same output for any forcing vector on the same grid, with
+/// coefficient derivation done once rather than per forcing call.
+pub fn prepare_modal_integrator(omega: f64, zeta: f64, times: &[f64]) -> PreparedIntegrator {
+    let use_duhamel = omega > OMEGA_FLOOR
+        && zeta < ZETA_CEILING
+        && is_uniformly_sampled(times, 1e-9);
+
+    if use_duhamel {
+        let dt = times[1] - times[0];
+        PreparedIntegrator::Duhamel { coeffs: duhamel_coefficients(omega, zeta, dt) }
+    } else {
+        PreparedIntegrator::Newmark { omega, zeta }
+    }
+}
+
+/// Integrate one scalar SDOF modal ODE using a pre-prepared integrator.
+///
+/// Routes to the appropriate recurrence based on `prep`:
+/// - `Duhamel { coeffs }` → [`duhamel_solve_with_coeffs`] (no re-derivation).
+/// - `Newmark { omega, zeta }` → [`newmark_solve`].
+///
+/// Produces the same output as `solve_modal_response` called with the same
+/// `(omega, zeta, times, forcing, xi0, v0)` that produced `prep` — bit-identical
+/// for a given forcing vector, by construction.
+///
+/// # Arguments
+/// * `prep`    — the pre-prepared integrator from [`prepare_modal_integrator`].
+/// * `times`   — same time grid that was passed to `prepare_modal_integrator`.
+/// * `forcing` — per-timestep projected modal forcing; same length as `times`.
+/// * `xi0`     — initial modal displacement ξ(t₀).
+/// * `v0`      — initial modal velocity ξ̇(t₀).
+pub fn integrate_prepared(
+    prep: &PreparedIntegrator,
+    times: &[f64],
+    forcing: &[f64],
+    xi0: f64,
+    v0: f64,
+) -> Vec<f64> {
+    match prep {
+        PreparedIntegrator::Duhamel { coeffs } => {
+            duhamel_solve_with_coeffs(coeffs, forcing, xi0, v0)
+        }
+        PreparedIntegrator::Newmark { omega, zeta } => {
+            newmark_solve(*omega, *zeta, times, forcing, xi0, v0)
+        }
+    }
+}
+
 /// Integrate one scalar SDOF modal ODE, automatically selecting the integrator.
 ///
 /// # Selection logic
@@ -115,22 +227,9 @@ pub fn solve_modal_response(
         forcing.len(),
         "times and forcing must have equal length"
     );
-    let use_duhamel = omega > OMEGA_FLOOR
-        && zeta < ZETA_CEILING
-        && is_uniformly_sampled(times, 1e-9);
-
-    if use_duhamel {
-        let dt = times[1] - times[0];
-        ModalResponse {
-            coords: duhamel_solve(omega, zeta, dt, forcing, xi0, v0),
-            integrator: Integrator::DuhamelUniform,
-        }
-    } else {
-        ModalResponse {
-            coords: newmark_solve(omega, zeta, times, forcing, xi0, v0),
-            integrator: Integrator::Newmark,
-        }
-    }
+    let prep = prepare_modal_integrator(omega, zeta, times);
+    let coords = integrate_prepared(&prep, times, forcing, xi0, v0);
+    ModalResponse { coords, integrator: prep.integrator() }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -384,10 +483,24 @@ pub fn duhamel_coefficients(omega: f64, zeta: f64, dt: f64) -> DuhamelCoeffs {
 /// * The original "rel error < 1 × 10⁻⁹ vs analytic sine at 50 points"
 ///   target is **NOT** asserted — it is ~6 orders below the O((ΩΔt)²)
 ///   linear-interpolation method floor at 50 sample points.
-pub fn duhamel_solve(
-    omega: f64,
-    zeta: f64,
-    dt: f64,
+/// Integrate the scalar SDOF modal ODE using pre-derived [`DuhamelCoeffs`].
+///
+/// Identical to [`duhamel_solve`] but accepts already-computed coefficients,
+/// so the caller can cache and reuse them across multiple forcing vectors
+/// without re-deriving the trig/exp expression (the per-mode cache seam for
+/// task λ).
+///
+/// # Arguments
+/// * `coeffs`  — pre-derived per-timestep recurrence coefficients.
+/// * `forcing` — scalar pre-projected modal forcing samples, one per output
+///   time point; `forcing[0]` is the force at `t=0`.
+/// * `xi0`     — initial modal displacement ξ(0).
+/// * `v0`      — initial modal velocity ξ̇(0).
+///
+/// # Returns
+/// A `Vec<f64>` of length `forcing.len()` where index 0 = ξ(0) = `xi0`.
+pub fn duhamel_solve_with_coeffs(
+    coeffs: &DuhamelCoeffs,
     forcing: &[f64],
     xi0: f64,
     v0: f64,
@@ -398,8 +511,7 @@ pub fn duhamel_solve(
         return out;
     }
 
-    let DuhamelCoeffs { a, b, a_p, b_p, c, d, c_p, d_p } =
-        duhamel_coefficients(omega, zeta, dt);
+    let DuhamelCoeffs { a, b, a_p, b_p, c, d, c_p, d_p } = *coeffs;
 
     // State: (u, v) = (displacement, velocity) in modal coordinates.
     let mut u = xi0;
@@ -426,6 +538,18 @@ pub fn duhamel_solve(
     }
 
     out
+}
+
+pub fn duhamel_solve(
+    omega: f64,
+    zeta: f64,
+    dt: f64,
+    forcing: &[f64],
+    xi0: f64,
+    v0: f64,
+) -> Vec<f64> {
+    let coeffs = duhamel_coefficients(omega, zeta, dt);
+    duhamel_solve_with_coeffs(&coeffs, forcing, xi0, v0)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
