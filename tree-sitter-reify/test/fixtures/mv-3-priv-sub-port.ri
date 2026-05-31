@@ -1,0 +1,8 @@
+/// Fixture: priv sub and priv port visibility modifiers (task 3976, PRD §D-3/D-4).
+/// Signal: `tree-sitter parse --quiet mv-3-priv-sub-port.ri` exits 0 after grammar change.
+pub structure def Gearbox {
+    priv sub inner = Inner()
+    sub outer = Outer()
+    priv port hidden : MechPort
+    port external : MechPort
+}

@@ -1,0 +1,6 @@
+/// Fixture: priv param visibility modifier (task 3976, PRD §D-3/D-4).
+/// Signal: `tree-sitter parse --quiet mv-2-priv-param.ri` exits 0 after grammar change.
+pub structure def Actuator {
+    priv param rated_torque : Torque = 5
+    param q : Length = 1mm
+}
