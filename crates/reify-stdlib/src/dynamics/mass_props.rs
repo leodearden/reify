@@ -13,6 +13,55 @@
 //!     ground-truth mass/com/inertia for a uniform-density box, the value the
 //!     deferred KGQ kernel query (task 3620) will later be cross-checked against.
 
+/// Default mass density (kg/m³) used when `body_mass_props` can resolve no
+/// other density: the density of water at ~4 °C.
+///
+/// PRD `docs/prds/v0_3/rigid-body-dynamics.md` §5.4 specifies water (1000
+/// kg/m³) as the bottom rung of the density ladder so a body with neither an
+/// explicit `density` argument nor a `Material` density still yields a
+/// physically-plausible (if approximate) inertial estimate rather than zero
+/// mass or `Undef`. Falling back to this value also raises
+/// [`DensitySource::DefaultWater`], which the eval layer turns into the
+/// `W_DynamicsDefaultDensity` advisory warning.
+pub const DEFAULT_DENSITY_KG_M3: f64 = 1000.0;
+
+/// Which rung of the [`resolve_density`] priority ladder supplied the density.
+///
+/// Returned alongside the resolved density so the eval layer can decide whether
+/// to emit the `W_DynamicsDefaultDensity` warning (only on
+/// [`DefaultWater`](DensitySource::DefaultWater)). The pure layer itself stays
+/// diagnostic-free.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DensitySource {
+    /// The caller passed an explicit `density` argument to `body_mass_props`.
+    Explicit,
+    /// No explicit argument; the body's `Material.density` was used.
+    Material,
+    /// Neither was available; the [`DEFAULT_DENSITY_KG_M3`] water default was
+    /// used. The eval layer emits `W_DynamicsDefaultDensity` for this case.
+    DefaultWater,
+}
+
+/// Resolve the mass density for `body_mass_props` via the fn-level priority
+/// ladder (PRD §5.4): an explicit `density` argument wins; failing that, the
+/// body's `Material` density; failing that, the [`DEFAULT_DENSITY_KG_M3`] water
+/// default.
+///
+/// Returns the chosen density (kg/m³) paired with the [`DensitySource`] rung it
+/// came from, so the caller knows whether a default-density warning is due.
+/// This is pure `f64` selection — no validation of the magnitude (a non-positive
+/// or `NaN` density is returned verbatim; physical validity of the resulting
+/// inertia is enforced downstream by the existing MassProperties PSD hook).
+pub fn resolve_density(explicit: Option<f64>, material: Option<f64>) -> (f64, DensitySource) {
+    if let Some(rho) = explicit {
+        (rho, DensitySource::Explicit)
+    } else if let Some(rho) = material {
+        (rho, DensitySource::Material)
+    } else {
+        (DEFAULT_DENSITY_KG_M3, DensitySource::DefaultWater)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
