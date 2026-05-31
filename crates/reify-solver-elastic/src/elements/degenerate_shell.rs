@@ -54,6 +54,61 @@
 //! 4065's. The element stiffness assembled from these pieces lives beside its
 //! flat-facet sibling in [`crate::shell_assembly`].
 
+use crate::shell_assembly::build_shell_frame;
+
+/// A per-node shell **director**: the unit vector along the through-thickness
+/// fibre at a mesh vertex (the `V_i` of the degenerate-shell geometry map
+/// `X = Σ N_i x_i + (ζ/2) Σ N_i t_i V_i`).
+///
+/// Represented as a bare `[f64; 3]` so it interoperates directly with node
+/// positions and the cross-product helpers. The element treats it as a unit
+/// vector; callers supplying explicit (extraction- or analytically-derived)
+/// directors own the unit-norm invariant. The [`directors_from_facets`]
+/// fallback always returns unit-norm directors.
+pub type Director = [f64; 3];
+
+/// Neighbour-averaged facet-normal **director fallback** for meshes without
+/// extraction-supplied per-vertex normals.
+///
+/// For each triangle in `connectivity` the unit facet normal is taken from
+/// [`build_shell_frame`] (cross-product convention `n = (p1−p0) × (p2−p0)`,
+/// normalized — `e3` of the local frame), so the sign convention is shared
+/// with the rest of the shell pipeline. Each facet normal is accumulated into
+/// its three vertices and every vertex director is the normalized sum of the
+/// unit normals of its incident facets. Returns one unit-norm [`Director`] per
+/// entry of `nodes`, in node order.
+///
+/// This is the *default* director source when nothing better is available; the
+/// element consumes explicit directors (provenance-agnostic), and curved
+/// benchmarks instead supply analytic vertex normals (the extraction
+/// stand-in). A node with no incident facet, or whose incident normals exactly
+/// cancel, falls back to `+z` so the result is always unit-norm.
+pub fn directors_from_facets(nodes: &[[f64; 3]], connectivity: &[[usize; 3]]) -> Vec<Director> {
+    let mut acc = vec![[0.0_f64; 3]; nodes.len()];
+    for conn in connectivity {
+        let tri = [nodes[conn[0]], nodes[conn[1]], nodes[conn[2]]];
+        // e3 of the local frame = unit facet normal, sign-consistent with the
+        // membrane/bending/shear pipeline.
+        let n = build_shell_frame(&tri).r[2];
+        for &v in conn.iter() {
+            acc[v][0] += n[0];
+            acc[v][1] += n[1];
+            acc[v][2] += n[2];
+        }
+    }
+    for d in acc.iter_mut() {
+        let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        if len > 1e-30 {
+            d[0] /= len;
+            d[1] /= len;
+            d[2] /= len;
+        } else {
+            *d = [0.0, 0.0, 1.0];
+        }
+    }
+    acc
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
