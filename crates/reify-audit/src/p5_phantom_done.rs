@@ -28,15 +28,83 @@ const EMPTY_ASSERTION_PATTERNS: &[&str] = &[
 // Placeholder/stub markers for H1 fn-name gate (gate a, case-insensitive).
 // A test fn name containing any of these signals a deliberately-placeholder
 // test rather than a legitimate empty-result test (design caveat task 4140).
+//
+// NOTE: "empty" is intentionally NOT in this list. Many legitimate test names
+// contain the word 'empty' as a domain noun (e.g. `handles_empty_input`,
+// `returns_error_on_empty_list`, `empty_collection_is_valid`). Including it
+// would generate false positives for tests that correctly assert an empty result
+// for an empty input — exactly the class of legitimate test the double-gate is
+// designed to spare. The concrete incident fn name
+// `activate_expands_geometric_params_placeholder_to_empty_list` still triggers
+// via the stronger "placeholder" marker. Per task 4140 §FP-control.
 const PLACEHOLDER_MARKERS: &[&str] = &[
     "placeholder",
-    "empty",
     "not_yet",
     "notyet",
     "stub",
     "todo",
     "unimplemented",
 ];
+
+/// Returns `true` when `line` contains a vacuous empty-assertion pattern
+/// (gate b of the H1 double-gate), with one exception: a `.is_empty()` that is
+/// part of a negated expression (e.g. `assert!(!result.is_empty())`) does NOT
+/// satisfy the gate — asserting non-empty is not a vacuous assertion.
+///
+/// Negation detection: strip identifier characters (word chars) from the end
+/// of the text before `.is_empty()`; if what remains ends with `!`, the call
+/// is negated. This correctly handles `!result.is_empty()` (where `!` precedes
+/// the receiver, not the dot) while not mistaking `assert!(result.is_empty()`
+/// (which ends with `(` after stripping `result`) for a negation.
+fn line_has_empty_assertion(line: &str) -> bool {
+    for pat in EMPTY_ASSERTION_PATTERNS {
+        let Some(pos) = line.find(pat) else {
+            continue;
+        };
+        // Special-case: detect negated `.is_empty()` — asserting NON-empty.
+        // Strip word characters from the end of the text before `.is_empty()`.
+        // If what remains ends with `!`, the receiver was negated (e.g.
+        // `!result.is_empty()`). Does not catch chained calls like
+        // `!x.to_vec().is_empty()` (rare in tests; accepted limitation).
+        if *pat == ".is_empty()" {
+            let before_trimmed = line[..pos].trim_end_matches(|c: char| c.is_alphanumeric() || c == '_');
+            if before_trimmed.ends_with('!') {
+                continue; // negated: asserting non-empty
+            }
+        }
+        return true;
+    }
+    false
+}
+
+/// Extract the function name from a line that is a Rust `fn` declaration.
+/// Returns `None` when the line is not a function declaration. Anchors to the
+/// start of the non-whitespace content so that `fn ` occurring inside a doc
+/// comment, string literal, or another identifier context is NOT mistakenly
+/// treated as a declaration boundary.
+///
+/// Accepted leading patterns (after stripping leading whitespace):
+/// - `fn ` / `pub fn ` / `async fn ` / `pub async fn `
+/// - `pub(<vis>) fn ` (e.g. `pub(crate) fn`, `pub(super) fn`)
+///
+/// Suggestion 4 from the code review (task 4140 amendment pass).
+fn extract_fn_name(line: &str) -> Option<String> {
+    let trimmed = line.trim_start();
+    // Determine whether this trimmed line begins with a fn declaration.
+    let is_fn_decl = trimmed.starts_with("fn ")
+        || trimmed.starts_with("pub fn ")
+        || trimmed.starts_with("async fn ")
+        || trimmed.starts_with("pub async fn ")
+        || (trimmed.starts_with("pub(") && trimmed.contains(") fn "));
+    if !is_fn_decl {
+        return None;
+    }
+    // Find `fn ` within the (already-anchored) trimmed line and extract the name.
+    let fn_kw_pos = trimmed.find("fn ")?;
+    let after_fn = &trimmed[fn_kw_pos + 3..];
+    let name = after_fn.split('(').next()?.trim().to_lowercase();
+    if name.is_empty() { None } else { Some(name) }
+}
 
 /// The git ref the detector diffs claimed commits *against*. Production runs
 /// against `main`; the integration tests configure their `MockGitOps` with
@@ -148,10 +216,10 @@ fn check_task(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Finding> {
 /// `GitOps::diff_added_lines_in_commit(commit, path)` and emits a
 /// `P5TestsAssertEmpty` `Medium` finding ONLY when an added test fn BOTH:
 ///
-/// (a) carries a placeholder/empty/not_yet/notyet/stub/todo/unimplemented
-///     marker in its fn name (case-insensitive substring match on `fn <name>(`);
+/// (a) carries a placeholder/not_yet/notyet/stub/todo/unimplemented marker in
+///     its fn name (case-insensitive substring match; see `PLACEHOLDER_MARKERS`);
 /// (b) has an empty/vacuous assertion within that fn's added lines
-///     (see `EMPTY_ASSERTION_PATTERNS`).
+///     (see `EMPTY_ASSERTION_PATTERNS` and [`line_has_empty_assertion`]).
 ///
 /// The double-gate suppresses legitimately-empty capabilities (e.g.
 /// `fn returns_no_warnings_for_valid_input()` asserts `is_empty()`) while
@@ -159,7 +227,23 @@ fn check_task(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Finding> {
 /// `activate_expands_geometric_params_placeholder_to_empty_list` that
 /// asserts `is_empty()`. Design caveat: task 4140 §FP-control.
 ///
+/// Fn-declaration detection is anchored to the start of the non-whitespace
+/// content of the line (via [`extract_fn_name`]) to avoid spurious matches on
+/// `fn ` inside doc comments, string literals, or other non-declaration
+/// contexts.
+///
 /// Skipped when `done_provenance.commit` is absent (no commit to diff).
+///
+/// # Known limitation
+///
+/// H1 only fires when the `fn <name>(` declaration line itself appears among
+/// the commit's added lines. If a developer adds assertion lines into a
+/// pre-existing placeholder fn (signature unchanged), `current_fn_name` remains
+/// `None` and the heuristic silently misses the case. This is an accepted
+/// limitation: closing the gap would require a `GitOps::read_file_at_commit`
+/// seam not currently available. The incident fixtures all add the whole fn,
+/// confirming the heuristic covers the target pattern. Per task 4140
+/// §H1-known-limitations.
 fn check_tests_assert_empty(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Finding> {
     let Some(commit) = meta.done_provenance.as_ref().and_then(|p| p.commit.as_deref()) else {
         return vec![];
@@ -172,40 +256,31 @@ fn check_tests_assert_empty(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
         }
         let added = ctx.git.diff_added_lines_in_commit(commit, path);
         // Walk added lines tracking the current fn name.
-        // State machine: once we see `fn <name>(`, we record the lowercased name
-        // until the next `fn` declaration, accumulating the fn's added lines.
-        // A placeholder-named fn whose accumulated lines contain a vacuous assertion
-        // fires the finding.
+        // State machine: once we see an anchored fn declaration, we record the
+        // lowercased fn name until the next declaration, accumulating the fn's
+        // added lines. A placeholder-named fn whose accumulated lines contain a
+        // vacuous assertion (and is not a negated non-empty assertion) fires the
+        // finding. Uses extract_fn_name to anchor detection to declaration lines
+        // only, and line_has_empty_assertion to exclude negated .is_empty() calls.
         let mut current_fn_name: Option<String> = None;
         let mut fn_has_placeholder = false;
         let mut fn_has_empty_assertion = false;
         let mut found_in_file = false;
 
         for (_, line) in &added {
-            // Detect a new fn declaration.
-            if let Some(fn_start) = line.find("fn ") {
+            // Detect a new fn declaration (anchored to declaration start).
+            if let Some(fn_name) = extract_fn_name(line) {
                 // Flush the previous fn if it triggered both gates.
                 if fn_has_placeholder && fn_has_empty_assertion {
                     found_in_file = true;
                 }
-                // Extract the fn name (up to the first `(`).
-                let after_fn = &line[fn_start + 3..];
-                let fn_name = after_fn
-                    .split('(')
-                    .next()
-                    .unwrap_or("")
-                    .trim()
-                    .to_lowercase();
-                current_fn_name = Some(fn_name.clone());
                 fn_has_placeholder = PLACEHOLDER_MARKERS.iter().any(|m| fn_name.contains(m));
                 fn_has_empty_assertion = false;
+                current_fn_name = Some(fn_name);
             }
 
-            // Within a fn, check for vacuous assertions.
-            if current_fn_name.is_some()
-                && fn_has_placeholder
-                && EMPTY_ASSERTION_PATTERNS.iter().any(|pat| line.contains(pat))
-            {
+            // Within a fn, check for vacuous assertions (excluding negated !is_empty()).
+            if current_fn_name.is_some() && fn_has_placeholder && line_has_empty_assertion(line) {
                 fn_has_empty_assertion = true;
             }
         }
@@ -606,16 +681,11 @@ fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
     let symbols = ctx.jcodemunch.get_changed_symbols(&since_sha, until_sha);
     let mut findings = Vec::new();
     for symbol in symbols {
-        // Per-symbol guard: stdlib scope-exclude.
-        if symbol.file.starts_with("crates/reify-stdlib/") {
-            continue;
-        }
-        // Per-symbol guard: intentional-orphan opt-outs (mirrors P1).
-        if symbol.has_allow_dead_code || symbol.has_cfg_test {
-            continue;
-        }
-        // Per-symbol guard: non-blank G-allow marker (mirrors p1_producer_orphan::is_g_allow_suppressed).
-        if symbol.g_allow_marker.as_deref().is_some_and(|r| !r.trim().is_empty()) {
+        // Per-symbol guards: stdlib scope-exclude, intentional-orphan opt-outs
+        // (#[allow(dead_code)], #[cfg(test)]), and non-blank G-allow marker.
+        // Delegated to crate::is_symbol_suppressed so that P1 and P5 H2 share
+        // the same opt-out semantics and cannot drift independently.
+        if crate::is_symbol_suppressed(&symbol) {
             continue;
         }
         let has_non_test_caller = ctx

@@ -1053,3 +1053,31 @@ fn is_test_path(p: &str) -> bool {
         || p.contains(".test.")  // JS/TS: foo.test.ts
         || p.contains(".spec.")  // JS/TS: foo.spec.ts
 }
+
+/// Combined suppression predicate for detector passes that check changed symbols.
+///
+/// Returns `true` when the symbol should be silently skipped — it is a stdlib
+/// def, an intentional orphan, or carries a G-allow marker:
+///
+/// - File starts with `crates/reify-stdlib/` (scope-exclude: every
+///   `.ri` structure def is technically orphan until something calls it).
+/// - `has_allow_dead_code` or `has_cfg_test` (intentional-orphan opt-outs).
+/// - Non-blank `// G-allow:` marker (mirrors
+///   `scripts/audit-orphan-producers.sh:150` `G_ALLOW_RE =
+///   //\s*G-allow:\s*(.+)` where `(.+)` requires at least one non-whitespace
+///   character; a blank/whitespace-only marker does NOT suppress).
+///
+/// Used by both P1 (`p1_producer_orphan`) and P5 H2 (`check_live_path_stranded`)
+/// so the opt-out semantics stay in lockstep. `p1_producer_orphan` still holds
+/// its own private `is_g_allow_suppressed` copy; this crate-level helper is the
+/// canonical reference for future callers. Per `f-infra-design.md` §5 P1/P5.
+// G-allow: shared suppression predicate; callers are intra-crate (p5_phantom_done::check_live_path_stranded) — orphan-audit script counts only inter-crate call sites
+pub(crate) fn is_symbol_suppressed(symbol: &ChangedSymbol) -> bool {
+    symbol.file.starts_with("crates/reify-stdlib/")
+        || symbol.has_allow_dead_code
+        || symbol.has_cfg_test
+        || symbol
+            .g_allow_marker
+            .as_deref()
+            .is_some_and(|r| !r.trim().is_empty())
+}

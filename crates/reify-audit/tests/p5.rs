@@ -2087,6 +2087,170 @@ mod tests {
         );
     }
 
+    /// H1 FP guard (negation): a placeholder-named fn that asserts
+    /// `assert!(!result.is_empty())` (negated — asserting NON-empty) must NOT
+    /// be flagged.
+    ///
+    /// The `.is_empty()` pattern in gate (b) fires only when NOT immediately
+    /// preceded by `!`. A test like `fn placeholder_checks_non_empty_result()`
+    /// that asserts `!result.is_empty()` is a real correctness check, not a
+    /// vacuous placeholder — the double-gate must suppress it.
+    ///
+    /// Locks the negation-guard added in the amendment pass (task 4140 review
+    /// suggestion 1).
+    #[test]
+    fn h1_negated_is_empty_not_flagged() {
+        let conn = seed_db();
+        insert_task_completed_event(&conn, "H1NEG1");
+
+        let mut git = MockGitOps::new();
+        git.set_diff_changed_paths(
+            "main",
+            "h1neg1_commit",
+            vec!["crates/reify-eval/tests/neg_tests.rs".to_string()],
+        );
+        git.set_log_grep("main", "H1NEG1", vec![]);
+
+        // fn name has "placeholder" marker BUT asserts !is_empty() (non-empty).
+        git.set_diff_added_lines_in_commit(
+            "h1neg1_commit",
+            "crates/reify-eval/tests/neg_tests.rs",
+            vec![
+                (1, "    #[test]".to_string()),
+                (2, "    fn placeholder_checks_non_empty_result() {".to_string()),
+                (3, "        let result = compute();".to_string()),
+                (4, "        assert!(!result.is_empty(), \"result must not be empty\");".to_string()),
+                (5, "    }".to_string()),
+            ],
+        );
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "H1NEG1".to_string(),
+            TaskMetadata {
+                task_id: "H1NEG1".to_string(),
+                status: "done".to_string(),
+                files: vec!["crates/reify-eval/tests/neg_tests.rs".to_string()],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("h1neg1_commit".to_string()),
+                    note: None,
+                }),
+                title: "Add non-empty assertion test".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        let h1_findings: Vec<_> = findings
+            .iter()
+            .filter(|f| f.pattern == Pattern::P5TestsAssertEmpty)
+            .collect();
+        assert!(
+            h1_findings.is_empty(),
+            "placeholder-named fn asserting !is_empty() (non-empty) must NOT be flagged; \
+             got {:?}",
+            h1_findings
+        );
+    }
+
+    /// H1 FP guard (empty-as-domain-noun): a test fn whose name contains 'empty'
+    /// as a descriptive noun (e.g. `handles_empty_input_returns_no_warnings`) but
+    /// that legitimately asserts `is_empty()` must NOT be flagged.
+    ///
+    /// 'empty' was formerly in PLACEHOLDER_MARKERS, which caused false positives
+    /// for names like `handles_empty_input`, `returns_error_on_empty_list`, and
+    /// `empty_collection_is_valid`. This test locks the non-flagging after
+    /// dropping 'empty' from the marker set (task 4140 review suggestion 2).
+    #[test]
+    fn h1_empty_in_name_legitimate_assertion_not_flagged() {
+        let conn = seed_db();
+        insert_task_completed_event(&conn, "H1EMPTY");
+
+        let mut git = MockGitOps::new();
+        git.set_diff_changed_paths(
+            "main",
+            "h1empty_commit",
+            vec!["crates/reify-lint/tests/empty_tests.rs".to_string()],
+        );
+        git.set_log_grep("main", "H1EMPTY", vec![]);
+
+        // fn name contains 'empty' as a domain noun — no stronger placeholder marker.
+        // The fn legitimately asserts is_empty() for a valid empty-input case.
+        git.set_diff_added_lines_in_commit(
+            "h1empty_commit",
+            "crates/reify-lint/tests/empty_tests.rs",
+            vec![
+                (1, "    #[test]".to_string()),
+                (2, "    fn handles_empty_input_returns_no_warnings() {".to_string()),
+                (3, "        let result = lint_empty_input();".to_string()),
+                (4, "        assert!(result.is_empty(), \"empty input should produce no warnings\");".to_string()),
+                (5, "    }".to_string()),
+            ],
+        );
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "H1EMPTY".to_string(),
+            TaskMetadata {
+                task_id: "H1EMPTY".to_string(),
+                status: "done".to_string(),
+                files: vec!["crates/reify-lint/tests/empty_tests.rs".to_string()],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("h1empty_commit".to_string()),
+                    note: None,
+                }),
+                title: "Handle empty input case".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        let h1_findings: Vec<_> = findings
+            .iter()
+            .filter(|f| f.pattern == Pattern::P5TestsAssertEmpty)
+            .collect();
+        assert!(
+            h1_findings.is_empty(),
+            "fn with 'empty' as a domain noun (not a placeholder marker) must NOT be flagged; \
+             got {:?}",
+            h1_findings
+        );
+    }
+
     /// End-to-end regression pin for the task 1638/1904/2199 phantom-done class.
     ///
     /// Combines all three incident traits in one fixture:
