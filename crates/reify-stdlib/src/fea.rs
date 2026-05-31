@@ -4060,4 +4060,25 @@ mod tests {
     fn tensor_projection_magnitude_window_too_short_panics_in_dev() {
         let _ = TensorProjection::Magnitude.apply(&[1.0, 2.0]); // length 2 < 3
     }
+
+    // ── task 3029: fea::diagnose unit tests (multi-load-case FEA #10) ─────────
+
+    // step-5 (RED): empty weights map → MultiLoadEmptyWeights diagnostic.
+    // Mirrors the trigger in linear_combine_empty_weights_returns_undef. RED
+    // until fea::diagnose is introduced in step-6.
+    #[test]
+    fn diagnose_linear_combine_empty_weights() {
+        let mcr = multi_case_result_value(&[("A", make_fixture_elastic_result(0))]);
+        let empty_weights = Value::Map(BTreeMap::new());
+        let diag = diagnose("linear_combine", &[mcr, empty_weights])
+            .expect("empty weights must produce a diagnostic");
+        assert_eq!(
+            diag.code,
+            Some(reify_core::DiagnosticCode::MultiLoadEmptyWeights)
+        );
+        assert_eq!(
+            diag.message,
+            "linear_combine: weights map is empty. Specify at least one weighted base case."
+        );
+    }
 }
