@@ -180,6 +180,9 @@ struct CartwheelInputs<'a> {
     blade_count: f64,
     /// Blade length L (metres).
     length: f64,
+    /// Blade thickness t in the bending direction (metres).
+    /// Required for the surface-yield rotation θ_yield = yield·L/(E·t/2).
+    thickness: f64,
     /// Blade second moment of area `I = width·thickness³/12` (m⁴).
     i: f64,
     /// Young's modulus E (Pa).
@@ -230,6 +233,7 @@ fn parse_cartwheel_inputs(args: &[Value]) -> Option<CartwheelInputs<'_>> {
     Some(CartwheelInputs {
         blade_count,
         length,
+        thickness,
         i: width * thickness.powi(3) / 12.0,
         e,
         yield_si: material_field_si(material, "yield_stress"),
@@ -264,8 +268,16 @@ fn prb_cartwheel_flexure(args: &[Value]) -> Value {
     // Each blade contributes k_blade = γ·E·I/L (Howell §5.1 cantilever).
     let k_pivot = c.blade_count * CANTILEVER_GAMMA * c.e * c.i / c.length;
 
-    // PROVISIONAL: ±5° PRB cap only (yield-aware refinement added in step-4).
-    let range = symmetric_angle_range(PRB_ANGLE_LIMIT_RAD);
+    // Symmetric prb_validity range = ±min(θ_yield, 5°). Each radial blade is a
+    // cantilever; the cartwheel rotation equals the per-blade rotation, so the
+    // cantilever surface-yield rotation IS the pivot's yield-limited range:
+    //   θ_yield = yield·L / (E·t/2)  (Howell §5.1 cantilever surface-yield).
+    // A material without yield_stress contributes only the 5° PRB cap.
+    let theta_lim = match c.yield_si {
+        Some(y) => (y * c.length / (c.e * c.thickness / 2.0)).min(PRB_ANGLE_LIMIT_RAD),
+        None => PRB_ANGLE_LIMIT_RAD,
+    };
+    let range = symmetric_angle_range(theta_lim);
 
     // Optional trailing neutral angle (default 0 for the 7-arg form; step-8
     // wires the 8-arg form — neutral_arg is already populated by the parser).
