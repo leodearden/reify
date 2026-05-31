@@ -260,6 +260,145 @@ fn trampoline_sign_violation_is_failed_with_diagnostic() {
     }
 }
 
+// ── step-9 (amend): trampoline failure-path coverage ─────────────────────────
+//
+// The happy-path + single sign-violation tests above leave the other implemented
+// failure paths unexercised — exactly the guards most likely to regress silently
+// into an `Ok`/panic. These assert `ComputeOutcome::Failed` for each, and check a
+// guard-specific phrase (not just the shared `E_FormFindInfeasible` prefix) so
+// the `describe()` mapping and the trampoline's own range/length guards are
+// actually covered.
+
+/// A Tensegrity with a disconnected free node: node 0 is cabled to anchor 2,
+/// while free node 1 floats with no member touching it — its row in the reduced
+/// stiffness `D_ff` is zero, so the solve is singular (mirrors the kernel's
+/// `disconnected_free_node_is_singular_reduced_stiffness` golden).
+fn disconnected_free_node_tensegrity() -> Value {
+    let nodes = Value::List(vec![
+        node(0.0, 0.0, 0.0), // free node 0 — cabled to the anchor
+        node(5.0, 0.0, 0.0), // free node 1 — floating: no members touch it
+        node(1.0, 0.0, 0.0), // anchor 2
+    ]);
+    let struts = Value::List(vec![]);
+    let cables = Value::List(vec![Value::List(vec![Value::Int(0), Value::Int(2)])]);
+    let fields: PersistentMap<String, Value> = [
+        ("nodes".to_string(), nodes),
+        ("struts".to_string(), struts),
+        ("cables".to_string(), cables),
+    ]
+    .into_iter()
+    .collect();
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(0),
+        type_name: "Tensegrity".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
+/// Assert the outcome is `Failed` with an `E_FormFindInfeasible` diagnostic whose
+/// message also contains `needle` (proving the specific guard / `describe()` arm
+/// fired, not merely *some* infeasibility).
+fn assert_failed_infeasible(outcome: ComputeOutcome, needle: &str) {
+    match outcome {
+        ComputeOutcome::Failed { diagnostics } => {
+            let joined = diagnostics
+                .iter()
+                .map(|d| d.message.as_str())
+                .collect::<Vec<_>>()
+                .join(" | ");
+            assert!(
+                joined.contains("E_FormFindInfeasible"),
+                "expected an E_FormFindInfeasible diagnostic, got: {joined}"
+            );
+            assert!(
+                joined.contains(needle),
+                "expected the diagnostic to mention {needle:?}, got: {joined}"
+            );
+        }
+        other => panic!("expected ComputeOutcome::Failed, got {other:?}"),
+    }
+}
+
+/// All five nodes anchored ⇒ empty free set: the kernel has nothing to solve for
+/// and the trampoline must surface a clean diagnostic, not a degenerate 0×0 solve.
+#[test]
+fn trampoline_all_anchored_is_failed_empty_free_set() {
+    let value_inputs = vec![
+        cable_net_tensegrity(),
+        Value::List(vec![Value::Real(1.0); 4]),
+        Value::List(vec![
+            Value::Int(0),
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(4),
+        ]),
+    ];
+    assert_failed_infeasible(call_form_find(&value_inputs), "every node is anchored");
+}
+
+/// A disconnected free node makes `D_ff` singular: the post-solve residual guard
+/// must trip and the trampoline must report it (never NaN coordinates / a wrong
+/// solve).
+#[test]
+fn trampoline_disconnected_free_node_is_failed_singular() {
+    let value_inputs = vec![
+        disconnected_free_node_tensegrity(),
+        Value::List(vec![Value::Real(1.0)]), // one cable
+        Value::List(vec![Value::Int(2)]),    // anchor 2
+    ];
+    assert_failed_infeasible(call_form_find(&value_inputs), "singular reduced stiffness");
+}
+
+/// force_densities shorter than the member count (4 cables, 3 densities) is a
+/// dimension mismatch — caught by the kernel up front.
+#[test]
+fn trampoline_force_density_count_mismatch_is_failed() {
+    let value_inputs = vec![
+        cable_net_tensegrity(),                 // 4 cables
+        Value::List(vec![Value::Real(1.0); 3]), // only 3 force densities
+        Value::List(vec![
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(4),
+        ]),
+    ];
+    assert_failed_infeasible(call_form_find(&value_inputs), "member count");
+}
+
+/// An anchor index past the node array is rejected by the trampoline's own range
+/// check (before the kernel runs), with the offending index located in the
+/// message.
+#[test]
+fn trampoline_out_of_range_anchor_index_is_failed() {
+    let value_inputs = vec![
+        cable_net_tensegrity(), // 5 nodes ⇒ valid indices 0..5
+        Value::List(vec![Value::Real(1.0); 4]),
+        Value::List(vec![
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(99), // out of range
+        ]),
+    ];
+    assert_failed_infeasible(call_form_find(&value_inputs), "out of range");
+}
+
+/// Fewer than three value_inputs (a caller that failed to let-bind all three
+/// args — the shallow-walk capture contract) hits the `run()` length guard, which
+/// must produce a located diagnostic rather than an index-out-of-bounds panic.
+#[test]
+fn trampoline_short_value_inputs_is_failed() {
+    let value_inputs = vec![
+        cable_net_tensegrity(),
+        Value::List(vec![Value::Real(1.0); 4]),
+        // anchors omitted → only 2 inputs reach the trampoline
+    ];
+    assert_failed_infeasible(call_form_find(&value_inputs), "expects 3 inputs");
+}
+
 // ── step-11: e2e + cache-hit + CLI over examples/tensegrity_cable_net.ri ──────
 
 /// The committed anchored cable-net example. `include_str!` makes a *missing*
@@ -439,8 +578,15 @@ fn cli_cable_net_prints_solved_z() {
         String::from_utf8_lossy(&output.stderr),
     );
     let stdout = String::from_utf8(output.stdout).expect("stdout must be valid UTF-8");
+    // Tight assertion: the solved free node 0 prints at the anchor centroid
+    // (0, 0, 0.5) m, i.e. the exact token `point(0 m, 0 m, 0.5 m)`. A bare "0.5"
+    // substring would also match "0.50" / "10.5" / any incidental 0.5 in another
+    // cell, so a *wrong* solve could pass; the full point string ties z = 0.5 to
+    // node 0 being at the centroid. The 1×1 reduced solve is bit-exact here
+    // (2 / 4 = 0.5 in IEEE-754), so the printed form needs no tolerance.
     assert!(
-        stdout.contains("0.5"),
-        "expected the solved z (0.5) in `reify eval` stdout; got:\n{stdout}"
+        stdout.contains("point(0 m, 0 m, 0.5 m)"),
+        "expected the solved node 0 at the anchor centroid `point(0 m, 0 m, 0.5 m)` \
+         in `reify eval` stdout; got:\n{stdout}"
     );
 }
