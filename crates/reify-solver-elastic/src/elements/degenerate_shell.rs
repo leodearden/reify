@@ -433,10 +433,14 @@ pub fn degenerate_membrane_bending_b(
 /// rigid-body null-space and 3D-rotation isotropy (esc-4068-127). It is therefore
 /// **not** the field the stiffness uses; [`degenerate_transverse_shear_b`] builds
 /// the covariant shear from the *exact* degenerate kinematics instead. This
-/// function is retained as the documented witness that, when flat, the exact
-/// kinematics coincide with task 3392's carried DISP3 covariant field
-/// (`degenerate_assumed_covariant_shear_is_carried_verbatim_from_mitc3_plus`).
-pub fn degenerate_assumed_covariant_shear_b(coord: ShellReferenceCoord) -> [[f64; 18]; 2] {
+/// function is a test-only (`#[cfg(test)]`) witness that, when flat, the exact
+/// kinematics coincide with task 3392's carried DISP3 covariant field, used by
+/// the constant-state and flat-reduction tests below. "No new shear field" holds
+/// by construction: it invokes only the task-3392 primitives
+/// (`covariant_shear_b_nodal` + `interpolate_assumed_shear_mitc3_plus`), so there
+/// is no second reconstruction to drift against.
+#[cfg(test)]
+fn degenerate_assumed_covariant_shear_b(coord: ShellReferenceCoord) -> [[f64; 18]; 2] {
     use crate::elements::mitc3_plus::ShearStrain;
     let interior = Mitc3Plus.interior_tying_points();
     // (1) Sample the bare-DISP3 covariant shear at the six interior tying points.
@@ -1177,37 +1181,6 @@ mod tests {
         e
     }
 
-    /// Independently reconstruct the carried MITC3+ assumed **covariant** shear B
-    /// at `coord`, exactly as task 3392 does inline in
-    /// `shell_element_stiffness_mitc3_plus`: sample the bare-DISP3 covariant shear
-    /// ([`Mitc3Plus::covariant_shear_b_nodal`]) at the six interior tying points
-    /// and re-interpolate column-by-column via
-    /// [`Mitc3Plus::interpolate_assumed_shear_mitc3_plus`] (Eq. 9). Used to prove
-    /// the degenerate module carries the 3392 field VERBATIM (no new shear field).
-    fn mitc3_plus_covariant_shear_b_reference(coord: ShellReferenceCoord) -> [[f64; 18]; 2] {
-        use crate::elements::mitc3_plus::ShearStrain;
-        let interior = Mitc3Plus.interior_tying_points();
-        let mut b_tp = [[[0.0_f64; 18]; 2]; Mitc3Plus::N_INTERIOR_TYING_POINTS];
-        for (k, tp) in interior.iter().enumerate() {
-            b_tp[k] = Mitc3Plus.covariant_shear_b_nodal(tp.coord);
-        }
-        let mut b = [[0.0_f64; 18]; 2];
-        for dof in 0..18 {
-            let samples: [ShearStrain; Mitc3Plus::N_INTERIOR_TYING_POINTS] = [
-                ShearStrain { gamma_xi_zeta: b_tp[0][0][dof], gamma_eta_zeta: b_tp[0][1][dof] },
-                ShearStrain { gamma_xi_zeta: b_tp[1][0][dof], gamma_eta_zeta: b_tp[1][1][dof] },
-                ShearStrain { gamma_xi_zeta: b_tp[2][0][dof], gamma_eta_zeta: b_tp[2][1][dof] },
-                ShearStrain { gamma_xi_zeta: b_tp[3][0][dof], gamma_eta_zeta: b_tp[3][1][dof] },
-                ShearStrain { gamma_xi_zeta: b_tp[4][0][dof], gamma_eta_zeta: b_tp[4][1][dof] },
-                ShearStrain { gamma_xi_zeta: b_tp[5][0][dof], gamma_eta_zeta: b_tp[5][1][dof] },
-            ];
-            let proj = Mitc3Plus.interpolate_assumed_shear_mitc3_plus(&samples, coord);
-            b[0][dof] = proj.gamma_xi_zeta;
-            b[1][dof] = proj.gamma_eta_zeta;
-        }
-        b
-    }
-
     /// (i) Patch-safety prerequisite: the carried assumed **covariant** shear
     /// field reproduces a CONSTANT covariant transverse-shear state exactly at
     /// every probe. Mirrors
@@ -1230,34 +1203,6 @@ mod tests {
             let e = shear_b_times_u(&b, &u);
             assert!((e[0] - alpha).abs() < TOL, "γ_ξζ at {p:?} = {} expected {alpha}", e[0]);
             assert!(e[1].abs() < TOL, "γ_ηζ at {p:?} = {} expected 0", e[1]);
-        }
-    }
-
-    /// No NEW shear field is introduced: the degenerate module's assumed
-    /// covariant shear B is the 3392 MITC3+ field VERBATIM — equal entrywise (to
-    /// FP round-off) to an independent `covariant_shear_b_nodal` +
-    /// `interpolate_assumed_shear_mitc3_plus` reconstruction at every probe. Only
-    /// the covariant→physical map (below) is re-expressed for the varying J; the
-    /// natural-coordinate field is unchanged.
-    #[test]
-    fn degenerate_assumed_covariant_shear_is_carried_verbatim_from_mitc3_plus() {
-        for p in [
-            ShellReferenceCoord::new(1.0 / 3.0, 1.0 / 3.0),
-            ShellReferenceCoord::new(0.2, 0.3),
-            ShellReferenceCoord::new(0.45, 0.1),
-        ] {
-            let got = degenerate_assumed_covariant_shear_b(p);
-            let want = mitc3_plus_covariant_shear_b_reference(p);
-            for r in 0..2 {
-                for c in 0..18 {
-                    assert!(
-                        (got[r][c] - want[r][c]).abs() < 1e-15,
-                        "covariant shear B[{r}][{c}] = {} not carried verbatim (want {})",
-                        got[r][c],
-                        want[r][c],
-                    );
-                }
-            }
         }
     }
 
