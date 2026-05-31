@@ -47,13 +47,16 @@ export function BucklingPanel(props: BucklingPanelProps) {
     if (!canvasRef) return;
 
     // Guard: jsdom and non-WebGL environments return null here.
-    let gl: WebGLRenderingContext | null = null;
+    // Probe webgl2 before webgl so Three's WebGLRenderer can still acquire the
+    // webgl2 context; probing 'webgl' first permanently commits this canvas to
+    // WebGL1 (per spec, a canvas cannot switch context type once acquired).
+    let hasWebGL: boolean;
     try {
-      gl = canvasRef.getContext('webgl') as WebGLRenderingContext | null;
+      hasWebGL = !!(canvasRef.getContext('webgl2') ?? canvasRef.getContext('webgl'));
     } catch (_) {
-      // Swallow — environments where getContext throws (rare but possible).
+      hasWebGL = false;
     }
-    if (!gl) return;
+    if (!hasWebGL) return;
 
     // 3D initialisation — only reached in a real WebGL environment.
     const base = store.state.base;
