@@ -146,6 +146,18 @@ impl OcctKernel {
         Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
     }
 
+    /// Stub rigid-transform-application primitive — always errors because OCCT
+    /// is unavailable. Mirrors the real `OcctKernel::apply_transform_to_handle`
+    /// signature so call sites compile under both `has_occt` and `!has_occt`
+    /// (sub-placement PRD §5, task 3901).
+    pub fn apply_transform_to_handle(
+        &mut self,
+        _handle: GeometryHandleId,
+        _t: &crate::Transform3,
+    ) -> Result<GeometryHandleId, GeometryError> {
+        Err(GeometryError::OperationFailed(NOT_AVAILABLE.into()))
+    }
+
     /// Stub closest-point probe — always errors because OCCT is unavailable.
     /// Mirrors the real `OcctKernel::closest_point_on_shape` signature so call sites
     /// compile under both `has_occt` and `!has_occt`.

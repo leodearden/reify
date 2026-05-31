@@ -811,6 +811,24 @@ double distance_with_transform(
     const OcctShape& b,
     const Transform3Props& t_rel);
 
+/// Apply the rigid transform encoded in `t` to `shape`, returning a fresh
+/// `OcctShape` whose topology shares pointers with the source (TopLoc_Location
+/// encoding via `BRepBuilderAPI_Transform(…, Standard_False)`) — no geometry
+/// bake, no precision loss (sub-placement PRD §5, task 3901).
+///
+/// Reuses the existing static helpers `build_trsf` (unit-quaternion validation,
+/// `gp_Quaternion(qx,qy,qz,qw)` ordering) and `apply_location_trsf`
+/// (BRepBuilderAPI_Transform with Copy=Standard_False) — same composition used
+/// by `dist_with_pre_compose`. The source shape is never mutated; callers can
+/// re-use the source handle to place the same child in multiple frames.
+///
+/// Throws `std::runtime_error` if `t` carries a non-unit quaternion (|q|² outside
+/// [1−1e-6, 1+1e-6]) — the error message starts with "build_trsf: non-unit
+/// quaternion" and is surfaced as `Err(cxx::Exception)` through the cxx-bridge.
+std::unique_ptr<OcctShape> apply_transform_to_shape(
+    const OcctShape& shape,
+    const Transform3Props& t);
+
 /// Return the closest point on `shape` to the query point (px, py, pz).
 ///
 /// Algorithm: build a TopoDS_Vertex from the query point via

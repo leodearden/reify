@@ -862,6 +862,41 @@ impl OcctKernel {
         queries::distance_with_transform(s1, s2, t_rel)
     }
 
+    /// Apply the rigid transform `t` to the shape identified by `handle`,
+    /// returning a *new* handle that points at the transformed result. The
+    /// source handle is preserved unmodified so the same child shape can be
+    /// placed under several different frames (sub-placement PRD §5, task 3901).
+    ///
+    /// The transform is encoded via `BRepBuilderAPI_Transform(…, Standard_False)`
+    /// (TopLoc_Location) — no geometry bake, exact-isometry preserved at
+    /// machine precision. The result inherits the source's [`BRepKind`] because
+    /// a rigid isometry preserves topology (a Solid stays a Solid, a Face stays
+    /// a Face, …).
+    ///
+    /// # Errors
+    /// - `GeometryError::InvalidReference(handle)` if `handle` is unknown to
+    ///   this kernel.
+    /// - `GeometryError::OperationFailed(msg)` if the quaternion stored in `t`
+    ///   is not a unit quaternion (|q|² outside [1−1e-6, 1+1e-6]) — the message
+    ///   contains "quaternion". Any other OCCT failure is also surfaced via
+    ///   `OperationFailed`.
+    pub fn apply_transform_to_handle(
+        &mut self,
+        handle: GeometryHandleId,
+        t: &crate::Transform3,
+    ) -> Result<GeometryHandleId, GeometryError> {
+        // Inherit the source's BRepKind so a transformed Face stays a Face,
+        // a Wire stays a Wire, etc. Missing repr falls back to Solid to match
+        // the implicit default in `store(shape)`.
+        let source_repr = self.repr_of(handle).unwrap_or(BRepKind::Solid);
+        let shape = self.get_shape(handle)?;
+        let props = ffi::ffi::Transform3Props::from(t);
+        let new_shape = ffi::ffi::apply_transform_to_shape(shape, &props)
+            .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+        let new_handle = self.store_with_repr(new_shape, source_repr);
+        Ok(new_handle.id)
+    }
+
     /// Return the closest point on the shape identified by `handle` to the
     /// query point `(px, py, pz)`.
     ///
@@ -2071,6 +2106,46 @@ impl OcctKernel {
                     shape, point[0], point[1], point[2], axis[0], axis[1], axis[2], *angle_rad,
                 )
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
+            GeometryOp::ApplyTransform {
+                target,
+                rotation,
+                translation,
+            } => {
+                // Validate the 4 quaternion components and 3 translation
+                // components are finite. Unit-quaternion enforcement lives in
+                // the C++ helper `build_trsf` (called via FFI) — surfacing it
+                // here would just duplicate the check; the kernel error path
+                // already returns a "quaternion"-tagged message for |q|≠1.
+                if !rotation[0].is_finite()
+                    || !rotation[1].is_finite()
+                    || !rotation[2].is_finite()
+                    || !rotation[3].is_finite()
+                    || !translation[0].is_finite()
+                    || !translation[1].is_finite()
+                    || !translation[2].is_finite()
+                {
+                    return Err(GeometryError::OperationFailed(format!(
+                        "apply_transform parameters must be finite: rotation={:?}, translation={:?}",
+                        rotation, translation
+                    )));
+                }
+                let t = crate::Transform3 {
+                    qw: rotation[0],
+                    qx: rotation[1],
+                    qy: rotation[2],
+                    qz: rotation[3],
+                    tx: translation[0],
+                    ty: translation[1],
+                    tz: translation[2],
+                };
+                // Forward to the inherent `apply_transform_to_handle` to
+                // re-use its source-repr inheritance + FFI plumbing. Return
+                // early so we don't fall through to the default `self.store`
+                // path below — the new handle is already registered.
+                let new_id = self.apply_transform_to_handle(*target, &t)?;
+                let repr = self.repr_of(new_id);
+                return Ok(GeometryHandle { id: new_id, repr });
             }
             GeometryOp::Extrude { profile, distance } => {
                 let dist = extract_f64(distance)?;
@@ -8325,6 +8400,45 @@ mod tests {
         assert!(
             (post_bb.zmax - orig_bb.zmax).abs() < tol,
             "source zmax mutated: before={}, after={}", orig_bb.zmax, post_bb.zmax
+        );
+    }
+
+    /// `OcctKernel::execute(&GeometryOp::ApplyTransform { ... })` must dispatch to
+    /// `apply_transform_to_handle`, return a fresh `GeometryHandle`, and preserve
+    /// the source BRepKind (Solid → Solid) on the result.
+    ///
+    /// Locks the kernel-side dispatch arm: the IR-level `GeometryOp::ApplyTransform`
+    /// is the unified seam that T5/T8 will emit, so executing it through the
+    /// standard `execute(&op)` entry must produce a usable handle with the right
+    /// classifier.
+    #[test]
+    fn execute_apply_transform_dispatches_correctly() {
+        let mut kernel = OcctKernel::new();
+
+        let source = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .expect("box creation should succeed");
+
+        let result = kernel.execute(&GeometryOp::ApplyTransform {
+            target: source.id,
+            rotation: [1.0, 0.0, 0.0, 0.0],
+            translation: [10.0, 20.0, 30.0],
+        });
+
+        let handle = result.expect("ApplyTransform execute should succeed");
+        assert_eq!(
+            handle.repr,
+            Some(BRepKind::Solid),
+            "ApplyTransform on a Solid source must produce a Solid result handle \
+             (rigid isometry preserves topology classification)"
+        );
+        assert_ne!(
+            handle.id, source.id,
+            "ApplyTransform must produce a fresh handle, not reuse the source's"
         );
     }
 }

@@ -3181,6 +3181,25 @@ bool interferes_with_transform(
     });
 }
 
+std::unique_ptr<OcctShape> apply_transform_to_shape(
+    const OcctShape& shape,
+    const Transform3Props& t)
+{
+    return wrap_occt_call("apply_transform_to_shape", [&]() {
+        // Re-use the existing static helpers verbatim — no new OCCT math.
+        // build_trsf validates the unit-quaternion invariant (|q|² ∈ [1±1e-6])
+        // and throws std::runtime_error on violation; that error is caught by
+        // wrap_occt_call and surfaced as a cxx::Exception with the same message.
+        // apply_location_trsf wraps BRepBuilderAPI_Transform(..., Standard_False)
+        // → TopLoc_Location encoding, no geometry bake, no PNv2 concerns.
+        const gp_Trsf trsf = build_trsf(t);
+        TopoDS_Shape placed = apply_location_trsf(shape.shape, trsf);
+        auto result = std::make_unique<OcctShape>();
+        result->shape = placed;
+        return result;
+    });
+}
+
 Point3 closest_point_on_shape(const OcctShape& shape, double px, double py, double pz) {
     return wrap_occt_call("closest_point_on_shape", [&]() {
         gp_Pnt query_pnt(px, py, pz);
