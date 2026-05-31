@@ -82,3 +82,78 @@ pub fn mode_frequency(
 ) -> Real {
     result.modes[n].frequency
 }
+
+// ── transient_response ────────────────────────────────────────────────────────
+
+// `@optimized("modal::transient_response")` causes the engine to insert a
+// ComputeNode with target == "modal::transient_response" rather than
+// body-inlining. The trampoline lives at crates/reify-eval/src/modal_ops.rs
+// (task ι): ι owns fn + dispatch; the future task λ adds warm-state caching.
+//
+// Signature deviation from PRD §5.2 `transient_response(modal_result, forcing,
+// t_range : Range<Time>, dt)`:
+//   `Range<T>` is NOT a surface type in Reify .ri yet (kinematic.ri:164
+//   "Range<T> not yet a surface type"; flexures_types.ri:104 same), so a typed
+//   `t_range : Range<Time>` param would not resolve. A uniform time grid is
+//   fully specified by (t_start, t_end, dt), so the single `t_range` is split
+//   into two scalar params `t_start : Time, t_end : Time` (plus the existing
+//   `dt : Time`) — a documented signature deviation, exactly the pattern
+//   `modal_analysis` itself uses (modal_analysis_fns.ri:28) and
+//   `solve_elastic_static` (List placeholders for loads/supports). See plan
+//   design-decision-2.
+//
+// Returns a `DisplacementTimeHistory` (declared in std.modal.analysis, in the
+// growing prelude here) carrying the per-mode modal-coordinate series; query a
+// physical location/direction with `displacement_at` below. An empty
+// `forcing.sources` yields a degenerate empty history plus an
+// `E_TransientForcingMissing` Error from the trampoline (ForcingTimeHistory's
+// `sources.count > 0` ctor constraint catches the common case at construction).
+//
+// Placeholder body: dispatch replaces the body once the trampoline is
+// registered (task ι step-10), so the `DisplacementTimeHistory()` ctor call is
+// never evaluated — the same body-placeholder pattern `modal_analysis` uses with
+// `ModalResult()` (modal_analysis_fns.ri:60).
+@optimized("modal::transient_response")
+pub fn transient_response(
+    modal_result : ModalResult,
+    forcing      : ForcingTimeHistory,
+    t_start      : Time,
+    t_end        : Time,
+    dt           : Time
+) -> DisplacementTimeHistory {
+    DisplacementTimeHistory()
+}
+
+// ── displacement_at ─────────────────────────────────────────────────────────────
+
+// `@optimized("modal::displacement_at")` is the lazy single-location modal-
+// superposition reconstruction (PRD §5.2 / task ι). The trampoline (modal_ops.rs)
+// resolves `location` to a node (a numeric string parses as an explicit node
+// index; any other string resolves to the fundamental-mode antinode), computes
+// the per-mode projection coefficient Φ_i[node]·direction, and returns the
+// physical displacement time series
+// u(t_j) = Σ_i (Φ_i[node]·direction)·mode_coords[i][j] — expanding ONLY the
+// queried node, never the full n_nodes × n_times matrix.
+//
+// Returns `List<Real>` (PRD §5.2) — the scalar displacement projected onto
+// `direction` at each timestep. This is the first `@optimized` fn returning a
+// non-struct value; the ComputeOutcome carries a `Value::List`. `Real` (not a
+// dimensioned `List<Length>`) because the mass-normalized reconstruction Φ·ξ
+// carries the same unrepresentable √mass·length unit algebra `Mode.shape`
+// documents (modal_analysis.ri:155-165).
+//
+// NOTE: invoked as a FREE function `displacement_at(history, location, direction)`
+// — method-call syntax is not UFCS in Reify, so `history.displacement_at(...)`
+// would not resolve.
+//
+// Placeholder body `[]`: dispatch replaces it once the trampoline is registered
+// (task ι step-10); the empty-list literal infers `List<Real>` against the
+// declared return type.
+@optimized("modal::displacement_at")
+pub fn displacement_at(
+    history   : DisplacementTimeHistory,
+    location  : String,
+    direction : Vector3<Dimensionless>
+) -> List<Real> {
+    []
+}
