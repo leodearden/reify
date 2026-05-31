@@ -9713,6 +9713,150 @@ mod tests {
         );
     }
 
+    // Step-5 RED tests: remaining arg combinations (Shape×Shape, Point×Point).
+    //
+    // (a) Shape×Shape: both members in named_steps, kernel seeded with
+    // with_distance_result(handle_a, handle_b, meters(0.04)) → must produce
+    // Some(Value::Scalar{LENGTH, ≈0.04}). RED: step-4 only handles Shape×Point;
+    // (Some(shapeA), None, Some(shapeB), None) hits `_ => None`.
+    //
+    // (b) Point×Point: both in values, no kernel call → pure Euclidean result.
+    // (0,0,0) to (0.03,0.04,0.0) = 0.05 (3-4-5). RED: same placeholder.
+
+    #[test]
+    fn try_eval_topology_selector_distance_shape_shape_uses_kernel_distance() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_test_support::values::meters;
+        let handle_a = reify_ir::GeometryHandleId(10);
+        let handle_b = reify_ir::GeometryHandleId(11);
+        // kernel_distance reads GeometryQuery::Distance{from, to} and accepts
+        // Real or Scalar{LENGTH} reply. Use meters(0.04) (Value::Scalar{LENGTH}).
+        let mut kernel = MockGeometryKernel::new()
+            .with_distance_result(handle_a, handle_b, meters(0.04));
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        named_steps.insert("a".to_string(), handle_a);
+        named_steps.insert("b".to_string(), handle_b);
+
+        let values = reify_ir::ValueMap::new();
+
+        // distance(a, b): both args are Geometry (named_steps).
+        let expr = topology_selector_call_two_value_refs(
+            "distance",
+            "ShapeShape",
+            "a",
+            reify_core::Type::Geometry,
+            "b",
+            reify_core::Type::Geometry,
+            reify_core::Type::length(),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        match result {
+            Some(reify_ir::Value::Scalar { si_value, dimension })
+                if dimension == reify_core::DimensionVector::LENGTH =>
+            {
+                let expected = 0.04_f64;
+                let epsilon = 1e-12;
+                assert!(
+                    (si_value - expected).abs() < epsilon,
+                    "distance(shapeA, shapeB) si_value should be 0.04; \
+                     got {si_value:.15} (delta {delta:.3e})",
+                    delta = (si_value - expected).abs()
+                );
+            }
+            other => panic!(
+                "distance(shapeA, shapeB) with kernel Distance reply must return \
+                 Some(Value::Scalar{{LENGTH, ≈0.04}}); got {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "happy-path Shape×Shape distance must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_distance_point_point_pure_euclidean() {
+        use reify_test_support::mocks::CountingMockKernel;
+        // Point×Point: both args resolved from values; pure Euclidean, no kernel.
+        // (0,0,0) to (0.03,0.04,0) = 0.05 (3-4-5 right triangle).
+        let inner = reify_test_support::mocks::MockGeometryKernel::new();
+        let mut kernel = CountingMockKernel::new(inner);
+
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            reify_core::ValueCellId::new("PointPoint", "pa"),
+            point3_length_value(0.0, 0.0, 0.0),
+        );
+        values.insert(
+            reify_core::ValueCellId::new("PointPoint", "pb"),
+            point3_length_value(0.03, 0.04, 0.0),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "distance",
+            "PointPoint",
+            "pa",
+            reify_core::Type::point3(reify_core::Type::length()),
+            "pb",
+            reify_core::Type::point3(reify_core::Type::length()),
+            reify_core::Type::length(),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        match result {
+            Some(reify_ir::Value::Scalar { si_value, dimension })
+                if dimension == reify_core::DimensionVector::LENGTH =>
+            {
+                let expected = 0.05_f64; // |(0.03, 0.04, 0)| = 0.05 exactly
+                let epsilon = 1e-12;
+                assert!(
+                    (si_value - expected).abs() < epsilon,
+                    "distance(pointA, pointB) pure Euclidean should be 0.05; \
+                     got {si_value:.15} (delta {delta:.3e})",
+                    delta = (si_value - expected).abs()
+                );
+            }
+            other => panic!(
+                "distance(pointA, pointB) must return Some(Value::Scalar{{LENGTH, ≈0.05}}); \
+                 got {:?}",
+                other
+            ),
+        }
+        assert_eq!(
+            kernel.total_query_count(),
+            0,
+            "Point×Point distance must not consult the kernel; got {} queries",
+            kernel.total_query_count()
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "Point×Point distance must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
     // ── gate_query_capability unit tests (task 3623) ─────────────────────────
     //
     // These tests pin the §5.4 four-branch policy contract of
