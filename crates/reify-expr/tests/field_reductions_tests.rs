@@ -726,14 +726,18 @@ fn all_reductions_on_imported_field_return_undef() {
     assert_all_reductions_undef(field, field_type, "Imported");
 }
 
-/// `max`/`min`/`argmax`/`argmin` over a derived (e.g. `VonMises`-wrapped)
-/// field return `Value::Undef`. Sampled-subfield reduction for derived
-/// wrappers is deferred — see the TODO(future) note in
-/// `field_reductions.rs`.
+/// `max`/`min`/`argmax`/`argmin` over a derived source that is NOT
+/// `FieldSourceKind::VonMises` return `Value::Undef` (deferred — PRD §13
+/// line 238). Using `MaxShear` as the representative still-deferred source
+/// after `VonMises` was promoted to a fully-handled source kind in β.
+///
+/// This test is the surviving "other derived sources stay deferred" pin
+/// after `all_reductions_on_derived_field_return_undef` was repurposed from
+/// `VonMises` to `MaxShear` in task 4085 step S5.
 #[test]
-fn all_reductions_on_derived_field_return_undef() {
-    let (field, field_type) = make_constant_real_analytical_field(FieldSourceKind::VonMises);
-    assert_all_reductions_undef(field, field_type, "derived (VonMises)");
+fn all_reductions_on_derived_non_vonmises_field_return_undef() {
+    let (field, field_type) = make_constant_real_analytical_field(FieldSourceKind::MaxShear);
+    assert_all_reductions_undef(field, field_type, "derived (MaxShear — still deferred)");
 }
 
 // ── Step 17: NaN-skip and empty-data semantics ──────────────────────────────
@@ -1090,5 +1094,583 @@ fn argmax_sampled_field_2d_with_shape_mismatch_returns_undef() {
         result,
         Value::Undef,
         "argmax(field) over 2-D field with data.len() != prod(axis_lengths) should return Value::Undef"
+    );
+}
+
+// ── Step S1: max / min reduce a VonMises-derived Sampled field ──────────────
+//
+// These tests are RED before the VonMises arm is implemented in
+// `field_reductions.rs` (both return Value::Undef at the VonMises catch-all).
+// After S2 they become GREEN.
+//
+// Uniaxial window convention: window_i = [σ_i, 0, 0, 0, 0, 0, 0, 0, 0]
+// (σ_xx only, all off-diagonals and other diagonals zero).  For a uniaxial
+// stress tensor von Mises == σ_xx exactly, which gives exact expected values
+// without any approximation.
+
+/// Build a 1-D `SampledField` with stride-9 row-major tensor data.
+///
+/// Each element `windows[i]` is a 9-float symmetric 3×3 matrix stored
+/// row-major: [s_xx, s_xy, s_xz, s_yx, s_yy, s_yz, s_zx, s_zy, s_zz].
+/// Axis coords are `axis[0], axis[1], ..., axis[K-1]`.
+fn make_sampled_tensor_1d(name: &str, axis: Vec<f64>, windows: Vec<[f64; 9]>) -> SampledField {
+    assert_eq!(
+        axis.len(),
+        windows.len(),
+        "axis and windows must have equal length"
+    );
+    let bounds_min = vec![*axis.first().expect("axis must be non-empty")];
+    let bounds_max = vec![*axis.last().expect("axis must be non-empty")];
+    let spacing = if axis.len() >= 2 {
+        vec![axis[1] - axis[0]]
+    } else {
+        vec![1.0]
+    };
+    let mut data: Vec<f64> = Vec::with_capacity(windows.len() * 9);
+    for w in &windows {
+        data.extend_from_slice(w);
+    }
+    SampledField {
+        name: name.to_string(),
+        kind: SampledGridKind::Regular1D,
+        bounds_min,
+        bounds_max,
+        spacing,
+        axis_grids: vec![axis],
+        interpolation: InterpolationKind::Linear,
+        data,
+        oob_emitted: AtomicBool::new(false),
+    }
+}
+
+/// Wrap a stride-9 `SampledField` in a `Value::Field { source: Sampled }`
+/// with the supplied domain and a Matrix3x3<PRESSURE> codomain.
+fn wrap_sampled_tensor_field(sf: SampledField, domain: Type) -> Value {
+    let codomain = Type::Matrix {
+        m: 3,
+        n: 3,
+        quantity: Box::new(Type::Scalar {
+            dimension: DimensionVector::PRESSURE,
+        }),
+    };
+    Value::Field {
+        domain_type: domain,
+        codomain_type: codomain,
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(sf)),
+    }
+}
+
+/// Uniaxial window for a single principal stress σ: [σ,0,0, 0,0,0, 0,0,0].
+/// Von Mises == σ_xx == σ exactly for this window.
+fn uniaxial_window(sigma: f64) -> [f64; 9] {
+    [sigma, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+}
+
+/// `max` / `min` over a VonMises-source field whose lambda is a 1-D Sampled
+/// tensor field (directly constructed, bypassing `compute_von_mises` wrapping).
+///
+/// Uniaxial windows: σ_xx = {100e6, 250e6, 175e6} → von Mises = {100e6,
+/// 250e6, 175e6}. Expected: max = 250e6 Pa, min = 100e6 Pa.
+///
+/// **RED before S2**: VonMises arm returns `Value::Undef`.
+#[test]
+fn max_min_von_mises_derived_sampled_field_returns_correct_extremum() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+
+    // Build the inner Sampled tensor field (stride-9 uniaxial windows).
+    let inner_sf = make_sampled_tensor_1d(
+        "stress",
+        vec![0.0, 1.0, 2.0],
+        vec![
+            uniaxial_window(100e6),
+            uniaxial_window(250e6),
+            uniaxial_window(175e6),
+        ],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(inner_sf, Type::Real);
+
+    // Directly construct the VonMises-source field (lambda = inner tensor field).
+    let (vonmises_field, vonmises_field_type) = make_field_with_source(
+        Type::Real,
+        pressure.clone(),
+        FieldSourceKind::VonMises,
+        inner_tensor_field,
+    );
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // max(vonmises_field) should be 250e6 Pa
+    let max_expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(vonmises_field.clone(), vonmises_field_type.clone())],
+        pressure.clone(),
+    );
+    assert_eq!(
+        eval_expr(&max_expr, &ctx),
+        Value::Scalar {
+            si_value: 250e6,
+            dimension: DimensionVector::PRESSURE,
+        },
+        "max(VonMises-derived field) should return 250e6 Pa (the projected maximum)"
+    );
+
+    // min(vonmises_field) should be 100e6 Pa
+    let min_expr = make_function_call(
+        "min",
+        vec![CompiledExpr::literal(vonmises_field, vonmises_field_type)],
+        pressure.clone(),
+    );
+    assert_eq!(
+        eval_expr(&min_expr, &ctx),
+        Value::Scalar {
+            si_value: 100e6,
+            dimension: DimensionVector::PRESSURE,
+        },
+        "min(VonMises-derived field) should return 100e6 Pa (the projected minimum)"
+    );
+}
+
+/// B3 composition: `max` evaluated via `eval_expr` over a VonMises-source
+/// field whose lambda is a Sampled tensor field — exercises the real
+/// `eval_expr` dispatch path for the `max` → VonMises reduction chain.
+///
+/// Same tensor data as the test above; the VonMises field is pre-built and
+/// passed as a literal argument to the `max` function call so the full
+/// `eval_expr` dispatch fires (matching the "directly-constructed Sampled
+/// tensor field" requirement in the design decisions).
+///
+/// **RED before S2**: VonMises arm returns `Value::Undef`.
+#[test]
+fn b3_max_of_von_mises_field_via_eval_expr_dispatch() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+
+    let inner_sf = make_sampled_tensor_1d(
+        "stress",
+        vec![0.0, 1.0, 2.0],
+        vec![
+            uniaxial_window(100e6),
+            uniaxial_window(250e6),
+            uniaxial_window(175e6),
+        ],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(inner_sf, Type::Real);
+
+    let (vonmises_field, vonmises_field_type) = make_field_with_source(
+        Type::Real,
+        pressure.clone(),
+        FieldSourceKind::VonMises,
+        inner_tensor_field,
+    );
+
+    // max(vonmises_field) — tested through the real eval_expr dispatch.
+    let max_expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(vonmises_field, vonmises_field_type)],
+        pressure.clone(),
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&max_expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        result,
+        Value::Scalar {
+            si_value: 250e6,
+            dimension: DimensionVector::PRESSURE,
+        },
+        "B3: max(VonMises field over sampled tensor data) must be non-Undef Scalar<Pressure>"
+    );
+}
+
+// ── Step S3: argmax / argmin reduce a VonMises-derived Sampled field ─────────
+//
+// RED before S4: compute_argextremum's VonMises path returns Value::Undef.
+// After S4 these become GREEN.
+
+/// `argmax` / `argmin` over a 1-D VonMises field with Scalar<LENGTH> domain.
+///
+/// Inner tensor field: 1-D Sampled, axis = [0.0, 1.0, 2.0] (LENGTH),
+/// uniaxial windows σ_xx = {100e6, 250e6, 175e6} → vM = {100e6, 250e6, 175e6}.
+/// argmax → coord at index 1 → 1.0 m; argmin → coord at index 0 → 0.0 m.
+///
+/// **RED before S4**.
+#[test]
+fn argmax_argmin_von_mises_field_1d_length_domain_returns_coord() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+
+    let inner_sf = make_sampled_tensor_1d(
+        "stress",
+        vec![0.0, 1.0, 2.0],
+        vec![
+            uniaxial_window(100e6),
+            uniaxial_window(250e6),
+            uniaxial_window(175e6),
+        ],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(inner_sf, length.clone());
+
+    let (vonmises_field, vonmises_field_type) = make_field_with_source(
+        length.clone(),
+        pressure.clone(),
+        FieldSourceKind::VonMises,
+        inner_tensor_field,
+    );
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // argmax → index 1 → coord 1.0 m
+    let argmax_expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(vonmises_field.clone(), vonmises_field_type.clone())],
+        length.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmax_expr, &ctx),
+        Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmax(VonMises 1-D field) should return coord at projected max (index 1 → 1.0 m)"
+    );
+
+    // argmin → index 0 → coord 0.0 m
+    let argmin_expr = make_function_call(
+        "argmin",
+        vec![CompiledExpr::literal(vonmises_field, vonmises_field_type)],
+        length.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmin_expr, &ctx),
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmin(VonMises 1-D field) should return coord at projected min (index 0 → 0.0 m)"
+    );
+}
+
+/// `argmax` over a 3-D VonMises field with Point3<LENGTH> domain.
+///
+/// Inner tensor field: 3-D Sampled, axes = [0.0, 1.0] × [0.0] × [0.0, 0.5].
+/// Shape (2, 1, 2) → 4 grid points, row-major linear indices 0-3.
+/// Uniaxial windows: σ_xx = {100e6, 175e6, 50e6, 250e6} → vM = same.
+/// Max at linear index 3 → per-axis (1, 0, 1) → coord (1.0, 0.0, 0.5).
+/// Min at linear index 2 → per-axis (1, 0, 0) → coord (1.0, 0.0, 0.0).
+///
+/// Decomposition (axis-0 outermost, row-major):
+///   i_2 = 3 % 2 = 1
+///   i_1 = (3 / 2) % 1 = 0
+///   i_0 = 3 / (1 * 2) = 1
+/// → axis_0[1]=1.0, axis_1[0]=0.0, axis_2[1]=0.5.
+///
+/// **RED before S4**.
+#[test]
+fn argmax_von_mises_field_3d_length_domain_returns_point3_at_max() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let domain = Type::point3(length.clone());
+
+    // Shape (2, 1, 2): axis0=[0,1], axis1=[0], axis2=[0,0.5].
+    let inner_sf = {
+        let bounds_min = vec![0.0, 0.0, 0.0];
+        let bounds_max = vec![1.0, 0.0, 0.5];
+        let spacing = vec![1.0, 1.0, 0.5];
+        let axis0 = vec![0.0, 1.0];
+        let axis1 = vec![0.0];
+        let axis2 = vec![0.0, 0.5];
+        // Row-major linear ordering (axis-0 outermost):
+        //   idx 0: (0,0,0) → σ=100e6
+        //   idx 1: (0,0,1) → σ=175e6
+        //   idx 2: (1,0,0) → σ=50e6
+        //   idx 3: (1,0,1) → σ=250e6  ← max
+        let windows = vec![
+            uniaxial_window(100e6),
+            uniaxial_window(175e6),
+            uniaxial_window(50e6),
+            uniaxial_window(250e6),
+        ];
+        let mut data: Vec<f64> = Vec::with_capacity(4 * 9);
+        for w in &windows {
+            data.extend_from_slice(w);
+        }
+        SampledField {
+            name: "stress_3d".to_string(),
+            kind: SampledGridKind::Regular3D,
+            bounds_min,
+            bounds_max,
+            spacing,
+            axis_grids: vec![axis0, axis1, axis2],
+            interpolation: InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    };
+
+    let inner_tensor_field = Value::Field {
+        domain_type: domain.clone(),
+        codomain_type: Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity: Box::new(pressure.clone()),
+        },
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(inner_sf)),
+    };
+
+    let (vonmises_field, vonmises_field_type) = make_field_with_source(
+        domain.clone(),
+        pressure.clone(),
+        FieldSourceKind::VonMises,
+        inner_tensor_field,
+    );
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // argmax → linear index 3 → (1, 0, 1) → (1.0, 0.0, 0.5)
+    let argmax_expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(vonmises_field.clone(), vonmises_field_type.clone())],
+        domain.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmax_expr, &ctx),
+        Value::Point(vec![
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.5,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]),
+        "argmax(VonMises 3-D field) should return Point3 at projected max (linear idx 3)"
+    );
+
+    // argmin → linear index 2 → (1, 0, 0) → (1.0, 0.0, 0.0)
+    let argmin_expr = make_function_call(
+        "argmin",
+        vec![CompiledExpr::literal(vonmises_field, vonmises_field_type)],
+        domain.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmin_expr, &ctx),
+        Value::Point(vec![
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]),
+        "argmin(VonMises 3-D field) should return Point3 at projected min (linear idx 2)"
+    );
+}
+
+// ── Step S5: defensive / negative contract pins for the VonMises path ────────
+//
+// These tests verify the guards delivered in S2/S4 (`project_von_mises_sampled`
+// returning None on malformed inputs) and the NaN-skip behaviour.
+
+/// All four reductions return `Value::Undef` when the VonMises field's lambda
+/// is NOT a Sampled `Value::Field` (e.g. `Value::Undef`).
+///
+/// This pins the `project_von_mises_sampled` level-1 defensive arm and
+/// preserves a VonMises negative pin after the stale
+/// `all_reductions_on_derived_field_return_undef` test was repurposed to
+/// `MaxShear` in this step.
+#[test]
+fn all_reductions_on_vonmises_field_with_non_sampled_lambda_return_undef() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    // VonMises field whose lambda is Value::Undef (not a Sampled Field).
+    let (field, field_type) = make_field_with_source(
+        Type::Real,
+        pressure,
+        FieldSourceKind::VonMises,
+        Value::Undef,
+    );
+    assert_all_reductions_undef(field, field_type, "VonMises with non-Sampled lambda (Undef)");
+}
+
+/// All four reductions return `Value::Undef` when the VonMises field's backing
+/// `SampledField` violates the stride-9 contract (`data.len() != grid_count * 9`).
+///
+/// Pins the `grid_count == 0 || sf.data.len() != grid_count * 9` guard in
+/// `project_von_mises_sampled`.
+#[test]
+fn all_reductions_on_vonmises_field_with_stride_violation_return_undef() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    // Stride violation: axis has 3 points (grid_count=3), data has 3*8=24
+    // values instead of 3*9=27 — one short per window.
+    let bad_sf = {
+        let axis = vec![0.0, 1.0, 2.0];
+        let mut data = Vec::with_capacity(24);
+        for _ in 0..3 {
+            data.extend_from_slice(&[1.0_f64; 8]); // 8-float windows, not 9
+        }
+        SampledField {
+            name: "bad_stride".to_string(),
+            kind: SampledGridKind::Regular1D,
+            bounds_min: vec![0.0],
+            bounds_max: vec![2.0],
+            spacing: vec![1.0],
+            axis_grids: vec![axis],
+            interpolation: InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    };
+    let inner_tensor_field = Value::Field {
+        domain_type: Type::Real,
+        codomain_type: Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity: Box::new(pressure.clone()),
+        },
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(bad_sf)),
+    };
+    let (field, field_type) = make_field_with_source(
+        Type::Real,
+        pressure,
+        FieldSourceKind::VonMises,
+        inner_tensor_field,
+    );
+    assert_all_reductions_undef(
+        field,
+        field_type,
+        "VonMises with stride-contract violation (data.len() != grid_count*9)",
+    );
+}
+
+/// All four reductions return `Value::Undef` when every projected window is
+/// NaN (all-out-of-solid sentinel).
+///
+/// Pins the NaN-skip + all-finite-absent → Undef chain:
+/// `compute_von_mises_3x3` of an all-NaN window returns NaN,
+/// `argmax_argmin_index` skips NaN and returns `None`, → `Value::Undef`.
+#[test]
+fn all_reductions_on_vonmises_field_with_all_nan_windows_return_undef() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    // All-NaN windows — every window is [NaN; 9], simulating fully
+    // out-of-solid sentinel values from the FEA elaborator.
+    let nan_sf = make_sampled_tensor_1d(
+        "all_nan",
+        vec![0.0, 1.0],
+        vec![
+            [f64::NAN; 9],
+            [f64::NAN; 9],
+        ],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(nan_sf, Type::Real);
+    let (field, field_type) = make_field_with_source(
+        Type::Real,
+        pressure,
+        FieldSourceKind::VonMises,
+        inner_tensor_field,
+    );
+    assert_all_reductions_undef(
+        field,
+        field_type,
+        "VonMises with all-NaN projected windows (all-out-of-solid)",
+    );
+}
+
+/// Positive NaN-skip: when SOME windows are NaN (out-of-solid sentinel)
+/// and others are finite, the reduction operates only over the finite-projected
+/// windows.
+///
+/// Setup: 3 windows — NaN, σ=250e6, NaN — projected: NaN, 250e6, NaN.
+/// max → 250e6 Pa (only finite window), argmax → coord 1.0 m (axis[1]).
+#[test]
+fn reductions_on_vonmises_field_with_partial_nan_windows_skip_nan() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+
+    let sf = make_sampled_tensor_1d(
+        "partial_nan",
+        vec![0.0, 1.0, 2.0],
+        vec![
+            [f64::NAN; 9],        // out-of-solid sentinel
+            uniaxial_window(250e6), // finite: σ=250e6 Pa
+            [f64::NAN; 9],        // out-of-solid sentinel
+        ],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(sf, length.clone());
+    let (field, field_type) = make_field_with_source(
+        length.clone(),
+        pressure.clone(),
+        FieldSourceKind::VonMises,
+        inner_tensor_field,
+    );
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // max → the single finite projected window: 250e6 Pa
+    let max_expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(field.clone(), field_type.clone())],
+        pressure.clone(),
+    );
+    assert_eq!(
+        eval_expr(&max_expr, &ctx),
+        Value::Scalar {
+            si_value: 250e6,
+            dimension: DimensionVector::PRESSURE,
+        },
+        "max(VonMises field with partial NaN) should skip NaN and return 250e6 Pa"
+    );
+
+    // argmax → the finite window at axis index 1 → coord 1.0 m
+    let argmax_expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(field, field_type)],
+        length.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmax_expr, &ctx),
+        Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmax(VonMises field with partial NaN) should skip NaN and return coord 1.0 m"
     );
 }

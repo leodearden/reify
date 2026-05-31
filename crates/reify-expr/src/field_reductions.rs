@@ -9,17 +9,27 @@
 //!
 //! # Source-kind support (staged per task description)
 //!
-//! Only `FieldSourceKind::Sampled` is fully implemented in v0.3.
+//! `FieldSourceKind::Sampled` and `FieldSourceKind::VonMises` are fully
+//! implemented:
+//!
+//! - **Sampled** — data buffer reduced directly (stride-1 scalar data).
+//! - **VonMises** — the backing Sampled tensor field is unwrapped from
+//!   the lambda slot, each 9-float window is projected to a scalar via
+//!   `reify_stdlib::compute_von_mises_3x3`, and the resulting stride-1
+//!   scalar buffer is delegated to the existing Sampled reduction path.
+//!   This mirrors `reify_stdlib::fea::envelope_tensor_projection` (the
+//!   proven two-pass pattern in this codebase).
+//!
 //! All other source kinds (`Analytical`, `Composed`, `Imported`, and
 //! the derived wrappers `Gradient`/`Divergence`/`Curl`/`Laplacian`/
-//! `VonMises`/`PrincipalStresses`/`MaxShear`/`SafetyFactor`) return
+//! `PrincipalStresses`/`MaxShear`/`SafetyFactor`) return
 //! `Value::Undef`.
 //!
-//! The deferred path requires either numerical optimisation over an
-//! analytical lambda's bounded domain (Nelder-Mead / golden-section /
-//! coordinate descent) or sampled-subfield reduction for derived
-//! wrappers — see `docs/prds/v0_3/structural-analysis-fea.md` task #6.
-//! The PRD task description authorises this staging:
+//! The deferred path for those kinds requires either numerical
+//! optimisation over an analytical lambda's bounded domain (Nelder-Mead /
+//! golden-section / coordinate descent) or sampled-subfield reduction —
+//! see `docs/prds/v0_3/structural-analysis-fea.md` task #6.  The PRD
+//! task description authorises this staging:
 //! "Implementation can be staged — `sampled` first (FEA produces
 //! sampled fields)."
 //!
@@ -32,12 +42,25 @@
 //! when reducing; if all values are non-finite (or `data.is_empty()`),
 //! return `Value::Undef`. This matches the `safety_factor` poison
 //! convention and the `sanitize_value` discipline elsewhere in stdlib.
+//!
+//! For VonMises projections, NaN tensor windows (out-of-solid sentinel
+//! values used by the FEA elaborator) project to NaN via
+//! `compute_von_mises_3x3` and are then skipped by the existing
+//! `is_finite()` reduction, matching
+//! `solve_elastic_static_e2e.rs`'s window-skip logic.
+
+use std::sync::atomic::AtomicBool;
 
 use reify_core::Type;
 use reify_ir::{FieldSourceKind, SampledField, Value};
 
 /// Compute `max(field)` — return the maximum codomain value of a
-/// `Sampled`-source field, wrapped per the field's `codomain_type`.
+/// `Sampled`- or `VonMises`-source field, wrapped per the field's
+/// `codomain_type`.
+///
+/// For `VonMises` fields the backing Sampled tensor field is projected
+/// per 9-float window via `reify_stdlib::compute_von_mises_3x3` before
+/// the reduction (see [`project_von_mises_sampled`]).
 ///
 /// Other source kinds return `Value::Undef` (deferred — see module
 /// doc-comment for the staging rationale).
@@ -46,7 +69,12 @@ pub(crate) fn compute_max(field_val: &Value) -> Value {
 }
 
 /// Compute `min(field)` — return the minimum codomain value of a
-/// `Sampled`-source field, wrapped per the field's `codomain_type`.
+/// `Sampled`- or `VonMises`-source field, wrapped per the field's
+/// `codomain_type`.
+///
+/// For `VonMises` fields the backing Sampled tensor field is projected
+/// per 9-float window via `reify_stdlib::compute_von_mises_3x3` before
+/// the reduction (see [`project_von_mises_sampled`]).
 ///
 /// Other source kinds return `Value::Undef` (deferred — see module
 /// doc-comment for the staging rationale).
@@ -55,8 +83,12 @@ pub(crate) fn compute_min(field_val: &Value) -> Value {
 }
 
 /// Compute `argmax(field)` — return the domain coord at which a
-/// `Sampled`-source field attains its maximum value, wrapped per the
-/// field's `domain_type`.
+/// `Sampled`- or `VonMises`-source field attains its maximum value,
+/// wrapped per the field's `domain_type`.
+///
+/// For `VonMises` fields the backing Sampled tensor field is projected
+/// per 9-float window via `reify_stdlib::compute_von_mises_3x3` before
+/// the index search (see [`project_von_mises_sampled`]).
 ///
 /// Tie-break: lowest linear index wins (the `total_cmp` reduce keeps
 /// the first-seen extremum on equal values).
@@ -67,8 +99,12 @@ pub(crate) fn compute_argmax(field_val: &Value) -> Value {
 }
 
 /// Compute `argmin(field)` — return the domain coord at which a
-/// `Sampled`-source field attains its minimum value, wrapped per the
-/// field's `domain_type`.
+/// `Sampled`- or `VonMises`-source field attains its minimum value,
+/// wrapped per the field's `domain_type`.
+///
+/// For `VonMises` fields the backing Sampled tensor field is projected
+/// per 9-float window via `reify_stdlib::compute_von_mises_3x3` before
+/// the index search (see [`project_von_mises_sampled`]).
 ///
 /// Tie-break: lowest linear index wins (mirrors `compute_argmax`).
 ///
@@ -98,21 +134,116 @@ fn compute_extremum(field_val: &Value, find_min: bool) -> Value {
             // return Undef rather than panicking.
             _ => Value::Undef,
         },
+        // VonMises: project each 9-float tensor window in the backing Sampled
+        // field to a scalar via `compute_von_mises_3x3`, then delegate to the
+        // existing Sampled reduction path. Mirrors fea.rs::envelope_tensor_projection.
+        // NaN windows (out-of-solid sentinel) project to NaN and are skipped
+        // by the is_finite() gate in argmax_argmin_index.
+        FieldSourceKind::VonMises => match project_von_mises_sampled(lambda.as_ref()) {
+            Some(sf) => reduce_sampled_extremum(&sf, codomain_type, find_min),
+            None => Value::Undef,
+        },
         // TODO(future): numerical optimisation over Analytical/Composed lambda
-        // domains (Nelder-Mead / golden-section / coordinate descent); iterate
-        // over Sampled subfield for derived (Gradient, VonMises, MaxShear, ...)
-        // wrappers — see PRD docs/prds/v0_3/structural-analysis-fea.md task #6
+        // domains (Nelder-Mead / golden-section / coordinate descent); sampled-
+        // subfield reduction for Gradient/Divergence/Curl/Laplacian/MaxShear/
+        // PrincipalStresses/SafetyFactor — see
+        // PRD docs/prds/v0_3/structural-analysis-fea.md task #6 and §13 line 238
         // (deferred per task description's "Implementation can be staged —
         // sampled first"). Imported fields carry Value::Undef in their lambda
         // slot and cannot be reduced without a backing data buffer.
         //
-        // Pinned by the step-15 negative-path tests:
+        // Pinned by the step-15 / S5 negative-path tests:
         // - all_reductions_on_analytical_field_return_undef
         // - all_reductions_on_composed_field_return_undef
         // - all_reductions_on_imported_field_return_undef
-        // - all_reductions_on_derived_field_return_undef
+        // - all_reductions_on_derived_non_vonmises_field_return_undef
         _ => Value::Undef,
     }
+}
+
+/// Project the backing Sampled tensor field stored in a VonMises field's
+/// lambda slot into a fresh stride-1 scalar `SampledField`.
+///
+/// # Unwrap path
+///
+/// The lambda slot of a `VonMisesField` holds the ORIGINAL tensor
+/// `Value::Field { source: Sampled, lambda: Arc<Value::SampledField(_)>, .. }`.
+/// This helper performs two levels of unwrapping:
+/// 1. `lambda` as `Value::Field { source: Sampled, lambda: inner, .. }`
+/// 2. `inner.as_ref()` as `Value::SampledField(sf)` (the actual data buffer)
+///
+/// Returns `None` defensively for any other shape, mirroring the
+/// `compute_extremum` Sampled defensive arm.
+///
+/// # Projection
+///
+/// Computes `grid_count = ∏ axis_grid lengths`, guards that
+/// `sf.axis_grids` is non-empty, `grid_count > 0`, and
+/// `sf.data.len() == grid_count * 9` (stride contract — mirrors
+/// `fea.rs::extract_per_case_sampled_field`), then for each `i` in
+/// `0..grid_count` pushes
+/// `reify_stdlib::compute_von_mises_3x3(&sf.data[i*9..i*9+9])` into a new
+/// scalar `Vec<f64>`.
+///
+/// Note: the `axis_grids.is_empty()` guard is technically redundant given
+/// the `SampledGridKind` invariant (`Regular1D`/`Regular2D`/`Regular3D` all
+/// carry at least one axis), but it prevents the empty-iterator identity
+/// (`product() == 1`) from producing `grid_count == 1` on a structurally
+/// impossible empty-axis field — symmetry with the documented stride
+/// contract.
+///
+/// # Result
+///
+/// Returns a fresh `SampledField` copying `sf`'s grid metadata (`name`,
+/// `kind`, `bounds_min`, `bounds_max`, `spacing`, `axis_grids`,
+/// `interpolation`) with `data = projected_scalars` and
+/// `oob_emitted: AtomicBool::new(false)` (fresh flag — the projected field
+/// is an internal intermediary, so there is no user-visible duplicate-warning
+/// surface to suppress, mirroring fea.rs line 804–813 rationale).
+fn project_von_mises_sampled(lambda: &Value) -> Option<SampledField> {
+    // Level 1: unwrap the Sampled tensor field from the VonMises lambda slot.
+    let inner = match lambda {
+        Value::Field {
+            source: FieldSourceKind::Sampled,
+            lambda: inner,
+            ..
+        } => inner,
+        _ => return None,
+    };
+
+    // Level 2: unwrap the SampledField from the Sampled field's lambda slot.
+    let sf = match inner.as_ref() {
+        Value::SampledField(sf) => sf,
+        _ => return None,
+    };
+
+    // Shape + stride contract: axis_grids must be non-empty (SampledGridKind
+    // invariant guarantees this for Regular1D/2D/3D, but checked defensively
+    // for directly-constructed fields bypassing that gate; an empty axis_grids
+    // vec would yield product()==1, not 0, so it must be guarded separately),
+    // grid_count must be non-zero, and data must be exactly grid_count * 9 floats.
+    let grid_count: usize = sf.axis_grids.iter().map(|g| g.len()).product();
+    if sf.axis_grids.is_empty() || grid_count == 0 || sf.data.len() != grid_count * 9 {
+        return None;
+    }
+
+    // Project each 9-float window to a scalar von Mises value.
+    let mut projected: Vec<f64> = Vec::with_capacity(grid_count);
+    for i in 0..grid_count {
+        projected.push(reify_stdlib::compute_von_mises_3x3(&sf.data[i * 9..i * 9 + 9]));
+    }
+
+    Some(SampledField {
+        name: sf.name.clone(),
+        kind: sf.kind,
+        bounds_min: sf.bounds_min.clone(),
+        bounds_max: sf.bounds_max.clone(),
+        spacing: sf.spacing.clone(),
+        axis_grids: sf.axis_grids.clone(),
+        interpolation: sf.interpolation,
+        data: projected,
+        oob_emitted: AtomicBool::new(false),
+    })
 }
 
 /// Reduce a `SampledField`'s data buffer to a single extremum value,
@@ -171,10 +302,27 @@ fn compute_argextremum(field_val: &Value, find_min: bool) -> Value {
             // Defensive: see compute_extremum's matching defensive arm.
             _ => Value::Undef,
         },
+        // VonMises: project the backing tensor field per 9-float window, then
+        // locate the extremum index in the projected scalar buffer and
+        // decompose it against the inner field's axis_grids.
+        // `project_von_mises_sampled` clones the inner grid metadata (including
+        // axis_grids), so `arg_coord_from_index` operates on the same shape —
+        // its shape guard (`data.len() == prod(axis_grid lengths)`) holds
+        // because data.len() == grid_count == prod(axis_grid lengths) after
+        // projection.
+        FieldSourceKind::VonMises => match project_von_mises_sampled(lambda.as_ref()) {
+            Some(sf) => match argmax_argmin_index(&sf.data, find_min) {
+                Some(linear) => arg_coord_from_index(&sf, linear, domain_type),
+                None => Value::Undef,
+            },
+            None => Value::Undef,
+        },
         // TODO(future): see compute_extremum for the full deferred-path note.
-        // Same staging rationale applies — argmax/argmin over a non-Sampled
-        // source would require numerical optimisation, not yet in scope.
-        // Pinned by the same step-15 tests as compute_extremum.
+        // Same staging rationale applies — argmax/argmin over Analytical/
+        // Composed/Gradient/Divergence/Curl/Laplacian/MaxShear/
+        // PrincipalStresses/SafetyFactor sources requires numerical optimisation
+        // or sampled-subfield reduction, not yet in scope (PRD §13 line 238).
+        // Pinned by the same step-15 / S5 negative-path tests as compute_extremum.
         _ => Value::Undef,
     }
 }
