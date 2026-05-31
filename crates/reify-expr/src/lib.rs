@@ -714,7 +714,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 // current cell (topological ordering requirement).
                 // Return Undef to make it visible rather than silently defaulting
                 // to Undetermined.
-                let Some((_, state)) = det_map.get(cell) else {
+                let Some((value, state)) = det_map.get(cell) else {
                     debug_assert!(
                         false,
                         "DeterminacyPredicate references cell {:?} not in determinacy snapshot — wiring bug or eval-order violation",
@@ -724,7 +724,22 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 };
                 let state = *state;
                 let result = match kind {
-                    DeterminacyPredicateKind::Determined => state == DeterminacyState::Determined,
+                    // A cell is "determined" only when BOTH its state is
+                    // Determined AND its resolved Value is non-Undef.
+                    //
+                    // Rationale: the eval pipeline legitimately stores
+                    // (Value::Undef, DeterminacyState::Determined) for cells
+                    // that have a binding expression but whose value depends on
+                    // geometry not yet resolved (geometry-undef params). Such a
+                    // cell is NOT determined from the caller's perspective —
+                    // e.g. simulation_ready (task 4016) must not treat a
+                    // geometry-undef input as a resolved one. Value::is_undef()
+                    // is true only for Value::Undef; concrete values like
+                    // Bool(false), Int(0), Option(None), and empty collections
+                    // are genuine resolved values and remain "determined".
+                    DeterminacyPredicateKind::Determined => {
+                        state == DeterminacyState::Determined && !value.is_undef()
+                    }
                     DeterminacyPredicateKind::Undetermined => {
                         state == DeterminacyState::Undetermined
                     }
