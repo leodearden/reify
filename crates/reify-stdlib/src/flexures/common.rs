@@ -144,6 +144,23 @@ fn numeric_from_value(v: &Value) -> Option<f64> {
     }
 }
 
+/// Compute the cantilever surface-yield rotation limit θ_lim, capped at the
+/// PRB small-deflection limit.
+///
+/// Cantilever bending stress σ = E·(t/2)·θ/L (Howell §5.1)
+/// ⇒ θ_yield = yield·L/(E·t/2), capped at [`PRB_ANGLE_LIMIT_RAD`] (5°).
+/// No `yield_stress` ⇒ only the PRB cap applies.
+///
+/// Shared by `beam::prb_cantilever_beam` (revolute joint) and
+/// `compound::prb_cartwheel_flexure` (each radial blade is a cantilever) —
+/// a single definition prevents the two modules drifting on the surface-yield model.
+pub(super) fn cantilever_theta_lim(length: f64, thickness: f64, e: f64, yield_si: Option<f64>) -> f64 {
+    match yield_si {
+        Some(y) => (y * length / (e * thickness / 2.0)).min(PRB_ANGLE_LIMIT_RAD),
+        None => PRB_ANGLE_LIMIT_RAD,
+    }
+}
+
 /// Compute the fixed-guided surface-yield deflection half-width δ_max.
 ///
 /// Fixed-guided bending stress σ = 3·E·t·δ / L²

@@ -10,8 +10,9 @@ use reify_core::DimensionVector;
 use reify_ir::Value;
 
 use super::common::{
-    fixed_guided_delta_max, length_si, make_flexure_joint, material_field_si, neutral_angle_si,
-    symmetric_angle_range, CANTILEVER_GAMMA, FIXED_GUIDED_GAMMA, PRB_ANGLE_LIMIT_RAD,
+    cantilever_theta_lim, fixed_guided_delta_max, length_si, make_flexure_joint,
+    material_field_si, neutral_angle_si, symmetric_angle_range, CANTILEVER_GAMMA,
+    FIXED_GUIDED_GAMMA,
 };
 
 /// Evaluate a beam-flexure constructor by name.
@@ -112,13 +113,7 @@ fn prb_cantilever_beam(args: &[Value]) -> Value {
     // surface-yield rotation (Howell §5.1: σ(θ) = E·(t/2)·θ/L ⇒
     // θ_yield = yield·L/(E·t/2)); the 5° PRB limit bounds small-deflection
     // fidelity. A material without a yield_stress contributes only the 5° cap.
-    let theta_lim = match b.yield_si {
-        Some(yield_si) => {
-            let theta_yield = yield_si * b.length / (b.e * b.thickness / 2.0);
-            theta_yield.min(PRB_ANGLE_LIMIT_RAD)
-        }
-        None => PRB_ANGLE_LIMIT_RAD,
-    };
+    let theta_lim = cantilever_theta_lim(b.length, b.thickness, b.e, b.yield_si);
     let range = symmetric_angle_range(theta_lim);
 
     // Optional trailing neutral angle (default 0 for the 6-arg form).

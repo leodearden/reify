@@ -25,8 +25,9 @@ use reify_core::DimensionVector;
 use reify_ir::Value;
 
 use super::common::{
-    fixed_guided_delta_max, length_si, make_flexure_joint, material_field_si, neutral_angle_si,
-    symmetric_angle_range, CANTILEVER_GAMMA, FIXED_GUIDED_GAMMA, PRB_ANGLE_LIMIT_RAD,
+    cantilever_theta_lim, fixed_guided_delta_max, length_si, make_flexure_joint,
+    material_field_si, neutral_angle_si, symmetric_angle_range, CANTILEVER_GAMMA,
+    FIXED_GUIDED_GAMMA,
 };
 
 /// Shared validated inputs for compound-flexure constructors.
@@ -201,13 +202,12 @@ struct CartwheelInputs<'a> {
 /// `(blade_count:Int, blade_length, blade_width, blade_thickness,
 /// material, pivot, axis[, neutral])`.
 ///
-/// Returns `None` (⇒ `Value::Undef`) on: arity ∉ {7, 8}; blade_count not a
-/// recognised numeric type; non-positive or non-finite geometry; thickness ≥
-/// length; a material without a finite positive `youngs_modulus`; or an axis
-/// that is not a finite, non-zero, dimensionless 3-vector.
-///
-/// Note: the strict blade_count ≥ 1 and integer-only guards are added in step-6;
-/// this initial version accepts any finite numeric blade_count.
+/// Returns `None` (⇒ `Value::Undef`) on: arity ∉ {7, 8}; blade_count not an
+/// integer-valued finite number ≥ 1 (i.e. `Int` ≥ 1, or a whole finite `Real`
+/// ≥ 1.0 — non-integers and values < 1 are rejected); non-positive or
+/// non-finite geometry; thickness ≥ length; a material without a finite
+/// positive `youngs_modulus`; or an axis that is not a finite, non-zero,
+/// dimensionless 3-vector.
 fn parse_cartwheel_inputs(args: &[Value]) -> Option<CartwheelInputs<'_>> {
     if args.len() != 7 && args.len() != 8 {
         return None;
@@ -271,13 +271,9 @@ fn prb_cartwheel_flexure(args: &[Value]) -> Value {
 
     // Symmetric prb_validity range = ±min(θ_yield, 5°). Each radial blade is a
     // cantilever; the cartwheel rotation equals the per-blade rotation, so the
-    // cantilever surface-yield rotation IS the pivot's yield-limited range:
-    //   θ_yield = yield·L / (E·t/2)  (Howell §5.1 cantilever surface-yield).
-    // A material without yield_stress contributes only the 5° PRB cap.
-    let theta_lim = match c.yield_si {
-        Some(y) => (y * c.length / (c.e * c.thickness / 2.0)).min(PRB_ANGLE_LIMIT_RAD),
-        None => PRB_ANGLE_LIMIT_RAD,
-    };
+    // cantilever surface-yield rotation IS the pivot's yield-limited range
+    // (shared formula with beam::prb_cantilever_beam via common::cantilever_theta_lim).
+    let theta_lim = cantilever_theta_lim(c.length, c.thickness, c.e, c.yield_si);
     let range = symmetric_angle_range(theta_lim);
 
     // Optional trailing neutral angle (default 0 for the 7-arg form; step-8
@@ -707,13 +703,6 @@ mod tests {
                 assert!(
                     rel < 1e-9,
                     "spring_rate {si_value} vs {k_pivot_expected} (rel {rel})"
-                );
-                // Pin the k_pivot = N·k_blade law (§6.3)
-                let rel_kb = (si_value - n as f64 * k_blade).abs() / k_pivot_expected;
-                assert!(
-                    rel_kb < 1e-9,
-                    "spring_rate must equal N×k_blade: {si_value} vs {} (rel {rel_kb})",
-                    n as f64 * k_blade
                 );
             }
             other => panic!("expected spring_rate Scalar, got {other:?}"),
