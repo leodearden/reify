@@ -495,9 +495,11 @@ fn main() -> ExitCode {
     // Construct seam impls.
     let git = RealGitOps::new(PathBuf::from(&args.project_root));
 
-    // Construct jcodemunch seam: Noop for --no-jcodemunch, P5/pre-done,
-    // and P2-only runs (never connects); Real for P1 runs (connects in
-    // constructor — fail-fast to 125 if the serve is unreachable).
+    // Construct jcodemunch seam:
+    // - Noop for --no-jcodemunch, P5/pre-done, and P2-only runs (never connects).
+    // - Real for P1/PDEAD runs; if the serve is unreachable, fail-soft to Noop
+    //   so P2/P5 still run and P1 degrades to zero findings. Exit 125 is
+    //   reserved for genuine arg/IO misconfiguration, not an optional substrate.
     let jcodemunch: Box<dyn JCodemunchOps> =
         if args.no_jcodemunch || !needs_jcodemunch(&args) {
             Box::new(NoopJCodemunchOps)
@@ -510,10 +512,12 @@ fn main() -> ExitCode {
                 Ok(r) => Box::new(r),
                 Err(e) => {
                     eprintln!(
-                        "reify-audit: error connecting to jcodemunch at '{}': {}",
+                        "reify-audit: jcodemunch unreachable at '{}': {} — \
+                        P1 degraded to zero findings; P2/P5 still run \
+                        (pass --no-jcodemunch to silence)",
                         args.jcodemunch_url, e
                     );
-                    return ExitCode::from(ERROR_EXIT);
+                    Box::new(NoopJCodemunchOps)
                 }
             }
         };
