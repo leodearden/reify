@@ -480,6 +480,11 @@ module.exports = grammar({
       $.annotation,
       $.pragma,
       $.match_arm_decl_block,
+      // Associated-type binding in structure/occurrence bodies (task 3971 ιₐ).
+      // Mirrors the existing `$.associated_type` arm in `trait_member`; admits
+      // `type X = Concrete` inside structure/occurrence bodies so conformers can
+      // satisfy trait associated-type requirements.
+      $.associated_type,
     ),
 
     // ── Meta block ──────────────────────────────────────────
@@ -836,9 +841,42 @@ module.exports = grammar({
     ),
 
     // ── Types ───────────────────────────────────────────────
+    // type_expr admits three forms (task 3971 ιₐ adds qualified_type):
+    //   - bare identifier:      `Steel`, `T`, `Int`
+    //   - parameterized type:   `Box<T>`, `Tensor<2, 3, Force>`
+    //   - qualified type:       `Beam::Material`, `T::Material`,
+    //                           `Beam::(HasMaterial::Material)` (FORK-G disambiguator)
+    //
+    // All three share the `identifier` prefix; the lookahead token disambiguates:
+    //   '<'  → parameterized_type
+    //   '::' → qualified_type
+    //   else → bare identifier
+    // tree-sitter resolves this via the existing [$.type_expr, $.parameterized_type]
+    // conflict (line 71) extended with $.qualified_type if the generator requests it.
     type_expr: $ => choice(
       $.parameterized_type,
+      $.qualified_type,
       $.identifier,
+    ),
+
+    // Qualified type-expr: `Beam::Material` or `Beam::(HasMaterial::Material)`.
+    // Type-side analogue of value-side `qualified_access` (grammar.js:1312-1329).
+    // The parenthesized form encodes the FORK-G trait disambiguator (PRD §3.5 Phase 8).
+    // base is restricted to $.identifier (not $.type_expr) because all PRD forms
+    // have an identifier base; restricting minimises new GLR conflicts.
+    qualified_type: $ => seq(
+      field('base', $.identifier),
+      '::',
+      choice(
+        field('member', $.identifier),
+        seq(
+          '(',
+          field('trait', $.identifier),
+          '::',
+          field('member', $.identifier),
+          ')',
+        ),
+      ),
     ),
 
     // A type with type arguments: `Box<T>`, `Map<String, Int>`
