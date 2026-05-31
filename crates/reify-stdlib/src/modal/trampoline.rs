@@ -104,7 +104,7 @@ impl ModalCacheKey {
 
 #[cfg(test)]
 mod tests {
-    use super::ModalCacheKey;
+    use super::{ModalCacheKey, TransientCacheKey};
 
     // Baseline (K,M)-determining inputs for a steel beam at P1 order:
     // length/width/height (m); E (Pa), ν, density (kg/m³); element_order (P1=0).
@@ -170,5 +170,80 @@ mod tests {
         let neg_zero = ModalCacheKey::new(-0.0, W, H, E, NU, RHO, P1);
         let pos_zero = ModalCacheKey::new(0.0, W, H, E, NU, RHO, P1);
         assert!(!neg_zero.matches(&pos_zero), "-0.0 and +0.0 differ by bits");
+    }
+
+    // ── TransientCacheKey tests ──────────────────────────────────────────────
+
+    /// Baseline (t_start, t_end, dt, modes) for a two-mode transient setup.
+    fn transient_baseline() -> TransientCacheKey {
+        TransientCacheKey::new(
+            0.0,   // t_start (s)
+            0.1,   // t_end (s)
+            0.005, // dt (s)
+            vec![(40.0, 0.01), (250.0, 0.02)],  // (frequency_hz, damping_ratio)
+        )
+    }
+
+    /// (a) Two keys built from identical (t_start, t_end, dt, per-mode pairs)
+    /// `matches()` — the cache-HIT condition.
+    #[test]
+    fn transient_key_matches_identical_inputs() {
+        assert!(transient_baseline().matches(&transient_baseline()));
+    }
+
+    /// (b) A different `dt` must NOT match.
+    #[test]
+    fn transient_key_differs_on_dt() {
+        let other = TransientCacheKey::new(0.0, 0.1, 0.010, vec![(40.0, 0.01), (250.0, 0.02)]);
+        assert!(!transient_baseline().matches(&other));
+        assert!(!other.matches(&transient_baseline()));
+    }
+
+    /// (c) A different `t_start` must NOT match; a different `t_end` must NOT match.
+    #[test]
+    fn transient_key_differs_on_t_start_and_t_end() {
+        let diff_start = TransientCacheKey::new(0.001, 0.1, 0.005, vec![(40.0, 0.01), (250.0, 0.02)]);
+        assert!(!transient_baseline().matches(&diff_start), "different t_start must MISS");
+
+        let diff_end = TransientCacheKey::new(0.0, 0.2, 0.005, vec![(40.0, 0.01), (250.0, 0.02)]);
+        assert!(!transient_baseline().matches(&diff_end), "different t_end must MISS");
+    }
+
+    /// (d) A different mode `frequency_hz` must NOT match;
+    /// a different `damping_ratio` must NOT match.
+    #[test]
+    fn transient_key_differs_on_mode_fields() {
+        let diff_freq = TransientCacheKey::new(0.0, 0.1, 0.005, vec![(45.0, 0.01), (250.0, 0.02)]);
+        assert!(!transient_baseline().matches(&diff_freq), "different frequency_hz must MISS");
+
+        let diff_zeta = TransientCacheKey::new(0.0, 0.1, 0.005, vec![(40.0, 0.02), (250.0, 0.02)]);
+        assert!(!transient_baseline().matches(&diff_zeta), "different damping_ratio must MISS");
+    }
+
+    /// (e) A different mode COUNT must NOT match.
+    #[test]
+    fn transient_key_differs_on_mode_count() {
+        let three_modes = TransientCacheKey::new(
+            0.0, 0.1, 0.005, vec![(40.0, 0.01), (250.0, 0.02), (600.0, 0.03)],
+        );
+        assert!(!transient_baseline().matches(&three_modes), "different mode count must MISS");
+
+        let one_mode = TransientCacheKey::new(0.0, 0.1, 0.005, vec![(40.0, 0.01)]);
+        assert!(!transient_baseline().matches(&one_mode), "different mode count must MISS");
+    }
+
+    /// (f) Bit-equality semantics: two keys with a NaN in the same field match
+    /// (identical NaN bit patterns), while -0.0 vs +0.0 in `dt` do NOT match.
+    #[test]
+    fn transient_key_uses_bit_equality() {
+        // Identical NaN bits in the same field → match.
+        let nan_a = TransientCacheKey::new(f64::NAN, 0.1, 0.005, vec![(40.0, 0.01)]);
+        let nan_b = TransientCacheKey::new(f64::NAN, 0.1, 0.005, vec![(40.0, 0.01)]);
+        assert!(nan_a.matches(&nan_b), "identical NaN bits must match");
+
+        // -0.0 vs +0.0 in dt → equal under `==`, distinct bits → must NOT match.
+        let neg_zero_dt = TransientCacheKey::new(0.0, 0.1, -0.0_f64, vec![(40.0, 0.01)]);
+        let pos_zero_dt = TransientCacheKey::new(0.0, 0.1, 0.0_f64, vec![(40.0, 0.01)]);
+        assert!(!neg_zero_dt.matches(&pos_zero_dt), "-0.0 and +0.0 in dt differ by bits");
     }
 }
