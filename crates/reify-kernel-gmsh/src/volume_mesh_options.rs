@@ -62,6 +62,7 @@ impl VolumeMeshOptions {
     pub fn content_hash(&self) -> ContentHash {
         ContentHash::of_str("VolumeMeshOptions")
             .combine(ContentHash::of(&[self.force_tet as u8]))
+            .combine(ContentHash::of(&[self.require_hex_wedge as u8]))
     }
 }
 
