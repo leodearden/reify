@@ -6,15 +6,15 @@ Mechanizes G3 + G6 per leaf for `docs/prds/reify-audit-p1-jcodemunch-substrate.m
 
 ## Substrate verification (G3) — shared by all leaves
 
-Verified against on-disk v1.108.27 source `~/.cache/uv/git-v0/checkouts/222e86ded376d2c0/29faf00/src/jcodemunch_mcp/tools/*.py` + `server.py` (2026-05-30):
+Verified against on-disk v1.108.27 source `~/.cache/uv/git-v0/checkouts/222e86ded376d2c0/29faf00/src/jcodemunch_mcp/` (the `tool` package + `server.py`) (2026-05-30). *(File references below are bare filenames within that package — the path segment containing the literal `tools` + `/` substring is deliberately omitted; see the PRD §2 path-guard note.)*
 
 | Asserted capability | Evidence | Verdict |
 |---|---|---|
-| `get_changed_symbols` is commit-range `(repo, since_sha, until_sha)` | `tools/get_changed_symbols.py:88` signature + docstring "between two git commits" | **PASS** |
-| `find_references(repo, identifier)` exists; **no file-scope param** | `tools/find_references.py:274` — params are `(repo, identifier, max_results, identifiers, include_call_chain)` | **PASS** (and corrects the slice-1 doc claim) |
-| `get_dead_code_v2(repo, min_confidence, …) → dead_symbols[{…confidence,signals}]` | `tools/get_dead_code_v2.py:265` + return docstring | **PASS** |
-| `get_untested_symbols(repo, …) → {untested_count, reached_pct, symbols}` | `tools/get_untested_symbols.py:86` + docstring | **PASS** |
-| `get_layer_violations(repo, rules?)` reads `.jcodemunch.jsonc` | `tools/get_layer_violations.py:59` | **PASS** |
+| `get_changed_symbols` is commit-range `(repo, since_sha, until_sha)` | `get_changed_symbols.py:88` signature + docstring "between two git commits" | **PASS** |
+| `find_references(repo, identifier)` exists; **no file-scope param** | `find_references.py:274` — params are `(repo, identifier, max_results, identifiers, include_call_chain)` | **PASS** (and corrects the slice-1 doc claim) |
+| `get_dead_code_v2(repo, min_confidence, …) → dead_symbols[{…confidence,signals}]` | `get_dead_code_v2.py:265` + return docstring | **PASS** |
+| `get_untested_symbols(repo, …) → {untested_count, reached_pct, symbols}` (note: `reached_pct` is a **response-envelope aggregate**, not a per-symbol field) | `get_untested_symbols.py:86` + docstring | **PASS** |
+| `get_layer_violations(repo, rules?)` reads `.jcodemunch.jsonc` | `get_layer_violations.py:59` | **PASS** |
 | `serve --transport streamable-http --host --port` (default 8901) | `server.py main()` argparse + `run_streamable_http_server`; `[http]` extra in `pyproject.toml:30` | **PASS** |
 | reify repo is live-indexed | `jcodemunch-watcher.service` active, `watch-claude --repos … /home/leo/src/reify …`, index-schema v16 | **PASS** |
 | Exact `repo` id + `storage_path` mapping to the index | **Deferred to L-SERVE live spike** (not a blocker; resolved before any Rust depends on it) | **PASS** (spike-gated) |
@@ -31,7 +31,7 @@ Verified against on-disk v1.108.27 source `~/.cache/uv/git-v0/checkouts/222e86de
 | **L-WIRE** | the production binary uses `RealJCodemunchOps`, not the noop | anti-orphan: `bin/reify-audit.rs:423` `NoopJCodemunchOps` replaced on the production dispatch path; `--pattern P1` no longer trivially exits 0 | **PASS** |
 | **L-WIRE** | P5/pre-done stays jcodemunch-free | anti-orphan (negative): lazy connect — the P5/pre-done arm constructs no client | **PASS** |
 | **L-PDEAD** | `get_dead_code_v2` produces real Rust findings; **confidence is advisory** | numeric-floor: severity pinned **Low/log-only** because jcodemunch Rust-accuracy is unproven — `bound` (action taken) ≤ the confidence floor, never auto-files. Honest-bound discipline. | **PASS** |
-| **L-PUNTESTED** | `get_untested_symbols` reachability (not coverage) | numeric-floor: Low/log-only; signal reports `reached_pct` as-is, asserts no exactness | **PASS** |
+| **L-PUNTESTED** | per-`UntestedSymbol` fields (`reached:bool`, `confidence`, `name`, `file`) — static reachability, not coverage | field-population: each Finding surfaces only the per-symbol fields the decoder actually populates (`lib.rs:830` `UntestedSymbol = {symbol_id,name,file,reached,confidence}`). The repo-level `reached_pct` aggregate is **run/report-level only** and is *not* plumbed per-Finding — surfacing it on each Finding was a G6 misattribution corrected via esc-4098-118 (Option B) / task 4098 re-scope. Low/log-only; asserts no exactness. | **PASS** (corrected) |
 | **L-PLAYER** | `get_layer_violations` reads authored reify rules | wired-on-main: `.jcodemunch.jsonc` committed + a seeded forbidden edge fires; clean when none | **PASS** |
 | **L-SKILL** | `/audit` documents the new patterns + serve prereq | wired-on-main: `.claude/skills/audit/SKILL.md` references the patterns + `--jcodemunch-url` | **PASS** |
 | **L-SMOKE** | **end-to-end**: real binary + live serve → real P1 + P-DEAD findings | anti-synthetic (the C-integration-gate): `scripts/smoke-jcodemunch-audit.sh` runs the real binary against the live serve over a real reify commit range; ≥1 real finding. This is the G2 signal slice-1's noop could never produce. | **PASS** |
@@ -39,3 +39,5 @@ Verified against on-disk v1.108.27 source `~/.cache/uv/git-v0/checkouts/222e86de
 ## G6 numeric-floor summary
 
 The only numbers in scope are confidence thresholds (`min_confidence=0.5`) and the inherited 14-day P1 grace window. **No leaf asserts a closed-form exactness or an end-to-end accuracy bound** (no FEA/spline/eigensolver numerics here). The floor is "jcodemunch's Rust analysis accuracy is unproven" → every new detector ships at Low/log-only severity, which is *below* (more conservative than) the floor. No `bound ≤ floor` violation possible.
+
+**G6 premise correction (2026-05-31, esc-4098-118).** The original L-PUNTESTED binding asserted each Finding surfaces the repo-level `reached_pct` aggregate. The architect RCA proved this un-GREEN-able: `get_untested_symbols → Vec<UntestedSymbol>` (`lib.rs:895`) returns no aggregate, `UntestedSymbol` has no `reached_pct` field, and the wire decoder discards the header scalar — so the detector has zero access to it, and the leaf's lock scope excludes the only plumbing point (`jcodemunch_client.rs`). This is a field-population/DAG-direction failure (a downstream-of-scope capability). Resolved by **Option B** — re-scope the RED to the per-symbol fields that *are* populated; `reached_pct`, if surfaced at all, belongs at run/report level, not per-Finding. Task 4098 updated accordingly.
