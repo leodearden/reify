@@ -351,6 +351,113 @@ pub fn degenerate_membrane_bending_b(
     b
 }
 
+/// Assumed **covariant** transverse-shear B-matrix (`2 × 18`) at the in-plane
+/// reference coordinate `coord`, carried VERBATIM from the MITC3+ formulation
+/// (task 3392).
+///
+/// Rows are the covariant components `(γ_ξζ, γ_ηζ)`; columns the 18 nodal DOFs
+/// (`6·node + {u_x,u_y,u_z,θ_x,θ_y,θ_z}`). Construction — identical to the inline
+/// assembly in [`crate::shell_assembly::shell_element_stiffness_mitc3_plus`]:
+///
+/// 1. sample the bare three-node (DISP3) covariant shear
+///    ([`Mitc3Plus::covariant_shear_b_nodal`]) at the six interior tying points
+///    ([`Mitc3Plus::interior_tying_points`]);
+/// 2. re-interpolate each DOF column via
+///    [`Mitc3Plus::interpolate_assumed_shear_mitc3_plus`] (Lee–Lee–Bathe Eq. 9).
+///
+/// This field is **geometry-free** (pure natural coordinates): it is *exactly*
+/// task 3392's assumed transverse-shear field — no new shear formulation is
+/// introduced here. The varying Jacobian enters only through the
+/// covariant→physical map applied downstream by [`degenerate_transverse_shear_b`].
+pub fn degenerate_assumed_covariant_shear_b(coord: ShellReferenceCoord) -> [[f64; 18]; 2] {
+    use crate::elements::mitc3_plus::ShearStrain;
+    let interior = Mitc3Plus.interior_tying_points();
+    // (1) Sample the bare-DISP3 covariant shear at the six interior tying points.
+    let mut b_tp = [[[0.0_f64; 18]; 2]; Mitc3Plus::N_INTERIOR_TYING_POINTS];
+    for (k, tp) in interior.iter().enumerate() {
+        b_tp[k] = Mitc3Plus.covariant_shear_b_nodal(tp.coord);
+    }
+    // (2) Re-interpolate each DOF column via Eq. 9 at `coord`.
+    let mut b = [[0.0_f64; 18]; 2];
+    for dof in 0..Mitc3Plus::N_DOFS {
+        let samples: [ShearStrain; Mitc3Plus::N_INTERIOR_TYING_POINTS] = [
+            ShearStrain { gamma_xi_zeta: b_tp[0][0][dof], gamma_eta_zeta: b_tp[0][1][dof] },
+            ShearStrain { gamma_xi_zeta: b_tp[1][0][dof], gamma_eta_zeta: b_tp[1][1][dof] },
+            ShearStrain { gamma_xi_zeta: b_tp[2][0][dof], gamma_eta_zeta: b_tp[2][1][dof] },
+            ShearStrain { gamma_xi_zeta: b_tp[3][0][dof], gamma_eta_zeta: b_tp[3][1][dof] },
+            ShearStrain { gamma_xi_zeta: b_tp[4][0][dof], gamma_eta_zeta: b_tp[4][1][dof] },
+            ShearStrain { gamma_xi_zeta: b_tp[5][0][dof], gamma_eta_zeta: b_tp[5][1][dof] },
+        ];
+        let proj = Mitc3Plus.interpolate_assumed_shear_mitc3_plus(&samples, coord);
+        b[0][dof] = proj.gamma_xi_zeta;
+        b[1][dof] = proj.gamma_eta_zeta;
+    }
+    b
+}
+
+/// Physical (lamina) transverse-shear B-matrix (`2 × 18`) at `coord`: the
+/// carried covariant assumed-shear field ([`degenerate_assumed_covariant_shear_b`])
+/// mapped covariant→physical by the in-plane `2×2` sub-block of `J⁻ᵀ` expressed
+/// in the per-point lamina frame, at the now-**varying** Jacobian.
+///
+/// Rows are the physical lamina transverse-shear components `(γ_1ζ', γ_2ζ')`
+/// (lamina axes `e1, e2` against the director `e3`); columns the 18 nodal DOFs.
+///
+/// # Map
+///
+/// With `J = ∂X/∂(ξ,η,ζ)` ([`degenerate_jacobian`]) and the lamina rotation `q`
+/// (rows `e1, e2, e3`; [`lamina_frame`]), the Jacobian in the lamina frame is
+/// `J_lam = q · J`, so `J_lam⁻ᵀ = q · J⁻ᵀ`. The physical lamina transverse shear
+/// is the in-plane `2×2` sub-block of `J_lam⁻ᵀ` applied to the covariant pair:
+///
+/// ```text
+/// [γ_1ζ'; γ_2ζ'] = (J_lam⁻ᵀ)[0..2, 0..2] · [γ_ξζ; γ_ηζ]
+/// ```
+///
+/// This is exactly task 3392's `J2⁻ᵀ` covariant→physical map, only re-expressed
+/// against the varying 3×3 `J` instead of the flat element's constant 2×2 `J2`
+/// — the carried natural-coordinate field is unchanged; only the geometric map
+/// varies per integration point. On a flat facet `J` is `ζ`-invariant, `q`
+/// reduces to [`crate::shell_assembly::build_shell_frame`], and the sub-block
+/// equals `shell_kinematics(...).jac2_inv_t`, so the carry-over reduces to 3392.
+/// Sharing `lamina_frame` with [`degenerate_membrane_bending_b`] keeps the
+/// transverse shear in the same lamina frame as membrane/bending for assembly.
+pub fn degenerate_transverse_shear_b(
+    nodes: &[[f64; 3]; 3],
+    directors: &[Director; 3],
+    thicknesses: &[f64; 3],
+    coord: ShellRefCoord3,
+) -> [[f64; 18]; 2] {
+    // (1) Carried covariant assumed-shear field (geometry-free, natural coords).
+    let b_cov = degenerate_assumed_covariant_shear_b(coord.in_plane());
+
+    // (2) Varying-J covariant→physical map in the lamina frame.
+    let (j, _det) = degenerate_jacobian(nodes, directors, thicknesses, coord);
+    let (j_inv, _) = mat3_inverse(&j);
+    let n = Mitc3Plus.shape_at(coord.in_plane());
+    let q = lamina_frame(&j, &n, directors);
+    // In-plane sub-block m2[a][b] = (J_lam⁻ᵀ)[a][b] = (q · J⁻ᵀ)[a][b],
+    // a,b ∈ {0,1}, with J⁻ᵀ[k][b] = J⁻¹[b][k].
+    let mut m2 = [[0.0_f64; 2]; 2];
+    for a in 0..2 {
+        for b in 0..2 {
+            let mut v = 0.0;
+            for k in 0..3 {
+                v += q[a][k] * j_inv[b][k];
+            }
+            m2[a][b] = v;
+        }
+    }
+
+    // (3) Physical lamina shear B = m2 · b_cov.
+    let mut b_phys = [[0.0_f64; 18]; 2];
+    for dof in 0..18 {
+        b_phys[0][dof] = m2[0][0] * b_cov[0][dof] + m2[0][1] * b_cov[1][dof];
+        b_phys[1][dof] = m2[1][0] * b_cov[0][dof] + m2[1][1] * b_cov[1][dof];
+    }
+    b_phys
+}
+
 /// A per-node shell **director**: the unit vector along the through-thickness
 /// fibre at a mesh vertex (the `V_i` of the degenerate-shell geometry map
 /// `X = Σ N_i x_i + (ζ/2) Σ N_i t_i V_i`).
