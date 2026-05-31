@@ -1588,4 +1588,44 @@ mod tests {
             }
         }
     }
+
+    // ── task 4069 step-3/4: assumed (ANS) membrane B — constant-state prereq ──
+
+    /// Constant-state reproduction (the consistency / patch prerequisite). On the
+    /// flat patch (a constant-Jacobian configuration, lamina = global xy) an affine
+    /// in-plane field `u_x = a·x + p·y`, `u_y = q·x + b·y` drives a CONSTANT
+    /// covariant membrane state, which maps to the constant physical lamina strain
+    /// `[a, b, p+q]`. The assumed-natural-strain membrane field
+    /// [`degenerate_assumed_membrane_b`] must reproduce it EXACTLY at every `(ξ,η)`
+    /// to `TOL = 1e-12`. Mirrors
+    /// `degenerate_assumed_covariant_shear_reproduces_constant_state`.
+    #[test]
+    fn degenerate_assumed_membrane_reproduces_constant_state() {
+        let (nodes, directors, thicknesses) = flat_patch();
+        let (a, b, p, q) = (0.012_f64, -0.006, 0.004, -0.002);
+        let mut u = [0.0_f64; 18];
+        for i in 0..3 {
+            let (x, y) = (nodes[i][0], nodes[i][1]);
+            u[6 * i] = a * x + p * y; // u_x = a·x + p·y
+            u[6 * i + 1] = q * x + b * y; // u_y = q·x + b·y
+        }
+        let want = [a, b, p + q];
+        for &(xi, eta) in &[(1.0 / 3.0, 1.0 / 3.0), (0.2, 0.3), (0.5, 0.25), (0.1, 0.6)] {
+            let bm = degenerate_assumed_membrane_b(
+                &nodes,
+                &directors,
+                &thicknesses,
+                ShellRefCoord3::new(xi, eta, 0.0),
+            );
+            let e = b_times_u(&bm, &u);
+            for r in 0..3 {
+                assert!(
+                    (e[r] - want[r]).abs() < TOL,
+                    "ANS membrane constant-state strain[{r}] at ({xi},{eta}) = {} expected {}",
+                    e[r],
+                    want[r],
+                );
+            }
+        }
+    }
 }
