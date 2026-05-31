@@ -25,6 +25,12 @@ fn notch_source() -> &'static str {
     include_str!("../../../examples/flexures/notch_hinge_circular_prb.ri")
 }
 
+/// The parallelogram-stage worked-example source
+/// (L=20mm, b=5mm, t=0.5mm, blade_spacing=10mm, Steel_AISI_1045 E=205GPa).
+fn parallelogram_source() -> &'static str {
+    include_str!("../../../examples/flexures/parallelogram_stage.ri")
+}
+
 /// Look up `key` in a `Value::Map`, returning `None` for any other variant.
 fn map_get<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
     match v {
@@ -78,6 +84,90 @@ fn cantilever_beam_prb_runs_end_to_end() {
             );
         }
         other => panic!("expected spring_rate Scalar, got {other:?}"),
+    }
+}
+
+/// step-13: RED→GREEN — parallelogram stage end-to-end (§10.1 row 3).
+///
+/// Compiles and evals `examples/flexures/parallelogram_stage.ri`, asserts
+/// diagnostic-clean, and checks the §10.1 row-3 producer signal:
+/// - spring_rate within 1% of 48·E·I/L³
+/// - transverse_stiffness / spring_rate ≥ 1000 (stiffness ratio)
+/// - parasitic_error < L/1000
+#[test]
+fn parallelogram_stage_runs_end_to_end() {
+    let compiled = parse_and_compile_with_stdlib(parallelogram_source());
+    let mut engine = make_simple_engine();
+    let eval_result = engine.eval(&compiled);
+
+    // Diagnostic-clean — η emits no Error diagnostics.
+    let errors: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics, got: {:?}",
+        errors
+    );
+
+    // The stage_flexure cell is a prismatic joint Map.
+    let id = ValueCellId::new("ParallelogramStagePrb", "stage_flexure");
+    let flexure = eval_result.values.get(&id).unwrap_or_else(|| {
+        panic!("ParallelogramStagePrb.stage_flexure cell missing from eval result")
+    });
+    assert_eq!(
+        map_get(flexure, "kind"),
+        Some(&Value::String("prismatic".to_string())),
+        "stage_flexure presents as a prismatic joint; got {flexure:?}"
+    );
+
+    // Analytic fixture values: L=20mm, b=5mm, t=0.5mm, E=205GPa (Steel_AISI_1045).
+    let length = 0.02_f64;
+    let width = 0.005_f64;
+    let thickness = 0.0005_f64;
+    let e = 205e9_f64;
+    let i = width * thickness.powi(3) / 12.0;
+
+    // spring_rate within 1% of k_stage = 48·E·I/L³ (four fixed-guided blades, γ=12).
+    let k_expected = 48.0 * e * i / length.powi(3);
+    let spring_rate_si = match map_get(flexure, "spring_rate") {
+        Some(Value::Scalar { si_value, .. }) => {
+            let rel = (si_value - k_expected).abs() / k_expected;
+            assert!(
+                rel < 0.01,
+                "spring_rate {si_value} within 1% of analytic {k_expected} (rel {rel})"
+            );
+            *si_value
+        }
+        other => panic!("expected spring_rate Scalar, got {other:?}"),
+    };
+
+    // §10.1 row 3: transverse_stiffness / spring_rate ≥ 1000.
+    let transverse_si = match map_get(flexure, "transverse_stiffness") {
+        Some(Value::Scalar { si_value, .. }) => *si_value,
+        other => panic!("expected transverse_stiffness Scalar, got {other:?}"),
+    };
+    let ratio = transverse_si / spring_rate_si;
+    assert!(
+        ratio >= 1000.0,
+        "transverse/spring ratio {ratio} ≥ 1000 (§10.1 row 3)"
+    );
+
+    // §10.1 row 3: parasitic_error is Option(Some(Length)) with si_value < L/1000.
+    match map_get(flexure, "parasitic_error") {
+        Some(Value::Option(Some(inner))) => match inner.as_ref() {
+            Value::Scalar { si_value, .. } => {
+                assert!(
+                    *si_value < length / 1000.0,
+                    "parasitic_error {si_value} < L/1000 = {} (§10.1 row 3)",
+                    length / 1000.0
+                );
+            }
+            other => panic!("parasitic_error inner: expected Scalar, got {other:?}"),
+        },
+        other => panic!("expected parasitic_error Option(Some(Scalar)), got {other:?}"),
     }
 }
 
