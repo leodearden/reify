@@ -1,0 +1,83 @@
+// Anchored cable-net form-finding smoke test for `fn form_find`.
+//
+// PRD reference: docs/prds/v0_6/tensegrity-structures.md §4 / Tier-1 leaf T1a.
+//
+// A pure-cable (no strut) net: one free node spoked to four fixed anchors.
+//
+//   node 0: free   — initial guess (0.3, 0.2, 0.4) m, deliberately off-solution
+//   node 1: anchor — ( 1,  0, 0) m
+//   node 2: anchor — (-1,  0, 0) m
+//   node 3: anchor — ( 0,  1, 1) m
+//   node 4: anchor — ( 0, -1, 1) m
+//
+//   cables: [[0,1],[0,2],[0,3],[0,4]]   (four spokes, all in tension q > 0)
+//   struts: []                          (none — this is a pure tension net)
+//
+// Force-Density form-finding with equal force densities q = 1 places the free
+// node at the *weighted centroid* of its anchors (the exact FD identity
+// x_f = Σ qᵢ xᵢ / Σ qᵢ):
+//
+//   node 0 → ( (1−1+0+0)/4, (0+0+1−1)/4, (0+0+1+1)/4 ) = (0, 0, 0.5) m
+//
+// The integration test at `crates/reify-eval/tests/tensegrity_t1a_form_find.rs`
+// asserts that `CableNet.form.nodes[0]` solves to (0, 0, 0.5) within 1e-9 and
+// that `@optimized("solver::form_find")` lowered to a ComputeNode with
+// target == "solver::form_find" (dispatched to the trampoline in
+// `crates/reify-eval/src/compute_targets/form_find.rs`, NOT body-inlined) when
+// the trampoline is registered via
+// `reify_eval::compute_targets::register_compute_fns`.
+//
+// Running:
+//
+//     reify eval examples/tensegrity_cable_net.ri
+//
+// prints the solved `form.nodes` — node 0 at the anchor centroid (z = 0.5 m) —
+// the T1a user-observable signal.
+//
+// Capture note (ComputeNode value-input contract):
+//   The structure, the force-density list, and the anchor list are each bound
+//   to their own `let` and passed to `form_find` by bare name. Bare `ValueRef`
+//   arguments are what the engine records as the ComputeNode's `value_inputs`
+//   (engine_eval.rs shallow-walk) — the cache-key dependency list that drives
+//   the Final-gate cache hit on a second eval. (The trampoline itself receives
+//   every argument's value positionally regardless, but let-binding keeps the
+//   dependency tracking honest — same discipline as fea_cantilever_smoke.ri.)
+
+structure CableNet {
+    // ── Network topology ────────────────────────────────────────────────────
+    //
+    // Free node 0 (off-solution initial guess) plus four anchors; four cable
+    // spokes 0→{1,2,3,4}. No struts — a pure tension net.
+    let net = Tensegrity(
+        nodes: [
+            point3(0.3m, 0.2m, 0.4m),   // node 0: free (initial guess; overwritten)
+            point3(1m, 0m, 0m),         // node 1: anchor
+            point3(-1m, 0m, 0m),        // node 2: anchor
+            point3(0m, 1m, 1m),         // node 3: anchor
+            point3(0m, -1m, 1m)         // node 4: anchor
+        ],
+        struts: [],
+        cables: [[0, 1], [0, 2], [0, 3], [0, 4]]
+    )
+
+    // Per-member force densities, struts-then-cables order (no struts here, so
+    // these four entries are the four cables). All positive — cables carry
+    // tension (the FD sign contract enforced by the kernel).
+    let qs = [1.0, 1.0, 1.0, 1.0]
+
+    // 0-based indices into `net.nodes` of the anchored (fixed) nodes.
+    let anchors = [1, 2, 3, 4]
+
+    // ── Form-finding solve ──────────────────────────────────────────────────
+    //
+    // `@optimized("solver::form_find")` routes this call to the FD trampoline,
+    // which solves the reduced free-node system D_ff X_f = −D_fa X_a and returns
+    // a FormFindResult carrying the solved node coordinates, per-member axial
+    // forces, the echoed force densities, and a convergence flag.
+    let form = form_find(net, qs, anchors)
+
+    // Solved equilibrium geometry — node 0 lands at the anchor centroid
+    // (0, 0, 0.5) m. This is the user-observable T1a signal printed by
+    // `reify eval`.
+    let solved = form.nodes
+}
