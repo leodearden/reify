@@ -320,3 +320,42 @@ fn pow_dimensioned_exp_127_not_flagged() {
         errors
     );
 }
+
+/// `5mm ^ -128` must NOT produce `DiagnosticCode::ExponentOutOfRange`.
+///
+/// -128 is i8::MIN — the most-negative in-range exponent.  This is the
+/// symmetric lower-boundary regression-guard mirroring the 127 (i8::MAX)
+/// upper-boundary test: `i8::try_from(-128)` succeeds, so no diagnostic
+/// should be emitted.
+#[test]
+fn pow_dimensioned_exp_neg128_not_flagged() {
+    let errors = compile_let_expr_errors("5mm ^ -128");
+    let flagged = errors
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::ExponentOutOfRange));
+    assert!(
+        !flagged,
+        "5mm ^ -128 should NOT produce DiagnosticCode::ExponentOutOfRange \
+         (-128 is i8::MIN, in range), got errors: {:?}",
+        errors
+    );
+}
+
+/// `5mm ^ -129` must produce `DiagnosticCode::ExponentOutOfRange`.
+///
+/// -129 is one below i8::MIN (-128) — the just-over-lower-boundary case.
+/// `i8::try_from(-129)` fails, so the compile guard must emit the diagnostic,
+/// symmetric to the 256 (one above i8::MAX) positive-overflow test.
+#[test]
+fn pow_dimensioned_exp_neg129_flagged() {
+    let errors = compile_let_expr_errors("5mm ^ -129");
+    let flagged = errors
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::ExponentOutOfRange));
+    assert!(
+        flagged,
+        "5mm ^ -129 should produce DiagnosticCode::ExponentOutOfRange \
+         (-129 underflows i8::MIN), got errors: {:?}",
+        errors
+    );
+}

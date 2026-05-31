@@ -3057,7 +3057,7 @@ fn eval_pow(lv: &Value, rv: &Value) -> Value {
             Value::Int(n),
         ) => match i8::try_from(*n) {
             Ok(n_i8) => Value::Scalar {
-                si_value: si_value.powi(*n as i32),
+                si_value: si_value.powi(n_i8 as i32),
                 dimension: dimension.pow(n_i8),
             },
             Err(_) => Value::Undef,
