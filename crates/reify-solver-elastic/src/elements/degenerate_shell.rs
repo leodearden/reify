@@ -1784,4 +1784,100 @@ mod tests {
             }
         }
     }
+
+    // ── task 4069 step-7/8: rigid-body compatibility & frame objectivity ─────
+
+    /// (a) Rigid-body compatibility on the CURVED tilted fixture. A consistent
+    /// rigid rotation `u_i = ω×x_i`, `θ_i = ω` is strain-free, so the ANS membrane
+    /// field must annihilate it (`<1e-9`) at several `(ξ,η)`. The covariant
+    /// membrane strain IS the genuine strain (zero for any rigid mode), so this
+    /// holds by construction — verified directly on tilted directors. Mirrors
+    /// `degenerate_b_rigid_rotation_on_curved_patch_yields_zero_strain`.
+    #[test]
+    fn degenerate_assumed_membrane_b_rigid_rotation_on_curved_patch_yields_zero() {
+        let (nodes, directors, thicknesses) = tilted_fixture();
+        let omega = [0.02_f64, -0.05, 0.03];
+        let mut u = [0.0_f64; 18];
+        for (i, x_i) in nodes.iter().enumerate() {
+            let t = cross(omega, *x_i);
+            u[6 * i] = t[0];
+            u[6 * i + 1] = t[1];
+            u[6 * i + 2] = t[2];
+            u[6 * i + 3] = omega[0];
+            u[6 * i + 4] = omega[1];
+            u[6 * i + 5] = omega[2];
+        }
+        for &(xi, eta) in &[(1.0 / 3.0, 1.0 / 3.0), (0.2, 0.3), (0.5, 0.25)] {
+            let e = b_times_u(
+                &degenerate_assumed_membrane_b(
+                    &nodes,
+                    &directors,
+                    &thicknesses,
+                    ShellRefCoord3::new(xi, eta, 0.0),
+                ),
+                &u,
+            );
+            for (r, &er) in e.iter().enumerate() {
+                assert!(
+                    er.abs() < 1e-9,
+                    "rigid-rotation ANS membrane strain[{r}] = {er} @ ({xi},{eta})",
+                );
+            }
+        }
+    }
+
+    /// (b) Frame objectivity on the CURVED tilted fixture. Rotating the whole
+    /// configuration (nodes, directors, DOFs) by a fixed proper `R` leaves the ANS
+    /// membrane lamina strains unchanged (`<1e-9`): the covariant strain
+    /// (`g_a·u_,b`) and the covariant→physical map `m2 = q·J⁻ᵀ` co-rotate
+    /// together. An arbitrary non-rigid DOF field is used so the strains are
+    /// genuinely non-zero — a non-objective map would differ by O(strain). Mirrors
+    /// `degenerate_b_is_frame_objective_under_rigid_rotation`.
+    #[test]
+    fn degenerate_assumed_membrane_b_is_frame_objective_under_rigid_rotation() {
+        let (nodes, directors, thicknesses) = tilted_fixture();
+        let u: [f64; 18] = [
+            0.010, -0.020, 0.015, 0.030, -0.010, 0.020, // node 0
+            -0.005, 0.012, -0.008, -0.020, 0.025, -0.015, // node 1
+            0.018, -0.006, 0.022, 0.010, -0.030, 0.005, // node 2
+        ];
+        let r = rot_matrix();
+        let nodes_r = [matvec(&r, nodes[0]), matvec(&r, nodes[1]), matvec(&r, nodes[2])];
+        let directors_r =
+            [matvec(&r, directors[0]), matvec(&r, directors[1]), matvec(&r, directors[2])];
+        let mut u_r = [0.0_f64; 18];
+        for i in 0..3 {
+            let ut = matvec(&r, [u[6 * i], u[6 * i + 1], u[6 * i + 2]]);
+            let tt = matvec(&r, [u[6 * i + 3], u[6 * i + 4], u[6 * i + 5]]);
+            u_r[6 * i] = ut[0];
+            u_r[6 * i + 1] = ut[1];
+            u_r[6 * i + 2] = ut[2];
+            u_r[6 * i + 3] = tt[0];
+            u_r[6 * i + 4] = tt[1];
+            u_r[6 * i + 5] = tt[2];
+        }
+        let mut max_strain = 0.0_f64;
+        for &(xi, eta) in &[(1.0 / 3.0, 1.0 / 3.0), (0.25, 0.4), (0.5, 0.2)] {
+            let c = ShellRefCoord3::new(xi, eta, 0.0);
+            let e0 = b_times_u(
+                &degenerate_assumed_membrane_b(&nodes, &directors, &thicknesses, c),
+                &u,
+            );
+            let e1 = b_times_u(
+                &degenerate_assumed_membrane_b(&nodes_r, &directors_r, &thicknesses, c),
+                &u_r,
+            );
+            for (k, (&a, &b)) in e0.iter().zip(e1.iter()).enumerate() {
+                assert!(
+                    (a - b).abs() < 1e-9,
+                    "ANS membrane strain[{k}] not frame-objective: {a} vs {b} @ ({xi},{eta})",
+                );
+                max_strain = max_strain.max(a.abs());
+            }
+        }
+        assert!(
+            max_strain > 1e-6,
+            "non-rigid membrane strain magnitude {max_strain} too small to test objectivity",
+        );
+    }
 }
