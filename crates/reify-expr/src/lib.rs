@@ -17,7 +17,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use reify_ast::QuantifierKind;
-use reify_core::{Diagnostic, DimensionVector, FIELD_ENTITY_PREFIX, Type, ValueCellId};
+use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, FIELD_ENTITY_PREFIX, Type, ValueCellId};
 use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyPredicateKind, DeterminacyState, FieldSourceKind, PersistentMap, SelectorKind, StructureInstanceData, StructureTypeId, UnOp, Value, ValueMap, quaternion_is_finite};
 
 /// Maximum recursion depth for user-defined function calls.
@@ -507,6 +507,18 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                         && let Some(sink) = ctx.diagnostics
                         && let Some(diag) =
                             reify_stdlib::stackup_diagnose(&function.name, &evaluated_args)
+                    {
+                        sink.borrow_mut().push(diag);
+                    }
+                    // Same post-Undef classification for multi-load-case
+                    // (task #10) failures: when `linear_combine` returns Undef,
+                    // emit the specific diagnostic via `fea_diagnose`. stackup
+                    // names and "linear_combine" are disjoint, so at most one of
+                    // the two diagnose helpers ever fires for a single Undef.
+                    if matches!(result, Value::Undef)
+                        && let Some(sink) = ctx.diagnostics
+                        && let Some(diag) =
+                            reify_stdlib::fea_diagnose(&function.name, &evaluated_args)
                     {
                         sink.borrow_mut().push(diag);
                     }
@@ -1387,16 +1399,18 @@ fn resolve_load_case_options(fields: &PersistentMap<String, Value>, shared_optio
 /// no actual ComputeNode realization occurs — mesh-reuse verification requires
 /// routing through the engine's @optimized dispatch (future work; see step-5 test).
 ///
-/// Failure modes (silent-Undef per PRD task #10 deferral):
-/// - `args.len() < 5`: wrong arity (guarded by dispatch arm; defensive here)
-/// - `cases` arg is not `Value::List`: Undef
-/// - cases list is empty: Undef
-/// - any case is not `Value::StructureInstance`: Undef
-/// - any `LoadCase.name` is not `Value::String`: Undef
-/// - duplicate case names: last-wins (the second case silently overwrites the
-///   first in the output `BTreeMap`; not diagnosticated — per silent-Undef
-///   discipline, the observable contract is that `case_names` / `result_for`
-///   see the final state of the map; tracking is PRD task #10 scope)
+/// Failure modes (PRD task #10 now diagnoses empty-cases and duplicate-names;
+/// the remaining shape mismatches stay silent-Undef):
+/// - `args.len() < 5`: wrong arity (guarded by dispatch arm; defensive here) → Undef
+/// - `cases` arg is not `Value::List`: Undef (silent)
+/// - cases list is empty: Undef + `MultiLoadEmptyCases` diagnostic (task #10)
+/// - duplicate case names: Undef + `MultiLoadDuplicateCaseName` diagnostic
+///   naming the offending case (task #10). An up-front uniqueness pre-pass
+///   rejects the second occurrence — no longer the silent last-wins overwrite
+///   it was while task #10 was deferred.
+/// - any case is not `Value::StructureInstance`: Undef (silent)
+/// - any `LoadCase.name` is not `Value::String`: Undef (silent; such cases are
+///   skipped by the duplicate pre-pass and rejected by the main solve loop)
 fn eval_solve_load_cases(args: &[Value], ctx: &EvalContext) -> Value {
     if args.len() < 5 {
         return Value::Undef;
@@ -1416,7 +1430,42 @@ fn eval_solve_load_cases(args: &[Value], ctx: &EvalContext) -> Value {
     };
 
     if cases.is_empty() {
+        // task #10 (multi-load-case FEA): empty cases is a user error, not a
+        // silent Undef. Emit MultiLoadEmptyCases into the runtime sink (when
+        // present) and still return Undef.
+        if let Some(sink) = ctx.diagnostics {
+            sink.borrow_mut().push(
+                Diagnostic::error(
+                    "Multi-load case analysis requires at least one LoadCase. Use solve_elastic_static for single-case analysis.",
+                )
+                .with_code(DiagnosticCode::MultiLoadEmptyCases),
+            );
+        }
         return Value::Undef;
+    }
+
+    // task #10 (multi-load-case FEA): reject duplicate case names up front.
+    // Each LoadCase in a single solve_load_cases call must have a unique name
+    // so downstream linear_combine weight maps can reference cases
+    // unambiguously. This pre-pass runs before any solve invocation, so the
+    // diagnostic fires with zero solver work. Cases lacking a `Value::String`
+    // name are skipped here and handled as before by the main loop below.
+    let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for case_val in cases.iter() {
+        if let Value::StructureInstance(data) = case_val
+            && let Some(Value::String(name)) = data.fields.get(&"name".to_string())
+            && !seen_names.insert(name.clone())
+        {
+            if let Some(sink) = ctx.diagnostics {
+                sink.borrow_mut().push(
+                    Diagnostic::error(format!(
+                        "Duplicate load case name: '{name}'. Each LoadCase in a single solve_load_cases call must have a unique name."
+                    ))
+                    .with_code(DiagnosticCode::MultiLoadDuplicateCaseName),
+                );
+            }
+            return Value::Undef;
+        }
     }
 
     let mut out: std::collections::BTreeMap<Value, Value> = std::collections::BTreeMap::new();
@@ -5652,6 +5701,99 @@ mod tests {
         assert_eq!(
             result, shared,
             "unexpected options shape should fall back to shared_options"
+        );
+    }
+
+    // ── task 3029 step-1: solve_load_cases empty-cases diagnostic (RED) ──────
+    //
+    // `eval_solve_load_cases` with an empty `cases` list (args[4]) must emit a
+    // `MultiLoadEmptyCases` error diagnostic into the runtime sink and still
+    // return `Value::Undef`. Before v0.3.x task #10 this path returned Undef
+    // silently (lib.rs empty-cases guard). White-box test: calls the private
+    // fn directly with a sink-bearing EvalContext — the FEA solve trampoline is
+    // irrelevant because the empty-cases guard fires before the solve loop.
+    #[test]
+    fn solve_load_cases_empty_cases_emits_diagnostic() {
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+
+        // 5-element args slice: material/length/width/height are irrelevant
+        // here because the empty-cases guard fires before they are used.
+        let args = [
+            Value::Undef,
+            Value::Undef,
+            Value::Undef,
+            Value::Undef,
+            Value::List(vec![]),
+        ];
+
+        let result = eval_solve_load_cases(&args, &ctx);
+
+        assert_eq!(result, Value::Undef, "empty cases must return Undef");
+
+        let diags = sink.borrow();
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly one diagnostic, got {diags:?}"
+        );
+        assert_eq!(
+            diags[0].code,
+            Some(reify_core::DiagnosticCode::MultiLoadEmptyCases)
+        );
+        assert_eq!(
+            diags[0].message,
+            "Multi-load case analysis requires at least one LoadCase. Use solve_elastic_static for single-case analysis."
+        );
+    }
+
+    /// Build a minimal `LoadCase` `Value::StructureInstance` with the given
+    /// `name` and empty `loads`/`supports` lists (task 3029 multi-load tests).
+    fn load_case(name: &str) -> Value {
+        let mut fields: PersistentMap<String, Value> = PersistentMap::new();
+        fields.insert("name".to_string(), Value::String(name.to_string()));
+        fields.insert("loads".to_string(), Value::List(vec![]));
+        fields.insert("supports".to_string(), Value::List(vec![]));
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "LoadCase".to_string(),
+            version: 0,
+            fields,
+        }))
+    }
+
+    // ── task 3029 step-3: solve_load_cases duplicate-names diagnostic (RED) ──
+    //
+    // Two LoadCases sharing the same `name` must emit a
+    // MultiLoadDuplicateCaseName error diagnostic (naming the offending case)
+    // and return Value::Undef. Before task #10 duplicates were silently
+    // last-wins in the output BTreeMap with no diagnostic emitted.
+    #[test]
+    fn solve_load_cases_duplicate_names_emits_diagnostic() {
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+
+        let args = [
+            Value::Undef,
+            Value::Undef,
+            Value::Undef,
+            Value::Undef,
+            Value::List(vec![load_case("operating"), load_case("operating")]),
+        ];
+
+        let result = eval_solve_load_cases(&args, &ctx);
+
+        assert_eq!(result, Value::Undef, "duplicate names must return Undef");
+
+        let diags = sink.borrow();
+        assert!(
+            diags.iter().any(|d| d.code
+                == Some(reify_core::DiagnosticCode::MultiLoadDuplicateCaseName)
+                && d.message
+                    == "Duplicate load case name: 'operating'. Each LoadCase in a single solve_load_cases call must have a unique name."),
+            "expected a MultiLoadDuplicateCaseName diagnostic naming 'operating', got {diags:?}"
         );
     }
 }

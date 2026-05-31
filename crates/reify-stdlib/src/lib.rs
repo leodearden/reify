@@ -19,6 +19,14 @@ pub use helpers::complex_phase;
 /// stackup builtin returns `Value::Undef`.
 pub use stackup::diagnose as stackup_diagnose;
 
+/// Public re-export of the multi-load-case FEA error classifier.
+///
+/// Called by `crates/reify-expr/src/lib.rs` at the builtin fallthrough arm to
+/// push `Severity::Error` diagnostics into the `EvalContext` sink when
+/// `linear_combine` returns `Value::Undef` for a task-#10 failure mode
+/// (empty/unknown-case weights or incompatible meshes).
+pub use fea::diagnose as fea_diagnose;
+
 #[cfg(test)]
 #[macro_use]
 mod test_macros;
