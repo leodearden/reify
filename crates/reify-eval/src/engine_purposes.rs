@@ -6,7 +6,7 @@ use crate::deps::ReverseDependencyIndex;
 use crate::graph::ValueCellNode;
 use reify_compiler::{ResolvedSchemaQuery, ValueCellKind};
 use reify_core::{ConstraintNodeId, ContentHash, Type, ValueCellId};
-use reify_ir::{CompiledExpr, CompiledExprKind, OptimizationObjective, PersistentMap};
+use reify_ir::{CompiledExpr, CompiledExprKind, DeterminacyState, OptimizationObjective, PersistentMap, Value, ValueMap};
 use std::sync::Arc;
 
 impl Engine {
@@ -188,6 +188,12 @@ impl Engine {
         let token = purpose_binding_token(bindings);
         let purpose_entity = format!("purpose:{}@{}", purpose_name, token);
 
+        // Clone Arc handles BEFORE the &mut eval_state borrow so the closures
+        // below can use them without conflicting with the mutable state borrow.
+        // Mirrors rebuild_purpose_infrastructure's Arc::clone(&self.compiled_fields).
+        let functions = Arc::clone(&self.functions);
+        let meta_map = Arc::clone(&self.meta_map);
+
         // Get mutable access to the evaluation state.
         let state = match self.eval_state.as_mut() {
             Some(s) => s,
@@ -242,6 +248,116 @@ impl Engine {
             obj
         });
 
+        // Release the closure's borrow on state.snapshot.graph.value_cells so
+        // we can mutate it below for let-cell injection (task 4009 δ).
+        drop(expand_placeholders);
+
+        // ── Let-cell injection (task 4009 δ) ─────────────────────────────────
+        //
+        // For each `let` in the purpose (in declaration order):
+        //   1. Clone + remap the compiled let expr (entity remap for params,
+        //      cell remap for earlier lets so forward-ref chains resolve).
+        //   2. Evaluate the remapped expr against the current snapshot values.
+        //   3. Inject a synthetic ValueCellNode into graph.value_cells.
+        //   4. Seed (value, determinacy) into snapshot.values and a local
+        //      values map so subsequent lets and constraint dispatch can read it.
+        //
+        // After injection, remap_cell rewrites let-references in constraints
+        // and the objective (compile-time `{purpose_name}::{let_name}` →
+        // injected `{purpose_entity}::__let_{name}`) so they resolve correctly.
+
+        // Build a local values map from the current snapshot so eval_expr can
+        // resolve earlier lets and entity params.
+        let mut local_values = ValueMap::new();
+        for (id, (val, _det)) in state.snapshot.values.iter() {
+            local_values.insert(id.clone(), val.clone());
+        }
+
+        // Accumulate (compile_id → injected_id) pairs for remap_cell below.
+        let mut let_remaps: Vec<(ValueCellId, ValueCellId)> = Vec::new();
+        let mut injected_let_ids: Vec<ValueCellId> = Vec::new();
+
+        for let_decl in &purpose.lets {
+            // Clone and remap the let expression.
+            let mut remapped_expr = let_decl.expr.clone();
+
+            // Apply per-param entity remap (same as constraints above).
+            for (param, entity) in bindings {
+                let from_stamp = format!("{}::{}", purpose_name, param);
+                remapped_expr.remap_entity(&from_stamp, entity);
+            }
+
+            // Apply remap_cell for earlier lets (so chained lets resolve).
+            for (compile_id, injected_id) in &let_remaps {
+                remapped_expr.remap_cell(compile_id, injected_id);
+            }
+
+            // Build the injected cell id: "{purpose_entity}::__let_{name}".
+            let injected_id =
+                ValueCellId::new(&purpose_entity, format!("__let_{}", let_decl.name));
+
+            // Evaluate the remapped expression against the current local values.
+            let val = reify_expr::eval_expr(
+                &remapped_expr,
+                &crate::eval_ctx_with_meta(&local_values, &functions, &meta_map)
+                    .with_determinacy(&state.snapshot.values),
+            );
+
+            // Determine the determinacy state of the evaluated value.
+            let det = if matches!(val, Value::Undef) {
+                DeterminacyState::Undetermined
+            } else {
+                DeterminacyState::Determined
+            };
+
+            // Inject a synthetic ValueCellNode into the evaluation graph.
+            state.snapshot.graph.value_cells.insert(
+                injected_id.clone(),
+                ValueCellNode {
+                    id: injected_id.clone(),
+                    kind: reify_compiler::ValueCellKind::Let,
+                    cell_type: remapped_expr.result_type.clone(),
+                    default_expr: Some(remapped_expr),
+                    content_hash: ContentHash::of_str(&format!(
+                        "purpose:{}:let:{}",
+                        purpose_name, let_decl.name
+                    )),
+                },
+            );
+
+            // Seed (value, determinacy) into snapshot.values and local_values so
+            // subsequent lets see this let's value during their own evaluation.
+            state
+                .snapshot
+                .values
+                .insert(injected_id.clone(), (val.clone(), det));
+            local_values.insert(injected_id.clone(), val);
+
+            // Record for constraint/objective remap_cell pass below.
+            let_remaps.push((let_decl.cell_id.clone(), injected_id.clone()));
+            injected_let_ids.push(injected_id);
+        }
+
+        // Rewrite let-references in constraints: compile-time cell id →
+        // injected cell id (renames member to __let_{name}).
+        for constraint in &mut rewritten_constraints {
+            for (compile_id, injected_id) in &let_remaps {
+                constraint.expr.remap_cell(compile_id, injected_id);
+            }
+        }
+
+        // Same rewrite for the objective expression.
+        let rewritten_objective = rewritten_objective.map(|mut obj| {
+            match &mut obj {
+                OptimizationObjective::Minimize(expr) | OptimizationObjective::Maximize(expr) => {
+                    for (compile_id, injected_id) in &let_remaps {
+                        expr.remap_cell(compile_id, injected_id);
+                    }
+                }
+            }
+            obj
+        });
+
         // Inject each constraint into the evaluation graph.
         let mut injected_ids = Vec::new();
         for (i, constraint) in rewritten_constraints.iter().enumerate() {
@@ -285,6 +401,12 @@ impl Engine {
         // single-param behaviour is byte-identical (a 1-entry Vec).
         self.active_purpose_bindings
             .insert(purpose_name.to_string(), bindings.to_vec());
+
+        // Record injected let-cell ids for check_constraints_with_values overlay
+        // (task 4009 δ). Even if the purpose has no lets, insert an empty Vec so
+        // deactivate_purpose's remove() call is always a no-op rather than a missing-key.
+        self.active_purpose_let_cells
+            .insert(purpose_name.to_string(), injected_let_ids);
 
         true
     }
