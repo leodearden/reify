@@ -318,4 +318,95 @@ mod tests {
             "ratio {ratio_actual} >= 1000 (§10.1 row 3)"
         );
     }
+
+    // ── step-5: RED -- parasitic_error closed form + range magnitude ───────────
+
+    #[test]
+    fn prb_parallelogram_flexure_parasitic_error_and_range_magnitude() {
+        let length = 0.02_f64;
+        let width  = 0.005_f64;
+        let thick  = 0.0005_f64;
+        let e      = 205e9_f64;
+        let yield_si = 310e6_f64;
+
+        // ── Case 1: steel() with yield_stress ─────────────────────────────────
+        let result = crate::eval_builtin("prb_parallelogram_flexure", &compound_args());
+
+        // δ_max = yield·L²/(3·E·t)  (fixed-guided surface-yield deflection)
+        let delta_max_val = yield_si * length.powi(2) / (3.0 * e * thick);
+        // δ_rot = L·(1 − cos(δ_max/L))  (Roberts approximation)
+        let theta = delta_max_val / length;
+        let delta_rot_expected = length * (1.0 - theta.cos());
+
+        match map_get(&result, "parasitic_error") {
+            Some(Value::Option(Some(inner))) => {
+                match inner.as_ref() {
+                    Value::Scalar { si_value, dimension } => {
+                        assert_eq!(
+                            *dimension,
+                            DimensionVector::LENGTH,
+                            "parasitic_error inner carries LENGTH dimension"
+                        );
+                        let rel = (si_value - delta_rot_expected).abs() / delta_rot_expected;
+                        assert!(
+                            rel < 1e-9,
+                            "parasitic_error {si_value} vs {delta_rot_expected} (rel {rel})"
+                        );
+                        // §10.1 row 3: parasitic < L/1000
+                        assert!(
+                            *si_value < length / 1000.0,
+                            "parasitic_error {si_value} < L/1000 = {} (§10.1 row 3)",
+                            length / 1000.0
+                        );
+                    }
+                    other => panic!("parasitic_error inner: expected Scalar, got {other:?}"),
+                }
+            }
+            other => panic!("expected parasitic_error Option(Some(Scalar)), got {other:?}"),
+        }
+
+        // Range magnitude pin: upper == δ_max (yield branch)
+        let range = map_get(&result, "range").expect("range key present");
+        let (_, up) = range_lower_upper(range);
+        match up {
+            Value::Scalar { si_value, .. } => {
+                let rel = (si_value - delta_max_val).abs() / delta_max_val;
+                assert!(
+                    rel < 1e-9,
+                    "range upper {si_value} vs δ_max {delta_max_val} (rel {rel})"
+                );
+            }
+            other => panic!("range upper: expected Scalar, got {other:?}"),
+        }
+
+        // ── Case 2: steel_no_yield() → δ_max = 0.1·L, parasitic uses that ─────
+        let args_ny = vec![
+            Value::length(length),
+            Value::length(width),
+            Value::length(thick),
+            Value::length(0.010),
+            steel_no_yield(),
+            axis_y(),
+            origin(),
+        ];
+        let result_ny = crate::eval_builtin("prb_parallelogram_flexure", &args_ny);
+        let delta_fallback = 0.1 * length;
+        let theta_ny = delta_fallback / length;
+        let delta_rot_ny = length * (1.0 - theta_ny.cos());
+        match map_get(&result_ny, "parasitic_error") {
+            Some(Value::Option(Some(inner))) => {
+                match inner.as_ref() {
+                    Value::Scalar { si_value, .. } => {
+                        let rel = (si_value - delta_rot_ny).abs() / delta_rot_ny;
+                        assert!(
+                            rel < 1e-9,
+                            "no-yield parasitic {si_value} vs {delta_rot_ny} (rel {rel})"
+                        );
+                    }
+                    other => panic!("no-yield parasitic inner: expected Scalar, got {other:?}"),
+                }
+            }
+            other => panic!("no-yield: expected parasitic_error Option(Some(_)), got {other:?}"),
+        }
+    }
 }
