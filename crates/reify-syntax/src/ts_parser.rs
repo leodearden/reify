@@ -2608,6 +2608,7 @@ impl<'a> Lowering<'a> {
             "qualified_access" => self.lower_qualified_access(node),
             "instance_qualified_access" => self.lower_instance_qualified_access(node),
             "trait_method_call" => self.lower_trait_method_call(node),
+            "variant_construction" => self.lower_variant_construction(node),
             "parenthesized_expression" => {
                 // Unwrap parenthesized expression — find the inner expression
                 let mut cursor = node.walk();
@@ -3573,6 +3574,46 @@ impl<'a> Lowering<'a> {
                 None
             }
         }
+    }
+
+    /// Lower a `variant_construction` CST node to `ExprKind::VariantConstruct`.
+    ///
+    /// Grammar (task α, step-6):
+    ///   `Name { field: value, ... }` — ≥1 named field, optional trailing comma.
+    ///
+    /// The lowered node carries the variant name and a Vec of (field_name, Expr)
+    /// in source-declaration order.  No `known_enums` gating — whether `Name` is
+    /// a real enum variant is resolved by task δ (3942).  At α the compiler emits
+    /// a "not yet supported" poison literal for every VariantConstruct node.
+    fn lower_variant_construction(&self, node: tree_sitter::Node) -> Option<Expr> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        let mut fields: Vec<(String, Expr)> = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "variant_construction_field" {
+                let field_name_node = match child.child_by_field_name("field") {
+                    Some(n) => n,
+                    None => continue,
+                };
+                let value_node = match child.child_by_field_name("value") {
+                    Some(n) => n,
+                    None => continue,
+                };
+                let field_name = self.node_text(field_name_node).to_string();
+                let value_expr = match self.lower_expr(value_node) {
+                    Some(e) => e,
+                    None => continue,
+                };
+                fields.push((field_name, value_expr));
+            }
+        }
+
+        Some(Expr {
+            kind: ExprKind::VariantConstruct { name, fields },
+            span: self.span(node),
+        })
     }
 
     fn lower_member_access(&self, node: tree_sitter::Node) -> Option<Expr> {
@@ -5206,6 +5247,15 @@ mod tests {
     fn lower_connect_body_error_node_emits_diagnostic() {
         // `{ >= }` produces an ERROR child inside connect_body.
         // When lower_connect_body is called directly, the ERROR arm fires.
+        // NOTE: `>=` as the first token inside `{` avoids a GLR ambiguity
+        // introduced by the variant_construction grammar production: after `b {`,
+        // the variant_construction fork needs an identifier as the field name.
+        // `>=` is NOT an identifier, so that fork dies immediately, and the
+        // connect_body fork cleanly handles `{ >= }` with an ERROR child.
+        // Using an identifier-first token (e.g. `shaft >= }`) would cause the
+        // variant_construction fork to partially match the identifier before
+        // dying at `>=`, which disrupts error recovery and may orphan `{ … }`
+        // as a member-level ERROR node instead of a connect_body node.
         let errors = lower_body_with_errors(
             "structure S { port a : out T  port b : in T  connect a -> b { >= } }",
         );
