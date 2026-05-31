@@ -424,4 +424,79 @@ mod tests {
             other => panic!("no-yield: expected parasitic_error Option(Some(_)), got {other:?}"),
         }
     }
+
+    // ── step-7: RED -- invalid inputs => Value::Undef ─────────────────────────
+
+    #[test]
+    fn prb_parallelogram_flexure_rejects_invalid_inputs() {
+        let undef = |args: Vec<Value>, label: &str| {
+            let r = crate::eval_builtin("prb_parallelogram_flexure", &args);
+            assert!(r.is_undef(), "{label}: expected Undef, got {r:?}");
+        };
+        let with = |idx: usize, v: Value| {
+            let mut a = compound_args();
+            a[idx] = v;
+            a
+        };
+
+        // Wrong arity.
+        undef(vec![], "0 args");
+        {
+            let mut a = compound_args();
+            a.truncate(6); // 6 args instead of 7
+            undef(a, "6 args");
+        }
+        {
+            let mut a = compound_args();
+            a.push(Value::length(0.0)); // 8 args
+            undef(a, "8 args");
+        }
+
+        // Non-positive geometry (these FAIL before step-8 guards are added):
+        undef(with(0, Value::length(0.0)), "length = 0");
+        undef(with(0, Value::length(-0.02)), "length < 0");
+        undef(with(1, Value::length(0.0)), "width = 0");
+        undef(with(3, Value::length(0.0)), "blade_spacing = 0");
+        undef(with(3, Value::length(-0.01)), "blade_spacing < 0");
+
+        // NaN (non-finite) geometry — length_si rejects NaN already:
+        undef(with(2, Value::length(f64::NAN)), "thickness = NaN");
+
+        // Degenerate beam: thickness >= length (FAILS before step-8):
+        undef(with(2, Value::length(0.02)), "thickness == length");
+        undef(
+            {
+                let mut a = compound_args();
+                a[0] = Value::length(0.005); // length < thickness=0.0005 would be fine, but...
+                a[2] = Value::length(0.010); // thickness > length
+                a
+            },
+            "thickness > length",
+        );
+
+        // Bad material.
+        undef(with(4, Value::Real(1.0)), "material not a StructureInstance");
+        undef(with(4, material("NoModulus", &[])), "material missing youngs_modulus");
+
+        // Bad axis (args[5]).
+        undef(with(5, Value::Real(1.0)), "axis not a vector");
+        undef(
+            with(
+                5,
+                Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]),
+            ),
+            "axis is zero vector",
+        );
+        undef(
+            with(
+                5,
+                Value::Vector(vec![
+                    Value::length(0.0),
+                    Value::length(1.0),
+                    Value::length(0.0),
+                ]),
+            ),
+            "axis is length-dimensioned",
+        );
+    }
 }
