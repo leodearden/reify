@@ -102,7 +102,7 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  --task <id>              Spot-check a single task (all detectors)");
     let _ = writeln!(out, "  --pre-done               With --task: run P5 pre-done check only");
     let _ = writeln!(out, "  --since <iso-date>       Window sweep from ISO date (all detectors)");
-    let _ = writeln!(out, "  --pattern P1|P2|P5|PDEAD Restrict to one detector");
+    let _ = writeln!(out, "  --pattern P1|P2|P5|PDEAD|PUNTESTED Restrict to one detector");
     let _ = writeln!(out, "  --tasks-file <path>      JSON array of TaskMetadata (overrides live loader; for tests)");
     let _ = writeln!(out, "  --fused-memory-url <url> MCP endpoint (default: $FUSED_MEMORY_URL or http://localhost:8002/mcp)");
     let _ = writeln!(out, "  --runs-db <path>         SQLite runs.db path (default: data/orchestrator/runs.db)");
@@ -246,10 +246,10 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
                 i += 1;
                 let p = argv.get(i).ok_or("--pattern requires a value")?.as_str();
                 match p {
-                    "P1" | "P2" | "P5" | "PDEAD" => pattern = Some(p.to_string()),
+                    "P1" | "P2" | "P5" | "PDEAD" | "PUNTESTED" => pattern = Some(p.to_string()),
                     other => {
                         return Err(format!(
-                            "unknown --pattern value '{}'; expected P1, P2, P5, or PDEAD",
+                            "unknown --pattern value '{}'; expected P1, P2, P5, PDEAD, or PUNTESTED",
                             other
                         ))
                     }
@@ -413,7 +413,7 @@ fn needs_jcodemunch(args: &Args) -> bool {
     if args.pre_done {
         return false;
     }
-    args.pattern.as_deref().is_none_or(|p| p == "P1" || p == "PDEAD")
+    args.pattern.as_deref().is_none_or(|p| p == "P1" || p == "PDEAD" || p == "PUNTESTED")
 }
 
 // -----------------------------------------------------------------------
@@ -570,6 +570,10 @@ fn main() -> ExitCode {
         }
         if run_pdead {
             all.extend(reify_audit::pdead_dead_code::check(&ctx));
+        }
+        let run_puntested = args.pattern.as_deref() == Some("PUNTESTED");
+        if run_puntested {
+            all.extend(reify_audit::puntested::check(&ctx));
         }
         all
     };
@@ -745,6 +749,17 @@ mod tests {
     }
 
     #[test]
+    fn parse_args_accepts_puntested_pattern() {
+        let args = parse_args(&["--pattern".to_string(), "PUNTESTED".to_string()])
+            .unwrap_or_else(|e| panic!("--pattern PUNTESTED must parse successfully; got: {e}"));
+        assert_eq!(
+            args.pattern.as_deref(),
+            Some("PUNTESTED"),
+            "parsed pattern must be Some(\"PUNTESTED\")"
+        );
+    }
+
+    #[test]
     fn parse_args_happy_path_round_trip() {
         let argv: Vec<String> = [
             "--task",
@@ -822,5 +837,14 @@ mod tests {
         assert!(!needs_jcodemunch(&make_args(false, Some("P5"))));
         // PDEAD explicitly → true (needs live jcodemunch server)
         assert!(needs_jcodemunch(&make_args(false, Some("PDEAD"))));
+    }
+
+    #[test]
+    fn needs_jcodemunch_puntested_routes_true() {
+        // PUNTESTED explicitly → true (needs live jcodemunch server)
+        assert!(
+            needs_jcodemunch(&make_args(false, Some("PUNTESTED"))),
+            "PUNTESTED must require jcodemunch (needs live server)"
+        );
     }
 }
