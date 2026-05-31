@@ -75,6 +75,15 @@ module.exports = grammar({
     // split stable even if a future type_expr change introduces a brace-shaped
     // right edge.
     [$.function_definition, $.function_signature],
+    // variant_construction (`Name { field: value }`) shares a common prefix with
+    // any `_primary_expression` that reduces to a bare `identifier` when the next
+    // token is `{`.  The GLR resolves the ambiguity by keeping both forks alive;
+    // the construction fork dies if the brace content is not `field: value` pairs
+    // (e.g. match arms or guarded-block members).
+    // tree-sitter generate error: "Add a conflict for these rules:
+    //   `_primary_expression`, `variant_construction`".
+    // PRD §4.4 / task α (data-carrying-enums, step-6).
+    [$._primary_expression, $.variant_construction],
   ],
 
   rules: {
@@ -108,8 +117,30 @@ module.exports = grammar({
       'enum',
       field('name', $.identifier),
       '{',
-      optional(seq($.identifier, repeat(seq(',', $.identifier)), optional(','))),
+      commaSep($.enum_variant),
       '}',
+    ),
+
+    // A single variant in an enum body: either a bare name (`Point`) or a
+    // named-field form (`Circle { radius: Length }`).
+    // PRD §4.4 / task α (data-carrying-enums).
+    enum_variant: $ => seq(
+      field('name', $.identifier),
+      optional(seq(
+        '{',
+        $.variant_field_decl,
+        repeat(seq(',', $.variant_field_decl)),
+        optional(','),
+        '}',
+      )),
+    ),
+
+    // A single `field: Type` pair inside an enum_variant payload.
+    // PRD §4.4 / task α.
+    variant_field_decl: $ => seq(
+      field('field', $.identifier),
+      ':',
+      field('type', $.type_expr),
     ),
 
     // ── Function ─────────────────────────────────────────────
@@ -1116,6 +1147,32 @@ module.exports = grammar({
       $.map_literal,
       $.identifier,
       $.parenthesized_expression,
+      // Named-field brace construction: `Name { field: value, ... }` (≥1 field).
+      // Symmetric with variant_binding_pattern.  Disambiguated from
+      // match/where bodies by GLR (see conflicts entry above).
+      // PRD §4.4 / task α (data-carrying-enums, step-6).
+      $.variant_construction,
+    ),
+
+    // ── Variant brace construction ──────────────────────────────
+    // `Rect { width: 20mm, height: 10mm }` — named-field variant construction.
+    // ≥1 field required (no empty-brace form).  Symmetric with variant_binding_pattern
+    // (pattern side) and variant_field_decl (declaration side).
+    // PRD §4.4 / task α, F2-a (brace form, Leo-ratified 2026-05-27).
+    variant_construction: $ => seq(
+      field('name', $.identifier),
+      '{',
+      $.variant_construction_field,
+      repeat(seq(',', $.variant_construction_field)),
+      optional(','),
+      '}',
+    ),
+
+    // A single `field: value` pair inside a variant_construction.
+    variant_construction_field: $ => seq(
+      field('field', $.identifier),
+      ':',
+      field('value', $._expression),
     ),
 
     // Imaginary literal: a decimal/scientific number immediately followed by the
