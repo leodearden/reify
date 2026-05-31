@@ -31,6 +31,7 @@ use reify_stdlib::modal::free_vibration::{
     eigenvalue_to_frequency_hz, is_rigid_body_mode, mass_normalization_scale,
     modal_participation_mass, rayleigh_damping_ratio,
 };
+use reify_stdlib::modal::trampoline::ModalCacheKey;
 
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
@@ -487,6 +488,12 @@ pub(crate) fn eigensolve_modal(
 /// bit-identical to the pre-split `solve_modal_core`. See [`assemble_modal_km`]
 /// for the P1/P2 assembly and [`eigensolve_modal`] for the `reference_direction`
 /// / free-DOF-subspace semantics.
+///
+/// `#[allow(dead_code)]`: since task κ the production trampoline composes
+/// [`assemble_modal_km`] + [`eigensolve_modal`] directly (to thread the cache
+/// between them), so this convenience wrapper is exercised only by the
+/// `modal_ops` unit tests (which assert the composed path stays bit-identical).
+#[allow(dead_code)]
 pub(crate) fn solve_modal_core(
     mesh: ModalMesh<'_>,
     density: f64,
@@ -752,7 +759,50 @@ fn degenerate_modal_result() -> Value {
 // Trampoline (modal::free_vibration)
 // ---------------------------------------------------------------------------
 
-/// `@optimized("modal::free_vibration")` trampoline for `fn modal_analysis`
+/// Warm-state payload donated by the modal trampoline (task κ): the cache key
+/// plus the expensive assembled `(K, M)` it certifies. Recovered on the next
+/// invocation via `downcast_ref` and reused only when the incoming request's
+/// [`ModalCacheKey`] matches — i.e. the cached assembly is still valid for the
+/// new (geometry, material, element_order).
+#[derive(Clone)]
+pub(crate) struct ModalAnalysisCache {
+    /// The `(K, M)`-determining inputs the cached `assembly` was built for.
+    pub(crate) key: ModalCacheKey,
+    /// The assembled stiffness/mass (+ norms, node count) to amortize.
+    pub(crate) assembly: ModalAssembly,
+}
+
+impl ModalAnalysisCache {
+    /// Wrap this cache in an [`OpaqueState`] for donation to the warm-state pool.
+    /// The size hint is a placeholder until step-12 derives the real, nnz-based
+    /// estimate (and the matching `cost_per_byte`).
+    fn into_opaque_state(self) -> OpaqueState {
+        // Placeholder size; step-12 replaces it with `estimated_size_bytes()`.
+        OpaqueState::new(self, 1)
+    }
+}
+
+/// Result of the in-crate modal core [`run_modal_analysis`]: the engine-facing
+/// [`ComputeOutcome`] plus a white-box `reused_assembly` flag the unit tests
+/// assert cache amortization against (the public `ComputeFn` returns only the
+/// outcome).
+pub(crate) struct ModalTrampolineRun {
+    /// The compute outcome the public trampoline returns.
+    pub(crate) outcome: ComputeOutcome,
+    /// `true` iff this run reused a cached [`ModalAnalysisCache`] assembly rather
+    /// than assembling `(K, M)` fresh. Observable only in-crate (amortization
+    /// tests); the public `ComputeFn` discards it, hence `allow(dead_code)`.
+    #[allow(dead_code)]
+    pub(crate) reused_assembly: bool,
+}
+
+/// In-crate modal core behind [`solve_modal_analysis_trampoline`], adding the
+/// task-κ warm-state cache — reuse the assembled `(K, M)` across calls whose
+/// [`ModalCacheKey`] matches — on top of the assemble → eigensolve → shape
+/// pipeline. Returns a [`ModalTrampolineRun`] so in-crate tests can also observe
+/// whether the assembly was reused; the public trampoline takes only `.outcome`.
+///
+/// `@optimized("modal::free_vibration")` core for `fn modal_analysis`
 /// (task ζ). Receives the five flat `value_inputs` matching the fn signature:
 ///
 /// ```text
@@ -779,17 +829,17 @@ fn degenerate_modal_result() -> Value {
 /// A material with no positive `density` short-circuits to a degenerate
 /// empty-modes result plus an `E_ModalNoMassMatrix` Error (the
 /// [`extract_density_or_degenerate`] guard) — no mesh / eigensolve runs.
-pub fn solve_modal_analysis_trampoline(
+pub(crate) fn run_modal_analysis(
     value_inputs: &[Value],
-    _realization_inputs: &[RealizationReadHandle],
-    _options: &Value,
-    _prior_warm_state: Option<&OpaqueState>,
+    prior_warm_state: Option<&OpaqueState>,
     _cancellation: &CancellationHandle,
-) -> ComputeOutcome {
+) -> ModalTrampolineRun {
     // ── (1) density guard — no M without a positive density (short-circuit) ──
+    // The guard's degenerate outcome already carries new_warm_state = None, so a
+    // missing density neither reuses nor donates a cache (reused_assembly = false).
     let density = match extract_density_or_degenerate(&value_inputs[0]) {
         Ok(d) => d,
-        Err(outcome) => return outcome,
+        Err(outcome) => return ModalTrampolineRun { outcome, reused_assembly: false },
     };
 
     // ── (2) material elastic constants (E, ν) ────────────────────────────────
@@ -809,6 +859,13 @@ pub fn solve_modal_analysis_trampoline(
     let reference_direction = extract_reference_direction(options);
     let (alpha, beta) = extract_damping(options);
     let element_order = extract_element_order(options);
+    // Map the order to the cache-key discriminant from the SAME source that picks
+    // the ModalMesh below, so the key and the assembled (K, M) can never disagree
+    // (task 4066: P1 and P2 assemble distinct matrices and node counts).
+    let element_order_disc: u8 = match element_order {
+        ElementOrder::P1 => 0,
+        ElementOrder::P2 => 1,
+    };
     // P2 promotes the beam mesh to 10-node tets ONCE here; the promoted node set
     // then drives BOTH the Dirichlet BC realization AND the K/M assembly in
     // `solve_modal_core` (handed across as `ModalMesh::P2`). P2 promotion inserts
@@ -831,15 +888,31 @@ pub fn solve_modal_analysis_trampoline(
     let bcs = build_dirichlet_bcs(options, modal_mesh.nodes(), length, width, height);
     let eigen_opts = EigenSolverOptions { n_modes, tol, max_iters, sigma };
 
-    // ── (5) core free-vibration eigensolve ───────────────────────────────────
-    let core = solve_modal_core(
-        modal_mesh,
+    // ── (5) cache lookup: reuse the assembled (K, M) on a key HIT ────────────
+    // The key captures EXACTLY the (K, M)-determining inputs (geometry + material
+    // + element_order); n_modes / tol / sigma / max_iters / boundary_conditions /
+    // damping / reference_direction are excluded, so a call differing only in
+    // those HITs. On a miss (or no prior) assemble fresh. The cheap mesh + BCs
+    // above are rebuilt either way — a HIT still needs them to realize the
+    // Dirichlet BCs by coordinate; only the expensive (K, M) assembly is reused.
+    let key = ModalCacheKey::new(
+        length,
+        width,
+        height,
+        material.youngs_modulus,
+        material.poisson_ratio,
         density,
-        &material,
-        reference_direction,
-        &bcs,
-        &eigen_opts,
+        element_order_disc,
     );
+    let prior_cache =
+        prior_warm_state.and_then(|s| s.downcast_ref::<ModalAnalysisCache>().cloned());
+    let (assembly, reused_assembly) = match prior_cache {
+        Some(cache) if cache.key.matches(&key) => (cache.assembly, true),
+        _ => (assemble_modal_km(modal_mesh, density, &material), false),
+    };
+
+    // Free-DOF eigensolve over the reused-or-fresh assembly (the cheap half).
+    let core = eigensolve_modal(&assembly, reference_direction, &bcs, &eigen_opts);
 
     // ── (6) modes list: one Mode StructureInstance per returned mode ─────────
     // phi_full and frequencies are pushed in lockstep by solve_modal_core; assert
@@ -896,12 +969,36 @@ pub fn solve_modal_analysis_trampoline(
         fields: result_fields,
     }));
 
-    ComputeOutcome::Completed {
+    // ── (8) donate the assembled (K, M) as warm state (task κ) ───────────────
+    // `run_compute_dispatch` donates `new_warm_state` to the Compute node on a
+    // Completed outcome (and restores the prior on Cancelled/Failed). `key` is a
+    // `Copy` ModalCacheKey, so reusing it from the (5) match guard is fine.
+    // `cost_per_byte` stays None until step-12 sizes the cache.
+    let new_warm_state = Some(ModalAnalysisCache { key, assembly }.into_opaque_state());
+    let outcome = ComputeOutcome::Completed {
         result,
-        new_warm_state: None,
+        new_warm_state,
         cost_per_byte: None,
         diagnostics: core.diagnostics,
-    }
+    };
+    ModalTrampolineRun { outcome, reused_assembly }
+}
+
+/// `@optimized("modal::free_vibration")` public `ComputeFn` for `fn
+/// modal_analysis` (task ζ; registered in `compute_targets::mod`). A thin
+/// wrapper over the in-crate core [`run_modal_analysis`]: it forwards the prior
+/// warm state and the cancellation handle and surfaces only the
+/// [`ComputeOutcome`]. Warm-state donation/recovery (the assembled `(K, M)`
+/// cache) and cooperative cancellation live in the core (task κ); the core's
+/// white-box `reused_assembly` flag is for in-crate amortization tests only.
+pub fn solve_modal_analysis_trampoline(
+    value_inputs: &[Value],
+    _realization_inputs: &[RealizationReadHandle],
+    _options: &Value,
+    prior_warm_state: Option<&OpaqueState>,
+    cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    run_modal_analysis(value_inputs, prior_warm_state, cancellation).outcome
 }
 
 /// Read an SI scalar magnitude from a numeric `Value`, tolerating the runtime
