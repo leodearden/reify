@@ -574,6 +574,19 @@ fn resolve_collection_sub_to_list(scope: &CompilationScope, sub_name: &str) -> C
     CompiledExpr::value_ref(list_id, list_type)
 }
 
+/// Build the canonical namespaced symbol for a trait-static function.
+///
+/// This is the **sole source of truth** for the `"Trait::method"` mangling used
+/// by BOTH the producer (static-fn registration in `traits_phase`) and the
+/// consumer (the `TraitStaticCall` dispatch arm in `compile_expr_guarded`).
+/// Keeping it in one place means the two sides can never drift.
+///
+/// `::` is collision-safe: the Reify grammar forbids `::` in a user-declared
+/// free-function name, so a namespaced symbol can never clash with a real fn.
+pub(crate) fn trait_static_fn_symbol(trait_name: &str, method: &str) -> String {
+    format!("{trait_name}::{method}")
+}
+
 /// Build a `CompiledExpr` for a `UserFunctionCall` node.
 ///
 /// Centralises the `TAG_USER_FUNCTION_CALL` ContentHash fold so both the
