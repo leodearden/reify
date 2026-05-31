@@ -3169,10 +3169,10 @@ fn dispatch_curvature(
         u: point[0],
         v: point[1],
     };
-    match kernel.query(&surface_query) {
-        Ok(value) => return Some(parse_curvature_matrix_reply(&value, helper_name, diagnostics)),
-        Err(_) => {} // fall through to curve form
+    if let Ok(value) = kernel.query(&surface_query) {
+        return Some(parse_curvature_matrix_reply(&value, helper_name, diagnostics));
     }
+    // Err(_): fall through to curve form
 
     // Retry as curve: full 3D world point.
     let curve_query = reify_ir::GeometryQuery::CurveCurvatureAt {
