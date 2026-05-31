@@ -383,6 +383,8 @@ pub mod constitutive;
 pub mod eigensolve;
 pub mod elements;
 pub mod error_estimator;
+// Task 3794: Tensegrity T1a — anchored Force-Density form-finding kernel.
+pub mod form_find;
 pub mod geometric_stiffness;
 pub mod interpolation;
 // Task 3868: κ — additive joint-stiffness kernel (PRD compliant-joints-flexures.md §7.2).
@@ -567,3 +569,8 @@ pub use volume_refine::{RefineError, refine_with_size_field};
 // assert_eq!(get(1, 1), 3.0);
 // ```
 pub use joint_stiffness::{JointStiffness, add_joint_stiffness};
+// Task 3794: Tensegrity T1a — anchored Force-Density form-finding kernel.
+// PRD: docs/prds/v0_6/tensegrity-structures.md §4. Pure numeric kernel behind
+// the `solver::form_find` ComputeNode target; the Value-cracking trampoline
+// lives in reify-eval's compute_targets/form_find.rs.
+pub use form_find::{FormFindError, FormFindSolve, MemberKind, form_find_anchored};
