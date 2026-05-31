@@ -976,4 +976,48 @@ mod tests {
             );
         }
     }
+
+    /// Pins that `ManifoldKernel::query(GeometryQuery::Distance{from,to})`
+    /// returns `Ok(Value::Real(d))` with `d ≈ 4.0` for two disjoint unit
+    /// cubes at [0,0,0] and [5,0,0].
+    ///
+    /// `unit_cube_mesh([dx,dy,dz])` spans [dx, dx+1]³, so the cube at
+    /// [0,0,0] occupies x ∈ [0,1] and the cube at [5,0,0] occupies x ∈
+    /// [5,6].  The closest vertex pair is at x=1 vs x=5, giving an exact
+    /// vertex-to-vertex min distance of |5 − 1| = 4.0.
+    ///
+    /// RED (task 3610 step-7): `ManifoldKernel::query` currently returns
+    /// `Err(QueryError::QueryFailed(STUB_MSG))` for every query variant.
+    /// GREEN is delivered by step-8 which adds `queries.rs` and wires
+    /// the `Distance` arm.
+    ///
+    /// Match-on-Ok rather than assert_eq! because `QueryError` does not
+    /// derive `PartialEq`.
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn query_distance_of_disjoint_cubes_returns_approx_4() {
+        let mut kernel = ManifoldKernel::new();
+        let from = kernel
+            .ingest_mesh(&unit_cube_mesh([0.0, 0.0, 0.0]))
+            .expect("unit_cube_mesh([0,0,0]) must be a valid manifold")
+            .id;
+        let to = kernel
+            .ingest_mesh(&unit_cube_mesh([5.0, 0.0, 0.0]))
+            .expect("unit_cube_mesh([5,0,0]) must be a valid manifold")
+            .id;
+
+        let result = kernel.query(&GeometryQuery::Distance { from, to });
+
+        match result {
+            Ok(Value::Real(d)) => assert!(
+                (d - 4.0).abs() < 1e-9,
+                "distance between unit cubes at [0,0,0] and [5,0,0] must be \
+                 ≈ 4.0 (vertex-to-vertex min); got {d}",
+            ),
+            other => panic!(
+                "query(Distance{{from,to}}) must return Ok(Value::Real(≈4.0)); \
+                 got {other:?}",
+            ),
+        }
+    }
 }
