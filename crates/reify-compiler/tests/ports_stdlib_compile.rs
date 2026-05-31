@@ -722,6 +722,139 @@ fn std_ports_thermal_module_cardinality_locked() {
     );
 }
 
+// ─── step-5 (fluid): std/ports/fluid surface ──────────────────────────────────
+
+/// std/ports/fluid must load with zero Severity::Error diagnostics.
+/// FluidPort refines exactly [Port] with required members [pressure, flow_rate,
+/// medium] in order, resolving to:
+///   pressure  : Scalar<PRESSURE>
+///   flow_rate : Scalar<VOLUME/TIME>   (via VolumetricFlowRate alias)
+///   medium    : String
+///
+/// `flow_rate` is asserted via DimensionVector::VOLUME.div(&DimensionVector::TIME)
+/// because the `VolumetricFlowRate = Volume / Time` alias resolves to that
+/// composite dimension at compile time — exactly as Torque = Force*Length/Angle
+/// resolves in the rotary_port_trait_surface test.
+#[test]
+fn std_ports_fluid_loads_with_no_errors_and_fluid_port_trait() {
+    let module = load_module("std/ports/fluid");
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "unexpected error diagnostics in ports_fluid.ri: {:?}",
+        errors
+    );
+
+    let fluid_port = find_trait("std/ports/fluid", "FluidPort");
+    assert_eq!(
+        fluid_port.refinements.as_slice(),
+        ["Port".to_string()].as_slice(),
+        "FluidPort should refine exactly [Port], got: {:?}",
+        fluid_port.refinements
+    );
+
+    assert_eq!(
+        fluid_port.required_members.len(),
+        3,
+        "FluidPort should have exactly 3 required members; got: {:?}",
+        fluid_port
+            .required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        fluid_port.required_members[0].name,
+        "pressure",
+        "FluidPort required_members[0] should be 'pressure'"
+    );
+    assert_eq!(
+        fluid_port.required_members[1].name,
+        "flow_rate",
+        "FluidPort required_members[1] should be 'flow_rate'"
+    );
+    assert_eq!(
+        fluid_port.required_members[2].name,
+        "medium",
+        "FluidPort required_members[2] should be 'medium'"
+    );
+
+    assert_eq!(
+        param_type("std/ports/fluid", "FluidPort", "pressure"),
+        Type::Scalar {
+            dimension: DimensionVector::PRESSURE
+        },
+        "FluidPort.pressure must be Scalar<PRESSURE>"
+    );
+
+    // VolumetricFlowRate = Volume / Time; alias resolves to the composite dimension.
+    let expected_flow_rate_dim = DimensionVector::VOLUME.div(&DimensionVector::TIME);
+    assert_eq!(
+        param_type("std/ports/fluid", "FluidPort", "flow_rate"),
+        Type::Scalar {
+            dimension: expected_flow_rate_dim
+        },
+        "FluidPort.flow_rate must be Scalar<VOLUME/TIME> \
+         (VolumetricFlowRate alias — alias indirection required for binary dim-op; \
+         see ports_fluid.ri header deviation)"
+    );
+
+    assert_eq!(
+        param_type("std/ports/fluid", "FluidPort", "medium"),
+        Type::String,
+        "FluidPort.medium must be Type::String \
+         (open medium set; free-form identifier per io.ri precedent)"
+    );
+}
+
+/// std/ports/fluid cardinality lock: exactly 1 trait (FluidPort),
+/// 0 enums, 0 structures.
+#[test]
+fn std_ports_fluid_module_cardinality_locked() {
+    let module = load_module("std/ports/fluid");
+
+    assert_eq!(
+        module.enum_defs.len(),
+        0,
+        "std/ports/fluid should declare 0 enums, got: {:?}",
+        module
+            .enum_defs
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    let trait_names: Vec<&str> = module
+        .trait_defs
+        .iter()
+        .map(|t| t.name.as_str())
+        .collect();
+    assert_eq!(
+        module.trait_defs.len(),
+        1,
+        "std/ports/fluid should declare exactly 1 trait (FluidPort), got: {:?}",
+        trait_names
+    );
+
+    let structure_names: Vec<&str> = module
+        .templates
+        .iter()
+        .filter(|t| t.entity_kind == EntityKind::Structure)
+        .map(|t| t.name.as_str())
+        .collect();
+    assert_eq!(
+        structure_names.len(),
+        0,
+        "std/ports/fluid should declare 0 structures, got: {:?}",
+        structure_names
+    );
+}
+
 // ─── step-9: capstone example compile ─────────────────────────────────────────
 
 /// examples/stdlib/ports_mechanical.ri must compile without errors and
