@@ -11704,4 +11704,438 @@ mod tests {
             diagnostics
         );
     }
+
+    // ── try_eval_topology_selector length dispatch unit tests ──────────────
+    // (task 3622, KGQ-ν: length(Curve) + perimeter(Surface))
+    //
+    // Step-1 RED: tests compile but FAIL until step-2 wires the
+    // "length" → TopologySelectorHelper::Length arm to the dispatcher.
+
+    /// Build a `CompiledExpr` for `helper(<literal_real>)` with a single
+    /// literal arg. Used for 1-arg literal fall-through tests.
+    fn topology_selector_call_one_literal_arg(helper_name: &str) -> reify_ir::CompiledExpr {
+        let arg = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Real(1.0),
+            reify_core::Type::Real,
+        );
+        let content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str(helper_name))
+            .combine(arg.content_hash);
+        reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: helper_name.to_string(),
+                    qualified_name: helper_name.to_string(),
+                },
+                args: vec![arg],
+            },
+            result_type: reify_core::Type::Real,
+            content_hash,
+        }
+    }
+
+    /// `length(edge_sub_handle)` with a staged `Value::Real(0.02)` EdgeLength
+    /// result must yield `Some(Value::length(0.02))` and zero diagnostics.
+    ///
+    /// PRIMARY RED assertion — pre-impl `length` hits the `_ => return None` arm.
+    #[test]
+    fn try_eval_topology_selector_length_edge_subhandle_returns_scalar_length() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+
+        let edge_kh = reify_ir::GeometryHandleId(10);
+        let parent_rr = RealizationNodeId::new("LengthTest", 0);
+        let parent_hash: [u8; 32] = [0x42; 32];
+        let mut kernel = MockGeometryKernel::new()
+            .with_edge_length_result(edge_kh, reify_ir::Value::Real(0.02));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("LengthTest", "e"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr,
+                upstream_values_hash: parent_hash,
+                kernel_handle: edge_kh,
+            },
+        );
+
+        let expr = topology_selector_call_one_value_ref(
+            "length",
+            "LengthTest",
+            "e",
+            Type::Geometry,
+            Type::length(),
+        );
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::length(0.02)),
+            "length(edge) must return Some(Value::length(0.02 m)); got {:?}; diags: {:?}",
+            result,
+            diagnostics
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "happy-path length must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// `length(<literal>)` must fall through to `None` without consulting the
+    /// kernel — the `resolve_parent_geometry_handle_arg` guard rejects non-ValueRef.
+    #[test]
+    fn try_eval_topology_selector_length_literal_arg_falls_through_to_none() {
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mut kernel = MockGeometryKernel::new();
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let values = reify_ir::ValueMap::new();
+
+        let expr = topology_selector_call_one_literal_arg("length");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "length(<literal>) must return None; got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "literal-arg fall-through must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// `length(edge_sub_handle)` with no staged EdgeLength result (mock returns
+    /// error) must yield `Some(Value::Undef)` + exactly one Warning mentioning
+    /// "length".
+    #[test]
+    fn try_eval_topology_selector_length_kernel_err_returns_undef_with_warning() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+
+        let edge_kh = reify_ir::GeometryHandleId(11);
+        let parent_rr = RealizationNodeId::new("LengthTest", 0);
+        let parent_hash: [u8; 32] = [0x43; 32];
+        // No EdgeLength staged → mock returns QueryFailed.
+        let mut kernel = MockGeometryKernel::new();
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("LengthTest", "e"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr,
+                upstream_values_hash: parent_hash,
+                kernel_handle: edge_kh,
+            },
+        );
+
+        let expr = topology_selector_call_one_value_ref(
+            "length",
+            "LengthTest",
+            "e",
+            Type::Geometry,
+            Type::length(),
+        );
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "length with kernel Err must yield Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "kernel Err must emit exactly one Warning; got {} diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Warning,
+            "diagnostic severity must be Warning; got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("length"),
+            "diagnostic must mention 'length'; got: {}",
+            diag.message
+        );
+    }
+
+    // ── try_eval_topology_selector perimeter dispatch unit tests ───────────
+    // (task 3622, KGQ-ν)
+    //
+    // Step-3 RED: tests compile but FAIL until step-4 wires the
+    // "perimeter" → TopologySelectorHelper::Perimeter arm to the dispatcher.
+
+    /// `perimeter(face_sub_handle)` where the mock kernel returns 4 edges with
+    /// exactly-representable lengths 1.0+2.0+3.0+4.0=10.0 must yield
+    /// `Some(Value::length(10.0))` and zero diagnostics.
+    ///
+    /// PRIMARY RED assertion — pre-impl `perimeter` hits the `_ => return None` arm.
+    #[test]
+    fn try_eval_topology_selector_perimeter_face_subhandle_sums_edge_lengths() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+
+        let face_kh = reify_ir::GeometryHandleId(20);
+        let e1 = reify_ir::GeometryHandleId(21);
+        let e2 = reify_ir::GeometryHandleId(22);
+        let e3 = reify_ir::GeometryHandleId(23);
+        let e4 = reify_ir::GeometryHandleId(24);
+        let parent_rr = RealizationNodeId::new("PerimTest", 0);
+        let parent_hash: [u8; 32] = [0x50; 32];
+        // Use exactly-representable lengths so summation is bit-exact.
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_edges(face_kh, vec![e1, e2, e3, e4])
+            .with_edge_length_result(e1, reify_ir::Value::Real(1.0))
+            .with_edge_length_result(e2, reify_ir::Value::Real(2.0))
+            .with_edge_length_result(e3, reify_ir::Value::Real(3.0))
+            .with_edge_length_result(e4, reify_ir::Value::Real(4.0));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("PerimTest", "f"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr,
+                upstream_values_hash: parent_hash,
+                kernel_handle: face_kh,
+            },
+        );
+
+        let expr = topology_selector_call_one_value_ref(
+            "perimeter",
+            "PerimTest",
+            "f",
+            Type::Geometry,
+            Type::length(),
+        );
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::length(10.0)),
+            "perimeter(face) must return Some(Value::length(10.0 m)); got {:?}; diags: {:?}",
+            result,
+            diagnostics
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "happy-path perimeter must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// `perimeter(<literal>)` must fall through to `None` — the
+    /// `resolve_parent_geometry_handle_arg` guard rejects non-ValueRef args.
+    #[test]
+    fn try_eval_topology_selector_perimeter_literal_arg_falls_through_to_none() {
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mut kernel = MockGeometryKernel::new();
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let values = reify_ir::ValueMap::new();
+
+        let expr = topology_selector_call_one_literal_arg("perimeter");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "perimeter(<literal>) must return None; got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "literal-arg fall-through must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// `perimeter(face_sub_handle)` when `extract_edges` returns an error must
+    /// yield `Some(Value::Undef)` + exactly one Warning mentioning "perimeter".
+    #[test]
+    fn try_eval_topology_selector_perimeter_extract_edges_error_returns_undef_with_warning() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+
+        let face_kh = reify_ir::GeometryHandleId(25);
+        let parent_rr = RealizationNodeId::new("PerimTest", 0);
+        let parent_hash: [u8; 32] = [0x51; 32];
+        let mut kernel = MockGeometryKernel::new()
+            .with_extract_edges_error(face_kh, reify_ir::QueryError::InvalidHandle(face_kh));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("PerimTest", "f"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr,
+                upstream_values_hash: parent_hash,
+                kernel_handle: face_kh,
+            },
+        );
+
+        let expr = topology_selector_call_one_value_ref(
+            "perimeter",
+            "PerimTest",
+            "f",
+            Type::Geometry,
+            Type::length(),
+        );
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "perimeter with extract_edges error must yield Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "extract_edges error must emit exactly one Warning; got {} diags: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Warning,
+            "diagnostic severity must be Warning; got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("perimeter"),
+            "diagnostic must mention 'perimeter'; got: {}",
+            diag.message
+        );
+    }
+
+    /// `perimeter(face_sub_handle)` when edges are staged but one `EdgeLength`
+    /// query returns a non-Real value must yield `Some(Value::Undef)` + one Warning.
+    #[test]
+    fn try_eval_topology_selector_perimeter_non_real_edge_length_returns_undef_with_warning() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+
+        let face_kh = reify_ir::GeometryHandleId(26);
+        let e1 = reify_ir::GeometryHandleId(27);
+        let e2 = reify_ir::GeometryHandleId(28);
+        let parent_rr = RealizationNodeId::new("PerimTest", 0);
+        let parent_hash: [u8; 32] = [0x52; 32];
+        // e1 returns Real(1.0) ok, e2 returns a non-Real value → should degrade.
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_edges(face_kh, vec![e1, e2])
+            .with_edge_length_result(e1, reify_ir::Value::Real(1.0))
+            .with_edge_length_result(e2, reify_ir::Value::Bool(true)); // unexpected type
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("PerimTest", "f"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr,
+                upstream_values_hash: parent_hash,
+                kernel_handle: face_kh,
+            },
+        );
+
+        let expr = topology_selector_call_one_value_ref(
+            "perimeter",
+            "PerimTest",
+            "f",
+            Type::Geometry,
+            Type::length(),
+        );
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "perimeter with non-Real EdgeLength must yield Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "non-Real EdgeLength must emit exactly one Warning; got {} diags: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_core::Severity::Warning,
+            "diagnostic severity must be Warning; got {:?}",
+            diagnostics[0].severity
+        );
+    }
 }
