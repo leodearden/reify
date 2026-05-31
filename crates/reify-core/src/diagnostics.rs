@@ -1376,6 +1376,31 @@ pub enum DiagnosticCode {
     ///
     /// The PRD-prose mnemonic for this code is `E_TRAIT_FN_SIGNATURE_MISMATCH`.
     TraitFnSignatureMismatch,
+    /// Origin: `crates/reify-compiler/src/expr.rs` (BinOp::Pow + Scalar branch).
+    ///
+    /// Emitted as a `Severity::Error` when a dimensioned (`Scalar<Q>`) value is
+    /// raised to an integer literal exponent whose value overflows `i8` (i.e. lies
+    /// outside `[-128, 127]`).  PRD §4.3 requires the dimension vector `Q^n` to be
+    /// computed at compile time, which requires the exponent to fit in the `i8`
+    /// slot accepted by `DimensionVector::pow(i8)`.
+    ///
+    /// Distinct from [`NonIntegerExponentOnDimensioned`] (which rejects non-integer
+    /// or non-literal exponents) and from `UnitResolveError::ExponentOutOfRange`
+    /// (a unit-module error type whose uncoded diagnostic fires on the unit-literal
+    /// path, e.g. `5mm^256` without spaces).  A dedicated code keeps the value-level
+    /// path's coded-diagnostic convention and lets compile tests assert on `d.code`
+    /// rather than on message substrings.
+    ///
+    /// Canonical message form:
+    ///   `"exponent <n> is out of range for dimensioned `^`; must fit in i8 ([-128, 127])"`
+    /// with a label `"exponent out of range"` on the exponent span.
+    ///
+    /// The result type is poisoned to `Type::Error` (anti-cascade), mirroring the
+    /// adjacent [`NonIntegerExponentOnDimensioned`] branch.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_EXPONENT_OUT_OF_RANGE`
+    /// (severity convention: `E_*` → Error).
+    ExponentOutOfRange,
 }
 
 /// A diagnostic message with location and optional labels.

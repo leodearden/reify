@@ -940,15 +940,39 @@ pub(crate) fn compile_expr_guarded(
                                 _ => None,
                             };
                             if let Some(n) = int_exp {
-                                let scaled = dimension.pow(n as i8);
-                                result_type = if scaled.is_dimensionless() {
-                                    // `5mm ^ 0` or any Scalar<Q^0> collapses to Real,
-                                    // matching the existing BinOp::Div dimensionless→Real
-                                    // convention.
-                                    Type::Real
-                                } else {
-                                    Type::Scalar { dimension: scaled }
-                                };
+                                // Guard: exponent must fit in i8 for DimensionVector::pow(i8).
+                                // Mirrors units.rs:680-681 (`i8::try_from` pattern).
+                                // Lossy `as i8` truncation (e.g. 256 as i8 == 0) would silently
+                                // produce a wrong dimension with no diagnostic — exactly the
+                                // silent-wrong-dimension class "errors must be noisy" warns about.
+                                // (task-4106 / E_EXPONENT_OUT_OF_RANGE)
+                                match i8::try_from(n) {
+                                    Ok(n_i8) => {
+                                        let scaled = dimension.pow(n_i8);
+                                        result_type = if scaled.is_dimensionless() {
+                                            // `5mm ^ 0` or any Scalar<Q^0> collapses to Real,
+                                            // matching the existing BinOp::Div dimensionless→Real
+                                            // convention.
+                                            Type::Real
+                                        } else {
+                                            Type::Scalar { dimension: scaled }
+                                        };
+                                    }
+                                    Err(_) => {
+                                        result_type = make_poison_type(
+                                            diagnostics,
+                                            Diagnostic::error(format!(
+                                                "exponent {n} is out of range for dimensioned `^`; \
+                                                 must fit in i8 ([-128, 127])",
+                                            ))
+                                            .with_code(DiagnosticCode::ExponentOutOfRange)
+                                            .with_label(DiagnosticLabel::new(
+                                                right.span,
+                                                "exponent out of range",
+                                            )),
+                                        );
+                                    }
+                                }
                             }
                             // None case: non-integer exponent on dimensioned base
                             // (task-3805 / PRD §4.3 / E_NONINT_EXP_ON_DIMENSIONED).
