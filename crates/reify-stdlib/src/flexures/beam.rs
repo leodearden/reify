@@ -35,10 +35,14 @@ pub(crate) fn eval_beam(name: &str, args: &[Value]) -> Option<Value> {
 /// stiffness is the closed-form `k_θ = γ·E·I / L` (Howell §5.1, γ = 2.65), with
 /// `I = width·thickness³/12` the rectangular-section second moment of area.
 ///
+/// The symmetric `prb_validity` rotation range is `±min(θ_yield, 5°)`, where
+/// `θ_yield = yield·L/(E·t/2)` is the surface-yield rotation and 5° is the PRB
+/// small-deflection limit. When the material carries no `yield_stress`, only
+/// the 5° PRB limit applies.
+///
 /// Returns `Value::Undef` on arity ≠ {6, 7} or when any geometry / material /
 /// axis argument fails extraction. (Comprehensive geometry guards land in a
-/// later step; the yield-capped validity range likewise lands later — this
-/// step uses a placeholder symmetric ±5° range.)
+/// later step.)
 fn prb_cantilever_beam(args: &[Value]) -> Value {
     // Uniform 6/7-arg signature (the optional 7th arg is the neutral angle,
     // wired in a later step): (length, width, thickness, material, pivot, axis).
@@ -69,11 +73,20 @@ fn prb_cantilever_beam(args: &[Value]) -> Value {
     let i = width * thickness.powi(3) / 12.0;
     let k_theta = CANTILEVER_GAMMA * e * i / length;
 
-    // Placeholder symmetric ±5° validity range — the yield cap lands in a
-    // later step.
+    // Symmetric prb_validity range = ±min(θ_yield, 5°). θ_yield is the
+    // surface-yield rotation (Howell §5.1: σ(θ) = E·(t/2)·θ/L ⇒
+    // θ_yield = yield·L/(E·t/2)); the 5° PRB limit bounds small-deflection
+    // fidelity. A material without a yield_stress contributes only the 5° cap.
+    let theta_lim = match material_field_si(material, "yield_stress") {
+        Some(yield_si) => {
+            let theta_yield = yield_si * length / (e * thickness / 2.0);
+            theta_yield.min(PRB_ANGLE_LIMIT_RAD)
+        }
+        None => PRB_ANGLE_LIMIT_RAD,
+    };
     let range = Value::range(
-        Some(Value::angle(-PRB_ANGLE_LIMIT_RAD)),
-        Some(Value::angle(PRB_ANGLE_LIMIT_RAD)),
+        Some(Value::angle(-theta_lim)),
+        Some(Value::angle(theta_lim)),
         true,
         true,
     );
