@@ -548,11 +548,13 @@ fn solve_p2_pipeline_with_opts(
     dedup_bcs(bcs);
     apply_dirichlet_row_elimination(&mut k, &mut f, bcs);
 
+    let max_iter = opts.max_iter;
     let result: CgResult = solve_cg(&k, &f, opts, SolverMode::Deterministic);
     assert!(
         result.converged,
-        "solve_p2_pipeline: CG did not converge (iterations={})",
+        "solve_p2_pipeline_with_opts: CG did not converge after {} iterations (cap={})",
         result.iterations,
+        max_iter,
     );
     result.u.to_vec()
 }
