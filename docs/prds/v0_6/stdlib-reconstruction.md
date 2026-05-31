@@ -29,7 +29,7 @@ let thermal_energy = BOLTZMANN_CONSTANT() * 300K
 Concretely, after this PRD lands:
 - `import std.ports.mechanical` (and `.electrical` / `.thermal` / `.fluid`) compiles; `RotaryPort`, `PowerPort`, `SignalPort`, `ThreadedPort`, `Bore`, `Shaft` etc. are usable as port-type annotations and as trait bounds.
 - `import std.process` compiles; `Process`, `Subtracting`, `Adding`, `Forming`, `Joining`, and `DFMRule` are usable as trait bounds.
-- `import std.fields` compiles; it packages the existing built-in differential operators (`gradient`, `divergence`, `curl`, `laplacian`, `sample`) behind a documented module surface, and exposes the `Field<D,C>` type alias and field-construction helpers.
+- `import std.fields` compiles; it packages the existing built-in differential operators (`gradient`, `divergence`, `curl`, `laplacian`, `sample`) behind a documented module surface, and documents the built-in `Field<D,C>` parametric type (it resolves without import — the module declares no alias) and field-construction helpers.
 - `SPEED_OF_LIGHT()` and `BOLTZMANN_CONSTANT()` join `STANDARD_GRAVITY()` in `std.units`, completing the spec §11.3 promise of `pi`/`g`/`c`/`boltzmann`.
 
 Each is a stdlib `.ri` authoring task: append the `.ri` file under `crates/reify-compiler/stdlib/`, register it in `crates/reify-compiler/src/stdlib_loader.rs`, and verify with a CI example `.ri` that imports the module and exercises one trait / constant. The language already supports `trait`, `structure def`, `enum`, `pub fn`, and `pub type` — so **grammar_confirmed = true** for all four slices (verified, §G3 below).
@@ -83,9 +83,9 @@ Single file `process.ri` → `std.process`, per done-task #333's enumeration:
 ### Slice C — `std.fields` module surface (packages existing builtins)
 
 The differential operators are already built in (`gradient`/`divergence`/`curl`/`laplacian`/`sample` in `reify-expr`). `std.fields` is a **packaging-only** module — it does NOT reimplement them (G4 seam: declared consumer of the existing `calculus.rs` operators). It provides:
-- The `Field<D, C>` type-alias surface (the parameterised field type — `Field<X,Y>` now parses in both param and return position, task 3088).
+- Documentation of the built-in `Field<D,C>` parametric type (resolves without import; not an alias declared by the module — `Field<X,Y>` parses in both param and return position, task 3088).
 - `pub fn` wrappers / re-export documentation for the interpolation constructors named in the spec §11 tree (`constant_field`, `fn_field`, `from_samples`) and spatial ops (`compose`, `sample`, `restrict`) — authored as thin `pub fn` surfaces ONLY where a corresponding builtin or composable definition exists; where the operator is a prelude builtin (the differential ops), the module documents it as such rather than shadowing it (matching how `analysis.ri` does NOT redeclare `von_mises`).
-- Follows the `analysis.ri` idiom: `#no_prelude`, `pub type` aliases, trait/structure surface, no redeclaration of intercepted builtins.
+- Follows the `analysis.ri` idiom: `#no_prelude` and no redeclaration of intercepted builtins; unlike analysis.ri it declares no `pub type` alias for `Field<D,C>` (a built-in type — a self-alias would be a circular-alias Error).
 
 The decisive scoping question (which ops get a real `pub fn` body vs. a doc-only mention) is resolved at §6 design decision 4.
 
@@ -112,7 +112,7 @@ The spec §11.3 also names `pi` and `g`; `pi` is already a compiler builtin (`co
 
 4. **`std.ports` does NOT enforce the "T refines Port" compile rule.** That is a compiler change (a new check in port-decl validation), out of scope for stdlib authoring. The named-port-type stdlib is the deliverable; enforcement is flagged as a design fork for Leo (could be a follow-on task once `Port` is in the prelude).
 
-5. **`std.fields` packages, never reimplements.** The differential operators stay built-in; the module surface is documentation + `pub type Field<D,C>` + thin helpers only where a real composable body exists. No shadowing of intercepted builtins (the `analysis.ri` precedent).
+5. **`std.fields` packages, never reimplements.** The differential operators stay built-in; the module surface is documentation + a built-in `Field<D,C>` type reference (no alias declaration) + thin helpers only where a real composable body exists. No shadowing of intercepted builtins (the `analysis.ri` precedent).
 
 6. **Constants use decimal literals + zero-arg `pub fn`.** Matches `STANDARD_GRAVITY()`. Scientific notation is unsupported in value position.
 
@@ -154,7 +154,7 @@ Greek labels; actual IDs assigned at decompose time. Approach **bare B** (vertic
   - **Modules touched:** reify-compiler (stdlib + stdlib_loader.rs), examples.
 
 - **Task δ — Author `std.fields` module surface.**
-  - `fields.ri` (`std.fields`): `pub type Field<D, C>` surface, doc-block cataloguing the prelude-builtin differential operators it packages (no shadowing), and `pub fn` helpers only for ops with a composable Reify body (resolve which during the task — see open Q1). Register in loader.
+  - `fields.ri` (`std.fields`): built-in `Field<D,C>` type reference (no alias declared — a self-alias is a circular-alias Error), doc-block cataloguing the prelude-builtin differential operators it packages (no shadowing), and `pub fn` helpers only for ops with a composable Reify body (resolve which during the task — see open Q1). Register in loader.
   - **Observable signal:** `examples/stdlib/fields.ri` imports `std.fields`, declares a `field def temp : Point3<Length> -> Temperature { … }`, calls `gradient(temp)` and `sample(temp, point3(…))`, and asserts a sampled value — compiles AND `reify eval` prints the expected gradient/sample value (the operators already work; the example proves the module-import path resolves them).
   - **Prereqs:** none (consumes existing builtins).
   - **grammar_confirmed:** true (verified `Field<X,Y>` parses param + return).
