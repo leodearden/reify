@@ -22,7 +22,7 @@
 //! tests therefore drive conformance from an entity `let` body where the ctor arg
 //! acquires its `StructureRef` type.
 
-use reify_core::DiagnosticCode;
+use reify_core::{DiagnosticCode, Severity};
 use reify_test_support::compile_source;
 
 /// Common source preamble: trait, two structures, one fn.
@@ -85,5 +85,107 @@ structure Test {{
         msg.contains("DrivingJoint"),
         "diagnostic should mention 'DrivingJoint'; got: {}",
         msg
+    );
+}
+
+// ── Step-7: constraint, wrapper-param, positive, and eval-builtin cases ─────
+
+/// (a) A non-conforming call inside an entity CONSTRAINT emits TypeNotConformingToTrait.
+///
+/// RED until step-8: step-6 only walks value-cell default_exprs; constraint
+/// exprs are not yet walked.
+#[test]
+fn entity_constraint_bad_arg_emits_type_not_conforming_to_trait() {
+    let source = format!(
+        r#"{}
+structure T2 {{
+    constraint couple(FixedThing()) > 0.0
+}}
+"#,
+        preamble()
+    );
+    let module = compile_source(&source);
+
+    let conformance_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
+        .collect();
+
+    assert_eq!(
+        conformance_errors.len(),
+        1,
+        "expected 1 TypeNotConformingToTrait in constraint, got {}: {:?}",
+        conformance_errors.len(),
+        module.diagnostics
+    );
+}
+
+/// (b) Option<DrivingJoint> param called with some(FixedThing()) emits a conformance error.
+///
+/// RED until step-8: step-6 value-cell walk won't trigger Option wrapper
+/// recursion into a struct built via couple_opt(some(FixedThing())).
+/// Actually step-6 does walk value-cells — this MAY already pass. The plan
+/// says RED because constraints are not yet walked; but the wrapper test is
+/// for a value-cell. Let's keep it as a wrapper regression guard.
+///
+/// The wrapper param exercises `walk_param_against_arg`'s `Option` arm.
+#[test]
+fn option_wrapped_trait_param_bad_arg_emits_conformance_error() {
+    let source = format!(
+        r#"{}
+fn couple_opt(joint : Option<DrivingJoint>) -> Real {{
+    0.0
+}}
+
+structure T3 {{
+    let bad = couple_opt(some(FixedThing()))
+}}
+"#,
+        preamble()
+    );
+    let module = compile_source(&source);
+
+    let conformance_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
+        .collect();
+
+    assert_eq!(
+        conformance_errors.len(),
+        1,
+        "expected 1 TypeNotConformingToTrait for Option<DrivingJoint> param with FixedThing arg, \
+         got {}: {:?}",
+        conformance_errors.len(),
+        module.diagnostics
+    );
+}
+
+/// (c) A conforming call produces NO TypeNotConformingToTrait error.
+///
+/// Positive guard: this must hold before and after step-8.
+#[test]
+fn entity_let_good_arg_emits_no_conformance_error() {
+    let source = format!(
+        r#"{}
+structure TOk {{
+    let ok = couple(RevoluteJoint())
+}}
+"#,
+        preamble()
+    );
+    let module = compile_source(&source);
+
+    let conformance_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
+        .collect();
+
+    assert!(
+        conformance_errors.is_empty(),
+        "conforming call must produce no TypeNotConformingToTrait errors; got: {:?}",
+        conformance_errors
     );
 }
