@@ -1191,10 +1191,19 @@ fn extract_forcing_sources(forcing: &Value) -> Vec<Value> {
 
 /// Resolve a forcing/query `location` string to a node index, geometry-free
 /// (design-decision-3). A string that parses as a non-negative integer is an
-/// explicit node index (clamped into range); any other string resolves to the
-/// fundamental-mode (mode 0) antinode `dominant_antinode_index(Φ₀)` — the
-/// cantilever free-end tip. The forcing projection and `displacement_at` share
-/// this resolver, so "force at tip" / "query at tip" hit the same node.
+/// explicit node index; any other string resolves to the fundamental-mode
+/// (mode 0) antinode `dominant_antinode_index(Φ₀)` — the cantilever free-end
+/// tip. The forcing projection and `displacement_at` share this resolver, so
+/// "force at tip" / "query at tip" hit the same node.
+///
+/// CONTRACT (reviewer suggestion 4): an explicit numeric index that exceeds the
+/// node count is INTENTIONALLY clamped to the last node (`idx.min(n_nodes − 1)`),
+/// not rejected. Geometry-free resolution has no node table to validate an index
+/// against, and clamping keeps both call sites total — they consume a bare
+/// `usize` with no diagnostic channel threaded through. The v0.3 node-resolution
+/// simplification is already escalated (design-decision-3); a full LocationId→
+/// node topology (which could reject an out-of-range index) is deferred to the
+/// Part type. Pinned by `resolve_location_node_clamps_out_of_range_index`.
 fn resolve_location_node(location: &str, mode0_shape: &[[f64; 3]]) -> usize {
     if let Ok(idx) = location.trim().parse::<usize>() {
         return idx.min(mode0_shape.len().saturating_sub(1));
@@ -1831,8 +1840,9 @@ mod tests {
         assemble_modal_km, build_beam_mesh, build_dirichlet_bcs, displacement_at_trampoline,
         eigensolve_modal, extract_damping,
         extract_density_or_degenerate, extract_eigen_knobs, extract_reference_direction,
-        mode_shape_value, read_scalar_si, run_modal_analysis, simply_supported_pin_pin_bcs,
-        solve_modal_analysis_trampoline, solve_modal_core, solve_transient_response_trampoline,
+        mode_shape_value, read_scalar_si, resolve_location_node, run_modal_analysis,
+        simply_supported_pin_pin_bcs, solve_modal_analysis_trampoline, solve_modal_core,
+        solve_transient_response_trampoline,
     };
     use crate::{CancellationHandle, ComputeOutcome};
 
@@ -3894,5 +3904,31 @@ mod tests {
 
         // The two locations resolve to different nodes → observably different series.
         assert_ne!(got_node1, got_tip, "numeric index and antinode must resolve distinctly");
+    }
+
+    /// Amendment (reviewer suggestion 4): pin the out-of-range numeric-index
+    /// clamp as an intentional contract — an explicit index past the last node
+    /// resolves to the last node (not an error, not node 0). Geometry-free
+    /// resolution has no node table to reject against; this test makes the clamp
+    /// a deliberate contract rather than incidental behavior.
+    #[test]
+    fn resolve_location_node_clamps_out_of_range_index() {
+        // 3-node fundamental shape; node 2 is the antinode (max ‖Φ₀‖).
+        let shape = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.5], [0.0, 0.0, 1.0]];
+
+        // In-range explicit indices map verbatim.
+        assert_eq!(resolve_location_node("0", &shape), 0);
+        assert_eq!(resolve_location_node("1", &shape), 1);
+        assert_eq!(resolve_location_node("2", &shape), 2);
+
+        // Out-of-range explicit indices clamp to the last node (n_nodes − 1 = 2).
+        assert_eq!(resolve_location_node("3", &shape), 2, "index just past the end clamps");
+        assert_eq!(resolve_location_node("99", &shape), 2, "far out-of-range clamps");
+
+        // A non-numeric string resolves to the antinode (node 2 here), not the clamp path.
+        assert_eq!(resolve_location_node("tip", &shape), 2);
+
+        // Empty shape: the saturating clamp floor is 0 (no panic / underflow).
+        assert_eq!(resolve_location_node("5", &[]), 0, "empty shape clamps to 0 without panic");
     }
 }
