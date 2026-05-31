@@ -212,3 +212,26 @@ Also references #318, #319 (existing selector FFI pattern) and #249
    gives the 3-cluster sequencing (A: mut widening + 4 simplest names; B:
    5 predicate-arg names; C: 2 topology-graph names) that the
    dispatch-arm sweep is decomposed against.
+
+## Related: typed-selector value type
+
+`docs/prds/topology-selector-value-type.md` is the sibling PRD that introduces a
+first-class typed-selector value type (`FaceSelector`, `EdgeSelector`, `BodySelector`)
+into the Reify type system. It re-types the existing `topology_selector_result_type`
+mappings from `List(Geometry)` to `Selector(kind)`, adding construct-time kind safety
+and composable selectors as language values (construction is kernel-free; resolution
+to `Vec<GeometryHandleId>` stays at solve time via `resolve()`).
+
+**Relationship to task 2699** (stdlib name wiring, task-breakdown item 8 above):
+task 2699 wires the remaining eleven selector names in
+`GEOMETRY_TOPOLOGY_SELECTOR_NAMES` and sets their result types via
+`topology_selector_result_type`. The value-type PRD re-types those mappings from
+`List(Geometry)` → `Selector(kind)`. Coordination: if 2699 lands first, the
+value-type PRD rebases onto it; otherwise the value-type PRD subsumes the
+result-type half. See value-type PRD §7 (pre-conditions) and §8 (cross-PRD table).
+
+**Relationship to task 4092** (selector→FE node-set mapping, downstream): the
+value-type PRD stops at `resolve() → Vec<GeometryHandleId>`. Task 4092 owns the
+downstream selector→node-set mapping for the FEA solve path. The FEA Load/Support
+follow-on PRD (the actual `String → FaceSelector`/`BodySelector` field migration in
+`fea_multi_case.ri`) depends on both the value-type PRD and task 4092.
