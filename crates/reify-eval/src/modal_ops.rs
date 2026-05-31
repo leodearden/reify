@@ -1047,7 +1047,8 @@ mod tests {
     use faer::sparse::SparseRowMat;
     use reify_core::{DimensionVector, Severity};
     use reify_ir::{StructureInstanceData, StructureTypeId, Value};
-    use reify_solver_elastic::{DirichletBc, EigenSolverOptions, IsotropicElastic};
+    use reify_solver_elastic::assembly::test_support::promote_tets_to_p2;
+    use reify_solver_elastic::{DirichletBc, EigenSolverOptions, ElementOrder, IsotropicElastic};
     use reify_stdlib::modal::free_vibration::{is_rigid_body_mode, rayleigh_damping_ratio};
 
     use super::{
@@ -1190,6 +1191,127 @@ mod tests {
                     "mode {i}: constrained DOF {g} must be exactly 0.0",
                 );
             }
+        }
+    }
+
+    /// step-7 (RED → GREEN in step-8): the P2 (`ElementOrder::P2`) path of
+    /// `solve_modal_core`.
+    ///
+    /// A STRUCTURAL pin, not an accuracy check — the headline P2 modal-frequency
+    /// accuracy gate lives in `reify-solver-elastic`'s
+    /// `tests/modal_benchmarks.rs` (which can call `solve_eigen_dense` directly;
+    /// this eval-side test only proves the orchestration runs the quadratic path
+    /// end-to-end and returns a well-shaped result).
+    ///
+    /// The same coarse root-clamped cantilever fixture as the P1 pin above,
+    /// solved with `ElementOrder::P2`. P2 promotion inserts edge-midpoint nodes,
+    /// so the solve must operate over the PROMOTED node set:
+    ///   • `result.n_nodes` equals the promoted node count, strictly greater than
+    ///     the P1 count (proving the promotion ran, not the P1 mesh);
+    ///   • the exact P2 consistent mass `M` is PD enough that the generalized
+    ///     eigensolve completes (converged, no Cholesky panic) — the
+    ///     degree-4-exact integration guarantee from steps 1–2;
+    ///   • frequencies are finite, strictly positive, ascending, with one
+    ///     full-DOF mode shape (length `3·n_nodes_p2`) per frequency.
+    ///
+    /// BCs are built over the PROMOTED node set (clamping the `x ≈ 0` root face by
+    /// coordinate so the new edge-midpoint nodes on the face are caught too),
+    /// using the SAME shared `promote_tets_to_p2` helper `solve_modal_core`'s P2
+    /// branch promotes with — so the BC DOF indices line up with the solve's
+    /// internal node numbering.
+    ///
+    /// RED: `solve_modal_core` has no `element_order` parameter / no P2 branch yet
+    /// (compile-fail).
+    #[test]
+    fn solve_modal_core_p2_path_returns_well_shaped_promoted_result() {
+        let length = 0.02_f64; // X — beam axis (short → coarse promoted mesh)
+        let width = 0.05_f64; // Y — width
+        let height = 0.1_f64; // Z — bending axis
+
+        let mesh = build_beam_mesh(length, width, height);
+
+        // Promote with the shared helper the P2 branch reuses, so the BC DOF
+        // indices match the solve's internal promotion node numbering.
+        let (nodes_p2, _tets_p2) = promote_tets_to_p2(&mesh.nodes, &mesh.tets);
+        assert!(
+            nodes_p2.len() > mesh.nodes.len(),
+            "P2 promotion must add edge-midpoint nodes: {} !> {}",
+            nodes_p2.len(),
+            mesh.nodes.len(),
+        );
+
+        // Clamp the x ≈ 0 root face over the PROMOTED node set (catches P2
+        // edge-midpoints by coordinate).
+        let mut bcs = Vec::new();
+        for (n, coord) in nodes_p2.iter().enumerate() {
+            if coord[0] <= 1e-9 {
+                for axis in 0..3 {
+                    bcs.push(DirichletBc { dof: 3 * n + axis, value: 0.0 });
+                }
+            }
+        }
+        assert!(!bcs.is_empty(), "fixture must clamp at least one root-face DOF");
+
+        let eigen_opts =
+            EigenSolverOptions { n_modes: 3, tol: 1e-8, max_iters: 200, sigma: 0.0 };
+
+        let result: ModalCoreResult = solve_modal_core(
+            &mesh,
+            STEEL_DENSITY,
+            &steel(),
+            [0.0, 0.0, 1.0], // reference_direction; unused by this assertion
+            &bcs,
+            &eigen_opts,
+            ElementOrder::P2,
+        );
+
+        // (a) n_nodes is the PROMOTED P2 count (> the P1 count) — the P2 branch
+        //     assembled K/M over the promoted mesh, not the P1 one.
+        assert_eq!(
+            result.n_nodes,
+            nodes_p2.len(),
+            "P2 result.n_nodes must equal the promoted node count {}",
+            nodes_p2.len(),
+        );
+
+        // (b) ≥ 1 mode returned and (d) the eigensolve converged — the exact P2
+        //     mass is PD, so the generalized solve completes without panicking.
+        assert!(
+            !result.frequencies.is_empty(),
+            "expect ≥ 1 P2 mode; got {}",
+            result.frequencies.len(),
+        );
+        assert!(result.converged, "P2 generalized eigensolve must converge");
+
+        // (c) frequencies finite, strictly positive, ascending.
+        for (i, &f) in result.frequencies.iter().enumerate() {
+            assert!(
+                f.is_finite() && f > 0.0,
+                "P2 frequency[{i}] = {f} must be finite and strictly positive",
+            );
+        }
+        for w in result.frequencies.windows(2) {
+            assert!(
+                w[0] <= w[1],
+                "P2 frequencies must be sorted ascending: {} > {}",
+                w[0],
+                w[1],
+            );
+        }
+
+        // (e) one full-DOF mode shape per frequency, each length 3·n_nodes_p2.
+        assert_eq!(
+            result.phi_full.len(),
+            result.frequencies.len(),
+            "one full mode shape per returned P2 frequency",
+        );
+        for (i, phi) in result.phi_full.iter().enumerate() {
+            assert_eq!(
+                phi.len(),
+                3 * result.n_nodes,
+                "P2 mode {i} shape length must be 3·n_nodes_p2 = {}",
+                3 * result.n_nodes,
+            );
         }
     }
 
