@@ -1283,3 +1283,209 @@ fn b3_max_of_von_mises_field_via_eval_expr_dispatch() {
         "B3: max(VonMises field over sampled tensor data) must be non-Undef Scalar<Pressure>"
     );
 }
+
+// ── Step S3: argmax / argmin reduce a VonMises-derived Sampled field ─────────
+//
+// RED before S4: compute_argextremum's VonMises path returns Value::Undef.
+// After S4 these become GREEN.
+
+/// `argmax` / `argmin` over a 1-D VonMises field with Scalar<LENGTH> domain.
+///
+/// Inner tensor field: 1-D Sampled, axis = [0.0, 1.0, 2.0] (LENGTH),
+/// uniaxial windows σ_xx = {100e6, 250e6, 175e6} → vM = {100e6, 250e6, 175e6}.
+/// argmax → coord at index 1 → 1.0 m; argmin → coord at index 0 → 0.0 m.
+///
+/// **RED before S4**.
+#[test]
+fn argmax_argmin_von_mises_field_1d_length_domain_returns_coord() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+
+    let inner_sf = make_sampled_tensor_1d(
+        "stress",
+        vec![0.0, 1.0, 2.0],
+        vec![
+            uniaxial_window(100e6),
+            uniaxial_window(250e6),
+            uniaxial_window(175e6),
+        ],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(inner_sf, length.clone());
+
+    let (vonmises_field, vonmises_field_type) = make_field_with_source(
+        length.clone(),
+        pressure.clone(),
+        FieldSourceKind::VonMises,
+        inner_tensor_field,
+    );
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // argmax → index 1 → coord 1.0 m
+    let argmax_expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(vonmises_field.clone(), vonmises_field_type.clone())],
+        length.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmax_expr, &ctx),
+        Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmax(VonMises 1-D field) should return coord at projected max (index 1 → 1.0 m)"
+    );
+
+    // argmin → index 0 → coord 0.0 m
+    let argmin_expr = make_function_call(
+        "argmin",
+        vec![CompiledExpr::literal(vonmises_field, vonmises_field_type)],
+        length.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmin_expr, &ctx),
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmin(VonMises 1-D field) should return coord at projected min (index 0 → 0.0 m)"
+    );
+}
+
+/// `argmax` over a 3-D VonMises field with Point3<LENGTH> domain.
+///
+/// Inner tensor field: 3-D Sampled, axes = [0.0, 1.0] × [0.0] × [0.0, 0.5].
+/// Shape (2, 1, 2) → 4 grid points, row-major linear indices 0-3.
+/// Uniaxial windows: σ_xx = {100e6, 175e6, 50e6, 250e6} → vM = same.
+/// Max at linear index 3 → per-axis (1, 0, 1) → coord (1.0, 0.0, 0.5).
+/// Min at linear index 2 → per-axis (1, 0, 0) → coord (1.0, 0.0, 0.0).
+///
+/// Decomposition (axis-0 outermost, row-major):
+///   i_2 = 3 % 2 = 1
+///   i_1 = (3 / 2) % 1 = 0
+///   i_0 = 3 / (1 * 2) = 1
+/// → axis_0[1]=1.0, axis_1[0]=0.0, axis_2[1]=0.5.
+///
+/// **RED before S4**.
+#[test]
+fn argmax_von_mises_field_3d_length_domain_returns_point3_at_max() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let domain = Type::point3(length.clone());
+
+    // Shape (2, 1, 2): axis0=[0,1], axis1=[0], axis2=[0,0.5].
+    let inner_sf = {
+        let bounds_min = vec![0.0, 0.0, 0.0];
+        let bounds_max = vec![1.0, 0.0, 0.5];
+        let spacing = vec![1.0, 1.0, 0.5];
+        let axis0 = vec![0.0, 1.0];
+        let axis1 = vec![0.0];
+        let axis2 = vec![0.0, 0.5];
+        // Row-major linear ordering (axis-0 outermost):
+        //   idx 0: (0,0,0) → σ=100e6
+        //   idx 1: (0,0,1) → σ=175e6
+        //   idx 2: (1,0,0) → σ=50e6
+        //   idx 3: (1,0,1) → σ=250e6  ← max
+        let windows = vec![
+            uniaxial_window(100e6),
+            uniaxial_window(175e6),
+            uniaxial_window(50e6),
+            uniaxial_window(250e6),
+        ];
+        let mut data: Vec<f64> = Vec::with_capacity(4 * 9);
+        for w in &windows {
+            data.extend_from_slice(w);
+        }
+        SampledField {
+            name: "stress_3d".to_string(),
+            kind: SampledGridKind::Regular3D,
+            bounds_min,
+            bounds_max,
+            spacing,
+            axis_grids: vec![axis0, axis1, axis2],
+            interpolation: InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    };
+
+    let inner_tensor_field = Value::Field {
+        domain_type: domain.clone(),
+        codomain_type: Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity: Box::new(pressure.clone()),
+        },
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(inner_sf)),
+    };
+
+    let (vonmises_field, vonmises_field_type) = make_field_with_source(
+        domain.clone(),
+        pressure.clone(),
+        FieldSourceKind::VonMises,
+        inner_tensor_field,
+    );
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // argmax → linear index 3 → (1, 0, 1) → (1.0, 0.0, 0.5)
+    let argmax_expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(vonmises_field.clone(), vonmises_field_type.clone())],
+        domain.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmax_expr, &ctx),
+        Value::Point(vec![
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.5,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]),
+        "argmax(VonMises 3-D field) should return Point3 at projected max (linear idx 3)"
+    );
+
+    // argmin → linear index 2 → (1, 0, 0) → (1.0, 0.0, 0.0)
+    let argmin_expr = make_function_call(
+        "argmin",
+        vec![CompiledExpr::literal(vonmises_field, vonmises_field_type)],
+        domain.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmin_expr, &ctx),
+        Value::Point(vec![
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]),
+        "argmin(VonMises 3-D field) should return Point3 at projected min (linear idx 2)"
+    );
+}
