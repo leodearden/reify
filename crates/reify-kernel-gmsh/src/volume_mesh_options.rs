@@ -60,7 +60,7 @@ impl VolumeMeshOptions {
     /// entry in the same `ToleranceBucket`, silently returning wrong
     /// cached geometry. Pinned by `default_content_hash_is_not_no_options_sentinel`.
     pub fn content_hash(&self) -> ContentHash {
-        ContentHash(0)
+        ContentHash::of_str("VolumeMeshOptions")
     }
 }
 
