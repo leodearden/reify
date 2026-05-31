@@ -244,6 +244,25 @@ pub fn try_eval_body_mass_props(
         return None;
     }
 
+    // (2a) Arity guard. The compiler signature `body_mass_props(body, density?)`
+    // is the primary arity gate, but the `expr.rs` name-recognition path assigns
+    // the `MassProperties` result type without an arity check, so a
+    // malformed-arity call can still reach this dispatch. Surface it as an
+    // `E_DynamicsBodyMassPropsArity` error instead of silently returning `None`
+    // (which would leave a `MassProperties`-typed cell holding the pure-eval
+    // `Undef` with no diagnostic anywhere). The cell is left at its `Undef`
+    // pure-eval value — no `MassProperties` is assembled for a malformed call.
+    if args.is_empty() || args.len() > 2 {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "body_mass_props expects 1 or 2 arguments (body, density?), got {}",
+                args.len(),
+            ))
+            .with_code(DiagnosticCode::DynamicsBodyMassPropsArity),
+        );
+        return None;
+    }
+
     // (3) Resolve the body argument (args[0]). A missing or unresolvable body
     // arg returns None (cell left untouched) rather than a malformed instance.
     let body = resolve_arg_value(args.first()?, values)?;
@@ -607,5 +626,61 @@ mod tests {
             result.is_none(),
             "non-call expr must return None, got {result:?}"
         );
+    }
+
+    // ── arity guard: malformed-arity body_mass_props -> error, None ───────────
+    //
+    // The compiler signature `body_mass_props(body, density?)` is the primary
+    // arity gate, but the `expr.rs` name-recognition path assigns the result
+    // type without an arity check, so a 0-arg or 3+-arg call can reach this
+    // dispatch. It must surface an `E_DynamicsBodyMassPropsArity` error rather
+    // than silently returning `None` (which would leave a MassProperties-typed
+    // cell at `Undef` with no diagnostic).
+
+    #[test]
+    fn dispatch_zero_args_emits_arity_error_and_returns_none() {
+        let expr = call_expr("body_mass_props", &[]);
+        let values = ValueMap::new();
+        let kernel = MockGeometryKernel::new();
+        let mut diags = Vec::new();
+
+        let result = try_eval_body_mass_props(&expr, &values, &kernel, &mut diags);
+        assert!(
+            result.is_none(),
+            "zero-arg body_mass_props() must return None (cell left at Undef), got {result:?}"
+        );
+        assert_eq!(
+            diags.len(),
+            1,
+            "malformed arity must emit exactly one diagnostic, got {diags:?}"
+        );
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert_eq!(
+            diags[0].code,
+            Some(DiagnosticCode::DynamicsBodyMassPropsArity),
+            "arity diagnostic must carry the DynamicsBodyMassPropsArity code"
+        );
+    }
+
+    #[test]
+    fn dispatch_too_many_args_emits_arity_error_and_returns_none() {
+        let a = ValueCellId::new("Design", "a");
+        let b = ValueCellId::new("Design", "b");
+        let c = ValueCellId::new("Design", "c");
+        // The guard fires before arg resolution, so the cells need not be in
+        // `values`.
+        let expr = call_expr("body_mass_props", &[a, b, c]);
+        let values = ValueMap::new();
+        let kernel = MockGeometryKernel::new();
+        let mut diags = Vec::new();
+
+        let result = try_eval_body_mass_props(&expr, &values, &kernel, &mut diags);
+        assert!(
+            result.is_none(),
+            "3-arg body_mass_props(...) must return None, got {result:?}"
+        );
+        assert_eq!(diags.len(), 1, "malformed arity must emit one diagnostic, got {diags:?}");
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert_eq!(diags[0].code, Some(DiagnosticCode::DynamicsBodyMassPropsArity));
     }
 }

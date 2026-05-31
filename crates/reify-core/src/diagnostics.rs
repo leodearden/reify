@@ -1353,6 +1353,28 @@ pub enum DiagnosticCode {
     /// (severity convention: `W_*` → Warning). Registered in task 3829
     /// (RBD-β, PRD `docs/prds/v0_3/rigid-body-dynamics.md` §5.4).
     DynamicsDefaultDensity,
+    /// Origin: `crates/reify-eval/src/dynamics_ops.rs`
+    /// (`try_eval_body_mass_props` dispatch arity guard in the RBD-β stdlib-fn
+    /// pass).
+    ///
+    /// Emitted as a `Severity::Error` when a recognised `body_mass_props(...)`
+    /// call reaches the eval-layer dispatch with the wrong number of arguments
+    /// — zero, or more than two — for the `body_mass_props(body, density?)`
+    /// signature. No `MassProperties` is assembled; the cell is left at the
+    /// `Value::Undef` produced by the pure `eval_expr` path. This is the
+    /// eval-layer safety net for the case where the compiler's name-recognition
+    /// path (`crates/reify-compiler/src/expr.rs`) assigns the `MassProperties`
+    /// result type without an arity check, so a malformed-arity call would
+    /// otherwise leave a `MassProperties`-typed cell silently holding `Undef`.
+    /// The primary arity gate remains the compiler `body_mass_props(body,
+    /// density?)` signature.
+    ///
+    /// Canonical message form:
+    /// `"body_mass_props expects 1 or 2 arguments (body, density?), got <n>"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_DynamicsBodyMassPropsArity`
+    /// (severity convention: `E_*` → Error). Registered in task 3829 (RBD-β).
+    DynamicsBodyMassPropsArity,
     /// Origin: `crates/reify-compiler/src/conformance` (assoc-fn satisfaction
     /// phase) and `crates/reify-compiler/src/trait_requirements.rs`.
     ///
