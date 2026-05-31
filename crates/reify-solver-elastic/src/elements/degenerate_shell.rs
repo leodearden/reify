@@ -207,6 +207,17 @@ pub fn mat3_inverse(m: &[[f64; 3]; 3]) -> ([[f64; 3]; 3], f64) {
     let c21 = -(m[0][0] * m[1][2] - m[0][2] * m[1][0]);
     let c22 = m[0][0] * m[1][1] - m[0][1] * m[1][0];
     let det = m[0][0] * c00 + m[0][1] * c01 + m[0][2] * c02;
+    // Degeneracy guard: a valid degenerate-shell element Jacobian has
+    // |det| ~ area·(t/2) (O(1e-2…1) for physical meshes). A determinant at/below
+    // this floor signals a collapsed or inverted element, which would otherwise
+    // yield a silent inf/NaN inverse that propagates into B and the stiffness.
+    // debug-only (no release-build cost), matching the project convention that
+    // contract violations surface a diagnostic.
+    debug_assert!(
+        det.is_finite() && det.abs() > 1e-12,
+        "mat3_inverse: near-singular Jacobian (det = {det}); a degenerate or inverted \
+         shell element corrupts the stiffness — check mesh geometry / directors",
+    );
     let inv_det = 1.0 / det;
     // inverse = adj/det = (cofactorᵀ)/det → inv[i][j] = C[j][i]/det.
     let inv = [
@@ -251,6 +262,15 @@ fn lamina_frame(j: &[[f64; 3]; 3], n: &[f64; 3], directors: &[Director; 3]) -> [
         }
     }
     let l3 = (e3[0] * e3[0] + e3[1] * e3[1] + e3[2] * e3[2]).sqrt();
+    // The interpolated director is a convex combination of unit directors, so
+    // |e3| ∈ (0, 1]; it collapses to ~0 only if incident directors nearly cancel
+    // (an over-curved/degenerate element), which would leave the lamina normal
+    // undefined and divide by ~0 below.
+    debug_assert!(
+        l3 > 1e-12,
+        "lamina_frame: interpolated director magnitude {l3} ≈ 0 — incident directors \
+         nearly cancel (over-curved/degenerate element); lamina normal is undefined",
+    );
     for c in e3.iter_mut() {
         *c /= l3;
     }
@@ -259,6 +279,14 @@ fn lamina_frame(j: &[[f64; 3]; 3], n: &[f64; 3], directors: &[Director; 3]) -> [
     let dot = g1[0] * e3[0] + g1[1] * e3[1] + g1[2] * e3[2];
     let mut e1 = [g1[0] - dot * e3[0], g1[1] - dot * e3[1], g1[2] - dot * e3[2]];
     let l1 = (e1[0] * e1[0] + e1[1] * e1[1] + e1[2] * e1[2]).sqrt();
+    // |e1| ≈ 0 only if J column 0 (g1 = ∂X/∂ξ) is parallel to the director e3 —
+    // a degenerate element whose in-plane tangent has collapsed onto the normal;
+    // the in-plane lamina axis would be undefined and divide by ~0 below.
+    debug_assert!(
+        l1 > 1e-12,
+        "lamina_frame: in-plane axis magnitude {l1} ≈ 0 — J column 0 is parallel to the \
+         director (degenerate element); lamina in-plane axis is undefined",
+    );
     for c in e1.iter_mut() {
         *c /= l1;
     }
