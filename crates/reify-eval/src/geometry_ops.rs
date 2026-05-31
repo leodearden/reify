@@ -3984,7 +3984,11 @@ pub(crate) fn eval_sub_pose(
             }
             if !matches!(*basis, reify_ir::Value::Orientation { .. }) {
                 diagnostics.push(Diagnostic::error(
-                    "`at` pose Frame basis must be a unit Orientation quaternion",
+                    // The check is structural: Value::Orientation variant only.
+                    // frame3 guarantees unit basis; non-unit quaternions arriving
+                    // via other construction paths are caught by downstream
+                    // Transform composition rather than here (keeps lowering exact).
+                    "`at` pose Frame basis must be a Value::Orientation",
                 ));
                 return reify_ir::Value::Undef;
             }
@@ -3994,6 +3998,11 @@ pub(crate) fn eval_sub_pose(
             }
         }
         _ => {
+            // This arm includes Value::Undef (expression evaluation failed upstream).
+            // We emit one error here intentionally: it gives the caller a call-site
+            // anchor showing *where* the failed pose affected sub-component placement,
+            // complementing whatever diagnostic the upstream expression already emitted.
+            // This behavior is pinned by `eval_sub_pose_undef_expr_returns_undef_with_diagnostic`.
             diagnostics.push(Diagnostic::error(
                 "`at` pose expression must evaluate to a Transform or Frame",
             ));
@@ -12776,6 +12785,274 @@ mod tests {
             diagnostics[0].severity,
             reify_core::Severity::Error,
             "diagnostic must be Error severity; got {:?}",
+            diagnostics[0].severity
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Frame validation branch tests (Suggestion 1: test_coverage)
+    // Each of the four Frame-specific guard clauses must individually produce
+    // exactly one Diagnostic::error and return Value::Undef.
+    // -------------------------------------------------------------------------
+
+    /// Helper: a valid unit Orientation (identity).
+    fn identity_orientation() -> reify_ir::Value {
+        reify_ir::Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }
+    }
+
+    /// Helper: a valid 3-component LENGTH Point.
+    fn valid_origin() -> reify_ir::Value {
+        reify_ir::Value::Point(vec![
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+        ])
+    }
+
+    /// Frame origin is not a `Value::Point` at all (e.g. a bare `Value::Real`).
+    /// The first guard in the Frame arm must fire.
+    #[test]
+    fn eval_sub_pose_frame_non_point_origin_errors() {
+        let expr = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Frame {
+                origin: Box::new(reify_ir::Value::Real(1.0)),
+                basis: Box::new(identity_orientation()),
+            },
+            reify_core::Type::frame(3),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = super::eval_sub_pose(
+            Some(&expr),
+            &ValueMap::new(),
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(result.is_undef(), "non-Point origin must return Undef; got {:?}", result);
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "non-Point origin must push exactly one diagnostic; got {} diags: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_core::Severity::Error,
+            "diagnostic must be Error; got {:?}",
+            diagnostics[0].severity
+        );
+    }
+
+    /// Frame origin is a `Value::Point` but with only 2 components (not 3).
+    /// The component-count guard must fire.
+    #[test]
+    fn eval_sub_pose_frame_origin_two_components_errors() {
+        let expr = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Frame {
+                origin: Box::new(reify_ir::Value::Point(vec![
+                    reify_ir::Value::length(1.0),
+                    reify_ir::Value::length(2.0),
+                    // missing third component
+                ])),
+                basis: Box::new(identity_orientation()),
+            },
+            reify_core::Type::frame(3),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = super::eval_sub_pose(
+            Some(&expr),
+            &ValueMap::new(),
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(result.is_undef(), "2-component origin must return Undef; got {:?}", result);
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "2-component origin must push exactly one diagnostic; got {} diags: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_core::Severity::Error,
+            "diagnostic must be Error; got {:?}",
+            diagnostics[0].severity
+        );
+    }
+
+    /// Frame origin has a component with ANGLE dimension instead of LENGTH.
+    /// The dimension guard must fire.
+    #[test]
+    fn eval_sub_pose_frame_origin_non_length_dimension_errors() {
+        let expr = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Frame {
+                origin: Box::new(reify_ir::Value::Point(vec![
+                    // First component is ANGLE-dimensioned — invalid for a Point origin
+                    reify_ir::Value::Scalar {
+                        si_value: 1.0,
+                        dimension: reify_core::DimensionVector::ANGLE,
+                    },
+                    reify_ir::Value::length(2.0),
+                    reify_ir::Value::length(3.0),
+                ])),
+                basis: Box::new(identity_orientation()),
+            },
+            reify_core::Type::frame(3),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = super::eval_sub_pose(
+            Some(&expr),
+            &ValueMap::new(),
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_undef(),
+            "non-LENGTH origin component must return Undef; got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "non-LENGTH origin must push exactly one diagnostic; got {} diags: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_core::Severity::Error,
+            "diagnostic must be Error; got {:?}",
+            diagnostics[0].severity
+        );
+    }
+
+    /// Frame origin has a non-finite (NaN) coordinate.
+    /// The `si_value.is_finite()` guard must fire.
+    #[test]
+    fn eval_sub_pose_frame_origin_nan_coordinate_errors() {
+        let expr = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Frame {
+                origin: Box::new(reify_ir::Value::Point(vec![
+                    reify_ir::Value::Scalar {
+                        si_value: f64::NAN,
+                        dimension: reify_core::DimensionVector::LENGTH,
+                    },
+                    reify_ir::Value::length(2.0),
+                    reify_ir::Value::length(3.0),
+                ])),
+                basis: Box::new(identity_orientation()),
+            },
+            reify_core::Type::frame(3),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = super::eval_sub_pose(
+            Some(&expr),
+            &ValueMap::new(),
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(result.is_undef(), "NaN coordinate must return Undef; got {:?}", result);
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "NaN coordinate must push exactly one diagnostic; got {} diags: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_core::Severity::Error,
+            "diagnostic must be Error; got {:?}",
+            diagnostics[0].severity
+        );
+    }
+
+    /// Frame basis is not a `Value::Orientation` (e.g. a bare `Value::Real`).
+    /// The basis-variant guard must fire.
+    #[test]
+    fn eval_sub_pose_frame_non_orientation_basis_errors() {
+        let expr = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Frame {
+                origin: Box::new(valid_origin()),
+                basis: Box::new(reify_ir::Value::Real(1.0)),
+            },
+            reify_core::Type::frame(3),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = super::eval_sub_pose(
+            Some(&expr),
+            &ValueMap::new(),
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_undef(),
+            "non-Orientation basis must return Undef; got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "non-Orientation basis must push exactly one diagnostic; got {} diags: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_core::Severity::Error,
+            "diagnostic must be Error; got {:?}",
+            diagnostics[0].severity
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Undef behavior test (Suggestion 3: robustness — pins the chosen behavior)
+    // -------------------------------------------------------------------------
+
+    /// A pose expression that evaluates to `Value::Undef` (simulating an upstream
+    /// evaluation failure) must produce exactly one `Diagnostic::error`.
+    ///
+    /// This pins the intentional design choice: we emit a call-site error even when
+    /// the expression already produced Undef, giving the consumer a placement-site
+    /// anchor in addition to whatever upstream diagnostic the expression emitted.
+    /// See the comment in the `_` catch-all arm of `eval_sub_pose` for the rationale.
+    #[test]
+    fn eval_sub_pose_undef_expr_returns_undef_with_diagnostic() {
+        // Build an expression that evaluates to Value::Undef directly.
+        let expr = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Undef,
+            reify_core::Type::Real, // type doesn't matter; the value is Undef
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = super::eval_sub_pose(
+            Some(&expr),
+            &ValueMap::new(),
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_undef(),
+            "Undef-evaluating pose must return Undef; got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "Undef pose must push exactly one call-site diagnostic; got {} diags: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_core::Severity::Error,
+            "call-site diagnostic must be Error; got {:?}",
             diagnostics[0].severity
         );
     }
