@@ -2086,6 +2086,222 @@ mod tests {
             h2_findings
         );
     }
+
+    /// End-to-end regression pin for the task 1638/1904/2199 phantom-done class.
+    ///
+    /// Combines all three incident traits in one fixture:
+    /// - Clean file-level corroboration (check_one returns None — the incident
+    ///   slipped through WITH clean corroboration).
+    /// - H1: a placeholder-named test fn asserting is_empty().
+    /// - H2: a cross-crate changed capability symbol with no non-test caller.
+    ///
+    /// Asserts:
+    /// - `check(&ctx)` returns >=1 finding with Pattern::P5TestsAssertEmpty or
+    ///   Pattern::P5LivePathStranded (the two new heuristics must fire).
+    /// - `check_pre_done(&ctx, id)` returns the same findings (D-1 hook parity).
+    ///
+    /// Also includes a fully-clean cross-crate control task (non-empty test +
+    /// live non-test caller) and asserts it yields zero new-pattern findings
+    /// (the "no new false-positives" criterion).
+    #[test]
+    fn regression_1638_1904_2199_phantom_done_flagged() {
+        let conn = seed_db();
+        // Both tasks have clean runs.db events.
+        insert_task_completed_event(&conn, "REGR1");
+        insert_task_completed_event(&conn, "REGR2");
+
+        let mut git = MockGitOps::new();
+        // REGR1 (incident shape): clean file-level corroboration.
+        git.set_diff_changed_paths(
+            "main",
+            "regr1_commit",
+            vec![
+                "crates/reify-compiler/src/compile.rs".to_string(),
+                "crates/reify-eval/tests/expand_tests.rs".to_string(),
+            ],
+        );
+        git.set_log_grep("main", "REGR1", vec![]);
+        // H1: placeholder fn + empty assertion in the test file.
+        git.set_diff_added_lines_in_commit(
+            "regr1_commit",
+            "crates/reify-eval/tests/expand_tests.rs",
+            vec![
+                (5,  "    #[test]".to_string()),
+                (6,  "    fn activate_expands_geometric_params_placeholder_to_empty_list() {".to_string()),
+                (7,  "        let result = activate_geometric_params();".to_string()),
+                (8,  "        assert!(result.is_empty());".to_string()),
+                (9,  "    }".to_string()),
+            ],
+        );
+
+        // REGR2 (clean control): same cross-crate shape but everything is legit.
+        git.set_diff_changed_paths(
+            "main",
+            "regr2_commit",
+            vec![
+                "crates/reify-compiler/src/compile.rs".to_string(),
+                "crates/reify-eval/tests/clean_tests.rs".to_string(),
+            ],
+        );
+        git.set_log_grep("main", "REGR2", vec![]);
+        // Non-placeholder fn name, non-empty assertion.
+        git.set_diff_added_lines_in_commit(
+            "regr2_commit",
+            "crates/reify-eval/tests/clean_tests.rs",
+            vec![
+                (1, "    #[test]".to_string()),
+                (2, "    fn compiles_geometric_params_correctly() {".to_string()),
+                (3, "        let result = compile_geometric_params();".to_string()),
+                (4, "        assert_eq!(result.len(), 3);".to_string()),
+                (5, "    }".to_string()),
+            ],
+        );
+
+        let mut task_metadata = std::collections::HashMap::new();
+        task_metadata.insert(
+            "REGR1".to_string(),
+            TaskMetadata {
+                task_id: "REGR1".to_string(),
+                status: "done".to_string(),
+                files: vec![
+                    "crates/reify-compiler/src/compile.rs".to_string(),
+                    "crates/reify-eval/tests/expand_tests.rs".to_string(),
+                ],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("regr1_commit".to_string()),
+                    note: None,
+                }),
+                title: "Activate geometric param expansion".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+        task_metadata.insert(
+            "REGR2".to_string(),
+            TaskMetadata {
+                task_id: "REGR2".to_string(),
+                status: "done".to_string(),
+                files: vec![
+                    "crates/reify-compiler/src/compile.rs".to_string(),
+                    "crates/reify-eval/tests/clean_tests.rs".to_string(),
+                ],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("regr2_commit".to_string()),
+                    note: None,
+                }),
+                title: "Compile geometric params".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let mut jc = MockJCodemunchOps::new();
+        // H2 for REGR1: stranded symbol with no callers.
+        jc.set_changed_symbols(
+            "regr1_commit^1",
+            "regr1_commit",
+            vec![reify_audit::ChangedSymbol {
+                name: "expand_purpose_reflective_placeholders".to_string(),
+                file: "crates/reify-compiler/src/compile.rs".to_string(),
+                line: 58,
+                has_allow_dead_code: false,
+                has_cfg_test: false,
+                g_allow_marker: None,
+            }],
+        );
+        // No callers → stranded.
+
+        // H2 for REGR2: live non-test caller → not stranded (clean control).
+        jc.set_changed_symbols(
+            "regr2_commit^1",
+            "regr2_commit",
+            vec![reify_audit::ChangedSymbol {
+                name: "compile_purpose".to_string(),
+                file: "crates/reify-compiler/src/compile.rs".to_string(),
+                line: 20,
+                has_allow_dead_code: false,
+                has_cfg_test: false,
+                g_allow_marker: None,
+            }],
+        );
+        jc.set_find_references(
+            "crates/reify-compiler/src/compile.rs",
+            "compile_purpose",
+            vec![reify_audit::SymbolReference {
+                file: "crates/reify-eval/src/lib.rs".to_string(),
+                line: 33,
+            }],
+        );
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        // REGR1: must produce at least one new-pattern finding.
+        let all_findings = p5_phantom_done::check(&ctx);
+        let regr1_new: Vec<_> = all_findings
+            .iter()
+            .filter(|f| f.task_id == "REGR1")
+            .filter(|f| {
+                f.pattern == Pattern::P5TestsAssertEmpty
+                    || f.pattern == Pattern::P5LivePathStranded
+            })
+            .collect();
+        assert!(
+            !regr1_new.is_empty(),
+            "incident shape (REGR1) must trigger at least one new-pattern finding; \
+             got {:?}",
+            all_findings
+        );
+
+        // check_pre_done must agree with check for REGR1.
+        let pre_done_regr1 = p5_phantom_done::check_pre_done(&ctx, "REGR1");
+        let pre_done_new: Vec<_> = pre_done_regr1
+            .iter()
+            .filter(|f| {
+                f.pattern == Pattern::P5TestsAssertEmpty
+                    || f.pattern == Pattern::P5LivePathStranded
+            })
+            .collect();
+        assert_eq!(
+            regr1_new.len(),
+            pre_done_new.len(),
+            "check and check_pre_done must agree on new-pattern finding count for REGR1; \
+             check={:?}, pre_done={:?}",
+            regr1_new,
+            pre_done_new
+        );
+
+        // REGR2 (clean control): must produce ZERO new-pattern findings.
+        let regr2_new: Vec<_> = all_findings
+            .iter()
+            .filter(|f| f.task_id == "REGR2")
+            .filter(|f| {
+                f.pattern == Pattern::P5TestsAssertEmpty
+                    || f.pattern == Pattern::P5LivePathStranded
+            })
+            .collect();
+        assert!(
+            regr2_new.is_empty(),
+            "clean control task (REGR2) must yield zero new-pattern findings; \
+             got {:?}",
+            regr2_new
+        );
+    }
 }
 
 
