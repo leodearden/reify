@@ -35,6 +35,9 @@
 //! auto-scaling, the free-standing (unanchored) eigenvalue case, external loads,
 //! and stability/buckling analysis are out of scope (tracked as T1b/T2/T3).
 
+use faer::Mat;
+use faer::linalg::solvers::Solve;
+
 /// Member type tag. Determines the enforced sign of the member's force density:
 /// cables carry tension (`q > 0`), struts carry compression (`q < 0`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,12 +96,67 @@ pub fn form_find_anchored(
     q: &[f64],
     anchors: &[usize],
 ) -> Result<FormFindSolve, FormFindError> {
-    // pre-1 scaffold: public API only, no behavior yet. step-2/4/6 implement the
-    // FD solve, member forces, and validation guards respectively. The stub
-    // returns an error so kernel unit tests fail RED on behavior, not on a
-    // missing symbol.
-    let _ = (nodes, members, kinds, q, anchors);
-    Err(FormFindError::DimensionMismatch)
+    let n = nodes.len();
+
+    // Force-density Laplacian D = Cᵀ Q C, accumulated directly without
+    // materialising the m×N connectivity C. For a member (j, k) with force
+    // density qᵢ, the row Cᵢ has +1 at j and −1 at k, so the rank-1 update
+    // Cᵢᵀ qᵢ Cᵢ adds qᵢ to D[j,j] and D[k,k] and −qᵢ to D[j,k] and D[k,j] — the
+    // standard FDM (weighted graph Laplacian) assembly.
+    let mut d = Mat::<f64>::zeros(n, n);
+    for (&(j, k), &qi) in members.iter().zip(q.iter()) {
+        d[(j, j)] += qi;
+        d[(k, k)] += qi;
+        d[(j, k)] -= qi;
+        d[(k, j)] -= qi;
+    }
+
+    // Partition node indices into anchored A and free F (both ascending).
+    let mut is_anchor = vec![false; n];
+    for &a in anchors {
+        is_anchor[a] = true;
+    }
+    let free_indices: Vec<usize> = (0..n).filter(|&i| !is_anchor[i]).collect();
+    let anchor_indices: Vec<usize> = (0..n).filter(|&i| is_anchor[i]).collect();
+    let nf = free_indices.len();
+
+    // Reduced free-node system D_ff X_f = −D_fa X_a (prestress-only: no external
+    // load term). All three coordinate axes are solved at once as an |F|×3 RHS
+    // so D_ff is factored only once.
+    let mut dff = Mat::<f64>::zeros(nf, nf);
+    let mut rhs = Mat::<f64>::zeros(nf, 3);
+    for (fi, &gi) in free_indices.iter().enumerate() {
+        for (fj, &gj) in free_indices.iter().enumerate() {
+            dff[(fi, fj)] = d[(gi, gj)];
+        }
+        for &ga in &anchor_indices {
+            let coupling = d[(gi, ga)];
+            let xa = nodes[ga];
+            rhs[(fi, 0)] -= coupling * xa[0];
+            rhs[(fi, 1)] -= coupling * xa[1];
+            rhs[(fi, 2)] -= coupling * xa[2];
+        }
+    }
+
+    let plu = dff.partial_piv_lu();
+    plu.solve_in_place(&mut rhs);
+
+    // Scatter solved free-node rows back into original node order; anchors keep
+    // their exact input coordinates (no solve round-trip).
+    let mut out_nodes = nodes.to_vec();
+    for (fi, &gi) in free_indices.iter().enumerate() {
+        out_nodes[gi] = [rhs[(fi, 0)], rhs[(fi, 1)], rhs[(fi, 2)]];
+    }
+
+    // `kinds` drives the per-member sign validation added in step-6; the
+    // happy-path solve here does not yet consume it.
+    let _ = kinds;
+    Ok(FormFindSolve {
+        nodes: out_nodes,
+        member_forces: vec![],
+        force_densities: q.to_vec(),
+        converged: true,
+    })
 }
 
 #[cfg(test)]
