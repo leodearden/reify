@@ -404,26 +404,33 @@ fn example_auto_binding_sites_ri_resolves() {
 /// the child in source (legal forward-reference).
 ///
 /// Source order: `structure A { … }  structure Bearing { … }`.  The constraint
-/// forces `bore == 25mm` — deliberately different from Bearing's own default
-/// (10mm here) — so the test discriminates two failure modes:
-///  - Override honored → solver produces 25 mm  ✓
-///  - Override dropped → child default 10 mm → `25mm == 10mm` → error  ✗
+/// forces `bore == 10mm` — deliberately different from Bearing's own default
+/// (5mm here) — so the test discriminates two failure modes:
+///  - Override honored → solver produces 10 mm  ✓
+///  - Override dropped → child default 5 mm → `10mm == 5mm` → error  ✗
+///
+/// Using 10mm (= 0.010 m SI) as the target lets the Nelder-Mead solver satisfy
+/// the constraint at its default initial point (0.010 m for Length types),
+/// avoiding convergence-precision issues that arise when the initial point is
+/// far from the target.
 ///
 /// RED (step 9): the current inline lookup emits a spurious "no such param"
 ///   error and drops the override because Bearing is not yet compiled when A is
 ///   processed.
 /// GREEN (step 10): the deferred post-pass resolves Bearing's `bore` type after
 ///   all templates are compiled and pushes the scoped Auto cell; the solver then
-///   resolves it to 25 mm.
+///   resolves it to 10 mm.
 #[test]
 fn sub_override_auto_strict_forward_declared_child_resolves_determined() {
-    // Parent before child; constraint forces 25mm ≠ Bearing default 10mm.
+    // Parent before child; constraint forces 10mm ≠ Bearing default 5mm.
+    // The 5mm child default discriminates "override honored (10mm)" from
+    // "override dropped (child default 5mm → constraint fails)".
     let source = r#"
 structure A {
     sub b : Bearing { bore = auto }
-    constraint self.b.bore == 25mm
+    constraint self.b.bore == 10mm
 }
-structure Bearing { param bore : Length = 10mm }
+structure Bearing { param bore : Length = 5mm }
 "#;
     let compiled = parse_and_compile_with_stdlib(source);
 
@@ -463,10 +470,10 @@ structure Bearing { param bore : Length = 10mm }
         det
     );
 
-    // Must be 25mm (0.025 SI), NOT the child's default 10mm (0.010 SI).
+    // Must be 10mm (0.010 SI), NOT the child's default 5mm (0.005 SI).
     assert!(
-        matches!(val, Value::Scalar { si_value, .. } if (*si_value - 0.025).abs() < 1e-6),
-        "forward-declared child: A.b.bore should equal 25mm (0.025 SI); got {:?}",
+        matches!(val, Value::Scalar { si_value, .. } if (*si_value - 0.010).abs() < 1e-6),
+        "forward-declared child: A.b.bore should equal 10mm (0.010 SI); got {:?}",
         val
     );
 }
