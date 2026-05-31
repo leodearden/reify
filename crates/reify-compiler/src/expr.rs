@@ -3257,16 +3257,117 @@ pub(crate) fn compile_expr_guarded(
                 "not yet supported",
             )),
         ),
-        reify_ast::ExprKind::TraitStaticCall { .. } => make_poison_literal(
-            diagnostics,
-            Diagnostic::error(
-                "trait static-fn calls are not yet supported (task δ/ζ)".to_string(),
-            )
-            .with_label(DiagnosticLabel::new(
-                expr.span,
-                "not yet supported",
-            )),
-        ),
+        // ── task η 3945: trait-static fn dispatch ────────────────────────────────
+        // `Trait::fn(args)` — a no-self, no-receiver call that resolves directly
+        // to the trait's body-carrying static assoc fn (PRD §5.2, §6).
+        //
+        // The producer side (traits_phase.rs tail of phase_traits) registered each
+        // such fn as a `CompiledFunction` named `"Trait::method"` in ctx.functions.
+        // Here we simply look up that namespaced symbol via the normal overload
+        // resolver and lower to a `UserFunctionCall` — no new eval entry point needed.
+        //
+        // Name-drift guard: both sites call `trait_static_fn_symbol(trait, method)`
+        // so the symbol is byte-for-byte identical.
+        reify_ast::ExprKind::TraitStaticCall { trait_name, method, args } => {
+            // Compile each argument.
+            let compiled_args: Vec<CompiledExpr> = args
+                .iter()
+                .map(|arg| {
+                    compile_expr_guarded(
+                        arg,
+                        scope,
+                        enum_defs,
+                        functions,
+                        diagnostics,
+                        current_guard,
+                        lambda_counter,
+                    )
+                })
+                .collect();
+
+            let arg_types: Vec<Type> = compiled_args
+                .iter()
+                .map(|a| a.result_type.clone())
+                .collect();
+
+            // Build the namespaced symbol (sole source of truth).
+            let symbol = trait_static_fn_symbol(trait_name, method);
+
+            match resolve_function_overload(&symbol, &arg_types, functions) {
+                OverloadResolution::Resolved(matched_fn) => {
+                    // Emit deprecation warning if the static fn carries @deprecated.
+                    if let Some(msg) = deprecation_message(&matched_fn.annotations) {
+                        emit_deprecation_warning(
+                            "static function",
+                            &symbol,
+                            msg,
+                            expr.span,
+                            diagnostics,
+                        );
+                    }
+                    let result_type = matched_fn.return_type.clone();
+                    build_user_function_call_expr(&symbol, compiled_args, result_type)
+                }
+                OverloadResolution::Ambiguous(candidates) => {
+                    let candidate_sigs: Vec<String> =
+                        candidates.iter().map(|f| format_fn_signature(f)).collect();
+                    // Anti-cascade (task-448/task-1912/task-1921): poison to suppress cascade.
+                    make_poison_literal(
+                        diagnostics,
+                        Diagnostic::error(format!(
+                            "ambiguous static-fn call: {} candidates match {}({}): {}",
+                            candidates.len(),
+                            symbol,
+                            arg_types
+                                .iter()
+                                .map(|t| format!("{}", t))
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            candidate_sigs.join(", ")
+                        ))
+                        .with_label(DiagnosticLabel::new(expr.span, "ambiguous call")),
+                    )
+                }
+                OverloadResolution::NoMatch(_) | OverloadResolution::NoUserFunctions => {
+                    // The namespaced fn was either never registered (unknown trait /
+                    // unknown method / instance-method-only) or registered but the
+                    // provided argument types don't match any overload.
+                    //
+                    // Produce a refined message using scope.trait_members when available
+                    // (populated in entity bodies; empty in function-body scopes).
+                    let detail =
+                        if let Some(members) = scope.trait_members.get(trait_name.as_str()) {
+                            if members.contains(method.as_str()) {
+                                // Member is known but was not registered as a static fn —
+                                // it has a self receiver (instance method).
+                                format!(
+                                    "trait '{}' member '{}' requires a receiver; \
+                                     to call it on an object use: obj.({}::{})(…)",
+                                    trait_name, method, trait_name, method
+                                )
+                            } else {
+                                // Trait is known but has no member with this name.
+                                format!(
+                                    "trait '{}' has no static function '{}'",
+                                    trait_name, method
+                                )
+                            }
+                        } else {
+                            // Trait not found in scope (or scope has no trait_members).
+                            format!(
+                                "unknown trait-static function '{}::{}'",
+                                trait_name, method
+                            )
+                        };
+                    // Anti-cascade (task-448/task-1912/task-1921): poison to suppress cascade.
+                    make_poison_literal(
+                        diagnostics,
+                        Diagnostic::error(detail)
+                            .with_label(DiagnosticLabel::new(expr.span, "unknown static function")),
+                    )
+                }
+            }
+        }
         reify_ast::ExprKind::VariantConstruct { .. } => make_poison_literal(
             diagnostics,
             Diagnostic::error(
