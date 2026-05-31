@@ -1021,6 +1021,151 @@ mod cli {
         );
     }
 
+    /// `--pattern PLAYER --no-jcodemunch` exits 0 with an empty findings array.
+    ///
+    /// Confirms PLAYER is an accepted pattern (parser does not exit 125) and that
+    /// with `NoopJCodemunchOps` the tool exits cleanly with zero findings.
+    ///
+    /// Note: this cannot verify that the `if run_player { ... }` dispatch arm is
+    /// present in main() — `NoopJCodemunchOps` returns `vec![]` regardless, so a
+    /// dropped arm would still pass. `player_dispatch_forwards_canned_layer_violation`
+    /// (S2) covers end-to-end dispatch through the live jcodemunch seam.
+    #[test]
+    fn player_no_jcodemunch_exits_0_with_empty_findings() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+
+        let tasks_file = write_tasks_json(dir, &[]);
+        let runs_db = write_empty_runs_db(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--pattern",
+                "PLAYER",
+                "--no-jcodemunch",
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit --pattern PLAYER --no-jcodemunch");
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "--pattern PLAYER --no-jcodemunch must exit 0; got {:?}\nstderr: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.is_empty(),
+            "--pattern PLAYER --no-jcodemunch must yield zero findings; got:\n{:#}",
+            serde_json::Value::Array(findings)
+        );
+    }
+
+    /// `--pattern PLAYER` with a live mock jcodemunch that returns one layer
+    /// violation produces exactly one `PLayerViolation/Low` finding.
+    ///
+    /// This is the first end-to-end test proving the `if run_player { player::check }`
+    /// dispatch arm (the `run_player` predicate in the binary) forwards through the
+    /// real jcodemunch seam. The noop smoke test above cannot cover this gap (see
+    /// `player_no_jcodemunch_exits_0_with_empty_findings` above): with `--no-jcodemunch`,
+    /// a dropped dispatch arm also yields zero findings and exit 0. Here the decisive
+    /// assertion is that exactly one `PLayerViolation/Low` finding surfaces with the
+    /// from/to files threaded through `player::check`'s summary and evidence.
+    ///
+    /// Canned violation flow: mock → `RealJCodemunchOps::get_layer_violations` →
+    /// `layer_violations_from_wire` → `player::check` → `Finding{pattern:PLayerViolation, ...}`.
+    #[test]
+    fn player_dispatch_forwards_canned_layer_violation() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+
+        let tasks_file = write_tasks_json(dir, &[]);
+        let runs_db = write_empty_runs_db(dir);
+
+        let mock = spawn_mock_mcp(|_args| {
+            Some(serde_json::json!({
+                "violations": [{
+                    "from": "crates/reify-cli",
+                    "to": "crates/reify-kernel",
+                    "from_symbol": "reify_cli::main",
+                    "to_symbol": "reify_kernel::solver::Solver::solve",
+                    "allowed": false,
+                    "rule_index": 0
+                }]
+            }))
+        });
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--pattern",
+                "PLAYER",
+                "--jcodemunch-url",
+                mock.url(),
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit --pattern PLAYER with mock jcodemunch");
+
+        mock.stop();
+
+        // PLayerViolation is Severity::Low → high_severity_exit_code == 0.
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "--pattern PLAYER with one Low finding must exit 0; got {:?}\nstderr: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one PLayerViolation finding; got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+        let f = &findings[0];
+        assert_eq!(
+            f["pattern"].as_str(),
+            Some("PLayerViolation"),
+            "finding pattern must be PLayerViolation; got:\n{f:#}"
+        );
+        assert_eq!(
+            f["severity"].as_str(),
+            Some("Low"),
+            "finding severity must be Low; got:\n{f:#}"
+        );
+        let summary = f["summary"].as_str().unwrap_or("");
+        assert!(
+            summary.starts_with("crates/reify-cli imports crates/reify-kernel"),
+            "finding summary must begin 'crates/reify-cli imports crates/reify-kernel' \
+             (directional from→to); got: {summary:?}"
+        );
+        assert_eq!(
+            f["evidence"][0]["File"]["path"].as_str(),
+            Some("crates/reify-cli"),
+            "finding evidence[0] must point at from_file; got:\n{:#}",
+            f["evidence"]
+        );
+    }
+
     /// `--pattern P5` with an unreachable jcodemunch URL must NOT exit 125 —
     /// P5 never contacts jcodemunch.
     #[test]
