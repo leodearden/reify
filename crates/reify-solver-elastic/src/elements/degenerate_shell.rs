@@ -1436,4 +1436,74 @@ mod tests {
             }
         }
     }
+
+    // ── task 4069 step-1/2: exact covariant MEMBRANE strain B ────────────────
+
+    /// (i) On the flat patch, a constant in-plane stretch `u_x = a·x`, `u_y = b·y`
+    /// yields the constant COVARIANT membrane strain at `ζ=0`. The covariant strain
+    /// carries the un-normalized base-vector metric: with `g_ξ = x₁−x₀ = (2,0,0)`,
+    /// `g_η = x₂−x₀ = (0,1.5,0)`, `u_,ξ = (2a,0,0)`, `u_,η = (0,1.5b,0)`,
+    ///   `ε_ξξ = g_ξ·u_,ξ = 4a`, `ε_ηη = g_η·u_,η = 2.25b`, `2ε_ξη = 0`.
+    /// Evaluated at several `(ξ,η)` — the covariant membrane strain of a linear
+    /// triangle is element-constant at the mid-surface. Mirrors
+    /// `degenerate_b_constant_stretch_yields_constant_membrane_strain` (covariant
+    /// rather than physical-lamina components).
+    #[test]
+    fn degenerate_exact_covariant_membrane_b_constant_stretch_at_zeta_zero() {
+        let (nodes, directors, thicknesses) = flat_patch();
+        let a = 0.01_f64;
+        let b = -0.004_f64;
+        let mut u = [0.0_f64; 18];
+        for i in 0..3 {
+            u[6 * i] = a * nodes[i][0]; // u_x = a·x
+            u[6 * i + 1] = b * nodes[i][1]; // u_y = b·y
+        }
+        // g_ξ = (2,0,0), g_η = (0,1.5,0); u_,ξ = (2a,0,0), u_,η = (0,1.5b,0).
+        let want = [4.0 * a, 2.25 * b, 0.0];
+        for &(xi, eta) in &[(1.0 / 3.0, 1.0 / 3.0), (0.2, 0.3), (0.5, 0.25)] {
+            let bm = degenerate_exact_covariant_membrane_b(
+                &nodes,
+                &directors,
+                &thicknesses,
+                ShellRefCoord3::new(xi, eta, 0.0),
+            );
+            let e = b_times_u(&bm, &u);
+            for r in 0..3 {
+                assert!(
+                    (e[r] - want[r]).abs() < TOL,
+                    "covariant membrane strain[{r}] at ({xi},{eta}) = {} expected {}",
+                    e[r],
+                    want[r],
+                );
+            }
+        }
+    }
+
+    /// (ii) A rigid translation yields ZERO covariant membrane strain
+    /// (`Σ ∇N_i = 0`, so `u_,ξ = u_,η = 0`).
+    #[test]
+    fn degenerate_exact_covariant_membrane_b_rigid_translation_yields_zero() {
+        let (nodes, directors, thicknesses) = flat_patch();
+        let mut u = [0.0_f64; 18];
+        for i in 0..3 {
+            u[6 * i] = 0.7;
+            u[6 * i + 1] = -0.3;
+            u[6 * i + 2] = 0.4;
+        }
+        for &(xi, eta) in &[(1.0 / 3.0, 1.0 / 3.0), (0.25, 0.4)] {
+            let bm = degenerate_exact_covariant_membrane_b(
+                &nodes,
+                &directors,
+                &thicknesses,
+                ShellRefCoord3::new(xi, eta, 0.0),
+            );
+            let e = b_times_u(&bm, &u);
+            for (r, &er) in e.iter().enumerate() {
+                assert!(
+                    er.abs() < TOL,
+                    "rigid translation covariant membrane strain[{r}] = {er}",
+                );
+            }
+        }
+    }
 }
