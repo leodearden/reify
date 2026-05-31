@@ -923,3 +923,62 @@ fn query_shared_edges_unit_cube() {
         "non-adjacent triangles 0 and {non_adjacent} must share no edge; got {none_shared:?}",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Mass properties via signed-tetrahedron mesh integration:
+// CenterOfMass (steps 13 + 14), InertiaTensor (steps 15 + 16)
+// ---------------------------------------------------------------------------
+
+/// Query `CenterOfMass{handle, density}` and return the parsed `[x, y, z]`,
+/// panicking on any non-`Ok(Value::String)` reply.
+fn query_center_of_mass(
+    kernel: &ManifoldKernel,
+    handle: GeometryHandleId,
+    density: f64,
+) -> [f64; 3] {
+    match kernel.query(&GeometryQuery::CenterOfMass { handle, density }) {
+        Ok(Value::String(s)) => parse_xyz(&s),
+        other => panic!(
+            "CenterOfMass{{handle={handle:?}, density={density}}} must return \
+             Ok(Value::String(_)); got {other:?}"
+        ),
+    }
+}
+
+/// `CenterOfMass` over the unit cube via signed-tetrahedron mesh integration.
+///
+/// `unit_cube_mesh([0,0,0])` spans `[0,1]³`, so its true volume centroid is
+/// `(0.5, 0.5, 0.5)` — offset from the origin, which proves the arm performs
+/// real integration rather than returning an origin default. Polyhedral
+/// integration is exact on the cube's exactly-representable `{0,1}` vertices,
+/// so the 1e-9 tolerance is derived, not tuned. Density is ignored
+/// (uniform-density centroid == geometric centroid, matching OCCT), pinned by
+/// querying ρ=1 vs ρ=100.
+///
+/// RED (step-13): `query()` returns `Err(QueryFailed(STUB_MSG))` for
+/// `CenterOfMass`. GREEN is step-14.
+#[test]
+fn query_center_of_mass_unit_cube() {
+    let mut kernel = ManifoldKernel::new();
+    let handle = ingest(&mut kernel, [0.0, 0.0, 0.0]);
+
+    // (a) Volume centroid is the cube's geometric centre, (0.5, 0.5, 0.5).
+    let c = query_center_of_mass(&kernel, handle, 1.0);
+    let expected = [0.5, 0.5, 0.5];
+    for axis in 0..3 {
+        assert!(
+            (c[axis] - expected[axis]).abs() < 1e-9,
+            "CenterOfMass axis {axis} must be {} within 1e-9; got {c:?}",
+            expected[axis],
+        );
+    }
+
+    // (b) Density-invariance: ρ=1 and ρ=100 yield *identical* coordinates
+    //     (the arm never reads density), so exact equality must hold.
+    let c100 = query_center_of_mass(&kernel, handle, 100.0);
+    assert_eq!(
+        c, c100,
+        "CenterOfMass must ignore density (uniform-density centroid); \
+         ρ=1 gave {c:?}, ρ=100 gave {c100:?}",
+    );
+}
