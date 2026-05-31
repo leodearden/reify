@@ -290,6 +290,17 @@ impl ImpulseTrain {
         self.impulses.last().map(|imp| imp.time).unwrap_or(0.0)
     }
 
+    /// The `(time, amplitude)` pairs of every impulse, in strictly-increasing
+    /// time order. Exposes the train contents for cross-module inspection and
+    /// marshalling (e.g. `input_shape`'s `build_train_for_shaper` dispatch
+    /// tests) without leaking the private `Impulse` type.
+    pub fn points(&self) -> Vec<(f64, f64)> {
+        self.impulses
+            .iter()
+            .map(|imp| (imp.time, imp.amplitude))
+            .collect()
+    }
+
     /// Singer-Seering percentage residual vibration V(ω_n, ζ).
     ///
     /// ```text
