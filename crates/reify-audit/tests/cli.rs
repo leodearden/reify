@@ -130,7 +130,7 @@ mod cli {
         );
 
         let stdout = String::from_utf8_lossy(&out.stdout);
-        for flag in &["--task", "--pre-done", "--since", "--pattern"] {
+        for flag in &["--task", "--pre-done", "--since", "--pattern", "--jcodemunch-url", "--no-jcodemunch"] {
             assert!(
                 stdout.contains(flag),
                 "--help stdout must contain '{}'\nFull stdout:\n{}",
@@ -227,6 +227,7 @@ mod cli {
             .args([
                 "--task",
                 "3242",
+                "--no-jcodemunch",
                 "--tasks-file",
                 tasks_file.to_str().unwrap(),
                 "--runs-db",
@@ -259,6 +260,7 @@ mod cli {
             .args([
                 "--task",
                 "7777",
+                "--no-jcodemunch",
                 "--tasks-file",
                 tasks_file.to_str().unwrap(),
                 "--runs-db",
@@ -679,6 +681,7 @@ mod cli {
             .args([
                 "--pattern",
                 "P1",
+                "--no-jcodemunch",
                 "--tasks-file",
                 tasks_file.to_str().unwrap(),
                 "--runs-db",
@@ -687,20 +690,186 @@ mod cli {
                 dir.to_str().unwrap(),
             ])
             .output()
-            .expect("invoke reify-audit --pattern P1");
+            .expect("invoke reify-audit --pattern P1 --no-jcodemunch");
 
         assert_eq!(
             out.status.code(),
             Some(0),
-            "--pattern P1 with NoopJCodemunchOps must exit 0"
+            "--pattern P1 --no-jcodemunch must exit 0"
         );
 
         let stderr = String::from_utf8_lossy(&out.stderr);
         let findings = parse_findings_from_stderr(&stderr);
         assert!(
             findings.is_empty(),
-            "--pattern P1 with Noop must yield zero findings; got:\n{:#}",
+            "--pattern P1 --no-jcodemunch must yield zero findings; got:\n{:#}",
             serde_json::Value::Array(findings)
+        );
+    }
+
+    /// P1 with an unreachable jcodemunch endpoint exits 125 (fail-fast
+    /// infra error).
+    ///
+    /// After step-2 the flags parse but main still binds NoopJCodemunchOps,
+    /// so P1 runs without connecting and exits 0 ≠ 125 — this test is RED
+    /// until step-6 wires up RealJCodemunchOps.
+    #[test]
+    fn p1_unreachable_jcodemunch_exits_125() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+
+        let tasks = vec![task_fixture("1", "pending", None, None)];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+
+        let throwaway = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = throwaway.local_addr().expect("addr").port();
+        drop(throwaway);
+        let closed_url = format!("http://127.0.0.1:{port}/mcp");
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--pattern", "P1",
+                "--jcodemunch-url", &closed_url,
+                "--tasks-file", tasks_file.to_str().unwrap(),
+                "--runs-db", runs_db.to_str().unwrap(),
+                "--project-root", dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit --pattern P1 unreachable jcodemunch");
+
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "--pattern P1 with unreachable jcodemunch must exit 125; got {:?}\nstdout: {}\nstderr: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// `--pattern P1 --no-jcodemunch` keeps P1 inert (Noop) and exits 0.
+    ///
+    /// Verifies the offline escape hatch: even after step-6 activates real
+    /// jcodemunch, the explicit flag opts back into NoopJCodemunchOps.
+    #[test]
+    fn no_jcodemunch_flag_keeps_p1_inert() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+
+        let tasks = vec![task_fixture("1", "pending", None, None)];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+
+        let throwaway = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = throwaway.local_addr().expect("addr").port();
+        drop(throwaway);
+        let closed_url = format!("http://127.0.0.1:{port}/mcp");
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--pattern", "P1",
+                "--no-jcodemunch",
+                "--jcodemunch-url", &closed_url,
+                "--tasks-file", tasks_file.to_str().unwrap(),
+                "--runs-db", runs_db.to_str().unwrap(),
+                "--project-root", dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit --pattern P1 --no-jcodemunch");
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "--pattern P1 --no-jcodemunch must exit 0 (Noop, no connection); got {:?}\nstderr: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.is_empty(),
+            "--pattern P1 --no-jcodemunch must yield zero findings; got:\n{:#}",
+            serde_json::Value::Array(findings)
+        );
+    }
+
+    /// `--task <id> --pre-done` with an unreachable jcodemunch URL must NOT
+    /// exit 125 — the pre-done path runs P5 only and never contacts jcodemunch.
+    #[test]
+    fn pre_done_stays_jcodemunch_free_with_unreachable_jcodemunch() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+
+        let tasks = vec![task_fixture("42", "done", Some("merged"), Some("abc"))];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+
+        let throwaway = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = throwaway.local_addr().expect("addr").port();
+        drop(throwaway);
+        let closed_url = format!("http://127.0.0.1:{port}/mcp");
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task", "42",
+                "--pre-done",
+                "--jcodemunch-url", &closed_url,
+                "--tasks-file", tasks_file.to_str().unwrap(),
+                "--runs-db", runs_db.to_str().unwrap(),
+                "--project-root", dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit --pre-done with closed jcodemunch url");
+
+        assert_ne!(
+            out.status.code(),
+            Some(125),
+            "--pre-done must not contact jcodemunch (unreachable jcodemunch-url must not cause exit 125); \
+             got {:?}\nstderr: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// `--pattern P5` with an unreachable jcodemunch URL must NOT exit 125 —
+    /// P5 never contacts jcodemunch.
+    #[test]
+    fn sweep_pattern_p5_skips_jcodemunch() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+
+        let tasks = vec![task_fixture("77", "pending", None, None)];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+
+        let throwaway = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = throwaway.local_addr().expect("addr").port();
+        drop(throwaway);
+        let closed_url = format!("http://127.0.0.1:{port}/mcp");
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--pattern", "P5",
+                "--jcodemunch-url", &closed_url,
+                "--tasks-file", tasks_file.to_str().unwrap(),
+                "--runs-db", runs_db.to_str().unwrap(),
+                "--project-root", dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit --pattern P5 with closed jcodemunch url");
+
+        assert_ne!(
+            out.status.code(),
+            Some(125),
+            "--pattern P5 must not contact jcodemunch (exit 125 would mean it did); \
+             got {:?}\nstderr: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
         );
     }
 }
@@ -1223,6 +1392,7 @@ mod http_loader {
             .args([
                 "--since", "2026-01-01",
                 "--pattern", "P1",
+                "--no-jcodemunch",
                 "--fused-memory-url", mock.url(),
                 "--runs-db", runs_db.to_str().unwrap(),
                 "--project-root", dir.to_str().unwrap(),
