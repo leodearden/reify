@@ -491,8 +491,9 @@ fn emit_leaf_conformance_for_arg_type(
 /// expressions are not available for inspection. Walks the wrapper structure of
 /// `arg_type` in lockstep with `param_type`. At a `Type::TraitObject` leaf,
 /// `StructureRef`/`TraitObject` args defer to `emit_leaf_conformance_for_arg_type`;
-/// `Geometry`/`Error` args are skipped (unverifiable at the type level / anti-cascade);
-/// any other leaf type (scalar, enum, point, …) cannot carry trait bounds and emits a
+/// `Geometry`/`Error`/`TypeParam` args are skipped (unverifiable at the type level /
+/// anti-cascade / unresolved generic); any other leaf type (scalar, enum, point, …)
+/// cannot carry trait bounds and emits a
 /// `TypeNotConformingToTrait` directly — mirroring the literal walker's fallback so a
 /// wrapper-nested trait param reached with a non-literal scalar arg is not silently
 /// accepted (task-4081 soundness, esc-4081-174).
@@ -544,7 +545,14 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
             // (e.g. an `Option<Geometry>` ValueRef) carries no op-array here, so we
             // cannot verify it — skip rather than risk a false positive. `Type::Error`
             // is anti-cascade (a nested poison sentinel reaching this leaf).
-            Type::Geometry | Type::Error => {}
+            // `Type::TypeParam` is an unresolved generic type variable (e.g. `T` in a
+            // generic structure/function that forwards a type-param-typed value to a
+            // trait param). It is "unknown/unresolved", NOT "definitely
+            // non-conforming" — its real conformance is decided once `T` is bound to a
+            // concrete type at instantiation — so it is unverifiable at this leaf and
+            // skipped. Emitting here would be a false positive (esc-4081 amend,
+            // reviewer_comprehensive robustness_false_positive).
+            Type::Geometry | Type::Error | Type::TypeParam(_) => {}
             // Any other leaf type (scalar, enum, point, vector, …) can never carry
             // trait bounds, so it cannot conform to a trait param. Emit the same
             // diagnostic the literal walker emits for non-struct/non-trait leaves.
@@ -807,6 +815,13 @@ fn check_leaf_trait_conformance(
         Type::StructureRef(_) | Type::TraitObject(_) => {
             emit_leaf_conformance_for_arg_type(effective_arg_type, required_trait, ctx);
         }
+        // Unresolved generic type variable — unverifiable at this leaf, mirroring the
+        // type-level walker's `TypeParam` skip. A `T`-typed arg forwarded to a trait
+        // param (e.g. `structure W<T> { let z = couple(inner) }` with `inner : T`) is
+        // "unknown", not "definitely non-conforming"; its conformance is decided when
+        // `T` is bound at instantiation. Skipping avoids a false positive (esc-4081
+        // amend, reviewer_comprehensive robustness_false_positive).
+        Type::TypeParam(_) => {}
         _ => {
             // Anti-cascade: when arg_type is a numeric fallback (Real or Int)
             // and arg_call_name is Some but the callee was not in the template
@@ -5014,10 +5029,6 @@ mod tests {
 
     /// Build a `TopologyTemplate` with the given `trait_bounds` and no value cells.
     fn template_with_bounds(name: &str, bounds: Vec<&str>) -> TopologyTemplate {
-        minimal_template_with_bounds(name, bounds)
-    }
-
-    fn minimal_template_with_bounds(name: &str, bounds: Vec<&str>) -> TopologyTemplate {
         TopologyTemplate {
             name: name.to_string(),
             doc: None,
@@ -5160,6 +5171,82 @@ mod tests {
         assert!(
             diagnostics.is_empty(),
             "Type::Error arg must not produce diagnostics (anti-cascade), got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// (d) Bare trait param + `Type::TypeParam` (non-literal ValueRef) arg → zero
+    /// diagnostics. An unresolved generic type variable forwarded to a trait param
+    /// routes through the literal walker (`check_leaf_trait_conformance`); it is
+    /// unverifiable here, not non-conforming, so it must be skipped rather than emit a
+    /// false-positive `TypeNotConformingToTrait` (esc-4081 amend,
+    /// reviewer_comprehensive robustness_false_positive).
+    #[test]
+    fn fn_arg_conformance_type_param_arg_skipped() {
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let dj = marker_trait("DrivingJoint");
+        let trait_registry: HashMap<String, &CompiledTrait> = [("DrivingJoint", &dj)]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
+
+        // A non-literal arg (ValueRef) whose result_type is an unresolved type param.
+        let compiled_arg = CompiledExpr::value_ref(
+            ValueCellId::new("Test", "inner"),
+            Type::TypeParam("T".to_string()),
+        );
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &Type::TraitObject("DrivingJoint".to_string()),
+            "joint",
+            &compiled_arg,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &mut diagnostics,
+        );
+
+        assert!(
+            diagnostics.is_empty(),
+            "an unresolved TypeParam arg must not produce a conformance diagnostic \
+             (unverifiable, not non-conforming), got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// (e) Wrapper trait param `Option<DrivingJoint>` + `Option<TypeParam>`
+    /// (non-literal ValueRef) arg → zero diagnostics. The wrapper case routes through
+    /// the type-level walker (`walk_param_against_arg_type`); its `TypeParam` leaf must
+    /// be skipped for the same reason as the bare case above.
+    #[test]
+    fn fn_arg_conformance_wrapped_type_param_arg_skipped() {
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let dj = marker_trait("DrivingJoint");
+        let trait_registry: HashMap<String, &CompiledTrait> = [("DrivingJoint", &dj)]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
+
+        // Non-literal `Option<T>` ValueRef against an `Option<DrivingJoint>` param.
+        let compiled_arg = CompiledExpr::value_ref(
+            ValueCellId::new("Test", "inner"),
+            Type::Option(Box::new(Type::TypeParam("T".to_string()))),
+        );
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &Type::Option(Box::new(Type::TraitObject("DrivingJoint".to_string()))),
+            "joint",
+            &compiled_arg,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &mut diagnostics,
+        );
+
+        assert!(
+            diagnostics.is_empty(),
+            "an unresolved Option<TypeParam> arg must not produce a conformance \
+             diagnostic (unverifiable, not non-conforming), got: {:?}",
             diagnostics
         );
     }
