@@ -461,28 +461,6 @@ pub fn duhamel_coefficients(omega: f64, zeta: f64, dt: f64) -> DuhamelCoeffs {
     DuhamelCoeffs { a, b, a_p, b_p, c, d, c_p, d_p }
 }
 
-/// Integrate the scalar SDOF modal ODE on a **uniform** time grid via the
-/// exact per-timestep Duhamel recurrence (Chopra Table 5.3.1).
-///
-/// # Arguments
-/// * `omega`   — natural angular frequency ω (rad/s); must satisfy ω > 0 and
-///   ζ < 1 for the underdamped closed form.
-/// * `zeta`    — modal damping ratio ζ (dimensionless, 0 ≤ ζ < 1).
-/// * `dt`      — uniform time step Δt (s).
-/// * `forcing` — scalar pre-projected modal forcing samples fᵢ(tⱼ), one per
-///   output time point; `forcing[0]` is the force at t=0.
-/// * `xi0`     — initial modal displacement ξ(0).
-/// * `v0`      — initial modal velocity ξ̇(0).
-///
-/// # Returns
-/// A `Vec<f64>` of length `forcing.len()` where index 0 = ξ(0) = `xi0`.
-///
-/// # Accuracy contract (Leo-ratified esc-3821-44 option A)
-/// * **Exact** (≤ 1 × 10⁻¹²) for constant and piecewise-linear forcing.
-/// * **2nd-order** O((ΩΔt)²) for smooth forcing.
-/// * The original "rel error < 1 × 10⁻⁹ vs analytic sine at 50 points"
-///   target is **NOT** asserted — it is ~6 orders below the O((ΩΔt)²)
-///   linear-interpolation method floor at 50 sample points.
 /// Integrate the scalar SDOF modal ODE using pre-derived [`DuhamelCoeffs`].
 ///
 /// Identical to [`duhamel_solve`] but accepts already-computed coefficients,
@@ -540,6 +518,28 @@ pub fn duhamel_solve_with_coeffs(
     out
 }
 
+/// Integrate the scalar SDOF modal ODE on a **uniform** time grid via the
+/// exact per-timestep Duhamel recurrence (Chopra Table 5.3.1).
+///
+/// # Arguments
+/// * `omega`   — natural angular frequency ω (rad/s); must satisfy ω > 0 and
+///   ζ < 1 for the underdamped closed form.
+/// * `zeta`    — modal damping ratio ζ (dimensionless, 0 ≤ ζ < 1).
+/// * `dt`      — uniform time step Δt (s).
+/// * `forcing` — scalar pre-projected modal forcing samples fᵢ(tⱼ), one per
+///   output time point; `forcing[0]` is the force at t=0.
+/// * `xi0`     — initial modal displacement ξ(0).
+/// * `v0`      — initial modal velocity ξ̇(0).
+///
+/// # Returns
+/// A `Vec<f64>` of length `forcing.len()` where index 0 = ξ(0) = `xi0`.
+///
+/// # Accuracy contract (Leo-ratified esc-3821-44 option A)
+/// * **Exact** (≤ 1 × 10⁻¹²) for constant and piecewise-linear forcing.
+/// * **2nd-order** O((ΩΔt)²) for smooth forcing.
+/// * The original "rel error < 1 × 10⁻⁹ vs analytic sine at 50 points"
+///   target is **NOT** asserted — it is ~6 orders below the O((ΩΔt)²)
+///   linear-interpolation method floor at 50 sample points.
 pub fn duhamel_solve(
     omega: f64,
     zeta: f64,
