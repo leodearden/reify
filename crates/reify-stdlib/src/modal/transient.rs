@@ -1210,6 +1210,147 @@ mod tests {
         assert_eq!(dominant_antinode_index(&empty), 0);
     }
 
+    // ── task λ: prepare/integrate split (RED → GREEN in step-4) ──────────────
+
+    /// (a) `integrate_prepared(&prepare_modal_integrator(ω,ζ,&times), &times,
+    /// &forcing, xi0, v0)` returns coords BIT-IDENTICAL to
+    /// `solve_modal_response(ω,ζ,&times,&forcing,xi0,v0).coords` for:
+    ///   - a uniform-grid underdamped case (Duhamel path)
+    ///   - a ζ≥1 (critically-damped) case (Newmark path)
+    ///   - a ω≈0 (rigid-body) case (Newmark path)
+    ///
+    /// (b) `prepare_modal_integrator` selects DuhamelUniform vs Newmark
+    /// identically to `solve_modal_response`'s dispatcher.
+    ///
+    /// (c) `duhamel_solve_with_coeffs(&duhamel_coefficients(ω,ζ,dt), &forcing,
+    /// xi0, v0)` equals `duhamel_solve(ω,ζ,dt,&forcing,xi0,v0)` bit-for-bit.
+    ///
+    /// RED: `prepare_modal_integrator`, `integrate_prepared`, and
+    /// `duhamel_solve_with_coeffs` are absent — fails to compile.
+    #[test]
+    fn prepare_integrate_split_matches_solve_modal_response() {
+        let n = 60_usize;
+        let dt = 0.001_f64;
+        let p0 = 2.0_f64;
+        let xi0 = 0.0_f64;
+        let v0 = 0.0_f64;
+
+        // ── (a) Duhamel path: uniform underdamped ─────────────────────────────
+        {
+            let omega = 50.0_f64;
+            let zeta  = 0.05_f64;
+            let times: Vec<f64> = (0..n).map(|i| i as f64 * dt).collect();
+            let forcing: Vec<f64> = vec![p0; n];
+
+            let reference = solve_modal_response(omega, zeta, &times, &forcing, xi0, v0);
+            assert_eq!(
+                reference.integrator,
+                Integrator::DuhamelUniform,
+                "fixture must select DuhamelUniform",
+            );
+
+            let prep = prepare_modal_integrator(omega, zeta, &times);
+            // (b) same variant selected
+            assert!(
+                matches!(prep, PreparedIntegrator::Duhamel { .. }),
+                "prepare_modal_integrator must return Duhamel{{ .. }} for uniform+underdamped",
+            );
+
+            let got = integrate_prepared(&prep, &times, &forcing, xi0, v0);
+            assert_eq!(got.len(), reference.coords.len());
+            for (j, (&g, &r)) in got.iter().zip(reference.coords.iter()).enumerate() {
+                assert_eq!(
+                    g.to_bits(),
+                    r.to_bits(),
+                    "Duhamel path step {j}: integrate_prepared {g:.6e} != solve_modal_response {r:.6e}",
+                );
+            }
+        }
+
+        // ── (a) Newmark path: ζ≥1 (critically-damped) ────────────────────────
+        {
+            let omega = 50.0_f64;
+            let zeta  = 1.5_f64; // over-damped → Newmark
+            let times: Vec<f64> = (0..n).map(|i| i as f64 * dt).collect();
+            let forcing: Vec<f64> = vec![p0; n];
+
+            let reference = solve_modal_response(omega, zeta, &times, &forcing, xi0, v0);
+            assert_eq!(reference.integrator, Integrator::Newmark, "ζ≥1 must use Newmark");
+
+            let prep = prepare_modal_integrator(omega, zeta, &times);
+            assert!(
+                matches!(prep, PreparedIntegrator::Newmark { .. }),
+                "prepare_modal_integrator must return Newmark{{ .. }} for ζ≥1",
+            );
+
+            let got = integrate_prepared(&prep, &times, &forcing, xi0, v0);
+            assert_eq!(got.len(), reference.coords.len());
+            for (j, (&g, &r)) in got.iter().zip(reference.coords.iter()).enumerate() {
+                assert_eq!(
+                    g.to_bits(),
+                    r.to_bits(),
+                    "Newmark (ζ≥1) step {j}: integrate_prepared {g:.6e} != solve_modal_response {r:.6e}",
+                );
+            }
+        }
+
+        // ── (a) Newmark path: ω≈0 (rigid-body) ───────────────────────────────
+        {
+            let omega = 1e-10_f64; // below OMEGA_FLOOR → Newmark
+            let zeta  = 0.05_f64;
+            let times: Vec<f64> = (0..n).map(|i| i as f64 * dt).collect();
+            let forcing: Vec<f64> = vec![p0; n];
+
+            let reference = solve_modal_response(omega, zeta, &times, &forcing, xi0, v0);
+            assert_eq!(reference.integrator, Integrator::Newmark, "ω≈0 must use Newmark");
+
+            let prep = prepare_modal_integrator(omega, zeta, &times);
+            assert!(
+                matches!(prep, PreparedIntegrator::Newmark { .. }),
+                "prepare_modal_integrator must return Newmark{{ .. }} for ω≈0",
+            );
+
+            let got = integrate_prepared(&prep, &times, &forcing, xi0, v0);
+            assert_eq!(got.len(), reference.coords.len());
+            for (j, (&g, &r)) in got.iter().zip(reference.coords.iter()).enumerate() {
+                assert_eq!(
+                    g.to_bits(),
+                    r.to_bits(),
+                    "Newmark (ω≈0) step {j}: integrate_prepared {g:.6e} != solve_modal_response {r:.6e}",
+                );
+            }
+        }
+    }
+
+    /// (c) `duhamel_solve_with_coeffs(&duhamel_coefficients(ω,ζ,dt), &forcing,
+    /// xi0, v0)` returns the SAME bits as `duhamel_solve(ω,ζ,dt,&forcing,xi0,v0)`.
+    ///
+    /// RED: `duhamel_solve_with_coeffs` is absent — fails to compile.
+    #[test]
+    fn duhamel_solve_with_coeffs_equals_duhamel_solve_bit_for_bit() {
+        let omega = 50.0_f64;
+        let zeta  = 0.05_f64;
+        let dt    = 0.001_f64;
+        let n     = 60_usize;
+        let p0    = 3.0_f64;
+        let xi0   = 1.0_f64;
+        let v0    = 0.5_f64;
+
+        let forcing: Vec<f64> = (0..n).map(|i| p0 * (i as f64 * dt)).collect();
+        let reference = duhamel_solve(omega, zeta, dt, &forcing, xi0, v0);
+        let coeffs    = duhamel_coefficients(omega, zeta, dt);
+        let got       = duhamel_solve_with_coeffs(&coeffs, &forcing, xi0, v0);
+
+        assert_eq!(got.len(), reference.len());
+        for (j, (&g, &r)) in got.iter().zip(reference.iter()).enumerate() {
+            assert_eq!(
+                g.to_bits(),
+                r.to_bits(),
+                "step {j}: duhamel_solve_with_coeffs {g:.6e} != duhamel_solve {r:.6e}",
+            );
+        }
+    }
+
     // ─── step-7: reconstruct_series (RED) ────────────────────────────────────
 
     /// `reconstruct_series(coeffs, mode_coords)` computes the per-timestep
