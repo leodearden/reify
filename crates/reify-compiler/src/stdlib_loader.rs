@@ -247,6 +247,12 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 "std.ports.fluid",
                 include_str!("../stdlib/ports_fluid.ri"),
             ),
+            // `std.fields` is a documentation-only packaging surface for the
+            // existing built-in field differential operators (gradient, divergence,
+            // curl, laplacian, sample). It declares no pub fn or pub type and
+            // references no other stdlib module → zero ordering constraints;
+            // tail-append is safe. Reconstruction per PRD §Slice C.
+            ("std.fields", include_str!("../stdlib/fields.ri")),
         ];
 
         // SEQUENTIAL COMPILATION WITH GROWING PRELUDE: each module is compiled

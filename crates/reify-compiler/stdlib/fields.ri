@@ -1,0 +1,42 @@
+#no_prelude
+// Stdlib: Field Differential Operators (packaging surface)
+//
+// std.fields packages the existing built-in field differential operators.
+// It does NOT reimplement them — all operators are intercepting builtins
+// in reify-expr and resolve via the prelude without any import (PRD §Slice C,
+// decision 5). Importing this module is a no-op for symbol resolution; its
+// purpose is to provide a named, stable import path for documentation and
+// future extension.
+//
+// ── Built-in operators (prelude-resolved, not redeclared here) ────────────────
+//
+//   gradient(f)          — spatial gradient of a scalar field → vector field
+//   divergence(f)        — divergence of a vector field → scalar field
+//   curl(f)              — curl of a 3-D vector field → vector field
+//   laplacian(f)         — Laplacian of a scalar field → scalar field
+//   sample(f, point)     — evaluate field f at a domain point; intercepting
+//                          builtin (reify-expr/lib.rs:196); do NOT shadow
+//
+// ── §11 Standard Library Field Functions (documented, not redeclared) ─────────
+//
+//   compose              — field source syntax: `source = composed { ... }`;
+//                          not a callable function
+//   sample               — intercepting builtin (see above)
+//   restrict             — no implementation; returns Field, which is not
+//                          constructible in a pub fn body
+//   constant_field       — same restriction as restrict
+//   fn_field             — same restriction as restrict
+//   from_samples         — same restriction as restrict
+//
+//   All six are listed in crates/reify-mcp/src/tools/chunks/fields.md §40-47.
+//   None satisfies (no intercepting builtin) AND (composable Reify body),
+//   so none is declared here.
+//
+// ── Why no Field type alias ───────────────────────────────────────────────────
+//
+//   The built-in parametric type Field<D,C> already resolves everywhere
+//   without import (parametric_field_resolution_tests.rs, task 3088).
+//   A self-alias `type Field<D,C> = Field<D,C>` is a circular-alias Error
+//   (type_resolution.rs:1687) that panics stdlib_loader.rs's assert! on
+//   Error-severity diagnostics and breaks the entire build (esc-4025-76).
+//   The regression guard in fields_stdlib_compile.rs pins this invariant.
