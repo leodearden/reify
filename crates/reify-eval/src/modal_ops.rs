@@ -1117,6 +1117,36 @@ fn forcing_missing_outcome() -> ComputeOutcome {
     }
 }
 
+/// Build the degenerate short-circuit outcome for a `modal_result` input that
+/// carries no usable modes (`modal_result` absent / `Value::Undef`, or a
+/// `ModalResult` struct whose `modes` list is empty / absent): an
+/// `E_TransientModalResultMissing` `Error` diagnostic plus a degenerate (empty
+/// `t_samples` / `mode_coords`) `DisplacementTimeHistory` — no transient was
+/// integrated. Mirrors [`forcing_missing_outcome`]; message-based diagnostic
+/// (`code: None`) per design_decision #6, and no warm state is donated.
+///
+/// This guard closes the third silent-failure path in `run_transient_response`:
+/// without it, the per-mode loop runs zero times and the trampoline returns a
+/// structurally-valid but all-zero result that masks an upstream failed
+/// `modal::free_vibration` node. Placed before the empty-forcing guard so that
+/// a failed modal-analysis node (the root cause) is surfaced first.
+fn modal_result_missing_outcome() -> ComputeOutcome {
+    let diagnostic = Diagnostic::error(
+        "E_TransientModalResultMissing: the modal result carries no modes \
+         (`modal_result` absent/Undef or its `modes` list empty), so there are \
+         no mode shapes to project the forcing onto and the mode-superposition \
+         transient is undefined; returning an empty displacement history. This \
+         typically indicates the upstream modal analysis (modal::free_vibration) \
+         failed or was not yet evaluated.",
+    );
+    ComputeOutcome::Completed {
+        result: degenerate_displacement_history(),
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: vec![diagnostic],
+    }
+}
+
 /// Fetch field `name` from a StructureInstance `val` by reference (no clone);
 /// `None` if `val` is not a StructureInstance or lacks the field. The borrowing
 /// companion to [`field_or`], used by the transient trampolines to read forcing /
@@ -1399,7 +1429,21 @@ pub(crate) fn run_transient_response(
     let t_end = value_inputs.get(3).map(read_scalar_si).unwrap_or(0.0);
     let dt = value_inputs.get(4).map(read_scalar_si).unwrap_or(0.0);
 
-    // ── (1) empty-forcing guard (no cache — mirrors density guard) ────────────
+    // ── (1) missing-modal-result guard ───────────────────────────────────────
+    // modal_result is the primary positional input: Undef / non-ModalResult /
+    // ModalResult with empty modes all yield &[] from modal_result_modes, which
+    // would silently produce a zero-displacement history by summing over zero
+    // modes. Fire this guard first (even when forcing is also empty) so the
+    // diagnostic points at the root cause — the upstream modal solve — rather
+    // than the secondary empty-forcing symptom. Mirrors forcing_missing_outcome.
+    if modal_result_modes(&modal_result).is_empty() {
+        return TransientTrampolineRun {
+            outcome: modal_result_missing_outcome(),
+            reused_setup: false,
+        };
+    }
+
+    // ── (2) empty-forcing guard (no cache — mirrors density guard) ────────────
     let sources = extract_forcing_sources(&forcing);
     if sources.is_empty() {
         return TransientTrampolineRun {
@@ -1408,7 +1452,7 @@ pub(crate) fn run_transient_response(
         };
     }
 
-    // ── (2) extract per-mode (frequency_hz, damping_ratio, shape) ────────────
+    // ── (3) extract per-mode (frequency_hz, damping_ratio, shape) ────────────
     // Shapes are extracted fresh every call (they feed only the always-recomputed
     // forcing projection, not the cached coefficients; the echoed modal_result
     // supplies them, so a key match over (freq, zeta, dt, t_range) fully certifies
@@ -1427,7 +1471,7 @@ pub(crate) fn run_transient_response(
         })
         .collect();
 
-    // ── (3) cache lookup: try to reuse the grid + prepared integrators ────────
+    // ── (4) cache lookup: try to reuse the grid + prepared integrators ────────
     // Key excludes `forcing` (cheap-varying) and mode shapes (not needed by
     // the coefficients); see TransientCacheKey docs.
     let key = TransientCacheKey::new(t_start, t_end, dt, mode_params.clone());
@@ -1471,7 +1515,7 @@ pub(crate) fn run_transient_response(
         }
     };
 
-    // ── (4) forcing projection (always, even on a cache HIT) ─────────────────
+    // ── (5) forcing projection (always, even on a cache HIT) ─────────────────
     // Per source: resolve node, direction, sample p_src(tⱼ) over the grid.
     let mode0_shape: &[[f64; 3]] = shapes.first().map(Vec::as_slice).unwrap_or(&[]);
     struct SourceProjection {
@@ -1494,7 +1538,7 @@ pub(crate) fn run_transient_response(
         })
         .collect();
 
-    // ── (5) per-mode integration (+ cancellation poll between modes) ──────────
+    // ── (6) per-mode integration (+ cancellation poll between modes) ──────────
     let mut mode_coords: Vec<Value> = Vec::with_capacity(modes.len());
     for (i, (_freq, zeta)) in mode_params.iter().enumerate() {
         // Between-modes cancellation poll (PRD §6 "between modes (per timestep)").
@@ -1532,7 +1576,7 @@ pub(crate) fn run_transient_response(
         mode_coords.push(Value::List(coords.into_iter().map(Value::Real).collect()));
     }
 
-    // ── (6) shape the DisplacementTimeHistory ────────────────────────────────
+    // ── (7) shape the DisplacementTimeHistory ────────────────────────────────
     let t_samples = Value::List(
         grid.iter()
             .map(|&t| Value::Scalar { si_value: t, dimension: DimensionVector::TIME })
@@ -1553,7 +1597,7 @@ pub(crate) fn run_transient_response(
         fields,
     }));
 
-    // ── (7) donate the grid + prepared integrators as warm state (task λ) ─────
+    // ── (8) donate the grid + prepared integrators as warm state (task λ) ─────
     let cache = TransientCache { key, grid, prepared };
     let (state, size_bytes) = cache.into_opaque_state();
     let cost_per_byte = if size_bytes > 0 { Some(1.0 / size_bytes as f64) } else { None };
@@ -3984,6 +4028,109 @@ mod tests {
                     assert!(ts.is_empty(), "degenerate grid must yield empty t_samples")
                 }
                 other => panic!("t_samples must be a Value::List; got {other:?}"),
+            }
+        }
+    }
+
+    /// Task 4131: a missing / degenerate `modal_result` input — either `Value::Undef`
+    /// (upstream modal analysis failed) or a well-formed `ModalResult` struct with an
+    /// empty `modes` list — is FLAGGED, not silent.
+    ///
+    /// With a valid non-empty forcing and a valid non-empty time grid (so neither the
+    /// empty-forcing nor the degenerate-grid guard can fire), a degenerate
+    /// `modal_result` must short-circuit to a *flagged* degenerate history: an `Error`
+    /// diagnostic containing `"E_TransientModalResultMissing"` plus an empty
+    /// `DisplacementTimeHistory` — so a silently zero-displacement result is never
+    /// fabricated by summing over zero modes.
+    ///
+    /// Both degenerate shapes route through the same
+    /// `modal_result_modes(&modal_result).is_empty()` branch.
+    ///
+    /// RED: the current trampoline loops over zero modes and returns an un-flagged
+    /// empty history with NO diagnostic, so assertion (a) fails.
+    #[test]
+    fn transient_response_missing_modal_result_emits_modal_result_missing() {
+        // Non-empty forcing — the empty-forcing guard must NOT fire.
+        let forcing = forcing_history(vec![step_force("tip", [0.0, 0.0, 1.0], 10.0, 0.0)]);
+        // Valid non-empty grid — the degenerate-grid guard must NOT fire.
+        let (t_start, t_end, dt) = (0.0_f64, 0.1_f64, 0.005_f64);
+        assert!(
+            uniform_time_grid(t_start, t_end, dt).len() > 1,
+            "fixture grid must be non-empty so neither the empty-forcing nor the \
+             degenerate-grid guard masks the missing-modal-result guard",
+        );
+
+        // Four degenerate modal_result shapes: Undef (upstream node errored),
+        // a well-formed ModalResult with an empty `modes` list, a ModalResult
+        // whose `modes` field is absent, and a non-ModalResult struct. All four
+        // route through the same `modal_result_modes(&modal_result).is_empty()`
+        // branch and must emit the same E_TransientModalResultMissing diagnostic.
+        let modal_result_no_modes_field =
+            struct_instance("ModalResult", vec![("part".to_string(), Value::String(String::new()))]);
+        let non_modal_result_struct =
+            struct_instance("SomeOtherStruct", vec![("modes".to_string(), Value::List(vec![]))]);
+        for (label, modal_result) in [
+            ("Value::Undef", Value::Undef),
+            ("modal_result_with_modes(vec![])", modal_result_with_modes(vec![])),
+            ("ModalResult without modes field", modal_result_no_modes_field),
+            ("non-ModalResult struct", non_modal_result_struct),
+        ] {
+            let value_inputs = vec![
+                modal_result,
+                forcing.clone(),
+                time_scalar(t_start),
+                time_scalar(t_end),
+                time_scalar(dt),
+            ];
+            let outcome = solve_transient_response_trampoline(
+                &value_inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            );
+            let ComputeOutcome::Completed { result, diagnostics, .. } = outcome else {
+                panic!("[{label}] expected a Completed outcome");
+            };
+
+            // (a) an Error diagnostic identifies the missing-modal-result condition.
+            let has_err = diagnostics.iter().any(|d| {
+                d.severity == Severity::Error
+                    && d.message.contains("E_TransientModalResultMissing")
+            });
+            assert!(
+                has_err,
+                "[{label}] expected an Error containing \"E_TransientModalResultMissing\"; \
+                 got {diagnostics:?}",
+            );
+
+            // (b) the result is a degenerate DisplacementTimeHistory: empty t_samples
+            //     and empty mode_coords (no transient was integrated).
+            let data = match &result {
+                Value::StructureInstance(d) => d,
+                other => panic!(
+                    "[{label}] expected a DisplacementTimeHistory StructureInstance; \
+                     got {other:?}"
+                ),
+            };
+            assert_eq!(data.type_name, "DisplacementTimeHistory");
+            match data.fields.get("t_samples") {
+                Some(Value::List(ts)) => assert!(
+                    ts.is_empty(),
+                    "[{label}] degenerate t_samples must be empty; got {} samples",
+                    ts.len(),
+                ),
+                other => panic!("[{label}] t_samples must be a Value::List; got {other:?}"),
+            }
+            match data.fields.get("mode_coords") {
+                Some(Value::List(mc)) => assert!(
+                    mc.is_empty(),
+                    "[{label}] degenerate mode_coords must be empty; got {} modes",
+                    mc.len(),
+                ),
+                other => {
+                    panic!("[{label}] mode_coords must be a Value::List; got {other:?}")
+                }
             }
         }
     }
