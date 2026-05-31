@@ -344,6 +344,10 @@ fn z_dominant_frequencies(result: &Value) -> Vec<f64> {
                 }
             }
         }
+        // Z-dominant iff the Z shape-energy ties-or-exceeds both X and Y. The `>=`
+        // is deliberate: an exact energy tie is counted as Z-dominant (conservative
+        // inclusion), so a borderline mode is never silently dropped from the
+        // vertical family the caller asserts `len() >= 3` on before indexing.
         if energy[2] >= energy[0] && energy[2] >= energy[1] {
             out.push(freq);
         }
