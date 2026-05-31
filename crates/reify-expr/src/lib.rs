@@ -5796,4 +5796,72 @@ mod tests {
             "expected a MultiLoadDuplicateCaseName diagnostic naming 'operating', got {diags:?}"
         );
     }
+
+    // ── BinOp::Mod eval regression guards (task-3916 / spec §9.2.1) ──────────
+    //
+    // These are GREEN on arrival — the eval path is already correct end-to-end.
+    // They pin `7 % 3 -> Int(1)`, `7 % 0 -> Undef`, `undef % 5 -> Undef` so
+    // that a future change to eval_mod regresses visibly rather than silently.
+    // (Mirrors the already-green `pow_int_int_result_type_is_int` pattern in
+    // value_pow_compile_tests.rs.)
+
+    /// `7 % 3` must evaluate to `Int(1)`.
+    ///
+    /// GREEN on arrival: `eval_mod(Int(7), Int(3)) = Int(7 % 3) = Int(1)`.
+    #[test]
+    fn eval_mod_int_int_returns_remainder() {
+        let expr = CompiledExpr::binop(
+            BinOp::Mod,
+            lit(Value::Int(7), Type::Int),
+            lit(Value::Int(3), Type::Int),
+            Type::Int,
+        );
+        let values = ValueMap::new();
+        assert_eq!(
+            eval_expr(&expr, &EvalContext::simple(&values)),
+            Value::Int(1),
+            "7 % 3 should evaluate to Int(1)"
+        );
+    }
+
+    /// `7 % 0` must evaluate to `Undef` (division by zero).
+    ///
+    /// GREEN on arrival: `eval_mod(Int(7), Int(0))` hits the `b == 0` branch
+    /// in `eval_mod` and returns `Value::Undef`.
+    #[test]
+    fn eval_mod_int_zero_returns_undef() {
+        let expr = CompiledExpr::binop(
+            BinOp::Mod,
+            lit(Value::Int(7), Type::Int),
+            lit(Value::Int(0), Type::Int),
+            Type::Int,
+        );
+        let values = ValueMap::new();
+        assert_eq!(
+            eval_expr(&expr, &EvalContext::simple(&values)),
+            Value::Undef,
+            "7 % 0 should evaluate to Undef (divide-by-zero)"
+        );
+    }
+
+    /// `undef % 5` must evaluate to `Undef` (undef propagation).
+    ///
+    /// GREEN on arrival: the dispatcher's leading undef short-circuit
+    /// (`lv.is_undef() || rv.is_undef() → Undef`, lib.rs:2022) fires before
+    /// `eval_mod` is called.
+    #[test]
+    fn eval_mod_undef_left_propagates_undef() {
+        let expr = CompiledExpr::binop(
+            BinOp::Mod,
+            lit(Value::Undef, Type::Int),
+            lit(Value::Int(5), Type::Int),
+            Type::Int,
+        );
+        let values = ValueMap::new();
+        assert_eq!(
+            eval_expr(&expr, &EvalContext::simple(&values)),
+            Value::Undef,
+            "undef % 5 should propagate Undef"
+        );
+    }
 }
