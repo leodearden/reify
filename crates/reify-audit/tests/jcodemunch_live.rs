@@ -33,6 +33,34 @@
 // Finding-shape predicates (pure; no serve needed)
 // -----------------------------------------------------------------------
 
+// -----------------------------------------------------------------------
+// Serve-availability preflight (pure TCP connect; no MCP handshake)
+// -----------------------------------------------------------------------
+
+/// Returns true iff the jcodemunch-serve process is accepting TCP connections
+/// at the address encoded in `url`.
+///
+/// Parses `host:port` from the URL and attempts
+/// [`TcpStream::connect_timeout`] with a 2-second timeout.  A bare TCP
+/// connect is sufficient to distinguish "serve process listening" from "serve
+/// down" for the skip gate; the binary's own MCP handshake does the deeper
+/// protocol check on the live legs.
+///
+/// Returns false on parse failure, connection refused, or timeout.
+fn jcodemunch_serve_reachable(url: &str) -> bool {
+    // Strip scheme to get "host:port[/path]"
+    let without_scheme = url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    // Take just the "host:port" part (before any slash)
+    let host_port = without_scheme.split('/').next().unwrap_or("");
+    let addr: std::net::SocketAddr = match host_port.parse() {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+    std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(2)).is_ok()
+}
+
 /// Returns true iff `v` is a P1ProducerOrphan finding.
 ///
 /// Mirrors cli.rs's pattern-string comparison: `Pattern` serializes to its
