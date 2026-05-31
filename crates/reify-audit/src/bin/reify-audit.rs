@@ -418,6 +418,24 @@ fn needs_jcodemunch(args: &Args) -> bool {
     args.pattern.as_deref().is_none_or(|p| p == "P1" || p == "PDEAD" || p == "PUNTESTED" || p == "PLAYER")
 }
 
+/// Opt-in dispatch predicate for PDEAD: true only when `--pattern PDEAD` is
+/// given explicitly (not part of the default all-detector sweep).
+fn run_pdead(args: &Args) -> bool {
+    args.pattern.as_deref() == Some("PDEAD")
+}
+
+/// Opt-in dispatch predicate for PUNTESTED: true only when `--pattern PUNTESTED`
+/// is given explicitly (not part of the default all-detector sweep).
+fn run_puntested(args: &Args) -> bool {
+    args.pattern.as_deref() == Some("PUNTESTED")
+}
+
+/// Opt-in dispatch predicate for PLAYER: true only when `--pattern PLAYER` is
+/// given explicitly (not part of the default all-detector sweep).
+fn run_player(args: &Args) -> bool {
+    args.pattern.as_deref() == Some("PLAYER")
+}
+
 // -----------------------------------------------------------------------
 // Main
 // -----------------------------------------------------------------------
@@ -558,9 +576,9 @@ fn main() -> ExitCode {
         let run_p2 = args.pattern.as_deref().is_none_or(|p| p == "P2");
         let run_p5 = args.pattern.as_deref().is_none_or(|p| p == "P5");
         // PDEAD, PUNTESTED, and PLAYER are opt-in only — not part of the default all-detector sweep.
-        let run_pdead = args.pattern.as_deref() == Some("PDEAD");
-        let run_puntested = args.pattern.as_deref() == Some("PUNTESTED");
-        let run_player = args.pattern.as_deref() == Some("PLAYER");
+        let run_pdead = run_pdead(&args);
+        let run_puntested = run_puntested(&args);
+        let run_player = run_player(&args);
 
         let mut all = Vec::new();
         if run_p1 {
@@ -857,16 +875,27 @@ mod tests {
     /// Guard: PDEAD and PUNTESTED are opt-in only — neither may run in the
     /// default (no --pattern) all-detector sweep.  A future refactor that
     /// accidentally folds either into the default run will trip this test.
+    ///
+    /// Tests the actual `run_pdead`/`run_puntested` dispatch predicates rather
+    /// than just the fixture construction, so a real change to the dispatch
+    /// logic would be caught.
     #[test]
     fn pdead_and_puntested_not_in_default_sweep() {
-        let default_args = make_args(false, None);
         assert!(
-            default_args.pattern.as_deref() != Some("PDEAD"),
+            !run_pdead(&make_args(false, None)),
             "PDEAD must be opt-in only (not part of the default sweep)"
         );
         assert!(
-            default_args.pattern.as_deref() != Some("PUNTESTED"),
+            run_pdead(&make_args(false, Some("PDEAD"))),
+            "PDEAD must activate when --pattern PDEAD is given"
+        );
+        assert!(
+            !run_puntested(&make_args(false, None)),
             "PUNTESTED must be opt-in only (not part of the default sweep)"
+        );
+        assert!(
+            run_puntested(&make_args(false, Some("PUNTESTED"))),
+            "PUNTESTED must activate when --pattern PUNTESTED is given"
         );
     }
 
@@ -895,14 +924,18 @@ mod tests {
     }
 
     /// Guard: PLAYER is opt-in only — must not run in the default (no --pattern)
-    /// all-detector sweep. A future refactor that accidentally folds PLAYER into
-    /// the default run will trip this test.
+    /// all-detector sweep. Tests the actual `run_player` dispatch predicate rather
+    /// than just the fixture construction, so a real change to the dispatch logic
+    /// would be caught (e.g. accidentally folding PLAYER into the default sweep).
     #[test]
     fn player_not_in_default_sweep() {
-        let default_args = make_args(false, None);
         assert!(
-            default_args.pattern.as_deref() != Some("PLAYER"),
+            !run_player(&make_args(false, None)),
             "PLAYER must be opt-in only (not part of the default sweep)"
+        );
+        assert!(
+            run_player(&make_args(false, Some("PLAYER"))),
+            "PLAYER must activate when --pattern PLAYER is given"
         );
     }
 }

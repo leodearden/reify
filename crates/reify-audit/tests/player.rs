@@ -53,10 +53,12 @@ mod tests {
         let git = MockGitOps::new();
         let mut jc = MockJCodemunchOps::new();
 
+        // Rule string matches the production wire format emitted by
+        // `layer_violations_from_wire`: `format!("rule[{rule_index}]: {from_symbol} → {to_symbol}")`.
         jc.set_layer_violations(vec![lv(
             "crates/reify-ast/src/parser.rs",
             "crates/reify-eval/src/engine.rs",
-            "ast-must-not-depend-on-eval",
+            "rule[0]: reify_ast::parser → reify_eval::engine",
         )]);
 
         let ctx = AuditContext {
@@ -100,7 +102,7 @@ mod tests {
             f.summary
         );
         assert!(
-            f.summary.contains("ast-must-not-depend-on-eval"),
+            f.summary.contains("rule[0]: reify_ast::parser → reify_eval::engine"),
             "summary must contain rule; got: {}",
             f.summary
         );
