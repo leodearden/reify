@@ -4238,4 +4238,46 @@ mod tests {
         );
         assert!(!miss_tend.reused_setup, "changed t_end must be a cache MISS");
     }
+
+    // ── task λ step-7: cancellation tests (RED → GREEN in step-8) ────────────
+
+    /// step-7λ (RED → GREEN in step-8): cooperative cancellation in
+    /// `run_transient_response`.
+    ///
+    /// (a) A pre-cancelled `CancellationHandle` with valid 2-mode ModalResult
+    ///     + non-empty forcing + valid grid yields `ComputeOutcome::Cancelled`
+    ///     and `reused_setup == false` (a cancelled run reuses nothing).
+    /// (b) Regression: a fresh handle still yields `ComputeOutcome::Completed`
+    ///     (the added polls leave the happy path intact).
+    ///
+    /// RED: step-6's core ignores the handle at entry, so a pre-cancelled run
+    /// still Completes (assertion (a) fails).
+    #[test]
+    fn run_transient_response_honors_cancellation() {
+        let mode0 = mode_struct(40.0, 0.01, &[0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 1.0]);
+        let mode1 = mode_struct(250.0, 0.02, &[0.0, 0.0, 0.0, 0.0, 0.0, -0.7, 0.0, 0.0, 0.4]);
+        let modal = modal_result_with_modes(vec![mode0, mode1]);
+        let forcing = forcing_history(vec![step_force("tip", [0.0, 0.0, 1.0], 10.0, 0.0)]);
+        let (t_start, t_end, dt) = (0.0_f64, 0.1_f64, 0.005_f64);
+        let inputs = transient_inputs(modal, forcing, t_start, t_end, dt);
+
+        // (a) pre-cancelled → Cancelled, reused_setup = false
+        let cancelled = CancellationHandle::new();
+        cancelled.cancel();
+        let run = run_transient_response(&inputs, None, &cancelled);
+        assert!(
+            matches!(run.outcome, ComputeOutcome::Cancelled),
+            "a pre-cancelled handle must yield ComputeOutcome::Cancelled; got {:?}",
+            run.outcome,
+        );
+        assert!(!run.reused_setup, "a cancelled run must report reused_setup = false");
+
+        // (b) fresh handle → Completed (happy path unaffected by the added polls)
+        let fresh = CancellationHandle::new();
+        let ok = run_transient_response(&inputs, None, &fresh);
+        assert!(
+            matches!(ok.outcome, ComputeOutcome::Completed { .. }),
+            "a fresh handle must Complete; got {:?}", ok.outcome,
+        );
+    }
 }
