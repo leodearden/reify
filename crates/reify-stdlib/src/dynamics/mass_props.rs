@@ -153,13 +153,12 @@ mod tests {
         }
 
         let expected_diag = [0.065, 0.05, 0.025];
-        for r in 0..3 {
-            for c in 0..3 {
+        for (r, row) in inertia.iter().enumerate() {
+            for (c, &got) in row.iter().enumerate() {
                 let want = if r == c { expected_diag[r] } else { 0.0 };
                 assert!(
-                    (inertia[r][c] - want).abs() < 1e-12,
-                    "inertia[{r}][{c}] should be {want}, got {}",
-                    inertia[r][c]
+                    (got - want).abs() < 1e-12,
+                    "inertia[{r}][{c}] should be {want}, got {got}"
                 );
             }
         }
