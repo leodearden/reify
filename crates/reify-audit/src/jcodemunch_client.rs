@@ -24,6 +24,7 @@
 //! the `#MUNCH/` prefix.
 
 use std::cell::Cell;
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -936,14 +937,16 @@ impl JCodemunchOps for RealJCodemunchOps {
         let mut file_cache: HashMap<PathBuf, Vec<String>> = HashMap::new();
         for sym in &mut symbols {
             let path = self.project_root.join(&sym.file);
-            if !file_cache.contains_key(&path) {
-                let (lines, diagnostic) = read_source_lines_for_enrichment(&path);
-                if let Some(msg) = diagnostic {
-                    eprintln!("{msg}");
+            let lines = match file_cache.entry(path.clone()) {
+                Entry::Occupied(e) => e.into_mut(),
+                Entry::Vacant(v) => {
+                    let (lines, diagnostic) = read_source_lines_for_enrichment(v.key());
+                    if let Some(msg) = diagnostic {
+                        eprintln!("{msg}");
+                    }
+                    v.insert(lines)
                 }
-                file_cache.insert(path.clone(), lines);
-            }
-            let lines = &file_cache[&path];
+            };
             if !lines.is_empty() {
                 let lines_ref: Vec<&str> = lines.iter().map(String::as_str).collect();
                 let (has_allow_dead_code, has_cfg_test, g_allow_marker) =

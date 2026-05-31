@@ -882,6 +882,12 @@ mod cli {
             "--pattern P1 --no-jcodemunch must yield zero findings; got:\n{:#}",
             serde_json::Value::Array(findings)
         );
+        // --no-jcodemunch bypasses the jcodemunch seam entirely (Noop), so the
+        // fail-soft breadcrumb must NOT appear — the user opted in to silence.
+        assert!(
+            !stderr.contains("jcodemunch unreachable"),
+            "--no-jcodemunch must not emit the fail-soft breadcrumb; stderr:\n{stderr}"
+        );
     }
 
     /// `--task <id> --pre-done` with an unreachable jcodemunch URL must NOT
