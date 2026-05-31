@@ -306,6 +306,13 @@ pub fn assert_trait_constraint_binop(
     // `((coefficient * unit_a) * unit_b)` (or with a `/` instead of `*`); walk
     // the left spine of any `*`/`/` BinOp until we find the NumberLiteral.
     //
+    // After task ζ migrated the stdlib electrical bounds to compound unit
+    // literals (`0.0001ohm*m`), the RHS may instead be a single
+    // `ExprKind::QuantityLiteral { value, .. }`. Its `value` field is the same
+    // coefficient the BinOp spine-walk would extract — the migrated bounds use
+    // SI-factor-1 units (ohm, m), so the coefficient equals the SI value — so
+    // it is accepted via the same `break <coefficient>` path.
+    //
     // Coverage note (deliberate): this helper verifies only the operator and
     // the numeric coefficient — NOT that the RHS is dimensioned. That means a
     // regression dropping the unit chain (e.g. back to bare `resistivity <
@@ -321,14 +328,26 @@ pub fn assert_trait_constraint_binop(
         loop {
             match &cursor.kind {
                 ExprKind::NumberLiteral { value: v, .. } => break *v,
+                // Compound unit literal (`0.0001ohm*m`, task ζ): the whole
+                // dimensioned RHS folds to a single QuantityLiteral whose
+                // `value` is the leading coefficient. This helper compares
+                // COEFFICIENTS, not resolved SI values (mirroring the
+                // NumberLiteral path above); the two coincide here only
+                // because every current caller's unit has SI factor 1 (ohm,
+                // m). Foot-gun for a future caller: a scaled unit such as
+                // `1mm` or `1MPa` yields coefficient 1, NOT its SI magnitude
+                // (1e-3, 1e6), so pass `expected_rhs` as the coefficient, not
+                // the SI value, or this assertion will spuriously mismatch.
+                ExprKind::QuantityLiteral { value, .. } => break *value,
                 ExprKind::BinOp { op, left, .. }
                     if op.as_str() == "*" || op.as_str() == "/" =>
                 {
                     cursor = left;
                 }
                 other => panic!(
-                    "{} constraint RHS for '{}' should be NumberLiteral (or a \
-                     dimensioned-multiply chain rooted at one), got {:?}",
+                    "{} constraint RHS for '{}' should be a NumberLiteral, a \
+                     compound QuantityLiteral, or a dimensioned-multiply chain \
+                     rooted at a NumberLiteral, got {:?}",
                     trait_name, expected_member, other
                 ),
             }

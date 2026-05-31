@@ -112,7 +112,7 @@ fn quantity_literal_parsing() {
         Some(expr) => match &expr.kind {
             ExprKind::QuantityLiteral { value, unit } => {
                 assert!((value - 80.0).abs() < f64::EPSILON);
-                assert_eq!(unit, "mm");
+                assert_eq!(unit, &UnitExpr::Unit("mm".to_string()));
             }
             other => panic!("expected QuantityLiteral, got {:?}", other),
         },
@@ -552,6 +552,8 @@ fn all_spans_valid() {
             MemberDecl::ForallConstraint(d) => d.span,
             // Not produced by the tree-sitter parser yet (task 2372).
             MemberDecl::MatchArmDeclGroup(g) => g.span,
+            // Produced by lower_function (task 3937).
+            MemberDecl::Fn(f) => f.span,
         };
         assert!(span.start < span.end, "span should be non-empty");
     }

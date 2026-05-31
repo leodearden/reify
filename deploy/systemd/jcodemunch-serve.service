@@ -1,0 +1,36 @@
+[Unit]
+Description=jCodeMunch query-serve (streamable-HTTP on :8901)
+Documentation=file:///home/leo/src/reify/docs/architecture-audit/jcodemunch-serve-activation.md
+After=network.target
+# The watcher keeps the on-disk index fresh; the serve only answers queries.
+# Both read the SAME shared ~/.code-index (dark-factory parity — one persistent
+# watcher + one persistent serve off a single schema-v16 index).
+After=jcodemunch-watcher.service
+Wants=jcodemunch-watcher.service
+
+[Service]
+Type=simple
+
+# Pinned to the git source — PyPI jcodemunch-mcp was quarantined (admin
+# review #308, 2026-05-30), matching the watcher unit's pin.
+# --watcher=false: serve answers queries only; the watcher unit owns indexing.
+# storage_path (~/.code-index) is the default resolved from ~/.code-index/config.jsonc,
+# shared with jcodemunch-watcher.service (schema v16, repo leodearden-reify).
+ExecStart=/home/leo/.local/bin/uvx \
+  --python 3.12 \
+  --from "jcodemunch-mcp @ git+https://github.com/jgravelle/jcodemunch-mcp.git@v1.108.27" \
+  jcodemunch-mcp serve \
+  --transport streamable-http \
+  --host 127.0.0.1 \
+  --port 8901 \
+  --watcher=false
+
+Restart=on-failure
+RestartSec=5
+RestartMaxDelaySec=60
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

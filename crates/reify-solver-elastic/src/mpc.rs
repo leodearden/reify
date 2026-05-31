@@ -50,6 +50,8 @@
 
 use faer::sparse::SparseRowMat;
 
+use crate::sparse_util::find_in_row;
+
 /// Apply multi-point constraints to the global stiffness matrix `K` and load
 /// vector `f` via row-elimination, in place.
 ///
@@ -315,18 +317,6 @@ pub fn apply_mpc_row_elimination(k: &mut SparseRowMat<usize, f64>, f: &mut [f64]
         // Step 4: pin RHS.
         f[p] = beta;
     }
-}
-
-/// Returns the absolute slot index in `col_idx` (and the matching `vals` slot)
-/// for the stored entry at column `target` within CSR row `[start, end)`, or
-/// `None` if the column is not stored.  Requires sorted column indices within
-/// the row (faer `SymbolicSparseRowMat` soft invariant).
-#[inline]
-fn find_in_row(col_idx: &[usize], start: usize, end: usize, target: usize) -> Option<usize> {
-    col_idx[start..end]
-        .binary_search(&target)
-        .ok()
-        .map(|rel| start + rel)
 }
 
 /// One linear multi-point constraint row of the form

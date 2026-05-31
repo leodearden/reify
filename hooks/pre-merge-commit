@@ -11,6 +11,16 @@
 # detects MERGE_HEAD and forces --scope all defensively. Worktree branches skip
 # the gate for speed, matching hooks/pre-commit (the orchestrator's task-branch
 # merges are not main and are gated by the orchestrator's own verify).
+#
+# --profile both (NOT debug): the merge gate is where release coverage lives.
+# Per-task verify (orchestrator.yaml) and the per-commit gate (hooks/project-
+# checks) both run --profile debug for fast feedback; release reruns far less
+# often, so it is pinned here, at the merge boundary. This is also where the
+# heavy release-only tests in reify-solver-elastic — gated behind
+# #[cfg_attr(debug_assertions, ignore)] (buckling/eigensolve) — actually run:
+# release sets debug_assertions=false, so the ignore lifts and they execute
+# exactly once, at merge, instead of imposing their multi-minute floor on every
+# per-task iteration.
 
 ROOT="$(git rev-parse --show-toplevel)"
 
@@ -19,4 +29,4 @@ if [ "$branch" != "main" ]; then
     exit 0
 fi
 
-exec "$ROOT/scripts/verify.sh" all --profile debug --scope all
+exec "$ROOT/scripts/verify.sh" all --profile both --scope all

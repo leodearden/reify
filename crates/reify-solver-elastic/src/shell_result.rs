@@ -16,40 +16,6 @@ use crate::constitutive::IsotropicElastic;
 use crate::shell_assembly::{build_shell_frame, plane_stress_d};
 use reify_ir::Value;
 
-/// Returns the local-to-global rotation matrix for a three-node MITC3 shell element.
-///
-/// # Convention
-///
-/// The returned 3×3 matrix is the *local-to-global* rotation:
-/// - `result[i][j]` is the *i-th global component of the j-th local basis vector*
-///   (equivalently: the j-th column of `result` is the j-th local basis vector expressed
-///   in global coordinates).
-/// - A local-frame displacement vector `v_local` maps to global via `v_global = frame · v_local`.
-/// - A local-frame rank-2 stress tensor maps to global via `σ_global = frame · σ_local · frameᵀ`.
-///
-/// This is the **transpose** of [`crate::shell_assembly::build_shell_frame`]`.r`, which stores
-/// the *global-to-local* rotation (rows = local basis vectors in global coordinates,
-/// so `R · v_global = v_local`).  Transposing gives the local-to-global direction:
-/// `result[i][j] = frame.r[j][i]`.
-///
-/// # Relation to `ElasticResult.frame`
-///
-/// Matches the `ElasticResult.frame` local-to-global convention documented in
-/// `crates/reify-compiler/stdlib/solver_elastic.ri:276–294`.  The future
-/// `to_global(stress, frame)` helper (T18-T20) can use this directly as
-/// `σ_global = frame · σ_local · frameᵀ` without any transpose step at the call site.
-pub fn shell_element_frame(nodes: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
-    let r = build_shell_frame(nodes).r;
-    // Transpose: result[i][j] = r[j][i].
-    let mut result = [[0.0_f64; 3]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
-            result[i][j] = r[j][i];
-        }
-    }
-    result
-}
-
 /// Per-element Cauchy stress tensors in the local mid-surface frame for a
 /// MITC3 shell element.
 ///
@@ -73,8 +39,8 @@ pub fn shell_element_frame(nodes: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
 ///
 /// # To-global transform (T18-T20)
 ///
-/// Use `shell_element_frame` to obtain the local-to-global rotation matrix F,
-/// then `σ_global = F · σ_local · Fᵀ` for each layer.
+/// Use [`crate::shell_assembly::ShellFrame::local_to_global`] to obtain the
+/// local-to-global rotation matrix F, then `σ_global = F · σ_local · Fᵀ` for each layer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShellElementStress {
     /// Stress tensor at z = +t/2 (top / outer fibre), local frame.
@@ -291,43 +257,6 @@ mod tests {
             }
         }
         out
-    }
-
-    /// `shell_element_frame(nodes)` must return the transpose of `build_shell_frame(nodes).r`.
-    ///
-    /// `build_shell_frame.r` has rows = local basis vectors in global coordinates, so it maps
-    /// global → local.  The frame field convention (see `ElasticResult.frame` in solver_elastic.ri)
-    /// is local-to-global.  Therefore `shell_element_frame` must return the transpose of `r`.
-    ///
-    /// Also verified: each row of the returned matrix has unit norm (orthonormal).
-    #[test]
-    fn shell_element_frame_is_transpose_of_shell_frame_rotation() {
-        let nodes: [[f64; 3]; 3] = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 3.0, 0.0]];
-        let frame_r = build_shell_frame(&nodes).r;
-        let result = shell_element_frame(&nodes);
-
-        // result[i][j] must equal frame_r[j][i] (transpose)
-        for i in 0..3 {
-            for j in 0..3 {
-                let expected = frame_r[j][i];
-                let got = result[i][j];
-                assert!(
-                    (got - expected).abs() < 1e-12,
-                    "result[{i}][{j}] = {got}, expected frame.r[{j}][{i}] = {expected}",
-                );
-            }
-        }
-
-        // Each column of result (= each row of frame_r) has unit norm.
-        for i in 0..3 {
-            let norm_sq = result[i][0] * result[i][0]
-                + result[i][1] * result[i][1]
-                + result[i][2] * result[i][2];
-            assert!(
-                (norm_sq - 1.0).abs() < 1e-12,
-                "result row {i} norm² = {norm_sq}, expected 1.0",
-            );
-        }
     }
 
     // Helpers shared across shell_element_stress tests.

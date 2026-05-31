@@ -696,6 +696,18 @@ pub mod ffi {
         /// surface, or yields a degenerate (zero-magnitude) cross product at `(u, v)`.
         fn surface_normal_at(face: &OcctShape, u: f64, v: f64) -> Result<Point3>;
 
+        /// Outward unit normal of a face at the Cartesian world-space point
+        /// `(px, py, pz)` (metres).
+        ///
+        /// Projects the query point via `ShapeAnalysis_Surface::ValueOfUV(p, 1e-9)`
+        /// then delegates to `face_outward_unit_normal_at_uv` — the same
+        /// orientation-aware helper as `query_face_normal` and `surface_normal_at`.
+        ///
+        /// Throws (surfaces as `Err`) if the shape is not a face, has no underlying
+        /// surface, or yields a degenerate (zero-magnitude) normal at the projected
+        /// `(u, v)`.
+        fn surface_normal_at_point(face: &OcctShape, px: f64, py: f64, pz: f64) -> Result<Point3>;
+
         /// Gaussian, mean, and principal curvatures at the parametric point
         /// `(u, v)` on `face`, plus unit-length principal-direction tangents.
         ///
@@ -709,6 +721,19 @@ pub mod ffi {
         /// Throws (surfaces as `Err`) if the shape is not a face, has no
         /// underlying surface, or curvature is undefined at `(u, v)`.
         fn curvature_at(face: &OcctShape, u: f64, v: f64) -> Result<CurvatureProps>;
+
+        /// Signed curvature of an edge at the closest point on the curve to the
+        /// world-space query point `(px, py, pz)`.
+        ///
+        /// Projects the query point onto the edge's underlying `Geom_Curve` via
+        /// `GeomAPI_ProjectPointOnCurve`, then evaluates curvature via
+        /// `BRepLProp_CLProps`. Sign follows the Frenet frame (positive toward
+        /// principal normal).
+        ///
+        /// Throws (surfaced as `Err`) if the shape is not an edge, the edge is
+        /// degenerate (no underlying curve), projection fails, or the tangent is
+        /// undefined at the projected parameter.
+        fn curve_curvature_at(edge: &OcctShape, px: f64, py: f64, pz: f64) -> Result<f64>;
         fn query_centroid(shape: &OcctShape) -> Result<Point3>;
         /// Surface-properties centroid for a 2D sub-shape (TopoDS_Face).
         /// Used by the `Centroid` query path when the stored repr is
@@ -785,6 +810,39 @@ pub mod ffi {
             py: f64,
             pz: f64,
             tolerance: f64,
+        ) -> Result<bool>;
+
+        /// Test whether `(px, py, pz)` is inside or on the boundary of a closed solid.
+        ///
+        /// Wraps `BRepClass3d_SolidClassifier(shape).Perform(gp_Pnt, tolerance)`;
+        /// returns `true` when `State() == TopAbs_IN || State() == TopAbs_ON`.
+        ///
+        /// **Tolerance precondition:** `tolerance` must be a non-negative finite `f64`.
+        /// Negative or NaN values cause the C++ implementation to throw, which maps to
+        /// `Err(QueryError::QueryFailed(_))` at the Rust call site.
+        fn contains_solid(
+            shape: &OcctShape,
+            px: f64,
+            py: f64,
+            pz: f64,
+            tolerance: f64,
+        ) -> Result<bool>;
+
+        /// Test whether two shapes are geometrically equivalent within `tolerance`
+        /// by topology-count matching and sampled-vertex proximity.
+        ///
+        /// STRICT-VARIANT NOTE: This is the asymmetric sampled-point geo_equiv
+        /// (PRD §5.1, KGQ-δ).  A future `geo_equiv_strict` using symmetric
+        /// Hausdorff distance is deferred to v0.4 per PRD §5.1 + Open Question §10.
+        ///
+        /// **Tolerance precondition:** `tolerance` must be a non-negative finite `f64`.
+        /// Negative or NaN values cause the C++ implementation to throw, which maps to
+        /// `Err(QueryError::QueryFailed(_))` at the Rust call site.
+        fn geo_equiv_topo_sample(
+            a: &OcctShape,
+            b: &OcctShape,
+            tolerance: f64,
+            sample_count: usize,
         ) -> Result<bool>;
 
         fn query_moment_of_inertia(shape: &OcctShape, ax: f64, ay: f64, az: f64) -> Result<f64>;

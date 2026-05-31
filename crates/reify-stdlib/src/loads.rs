@@ -1,13 +1,17 @@
 //! FEA load constructors for the stdlib.
 //!
-//! Provides `traction_load`, `body_force`, and `gravity` name-dispatched
-//! constructors.  Each returns a `Value::Map` with a `kind` discriminator
-//! field, matching the joints/coupling constructor pattern.
+//! Provides `gravity` as the only remaining name-dispatched constructor.  It
+//! returns a `Value::Map` with a `kind` discriminator field, matching the
+//! joints/coupling constructor pattern.
 //!
-//! Retired: `point_load` (SIR-α, task 3540 step-20) and `pressure_load`
-//! (SIR-β-load, task 3544 step-4) — both replaced by stdlib structure defs
-//! (`PointLoad` / `PressureLoad` in `fea_multi_case.ri`) that lower to
-//! `Value::StructureInstance` via `CompiledExprKind::StructureInstanceCtor`.
+//! Retired: `point_load` (SIR-α, task 3540 step-20), `pressure_load`
+//! (SIR-β-load, task 3544 step-4), `traction_load` (FEA-2, task 2881
+//! step-4), and `body_force` (FEA-2, task 2881 step-8) — all four replaced
+//! by stdlib structure defs (`PointLoad` / `PressureLoad` / `TractionLoad` /
+//! `BodyForce` in `fea_multi_case.ri`) that lower to `Value::StructureInstance`
+//! via `CompiledExprKind::StructureInstanceCtor`.  `gravity` is retained as a
+//! builtin because its 0-arg Earth-default and scalar→−Z constructor logic
+//! cannot be replicated by a plain structure-def field bundle.
 //!
 //! Selector-target validation is delegated to
 //! [`crate::helpers::validate_selector_target`].  Selector targets are
@@ -18,10 +22,7 @@
 use reify_core::DimensionVector;
 use reify_ir::Value;
 
-use crate::helpers::{
-    make_kind_map, validate_dimensioned_scalar, validate_dimensioned_vec3,
-    validate_selector_target,
-};
+use crate::helpers::{make_kind_map, validate_dimensioned_scalar, validate_dimensioned_vec3};
 
 /// Earth standard gravity in m/s² (CGPM 1901 definition).
 pub(crate) const EARTH_GRAVITY: f64 = 9.80665;
@@ -46,8 +47,21 @@ pub(crate) const EARTH_GRAVITY: f64 = 9.80665;
 /// `crates/reify-compiler/stdlib/fea_multi_case.ri` takes over via the same
 /// `CompiledExprKind::StructureInstanceCtor` lowering. `eval_loads`'s arm is
 /// removed in lockstep so this list and its partition guard stay in sync.
+///
+/// task 2881 (FEA-2, step-4): `"traction_load"` retired here — the
+/// `structure def TractionLoad : Load { ... }` declaration in
+/// `crates/reify-compiler/stdlib/fea_multi_case.ri` takes over via the same
+/// `CompiledExprKind::StructureInstanceCtor` lowering. `eval_loads`'s arm is
+/// removed in lockstep so this list and its partition guard stay in sync.
+///
+/// task 2881 (FEA-2, step-8): `"body_force"` retired here — the
+/// `structure def BodyForce : Load { ... }` declaration in
+/// `crates/reify-compiler/stdlib/fea_multi_case.ri` takes over via the same
+/// `CompiledExprKind::StructureInstanceCtor` lowering. `eval_loads`'s arm is
+/// removed in lockstep so this list and its partition guard stay in sync.
+/// LOAD_KINDS is now exactly `["gravity"]`.
 #[allow(dead_code)]
-pub(crate) const LOAD_KINDS: &[&str] = &["traction_load", "body_force", "gravity"];
+pub(crate) const LOAD_KINDS: &[&str] = &["gravity"];
 
 /// Returns `true` if `v` is a load `Value::Map` produced by this module —
 /// i.e., a Map with a `kind` field whose value is one of `LOAD_KINDS`.
@@ -97,39 +111,26 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
         // `eval_builtin("pressure_load", ...)` fall through to `Value::Undef`
         // (the unknown-name contract). The `magnitude`/`face`/`direction` field
         // shapes are preserved by the structure-def per Q-SIR-4.
-        "traction_load" => {
-            if args.len() != 2 {
-                return Some(Value::Undef);
-            }
-            if validate_selector_target(&args[0]).is_none() {
-                return Some(Value::Undef);
-            }
-            if validate_dimensioned_vec3(&args[1], DimensionVector::PRESSURE).is_none() {
-                return Some(Value::Undef);
-            }
-            make_kind_map(
-                "traction_load",
-                vec![("face", args[0].clone()), ("traction", args[1].clone())],
-            )
-        }
-        "body_force" => {
-            if args.len() != 2 {
-                return Some(Value::Undef);
-            }
-            if validate_selector_target(&args[0]).is_none() {
-                return Some(Value::Undef);
-            }
-            if validate_dimensioned_vec3(&args[1], DimensionVector::FORCE_DENSITY).is_none() {
-                return Some(Value::Undef);
-            }
-            make_kind_map(
-                "body_force",
-                vec![
-                    ("body", args[0].clone()),
-                    ("force_density", args[1].clone()),
-                ],
-            )
-        }
+        //
+        // task 2881 (FEA-2, step-4): `traction_load` retired. The
+        // `structure def TractionLoad : Load { ... }` in
+        // `crates/reify-compiler/stdlib/fea_multi_case.ri` takes over via the
+        // same `CompiledExprKind::StructureInstanceCtor` lowering; source-level
+        // `TractionLoad(...)` evals to a `Value::StructureInstance`. Returning
+        // `None` (via the wildcard arm below) makes
+        // `eval_builtin("traction_load", ...)` fall through to `Value::Undef`
+        // (the unknown-name contract). The `face`/`traction` field shapes are
+        // preserved by the structure-def per Q-SIR-4.
+        //
+        // task 2881 (FEA-2, step-8): `body_force` retired. The
+        // `structure def BodyForce : Load { ... }` in
+        // `crates/reify-compiler/stdlib/fea_multi_case.ri` takes over via the
+        // same `CompiledExprKind::StructureInstanceCtor` lowering; source-level
+        // `BodyForce(...)` evals to a `Value::StructureInstance`. Returning
+        // `None` (via the wildcard arm below) makes
+        // `eval_builtin("body_force", ...)` fall through to `Value::Undef`
+        // (the unknown-name contract). The `body`/`force_density` field shapes
+        // are preserved by the structure-def per Q-SIR-4.
         "gravity" => {
             let accel_dim = DimensionVector::ACCELERATION;
             match args.len() {
@@ -254,252 +255,99 @@ mod tests {
     // scalar validation now lives on the structure-def's field contracts and
     // is exercised by the SIR-β-load boundary suite, not here.
 
-    // ── traction_load constructor: happy path ────────────────────────────────
+    // ── task 2881 step-3 (RED): post-retirement contract ─────────────────────
+    //
+    // After step-4 (FEA-2 stdlib swap), `traction_load` is no longer a
+    // name-dispatched builtin — its role is taken by the
+    // `structure def TractionLoad : Load { ... }` declaration in
+    // `crates/reify-compiler/stdlib/fea_multi_case.ri`. Source-level
+    // `TractionLoad(...)` calls lower to `CompiledExprKind::StructureInstanceCtor`
+    // and eval into a `Value::StructureInstance`. The
+    // `eval_builtin("traction_load", ...)` Rust API path returns `Value::Undef`
+    // because the dispatch arm in `eval_loads` is removed.
+    //
+    // RED: this test currently fails because `eval_builtin("traction_load", ...)`
+    // returns a `Value::Map` (the pre-retirement happy path). Step-4 retires
+    // the arm and updates `LOAD_KINDS` so the partition guard stays green.
 
     #[test]
-    fn traction_load_returns_map_with_correct_fields() {
-        let face = selector_stub("face_stub");
-        // Shear traction with normal+tangential components (Pa).
+    fn traction_load_eval_builtin_returns_undef_post_retirement() {
+        let selector = selector_stub("face_stub");
         let traction = make_scalar_vec3([2e6, 0.0, -1e6], DimensionVector::PRESSURE);
-
-        let result = eval_builtin("traction_load", &[face.clone(), traction.clone()]);
-
-        let map = match result {
-            Value::Map(m) => m,
-            other => panic!("expected Value::Map, got {:?}", other),
-        };
-
-        assert_eq!(
-            map.get(&Value::String("kind".to_string())),
-            Some(&Value::String("traction_load".to_string())),
-            "kind should be 'traction_load'"
-        );
-        assert_eq!(
-            map.get(&Value::String("face".to_string())),
-            Some(&face),
-            "face should round-trip"
-        );
-        assert_eq!(
-            map.get(&Value::String("traction".to_string())),
-            Some(&traction),
-            "traction should round-trip"
-        );
-    }
-
-    // ── traction_load: failure modes ─────────────────────────────────────────
-
-    #[test]
-    fn traction_load_traction_force_dim_returns_undef() {
-        let bad = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::FORCE);
         assert!(
-            eval_builtin("traction_load", &[selector_stub("face_stub"), bad]).is_undef(),
-            "traction with FORCE dim → Undef"
+            eval_builtin("traction_load", &[selector, traction]).is_undef(),
+            "after step-4 retirement, eval_builtin('traction_load', ...) must \
+             return Undef; the structure-instance ctor path (TractionLoad) replaces \
+             the builtin entirely (FEA-2 task 2881, Q-SIR-4 — rename traction_load → TractionLoad)"
         );
     }
 
+    // ── traction_load constructor: RETIRED (FEA-2, task 2881 step-4) ─────────
+    //
+    // The `traction_load` name-dispatched builtin was retired in favour of the
+    // `structure def TractionLoad : Load { ... }` declaration in
+    // `crates/reify-compiler/stdlib/fea_multi_case.ri`. Source-level
+    // `TractionLoad(...)` calls now lower to `CompiledExprKind::StructureInstanceCtor`
+    // and eval to a `Value::StructureInstance` (end-to-end coverage:
+    // `crates/reify-eval/tests/fea_loads_stdlib_smoke.rs::
+    //  traction_load_in_source_lowers_to_structure_instance`).
+    //
+    // The Rust API contract — `eval_builtin("traction_load", ...)` returns
+    // `Value::Undef` — is pinned by
+    // `traction_load_eval_builtin_returns_undef_post_retirement` above. The
+    // former happy-path + per-argument validation tests are intentionally
+    // removed: with the arm gone, every input collapses to `Undef`, so those
+    // assertions no longer exercise distinct behaviour. Selector / dimensioned-
+    // vec3 validation is intentionally deferred: `traction : Real` is a
+    // placeholder for `Vector3<Pressure>` and `face : String` for
+    // `FaceSelector` (esc-2881-85); field-contract validation lands with the
+    // type-alias wave (task 4092, solve-time).
+
+    // ── body_force constructor: RETIRED (FEA-2, task 2881 step-8) ────────────
+    //
+    // The `body_force` name-dispatched builtin was retired in favour of the
+    // `structure def BodyForce : Load { ... }` declaration in
+    // `crates/reify-compiler/stdlib/fea_multi_case.ri`. Source-level
+    // `BodyForce(...)` calls now lower to `CompiledExprKind::StructureInstanceCtor`
+    // and eval to a `Value::StructureInstance` (end-to-end coverage:
+    // `crates/reify-eval/tests/fea_loads_stdlib_smoke.rs::
+    //  body_force_in_source_lowers_to_structure_instance`).
+    //
+    // The Rust API contract — `eval_builtin("body_force", ...)` returns
+    // `Value::Undef` — is pinned by
+    // `body_force_eval_builtin_returns_undef_post_retirement` above. The
+    // former happy-path + per-argument validation tests are intentionally
+    // removed: with the arm gone, every input collapses to `Undef`, so those
+    // assertions no longer exercise distinct behaviour. Selector / dimensioned-
+    // vec3 validation is intentionally deferred: `force_density : Real` is a
+    // placeholder for `Vector3<ForceDensity>` and `body : String` for
+    // `BodySelector` (esc-2881-85); field-contract validation lands with the
+    // type-alias wave (task 4092, solve-time).
+
+    // ── task 2881 step-7 (RED): post-retirement contract ─────────────────────
+    //
+    // After step-8 (FEA-2 stdlib swap), `body_force` is no longer a
+    // name-dispatched builtin — its role is taken by the
+    // `structure def BodyForce : Load { ... }` declaration in
+    // `crates/reify-compiler/stdlib/fea_multi_case.ri`. Source-level
+    // `BodyForce(...)` calls lower to `CompiledExprKind::StructureInstanceCtor`
+    // and eval into a `Value::StructureInstance`. The
+    // `eval_builtin("body_force", ...)` Rust API path returns `Value::Undef`
+    // because the dispatch arm in `eval_loads` is removed.
+    //
+    // RED: this test currently fails because `eval_builtin("body_force", ...)`
+    // returns a `Value::Map` (the pre-retirement happy path). Step-8 retires
+    // the arm and updates `LOAD_KINDS` so the partition guard stays green.
+
     #[test]
-    fn traction_load_traction_dimensionless_returns_undef() {
-        let bad = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+    fn body_force_eval_builtin_returns_undef_post_retirement() {
+        let selector = selector_stub("body_stub");
+        let force_density = make_scalar_vec3([0.0, 0.0, -77000.0], DimensionVector::FORCE_DENSITY);
         assert!(
-            eval_builtin("traction_load", &[selector_stub("face_stub"), bad]).is_undef(),
-            "dimensionless traction → Undef"
-        );
-    }
-
-    #[test]
-    fn traction_load_traction_nan_returns_undef() {
-        let nan_vec = make_scalar_vec3([f64::NAN, 0.0, 0.0], DimensionVector::PRESSURE);
-        assert!(
-            eval_builtin("traction_load", &[selector_stub("face_stub"), nan_vec]).is_undef(),
-            "NaN traction component → Undef"
-        );
-    }
-
-    #[test]
-    fn traction_load_traction_vec2_returns_undef() {
-        let vec2 = Value::Vector(vec![
-            Value::Scalar {
-                si_value: 1.0,
-                dimension: DimensionVector::PRESSURE,
-            },
-            Value::Scalar {
-                si_value: 0.0,
-                dimension: DimensionVector::PRESSURE,
-            },
-        ]);
-        assert!(
-            eval_builtin("traction_load", &[selector_stub("face_stub"), vec2]).is_undef(),
-            "2-component traction → Undef"
-        );
-    }
-
-    #[test]
-    fn traction_load_traction_real_returns_undef() {
-        assert!(
-            eval_builtin(
-                "traction_load",
-                &[selector_stub("face_stub"), Value::Real(1.0)]
-            )
-            .is_undef(),
-            "traction = Real → Undef"
-        );
-    }
-
-    #[test]
-    fn traction_load_selector_int_returns_undef() {
-        let traction = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::PRESSURE);
-        assert!(
-            eval_builtin("traction_load", &[Value::Int(7), traction]).is_undef(),
-            "selector = Int → Undef"
-        );
-    }
-
-    #[test]
-    fn traction_load_zero_args_returns_undef() {
-        assert!(
-            eval_builtin("traction_load", &[]).is_undef(),
-            "0 args → Undef"
-        );
-    }
-
-    #[test]
-    fn traction_load_one_arg_returns_undef() {
-        assert!(
-            eval_builtin("traction_load", &[selector_stub("face_stub")]).is_undef(),
-            "1 arg → Undef"
-        );
-    }
-
-    #[test]
-    fn traction_load_three_args_returns_undef() {
-        let traction = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::PRESSURE);
-        assert!(
-            eval_builtin(
-                "traction_load",
-                &[selector_stub("face_stub"), traction.clone(), traction]
-            )
-            .is_undef(),
-            "3 args → Undef"
-        );
-    }
-
-    // ── body_force constructor: happy path ───────────────────────────────────
-
-    #[test]
-    fn body_force_returns_map_with_correct_fields() {
-        let body = selector_stub("body_stub");
-        // Weight-density of steel ≈ 7850 kg/m³ × 9.81 m/s² ≈ 77 kN/m³.
-        let fd = make_scalar_vec3([0.0, 0.0, -77000.0], DimensionVector::FORCE_DENSITY);
-
-        let result = eval_builtin("body_force", &[body.clone(), fd.clone()]);
-
-        let map = match result {
-            Value::Map(m) => m,
-            other => panic!("expected Value::Map, got {:?}", other),
-        };
-
-        assert_eq!(
-            map.get(&Value::String("kind".to_string())),
-            Some(&Value::String("body_force".to_string())),
-            "kind should be 'body_force'"
-        );
-        assert_eq!(
-            map.get(&Value::String("body".to_string())),
-            Some(&body),
-            "body should round-trip"
-        );
-        assert_eq!(
-            map.get(&Value::String("force_density".to_string())),
-            Some(&fd),
-            "force_density should round-trip"
-        );
-    }
-
-    // ── body_force: failure modes ─────────────────────────────────────────────
-
-    #[test]
-    fn body_force_force_dim_returns_undef() {
-        // FORCE instead of ForceDensity.
-        let bad = make_scalar_vec3([0.0, 0.0, -9.81], DimensionVector::FORCE);
-        assert!(
-            eval_builtin("body_force", &[selector_stub("body_stub"), bad]).is_undef(),
-            "FORCE dim → Undef"
-        );
-    }
-
-    #[test]
-    fn body_force_pressure_dim_returns_undef() {
-        let bad = make_scalar_vec3([0.0, 0.0, -9.81], DimensionVector::PRESSURE);
-        assert!(
-            eval_builtin("body_force", &[selector_stub("body_stub"), bad]).is_undef(),
-            "PRESSURE dim → Undef"
-        );
-    }
-
-    #[test]
-    fn body_force_inf_component_returns_undef() {
-        let inf_vec = make_scalar_vec3([f64::INFINITY, 0.0, 0.0], DimensionVector::FORCE_DENSITY);
-        assert!(
-            eval_builtin("body_force", &[selector_stub("body_stub"), inf_vec]).is_undef(),
-            "Inf component → Undef"
-        );
-    }
-
-    #[test]
-    fn body_force_vec4_returns_undef() {
-        let dim = DimensionVector::FORCE_DENSITY;
-        let vec4 = Value::Vector(vec![
-            Value::Scalar {
-                si_value: 0.0,
-                dimension: dim,
-            },
-            Value::Scalar {
-                si_value: 0.0,
-                dimension: dim,
-            },
-            Value::Scalar {
-                si_value: -77000.0,
-                dimension: dim,
-            },
-            Value::Scalar {
-                si_value: 0.0,
-                dimension: dim,
-            },
-        ]);
-        assert!(
-            eval_builtin("body_force", &[selector_stub("body_stub"), vec4]).is_undef(),
-            "4-component vector → Undef"
-        );
-    }
-
-    #[test]
-    fn body_force_selector_bool_returns_undef() {
-        let fd = make_scalar_vec3([0.0, 0.0, -77000.0], DimensionVector::FORCE_DENSITY);
-        assert!(
-            eval_builtin("body_force", &[Value::Bool(false), fd]).is_undef(),
-            "selector = Bool → Undef"
-        );
-    }
-
-    #[test]
-    fn body_force_zero_args_returns_undef() {
-        assert!(eval_builtin("body_force", &[]).is_undef(), "0 args → Undef");
-    }
-
-    #[test]
-    fn body_force_one_arg_returns_undef() {
-        assert!(
-            eval_builtin("body_force", &[selector_stub("body_stub")]).is_undef(),
-            "1 arg → Undef"
-        );
-    }
-
-    #[test]
-    fn body_force_three_args_returns_undef() {
-        let fd = make_scalar_vec3([0.0, 0.0, -77000.0], DimensionVector::FORCE_DENSITY);
-        assert!(
-            eval_builtin("body_force", &[selector_stub("body_stub"), fd.clone(), fd]).is_undef(),
-            "3 args → Undef"
+            eval_builtin("body_force", &[selector, force_density]).is_undef(),
+            "after step-8 retirement, eval_builtin('body_force', ...) must \
+             return Undef; the structure-instance ctor path (BodyForce) replaces \
+             the builtin entirely (FEA-2 task 2881, Q-SIR-4 — rename body_force → BodyForce)"
         );
     }
 
@@ -770,29 +618,24 @@ mod tests {
     fn load_kinds_all_dispatched_by_eval_loads() {
         use super::{LOAD_KINDS, eval_loads, is_load_value};
 
-        let stub_selector = Value::Map({
-            let mut m = BTreeMap::new();
-            m.insert(
-                Value::String("kind".to_string()),
-                Value::String("stub".to_string()),
-            );
-            m
-        });
-        // `pressure_mag` removed: the `"pressure_load"` fixture arm was here but
-        // `pressure_load` was retired in SIR-β-load (task 3544 step-4) and is no
-        // longer in LOAD_KINDS — so the binding would be unused and trigger a
-        // clippy warning. `pressure_vec` (used by `traction_load`) is kept.
-        let pressure_vec = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::PRESSURE);
-        let fd_vec = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::FORCE_DENSITY);
+        // `stub_selector` removed: was needed for `traction_load` / `body_force`
+        // fixture arms, both now retired. `gravity` takes only a dimensioned
+        // value, not a selector.
+        //
+        // `pressure_mag` removed: `pressure_load` retired in SIR-β-load (task
+        // 3544 step-4) — no longer in LOAD_KINDS.
+        // `pressure_vec` removed: `traction_load` retired in FEA-2 (task 2881
+        // step-4) — no longer in LOAD_KINDS.
+        // `fd_vec` removed: `body_force` retired in FEA-2 (task 2881 step-8)
+        // — no longer in LOAD_KINDS. Only `accel_vec` (for `gravity`) remains.
         let accel_vec = make_scalar_vec3([0.0, 0.0, -9.81], DimensionVector::ACCELERATION);
 
         for kind in LOAD_KINDS {
-            // `point_load` retired in SIR-α wave-1 (step-20) — no longer in
-            // LOAD_KINDS, so no fixture arm here.
+            // `point_load` retired in SIR-α wave-1 (step-20) — no longer in LOAD_KINDS.
             // `pressure_load` retired in SIR-β-load (task 3544 step-4) — same.
+            // `traction_load` retired in FEA-2 (task 2881 step-4) — same.
+            // `body_force` retired in FEA-2 (task 2881 step-8) — same.
             let result = match *kind {
-                "traction_load" => eval_loads(kind, &[stub_selector.clone(), pressure_vec.clone()]),
-                "body_force" => eval_loads(kind, &[stub_selector.clone(), fd_vec.clone()]),
                 "gravity" => eval_loads(kind, std::slice::from_ref(&accel_vec)),
                 other => panic!(
                     "LOAD_KINDS contains '{}' but no fixture is defined for it — \

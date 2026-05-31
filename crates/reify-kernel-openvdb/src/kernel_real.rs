@@ -91,6 +91,60 @@ impl OpenVdbKernel {
         Ok(id)
     }
 
+    /// Convert a [`reify_ir::Mesh`] to a narrow-band SDF `FloatGrid` using
+    /// the parameters in `opts`, and register the result as a new handle.
+    ///
+    /// Reshapes the flat `mesh.vertices` (`Vec<f32>` in xyz order) and
+    /// `mesh.indices` (`Vec<u32>` in triangle order) into the `[[f32;3]]`/
+    /// `[[u32;3]]` slices expected by [`Self::realize_voxel_from_mesh`], then
+    /// delegates with `opts.voxel_size` and `opts.narrow_band`.
+    ///
+    /// Returns `Err(GeometryError::OperationFailed)` if:
+    /// - the vertex or index count is not a multiple of 3 (malformed flat mesh),
+    /// - `opts.voxel_size` or `opts.narrow_band` is not positive and finite, or
+    /// - the underlying FFI call fails (empty/degenerate mesh).
+    pub fn realize_voxel_from_mesh_with_options(
+        &mut self,
+        mesh: &Mesh,
+        opts: &crate::MeshToVoxelOptions,
+    ) -> Result<GeometryHandleId, GeometryError> {
+        if !mesh.vertices.len().is_multiple_of(3) {
+            return Err(GeometryError::OperationFailed(format!(
+                "mesh.vertices length {} is not a multiple of 3 (expected flat xyz layout)",
+                mesh.vertices.len(),
+            )));
+        }
+        if !mesh.indices.len().is_multiple_of(3) {
+            return Err(GeometryError::OperationFailed(format!(
+                "mesh.indices length {} is not a multiple of 3 (expected flat triangle layout)",
+                mesh.indices.len(),
+            )));
+        }
+        if !(opts.voxel_size > 0.0 && opts.voxel_size.is_finite()) {
+            return Err(GeometryError::OperationFailed(format!(
+                "opts.voxel_size must be positive and finite; got {}",
+                opts.voxel_size,
+            )));
+        }
+        if !(opts.narrow_band > 0.0 && opts.narrow_band.is_finite()) {
+            return Err(GeometryError::OperationFailed(format!(
+                "opts.narrow_band must be positive and finite; got {}",
+                opts.narrow_band,
+            )));
+        }
+        let verts: Vec<[f32; 3]> = mesh
+            .vertices
+            .chunks_exact(3)
+            .map(|c| [c[0], c[1], c[2]])
+            .collect();
+        let tris: Vec<[u32; 3]> = mesh
+            .indices
+            .chunks_exact(3)
+            .map(|c| [c[0], c[1], c[2]])
+            .collect();
+        self.realize_voxel_from_mesh(&verts, &tris, opts.voxel_size, opts.narrow_band)
+    }
+
     /// Return the number of active voxels in the grid registered under
     /// `handle`.
     ///
@@ -319,17 +373,29 @@ unsafe impl Sync for OpenVdbKernel {}
 // GeometryKernel trait implementation
 // ---------------------------------------------------------------------------
 
+// Planning vs execution contract note (cross-referenced from register.rs docstring):
+//
+// The `(Convert{from:Mesh}, Voxel)` entry in `openvdb_capability_descriptor()` (register.rs)
+// is a PLANNING declaration that lets the dispatcher BFS route BRep→Mesh→Voxel two-stage
+// chains. The executable Mesh→Voxel primitive is `realize_voxel_from_mesh_with_options`
+// (defined above). Trait-`execute()` of a terminal Voxel op intentionally returns
+// `GeometryError::OperationFailed` — graceful degradation, pinned by
+// `tests/dispatcher_integration.rs::openvdb_two_stage_chain_terminal_op_execute_degrades_gracefully`.
+// Full execute()-trait routing requires a GeometryOp Mesh-input variant and is task ε scope.
 const VOXEL_BOOL_STUB_MSG: &str = "OpenVDB voxel-Boolean execution requires Voxel handles on both operands. \
-     Direct-call voxelization via realize_voxel_from_mesh is available; \
-     dispatcher routing for Convert{from:Mesh}→Voxel is deferred until OCCT \
-     declares (Convert{from:BRep}, Mesh) in its capability descriptor (v0.3).";
+     Direct-call voxelization via realize_voxel_from_mesh_with_options is available; \
+     the descriptor now declares (Convert{from:Mesh}, Voxel) so BRep→Mesh→Voxel chains \
+     are dispatchable. Full execute()-trait routing (GeometryOp Mesh-input variant) \
+     remains future work (task ε).";
 
 impl GeometryKernel for OpenVdbKernel {
     fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-        // Voxel Boolean execution through execute() is deferred — see
-        // VOXEL_BOOL_STUB_MSG. The capability descriptor declares the Booleans
-        // so the dispatcher BFS can enumerate them, but execution requires
-        // the full dispatcher chain from BRep→Mesh→Voxel which isn't routed yet.
+        // Voxel op execution through execute() degrades gracefully — see
+        // VOXEL_BOOL_STUB_MSG and the planning-vs-execution contract note above.
+        // The capability descriptor declares (Convert{from:Mesh},Voxel) and the
+        // three Booleans so the dispatcher BFS can reach Voxel; execute() returns
+        // OperationFailed (not a panic, not Ok(_)) until task ε wires the
+        // realize_voxel_from_mesh_with_options wrapper into engine dispatch.
         Err(GeometryError::OperationFailed(VOXEL_BOOL_STUB_MSG.into()))
     }
 

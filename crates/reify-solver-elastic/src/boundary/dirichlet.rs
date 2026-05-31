@@ -46,6 +46,8 @@
 
 use faer::sparse::SparseRowMat;
 
+use crate::sparse_util::find_in_row;
+
 /// A prescribed-displacement boundary condition at a single degree of freedom.
 ///
 /// `dof` is the 0-based DOF index in the global system (row and column in K).
@@ -279,18 +281,6 @@ pub fn apply_dirichlet_row_elimination(
         // Step 5: pin RHS — f[i] is overwritten with the prescribed value.
         f[i] = u;
     }
-}
-
-/// Returns the absolute slot index in `col_idx` (and the matching `vals` slot)
-/// for the stored entry at column `target` within CSR row `[start, end)`, or
-/// `None` if the column is not stored.  Requires sorted column indices within
-/// the row (faer `SymbolicSparseRowMat` soft invariant).
-#[inline]
-fn find_in_row(col_idx: &[usize], start: usize, end: usize, target: usize) -> Option<usize> {
-    col_idx[start..end]
-        .binary_search(&target)
-        .ok()
-        .map(|rel| start + rel)
 }
 
 #[cfg(test)]

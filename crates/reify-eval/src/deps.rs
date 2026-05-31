@@ -22,11 +22,19 @@ use std::collections::{HashMap, HashSet};
 #[derive(Debug, Clone, Default)]
 pub struct DependencyTrace {
     pub reads: Vec<ValueCellId>,
+    /// GHR-δ (PRD geometry-handle-runtime.md §8 Phase 4): RealizationNodeIds
+    /// this node implicitly depends on. A value cell holding a
+    /// `Value::GeometryHandle` reads the upstream Realization named in its
+    /// `realization_ref`; that edge is invisible to the VC→VC `reads` set, so
+    /// it is recorded here and folded into freshness derivation
+    /// (`derive_output_freshness_from_trace_with_cause`) and the freshness-only
+    /// walk's Realization→ValueCell fan-out. Empty for all non-geometry nodes.
+    pub realization_reads: Vec<RealizationNodeId>,
 }
 
 /// Extract a dependency trace from a compiled expression by collecting all ValueRef ids.
 pub fn extract_dependency_trace(expr: &CompiledExpr) -> DependencyTrace {
-    DependencyTrace {
+    DependencyTrace { realization_reads: Vec::new(),
         reads: expr.collect_value_refs(),
     }
 }
@@ -211,8 +219,70 @@ impl ReverseDependencyIndex {
             }
         }
 
+        // GHR-δ S4 (edge: Realization → GH ValueCell). A value cell holding a
+        // `Value::GeometryHandle` depends on the upstream Realization that
+        // produced its handle — an edge invisible to the VC→VC expression scan
+        // above. Register it in the realization-keyed reverse map (reusing the
+        // edge #10 machinery) so the freshness walk's Realization fan-out and
+        // the edit-time donation cascade can find the backed cells.
+        for (rid, cell) in geometry_cell_realization_links(graph) {
+            index.add_realization(rid, NodeId::Value(cell));
+        }
+
         index
     }
+}
+
+/// GHR-δ: yield each `(realization_id, geometry_cell)` link recorded on the
+/// graph by [`crate::graph::EvaluationGraph::from_templates`] (S2) — the single
+/// source of truth for the Realization→ValueCell freshness edge. Consumed by
+/// the forward trace builder ([`build_trace_map_and_fields`]), the reverse
+/// index builder ([`ReverseDependencyIndex::build_from_graph_and_fields`]), and
+/// the cold/incremental eval-trace wiring in `engine_eval.rs` / `engine_edit.rs`.
+///
+/// **1:1 invariant.** Each geometry cell is expected to be backed by at most one
+/// realization: `from_templates` links a realization to the `Type::Geometry`
+/// value cell whose `member == realization.name`, and realization names are
+/// unique within an entity, so distinct realizations resolve to distinct cells.
+/// Callers that fold these links into a per-cell `realization_reads` list MUST
+/// nonetheless accumulate (not overwrite-last) so they stay consistent with the
+/// `push`-accumulating [`build_trace_map_and_fields`] even if that invariant is
+/// ever violated — use [`geometry_cell_realization_reads`] rather than calling
+/// [`crate::cache::CacheStore::set_realization_reads`] once per raw link.
+pub(crate) fn geometry_cell_realization_links(
+    graph: &crate::graph::EvaluationGraph,
+) -> impl Iterator<Item = (RealizationNodeId, ValueCellId)> + '_ {
+    graph.realizations.iter().filter_map(|(_, rnode)| {
+        rnode
+            .geometry_cell
+            .as_ref()
+            .map(|cell| (rnode.id.clone(), cell.clone()))
+    })
+}
+
+/// GHR-δ: fold [`geometry_cell_realization_links`] into a per-cell
+/// `realization_reads` list, accumulating (never overwriting) every realization
+/// that backs a given geometry cell.
+///
+/// This is the single source of truth for the cold-eval (`engine_eval.rs`) and
+/// incremental (`engine_edit.rs`) cache post-pass that calls
+/// [`crate::cache::CacheStore::set_realization_reads`]. Folding here — rather
+/// than calling the replace-semantics setter once per raw link — guarantees the
+/// cached trace carries the SAME accumulated `realization_reads` that
+/// [`build_trace_map_and_fields`] records via `push`, so the two freshness
+/// derivation paths cannot silently diverge if the 1:1 cell↔realization
+/// invariant is ever broken (two realizations sharing one geometry cell). In the
+/// expected 1:1 case each list has exactly one element, identical to the prior
+/// per-link behaviour. The replace-per-build setter remains idempotent across
+/// re-eval / edit rounds because each build re-folds from scratch.
+pub(crate) fn geometry_cell_realization_reads(
+    graph: &crate::graph::EvaluationGraph,
+) -> HashMap<ValueCellId, Vec<RealizationNodeId>> {
+    let mut reads: HashMap<ValueCellId, Vec<RealizationNodeId>> = HashMap::new();
+    for (rid, cell) in geometry_cell_realization_links(graph) {
+        reads.entry(cell).or_default().push(rid);
+    }
+    reads
 }
 
 /// Build a forward dependency trace map for all nodes in the graph.
@@ -269,7 +339,7 @@ pub fn build_trace_map_and_fields(
     }
 
     for (_, res_node) in graph.resolutions.iter() {
-        let trace = DependencyTrace {
+        let trace = DependencyTrace { realization_reads: Vec::new(),
             reads: res_node.auto_params.clone(),
         };
         traces.insert(NodeId::Resolution(res_node.id.clone()), trace);
@@ -284,6 +354,18 @@ pub fn build_trace_map_and_fields(
             let trace = extract_dependency_trace(expr);
             let field_cell = ValueCellId::new(FIELD_ENTITY_PREFIX, &field.name);
             traces.insert(NodeId::Value(field_cell), trace);
+        }
+    }
+
+    // GHR-δ S4 (forward edge: GH ValueCell → Realization). Augment each
+    // geometry cell's already-computed trace with the upstream Realization that
+    // produced its handle, so `derive_output_freshness_from_trace_with_cause`
+    // folds the realization's freshness into the cell's. The value cell's own
+    // trace was inserted by the value-cells loop above (empty for a param);
+    // here we only add the realization read.
+    for (rid, cell) in geometry_cell_realization_links(graph) {
+        if let Some(trace) = traces.get_mut(&NodeId::Value(cell)) {
+            trace.realization_reads.push(rid);
         }
     }
 
@@ -312,7 +394,7 @@ pub fn extract_realization_dependencies(
             reads.extend(expr.collect_value_refs());
         }
     }
-    DependencyTrace { reads }
+    DependencyTrace { realization_reads: Vec::new(), reads }
 }
 
 #[cfg(test)]
@@ -389,7 +471,7 @@ mod tests {
         let r0_id = RealizationNodeId::new(e, 0);
         graph.realizations.insert(
             r0_id.clone(),
-            RealizationNodeData {
+            RealizationNodeData { geometry_cell: None,
                 id: r0_id.clone(),
                 operations: vec![],
                 content_hash: ContentHash::of_str("r0"),
@@ -436,6 +518,73 @@ mod tests {
         let unknown = RealizationNodeId::new("Z", 99);
         let deps = index.realization_dependents_of(&unknown);
         assert!(deps.is_empty());
+    }
+
+    /// GHR-δ S3: the graph-aware builders surface the Realization→ValueCell
+    /// linkage in BOTH directions for a geometry-backed cell, riding the
+    /// `RealizationNodeData.geometry_cell` link populated by S2.
+    ///
+    /// (a) `build_trace_map_and_fields` records `realization_reads = [Widget#0]`
+    ///     on the GH cell's forward trace (and leaves non-geometry cells empty).
+    /// (b) `build_from_graph_and_fields` registers the reverse edge
+    ///     `realization_dependents_of(Widget#0) ∋ Value(Widget.body)`.
+    ///
+    /// RED until S4 wires both.
+    #[test]
+    fn graph_builders_link_geometry_cell_to_realization_both_directions() {
+        use crate::graph::EvaluationGraph;
+        use reify_core::RealizationNodeId;
+        use reify_test_support::parse_and_compile;
+
+        // `body` is the sole geometry member → realization Widget#0; `width`
+        // is a scalar param (no realization) used as the non-geometry control.
+        let module = parse_and_compile(
+            r#"structure def Widget {
+    param body : Solid = box(10mm, 20mm, 30mm)
+    param width : Length = 10mm
+}"#,
+        );
+        let graph = EvaluationGraph::from_templates(&module.templates);
+
+        let body = ValueCellId::new("Widget", "body");
+        let width = ValueCellId::new("Widget", "width");
+        let r0 = RealizationNodeId::new("Widget", 0);
+
+        // Precondition: S2 populated the graph link the builders ride on.
+        assert_eq!(
+            graph.realizations.get(&r0).unwrap().geometry_cell,
+            Some(body.clone()),
+            "precondition: from_templates must link Widget#0 -> Widget.body"
+        );
+
+        // (a) forward trace carries realization_reads on the GH cell only.
+        let traces = build_trace_map_and_fields(&graph, &[]);
+        let body_trace = traces
+            .get(&NodeId::Value(body.clone()))
+            .expect("trace map must contain Widget.body");
+        assert_eq!(
+            body_trace.realization_reads,
+            vec![r0.clone()],
+            "GH cell forward trace must read its backing realization"
+        );
+        let width_trace = traces
+            .get(&NodeId::Value(width.clone()))
+            .expect("trace map must contain Widget.width");
+        assert!(
+            width_trace.realization_reads.is_empty(),
+            "non-geometry cell must keep realization_reads empty, got {:?}",
+            width_trace.realization_reads
+        );
+
+        // (b) reverse edge registered Realization -> GH cell.
+        let index = ReverseDependencyIndex::build_from_graph_and_fields(&graph, &[]);
+        assert!(
+            index
+                .realization_dependents_of(&r0)
+                .contains(&NodeId::Value(body.clone())),
+            "realization_dependents_of(Widget#0) must contain Value(Widget.body), got {:?}",
+            index.realization_dependents_of(&r0)
+        );
     }
 
     /// P3.3 step-3: Edge #6 — VC → ComputeNode reverse-index registration.
@@ -867,10 +1016,10 @@ mod tests {
         let cell_x = ValueCellId::new("E", "x");
         let cell_y = ValueCellId::new("E", "y");
 
-        let trace_a = DependencyTrace {
+        let trace_a = DependencyTrace { realization_reads: Vec::new(),
             reads: vec![cell_x.clone()],
         };
-        let trace_b = DependencyTrace {
+        let trace_b = DependencyTrace { realization_reads: Vec::new(),
             reads: vec![cell_y.clone()],
         };
 

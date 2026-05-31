@@ -544,6 +544,26 @@ enum QueryKey {
         pz_bits: u64,
         tol_bits: u64,
     },
+    /// Contains keys the solid handle + query point + tolerance.
+    /// Powers the v0.1 stdlib `contains` helper (task 3611, KGQ-β).
+    /// Tolerance is bit-keyed so a future explicit-tolerance overload can
+    /// stage distinct results without re-staging the same handle/point pair.
+    Contains {
+        handle: GeometryHandleId,
+        px_bits: u64,
+        py_bits: u64,
+        pz_bits: u64,
+        tol_bits: u64,
+    },
+    /// GeoEquiv keys the two shape handles (canonicalised to canonical min/max
+    /// order since geo_equiv is symmetric) and the tolerance as bit-keyed
+    /// `u64` (via `density_bits`).
+    /// Powers the v0.1 stdlib `geo_equiv(a, b, tol)` helper (task 3613, KGQ-δ).
+    GeoEquiv {
+        left: GeometryHandleId,
+        right: GeometryHandleId,
+        tol_bits: u64,
+    },
     /// SurfaceAngle keys the two face handles. The angle is unsigned (the
     /// kernel returns `acos(|n_a · n_b|)`-style absolute-cos), so face_a
     /// and face_b are pair-canonicalised with `normalize_distance_pair` so
@@ -552,6 +572,31 @@ enum QueryKey {
     SurfaceAngle {
         face_a: GeometryHandleId,
         face_b: GeometryHandleId,
+    },
+    /// FaceNormalAt keys the face handle + query point (f64 bits via
+    /// `density_bits` for ±0.0 canonicalisation + NaN debug-assert).
+    /// Powers the v0.3 stdlib `normal(surface, point)` helper (task 3615, KGQ-ζ).
+    FaceNormalAt {
+        handle: GeometryHandleId,
+        px_bits: u64,
+        py_bits: u64,
+        pz_bits: u64,
+    },
+    /// CurveCurvatureAt keys the edge handle + world query point (f64 bits).
+    /// Powers the v0.3 stdlib `curvature(curve, point)` helper (task 3621, KGQ-μ).
+    CurveCurvatureAt {
+        handle: GeometryHandleId,
+        px_bits: u64,
+        py_bits: u64,
+        pz_bits: u64,
+    },
+    /// SurfaceCurvatureAt keys the face handle + parametric (u, v) coordinates
+    /// (f64 bits). Powers the v0.3 stdlib `curvature(surface, point)` helper
+    /// (task 3621, KGQ-μ).
+    SurfaceCurvatureAt {
+        handle: GeometryHandleId,
+        u_bits: u64,
+        v_bits: u64,
     },
 }
 
@@ -680,11 +725,59 @@ impl QueryKey {
                 pz_bits: density_bits(*pz),
                 tol_bits: density_bits(*tolerance),
             },
+            GeometryQuery::Contains {
+                handle,
+                px,
+                py,
+                pz,
+                tolerance,
+            } => QueryKey::Contains {
+                handle: *handle,
+                px_bits: density_bits(*px),
+                py_bits: density_bits(*py),
+                pz_bits: density_bits(*pz),
+                tol_bits: density_bits(*tolerance),
+            },
+            GeometryQuery::GeoEquiv {
+                left,
+                right,
+                tolerance,
+            } => {
+                let (lo, hi) = normalize_distance_pair(*left, *right);
+                QueryKey::GeoEquiv {
+                    left: lo,
+                    right: hi,
+                    tol_bits: density_bits(*tolerance),
+                }
+            }
             GeometryQuery::SurfaceAngle { face_a, face_b } => {
                 let (lo, hi) = normalize_distance_pair(*face_a, *face_b);
                 QueryKey::SurfaceAngle {
                     face_a: lo,
                     face_b: hi,
+                }
+            }
+            GeometryQuery::FaceNormalAt { handle, px, py, pz } => {
+                QueryKey::FaceNormalAt {
+                    handle: *handle,
+                    px_bits: density_bits(*px),
+                    py_bits: density_bits(*py),
+                    pz_bits: density_bits(*pz),
+                }
+            }
+            GeometryQuery::CurveCurvatureAt { handle, px, py, pz } => {
+                QueryKey::CurveCurvatureAt {
+                    handle: *handle,
+                    px_bits: density_bits(*px),
+                    py_bits: density_bits(*py),
+                    pz_bits: density_bits(*pz),
+                }
+            }
+            GeometryQuery::SurfaceCurvatureAt { handle, u, v } => {
+                QueryKey::SurfaceCurvatureAt {
+                    handle: *handle,
+                    u_bits: density_bits(*u),
+                    v_bits: density_bits(*v),
                 }
             }
         }
@@ -952,6 +1045,86 @@ impl MockGeometryKernel {
         self
     }
 
+    /// Configure a `FaceNormalAt` query result for a specific
+    /// (face handle, query point) pair.
+    ///
+    /// The `value` should be a `Value::String` containing a JSON-encoded
+    /// `{"x":..,"y":..,"z":..}` unit normal vector, matching the OCCT
+    /// kernel's wire format for `GeometryQuery::FaceNormalAt`. The point
+    /// coordinates `[px, py, pz]` are routed through `density_bits` for
+    /// stable hashing (±0.0 canonicalisation, NaN debug-assert).
+    ///
+    /// Powers the v0.3 stdlib `normal(surface, point)` helper (task 3615, KGQ-ζ).
+    pub fn with_face_normal_at_result(
+        mut self,
+        handle: GeometryHandleId,
+        point: [f64; 3],
+        value: Value,
+    ) -> Self {
+        self.typed_queries.insert(
+            QueryKey::FaceNormalAt {
+                handle,
+                px_bits: density_bits(point[0]),
+                py_bits: density_bits(point[1]),
+                pz_bits: density_bits(point[2]),
+            },
+            value,
+        );
+        self
+    }
+
+    /// Configure a `CurveCurvatureAt` query result for a specific
+    /// (edge handle, world query point) pair.
+    ///
+    /// `value` should be a `Value::Real(κ)` where κ is the signed Frenet curvature
+    /// in SI units (m⁻¹), matching the OCCT kernel's `curve_curvature_at` return.
+    /// Point coordinates are hashed via `density_bits` for stable keying.
+    ///
+    /// Powers the v0.3 stdlib `curvature(curve, point)` helper (task 3621, KGQ-μ).
+    pub fn with_curve_curvature_at_result(
+        mut self,
+        handle: GeometryHandleId,
+        point: [f64; 3],
+        value: Value,
+    ) -> Self {
+        self.typed_queries.insert(
+            QueryKey::CurveCurvatureAt {
+                handle,
+                px_bits: density_bits(point[0]),
+                py_bits: density_bits(point[1]),
+                pz_bits: density_bits(point[2]),
+            },
+            value,
+        );
+        self
+    }
+
+    /// Configure a `SurfaceCurvatureAt` query result for a specific
+    /// (face handle, parametric (u, v)) pair.
+    ///
+    /// `value` should be a nested `Value::List([[kappa_max, 0.0], [0.0, kappa_min]])`
+    /// matching the OCCT kernel's diagonal principal-curvature wire format for
+    /// `GeometryQuery::SurfaceCurvatureAt`. The (u, v) coordinates are hashed
+    /// via `density_bits` for stable keying.
+    ///
+    /// Powers the v0.3 stdlib `curvature(surface, point)` helper (task 3621, KGQ-μ).
+    pub fn with_surface_curvature_at_result(
+        mut self,
+        handle: GeometryHandleId,
+        uv: [f64; 2],
+        value: Value,
+    ) -> Self {
+        self.typed_queries.insert(
+            QueryKey::SurfaceCurvatureAt {
+                handle,
+                u_bits: density_bits(uv[0]),
+                v_bits: density_bits(uv[1]),
+            },
+            value,
+        );
+        self
+    }
+
     /// Configure a `ClosestPointOnShape` query result for a specific
     /// (geometry handle, query point) pair.
     ///
@@ -1002,6 +1175,64 @@ impl MockGeometryKernel {
                 px_bits: density_bits(point[0]),
                 py_bits: density_bits(point[1]),
                 pz_bits: density_bits(point[2]),
+                tol_bits: density_bits(tolerance),
+            },
+            value,
+        );
+        self
+    }
+
+    /// Configure a `contains` classifier query result for a specific solid/point/tolerance triple.
+    ///
+    /// The `value` should be a `Value::Bool(true)` (point inside or on the boundary)
+    /// or `Value::Bool(false)` (point outside). The `tolerance` is bit-keyed
+    /// (via `density_bits`) so the stub for `contains(solid, point)` (which the
+    /// dispatcher routes through `reify_ir::DEFAULT_CONTAINS_TOLERANCE_M`)
+    /// is distinguishable from a future explicit-tolerance `contains(solid, point, tol)` overload.
+    ///
+    /// Powers the v0.1 stdlib `contains` helper (task 3611, KGQ-β).
+    pub fn with_contains_result(
+        mut self,
+        handle: GeometryHandleId,
+        point: [f64; 3],
+        tolerance: f64,
+        value: Value,
+    ) -> Self {
+        self.typed_queries.insert(
+            QueryKey::Contains {
+                handle,
+                px_bits: density_bits(point[0]),
+                py_bits: density_bits(point[1]),
+                pz_bits: density_bits(point[2]),
+                tol_bits: density_bits(tolerance),
+            },
+            value,
+        );
+        self
+    }
+
+    /// Configure a `GeoEquiv` query result for a specific shape pair and tolerance.
+    ///
+    /// The `value` should be a `Value::Bool(true|false)`.
+    /// The shape pair `(left, right)` is canonicalised via
+    /// `normalize_distance_pair` so `(a, b)` and `(b, a)` map to the same
+    /// key (geo_equiv is symmetric by convention).
+    /// The tolerance is bit-keyed via `density_bits` so distinct tolerances
+    /// produce distinct keys (consistent with `with_contains_result`).
+    ///
+    /// Powers the v0.1 stdlib `geo_equiv(a, b, tol)` helper (task 3613, KGQ-δ).
+    pub fn with_geo_equiv_result(
+        mut self,
+        left: GeometryHandleId,
+        right: GeometryHandleId,
+        tolerance: f64,
+        value: Value,
+    ) -> Self {
+        let (lo, hi) = normalize_distance_pair(left, right);
+        self.typed_queries.insert(
+            QueryKey::GeoEquiv {
+                left: lo,
+                right: hi,
                 tol_bits: density_bits(tolerance),
             },
             value,
@@ -1317,7 +1548,12 @@ impl GeometryKernel for MockGeometryKernel {
             // canonical first handle, parallel to the Distance arm.
             GeometryQuery::ClosestPointOnShape { handle, .. } => handle,
             GeometryQuery::PointOnShape { handle, .. } => handle,
+            GeometryQuery::Contains { handle, .. } => handle,
+            GeometryQuery::GeoEquiv { left, .. } => left,
             GeometryQuery::SurfaceAngle { face_a, .. } => face_a,
+            GeometryQuery::FaceNormalAt { handle, .. } => handle,
+            GeometryQuery::CurveCurvatureAt { handle, .. } => handle,
+            GeometryQuery::SurfaceCurvatureAt { handle, .. } => handle,
         };
 
         self.queries

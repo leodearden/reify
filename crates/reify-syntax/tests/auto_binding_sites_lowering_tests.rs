@@ -3,7 +3,7 @@
 //! ## Coverage
 //!
 //! This file tests that `auto_keyword` CST nodes at binding sites are correctly
-//! lowered to `ExprKind::Auto { free: bool }` AST nodes. It covers the four
+//! lowered to `ExprKind::Auto { free: bool }` AST nodes. It covers the five
 //! AST-observable binding sites (in order of the grammar's `_binding_value` rule):
 //!
 //! 1. **`let_declaration.value`** — covered here.
@@ -16,10 +16,10 @@
 //! 4. **`param_declaration.default`** — already covered in
 //!    `boundary1_producer.rs::parse_auto_param` / `parse_auto_free_param` /
 //!    `parse_mixed_auto_and_auto_free`; no new tests needed here.
-//! 5. **`param_assignment.value`** — no AST snapshot in β (task 3804) because
-//!    no `MemberDecl` variant exists for `param_assignment` yet; that is
-//!    deferred to γ = task 3806 which adds the sub-instance-override
-//!    end-to-end. CST-level coverage lives in
+//! 5. **`param_assignment.value` via `lower_sub`** — covered here (γ = task 3806).
+//!    Previously deferred in β (task 3804) because `SubDecl` had no field to
+//!    carry param-override values; γ adds `SubDecl.param_overrides` and wires
+//!    the round-trip. CST-level coverage lives in
 //!    `auto_binding_sites_grammar_tests.rs::param_assignment_auto_strict_produces_auto_keyword`
 //!    and `param_assignment_auto_free_has_modifier_field`.
 //!
@@ -384,5 +384,97 @@ fn function_call_named_arg_value_non_auto_lowers_normally() {
         matches!(args[0].kind, ExprKind::NumberLiteral { .. }),
         "expected NumberLiteral, got {:?}",
         args[0].kind
+    );
+}
+
+// ── Site 5: param_assignment.value via `lower_sub` (γ = task 3806) ───────────
+
+/// Parse `structure S { sub b : Bearing { bore = <v> } }`, extract the
+/// `SubDecl`, and return the expression stored in `param_overrides` for the
+/// `bore` entry. Panics with a descriptive message if the override is absent.
+fn param_override_expr(source: &str, param_name: &str) -> ExprKind {
+    let module = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        module.errors.is_empty(),
+        "expected no parse errors: {:?}",
+        module.errors
+    );
+    let structure = match &module.declarations[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+    let sub_decl = match &structure.members[0] {
+        MemberDecl::Sub(s) => s,
+        other => panic!("expected Sub, got {:?}", other),
+    };
+    let (_, expr) = sub_decl
+        .param_overrides
+        .iter()
+        .find(|(n, _)| n == param_name)
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a '{}' entry in param_overrides; got: {:?}",
+                param_name,
+                sub_decl
+                    .param_overrides
+                    .iter()
+                    .map(|(n, _)| n.as_str())
+                    .collect::<Vec<_>>()
+            )
+        });
+    expr.kind.clone()
+}
+
+/// `sub b : Bearing { bore = auto }` — strict auto at the param_assignment site
+/// must lower to `ExprKind::Auto { free: false }` in `param_overrides`.
+#[test]
+fn param_assignment_auto_strict_lowers_to_expr_kind_auto_false() {
+    let kind = param_override_expr(
+        "structure S { sub b : Bearing { bore = auto } }",
+        "bore",
+    );
+    match kind {
+        ExprKind::Auto { free } => assert!(
+            !free,
+            "expected free: false for strict auto, got free: true"
+        ),
+        other => panic!("expected ExprKind::Auto, got {:?}", other),
+    }
+}
+
+/// `sub b : Bearing { bore = auto(free) }` — free auto at the param_assignment
+/// site must lower to `ExprKind::Auto { free: true }` in `param_overrides`.
+#[test]
+fn param_assignment_auto_free_lowers_to_expr_kind_auto_true() {
+    let kind = param_override_expr(
+        "structure S { sub b : Bearing { bore = auto(free) } }",
+        "bore",
+    );
+    match kind {
+        ExprKind::Auto { free } => assert!(
+            free,
+            "expected free: true for auto(free), got free: false"
+        ),
+        other => panic!("expected ExprKind::Auto, got {:?}", other),
+    }
+}
+
+/// `sub b : Bearing { bore = 5mm }` — a non-auto quantity literal at the
+/// param_assignment site must be captured in `param_overrides` as a
+/// `QuantityLiteral` (NOT silently discarded).
+///
+/// This proves that `param_overrides` is the uniform carrier for all
+/// param_assignment values, enabling future non-auto sub-override resolution
+/// (task ε) without a second lowering pass.
+#[test]
+fn param_assignment_non_auto_quantity_captured_in_param_overrides() {
+    let kind = param_override_expr(
+        "structure S { sub b : Bearing { bore = 5mm } }",
+        "bore",
+    );
+    assert!(
+        matches!(kind, ExprKind::QuantityLiteral { .. }),
+        "expected QuantityLiteral for `bore = 5mm`, got {:?}",
+        kind
     );
 }

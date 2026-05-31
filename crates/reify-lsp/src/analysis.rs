@@ -297,6 +297,7 @@ pub fn enclosing_decl_at(declarations: &[Declaration], offset: usize) -> Option<
             Declaration::Constraint(c) => c.span,
             Declaration::Unit(u) => u.span,
             Declaration::TypeAlias(t) => t.span,
+            Declaration::Module(m) => m.span,
         };
         if offset_u32 >= decl_span.start && offset_u32 < decl_span.end {
             return Some(decl);

@@ -228,6 +228,7 @@ const state: GuiState = {
   files: [file],
   tessellation_diagnostics: [diag],
   compile_diagnostics: [diag],
+  tensegrity_wires: [],
 };
 
 // --- GuiState.tessellation_diagnostics type assertion ---

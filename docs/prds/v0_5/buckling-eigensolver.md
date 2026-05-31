@@ -62,7 +62,7 @@ load    on column.face("top")    = 1 kN downward
 support on column.face("bottom") = fixed
 
 result = solve_buckling(column, material, [load], [support])
-critical = critical_load(result)            // ≈ π² E I / L²  → eigenvalue × 1 kN
+critical = critical_load(result, 1 kN)      // ≈ π² E I / L²  → eigenvalue × 1 kN
 ```
 
 The user observes:
@@ -170,9 +170,11 @@ natural typed form without surface-API change.
 **Result-interpretation helpers** (stdlib pure functions, no trampoline):
 
 ```
-fn critical_load(result: BucklingResult) -> Force
-    // First-mode eigenvalue × reference load magnitude.
-    // Reference load magnitude derived from the `pre_stress` field's stored load magnitudes.
+fn critical_load(result: BucklingResult, reference_load: Force) -> Force
+    // First-mode eigenvalue × reference_load. The kernel returns a dimensionless
+    // multiplier λ with λ × reference_load = P_cr, so the reference load is supplied
+    // explicitly (BucklingResult / pre_stress do not store a load magnitude) —
+    // mirroring safety_factor_buckling(result, applied_load).
 
 fn mode_shape(result: BucklingResult, n: Integer) -> Field<Point3<Length>, Vector3<Length>>
     // result.modes[n].mode_shape (subject to #3117 placeholder).
@@ -366,7 +368,7 @@ each side.
 | **Fixed-free cantilever column.** Same geometry; bottom fixed, top free, tip load. | Same. | `eigenvalue × 1 kN` within **11%** of `π² E I / (2L)²` (effective-length factor k=2; observed 10.0%). Mode shape is quarter-sine. |
 | **Fixed-pin column.** Same geometry; bottom face fully clamped (all 3 DOFs/node), top face laterally clamped (`u_x=u_y=0`, `u_z` free/node). | Same. | `eigenvalue × 1 kN` within **10%** of `π² E I / (k L)²` with **k≈0.6992 (fixed-pin)**; observed `k_eff≈0.670`, 8.8% at current mesh. |
 
-> **P1-tet accuracy note (G6 / esc-3453-5,6).** The 5% bounds and the **fixed-fixed (k=0.5)** third variant originally stated here are *not achievable* at practical mesh density: P1-tet bending lock at this slenderness (L/r≈138) yields 9–10% error on every BC variant, and pointwise Dirichlet BCs impose no rotational restraint, so a clamped-clamped attempt realizes **fixed-pin (k≈0.6992)**, not fixed-fixed. Bounds reconciled to the shipped test (`euler_column_pin_pin.rs`: pin-pin 10%, fixed-free 11%, fixed-pin 10%). True fixed-fixed (k=0.5) within 5% requires multi-point constraints (`u_z` equal across the top face) or P2-tet K_g — a follow-up beyond v0.5 task δ.
+> **P1-tet accuracy note (G6 / esc-3453-5,6).** The 5% bounds and the **fixed-fixed (k=0.5)** third variant originally stated here are *not achievable* at practical mesh density: P1-tet bending lock at this slenderness (L/r≈138) yields 9–10% error on every BC variant, and pointwise Dirichlet BCs impose no rotational restraint, so a clamped-clamped attempt realizes **fixed-pin (k≈0.6992)**, not fixed-fixed. Bounds reconciled to the shipped test (`euler_column_pin_pin.rs`: pin-pin 10%, fixed-free 11%, fixed-pin 10%). MPCs (`u_z` equal across the top face) **do** realize a true fixed-fixed (k=0.5) BC — verified in `euler_column_pin_pin.rs::fixed_guided_euler_column_within_nine_percent` (constraint satisfaction is bit-exact). The MPC alone does **not** reach 5%, however: P1-tet bending lock floors the error at ~6.8% (asymptote of `error = a + b/nx²`; 8.46% at nx=ny=10), so the MPC variant is bounded at **9%** to match the P1-tet tolerance family. **The original 5% has been achieved** by the P2-tet path (task 4052, esc-3813-117): `fixed_guided_euler_column_p2_within_five_percent` uses `solve_buckling_kernel_p2` with a `nx=ny=2, nz=32` P2 mesh and reaches **0.06% error** in 2.2 s release wall time (see §13 task δ).
 | **n_modes degeneracy on square cross-section.** Pinned-pinned column with square box (20×20×L). | Same. | First two eigenvalues are within tolerance of each other (in-plane / out-of-plane mode pair). `modes[0].mode_shape` and `modes[1].mode_shape` are orthogonal in displacement space. |
 | **Shell input emits clean diagnostic.** Call `solve_buckling` on a shell-classified body. | Body classifier returns Shell. | Trampoline returns `ComputeOutcome::Failed { diagnostics: [E_BucklingShellNotImplemented { cite_task: "3392", ... }] }`. No panic. |
 | **Cancellation under design loop.** Synthetic large-DOF column; auto-resolve drives a non-structural param; rapid input changes mid-solve. | Trampoline registered; ≥ 100 ms per Lanczos iteration. | Cancellation observed within 2× poll budget (≤ 200 ms). Prior cache entry intact. No orphaned solver threads. |
@@ -423,7 +425,7 @@ No reciprocal "the other owns it" pairs surfaced in this PRD's design.
 - **Shell-element K_g.** Stubbed with `E_BucklingShellNotImplemented`; full impl deferred
   to MITC3+ work (task 3392).
 - **Hex / wedge K_g.** Stubbed; future-PRD or extension of hex-wedge meshing decomp.
-- **P2 tet K_g.** Mechanical extension of P1; deferred to follow-up.
+- **P2 tet K_g.** Landed in task 4052 (esc-3813-117 follow-up): `geometric_element_stiffness_tet_p2` (30×30 K_g) + `element_stress_p2` + `solve_buckling_kernel_p2` are now the production P2 buckling pipeline. `fixed_guided_euler_column_p2_within_five_percent` achieves **0.06% error** at `nx=ny=2, nz=32` in 2.2 s — see §9.1 / §13 task δ.
 - **Thermal buckling / dynamic instability / flutter.** Separate physics.
 - **Modal (vibration) analysis.** Shares the eigensolver but is a different formulation
   (mass matrix M instead of K_g). Future PRD; left as a comment that this PRD's
@@ -483,8 +485,15 @@ isolation are not acceptable (`feedback_task_chain_user_observable`).
     asserts `result.modes[0].eigenvalue × 1 kN` within **10%** of `π²EI/L²` (P1-tet
     bending lock — see §9.1). Same test file also covers the fixed-free (11%) and
     fixed-pin (10%) BC variants. The third variant is **fixed-pin, not fixed-fixed**:
-    P1-tet pointwise Dirichlet imposes no rotational restraint, so true fixed-fixed /
-    k=0.5 within 5% needs MPCs or P2 K_g (deferred). Bounds corrected per esc-3453-5/6 (G6).
+    P1-tet pointwise Dirichlet imposes no rotational restraint, so the plain-Dirichlet
+    third variant is fixed-pin. A fourth variant
+    (`fixed_guided_euler_column_within_nine_percent`) uses a top-face `u_z`-equality MPC
+    to realize true fixed-fixed (k=0.5); the MPC is verified correct but P1-tet bending
+    lock floors error at ~6.8% (→ bounded **9%**, 8.46% at nx=ny=10). **The original 5%
+    is achieved by the P2-tet path** (task 4052, esc-3813-117 follow-up):
+    `fixed_guided_euler_column_p2_within_five_percent` uses `solve_buckling_kernel_p2`
+    with a `nx=ny=2, nz=32` P2 mesh and reaches **0.06% error** in 2.2 s release wall
+    time. Bounds corrected per esc-3453-5/6 (G6) and esc-3813-117.
   - **Prereqs:** β, γ.
   - **Crates touched:** reify-solver-elastic.
 
@@ -496,7 +505,9 @@ isolation are not acceptable (`feedback_task_chain_user_observable`).
   - **Observable signal:** `examples/buckling_column_smoke.ri` declares a steel column,
     calls `solve_buckling`, and prints `critical_load(result)`. `reify check
     examples/buckling_column_smoke.ri` evaluates the file and the printed value
-    matches the analytical Euler load within 5%. CLI evaluation confirms; re-running
+    matches the analytical Euler load within 10% (P1-tet bending-lock floor — see
+    §9.1; the original 5% is aspirational, gated on the P2-tet K_g follow-up
+    esc-3813-117). CLI evaluation confirms; re-running
     hits the ComputeNode cache (dispatch-count instrumentation).
   - **Prereqs:** α, δ, **plus compute-node-contract.md §8 task η landed** (FEA round-trip
     proves the trampoline shape works; `solver::buckling` is a sibling registration).

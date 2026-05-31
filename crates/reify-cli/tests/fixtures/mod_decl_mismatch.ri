@@ -1,0 +1,2 @@
+module wrong.path.here
+structure Bracket { param w : Scalar = 1mm }

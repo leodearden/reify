@@ -19,7 +19,7 @@
 use reify_test_support::{
     collect_errors, compile_source_with_stdlib, make_simple_engine, parse_and_compile_with_stdlib,
 };
-use reify_core::ValueCellId;
+use reify_core::{DiagnosticCode, ValueCellId};
 use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 
 /// `PersistentMap<String, Value>::get` is keyed by `&String`; this lets the
@@ -464,4 +464,114 @@ fn cli_reify_eval_prints_inspectable_structure_values() {
         "the SIR-α signal requires an inspectable Steel_AISI_1045 structure value \
          (not `undef`) in `reify eval` output; got:\n{stdout}"
     );
+}
+
+// ── RBD-α (task 3822) — MassProperties PSD inertia validation ────────────────
+
+/// Scenario: non-PSD inertia tensor → `E_DynamicsInertiaNotPSD` + `Value::Undef`.
+///
+/// `inertia: [[1,0,0],[0,1,0],[0,0,-1]]` has minimum eigenvalue −1.  The
+/// engine_eval PSD hook must:
+///   (a) emit a `Diagnostic` with `code == Some(DiagnosticCode::DynamicsInertiaNotPSD)`, and
+///   (b) replace the `mp` cell value with `Value::Undef`.
+///
+/// Note: `origin: 0.0` uses the Real placeholder (Frame3 is not yet a surface
+/// type). `point3(0mm, 0mm, 0mm)` builds the CoM Point3<Length>. The nested-list
+/// literal `[[1,0,0],[0,1,0],[0,0,-1]]` is accepted by the structure ctor (no
+/// call-site type check — trajectory.ri GcodeDialectInput precedent).
+#[test]
+fn mass_properties_non_psd_inertia_emits_diagnostic_and_undef() {
+    const SOURCE: &str = r#"
+structure def NonPsdFixture {
+    let mp = MassProperties(
+        mass: 1kg,
+        com: point3(0mm, 0mm, 0mm),
+        inertia: [[1,0,0],[0,1,0],[0,0,-1]],
+        origin: 0.0
+    )
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    // (a) A DynamicsInertiaNotPSD diagnostic must be present.
+    let psd_diags: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DynamicsInertiaNotPSD))
+        .collect();
+    assert!(
+        !psd_diags.is_empty(),
+        "expected a DynamicsInertiaNotPSD diagnostic for non-PSD inertia \
+         [[1,0,0],[0,1,0],[0,0,-1]] (min eigenvalue ≈ -1), got diagnostics: {:?}",
+        result.diagnostics
+    );
+
+    // (b) The `mp` cell must be Value::Undef (the PSD hook replaces the instance).
+    let mp_id = ValueCellId::new("NonPsdFixture", "mp");
+    let mp_val = result
+        .values
+        .get(&mp_id)
+        .unwrap_or_else(|| panic!("NonPsdFixture.mp cell missing from eval result"));
+    assert!(
+        matches!(mp_val, Value::Undef),
+        "NonPsdFixture.mp should be Value::Undef after non-PSD rejection, got: {:?}",
+        mp_val
+    );
+}
+
+/// Scenario: PSD inertia tensor → `Value::StructureInstance` + no PSD diagnostic.
+///
+/// `inertia: [[1,0,0],[0,1,0],[0,0,1]]` (identity) has all eigenvalues = 1.
+/// The engine_eval PSD hook must leave the instance untouched and emit no
+/// `DynamicsInertiaNotPSD` diagnostic.
+#[test]
+fn mass_properties_psd_inertia_yields_structure_instance() {
+    const SOURCE: &str = r#"
+structure def PsdFixture {
+    let mp = MassProperties(
+        mass: 1kg,
+        com: point3(0mm, 0mm, 0mm),
+        inertia: [[1,0,0],[0,1,0],[0,0,1]],
+        origin: 0.0
+    )
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    // No DynamicsInertiaNotPSD diagnostic should appear.
+    let psd_diags: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DynamicsInertiaNotPSD))
+        .collect();
+    assert!(
+        psd_diags.is_empty(),
+        "PSD inertia [[1,0,0],[0,1,0],[0,0,1]] should produce no \
+         DynamicsInertiaNotPSD diagnostic, got: {:?}",
+        psd_diags
+    );
+
+    // The `mp` cell must be a StructureInstance with type_name "MassProperties".
+    let mp_id = ValueCellId::new("PsdFixture", "mp");
+    let mp_val = result
+        .values
+        .get(&mp_id)
+        .unwrap_or_else(|| panic!("PsdFixture.mp cell missing from eval result"));
+    match mp_val {
+        Value::StructureInstance(data) => {
+            assert_eq!(
+                data.type_name, "MassProperties",
+                "PsdFixture.mp should be a MassProperties instance, got type_name: {:?}",
+                data.type_name
+            );
+        }
+        other => panic!(
+            "PsdFixture.mp should be Value::StructureInstance, got: {:?}",
+            other
+        ),
+    }
 }

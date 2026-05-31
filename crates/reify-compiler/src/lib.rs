@@ -41,6 +41,7 @@ mod type_resolution;
 mod types;
 mod units;
 
+pub use compile_builder::pre_pass::check_module_path_decl;
 pub use geometry::derive_feature_tags;
 pub use prelude_context::PreludeContext;
 pub use type_compat::{implicitly_converts_to, type_compatible};
@@ -75,7 +76,7 @@ pub(crate) use traits::*;
 pub(crate) use type_compat::*;
 pub(crate) use type_resolution::*;
 pub(crate) use units::*;
-pub use units::{GEOMETRY_FUNCTION_NAMES, UnitEntry, UnitRegistry};
+pub use units::{GEOMETRY_FUNCTION_NAMES, UnitEntry, UnitRegistry, UnitResolveError, resolve_unit_expr};
 
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
@@ -371,6 +372,13 @@ pub fn compile_with_prelude_context(
         &mut compile_ctx,
         prelude_refs,
     );
+
+    // Resolve deferred sub-instance-override `auto` / `auto(free)` cells raised
+    // for forward-declared child structures (task 3806, step 10).  Runs after
+    // `phase_auto_type_param_resolution` (all `type_args` placeholders are
+    // concrete) and before `phase_pending_bound_checks` (same template-registry
+    // composition; consistent ordering with other post-passes).
+    compile_builder::entities_phase::phase_sub_override_autos(&mut compile_ctx, prelude_refs);
 
     compile_builder::entities_phase::phase_pending_bound_checks(&mut compile_ctx, prelude_refs);
 

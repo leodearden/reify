@@ -56,6 +56,7 @@ fn reject_unresolved_type_names() {
         errors: vec![],
         content_hash: ContentHash::of_str("bad module"),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&module);
@@ -244,7 +245,7 @@ fn handle_parse_errors_gracefully() {
                 default: Some(Expr {
                     kind: ExprKind::QuantityLiteral {
                         value: 80.0,
-                        unit: "mm".into(),
+                        unit: UnitExpr::Unit("mm".to_string()),
                     },
                     span: SourceSpan::new(9, 13),
                 }),
@@ -264,6 +265,7 @@ fn handle_parse_errors_gracefully() {
         }],
         content_hash: ContentHash::of_str("partial module"),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     // Should not panic; should produce output for valid parts
@@ -354,6 +356,7 @@ fn reject_unresolved_type_in_trait_conformance() {
         errors: vec![],
         content_hash: ContentHash::of_str("bad conformance module"),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&module);

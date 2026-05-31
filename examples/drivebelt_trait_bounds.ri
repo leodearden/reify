@@ -82,8 +82,8 @@ structure def CeramicLiner : Refractory {
     param name : String = "alumina_ceramic"
 
     // ThermallyCharacterized
-    param thermal_conductivity : ThermalConductivity = 30.0 * 1W / (1m * 1K)
-    param specific_heat : SpecificHeat = 880.0 * 1J / (1kg * 1K)
+    param thermal_conductivity : ThermalConductivity = 30.0W/(m*K)
+    param specific_heat : SpecificHeat = 880.0J/(kg*K)
     param thermal_expansion : ThermalExpansion = 0.000008 / 1K  // 8.0e-6 coefficient of linear expansion
     param melting_point : Real = 2072.0        // K
     param max_service_temperature : Real = 2050.0 // K — clears Refractory >= 1500 guard
@@ -108,9 +108,9 @@ structure def Copper : Conductive {
     param name : String = "copper"
 
     // ElectricallyCharacterized
-    param resistivity : ElectricResistivity = 0.000000017 * 1ohm * 1m  // 1.7e-8 Ω·m — clears Conductive < 1e-4 guard
+    param resistivity : ElectricResistivity = 0.000000017ohm*m  // 1.7e-8 Ω·m — clears Conductive < 1e-4 guard
     param dielectric_constant : Real = 1.0      // placeholder (not meaningful for metals)
-    param dielectric_strength : DielectricStrength = 0.0 * 1V / 1m     // placeholder (infinite for conductors)
+    param dielectric_strength : DielectricStrength = 0.0V/m             // placeholder (infinite for conductors)
     param magnetic_permeability : Real = 1.0    // μ_r ≈ 1 for copper (diamagnetic)
 }
 

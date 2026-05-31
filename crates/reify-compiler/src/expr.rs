@@ -225,52 +225,83 @@ pub(crate) fn try_emit_cross_sub_geometry(
 /// `CompiledExprKind::CrossSubGeometryRef` (task 3508) whose entity stamp follows
 /// the same `format!("{}.{}", entity_name, sub_name)` convention used at
 /// expr.rs:1317 for scalar cross-sub member access, with `Type::Geometry`.
-/// The typed variant lets the bare-let drop site in entity.rs recognise the
-/// synthetic shape unambiguously via pattern match, rather than the fragile
-/// `entity.contains('.')` heuristic.
 ///
-/// Returns `None` when the member is not a realisation on the child template,
-/// allowing the caller to fall through to its existing "unknown member" branch.
+/// Returns `None` when the member is neither a geometry realisation nor a
+/// forward-declared member, allowing the caller to fall through to its existing
+/// "unknown member" branch.
 ///
-/// **No diagnostic emitted on success.**  The eval side (engine_build.rs) is
-/// responsible for plumbing the realised geometry handle into
-/// `named_steps["<sub>.<member>"]` so that the parallel `GeomRef::Sub("<sub>.<member>")`
-/// in the realisation ops resolves to the child's handle.
+/// **No diagnostic emitted on success.**  After GHR-γ step-4 the
+/// `CrossSubGeometryRef` falls through to the standard `ValueCellDecl` path in
+/// entity.rs.  The eval side (engine_build.rs `seed_cross_sub_named_steps`)
+/// stamps the scoped value cell (`ValueCellId("<parent>.<sub>", member)`) with a
+/// `Value::GeometryHandle` derived from the child's realization handle.  The
+/// eval-time arm in `reify_expr::eval_expr` dereferences the scoped cell
+/// directly (GHR-γ step-8).
 ///
 /// The collection-sub call sites continue to use [`try_emit_cross_sub_geometry`]
 /// to emit the v0.1 diagnostic until per-instance handles are implemented.
 ///
-/// # Forward-declared sub (runtime fallback)
+/// # Forward-declared sub (scalar fallback, task 3806 step-10)
 ///
 /// When the parent template is compiled before the child template (i.e., the sub's
 /// `structure_name` was not yet in `compiled_templates` at the time the parent's
 /// scope was built), `scope.sub_member_types` and `scope.sub_realization_names`
-/// are both empty for that sub.  In that case this helper still emits the
-/// working-path value-ref optimistically: the compile-side cannot distinguish a
-/// forward-declared geometry member from a forward-declared scalar member, so we
-/// trust the runtime to flag the missing handle via the
-/// `unresolvable GeomRef::Sub('<sub>.<member>')` diagnostic produced by
-/// `geometry_ops.rs::resolve_geom_ref`.  The optimism is centralized in
-/// `CompilationScope::sub_member_is_cross_sub_geometry_or_forward_declared`
-/// (task 3455), shared with `geometry.rs::try_resolve_cross_sub_geom_ref`.
+/// are both empty for that sub.
+///
+/// The two cases are handled differently to avoid a panic in eval:
+///
+/// * **Genuine geometry realization** (`sub_realization_names[sub].contains(member)`):
+///   emit `CrossSubGeometryRef` — the bare-let drop site in entity.rs silently drops
+///   it.  `CrossSubGeometryRef` must only appear at bare-let top-level (hence the
+///   `unreachable!()` guard in `eval_expr`).
+///
+/// * **Forward-declared child, non-geometry member**: emit `ValueCellRef(scoped_id,
+///   Type::Geometry)` instead.  `CrossSubGeometryRef` would panic in `eval_expr` when
+///   it appears inside a constraint BinOp (not at bare-let top-level), so we use
+///   `ValueCellRef` — which the solver evaluates by snapshot lookup, not by panicking.
+///   The deferred post-pass (`phase_sub_override_autos`) pushes the scoped Auto
+///   `ValueCellDecl` into the parent template once all entities are compiled, and
+///   the M3 solver resolves it against the parent's constraints.
+///
+/// Note: `geometry.rs::try_resolve_cross_sub_geom_ref` still uses the combined
+/// `sub_member_is_cross_sub_geometry_or_forward_declared` predicate for GeomRef::Sub
+/// resolution; only the value-ref path (this function) distinguishes the two cases.
 fn try_resolve_cross_sub_geometry_value_ref(
     scope: &CompilationScope<'_>,
     sub_name: &str,
     member: &str,
 ) -> Option<CompiledExpr> {
-    // Forward-declared optimism + realization check (task 3455): single
-    // source of truth shared with `geometry.rs::try_resolve_cross_sub_geom_ref`
-    // so the value-ref / GeomRef::Sub handshake cannot drift.  See the
-    // helper's docstring for the predicate semantics.
-    if scope.sub_member_is_cross_sub_geometry_or_forward_declared(sub_name, member) {
-        let scoped_entity = format!("{}.{}", scope.entity_name, sub_name);
-        let scoped_id = ValueCellId::new(&scoped_entity, member);
-        // Emit the typed discriminator (task-3508) so the bare-let drop site in
-        // entity.rs can recognise this synthetic shape via pattern match on the
-        // variant, rather than the fragile `entity.contains('.')` heuristic.
+    // Split the two reasons a member might be absent from sub_member_types:
+    //   1. Genuine geometry realization — sub_realization_names contains the member.
+    //   2. Forward-declared child — sub_component_types has the sub but
+    //      sub_member_types does not (child not yet compiled).
+    let has_realization = scope
+        .sub_realization_names
+        .get(sub_name)
+        .is_some_and(|s| s.contains(member));
+    let is_forward_declared = scope.sub_component_types.contains_key(sub_name)
+        && !scope.sub_member_types.contains_key(sub_name);
+
+    if !has_realization && !is_forward_declared {
+        return None;
+    }
+
+    let scoped_entity = format!("{}.{}", scope.entity_name, sub_name);
+    let scoped_id = ValueCellId::new(&scoped_entity, member);
+
+    if has_realization {
+        // Genuine geometry member: emit the typed CrossSubGeometryRef discriminator
+        // so the bare-let drop site in entity.rs can recognise and silently drop it
+        // (V0.1 no-op with a warning).  Safe only at bare-let top-level; the
+        // `unreachable!()` in eval_expr guards this invariant.
         Some(CompiledExpr::cross_sub_geometry_ref(scoped_id, Type::Geometry))
     } else {
-        None
+        // Forward-declared child (is_forward_declared, !has_realization):
+        // emit ValueCellRef so constraint expressions can be evaluated by the
+        // solver without panicking.  Type::Geometry is a placeholder — the
+        // compiler does not cascade-error on this type in comparison contexts,
+        // and eval looks up values from the snapshot by ID, not by type.
+        Some(CompiledExpr::value_ref(scoped_id, Type::Geometry))
     }
 }
 
@@ -434,6 +465,26 @@ const COLLECTION_AGGREGATION_MEMBERS: &[&str] = &["count", "sum", "keys", "value
 const PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS: &[&str] =
     &["params", "geometric_params", "material_params"];
 
+/// Structural-query accessor names on `self` in entity scope.
+///
+/// When a structure body accesses `self.<name>` where `<name>` is in this list
+/// and no user-declared param/let/sub with that name exists, the compiler emits a
+/// `CompiledExprKind::MethodCall` node with result type
+/// `Type::List(Box::new(Type::StructureRef(WILDCARD_STRUCTURE_KIND)))`.
+///
+/// Semantics:
+/// - `self.children` — direct sub-entity instances (one level deep).
+/// - `self.members`  — all members (params + sub-entities) at this level.
+/// - `self.descendants` — all sub-entity instances transitively.
+///
+/// User-declared params/lets/subs shadow these names because the dispatch is
+/// placed in the `None` arm of `scope.resolve(member)`, i.e. only when no
+/// user-definition matches.
+///
+/// Runtime enumeration (actually populating the list) is deferred to the β/γ
+/// tasks; this α task provides compiler-typing only.
+const STRUCTURAL_QUERY_ACCESSORS: &[&str] = &["children", "members", "descendants"];
+
 /// Entity-kind name that acts as the purpose-subject wildcard.
 ///
 /// A purpose declared as `purpose check(subject : Structure)` binds to *any*
@@ -587,6 +638,78 @@ pub(crate) fn compile_expr_guarded(
             }
         }
         reify_ast::ExprKind::QuantityLiteral { value, unit } => {
+            // Route compound unit expressions (Mul/Div/Pow) through resolve_unit_expr,
+            // which folds the factor product and dimension vector.  The bare-unit path
+            // (UnitExpr::Unit(name)) is left unchanged — it handles affine units like
+            // `20degC` correctly via lookup_unit_in_registry / unit_to_scalar (offset
+            // applied), whereas resolve_unit_expr rejects ALL offset units.
+            let unit = match unit {
+                reify_ast::UnitExpr::Unit(name) => name,
+                compound @ (reify_ast::UnitExpr::Mul(..)
+                | reify_ast::UnitExpr::Div(..)
+                | reify_ast::UnitExpr::Pow(..)) => {
+                    match scope.unit_registry {
+                        Some(registry) => {
+                            match resolve_unit_expr(compound, registry, expr.span) {
+                                Ok((factor, dimension)) => {
+                                    let si_value = value * factor;
+                                    if !si_value.is_finite() {
+                                        diagnostics.push(
+                                            Diagnostic::error(
+                                                "overflow in quantity literal: result is not finite"
+                                                    .to_string(),
+                                            )
+                                            .with_label(DiagnosticLabel::new(
+                                                expr.span,
+                                                "non-finite result",
+                                            )),
+                                        );
+                                        return CompiledExpr::literal(
+                                            Value::Undef,
+                                            Type::Scalar {
+                                                dimension: DimensionVector::DIMENSIONLESS,
+                                            },
+                                        );
+                                    }
+                                    return CompiledExpr::literal(
+                                        Value::Scalar { si_value, dimension },
+                                        Type::Scalar { dimension },
+                                    );
+                                }
+                                Err(e) => {
+                                    diagnostics.push(unit_resolve_error_to_diagnostic(&e));
+                                    return CompiledExpr::literal(
+                                        Value::Undef,
+                                        Type::Scalar {
+                                            dimension: DimensionVector::DIMENSIONLESS,
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                        None => {
+                            // Defensive path: compound units require a unit registry.
+                            // This branch is unreachable from entity/param scopes (which
+                            // always seed the registry), but emitting a diagnostic here
+                            // avoids silent mis-resolution if a compound literal ever
+                            // appears in a registry-less bootstrap scope.
+                            diagnostics.push(
+                                Diagnostic::error(
+                                    "compound unit expression requires a unit registry in scope"
+                                        .to_string(),
+                                )
+                                .with_label(DiagnosticLabel::new(expr.span, "compound unit")),
+                            );
+                            return CompiledExpr::literal(
+                                Value::Undef,
+                                Type::Scalar {
+                                    dimension: DimensionVector::DIMENSIONLESS,
+                                },
+                            );
+                        }
+                    }
+                }
+            };
             // Check the unit registry first (for user-declared units), then fall back to hardcoded.
             let resolved = scope
                 .lookup_unit_in_registry(*value, unit)
@@ -758,11 +881,86 @@ pub(crate) fn compile_expr_guarded(
             );
             match resolve_binop(op) {
                 Some(bin_op) => {
-                    let result_type = infer_binop_type(
+                    let mut result_type = infer_binop_type(
                         bin_op,
                         &compiled_left.result_type,
                         &compiled_right.result_type,
                     );
+
+                    // Dimension-scaling for `Scalar<Q> ^ n → Scalar<Q^n>` (task-3805 / PRD §4.3).
+                    //
+                    // `infer_binop_type(Pow, Scalar{Q}, _)` returns `left.clone() = Scalar{Q}`,
+                    // which is correct for `Int ^ Int` and `Real ^ Real` but wrong for `Scalar`
+                    // bases — the dimension must be raised to the n-th power.
+                    //
+                    // The EXACT compile-time integer n is needed to compute `Q^n`, so the
+                    // refinement runs here in `expr.rs` where the right `&Expr` AST is in scope.
+                    // (See design_decisions in plan.json — `infer_binop_type` only sees types,
+                    // not literal values, so it structurally cannot compute `Q^n`.)
+                    //
+                    // Because `^` binds tighter than unary `-`, `5mm ^ -2` parses as
+                    // `5mm ^ (-2)` — the exponent arrives as `UnOp{"-", NumberLiteral{2, false}}`,
+                    // not as a negative number literal.  Both shapes are matched.
+                    //
+                    // Non-integer exponents on dimensioned bases (the error path) are handled
+                    // in step-7 via `DiagnosticCode::NonIntegerExponentOnDimensioned`.
+                    if bin_op == BinOp::Pow
+                        && let Type::Scalar { dimension } = compiled_left.result_type
+                    {
+                            // Extract a signed integer literal from the right AST node.
+                            let int_exp: Option<i32> = match &right.kind {
+                                reify_ast::ExprKind::NumberLiteral {
+                                    value,
+                                    is_real: false,
+                                } => Some(*value as i32),
+                                reify_ast::ExprKind::UnOp { op: unary_op, operand }
+                                    if unary_op.as_str() == "-" =>
+                                {
+                                    match &operand.kind {
+                                        reify_ast::ExprKind::NumberLiteral {
+                                            value,
+                                            is_real: false,
+                                        } => Some(-(*value as i32)),
+                                        _ => None,
+                                    }
+                                }
+                                _ => None,
+                            };
+                            if let Some(n) = int_exp {
+                                let scaled = dimension.pow(n as i8);
+                                result_type = if scaled.is_dimensionless() {
+                                    // `5mm ^ 0` or any Scalar<Q^0> collapses to Real,
+                                    // matching the existing BinOp::Div dimensionless→Real
+                                    // convention.
+                                    Type::Real
+                                } else {
+                                    Type::Scalar { dimension: scaled }
+                                };
+                            }
+                            // None case: non-integer exponent on dimensioned base
+                            // (task-3805 / PRD §4.3 / E_NONINT_EXP_ON_DIMENSIONED).
+                            //
+                            // A real-valued literal (is_real:true), a non-literal exponent
+                            // (identifier, expression, etc.) all fall here.  Poison to
+                            // `Type::Error` (anti-cascade) and emit a single diagnostic so
+                            // downstream checks see `Type::Error` and suppress follow-on noise.
+                            if int_exp.is_none() {
+                                result_type = make_poison_type(
+                                    diagnostics,
+                                    Diagnostic::error(format!(
+                                        "non-integer exponent on dimensioned value `{}`; \
+                                         only integer-literal exponents are allowed \
+                                         (use sqrt for roots)",
+                                        compiled_left.result_type,
+                                    ))
+                                    .with_code(DiagnosticCode::NonIntegerExponentOnDimensioned)
+                                    .with_label(DiagnosticLabel::new(
+                                        right.span,
+                                        "exponent must be an integer literal",
+                                    )),
+                                );
+                            }
+                    }
 
                     // Dimension compatibility check for Add/Sub
                     if matches!(bin_op, BinOp::Add | BinOp::Sub) {
@@ -802,6 +1000,48 @@ pub(crate) fn compile_expr_guarded(
                                 );
                             }
                             _ => {}
+                        }
+                    }
+
+                    // Bool-operand guard for `implies` (task-3921 / PRD §3.4).
+                    //
+                    // `infer_binop_type` returns `Type::Bool` unconditionally for Implies, so
+                    // without this guard `5 implies 3` would silently type-check.  We reject
+                    // non-Bool, non-Error operands here (Type::Error is the poison sentinel;
+                    // suppressing the secondary diagnostic prevents cascade noise).
+                    //
+                    // And/Or are intentionally left unchanged (they evaluate non-Bool operands
+                    // to Undef at runtime; see design_decisions in plan.json).
+                    if matches!(bin_op, BinOp::Implies) {
+                        let lty = &compiled_left.result_type;
+                        let rty = &compiled_right.result_type;
+                        let left_bad =
+                            !matches!(lty, Type::Bool | Type::Error);
+                        let right_bad =
+                            !matches!(rty, Type::Bool | Type::Error);
+                        if left_bad {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "implies left operand must be Bool, got `{}`",
+                                    lty,
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    left.span,
+                                    "expected Bool here",
+                                )),
+                            );
+                        }
+                        if right_bad {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "implies right operand must be Bool, got `{}`",
+                                    rty,
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    right.span,
+                                    "expected Bool here",
+                                )),
+                            );
                         }
                     }
 
@@ -1330,6 +1570,34 @@ pub(crate) fn compile_expr_guarded(
                             return CompiledExpr::value_ref(id, ty);
                         }
                         None => {
+                            // Structural-query accessors (task 3982, PRD §8 Phase 1).
+                            //
+                            // Placed here — AFTER scope.resolve fails — so user-declared
+                            // params/lets/subs with the same name shadow the accessors
+                            // (matches the built-in–shadowing precedent at line ~683-690).
+                            //
+                            // Lower to a MethodCall node using the same shape as the
+                            // collection-aggregation lowering (`.count`/`.sum`, expr.rs ~2081).
+                            // self_ref mirrors the bare-`self` resolution (line ~663-668).
+                            // The result type `List(StructureRef(WILDCARD_STRUCTURE_KIND))`
+                            // is the concrete spelling of "List<EntityRef>" — the wildcard
+                            // StructureRef("Structure") already means "any structure entity".
+                            // β/γ dispatch on MethodCall{method ∈ STRUCTURAL_QUERY_ACCESSORS}.
+                            if STRUCTURAL_QUERY_ACCESSORS.contains(&member.as_str()) {
+                                let self_ref = CompiledExpr::value_ref(
+                                    ValueCellId::new(&scope.entity_name, "__self"),
+                                    Type::StructureRef(scope.entity_name.clone()),
+                                );
+                                let elem_type =
+                                    Type::StructureRef(WILDCARD_STRUCTURE_KIND.to_string());
+                                let list_type = Type::List(Box::new(elem_type));
+                                return CompiledExpr::method_call(
+                                    self_ref,
+                                    member.clone(),
+                                    vec![],
+                                    list_type,
+                                );
+                            }
                             // Anti-cascade (task-448/task-1921/task-1969): by-construction
                             // invariant — make_poison_literal pushes the diagnostic and
                             // returns the poison literal in one call.
@@ -1674,6 +1942,16 @@ pub(crate) fn compile_expr_guarded(
                 && let reify_ast::ExprKind::Ident(name) = &idx_obj.kind
                 && scope.collection_sub_names.contains(name.as_str())
             {
+                // GHR-γ (task 3605): check geometry realization members BEFORE
+                // sub_member_types — geometry params now have ValueCellDecls and
+                // appear in sub_member_types, but collection-sub geometry access
+                // is not yet supported in v0.1 regardless.  Checking here ensures
+                // the geometry-specific diagnostic fires even for Solid params.
+                if let Some(e) =
+                    try_emit_cross_sub_geometry(scope, name, member, expr.span, diagnostics)
+                {
+                    return e;
+                }
                 // Resolve member type from pre-populated sub_member_types
                 let member_type = match scope
                     .sub_member_types
@@ -1683,12 +1961,6 @@ pub(crate) fn compile_expr_guarded(
                 {
                     Some(ty) => ty,
                     None => {
-                        // Check for geometry realization member (task-3397).
-                        if let Some(e) =
-                            try_emit_cross_sub_geometry(scope, name, member, expr.span, diagnostics)
-                        {
-                            return e;
-                        }
                         // Anti-cascade (task-448/task-1921): return poison early rather than
                         // synthesising a dangling ValueRef to a non-existent cell.
                         return make_poison_literal(
@@ -2279,8 +2551,22 @@ pub(crate) fn compile_expr_guarded(
                         current_guard,
                         lambda_counter,
                     );
+                    // β lossy bridge: derive Vec<String> variant-tag strings from
+                    // the structured Vec<MatchPattern>.  Binders are dropped at β;
+                    // γ/ε widen CompiledMatchArm.patterns to CompiledPattern.
+                    let tag_patterns: Vec<String> = arm
+                        .patterns
+                        .iter()
+                        .map(|p| match p {
+                            reify_ast::MatchPattern::Wildcard => "_".to_string(),
+                            reify_ast::MatchPattern::Variant(n) => n.clone(),
+                            reify_ast::MatchPattern::VariantBind { name, .. } => {
+                                name.clone()
+                            }
+                        })
+                        .collect();
                     reify_ir::CompiledMatchArm {
-                        patterns: arm.patterns.clone(),
+                        patterns: tag_patterns,
                         body,
                     }
                 })
@@ -2944,6 +3230,40 @@ pub(crate) fn compile_expr_guarded(
                 });
             CompiledExpr::value_ref(id, ty)
         }
+        // Trait associated-fn call compilation is deferred to task δ/ζ.
+        // These placeholder arms keep `cargo build --workspace` green after
+        // the AST additions in task γ.  They emit a diagnostic and return a
+        // poison `CompiledExpr` to prevent cascading type errors.
+        reify_ast::ExprKind::TraitMethodCall { .. } => make_poison_literal(
+            diagnostics,
+            Diagnostic::error(
+                "trait associated-fn calls are not yet supported (task δ/ζ)".to_string(),
+            )
+            .with_label(DiagnosticLabel::new(
+                expr.span,
+                "not yet supported",
+            )),
+        ),
+        reify_ast::ExprKind::TraitStaticCall { .. } => make_poison_literal(
+            diagnostics,
+            Diagnostic::error(
+                "trait static-fn calls are not yet supported (task δ/ζ)".to_string(),
+            )
+            .with_label(DiagnosticLabel::new(
+                expr.span,
+                "not yet supported",
+            )),
+        ),
+        reify_ast::ExprKind::VariantConstruct { .. } => make_poison_literal(
+            diagnostics,
+            Diagnostic::error(
+                "named-field variant construction is not yet supported (task δ)".to_string(),
+            )
+            .with_label(DiagnosticLabel::new(
+                expr.span,
+                "not yet supported",
+            )),
+        ),
     }
 }
 
@@ -3573,6 +3893,7 @@ pub structure Rack {
                 id: ValueCellId::new(name, *pname),
                 kind: crate::types::ValueCellKind::Param,
                 visibility: crate::types::Visibility::Public,
+                is_aux: false,
                 cell_type: Type::Real,
                 default_expr: default.clone(),
                 solver_hints: vec![],
@@ -3602,6 +3923,7 @@ pub structure Rack {
             pragmas: vec![],
             match_arm_groups: vec![],
             forall_templates: vec![],
+            assoc_fns: vec![],
         }
     }
 
@@ -3756,6 +4078,143 @@ pub structure Rack {
             matches!(result.kind, CompiledExprKind::FunctionCall { .. }),
             "builtin `cos` must remain a FunctionCall, got {:?}",
             result.kind
+        );
+    }
+
+    /// `compile_expr_guarded` placeholder arms for `TraitStaticCall` and
+    /// `TraitMethodCall` (task γ keep-green) emit a "not yet supported
+    /// (task δ/ζ)" diagnostic and return a poison `CompiledExpr`.
+    ///
+    /// ## What this test pins
+    ///
+    /// * The placeholder arms reach correctly — no panic, no early return
+    ///   that silently drops the expression.
+    /// * Exactly **one** error fires per call site (no cascade from the
+    ///   poison `Type::Error` return propagating into downstream checks).
+    /// * The diagnostic message contains "not yet supported" so callers can
+    ///   identify it as a deliberate deferral rather than an ICE.
+    ///
+    /// These arms are replaced by real dispatch in task δ/ζ; at that point
+    /// this test can be updated to expect successful compilation instead.
+    #[test]
+    fn trait_call_exprs_emit_not_yet_supported_diagnostic_and_return_poison() {
+        use reify_core::Severity;
+        use reify_test_support::compile_source;
+
+        // TraitStaticCall: `C::make()`.  The trait_name "C" is never resolved
+        // as an identifier — the TraitStaticCall arm short-circuits before any
+        // identifier lookup — so exactly one error should fire.
+        let source = "pub structure A { let s = C::make() }";
+        let compiled = compile_source(source);
+        let errors: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "TraitStaticCall: expected exactly one error (the not-yet-supported \
+             placeholder), got: {:?}",
+            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert!(
+            errors[0].message.contains("not yet supported"),
+            "TraitStaticCall: expected 'not yet supported' in diagnostic, got: {:?}",
+            errors[0].message
+        );
+
+        // TraitMethodCall: `pin.(C::area)()`.  The placeholder arm uses `{ .. }`
+        // destructuring so the `object` sub-expression (`pin`) is never compiled,
+        // preventing any cascading "undefined variable" second diagnostic.
+        let source2 = "pub structure A { let w = pin.(C::area)() }";
+        let compiled2 = compile_source(source2);
+        let errors2: Vec<_> = compiled2
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert_eq!(
+            errors2.len(),
+            1,
+            "TraitMethodCall: expected exactly one error (the not-yet-supported \
+             placeholder), got: {:?}",
+            errors2.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert!(
+            errors2[0].message.contains("not yet supported"),
+            "TraitMethodCall: expected 'not yet supported' in diagnostic, got: {:?}",
+            errors2[0].message
+        );
+    }
+
+    /// β-bridge contract: the lossy pattern mapping in the match compiler correctly
+    /// maps `MatchPattern::Wildcard` → `"_"` and
+    /// `MatchPattern::VariantBind { name, .. }` → `name` (binders dropped).
+    ///
+    /// These two branches are the new β additions; `MatchPattern::Variant` is already
+    /// exercised by existing compiler tests (constructor_hash_tests, geometry tests).
+    /// This test pins the bridge so a regression — e.g. accidentally emitting binders
+    /// or the wrong tag — would be caught before silently breaking exhaustiveness
+    /// checking or variant-validation downstream.
+    #[test]
+    fn beta_bridge_wildcard_and_variantbind_produce_correct_tag_patterns() {
+        use reify_ir::CompiledExprKind;
+
+        let sp = SourceSpan::prelude();
+        let num = |v: f64| reify_ast::Expr {
+            kind: reify_ast::ExprKind::NumberLiteral {
+                value: v,
+                is_real: false,
+            },
+            span: sp,
+        };
+
+        let arms = vec![
+            // arm0: Wildcard → compiled pattern tag must be "_"
+            reify_ast::MatchArm {
+                patterns: vec![reify_ast::MatchPattern::Wildcard],
+                body: num(0.0),
+                span: sp,
+            },
+            // arm1: VariantBind → compiled pattern tag must be "Circle" (binders dropped)
+            reify_ast::MatchArm {
+                patterns: vec![reify_ast::MatchPattern::VariantBind {
+                    name: "Circle".to_string(),
+                    binders: vec![("radius".to_string(), "r".to_string())],
+                }],
+                body: num(1.0),
+                span: sp,
+            },
+        ];
+        let expr = reify_ast::Expr {
+            kind: reify_ast::ExprKind::Match {
+                discriminant: Box::new(num(0.0)),
+                arms,
+            },
+            span: sp,
+        };
+
+        let scope = CompilationScope::new("S");
+        let mut diags: Vec<Diagnostic> = vec![];
+        let result = compile_expr(&expr, &scope, &[], &[], &mut diags);
+
+        let CompiledExprKind::Match { arms: compiled_arms, .. } = &result.kind else {
+            panic!("expected CompiledExprKind::Match, got: {:?}", result.kind);
+        };
+        assert_eq!(compiled_arms.len(), 2);
+        assert_eq!(
+            compiled_arms[0].patterns,
+            vec!["_".to_string()],
+            "Wildcard should produce tag \"_\", got: {:?}",
+            compiled_arms[0].patterns,
+        );
+        assert_eq!(
+            compiled_arms[1].patterns,
+            vec!["Circle".to_string()],
+            "VariantBind {{ name: \"Circle\", .. }} should produce tag \"Circle\" (binders dropped), \
+             got: {:?}",
+            compiled_arms[1].patterns,
         );
     }
 }

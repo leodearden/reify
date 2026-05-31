@@ -71,6 +71,7 @@ fn module_with_alias(alias_name: &str, type_expr: TypeExpr) -> ParsedModule {
         errors: vec![],
         content_hash: dummy_hash("dispatch_test_module"),
         pragmas: vec![],
+        declared_module_path: None,
     }
 }
 
@@ -241,6 +242,7 @@ fn module_with_structure_param(type_expr: TypeExpr) -> ParsedModule {
         errors: vec![],
         content_hash: dummy_hash("test_module_struct"),
         pragmas: vec![],
+        declared_module_path: None,
     }
 }
 
@@ -271,6 +273,7 @@ fn module_with_trait_param(type_expr: TypeExpr) -> ParsedModule {
         errors: vec![],
         content_hash: dummy_hash("test_module_trait"),
         pragmas: vec![],
+        declared_module_path: None,
     }
 }
 
@@ -297,7 +300,7 @@ fn module_with_field_domain(domain_type: TypeExpr) -> ParsedModule {
                             // top of the expected "unresolved field type" domain error.
                             kind: ExprKind::QuantityLiteral {
                                 value: 1.0,
-                                unit: "m".to_string(),
+                                unit: UnitExpr::Unit("m".to_string()),
                             },
                             span: dummy_span(),
                         }),
@@ -312,6 +315,7 @@ fn module_with_field_domain(domain_type: TypeExpr) -> ParsedModule {
         errors: vec![],
         content_hash: dummy_hash("test_module_field"),
         pragmas: vec![],
+        declared_module_path: None,
     }
 }
 
@@ -363,6 +367,7 @@ fn module_with_trait_bound_type_arg(type_arg: TypeExpr) -> ParsedModule {
         errors: vec![],
         content_hash: dummy_hash("test_module_bound"),
         pragmas: vec![],
+        declared_module_path: None,
     }
 }
 

@@ -30,7 +30,7 @@
 //     default (a unit-Z print axis); this is a function call to the built-in
 //     `vec3` constructor, not a quantity literal.
 //   - These conventions are established by `materials_fea.ri` (density uses
-//     `n.0 * 1kg / (1m * 1m * 1m)`) and `printer.ri` (vec3 axis vectors).
+//     the compound-unit literal `<n>kg/m^3`) and `printer.ri` (vec3 axis vectors).
 //
 // Cross-module dependencies (resolved via sequential-prelude in stdlib_loader):
 //   - `MaterialPropertyProvenance` — from std.materials.fea

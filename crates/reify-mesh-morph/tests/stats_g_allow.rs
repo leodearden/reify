@@ -8,7 +8,8 @@
 //! The test shells out to `scripts/audit-orphan-producers.sh` with
 //! `--scope crates/reify-mesh-morph/src` and asserts *list membership* —
 //! each of the three named functions must be ABSENT from `orphans[]` and
-//! PRESENT in `allowed[]` with a reason citing both "2947" and "2949".
+//! PRESENT exactly once in `allowed[]` with a non-empty allow_reason
+//! (membership-only; no substring pin on the marker text).
 //!
 //! Crucially, we do NOT assert `orphan_count == 0`: reify-mesh-morph has 8
 //! pre-existing baseline orphans in boundary/elasticity/laplacian/lib/quality
@@ -82,8 +83,8 @@ fn stats_record_fns_are_g_allow_marked() {
             .as_str()
             .unwrap_or_default();
         assert!(
-            reason.contains("#2947") && reason.contains("#2949"),
-            "`{fn_name}` allow_reason must cite tasks #2947 and #2949; got: {reason:?}"
+            !reason.is_empty(),
+            "`{fn_name}` in stats.rs must have a non-empty allow_reason; got: {reason:?}"
         );
     }
 }

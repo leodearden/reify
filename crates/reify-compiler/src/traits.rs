@@ -99,6 +99,69 @@ fn resolve_trait_member_type_annotation(
     }
 }
 
+/// Derive the exact-match [`CompiledAssocFnSig`] for a trait associated function.
+///
+/// The leading `is_self` receiver (sentinel `self` named type, decl.rs:818-823)
+/// is recorded as `has_self` and excluded from `params`; every other param's
+/// `type_expr` and the `return_type` resolve through the same
+/// [`resolve_trait_member_type_annotation`] path the rest of `compile_trait`
+/// uses (so unresolved/DimensionalOp/IntegerLiteral annotations produce the
+/// same diagnostics). A missing return type defaults to `Type::Real`, matching
+/// `compile_function`'s convention. Added by task 3939 δ.
+#[allow(clippy::too_many_arguments)]
+fn assoc_fn_sig(
+    fn_def: &reify_ast::FnDef,
+    trait_decl: &reify_ast::TraitDecl,
+    enum_defs: &[reify_ir::EnumDef],
+    empty_params: &HashSet<String>,
+    alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CompiledAssocFnSig {
+    let mut has_self = false;
+    let mut params = Vec::new();
+    for p in &fn_def.params {
+        if p.is_self {
+            // The self receiver's sentinel `self` type is not resolved here;
+            // it is mapped to the concrete conformer type during conformance /
+            // dispatch (tasks δ/ζ). Record self-ness and skip.
+            has_self = true;
+            continue;
+        }
+        let ty = resolve_trait_member_type_annotation(
+            &p.type_expr,
+            trait_decl,
+            enum_defs,
+            empty_params,
+            alias_registry,
+            structure_names,
+            trait_names,
+            diagnostics,
+        );
+        params.push(ty);
+    }
+    let return_type = match &fn_def.return_type {
+        Some(te) => resolve_trait_member_type_annotation(
+            te,
+            trait_decl,
+            enum_defs,
+            empty_params,
+            alias_registry,
+            structure_names,
+            trait_names,
+            diagnostics,
+        ),
+        None => Type::Real,
+    };
+    CompiledAssocFnSig {
+        name: fn_def.name.clone(),
+        has_self,
+        params,
+        return_type,
+    }
+}
+
 pub(crate) fn compile_trait(
     trait_decl: &reify_ast::TraitDecl,
     enum_defs: &[reify_ir::EnumDef],
@@ -201,6 +264,34 @@ pub(crate) fn compile_trait(
                     span: sub_decl.span,
                 });
             }
+            reify_ast::MemberDecl::Fn(fn_def) => {
+                // Associated function (task 3939 δ). A bodyless fn is a required
+                // member the conformer must provide; a fn with a body is a
+                // default-providing member injected when not overridden.
+                let sig = assoc_fn_sig(
+                    fn_def,
+                    trait_decl,
+                    enum_defs,
+                    &empty_params,
+                    alias_registry,
+                    structure_names,
+                    trait_names,
+                    diagnostics,
+                );
+                if fn_def.body.is_none() {
+                    required_members.push(TraitRequirement {
+                        name: fn_def.name.clone(),
+                        kind: RequirementKind::Fn(sig),
+                        span: fn_def.span,
+                    });
+                } else {
+                    defaults.push(TraitDefault {
+                        name: Some(fn_def.name.clone()),
+                        kind: DefaultKind::Fn(fn_def.clone()),
+                        span: fn_def.span,
+                    });
+                }
+            }
             _ => {
                 // Minimize, Maximize, GuardedGroup, AssociatedType — skip for now
             }
@@ -277,6 +368,7 @@ pub(crate) fn compile_purpose(
     let mut constraints = Vec::new();
     let mut constraint_index = 0u32;
     let mut objective = None;
+    let mut lets = Vec::new();
 
     for member in &purpose_def.members {
         match member {
@@ -305,22 +397,22 @@ pub(crate) fn compile_purpose(
                 objective = Some(OptimizationObjective::Maximize(compiled_expr));
             }
             reify_ast::MemberDecl::Let(let_decl) => {
-                // Let bindings in purpose bodies are not yet supported:
-                // CompiledPurpose has no storage for let expressions, and
-                // activate_purpose only injects constraints. Any constraint
-                // referencing a let-bound name would produce a ValueCellId
-                // with no backing node in the eval graph.
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "let bindings in purpose bodies are not yet supported: '{}'",
-                        let_decl.name
-                    ))
-                    .with_code(DiagnosticCode::PurposeLetUnsupported)
-                    .with_label(DiagnosticLabel::new(
-                        let_decl.span,
-                        "unsupported in purpose".to_string(),
-                    )),
-                );
+                // Compile the let expression in the current scope (purpose params
+                // + earlier lets are visible). Any forward reference to a name not
+                // yet registered produces an unknown-identifier diagnostic via the
+                // normal scope.resolve path — no special-casing needed.
+                // Mirrors entity-body let semantics (ordered, no forward refs).
+                let expr = compile_expr(&let_decl.value, &scope, enum_defs, functions, diagnostics);
+                let cell_id = ValueCellId::new(purpose_name.as_str(), let_decl.name.as_str());
+                lets.push(CompiledPurposeLet {
+                    name: let_decl.name.clone(),
+                    cell_id,
+                    expr: expr.clone(),
+                    span: let_decl.span,
+                });
+                // Register AFTER compiling the expr so the let name is not visible
+                // to its own initialiser (ordered semantics, no forward refs).
+                scope.register(&let_decl.name, expr.result_type);
             }
             reify_ast::MemberDecl::GuardedGroup(g) => {
                 diagnostics.push(
@@ -457,6 +549,11 @@ pub(crate) fn compile_purpose(
                     )),
                 );
             }
+            reify_ast::MemberDecl::Fn(_) => {
+                // Associated fn compilation deferred to task δ/ζ.
+                // Trait fns are not valid in purpose bodies (grammar-enforced),
+                // so this arm is unreachable in practice at γ.
+            }
         }
     }
 
@@ -499,11 +596,189 @@ pub(crate) fn compile_purpose(
         name: purpose_def.name.clone(),
         is_pub: purpose_def.is_pub,
         params,
+        lets,
         constraints,
         objective,
         resolved_queries,
         content_hash: purpose_def.content_hash,
         annotations,
         pragmas: purpose_def.pragmas.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Unit tests for `compile_trait` associated-function handling (task 3939 δ).
+    //!
+    //! These pin the producer contract for trait associated functions:
+    //!   * a bodyless `fn req(self) -> Real` (FnDef.body = None) compiles to a
+    //!     `RequirementKind::Fn(sig)` requirement, and
+    //!   * a default-providing `fn area(self) -> Real { 3.14 }` (body = Some)
+    //!     compiles to a `DefaultKind::Fn(fn_def)` default.
+    //!
+    //! `compile_trait` is `pub(crate)`, so these tests must live in-crate.
+    use super::*;
+
+    fn span() -> reify_core::SourceSpan {
+        reify_core::SourceSpan::new(0, 0)
+    }
+
+    fn named_type(name: &str) -> reify_ast::TypeExpr {
+        reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::Named {
+                name: name.to_string(),
+                type_args: vec![],
+            },
+            span: span(),
+        }
+    }
+
+    /// The implicit `self` receiver param: `is_self == true` with the sentinel
+    /// `self` named type (per decl.rs:818-823).
+    fn self_param() -> reify_ast::FnParam {
+        reify_ast::FnParam {
+            name: "self".to_string(),
+            is_self: true,
+            type_expr: named_type("self"),
+            default: None,
+            span: span(),
+        }
+    }
+
+    /// Build an `FnDef` member, with `body` controlling required (None) vs
+    /// default-providing (Some).
+    fn fn_def(
+        name: &str,
+        params: Vec<reify_ast::FnParam>,
+        return_type: Option<reify_ast::TypeExpr>,
+        body: Option<reify_ast::FnBody>,
+    ) -> reify_ast::FnDef {
+        reify_ast::FnDef {
+            name: name.to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            params,
+            return_type,
+            body,
+            span: span(),
+            content_hash: reify_core::ContentHash::of_str(name),
+            annotations: vec![],
+        }
+    }
+
+    /// Wrap members in a `TraitDecl` named `"T"`.
+    fn trait_decl(members: Vec<reify_ast::MemberDecl>) -> reify_ast::TraitDecl {
+        reify_ast::TraitDecl {
+            name: "T".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            refinements: vec![],
+            members,
+            span: span(),
+            content_hash: reify_core::ContentHash::of_str("T"),
+            pragmas: vec![],
+            annotations: vec![],
+        }
+    }
+
+    /// Run `compile_trait` with empty enum/alias/name registries.
+    fn run(decl: &reify_ast::TraitDecl) -> (CompiledTrait, Vec<Diagnostic>) {
+        let enums: Vec<reify_ir::EnumDef> = vec![];
+        let alias_registry = TypeAliasRegistry::new();
+        let structure_names = HashSet::new();
+        let trait_names = HashSet::new();
+        let mut diagnostics = Vec::new();
+        let compiled = compile_trait(
+            decl,
+            &enums,
+            &alias_registry,
+            &structure_names,
+            &trait_names,
+            &mut diagnostics,
+        );
+        (compiled, diagnostics)
+    }
+
+    // (a) Bodyless `fn req(self) -> Real` → RequirementKind::Fn(sig).
+    #[test]
+    fn bodyless_assoc_fn_becomes_required_fn() {
+        let decl = trait_decl(vec![reify_ast::MemberDecl::Fn(fn_def(
+            "req",
+            vec![self_param()],
+            Some(named_type("Real")),
+            None, // bodyless → required
+        ))]);
+        let (compiled, _diags) = run(&decl);
+
+        let sig = compiled
+            .required_members
+            .iter()
+            .find_map(|r| match &r.kind {
+                RequirementKind::Fn(sig) => Some(sig.clone()),
+                _ => None,
+            })
+            .expect("expected a RequirementKind::Fn requirement for the bodyless fn");
+
+        assert_eq!(sig.name, "req");
+        assert!(sig.has_self, "self receiver should set has_self = true");
+        assert!(
+            sig.params.is_empty(),
+            "the self receiver must be excluded from params, got: {:?}",
+            sig.params
+        );
+        assert_eq!(sig.return_type, Type::Real);
+        // A required (bodyless) fn must NOT also appear as a default.
+        assert!(
+            !compiled
+                .defaults
+                .iter()
+                .any(|d| matches!(d.kind, DefaultKind::Fn(_))),
+            "a bodyless required fn must not produce a DefaultKind::Fn"
+        );
+    }
+
+    // (b) `fn area(self) -> Real { 3.5 }` → DefaultKind::Fn(fn_def).
+    // (Body value is irrelevant to this test — it only asserts the member becomes
+    // a default-providing fn. Kept off `3.14…` to avoid clippy::approx_constant.)
+    #[test]
+    fn assoc_fn_with_body_becomes_default_fn() {
+        let body = reify_ast::FnBody {
+            let_bindings: vec![],
+            result_expr: reify_ast::Expr {
+                kind: reify_ast::ExprKind::NumberLiteral {
+                    value: 3.5,
+                    is_real: true,
+                },
+                span: span(),
+            },
+        };
+        let decl = trait_decl(vec![reify_ast::MemberDecl::Fn(fn_def(
+            "area",
+            vec![self_param()],
+            Some(named_type("Real")),
+            Some(body), // has body → default-providing
+        ))]);
+        let (compiled, _diags) = run(&decl);
+
+        let default_fn_def = compiled
+            .defaults
+            .iter()
+            .find_map(|d| match &d.kind {
+                DefaultKind::Fn(fd) => Some(fd.clone()),
+                _ => None,
+            })
+            .expect("expected a DefaultKind::Fn default for the fn with a body");
+
+        assert_eq!(default_fn_def.name, "area");
+        // A default-providing fn must NOT also appear as a requirement.
+        assert!(
+            !compiled
+                .required_members
+                .iter()
+                .any(|r| matches!(r.kind, RequirementKind::Fn(_))),
+            "a default-providing fn must not produce a RequirementKind::Fn"
+        );
     }
 }

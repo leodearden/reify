@@ -18,6 +18,8 @@ import {
   MechanismPanel,
   DiagnosticsPanel,
   AutoResolvePanel,
+  SolverProgressOverlay,
+  BucklingPanel,
 } from './panels';
 import type { DiagnosticEntry } from './panels';
 import { WarmPoolDebugPanel } from './debug/WarmPoolDebugPanel';
@@ -32,6 +34,7 @@ import { createViewStateStore } from './stores/viewStateStore';
 import { createViewportStore, type CameraState } from './stores/viewportStore';
 import { createDefPreviewStore } from './stores/defPreviewStore';
 import { createMechanismStore } from './stores/mechanismStore';
+import { createBucklingStore, subscribeModeShapeFrames } from './stores/bucklingStore';
 import { createDefPreviewActivation } from './hooks/useDefPreviewActivation';
 import { createEditorSelectionSync } from './hooks/useEditorSelectionSync';
 import {
@@ -137,6 +140,7 @@ const App: Component = () => {
   const viewportStore = createViewportStore();
   const defPreviewStore = createDefPreviewStore();
   const mechanismStore = createMechanismStore({ getMechanismDescriptors: bridgeGetMechanismDescriptors });
+  const bucklingStore = createBucklingStore();
 
   // Track the currently-open file path so the debounced save effect can key off it.
   const [currentFilePath, setCurrentFilePath] = createSignal<string | null>(null);
@@ -799,6 +803,7 @@ const App: Component = () => {
   let sidecarCrashedUnsub: (() => void) | undefined;
   let debugBridgeUnsub: (() => void) | undefined;
   let kernelStatusUnsub: (() => void) | undefined;
+  let bucklingFrameUnsub: (() => void) | undefined;
 
   async function initApp() {
     // Clean up existing subscriptions before proceeding (defensive against
@@ -821,6 +826,8 @@ const App: Component = () => {
     sidecarCrashedUnsub = undefined;
     kernelStatusUnsub?.();
     kernelStatusUnsub = undefined;
+    bucklingFrameUnsub?.();
+    bucklingFrameUnsub = undefined;
 
     setInitPhase('loading');
 
@@ -1009,6 +1016,18 @@ const App: Component = () => {
       console.error('[claude] subscribeToSidecarCrashed failed:', err);
     }
 
+    // Subscribe to mode-shape-frame IPC events for the buckling animator
+    try {
+      const unlistenBuckling = await subscribeModeShapeFrames(bucklingStore);
+      if (!alive) {
+        unlistenBuckling();
+        return;
+      }
+      bucklingFrameUnsub = unlistenBuckling;
+    } catch (err) {
+      console.error('[buckling] subscribeModeShapeFrames failed:', err);
+    }
+
     // Initialize debug bridge if REIFY_DEBUG=1 (dynamic import for tree-shaking)
     try {
       if (await isDebugEnabled()) {
@@ -1066,6 +1085,7 @@ const App: Component = () => {
     sidecarCrashedUnsub?.();
     debugBridgeUnsub?.();
     kernelStatusUnsub?.();
+    bucklingFrameUnsub?.();
     sidePanelObserver?.disconnect();
     delete window.__REIFY_DEBUG__;
   });
@@ -1470,6 +1490,20 @@ const App: Component = () => {
                   auto-restores (unmounts) when complete — no bookkeeping needed. */}
               <Show when={engineStore.state.autoResolve.active}>
                 <AutoResolvePanel state={engineStore.state.autoResolve} />
+              </Show>
+              {/* SolverProgressOverlay: shows after >1s of in-flight CG solver
+                  progress ticks; hidden (debounce) for sub-second solves. */}
+              <Show when={engineStore.state.solverProgress.visible}>
+                <SolverProgressOverlay
+                  progress={engineStore.state.solverProgress.latest}
+                  trace={engineStore.state.solverProgress.trace}
+                  coarseReached={engineStore.state.solverProgress.coarseReached}
+                  onCancel={engineStore.cancelSolve}
+                />
+              </Show>
+              {/* BucklingPanel: shown when the buckling solver has emitted mode-shape data */}
+              <Show when={(bucklingStore.state.base !== null) || bucklingStore.modes().length > 0}>
+                <BucklingPanel store={bucklingStore} />
               </Show>
               {/* WarmPoolDebugPanel: REIFY_DEBUG=1 only — PRD §11 Q6 resolution */}
               <Show when={debugEnabled()}>

@@ -29,9 +29,9 @@
 
 use reify_eval::Engine;
 use reify_test_support::{
-    make_engine, make_simple_engine, parse_and_compile, parse_and_compile_with_stdlib,
+    make_engine, make_simple_engine, mm, parse_and_compile, parse_and_compile_with_stdlib,
 };
-use reify_core::{ModulePath, Severity, Type, ValueCellId, VersionId};
+use reify_core::{ContentHash, ModulePath, Severity, Type, ValueCellId, VersionId};
 use reify_ir::{CompiledExprKind, OptimizationObjective, Satisfaction};
 
 const EXAMPLE_PATH: &str = concat!(
@@ -1003,6 +1003,73 @@ purpose fits_within(part : Structure, envelope : Structure) {
     );
 }
 
+/// Reviewer regression: activating a ZERO-param purpose via the single-entity
+/// `activate_purpose` shim must be refused (no-op + warn), NOT panic.
+///
+/// Background:
+///   `activate_purpose_constraints` builds `vec![(purpose.params[0].name.clone(), …)]`
+///   (engine_purposes.rs:138) after ONLY the `params.len() > 1` guard. A zero-param
+///   purpose therefore reaches `purpose.params[0]` and panics index-out-of-bounds.
+///   Zero-param purposes compile cleanly: the grammar's `commaSep` accepts an empty
+///   `()`, `compile_purpose` has no zero-param rejection, and `constraint 1 > 0` is a
+///   literal constraint used pervasively across this suite with no diagnostic.
+///
+///   The single-entity shim binds exactly one entity to exactly one param; with zero
+///   params there is nothing to bind, so refusal (warn + return false) is the correct
+///   contract — mirroring `activate_multi_param_purpose_via_single_entity_shim_is_refused`.
+///   No capability is lost: zero-param purposes remain activatable via
+///   `activate_purpose_with_bindings(name, &[])` (C2/C3 pass vacuously).
+///
+/// RED state (before step-13): `activate_purpose` panics at `purpose.params[0]`
+/// instead of refusing. Step-13 widens the refusal guard from `> 1` to `!= 1`.
+#[test]
+fn activate_zero_param_purpose_via_single_entity_shim_does_not_panic() {
+    let source = r#"
+structure Bracket {
+    param length : Length = 80mm
+}
+
+purpose always_ok() {
+    constraint 1 > 0
+}
+"#;
+
+    // Precondition: compiles cleanly to exactly one zero-param purpose.
+    // parse_and_compile panics on any error-severity diagnostic.
+    let compiled = parse_and_compile(source);
+    assert_eq!(
+        compiled.compiled_purposes.len(),
+        1,
+        "precondition: always_ok must compile to exactly one purpose"
+    );
+    assert_eq!(
+        compiled.compiled_purposes[0].params.len(),
+        0,
+        "precondition: always_ok must have zero params"
+    );
+
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+    let before = constraint_count(&engine);
+
+    // Single-entity activation of a zero-param purpose.
+    // TODAY THIS PANICS at `purpose.params[0]` (index out of bounds).
+    engine.activate_purpose("always_ok", "Bracket");
+
+    // Refusal contract (mirrors the multi-param refusal): purpose must NOT
+    // activate, and zero constraints injected.
+    assert!(
+        !engine.is_purpose_active("always_ok"),
+        "zero-param purpose must NOT activate via the single-entity shim \
+         (the shim binds exactly one param; refuse rather than panic)"
+    );
+    assert_eq!(
+        constraint_count(&engine),
+        before,
+        "a refused zero-param activation must inject zero constraints"
+    );
+}
+
 // ── §5c: Objective ValueRef remap on activation (task-2181 β, reviewer test_coverage) ───────────
 
 /// Verifies that the inner `ValueRef` of a `minimize subject.mass` objective is remapped
@@ -1557,4 +1624,849 @@ purpose p1(subject : S) {
             trace.reads
         );
     }
+}
+
+// ── §11: Multi-param activation via activate_purpose_with_bindings (task γ) ──
+
+/// B1 / RED (step-01): `activate_purpose_with_bindings` remaps each param to
+/// its own distinct entity, producing per-param `ValueRef` entities in the
+/// injected constraint expression.
+///
+/// Inline source: two structures with a same-named param but distinct values,
+/// and a 2-param purpose that constraints `part.length < envelope.length`.
+/// Distinct binding → 80mm < 100mm → the expr has PartA on the left and BoxB
+/// on the right; aliased binding would give PartA on both sides.
+///
+/// Verifies the DISTINCT-binding structural property by inspecting injected
+/// constraint expression ValueRef entities directly (not the eval outcome).
+///
+/// RED because `Engine::activate_purpose_with_bindings` does not yet exist.
+#[test]
+fn activate_purpose_with_bindings_remaps_each_param_to_distinct_entity() {
+    let source = r#"
+structure PartA { param length : Length = 80mm }
+structure BoxB { param length : Length = 100mm }
+purpose fits_within(part : Structure, envelope : Structure) {
+    constraint part.length < envelope.length
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_simple_engine();
+    engine.eval(&compiled);
+
+    // Call the new API — RED: this method does not yet exist.
+    let result = engine.activate_purpose_with_bindings(
+        "fits_within",
+        &[
+            ("part".to_string(), "PartA".to_string()),
+            ("envelope".to_string(), "BoxB".to_string()),
+        ],
+    );
+    assert!(
+        result.is_ok(),
+        "expected Ok from activate_purpose_with_bindings, got {:?}",
+        result
+    );
+
+    assert!(
+        engine.is_purpose_active("fits_within"),
+        "purpose should be active after activate_purpose_with_bindings"
+    );
+
+    let snapshot = engine.snapshot().expect("snapshot after activate");
+
+    // Find the injected constraint by purpose prefix.
+    let (constraint_id, data) = snapshot
+        .graph
+        .constraints
+        .iter()
+        .find(|(id, _)| id.entity.starts_with("purpose:fits_within@"))
+        .expect("expected injected constraint with entity prefix 'purpose:fits_within@'");
+
+    // B1: expr must be a BinOp with DISTINCT ValueRef entities for each param.
+    // `constraint part.length < envelope.length` compiles to BinOp(Less, left, right).
+    let (left_entity, right_entity) = match &data.expr.kind {
+        CompiledExprKind::BinOp { left, right, .. } => {
+            let left_ent = match &left.kind {
+                CompiledExprKind::ValueRef(id) => id.entity.clone(),
+                other => panic!("expected ValueRef in BinOp left, got {:?}", other),
+            };
+            let right_ent = match &right.kind {
+                CompiledExprKind::ValueRef(id) => id.entity.clone(),
+                other => panic!("expected ValueRef in BinOp right, got {:?}", other),
+            };
+            (left_ent, right_ent)
+        }
+        other => panic!("expected BinOp in injected constraint expr, got {:?}", other),
+    };
+    assert_eq!(
+        left_entity, "PartA",
+        "left operand (part.length) must resolve to PartA after per-param remap"
+    );
+    assert_eq!(
+        right_entity, "BoxB",
+        "right operand (envelope.length) must resolve to BoxB after per-param remap"
+    );
+
+    // Multi-binding entity must use the digest prefix (not a raw entity name).
+    // Canonical = bindings sorted by param name, each "{param}={entity}", joined by ","
+    // sorted: "envelope" < "part" → "envelope=BoxB,part=PartA"
+    let canonical = "envelope=BoxB,part=PartA";
+    let digest = ContentHash::of_str(canonical);
+    let expected_entity = format!("purpose:fits_within@{}", digest);
+    assert_eq!(
+        constraint_id.entity, expected_entity,
+        "multi-binding activation must produce entity '{}', got '{}'",
+        expected_entity, constraint_id.entity
+    );
+}
+
+/// C3 / RED (step-03): `activate_purpose_with_bindings` must return Err when a
+/// binding names a param not declared by the purpose, and must NOT inject any
+/// constraints.
+///
+/// RED because step-02's implementation does not yet validate C3.
+/// (Step-04 adds the C3 guard.)
+#[test]
+fn activate_with_bindings_unknown_param_is_diagnostic() {
+    let source = r#"
+structure PartA { param length : Length = 80mm }
+structure BoxB { param length : Length = 100mm }
+purpose fits_within(part : Structure, envelope : Structure) {
+    constraint part.length < envelope.length
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_simple_engine();
+    engine.eval(&compiled);
+    let before = constraint_count(&engine);
+
+    // "bogus" is not a declared param of fits_within.
+    let result = engine.activate_purpose_with_bindings(
+        "fits_within",
+        &[
+            ("part".to_string(), "PartA".to_string()),
+            ("bogus".to_string(), "BoxB".to_string()),
+        ],
+    );
+
+    // C3: must return Err naming the unknown param.
+    let err_msg = result.expect_err(
+        "expected Err for an unknown binding param, got Ok"
+    );
+    assert!(
+        err_msg.contains("bogus"),
+        "error message must name the unknown param 'bogus', got: {err_msg}"
+    );
+
+    // No injection must have occurred.
+    assert!(
+        !engine.is_purpose_active("fits_within"),
+        "purpose must NOT be active after a C3 validation failure"
+    );
+    assert_eq!(
+        constraint_count(&engine),
+        before,
+        "zero constraints must be injected on a C3 validation failure"
+    );
+}
+
+/// C2 / (step-05): `activate_purpose_with_bindings` must return Err when a
+/// declared purpose param is missing from the bindings, and must NOT inject
+/// any constraints.
+///
+/// Note: C2 validation was included in step-02's implementation, so this test
+/// is GREEN immediately (not RED as planned). It documents and pins the C2
+/// contract correctly.
+#[test]
+fn activate_with_bindings_unbound_param_is_diagnostic() {
+    let source = r#"
+structure PartA { param length : Length = 80mm }
+structure BoxB { param length : Length = 100mm }
+purpose fits_within(part : Structure, envelope : Structure) {
+    constraint part.length < envelope.length
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_simple_engine();
+    engine.eval(&compiled);
+    let before = constraint_count(&engine);
+
+    // Only "part" is bound; "envelope" is missing.
+    let result = engine.activate_purpose_with_bindings(
+        "fits_within",
+        &[("part".to_string(), "PartA".to_string())],
+    );
+
+    // C2: must return Err naming the unbound param.
+    let err_msg = result.expect_err(
+        "expected Err for an unbound purpose param, got Ok"
+    );
+    assert!(
+        err_msg.contains("envelope"),
+        "error message must name the unbound param 'envelope', got: {err_msg}"
+    );
+
+    // No injection must have occurred.
+    assert!(
+        !engine.is_purpose_active("fits_within"),
+        "purpose must NOT be active after a C2 validation failure"
+    );
+    assert_eq!(
+        constraint_count(&engine),
+        before,
+        "zero constraints must be injected on a C2 validation failure"
+    );
+}
+
+/// Robustness (amend): `activate_purpose_with_bindings` must reject a binding
+/// set that binds the same param more than once, BEFORE any injection.
+///
+/// Both C3 (every binding names a declared param) and C2 (every declared param
+/// has a binding) pass for `[part:PartA, envelope:BoxB, part:BoxC]` — every
+/// param is bound and every binding names a real param — yet `part` is bound
+/// twice. Without an explicit duplicate check the inner remap loop consumes the
+/// `fits_within::part` stamp on the first remap, so the second (`part`→BoxC)
+/// finds nothing and is silently dropped, leaving a partially-bound constraint
+/// with no diagnostic (while `purpose_binding_token` still hashes both pairs).
+/// The method must instead return Err naming the duplicated param and inject
+/// nothing.
+#[test]
+fn activate_with_bindings_duplicate_param_is_diagnostic() {
+    let source = r#"
+structure PartA { param length : Length = 80mm }
+structure BoxB { param length : Length = 100mm }
+structure BoxC { param length : Length = 120mm }
+purpose fits_within(part : Structure, envelope : Structure) {
+    constraint part.length < envelope.length
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_simple_engine();
+    engine.eval(&compiled);
+    let before = constraint_count(&engine);
+
+    // "part" is bound twice; "envelope" is bound once. C2 and C3 both pass.
+    let result = engine.activate_purpose_with_bindings(
+        "fits_within",
+        &[
+            ("part".to_string(), "PartA".to_string()),
+            ("envelope".to_string(), "BoxB".to_string()),
+            ("part".to_string(), "BoxC".to_string()),
+        ],
+    );
+
+    // Must return Err naming the duplicated param.
+    let err_msg =
+        result.expect_err("expected Err for a param bound more than once, got Ok");
+    assert!(
+        err_msg.contains("part"),
+        "error message must name the duplicated param 'part', got: {err_msg}"
+    );
+
+    // No injection must have occurred (validation precedes injection).
+    assert!(
+        !engine.is_purpose_active("fits_within"),
+        "purpose must NOT be active after a duplicate-param validation failure"
+    );
+    assert_eq!(
+        constraint_count(&engine),
+        before,
+        "zero constraints must be injected on a duplicate-param validation failure"
+    );
+}
+
+/// C7 / RED (step-07): when a 2-param purpose has reflective members on BOTH
+/// params, `activate_purpose_with_bindings` must resolve the `a.params` and
+/// `b.params` placeholders to their RESPECTIVE bound entities — NOT to a single
+/// representative entity.
+///
+/// RED because step-02 passes `bindings[0].1` as the representative entity to
+/// `expand_purpose_reflective_placeholders` for all placeholders, so the
+/// `b.params` placeholder mis-resolves to `Sa` instead of `Sb`. Step-08 will
+/// fix this by passing the full bindings slice for per-param entity lookup.
+#[test]
+fn activate_with_bindings_resolves_reflective_query_per_param() {
+    // Sa has param "pa"; Sb has param "pb" — DISTINCT member names.
+    // A mis-bind would put Sa's entity on both constraints.
+    let source = r#"
+structure Sa { param pa : Real }
+structure Sb { param pb : Real }
+purpose pp(a : Structure, b : Structure) {
+    constraint forall x in a.params: determined(x)
+    constraint forall y in b.params: determined(y)
+}
+"#;
+    let compiled = parse_and_compile(source);
+    assert_eq!(compiled.compiled_purposes.len(), 1, "fixture must compile");
+
+    let mut engine = make_simple_engine();
+    engine.eval(&compiled);
+
+    let result = engine.activate_purpose_with_bindings(
+        "pp",
+        &[
+            ("a".to_string(), "Sa".to_string()),
+            ("b".to_string(), "Sb".to_string()),
+        ],
+    );
+    assert!(result.is_ok(), "expected Ok, got {:?}", result);
+    assert!(engine.is_purpose_active("pp"));
+
+    let snapshot = engine.snapshot().expect("snapshot after activate");
+
+    // Collect the two injected purpose constraints.
+    let mut injected: Vec<_> = snapshot
+        .graph
+        .constraints
+        .iter()
+        .filter(|(id, _)| id.entity.starts_with("purpose:pp@"))
+        .collect();
+    // Sort by constraint index for determinism.
+    injected.sort_by_key(|(id, _)| id.index);
+    assert_eq!(injected.len(), 2, "expected exactly 2 injected constraints");
+
+    // Helper: extract entities from a ReflectiveCellList inside a Quantifier.
+    let rcl_entities = |data: &reify_eval::graph::ConstraintNodeData| -> Vec<String> {
+        let collection = match &data.expr.kind {
+            CompiledExprKind::Quantifier { collection, .. } => collection,
+            other => panic!("expected Quantifier, got {:?}", other),
+        };
+        match &collection.kind {
+            CompiledExprKind::ReflectiveCellList(elements) => elements
+                .iter()
+                .map(|e| match &e.kind {
+                    CompiledExprKind::ValueRef(id) => id.entity.clone(),
+                    other => panic!("expected ValueRef, got {:?}", other),
+                })
+                .collect(),
+            other => panic!("expected ReflectiveCellList, got {:?}", other),
+        }
+    };
+
+    // First constraint (index 0): `forall x in a.params: determined(x)`
+    // a→Sa, so collection elements must have entity "Sa".
+    let entities_0 = rcl_entities(injected[0].1);
+    assert!(
+        !entities_0.is_empty(),
+        "a.params constraint (index 0) must expand to a non-empty ReflectiveCellList"
+    );
+    for entity in &entities_0 {
+        assert_eq!(
+            entity, "Sa",
+            "a.params constraint must reference entity 'Sa', got '{entity}'"
+        );
+    }
+
+    // Second constraint (index 1): `forall y in b.params: determined(y)`
+    // b→Sb, so collection elements must have entity "Sb".
+    let entities_1 = rcl_entities(injected[1].1);
+    assert!(
+        !entities_1.is_empty(),
+        "b.params constraint (index 1) must expand to a non-empty ReflectiveCellList"
+    );
+    for entity in &entities_1 {
+        assert_eq!(
+            entity, "Sb",
+            "b.params constraint must reference entity 'Sb' (not 'Sa'), got '{entity}'"
+        );
+    }
+}
+
+/// C6 parity / RED (step-01): `activate_purpose_with_bindings` with a single
+/// binding must produce the same `purpose:{name}@{entity}` prefix as the
+/// existing `activate_purpose` shim — NO digest in the single-binding path.
+///
+/// RED because `Engine::activate_purpose_with_bindings` does not yet exist.
+#[test]
+fn activate_with_bindings_single_param_keeps_entity_prefix() {
+    // SIMPLE_MFG_SRC: `purpose mfg_ready(subject : Structure) { constraint 1 > 0 }`
+    let compiled = parse_and_compile(SIMPLE_MFG_SRC);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+
+    // Single-param: C6 parity path — entity, NOT digest.
+    let result = engine.activate_purpose_with_bindings(
+        "mfg_ready",
+        &[("subject".to_string(), "Bracket".to_string())],
+    );
+    assert!(
+        result.is_ok(),
+        "expected Ok from activate_purpose_with_bindings, got {:?}",
+        result
+    );
+    assert!(engine.is_purpose_active("mfg_ready"), "purpose should be active");
+
+    let snapshot = engine.snapshot().expect("snapshot after activate");
+
+    // C6: entity must be exactly "purpose:mfg_ready@Bracket" (no digest).
+    let injected_entity = snapshot
+        .graph
+        .constraints
+        .keys()
+        .find(|id| id.entity.starts_with("purpose:mfg_ready@"))
+        .map(|id| id.entity.as_str())
+        .expect("expected injected constraint with purpose:mfg_ready@ prefix");
+
+    assert_eq!(
+        injected_entity,
+        "purpose:mfg_ready@Bracket",
+        "single-binding activation must use '@{{entity}}' (C6 parity, no digest)"
+    );
+}
+
+// ── §11: Purpose let-binding injection + constraint satisfaction (task 4009 δ) ─
+//
+// `activate_purpose` must inject a synthetic let-cell `__let_<name>` into the
+// evaluation graph, evaluate it against the bound entity's values, and seed the
+// result into `snapshot.values`.  `check_constraints_with_values` must then
+// overlay those injected let-cell values onto the incoming `values` map before
+// dispatching constraints, so that a constraint expression like `m > 0mm`
+// (where `m` is a let binding) can resolve `m` to its computed value.
+//
+// B3: let evaluates, constraint reads evaluated value → Satisfied / Violated.
+// B6/C4: covered in §12 (deactivate restores byte-identity).
+
+/// B3 (Satisfied) — `let m = subject.a - subject.b; constraint m > 0mm`
+/// with `a=80mm, b=50mm` → `m=30mm > 0mm` → Satisfied.
+///
+/// RED because `activate_purpose` does not yet inject/evaluate let cells and
+/// `check_constraints_with_values` does not yet overlay their values.
+#[test]
+fn let_binding_injected_cell_evaluates_and_feeds_constraint_satisfied() {
+    let source = r#"
+structure Bracket {
+    param a : Length = 80mm
+    param b : Length = 50mm
+}
+
+purpose marg(subject : Structure) {
+    let m = subject.a - subject.b
+    constraint m > 0mm
+}
+"#;
+    let compiled = parse_and_compile(source);
+    assert!(
+        compiled
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != Severity::Error),
+        "fixture must compile without errors: {:?}",
+        compiled.diagnostics
+    );
+
+    let mut engine = make_simple_engine();
+    let eval_result = engine.eval(&compiled);
+    engine.activate_purpose("marg", "Bracket");
+
+    let (constraint_results, _) = engine
+        .check_constraints_with_values(&eval_result.values)
+        .expect("check_constraints_with_values must not error");
+
+    let purpose_result = constraint_results
+        .iter()
+        .find(|e| e.id.entity.starts_with("purpose:marg@Bracket"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected injected constraint with entity prefix 'purpose:marg@Bracket'; \
+                 found: {:?}",
+                constraint_results.iter().map(|e| &e.id).collect::<Vec<_>>()
+            )
+        });
+
+    assert_eq!(
+        purpose_result.satisfaction,
+        reify_ir::Satisfaction::Satisfied,
+        "let m = 80mm - 50mm = 30mm; 30mm > 0mm → purpose constraint must be Satisfied"
+    );
+
+    // Also verify the injected let-cell is present in the graph.
+    let snapshot = engine.snapshot().expect("snapshot must exist after activation");
+    let let_cell_found = snapshot
+        .graph
+        .value_cells
+        .iter()
+        .any(|(id, _)| id.entity.starts_with("purpose:marg@Bracket") && id.member == "__let_m");
+    assert!(
+        let_cell_found,
+        "expected an injected value cell with entity prefix 'purpose:marg@Bracket' \
+         and member '__let_m' in graph.value_cells after activation"
+    );
+}
+
+// ── §12: Deactivate restores byte-identity (task 4009 δ, B6/C4) ─────────────
+//
+// After `deactivate_purpose`, ALL injected let-cells must be removed from
+// graph.value_cells and snapshot.values so the graph is byte-identical to
+// the pre-activation state — no `__let_` entries may remain.
+
+/// B6/C4 — deactivate removes injected let cells, restoring byte-identity.
+///
+/// Activating the let-purpose injects one let-cell and one constraint; after
+/// deactivate, both counts must return to pre-activation values and no cell
+/// with member `"__let_m"` may remain in graph.value_cells.
+///
+/// RED because `deactivate_purpose` does not yet remove injected let cells.
+#[test]
+fn deactivate_removes_injected_let_cells_restoring_graph() {
+    let source = r#"
+structure Bracket {
+    param a : Length = 80mm
+    param b : Length = 50mm
+}
+
+purpose marg(subject : Structure) {
+    let m = subject.a - subject.b
+    constraint m > 0mm
+}
+"#;
+    let compiled = parse_and_compile(source);
+    assert!(
+        compiled
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != Severity::Error),
+        "fixture must compile without errors: {:?}",
+        compiled.diagnostics
+    );
+
+    let mut engine = make_simple_engine();
+    engine.eval(&compiled);
+
+    // Record pre-activation counts.
+    let pre_cell_count = engine
+        .snapshot()
+        .expect("snapshot before activation")
+        .graph
+        .value_cells
+        .len();
+    let pre_constraint_count = constraint_count(&engine);
+
+    // Activate — should inject one let-cell + one constraint.
+    engine.activate_purpose("marg", "Bracket");
+
+    let post_activate_cell_count = engine
+        .snapshot()
+        .expect("snapshot after activation")
+        .graph
+        .value_cells
+        .len();
+    let post_activate_constraint_count = constraint_count(&engine);
+
+    assert_eq!(
+        post_activate_cell_count,
+        pre_cell_count + 1,
+        "activation must inject exactly one let-cell into graph.value_cells"
+    );
+    assert_eq!(
+        post_activate_constraint_count,
+        pre_constraint_count + 1,
+        "activation must inject exactly one constraint"
+    );
+
+    // Verify the let-cell is present after activation.
+    assert!(
+        engine
+            .snapshot()
+            .expect("snapshot after activation")
+            .graph
+            .value_cells
+            .iter()
+            .any(|(id, _)| id.entity.starts_with("purpose:marg@Bracket")
+                && id.member == "__let_m"),
+        "after activation: expected '__let_m' cell in graph.value_cells"
+    );
+
+    // Deactivate.
+    engine.deactivate_purpose("marg");
+
+    // Graph must be byte-identical to pre-activation state.
+    let post_deactivate_cell_count = engine
+        .snapshot()
+        .expect("snapshot after deactivation")
+        .graph
+        .value_cells
+        .len();
+    let post_deactivate_constraint_count = constraint_count(&engine);
+
+    assert_eq!(
+        post_deactivate_cell_count, pre_cell_count,
+        "after deactivation: graph.value_cells count must be restored to pre-activation value"
+    );
+    assert_eq!(
+        post_deactivate_constraint_count, pre_constraint_count,
+        "after deactivation: constraint count must be restored to pre-activation value"
+    );
+
+    // No __let_ cell may remain.
+    let let_cell_still_present = engine
+        .snapshot()
+        .expect("snapshot after deactivation")
+        .graph
+        .value_cells
+        .iter()
+        .any(|(id, _)| id.member.starts_with("__let_"));
+    assert!(
+        !let_cell_still_present,
+        "after deactivation: no '__let_' cell must remain in graph.value_cells"
+    );
+}
+
+/// B3 (Violated) — `let m = subject.a - subject.b; constraint m > 0mm`
+/// with `a=50mm, b=80mm` → `m=-30mm > 0mm` is false → Violated.
+#[test]
+fn let_binding_injected_cell_evaluates_and_feeds_constraint_violated() {
+    let source = r#"
+structure Bracket {
+    param a : Length = 50mm
+    param b : Length = 80mm
+}
+
+purpose marg(subject : Structure) {
+    let m = subject.a - subject.b
+    constraint m > 0mm
+}
+"#;
+    let compiled = parse_and_compile(source);
+    assert!(
+        compiled
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != Severity::Error),
+        "fixture must compile without errors: {:?}",
+        compiled.diagnostics
+    );
+
+    let mut engine = make_simple_engine();
+    let eval_result = engine.eval(&compiled);
+    engine.activate_purpose("marg", "Bracket");
+
+    let (constraint_results, _) = engine
+        .check_constraints_with_values(&eval_result.values)
+        .expect("check_constraints_with_values must not error");
+
+    let purpose_result = constraint_results
+        .iter()
+        .find(|e| e.id.entity.starts_with("purpose:marg@Bracket"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected injected constraint with entity prefix 'purpose:marg@Bracket'; \
+                 found: {:?}",
+                constraint_results.iter().map(|e| &e.id).collect::<Vec<_>>()
+            )
+        });
+
+    assert_eq!(
+        purpose_result.satisfaction,
+        reify_ir::Satisfaction::Violated,
+        "let m = 50mm - 80mm = -30mm; -30mm > 0mm is false → purpose constraint must be Violated"
+    );
+}
+
+// ── §13: Staleness / incremental freshness (task 4009 amendment, suggestion 1) ──────────────
+//
+// After activate_purpose, injected let-cells must participate in the incremental
+// reverse-dependency walk so that a subsequent edit_param() refreshes snapshot.values
+// for the let before check_constraints_with_values reads it.  Without this, the
+// constraint would silently evaluate against a stale let value after an edit.
+
+/// Staleness regression: activate a let-purpose, edit a param so the let's
+/// value flips sign, verify the purpose constraint transitions Satisfied → Violated.
+///
+/// Confirms that injected `__let_` cells are wired into the reverse-dependency
+/// index (rebuilt by rebuild_purpose_infrastructure after activation) so that
+/// edit_param's dirty-cone walk re-evaluates them and updates snapshot.values.
+#[test]
+fn let_binding_constraint_updates_after_edit_param() {
+    let source = r#"
+structure Bracket {
+    param a : Length = 80mm
+    param b : Length = 50mm
+}
+
+purpose marg(subject : Structure) {
+    let m = subject.a - subject.b
+    constraint m > 0mm
+}
+"#;
+    let compiled = parse_and_compile(source);
+    assert!(
+        compiled.diagnostics.iter().all(|d| d.severity != Severity::Error),
+        "fixture must compile without errors: {:?}",
+        compiled.diagnostics
+    );
+
+    let mut engine = make_simple_engine();
+    let eval_result = engine.eval(&compiled);
+    engine.activate_purpose("marg", "Bracket");
+
+    // Pre-edit: a=80mm, b=50mm → m=30mm > 0mm → Satisfied.
+    let (results, _) = engine
+        .check_constraints_with_values(&eval_result.values)
+        .expect("pre-edit check must not error");
+    let before = results
+        .iter()
+        .find(|e| e.id.entity.starts_with("purpose:marg@Bracket"))
+        .expect("must find injected constraint before edit");
+    assert_eq!(
+        before.satisfaction,
+        Satisfaction::Satisfied,
+        "pre-edit: m = 80mm - 50mm = 30mm > 0mm → Satisfied"
+    );
+
+    // Edit a: 80mm → 40mm so m = 40mm - 50mm = -10mm < 0mm.
+    let bracket_a = ValueCellId::new("Bracket", "a");
+    let edit_result = engine
+        .edit_param(bracket_a, mm(40.0))
+        .expect("edit_param must succeed");
+
+    // Post-edit: m=-10mm > 0mm is false → Violated.
+    let (results, _) = engine
+        .check_constraints_with_values(&edit_result.values)
+        .expect("post-edit check must not error");
+    let after = results
+        .iter()
+        .find(|e| e.id.entity.starts_with("purpose:marg@Bracket"))
+        .expect("must find injected constraint after edit");
+    assert_eq!(
+        after.satisfaction,
+        Satisfaction::Violated,
+        "after edit_param(a=40mm): let m = 40mm - 50mm = -10mm; -10mm > 0mm is false → Violated"
+    );
+}
+
+// ── §14: Objective referencing a let-bound expression (task 4009 amendment, suggestion 4) ──
+//
+// When a purpose body has both a `let` and an `objective`, the objective expression
+// must be remapped to the injected `__let_` cell id at activation time, and the
+// injected let-cell value must be present in snapshot.values so that the
+// optimizer/solve path can resolve it without a separate overlay.
+
+/// Architecture coverage: objective expression referencing a let-bound cell.
+///
+/// After activation the Minimize objective must be active and the injected
+/// `__let_m` cell must be present in snapshot.values, confirming that the
+/// optimizer can read the let value directly from the snapshot.
+#[test]
+fn let_binding_referenced_in_objective_is_present_in_snapshot() {
+    let source = r#"
+structure Widget {
+    param a : Length = 80mm
+    param b : Length = 50mm
+}
+
+purpose min_margin(subject : Structure) {
+    let m = subject.a - subject.b
+    objective minimize m
+}
+"#;
+    let compiled = parse_and_compile(source);
+    assert!(
+        compiled.diagnostics.iter().all(|d| d.severity != Severity::Error),
+        "fixture must compile without errors: {:?}",
+        compiled.diagnostics
+    );
+
+    let mut engine = make_simple_engine();
+    engine.eval(&compiled);
+    engine.activate_purpose("min_margin", "Widget");
+
+    // Objective must be present as Minimize.
+    let objectives = engine.active_objectives();
+    assert_eq!(objectives.len(), 1, "must have 1 active objective");
+    assert!(
+        matches!(objectives[0], OptimizationObjective::Minimize(_)),
+        "objective must be Minimize after activation"
+    );
+
+    // The injected let-cell value must be in snapshot.values so the optimizer
+    // can resolve it directly (snapshot.values is the optimizer's value source,
+    // no separate overlay is applied on that path).
+    let snapshot = engine.snapshot().expect("snapshot must exist after activation");
+    let let_in_values = snapshot.values.iter().any(|(id, _)| {
+        id.entity.starts_with("purpose:min_margin@Widget") && id.member == "__let_m"
+    });
+    assert!(
+        let_in_values,
+        "injected let-cell '__let_m' must be present in snapshot.values so the \
+         optimizer can resolve let-bound objective terms"
+    );
+}
+
+// ── §15: Chained let activation (task 4009 amendment, suggestion 5) ─────────────────────────
+//
+// The activation-time remap_cell chaining path — where a later let's compiled
+// expression references an earlier let's compile-time cell id that must be
+// rewritten to the injected id before evaluation — is the most intricate part
+// of the δ injection logic.  This end-to-end test verifies that both lets are
+// evaluated correctly and that the constraint derives its value through both.
+
+/// Chained lets: `let m = subject.a - subject.b; let n = m * 2`.
+/// m=30mm, n=60mm; constraint n > 0mm → Satisfied.
+///
+/// Uses multiplication by the dimensionless literal `2` so both let types are
+/// consistent under compile-time type inference (subject params resolve to Real
+/// for a wildcard Structure subject, and `Real * Real` is valid).
+///
+/// Verifies remap_cell chaining: `n`'s expr references the compile-time `m`
+/// cell id, which must be rewritten to the injected `__let_m` id before
+/// evaluation so `n` reads the correct value (not Undef).
+#[test]
+fn chained_let_bindings_resolve_through_both_lets() {
+    let source = r#"
+structure Widget {
+    param a : Length = 80mm
+    param b : Length = 50mm
+}
+
+purpose analysis(subject : Structure) {
+    let m = subject.a - subject.b
+    let n = m * 2
+    constraint n > 0mm
+}
+"#;
+    let compiled = parse_and_compile(source);
+    assert!(
+        compiled.diagnostics.iter().all(|d| d.severity != Severity::Error),
+        "fixture must compile without errors: {:?}",
+        compiled.diagnostics
+    );
+
+    let mut engine = make_simple_engine();
+    let eval_result = engine.eval(&compiled);
+    engine.activate_purpose("analysis", "Widget");
+
+    // m = 80mm - 50mm = 30mm; n = 30mm * 2 = 60mm; 60mm > 0mm → Satisfied.
+    let (results, _) = engine
+        .check_constraints_with_values(&eval_result.values)
+        .expect("check_constraints_with_values must not error");
+    let purpose_result = results
+        .iter()
+        .find(|e| e.id.entity.starts_with("purpose:analysis@Widget"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected injected constraint with prefix 'purpose:analysis@Widget'; found: {:?}",
+                results.iter().map(|e| &e.id).collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        purpose_result.satisfaction,
+        Satisfaction::Satisfied,
+        "m=30mm, n=60mm; 60mm > 0mm → purpose constraint must be Satisfied"
+    );
+
+    // Both let-cells must be present in graph.value_cells.
+    let snapshot = engine.snapshot().expect("snapshot must exist after activation");
+    assert!(
+        snapshot.graph.value_cells.iter().any(|(id, _)| {
+            id.entity.starts_with("purpose:analysis@Widget") && id.member == "__let_m"
+        }),
+        "injected __let_m cell must be present in graph.value_cells"
+    );
+    assert!(
+        snapshot.graph.value_cells.iter().any(|(id, _)| {
+            id.entity.starts_with("purpose:analysis@Widget") && id.member == "__let_n"
+        }),
+        "injected __let_n cell must be present in graph.value_cells"
+    );
 }

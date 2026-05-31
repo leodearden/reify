@@ -1,0 +1,2 @@
+module mod_decl_match
+structure Bracket { param w : Scalar = 1mm }

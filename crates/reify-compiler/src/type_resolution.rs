@@ -355,6 +355,49 @@ pub(crate) fn evaluate_const_expr(
             }
         }
         reify_ast::ExprKind::QuantityLiteral { value, unit } => {
+            // Route compound unit expressions (Mul/Div/Pow) through resolve_unit_expr,
+            // which folds the factor product and dimension vector.  The bare-unit path
+            // (UnitExpr::Unit(name)) is left unchanged — it handles affine units and
+            // the hardcoded fallback via the existing registry lookup + unit_to_scalar.
+            //
+            // Dimension is intentionally discarded from Ok((factor, _dim)).  A unit
+            // conversion factor is a pure scalar; the declared dimension comes from the
+            // unit's `: Dim` annotation, not from the conversion expression.
+            //
+            // NOTE: there is no cross-check between the folded DimensionVector and the
+            // declared `: Dim` annotation.  A declaration like `unit foo : Length = 1mm^2`
+            // (compound yields Area, annotation says Length) is accepted silently — the
+            // folded `_dim` is simply dropped.  This matches the bare-unit path (which
+            // also returns only a scalar factor).  If mismatch validation is ever desired
+            // it would live here: compare `_dim` against the dimension resolved from the
+            // `: Dim` annotation at the call site in `compile_unit`.
+            let unit = match unit {
+                reify_ast::UnitExpr::Unit(name) => name,
+                compound @ (reify_ast::UnitExpr::Mul(..)
+                | reify_ast::UnitExpr::Div(..)
+                | reify_ast::UnitExpr::Pow(..)) => {
+                    match resolve_unit_expr(compound, registry, expr.span) {
+                        Ok((factor, _dim)) => {
+                            let si = value * factor;
+                            if !si.is_finite() {
+                                diagnostics.push(
+                                    Diagnostic::error("overflow in unit conversion expression")
+                                        .with_label(DiagnosticLabel::new(
+                                            expr.span,
+                                            "result is not finite",
+                                        )),
+                                );
+                                return None;
+                            }
+                            return Some(si);
+                        }
+                        Err(e) => {
+                            diagnostics.push(unit_resolve_error_to_diagnostic(&e));
+                            return None;
+                        }
+                    }
+                }
+            };
             // Try registry first, then hardcoded fallback.
             if let Some(entry) = registry.lookup(unit) {
                 // Affine (offset) units cannot be used in unit conversion expressions —

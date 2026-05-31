@@ -36,6 +36,14 @@ module.exports = grammar({
     // AUTO_TOKEN even at operand positions where AUTO_TOKEN is not in
     // valid_symbols (producing ERROR via out-of-valid emission).
     $._auto_reservation_sentinel,
+    // RADIX_LITERAL: emitted (consuming the whole 0x.../0b... run) by the
+    // external scanner.  A plain token() regex alternative for hex/binary would
+    // be defeated by $._auto_reservation_sentinel in `extras`: the decimal DFA
+    // matches only the leading `0`, then _unit_expr_start fires at `x`/`b`
+    // (both unit-start chars) and the DFA consumes the rest as a unit_expr
+    // unit_name — yielding quantity_literal(number_literal "0", unit_expr "xFF").
+    // Only an external token consuming the WHOLE 0xFF/0b1010 run defeats this.
+    $._radix_literal,
   ],
 
   extras: $ => [
@@ -67,10 +75,25 @@ module.exports = grammar({
     // split stable even if a future type_expr change introduces a brace-shaped
     // right edge.
     [$.function_definition, $.function_signature],
+    // variant_construction (`Name { field: value }`) shares a common prefix with
+    // any `_primary_expression` that reduces to a bare `identifier` when the next
+    // token is `{`.  The GLR resolves the ambiguity by keeping both forks alive;
+    // the construction fork dies if the brace content is not `field: value` pairs
+    // (e.g. match arms or guarded-block members).
+    // tree-sitter generate error: "Add a conflict for these rules:
+    //   `_primary_expression`, `variant_construction`".
+    // PRD §4.4 / task α (data-carrying-enums, step-6).
+    [$._primary_expression, $.variant_construction],
   ],
 
   rules: {
-    source_file: $ => repeat($._declaration),
+    source_file: $ => seq(optional($.module_declaration), repeat($._declaration)),
+
+    // `module company.products.actuators`
+    // Placed ONLY here (not in _declaration) so that a module decl after any
+    // other declaration is a natural parse ERROR — the grammar enforces the
+    // top-of-file / one-per-file rule (PRD D-5, §7.2) with no extra code.
+    module_declaration: $ => seq('module', field('path', $.import_path)),
 
     _declaration: $ => choice(
       $.structure_definition,
@@ -93,9 +116,32 @@ module.exports = grammar({
       optional('pub'),
       'enum',
       field('name', $.identifier),
+      optional($.type_parameters),
       '{',
-      optional(seq($.identifier, repeat(seq(',', $.identifier)), optional(','))),
+      commaSep($.enum_variant),
       '}',
+    ),
+
+    // A single variant in an enum body: either a bare name (`Point`) or a
+    // named-field form (`Circle { radius: Length }`).
+    // PRD §4.4 / task α (data-carrying-enums).
+    enum_variant: $ => seq(
+      field('name', $.identifier),
+      optional(seq(
+        '{',
+        $.variant_field_decl,
+        repeat(seq(',', $.variant_field_decl)),
+        optional(','),
+        '}',
+      )),
+    ),
+
+    // A single `field: Type` pair inside an enum_variant payload.
+    // PRD §4.4 / task α.
+    variant_field_decl: $ => seq(
+      field('field', $.identifier),
+      ':',
+      field('type', $.type_expr),
     ),
 
     // ── Function ─────────────────────────────────────────────
@@ -152,11 +198,13 @@ module.exports = grammar({
       optional(seq('=', field('default', $._expression))),
     ),
 
-    fn_body: $ => seq(
-      '{',
-      repeat($.fn_let_binding),
-      field('result', $._expression),
-      '}',
+    fn_body: $ => choice(
+      // Block form: `{ [let y = e;]* result_expr }`
+      seq('{', repeat($.fn_let_binding), field('result', $._expression), '}'),
+      // Expression form: `= result_expr`  (spec §18 #10 — pure desugar)
+      // The `=` token disambiguates from the block form at the grammar level;
+      // lower_fn_body is unchanged because both arms share the `result` field.
+      seq('=', field('result', $._expression)),
     ),
 
     fn_let_binding: $ => seq(
@@ -510,6 +558,7 @@ module.exports = grammar({
     // ── Let ─────────────────────────────────────────────────
     let_declaration: $ => seq(
       optional('pub'),
+      optional('aux'),
       'let',
       field('name', $.identifier),
       optional(seq(':', field('type', $.type_expr))),
@@ -545,6 +594,7 @@ module.exports = grammar({
     sub_declaration: $ => choice(
       // Instantiation form: sub name = StructName<TypeArgs>(args)
       seq(
+        optional('aux'),
         'sub',
         field('name', $.identifier),
         '=',
@@ -554,12 +604,21 @@ module.exports = grammar({
         optional($.named_argument_list),
         ')',
         optional(field('guard', $.where_clause)),
+        optional(seq('at', field('pose', $._expression))),
       ),
       // Collection form: sub name : List<StructName>
       // The bare `'List'` token is reached only on exact-length matches —
       // see the long comment on the specialization arm below for the full
       // tree-sitter rule #1 / rule #2 reasoning and the regression lock.
+      //
+      // NOTE: `at <pose>` is grammatically accepted on the collection form
+      // for uniformity with the other two arms, but per-element collection
+      // placement is semantically out-of-scope (PRD §10). The compiler (T2,
+      // sub-placement lowering) is responsible for emitting a diagnostic when
+      // `pose_expr.is_some()` on a collection-form `SubDecl`; this grammar
+      // deliberately does not enforce that restriction at parse time.
       seq(
+        optional('aux'),
         'sub',
         field('name', $.identifier),
         ':',
@@ -568,6 +627,7 @@ module.exports = grammar({
         field('structure_name', $.identifier),
         '>',
         optional(field('guard', $.where_clause)),
+        optional(seq('at', field('pose', $._expression))),
       ),
       // Specialization form: sub name : StructName <typeargs>? where? { body }?
       //
@@ -606,13 +666,15 @@ module.exports = grammar({
       // Bare `'List'` (relying on rules #1 + #2) is the correct mechanism.
       // See escalation esc-3712-201 for the empirical evidence.
       seq(
+        optional('aux'),
         'sub',
         field('name', $.identifier),
         ':',
         field('structure_name', $.identifier),
         optional(field('type_args', seq('<', $.type_arg_list, '>'))),
         optional(field('guard', $.where_clause)),
-        optional(field('body', $.specialization_body)),
+        optional(field('body', choice($.specialization_body, $.keyed_member_block))),
+        optional(seq('at', field('pose', $._expression))),
       ),
     ),
 
@@ -625,6 +687,41 @@ module.exports = grammar({
       '{',
       repeat(choice($.param_assignment, $._member)),
       '}',
+    ),
+
+    // ── Keyed sub-member block (task 3929, PRD §2.2) ─────────────────────────
+    // Keyed sub-member block: `{ "key" => { overrides }  ... }`.
+    // Used as the body of `sub name : Keyed<T> { "k" => { overrides } }`.
+    //
+    // Disambiguation from `specialization_body`:
+    //   Both block forms open with `{`.  `keyed_member_block` requires at
+    //   least ONE entry (`repeat1`), so an empty `{}` is unambiguously a
+    //   `specialization_body` (which uses `repeat`, i.e. zero-or-more).
+    //   When the block is non-empty, the first token after `{` determines
+    //   the winner: a `string_literal` leads to `keyed_member_block`; an
+    //   identifier or member-keyword leads to `specialization_body`.
+    //   A `conflicts` entry is added only if `tree-sitter generate` reports
+    //   an unresolved conflict between the two rules.
+    //
+    // Scope note: the grammar accepts a keyed block after ANY `structure_name<…>`,
+    // not only after `Keyed<…>`.  Restricting the keyed block to the Keyed
+    // collection kind is a resolution/compiler concern (PRD task β), mirroring
+    // the established pattern where `at <pose>` is grammatically accepted on
+    // the collection form but semantically rejected by the compiler (PRD §10).
+    keyed_member_block: $ => seq(
+      '{',
+      repeat1($.keyed_member_entry),
+      '}',
+    ),
+
+    // A single keyed entry: `"key" => { overrides }`.
+    // The `overrides` specialization_body is reused verbatim (PRD §2.2/§9-Q4)
+    // so override blocks inside a keyed sub parse identically to a
+    // standalone specialization-scope body.
+    keyed_member_entry: $ => seq(
+      field('key', $.string_literal),
+      '=>',
+      field('overrides', $.specialization_body),
     ),
 
     // ── Param assignment (specialization body only) ──────────
@@ -821,9 +918,10 @@ module.exports = grammar({
     //   5: +, - (additive)
     //   6: *, /, % (multiplicative)
     //   7: unary -, ! (unary)
-    //   8: postfix index access ([]), qualified access (::)
-    //   9: postfix ad-hoc selector (@)
-    //  10: postfix member access (.), function call
+    //   8: ^ exponentiation (right-assoc)
+    //   9: postfix index access ([]), qualified access (::)
+    //  10: postfix ad-hoc selector (@)
+    //  11: postfix member access (.), function call
 
     _expression: $ => choice(
       $.range_expression,
@@ -911,8 +1009,30 @@ module.exports = grammar({
     ),
 
     match_pattern: $ => choice(
+      $.variant_binding_pattern,
       seq($.identifier, repeat(seq('|', $.identifier))),
       '_',
+    ),
+
+    // Named-field payload-binding pattern: `Circle { radius: r }` or
+    // `Rect { width: w, height: h }`.  The variant name is followed by a
+    // brace-delimited, comma-separated list of field_binding entries.
+    // A trailing comma is permitted (optional(',')).
+    // PRD §4.4 / task β (data-carrying-enums).
+    variant_binding_pattern: $ => seq(
+      field('variant', $.identifier),
+      '{',
+      $.field_binding,
+      repeat(seq(',', $.field_binding)),
+      optional(','),
+      '}',
+    ),
+
+    // A single `field: binder` pair inside a variant_binding_pattern.
+    field_binding: $ => seq(
+      field('field', $.identifier),
+      ':',
+      field('binder', $.identifier),
     ),
 
     // ── Decl-level match block (B2, tasks 3563 + 3564) ──────────────────────
@@ -965,6 +1085,11 @@ module.exports = grammar({
       prec.left(6, seq(field('left', $._expression), field('op', '*'), field('right', $._expression))),
       prec.left(6, seq(field('left', $._expression), field('op', '/'), field('right', $._expression))),
       prec.left(6, seq(field('left', $._expression), field('op', '%'), field('right', $._expression))),
+      // ── Exponentiation (right-associative, prec 8 — tighter than unary (7) and multiplicative (6)) ──
+      // PRD §3.3/§4.3: value-level ^ is right-associative; -2^2 = -(2^2), 2*3^2 = 2*(3^2).
+      // Disambiguated from unit_expr pow by whitespace: unit_expr uses token.immediate('^')
+      // (no whitespace), while this value-level ^ fires in the normal (whitespace-permitted) context.
+      prec.right(8, seq(field('left', $._expression), field('op', '^'), field('right', $._expression))),
     ),
 
     // ── Range expressions ───────────────────────────────────
@@ -1003,7 +1128,16 @@ module.exports = grammar({
     )),
 
     _primary_expression: $ => choice(
+      $.imaginary_literal,
       $.quantity_literal,
+      // alias($._radix_literal, $.number_literal): makes hex/binary literals (0xFF,
+      // 0b1010) appear as number_literal nodes in the CST.  number_literal is kept
+      // as a plain token() rule so error recovery inserts a MISSING leaf (is_missing=true)
+      // rather than a degenerate rule node — preserving task-3725's auto_type_arg
+      // span-narrowing behaviour.  The standalone alias here handles expression context
+      // (let x = 0xFF); the quantity_literal radix arm handles the unit-suffix case
+      // (0xFFmm).
+      alias($._radix_literal, $.number_literal),
       $.number_literal,
       $.string_literal,
       $.bool_literal,
@@ -1014,15 +1148,72 @@ module.exports = grammar({
       $.map_literal,
       $.identifier,
       $.parenthesized_expression,
+      // Named-field brace construction: `Name { field: value, ... }` (≥1 field).
+      // Symmetric with variant_binding_pattern.  Disambiguated from
+      // match/where bodies by GLR (see conflicts entry above).
+      // PRD §4.4 / task α (data-carrying-enums, step-6).
+      $.variant_construction,
+    ),
+
+    // ── Variant brace construction ──────────────────────────────
+    // `Rect { width: 20mm, height: 10mm }` — named-field variant construction.
+    // ≥1 field required (no empty-brace form).  Symmetric with variant_binding_pattern
+    // (pattern side) and variant_field_decl (declaration side).
+    // PRD §4.4 / task α, F2-a (brace form, Leo-ratified 2026-05-27).
+    variant_construction: $ => seq(
+      field('name', $.identifier),
+      '{',
+      $.variant_construction_field,
+      repeat(seq(',', $.variant_construction_field)),
+      optional(','),
+      '}',
+    ),
+
+    // A single `field: value` pair inside a variant_construction.
+    variant_construction_field: $ => seq(
+      field('field', $.identifier),
+      ':',
+      field('value', $._expression),
+    ),
+
+    // Imaginary literal: a decimal/scientific number immediately followed by the
+    // lowercase letter `j` with NO whitespace and NO further word characters.
+    // Examples: 4.1j, 2j, 1.5e-3j.
+    //
+    // The scanner's UNIT_EXPR_START block (src/scanner.c) special-cases bare `j`:
+    // when the lookahead is `j` and the char AFTER it is NOT a word character
+    // [A-Za-z0-9_], the scanner refuses to emit UNIT_EXPR_START, allowing
+    // token.immediate('j') to match instead.  Multi-char j-units (`jk`, `joule`)
+    // and capital-J (Joule) are unaffected — they fall through to quantity_literal.
+    //
+    // CST shape: (imaginary_literal value: (number_literal))
+    // PRD v0_6 complex-literals-and-stdmath, slice 1, D1 — `j` suffix only (not `i`).
+    imaginary_literal: $ => seq(
+      field('value', $.number_literal),
+      token.immediate('j'),
     ),
 
     // Quantity literal: number immediately followed by a unit expression (e.g. 80mm, 9.81m/s^2)
     // _unit_expr_start (external scanner) fires only when next char is a unit-start char
     // with no whitespace, enforcing the contiguity invariant from PRD §3.1.
-    quantity_literal: $ => seq(
-      field('value', $.number_literal),
-      $._unit_expr_start,
-      field('unit', $.unit_expr),
+    //
+    // Two arms handle radix literals (0xFFmm) and decimal literals (5mm) separately.
+    // alias($._radix_literal, $.number_literal) makes the radix prefix appear in the CST
+    // as a number_literal node (same as the decimal arm) so callers see a uniform
+    // quantity_literal { value: (number_literal), unit: (unit_expr) } structure.
+    quantity_literal: $ => choice(
+      // Radix arm: 0xFFmm → quantity_literal(value: number_literal "0xFF", unit: unit_expr "mm")
+      seq(
+        field('value', alias($._radix_literal, $.number_literal)),
+        $._unit_expr_start,
+        field('unit', $.unit_expr),
+      ),
+      // Decimal arm: 5mm → quantity_literal(value: number_literal "5", unit: unit_expr "mm")
+      seq(
+        field('value', $.number_literal),
+        $._unit_expr_start,
+        field('unit', $.unit_expr),
+      ),
     ),
 
     // Unit expression: composite unit with mul (*), div (/), and pow (^) operators.
@@ -1030,7 +1221,9 @@ module.exports = grammar({
     // character ahead and only fire when the operator is immediately adjacent AND the
     // next character is a valid unit-start ([A-Za-z_(]).  This prevents `25USD/1kg`
     // from greedily attempting the div arm when `/` is followed by a digit.
-    // ^ uses token.immediate because `^` is not a binary operator, so no conflict.
+    // ^ uses token.immediate to disambiguate from the value-level binary `^` operator in
+    // binary_expression (prec.right 8): unit_expr pow fires only when ^ is adjacent (no
+    // whitespace), while value-level ^ fires in the normal whitespace-permitted context.
     // PRD §3.2: ^ binds tighter than */; */ are left-associative.
     unit_expr: $ => choice(
       prec.left(1, seq(
@@ -1061,7 +1254,7 @@ module.exports = grammar({
     // An identifier that must immediately follow the previous token (no whitespace)
     immediate_identifier: $ => token.immediate(/[a-zA-Z_][a-zA-Z0-9_]*/),
 
-    function_call: $ => prec(10, seq(
+    function_call: $ => prec(11, seq(
       field('name', $.identifier),
       callTail($),
     )),
@@ -1072,7 +1265,7 @@ module.exports = grammar({
       optional(','),
     ),
 
-    member_access: $ => prec.left(10, seq(
+    member_access: $ => prec.left(11, seq(
       field('object', $._expression),
       '.',
       field('member', $.identifier),
@@ -1095,8 +1288,8 @@ module.exports = grammar({
 
     // ── Ad-hoc port selector ────────────────────────────────
     // expr @ ident(args) — selects a port on a substructure using a named selector
-    // Binds tighter than index_access (prec 8) but looser than member_access (prec 10)
-    ad_hoc_selector: $ => prec.left(9, seq(
+    // Binds tighter than index_access (prec 9) but looser than member_access (prec 11)
+    ad_hoc_selector: $ => prec.left(10, seq(
       field('base', $._expression),
       '@',
       field('selector', $.identifier),
@@ -1104,7 +1297,7 @@ module.exports = grammar({
     )),
 
     // ── Index access ────────────────────────────────────────
-    index_access: $ => prec.left(8, seq(
+    index_access: $ => prec.left(9, seq(
       field('object', $._expression),
       '[',
       field('index', $._expression),
@@ -1113,7 +1306,7 @@ module.exports = grammar({
 
     // ── Qualified access ─────────────────────────────────────
     // Foo::bar — qualified name access (e.g. module/type member lookup)
-    qualified_access: $ => prec.left(8, seq(
+    qualified_access: $ => prec.left(9, seq(
       field('qualifier', $._expression),
       '::',
       field('member', $.identifier),
@@ -1122,7 +1315,7 @@ module.exports = grammar({
     // obj.(Foo::bar) — instance-qualified access (e.g. trait-qualified method call)
     // Inner 'qualified' field accepts any expression; lowering validates it's a
     // qualified_access and emits a specific diagnostic if not.
-    instance_qualified_access: $ => prec.left(8, seq(
+    instance_qualified_access: $ => prec.left(9, seq(
       field('object', $._expression),
       '.',
       '(',
@@ -1131,13 +1324,26 @@ module.exports = grammar({
     )),
 
     // Trait::fn(args) or obj.(Trait::fn)(args) — callable qualified path
-    trait_method_call: $ => prec(10, seq(
+    trait_method_call: $ => prec(11, seq(
       field('callee', choice($.qualified_access, $.instance_qualified_access)),
       callTail($),
     )),
 
     // ── Literals ────────────────────────────────────────────
-    number_literal: $ => token(/\d+(\.\d+)?([eE][+-]?\d+)?/),
+    //
+    // number_literal is kept as a PLAIN token() (not a choice) so that
+    // tree-sitter's error recovery inserts a MISSING leaf node rather than a
+    // degenerate rule node.  A plain-token MISSING node has is_missing()=true
+    // which is detectable by first_error_or_missing_descendant; a choice-rule
+    // MISSING node gets has_error()=true but is_missing()=false with no children
+    // — invisible to that function — and breaks task-3725's auto_type_arg
+    // span-narrowing test.
+    //
+    // Radix literals (hex/binary) are integrated via alias($._radix_literal,
+    // $.number_literal) at each call site (_primary_expression and
+    // quantity_literal) so they appear as number_literal in the CST without
+    // modifying this token rule.
+    number_literal: $ => token(/\d(_?\d)*(\.\d(_?\d)*)?([eE][+-]?\d(_?\d)*)?/),
 
     string_literal: $ => token(seq(
       '"',

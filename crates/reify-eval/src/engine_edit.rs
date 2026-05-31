@@ -1146,7 +1146,10 @@ impl Engine {
             if !dirty_cone.contains(&field_node) {
                 continue;
             }
-            let new_field_value = crate::engine_eval::elaborate_field(
+            // elaborate_field returns (value, Option<ContentHash>); the hash is only
+            // meaningful for Imported sources and is not recorded in the edit path
+            // (hash recording is an Engine::eval concern).
+            let (new_field_value, _imported_hash) = crate::engine_eval::elaborate_field(
                 field,
                 &values,
                 &functions,
@@ -2300,6 +2303,27 @@ impl Engine {
         );
         for rid in &changed_realizations {
             self.cache.invalidate(&NodeId::Realization(rid.clone()));
+            // GHR-δ S12 (edit donation cross-kind cascade, PRD §8 Phase 4): a
+            // changed Realization invalidates not only its own cache entry but
+            // also every Value cell holding a `GeometryHandle` backed by it —
+            // the Realization→ValueCell freshness edge recorded by deps.rs (S4)
+            // and surfaced here through `new_reverse_index.realization_dependents_of`.
+            // The backed cell's own `content_hash` may be UNCHANGED across the
+            // edit (e.g. a declaration reorder swaps realization ops under a
+            // positional `RealizationNodeId` without touching the cell's member
+            // name or `default_expr`), so the value-cell `changed` leg above
+            // misses it; without this cascade the cell would survive with a
+            // stale handle. We invalidate (not re-evaluate): the incremental
+            // eval path cannot re-run the kernel, so a forced re-eval would
+            // strip the handle to `Undef` — lazy revalidation (S16) re-resolves
+            // it against the current Engine on the next read. `new_reverse_index`
+            // is a local (not a borrow of `self`), so iterating it while mutating
+            // `self.cache` is a disjoint borrow.
+            for dep in new_reverse_index.realization_dependents_of(rid) {
+                if let NodeId::Value(cell) = dep {
+                    self.cache.invalidate(&NodeId::Value(cell.clone()));
+                }
+            }
         }
         donate_warm_state_and_invalidate(
             pending_warm_seeds.pool_mut(),
@@ -2307,6 +2331,34 @@ impl Engine {
             &removed_realizations,
             NodeId::Realization,
         );
+        // GHR-δ S12 (removed-realization leg): a removed Realization is absent
+        // from `new_reverse_index`, so consult the OLD reverse index for the
+        // cells it backed. Invalidate only those that still exist in the new
+        // graph — a `Type::Geometry` cell whose realize() backing vanished
+        // (e.g. the member lost its geometry default) keeps a now-unbacked
+        // handle that must not survive; lazy revalidation (S16) then returns
+        // `Undef` on read because the realization_ref is absent from the
+        // Engine's handle map. Cells removed alongside their realization are
+        // already invalidated by the `removed` value-cell leg above; the
+        // new-graph membership gate avoids touching them twice (and avoids
+        // resurrecting a stale entry). Collect first to drop the immutable
+        // `eval_state.reverse_index` borrow before mutating `self.cache`.
+        for rid in &removed_realizations {
+            let backed: Vec<ValueCellId> = eval_state
+                .reverse_index
+                .realization_dependents_of(rid)
+                .iter()
+                .filter_map(|n| match n {
+                    NodeId::Value(c) if new_snapshot.graph.value_cells.contains_key(c) => {
+                        Some(c.clone())
+                    }
+                    _ => None,
+                })
+                .collect();
+            for cell in backed {
+                self.cache.invalidate(&NodeId::Value(cell));
+            }
+        }
         // (9b) ComputeNode arm (ζ / task 3425). Every ComputeNode in the old
         //      snapshot is "removed" at this stage — the new snapshot's
         //      compute_nodes map is empty until per-cell eval recreates them
@@ -3239,6 +3291,29 @@ impl Engine {
         //       fires with a non-empty map and re-donates all surviving
         //       entries, making them recoverable on the next `edit_source`.
         pending_warm_seeds.drain_into_cache_or_repool(&mut self.cache);
+
+        // GHR-δ S10 (incremental path): mirror the cold-eval post-pass in
+        // `eval()` — augment each geometry cell's CACHED trace with its backing
+        // Realization. The edit loop re-records geometry (param) cells via
+        // `extract_dependency_trace` (reads-only), which cannot see the implicit
+        // Realization→ValueCell edge, so without this an edited GH cell would
+        // lose `realization_reads` and its freshness derivation would stop
+        // folding in the Realization's freshness (PRD §5/§7.1). Links come from
+        // the same single source of truth the trace map / reverse index use,
+        // folded per-cell by (`geometry_cell_realization_reads`) so the cached
+        // trace carries the SAME accumulated `realization_reads` as
+        // `build_trace_map_and_fields` (which `push`-accumulates) even if the 1:1
+        // cell↔realization invariant is ever violated — see that helper's docs.
+        // `new_snapshot.graph` is read-only here (moved into `eval_state` just
+        // below) and `self.cache` is a disjoint field. The replace-semantics
+        // setter is idempotent across edit rounds and returns `false` harmlessly
+        // for any GH cell not (re-)recorded this edit (its entry already carries
+        // the link from the prior round).
+        for (cell, reads) in crate::deps::geometry_cell_realization_reads(&new_snapshot.graph) {
+            let _ = self
+                .cache
+                .set_realization_reads(&NodeId::Value(cell), reads);
+        }
 
         // (15) Install the new snapshot, dep structures, and demand; record
         //      actual_eval_set (excludes early-cutoff-skipped nodes).

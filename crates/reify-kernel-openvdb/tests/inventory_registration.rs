@@ -19,11 +19,11 @@
 use reify_kernel_openvdb::register::OPENVDB_KERNEL_NAME;
 use reify_ir::{CapabilityDescriptor, KernelRegistration, Operation, ReprKind};
 
-/// OpenVDB's capability descriptor must enumerate exactly the three
-/// Voxel-Boolean operations OpenVDB supports.
+/// OpenVDB's capability descriptor must enumerate the Voxel-Boolean operations
+/// and the Mesh→Voxel conversion entry added in task η.
 ///
 /// Positive pins: `(BooleanUnion/Difference/Intersection, Voxel)` — the
-/// complete set of Voxel-native Booleans OpenVDB can execute.
+/// Voxel-native Booleans; plus `(Convert{from:Mesh}, Voxel)` for Mesh→Voxel.
 ///
 /// Negative pins: `(BooleanUnion, BRep)`, `(BooleanUnion, Mesh)`, and
 /// `(BooleanUnion, Sdf)` must all return `false`. This enforces the

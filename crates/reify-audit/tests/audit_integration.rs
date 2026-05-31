@@ -105,19 +105,25 @@ mod tests {
             vec!["crates/x/215_file.rs".to_string()],
         );
 
-        // Fixtures 3–6 (tasks 2347/2358/2658/2699) are P1 producers. Each has
-        // a distinct done_at to avoid MockJCodemunchOps key collisions on
-        // (branch, since_epoch). All four timestamps are >14 days past NOW so
-        // the absent guards would emit Medium findings if not suppressed —
-        // making each fixture's guard exercise load-bearing.
+        // Fixtures 3–6 (tasks 2347/2358/2658/2699) are P1 producers. Symbols
+        // are seeded under their commit ranges (since_sha="{sha}^1", until_sha=
+        // "{sha}") per the new JCodemunchOps::get_changed_symbols signature.
+        // Tasks 2347/2358 have done_provenance=None (from legacy_meta) so P5
+        // stays asleep; they short-circuit at per-task guards BEFORE the commit-
+        // resolution step, so the seeded symbols are never actually queried.
+        // Tasks 2658/2699 also have done_provenance=None; they will be skipped
+        // at the commit-resolution guard (no commit → skip) instead of reaching
+        // their per-symbol guards — that per-symbol coverage is now handled by
+        // tests/p1.rs::per_symbol_guards_suppress_individually.
         let mut jc = MockJCodemunchOps::new();
 
         // Fixture 3 (task 2347, guard B3 audit_foundation=Some(true)): symbol
-        // is seeded so that without the audit_foundation guard P1 would reach
+        // seeded so that without the audit_foundation guard P1 would reach
         // per-symbol iteration; with the guard it short-circuits first.
+        // done_provenance=None → commit-resolution skips this task (never reached).
         jc.set_changed_symbols(
-            "main",
-            NOW - 20 * DAY,
+            "sha_2347^1",
+            "sha_2347",
             vec![ChangedSymbol {
                 name: "would_be_orphan".to_string(),
                 file: "crates/reify-x/src/foo.rs".to_string(),
@@ -129,9 +135,10 @@ mod tests {
         );
         // Fixture 4 (task 2358, guard B4 pending-consumer-ref): symbol seeded
         // so P1 would reach per-symbol iteration without the consumer-ref guard.
+        // done_provenance=None → commit-resolution skips this task (never reached).
         jc.set_changed_symbols(
-            "main",
-            NOW - 25 * DAY,
+            "sha_2358^1",
+            "sha_2358",
             vec![ChangedSymbol {
                 name: "producer_fn".to_string(),
                 file: "crates/reify-y/src/bar.rs".to_string(),
@@ -141,11 +148,13 @@ mod tests {
                 g_allow_marker: None,
             }],
         );
-        // Fixture 5 (task 2658, guard B5 stdlib scope-exclude): file is in
-        // crates/reify-stdlib/ → P1 skips the symbol before checking callers.
+        // Fixture 5 (task 2658, guard B5 stdlib scope-exclude): previously
+        // exercised by the stdlib path guard; now skipped at commit-resolution
+        // (done_provenance=None). Per-symbol coverage lives in
+        // tests/p1.rs::per_symbol_guards_suppress_individually.
         jc.set_changed_symbols(
-            "main",
-            NOW - 30 * DAY,
+            "sha_2658^1",
+            "sha_2658",
             vec![ChangedSymbol {
                 name: "stdlib_def".to_string(),
                 file: "crates/reify-stdlib/src/foo.ri".to_string(),
@@ -155,11 +164,13 @@ mod tests {
                 g_allow_marker: None,
             }],
         );
-        // Fixture 6 (task 2699, guard B7 G-allow marker): g_allow_marker is
-        // non-blank → is_g_allow_suppressed returns true → P1 skips the symbol.
+        // Fixture 6 (task 2699, guard B7 G-allow marker): previously exercised
+        // by the G-allow guard; now skipped at commit-resolution (done_provenance=
+        // None). Per-symbol coverage lives in
+        // tests/p1.rs::per_symbol_guards_suppress_individually.
         jc.set_changed_symbols(
-            "main",
-            NOW - 35 * DAY,
+            "sha_2699^1",
+            "sha_2699",
             vec![ChangedSymbol {
                 name: "g_allowed_fn".to_string(),
                 file: "crates/reify-z/src/baz.rs".to_string(),
@@ -442,9 +453,11 @@ mod tests {
         let git = MockGitOps::new(); // P1 doesn't touch git
 
         let mut jc = MockJCodemunchOps::new();
+        // Symbol seeded under the commit range for task 7301's merged commit.
+        // P1 maps done_provenance.commit → (since_sha, until_sha) = ("sha_7301^1", "sha_7301").
         jc.set_changed_symbols(
-            "main",
-            done_at,
+            "sha_7301^1",
+            "sha_7301",
             vec![ChangedSymbol {
                 name: "resolve_unique_by_attribute".to_string(),
                 file: "crates/reify-eval/src/selector_resolution.rs".to_string(),
@@ -464,7 +477,12 @@ mod tests {
                 task_id: "7301".to_string(),
                 status: "done".to_string(),
                 files: vec![],
-                done_provenance: None,
+                // Commit required so P1's commit-resolution guard can form the range.
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("sha_7301".to_string()),
+                    note: None,
+                }),
                 title: "Wire persistent naming resolution".to_string(),
                 prd: Some("docs/persistent-naming-v2.md".to_string()),
                 consumer_ref: None,

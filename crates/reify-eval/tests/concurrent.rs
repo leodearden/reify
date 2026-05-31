@@ -144,7 +144,7 @@ fn apply_concurrent_edit_updates_engine_state() {
         node: volume_node.clone(),
         value: new_volume.clone(),
         determinacy: DeterminacyState::Determined,
-        trace: DependencyTrace {
+        trace: DependencyTrace { realization_reads: Vec::new(),
             reads: vec![
                 ValueCellId::new(e, "width"),
                 ValueCellId::new(e, "height"),

@@ -1,0 +1,14 @@
+// complex_transcendental.ri — demonstrate complex_exp, complex_sqrt, complex_pow.
+//
+// PRD v0_6 complex-literals-and-stdmath, task ε (D5).
+//
+// Expected `reify eval` output:
+//   e = 1+0j        (complex_exp(0+0i) = e^0·(cos 0 + i·sin 0) = 1+0i)
+//   s = 0+1j        (complex_sqrt(-1+0i) = principal root of -1 = +i)
+//   p = -7+24j      (complex_pow(3+4i, 2) = (3+4i)² = -7+24i)
+
+structure def ComplexTranscendental {
+    let e = complex_exp(complex(0.0, 0.0))    // 1 + 0i
+    let s = complex_sqrt(complex(-1.0, 0.0))  // 0 + 1i  (principal root)
+    let p = complex_pow(complex(3.0, 4.0), 2) // -7 + 24i
+}

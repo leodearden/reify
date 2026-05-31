@@ -106,36 +106,6 @@ impl ManifoldKernel {
             .ok_or(GeometryError::InvalidReference(id))
     }
 
-    /// Test-only ingestion path for `reify_types::Mesh` inputs.
-    ///
-    /// Widens the input mesh's f32 vertices to f64 (per Decision 4 in the
-    /// task plan: "Reify's tolerance regime is f64; manifold internals stay
-    /// f64 throughout") and the u32 indices to u64 (per the
-    /// `from_mesh_f64` API signature), then constructs a `Manifold` via
-    /// `Manifold::from_mesh_f64`. Returns
-    /// `Err(GeometryError::OperationFailed)` on invalid mesh input — the
-    /// underlying manifold3d error is surfaced in the `OperationFailed`
-    /// payload so a winding-order regression in a fixture is debuggable
-    /// rather than presenting as a generic "must be a valid manifold"
-    /// message.
-    ///
-    /// Gated on `cfg(any(test, feature = "test-fixtures"))` so the API is
-    /// reachable from in-crate `mod tests` (cfg(test)) AND from cross-crate
-    /// integration tests in `tests/` (which set the `test-fixtures` feature
-    /// via the self-dev-dep in `Cargo.toml`).
-    #[cfg(any(test, feature = "test-fixtures"))]
-    pub fn store_mesh_for_test(&mut self, mesh: &Mesh) -> Result<GeometryHandleId, GeometryError> {
-        let vert_props_f64: Vec<f64> = mesh.vertices.iter().map(|&v| v as f64).collect();
-        let tri_indices_u64: Vec<u64> = mesh.indices.iter().map(|&i| i as u64).collect();
-        let manifold =
-            Manifold::from_mesh_f64(&vert_props_f64, 3, &tri_indices_u64).map_err(|e| {
-                GeometryError::OperationFailed(format!(
-                    "store_mesh_for_test: input Mesh must be a valid manifold; \
-                     manifold3d::from_mesh_f64 reported: {e:?}"
-                ))
-            })?;
-        Ok(self.store(manifold).id)
-    }
 }
 
 impl Default for ManifoldKernel {
@@ -273,6 +243,52 @@ impl GeometryKernel for ManifoldKernel {
     // extract_edges, extract_faces, execute_with_history, query_many all use
     // the trait defaults — they error in the standard "not supported" fashion.
 
+    /// Ingest an externally-supplied [`Mesh`] into the kernel, converting it
+    /// to a `Manifold` and storing it under a fresh handle.
+    ///
+    /// # Widening rationale (Decision 4, task 3186 plan)
+    ///
+    /// Reify's boundary contract is `Mesh { vertices: Vec<f32>, indices:
+    /// Vec<u32> }` while `Manifold::from_mesh_f64` requires `f64` vertex
+    /// props and `u64` indices. The widening (`f32 as f64`, `u32 as u64`)
+    /// happens here at the ingestion seam; manifold internals remain f64
+    /// throughout, and the corresponding narrowing on egress (`tessellate`)
+    /// converts back to f32/u32 at the Reify boundary.
+    ///
+    /// # Error surface
+    ///
+    /// Returns `Err(GeometryError::OperationFailed(_))` if the input is not a
+    /// closed orientable manifold (e.g. a mesh with boundary edges, inverted
+    /// winding, or degenerate geometry). The underlying `manifold3d` error is
+    /// included in the `OperationFailed` payload so winding-order regressions
+    /// in fixture meshes are debuggable without source-diving.
+    fn ingest_mesh(&mut self, mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
+        if !mesh.vertices.len().is_multiple_of(3) {
+            return Err(GeometryError::OperationFailed(format!(
+                "ingest_mesh: vertices.len() must be a multiple of 3 (xyz triplets); \
+                 got {}",
+                mesh.vertices.len()
+            )));
+        }
+        if !mesh.indices.len().is_multiple_of(3) {
+            return Err(GeometryError::OperationFailed(format!(
+                "ingest_mesh: indices.len() must be a multiple of 3 (triangle triplets); \
+                 got {}",
+                mesh.indices.len()
+            )));
+        }
+        let vert_props_f64: Vec<f64> = mesh.vertices.iter().map(|&v| v as f64).collect();
+        let tri_indices_u64: Vec<u64> = mesh.indices.iter().map(|&i| i as u64).collect();
+        let manifold =
+            Manifold::from_mesh_f64(&vert_props_f64, 3, &tri_indices_u64).map_err(|e| {
+                GeometryError::OperationFailed(format!(
+                    "ingest_mesh: input Mesh must be a valid manifold; \
+                     manifold3d::from_mesh_f64 reported: {e:?}"
+                ))
+            })?;
+        Ok(self.store(manifold))
+    }
+
     /// Override the trait default to advertise that ManifoldKernel implements
     /// [`KernelAttributeHook`]. Per PRD line 70, ManifoldKernel is the first
     /// concrete impl: returning `Some(self)` here is what makes the engine-
@@ -378,12 +394,8 @@ mod tests {
         }
     }
 
-    /// RED for step-1 of task 3093: pins that `execute(GeometryOp::Union)`
-    /// over two stored unit cubes returns `Ok(GeometryHandle { .. })`.
-    ///
-    /// Currently fails because (a) `store_mesh_for_test` does not yet exist
-    /// on `ManifoldKernel`, and (b) the `execute` impl returns the stub
-    /// error. Step-2 makes both true.
+    /// Pins that `execute(GeometryOp::Union)` over two stored unit cubes
+    /// returns `Ok(GeometryHandle { .. })`.
     ///
     /// Match-on-Ok-with-id rather than `assert_eq!` because `GeometryError`
     /// does not derive `PartialEq`. The `repr: None` contract is pinned
@@ -394,56 +406,49 @@ mod tests {
     fn union_of_two_stored_cubes_returns_ok_handle() {
         let mut kernel = ManifoldKernel::new();
         let l = kernel
-            .store_mesh_for_test(&unit_cube_mesh([0.0, 0.0, 0.0]))
-            .expect("unit_cube_mesh fixture must be a valid manifold");
+            .ingest_mesh(&unit_cube_mesh([0.0, 0.0, 0.0]))
+            .expect("unit_cube_mesh fixture must be a valid manifold")
+            .id;
         let r = kernel
-            .store_mesh_for_test(&unit_cube_mesh([0.5, 0.0, 0.0]))
-            .expect("unit_cube_mesh fixture must be a valid manifold");
+            .ingest_mesh(&unit_cube_mesh([0.5, 0.0, 0.0]))
+            .expect("unit_cube_mesh fixture must be a valid manifold")
+            .id;
 
         let result = kernel.execute(&GeometryOp::Union { left: l, right: r });
 
         assert_ok_handle(result, "Union");
     }
 
-    /// RED for step-3 of task 3093: pins that
-    /// `execute(GeometryOp::Difference)` over two overlapping stored unit
-    /// cubes returns `Ok(GeometryHandle { .. })`.
+    /// Pins that `execute(GeometryOp::Difference)` over two overlapping
+    /// stored unit cubes returns `Ok(GeometryHandle { .. })`.
     ///
     /// Cubes overlap by 0.5 in x so the difference is a non-degenerate
-    /// volume (no early empty-result short-circuit). Currently fails
-    /// because the `Difference` arm of `execute` returns the stub error
-    /// from step-2; step-4 wires it to `Manifold::difference`.
+    /// volume (no early empty-result short-circuit).
     #[cfg(feature = "test-fixtures")]
     #[test]
     fn difference_of_two_stored_cubes_returns_ok_handle() {
         let mut kernel = ManifoldKernel::new();
         let l = kernel
-            .store_mesh_for_test(&unit_cube_mesh([0.0, 0.0, 0.0]))
-            .expect("unit_cube_mesh fixture must be a valid manifold");
+            .ingest_mesh(&unit_cube_mesh([0.0, 0.0, 0.0]))
+            .expect("unit_cube_mesh fixture must be a valid manifold")
+            .id;
         let r = kernel
-            .store_mesh_for_test(&unit_cube_mesh([0.5, 0.0, 0.0]))
-            .expect("unit_cube_mesh fixture must be a valid manifold");
+            .ingest_mesh(&unit_cube_mesh([0.5, 0.0, 0.0]))
+            .expect("unit_cube_mesh fixture must be a valid manifold")
+            .id;
 
         let result = kernel.execute(&GeometryOp::Difference { left: l, right: r });
 
         assert_ok_handle(result, "Difference");
     }
 
-    /// RED for step-5 of task 3093: pins that
-    /// `execute(GeometryOp::Intersection)` over two overlapping stored
-    /// unit cubes returns `Ok(GeometryHandle { .. })`.
+    /// Pins that `execute(GeometryOp::Intersection)` over two overlapping
+    /// stored unit cubes returns `Ok(GeometryHandle { .. })`.
     ///
     /// Cubes overlap by 0.5 in x so the intersection has non-empty volume.
     /// We deliberately do NOT pin the geometric volume here (that's a
     /// query, exercised separately) — only the structural handle-return
-    /// contract. Currently fails because the `Intersection` arm of
-    /// `execute` returns the stub error; step-6 wires it to
-    /// `Manifold::intersection`.
-    ///
-    /// Renamed during amendment round 2 (was
-    /// `…_returns_ok_handle_with_nonempty_volume`) so the name matches what
-    /// the assertions actually pin: the structural Ok-handle shape, not the
-    /// non-empty volume. The disjoint-input empty-mesh contract is exercised
+    /// contract. The disjoint-input empty-mesh contract is exercised
     /// separately by
     /// [`tessellate_of_intersection_of_disjoint_cubes_returns_empty_mesh`].
     #[cfg(feature = "test-fixtures")]
@@ -451,11 +456,13 @@ mod tests {
     fn intersection_of_two_overlapping_cubes_returns_ok_handle() {
         let mut kernel = ManifoldKernel::new();
         let l = kernel
-            .store_mesh_for_test(&unit_cube_mesh([0.0, 0.0, 0.0]))
-            .expect("unit_cube_mesh fixture must be a valid manifold");
+            .ingest_mesh(&unit_cube_mesh([0.0, 0.0, 0.0]))
+            .expect("unit_cube_mesh fixture must be a valid manifold")
+            .id;
         let r = kernel
-            .store_mesh_for_test(&unit_cube_mesh([0.5, 0.0, 0.0]))
-            .expect("unit_cube_mesh fixture must be a valid manifold");
+            .ingest_mesh(&unit_cube_mesh([0.5, 0.0, 0.0]))
+            .expect("unit_cube_mesh fixture must be a valid manifold")
+            .id;
 
         let result = kernel.execute(&GeometryOp::Intersection { left: l, right: r });
 
@@ -481,12 +488,14 @@ mod tests {
     fn tessellate_of_intersection_of_disjoint_cubes_returns_empty_mesh() {
         let mut kernel = ManifoldKernel::new();
         let l = kernel
-            .store_mesh_for_test(&unit_cube_mesh([0.0, 0.0, 0.0]))
-            .expect("unit_cube_mesh fixture must be a valid manifold");
+            .ingest_mesh(&unit_cube_mesh([0.0, 0.0, 0.0]))
+            .expect("unit_cube_mesh fixture must be a valid manifold")
+            .id;
         // Offset >> 1.0 so the two cubes share no volume.
         let r = kernel
-            .store_mesh_for_test(&unit_cube_mesh([5.0, 0.0, 0.0]))
-            .expect("unit_cube_mesh fixture must be a valid manifold");
+            .ingest_mesh(&unit_cube_mesh([5.0, 0.0, 0.0]))
+            .expect("unit_cube_mesh fixture must be a valid manifold")
+            .id;
 
         let intersection_handle = kernel
             .execute(&GeometryOp::Intersection { left: l, right: r })
@@ -585,11 +594,13 @@ mod tests {
     fn tessellate_of_stored_union_returns_nonempty_mesh() {
         let mut kernel = ManifoldKernel::new();
         let l = kernel
-            .store_mesh_for_test(&unit_cube_mesh([0.0, 0.0, 0.0]))
-            .expect("unit_cube_mesh fixture must be a valid manifold");
+            .ingest_mesh(&unit_cube_mesh([0.0, 0.0, 0.0]))
+            .expect("unit_cube_mesh fixture must be a valid manifold")
+            .id;
         let r = kernel
-            .store_mesh_for_test(&unit_cube_mesh([0.5, 0.0, 0.0]))
-            .expect("unit_cube_mesh fixture must be a valid manifold");
+            .ingest_mesh(&unit_cube_mesh([0.5, 0.0, 0.0]))
+            .expect("unit_cube_mesh fixture must be a valid manifold")
+            .id;
 
         let union_handle = kernel
             .execute(&GeometryOp::Union { left: l, right: r })
@@ -743,11 +754,13 @@ mod tests {
     fn manifold_kernel_handle_repr_is_none_for_non_brep_kernel() {
         let mut kernel = ManifoldKernel::new();
         let l = kernel
-            .store_mesh_for_test(&unit_cube_mesh([0.0, 0.0, 0.0]))
-            .expect("unit_cube_mesh fixture must be a valid manifold");
+            .ingest_mesh(&unit_cube_mesh([0.0, 0.0, 0.0]))
+            .expect("unit_cube_mesh fixture must be a valid manifold")
+            .id;
         let r = kernel
-            .store_mesh_for_test(&unit_cube_mesh([0.5, 0.0, 0.0]))
-            .expect("unit_cube_mesh fixture must be a valid manifold");
+            .ingest_mesh(&unit_cube_mesh([0.5, 0.0, 0.0]))
+            .expect("unit_cube_mesh fixture must be a valid manifold")
+            .id;
 
         let handle = kernel
             .execute(&GeometryOp::Union { left: l, right: r })
@@ -762,7 +775,55 @@ mod tests {
         );
     }
 
-    /// RED for item 4 of task 3186: pins that `store_mesh_for_test` returns
+    /// Pins that `GeometryKernel::ingest_mesh` default returns
+    /// `Err(GeometryError::OperationFailed(_))` with the concrete kernel name
+    /// and the "does not accept Mesh inputs" sentinel phrase.
+    ///
+    /// Uses `reify_test_support::FailingMockGeometryKernel` — a non-overriding
+    /// `GeometryKernel` impl that is already an ungated dev-dep — so the test
+    /// exercises the trait default directly without requiring a new dependency
+    /// (e.g. `reify-kernel-fidget`). Design decision 4 (task 4047 plan.json):
+    /// "Negative test reuses `FailingMockGeometryKernel` rather than
+    /// `FidgetKernel`."
+    ///
+    /// Structural assertions:
+    /// - result is `Err(GeometryError::OperationFailed(_))` (match-on-variant;
+    ///   `GeometryError` does not derive `PartialEq`)
+    /// - the `OperationFailed` payload contains "FailingMockGeometryKernel"
+    ///   (proves `type_name::<Self>()` resolves to the *concrete* kernel name)
+    /// - the payload contains "does not accept Mesh inputs"
+    ///
+    /// RED: fails to compile until `ingest_mesh` is added to `GeometryKernel`
+    /// (step-2 of task 4047).
+    #[test]
+    fn ingest_mesh_on_non_overriding_kernel_returns_operation_failed_with_kernel_name() {
+        let mut kernel = reify_test_support::FailingMockGeometryKernel;
+        let result = kernel.ingest_mesh(&Mesh {
+            vertices: vec![],
+            indices: vec![],
+            normals: None,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("FailingMockGeometryKernel"),
+                    "OperationFailed payload must contain the concrete kernel name \
+                     (via type_name::<Self>()); got: {msg:?}",
+                );
+                assert!(
+                    msg.contains("does not accept Mesh inputs"),
+                    "OperationFailed payload must contain the sentinel phrase \
+                     \"does not accept Mesh inputs\"; got: {msg:?}",
+                );
+            }
+            other => panic!(
+                "ingest_mesh on a non-overriding kernel must return \
+                 Err(GeometryError::OperationFailed(_)); got {other:?}",
+            ),
+        }
+    }
+
+    /// Pins that `GeometryKernel::ingest_mesh` returns
     /// `Err(GeometryError::OperationFailed(_))` when given an invalid
     /// (non-manifold) mesh.
     ///
@@ -770,21 +831,14 @@ mod tests {
     /// (it has three boundary edges with no closing surface), so
     /// `Manifold::from_mesh_f64` must reject it. Match-on-variant rather than
     /// equality because `GeometryError` does not derive `PartialEq` — mirrors
-    /// `execute_union_with_unknown_handle_returns_invalid_reference` (lines
-    /// 528-543).
+    /// `execute_union_with_unknown_handle_returns_invalid_reference`.
     ///
     /// This test does not need `#[cfg(feature = "test-fixtures")]` because it
     /// lives inside the unit `mod tests` block, which is compiled under
     /// `cfg(test)` — the gating predicate `cfg(any(test, feature =
     /// "test-fixtures"))` is satisfied by `cfg(test)` alone.
-    ///
-    /// Pins the post-conversion `Result` contract: `store_mesh_for_test`
-    /// previously returned `GeometryHandleId` and panicked on bad input;
-    /// task 3186 step-2 (GREEN) converted the signature to
-    /// `Result<GeometryHandleId, GeometryError>`. This test is GREEN as
-    /// merged — see git history for the RED→GREEN transition.
     #[test]
-    fn store_mesh_for_test_with_invalid_mesh_returns_err_operation_failed() {
+    fn ingest_mesh_with_invalid_mesh_returns_err_operation_failed() {
         let mut kernel = ManifoldKernel::new();
         // A single open triangle — three vertices, one triangle face.
         // Not a closed manifold: three boundary edges, no closing surface.
@@ -800,7 +854,7 @@ mod tests {
             normals: None,
         };
 
-        let result = kernel.store_mesh_for_test(&bad_mesh);
+        let result = kernel.ingest_mesh(&bad_mesh);
 
         match result {
             Err(GeometryError::OperationFailed(msg)) => assert!(
@@ -810,9 +864,116 @@ mod tests {
                  regressions (doc comment promises the underlying manifold3d error is surfaced)",
             ),
             other => panic!(
-                "store_mesh_for_test with a single-triangle (non-manifold) mesh must return \
+                "ingest_mesh with a single-triangle (non-manifold) mesh must return \
                  Err(GeometryError::OperationFailed(_)); got {other:?}"
             ),
+        }
+    }
+
+    /// Pins the round-trip contract for `ManifoldKernel::ingest_mesh`: a
+    /// valid closed-orientable mesh (the canonical `unit_cube_mesh` fixture)
+    /// ingests without error and tessellates back to a geometrically faithful
+    /// output.
+    ///
+    /// Assertions (per task 4047 design decision 3 — robust bbox rather than
+    /// exact vertex count):
+    /// - `out.vertices` and `out.indices` are non-empty
+    /// - `out.vertices.len() % 3 == 0` and `out.indices.len() % 3 == 0`
+    ///   (xyz triplets / triangle triplets invariant)
+    /// - the axis-aligned bounding box of the round-tripped mesh matches the
+    ///   input's within 1e-6 per axis (manifold weld/reindex preserves
+    ///   geometry; exact vertex count is NOT asserted — see
+    ///   `boolean_ops_integration.rs:59-63`).  The tolerance is 1e-6, not
+    ///   1e-9, because `tessellate` returns f32 vertices whose machine epsilon
+    ///   (~1.2e-7) makes 1e-9 physically unrepresentable; tightening the
+    ///   assert to match the f64-layer prose in the PRD would make this test
+    ///   unreliable.
+    /// - bbox centroid == (0.5, 0.5, 0.5) within 1e-6 (same f32-egress
+    ///   rationale; the unit cube is centred there for the `[0.0,0.0,0.0]`
+    ///   origin variant)
+    ///
+    /// RED: `ManifoldKernel` currently inherits the trait default which
+    /// returns `Err`; the first `.expect(…)` panics until step-4 adds the
+    /// override.
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn ingest_mesh_round_trips_unit_cube_through_manifold() {
+        let initial = unit_cube_mesh([0.0, 0.0, 0.0]);
+        let mut kernel = ManifoldKernel::new();
+
+        let handle = kernel
+            .ingest_mesh(&initial)
+            .expect("unit_cube_mesh must ingest as a valid manifold");
+
+        let out = kernel
+            .tessellate(handle.id, 0.0)
+            .expect("tessellate of ingested cube must succeed");
+
+        // Structural invariants.
+        assert!(
+            !out.vertices.is_empty(),
+            "tessellated mesh must have vertices",
+        );
+        assert!(
+            !out.indices.is_empty(),
+            "tessellated mesh must have indices",
+        );
+        assert_eq!(
+            out.vertices.len() % 3,
+            0,
+            "vertices.len() must be a multiple of 3 (xyz triplets)",
+        );
+        assert_eq!(
+            out.indices.len() % 3,
+            0,
+            "indices.len() must be a multiple of 3 (triangle triplets)",
+        );
+
+        // Bounding-box fidelity assertions.
+        // Extract (min_x, min_y, min_z) and (max_x, max_y, max_z) from a
+        // flat xyz-triplet slice.
+        fn bbox(verts: &[f32]) -> ([f32; 3], [f32; 3]) {
+            let mut mn = [f32::INFINITY; 3];
+            let mut mx = [f32::NEG_INFINITY; 3];
+            for chunk in verts.chunks(3) {
+                for (axis, &v) in chunk.iter().enumerate() {
+                    mn[axis] = mn[axis].min(v);
+                    mx[axis] = mx[axis].max(v);
+                }
+            }
+            (mn, mx)
+        }
+
+        let (in_min, in_max) = bbox(&initial.vertices);
+        let (out_min, out_max) = bbox(&out.vertices);
+
+        for axis in 0..3 {
+            assert!(
+                (out_min[axis] - in_min[axis]).abs() < 1e-6_f32,
+                "bbox min[{axis}] round-trip error too large: \
+                 in={}, out={} (diff={})",
+                in_min[axis],
+                out_min[axis],
+                (out_min[axis] - in_min[axis]).abs(),
+            );
+            assert!(
+                (out_max[axis] - in_max[axis]).abs() < 1e-6_f32,
+                "bbox max[{axis}] round-trip error too large: \
+                 in={}, out={} (diff={})",
+                in_max[axis],
+                out_max[axis],
+                (out_max[axis] - in_max[axis]).abs(),
+            );
+        }
+
+        // Centroid of the unit cube (origin variant) must be (0.5, 0.5, 0.5).
+        for axis in 0..3 {
+            let centroid = (out_min[axis] + out_max[axis]) / 2.0;
+            assert!(
+                (centroid - 0.5).abs() < 1e-6_f32,
+                "bbox centroid[{axis}] must be 0.5 for the unit cube; \
+                 got {centroid}",
+            );
         }
     }
 }

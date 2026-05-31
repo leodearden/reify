@@ -6,27 +6,19 @@ license.workspace = true
 description = "Manifold mesh-Boolean kernel adapter"
 
 [features]
-# Test-only API surface gate.
+# Test-only fixture gate.
 #
-# Activating this feature exposes the `store_mesh_for_test` ingestion path
-# on `ManifoldKernel` and the `manifold_factory_for_test` accessor in
-# `register.rs`. Without these, integration test binaries in `tests/` cannot
-# populate input handles for boolean tests because the v0.2
-# `CapabilityDescriptor` only declares the three mesh-Boolean ops — there is
-# no production path for a mesh to enter the kernel until v0.3's BRep→Mesh
-# conversion stage lands.
+# Activating this feature exposes the `unit_cube_mesh` fixture and the
+# `manifold_factory_for_test` accessor in `register.rs` for use in
+# integration test binaries under `tests/`. The production mesh-ingestion
+# path (`GeometryKernel::ingest_mesh`) is now ungated — it lives directly
+# on the trait and is reachable via any `ManifoldKernel` instance without
+# this feature.
 #
 # The feature is activated for ALL test builds (both `cargo test --lib`
 # in-crate and cross-crate integration test binaries) via the self-dev-dep
 # below — mirroring the OCCT pattern at
 # `crates/reify-kernel-occt/Cargo.toml:16,27`.
-#
-# The OCCT pattern is reused because the v0.2 dispatcher routes ops to
-# manifold based on the `(op, repr)` descriptor; expanding that descriptor
-# with mesh-native primitives would silently shift dispatcher routing and
-# create a competing primitive owner with OCCT (lex-min tie-break would
-# misroute primitives through manifold). The test-fixtures gate is the
-# minimally-invasive alternative.
 test-fixtures = []
 
 [dependencies]
@@ -55,7 +47,7 @@ reify-test-support.workspace = true
 # Self-dev-dep: activates `test-fixtures` for all integration test binaries
 # in `tests/` (which are separate compilation units — they do NOT inherit
 # `cfg(test)` from the parent crate, so `cfg(test)` alone cannot reach the
-# gated `store_mesh_for_test` and `manifold_factory_for_test` API surface).
+# gated `unit_cube_mesh` and `manifold_factory_for_test` API surface).
 # Same pattern used by:
 #   crates/reify-eval/Cargo.toml:21  (reify-eval activating test-instrumentation)
 #   crates/reify-kernel-occt/Cargo.toml:27 (reify-kernel-occt activating test-fixtures)

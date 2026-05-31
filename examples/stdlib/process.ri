@@ -1,0 +1,27 @@
+// std.process CI signal — examples/stdlib/process.ri
+//
+// Demonstrates the std.process trait surface:
+//   - MilledPart : Subtracting  — a CNC-milling process conformer
+//   - MinWallThicknessRule : DFMRule  — a DFM rule conformer
+//
+// This file is auto-covered by examples_smoke.rs (directory walk) and
+// additionally compiled by the capstone test in process_stdlib_compile.rs.
+
+import std.process
+
+// A milled part provides the duration and cost required by Process (via
+// Subtracting : Process). Matches the io.ri Steel_AISI_1045 : ElasticMaterial
+// pattern: a concrete structure supplies defaults for the required trait params.
+structure def MilledPart : Subtracting {
+    param duration : Time = 30min
+    param cost : Money = 50USD
+}
+
+// A DFM rule that checks minimum wall thickness for milled parts.
+// applies_to uses a MilledPart() constructor as the process-applicability
+// value — mirrors fdm.ri `material : ElasticMaterial = ABS_Plastic()`.
+structure def MinWallThicknessRule : DFMRule {
+    param rule_name : String = "min_wall_thickness"
+    param severity : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process = MilledPart()
+}

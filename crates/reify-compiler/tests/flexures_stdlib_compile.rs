@@ -194,8 +194,9 @@ fn rotational_stiffness_alias_resolves_to_real() {
 /// `FlexureCompliance` is the value-type container for the PRD §4.2 seven-
 /// field flexure compliance contract. Per PRD §4.2:
 ///
-///   - `effective_stiffness   : RotationalStiffness`    (= Real placeholder
-///                                                       via the alias; PRD
+///   - `effective_stiffness   : RotationalStiffness`    (proper dimensioned
+///                                                       type kg·m²·s⁻²·rad⁻¹
+///                                                       per task α; PRD
 ///                                                       §4.2 spelling)
 ///   - `max_stress            : Pressure`               (at range endpoint)
 ///   - `max_stress_at_neutral : Pressure`               (zero unless preloaded)
@@ -208,9 +209,12 @@ fn rotational_stiffness_alias_resolves_to_real() {
 ///   - `at_yield              : Bool`                   (true if
 ///                                                       max_stress >= yield)
 ///
-/// `RotationalStiffness` resolves transitively to `Type::Real` via the
-/// step-4 `pub type` alias, so `effective_stiffness.cell_type ==
-/// Type::Real`. `Pressure` resolves to `Type::Scalar { dimension:
+/// `RotationalStiffness` now resolves to `Type::Scalar { dimension:
+/// DimensionVector::ROTATIONAL_STIFFNESS }` via NAMED_DIMENSIONS (task α
+/// of the compliant-joints-flexures PRD added the proper dimensioned type
+/// in dimension.rs; NAMED_DIMENSIONS takes priority over the placeholder
+/// `pub type RotationalStiffness = Real` alias in flexures_types.ri).
+/// `Pressure` resolves to `Type::Scalar { dimension:
 /// DimensionVector::PRESSURE }` via the standard dimensioned-type path.
 /// `Range<Angle>` is not a resolvable parameterized builtin
 /// (`type_resolution.rs::resolve_parameterized_builtin_type` has no Range
@@ -239,7 +243,12 @@ fn flexure_compliance_struct_has_correct_param_shape() {
     );
 
     let expected: &[(&str, Type)] = &[
-        ("effective_stiffness", Type::Real),
+        (
+            "effective_stiffness",
+            Type::Scalar {
+                dimension: DimensionVector::ROTATIONAL_STIFFNESS,
+            },
+        ),
         (
             "max_stress",
             Type::Scalar {

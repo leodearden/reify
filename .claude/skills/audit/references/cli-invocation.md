@@ -137,6 +137,23 @@ Each failure mode yields exit code 125. The skill should surface the human-reada
 | Unknown flag or missing value | `error: unknown flag '…'` or `error: --<flag> requires a value` | Bug in skill argv construction — check `references/modes.md` |
 | Literal 125 High findings (boundary) | tempfile contains a JSON array of 125 Finding objects | NOT an infra error — route as findings per §3.1 disambiguator |
 
+### §4.1 jcodemunch unreachable — fail-soft (NOT an infra error)
+
+When the jcodemunch MCP server is unreachable (the common case — jcodemunch is not in reify's `.mcp.json` and must be started separately), the default sweep and `--pattern P1` do **not** exit 125. Instead:
+
+- P1 degrades to **zero findings** (the inert `NoopJCodemunchOps` stub is used).
+- P2 (consumer-stub) and P5 (phantom-done) **still run** and produce normal findings.
+- A breadcrumb line appears on stderr before the JSON array:
+  ```
+  reify-audit: jcodemunch unreachable at 'http://127.0.0.1:8901/mcp': … — P1 degraded to zero findings; P2/P5 still run (pass --no-jcodemunch to silence)
+  ```
+
+**This breadcrumb is NOT exit 125** — the exit code is determined by findings severity (0 = none, 1+ = findings), same as a normal run. The §3.1 disambiguator applies normally.
+
+**Escape hatch:** pass `--no-jcodemunch` to force the inert stub without connecting, silencing the breadcrumb. Useful for P2/P5-only sweeps where P1 is intentionally skipped.
+
+**Recovery:** provision jcodemunch-serve at the URL shown in the breadcrumb (default `$JCODEMUNCH_URL` or `http://127.0.0.1:8901/mcp`). Note that jcodemunch is not listed in reify's `.mcp.json` — it must be started out-of-band as a separate process before a live P1 sweep.
+
 ---
 
 ## §5 Worked examples

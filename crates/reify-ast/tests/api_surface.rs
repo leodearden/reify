@@ -11,7 +11,7 @@
 //! types don't yet exist in reify-ast.
 
 // ── flat root imports ────────────────────────────────────────────────────────
-use reify_ast::{DimOp, Expr, ExprKind, LambdaParam, MatchArm, QuantifierKind, TypeExpr, TypeExprKind};
+use reify_ast::{DimOp, Expr, ExprKind, LambdaParam, MatchArm, MatchPattern, QuantifierKind, TypeExpr, TypeExprKind};
 
 // ── module-path imports ──────────────────────────────────────────────────────
 use reify_ast::ast::{
@@ -90,12 +90,12 @@ fn match_arm_flat_and_module_path_constructible() {
     let body = Expr { kind: ExprKind::BoolLiteral(true), span };
 
     let arm: MatchArm = MatchArm {
-        patterns: vec!["In".into()],
+        patterns: vec![MatchPattern::Variant("In".into())],
         body,
         span,
     };
     assert_eq!(arm.patterns.len(), 1);
-    assert_eq!(arm.patterns[0], "In");
+    assert_eq!(arm.patterns[0], MatchPattern::Variant("In".into()));
 
     // Module-path alias resolves to the same type.
     let _arm_mod: MatchArmMod = arm;

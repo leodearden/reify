@@ -1354,6 +1354,7 @@ fn precision_pragma_with_negative_or_nan_quantity_emits_error_via_injection() {
             errors: vec![],
             content_hash: reify_core::ContentHash(0),
             pragmas: vec![pragma],
+            declared_module_path: None,
         };
         reify_compiler::compile(&parsed)
     }

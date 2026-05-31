@@ -269,12 +269,15 @@ fn elastic_material_trait_has_four_dimensioned_members() {
 /// compile-time injection, not runtime violation semantics.
 #[test]
 fn elastic_material_trait_constrains_poisson_ratio_to_half_open_unit() {
-    // Note on density literal form: the spec lists `7800kg/m^3` as a Density
-    // literal (§2.7), but the tree-sitter grammar's `quantity_literal` is
-    // `number + identifier` only — compound `kg/m^3` is not a single token.
-    // The working idiom (per `examples/dimensional_chains.ri:84`) is the
-    // compositional form `7800.0 * 1kg / (1m * 1m * 1m)` which produces the
-    // same dimensioned value (7800 kg·m⁻³).
+    // Compound-unit literals now parse and resolve per spec §2.7
+    // (docs/prds/unit-expressions.md); `7800kg/m^3` is the canonical idiom
+    // (see examples/unit_expressions.ri:17). This fixture intentionally uses the
+    // compositional form `7800.0 * 1kg / (1m * 1m * 1m)` for test isolation:
+    // this test's purpose is Poisson-ratio constraint injection, not compound-unit
+    // resolution — using the compound-unit surface would cause a parser/resolver
+    // regression to masquerade as a constraint-injection failure here.
+    // Compound-unit resolution is covered canonically by compound_unit_resolution_tests.rs
+    // and unit_expressions_e2e.rs.
     let source = r#"
 structure def Conformer : ElasticMaterial {
     param youngs_modulus : Pressure = 200GPa

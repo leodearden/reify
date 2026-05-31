@@ -71,7 +71,7 @@ vi.mock('../bridge', () => ({
   onKernelStatus: vi.fn().mockResolvedValue(() => {}),
   getContainingDefinition: vi.fn().mockResolvedValue(null),
   getEntityAtSourceLocation: vi.fn().mockResolvedValue(null),
-  getDefPreview: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [] }),
+  getDefPreview: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [] }),
   getMechanismDescriptors: vi.fn().mockResolvedValue([]),
 }));
 
@@ -118,7 +118,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
   // Reset bridge mock implementations
-  vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [] });
+  vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [] });
   vi.mocked(bridge.onMeshUpdate).mockResolvedValue(() => {});
   vi.mocked(bridge.onValueUpdate).mockResolvedValue(() => {});
   vi.mocked(bridge.onConstraintUpdate).mockResolvedValue(() => {});
@@ -260,6 +260,7 @@ describe('App wiring', () => {
       files: [],
       tessellation_diagnostics: [],
       compile_diagnostics: [],
+      tensegrity_wires: [],
     });
     await renderAndWaitForReady();
     const row = screen.getByTestId('constraint-row-c1');
@@ -278,6 +279,7 @@ describe('App wiring', () => {
       files: [],
       tessellation_diagnostics: [],
       compile_diagnostics: [],
+      tensegrity_wires: [],
     });
     await renderAndWaitForReady();
     // Open context picker — 'Violated constraints' should be enabled

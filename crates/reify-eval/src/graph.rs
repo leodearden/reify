@@ -49,6 +49,18 @@ pub struct RealizationNodeData {
     /// Task ε (3436) will write the per-op dispatcher choice at execution time.
     /// NOT included in `content_hash` — this is dispatcher/cache metadata, not identity.
     pub produced_repr: ReprKind,
+    /// GHR-δ (PRD geometry-handle-runtime.md §8 Phase 4): the value cell that
+    /// holds this realization's `Value::GeometryHandle`, if any. Populated by
+    /// [`EvaluationGraph::from_templates`] when a template has a `Type::Geometry`
+    /// value cell whose member name matches this realization's name (the same
+    /// rule GHR-γ uses in `post_process_geometry_handle_cells`). `None` for
+    /// realizations with no backing geometry cell. Riding this link on the graph
+    /// lets the trace builders record the Realization→ValueCell freshness edge in
+    /// both directions without re-deriving the cell↔realization correspondence,
+    /// which is otherwise lost (RealizationNodeData carries no name/member link).
+    /// NOT included in `content_hash` — it is an evaluation-graph wiring detail,
+    /// not realization identity.
+    pub geometry_cell: Option<ValueCellId>,
 }
 
 /// A resolution node in the evaluation graph.
@@ -318,6 +330,21 @@ impl EvaluationGraph {
                         .iter()
                         .map(|op| ContentHash::of_str(&format!("{:?}", op))),
                 );
+                // GHR-δ S2: link this realization to the `Type::Geometry` value
+                // cell it backs, if any — the same name-match rule GHR-γ applies
+                // in `post_process_geometry_handle_cells`
+                // (`cell.id.member == realization.name && cell_type == Geometry`).
+                // Riding the link on the graph lets the trace builders record the
+                // Realization→ValueCell freshness edge in both directions without
+                // re-deriving the cell↔realization correspondence (which the eval
+                // graph's RealizationNodeData otherwise drops).
+                let geometry_cell = realization.name.as_deref().and_then(|name| {
+                    template
+                        .value_cells
+                        .iter()
+                        .find(|c| c.id.member == name && c.cell_type == Type::Geometry)
+                        .map(|c| c.id.clone())
+                });
                 let node = RealizationNodeData {
                     id: realization.id.clone(),
                     operations: realization.operations.clone(),
@@ -325,6 +352,7 @@ impl EvaluationGraph {
                     // v0.2 default — OCCT-only baseline; task ε (3436) writes the
                     // per-op dispatcher choice at execution time.
                     produced_repr: ReprKind::BRep,
+                    geometry_cell,
                 };
                 graph.realizations.insert(realization.id.clone(), node);
             }
@@ -429,6 +457,21 @@ impl EvaluationGraph {
 
                     for child_cell in &child_template.value_cells {
                         let scoped_id = ValueCellId::new(&scoped_entity, &child_cell.id.member);
+
+                        // task 3806 (γ) precedence rule: if the parent template
+                        // already inserted an override cell for this scoped id
+                        // (lines 284-298 above, from the parent's own value_cells
+                        // — e.g. a `sub b : Bearing { bore = auto }` override
+                        // emitted by entity.rs step-4), let that cell stand.
+                        // Overwriting it with the child-default-derived node
+                        // would change its `kind` from `Auto` to `Param`, which
+                        // would cause `Snapshot::from_compiled_module` to
+                        // initialise the cell as `Undetermined` instead of `Auto`
+                        // and break incremental-eval cache-key invariants.
+                        if graph.value_cells.contains_key(&scoped_id) {
+                            continue;
+                        }
+
                         let id_hash = ContentHash::of_str(&format!("{}", scoped_id));
                         let expr_hash = child_cell
                             .default_expr
@@ -932,7 +975,7 @@ mod tests {
         }];
         let hash = ContentHash::of_str("realization0");
 
-        let node = RealizationNodeData {
+        let node = RealizationNodeData { geometry_cell: None,
             id: id.clone(),
             operations: ops,
             content_hash: hash,
@@ -970,6 +1013,52 @@ mod tests {
             ReprKind::BRep,
             "from_templates must initialize produced_repr to ReprKind::BRep \
              (v0.2 default; task ε (3436) wires the per-op dispatcher choice)"
+        );
+    }
+
+    /// GHR-δ S1: `EvaluationGraph::from_templates` populates
+    /// `RealizationNodeData.geometry_cell` with the `Type::Geometry` value cell
+    /// whose member name matches the realization's name (the GHR-γ rule from
+    /// `post_process_geometry_handle_cells`: `cell.id.member == realization.name
+    /// && cell.cell_type == Type::Geometry`), and leaves it `None` for
+    /// realizations with no backing geometry cell.
+    ///
+    /// RED until S2 wires the population in `from_templates`.
+    #[test]
+    fn from_templates_populates_realization_geometry_cell() {
+        use reify_test_support::{bracket_compiled_module, parse_and_compile};
+
+        // Some(cell): `param body : Solid = box(..)` compiles to a realization
+        // named "body" backed by the Type::Geometry value cell Widget.body
+        // (same fixture as geometry_handle_value_cell_e2e.rs).
+        let module = parse_and_compile(
+            r#"structure def Widget {
+    param body : Solid = box(10mm, 20mm, 30mm)
+}"#,
+        );
+        let graph = EvaluationGraph::from_templates(&module.templates);
+        let widget_r0 = graph
+            .realizations
+            .get(&RealizationNodeId::new("Widget", 0))
+            .expect("Widget realization #0 must exist");
+        assert_eq!(
+            widget_r0.geometry_cell,
+            Some(ValueCellId::new("Widget", "body")),
+            "a geometry-backed realization must link its Type::Geometry value cell"
+        );
+
+        // None: the bracket fixture has a realization (#0, a box) but no
+        // Type::Geometry value cell — every member is Length/Scalar — so the
+        // realization has no backing geometry cell.
+        let bracket = bracket_compiled_module();
+        let bgraph = EvaluationGraph::from_templates(&bracket.templates);
+        let bracket_r0 = bgraph
+            .realizations
+            .get(&RealizationNodeId::new("Bracket", 0))
+            .expect("Bracket realization #0 must exist");
+        assert_eq!(
+            bracket_r0.geometry_cell, None,
+            "a realization with no Type::Geometry backing cell must have geometry_cell == None"
         );
     }
 
@@ -1352,7 +1441,7 @@ mod tests {
         assert_eq!(graph.constraints.len(), 1);
 
         let rnid = RealizationNodeId::new("Bracket", 0);
-        let rnode = RealizationNodeData {
+        let rnode = RealizationNodeData { geometry_cell: None,
             id: rnid.clone(),
             operations: vec![],
             content_hash: ContentHash::of_str("r0"),
@@ -1813,7 +1902,7 @@ mod tests {
         let mut graph_c = EvaluationGraph::default();
         graph_c.realizations.insert(
             RealizationNodeId::new("X", 0),
-            RealizationNodeData {
+            RealizationNodeData { geometry_cell: None,
                 id: RealizationNodeId::new("X", 0),
                 operations: vec![],
                 content_hash: hash_h,

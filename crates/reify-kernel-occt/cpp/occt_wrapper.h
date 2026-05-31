@@ -884,6 +884,41 @@ Point3 vertex_point(const OcctShape& shape);
 /// and parent task 2324.
 bool point_on_shape(const OcctShape& shape, double px, double py, double pz, double tolerance);
 
+/// Test whether `(px, py, pz)` is inside or on the boundary of a closed solid.
+///
+/// Uses `BRepClass3d_SolidClassifier(shape).Perform(gp_Pnt(px,py,pz), tolerance)`.
+/// Returns `true` when the classifier state is `TopAbs_IN` (strictly inside) or
+/// `TopAbs_ON` (on the boundary surface within `tolerance`); returns `false` for
+/// `TopAbs_OUT`. This is the conventional closed-solid membership predicate per
+/// PRD §8.1 (KGQ-β).
+///
+/// **Tolerance precondition:** `tolerance` must be a non-negative finite `double`.
+/// Negative or NaN values cause the implementation to throw `std::runtime_error`.
+bool contains_solid(const OcctShape& shape, double px, double py, double pz, double tolerance);
+
+/// Test whether two shapes are geometrically equivalent within `tolerance`
+/// by (1) topology-count matching and (2) sampled-vertex proximity.
+///
+/// STRICT-VARIANT NOTE: This is the asymmetric sampled-point geo_equiv (PRD §5.1,
+/// KGQ-δ).  A future `geo_equiv_strict` using symmetric Hausdorff distance is
+/// deferred to v0.4 per PRD §5.1 + Open Question §10.
+///
+/// Algorithm:
+///   (1) Compare per-kind (vertex/edge/face) counts via `TopExp::MapShapes`;
+///       a count mismatch returns `false` immediately.
+///   (2) For each face / edge in canonical `face_map()` / `edge_map()` order,
+///       evaluate `sample_count` uniform parameter points on both shapes and
+///       require every `|p_a − p_b| < tolerance`.
+///
+/// **Tolerance precondition:** `tolerance` must be a *strictly positive* finite
+/// `double`.  Zero, negative, or non-finite values cause the implementation to
+/// throw `std::runtime_error`.  (A zero tolerance makes `tol_sq = 0` so the
+/// `>= tol_sq` comparison is always true — even identical shapes return `false`.)
+///
+/// Powers the v0.1 stdlib `geo_equiv(a, b, tol) -> Bool` (PRD §9 KGQ-δ).
+bool geo_equiv_topo_sample(const OcctShape& a, const OcctShape& b,
+                           double tolerance, size_t sample_count);
+
 double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, double az);
 
 /// Compute the full 3×3 inertia tensor about the shape's centroid,
@@ -1041,6 +1076,25 @@ rust::String edge_curve_kind(const OcctShape& shape);
 /// surface, or yields a degenerate (zero-magnitude) normal at `(u, v)`.
 Point3 surface_normal_at(const OcctShape& face, double u, double v);
 
+/// Outward unit normal of a face at the Cartesian world-space point
+/// `(px, py, pz)` (metres).
+///
+/// The shape MUST be a `TopoDS_Face`. Algorithm:
+///   (a) project `gp_Pnt(px, py, pz)` onto the face's underlying surface via
+///       `ShapeAnalysis_Surface::ValueOfUV(p, 1e-9)` to obtain `(u, v)`,
+///   (b) delegate to `face_outward_unit_normal_at_uv(face, u, v, who)` for
+///       the `BRepAdaptor_Surface::D1` derivative, `Du × Dv` cross product,
+///       magnitude check, `TopAbs_REVERSED` orientation flip, and normalize.
+///
+/// Reuses the same orientation-aware helper as `query_face_normal` (centroid
+/// path) and `surface_normal_at` (caller-supplied (u,v) path), so the
+/// REVERSED-flip outward convention and magnitude/error handling are shared.
+///
+/// Throws `std::runtime_error` if the shape is not a face, projection fails,
+/// or the surface yields a degenerate (zero-magnitude) normal at the projected
+/// `(u, v)`.
+Point3 surface_normal_at_point(const OcctShape& face, double px, double py, double pz);
+
 /// Curvature properties at the parametric point `(u, v)` on a face surface.
 /// Defined by the cxx bridge (ffi.rs); forward-declared here for use in the
 /// `curvature_at` function signature.
@@ -1068,6 +1122,23 @@ struct CurvatureProps;
 /// Throws `std::runtime_error` if the shape is not a face, has no underlying
 /// surface, or curvature is undefined at `(u, v)` (e.g. at a singular point).
 CurvatureProps curvature_at(const OcctShape& face, double u, double v);
+
+/// Signed curvature of an edge at the closest point to the world-space query
+/// point `(px, py, pz)`.
+///
+/// Projects `(px, py, pz)` onto the edge's underlying curve via
+/// `GeomAPI_ProjectPointOnCurve`, then evaluates curvature via
+/// `BRepLProp_CLProps` at the projected parameter.
+///
+/// Returns the curvature scalar (SI unit: 1/m = m⁻¹; positive for convex
+/// toward the Frenet principal normal).
+///
+/// Throws `std::runtime_error` if:
+/// - `shape` is not a `TopoDS_EDGE`,
+/// - the edge has no underlying curve (degenerate),
+/// - projection yields no nearest point,
+/// - the tangent is undefined at the projected parameter.
+double curve_curvature_at(const OcctShape& edge, double px, double py, double pz);
 
 // --- Conformance queries ---
 

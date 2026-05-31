@@ -1025,6 +1025,7 @@ fn evaluate_let_bindings_skips_let_cell_without_default_expr() {
         id: ValueCellId::new("S", "bad"),
         kind: ValueCellKind::Let,
         visibility: Visibility::Private,
+        is_aux: false,
         cell_type: Type::Int,
         default_expr: None,
         solver_hints: vec![],

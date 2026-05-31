@@ -1,0 +1,7 @@
+structure Bracket {
+    param length : Length = 80mm
+}
+
+purpose always_ok() {
+    constraint 1 > 0
+}

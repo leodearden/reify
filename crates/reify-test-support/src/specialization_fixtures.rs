@@ -112,6 +112,10 @@ pub fn make_sub_bare(name: &str, span: SourceSpan) -> MemberDecl {
         is_collection: false,
         where_clause: None,
         body: None,
+        param_overrides: Vec::new(),
+        keyed_members: Vec::new(),
+        is_aux: false,
+        pose_expr: None,
         span,
         content_hash: dummy_hash(),
     })
@@ -130,6 +134,10 @@ pub fn make_sub_with_body(name: &str, span: SourceSpan, body: Vec<MemberDecl>) -
         is_collection: false,
         where_clause: None,
         body: Some(body),
+        param_overrides: Vec::new(),
+        keyed_members: Vec::new(),
+        is_aux: false,
+        pose_expr: None,
         span,
         content_hash: dummy_hash(),
     })
@@ -144,6 +152,7 @@ pub fn make_let(name: &str) -> MemberDecl {
         name: name.to_string(),
         doc: None,
         is_pub: false,
+        is_aux: false,
         type_expr: None,
         value: dummy_expr(),
         where_clause: None,
@@ -192,6 +201,7 @@ pub fn parsed_module_with_structure_members(
         errors: Vec::new(),
         content_hash: dummy_hash(),
         pragmas: Vec::new(),
+        declared_module_path: None,
     }
 }
 

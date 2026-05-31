@@ -13,6 +13,7 @@ import {
 import { computeBoundsTree, disposeBoundsTree } from 'three-mesh-bvh';
 import type { MeshData, VisibilityState } from '../types';
 import { createGhostMaterial } from './ghostMaterial';
+import type { BarycentricUV, ProbeSample } from '../stores/probeStore';
 
 // Patch BufferGeometry prototype for BVH acceleration
 (BufferGeometry.prototype as any).computeBoundsTree = computeBoundsTree;
@@ -100,6 +101,36 @@ export interface MeshManagerContext {
    * In both branches geometry vertices/indices/normals/BVH are NOT touched.
    */
   rebuildMaterials: () => void;
+  /**
+   * Compute barycentric coordinates of `point` within face `faceId` of entity
+   * `entityPath`, reading the LIVE geometry position attribute.
+   *
+   * Returns null when the entity is absent, the index buffer is missing, faceId
+   * is out of range (3*faceId+2 >= index.count), or the triangle is degenerate.
+   *
+   * Uses the standard projected-area formula; stable across three versions.
+   */
+  computeBarycentric: (
+    entityPath: string,
+    faceId: number,
+    point: { x: number; y: number; z: number },
+  ) => BarycentricUV | null;
+  /**
+   * Sample FEA quantities at a probe point identified by barycentric coordinates.
+   *
+   * Returns null when the entity is absent or the faceId is out of range —
+   * this is the staleness signal used by resampleAll().
+   *
+   * When present, interpolates:
+   *   - displacement from (meshDisplacedPositions − meshOriginalVertices)
+   *   - vonMises and all other scalars from meshScalarChannels
+   *   - all vector channels from meshVectorChannels
+   */
+  sampleProbe: (
+    entityPath: string,
+    faceId: number,
+    bary: BarycentricUV,
+  ) => ProbeSample | null;
 }
 
 /**
@@ -131,6 +162,10 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
   // Side-table: for each entity, the scalar_channels map at creation time.
   // Kept so setColorize can re-bake without requiring a full geometry sync.
   const meshScalarChannels = new Map<string, Record<string, Float32Array>>();
+
+  // Side-table: per-vertex vector channels, mirroring meshScalarChannels.
+  // Populated in createMeshFromData / updateMeshGeometry; deleted in removeMesh.
+  const meshVectorChannels = new Map<string, Record<string, Float32Array>>();
 
   // Side-tables for deformation: cached original vertex positions and displaced positions.
   // Populated in createMeshFromData / updateMeshGeometry; deleted in removeMesh.
@@ -230,6 +265,10 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     if (data.scalar_channels) {
       meshScalarChannels.set(entityPath, data.scalar_channels);
     }
+    // Store vector channels for sampleProbe interpolation.
+    if (data.vector_channels) {
+      meshVectorChannels.set(entityPath, data.vector_channels);
+    }
 
     // Cache original vertices and displaced positions for deformation recompute.
     // We store copies so in-place blending into the position buffer never corrupts
@@ -312,6 +351,12 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     // Update the side-table scalar channels so setColorize picks up fresh data.
     // Use mesh.name as the entity path (set to entityPath in createMeshFromData).
     meshScalarChannels.set(mesh.name, data.scalar_channels ?? {});
+    // Update vector channels (delete when absent so staleness detection is correct).
+    if (data.vector_channels) {
+      meshVectorChannels.set(mesh.name, data.vector_channels);
+    } else {
+      meshVectorChannels.delete(mesh.name);
+    }
 
     // Refresh deformation side-tables from the incoming data.
     // Always update original vertices (vertices may change on a topology edit).
@@ -560,6 +605,7 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     (mesh.material as { dispose: () => void }).dispose();
     meshMap.delete(entityPath);
     meshScalarChannels.delete(entityPath);
+    meshVectorChannels.delete(entityPath);
     meshOriginalVertices.delete(entityPath);
     meshDisplacedPositions.delete(entityPath);
     visibilityMap.delete(entityPath);
@@ -803,5 +849,154 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     return new Map(ghostMeshMap);
   }
 
-  return { sync, dispose, getSceneMeshes, setVisibility, getGhostMeshes, setColorize, rebuildMaterials, setDeformation, getDeformedOverlays };
+  /**
+   * Compute barycentric coordinates of `point` within face `faceId` of entity
+   * `entityPath`, reading the LIVE geometry position buffer.
+   *
+   * Uses the standard Cramer's-rule / projected-area formula (stable, UV-free).
+   * Returns null when the entity is absent, the index buffer is missing, faceId
+   * is out of range, or the triangle is degenerate (denom ≈ 0).
+   */
+  function computeBarycentric(
+    entityPath: string,
+    faceId: number,
+    point: { x: number; y: number; z: number },
+  ): BarycentricUV | null {
+    const mesh = meshMap.get(entityPath);
+    if (!mesh) return null;
+
+    const geometry = mesh.geometry as BufferGeometry;
+    const indexAttr = geometry.index;
+    if (!indexAttr) return null;
+
+    const indexArr = indexAttr.array as Uint32Array | Uint16Array | number[];
+    const base = 3 * faceId;
+    if (base + 2 >= indexArr.length) return null;
+
+    const ia = indexArr[base];
+    const ib = indexArr[base + 1];
+    const ic = indexArr[base + 2];
+
+    const posAttr = geometry.getAttribute('position') as BufferAttribute | null;
+    if (!posAttr) return null;
+    const pos = posAttr.array as Float32Array;
+
+    // Vertex positions
+    const ax = pos[ia * 3], ay = pos[ia * 3 + 1], az = pos[ia * 3 + 2];
+    const bx = pos[ib * 3], by = pos[ib * 3 + 1], bz = pos[ib * 3 + 2];
+    const cx = pos[ic * 3], cy = pos[ic * 3 + 1], cz = pos[ic * 3 + 2];
+
+    // Edge vectors
+    const v0x = bx - ax, v0y = by - ay, v0z = bz - az;
+    const v1x = cx - ax, v1y = cy - ay, v1z = cz - az;
+    const v2x = point.x - ax, v2y = point.y - ay, v2z = point.z - az;
+
+    // Dot products
+    const d00 = v0x * v0x + v0y * v0y + v0z * v0z;
+    const d01 = v0x * v1x + v0y * v1y + v0z * v1z;
+    const d11 = v1x * v1x + v1y * v1y + v1z * v1z;
+    const d20 = v2x * v0x + v2y * v0y + v2z * v0z;
+    const d21 = v2x * v1x + v2y * v1y + v2z * v1z;
+
+    const denom = d00 * d11 - d01 * d01;
+    if (Math.abs(denom) < 1e-12) return null; // degenerate triangle
+
+    const v = (d11 * d20 - d01 * d21) / denom;
+    const w = (d00 * d21 - d01 * d20) / denom;
+    const u = 1 - v - w;
+
+    return [u, v, w];
+  }
+
+  /**
+   * Sample FEA quantities at a probe point given its barycentric coordinates.
+   *
+   * Returns null when the entity is absent or faceId is out of range (the
+   * staleness signal passed back to resampleAll()).
+   */
+  function sampleProbe(
+    entityPath: string,
+    faceId: number,
+    bary: BarycentricUV,
+  ): ProbeSample | null {
+    const mesh = meshMap.get(entityPath);
+    if (!mesh) return null;
+
+    const geometry = mesh.geometry as BufferGeometry;
+    const indexAttr = geometry.index;
+    if (!indexAttr) return null;
+
+    const indexArr = indexAttr.array as Uint32Array | Uint16Array | number[];
+    const base = 3 * faceId;
+    if (base + 2 >= indexArr.length) return null;
+
+    const ia = indexArr[base];
+    const ib = indexArr[base + 1];
+    const ic = indexArr[base + 2];
+
+    const [u, v, w] = bary;
+
+    // -----------------------------------------------------------------------
+    // Displacement: barycentric-interp of (displaced - original) per vertex
+    // -----------------------------------------------------------------------
+    let displacement: [number, number, number] | null = null;
+    const orig = meshOriginalVertices.get(entityPath);
+    const disp = meshDisplacedPositions.get(entityPath);
+    if (orig && disp) {
+      const dx = u * (disp[ia * 3]     - orig[ia * 3])     +
+                 v * (disp[ib * 3]     - orig[ib * 3])     +
+                 w * (disp[ic * 3]     - orig[ic * 3]);
+      const dy = u * (disp[ia * 3 + 1] - orig[ia * 3 + 1]) +
+                 v * (disp[ib * 3 + 1] - orig[ib * 3 + 1]) +
+                 w * (disp[ic * 3 + 1] - orig[ic * 3 + 1]);
+      const dz = u * (disp[ia * 3 + 2] - orig[ia * 3 + 2]) +
+                 v * (disp[ib * 3 + 2] - orig[ib * 3 + 2]) +
+                 w * (disp[ic * 3 + 2] - orig[ic * 3 + 2]);
+      displacement = [dx, dy, dz];
+    }
+
+    // -----------------------------------------------------------------------
+    // Scalar channels (vonMises surfaced explicitly; all others in scalars)
+    // -----------------------------------------------------------------------
+    const scalars: Record<string, number> = {};
+    let vonMises: number | null = null;
+    const scalarMap = meshScalarChannels.get(entityPath);
+    if (scalarMap) {
+      for (const [name, arr] of Object.entries(scalarMap)) {
+        const val = u * arr[ia] + v * arr[ib] + w * arr[ic];
+        scalars[name] = val;
+        if (name === 'vonMises') vonMises = val;
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // Vector channels (component-wise interpolation)
+    // -----------------------------------------------------------------------
+    const vectors: Record<string, [number, number, number]> = {};
+    const vecMap = meshVectorChannels.get(entityPath);
+    if (vecMap) {
+      for (const [name, arr] of Object.entries(vecMap)) {
+        const vx = u * arr[ia * 3]     + v * arr[ib * 3]     + w * arr[ic * 3];
+        const vy = u * arr[ia * 3 + 1] + v * arr[ib * 3 + 1] + w * arr[ic * 3 + 1];
+        const vz = u * arr[ia * 3 + 2] + v * arr[ib * 3 + 2] + w * arr[ic * 3 + 2];
+        vectors[name] = [vx, vy, vz];
+      }
+    }
+
+    return { displacement, vonMises, scalars, vectors };
+  }
+
+  return {
+    sync,
+    dispose,
+    getSceneMeshes,
+    setVisibility,
+    getGhostMeshes,
+    setColorize,
+    rebuildMaterials,
+    setDeformation,
+    getDeformedOverlays,
+    computeBarycentric,
+    sampleProbe,
+  };
 }

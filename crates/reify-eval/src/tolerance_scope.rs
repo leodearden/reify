@@ -35,7 +35,8 @@ pub(crate) struct ToleranceBinding {
 
 /// Walk `purpose.constraints` and extract every
 /// `RepresentationWithin(<bare-param-StructureRef>, <length-literal>)`
-/// binding, anchored on `bound_entity_ref`.
+/// binding, routing each matched constraint's subject param to its own bound
+/// entity from `bindings`.
 ///
 /// Non-matching constraints are silently skipped — this matches the PRD's
 /// "activate dormant infrastructure" posture: a constraint that doesn't
@@ -47,8 +48,8 @@ pub(crate) struct ToleranceBinding {
 /// 2. **Subject (arg0):** `ValueRef` whose `result_type` is `StructureRef(_)` AND whose
 ///    `ValueCellId.entity` matches one of `purpose.params[*].name` (the "bare-purpose-param"
 ///    contract). A `ValueRef` to a non-param entity is rejected even if it happens to be
-///    typed `StructureRef(_)`, so a hypothetical second purpose param or an unrelated
-///    structure reference doesn't silently bind a tolerance to `bound_entity_ref`.
+///    typed `StructureRef(_)`, so an unrelated structure reference doesn't silently
+///    bind a tolerance to an entity it has no semantic connection to.
 /// 3. **Tolerance literal (arg1):** `Literal(Value::Scalar { dimension == LENGTH, si_value })`
 ///    where `si_value.is_finite() && si_value >= 0.0`. Non-finite values (NaN, ±Inf) and
 ///    negative finite values have no semantics for a tolerance — and worse, both would
@@ -60,24 +61,22 @@ pub(crate) struct ToleranceBinding {
 ///    `>= 0.0` half of the gate restores the symmetry `tolerance_combine.rs`'s
 ///    "Recognition-shape twin" docstring claims with `extract_output_tolerance_bound`.
 ///
-/// # Single-binding contract
+/// # Per-param binding
 ///
-/// The matched param identity (`subject_cell_id.entity`) is intentionally discarded after the
-/// membership check: under today's single-binding `activate_purpose(name, single_entity_ref)`
-/// API only one entity-ref is bound per purpose, so substituting `bound_entity_ref` for every
-/// matched constraint's subject is unambiguous — but a future multi-param-aware producer (one
-/// that activates a purpose against multiple entity-refs, one per param) will need to thread
-/// the matched param identity back through so each `ToleranceBinding` records *which* param
-/// the constraint subjected, rather than collapsing all bindings to a single `bound_entity_ref`.
+/// For each matched constraint, the subject's param name (`subject_cell_id.entity`, already
+/// membership-checked against `purpose.params`) is looked up in `bindings` to resolve the
+/// per-param bound entity. This routes each `RepresentationWithin` constraint's
+/// `ToleranceBinding.subject_entity` to the entity that was specifically bound to that param
+/// at activation time, rather than collapsing all constraints onto a single ref.
+///
+/// If a param passes the membership gate but has no entry in `bindings`, its constraint is
+/// skipped. This cannot occur for validly-activated purposes (C2 ensures every declared param
+/// has a binding), but is a safe no-op for defensive handling.
 pub(crate) fn extract_tolerance_bindings(
     purpose: &CompiledPurpose,
-    bound_entity_ref: &str,
+    bindings: &[(String, String)],
 ) -> Vec<ToleranceBinding> {
-    let mut bindings = Vec::new();
-    #[cfg(debug_assertions)]
-    let mut first_param_seen: Option<&str> = None;
-    #[cfg(debug_assertions)]
-    let mut second_distinct_param: Option<&str> = None;
+    let mut result = Vec::new();
     for constraint in &purpose.constraints {
         // Match: top-level UserFunctionCall("RepresentationWithin", [arg0, arg1])
         let (function_name, args) = match &constraint.expr.kind {
@@ -98,11 +97,9 @@ pub(crate) fn extract_tolerance_bindings(
         // entity matches one of the purpose's param names. The entity check is
         // what enforces the "bare-purpose-param subject" contract documented at
         // the module level — without it, a `RepresentationWithin(<unrelated
-        // StructureRef ValueRef>, tol)` would silently bind a tolerance to
-        // `bound_entity_ref` even though the constraint's subject is not the
-        // purpose's bound parameter. Today's compiler emits no such shape, but
-        // matching the documented contract prevents surprises when a real
-        // producer comes online.
+        // StructureRef ValueRef>, tol)` would silently bind a tolerance to an
+        // unrelated entity. Today's compiler emits no such shape, but matching
+        // the documented contract prevents surprises when a real producer comes online.
         let subject_arg = &args[0];
         let subject_cell_id = match &subject_arg.kind {
             CompiledExprKind::ValueRef(id) => id,
@@ -118,25 +115,19 @@ pub(crate) fn extract_tolerance_bindings(
         {
             continue;
         }
-        // Track distinct subject param names that pass the membership gate.
-        // Used by the debug_assert after the loop to enforce the single-binding
-        // contract (see function docstring # Single-binding contract).
-        // Both declarations and this block are gated on debug_assertions so the
-        // bookkeeping disappears entirely from release builds, where the consuming
-        // debug_assert! is a no-op.  `first_param_seen` records the initial name;
-        // `second_distinct_param` captures the first name that differs — enough
-        // context to produce a fault-localising panic message ({:?} after {:?}).
-        #[cfg(debug_assertions)]
+
+        // Resolve the param's bound entity from the bindings slice. Each param routes
+        // to its own entity so multi-param purposes produce per-param ToleranceBindings
+        // rather than collapsing all constraints onto a single ref.
+        let subject_entity = match bindings
+            .iter()
+            .find(|(p, _)| p == &subject_cell_id.entity)
         {
-            let name = subject_cell_id.entity.as_str();
-            match first_param_seen {
-                None => first_param_seen = Some(name),
-                Some(first) if first != name && second_distinct_param.is_none() => {
-                    second_distinct_param = Some(name);
-                }
-                _ => {}
-            }
-        }
+            Some((_, entity)) => entity.clone(),
+            // Param not in bindings — skip. Defensively safe; valid activations guarantee
+            // every declared param has a binding (C2).
+            None => continue,
+        };
 
         // arg1 must be a Literal(Value::Scalar { dimension == LENGTH, si_value })
         // where si_value.is_finite() && si_value >= 0.0 — see gate-3 in the
@@ -153,23 +144,12 @@ pub(crate) fn extract_tolerance_bindings(
             continue;
         }
 
-        bindings.push(ToleranceBinding {
-            subject_entity: bound_entity_ref.to_string(),
+        result.push(ToleranceBinding {
+            subject_entity,
             si_tolerance: si_value,
         });
     }
-    #[cfg(debug_assertions)]
-    debug_assert!(
-        second_distinct_param.is_none(),
-        "single-binding contract: extract_tolerance_bindings saw a second distinct \
-         purpose-param subject ({:?} after {:?}) but today's activate_purpose API \
-         binds only one entity_ref per purpose; a multi-param-aware producer must \
-         thread param identity into ToleranceBinding rather than collapsing to \
-         bound_entity_ref",
-        second_distinct_param,
-        first_param_seen,
-    );
-    bindings
+    result
 }
 
 /// Collect every distinct entity-ref reachable from `subject` in the
@@ -290,7 +270,10 @@ mod tests {
             .constraint("subject", 0, None, constraint_expr)
             .build();
 
-        let bindings = extract_tolerance_bindings(&purpose, "MyDesign");
+        let bindings = extract_tolerance_bindings(
+            &purpose,
+            &[("subject".to_string(), "MyDesign".to_string())],
+        );
 
         assert_eq!(bindings.len(), 1);
         assert_eq!(bindings[0].subject_entity, "MyDesign");
@@ -328,7 +311,10 @@ mod tests {
             .constraint("subject", 2, None, rep_within)
             .build();
 
-        let bindings = extract_tolerance_bindings(&purpose, "MyDesign");
+        let bindings = extract_tolerance_bindings(
+            &purpose,
+            &[("subject".to_string(), "MyDesign".to_string())],
+        );
 
         assert_eq!(
             bindings.len(),
@@ -355,7 +341,10 @@ mod tests {
             .constraint("subject", 0, None, constraint_expr)
             .build();
 
-        let bindings = extract_tolerance_bindings(&purpose, "MyDesign");
+        let bindings = extract_tolerance_bindings(
+            &purpose,
+            &[("subject".to_string(), "MyDesign".to_string())],
+        );
 
         assert!(
             bindings.is_empty(),
@@ -385,7 +374,10 @@ mod tests {
             .constraint("subject", 0, None, constraint_expr)
             .build();
 
-        let bindings = extract_tolerance_bindings(&purpose, "MyDesign");
+        let bindings = extract_tolerance_bindings(
+            &purpose,
+            &[("subject".to_string(), "MyDesign".to_string())],
+        );
 
         assert!(
             bindings.is_empty(),
@@ -413,7 +405,10 @@ mod tests {
                 .constraint("subject", 0, None, constraint_expr)
                 .build();
 
-            let bindings = extract_tolerance_bindings(&purpose, "MyDesign");
+            let bindings = extract_tolerance_bindings(
+                &purpose,
+                &[("subject".to_string(), "MyDesign".to_string())],
+            );
 
             assert!(
                 bindings.is_empty(),
@@ -453,7 +448,10 @@ mod tests {
                 .constraint("subject", 0, None, constraint_expr)
                 .build();
 
-            let bindings = extract_tolerance_bindings(&purpose, "MyDesign");
+            let bindings = extract_tolerance_bindings(
+                &purpose,
+                &[("subject".to_string(), "MyDesign".to_string())],
+            );
 
             assert!(
                 bindings.is_empty(),
@@ -461,46 +459,6 @@ mod tests {
                 bad_value
             );
         }
-    }
-
-    /// Forward-compatibility guard: `extract_tolerance_bindings` must panic in debug
-    /// builds when the purpose has more than one distinct purpose-param subject across
-    /// its matched `RepresentationWithin` constraints.
-    ///
-    /// Under today's single-binding `activate_purpose(name, single_entity_ref)` API,
-    /// exactly one entity-ref is bound per purpose (see the `# Single-binding contract`
-    /// section in the function's docstring).  A future multi-param-aware producer that
-    /// activates a purpose with multiple entity-refs — one per named param — would
-    /// silently misroute tolerances if it called this function as-is: every matched
-    /// constraint's subject would be collapsed onto the single `bound_entity_ref`,
-    /// regardless of which purpose-param the constraint actually names.  The
-    /// `debug_assert!` ensures that such a producer is caught at the call site rather
-    /// than producing a subtle mis-routing bug.
-    ///
-    /// Fixture: purpose with TWO Structure params ("subject" and "other_param"), with
-    /// one `RepresentationWithin` subjecting each — both pass every existing extraction
-    /// gate (StructureRef type, param-membership, finite non-negative LENGTH literal).
-    #[cfg(debug_assertions)]
-    #[test]
-    #[should_panic(expected = "single-binding contract")]
-    fn extract_tolerance_bindings_panics_on_multi_param_subjects_in_debug() {
-        let constraint_subject =
-            representation_within_constraint("subject", "Bracket", 1e-6, DimensionVector::LENGTH);
-        let constraint_other = representation_within_constraint(
-            "other_param",
-            "Bracket",
-            5e-6,
-            DimensionVector::LENGTH,
-        );
-
-        let purpose = CompiledPurposeBuilder::new("manufacturing")
-            .param("subject", "Structure")
-            .param("other_param", "Structure")
-            .constraint("subject", 0, None, constraint_subject)
-            .constraint("other_param", 1, None, constraint_other)
-            .build();
-
-        extract_tolerance_bindings(&purpose, "MyDesign");
     }
 
     /// `si_value == 0.0` is the exact lower boundary accepted by the
@@ -520,7 +478,10 @@ mod tests {
             .constraint("subject", 0, None, constraint_expr)
             .build();
 
-        let bindings = extract_tolerance_bindings(&purpose, "MyDesign");
+        let bindings = extract_tolerance_bindings(
+            &purpose,
+            &[("subject".to_string(), "MyDesign".to_string())],
+        );
 
         assert_eq!(
             bindings.len(),
@@ -615,5 +576,52 @@ mod tests {
         assert_eq!(scope.len(), 2);
         assert_eq!(scope.get("A"), Some(&1e-6));
         assert_eq!(scope.get("B"), Some(&5e-6));
+    }
+
+    /// A 2-param purpose with two `RepresentationWithin` constraints — one per
+    /// param — must yield two `ToleranceBinding`s, each routed to its OWN bound
+    /// entity rather than collapsed onto a single ref.
+    ///
+    /// This is the unit-level pin for the per-param identity threading introduced
+    /// in step-2 of task 4070: `extract_tolerance_bindings` now resolves each
+    /// matched constraint's subject param against the `bindings` slice so
+    /// multi-param purposes produce per-param `ToleranceBinding`s.
+    #[test]
+    fn extract_tolerance_bindings_threads_each_param_to_its_bound_entity() {
+        let constraint_part =
+            representation_within_constraint("part", "Bracket", 1e-6, DimensionVector::LENGTH);
+        let constraint_env =
+            representation_within_constraint("envelope", "Envelope", 5e-6, DimensionVector::LENGTH);
+
+        let purpose = CompiledPurposeBuilder::new("fits")
+            .param("part", "Structure")
+            .param("envelope", "Structure")
+            .constraint("part", 0, None, constraint_part)
+            .constraint("envelope", 1, None, constraint_env)
+            .build();
+
+        let bindings = vec![
+            ("part".to_string(), "PartInst".to_string()),
+            ("envelope".to_string(), "EnvInst".to_string()),
+        ];
+        let result = extract_tolerance_bindings(&purpose, &bindings);
+
+        assert_eq!(result.len(), 2, "must yield exactly two ToleranceBindings");
+        let part_binding = result
+            .iter()
+            .find(|b| b.subject_entity == "PartInst")
+            .expect("must have a binding for PartInst (part param)");
+        assert_eq!(
+            part_binding.si_tolerance, 1e-6,
+            "part param must carry its own tolerance (1e-6)"
+        );
+        let env_binding = result
+            .iter()
+            .find(|b| b.subject_entity == "EnvInst")
+            .expect("must have a binding for EnvInst (envelope param)");
+        assert_eq!(
+            env_binding.si_tolerance, 5e-6,
+            "envelope param must carry its own tolerance (5e-6)"
+        );
     }
 }

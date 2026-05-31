@@ -2156,3 +2156,213 @@ fn seeded_prelude_unit_carries_prelude_span_and_module_through_registry() {
         dup_diag.message
     );
 }
+
+// ─── step-N: evaluate_const_expr compound unit path (task 3803) ──────────────
+//
+// These tests exercise the `QuantityLiteral` compound arm of `evaluate_const_expr`
+// in `type_resolution.rs` — i.e. the conversion-factor RHS of a `unit` declaration.
+// They were RED against the placeholder ("compound unit expressions are not yet
+// supported in unit conversion expressions") and turn GREEN after step-4 wires
+// `resolve_unit_expr` into that arm.
+
+/// `unit area_u : Area = 1mm^2` → factor ≈ 1e-6 m², no errors.
+///
+/// Exercises the `Pow` arm of resolve_unit_expr through evaluate_const_expr:
+/// mm has factor=0.001, so mm^2 has factor=0.001²=1e-6.
+#[test]
+fn evaluate_const_expr_compound_pow_mm2_area_factor() {
+    let module = compile_source_with_stdlib("unit area_u : Area = 1mm^2");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unit area_u : Area = 1mm^2 should compile cleanly, errors: {:?}",
+        errors_only(&module)
+    );
+    let unit = module
+        .units
+        .iter()
+        .find(|u| u.name == "area_u")
+        .expect("area_u not found in compiled units");
+    let expected = 1e-6_f64;
+    let tol = 1e-9 * expected.abs().max(1.0);
+    assert!(
+        (unit.factor - expected).abs() <= tol,
+        "area_u factor should be {} (tol {}), got {}",
+        expected,
+        tol,
+        unit.factor
+    );
+}
+
+/// `unit kj_equiv : Energy = 1kN*m` → factor ≈ 1000 J (kN=1000, m=1), no errors.
+///
+/// Exercises the `Mul` arm of resolve_unit_expr through evaluate_const_expr.
+#[test]
+fn evaluate_const_expr_compound_mul_kn_m_energy_factor() {
+    let module = compile_source_with_stdlib("unit kj_equiv : Energy = 1kN*m");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unit kj_equiv : Energy = 1kN*m should compile cleanly, errors: {:?}",
+        errors_only(&module)
+    );
+    let unit = module
+        .units
+        .iter()
+        .find(|u| u.name == "kj_equiv")
+        .expect("kj_equiv not found in compiled units");
+    let expected = 1000.0_f64;
+    let tol = 1e-6 * expected;
+    assert!(
+        (unit.factor - expected).abs() <= tol,
+        "kj_equiv factor should be {} (tol {}), got {}",
+        expected,
+        tol,
+        unit.factor
+    );
+}
+
+/// `unit bad : Length = 1mm*zzz` with unknown unit `zzz` → Error naming "zzz".
+///
+/// Guards that evaluate_const_expr's compound arm emits the offender name
+/// (not the old generic "compound unit expressions are not yet supported" message).
+#[test]
+fn evaluate_const_expr_compound_unknown_unit_names_offender() {
+    let module = compile_source_with_stdlib("unit bad : Length = 1mm*zzz");
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected an Error diagnostic for unknown unit 'zzz', got none"
+    );
+    let names_zzz = errors.iter().any(|d| d.message.contains("zzz"));
+    assert!(
+        names_zzz,
+        "expected an Error naming 'zzz'; got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// `unit bad2 : Temperature = 1degC*m` with affine unit `degC` in compound
+/// → Error naming "degC".
+///
+/// Guards that evaluate_const_expr's compound arm routes through
+/// `unit_resolve_error_to_diagnostic` so AffineUnitInCompound carries the name.
+#[test]
+fn evaluate_const_expr_compound_affine_unit_names_offender() {
+    let module = compile_source_with_stdlib("unit bad2 : Temperature = 1degC*m");
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected an Error diagnostic for affine unit 'degC' in compound, got none"
+    );
+    let names_degc = errors.iter().any(|d| d.message.contains("degC"));
+    assert!(
+        names_degc,
+        "expected an Error naming 'degC'; got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// `unit bad_exp : Area = 1mm^200` with exponent 200 out of i8 range → Error.
+///
+/// Exercises the ExponentOutOfRange variant of unit_resolve_error_to_diagnostic
+/// through evaluate_const_expr's compound arm.  The message must mention the
+/// exponent (200) or describe it as out of range.
+#[test]
+fn evaluate_const_expr_compound_exponent_out_of_range_error() {
+    let module = compile_source_with_stdlib("unit bad_exp : Area = 1mm^200");
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected an Error diagnostic for exponent 200 out of i8 range, got none"
+    );
+    let mentions_exponent = errors.iter().any(|d| {
+        d.message.contains("200")
+            || d.message.contains("exponent")
+            || d.message.contains("out of range")
+    });
+    assert!(
+        mentions_exponent,
+        "expected an Error message mentioning the out-of-range exponent; got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// Overflow guard: compound conversion expression that produces a non-finite SI value.
+///
+/// A 309-digit numeric value parses as `f64::INFINITY`; multiplied by the
+/// compound factor for `kN*m` (1000.0) the product stays infinite.  The
+/// `!si.is_finite()` guard in evaluate_const_expr's compound arm must fire,
+/// emit an overflow diagnostic, and return `None` so the unit is NOT registered.
+#[test]
+fn evaluate_const_expr_compound_overflow_emits_error_and_is_not_registered() {
+    // 309 nines → f64::INFINITY when parsed
+    let big_num = "9".repeat(309);
+    let src = format!("unit big_energy : Energy = {}kN*m", big_num);
+    let module = compile_source_with_stdlib(&src);
+    // Unit should NOT be registered — evaluate_const_expr returned None
+    assert!(
+        !module.units.iter().any(|u| u.name == "big_energy"),
+        "unit with overflow compound conversion should not be registered; units: {:?}",
+        module.units.iter().map(|u| &u.name).collect::<Vec<_>>()
+    );
+    let errors = errors_only(&module);
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("overflow") || d.message.contains("finite")),
+        "expected overflow diagnostic for compound conversion overflow; got: {:?}",
+        errors
+    );
+}
+
+/// Dimension-mismatch documentation test: compound conversion dimension is NOT
+/// cross-checked against the unit's `: Dim` annotation.
+///
+/// `unit mismatch_dim : Length = 1mm^2` folds to an Area dimension via
+/// resolve_unit_expr, but evaluate_const_expr intentionally discards the folded
+/// dimension (`_dim`) — it returns only the scalar factor (1e-6).  The declared
+/// dimension (`Length`) comes from the `: Dim` annotation and is never validated
+/// against the compound's dimension.  This matches the bare-unit path behaviour.
+///
+/// This test documents the gap so a future regression (accidentally enabling
+/// validation) is immediately visible.
+#[test]
+fn evaluate_const_expr_compound_dimension_mismatch_accepted_silently() {
+    // Area compound (mm^2 → dimension AREA), but declared as Length.
+    // No error expected — dimension cross-check is not implemented.
+    let module = compile_source_with_stdlib("unit mismatch_dim : Length = 1mm^2");
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "dimension mismatch in compound conversion should not produce an error \
+         (folded dimension is intentionally discarded; no cross-check implemented); \
+         got: {:?}",
+        errors
+    );
+    // The unit is registered with the compound's numeric factor (1e-6).
+    let unit = module.units.iter().find(|u| u.name == "mismatch_dim");
+    assert!(
+        unit.is_some(),
+        "mismatch_dim should be registered despite the declared and compound dimensions differing"
+    );
+    let unit = unit.unwrap();
+    let expected_factor = 1e-6_f64;
+    let tol = 1e-9;
+    assert!(
+        (unit.factor - expected_factor).abs() <= tol,
+        "mismatch_dim factor should be {} (1mm^2), got {}",
+        expected_factor,
+        unit.factor
+    );
+}

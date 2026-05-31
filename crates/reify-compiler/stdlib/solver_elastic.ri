@@ -254,58 +254,79 @@ structure def ElasticOptions {
 // and `ShellStress.top/mid/bottom` (`Field<Point3<Length>, Tensor<2, 3, Pressure>>`).
 // All six Field-typed slots are now declared with their precise types; no Real
 // placeholders remain in `ElasticResult` or `ShellStress`.
+// Task 4067 added `shell_channels : ShellStress` (seventh param) — see below.
 // Real-placeholder audit: docs/notes/stdlib-real-placeholder-audit.md
 //
 // Field semantics:
-//   displacement  — per-mesh-node displacement vector. PRD task #16 (the
-//                   runtime solver) populates the Field-typed value through
-//                   the same Map-based path that `loads.rs` and `supports.rs`
-//                   use. Tightened from Real placeholder in task 3117 after
-//                   confirming the resolver arm at `type_resolution.rs:1313`
-//                   accepts `Field<X, Y>` in `param` positions.
-//   stress        — per-mesh-node Cauchy stress tensor. Same runtime
-//                   population path as `displacement`; tightened from Real
-//                   placeholder in task 3117.
-//   frame         — per-mesh-element local-to-global rotation matrix,
-//                   `Field<Point3<Length>, Matrix<3, 3, Real>>` (one 3×3
-//                   orthogonal matrix per element; tightened from `Real`
-//                   placeholder in task #3641 using the resolver capability
-//                   confirmed by task 3117).
-//                   Tet population convention: the engine sets
-//                   `frame = Value::Undef` because tet stress is already in
-//                   the global Cartesian frame — no per-element local frame
-//                   exists for solid elements. Using Undef (rather than a
-//                   synthesised identity field) signals the absence cleanly
-//                   and prevents silent mistreatment by shell pipeline code
-//                   that forgets to check element type. Note for future
-//                   runtime-type-checking implementors: Value::Undef must
-//                   remain accepted for this Field-typed param on tet results
-//                   (see 'Runtime structured-stress contract (NOT implemented
-//                   at the stdlib level)' in `std/fea_multi_case.ri`).
-//                   Shell population convention: the engine populates the
-//                   per-element MITC3+ local frame derived from the
-//                   mid-surface mesher (the frame whose z-axis is the
-//                   element normal). Callers can apply `to_global(stress,
-//                   frame)` (engine-integration task T18-T20) to transform
-//                   shell stress into the global frame.
-//                   PRD reference: docs/prds/v0_4/structural-analysis-shells.md
-//                   § "Stress through thickness".
-//   max_von_mises — peak von-Mises equivalent stress over the mesh.
-//                   Convenience scalar for safety-factor / yield-margin
-//                   comparisons; equivalent to
-//                   `field_max(von_mises(stress))`. Pressure-typed (Pa).
-//   converged     — true iff the CG solver hit the residual tolerance
-//                   before exhausting `max_iter`. Downstream consumers
-//                   should refuse to trust `displacement`/`stress` when
-//                   `converged == false`.
-//   iterations    — actual CG iteration count. Useful for diagnostics
-//                   ("solver hit the cap" vs "solver converged in 12
-//                   iters") and for tightening / relaxing `cg_tolerance`
-//                   on subsequent runs.
+//   displacement    — per-mesh-node displacement vector. PRD task #16 (the
+//                     runtime solver) populates the Field-typed value through
+//                     the same Map-based path that `loads.rs` and `supports.rs`
+//                     use. Tightened from Real placeholder in task 3117 after
+//                     confirming the resolver arm at `type_resolution.rs:1313`
+//                     accepts `Field<X, Y>` in `param` positions.
+//   stress          — per-mesh-node Cauchy stress tensor (mid-surface / flat
+//                     stress for shells; the single stress field for tets). Same
+//                     runtime population path as `displacement`; tightened from
+//                     Real placeholder in task 3117.
+//   frame           — per-mesh-element local-to-global rotation matrix,
+//                     `Field<Point3<Length>, Matrix<3, 3, Real>>` (one 3×3
+//                     orthogonal matrix per element; tightened from `Real`
+//                     placeholder in task #3641 using the resolver capability
+//                     confirmed by task 3117).
+//                     Tet population convention: the engine sets
+//                     `frame = Value::Undef` because tet stress is already in
+//                     the global Cartesian frame — no per-element local frame
+//                     exists for solid elements. Using Undef (rather than a
+//                     synthesised identity field) signals the absence cleanly
+//                     and prevents silent mistreatment by shell pipeline code
+//                     that forgets to check element type. Note for future
+//                     runtime-type-checking implementors: Value::Undef must
+//                     remain accepted for this Field-typed param on tet results
+//                     (see 'Runtime structured-stress contract (NOT implemented
+//                     at the stdlib level)' in `std/fea_multi_case.ri`).
+//                     Shell population convention: the engine populates the
+//                     per-element MITC3+ local frame derived from the
+//                     mid-surface mesher (the frame whose z-axis is the
+//                     element normal). Callers can apply `to_global(stress,
+//                     frame)` (engine-integration task T18-T20) to transform
+//                     shell stress into the global frame.
+//                     PRD reference: docs/prds/v0_4/structural-analysis-shells.md
+//                     § "Stress through thickness".
+//   shell_channels  — through-thickness stress decomposition for shell elements;
+//                     a `ShellStress` carrying three integration-layer fields:
+//                     `top` (outer fibre), `mid` (neutral plane), `bottom`
+//                     (inner fibre). Task 4067 (PRD S1, DR-1).
+//                     Tet population convention: the engine sets
+//                     `shell_channels = Value::Undef`. Through-thickness
+//                     top/mid/bottom is undefined for a general solid element
+//                     (no mid-surface, no thickness axis); using Undef is the
+//                     honest-absence signal (PRD DR-3). Cross-element uniformity
+//                     is carried by `stress` and `max_von_mises`.
+//                     Shell population convention (task 3594/δ, out of scope for
+//                     task 4067): the engine calls `shell_channels_to_value` to
+//                     populate top/bottom from the MITC3+ layer data; mid is
+//                     identical to `stress` by construction (I-2 invariant).
+//                     Note for future runtime-type-checking implementors:
+//                     Value::Undef must remain accepted for this ShellStress-typed
+//                     param on tet results (same Undef-for-absent-field convention
+//                     as `frame` above).
+//   max_von_mises   — peak von-Mises equivalent stress over the mesh.
+//                     Convenience scalar for safety-factor / yield-margin
+//                     comparisons; equivalent to
+//                     `field_max(von_mises(stress))`. Pressure-typed (Pa).
+//   converged       — true iff the CG solver hit the residual tolerance
+//                     before exhausting `max_iter`. Downstream consumers
+//                     should refuse to trust `displacement`/`stress` when
+//                     `converged == false`.
+//   iterations      — actual CG iteration count. Useful for diagnostics
+//                     ("solver hit the cap" vs "solver converged in 12
+//                     iters") and for tightening / relaxing `cg_tolerance`
+//                     on subsequent runs.
 structure def ElasticResult {
     param displacement : Field<Point3<Length>, Vector3<Length>>
     param stress : Field<Point3<Length>, Tensor<2, 3, Pressure>>
     param frame : Field<Point3<Length>, Matrix<3, 3, Real>>
+    param shell_channels : ShellStress
     param max_von_mises : Pressure
     param converged : Bool
     param iterations : Int
@@ -331,11 +352,8 @@ structure def ElasticResult {
 // It carries three stress channels, one per integration layer:
 //
 //   top    — top-surface stress (outer fibre in the solver's local-z direction).
-//   mid    — mid-surface (neutral-plane) stress. For tet results, this is
-//            equal to `top` and `bottom` (no through-thickness gradient).
-//            The backward-compatible alias `result.stress` targets this channel
-//            for tet→shell migration; the alias semantics are implemented by
-//            engine-integration tasks T18-T20.
+//   mid    — mid-surface (neutral-plane) stress. For shell results this equals
+//            `ElasticResult.stress` by construction (I-2 invariant, PRD DR-1).
 //   bottom — bottom-surface stress (inner fibre opposite to `top`).
 //
 // Each channel is a `Field<Point3<Length>, Tensor<2, 3, Pressure>>` — a
@@ -343,24 +361,161 @@ structure def ElasticResult {
 // task #3641 — see Resolution note above the `ElasticResult` declaration
 // for provenance).
 //
-// Tet-result population convention: the engine calls
-// `ShellStress::homogeneous(field)` (Rust constructor in
-// `crates/reify-solver-elastic/src/shell_result.rs`), which sets
-// top == mid == bottom == the single tet stress field. This preserves the
-// invariant that `ShellStress` always has all three channels populated even
-// for solid-element results that have no through-thickness variation. Note
-// for future runtime-type-checking implementors: Map-typed values from
-// ShellStress::homogeneous must remain accepted for these Field-typed params
-// on tet results (see 'Runtime structured-stress contract (NOT implemented
-// at the stdlib level)' in `std/fea_multi_case.ri`).
+// Population conventions (task 4067, PRD S1 / DR-3):
+//
+//   Tet/solid results: `ElasticResult.shell_channels` is set to `Value::Undef`.
+//   Through-thickness top/mid/bottom is physically undefined for a general solid
+//   element (no mid-surface, no thickness axis). Undef is the honest-absence
+//   signal; cross-element uniformity is carried by `ElasticResult.stress` and
+//   `max_von_mises`. Do NOT fabricate homogeneous top==mid==bottom for tets —
+//   that would make the affirmative false claim "zero through-thickness bending
+//   gradient" (PRD DR-3).
+//
+//   Shell results (task 3594/δ): `shell_channels_to_value` populates all three
+//   channels from the MITC3+ layer integration data; `mid` is identical to
+//   `ElasticResult.stress` by construction (I-2). `ElasticResult.frame` carries
+//   the per-element local frame separately (not part of ShellStress).
 //
 // No defaults, no constraints — output container only, populated exclusively
 // by the solver. Mirrors the `ElasticResult` shape discipline.
 //
 // PRD reference: docs/prds/v0_4/structural-analysis-shells.md §
-// "Stress through thickness".
+// "Stress through thickness"; docs/prds/v0_4/shell-stress-channel-surfacing.md.
 structure def ShellStress {
     param top : Field<Point3<Length>, Tensor<2, 3, Pressure>>
     param mid : Field<Point3<Length>, Tensor<2, 3, Pressure>>
     param bottom : Field<Point3<Length>, Tensor<2, 3, Pressure>>
+}
+
+// ── FEAMaterialInput ─────────────────────────────────────────────────────────
+//
+// Type-coercion shim for passing concrete `ElasticMaterial` structures (e.g.
+// `Steel_AISI_1045()`) to functions that expect `ElasticMaterial` (e.g.
+// `solve_buckling`). The Reify overload resolver uses exact type equality; a
+// concrete `StructureRef("Steel_AISI_1045")` does not match the declared
+// `TraitObject("ElasticMaterial")` at a fn call site.
+//
+// Workaround (same pattern as `LoadCase.loads : List<Real>` for loads/supports):
+//   1. Wrap the material: `let mi = FEAMaterialInput(material: mat)`
+//      (structure ctors accept any value — no call-site type check)
+//   2. Pass `mi.material` — whose compile-time type is `ElasticMaterial` (the
+//      declared param type) — to the function. Exact match. ✓
+//
+// NOTE: this struct is intentionally kept for solve_buckling compatibility.
+// solve_elastic_static now accepts ConstitutiveLaw via ConstitutiveLawInput
+// (task δ/3780). Do NOT widen FEAMaterialInput.material to ConstitutiveLaw —
+// that would break buckling (solver_buckling_fns.ri:51, param material:ElasticMaterial).
+//
+// TODO(trait-coerce): remove this struct and pass material directly once the
+// type checker supports trait-object coercion at fn call sites.
+pub structure def FEAMaterialInput {
+    param material : ElasticMaterial
+}
+
+// ── ConstitutiveLawInput ──────────────────────────────────────────────────────
+//
+// Type-coercion shim for passing any `ConstitutiveLaw` conformer (isotropic,
+// orthotropic, transverse-isotropic) to `solve_elastic_static`. The Reify
+// overload resolver uses exact type equality; a concrete structure like
+// `OrthotropicMaterial(...)` has compile-time type
+// `StructureRef("OrthotropicMaterial")`, which does not match the declared
+// `TraitObject("ConstitutiveLaw")` at a fn call site.
+//
+// Workaround (same pattern as FEAMaterialInput):
+//   1. Wrap the law: `let ci = ConstitutiveLawInput(law: mat)`
+//      (structure ctors accept any value — no call-site type check)
+//   2. Pass `ci.law` — whose compile-time type is `ConstitutiveLaw` (the
+//      declared param type) — to `solve_elastic_static`. Exact match. ✓
+//
+// This is the δ/3780 scalar-lift surface: a bare ConstitutiveLaw is
+// auto-lifted to a homogeneous ConstantField by the trampoline so a single
+// solve path handles both isotropic and anisotropic (orthotropic /
+// transverse-isotropic) cases. Heterogeneous Field<Point3,AnisotropicMaterial>
+// call-surface is deferred to task ε.
+//
+// Q3 design decision (δ/3780): wrapper-coercion was chosen over the PRD's
+// "coercion at lowering" because lowering changes require reify-compiler Rust
+// changes outside this task's stdlib scope. The load order
+// (materials_fea before constitutive) also forbids
+// `trait ElasticMaterial : ConstitutiveLaw`.
+//
+// TODO(trait-coerce): remove this struct and pass material directly once the
+// type checker supports trait-object coercion at fn call sites.
+pub structure def ConstitutiveLawInput {
+    param law : ConstitutiveLaw
+}
+
+// ── solve_elastic_static ──────────────────────────────────────────────────────
+//
+// First @optimized consumer in this stdlib — PRD §8 task η,
+// docs/prds/v0_3/compute-node-contract.md.
+//
+// At eval time the @optimized("solver::elastic_static") annotation causes the
+// engine (engine_eval.rs:2793-2944) to allocate a ComputeNode with
+//   target == "solver::elastic_static"
+// and dispatch to the registered trampoline in
+//   crates/reify-eval/src/compute_targets/elastic_static.rs
+// rather than inlining the body below.
+//
+// Body discipline: `{ ElasticResult() }` is the inline fallback path (PRD §9
+// Q1 body-inline-in-debug policy). In normal operation the trampoline is
+// always registered and the body is never executed. The bare constructor call
+// produces an ElasticResult with all fields at their defaults or Undef —
+// acceptable as a fallback sentinel per the Undef-for-Field convention
+// documented at the ElasticResult struct above.
+//
+// Signature notes:
+//
+//   `material : ConstitutiveLaw` (task δ/3780 generalisation):
+//     Accepts any conforming structure: isotropic (`ElasticMaterial` conformers),
+//     orthotropic (`OrthotropicMaterial`), or transverse-isotropic
+//     (`TransverseIsotropicMaterial`). The trampoline auto-lifts the single
+//     homogeneous ConstitutiveLaw to a `ConstantField` — the scalar auto-lift
+//     mechanism — so a single solve path handles the homogeneous case.
+//
+//     Call-site coercion: because the overload resolver uses exact type equality,
+//     callers must wrap their material in `ConstitutiveLawInput(law: mat)` and
+//     pass `ci.law`. Structure ctors accept any value, so
+//     `ConstitutiveLawInput(law: OrthotropicMaterial(...)).law` (and the isotropic
+//     `ConstitutiveLawInput(law: Steel_AISI_1045()).law`) both satisfy the
+//     `TraitObject("ConstitutiveLaw")` param type. See ConstitutiveLawInput doc.
+//
+//     Q3 resolution (δ/3780): wrapper-coercion chosen over PRD "coercion at
+//     lowering" (out of scope for stdlib-only task). See ConstitutiveLawInput doc.
+//
+//     Heterogeneous `Field<Point3<Length>, AnisotropicMaterial>` call-surface
+//     deferred to task ε.
+//
+//   `loads : List<Real>` and `supports : List<Real>`:
+//     Placeholder types for `List<Load>` and `List<Support>`. The `Load` and
+//     `Support` marker traits are declared in `std.fea.multi_case` which is
+//     compiled AFTER this module in the sequential prelude build (stdlib_loader.rs).
+//     The runtime value is a `Value::List` of `Value::StructureInstance` items
+//     regardless of the compile-time element-type annotation; the trampoline
+//     reads them correctly. Matches the same placeholder convention used by
+//     `LoadCase.loads : List<Real>` and `LoadCase.supports : List<Real>` in
+//     `std.fea.multi_case` (see that module's header note 1).
+//     TODO(load-trait): tighten to `List<Load>` and `List<Support>` when the
+//     trait declarations are moved to an earlier stdlib module.
+//
+//   `options : ElasticOptions` (no default):
+//     `phase_functions` runs before `phase_entities` in the Reify compiler, so
+//     a same-module structure constructor `ElasticOptions()` cannot be used as
+//     a fn param default (esc-3851-32, functions.rs:157 comment). The `none`
+//     sentinel is typed `Option<Real>`, not `Option<ElasticOptions>`, so it also
+//     fails the `fn_param_default_compatible` strict-equality check (type_compat.rs:269).
+//     Callers must pass `ElasticOptions()` explicitly (or a custom instance).
+//     TODO(phase-order): add `= ElasticOptions()` default once the
+//     phase-functions-before-phase-entities ordering is resolved.
+@optimized("solver::elastic_static")
+pub fn solve_elastic_static(
+    material  : ConstitutiveLaw,
+    length    : Length,
+    width     : Length,
+    height    : Length,
+    loads     : List<Real>,
+    supports  : List<Real>,
+    options   : ElasticOptions
+) -> ElasticResult {
+    ElasticResult()
 }

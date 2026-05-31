@@ -1856,3 +1856,157 @@ fn compile_project_with_entry_source_returns_parse_errors_for_invalid_entry_sour
         diagnostics
     );
 }
+
+// ── Task γ (step-5): module-path declaration enforcement at entry-source site ──
+
+/// Helper: compile entry_source as main.ri (stem "main"), return the entry module's diagnostics.
+fn entry_source_diagnostics(entry_source: &str) -> Vec<reify_core::Diagnostic> {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let result = reify_compiler::module_dag::compile_project_with_entry_source(
+        &dir.join("main.ri"),
+        entry_source,
+        &resolver,
+    );
+    let modules = result.expect("compile_project_with_entry_source should succeed");
+    modules.into_iter().last().expect("should have at least the entry module").diagnostics
+}
+
+#[test]
+fn entry_source_matching_module_decl_no_path_diagnostic() {
+    // `module main` matches stem "main" → no E/W path diagnostic
+    let diags = entry_source_diagnostics("module main\nstructure S { param x: Scalar = 1mm }");
+    let path_diags: Vec<_> = diags
+        .iter()
+        .filter(|d| {
+            d.message.contains("E_MODULE_PATH_MISMATCH")
+                || d.message.contains("W_MODULE_DECL_MISSING")
+        })
+        .collect();
+    assert!(
+        path_diags.is_empty(),
+        "matching declaration should produce no path diagnostic, got: {:?}",
+        path_diags
+    );
+}
+
+#[test]
+fn entry_source_mismatched_module_decl_emits_error() {
+    // `module a.b.c` != stem "main" → E_MODULE_PATH_MISMATCH Error
+    let diags = entry_source_diagnostics("module a.b.c\nstructure S { param x: Scalar = 1mm }");
+    let mismatch: Vec<_> = diags
+        .iter()
+        .filter(|d| d.message.contains("E_MODULE_PATH_MISMATCH"))
+        .collect();
+    assert!(
+        !mismatch.is_empty(),
+        "expected E_MODULE_PATH_MISMATCH diagnostic, got: {:?}",
+        diags
+    );
+    assert_eq!(
+        mismatch[0].severity,
+        Severity::Error,
+        "E_MODULE_PATH_MISMATCH should be Error severity"
+    );
+}
+
+#[test]
+fn entry_source_absent_module_decl_emits_warning() {
+    // No module declaration → W_MODULE_DECL_MISSING Warning
+    let diags = entry_source_diagnostics("structure S { param x: Scalar = 1mm }");
+    let missing: Vec<_> = diags
+        .iter()
+        .filter(|d| d.message.contains("W_MODULE_DECL_MISSING"))
+        .collect();
+    assert!(
+        !missing.is_empty(),
+        "expected W_MODULE_DECL_MISSING diagnostic, got: {:?}",
+        diags
+    );
+    assert_eq!(
+        missing[0].severity,
+        Severity::Warning,
+        "W_MODULE_DECL_MISSING should be Warning severity"
+    );
+}
+
+// ── Task γ (step-3): module-path declaration enforcement at DAG site ──
+
+/// Helper: build a simple two-file project (a.ri imports dep.ri), compile
+/// entry `a`, and return the diagnostics from the `dep` module.
+fn dag_dep_diagnostics(dep_source: &str) -> Vec<reify_core::Diagnostic> {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    fs::write(
+        dir.join("a.ri"),
+        "import dep\nstructure A { param x: Scalar = 1mm }",
+    )
+    .unwrap();
+    fs::write(dir.join("dep.ri"), dep_source).unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let mut dag = ModuleDag::new();
+    dag.compile_module("a", &resolver)
+        .expect("compile_module should succeed for diagnostic check");
+    dag.modules.remove("dep").expect("dep should be compiled").diagnostics
+}
+
+#[test]
+fn dag_matching_module_decl_no_path_diagnostic() {
+    // dep.ri declares `module dep` (matches resolver path "dep") → no E/W diagnostic
+    let diags = dag_dep_diagnostics("module dep\nstructure Dep { param x: Scalar = 1mm }");
+    let path_diags: Vec<_> = diags
+        .iter()
+        .filter(|d| {
+            d.message.contains("E_MODULE_PATH_MISMATCH")
+                || d.message.contains("W_MODULE_DECL_MISSING")
+        })
+        .collect();
+    assert!(
+        path_diags.is_empty(),
+        "matching declaration should produce no path diagnostic, got: {:?}",
+        path_diags
+    );
+}
+
+#[test]
+fn dag_mismatched_module_decl_emits_error() {
+    // dep.ri declares `module not.dep` (mismatch) → E_MODULE_PATH_MISMATCH Error
+    let diags = dag_dep_diagnostics("module not.dep\nstructure Dep { param x: Scalar = 1mm }");
+    let mismatch: Vec<_> = diags
+        .iter()
+        .filter(|d| d.message.contains("E_MODULE_PATH_MISMATCH"))
+        .collect();
+    assert!(
+        !mismatch.is_empty(),
+        "expected E_MODULE_PATH_MISMATCH diagnostic, got: {:?}",
+        diags
+    );
+    assert_eq!(
+        mismatch[0].severity,
+        Severity::Error,
+        "E_MODULE_PATH_MISMATCH should be Error severity"
+    );
+}
+
+#[test]
+fn dag_absent_module_decl_emits_warning() {
+    // dep.ri has no module declaration → W_MODULE_DECL_MISSING Warning
+    let diags = dag_dep_diagnostics("structure Dep { param x: Scalar = 1mm }");
+    let missing: Vec<_> = diags
+        .iter()
+        .filter(|d| d.message.contains("W_MODULE_DECL_MISSING"))
+        .collect();
+    assert!(
+        !missing.is_empty(),
+        "expected W_MODULE_DECL_MISSING diagnostic, got: {:?}",
+        diags
+    );
+    assert_eq!(
+        missing[0].severity,
+        Severity::Warning,
+        "W_MODULE_DECL_MISSING should be Warning severity"
+    );
+}

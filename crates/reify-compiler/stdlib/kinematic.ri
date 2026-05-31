@@ -1,0 +1,171 @@
+// Stdlib: Kinematic Constraints  (`std.kinematic`)
+//
+// PRD: docs/prds/v0_3/kcc-joints.md  Phase-1 (KCC-ζ task 3845).
+//
+// Provides the named-type substrate for the v0.3 Kinematic Constraints PRD —
+// marker trait DrivingJoint, per-kind joint structures, non-conforming joints,
+// and top-level container types.
+//
+// Surface:
+//   - trait DrivingJoint               (marker — independent-motion-variable joints)
+//   - structure def Prismatic          : DrivingJoint (axis : Vec3,
+//                                        spring_rate : Option<TranslationalStiffness> = none,
+//                                        damping     : Option<TranslationalDamping>  = none,
+//                                        neutral     : Option<Length>                = none)
+//   - structure def Revolute           : DrivingJoint (axis : Vec3,
+//                                        spring_rate : Option<RotationalStiffness>   = none,
+//                                        damping     : Option<RotationalDamping>     = none,
+//                                        neutral     : Option<Angle>                 = none)
+//   - structure def Cylindrical        : DrivingJoint (axis : Vec3)
+//   - structure def Planar             : DrivingJoint (axis_x : Vec3, axis_y : Vec3)
+//   - structure def Spherical          : DrivingJoint (axis-isotropic; no axis field)
+//   - structure def Coupling           (derived motion — no independent motion var)
+//   - structure def Fixed              (0-DOF sub-assembly grouping)
+//   - structure def BodyId             (opaque body identifier placeholder)
+//   - structure def Mechanism          (body+joint-parent graph placeholder)
+//   - structure def Snapshot           (free_values, is_singular)
+//   - structure def SweepDim           (joint, range, steps)
+//
+// Module placement: registered last in `stdlib_loader.rs` after `std.stackup`.
+// Hard dependencies:
+//   - `std.trajectory` (for Vec3 and JointValue aliases — trajectory.ri:76,96)
+//   - `std.units` (Bool, Int, Real)
+//
+// Encoding notes:
+//   1. `DrivingJoint` is an empty marker trait. Joints stay `Value::Map` per
+//      PRD §7.1 (esc-3845-91) — these are nominal type-tags, not runtime carriers.
+//      The units.rs/sweep.rs per-name runtime hooks are KEPT per esc-3845-91.
+//   2. Coupling / Fixed do NOT carry the `: DrivingJoint` clause. Coupling has
+//      derived motion (screw/gear/rack-and-pinion — no independent motion variable).
+//      Fixed is a 0-DOF sub-assembly grouping — no motion variable at all.
+//   3. Field types use only prelude-resolvable types. PRD §7.1 ideal types that
+//      are not yet surface types (Range<T>, bare Point3, Joint, Body, JointParent,
+//      LoopClosureRecord, BodySnapshot, ConvergenceReport) are represented with
+//      Real / alias (Vec3, JointValue) / Map<String,_> placeholders + TODO comments.
+//      Same convention as dynamics.ri (`mechanism : Real // TODO(mechanism-type)`).
+//      Field tightening is deferred to the future joints→SIR-α migration.
+//   4. `Vec3` (= Real alias) resolves because kinematic.ri is registered after
+//      std.trajectory. `JointValue` (= Real alias) likewise.
+
+// ── DrivingJoint marker trait ─────────────────────────────────────────────────
+
+// DrivingJoint — marker trait for joint kinds that introduce an independent
+// motion variable (a generalized coordinate). Prismatic/Revolute/Cylindrical/
+// Planar/Spherical each contribute at least one DOF to the mechanism.
+//
+// Kept empty by design: each joint encodes its kinematics via the joint-kind
+// type tag (SIR-α nominal dispatch). The sweep engine identifies which joints
+// are sweepable by checking conformance to this trait.
+//
+// NON-CONFORMING: Coupling (derived motion — screw/gear/rack-and-pinion) and
+// Fixed (0-DOF sub-assembly grouping) are declared WITHOUT this clause because
+// they do not contribute an independent generalized coordinate.
+trait DrivingJoint { }
+
+// ── Conforming joint kinds ────────────────────────────────────────────────────
+
+// Prismatic — translational sliding joint (1 translational DOF).
+// `axis` is the translation direction in the parent body frame.
+// Vec3 = Real alias (trajectory.ri:96) — placeholder for a proper 3-vector type.
+//
+// Compliant-joint fields (task 3849 / Phase-1, §8.2):
+//   spring_rate : N/m    — linear spring coefficient; None = rigid (no spring).
+//   damping     : N·s/m  — linear damping coefficient; None = rigid (no damper).
+//   neutral     : m      — rest position; None = consumer-applied (task ι/RBD default:
+//                          range midpoint). Cannot be a literal default because the
+//                          KCC-ζ Prismatic has no `range` field.
+structure def Prismatic : DrivingJoint {
+    param axis : Vec3 // TODO(vec3-type): proper 3-vector; Vec3 = Real alias for now
+    param spring_rate : Option<TranslationalStiffness> = none // N/m; None = rigid
+    param damping     : Option<TranslationalDamping>   = none // N·s/m; None = rigid
+    param neutral     : Option<Length>                 = none // m; None → task ι default
+}
+
+// Revolute — single-axis rotation joint (1 rotational DOF).
+// `axis` is the rotation axis in the parent body frame.
+//
+// Compliant-joint fields (task 3849 / Phase-1, §8.2):
+//   spring_rate : N·m/rad    — rotational spring coefficient; None = rigid (no spring).
+//   damping     : N·m·s/rad  — rotational damping coefficient; None = rigid (no damper).
+//   neutral     : rad        — rest angle; None = consumer-applied (task ι/RBD default: 0).
+structure def Revolute : DrivingJoint {
+    param axis : Vec3 // TODO(vec3-type): proper 3-vector; Vec3 = Real alias for now
+    param spring_rate : Option<RotationalStiffness> = none // N·m/rad; None = rigid
+    param damping     : Option<RotationalDamping>   = none // N·m·s/rad; None = rigid
+    param neutral     : Option<Angle>               = none // rad; None → task ι default: 0
+}
+
+// Cylindrical — combined sliding + rotation joint (2 DOF: 1 translational + 1 rotational).
+// Both DOF share the same `axis` direction in the parent body frame.
+structure def Cylindrical : DrivingJoint {
+    param axis : Vec3 // TODO(vec3-type): proper 3-vector; Vec3 = Real alias for now
+}
+
+// Planar — joint constrained to a plane (3 DOF: 2 translational + 1 rotational).
+// `axis_x` and `axis_y` span the plane in the parent body frame; the normal is
+// their cross-product.
+structure def Planar : DrivingJoint {
+    param axis_x : Vec3 // TODO(vec3-type): first spanning axis of the constraint plane
+    param axis_y : Vec3 // TODO(vec3-type): second spanning axis of the constraint plane
+}
+
+// Spherical — ball-and-socket joint (3 rotational DOF).
+// Axis-isotropic — no preferred axis field. The full SO(3) rotation set is
+// parameterised by the solver via quaternion/Euler internally.
+structure def Spherical : DrivingJoint { }
+
+// ── Non-conforming joint kinds ────────────────────────────────────────────────
+
+// Coupling — derived-motion joint (no independent motion variable).
+// Examples: screw joint (linear ↔ angular coupling), gear pair, rack-and-pinion.
+// The motion of a Coupling is fully determined by one or more DrivingJoint DOFs
+// via a kinematic constraint equation — it does NOT contribute a generalized
+// coordinate to the mechanism.
+structure def Coupling { }
+
+// Fixed — rigid, zero-DOF sub-assembly grouping.
+// Two bodies connected by a Fixed joint move as one rigid body. No motion
+// variable; used to group sub-assemblies for bookkeeping without affecting
+// the mechanism's DOF count.
+structure def Fixed { }
+
+// ── Top-level kinematic types ─────────────────────────────────────────────────
+
+// BodyId — opaque identifier for a body within a Mechanism.
+// TODO(body-id-type): will become a proper nominal type once bodies are
+// promoted to SIR-α entities. Declared now so KCC-θ/KCC-ι consumers can
+// reference the type name without introducing a stub in their own modules.
+structure def BodyId { }
+
+// Mechanism — body/joint-parent graph for a kinematic assembly (PRD §7.1).
+//
+//   bodies        : List<Real>            — TODO(body-type): List<BodyId> placeholder
+//   joint_parents : Map<String, Real>     — TODO: Map<BodyId, JointParent> placeholder
+//   loop_closures : List<Real>            — TODO(loop-closure-record-type) placeholder
+structure def Mechanism {
+    param bodies : List<Real>          // TODO(body-type): List<BodyId> placeholder
+    param joint_parents : Map<String, Real>  // TODO: Map<BodyId,JointParent> placeholder
+    param loop_closures : List<Real>   // TODO(loop-closure-record-type) placeholder
+}
+
+// Snapshot — a single kinematic configuration of a Mechanism (PRD §7.1).
+//
+//   free_values  : List<JointValue>  — per-DOF generalized coordinates
+//                                      (JointValue = Real alias, trajectory.ri:76)
+//   is_singular  : Bool              — true if the configuration is at a singularity
+structure def Snapshot {
+    param free_values : List<JointValue>
+    param is_singular : Bool
+}
+
+// SweepDim — one dimension of a kinematic sweep study (PRD §7.1).
+//
+//   joint  : Real    — TODO(joint-type): the swept joint (DrivingJoint placeholder)
+//   range  : Real    — TODO(range-type): Range<T> not yet a surface type in
+//                      type_resolution.rs — Real placeholder for now
+//   steps  : Int     — number of discrete steps across the range
+structure def SweepDim {
+    param joint : Real   // TODO(joint-type): DrivingJoint placeholder
+    param range : Real   // TODO(range-type): Range<T> not yet a surface type
+    param steps : Int
+}

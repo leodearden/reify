@@ -1,0 +1,38 @@
+// Physical-constants smoke test for std.units.
+//
+// Exercises the three dimensioned constants in `std.units`:
+//   - STANDARD_GRAVITY()   (Acceleration, exact BIPM/CGPM 1901 reference)
+//   - SPEED_OF_LIGHT()     (Velocity = Length/Time, exact SI definition)
+//   - BOLTZMANN_CONSTANT() (HeatCapacity = Energy/Temperature, exact 2019 SI)
+//
+// PRD: docs/prds/v0_6/stdlib-reconstruction.md task ζ.
+//
+// Both new constants are accessible via the implicit std.units prelude —
+// no explicit `import std.units` is needed, same as STANDARD_GRAVITY()
+// usage in examples/multi_load_bracket.ri.
+//
+// Comments deliberately do NOT echo the literal SI numeric values; the
+// dedicated regression test asserts the source contains the constant NAMES
+// but NOT inline magic numbers (see
+// crates/reify-compiler/tests/constants_example_tests.rs).
+
+structure def PhysicalConstants {
+    // Gravity — standard acceleration of free fall.
+    let g = STANDARD_GRAVITY()
+
+    // Speed of light in vacuum — exact by the SI second/metre redefinition.
+    let c = SPEED_OF_LIGHT()
+
+    // Boltzmann constant — exact by the 2019 SI redefinition.
+    let k_B = BOLTZMANN_CONSTANT()
+
+    // Thermal energy at room temperature (300 K).
+    // k_B * 300 K exercises BOLTZMANN_CONSTANT in a dimensioned expression
+    // and confirms the HeatCapacity × Temperature → Energy reduction works.
+    let thermal_energy = k_B * 300K
+
+    // Relativistic rest energy of one kilogram of mass (E = m c²).
+    // Exercises SPEED_OF_LIGHT in a multiplication that reduces
+    // (Length/Time)² × Mass → Energy.
+    let rest_energy_per_kg = 1kg * c * c
+}

@@ -1258,41 +1258,22 @@ purpose mfg(subject : Structure) {
     );
 }
 
-/// Regression-lock (task 2501): the purpose-body-let-shadow warning and the
-/// "let bindings in purpose bodies are not yet supported" error BOTH fire at
-/// the same span, and that is **intentional**.
+/// Regression-lock (task 2501, updated task 4009 δ): `let subject` in a purpose
+/// body shadows purpose-param `subject` and the shadow-lint fires.
 ///
 /// ## Design rationale
 ///
 /// When `purpose mfg(subject : Structure) { let subject = 1 ; constraint
-/// subject > 0 }` is compiled today, two diagnostics are emitted:
+/// subject > 0 }` is compiled, the shadow-lint emits a `Shadowing` warning:
+/// body `let subject` hides purpose-param `subject`.
 ///
-/// 1. **`Shadowing` Warning** (from `shadow_lint.rs` Purpose arm): body `let
-///    subject` hides purpose-param `subject`.  This is the shadow-lint
-///    contract.
+/// As of task 4009 δ, purpose-body let bindings are fully supported:
+/// `DiagnosticCode::PurposeLetUnsupported` is no longer emitted for this case.
+/// The Shadowing warning remains because the shadow is real and the user should
+/// be aware of it.
 ///
-/// 2. **`DiagnosticCode::PurposeLetUnsupported` Error** from `compile_purpose`
-///    (`crates/reify-compiler/src/traits.rs`): "let bindings in purpose bodies
-///    are not yet supported: 'subject'".  This is an *unsupported-feature*
-///    error, not a *duplicate-decl* error — `DiagnosticCode` has no
-///    `DuplicateDecl` variant.  Identified by typed code rather than message
-///    substring.
-///
-/// Both diagnostics fire at the body's `let subject` span.  We choose the
-/// **document-as-intentional** branch rather than suppressing one:
-///
-/// * The error is the actionable signal: it tells the user to remove the `let`.
-///   Once removed, the shadow disappears too — both signals become vacuous.
-/// * Suppressing the Shadowing warning would couple `shadow_lint` to a
-///   transient implementation detail of `compile_purpose` and would silently
-///   discard information once purpose-let support lands.
-/// * The task's narrow concern ("no Severity::Error *duplicate-decl* at same
-///   site") does not require suppression because the existing error has a
-///   distinct user-facing meaning (unsupported feature, not name collision).
-///
-/// This characterization test locks that coexistence.  If a future change
-/// suppresses either diagnostic, this test will fail and force a deliberate,
-/// reviewed decision rather than a silent regression.
+/// This test locks the Shadowing warning. If `shadow_lint` is accidentally
+/// disabled for purpose-body lets a future change will fail here.
 #[test]
 fn purpose_body_let_shadow_coexists_with_unsupported_let_error_intentional() {
     let source = r#"
@@ -1303,7 +1284,7 @@ purpose mfg(subject : Structure) {
 "#;
     let module = compile_source_with_stdlib(source);
 
-    // (1) Exactly one Shadowing warning for the body `let subject`.
+    // Exactly one Shadowing warning for the body `let subject`.
     let shadow_warnings: Vec<_> = module
         .diagnostics
         .iter()
@@ -1321,70 +1302,17 @@ purpose mfg(subject : Structure) {
             .collect::<Vec<_>>()
     );
 
-    // (2) At least one diagnostic with code PurposeLetUnsupported — the
-    //     unsupported-feature error from compile_purpose.  This error fires at
-    //     the same body-let span — intentional.
+    // No PurposeLetUnsupported error: purpose-body lets are now supported (task 4009 δ).
     let unsupported_errors: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| {
-            d.severity == Severity::Error && d.code == Some(DiagnosticCode::PurposeLetUnsupported)
-        })
+        .filter(|d| d.code == Some(DiagnosticCode::PurposeLetUnsupported))
         .collect();
     assert!(
-        !unsupported_errors.is_empty(),
-        "expected at least one diagnostic with code DiagnosticCode::PurposeLetUnsupported, \
-         got none. Full diagnostics: {:?}",
-        module.diagnostics
-    );
-
-    // (3) The Shadowing warning's child-site label and the unsupported-let
-    //     error's first label must both point at the body `let subject` span
-    //     (i.e., they overlap the body-let token).
-    let body_let_subject = source
-        .find("let subject")
-        .expect("source must contain `let subject`");
-
-    let shadow_child_span = &shadow_warnings[0].labels[0].span;
-    assert!(
-        (shadow_child_span.start as usize) >= body_let_subject,
-        "Shadowing warning child-site label must point at body `let subject` \
-         (>= byte {}), got {:?}",
-        body_let_subject,
-        shadow_child_span
-    );
-
-    let error_first_label_span = &unsupported_errors[0]
-        .labels
-        .first()
-        .expect("unsupported-let error must have at least one label")
-        .span;
-    assert!(
-        (error_first_label_span.start as usize) >= body_let_subject,
-        "unsupported-let error first label must point at body `let subject` \
-         (>= byte {}), got {:?}",
-        body_let_subject,
-        error_first_label_span
-    );
-
-    // (4) The two spans must overlap — both diagnostics point at the body-let
-    //     site.  We require overlap rather than byte-identical equality so that
-    //     a future, harmless refactor (e.g. shadow-lint narrowing to just
-    //     `subject` while the unsupported-let error spans `let subject = 1`)
-    //     does not fail the test even though the design intent ("both fire at
-    //     the body-let site") is preserved.
-    let sc_start = shadow_child_span.start as usize;
-    let sc_end = shadow_child_span.end as usize;
-    let ef_start = error_first_label_span.start as usize;
-    let ef_end = error_first_label_span.end as usize;
-    assert!(
-        sc_start < ef_end && ef_start < sc_end,
-        "Shadowing warning child-site span [{sc_start}, {sc_end}) and \
-         unsupported-let error first-label span [{ef_start}, {ef_end}) must \
-         overlap (both point at the body `let subject` token). \
-         Shadow span: {:?}, Error span: {:?}",
-        shadow_child_span,
-        error_first_label_span
+        unsupported_errors.is_empty(),
+        "expected no PurposeLetUnsupported diagnostics after task 4009 δ, \
+         got: {:?}",
+        unsupported_errors
     );
 }
 

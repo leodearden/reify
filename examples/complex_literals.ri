@@ -1,0 +1,22 @@
+// complex_literals.ri — demonstrate imaginary literal syntax and Real/Int + Complex promotion.
+//
+// PRD v0_6 complex-literals-and-stdmath, D2 (imaginary literal) and D3 (mixed add).
+//
+// `4.1j` desugars to `complex(0.0, 4.1)` in the lowering pass, so
+// `3.2 + 4.1j` = `3.2 + complex(0.0, 4.1)` → Complex{3.2, 4.1, DIMENSIONLESS}.
+//
+// Expected `reify eval` output includes:
+//   z_re = 3.2
+//   z_im = 4.1
+
+structure def ComplexLiterals {
+    // z = 3.2 + 4.1j: exercises Real + imaginary_literal → Complex{3.2,4.1,DIMENSIONLESS}
+    let z = 3.2 + 4.1j
+
+    // Extract components to produce observable scalar outputs in `reify eval`.
+    let z_re = re(z)   // → Real(3.2)
+    let z_im = im(z)   // → Real(4.1)
+
+    // w = 3 + 4j: exercises Int + imaginary_literal → Complex{3.0,4.0,DIMENSIONLESS}
+    let w = 3 + 4j
+}

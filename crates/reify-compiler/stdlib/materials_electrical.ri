@@ -59,7 +59,7 @@ trait ElectricallyCharacterized : MaterialSpec {
 // RHS dimensioned (Ω·m = ElectricResistivity) so runtime `eval_cmp` dim-equality
 // succeeds — bare-numeric RHS would yield Indeterminate (esc-3115-112).
 trait Conductive : ElectricallyCharacterized {
-    constraint resistivity < 0.0001 * 1ohm * 1m
+    constraint resistivity < 0.0001ohm*m
 }
 
 // ── Insulating ───────────────────────────────────────────────────────────────
@@ -73,6 +73,6 @@ trait Conductive : ElectricallyCharacterized {
 // RHS values dimensioned to match LHS aliases (Ω·m, V/m) — see Conductive above
 // for rationale (esc-3115-112).
 trait Insulating : ElectricallyCharacterized {
-    constraint resistivity > 1000000.0 * 1ohm * 1m
-    constraint dielectric_strength > 0.0 * 1V / 1m
+    constraint resistivity > 1000000ohm*m
+    constraint dielectric_strength > 0.0V/m
 }

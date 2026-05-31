@@ -26,7 +26,7 @@ After this PRD ships, every helper name in scope (§2) is callable from `.ri` so
 - `distance(box(10mm,20mm,30mm), point3(20mm,0,0))` evaluates to `Scalar<Length>(15mm)` — analytic distance from a 10×20×30mm box (centred at origin) to a point 20mm along +X.
 - `contains(box(10mm,10mm,10mm), point3(0,0,0))` evaluates to `Bool(true)`; `contains(box(10mm,10mm,10mm), point3(20mm,0,0))` evaluates to `Bool(false)`.
 - `edges(box(10mm,20mm,30mm))` evaluates to a `List<Geometry>` of 12 sub-handles (one per box edge); `len(edges(box(...)))` returns `Int(12)`.
-- `moment_of_inertia(box(50mm,30mm,10mm), 7850.0)` evaluates to a `Tensor<2,3,MomentOfInertia>` matching the analytic `(1/12) m (W² + H²)` etc. tensor. (Density arg is a bare numeric Real today; compound-unit literal `7850 kg/m^3` does not parse — known grammar limitation; out of scope here.)
+- `moment_of_inertia(box(50mm,30mm,10mm), 7850.0)` evaluates to a `Tensor<2,3,MomentOfInertia>` matching the analytic `(1/12) m (W² + H²)` etc. tensor. (Density arg is a bare numeric Real in v0.3 — `resolve_density_arg` (geometry_ops.rs) rejects a dimensioned Scalar with a Warning; compound-unit literals such as `7850kg/m^3` now parse per spec §2.7 (docs/prds/unit-expressions.md), but the moment_of_inertia density argument accepts only a bare Real — this is a v0.3 dispatch contract, not a grammar limitation.)
 - `curvature(sphere(5mm), point3(5mm,0,0))` evaluates to `Scalar<Curvature>(1/5mm)`.
 
 Each of these is exercised by an `.ri` example file in `examples/kernel_queries/` plus an integration test pinning the analytic expected value against the kernel's reply.

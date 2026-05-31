@@ -311,6 +311,12 @@ pub const GEOMETRY_QUERY_NAMES: &[&str] = &[
     "geo_equiv",
     "angle",
     "curvature",
+    // KGQ-ζ (task 3615, Phase 6): at-point surface normal.
+    // normal(surface: Surface, point: Point3<Length>) -> Vector3<Dimensionless>
+    // GHR-α (task 3603) registered the original 12 Phase-1 names above and
+    // omitted `normal` (it fell through the gap between the two PRDs). KGQ-ζ
+    // absorbs the registration since 3603 is already done.
+    "normal",
 ];
 
 pub(crate) fn is_geometry_query(name: &str) -> bool {
@@ -343,6 +349,13 @@ pub(crate) fn is_geometry_query(name: &str) -> bool {
 /// - `curvature(curve, t)`   → `Scalar<Curvature>` (Curve overload only;
 ///   Surface overload deferred — see [`GEOMETRY_QUERY_NAMES`])
 ///
+/// KGQ-ζ Phase 6 addition (task 3615):
+/// - `normal(surface, point)` → `Vector3<Dimensionless>` (`Type::vec3(Type::Real)`)
+///   The quantity is `Type::Real` (dimensionless), NOT a `Scalar` dimension,
+///   matching the `Value::Vector(vec![Value::Real(_); 3])` shape that
+///   `dispatch_normal_vector3` constructs and that `Value.infer_type()` maps
+///   back to `Type::Vector { n: 3, quantity: Box::new(Type::Real) }`.
+///
 /// Returns `None` for any other name (caller falls through to its default
 /// type-inference path). Mirrors the contract of the sibling
 /// [`topology_selector_result_type`].
@@ -373,6 +386,11 @@ pub(crate) fn geometry_query_result_type(name: &str) -> Option<reify_core::Type>
         "curvature" => Type::Scalar {
             dimension: DimensionVector::CURVATURE,
         },
+        // KGQ-ζ (task 3615, Phase 6): at-point surface normal.
+        // Returns a dimensionless unit vector — Value::Vector([Real,Real,Real]).
+        // Type::Real (not a Scalar dimension) is the quantity so that the
+        // dispatched Value::Vector(vec![Value::Real(_);3]).infer_type() == this.
+        "normal" => Type::vec3(Type::Real),
         _ => return None,
     })
 }
@@ -445,6 +463,18 @@ pub(crate) fn unit_to_scalar(value: f64, unit: &str) -> Option<(Value, Dimension
                 dimension: DimensionVector::TIME,
             },
             DimensionVector::TIME,
+        )),
+        // Kelvin needs a hardcoded fallback because `std.units` itself uses
+        // `1K` in `BOLTZMANN_CONSTANT()`s body — fn bodies in std.units load
+        // with no unit_registry seeded, so the K declared at units.ri can't
+        // satisfy the same file's own quantity literals. Mirrors the kg/s/m
+        // self-bootstrap entries above.
+        "K" => Some((
+            Value::Scalar {
+                si_value: value,
+                dimension: DimensionVector::TEMPERATURE,
+            },
+            DimensionVector::TEMPERATURE,
         )),
         _ => None,
     }
@@ -531,6 +561,126 @@ impl UnitRegistry {
 impl Default for UnitRegistry {
     fn default() -> Self {
         UnitRegistry::new()
+    }
+}
+
+// --- UnitExpr resolver (task 3803 / PRD §4.2) ---
+
+/// Error returned by [`resolve_unit_expr`] when a `UnitExpr` cannot be folded.
+///
+/// All variants carry the *use-site* `span` that was threaded into the call —
+/// the `UnitExpr` AST nodes carry no spans of their own, and the §3.1
+/// contiguity invariant means the entire unit-expression is one source region.
+#[derive(Debug, PartialEq)]
+pub enum UnitResolveError {
+    /// No entry for this unit name in the registry.
+    UnknownUnit { name: String, span: SourceSpan },
+    /// The unit has an additive offset (`UnitEntry.offset.is_some()`) and
+    /// therefore cannot be used inside a compound expression.  Route bare
+    /// affine literals (e.g. `20degC`) through the existing
+    /// `lookup_unit_in_registry` / `unit_to_scalar` standalone path.
+    AffineUnitInCompound { name: String, span: SourceSpan },
+    /// The exponent in a `Pow` node is outside the `i8` range accepted by
+    /// [`DimensionVector::pow`].  Realistic unit exponents are ≤ ±10; values
+    /// beyond `i8::MIN..=i8::MAX` (±127) are rejected rather than silently
+    /// wrapping or panicking.
+    ExponentOutOfRange { exponent: i32, span: SourceSpan },
+}
+
+/// Convert a [`UnitResolveError`] into a user-facing [`Diagnostic`].
+///
+/// Centralises diagnostic messaging for compound unit resolution failures so
+/// that both call sites (`expr.rs` and `type_resolution.rs`) emit consistent
+/// error messages, and a future fourth `UnitResolveError` variant is handled in
+/// exactly one place.
+///
+/// The span embedded in each error variant is used as the diagnostic label
+/// location — it equals the `expr.span` threaded into `resolve_unit_expr` at
+/// the call site, which covers the entire quantity literal source region.
+pub(crate) fn unit_resolve_error_to_diagnostic(err: &UnitResolveError) -> Diagnostic {
+    match err {
+        UnitResolveError::UnknownUnit { name, span } => Diagnostic::error(format!(
+            "unknown unit: {}",
+            name
+        ))
+        .with_label(DiagnosticLabel::new(*span, "unrecognized unit")),
+
+        UnitResolveError::AffineUnitInCompound { name, span } => Diagnostic::error(format!(
+            "affine (offset) unit '{}' cannot be used in a compound unit expression",
+            name
+        ))
+        .with_label(DiagnosticLabel::new(*span, "affine unit in compound")),
+
+        UnitResolveError::ExponentOutOfRange { exponent, span } => Diagnostic::error(format!(
+            "unit exponent {} out of range",
+            exponent
+        ))
+        .with_label(DiagnosticLabel::new(*span, "exponent out of range")),
+    }
+}
+
+/// Fold a `UnitExpr` AST node against `registry`, returning the combined
+/// SI conversion factor and [`DimensionVector`] for the expression.
+///
+/// # Parameters
+/// - `expr`     — the unit expression to evaluate (no spans stored in AST nodes)
+/// - `registry` — the registry to look up atom names in
+/// - `span`     — the use-site source span (stamped into any error)
+///
+/// # Returns
+/// `Ok((factor, dimension))` where `si_value = numeric_value * factor`.
+///
+/// # Errors
+/// - [`UnitResolveError::UnknownUnit`]          — atom name not in registry
+/// - [`UnitResolveError::AffineUnitInCompound`] — affine unit in compound context
+/// - [`UnitResolveError::ExponentOutOfRange`]   — `Pow` exponent outside `i8` range
+///
+/// # Standalone affine path
+/// Bare affine literals like `20degC` must be routed through
+/// `lookup_unit_in_registry` / `unit_to_scalar` (which applies the offset).
+/// The ε integration task wires the bare-vs-compound routing in `expr.rs`.
+pub fn resolve_unit_expr(
+    expr: &reify_ast::UnitExpr,
+    registry: &UnitRegistry,
+    span: SourceSpan,
+) -> Result<(f64, DimensionVector), UnitResolveError> {
+    match expr {
+        reify_ast::UnitExpr::Unit(name) => match registry.lookup(name) {
+            None => Err(UnitResolveError::UnknownUnit {
+                name: name.clone(),
+                span,
+            }),
+            Some(entry) => {
+                if entry.offset.is_some() {
+                    return Err(UnitResolveError::AffineUnitInCompound {
+                        name: name.clone(),
+                        span,
+                    });
+                }
+                Ok((entry.factor, entry.dimension))
+            }
+        },
+        reify_ast::UnitExpr::Mul(a, b) => {
+            let (fa, da) = resolve_unit_expr(a, registry, span)?;
+            let (fb, db) = resolve_unit_expr(b, registry, span)?;
+            Ok((fa * fb, da.mul(&db)))
+        }
+        reify_ast::UnitExpr::Div(a, b) => {
+            let (fa, da) = resolve_unit_expr(a, registry, span)?;
+            let (fb, db) = resolve_unit_expr(b, registry, span)?;
+            Ok((fa / fb, da.div(&db)))
+        }
+        reify_ast::UnitExpr::Pow(a, n) => {
+            let (fa, da) = resolve_unit_expr(a, registry, span)?;
+            // `f64::powi` takes i32 natively — no narrowing needed for the factor.
+            // `DimensionVector::pow` takes i8, so the exponent must be narrowed.
+            // Guard the conversion so an out-of-range exponent surfaces as a
+            // resolve error rather than a panic or silent wrap.  Realistic unit
+            // exponents are ≤ ±10 (per the UnitExpr::Pow doc-comment).
+            let n_i8 = i8::try_from(*n)
+                .map_err(|_| UnitResolveError::ExponentOutOfRange { exponent: *n, span })?;
+            Ok((fa.powi(*n), da.pow(n_i8)))
+        }
     }
 }
 
@@ -1045,5 +1195,378 @@ mod tests {
                  runtime)"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 3615 — KGQ-ζ: `normal` compiler registration
+    // -----------------------------------------------------------------------
+
+    /// `is_geometry_query("normal")` must return true once the KGQ-ζ
+    /// registration lands in step-4. Fails until then.
+    #[test]
+    fn is_geometry_query_recognises_normal() {
+        assert!(
+            is_geometry_query("normal"),
+            "is_geometry_query(\"normal\") must be true after KGQ-ζ step-4 registration"
+        );
+    }
+
+    /// `geometry_query_result_type("normal")` must return
+    /// `Some(Type::vec3(Type::Real))` — a dimensionless 3D vector, i.e.
+    /// `Type::Vector { n: 3, quantity: Box::new(Type::Real) }`.
+    ///
+    /// This is the exact type that `Value::Vector(vec![Value::Real(_); 3]).infer_type()`
+    /// produces (verified: value.rs `try_infer_type` for Vector sets quantity =
+    /// first component's `try_infer_type()`, and `Value::Real → Type::Real`).
+    #[test]
+    fn geometry_query_result_type_for_normal_is_vec3_real() {
+        use reify_core::Type;
+        assert_eq!(
+            geometry_query_result_type("normal"),
+            Some(Type::vec3(Type::Real)),
+            "geometry_query_result_type(\"normal\") must be Some(Type::vec3(Type::Real)) \
+             after KGQ-ζ step-4 registration"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 3803 — resolve_unit_expr: registry-folding evaluator for UnitExpr
+    // -----------------------------------------------------------------------
+    //
+    // Inline fixture registry shared by step-1 through step-10 tests.
+    // Seeded with a minimal set of SI units sufficient to cover all test cases:
+    //   m   → (1.0,    LENGTH)
+    //   kN  → (1000.0, FORCE)
+    //   mm  → (0.001,  LENGTH)
+    //   kg  → (1.0,    MASS)
+    //   s   → (1.0,    TIME)
+    //   degC → (1.0,   TEMPERATURE, offset=273.15)  ← affine; seeded in step-9
+    //
+    // All UnitEntry fields are pub → struct literals constructed directly;
+    // no test-support helper needed.
+
+    fn make_resolver_registry() -> UnitRegistry {
+        use reify_core::{ContentHash, DimensionVector, SourceSpan};
+        let mut reg = UnitRegistry::new();
+        for (name, dimension, factor, offset) in &[
+            ("m", DimensionVector::LENGTH, 1.0_f64, None),
+            ("kN", DimensionVector::FORCE, 1000.0_f64, None),
+            ("mm", DimensionVector::LENGTH, 0.001_f64, None),
+            ("kg", DimensionVector::MASS, 1.0_f64, None),
+            ("s", DimensionVector::TIME, 1.0_f64, None),
+        ] {
+            reg.register(UnitEntry {
+                name: name.to_string(),
+                dimension: *dimension,
+                factor: *factor,
+                offset: *offset,
+                is_pub: true,
+                span: SourceSpan::empty(0),
+                content_hash: ContentHash::of_str(name),
+                source_module: None,
+            })
+            .unwrap();
+        }
+        reg
+    }
+
+    // --- Step-1: Unit fold arm (RED — resolve_unit_expr / UnitResolveError absent) ---
+
+    #[test]
+    fn resolve_unit_expr_unit_m_returns_length_factor_1() {
+        use reify_core::{DimensionVector, SourceSpan};
+        let reg = make_resolver_registry();
+        let use_span = SourceSpan::new(10, 11);
+        let result = resolve_unit_expr(
+            &reify_ast::UnitExpr::Unit("m".to_string()),
+            &reg,
+            use_span,
+        );
+        let (factor, dim) = result.expect("m must resolve successfully");
+        assert!((factor - 1.0).abs() < 1e-9, "m: factor must ≈ 1.0, got {factor}");
+        assert_eq!(dim, DimensionVector::LENGTH, "m: dimension must be LENGTH");
+    }
+
+    #[test]
+    fn resolve_unit_expr_unit_kn_returns_force_factor_1000() {
+        use reify_core::{DimensionVector, SourceSpan};
+        let reg = make_resolver_registry();
+        let use_span = SourceSpan::new(10, 12);
+        let result = resolve_unit_expr(
+            &reify_ast::UnitExpr::Unit("kN".to_string()),
+            &reg,
+            use_span,
+        );
+        let (factor, dim) = result.expect("kN must resolve successfully");
+        assert!((factor - 1000.0).abs() < 1e-9, "kN: factor must ≈ 1000.0, got {factor}");
+        assert_eq!(dim, DimensionVector::FORCE, "kN: dimension must be FORCE");
+    }
+
+    #[test]
+    fn resolve_unit_expr_unknown_unit_returns_err_with_use_site_span() {
+        use reify_core::SourceSpan;
+        let reg = make_resolver_registry();
+        let use_span = SourceSpan::new(20, 23);
+        let err = resolve_unit_expr(
+            &reify_ast::UnitExpr::Unit("kgg".to_string()),
+            &reg,
+            use_span,
+        )
+        .expect_err("kgg must not resolve");
+        assert_eq!(
+            err,
+            UnitResolveError::UnknownUnit {
+                name: "kgg".to_string(),
+                span: use_span,
+            },
+            "error must carry the offending name and the use-site span"
+        );
+    }
+
+    // --- Step-3/4: Mul fold arm ---
+
+    #[test]
+    fn resolve_unit_expr_mul_kn_m_returns_torque_factor_1000() {
+        use reify_core::{DimensionVector, SourceSpan};
+        let reg = make_resolver_registry();
+        let use_span = SourceSpan::new(30, 35);
+        // 5kN*m = Mul(Unit("kN"), Unit("m"))
+        let expr = reify_ast::UnitExpr::Mul(
+            Box::new(reify_ast::UnitExpr::Unit("kN".to_string())),
+            Box::new(reify_ast::UnitExpr::Unit("m".to_string())),
+        );
+        let (factor, dim) = resolve_unit_expr(&expr, &reg, use_span)
+            .expect("kN*m must resolve successfully");
+        assert!(
+            (factor - 1000.0).abs() < 1e-9,
+            "kN*m: factor must ≈ 1000.0 (1000.0 * 1.0), got {factor}"
+        );
+        // FORCE (kg·m·s⁻²) × LENGTH (m) = kg·m²·s⁻²  (= ENERGY)
+        let expected_dim = DimensionVector::FORCE.mul(&DimensionVector::LENGTH);
+        assert_eq!(dim, expected_dim, "kN*m: dimension must be FORCE·LENGTH");
+    }
+
+    // --- Step-5: Div fold arm (RED — todo!() panics) ---
+
+    #[test]
+    fn resolve_unit_expr_div_left_assoc_dynamic_viscosity() {
+        use reify_core::{DimensionVector, SourceSpan};
+        let reg = make_resolver_registry();
+        let use_span = SourceSpan::new(40, 49);
+        // kg/m/s = Div(Div(Unit("kg"), Unit("m")), Unit("s"))
+        let expr = reify_ast::UnitExpr::Div(
+            Box::new(reify_ast::UnitExpr::Div(
+                Box::new(reify_ast::UnitExpr::Unit("kg".to_string())),
+                Box::new(reify_ast::UnitExpr::Unit("m".to_string())),
+            )),
+            Box::new(reify_ast::UnitExpr::Unit("s".to_string())),
+        );
+        let (factor, dim) = resolve_unit_expr(&expr, &reg, use_span)
+            .expect("kg/m/s must resolve successfully");
+        // All SI base units → factor = 1.0/1.0/1.0 = 1.0
+        assert!(
+            (factor - 1.0).abs() < 1e-9,
+            "kg/m/s: factor must ≈ 1.0, got {factor}"
+        );
+        assert_eq!(
+            dim,
+            DimensionVector::DYNAMIC_VISCOSITY,
+            "kg/m/s dimension must be DYNAMIC_VISCOSITY (kg·m⁻¹·s⁻¹)"
+        );
+    }
+
+    #[test]
+    fn resolve_unit_expr_div_factor_divides() {
+        use reify_core::{DimensionVector, SourceSpan};
+        let reg = make_resolver_registry();
+        let use_span = SourceSpan::new(50, 54);
+        // kN/m = Div(Unit("kN"), Unit("m"))
+        let expr = reify_ast::UnitExpr::Div(
+            Box::new(reify_ast::UnitExpr::Unit("kN".to_string())),
+            Box::new(reify_ast::UnitExpr::Unit("m".to_string())),
+        );
+        let (factor, dim) = resolve_unit_expr(&expr, &reg, use_span)
+            .expect("kN/m must resolve successfully");
+        // 1000.0 / 1.0 = 1000.0
+        assert!(
+            (factor - 1000.0).abs() < 1e-9,
+            "kN/m: factor must ≈ 1000.0, got {factor}"
+        );
+        let expected_dim = DimensionVector::FORCE.div(&DimensionVector::LENGTH);
+        assert_eq!(dim, expected_dim, "kN/m: dimension must be FORCE/LENGTH");
+    }
+
+    // --- Step-7: Pow fold arm (RED — todo!() panics) ---
+
+    #[test]
+    fn resolve_unit_expr_pow_mm_squared_is_area() {
+        use reify_core::{DimensionVector, SourceSpan};
+        let reg = make_resolver_registry();
+        let use_span = SourceSpan::new(60, 64);
+        // mm^2 = Pow(Unit("mm"), 2)
+        let expr = reify_ast::UnitExpr::Pow(
+            Box::new(reify_ast::UnitExpr::Unit("mm".to_string())),
+            2,
+        );
+        let (factor, dim) = resolve_unit_expr(&expr, &reg, use_span)
+            .expect("mm^2 must resolve successfully");
+        // 0.001.powi(2) = 1e-6
+        assert!(
+            (factor - 1e-6).abs() < 1e-15,
+            "mm^2: factor must ≈ 1e-6, got {factor}"
+        );
+        assert_eq!(dim, DimensionVector::AREA, "mm^2: dimension must be AREA");
+    }
+
+    #[test]
+    fn resolve_unit_expr_pow_negative_exponent_s_minus2() {
+        use reify_core::{DimensionVector, SourceSpan};
+        let reg = make_resolver_registry();
+        let use_span = SourceSpan::new(70, 74);
+        // s^-2 = Pow(Unit("s"), -2)
+        let expr = reify_ast::UnitExpr::Pow(
+            Box::new(reify_ast::UnitExpr::Unit("s".to_string())),
+            -2,
+        );
+        let (factor, dim) = resolve_unit_expr(&expr, &reg, use_span)
+            .expect("s^-2 must resolve successfully");
+        assert!(
+            (factor - 1.0).abs() < 1e-9,
+            "s^-2: factor must ≈ 1.0 (1.0^-2), got {factor}"
+        );
+        let expected_dim = DimensionVector::TIME.pow(-2);
+        assert_eq!(dim, expected_dim, "s^-2: dimension must be TIME^-2");
+    }
+
+    #[test]
+    fn resolve_unit_expr_pow_zero_exponent_is_dimensionless() {
+        use reify_core::{DimensionVector, SourceSpan};
+        let reg = make_resolver_registry();
+        let use_span = SourceSpan::new(80, 83);
+        // m^0 = Pow(Unit("m"), 0)
+        let expr = reify_ast::UnitExpr::Pow(
+            Box::new(reify_ast::UnitExpr::Unit("m".to_string())),
+            0,
+        );
+        let (factor, dim) = resolve_unit_expr(&expr, &reg, use_span)
+            .expect("m^0 must resolve successfully");
+        assert!(
+            (factor - 1.0).abs() < 1e-9,
+            "m^0: factor must ≈ 1.0 (1.0^0), got {factor}"
+        );
+        assert_eq!(
+            dim,
+            DimensionVector::DIMENSIONLESS,
+            "m^0: dimension must be DIMENSIONLESS"
+        );
+    }
+
+    #[test]
+    fn resolve_unit_expr_div_pow_kg_per_m3_is_mass_density() {
+        use reify_core::{DimensionVector, SourceSpan};
+        let reg = make_resolver_registry();
+        let use_span = SourceSpan::new(90, 96);
+        // kg/m^3 = Div(Unit("kg"), Pow(Unit("m"), 3))
+        let expr = reify_ast::UnitExpr::Div(
+            Box::new(reify_ast::UnitExpr::Unit("kg".to_string())),
+            Box::new(reify_ast::UnitExpr::Pow(
+                Box::new(reify_ast::UnitExpr::Unit("m".to_string())),
+                3,
+            )),
+        );
+        let (factor, dim) = resolve_unit_expr(&expr, &reg, use_span)
+            .expect("kg/m^3 must resolve successfully");
+        // factor = 1.0 / 1.0^3 = 1.0
+        assert!(
+            (factor - 1.0).abs() < 1e-9,
+            "kg/m^3: factor must ≈ 1.0, got {factor}"
+        );
+        assert_eq!(
+            dim,
+            DimensionVector::MASS_DENSITY,
+            "kg/m^3: dimension must be MASS_DENSITY"
+        );
+    }
+
+    // --- Step-9: affine-rejection tests (RED — AffineUnitInCompound variant absent) ---
+
+    fn make_affine_registry() -> UnitRegistry {
+        use reify_core::{ContentHash, DimensionVector, SourceSpan};
+        let mut reg = make_resolver_registry();
+        // degC is an affine unit: si_value = value * 1.0 + 273.15
+        reg.register(UnitEntry {
+            name: "degC".to_string(),
+            dimension: DimensionVector::TEMPERATURE,
+            factor: 1.0,
+            offset: Some(273.15),
+            is_pub: true,
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash::of_str("degC"),
+            source_module: None,
+        })
+        .unwrap();
+        reg
+    }
+
+    #[test]
+    fn resolve_unit_expr_affine_in_compound_div_rejected() {
+        use reify_core::SourceSpan;
+        let reg = make_affine_registry();
+        let use_span = SourceSpan::new(100, 108);
+        // 5degC/m = Div(Unit("degC"), Unit("m"))
+        let expr = reify_ast::UnitExpr::Div(
+            Box::new(reify_ast::UnitExpr::Unit("degC".to_string())),
+            Box::new(reify_ast::UnitExpr::Unit("m".to_string())),
+        );
+        let err = resolve_unit_expr(&expr, &reg, use_span)
+            .expect_err("degC/m must be rejected");
+        assert_eq!(
+            err,
+            UnitResolveError::AffineUnitInCompound {
+                name: "degC".to_string(),
+                span: use_span,
+            },
+            "error must be AffineUnitInCompound with offending name and use-site span"
+        );
+    }
+
+    #[test]
+    fn resolve_unit_expr_bare_affine_unit_also_rejected() {
+        // Even a bare `Unit("degC")` returns AffineUnitInCompound — the fold
+        // never silently drops an offset. Bare affine literals must use the
+        // standalone lookup_unit_in_registry / unit_to_scalar path.
+        use reify_core::SourceSpan;
+        let reg = make_affine_registry();
+        let use_span = SourceSpan::new(110, 114);
+        let err = resolve_unit_expr(
+            &reify_ast::UnitExpr::Unit("degC".to_string()),
+            &reg,
+            use_span,
+        )
+        .expect_err("bare Unit(degC) must be rejected by resolve_unit_expr");
+        assert_eq!(
+            err,
+            UnitResolveError::AffineUnitInCompound {
+                name: "degC".to_string(),
+                span: use_span,
+            },
+            "bare affine unit must produce AffineUnitInCompound error"
+        );
+    }
+
+    #[test]
+    fn resolve_unit_expr_non_affine_compound_still_resolves() {
+        // Regression: adding the affine guard must not break non-affine units.
+        use reify_core::{DimensionVector, SourceSpan};
+        let reg = make_affine_registry();
+        let use_span = SourceSpan::new(120, 124);
+        let expr = reify_ast::UnitExpr::Mul(
+            Box::new(reify_ast::UnitExpr::Unit("kg".to_string())),
+            Box::new(reify_ast::UnitExpr::Unit("m".to_string())),
+        );
+        let (factor, dim) = resolve_unit_expr(&expr, &reg, use_span)
+            .expect("kg*m must still resolve after affine guard is added");
+        assert!((factor - 1.0).abs() < 1e-9);
+        assert_eq!(dim, DimensionVector::MASS.mul(&DimensionVector::LENGTH));
     }
 }

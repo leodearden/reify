@@ -810,28 +810,23 @@ pub structure Inner {
 }
 
 /// Bare cross-sub geometry access (no enclosing geometry call):
-/// `let copy = self.inner.body` produces a value-cell binding rather than a
-/// realisation op.  The compile-side `try_resolve_cross_sub_geometry_value_ref`
-/// helper emits a `CompiledExpr::value_ref(ValueCellId::new("Outer.inner",
-/// "body"), Type::Geometry)`, but the eval side only seeds the *geometry*
-/// `named_steps["inner.body"]` entry — it does NOT seed a value cell at
-/// `("Outer.inner", "body")`.
+/// `let copy = self.inner.body` now produces a normal `ValueCellDecl` with
+/// `cell_type = Type::Geometry` and `default_expr` of kind
+/// `CrossSubGeometryRef`.  The v0.1 bypass that dropped the cell and emitted a
+/// Warning was retired in GHR-γ step-4 (task 3605).
 ///
-/// The let binding has no `RealizationDecl` (a bare `MemberAccess` doesn't
-/// pass `is_geometry_let`), so the kernel records no ops for `copy`.  The
-/// value-cell lookup at eval time finds no binding and resolves to `Undef`.
+/// The let binding still has no `RealizationDecl` (a bare `MemberAccess`
+/// doesn't pass `is_geometry_let`), so the kernel records no additional ops for
+/// `copy` — `translate_count` remains 0.  No "unresolvable GeomRef::Sub"
+/// diagnostic fires because the bare path emits no `GeomRef::Sub` op.
 ///
-/// This documents the v0.1 boundary: the working path is intended for use
-/// *inside* a geometry call (translate / union / mirror / etc.) where the
-/// parallel `try_resolve_cross_sub_geom_ref` in geometry.rs lowers the
-/// access to a `GeomRef::Sub` and the kernel resolves the handle.  Bare
-/// uses produce no kernel ops and no error.
+/// Resolution of `copy`'s value cell (`CrossSubGeometryRef` → scoped
+/// `Value::GeometryHandle`) is covered by step-7/step-8 of GHR-γ.
 ///
 /// Regression guard: pins (a) the no-compile-error behaviour, and (b) the
-/// no-kernel-op behaviour (the kernel sees no Box for Inner.body and no
-/// downstream op for `copy`).  If the bare-use path becomes broken in some
-/// other way (e.g. starts emitting a spurious error or wedging the build),
-/// this test fails loudly.
+/// no-extra-kernel-op behaviour.  If the bare-use path becomes broken (e.g.
+/// starts emitting a spurious error or wedging the build), this test fails
+/// loudly.
 #[test]
 fn bare_cross_sub_geometry_access_is_documented_v01_value_cell_only() {
     let source = r#"pub structure Inner {

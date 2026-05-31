@@ -203,6 +203,32 @@ export interface FileData {
   content: string;
 }
 
+/**
+ * A single tensegrity wire endpoint pair with member-type tag, as emitted by
+ * the backend `build_tensegrity_wires` extractor (T0b). Mirrors the Rust
+ * `TensegrityWireData` struct in `gui/src-tauri/src/types.rs`.
+ *
+ * Coordinate values are plain SI metres (f64 passthrough from the Reify kernel).
+ */
+export interface TensegrityWireData {
+  /** Dot-separated entity path of the owning structure (e.g. `"TPrism"`). */
+  entity_path: string;
+  /** Member type: `"strut"` (compression) or `"cable"` (tension). */
+  kind: string;
+  /** Start-point X coordinate in SI metres. */
+  x1: number;
+  /** Start-point Y coordinate in SI metres. */
+  y1: number;
+  /** Start-point Z coordinate in SI metres. */
+  z1: number;
+  /** End-point X coordinate in SI metres. */
+  x2: number;
+  /** End-point Y coordinate in SI metres. */
+  y2: number;
+  /** End-point Z coordinate in SI metres. */
+  z2: number;
+}
+
 /** Full GUI state snapshot from the backend (with typed arrays). */
 export interface GuiState {
   meshes: MeshData[];
@@ -212,6 +238,8 @@ export interface GuiState {
   tessellation_diagnostics: DiagnosticInfo[];
   /** Compile-time diagnostics (warnings, errors) from the Reify compiler. */
   compile_diagnostics: DiagnosticInfo[];
+  /** Tensegrity wire endpoint pairs with member-type tags (T0b). Empty when no tensegrity wires are present. */
+  tensegrity_wires: TensegrityWireData[];
 }
 
 /** Wire-format GUI state as received from Tauri IPC. */
@@ -223,6 +251,11 @@ export interface RawGuiState {
   tessellation_diagnostics: DiagnosticInfo[];
   /** Compile-time diagnostics (warnings, errors) from the Reify compiler. */
   compile_diagnostics: DiagnosticInfo[];
+  /**
+   * Tensegrity wire endpoint pairs with member-type tags (T0b).
+   * Optional on the wire for forward-compat with older backend payloads.
+   */
+  tensegrity_wires?: TensegrityWireData[];
 }
 
 /** Convert wire-format GUI state to typed arrays. */
@@ -234,6 +267,7 @@ export function convertRawGuiState(raw: RawGuiState): GuiState {
     files: raw.files,
     tessellation_diagnostics: raw.tessellation_diagnostics,
     compile_diagnostics: raw.compile_diagnostics,
+    tensegrity_wires: raw.tensegrity_wires ?? [],
   };
 }
 
@@ -586,4 +620,50 @@ export interface FeaCaseChanged {
   active_case_id: string;
   /** All available case names, sorted lexicographically. */
   available_cases: string[];
+}
+
+/**
+ * Payload for the `solver-progress` Tauri event channel (GR-016 ζ).
+ *
+ * Emitted at the end of each CG iteration by the `solve_cg_with_progress`
+ * kernel callback in `crates/reify-solver-elastic/src/solver.rs`.
+ *
+ * Field names match the Rust IPC struct in
+ * `gui/src-tauri/src/types.rs::SolverProgress` exactly — no `serde(rename_all)`
+ * (PRD `docs/prds/v0_3/gui-event-channel-inventory.md` §2.2 task ζ / §3.2).
+ *
+ * `eta_ms` is absent from the wire when ETA cannot be estimated (first iteration).
+ * Consumer: `SolverProgressOverlay`.
+ */
+export interface SolverProgress {
+  /** Solver algorithm identifier, e.g. `"cg"` for Jacobi-preconditioned CG. */
+  solver_kind: string;
+  /** 1-indexed iteration number just completed. */
+  iter: number;
+  /** L2 residual norm at this iteration. */
+  residual: number;
+  /** Estimated time to completion in milliseconds; absent when ETA not yet estimable. */
+  eta_ms?: number;
+}
+
+/**
+ * One reference frame emitted by the `mode-shape-frame` Tauri event channel (task ι/3458).
+ *
+ * Field names match `gui/src-tauri/src/types.rs::ModeShapeFrame` exactly — no
+ * `serde(rename_all)` (IPC mirror convention). Two frame types are emitted per
+ * solve: one undeformed base frame (phase=0.0) and one peak frame per mode
+ * (phase=1.0). The frontend uses these to drive the BucklingPanel animator.
+ *
+ * Consumer: `BucklingPanel` / `bucklingStore`.
+ */
+export interface ModeShapeFrame {
+  /** 0-based index of the mode this frame belongs to. */
+  mode_index: number;
+  /** 0.0 = undeformed base frame; 1.0 = scaled peak displacement frame. */
+  phase: number;
+  /** Flat XYZ array: [x0, y0, z0, x1, y1, z1, …], length 3·n_nodes. */
+  displaced_positions: number[];
+  /** Buckling load multiplier λ for this mode (task 4072, GR-016).
+   * Present on peak frames (phase≈1.0); absent on the undeformed base frame. */
+  eigenvalue?: number;
 }

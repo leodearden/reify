@@ -2357,6 +2357,7 @@ mod helper_tests {
             pragmas: vec![],
             match_arm_groups: vec![],
             forall_templates: vec![],
+            assoc_fns: vec![],
         }
     }
 
@@ -2651,6 +2652,7 @@ mod helper_tests {
                     id: field_t.clone(),
                     kind: crate::ValueCellKind::Param,
                     visibility: crate::Visibility::Private,
+                    is_aux: false,
                     cell_type: Type::TypeParam("T".into()),
                     default_expr: None,
                     solver_hints: vec![],
@@ -2660,6 +2662,7 @@ mod helper_tests {
                     id: field_u.clone(),
                     kind: crate::ValueCellKind::Param,
                     visibility: crate::Visibility::Private,
+                    is_aux: false,
                     cell_type: Type::TypeParam("U".into()),
                     default_expr: None,
                     solver_hints: vec![],
@@ -2747,6 +2750,7 @@ mod helper_tests {
                     id: field_t.clone(),
                     kind: crate::ValueCellKind::Param,
                     visibility: crate::Visibility::Private,
+                    is_aux: false,
                     cell_type: Type::TypeParam("T".into()),
                     default_expr: None,
                     solver_hints: vec![],
@@ -2756,6 +2760,7 @@ mod helper_tests {
                     id: field_u.clone(),
                     kind: crate::ValueCellKind::Param,
                     visibility: crate::Visibility::Private,
+                    is_aux: false,
                     cell_type: Type::TypeParam("U".into()),
                     default_expr: None,
                     solver_hints: vec![],
@@ -2765,6 +2770,7 @@ mod helper_tests {
                     id: field_z.clone(),
                     kind: crate::ValueCellKind::Param,
                     visibility: crate::Visibility::Private,
+                    is_aux: false,
                     cell_type: Type::TypeParam("Z".into()),
                     default_expr: None,
                     solver_hints: vec![],

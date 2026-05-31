@@ -42,6 +42,7 @@ pub mod mesh_profile_2d;
 pub mod mesh_volume;
 pub mod options;
 pub mod refine_volume;
+pub mod volume_mesh_options;
 pub mod register;
 pub mod repair;
 pub mod through_thickness;
@@ -115,6 +116,7 @@ pub use mesh_boundary::EntityAttribution;
 #[cfg(all(has_gmsh, feature = "mesh-morph"))]
 pub use mesh_boundary::{BoundaryAttributedReport, mesh_surface_to_volume_with_attribution};
 pub use options::MeshingOptions;
+pub use volume_mesh_options::VolumeMeshOptions;
 // Task 2999: a-posteriori volume mesh refinement driven by per-element size
 // hints (PRD docs/prds/v0_4/a-posteriori-error-estimation.md task #2).
 // Unconditional re-export — uniform signature in both cfg(has_gmsh) (real FFI

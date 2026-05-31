@@ -72,6 +72,10 @@ fn sub_member(name: &str, structure_name: &str) -> MemberDecl {
         is_collection: false,
         where_clause: None,
         body: None,
+        param_overrides: vec![],
+        keyed_members: vec![],
+        is_aux: false,
+        pose_expr: None,
         span: zero_span(),
         content_hash: ContentHash(0),
     })
@@ -82,6 +86,7 @@ fn let_member(name: &str, value: Expr) -> MemberDecl {
         name: name.to_string(),
         doc: None,
         is_pub: false,
+        is_aux: false,
         type_expr: None,
         value,
         where_clause: None,
@@ -134,7 +139,8 @@ fn head_type_enum() -> Declaration {
         name: "HeadType".to_string(),
         doc: None,
         is_pub: false,
-        variants: vec!["Hex".to_string(), "Socket".to_string()],
+        type_params: vec![],
+        variants: vec!["Hex".into(), "Socket".into()],
         span: zero_span(),
         content_hash: ContentHash(0),
         annotations: vec![],
@@ -230,6 +236,7 @@ fn self_dot_match_cluster_resolves_to_union_of_arm_types() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -291,10 +298,11 @@ fn self_dot_match_cluster_pipe_arm_collapses_to_one_union_member() {
                 name: "HeadType".to_string(),
                 doc: None,
                 is_pub: false,
+                type_params: vec![],
                 variants: vec![
-                    "Hex".to_string(),
-                    "Socket".to_string(),
-                    "Button".to_string(),
+                    "Hex".into(),
+                    "Socket".into(),
+                    "Button".into(),
                 ],
                 span: zero_span(),
                 content_hash: ContentHash(0),
@@ -307,6 +315,7 @@ fn self_dot_match_cluster_pipe_arm_collapses_to_one_union_member() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -390,6 +399,7 @@ fn self_dot_cluster_dot_common_field_resolves_to_arm_field_type() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -471,6 +481,7 @@ fn self_dot_cluster_dot_arm_specific_field_emits_diagnostic_listing_missing_arms
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -551,6 +562,7 @@ fn external_sub_dot_cluster_dot_common_field_typechecks() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -632,6 +644,7 @@ fn self_dot_cluster_dot_divergent_types_emits_diagnostic_listing_arms() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -700,6 +713,7 @@ fn external_sub_dot_cluster_dot_arm_specific_field_emits_diagnostic() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -732,6 +746,10 @@ fn collection_sub_member(name: &str, structure_name: &str) -> MemberDecl {
         is_collection: true,
         where_clause: None,
         body: None,
+        param_overrides: vec![],
+        keyed_members: vec![],
+        is_aux: false,
+        pose_expr: None,
         span: zero_span(),
         content_hash: ContentHash(0),
     })
@@ -821,6 +839,7 @@ fn external_collection_sub_indexed_dot_cluster_dot_common_field_typechecks() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -909,6 +928,7 @@ fn external_collection_sub_indexed_dot_cluster_dot_arm_specific_field_emits_diag
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -997,6 +1017,7 @@ fn external_collection_sub_indexed_dot_cluster_dot_divergent_types_emits_diagnos
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -1063,6 +1084,7 @@ fn collection_sub_indexed_nan_emits_out_of_range_diagnostic() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -1114,6 +1136,7 @@ fn collection_sub_indexed_infinity_emits_out_of_range_diagnostic() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -1169,6 +1192,7 @@ fn collection_sub_indexed_1e20_emits_out_of_range_diagnostic() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -1267,6 +1291,7 @@ fn cluster_routing_path_i64_max_boundary_emits_out_of_range_diagnostic() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);

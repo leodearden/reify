@@ -240,6 +240,118 @@ else
     ok "sccache installed"
 fi
 
+# ---------- build-accelerator systemd --user services ----------
+#
+# Build infra installed as systemd --user units so it survives reboots and
+# does NOT silently revert to defaults (a depleted/un-tuned default once pinned
+# the orchestrator's merge verifies to -j1 with idle cores):
+#   * sccache.service              — sccache server with a tuned cache cap. The
+#                                    10 GiB default is far too small for the
+#                                    orchestrator's back-to-back full-workspace
+#                                    verifies across worktrees; a single
+#                                    target/debug is ~60-80 GiB.
+#   * reify-jobserver.service      — shared 32-token cargo jobserver FIFO so
+#                                    concurrent verifies don't oversubscribe
+#                                    cores. PartOf=orchestrator-reify.service
+#                                    re-seeds it whenever the orchestrator
+#                                    restarts (a restart SIGKILLs in-flight
+#                                    rustc, each permanently leaking its token).
+#   * reify-jobserver-canary.{service,timer} — every 5 min, re-seed the FIFO if
+#                                    tokens have leaked; acts ONLY while the
+#                                    build is idle, so it can never disrupt an
+#                                    in-flight verify.
+#
+# Cache size overridable via REIFY_SCCACHE_SIZE (default 100G). Skipped when no
+# systemd --user bus is available (e.g. CI).
+
+install_build_services() {
+    local unit_dir="$HOME/.config/systemd/user"
+    local sccache_bin="$HOME/.cargo/bin/sccache"
+    local repo_dir size
+    repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    size="${REIFY_SCCACHE_SIZE:-100G}"
+    mkdir -p "$unit_dir"
+
+    cat > "$unit_dir/sccache.service" <<EOF
+[Unit]
+Description=sccache build cache server (${size} cap) for reify verify/builds
+Documentation=https://github.com/mozilla/sccache
+After=network.target
+Before=orchestrator-reify.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=SCCACHE_CACHE_SIZE=${size}
+Environment=SCCACHE_IDLE_TIMEOUT=0
+ExecStartPre=-${sccache_bin} --stop-server
+ExecStart=${sccache_bin} --start-server
+ExecStop=${sccache_bin} --stop-server
+
+[Install]
+WantedBy=default.target
+EOF
+
+    cat > "$unit_dir/reify-jobserver.service" <<'EOF'
+[Unit]
+Description=Shared cargo jobserver FIFO (32 tokens) for reify orchestrator
+# PartOf= re-seeds the pool when the orchestrator restarts (a restart SIGKILLs
+# in-flight verify rustc, each permanently losing the FIFO token it held).
+# Inert if orchestrator-reify.service isn't installed.
+PartOf=orchestrator-reify.service
+
+[Service]
+Type=simple
+ExecStartPre=/bin/bash -c 'rm -f /tmp/reify-jobserver && mkfifo /tmp/reify-jobserver'
+ExecStart=/bin/bash -c 'exec 7<>/tmp/reify-jobserver; printf "%%032s" | tr " " "+" >&7; exec sleep infinity'
+ExecStopPost=/bin/rm -f /tmp/reify-jobserver
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+EOF
+
+    cat > "$unit_dir/reify-jobserver-canary.service" <<EOF
+[Unit]
+Description=Re-seed the cargo jobserver FIFO if tokens have leaked (idle-only check)
+
+[Service]
+Type=oneshot
+ExecStart=${repo_dir}/scripts/jobserver-canary.sh
+StandardOutput=journal
+StandardError=journal
+EOF
+
+    cat > "$unit_dir/reify-jobserver-canary.timer" <<'EOF'
+[Unit]
+Description=Periodic cargo jobserver depletion check (every 5 min)
+
+[Timer]
+OnBootSec=300
+OnUnitActiveSec=300
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target
+EOF
+
+    chmod +x "$repo_dir/scripts/jobserver-canary.sh"
+    systemctl --user daemon-reload
+    systemctl --user enable --now sccache.service reify-jobserver.service reify-jobserver-canary.timer
+}
+
+if systemctl --user show-environment &>/dev/null; then
+    info "Installing build-accelerator services (sccache ${REIFY_SCCACHE_SIZE:-100G} + cargo jobserver + leak canary)..."
+    if install_build_services; then
+        ok "build-accelerator services installed, enabled & started"
+    else
+        warn "build-accelerator service install hit an error (see above) — non-fatal"
+    fi
+else
+    warn "no systemd --user bus — skipping build-accelerator service install"
+fi
+
 # ---------- cargo-nextest ----------
 #
 # scripts/verify.sh runs the non-OCCT workspace test tail through nextest (one

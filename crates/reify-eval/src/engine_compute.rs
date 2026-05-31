@@ -310,6 +310,25 @@ impl crate::Engine {
                 cost_per_byte,
                 diagnostics,
             }) => {
+                // §9-ζ (#3596) dispatch-complete fold hook: fold derived
+                // mid-surface attributes into the topology_attribute_table so
+                // downstream selector lookup can find them. Gated on the single
+                // target that currently needs a post-dispatch fold; a per-target
+                // hook map is the documented future generalization if more
+                // targets need this pattern.
+                //
+                // NOTE: topology_attribute_table is rebuild-derived and is NOT
+                // repopulated on a pure in-memory cache hit. Any future path
+                // that short-circuits dispatch from a cached result (task ι
+                // scope) must also call this fold so the table stays consistent
+                // with the result served to callers.
+                if target == "shell-extract::extract" {
+                    crate::shell_extract_compute::fold_mid_surface_attributes_into_table(
+                        &mut self.topology_attribute_table,
+                        &result,
+                    );
+                }
+
                 // Step 3a: atomic completion (write + flip Pending→Final +
                 // clear cause + donate warm state). PRD §5 step-3 bundles
                 // all four operations into a single critical section.
@@ -433,7 +452,10 @@ mod tests {
     };
     use crate::graph::CancellationHandle;
 
-    /// A minimal identity trampoline: returns `value_inputs[0]` as the result.
+    /// A minimal identity trampoline: returns the first entry of `value_inputs`
+    /// as the result, or `Value::Undef` when the slice is empty (defensive
+    /// guard for the case where the engine invokes the trampoline with zero
+    /// evaluated arguments — e.g. a zero-argument @optimized call).
     fn identity_fn(
         value_inputs: &[Value],
         _realization_inputs: &[RealizationReadHandle],
@@ -442,10 +464,29 @@ mod tests {
         _cancellation: &CancellationHandle,
     ) -> ComputeOutcome {
         ComputeOutcome::Completed {
-            result: value_inputs[0].clone(),
+            result: value_inputs.first().cloned().unwrap_or(Value::Undef),
             new_warm_state: None,
             cost_per_byte: None,
             diagnostics: vec![],
+        }
+    }
+
+    // ── Test: identity_fn with empty value_inputs ───────────────────────────
+
+    /// Guard test: `identity_fn` called with an empty `value_inputs` slice must
+    /// return `ComputeOutcome::Completed { result: Value::Undef }` instead of
+    /// panicking with IndexOutOfBounds. The empty-slice path arises when a
+    /// zero-argument @optimized call causes the engine to pass an empty
+    /// arg_values slice to the trampoline.
+    #[test]
+    fn identity_fn_empty_value_inputs_returns_undef_without_panic() {
+        let result = identity_fn(&[], &[], &Value::Undef, None, &CancellationHandle::new());
+        match result {
+            ComputeOutcome::Completed { result: Value::Undef, .. } => {}
+            other => panic!(
+                "expected ComputeOutcome::Completed {{ result: Value::Undef }}, got {:?}",
+                other
+            ),
         }
     }
 

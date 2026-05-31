@@ -1,10 +1,11 @@
 //! Tests for `param x : Solid = <geometry_call>` compilation.
 //!
-//! A `Solid`-typed param with a geometry-call default should be lowered as a
-//! realization (like a geometry let) rather than a scalar ValueCellDecl.
+//! After GHR-γ: a `Solid`-typed param with a geometry-call default is lowered
+//! BOTH as a `ValueCellDecl{cell_type: Type::Geometry}` AND as a `RealizationDecl`.
 
 use reify_compiler::{BooleanOp, CompiledGeometryOp, PrimitiveKind, ValueCellKind};
 use reify_core::{RealizationNodeId, Severity, Type};
+use reify_ir::CompiledExprKind;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -33,12 +34,11 @@ fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
     compiled
 }
 
-// ─── step-5: Solid-typed param must NOT emit a ValueCellDecl ─────────────────
+// ─── GHR-γ: Solid-typed param MUST emit a ValueCellDecl ──────────────────────
 
-/// After the pre-pass extension (step-4), scope registers `g` as Type::Geometry.
-/// The main Param loop must also skip ValueCellDecl construction so that `g`
-/// appears nowhere in `template.value_cells`.
-/// Expect failure until the main-loop early-continue (step-6) is implemented.
+/// After GHR-γ (bypass retired), `param g : Solid = cylinder(10mm, 20mm)`
+/// must produce a `ValueCellDecl{cell_type: Type::Geometry, kind: Param}`
+/// AND a `RealizationDecl` (both paths are now active in parallel).
 #[test]
 fn solid_param_has_no_value_cell() {
     let source = r#"structure def Widget {
@@ -51,26 +51,32 @@ fn solid_param_has_no_value_cell() {
         .find(|t| t.name == "Widget")
         .expect("Widget template not found");
 
-    // The geometry param must NOT produce a scalar ValueCellDecl.
-    assert!(
-        !template.value_cells.iter().any(|c| c.id.member == "g"),
-        "ValueCellDecl for 'g' must not exist; Solid-typed params with geometry \
-         defaults should be lowered as realizations only"
+    // After GHR-γ: exactly one ValueCellDecl for 'g' with Type::Geometry.
+    let g_cells: Vec<_> = template.value_cells.iter().filter(|c| c.id.member == "g").collect();
+    assert_eq!(
+        g_cells.len(),
+        1,
+        "expected exactly 1 ValueCellDecl for 'g' (GHR-γ: bypass retired); got: {:#?}",
+        g_cells
+    );
+    assert_eq!(
+        g_cells[0].cell_type,
+        Type::Geometry,
+        "expected cell_type=Type::Geometry for 'g'"
+    );
+    assert_eq!(
+        g_cells[0].kind,
+        ValueCellKind::Param,
+        "expected kind=ValueCellKind::Param for 'g'"
     );
 }
 
-// ─── step-7: Guarded Solid-typed param must not emit a ValueCellDecl ─────────
+// ─── GHR-γ: Guarded Solid-typed param emits both ValueCellDecl + RealizationDecl
 
-/// A `Solid`-typed param inside a block-level `where` guard must behave the same
-/// as a geometry let in a guarded block: it must NOT appear as a `ValueCellDecl`
-/// in the guarded group's `members`, and must produce a `RealizationDecl` in the
-/// template's top-level realizations list.
-///
-/// Expect failure until `guards.rs` is updated (step-8):
-/// - `register_guarded_names` currently does not add Solid params to
-///   `known_geometry_lets`, so the guarded-members pass treats `g` as a
-///   regular scalar param and emits a `ValueCellDecl`.
-/// - No realization is emitted for the guarded geometry param.
+/// After GHR-γ (bypass retired), a `Solid`-typed param inside a block-level
+/// `where` guard MUST appear as a `ValueCellDecl` in the guarded group's
+/// `members` (with `cell_type == Type::Geometry`) AND produce a `RealizationDecl`
+/// in the template's top-level realizations list.
 #[test]
 fn guarded_solid_param_compiles_as_realization() {
     let source = r#"structure def W {
@@ -86,20 +92,31 @@ fn guarded_solid_param_compiles_as_realization() {
         .find(|t| t.name == "W")
         .expect("W template not found");
 
-    // (a) `g` must NOT appear as a ValueCellDecl in top-level value_cells.
+    // (a) `g` must NOT appear as a top-level ValueCellDecl — it is guarded.
     assert!(
         !template.value_cells.iter().any(|c| c.id.member == "g"),
-        "top-level ValueCellDecl for 'g' must not exist"
+        "top-level ValueCellDecl for 'g' must not exist (it belongs in guarded_groups)"
     );
-    // (b) `g` must NOT appear in any guarded group's members.
-    for group in &template.guarded_groups {
-        assert!(
-            !group.members.iter().any(|m| m.id.member == "g"),
-            "guarded ValueCellDecl for 'g' must not exist; Solid-typed guarded params \
-             should be lowered as realizations, not scalar value cells"
-        );
-    }
-    // (c) At least one RealizationDecl must be emitted for the guarded geometry param.
+    // (b) After GHR-γ: `g` MUST appear in exactly one guarded group's members
+    //     with cell_type == Type::Geometry and kind == Param.
+    let guarded_g_cells: Vec<_> = template
+        .guarded_groups
+        .iter()
+        .flat_map(|grp| grp.members.iter())
+        .filter(|c| c.id.member == "g")
+        .collect();
+    assert_eq!(
+        guarded_g_cells.len(),
+        1,
+        "expected exactly 1 guarded ValueCellDecl for 'g' (GHR-γ: bypass retired); got: {:#?}",
+        guarded_g_cells
+    );
+    assert_eq!(
+        guarded_g_cells[0].cell_type,
+        Type::Geometry,
+        "expected cell_type=Type::Geometry for guarded 'g'"
+    );
+    // (c) At least one RealizationDecl must still be emitted for the guarded geometry param.
     assert!(
         !template.realizations.is_empty(),
         "expected at least one RealizationDecl for guarded `param g : Solid = cylinder(...)`, \
@@ -107,14 +124,12 @@ fn guarded_solid_param_compiles_as_realization() {
     );
 }
 
-// ─── step-3: Solid-typed param should lower to a realization ─────────────────
+// ─── GHR-γ: Solid-typed param lowers to BOTH a ValueCellDecl and a RealizationDecl
 
-/// `param g : Solid = cylinder(10mm, 20mm)` must:
+/// After GHR-γ (bypass retired), `param g : Solid = cylinder(10mm, 20mm)` must:
 /// (a) compile without errors,
-/// (b) produce NO ValueCellDecl named `g`,
-/// (c) produce exactly 1 RealizationDecl,
-/// (d) register `g` as Type::Geometry (verified indirectly: the cell_type of
-///     any value cell named `g` must not exist, since the param is a realization).
+/// (b) produce exactly one `ValueCellDecl` named `g` with `cell_type == Type::Geometry`,
+/// (c) produce exactly 1 RealizationDecl (realization path unchanged).
 #[test]
 fn solid_param_compiles_as_realization() {
     let source = r#"structure def Widget {
@@ -128,11 +143,18 @@ fn solid_param_compiles_as_realization() {
         .find(|t| t.name == "Widget")
         .expect("Widget template not found");
 
-    // (b) No value_cell named "g" — it should be a realization, not a scalar cell.
-    let has_g_cell = template.value_cells.iter().any(|c| c.id.member == "g");
-    assert!(
-        !has_g_cell,
-        "expected no ValueCellDecl for 'g', but one was found (param should lower as realization)"
+    // (b) After GHR-γ: exactly one ValueCellDecl named "g" with Type::Geometry.
+    let g_cells: Vec<_> = template.value_cells.iter().filter(|c| c.id.member == "g").collect();
+    assert_eq!(
+        g_cells.len(),
+        1,
+        "expected exactly 1 ValueCellDecl for 'g' (GHR-γ: bypass retired); got: {:#?}",
+        g_cells
+    );
+    assert_eq!(
+        g_cells[0].cell_type,
+        Type::Geometry,
+        "expected cell_type=Type::Geometry for 'g'"
     );
 
     // (c) Exactly 1 RealizationDecl for the single geometry param.
@@ -173,10 +195,25 @@ fn solid_param_referenced_by_downstream_boolean_op() {
         .find(|t| t.name == "W1")
         .expect("W1 template not found");
 
-    // (a) No scalar ValueCellDecls — g, other, and out are all geometry members.
-    assert!(
-        template.value_cells.is_empty(),
-        "expected no ValueCellDecls (all three members are geometry); got: {:#?}",
+    // (a) After GHR-γ: `g` (Solid param) has exactly 1 ValueCellDecl with Type::Geometry.
+    //     `other` and `out` are geometry lets — no ValueCellDecl for them.
+    let g_cells: Vec<_> = template.value_cells.iter().filter(|c| c.id.member == "g").collect();
+    assert_eq!(
+        g_cells.len(),
+        1,
+        "expected exactly 1 ValueCellDecl for 'g' (GHR-γ: bypass retired); got: {:#?}",
+        g_cells
+    );
+    assert_eq!(
+        g_cells[0].cell_type,
+        Type::Geometry,
+        "expected cell_type=Type::Geometry for 'g'"
+    );
+    assert_eq!(
+        template.value_cells.len(),
+        1,
+        "expected exactly 1 ValueCellDecl total (only 'g' is a Solid param; other/out are lets); \
+         got: {:#?}",
         template.value_cells
     );
 
@@ -277,10 +314,25 @@ fn solid_param_default_aliasing_geometry_let_is_realization() {
         .find(|t| t.name == "W2")
         .expect("W2 template not found");
 
-    // (a) No scalar ValueCellDecls — both `a` and `g` are geometry members.
-    assert!(
-        template.value_cells.is_empty(),
-        "expected no ValueCellDecls (both a and g are geometry); got: {:#?}",
+    // (a) After GHR-γ: `g` (Solid param with geometry-ident default) has exactly 1 ValueCellDecl.
+    //     `a` is a geometry let — no ValueCellDecl for it.
+    let g_cells: Vec<_> = template.value_cells.iter().filter(|c| c.id.member == "g").collect();
+    assert_eq!(
+        g_cells.len(),
+        1,
+        "expected exactly 1 ValueCellDecl for 'g' (GHR-γ: bypass retired); got: {:#?}",
+        g_cells
+    );
+    assert_eq!(
+        g_cells[0].cell_type,
+        Type::Geometry,
+        "expected cell_type=Type::Geometry for 'g'"
+    );
+    assert_eq!(
+        template.value_cells.len(),
+        1,
+        "expected exactly 1 ValueCellDecl total (only 'g' is a Solid param; 'a' is a geometry let); \
+         got: {:#?}",
         template.value_cells
     );
 
@@ -357,23 +409,31 @@ fn nested_guarded_solid_param_compiles_as_realization() {
 
     // (a) No error diagnostics — already checked by compile_no_errors.
 
-    // (b) `g` must NOT appear as a ValueCellDecl in top-level value_cells.
+    // (b) `g` must NOT appear as a top-level ValueCellDecl — it is nested-guarded.
     assert!(
         !template.value_cells.iter().any(|c| c.id.member == "g"),
-        "top-level ValueCellDecl for 'g' must not exist"
+        "top-level ValueCellDecl for 'g' must not exist (it belongs in guarded_groups)"
     );
 
-    // (c) `g` must NOT appear in any guarded group's members or else_members.
-    for group in &template.guarded_groups {
-        assert!(
-            !group.members.iter().any(|m| m.id.member == "g"),
-            "guarded ValueCellDecl for 'g' must not exist in members"
-        );
-        assert!(
-            !group.else_members.iter().any(|m| m.id.member == "g"),
-            "guarded ValueCellDecl for 'g' must not exist in else_members"
-        );
-    }
+    // (c) After GHR-γ: `g` MUST appear in some guarded group's members as a
+    //     ValueCellDecl with cell_type == Type::Geometry.
+    let guarded_g_cells: Vec<_> = template
+        .guarded_groups
+        .iter()
+        .flat_map(|grp| grp.members.iter())
+        .filter(|c| c.id.member == "g")
+        .collect();
+    assert_eq!(
+        guarded_g_cells.len(),
+        1,
+        "expected exactly 1 guarded ValueCellDecl for 'g' (GHR-γ: bypass retired); got: {:#?}",
+        guarded_g_cells
+    );
+    assert_eq!(
+        guarded_g_cells[0].cell_type,
+        Type::Geometry,
+        "expected cell_type=Type::Geometry for nested-guarded 'g'"
+    );
 
     // (d) Exactly one RealizationDecl must be emitted for the nested geometry
     // param. Using `== 1` (not `>= 1`) prevents a future double-emit regression
@@ -455,21 +515,31 @@ fn nested_guarded_solid_param_in_else_branch_compiles_as_realization() {
         .find(|t| t.name == "W5")
         .expect("W5 template not found");
 
-    // (a) `g` must NOT appear as a ValueCellDecl anywhere.
+    // (a) `g` must NOT appear as a top-level ValueCellDecl — it is nested-guarded.
     assert!(
         !template.value_cells.iter().any(|c| c.id.member == "g"),
-        "top-level ValueCellDecl for 'g' must not exist"
+        "top-level ValueCellDecl for 'g' must not exist (it belongs in guarded_groups)"
     );
-    for group in &template.guarded_groups {
-        assert!(
-            !group.members.iter().any(|m| m.id.member == "g"),
-            "guarded ValueCellDecl for 'g' must not exist in members"
-        );
-        assert!(
-            !group.else_members.iter().any(|m| m.id.member == "g"),
-            "guarded ValueCellDecl for 'g' must not exist in else_members"
-        );
-    }
+    // After GHR-γ: `g` MUST appear in some guarded group's members or else_members
+    //     as a ValueCellDecl with cell_type == Type::Geometry.
+    let guarded_g_cells: Vec<_> = template
+        .guarded_groups
+        .iter()
+        .flat_map(|grp| grp.members.iter().chain(grp.else_members.iter()))
+        .filter(|c| c.id.member == "g")
+        .collect();
+    assert_eq!(
+        guarded_g_cells.len(),
+        1,
+        "expected exactly 1 guarded ValueCellDecl for 'g' in members or else_members (GHR-γ); \
+         got: {:#?}",
+        guarded_g_cells
+    );
+    assert_eq!(
+        guarded_g_cells[0].cell_type,
+        Type::Geometry,
+        "expected cell_type=Type::Geometry for else-branch nested-guarded 'g'"
+    );
 
     // (b) Exactly one RealizationDecl must be emitted for `g` (from the else
     // branch). Using `== 1` guards against both recursion failure (0) and
@@ -563,5 +633,196 @@ fn solid_param_with_non_geometry_default_silently_accepts() {
         ValueCellKind::Param,
         "pin-down: expected kind=ValueCellKind::Param for `param g : Solid = 42`, got {:?}",
         g_cell.kind
+    );
+}
+
+// ─── GHR-γ step-1: ValueCellDecl MUST exist for Solid params ─────────────────
+// These RED tests assert that after the bypass retirement, Solid-typed params
+// with geometry-call defaults produce a `ValueCellDecl{cell_type: Type::Geometry,
+// kind: ValueCellKind::Param}` in addition to the existing RealizationDecl.
+// They FAIL until step-2 deletes the `is_solid_geometry_param → continue` bypass.
+
+/// After GHR-γ, `param body : Solid = box(10mm, 20mm, 30mm)` must produce:
+/// (a) exactly one `ValueCellDecl` with `id.member == "body"`, `cell_type ==
+///     Type::Geometry`, `kind == ValueCellKind::Param`, `default_expr.is_some()`.
+/// (b) exactly one `RealizationDecl` (parallel realization-op chain unchanged).
+///
+/// Currently FAILS because entity.rs:1045's `is_solid_geometry_param(…) → continue`
+/// skip drops the ValueCellDecl.
+#[test]
+fn solid_param_creates_geometry_value_cell() {
+    let source = r#"structure def Widget {
+    param body : Solid = box(10mm, 20mm, 30mm)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Widget")
+        .expect("Widget template not found");
+
+    // (a) Exactly one ValueCellDecl named "body" with Type::Geometry + Param kind.
+    let body_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|c| c.id.member == "body")
+        .collect();
+    assert_eq!(
+        body_cells.len(),
+        1,
+        "expected exactly 1 ValueCellDecl for 'body'; got: {:#?}",
+        body_cells
+    );
+    let cell = body_cells[0];
+    assert_eq!(
+        cell.cell_type,
+        Type::Geometry,
+        "expected cell_type=Type::Geometry for 'body', got {:?}",
+        cell.cell_type
+    );
+    assert_eq!(
+        cell.kind,
+        ValueCellKind::Param,
+        "expected kind=ValueCellKind::Param for 'body', got {:?}",
+        cell.kind
+    );
+    assert!(
+        cell.default_expr.is_some(),
+        "expected default_expr.is_some() for 'body' (box call as default)"
+    );
+
+    // (b) Exactly one RealizationDecl — realization path is orthogonal and unchanged.
+    assert_eq!(
+        template.realizations.len(),
+        1,
+        "expected exactly 1 RealizationDecl for `param body : Solid = box(...)`, got {}",
+        template.realizations.len()
+    );
+}
+
+/// Guarded-block variant: `where some_cond { param body : Solid = box(...) }` must
+/// produce a `ValueCellDecl` in the guarded group's `members` AND a `RealizationDecl`
+/// in the template's top-level realizations list.
+///
+/// Currently FAILS because guards.rs:381's `is_solid_geometry_param(…) → continue`
+/// skips the ValueCellDecl in the guarded-members compilation pass.
+#[test]
+fn guarded_solid_param_creates_geometry_value_cell() {
+    let source = r#"structure def W {
+    param some_cond : Bool = true
+    where some_cond {
+        param body : Solid = box(10mm, 20mm, 30mm)
+    }
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "W")
+        .expect("W template not found");
+
+    // (a) "body" must appear as a ValueCellDecl in exactly one guarded group's members.
+    let guarded_body_cells: Vec<_> = template
+        .guarded_groups
+        .iter()
+        .flat_map(|g| g.members.iter())
+        .filter(|c| c.id.member == "body")
+        .collect();
+    assert_eq!(
+        guarded_body_cells.len(),
+        1,
+        "expected exactly 1 guarded ValueCellDecl for 'body'; got: {:#?}",
+        guarded_body_cells
+    );
+    let cell = guarded_body_cells[0];
+    assert_eq!(
+        cell.cell_type,
+        Type::Geometry,
+        "expected cell_type=Type::Geometry for guarded 'body', got {:?}",
+        cell.cell_type
+    );
+    assert_eq!(
+        cell.kind,
+        ValueCellKind::Param,
+        "expected kind=ValueCellKind::Param for guarded 'body', got {:?}",
+        cell.kind
+    );
+
+    // (b) At least one RealizationDecl must still be emitted.
+    assert!(
+        !template.realizations.is_empty(),
+        "expected at least one RealizationDecl for guarded `param body : Solid = box(...)`, got none"
+    );
+}
+
+// ─── GHR-γ step-3: bare cross-sub geometry let MUST emit a ValueCellDecl ─────
+
+/// After GHR-γ step-4 (cross-sub bypass retired), `let copy = self.child.body`
+/// where `body` is a geometry param on a sub-structure MUST produce a
+/// `ValueCellDecl{cell_type: Type::Geometry}` for `copy` on the outer template,
+/// with `default_expr` whose kind is `CompiledExprKind::CrossSubGeometryRef(_)`.
+///
+/// Currently FAILS because entity.rs:1148-1171 intercepts `CrossSubGeometryRef`
+/// and `continue`s with a Warning, dropping the cell.  Step-4 deletes that bypass.
+///
+/// Note: the required sub-constructor syntax is `sub child = Inner()` — the grammar
+/// does NOT accept `sub child : Inner` (zero occurrences in the test suite).
+#[test]
+fn bare_cross_sub_geometry_creates_value_cell() {
+    // Use a geometry-LET child member (`let body = sphere(5mm)`) — geometry lets
+    // have only a RealizationDecl (not a ValueCellDecl), so `body` is absent from
+    // `sub_member_types["child"]`.  The expr.rs lookup falls through to
+    // `try_resolve_cross_sub_geometry_value_ref`, which produces
+    // `CompiledExprKind::CrossSubGeometryRef`.  That's the variant the old
+    // bypass matched on; after step-4 retires the bypass the cell is created.
+    //
+    // For `param body : Solid` the child HAS a ValueCellDecl, so `body` IS in
+    // `sub_member_types` and the access resolves to a plain `ValueRef` — the
+    // bypass never fired for that case even before step-4.
+    let source = r#"pub structure Inner {
+    let body = sphere(5mm)
+}
+pub structure Outer {
+    sub child = Inner()
+    let copy = self.child.body
+}"#;
+    let compiled = compile_no_errors(source);
+    let outer = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Outer")
+        .expect("Outer template not found");
+
+    // After step-4: `copy` must be a ValueCellDecl with Type::Geometry.
+    let copy_cells: Vec<_> = outer
+        .value_cells
+        .iter()
+        .filter(|c| c.id.member == "copy")
+        .collect();
+    assert_eq!(
+        copy_cells.len(),
+        1,
+        "expected exactly 1 ValueCellDecl for 'copy' (GHR-γ step-4: bypass retired); \
+         got: {:#?}",
+        copy_cells
+    );
+    let cell = copy_cells[0];
+    assert_eq!(
+        cell.cell_type,
+        Type::Geometry,
+        "expected cell_type=Type::Geometry for 'copy', got {:?}",
+        cell.cell_type
+    );
+    // The default_expr must carry a CrossSubGeometryRef discriminator (not
+    // ValueRef) because the geometry-let child member is absent from
+    // sub_member_types.
+    let default_expr = cell
+        .default_expr
+        .as_ref()
+        .expect("expected default_expr.is_some() for 'copy'");
+    assert!(
+        matches!(default_expr.kind, CompiledExprKind::CrossSubGeometryRef(_)),
+        "expected default_expr.kind == CrossSubGeometryRef(_) for 'copy', got {:?}",
+        default_expr.kind
     );
 }

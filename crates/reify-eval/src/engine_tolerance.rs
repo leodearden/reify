@@ -210,10 +210,12 @@ impl Engine {
     /// # Subject entity binding
     ///
     /// `Engine::active_purpose_bindings` is the canonical
-    /// `purpose_name → entity_ref` map populated by `activate_purpose`. The
-    /// helper iterates the bindings' values (each value is a subject
-    /// `entity_ref`) and treats each as the third argument to
-    /// [`Engine::check_imported_tolerance_promise`].
+    /// `purpose_name → Vec<(param, entity)>` map populated by `activate_purpose`
+    /// and `activate_purpose_with_bindings`. The helper iterates per `(param, entity)`
+    /// across each purpose's binding list so that every bound entity — including
+    /// each of a multi-param purpose's per-param entities — is dispatched to
+    /// [`Engine::check_imported_tolerance_promise`]. Single-param purposes produce
+    /// one entity per purpose (byte-identical to the pre-4070 behaviour).
     ///
     /// # Code-agnostic forwarding
     ///
@@ -281,13 +283,23 @@ impl Engine {
         // whatever `check_imported_tolerance_promise` returns. The helper is
         // code-agnostic: both `ImportedTolerancePromiseInsufficient` and
         // `InputTolerancePromiseIsZero` codes flow through unchanged.
+        //
+        // Edge case: if two params of the same purpose bind the same entity_ref,
+        // check_imported_tolerance_promise fires twice for that entity — emitting a
+        // duplicate diagnostic.  This is accepted: cross-purpose duplicates were
+        // already possible pre-4070, C-validation only rejects duplicate *params*
+        // (not duplicate entity targets), and single-param behaviour is unaffected.
         for input_name in &input_template_names {
             for output_name in &output_template_names {
-                for entity_ref in self.active_purpose_bindings.values() {
-                    if let Some(diag) =
-                        self.check_imported_tolerance_promise(input_name, entity_ref, output_name)
-                    {
-                        diagnostics.push(diag);
+                for param_bindings in self.active_purpose_bindings.values() {
+                    for (_param, entity_ref) in param_bindings {
+                        if let Some(diag) = self.check_imported_tolerance_promise(
+                            input_name,
+                            entity_ref,
+                            output_name,
+                        ) {
+                            diagnostics.push(diag);
+                        }
                     }
                 }
             }

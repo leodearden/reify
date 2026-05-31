@@ -353,7 +353,7 @@ fn edit_param_count_change_invalidates_prior_forall_constraint_cache() {
         let entry = NodeCache::new(
             CachedResult::Value(Value::Bool(true), DeterminacyState::Determined),
             Freshness::Final,
-            DependencyTrace { reads: Vec::new() },
+            DependencyTrace { realization_reads: Vec::new(), reads: Vec::new() },
             VersionId(0),
         );
         engine
@@ -1134,7 +1134,7 @@ fn edit_param_count_change_invalidates_prior_forall_connect_constraint_cache() {
         let entry = NodeCache::new(
             CachedResult::Value(Value::Bool(true), DeterminacyState::Determined),
             Freshness::Final,
-            DependencyTrace { reads: Vec::new() },
+            DependencyTrace { realization_reads: Vec::new(), reads: Vec::new() },
             VersionId(0),
         );
         engine

@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use reify_compiler::{CompiledModule, ValueCellDecl, ValueCellKind, find_template};
 use reify_ir::sampled::{LinspaceError, linspace_inclusive};
-use reify_core::{Diagnostic, DiagnosticCode, FIELD_ENTITY_PREFIX, SnapshotId, ValueCellId, VersionId};
+use reify_core::{ContentHash, Diagnostic, DiagnosticCode, FIELD_ENTITY_PREFIX, SnapshotId, ValueCellId, VersionId};
 use reify_ir::{AutoParam, CompiledFunction, DeterminacyState, ErrorRef, Freshness, InterpolationKind, PersistentMap, ResolutionProblem, SampledField, SampledGridKind, SnapshotProvenance, SolveResult, Value, ValueMap};
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
@@ -91,6 +91,7 @@ pub fn is_representable_cell_type(ty: &reify_core::Type) -> bool {
         | Type::Orientation(_)
         | Type::Frame(_)
         | Type::Transform(_)
+        | Type::AffineMap(_) // task 3958 / α: Value::AffineMap now exists
         | Type::Range(_)
         | Type::Plane
         | Type::Axis
@@ -584,15 +585,39 @@ fn eval_guarded_group_param_cell(
 /// the field's lambda becomes `Arc::new(Value::Undef)` — a poisoned
 /// no-op that produces `Undef` at every sample point.
 ///
-/// `Imported` fields produce a placeholder `Value::Undef` lambda — they
-/// have no callable lambda body to evaluate at this point.
+/// `Imported` fields (task 3576 step-8): call `reify_kernel_openvdb::read_vdb_file`
+/// with the compiled path and grid name.  On success, wrap the resulting
+/// `SampledField` as `Value::SampledField`; on error push a
+/// `DiagnosticCode::FieldImportFailed` runtime error into `runtime_sink` and
+/// return `Value::Undef`.  IngestOutcome warnings are forwarded to `runtime_sink`.
+/// Elaborate a compiled field declaration into a runtime [`Value::Field`].
+///
+/// ## Return value
+///
+/// Returns `(value, content_hash)` where `content_hash` is `Some` for
+/// `Imported` sources whose file was successfully read for hashing, and
+/// `None` for all other source kinds (or when the hash read fails).  The
+/// caller (typically `Engine::eval`) stores this hash into the
+/// `CacheStore` imported-file side-table so subsequent evals can detect
+/// file-content changes without a second `fs::read` call — see
+/// `CacheStore::record_imported_file_hash`.
+///
+/// Computing the hash here (inside the same elaboration step that calls
+/// `read_vdb_file`) avoids a redundant `fs::read` in the caller.  The
+/// VDB library issues its own file I/O internally through the C++ boundary
+/// so the bytes cannot be shared, but the separate top-level `fs::read`
+/// that the caller would otherwise perform is eliminated.
 pub(crate) fn elaborate_field(
     field: &reify_compiler::CompiledField,
     values: &ValueMap,
     functions: &[CompiledFunction],
     meta_map: &HashMap<String, HashMap<String, String>>,
     runtime_sink: Option<&RefCell<Vec<Diagnostic>>>,
-) -> Value {
+) -> (Value, Option<ContentHash>) {
+    // For Imported sources, the hash is computed alongside the VDB read so the
+    // caller can record it without issuing a separate fs::read.
+    let mut imported_hash: Option<ContentHash> = None;
+
     let lambda_value = match &field.source {
         reify_compiler::CompiledFieldSource::Analytical { expr }
         | reify_compiler::CompiledFieldSource::Composed { expr } => {
@@ -613,7 +638,46 @@ pub(crate) fn elaborate_field(
                 None => Arc::new(Value::Undef),
             }
         }
-        reify_compiler::CompiledFieldSource::Imported => Arc::new(Value::Undef),
+        reify_compiler::CompiledFieldSource::Imported { path, grid, .. } => {
+            // Call read_vdb_file with the compiled path and grid name.
+            // Both cfg branches (real FFI and stub) return Result<IngestOutcome, IngestError>;
+            // errors surface as FieldImportFailed runtime diagnostics + Value::Undef.
+            match (path, grid) {
+                (Some(p), Some(g)) => {
+                    // Hash the raw file bytes here so the caller has the hash without
+                    // issuing a separate fs::read after elaboration returns.  IO errors
+                    // (e.g. file not found) leave imported_hash as None; the VDB read
+                    // below will then also fail and emit FieldImportFailed.
+                    imported_hash = hash_imported_file_content(p).ok();
+                    match reify_kernel_openvdb::read_vdb_file(p, g, &field.codomain_type) {
+                        Ok(outcome) => {
+                            // Surface any ingest warnings (e.g. unit mismatch) into the sink.
+                            if !outcome.warnings.is_empty()
+                                && let Some(sink) = runtime_sink
+                            {
+                                sink.borrow_mut().extend(outcome.warnings);
+                            }
+                            Arc::new(Value::SampledField(outcome.field))
+                        }
+                        Err(e) => {
+                            if let Some(sink) = runtime_sink {
+                                sink.borrow_mut().push(
+                                    reify_core::Diagnostic::error(format!(
+                                        "field '{}': failed to import VDB file: {}",
+                                        field.name, e
+                                    ))
+                                    .with_code(reify_core::DiagnosticCode::FieldImportFailed),
+                                );
+                            }
+                            Arc::new(Value::Undef)
+                        }
+                    }
+                }
+                // Missing path or grid: a compiler error was already emitted;
+                // silently produce Undef at eval time (compiler error is the user-visible signal).
+                _ => Arc::new(Value::Undef),
+            }
+        }
     };
 
     let source_kind = match &field.source {
@@ -626,15 +690,18 @@ pub(crate) fn elaborate_field(
         reify_compiler::CompiledFieldSource::Composed { .. } => {
             reify_ir::FieldSourceKind::Composed
         }
-        reify_compiler::CompiledFieldSource::Imported => reify_ir::FieldSourceKind::Imported,
+        reify_compiler::CompiledFieldSource::Imported { .. } => reify_ir::FieldSourceKind::Imported,
     };
 
-    Value::Field {
-        domain_type: field.domain_type.clone(),
-        codomain_type: field.codomain_type.clone(),
-        source: source_kind,
-        lambda: lambda_value,
-    }
+    (
+        Value::Field {
+            domain_type: field.domain_type.clone(),
+            codomain_type: field.codomain_type.clone(),
+            source: source_kind,
+            lambda: lambda_value,
+        },
+        imported_hash,
+    )
 }
 
 /// Hash the raw bytes of an imported field source file.
@@ -664,7 +731,6 @@ pub(crate) fn elaborate_field(
 ///   `true` → cache invalidation signal (wired by PRD task 5).
 /// - File-path change with same content → same hash → `imported_file_hash_changed` returns
 ///   `false` → cache hit.
-#[allow(dead_code, reason = "wired into elaborate_field by PRD task 5")]
 pub(crate) fn hash_imported_file_content(path: &str) -> std::io::Result<reify_core::ContentHash> {
     // TODO(task-5-perf): `fs::read` allocates a `Vec<u8>` sized to the full file before
     // hashing.  For multi-MB .vdb assets on the hot evaluation path this is a noticeable
@@ -1150,18 +1216,19 @@ impl Engine {
         // dependencies change (task 2343 step-8).
         self.compiled_fields = Arc::new(module.fields.clone());
         // Preserve user-intent purpose bindings across eval() (task 3103).
-        // `active_purpose_bindings` (purpose_name → entity_ref) is pure user
-        // intent and does not reference any snapshot data, so it can be carried
-        // across a fresh eval() losslessly.  We snapshot it here via mem::take
-        // (leaving the field empty) so the derived-state clears below are safe,
-        // then re-apply each binding via activate_purpose() AFTER the new
+        // `active_purpose_bindings` (purpose_name → Vec<(param, entity)>) is
+        // pure user intent and does not reference any snapshot data, so it can
+        // be carried across a fresh eval() losslessly.  We snapshot it here via
+        // mem::take (leaving the field empty) so the derived-state clears below
+        // are safe, then re-apply each binding via
+        // activate_purpose_constraints_with_bindings_inner() AFTER the new
         // eval_state is stored at the end of this function.
         //
         // `active_purposes`, `active_objective_map`, and `active_tolerance_scope`
         // are *derived* state — they hold ConstraintNodeIds and value-cell
         // references tied to the OLD snapshot.  These must be rebuilt against the
         // fresh graph, which activate_purpose() does for us.
-        let mut preserved_bindings: Vec<(String, String)> =
+        let mut preserved_bindings: Vec<(String, Vec<(String, String)>)> =
             std::mem::take(&mut self.active_purpose_bindings)
                 .into_iter()
                 .collect();
@@ -1263,7 +1330,7 @@ impl Engine {
         // to refresh composed fields when their tracked dependencies change
         // — see `engine_edit.rs` for the incremental call site.
         for field in &module.fields {
-            let field_value = elaborate_field(
+            let (field_value, imported_hash) = elaborate_field(
                 field,
                 &values,
                 &functions,
@@ -1275,6 +1342,19 @@ impl Engine {
             snapshot
                 .values
                 .insert(field_id, (field_value, DeterminacyState::Determined));
+
+            // Record the file content-hash for Imported field sources so the
+            // cache side-table stays current and the future incremental-skip
+            // optimisation can gate on `imported_file_hash_changed` (PRD task 5 / D).
+            // The hash was already computed inside elaborate_field alongside the VDB
+            // read, so no separate fs::read is needed here.
+            if let reify_compiler::CompiledFieldSource::Imported {
+                path: Some(ref p), ..
+            } = field.source
+                && let Some(h) = imported_hash
+            {
+                self.cache.record_imported_file_hash(p, h);
+            }
         }
 
         // Two-pass evaluation (same logic as before)
@@ -2050,6 +2130,131 @@ impl Engine {
                 .combine(guard_state_hash);
         }
 
+        // GHR-δ S10: augment each geometry cell's CACHED trace with its backing
+        // Realization. Geometry params are recorded above with an empty
+        // `DependencyTrace` (the `record_eval_completed` param path can't see the
+        // implicit Realization→ValueCell edge), so without this post-pass the GH
+        // cell's freshness derivation would never fold in its Realization's
+        // freshness (PRD §5/§7.1). The links come from the same single source of
+        // truth the reverse index / trace map use, folded per-cell by
+        // (`geometry_cell_realization_reads`) so the cached trace carries the
+        // SAME accumulated `realization_reads` as `build_trace_map_and_fields`
+        // (which `push`-accumulates) even if the 1:1 cell↔realization invariant
+        // is ever violated — see that helper's docs. `snapshot.graph` is
+        // read-only here and `self.cache` is a disjoint field. Each build
+        // re-folds from scratch, so the replace-semantics setter stays
+        // idempotent across re-eval rounds.
+        for (cell, reads) in crate::deps::geometry_cell_realization_reads(&snapshot.graph) {
+            let _ = self
+                .cache
+                .set_realization_reads(&NodeId::Value(cell), reads);
+        }
+
+        // ── RBD-α (task 3822): MassProperties PSD inertia validation ─────────────
+        // Post-eval pass: for every cell whose value is a StructureInstance with
+        // type_name == "MassProperties", extract the `inertia` field, compute the
+        // symmetric-3×3 eigenvalues analytically, and replace the cell with
+        // Value::Undef (Determined) when the matrix is non-PSD or malformed.
+        //
+        // Design rationale: `reify-expr::eval_structure_instance_ctor` is
+        // intentionally registry-free and diagnostic-free (SIR-α design decision
+        // 2), so the diagnostic-emitting + value-replacing hook belongs here in
+        // reify-eval, where the diagnostics sink and value maps are both accessible.
+        //
+        // The immutable `values` borrow is released before any mutable insert by
+        // collecting target pairs first.
+        //
+        // Performance: the scan is guarded by a fast any() check so designs that
+        // never instantiate MassProperties skip the extraction pass entirely.
+        {
+            // Fast early-out: skip the O(n) extraction pass when no MassProperties
+            // cell exists (the common case when std.dynamics is unused).
+            let has_mass_props = values.iter().any(|(_, v)| {
+                matches!(v, Value::StructureInstance(d) if d.type_name == "MassProperties")
+            });
+
+            if has_mass_props {
+                // Classify each MassProperties cell's inertia field.
+                enum InertiaResult {
+                    /// Field is absent or already Undef — leave untouched (no false positives).
+                    Skip,
+                    /// Field is present but could not be parsed as a 3×3 numeric matrix.
+                    Malformed,
+                    /// Field parsed successfully — run PSD check.
+                    Valid([[f64; 3]; 3]),
+                }
+
+                let mass_props_cells: Vec<(ValueCellId, InertiaResult)> = values
+                    .iter()
+                    .filter_map(|(id, val)| {
+                        if let Value::StructureInstance(data) = val
+                            && data.type_name == "MassProperties"
+                        {
+                            let result = match data.fields.get(&"inertia".to_string()) {
+                                None | Some(Value::Undef) => InertiaResult::Skip,
+                                Some(v) => {
+                                    match crate::dynamics_psd::inertia_3x3_from_value(v) {
+                                        Some(m) => InertiaResult::Valid(m),
+                                        None => InertiaResult::Malformed,
+                                    }
+                                }
+                            };
+                            // Only collect cells that need attention.
+                            match result {
+                                InertiaResult::Skip => None,
+                                other => Some((id.clone(), other)),
+                            }
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                for (id, result) in mass_props_cells {
+                    match result {
+                        InertiaResult::Skip => unreachable!("Skip filtered above"),
+                        InertiaResult::Malformed => {
+                            // A present-but-unparseable inertia field (wrong shape, non-numeric
+                            // cell) is surfaced as E_DynamicsInertiaNotPSD so malformed tensors
+                            // never silently flow to dynamics consumers.
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "MassProperties '{}': inertia field cannot be parsed as \
+                                     a 3×3 numeric matrix",
+                                    id,
+                                ))
+                                .with_code(DiagnosticCode::DynamicsInertiaNotPSD),
+                            );
+                            values.insert(id.clone(), Value::Undef);
+                            snapshot.values.insert(
+                                id.clone(),
+                                (Value::Undef, DeterminacyState::Determined),
+                            );
+                        }
+                        InertiaResult::Valid(m) => {
+                            let tol = crate::dynamics_psd::psd_tol(&m);
+                            if !crate::dynamics_psd::is_symmetric_psd(&m, tol) {
+                                let min_eig = crate::dynamics_psd::min_eigenvalue(&m);
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "MassProperties '{}': inertia tensor is not positive \
+                                         semi-definite (min eigenvalue ≈ {:.3e})",
+                                        id, min_eig,
+                                    ))
+                                    .with_code(DiagnosticCode::DynamicsInertiaNotPSD),
+                                );
+                                values.insert(id.clone(), Value::Undef);
+                                snapshot.values.insert(
+                                    id.clone(),
+                                    (Value::Undef, DeterminacyState::Determined),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Store internal state for incremental evaluation
         self.eval_state = Some(EvaluationState {
             snapshot,
@@ -2060,12 +2265,13 @@ impl Engine {
         self.last_eval_set = Vec::new(); // Cold start: no incremental eval set
 
         // Re-apply preserved purpose bindings against the fresh snapshot (task 3103).
-        // activate_purpose_constraints() requires eval_state to be Some — satisfied
-        // by the assignment above.  For each captured binding it injects constraints
-        // into the new graph, restores the optimization objective, and populates
+        // activate_purpose_constraints_with_bindings_inner() requires eval_state to
+        // be Some — satisfied by the assignment above.  For each captured
+        // (purpose_name, Vec<(param, entity)>) it injects constraints into the new
+        // graph, restores the optimization objective, and records the bindings in
         // active_purpose_bindings.  If a purpose was removed by the re-eval
-        // (different module), activate_purpose_constraints() returns false silently
-        // — the stale binding is dropped automatically.  The already-active guard
+        // (different module), the inner returns false silently — the stale binding
+        // is dropped automatically.  The already-active guard
         // (active_purposes.contains_key) is NOT hit because active_purposes was
         // cleared above; re-injection is safe.
         //
@@ -2081,8 +2287,14 @@ impl Engine {
         // upstream and `active_tolerance_scope` is already cleared.
         if !preserved_bindings.is_empty() {
             let mut any_injected = false;
-            for (purpose_name, entity_ref) in &preserved_bindings {
-                any_injected |= self.activate_purpose_constraints(purpose_name, entity_ref);
+            for (purpose_name, param_bindings) in &preserved_bindings {
+                // Use the multi-param inner directly: it accepts any bindings slice
+                // (single- or multi-param), performs injection, and records the
+                // bindings in active_purpose_bindings. The single-entity shim
+                // activate_purpose_constraints refuses purposes with params.len()!=1,
+                // so it cannot round-trip multi-param purposes.
+                any_injected |=
+                    self.activate_purpose_constraints_with_bindings_inner(purpose_name, param_bindings);
             }
             if any_injected {
                 self.rebuild_purpose_infrastructure();
@@ -2806,6 +3018,67 @@ impl Engine {
                         .and_then(|f| f.optimized_target.clone());
 
                 if let Some(target) = maybe_target {
+                    // §8-η / §3 Final-gate: if the output VC is already
+                    // `Freshness::Final` in the cache from a prior eval() that
+                    // dispatched via the @optimized path, the trampoline result
+                    // is unchanged — skip re-dispatch and return the cached
+                    // value directly.
+                    //
+                    // Guard: we only fire this gate when the prior snapshot
+                    // (`self.eval_state`) had a ComputeNode for the same target
+                    // pointing to this output cell.  Without this guard, a
+                    // body-inline cache entry written by an intervening
+                    // `edit_source` that replaced the @optimized call with a
+                    // plain expression would suppress ComputeNode creation on
+                    // the next eval() call — the test
+                    // `remove_and_reinsert_via_edit_source_preserves_counter`
+                    // (opaque_state_lifecycle.rs) pins this invariant.
+                    //
+                    // Uses `NodeId::Value(cell_id.clone())` — the same key that
+                    // `complete_compute_dispatch_atomically` writes under on the
+                    // first dispatch (matching the post-dispatch store site).
+                    {
+                        let output_node_id = NodeId::Value(cell_id.clone());
+                        let prior_had_compute_node =
+                            self.eval_state.as_ref().is_some_and(|prior| {
+                                prior.snapshot.graph.compute_nodes.iter().any(
+                                    |(_, cn)| {
+                                        cn.target == target
+                                            && cn.output_value_cells.contains(cell_id)
+                                    },
+                                )
+                            });
+                        if prior_had_compute_node
+                            && self.cache.freshness(&output_node_id) == Freshness::Final
+                            && let Some(entry) = self.cache.get(&output_node_id)
+                            && let CachedResult::Value(cached_val, det) = entry.result.clone()
+                        {
+                            values.insert(cell_id.clone(), cached_val.clone());
+                            snapshot.values.insert(
+                                cell_id.clone(),
+                                (cached_val, det),
+                            );
+                            let _trace = take_trace(
+                                &mut let_traces,
+                                &node_id,
+                                "sorted_lets",
+                                "let_traces",
+                            );
+                            self.journal.record(EvalEvent {
+                                timestamp: Instant::now(),
+                                node_id,
+                                kind: EventKind::Completed {
+                                    outcome: EvalOutcome::Unchanged,
+                                },
+                                version: VersionId(version_id),
+                                payload: Some(EventPayload::Duration(
+                                    start.elapsed(),
+                                )),
+                            });
+                            continue;
+                        }
+                    }
+
                     if self.compute_dispatch(&target).is_some() {
                         // Evaluate args in a scoped block so the eval_ctx borrow on
                         // `snapshot.values` ends before we mutably access `snapshot`.
@@ -2856,6 +3129,8 @@ impl Engine {
                         // composition slice that consumes `value_inputs`).
                         // Crucially, the OUTPUT cell (`cell_id`) is NOT in
                         // this list — that would be a graph self-loop.
+                        // Contract pinned by:
+                        //   tests/compute_dispatch_registry.rs::e2e_optimized_non_valueref_arg_yields_empty_value_inputs
                         let value_inputs: Vec<reify_core::ValueCellId> = args
                             .iter()
                             .filter_map(|arg| match &arg.kind {
@@ -2887,9 +3162,12 @@ impl Engine {
                         // the same c_id, but is UNREACHABLE today: `c_id` is
                         // allocated as `max(index) + 1` from the current snapshot,
                         // so it is always a fresh identifier and the lookup will
-                        // always return `None`.  The freshness gate above also
-                        // short-circuits any re-eval of a Final node before this
-                        // code is reached.
+                        // always return `None`.  Two freshness gates above guard
+                        // this code: the Pending gate (lines 2771-2789) fires when
+                        // inputs are Pending, and the Final-gate (lines 2808-2861)
+                        // fires when the output VC is already Final from a prior
+                        // eval().  Together they short-circuit any re-eval of a
+                        // node whose inputs or output make re-dispatch unnecessary.
                         //
                         // The guard is kept for the future async-driver slice where
                         // a same-`ComputeNodeId` re-dispatch might carry a live
@@ -3194,6 +3472,62 @@ impl Engine {
             });
         }
     }
+
+    /// GHR-δ §5 lazy revalidation read entry point: read a value cell's stored
+    /// `Value`, revalidating any `Value::GeometryHandle` against the Engine's
+    /// current `realization_ref → handle` map ([`Engine::realization_handles`])
+    /// before returning it.
+    ///
+    /// - STALE handle (the cell's `kernel_handle` no longer matches the Engine's
+    ///   current handle for its `realization_ref`): the re-resolved value is
+    ///   written back into `snapshot.values` so the next read of the same cell
+    ///   hits the fast path, and the slow-path counter is bumped.
+    /// - ABSENT realization (no longer in the map): returns [`Value::Undef`] and
+    ///   bumps the counter.
+    /// - FAST path (handle already matches, or the value is not a geometry
+    ///   handle, or the cell is absent): returns the value verbatim (Undef for
+    ///   an absent cell) with no write-back and no counter bump.
+    ///
+    /// Takes `&self` (not `&mut self`): the validity map is read-only here and
+    /// the counter is an `AtomicUsize`, so the only mutation is to the
+    /// caller-owned `snapshot`. A caller can therefore clone the Engine's
+    /// snapshot (`engine.snapshot().clone()`) and revalidate against it without
+    /// a borrow conflict with `&self`. Per PRD §9 Q4 the per-read HashMap lookup
+    /// is acceptable for v0.3.
+    ///
+    /// **Consumers / production wiring (deferred).** As of GHR-δ this entry
+    /// point (and its sibling counter [`Engine::geometry_revalidation_slow_path_count`])
+    /// has NO production caller — only the in-crate integration suite
+    /// (`tests/geometry_handle_freshness.rs`) exercises it. Lazy revalidation is
+    /// therefore NOT yet active on any real read path: GUI value reads and other
+    /// consumers still read `snapshot.values` directly and bypass it. Routing the
+    /// real read boundary (e.g. the GUI engine's value-read path) through this
+    /// method is intentionally left to a follow-up task; until then a stale
+    /// handle is only re-resolved when a caller opts in. Do not assume
+    /// revalidation is live on every read just because this method exists.
+    pub fn read_value_revalidated(&self, snapshot: &mut Snapshot, cell: &ValueCellId) -> Value {
+        // Clone the (value, determinacy) pair out so the immutable borrow on
+        // `snapshot.values` ends before the possible write-back below. A missing
+        // cell reads as Undef (no entry to revalidate).
+        let Some((value, det)) = snapshot.values.get(cell).cloned() else {
+            return Value::Undef;
+        };
+        match revalidate_geometry_handle(&value, &self.realization_handles) {
+            RevalidationOutcome::Fresh => value,
+            RevalidationOutcome::Resolved(resolved) => {
+                self.geometry_revalidation_slow_path
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                // Preserve the cell's DeterminacyState; only the handle changes.
+                snapshot.values.insert(cell.clone(), (resolved.clone(), det));
+                resolved
+            }
+            RevalidationOutcome::Undef => {
+                self.geometry_revalidation_slow_path
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Value::Undef
+            }
+        }
+    }
 }
 
 #[cfg(all(test, debug_assertions))]
@@ -3313,6 +3647,78 @@ mod invariant_tests {
     }
 }
 
+/// GHR-δ §5 lazy revalidation: the classification of a cell's stored `Value`
+/// after checking its geometry handle against the Engine's current
+/// `realization_ref → handle` map ([`crate::Engine::realization_handles`]).
+///
+/// Returned by the pure oracle [`revalidate_geometry_handle`] and consumed by
+/// the Engine read entry point (S16), which decides whether to write a
+/// re-resolved value back into the snapshot and whether to bump the slow-path
+/// counter.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum RevalidationOutcome {
+    /// No change needed: the value is not a `GeometryHandle`, or its
+    /// `kernel_handle` already matches the Engine's current handle for its
+    /// `realization_ref`. The caller returns the value verbatim — no
+    /// write-back, no slow-path bump (the §9 Q4 fast path).
+    Fresh,
+    /// The value was a `GeometryHandle` whose `kernel_handle` was stale. The
+    /// carried `Value` keeps the same `realization_ref` + `upstream_values_hash`
+    /// with `kernel_handle` re-resolved to the Engine's current handle (so it
+    /// still compares `==` to the original — `kernel_handle` is excluded from
+    /// `Value` equality). The caller writes it back and bumps the slow path.
+    Resolved(Value),
+    /// The value was a `GeometryHandle` whose `realization_ref` is ABSENT from
+    /// the Engine's map (the backing realization no longer exists). The caller
+    /// returns `Value::Undef` and bumps the slow path.
+    Undef,
+}
+
+/// Pure validity oracle for a `Value::GeometryHandle` (PRD §5 lazy
+/// revalidation). Compares the handle's `kernel_handle` against
+/// `realization_handles[realization_ref]` and classifies the result into a
+/// [`RevalidationOutcome`]:
+///
+/// - non-`GeometryHandle` value → `Fresh` (passthrough; nothing to revalidate)
+/// - `realization_ref` present, handle EQUAL → `Fresh` (fast path)
+/// - `realization_ref` present, handle DIFFERENT → `Resolved` with the current
+///   handle spliced in (`realization_ref` + `upstream_values_hash` preserved)
+/// - `realization_ref` ABSENT → `Undef` (the backing realization was removed)
+///
+/// No kernel coupling and no Engine borrow: the handle map is the entire
+/// validity source (the GeometryKernel trait has no `is_valid` API and
+/// snapshots carry no kernel reference — see plan.json design decision), so
+/// this is unit-testable in isolation.
+pub(crate) fn revalidate_geometry_handle(
+    value: &Value,
+    realization_handles: &HashMap<reify_core::RealizationNodeId, reify_ir::GeometryHandleId>,
+) -> RevalidationOutcome {
+    let (realization_ref, upstream_values_hash, kernel_handle) = match value {
+        Value::GeometryHandle {
+            realization_ref,
+            upstream_values_hash,
+            kernel_handle,
+        } => (realization_ref, upstream_values_hash, kernel_handle),
+        // Not a geometry handle — nothing to revalidate.
+        _ => return RevalidationOutcome::Fresh,
+    };
+
+    match realization_handles.get(realization_ref) {
+        // Fast path: the handle still matches the Engine's current resolution.
+        Some(current) if current == kernel_handle => RevalidationOutcome::Fresh,
+        // Slow path: stale handle — re-resolve to the current one, preserving
+        // identity (realization_ref + upstream_values_hash) so the re-resolved
+        // value remains `==` to the original.
+        Some(current) => RevalidationOutcome::Resolved(Value::GeometryHandle {
+            realization_ref: realization_ref.clone(),
+            upstream_values_hash: *upstream_values_hash,
+            kernel_handle: *current,
+        }),
+        // Slow path: the backing realization is gone.
+        None => RevalidationOutcome::Undef,
+    }
+}
+
 /// Tests for `hash_imported_file_content`.
 ///
 /// Deliberately NOT inside `#[cfg(all(test, debug_assertions))] mod invariant_tests`
@@ -3385,6 +3791,117 @@ mod imported_file_hash_tests {
             err.kind(),
             std::io::ErrorKind::NotFound,
             "IO error kind must be NotFound for missing file"
+        );
+    }
+}
+
+/// GHR-δ §5 lazy-revalidation pure-helper unit tests (S13).
+///
+/// `revalidate_geometry_handle` is the kernel-free validity oracle: given a
+/// cell's stored `Value` and the Engine's `realization_ref → current handle`
+/// map, it classifies the value into a [`RevalidationOutcome`] without touching
+/// the kernel or borrowing the Engine. These cases pin the PRD §5 truth table:
+/// equal handle → Fresh (fast path); stale handle → Resolved with the current
+/// handle spliced in (identity preserved so it still `==` the original); absent
+/// realization → Undef; non-handle → Fresh passthrough.
+///
+/// RED until S14 defines `RevalidationOutcome` + `revalidate_geometry_handle`.
+#[cfg(test)]
+mod revalidation_tests {
+    use super::{RevalidationOutcome, revalidate_geometry_handle};
+    use reify_core::RealizationNodeId;
+    use reify_ir::{GeometryHandleId, Value};
+    use std::collections::HashMap;
+
+    /// A `Value::GeometryHandle` backed by `realization` with the given kernel id
+    /// and a fixed upstream hash (so identity preservation is observable).
+    fn handle(realization: &RealizationNodeId, id: u64) -> Value {
+        Value::GeometryHandle {
+            realization_ref: realization.clone(),
+            upstream_values_hash: [7u8; 32],
+            kernel_handle: GeometryHandleId(id),
+        }
+    }
+
+    /// (a) realization_ref present and kernel_handle EQUAL → `Fresh` (fast path,
+    /// no write-back).
+    #[test]
+    fn revalidate_equal_handle_is_fresh() {
+        let r0 = RealizationNodeId::new("Widget", 0);
+        let mut map = HashMap::new();
+        map.insert(r0.clone(), GeometryHandleId(42));
+        assert_eq!(
+            revalidate_geometry_handle(&handle(&r0, 42), &map),
+            RevalidationOutcome::Fresh
+        );
+    }
+
+    /// (b) realization_ref present but kernel_handle DIFFERENT → `Resolved` whose
+    /// Value carries the SAME realization_ref + upstream_values_hash with
+    /// kernel_handle re-resolved to the current handle. The re-resolved value
+    /// must compare `==` to the original (kernel_handle is excluded from Value
+    /// equality per the GeometryHandle variant contract).
+    #[test]
+    fn revalidate_stale_handle_resolves_to_current() {
+        let r0 = RealizationNodeId::new("Widget", 0);
+        let mut map = HashMap::new();
+        map.insert(r0.clone(), GeometryHandleId(99));
+        let stale = handle(&r0, 42);
+
+        match revalidate_geometry_handle(&stale, &map) {
+            RevalidationOutcome::Resolved(resolved) => {
+                match &resolved {
+                    Value::GeometryHandle {
+                        realization_ref,
+                        upstream_values_hash,
+                        kernel_handle,
+                    } => {
+                        assert_eq!(
+                            *kernel_handle,
+                            GeometryHandleId(99),
+                            "kernel_handle must be re-resolved to the current handle"
+                        );
+                        assert_eq!(realization_ref, &r0, "realization_ref must be preserved");
+                        assert_eq!(
+                            upstream_values_hash, &[7u8; 32],
+                            "upstream_values_hash must be preserved"
+                        );
+                    }
+                    other => panic!("expected GeometryHandle, got {:?}", other),
+                }
+                assert_eq!(
+                    resolved, stale,
+                    "re-resolved value must == original under Value PartialEq (kernel_handle excluded)"
+                );
+            }
+            other => panic!("expected Resolved, got {:?}", other),
+        }
+    }
+
+    /// (c) realization_ref ABSENT from the map → `Undef` (backing realization
+    /// removed; the read returns Value::Undef).
+    #[test]
+    fn revalidate_absent_realization_is_undef() {
+        let r0 = RealizationNodeId::new("Widget", 0);
+        let map: HashMap<RealizationNodeId, GeometryHandleId> = HashMap::new();
+        assert_eq!(
+            revalidate_geometry_handle(&handle(&r0, 42), &map),
+            RevalidationOutcome::Undef
+        );
+    }
+
+    /// (d) non-GeometryHandle value → `Fresh` passthrough (nothing to
+    /// revalidate, regardless of map contents).
+    #[test]
+    fn revalidate_non_handle_is_fresh() {
+        let map: HashMap<RealizationNodeId, GeometryHandleId> = HashMap::new();
+        assert_eq!(
+            revalidate_geometry_handle(&Value::Int(7), &map),
+            RevalidationOutcome::Fresh
+        );
+        assert_eq!(
+            revalidate_geometry_handle(&Value::Undef, &map),
+            RevalidationOutcome::Fresh
         );
     }
 }

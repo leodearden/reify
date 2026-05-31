@@ -5,17 +5,17 @@
 //! [`KBool::Undef`] (unknown/indeterminate).  The three operators implement the
 //! truth tables specified in §9.2.3 exactly:
 //!
-//! | a     | b     | AND   | OR    |
-//! |-------|-------|-------|-------|
-//! | T     | T     | T     | T     |
-//! | T     | F     | F     | T     |
-//! | T     | U     | U     | T     |
-//! | F     | T     | F     | T     |
-//! | F     | F     | F     | F     |
-//! | F     | U     | F     | U     |
-//! | U     | T     | U     | T     |
-//! | U     | F     | F     | U     |
-//! | U     | U     | U     | U     |
+//! | a     | b     | AND   | OR    | IMPLIES |
+//! |-------|-------|-------|-------|---------|
+//! | T     | T     | T     | T     | T       |
+//! | T     | F     | F     | T     | F       |
+//! | T     | U     | U     | T     | U       |
+//! | F     | T     | F     | T     | T       |
+//! | F     | F     | F     | F     | T       |
+//! | F     | U     | F     | U     | T       |
+//! | U     | T     | U     | T     | T       |
+//! | U     | F     | F     | U     | U       |
+//! | U     | U     | U     | U     | U       |
 //!
 //! | a     | NOT a |
 //! |-------|-------|
@@ -70,6 +70,21 @@ pub fn kleene_or(a: KBool, b: KBool) -> KBool {
         (KBool::False, KBool::False) => KBool::False,
         _ => KBool::Undef,
     }
+}
+
+/// Kleene three-valued IMPLIES.
+///
+/// Defined as the closed form `¬a ∨ b` (de-Morgan identity), exactly
+/// reproducing the §9.2.3 `a implies b` column:
+///
+/// - `False ⇒ anything = True`  (vacuous truth: `¬False = True` is absorbing for OR)
+/// - `True ⇒ b = b`              (modus ponens: `¬True = False`, `False ∨ b = b`)
+/// - `Undef ⇒ True = True`       (`¬Undef = Undef`, `Undef ∨ True = True`)
+/// - `Undef ⇒ False = Undef`     (`¬Undef = Undef`, `Undef ∨ False = Undef`)
+///
+/// See `docs/reify-language-spec.md` §9.2.3.
+pub fn kleene_implies(a: KBool, b: KBool) -> KBool {
+    kleene_or(kleene_not(a), b)
 }
 
 /// Kleene three-valued NOT.
@@ -175,6 +190,33 @@ mod tests {
         assert_eq!(kleene_or(Undef, False), Undef);
         // U ∨ U = U
         assert_eq!(kleene_or(Undef, Undef), Undef);
+    }
+
+    // -----------------------------------------------------------------------
+    // kleene_implies: all 9 rows of the §9.2.3 truth table (a ⇒ b)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn kleene_implies_truth_table() {
+        use KBool::*;
+        // T ⇒ T = T
+        assert_eq!(kleene_implies(True, True), True);
+        // T ⇒ F = F
+        assert_eq!(kleene_implies(True, False), False);
+        // T ⇒ U = U
+        assert_eq!(kleene_implies(True, Undef), Undef);
+        // F ⇒ T = T  (vacuous)
+        assert_eq!(kleene_implies(False, True), True);
+        // F ⇒ F = T  (vacuous)
+        assert_eq!(kleene_implies(False, False), True);
+        // F ⇒ U = T  (vacuous: ¬False = True is absorbing for OR)
+        assert_eq!(kleene_implies(False, Undef), True);
+        // U ⇒ T = T  (¬Undef = Undef, Undef ∨ True = True)
+        assert_eq!(kleene_implies(Undef, True), True);
+        // U ⇒ F = U  (¬Undef = Undef, Undef ∨ False = Undef)
+        assert_eq!(kleene_implies(Undef, False), Undef);
+        // U ⇒ U = U  (¬Undef = Undef, Undef ∨ Undef = Undef)
+        assert_eq!(kleene_implies(Undef, Undef), Undef);
     }
 
     // -----------------------------------------------------------------------

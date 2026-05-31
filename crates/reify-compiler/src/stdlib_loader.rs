@@ -94,6 +94,14 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 "std.solver.buckling",
                 include_str!("../stdlib/solver_buckling.ri"),
             ),
+            // `std.solver.buckling.fns` MUST follow `std.solver.buckling` —
+            // function bodies access struct fields (`result.modes[0].eigenvalue`)
+            // that require `BucklingResult`/`Mode` to be in the prelude registry.
+            // Same split as `std.flexures.types` / `std.flexures`. esc-3851-32.
+            (
+                "std.solver.buckling.fns",
+                include_str!("../stdlib/solver_buckling_fns.ri"),
+            ),
             (
                 "std.fea.multi_case",
                 include_str!("../stdlib/fea_multi_case.ri"),
@@ -110,11 +118,29 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 "std.modal.analysis",
                 include_str!("../stdlib/modal_analysis.ri"),
             ),
+            // `std.modal.analysis.fns` MUST follow `std.modal.analysis` —
+            // the `fn` bodies field-access `ModalResult.modes[n].frequency`,
+            // which requires `ModalResult`/`Mode` to already be in the prelude
+            // template registry when `phase_functions` runs. Same split +
+            // rationale as `std.solver.buckling` / `std.solver.buckling.fns`
+            // (esc-3851-32).
+            (
+                "std.modal.analysis.fns",
+                include_str!("../stdlib/modal_analysis_fns.ri"),
+            ),
             (
                 "std.trajectory",
                 include_str!("../stdlib/trajectory.ri"),
             ),
             ("std.fdm", include_str!("../stdlib/fdm.ri")),
+            // `std.fdm.correlations` (task β) MUST follow `std.fdm` — its
+            // structures reference `InfillPattern` (from std.fdm) and
+            // `MaterialPropertyProvenance` (from the earlier std.materials.fea),
+            // both resolved via the growing sequential prelude.
+            (
+                "std.fdm.correlations",
+                include_str!("../stdlib/fdm_correlations.ri"),
+            ),
             // `std.flexures.types` MUST precede `std.flexures` — the
             // accessor fn body in `std.flexures` references the
             // `FlexureCompliance` structure-def declared here via the
@@ -127,6 +153,99 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
             (
                 "std.flexures",
                 include_str!("../stdlib/flexures.ri"),
+            ),
+            // `std.tensegrity` depends on `std.units` (Length, Area, Force),
+            // `std.si_units` (0N literal), and `std.materials.fea`
+            // (ElasticMaterial trait) — all earlier in the prelude sequence.
+            // End-insertion minimises merge friction with future sibling additions.
+            (
+                "std.tensegrity",
+                include_str!("../stdlib/tensegrity.ri"),
+            ),
+            // `std.process` depends only on `std.units` (Time, Money — the first
+            // module in the sequence). End-append is order-safe and conflict-free.
+            // Reconstruction of lost work from task #333 per PRD §Slice B.
+            (
+                "std.process",
+                include_str!("../stdlib/process.ri"),
+            ),
+            // `std.dynamics` depends on `std.units` (Mass / Length / Time) and
+            // `std.trajectory` (for the `JointValue` alias used in TrajectorySample).
+            // Tail placement after `std.trajectory` satisfies both dependencies and
+            // keeps the v0.3 RBD cluster grouped. RBD-α task 3822.
+            (
+                "std.dynamics",
+                include_str!("../stdlib/dynamics.ri"),
+            ),
+            // `std.stackup` declares the tolerance stack-up authoring surface
+            // (Distribution, StackupMethod, Contributor, StackupResult).
+            // Depends only on built-in Length/Int types and the mm literal
+            // (available via std.si_units, earlier in this sequence).
+            // Tail placement after std.dynamics is order-safe and conflict-free.
+            // PRD v0_6 T6 — task 4004.
+            (
+                "std.stackup",
+                include_str!("../stdlib/stackup.ri"),
+            ),
+            // `std.kinematic` declares the DrivingJoint marker trait, per-kind
+            // joint structures (Prismatic/Revolute/Cylindrical/Planar/Spherical),
+            // non-conforming joints (Coupling/Fixed), and top-level container types
+            // (BodyId/Mechanism/Snapshot/SweepDim). Depends on std.trajectory
+            // (Vec3 and JointValue aliases) and std.units (Bool/Int/Real).
+            // Tail placement after std.trajectory satisfies both alias dependencies.
+            // Joints stay Value::Map per PRD §7.1 (esc-3845-91); units.rs/sweep.rs
+            // per-name hooks KEPT per esc-3845-91. KCC-ζ task 3845.
+            (
+                "std.kinematic",
+                include_str!("../stdlib/kinematic.ri"),
+            ),
+            // `std.ports` declares the Directionality enum and Port base trait.
+            // No inter-module dependencies beyond built-in types.
+            // Reconstruction of lost work per PRD task α.
+            (
+                "std.ports",
+                include_str!("../stdlib/ports.ri"),
+            ),
+            // `std.ports.mechanical` refines Port from std.ports and adds
+            // mechanical port traits (MechanicalPort, Bore, Shaft, RotaryPort,
+            // ThreadedPort, StructurePort) plus the Torque type alias.
+            // Must follow std.ports in the growing prelude sequence so Port is
+            // resolved when MechanicalPort : Port is compiled.
+            // Reconstruction of lost work per PRD task α.
+            (
+                "std.ports.mechanical",
+                include_str!("../stdlib/ports_mechanical.ri"),
+            ),
+            // `std.ports.electrical` refines Port from std.ports and adds
+            // electrical port traits (ElectricalPort, PowerPort, SignalPort)
+            // plus the SignalKind enum.
+            // Must follow std.ports in the growing prelude sequence so Port is
+            // resolved when ElectricalPort : Port is compiled.
+            // Reconstruction of lost work per PRD task β.
+            (
+                "std.ports.electrical",
+                include_str!("../stdlib/ports_electrical.ri"),
+            ),
+            // `std.ports.thermal` refines Port from std.ports and adds the
+            // lumped-thermal-port trait ThermalPort (Modelica HeatPort convention:
+            // temperature potential + heat_flow through variable).
+            // Must follow std.ports in the growing prelude sequence so Port is
+            // resolved when ThermalPort : Port is compiled.
+            // Reconstruction of lost work per PRD task β.
+            (
+                "std.ports.thermal",
+                include_str!("../stdlib/ports_thermal.ri"),
+            ),
+            // `std.ports.fluid` refines Port from std.ports and adds the fluid
+            // port trait FluidPort (pressure + VolumetricFlowRate + medium).
+            // VolumetricFlowRate = Volume / Time type alias is pub (mirrors
+            // units.ri Velocity); binary dim-op requires alias indirection.
+            // Must follow std.ports in the growing prelude sequence so Port is
+            // resolved when FluidPort : Port is compiled.
+            // Reconstruction of lost work per PRD task β.
+            (
+                "std.ports.fluid",
+                include_str!("../stdlib/ports_fluid.ri"),
             ),
         ];
 

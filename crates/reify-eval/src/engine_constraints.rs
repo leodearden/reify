@@ -314,7 +314,26 @@ impl Engine {
             .as_ref()
             .ok_or(EngineError::NotInitialized)?;
 
-        let active_ids = state.snapshot.graph.active_constraint_ids(values);
+        // Overlay injected let-cell values onto the incoming values so that
+        // constraints referencing purpose let-cells can resolve them (task 4009 δ).
+        // active_purpose_let_cells only contains entries for let-bearing purposes
+        // (let-less purposes are never inserted), so the fast-path is taken
+        // whenever no let-bearing purpose is active — O(1) map-empty check.
+        let effective_values: ValueMap = if self.active_purpose_let_cells.is_empty() {
+            values.clone()
+        } else {
+            let mut v = values.clone();
+            for let_ids in self.active_purpose_let_cells.values() {
+                for id in let_ids {
+                    if let Some((val, _det)) = state.snapshot.values.get(id) {
+                        v.insert(id.clone(), val.clone());
+                    }
+                }
+            }
+            v
+        };
+
+        let active_ids = state.snapshot.graph.active_constraint_ids(&effective_values);
         let constraint_nodes: Vec<_> = state
             .snapshot
             .graph
@@ -338,7 +357,7 @@ impl Engine {
 
             let (results, dispatch_diags) = self.dispatch_constraints(
                 entries,
-                values,
+                &effective_values,
                 &self.functions,
                 Some(&state.snapshot.values),
             );

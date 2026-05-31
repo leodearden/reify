@@ -155,7 +155,27 @@ fn imag<Q>(c: Complex<Q>) -> Scalar<Q>
 fn conjugate<Q>(c: Complex<Q>) -> Complex<Q>
 fn complex_magnitude<Q>(c: Complex<Q>) -> Scalar<Q>
 fn phase<Q>(c: Complex<Q>) -> Angle
+
+// Added in v0.6 (task ζ)
+fn abs<Q>(c: Complex<Q>) -> Scalar<Q>           // modulus; alias of complex_magnitude
+                                                  // returns Real when Q is Dimensionless
+fn arg<Q>(c: Complex<Q>) -> Angle               // argument (phase angle); alias of phase
+fn complex_div<Q1,Q2>(a: Complex<Q1>, b: Complex<Q2>) -> Complex<Q1/Q2>
+                                                  // also the `/` operator on Complex values
+fn complex_exp(c: Complex<Dimensionless>) -> Complex<Dimensionless>
+                                                  // dimensionless only; returns Undef on dimensioned input
+fn complex_sqrt(c: Complex<Dimensionless>) -> Complex<Dimensionless>
+                                                  // principal root; dimensionless only
+fn complex_pow<Q>(c: Complex<Q>, n: Int) -> Complex<Q^n>
+                                                  // integer exponent; any dimension
 ```
+
+**Imaginary-literal sugar.** `4.1j` and `3 + 4j` desugar to a DIMENSIONLESS `Complex`
+(spec D2/D6). Dimensioned complex values are built via the `complex(re, im)` constructor,
+e.g. `complex(50ohm, -30ohm)` → `Complex<Resistance>`.
+
+The spec names for `abs` and `arg` are *modulus* and *argument* respectively.
+`std.math.complex` is a documentation module — there is no `complex.ri` file to import.
 
 ---
 

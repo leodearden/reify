@@ -1,0 +1,6 @@
+/// Generic enum with bare (Unit) variants — α parse-signal.
+/// Isolates the type-param-on-enum head: `Maybe<T>` with no named-field payload.
+/// RED (pre step-2): `<T>` after the enum name produces ERROR nodes.
+/// GREEN (step-2): `optional($.type_parameters)` added to enum_declaration.
+/// PRD §4.5 / task α.
+enum Maybe<T> { Nothing, Just }

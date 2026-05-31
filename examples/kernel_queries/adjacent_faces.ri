@@ -1,0 +1,28 @@
+// Fixture: adjacent_faces + shared_edges relational topology selectors
+// PRD: docs/prds/v0_3/kernel-geometry-queries.md §9 Phase 3 KGQ-κ (task 3619)
+//
+// Let-bound intermediates (zdir, xdir, tol) are required because the dispatcher
+// resolves args via values.get(cell_id); inline vec3()/deg literals compile as
+// FunctionCall args which fall through to None in the dispatcher.
+//
+// Runtime note: prior to selector→list-helper→selector eval-chaining support
+// (engine_build.rs:3942-3949, out of scope for KGQ-κ), the chained cells
+// `top`, `side`, `neighbors`, and `shared` evaluate to Value::Undef at
+// runtime. This fixture pins COMPILATION (grammar + type registration for
+// adjacent_faces and shared_edges) rather than runtime semantics.
+// Runtime semantics are pinned by the kernel-layer OCCT tests instead:
+//   crates/reify-eval/tests/kernel_queries_adjacent_faces.rs
+//
+// Pinning tests:
+//   crates/reify-eval/tests/kernel_queries_adjacent_faces.rs
+
+structure def AdjacentFaces {
+    let b         = box(10mm, 20mm, 30mm)
+    let zdir      = vec3(0.0, 0.0, 1.0)
+    let xdir      = vec3(1.0, 0.0, 0.0)
+    let tol       = 1deg
+    let top       = single(faces_by_normal(b, zdir, tol))
+    let side      = single(faces_by_normal(b, xdir, tol))
+    let neighbors = adjacent_faces(b, top)
+    let shared    = shared_edges(top, side)
+}

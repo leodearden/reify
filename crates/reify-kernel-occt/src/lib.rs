@@ -1030,6 +1030,41 @@ impl OcctKernel {
         Ok([p.x, p.y, p.z])
     }
 
+    /// Outward unit normal of a face at the Cartesian world-space point
+    /// `(px, py, pz)` (metres).
+    ///
+    /// Projects the query point onto the face's underlying surface via
+    /// `ShapeAnalysis_Surface::ValueOfUV(point, 1e-9)` to obtain parametric
+    /// `(u, v)`, then delegates to `face_outward_unit_normal_at_uv` for the
+    /// `BRepAdaptor_Surface::D1` derivative, `TopAbs_REVERSED` orientation
+    /// flip, and magnitude check — the same pipeline as `query_face_normal`
+    /// (centroid path) and `surface_normal_at` (caller-supplied (u,v) path).
+    ///
+    /// The return type is `[f64; 3]` (a plain Rust array) rather than the
+    /// FFI-internal `Point3`: `Point3` is unavailable in stub builds
+    /// (`!has_occt`), so the public API uses a plain array for both paths
+    /// (same convention as `surface_normal_at` and `closest_point_on_shape`).
+    ///
+    /// # Errors
+    ///
+    /// - `QueryError::InvalidHandle` — if the handle is unknown.
+    /// - `QueryError::QueryFailed` — if the shape is not a face, projection
+    ///   fails, the surface yields a degenerate normal, or any OCCT call fails.
+    pub fn surface_normal_at_point(
+        &self,
+        handle: GeometryHandleId,
+        px: f64,
+        py: f64,
+        pz: f64,
+    ) -> Result<[f64; 3], QueryError> {
+        let s = self
+            .get_shape(handle)
+            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        let p = ffi::ffi::surface_normal_at_point(s, px, py, pz)
+            .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+        Ok([p.x, p.y, p.z])
+    }
+
     /// Gaussian, mean, and principal curvatures at the parametric point
     /// `(u, v)` on `face`, plus unit-length principal-direction tangents.
     ///
@@ -1072,6 +1107,40 @@ impl OcctKernel {
             dir_min: [c.dir_min.x, c.dir_min.y, c.dir_min.z],
             dir_max: [c.dir_max.x, c.dir_max.y, c.dir_max.z],
         })
+    }
+
+    /// Signed curvature of an edge at the closest point on the edge's underlying
+    /// curve to the world-space query point `(px, py, pz)` (in metres).
+    ///
+    /// Delegates to `occt::curve_curvature_at` which:
+    ///   (a) extracts the underlying `Geom_Curve` from the edge via
+    ///       `BRep_Tool::Curve(edge, f, l)`,
+    ///   (b) projects `(px, py, pz)` onto [f, l] via `GeomAPI_ProjectPointOnCurve`,
+    ///   (c) evaluates curvature at the projected parameter via `BRepLProp_CLProps`.
+    ///
+    /// Sign follows the Frenet frame (positive toward principal normal). For a
+    /// full circle in the XY plane OCCT returns κ > 0.
+    ///
+    /// Returns `Err(QueryError::InvalidHandle)` if `handle` is unknown.
+    /// Returns `Err(QueryError::QueryFailed)` if the shape is not an edge, has
+    /// no underlying curve, projection fails, or the tangent is undefined.
+    pub fn curve_curvature_at(
+        &self,
+        handle: GeometryHandleId,
+        px: f64,
+        py: f64,
+        pz: f64,
+    ) -> Result<f64, QueryError> {
+        let s = self
+            .get_shape(handle)
+            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        if !px.is_finite() || !py.is_finite() || !pz.is_finite() {
+            return Err(QueryError::QueryFailed(
+                "curve_curvature_at: query point coordinates must be finite".into(),
+            ));
+        }
+        ffi::ffi::curve_curvature_at(s, px, py, pz)
+            .map_err(|e| QueryError::QueryFailed(e.to_string()))
     }
 
     /// Test whether the query point `(px, py, pz)` lies on the BREP boundary
@@ -1120,6 +1189,67 @@ impl OcctKernel {
             .get_shape(handle)
             .map_err(|_| QueryError::InvalidHandle(handle))?;
         ffi::ffi::point_on_shape(s, px, py, pz, tolerance)
+            .map_err(|e| QueryError::QueryFailed(e.to_string()))
+    }
+
+    /// Test whether `(px, py, pz)` is inside or on the boundary of the closed
+    /// solid identified by `handle`.
+    ///
+    /// Uses `BRepClass3d_SolidClassifier(shape).Perform(gp_Pnt, tolerance)` and
+    /// returns `true` when `State() == TopAbs_IN || State() == TopAbs_ON` (closed-
+    /// solid membership; both interior and boundary points are "contained").
+    ///
+    /// Pass [`reify_ir::DEFAULT_CONTAINS_TOLERANCE_M`] (= `DEFAULT_POINT_ON_SHAPE_TOLERANCE_M`
+    /// ≈ OCCT's `Precision::Confusion()`, ~1e-7) for `tolerance` to match OCCT's
+    /// default confusion threshold.
+    ///
+    /// **Tolerance precondition:** `tolerance` must be a non-negative finite `f64`.
+    /// Negative or NaN values map to `Err(QueryError::QueryFailed(_))`.
+    ///
+    /// Returns `Err(QueryError::InvalidHandle(_))` if `handle` is unknown, or
+    /// `Err(QueryError::QueryFailed(_))` if the OCCT computation fails.
+    pub fn contains(
+        &self,
+        handle: GeometryHandleId,
+        px: f64,
+        py: f64,
+        pz: f64,
+        tolerance: f64,
+    ) -> Result<bool, QueryError> {
+        let s = self
+            .get_shape(handle)
+            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        ffi::ffi::contains_solid(s, px, py, pz, tolerance)
+            .map_err(|e| QueryError::QueryFailed(e.to_string()))
+    }
+
+    /// Test whether shapes `left` and `right` are geometrically equivalent
+    /// within `tolerance` using topology-count matching + sampled-vertex
+    /// proximity.
+    ///
+    /// STRICT-VARIANT NOTE: This is the asymmetric sampled-point geo_equiv
+    /// (PRD §5.1, KGQ-δ).  A future `geo_equiv_strict` using symmetric
+    /// Hausdorff distance is deferred to v0.4 per PRD §5.1 + Open Question §10.
+    ///
+    /// The sample count is threaded from [`reify_ir::DEFAULT_GEO_EQUIV_SAMPLE_COUNT`]
+    /// (= 8 per PRD §5.2) so that constant remains the single authoritative source.
+    ///
+    /// Returns `Err(QueryError::InvalidHandle(_))` if either handle is unknown.
+    /// Returns `Err(QueryError::QueryFailed(_))` if `tolerance` is non-finite
+    /// or negative, or if the OCCT computation fails.
+    pub fn geo_equiv(
+        &self,
+        left: GeometryHandleId,
+        right: GeometryHandleId,
+        tolerance: f64,
+    ) -> Result<bool, QueryError> {
+        let s_left = self
+            .get_shape(left)
+            .map_err(|_| QueryError::InvalidHandle(left))?;
+        let s_right = self
+            .get_shape(right)
+            .map_err(|_| QueryError::InvalidHandle(right))?;
+        ffi::ffi::geo_equiv_topo_sample(s_left, s_right, tolerance, reify_ir::DEFAULT_GEO_EQUIV_SAMPLE_COUNT)
             .map_err(|e| QueryError::QueryFailed(e.to_string()))
     }
 
@@ -2656,8 +2786,40 @@ impl OcctKernel {
             } => self
                 .point_on_shape(*handle, *px, *py, *pz, *tolerance)
                 .map(Value::Bool),
+            GeometryQuery::Contains {
+                handle,
+                px,
+                py,
+                pz,
+                tolerance,
+            } => self
+                .contains(*handle, *px, *py, *pz, *tolerance)
+                .map(Value::Bool),
+            GeometryQuery::GeoEquiv {
+                left,
+                right,
+                tolerance,
+            } => self.geo_equiv(*left, *right, *tolerance).map(Value::Bool),
             GeometryQuery::SurfaceAngle { face_a, face_b } => {
                 self.surface_angle(*face_a, *face_b).map(Value::Real)
+            }
+            GeometryQuery::FaceNormalAt { handle, px, py, pz } => {
+                let [x, y, z] = self.surface_normal_at_point(*handle, *px, *py, *pz)?;
+                Ok(Value::String(format!("{{\"x\":{x},\"y\":{y},\"z\":{z}}}")))
+            }
+            // KGQ-μ: curve curvature at a world point — implementation added by step-4.
+            GeometryQuery::CurveCurvatureAt { handle, px, py, pz } => {
+                self.curve_curvature_at(*handle, *px, *py, *pz).map(Value::Real)
+            }
+            // KGQ-μ: surface principal curvatures at (u,v) — returns nested
+            // Value::List [[kappa_max, 0.0], [0.0, kappa_min]] (InertiaTensor wire format).
+            GeometryQuery::SurfaceCurvatureAt { handle, u, v } => {
+                let c = self.curvature_at(*handle, *u, *v)?;
+                // Diagonal principal-curvature matrix: trace/2 = mean H, det = Gaussian K.
+                // Encoding: outer List of rows, each row a List of Values.
+                let row0 = Value::List(vec![Value::Real(c.kappa_max), Value::Real(0.0)]);
+                let row1 = Value::List(vec![Value::Real(0.0), Value::Real(c.kappa_min)]);
+                Ok(Value::List(vec![row0, row1]))
             }
         }
     }

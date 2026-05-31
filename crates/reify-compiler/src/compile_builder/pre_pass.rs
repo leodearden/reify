@@ -6,7 +6,7 @@
 //! phase modules.
 
 use reify_ast::{Declaration, FieldDef, FnDef, ParsedModule, TraitDecl, TypeAliasDecl, UnitDecl};
-use reify_core::{Diagnostic, DiagnosticLabel};
+use reify_core::{Diagnostic, DiagnosticLabel, ModulePath};
 
 use crate::CompiledModule;
 use crate::annotations::is_known_module_pragma;
@@ -57,6 +57,31 @@ pub(crate) fn effective_prelude<'a>(
     if has_no_prelude { &[] } else { prelude }
 }
 
+/// Check the top-of-file `module` declaration against the resolver-derived path.
+///
+/// Returns `None` if the declared path matches the expected path (spec §7.1: correct).
+/// Returns `Some(Diagnostic::warning(...))` if `declared` is `None` (W_MODULE_DECL_MISSING).
+/// Returns `Some(Diagnostic::error(...))` if `declared` is `Some` but doesn't match (E_MODULE_PATH_MISMATCH).
+///
+/// This is a pure helper so it can be unit-tested without a full compilation context.
+/// Re-exported from the crate root so `reify-cli` can call it via `reify_compiler::check_module_path_decl`.
+pub fn check_module_path_decl(declared: Option<&ModulePath>, expected: &ModulePath) -> Option<Diagnostic> {
+    match declared {
+        None => Some(Diagnostic::warning(format!(
+            "W_MODULE_DECL_MISSING: file has no top-of-file `module` declaration; \
+             expected `module {}` (spec \u{00a7}7.1)",
+            expected.0.join(".")
+        ))),
+        Some(d) if d != expected => Some(Diagnostic::error(format!(
+            "E_MODULE_PATH_MISMATCH: declared module path '{}' does not match \
+             expected path '{}' (derived from file location)",
+            d.0.join("."),
+            expected.0.join(".")
+        ))),
+        Some(_) => None,
+    }
+}
+
 /// References into `parsed.declarations` collected by [`collect_decl_refs`],
 /// partitioned by the phase that consumes them.
 ///
@@ -103,7 +128,7 @@ pub(crate) fn collect_decl_refs<'a>(
             Declaration::Enum(e) => {
                 ctx.enum_defs.push(reify_ir::EnumDef {
                     name: e.name.clone(),
-                    variants: e.variants.clone(),
+                    variants: e.variants.iter().map(|v| v.name.clone()).collect(),
                     doc: e.doc.clone(),
                 });
             }
@@ -141,4 +166,55 @@ pub(crate) fn collect_decl_refs<'a>(
     }
 
     refs
+}
+
+#[cfg(test)]
+mod tests {
+    use reify_core::{ModulePath, Severity};
+
+    use super::check_module_path_decl;
+
+    #[test]
+    fn absent_decl_returns_warning_with_expected_path() {
+        let expected = ModulePath::single("foo");
+        let diag = check_module_path_decl(None, &expected)
+            .expect("should return Some(diag) for absent declaration");
+        assert_eq!(diag.severity, Severity::Warning);
+        assert!(
+            diag.message.contains("W_MODULE_DECL_MISSING"),
+            "message should contain 'W_MODULE_DECL_MISSING', got: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn matching_decl_returns_none() {
+        let path = ModulePath::single("foo");
+        let result = check_module_path_decl(Some(&path), &path);
+        assert!(result.is_none(), "should return None when paths match");
+    }
+
+    #[test]
+    fn mismatched_decl_returns_error_with_both_paths() {
+        let declared = ModulePath::from_dotted("a.b.c").unwrap();
+        let expected = ModulePath::single("foo");
+        let diag = check_module_path_decl(Some(&declared), &expected)
+            .expect("should return Some(diag) for mismatch");
+        assert_eq!(diag.severity, Severity::Error);
+        assert!(
+            diag.message.contains("E_MODULE_PATH_MISMATCH"),
+            "message should contain 'E_MODULE_PATH_MISMATCH', got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("a.b.c"),
+            "message should name the declared path 'a.b.c', got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("foo"),
+            "message should name the expected path 'foo', got: {}",
+            diag.message
+        );
+    }
 }

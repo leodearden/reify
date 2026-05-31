@@ -163,9 +163,28 @@ pub(crate) fn compile_function(
         scope.register(name, ty.clone());
     }
 
-    // Compile body let bindings
+    // Compile body let bindings — bodyless trait fns (body = None) are not compiled
+    // here; they are deferred to task δ/ζ. Top-level Declaration::Function always
+    // has Some body, so the defensive guard is effectively unreachable for them.
+    let body = match &fn_def.body {
+        Some(b) => b,
+        None => {
+            diagnostics.push(
+                reify_core::Diagnostic::error(
+                    "internal compiler error: compile_function called on a bodyless \
+                     trait fn (body = None); this should not be reached until task δ/ζ"
+                        .to_string(),
+                )
+                .with_label(reify_core::DiagnosticLabel::new(
+                    fn_def.span,
+                    "bodyless fn".to_string(),
+                )),
+            );
+            return None;
+        }
+    };
     let mut compiled_lets = Vec::new();
-    for let_decl in &fn_def.body.let_bindings {
+    for let_decl in &body.let_bindings {
         let compiled_expr =
             compile_expr(&let_decl.value, &scope, enum_defs, functions, diagnostics);
         let let_type = compiled_expr.result_type.clone();
@@ -176,7 +195,7 @@ pub(crate) fn compile_function(
 
     // Compile result expression
     let result_expr = compile_expr(
-        &fn_def.body.result_expr,
+        &body.result_expr,
         &scope,
         enum_defs,
         functions,
@@ -214,6 +233,164 @@ pub(crate) fn compile_function(
     // lower_annotations. Same call shape as compile_constraint_def in defs_phase.rs.
     let opt_target = optimized_target(&fn_def.annotations);
 
+    let annotations = lower_annotations(&fn_def.annotations, diagnostics);
+    validate_annotations(&annotations, "function", diagnostics);
+
+    Some(CompiledFunction {
+        name: fn_def.name.clone(),
+        doc: fn_def.doc.clone(),
+        is_pub: fn_def.is_pub,
+        params,
+        param_defaults,
+        return_type,
+        body: CompiledFnBody {
+            let_bindings: compiled_lets,
+            result_expr,
+        },
+        content_hash,
+        annotations,
+        optimized_target: opt_target,
+    })
+}
+
+/// Compile a trait associated function bound to a specific conforming structure
+/// (the "conformer"). Sibling of [`compile_function`]; the sole difference is the
+/// leading `is_self` receiver parameter, whose type is the conformer
+/// `Type::StructureRef(conformer_name)` (and is registered as `self` in the body
+/// scope) instead of being resolved from the sentinel `self` named type.
+///
+/// `self.member` bare-member sugar resolution is deferred to task ζ — δ compiles
+/// only the receiver type plus the explicit params, which is sufficient to
+/// populate the assoc-fn table with a distinguishable [`CompiledFunction`]
+/// (override vs injected default differ by body content hash). Returns `None`
+/// for a bodyless fn (a required, body = None member never reaches this path:
+/// the resolver compiles the structure override or the default body, both of
+/// which carry a body). Added by task 3939 δ.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compile_assoc_function(
+    fn_def: &reify_ast::FnDef,
+    conformer_name: &str,
+    enum_defs: &[reify_ir::EnumDef],
+    functions: &[CompiledFunction],
+    alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<CompiledFunction> {
+    let empty_params = HashSet::new();
+    let receiver_type = Type::StructureRef(conformer_name.to_string());
+
+    // Resolve parameter types. The leading `is_self` receiver maps to the
+    // conformer StructureRef rather than resolving the sentinel `self` type;
+    // every other param resolves exactly as in `compile_function`.
+    let mut params: Vec<(String, Type)> = Vec::new();
+    for p in &fn_def.params {
+        if p.is_self {
+            params.push((p.name.clone(), receiver_type.clone()));
+            continue;
+        }
+        let ty = match resolve_type_expr_with_aliases(
+            &p.type_expr,
+            &empty_params,
+            alias_registry,
+            diagnostics,
+            structure_names,
+            trait_names,
+        ) {
+            Some(t) => t,
+            None => {
+                diagnostics.push(
+                    Diagnostic::error(format!("unresolved type: {}", p.type_expr))
+                        .with_code(DiagnosticCode::UnresolvedType)
+                        .with_label(DiagnosticLabel::new(p.type_expr.span, "unknown type name")),
+                );
+                Type::Real
+            }
+        };
+        params.push((p.name.clone(), ty));
+    }
+
+    // Compile default expressions in a neutral scope (definition-time semantics,
+    // matching `compile_function`). The `self` receiver never carries a default.
+    let neutral_scope = CompilationScope::new(&fn_def.name);
+    let param_defaults: Vec<Option<CompiledExpr>> = fn_def
+        .params
+        .iter()
+        .map(|p| {
+            p.default
+                .as_ref()
+                .map(|d| compile_expr(d, &neutral_scope, enum_defs, functions, diagnostics))
+        })
+        .collect();
+
+    // Resolve return type (defaults to Real when unannotated).
+    let return_type = match &fn_def.return_type {
+        Some(te) => match resolve_type_expr_with_aliases(
+            te,
+            &empty_params,
+            alias_registry,
+            diagnostics,
+            structure_names,
+            trait_names,
+        ) {
+            Some(t) => t,
+            None => {
+                diagnostics.push(
+                    Diagnostic::error(format!("unresolved return type: {}", te))
+                        .with_code(DiagnosticCode::UnresolvedType)
+                        .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
+                );
+                Type::Real
+            }
+        },
+        None => Type::Real,
+    };
+
+    // Body scope with all params (including the `self` receiver) registered so a
+    // body that names `self` resolves against the conformer type.
+    let mut scope = CompilationScope::new(&fn_def.name);
+    for (name, ty) in &params {
+        scope.register(name, ty.clone());
+    }
+
+    // Bodyless fns (required, body = None) have nothing to compile here.
+    let body = fn_def.body.as_ref()?;
+
+    let mut compiled_lets = Vec::new();
+    for let_decl in &body.let_bindings {
+        let compiled_expr =
+            compile_expr(&let_decl.value, &scope, enum_defs, functions, diagnostics);
+        let let_type = compiled_expr.result_type.clone();
+        scope.register(&let_decl.name, let_type);
+        compiled_lets.push((let_decl.name.clone(), compiled_expr));
+    }
+
+    let result_expr = compile_expr(&body.result_expr, &scope, enum_defs, functions, diagnostics);
+
+    // Content hash — same shape as `compile_function` so that an override body
+    // and an injected-default body hash differently when their bodies differ.
+    let content_hash = {
+        let name_hash = ContentHash::of_str(&fn_def.name);
+        let param_hashes = params
+            .iter()
+            .map(|(n, t)| ContentHash::of_str(n).combine(ContentHash::of_str(&format!("{}", t))));
+        let default_hashes = param_defaults.iter().map(|d| match d {
+            Some(e) => ContentHash::of(&[1u8]).combine(e.content_hash),
+            None => ContentHash::of(&[0u8]),
+        });
+        let body_hash = result_expr.content_hash;
+        let let_hashes = compiled_lets.iter().map(|(_, e)| e.content_hash);
+
+        let all_hashes = std::iter::once(name_hash)
+            .chain(param_hashes)
+            .chain(default_hashes)
+            .chain(std::iter::once(body_hash))
+            .chain(let_hashes);
+
+        ContentHash::combine_all(all_hashes)
+    };
+
+    let opt_target = optimized_target(&fn_def.annotations);
     let annotations = lower_annotations(&fn_def.annotations, diagnostics);
     validate_annotations(&annotations, "function", diagnostics);
 
@@ -538,18 +715,65 @@ pub(crate) fn compile_field(
                 expr: compiled_expr,
             }
         }
-        reify_ast::FieldSource::Imported { .. } => {
-            diagnostics.push(
-                Diagnostic::error(
-                    "imported field sources are deferred to v0.2; v0.1 supports analytical and composed only",
-                )
-                .with_code(DiagnosticCode::FieldImportedV02)
-                .with_label(DiagnosticLabel::new(
-                    field_def.span,
-                    "imported field source is deferred to v0.2",
-                )),
-            );
-            CompiledFieldSource::Imported
+        reify_ast::FieldSource::Imported { path, format, grid } => {
+            // Validate required keys: path, format, grid.
+            if path.is_none() {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "imported field source is missing required key: 'path'",
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        field_def.span,
+                        "missing required imported config key",
+                    )),
+                );
+            }
+            if format.is_none() {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "imported field source is missing required key: 'format'",
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        field_def.span,
+                        "missing required imported config key",
+                    )),
+                );
+            }
+            if grid.is_none() {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "imported field source is missing required key: 'grid'",
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        field_def.span,
+                        "missing required imported config key",
+                    )),
+                );
+            }
+            // Validate format value: only "OpenVDB" is supported in v0.2.
+            if let Some(fmt) = format.as_deref()
+                && fmt != "OpenVDB"
+            {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "unsupported imported field format '{}': only 'OpenVDB' is supported",
+                        fmt
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        field_def.span,
+                        "unsupported format for imported field source",
+                    )),
+                );
+            }
+            // Note: the struct is populated with whatever was parsed even when the
+            // validation diagnostics above were emitted.  Eval relies on (Some path,
+            // Some grid) and treats anything else as Undef; compile errors are the
+            // user-visible signal for missing or invalid keys.
+            CompiledFieldSource::Imported {
+                path: path.clone(),
+                format: format.clone(),
+                grid: grid.clone(),
+            }
         }
     };
 
@@ -571,7 +795,12 @@ pub(crate) fn compile_field(
                 ContentHash::combine_all(hashes)
             }
             CompiledFieldSource::Composed { expr } => expr.content_hash,
-            CompiledFieldSource::Imported => ContentHash::of(&[0u8]),
+            CompiledFieldSource::Imported { path, format, grid } => {
+                let ph = path.as_deref().map(ContentHash::of_str).unwrap_or(ContentHash(0));
+                let fh = format.as_deref().map(ContentHash::of_str).unwrap_or(ContentHash(0));
+                let gh = grid.as_deref().map(ContentHash::of_str).unwrap_or(ContentHash(0));
+                ContentHash::combine_all([ph, fh, gh])
+            }
         };
         ContentHash::combine_all([name_hash, domain_hash, codomain_hash, source_hash])
     };
@@ -681,7 +910,7 @@ mod tests {
             is_pub: false,
             domain_type,
             codomain_type,
-            source: CompiledFieldSource::Imported,
+            source: CompiledFieldSource::Imported { path: None, format: None, grid: None },
             content_hash: ContentHash(0),
             annotations: vec![],
         }

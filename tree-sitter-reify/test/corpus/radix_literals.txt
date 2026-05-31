@@ -1,0 +1,90 @@
+================================================================================
+radix literal: hex lowercase prefix (0xFF)
+================================================================================
+
+structure S {
+  let x = 0xFF
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (number_literal))))
+
+================================================================================
+radix literal: binary lowercase prefix (0b1010)
+================================================================================
+
+structure S {
+  let x = 0b1010
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (number_literal))))
+
+================================================================================
+radix literal: hex with digit separators (0xDEAD_BEEF)
+================================================================================
+
+structure S {
+  let x = 0xDEAD_BEEF
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (number_literal))))
+
+================================================================================
+radix literal with unit suffix: 0xFFmm (quantity_literal)
+================================================================================
+
+structure S {
+  let x = 0xFFmm
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (quantity_literal
+        value: (number_literal)
+        unit: (unit_expr
+          (unit_name))))))
+
+================================================================================
+regression: decimal quantity literal 5mm still parses correctly
+================================================================================
+
+structure S {
+  let w = 5mm
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (quantity_literal
+        value: (number_literal)
+        unit: (unit_expr
+          (unit_name))))))

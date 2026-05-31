@@ -588,7 +588,7 @@ mod tests {
         let r0_id = RealizationNodeId::new(e, 0);
         graph.realizations.insert(
             r0_id.clone(),
-            RealizationNodeData {
+            RealizationNodeData { geometry_cell: None,
                 id: r0_id.clone(),
                 operations: vec![],
                 content_hash: ContentHash::of_str("r0"),
@@ -681,7 +681,7 @@ mod tests {
         let r0_id = RealizationNodeId::new(e, 0);
         graph.realizations.insert(
             r0_id.clone(),
-            RealizationNodeData {
+            RealizationNodeData { geometry_cell: None,
                 id: r0_id.clone(),
                 operations: vec![],
                 content_hash: ContentHash::of_str("r0"),
@@ -770,7 +770,7 @@ mod tests {
         let r0_id = RealizationNodeId::new(e, 0);
         graph.realizations.insert(
             r0_id.clone(),
-            RealizationNodeData {
+            RealizationNodeData { geometry_cell: None,
                 id: r0_id.clone(),
                 operations: vec![],
                 content_hash: ContentHash::of_str("r0"),
@@ -957,7 +957,7 @@ mod tests {
         traces.insert(thickness.clone(), DependencyTrace::default());
         traces.insert(
             volume.clone(),
-            DependencyTrace {
+            DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![
                     ValueCellId::new(e, "width"),
                     ValueCellId::new(e, "height"),
@@ -1000,7 +1000,7 @@ mod tests {
         traces.insert(thickness.clone(), DependencyTrace::default());
         traces.insert(
             c1.clone(),
-            DependencyTrace {
+            DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![
                     ValueCellId::new(e, "width"),
                     ValueCellId::new(e, "thickness"),
@@ -1042,7 +1042,7 @@ mod tests {
         traces.insert(thickness.clone(), DependencyTrace::default());
         traces.insert(
             volume.clone(),
-            DependencyTrace {
+            DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![
                     ValueCellId::new(e, "width"),
                     ValueCellId::new(e, "thickness"),
@@ -1051,7 +1051,7 @@ mod tests {
         );
         traces.insert(
             c1.clone(),
-            DependencyTrace {
+            DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![
                     ValueCellId::new(e, "width"),
                     ValueCellId::new(e, "thickness"),
@@ -1094,7 +1094,7 @@ mod tests {
         // sq reads 'a' twice (simulating expression `a * a`)
         traces.insert(
             sq.clone(),
-            DependencyTrace {
+            DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![ValueCellId::new(e, "a"), ValueCellId::new(e, "a")],
             },
         );
@@ -1362,13 +1362,13 @@ mod tests {
         traces.insert(a.clone(), DependencyTrace::default());
         traces.insert(
             b.clone(),
-            DependencyTrace {
+            DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![ValueCellId::new("X", "a")],
             },
         );
         traces.insert(
             c.clone(),
-            DependencyTrace {
+            DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![ValueCellId::new("X", "a")],
             },
         );
@@ -1402,13 +1402,13 @@ mod tests {
         traces.insert(a.clone(), DependencyTrace::default());
         traces.insert(
             b.clone(),
-            DependencyTrace {
+            DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![ValueCellId::new("X", "a")],
             },
         );
         traces.insert(
             c.clone(),
-            DependencyTrace {
+            DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![ValueCellId::new("X", "b")],
             },
         );

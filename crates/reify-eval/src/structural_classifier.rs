@@ -419,7 +419,7 @@ mod tests {
         let rid = RealizationNodeId::new("Part", 42);
         g2.realizations.insert(
             rid.clone(),
-            RealizationNodeData {
+            RealizationNodeData { geometry_cell: None,
                 id: rid,
                 operations: vec![],
                 content_hash: ContentHash::of_str("extra-shape"),
@@ -447,7 +447,7 @@ mod tests {
         let rid = RealizationNodeId::new("Part", 99);
         g2.realizations.insert(
             rid.clone(),
-            RealizationNodeData {
+            RealizationNodeData { geometry_cell: None,
                 id: rid,
                 operations: vec![],
                 content_hash: ContentHash::of_str("extra-shape-2"),
@@ -652,7 +652,7 @@ mod tests {
         let rid = RealizationNodeId::new("Part", 99);
         g2.realizations.insert(
             rid.clone(),
-            RealizationNodeData {
+            RealizationNodeData { geometry_cell: None,
                 id: rid,
                 operations: vec![],
                 content_hash: reify_core::ContentHash::of_str("extra-realization"),

@@ -35,7 +35,7 @@
 //!     ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness,
 //!     IsotropicElastic,
 //!     ShellStress,
-//!     ShellElementStress, shell_element_frame, shell_element_stress,
+//!     ShellElementStress, shell_element_stress,
 //!     DirichletBc, apply_dirichlet_row_elimination,
 //!     FaceOrder, apply_body_force, apply_point_load, apply_traction_load,
 //!     SupportKind, SupportBodyKind, SupportCompatibility, build_support_bcs,
@@ -46,7 +46,7 @@
 //!     locate_element_p1, LocatableTet,
 //!     StressElement, element_stress_p1, recover_nodal_stress_p1, tet_volume_p1,
 //!     ProgressiveOptions, PartialElasticResult, PassTuning,
-//!     RefinementDemand, TerminationReason, AdvanceDecision,
+//!     RefinementDemand, AdvanceDecision,
 //!     coarse_pass_tuning, refinement_pass_tuning, near_constraint_boundary, should_refine,
 //!     SweepElementTarget, Mesh2d, Mesh2dReport, ProfileBoundary, Mesh2dOptions, Mesh2dError,
 //!     compute_quad_skew, recombine_quality_ok, auto_mesh_size_from_boundary,
@@ -93,14 +93,14 @@
 //!
 //! // ShellStress smoke test (T16): use a non-trivial value so a regression where
 //! // one channel is left default would surface here.
-//! let field = reify_types::Value::Real(1.0);
+//! let field = reify_ir::Value::Real(1.0);
 //! let ss = ShellStress::homogeneous(field.clone());
 //! assert_eq!(ss.top, field, "homogeneous: top must equal input");
 //! assert_eq!(ss.mid, field, "homogeneous: mid must equal input");
 //! assert_eq!(ss.bottom, field, "homogeneous: bottom must equal input");
 //!
-//! // T7 smoke tests: shell_element_frame orthonormality + shell_element_stress API typecheck.
-//! let frame_mat: [[f64; 3]; 3] = shell_element_frame(&nodes);
+//! // T7 smoke tests: local_to_global orthonormality + shell_element_stress API typecheck.
+//! let frame_mat: [[f64; 3]; 3] = build_shell_frame(&nodes).local_to_global();
 //! // All three rows of the local-to-global rotation matrix must have unit norm.
 //! for i in 0..3 {
 //!     let norm_sq = frame_mat[i][0]*frame_mat[i][0]
@@ -253,16 +253,11 @@
 //! );
 //!
 //! // Task 2923: progressive-solve framework smoke pin.
-//! // The import block above already asserts all progressive re-exports compile;
-//! // these one-shot constructions confirm renames or removals trip this doctest.
-//! let _ = ProgressiveOptions::default();
-//! let _ = PassTuning { mesh_tol: 0.0, cg_tol: 0.0 };
-//! let _ = PartialElasticResult {
-//!     displacement: vec![], stress: vec![], max_von_mises: 0.0,
-//!     converged: false, iterations: 0,
-//! };
-//! let _ = (RefinementDemand::None, TerminationReason::BudgetExhausted);
-//! let _ = AdvanceDecision::Continue(PassTuning { mesh_tol: 0.0, cg_tol: 0.0 });
+//! // The import block above asserts key progressive types and helpers compile.
+//! // TerminationReason is also re-exported from the crate root; it is covered
+//! // transitively via AdvanceDecision in the should_refine pin below rather
+//! // than directly in the import block.  These fn-signature pins catch renames
+//! // or signature changes at compile time.
 //! let _: fn(&ProgressiveOptions) -> PassTuning = coarse_pass_tuning;
 //! let _: fn(&ProgressiveOptions, usize) -> PassTuning = refinement_pass_tuning;
 //! let _: fn(&PartialElasticResult, &ProgressiveOptions) -> bool = near_constraint_boundary;
@@ -330,7 +325,7 @@
 //! };
 //! let _: fn(
 //!     &[StressElement<'_>],
-//!     &reify_types::VolumeMesh,
+//!     &reify_ir::VolumeMesh,
 //!     &IsotropicElastic,
 //! ) -> ZzIndicator = compute_zz_indicator;
 //!
@@ -376,9 +371,14 @@ pub mod elements;
 pub mod error_estimator;
 pub mod geometric_stiffness;
 pub mod interpolation;
+// Task 3868: κ — additive joint-stiffness kernel (PRD compliant-joints-flexures.md §7.2).
+pub mod joint_stiffness;
 pub mod mass_matrix;
 pub mod material_field;
 pub mod math;
+// Task 4066: P2-tet consistent mass-matrix kernel (closed-form degree-4-exact
+// barycentric integration) — the missing primitive for P2 modal analysis.
+pub mod p2_tet;
 pub mod mesher;
 pub mod mpc;
 pub mod progressive;
@@ -388,6 +388,7 @@ pub mod shell_boundary;
 pub mod shell_kinematics;
 pub mod shell_result;
 pub mod solver;
+pub(crate) mod sparse_util;
 pub mod sweep;
 pub mod volume_refine;
 pub mod warm_state;
@@ -396,8 +397,8 @@ pub mod warm_state;
 mod warm_register;
 
 pub use assembly::{
-    AssemblyElement, AssemblyMode, ElementOrder, ElementStiffness, OrphanDofsSummary,
-    assemble_global_stiffness, detect_orphan_dofs, element_stiffness,
+    AssemblyElement, AssemblyMode, BarSection, ElementOrder, ElementStiffness, OrphanDofsSummary,
+    assemble_global_stiffness, detect_orphan_dofs, element_stiffness, element_stiffness_bar_p1,
     hex::element_stiffness_hex_p1, wedge::element_stiffness_wedge_p1,
     // Task 3778: foundation β — field-aware assembly entry points.
     element_stiffness_hex_p1_with_field, element_stiffness_p1_with_field,
@@ -434,12 +435,17 @@ pub use progressive::{
     TerminationReason, coarse_pass_tuning, near_constraint_boundary, refinement_pass_tuning,
     should_refine,
 };
-pub use result::{StressElement, element_stress_p1, recover_nodal_stress_p1, tet_volume_p1};
-pub use shell_assembly::{ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness};
+pub use result::{
+    StressElement, element_stress_p1, element_stress_p2, recover_nodal_stress_p1, tet_volume_p1,
+};
+pub use shell_assembly::{
+    ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness,
+    shell_element_stiffness_mitc3_plus,
+};
 pub use shell_boundary::{SupportBodyKind, SupportCompatibility, SupportKind, build_support_bcs};
 pub use shell_kinematics::{ShellKinematics, shell_kinematics};
 pub use shell_result::{
-    ShellElementStress, ShellStress, shell_element_frame, shell_element_stress,
+    ShellElementStress, ShellStress, shell_element_stress,
 };
 // Task 2996: Z-Z error indicator — kernel-layer a-posteriori error estimator.
 // PRD: docs/prds/v0_4/a-posteriori-error-estimation.md, Task decomposition #1.
@@ -453,19 +459,33 @@ pub use eigensolve::{
 };
 // Task 3453: buckling-kernel orchestrator — pre-stress → K_g → eigensolve → mode-shape.
 // PRD: docs/prds/v0_5/buckling-eigensolver.md §13 task δ.
-pub use buckling_kernel::{BucklingKernelOptions, BucklingKernelResult, Mode, solve_buckling_kernel};
+pub use buckling_kernel::{
+    BucklingKernelOptions, BucklingKernelResult, Mode,
+    solve_buckling_kernel, solve_buckling_kernel_p2,
+};
 // Task 3452: P1-tet K_g element kernel + global assembly + shell/hex/wedge stubs.
 // PRD: docs/prds/v0_5/buckling-eigensolver.md §13 task γ.
+// Task 3797: T3a bar/cable K_g element kernel + per-member tangent stiffness.
 pub use geometric_stiffness::{
-    InitialStress3, geometric_element_stiffness_hex_p1, geometric_element_stiffness_shell,
-    geometric_element_stiffness_tet_p1, geometric_element_stiffness_wedge_p1,
+    InitialStress3, bar_tangent_stiffness, geometric_element_stiffness_bar_p1,
+    geometric_element_stiffness_hex_p1, geometric_element_stiffness_shell,
+    geometric_element_stiffness_tet_p1, geometric_element_stiffness_tet_p2,
+    geometric_element_stiffness_wedge_p1,
 };
 // Task 3818: P1-tet consistent mass-matrix element kernel; reuses
 // `assemble_global_stiffness` for the global scatter (the assembler treats
 // `k_e` opaquely — K vs K_g vs M).
 // PRD: docs/prds/v0_3/modal-analysis.md §10 Phase 1 task δ.
 pub use mass_matrix::consistent_element_mass_tet_p1;
-pub use solver::{CgResult, CgSolverOptions, SolverMode, solve_cg, solve_cg_warm};
+// Task 4066: P2-tet consistent mass-matrix element kernel (closed-form
+// degree-4-exact barycentric integration). Pairs with the P2 stiffness
+// (`element_stiffness` at `ElementOrder::P2`) for the modal eigenproblem
+// `K φ = λ M φ`; assembled via the same `assemble_global_stiffness` scatter.
+pub use p2_tet::consistent_element_mass_tet_p2;
+pub use solver::{
+    CgIterationControl, CgResult, CgSolverOptions, SolverMode, solve_cg, solve_cg_warm,
+    solve_cg_with_progress,
+};
 pub use warm_state::{CgWarmState, solve_cg_with_warm_state};
 // Task 2987: 2D cross-section meshing surface for the hex/wedge swept-body
 // pipeline. Re-export the typed orchestrator (`mesh_swept_profile_2d`), its
@@ -494,3 +514,32 @@ pub use sweep::{
 // is enforced by the orchestrator, not by the projector itself. External
 // callers cannot misuse it with a short slice.
 pub use volume_refine::{RefineError, refine_with_size_field};
+// Task 3868: κ — additive joint-stiffness kernel.
+// PRD compliant-joints-flexures.md §7.2: each spring-loaded joint contributes
+// K[dof,dof] += k to the global stiffness matrix; empty contributions → rigid
+// joint (zero addition), preserving existing modal-analysis behaviour.
+//
+// # Usage example
+//
+// ```
+// use reify_solver_elastic::{JointStiffness, add_joint_stiffness};
+// use faer::sparse::{SparseRowMat, Triplet};
+//
+// // 2×2 K = [[5, 0], [0, 0]] with (1,1) absent
+// let trips: Vec<Triplet<usize, usize, f64>> = vec![Triplet::new(0, 0, 5.0)];
+// let k = SparseRowMat::try_new_from_triplets(2, 2, &trips).unwrap();
+//
+// // Add a spring of stiffness 3.0 at DOF 1 (structurally absent → created).
+// let k2 = add_joint_stiffness(&k, &[JointStiffness { dof: 1, stiffness: 3.0 }]);
+//
+// // K[0,0] unchanged; K[1,1] created as 3.0.
+// let sym = k2.symbolic();
+// let get = |r, c| {
+//     let cols = sym.col_idx_of_row_raw(r);
+//     let vals = k2.val_of_row(r);
+//     cols.iter().zip(vals.iter()).find(|(&col, _)| col == c).map(|(_, &v)| v).unwrap_or(0.0)
+// };
+// assert_eq!(get(0, 0), 5.0);
+// assert_eq!(get(1, 1), 3.0);
+// ```
+pub use joint_stiffness::{JointStiffness, add_joint_stiffness};

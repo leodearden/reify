@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Infrastructure test for task 4051.
+# Infrastructure test for task 4051 (Cycles A-B) and task 4078 (Cycle C).
 # Covers:
 #   Cycle A — DF_VERIFY_ROLE validation / exit-64 contract (step-1 / step-2)
 #   Cycle B — CARGO_PRIO prefix-wrapping contract         (step-3 / step-4)
+#   Cycle C — PROFILE default by DF_VERIFY_ROLE            (task-4078 step-1 / step-2)
+#             merge+no-profile=>both; explicit --profile wins; task/unset=>debug
 #
 # Drives verify.sh via --print-plan (hermetic: never builds anything).
 
@@ -135,5 +137,73 @@ assert "merge/all/all: all cargo lines prefixed with 'nice -n 5 cargo'" \
 assert "merge/all/all: no 'ionice' anywhere in the full plan output" \
     bash -c '! printf "%s\n" "$1" | grep -q "ionice"' \
     _ "$MERGE_ALL_PLAN_FULL"
+
+# ---------------------------------------------------------------------------
+# Cycle C: PROFILE default by DF_VERIFY_ROLE (task 4078)
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle C: PROFILE default by DF_VERIFY_ROLE ---"
+
+# Capture full plan and commands-only plan for each case.
+# C1: merge + no explicit --profile => profile=both (release coverage on merge path)
+C1_FULL="$(DF_VERIFY_ROLE=merge bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan)"
+C1_CMDS="$(printf '%s\n' "$C1_FULL" | grep -v '^#')"
+
+# C2: merge + explicit --profile debug => profile=debug (explicit wins)
+C2_FULL="$(DF_VERIFY_ROLE=merge bash "$REPO_ROOT/scripts/verify.sh" test --scope all --profile debug --print-plan)"
+C2_CMDS="$(printf '%s\n' "$C2_FULL" | grep -v '^#')"
+
+# C2b: merge + explicit --profile release => profile=release (explicit wins; never coerced to both)
+C2B_FULL="$(DF_VERIFY_ROLE=merge bash "$REPO_ROOT/scripts/verify.sh" test --scope all --profile release --print-plan)"
+C2B_CMDS="$(printf '%s\n' "$C2B_FULL" | grep -v '^#')"
+
+# C3: task + no explicit --profile => profile=debug (task role unchanged)
+C3_FULL="$(DF_VERIFY_ROLE=task bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan)"
+C3_CMDS="$(printf '%s\n' "$C3_FULL" | grep -v '^#')"
+
+# C3b: unset DF_VERIFY_ROLE + no explicit --profile => profile=debug (unset defaults to task)
+C3B_FULL="$(env -u DF_VERIFY_ROLE bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan)"
+C3B_CMDS="$(printf '%s\n' "$C3B_FULL" | grep -v '^#')"
+
+# --- C1: merge + no --profile => both ---
+assert "C1: merge+no-profile: header shows profile=both" \
+    bash -c 'printf "%s\n" "$1" | grep "^# verify.sh plan" | grep -q "profile=both"' \
+    _ "$C1_FULL"
+
+assert "C1: merge+no-profile: a release workspace pass is present" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace.*--release"' \
+    _ "$C1_CMDS"
+
+assert "C1: merge+no-profile: a non-release (debug) pass is also present" \
+    bash -c 'printf "%s\n" "$1" | grep -E "cargo (test|nextest run) --workspace" | grep -qv -- "--release"' \
+    _ "$C1_CMDS"
+
+# --- C2: merge + explicit --profile debug => debug (explicit wins) ---
+assert "C2: merge+--profile debug: header shows profile=debug (explicit wins)" \
+    bash -c 'printf "%s\n" "$1" | grep "^# verify.sh plan" | grep -q "profile=debug"' \
+    _ "$C2_FULL"
+
+assert "C2: merge+--profile debug: no release workspace pass (explicit wins)" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace.*--release"' \
+    _ "$C2_CMDS"
+
+# --- C2b: merge + explicit --profile release => release (fully authoritative) ---
+assert "C2b: merge+--profile release: header shows profile=release (explicit fully authoritative)" \
+    bash -c 'printf "%s\n" "$1" | grep "^# verify.sh plan" | grep -q "profile=release"' \
+    _ "$C2B_FULL"
+
+# --- C3: task + no --profile => debug ---
+assert "C3: task+no-profile: header shows profile=debug" \
+    bash -c 'printf "%s\n" "$1" | grep "^# verify.sh plan" | grep -q "profile=debug"' \
+    _ "$C3_FULL"
+
+assert "C3: task+no-profile: no release workspace pass" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace.*--release"' \
+    _ "$C3_CMDS"
+
+# --- C3b: unset role + no --profile => debug ---
+assert "C3b: unset-role+no-profile: header shows profile=debug (unset defaults to task)" \
+    bash -c 'printf "%s\n" "$1" | grep "^# verify.sh plan" | grep -q "profile=debug"' \
+    _ "$C3B_FULL"
 
 test_summary

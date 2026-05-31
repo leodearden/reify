@@ -102,6 +102,9 @@
 // OCCT distance
 #include <BRepExtrema_DistShapeShape.hxx>
 
+// OCCT solid classifier (contains / BRepClass3d_SolidClassifier)
+#include <BRepClass3d_SolidClassifier.hxx>
+
 // OCCT conformance queries
 #include <BRepCheck_Analyzer.hxx>
 #include <ShapeAnalysis_Shell.hxx>
@@ -117,6 +120,11 @@
 
 // OCCT local surface properties (curvature via GeomLProp_SLProps)
 #include <GeomLProp_SLProps.hxx>
+
+// OCCT local curve properties (curvature via BRepLProp_CLProps) — KGQ-μ
+#include <BRepLProp_CLProps.hxx>
+// OCCT curve projection (project world point to curve parameter) — KGQ-μ
+#include <GeomAPI_ProjectPointOnCurve.hxx>
 
 // OCCT BRep serialization
 #include <BRepTools.hxx>
@@ -2773,6 +2781,37 @@ Point3 surface_normal_at(const OcctShape& shape, double u, double v) {
     });
 }
 
+Point3 surface_normal_at_point(const OcctShape& shape, double px, double py, double pz) {
+    return wrap_occt_call("surface_normal_at_point", [&]() {
+        if (shape.shape.ShapeType() != TopAbs_FACE) {
+            throw std::runtime_error(
+                "surface_normal_at_point: shape is not a face"
+            );
+        }
+        TopoDS_Face face = TopoDS::Face(shape.shape);
+        if (face.IsNull()) {
+            throw std::runtime_error("surface_normal_at_point: face is null");
+        }
+        Handle(Geom_Surface) surf = BRep_Tool::Surface(face);
+        if (surf.IsNull()) {
+            throw std::runtime_error(
+                "surface_normal_at_point: face has no underlying surface"
+            );
+        }
+        // Project the Cartesian query point to (u, v) via ValueOfUV — same
+        // approach as face_outward_unit_normal (centroid path). The tolerance
+        // 1e-9 matches the centroid projection in face_outward_unit_normal.
+        ShapeAnalysis_Surface analyzer(surf);
+        gp_Pnt2d uv = analyzer.ValueOfUV(gp_Pnt(px, py, pz), 1e-9);
+        // Delegate to the shared orientation-aware normal helper; the REVERSED-
+        // flip outward convention is shared with query_face_normal / surface_normal_at.
+        gp_Vec n = face_outward_unit_normal_at_uv(
+            face, uv.X(), uv.Y(), "surface_normal_at_point"
+        );
+        return Point3{ n.X(), n.Y(), n.Z() };
+    });
+}
+
 CurvatureProps curvature_at(const OcctShape& shape, double u, double v) {
     return wrap_occt_call("curvature_at", [&]() {
         if (shape.shape.ShapeType() != TopAbs_FACE) {
@@ -2916,6 +2955,67 @@ CurvatureProps curvature_at(const OcctShape& shape, double u, double v) {
         Point3 dmin_pt{ d_min.X(), d_min.Y(), d_min.Z() };
         Point3 dmax_pt{ d_max.X(), d_max.Y(), d_max.Z() };
         return CurvatureProps{ K, H, kappa_min, kappa_max, dmin_pt, dmax_pt };
+    });
+}
+
+/// Signed curvature of an edge (curve) at the closest point on the curve to
+/// the world-space query point `(px, py, pz)`.
+///
+/// Algorithm:
+///   (a) Verify the shape is a `TopoDS_EDGE`; extract the underlying
+///       `Geom_Curve` via `BRep_Tool::Curve(edge, f, l)`.
+///   (b) Project `(px, py, pz)` onto the curve in parameter range [f, l]
+///       via `GeomAPI_ProjectPointOnCurve`; use the nearest-point parameter.
+///   (c) Evaluate curvature at that parameter via `BRepLProp_CLProps` (order=2).
+///
+/// Sign convention follows the Frenet frame: positive curvature bends toward
+/// the principal normal. For a circle in the XY plane the sign is positive.
+///
+/// Throws `std::runtime_error` if:
+/// - `shape` is not an edge,
+/// - the edge has no underlying curve (degenerate edge),
+/// - projection yields no nearest point (should not occur for bounded curves),
+/// - the tangent is undefined at the projected parameter (degenerate point).
+double curve_curvature_at(const OcctShape& shape, double px, double py, double pz) {
+    return wrap_occt_call("curve_curvature_at", [&]() {
+        if (shape.shape.ShapeType() != TopAbs_EDGE) {
+            throw std::runtime_error("curve_curvature_at: shape is not an edge");
+        }
+        TopoDS_Edge edge = TopoDS::Edge(shape.shape);
+        if (edge.IsNull()) {
+            throw std::runtime_error("curve_curvature_at: edge is null");
+        }
+
+        // Extract the underlying geometric curve and its parameter range.
+        // BRep_Tool::Curve applies the edge's TopLoc_Location so the curve
+        // is already in world frame — consistent with BRepAdaptor_Curve.
+        double f = 0.0, l = 0.0;
+        Handle(Geom_Curve) geom_curve = BRep_Tool::Curve(edge, f, l);
+        if (geom_curve.IsNull()) {
+            throw std::runtime_error(
+                "curve_curvature_at: edge has no underlying curve (degenerate edge)"
+            );
+        }
+
+        // Project the world-space query point to the nearest parameter on [f, l].
+        GeomAPI_ProjectPointOnCurve projector(gp_Pnt(px, py, pz), geom_curve, f, l);
+        if (projector.NbPoints() == 0) {
+            throw std::runtime_error(
+                "curve_curvature_at: point projection failed (no nearest point found)"
+            );
+        }
+        double t = projector.LowerDistanceParameter();
+
+        // Evaluate curvature at t.  BRepAdaptor_Curve honours TopLoc_Location
+        // consistently with BRep_Tool::Curve above.  Order=2 → curvature available.
+        BRepAdaptor_Curve adaptor(edge);
+        BRepLProp_CLProps clprops(adaptor, t, 2, Precision::Confusion());
+        if (!clprops.IsTangentDefined()) {
+            throw std::runtime_error(
+                "curve_curvature_at: tangent undefined at projected parameter (degenerate point)"
+            );
+        }
+        return clprops.Curvature();
     });
 }
 
@@ -3163,6 +3263,126 @@ bool point_on_shape(const OcctShape& shape, double px, double py, double pz, dou
             throw std::runtime_error("point_on_shape: no solution found");
         }
         return dist.Value() <= tolerance;
+    });
+}
+
+bool contains_solid(const OcctShape& shape, double px, double py, double pz, double tolerance) {
+    // Validate tolerance: negative or non-finite silently produce wrong results.
+    // Mirrors the `point_on_shape` precondition check.
+    if (!(std::isfinite(tolerance) && tolerance >= 0.0)) {
+        throw std::runtime_error(
+            "contains_solid: tolerance must be a non-negative finite value");
+    }
+    return wrap_occt_call("contains_solid", [&]() {
+        BRepClass3d_SolidClassifier classifier(shape.shape);
+        classifier.Perform(gp_Pnt(px, py, pz), tolerance);
+        TopAbs_State s = classifier.State();
+        // Closed-solid membership: both interior (IN) and boundary (ON) points
+        // are considered "contained". Only OUT returns false.
+        return s == TopAbs_IN || s == TopAbs_ON;
+    });
+}
+
+bool geo_equiv_topo_sample(const OcctShape& a, const OcctShape& b,
+                           double tolerance, size_t sample_count) {
+    // STRICT-VARIANT NOTE: This is the asymmetric sampled-point geo_equiv (PRD §5.1,
+    // KGQ-δ).  A future `geo_equiv_strict` using symmetric Hausdorff distance is
+    // deferred to v0.4 per PRD §5.1 + Open Question §10.
+    //
+    // Validate tolerance: must be strictly positive and finite.  A zero tolerance
+    // makes tol_sq = 0 and causes `pa.SquareDistance(pb) >= tol_sq` to be true even
+    // for exactly-coincident points (0 >= 0), so geo_equiv(a, a, 0) would return
+    // false — a confusing trap.  Negative or non-finite values are similarly
+    // meaningless as a distance bound.
+    if (!(std::isfinite(tolerance) && tolerance > 0.0)) {
+        throw std::runtime_error(
+            "geo_equiv_topo_sample: tolerance must be a strictly positive finite value");
+    }
+    return wrap_occt_call("geo_equiv_topo_sample", [&]() -> bool {
+        // (1) Topology check: compare per-kind counts for vertex, edge, and face.
+        // A count mismatch means the shapes cannot be equivalent — return false
+        // without reaching the sampling step.
+        for (TopAbs_ShapeEnum kind : {TopAbs_VERTEX, TopAbs_EDGE, TopAbs_FACE}) {
+            TopTools_IndexedMapOfShape ma, mb;
+            TopExp::MapShapes(a.shape, kind, ma);
+            TopExp::MapShapes(b.shape, kind, mb);
+            if (ma.Extent() != mb.Extent()) {
+                return false;
+            }
+        }
+
+        if (sample_count == 0) {
+            return true;
+        }
+
+        const double tol_sq = tolerance * tolerance;
+
+        // (2) Face sampling in canonical face_map() order.
+        //
+        // V0.1 KNOWN LIMITATION — canonical-order pairing: faces are matched by
+        // TopExp::MapShapes index (FindKey(i) of a vs FindKey(i) of b).  This assumes
+        // both shapes enumerate faces in the same canonical order.  For shapes built via
+        // different op sequences or boolean histories, OCCT's map ordering is not
+        // guaranteed to align, so non-corresponding faces may be paired, producing false
+        // negatives.  A future improvement should pair faces by nearest-centroid/bbox
+        // matching rather than raw map index.
+        //
+        // V0.1 KNOWN LIMITATION — diagonal-only sampling: points are evaluated along
+        // the parametric diagonal (u = u1+t*(u2-u1), v = v1+t*(v2-v1)) for N values
+        // of t in [0,1].  Off-diagonal UV deviations are not covered — two faces that
+        // differ only away from the corner-to-corner line may compare as equivalent
+        // (false positive).  For the box/cylinder fixtures in tests this is benign, but
+        // callers should treat geo_equiv as a heuristic rather than an exact predicate.
+        // A future `geo_equiv_strict` (PRD §5.1, Open Question §10) will use symmetric
+        // Hausdorff distance.
+        //
+        // For each pair of corresponding faces, evaluate `sample_count` uniform
+        // parameter points along the UV diagonal on both and check |p_a − p_b|² < tol².
+        const TopTools_IndexedMapOfShape& fa = a.face_map();
+        const TopTools_IndexedMapOfShape& fb = b.face_map();
+        for (Standard_Integer i = 1; i <= fa.Extent(); ++i) {
+            BRepAdaptor_Surface sa(TopoDS::Face(fa.FindKey(i)));
+            BRepAdaptor_Surface sb(TopoDS::Face(fb.FindKey(i)));
+            double u1a = sa.FirstUParameter(), u2a = sa.LastUParameter();
+            double v1a = sa.FirstVParameter(), v2a = sa.LastVParameter();
+            double u1b = sb.FirstUParameter(), u2b = sb.LastUParameter();
+            double v1b = sb.FirstVParameter(), v2b = sb.LastVParameter();
+            for (size_t j = 0; j < sample_count; ++j) {
+                double t = (sample_count > 1)
+                    ? static_cast<double>(j) / static_cast<double>(sample_count - 1)
+                    : 0.5;
+                gp_Pnt pa = sa.Value(u1a + t * (u2a - u1a), v1a + t * (v2a - v1a));
+                gp_Pnt pb = sb.Value(u1b + t * (u2b - u1b), v1b + t * (v2b - v1b));
+                if (pa.SquareDistance(pb) >= tol_sq) {
+                    return false;
+                }
+            }
+        }
+
+        // (3) Edge sampling in canonical edge_map() order.
+        // Same canonical-order pairing limitation as faces (see above).
+        // For each pair of corresponding edges, evaluate `sample_count` uniform
+        // t parameter points on both and check |p_a − p_b|² < tol².
+        const TopTools_IndexedMapOfShape& ea = a.edge_map();
+        const TopTools_IndexedMapOfShape& eb = b.edge_map();
+        for (Standard_Integer i = 1; i <= ea.Extent(); ++i) {
+            BRepAdaptor_Curve ca(TopoDS::Edge(ea.FindKey(i)));
+            BRepAdaptor_Curve cb(TopoDS::Edge(eb.FindKey(i)));
+            double t1a = ca.FirstParameter(), t2a = ca.LastParameter();
+            double t1b = cb.FirstParameter(), t2b = cb.LastParameter();
+            for (size_t j = 0; j < sample_count; ++j) {
+                double t = (sample_count > 1)
+                    ? static_cast<double>(j) / static_cast<double>(sample_count - 1)
+                    : 0.5;
+                gp_Pnt pa = ca.Value(t1a + t * (t2a - t1a));
+                gp_Pnt pb = cb.Value(t1b + t * (t2b - t1b));
+                if (pa.SquareDistance(pb) >= tol_sq) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
     });
 }
 
