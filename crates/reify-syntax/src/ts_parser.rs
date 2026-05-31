@@ -703,13 +703,17 @@ impl<'a> Lowering<'a> {
             .collect()
     }
 
-    /// Lower a type_expr node to a TypeExpr. Handles both bare identifiers and parameterized types.
+    /// Lower a type_expr node to a TypeExpr. Handles bare identifiers, parameterized types,
+    /// and qualified associated-type paths (`Beam::Material`, `Beam::(HasMaterial::Material)`).
     fn lower_type_expr_node(&self, node: tree_sitter::Node) -> TypeExpr {
         if node.kind() == "type_expr" {
-            // type_expr is choice(parameterized_type, identifier)
+            // type_expr is choice(parameterized_type, qualified_type, identifier)
             let child = node.child(0).unwrap_or(node);
             if child.kind() == "parameterized_type" {
                 return self.lower_parameterized_type(child);
+            }
+            if child.kind() == "qualified_type" {
+                return self.lower_qualified_type(child);
             }
             // bare identifier
             TypeExpr {
@@ -721,6 +725,8 @@ impl<'a> Lowering<'a> {
             }
         } else if node.kind() == "parameterized_type" {
             self.lower_parameterized_type(node)
+        } else if node.kind() == "qualified_type" {
+            self.lower_qualified_type(node)
         } else {
             // treat as bare identifier
             TypeExpr {
@@ -730,6 +736,72 @@ impl<'a> Lowering<'a> {
                 },
                 span: self.span(node),
             }
+        }
+    }
+
+    /// Lower a `qualified_type` CST node to a `TypeExpr`.
+    ///
+    /// Handles two grammar forms (FORK-G):
+    /// - Bare:           `Beam::Material`           → `QualifiedAssoc { base: Named("Beam"), trait_name: None,               member: "Material" }`
+    /// - Disambiguated:  `Beam::(HasMaterial::Material)` → `QualifiedAssoc { base: Named("Beam"), trait_name: Some("HasMaterial"), member: "Material" }`
+    ///
+    /// Resolution to a concrete `Type` is deferred to task ιₑ — this function emits the
+    /// unresolved AST node only.
+    fn lower_qualified_type(&self, node: tree_sitter::Node) -> TypeExpr {
+        // `base` field: the leading identifier (e.g. "Beam" or a type-param "T").
+        //
+        // Under well-formed input the `base` field is always present.  Under
+        // tree-sitter error recovery it may be absent; rather than silently
+        // substituting the whole-node text (which would produce a structurally-
+        // valid but semantically wrong QualifiedAssoc), we log a debug warning so
+        // the malformed input is visible in debug builds.
+        let base_node = match node.child_by_field_name("base") {
+            Some(n) => n,
+            None => {
+                debug_assert!(
+                    false,
+                    "lower_qualified_type: missing `base` field in node '{}' at {:?} — \
+                     likely tree-sitter error-recovery output; substituting whole-node text",
+                    node.kind(),
+                    node.range(),
+                );
+                node
+            }
+        };
+        let base = Box::new(TypeExpr {
+            kind: TypeExprKind::Named {
+                name: self.node_text(base_node).to_string(),
+                type_args: vec![],
+            },
+            span: self.span(base_node),
+        });
+
+        // `trait` field: present only for the disambiguated form `(Trait::Member)`.
+        let trait_name = node
+            .child_by_field_name("trait")
+            .map(|n| self.node_text(n).to_string());
+
+        // `member` field: the associated-type name (present in both forms).
+        //
+        // Under tree-sitter error recovery this field may be absent; an empty
+        // string would be a silent wrong result, so we assert in debug builds.
+        let member = match node.child_by_field_name("member") {
+            Some(n) => self.node_text(n).to_string(),
+            None => {
+                debug_assert!(
+                    false,
+                    "lower_qualified_type: missing `member` field in node '{}' at {:?} — \
+                     likely tree-sitter error-recovery output; using empty string",
+                    node.kind(),
+                    node.range(),
+                );
+                String::new()
+            }
+        };
+
+        TypeExpr {
+            kind: TypeExprKind::QualifiedAssoc { base, trait_name, member },
+            span: self.span(node),
         }
     }
 

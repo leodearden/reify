@@ -244,6 +244,9 @@ pub(crate) fn resolve_dimension_type(
         // Auto type-args (e.g. `auto: Seal`) cannot be resolved to a dimension;
         // resolution semantics are deferred to task 3477/3558.
         reify_ast::TypeExprKind::Auto { .. } => return None,
+        // Qualified assoc-type refs (e.g. `Beam::Material`) cannot be resolved to
+        // a dimension here; resolution deferred to task ιₑ.
+        reify_ast::TypeExprKind::QualifiedAssoc { .. } => return None,
     };
     // Scan the shared table (name → dimension direction).
     if let Some((dim, _)) = reify_core::NAMED_DIMENSIONS
@@ -824,6 +827,9 @@ pub(crate) fn resolve_type_alias_expr(
         // Auto type-args (e.g. `auto: Seal`) cannot be resolved to a concrete type here;
         // resolution semantics are deferred to task 3477/3558.
         reify_ast::TypeExprKind::Auto { .. } => None,
+        // Qualified assoc-type refs (e.g. `Beam::Material`) cannot be resolved here;
+        // resolution deferred to task ιₑ.
+        reify_ast::TypeExprKind::QualifiedAssoc { .. } => None,
     }
 }
 
@@ -884,6 +890,9 @@ pub(crate) fn resolve_type_alias_expr_to_dimension(
         // Auto type-args cannot be resolved to a dimension;
         // resolution semantics are deferred to task 3477/3558.
         reify_ast::TypeExprKind::Auto { .. } => None,
+        // Qualified assoc-type refs cannot be resolved to a dimension here;
+        // resolution deferred to task ιₑ.
+        reify_ast::TypeExprKind::QualifiedAssoc { .. } => None,
     }
 }
 
@@ -918,6 +927,9 @@ pub(crate) fn resolve_type_expr_with_aliases(
         // Auto type-args cannot be resolved to a concrete type here;
         // resolution semantics are deferred to task 3477/3558.
         reify_ast::TypeExprKind::Auto { .. } => return None,
+        // Qualified assoc-type refs cannot be resolved here;
+        // resolution deferred to task ιₑ.
+        reify_ast::TypeExprKind::QualifiedAssoc { .. } => return None,
     };
     // Check parameterized builtins (List<T>, Set<T>, Map<K,V>, Option<T>)
     if !type_args.is_empty()
@@ -1212,6 +1224,9 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
         // Auto type-args cannot be resolved to a concrete type here;
         // resolution semantics are deferred to task 3477/3558.
         reify_ast::TypeExprKind::Auto { .. } => None,
+        // Qualified assoc-type refs cannot be resolved here;
+        // resolution deferred to task ιₑ.
+        reify_ast::TypeExprKind::QualifiedAssoc { .. } => None,
     }
 }
 
@@ -1660,6 +1675,9 @@ pub(crate) fn resolve_type_alias_expr_to_dim_with_subst(
         // Auto type-args cannot be resolved to a dimension;
         // resolution semantics are deferred to task 3477/3558.
         reify_ast::TypeExprKind::Auto { .. } => None,
+        // Qualified assoc-type refs cannot be resolved to a dimension here;
+        // resolution deferred to task ιₑ.
+        reify_ast::TypeExprKind::QualifiedAssoc { .. } => None,
     }
 }
 
@@ -1683,6 +1701,25 @@ pub(crate) fn collect_type_expr_names(type_expr: &reify_ast::TypeExpr) -> Vec<St
         // trait/type-name references are preserved in dependency graphs.
         // Resolution semantics are deferred to task 3477/3558; only the name is surfaced here.
         reify_ast::TypeExprKind::Auto { bound, .. } => vec![bound.clone()],
+        // Qualified assoc-type refs contribute the base names (recursed), the member name,
+        // and the trait disambiguator name (if present) so that dep-graph edges are preserved.
+        // Resolution is deferred to task ιₑ.
+        //
+        // Note: `member` and `trait_name` are not top-level type names; they are the
+        // associated-type member and optional trait-disambiguation identifiers within a
+        // `Base::Member` / `Base::(Trait::Member)` path.  They are included here
+        // intentionally to ensure forward-compatibility dep-graph edges — the sole current
+        // consumer (alias-dependency resolution) filters by `alias_decls.contains_key`, so
+        // spurious entries are harmless today.  Task ιₑ will replace this placeholder with
+        // proper resolved-assoc-type dep tracking and can narrow the set at that point.
+        reify_ast::TypeExprKind::QualifiedAssoc { base, trait_name, member } => {
+            let mut names = collect_type_expr_names(base);
+            names.push(member.clone());
+            if let Some(t) = trait_name {
+                names.push(t.clone());
+            }
+            names
+        }
     }
 }
 
@@ -1785,16 +1822,18 @@ pub(crate) fn convert_type_params(
                 .collect();
             // Resolve defaults: try builtin types first, then preserve
             // structure names as StructureRef (concrete names, not type variables).
-            // DimensionalOp cannot appear as a type-parameter default — the grammar
-            // only allows Named nodes in that position, so this arm is unreachable.
-            let default = d.default.as_ref().map(|te| match &te.kind {
+            // DimensionalOp/IntegerLiteral/Auto cannot appear as type-parameter defaults —
+            // the grammar restricts those to type_arg_list slots, so those arms are unreachable.
+            // QualifiedAssoc defaults (e.g. `T = Beam::Material`) are valid grammar but
+            // resolution to a concrete Type is deferred to task ιₑ; they produce None here.
+            let default = d.default.as_ref().and_then(|te| match &te.kind {
                 reify_ast::TypeExprKind::Named { name, .. } => {
-                    resolve_type_name(name).unwrap_or_else(|| Type::StructureRef(name.clone()))
+                    Some(resolve_type_name(name).unwrap_or_else(|| Type::StructureRef(name.clone())))
                 }
                 reify_ast::TypeExprKind::DimensionalOp { .. } => {
                     unreachable!(
                         "dimensional operator cannot appear as a type-parameter default; \
-                             the parser only emits Named nodes for type-param defaults"
+                             the grammar restricts dimensional operators to type_arg_list slots"
                     )
                 }
                 reify_ast::TypeExprKind::IntegerLiteral(_) => {
@@ -1809,6 +1848,9 @@ pub(crate) fn convert_type_params(
                              the grammar restricts auto_type_arg to type_arg_list slots"
                     )
                 }
+                // QualifiedAssoc defaults (e.g. `structure def Foo<T = Beam::Material>`) are
+                // valid grammar; resolution to a concrete Type is deferred to task ιₑ.
+                reify_ast::TypeExprKind::QualifiedAssoc { .. } => None,
             });
             reify_ir::TypeParam {
                 name: d.name.clone(),
@@ -2114,6 +2156,34 @@ mod tests {
         assert!(
             reg.should_emit_skipped_parametric_prelude_info("Vec", span_c),
             "Vec on span_c should return true — non-skipped name must not pollute emitted-spans set"
+        );
+    }
+
+    /// `structure def Foo<T = Beam::Material>` parses to a `QualifiedAssoc` default.
+    /// `convert_type_params` must defer gracefully (default = None) rather than
+    /// panicking — resolution is deferred to task ιₑ.
+    #[test]
+    fn convert_type_params_qualified_assoc_default_defers_to_none() {
+        let span = reify_core::SourceSpan::new(0, 0);
+        let decl = reify_ast::TypeParamDecl {
+            name: "T".into(),
+            bounds: vec![],
+            default: Some(reify_ast::TypeExpr {
+                kind: reify_ast::TypeExprKind::QualifiedAssoc {
+                    base: Box::new(named_type_expr("Beam")),
+                    trait_name: None,
+                    member: "Material".into(),
+                },
+                span,
+            }),
+            span,
+        };
+        let result = convert_type_params(&[decl]);
+        assert_eq!(result.len(), 1, "expected one TypeParam");
+        assert_eq!(result[0].name, "T");
+        assert_eq!(
+            result[0].default, None,
+            "QualifiedAssoc default must be deferred (None) until task ιₑ resolves it"
         );
     }
 }

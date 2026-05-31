@@ -2788,6 +2788,9 @@ pub(crate) fn compile_expr_guarded(
                         // Auto type-args cannot be used as lambda param types;
                         // resolution semantics are deferred to task 3477/3558.
                         reify_ast::TypeExprKind::Auto { .. } => None,
+                        // Qualified assoc-type refs cannot be used as lambda param types here;
+                        // resolution deferred to task ιₑ.
+                        reify_ast::TypeExprKind::QualifiedAssoc { .. } => None,
                     };
                     if let Some(name) = name_opt {
                         match resolve_type_name(name) {

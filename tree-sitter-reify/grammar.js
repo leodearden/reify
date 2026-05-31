@@ -18,6 +18,34 @@ function callTail($) {
   return seq('(', optional($.argument_list), ')');
 }
 
+/**
+ * The set of member alternatives shared by `_member` and `_guard_member`.
+ * Keeping them in a single source of truth prevents the two lists from
+ * silently drifting when a new member form is added to one but forgotten in
+ * the other.  `_member` adds `$.associated_type` on top; `_guard_member`
+ * intentionally excludes it.
+ */
+function commonMembers($) {
+  return [
+    $.param_declaration,
+    $.let_declaration,
+    $.constraint_instantiation,
+    $.constraint_declaration,
+    $.sub_declaration,
+    $.minimize_declaration,
+    $.maximize_declaration,
+    $.guarded_block,
+    $.port_declaration,
+    $.connect_statement,
+    $.chain_statement,
+    $.forall_statement,
+    $.meta_block,
+    $.annotation,
+    $.pragma,
+    $.match_arm_decl_block,
+  ];
+}
+
 module.exports = grammar({
   name: 'reify',
 
@@ -464,22 +492,14 @@ module.exports = grammar({
     ),
 
     _member: $ => choice(
-      $.param_declaration,
-      $.let_declaration,
-      $.constraint_instantiation,
-      $.constraint_declaration,
-      $.sub_declaration,
-      $.minimize_declaration,
-      $.maximize_declaration,
-      $.guarded_block,
-      $.port_declaration,
-      $.connect_statement,
-      $.chain_statement,
-      $.forall_statement,
-      $.meta_block,
-      $.annotation,
-      $.pragma,
-      $.match_arm_decl_block,
+      // Shared alternatives: see commonMembers() above.
+      ...commonMembers($),
+      // Associated-type binding in structure/occurrence bodies (task 3971 ιₐ).
+      // Mirrors the existing `$.associated_type` arm in `trait_member`; admits
+      // `type X = Concrete` inside structure/occurrence bodies so conformers can
+      // satisfy trait associated-type requirements.
+      // NOTE: `_guard_member` intentionally excludes this via commonMembers().
+      $.associated_type,
     ),
 
     // ── Meta block ──────────────────────────────────────────
@@ -521,13 +541,30 @@ module.exports = grammar({
     ),
 
     // ── Guarded block ─────────────────────────────────────
+    //
+    // Guarded blocks use `_guard_member` (not `_member`) so that
+    // `associated_type` bindings (`type X = Concrete`) are NOT admitted
+    // inside `where cond { ... }` blocks — they are only valid at structure/
+    // occurrence body level.  This mirrors the intent of the test
+    // `associated_type_in_block_guard_rejected_by_parser`.
     guarded_block: $ => seq(
       'where',
       field('condition', $._expression),
       '{',
-      repeat($._member),
+      repeat($._guard_member),
       '}',
-      optional(seq('else', '{', repeat($._member), '}')),
+      optional(seq('else', '{', repeat($._guard_member), '}')),
+    ),
+
+    // ── Guard-body member ─────────────────────────────────
+    // Shares commonMembers() with `_member` but omits `$.associated_type`:
+    // `associated_type` is only valid at structure/occurrence body level;
+    // guarded blocks are nested inside those bodies and must not admit type
+    // bindings.  Using the shared helper keeps the two lists in sync — any
+    // future member form added to commonMembers() appears here automatically.
+    _guard_member: $ => choice(
+      ...commonMembers($),
+      // NOTE: $.associated_type is intentionally absent here.
     ),
 
     // ── Param ───────────────────────────────────────────────
@@ -836,9 +873,45 @@ module.exports = grammar({
     ),
 
     // ── Types ───────────────────────────────────────────────
+    // type_expr admits three forms (task 3971 ιₐ adds qualified_type):
+    //   - bare identifier:      `Steel`, `T`, `Int`
+    //   - parameterized type:   `Box<T>`, `Tensor<2, 3, Force>`
+    //   - qualified type:       `Beam::Material`, `T::Material`,
+    //                           `Beam::(HasMaterial::Material)` (FORK-G disambiguator)
+    //
+    // All three share the `identifier` prefix; the lookahead token disambiguates:
+    //   '<'  → parameterized_type
+    //   '::' → qualified_type
+    //   else → bare identifier
+    // The existing [$.type_expr, $.parameterized_type] conflict (line 71) is
+    // sufficient.  `qualified_type` uses '::' as its second token, which is
+    // unambiguous from '<' and any identifier suffix, so tree-sitter does NOT
+    // request a new conflict entry for it.  (Confirmed: `tree-sitter generate`
+    // runs clean with no new unresolved-conflict errors after adding this rule.)
     type_expr: $ => choice(
       $.parameterized_type,
+      $.qualified_type,
       $.identifier,
+    ),
+
+    // Qualified type-expr: `Beam::Material` or `Beam::(HasMaterial::Material)`.
+    // Type-side analogue of value-side `qualified_access` (grammar.js:1312-1329).
+    // The parenthesized form encodes the FORK-G trait disambiguator (PRD §3.5 Phase 8).
+    // base is restricted to $.identifier (not $.type_expr) because all PRD forms
+    // have an identifier base; restricting minimises new GLR conflicts.
+    qualified_type: $ => seq(
+      field('base', $.identifier),
+      '::',
+      choice(
+        field('member', $.identifier),
+        seq(
+          '(',
+          field('trait', $.identifier),
+          '::',
+          field('member', $.identifier),
+          ')',
+        ),
+      ),
     ),
 
     // A type with type arguments: `Box<T>`, `Map<String, Int>`

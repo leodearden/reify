@@ -1,0 +1,11 @@
+// Fixture for task 3971 (trait-assoc-type ιₐ): structure-body associated-type binding.
+// Exercises `type X = Concrete` inside a structure body (the new _member arm).
+// The trait declaration uses the FORK-E form (type Name / type Name = Default)
+// which already parses today; only the structure-body binding is new.
+trait HasMaterial {
+    type Material
+}
+
+structure def Beam : HasMaterial {
+    type Material = Steel
+}

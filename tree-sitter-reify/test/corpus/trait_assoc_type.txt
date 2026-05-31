@@ -1,0 +1,111 @@
+; ── Task 3971: trait-assoc-type ιₐ — structure-body type binding + qualified type-expr ──
+; Corpus tests below document the CST shape for the two new associated-type
+; CONSUMPTION surfaces.  The canonical CI signal is the Rust integration tests
+; in tree-sitter-reify/src/lib.rs (test_structure_body_assoc_type_*,
+; test_qualified_type_expr_*, test_trait_assoc_type_regression_*).
+;
+; REGRESSION PIN tests (already GREEN): trait-body associated-type declaration.
+; NEW-FORM tests (RED until grammar step-2): structure-body binding + qualified_type.
+
+================================================================================
+REGRESSION — trait body associated type without default
+================================================================================
+
+trait T { type Material }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (trait_declaration
+    name: (identifier)
+    (trait_member
+      (associated_type
+        name: (identifier)))))
+
+================================================================================
+REGRESSION — trait body associated type with default
+================================================================================
+
+trait T { type Material = Steel }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (trait_declaration
+    name: (identifier)
+    (trait_member
+      (associated_type
+        name: (identifier)
+        default: (type_expr
+          (identifier))))))
+
+================================================================================
+Structure-body associated type binding (type X = Concrete)
+================================================================================
+
+structure S { type Material = Steel }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (associated_type
+      name: (identifier)
+      default: (type_expr
+        (identifier)))))
+
+================================================================================
+Qualified type-expr bare form (Beam::Material in param type position)
+================================================================================
+
+structure S { param m : Beam::Material }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (qualified_type
+          base: (identifier)
+          member: (identifier))))))
+
+================================================================================
+Qualified type-expr bare form (T::Material — type-param base)
+================================================================================
+
+structure S { param y : T::Material }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (qualified_type
+          base: (identifier)
+          member: (identifier))))))
+
+================================================================================
+FORK-G disambiguated qualified type-expr Beam::(HasMaterial::Material)
+================================================================================
+
+structure S { param n : Beam::(HasMaterial::Material) }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (qualified_type
+          base: (identifier)
+          trait: (identifier)
+          member: (identifier))))))
