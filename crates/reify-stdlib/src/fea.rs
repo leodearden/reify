@@ -30,7 +30,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use reify_core::Type;
+use reify_core::{Diagnostic, DiagnosticCode, Type};
 use reify_ir::{FieldSourceKind, SampledField, Value};
 
 /// Evaluate a multi-load-case FEA stdlib function by name.
@@ -320,6 +320,55 @@ fn linear_combine(args: &[Value]) -> Value {
     result_map.insert(Value::String("iterations".to_string()), Value::Undef);
 
     Value::Map(result_map)
+}
+
+/// Post-hoc classifier for `linear_combine` failures, mirroring
+/// `stackup::diagnose`. Called at the `eval_builtin` `Undef` site (which has no
+/// `EvalContext`/diagnostics sink of its own) to re-derive the specific
+/// multi-load-case error behind an `Undef` result and attach a stable
+/// `DiagnosticCode`.
+///
+/// Returns `Some(Diagnostic)` only for the task-#10 modes; every other `Undef`
+/// cause (and every other builtin name) returns `None`, so the result
+/// propagates silently — same discipline as `stackup::diagnose`'s
+/// 'Not diagnosed' set.
+///
+/// Check ordering mirrors `linear_combine`'s own `Undef` order (arity →
+/// cases_map → weights-map → empty-weights → unknown-case → incompatible-mesh)
+/// so the diagnosed reason matches the real failure cause.
+///
+/// **Diagnosed** (`linear_combine`):
+/// - `MultiLoadEmptyWeights` — weights map is empty
+///
+/// **Not diagnosed** (Undef propagates silently, no code):
+/// - arity error (`args.len() != 2`)
+/// - `args[0]` not a `MultiCaseResult`, or `args[1]` not a `Value::Map`
+/// - non-String weight key / non-numeric or non-finite weight value
+/// - case value not a Map / missing `displacement`|`stress` / non-Sampled field
+pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
+    // Only `linear_combine` produces these multi-load-case diagnostics.
+    if name != "linear_combine" {
+        return None;
+    }
+    if args.len() != 2 {
+        return None; // arity error handled elsewhere
+    }
+    // args[0] must be a MultiCaseResult; args[1] must be a Map. Either shape
+    // mismatch is left to silent-Undef (no task-specified message).
+    extract_cases_map(&args[0])?;
+    let weights_map = match &args[1] {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    if weights_map.is_empty() {
+        return Some(
+            Diagnostic::error(
+                "linear_combine: weights map is empty. Specify at least one weighted base case.",
+            )
+            .with_code(DiagnosticCode::MultiLoadEmptyWeights),
+        );
+    }
+    None
 }
 
 /// Compute von Mises equivalent stress per grid point for a 3×3 row-major
