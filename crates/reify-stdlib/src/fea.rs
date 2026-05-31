@@ -339,6 +339,8 @@ fn linear_combine(args: &[Value]) -> Value {
 ///
 /// **Diagnosed** (`linear_combine`):
 /// - `MultiLoadEmptyWeights` — weights map is empty
+/// - `MultiLoadUnknownCaseInWeights` — a weight references a case name absent
+///   from the `MultiCaseResult` (first such entry, in BTreeMap key order)
 ///
 /// **Not diagnosed** (Undef propagates silently, no code):
 /// - arity error (`args.len() != 2`)
@@ -355,7 +357,7 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
     }
     // args[0] must be a MultiCaseResult; args[1] must be a Map. Either shape
     // mismatch is left to silent-Undef (no task-specified message).
-    extract_cases_map(&args[0])?;
+    let cases_map = extract_cases_map(&args[0])?;
     let weights_map = match &args[1] {
         Value::Map(m) => m,
         _ => return None,
@@ -367,6 +369,50 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
             )
             .with_code(DiagnosticCode::MultiLoadEmptyWeights),
         );
+    }
+
+    // Mirror linear_combine's per-entry validation order so the diagnosed cause
+    // matches the real Undef cause. The first entry to fail a check is what
+    // linear_combine Undefs on: a non-String key or non-numeric / non-finite
+    // weight is left undiagnosed (None), exactly like stackup's 'Not diagnosed'
+    // set; the first entry with a valid key+weight but an unknown case name
+    // yields MultiLoadUnknownCaseInWeights.
+    for (name_val, weight_val) in weights_map {
+        let case_name = match name_val {
+            Value::String(s) => s,
+            _ => return None, // non-String key: linear_combine Undefs, undiagnosed
+        };
+        // Weight must be Real/Int/dimensionless-Scalar AND finite (mirrors the
+        // weight parse + is_finite guard in linear_combine).
+        let weight_ok = match weight_val {
+            Value::Real(r) => r.is_finite(),
+            Value::Int(_) => true,
+            Value::Scalar {
+                si_value,
+                dimension,
+            } if dimension.is_dimensionless() => si_value.is_finite(),
+            _ => false,
+        };
+        if !weight_ok {
+            return None; // non-numeric / non-finite weight: undiagnosed
+        }
+        if !cases_map.contains_key(&Value::String(case_name.clone())) {
+            let mut available: Vec<&str> = cases_map
+                .keys()
+                .filter_map(|k| match k {
+                    Value::String(s) => Some(s.as_str()),
+                    _ => None,
+                })
+                .collect();
+            available.sort_unstable();
+            let list = available.join(", ");
+            return Some(
+                Diagnostic::error(format!(
+                    "linear_combine: weights map references unknown case '{case_name}'. Available cases: [{list}]. Did you misspell the case name?"
+                ))
+                .with_code(DiagnosticCode::MultiLoadUnknownCaseInWeights),
+            );
+        }
     }
     None
 }
