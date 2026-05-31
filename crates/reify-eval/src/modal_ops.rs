@@ -832,8 +832,19 @@ pub(crate) struct ModalTrampolineRun {
 pub(crate) fn run_modal_analysis(
     value_inputs: &[Value],
     prior_warm_state: Option<&OpaqueState>,
-    _cancellation: &CancellationHandle,
+    cancellation: &CancellationHandle,
 ) -> ModalTrampolineRun {
+    // ── (0) cancellation checkpoint: on entry, before any mesh/assembly work ──
+    // Coarse cooperative cancellation (CN-contract §2 / PRD §6): poll at the two
+    // natural checkpoints — here on entry, and again after assembly/recovery just
+    // before the eigensolve (the costly step). Finer per-Lanczos-restart
+    // granularity would need a cancellation hook on reify-solver-elastic's
+    // `solve_eigen_shift_invert` (3-arg, no callback) — out of scope, owned by the
+    // buckling-eigensolver PRD; coarse polling satisfies CN-contract §2 / PRD §6.
+    if cancellation.is_cancelled() {
+        return ModalTrampolineRun { outcome: ComputeOutcome::Cancelled, reused_assembly: false };
+    }
+
     // ── (1) density guard — no M without a positive density (short-circuit) ──
     // The guard's degenerate outcome already carries new_warm_state = None, so a
     // missing density neither reuses nor donates a cache (reused_assembly = false).
@@ -910,6 +921,14 @@ pub(crate) fn run_modal_analysis(
         Some(cache) if cache.key.matches(&key) => (cache.assembly, true),
         _ => (assemble_modal_km(modal_mesh, density, &material), false),
     };
+
+    // Cancellation checkpoint: after assembly/recovery, before the costly
+    // eigensolve. A cancel observed here drops the (possibly freshly-assembled)
+    // matrices without donating them; run_compute_dispatch restores the prior
+    // warm state on a Cancelled outcome (so reused_assembly is reported false).
+    if cancellation.is_cancelled() {
+        return ModalTrampolineRun { outcome: ComputeOutcome::Cancelled, reused_assembly: false };
+    }
 
     // Free-DOF eigensolve over the reused-or-fresh assembly (the cheap half).
     let core = eigensolve_modal(&assembly, reference_direction, &bcs, &eigen_opts);
