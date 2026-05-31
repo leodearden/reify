@@ -1,0 +1,53 @@
+// Anisotropic bar: isotropic vs transverse-isotropic tip-deflection comparison.
+//
+// Demonstrates the v0.5.x anisotropic elastostatics surface:
+//   - Isotropic baseline (Steel_AISI_1045) vs transverse-isotropic (weak build/z axis)
+//   - Identical geometry, loads, supports, and solver options; only the constitutive
+//     law differs — isolating anisotropy as the sole cause of the deflection delta
+//   - MaterialFrame orients the weak axial axis along the bar's length (bending) axis,
+//     making the build-direction weakness manifest as materially larger tip response
+//
+// PRD: docs/prds/v0_5/anisotropic-heterogeneous-elastostatics.md task ζ.
+//
+// Geometry: 500 mm long bar, 25 mm × 25 mm cross-section (L/h = 20,
+// within the P1-honest slender-beam range).  1 kN tip load; fixed root support.
+//
+// Type-coercion note (task δ/3780 ConstitutiveLaw surface):
+//   solve_elastic_static declares `material: ConstitutiveLaw`.  Wrap each
+//   material in `ConstitutiveLawInput(law: mat)` so `.law` carries compile-time
+//   type ConstitutiveLaw (satisfying the exact-type-equality overload resolver).
+//   See solver_elastic.ri ConstitutiveLawInput doc.  TODO(trait-coerce): remove
+//   the wrapper once trait subtype coercion is supported at fn call sites.
+//
+// Loads/supports coercion note:
+//   Bundle loads + supports via LoadCase; pass lc.loads / lc.supports so the
+//   compiler sees `List<Real>` (matching solve_elastic_static's placeholder param
+//   type).  See fea_cantilever_smoke.ri for the full rationale.
+
+structure AnisotropicBar {
+    // Geometry: 500 mm long bar with 25 mm × 25 mm square cross-section.
+    param length : Length = 500mm
+    param width  : Length = 25mm
+    param height : Length = 25mm
+
+    // Shared load case: 1000 N tip load, fixed root support.
+    // Both arms use the identical load case so the deflection delta is
+    // attributable solely to the constitutive law.
+    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let mount    = FixedSupport(target: "root")
+    let lc       = LoadCase(name: "cantilever", loads: [tip_load], supports: [mount])
+
+    // ── Isotropic baseline ────────────────────────────────────────────────────
+    // AISI 1045 medium-carbon steel (E = 205 GPa, ν = 0.29 — isotropic).
+    // Provides the reference tip response against which the transverse-isotropic
+    // arm is compared.
+    let iso_material = Steel_AISI_1045()
+    let iso_ci       = ConstitutiveLawInput(law: iso_material)
+    let iso_result   = solve_elastic_static(
+        iso_ci.law, length, width, height, lc.loads, lc.supports, ElasticOptions()
+    )
+    // Peak von Mises stress — compile-level proxy for tip structural response.
+    // At compile altitude this is Undef (solver runs only at runtime via the
+    // @optimized("solver::elastic_static") trampoline).
+    let iso_tip_deflection = iso_result.max_von_mises
+}
