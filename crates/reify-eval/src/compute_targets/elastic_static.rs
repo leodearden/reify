@@ -1167,4 +1167,117 @@ mod tests {
             1.5 * sigma_analytic,
         );
     }
+
+    // ── step-3 RED (task α/4084): element_stress_anisotropic + extended CantileverFeaSolve ──
+
+    /// element_stress_anisotropic vM must match element_von_mises_anisotropic
+    /// (same D_global·ε computation, just different output shape).
+    ///
+    /// Uses a single-element unit tet with the orthotropic fixture; asserts
+    /// that the vM derived from the 3×3 tensor agrees to ≤1e-9 rel with the
+    /// scalar returned by element_von_mises_anisotropic.
+    ///
+    /// Compile-fails until step-4 adds element_stress_anisotropic.
+    #[test]
+    fn element_stress_anisotropic_vm_matches_anisotropic() {
+        let law = OrthotropicMaterial {
+            e1: 200e9_f64, e2: 10e9_f64, e3: 10e9_f64,
+            g12: 4e9_f64,  g13: 4e9_f64, g23: 4e9_f64,
+            nu12: 0.3_f64, nu13: 0.3_f64, nu23: 0.3_f64,
+        };
+        let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let aniso_mat = AnisotropicMaterial::from_law(&law, identity);
+        let d_global = aniso_mat.d_matrix_global();
+
+        // Unit tet: nodes at (0,0,0),(1,0,0),(0,1,0),(0,0,1) — deterministic
+        let phys: [[f64; 3]; 4] = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
+
+        // Non-zero displacement vector (non-degenerate stress state)
+        let u_e: [f64; 12] = [
+            0.0,    0.0,    0.0,
+            1e-4,   0.0,    0.0,
+            0.0,    1e-4,   0.0,
+            0.0,    0.0,    1e-4,
+        ];
+
+        // element_stress_anisotropic (new fn — compile-fails until step-4)
+        let sigma = element_stress_anisotropic(&phys, &d_global, &u_e);
+
+        // vM from the 3×3 tensor:
+        //   vM = sqrt(½·[(σxx-σyy)²+(σyy-σzz)²+(σzz-σxx)²+6·(σxy²+σyz²+σzx²)])
+        let (sxx, syy, szz) = (sigma[0][0], sigma[1][1], sigma[2][2]);
+        let (sxy, syz, szx) = (sigma[0][1], sigma[1][2], sigma[0][2]);
+        let vm_from_tensor = f64::sqrt(0.5 * (
+            (sxx - syy).powi(2)
+            + (syy - szz).powi(2)
+            + (szz - sxx).powi(2)
+            + 6.0 * (sxy * sxy + syz * syz + szx * szx)
+        ));
+
+        let vm_scalar = element_von_mises_anisotropic(&phys, &d_global, &u_e);
+
+        assert!(
+            vm_from_tensor.is_finite() && vm_from_tensor > 0.0,
+            "vM from tensor must be finite and positive; got {vm_from_tensor}"
+        );
+        let tol = 1e-9 * vm_scalar.abs().max(1.0);
+        assert!(
+            (vm_from_tensor - vm_scalar).abs() < tol,
+            "element_stress_anisotropic vM {vm_from_tensor:.6e} differs from \
+             element_von_mises_anisotropic {vm_scalar:.6e} by {:.3e} > tol {tol:.3e}",
+            (vm_from_tensor - vm_scalar).abs(),
+        );
+    }
+
+    /// Extended CantileverFeaSolve exposes tet_connectivity, nodal_stress, nx/ny/nz.
+    ///
+    /// Uses the orthotropic fixture (length=0.8, height=0.1 → nz=6, nx=48, ny=1).
+    /// Compile-fails until step-4 adds these fields to CantileverFeaSolve.
+    #[test]
+    fn cantilever_fea_solve_extended_fields() {
+        let law = OrthotropicMaterial {
+            e1: 200e9_f64, e2: 10e9_f64, e3: 10e9_f64,
+            g12: 4e9_f64,  g13: 4e9_f64, g23: 4e9_f64,
+            nu12: 0.3_f64, nu13: 0.3_f64, nu23: 0.3_f64,
+        };
+        let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let aniso_mat = AnisotropicMaterial::from_law(&law, identity);
+
+        let length = 0.8_f64;
+        let width  = 0.1_f64;
+        let height = 0.1_f64;
+
+        let (fea, _) = solve_cantilever_fea(
+            &MaterialModel::Anisotropic(aniso_mat),
+            length, width, height, 1000.0, None,
+        );
+
+        // Expected mesh counts: nz=6, nx=round(0.8/0.1*6)=48, ny=1
+        let nz_exp = 6usize;
+        let nx_exp = ((length / height * nz_exp as f64).round() as usize).max(1);
+        let ny_exp = 1usize;
+
+        assert_eq!(fea.nz, nz_exp, "nz");
+        assert_eq!(fea.ny, ny_exp, "ny");
+        assert_eq!(fea.nx, nx_exp, "nx");
+
+        let expected_n_tets = nx_exp * ny_exp * nz_exp * 6;
+        assert_eq!(
+            fea.tet_connectivity.len(),
+            expected_n_tets,
+            "tet_connectivity.len() should be n_tets={expected_n_tets}"
+        );
+
+        let expected_n_nodes = (nx_exp + 1) * (ny_exp + 1) * (nz_exp + 1);
+        assert_eq!(
+            fea.nodal_stress.len(),
+            expected_n_nodes,
+            "nodal_stress.len() should be n_nodes={expected_n_nodes}"
+        );
+    }
 }
