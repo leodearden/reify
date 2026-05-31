@@ -9707,6 +9707,53 @@ fn mode_shape_scale_degenerate_fallback() {
     }
 }
 
+// ── Task 4086 step-3: RED — fixture body realization ─────────────────────────
+//
+// Asserts that fea_cantilever_smoke.ri exposes a `body` cell as a
+// Value::GeometryHandle (deferred realization, GHR-β).
+//
+// FAILS until step-4 adds `let body = box(length, width, height)` to the fixture:
+// without the binding, no `body` cell exists in CheckResult.values.
+
+/// Fixture body cell: fea_cantilever_smoke.ri must contain a `body` binding
+/// that evaluates to a Value::GeometryHandle (deferred realization for δ to
+/// render the FEA contour onto).
+#[test]
+fn cantilever_fixture_realizes_body() {
+    use reify_ir::Value;
+
+    let source = include_str!("../../../../examples/fea_cantilever_smoke.ri");
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(source, "FeaCantileverSmoke")
+        .expect("load_from_source must succeed for fea_cantilever_smoke.ri");
+
+    let check = session
+        .last_check_for_test()
+        .expect("last_check_for_test must be Some after load_from_source");
+
+    let body_cell = ValueCellId::new("FeaCantileverSmoke", "body");
+    let body_val = check
+        .values
+        .get(&body_cell)
+        .unwrap_or_else(|| panic!(
+            "cell FeaCantileverSmoke.body not found in CheckResult.values; \
+             fixture is missing `let body = box(...)`. Present cells: {:?}",
+            check.values.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>()
+        ));
+
+    assert!(
+        matches!(body_val, Value::GeometryHandle { .. }),
+        "expected FeaCantileverSmoke.body to be Value::GeometryHandle (deferred realization), \
+         got: {:?}",
+        body_val
+    );
+}
+
 // ── Task 4086 step-1: RED — B4 dispatch (register_compute_fns not wired yet) ──
 //
 // Asserts that a GUI EngineSession produces a real (non-Undef) ElasticResult
