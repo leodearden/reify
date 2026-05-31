@@ -8973,4 +8973,200 @@ mod tests {
             "Option(None) must return None — falls through the `_ => None` arm"
         );
     }
+
+    // ── Value::Selector substrate tests (step-3 RED / task 4116 α) ───────────
+    //
+    // These tests reference GeometryHandleRef, SelectorValue, LeafQuery, SelectorNode,
+    // and Value::Selector which don't exist until step-4. They fail to compile
+    // until the step-4 implementation lands.
+    mod selector {
+        use super::*;
+        use reify_core::ty::{SelectorKind, Type};
+        use reify_core::identity::RealizationNodeId;
+        use crate::geometry::GeometryHandleId;
+        use crate::value::{GeometryHandleRef, SelectorValue, LeafQuery};
+
+        /// Build a GeometryHandleRef with the given fields.
+        fn ghr(entity: &str, index: u32, hash: [u8; 32], kernel_id: u64) -> GeometryHandleRef {
+            GeometryHandleRef {
+                realization_ref: RealizationNodeId::new(entity, index),
+                upstream_values_hash: hash,
+                kernel_handle: GeometryHandleId(kernel_id),
+            }
+        }
+
+        /// Build a Value::GeometryHandle for use with from_geometry_handle.
+        fn gh_value(entity: &str, index: u32, hash: [u8; 32], kernel_id: u64) -> Value {
+            Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new(entity, index),
+                upstream_values_hash: hash,
+                kernel_handle: GeometryHandleId(kernel_id),
+            }
+        }
+
+        // (a) GeometryHandleRef: from_geometry_handle extracts fields correctly;
+        //     kernel_handle excluded from Value-level equality.
+        #[test]
+        fn geometry_handle_ref_from_geometry_handle_extracts_fields() {
+            let v = gh_value("Bracket", 0, [7u8; 32], 42);
+            let r = GeometryHandleRef::from_geometry_handle(&v)
+                .expect("from_geometry_handle must return Some for Value::GeometryHandle");
+            assert_eq!(r.realization_ref.entity, "Bracket");
+            assert_eq!(r.realization_ref.index, 0);
+            assert_eq!(r.upstream_values_hash, [7u8; 32]);
+            assert_eq!(r.kernel_handle, GeometryHandleId(42));
+        }
+
+        #[test]
+        fn geometry_handle_ref_from_geometry_handle_non_gh_returns_none() {
+            // from_geometry_handle on a non-GeometryHandle variant returns None
+            assert!(GeometryHandleRef::from_geometry_handle(&Value::Real(1.0)).is_none());
+            assert!(GeometryHandleRef::from_geometry_handle(&Value::Int(0)).is_none());
+        }
+
+        #[test]
+        fn geometry_handle_ref_kernel_handle_excluded_from_selector_value_equality() {
+            // Two selectors whose target refs differ only in kernel_handle must
+            // compare equal (kernel_handle is ephemeral — GHR-β §DD).
+            let target_a = ghr("Bracket", 0, [7u8; 32], 42);
+            let target_b = ghr("Bracket", 0, [7u8; 32], 99); // different kernel_handle
+            let q = LeafQuery::ByNormal { dir: [0., 0., 1.], tol_rad: 0.01 };
+            let sv_a = SelectorValue::leaf(SelectorKind::Face, target_a, q.clone()).unwrap();
+            let sv_b = SelectorValue::leaf(SelectorKind::Face, target_b, q).unwrap();
+            let va = Value::Selector(sv_a);
+            let vb = Value::Selector(sv_b);
+            assert_eq!(va, vb,
+                "Value::Selector equality must exclude kernel_handle (GHR-β §DD)");
+            assert_eq!(
+                va.content_hash(),
+                vb.content_hash(),
+                "content_hash must exclude kernel_handle"
+            );
+        }
+
+        // (b) Type inference: Value::Selector carries SelectorKind; infer_type delegates.
+        #[test]
+        fn value_selector_infer_type_face() {
+            let target = ghr("B", 0, [0u8; 32], 1);
+            let q = LeafQuery::ByNormal { dir: [0., 0., 1.], tol_rad: 0.01 };
+            let sv = SelectorValue::leaf(SelectorKind::Face, target, q).unwrap();
+            let v = Value::Selector(sv);
+            assert_eq!(v.try_infer_type(), Some(Type::Selector(SelectorKind::Face)));
+            assert_eq!(v.infer_type(), Type::Selector(SelectorKind::Face));
+        }
+
+        #[test]
+        fn value_selector_infer_type_edge() {
+            let target = ghr("B", 0, [0u8; 32], 1);
+            let q = LeafQuery::ByLength { min_m: 0.0, max_m: 1.0 };
+            let sv = SelectorValue::leaf(SelectorKind::Edge, target, q).unwrap();
+            let v = Value::Selector(sv);
+            assert_eq!(v.try_infer_type(), Some(Type::Selector(SelectorKind::Edge)));
+            assert_eq!(v.infer_type(), Type::Selector(SelectorKind::Edge));
+        }
+
+        #[test]
+        fn value_selector_infer_type_body() {
+            let target = ghr("B", 0, [0u8; 32], 1);
+            let q = LeafQuery::All;
+            let sv = SelectorValue::leaf(SelectorKind::Body, target, q).unwrap();
+            let v = Value::Selector(sv);
+            assert_eq!(v.try_infer_type(), Some(Type::Selector(SelectorKind::Body)));
+        }
+
+        // (c) content_hash determinism: same selector hashes equal; different hashes differ.
+        #[test]
+        fn selector_value_content_hash_deterministic() {
+            let q = LeafQuery::ByNormal { dir: [0., 0., 1.], tol_rad: 0.01 };
+            let sv1 = SelectorValue::leaf(SelectorKind::Face, ghr("B", 0, [0u8; 32], 1), q.clone()).unwrap();
+            let sv2 = SelectorValue::leaf(SelectorKind::Face, ghr("B", 0, [0u8; 32], 1), q).unwrap();
+            assert_eq!(sv1.content_hash(), sv2.content_hash(),
+                "same construction must produce identical content_hash");
+        }
+
+        #[test]
+        fn selector_value_content_hash_differs_by_kind() {
+            let target = ghr("B", 0, [0u8; 32], 1);
+            let qf = LeafQuery::ByNormal { dir: [0., 0., 1.], tol_rad: 0.01 };
+            let qe = LeafQuery::ByLength { min_m: 0.0, max_m: 1.0 };
+            let sv_face = SelectorValue::leaf(SelectorKind::Face, target.clone(), qf).unwrap();
+            let sv_edge = SelectorValue::leaf(SelectorKind::Edge, target, qe).unwrap();
+            assert_ne!(sv_face.content_hash(), sv_edge.content_hash(),
+                "different kind must produce different content_hash");
+        }
+
+        #[test]
+        fn selector_value_content_hash_differs_by_query() {
+            let target = ghr("B", 0, [0u8; 32], 1);
+            let q1 = LeafQuery::ByNormal { dir: [0., 0., 1.], tol_rad: 0.01 };
+            let q2 = LeafQuery::ByNormal { dir: [1., 0., 0.], tol_rad: 0.01 };
+            let sv1 = SelectorValue::leaf(SelectorKind::Face, target.clone(), q1).unwrap();
+            let sv2 = SelectorValue::leaf(SelectorKind::Face, target, q2).unwrap();
+            assert_ne!(sv1.content_hash(), sv2.content_hash(),
+                "different query direction must produce different content_hash");
+        }
+
+        #[test]
+        fn selector_value_content_hash_union_ne_intersect() {
+            let target = ghr("B", 0, [0u8; 32], 1);
+            let q = LeafQuery::ByNormal { dir: [0., 0., 1.], tol_rad: 0.01 };
+            let leaf_a = SelectorValue::leaf(SelectorKind::Face, target.clone(), q.clone()).unwrap();
+            let leaf_b = SelectorValue::leaf(SelectorKind::Face, target, q).unwrap();
+            let union = SelectorValue::union(vec![leaf_a.clone(), leaf_b.clone()]).unwrap();
+            let intersect = SelectorValue::intersect(vec![leaf_a, leaf_b]).unwrap();
+            assert_ne!(union.content_hash(), intersect.content_hash(),
+                "Union and Intersect of same children must hash differently");
+        }
+
+        // (d) Value-level equality/round-trip.
+        #[test]
+        fn value_selector_clone_eq() {
+            let target = ghr("B", 0, [0u8; 32], 1);
+            let q = LeafQuery::ByNormal { dir: [0., 0., 1.], tol_rad: 0.01 };
+            let sv = SelectorValue::leaf(SelectorKind::Face, target, q).unwrap();
+            let v = Value::Selector(sv);
+            assert_eq!(v.clone(), v, "clone of Value::Selector must equal original");
+        }
+
+        #[test]
+        fn value_selector_equal_same_structure() {
+            let q = LeafQuery::ByNormal { dir: [0., 0., 1.], tol_rad: 0.01 };
+            let va = Value::Selector(
+                SelectorValue::leaf(SelectorKind::Face, ghr("B", 0, [0u8; 32], 1), q.clone()).unwrap()
+            );
+            let vb = Value::Selector(
+                SelectorValue::leaf(SelectorKind::Face, ghr("B", 0, [0u8; 32], 1), q).unwrap()
+            );
+            assert_eq!(va, vb, "identical selectors must compare equal");
+        }
+
+        #[test]
+        fn value_selector_union_ne_intersect() {
+            let target = ghr("B", 0, [0u8; 32], 1);
+            let q = LeafQuery::ByNormal { dir: [0., 0., 1.], tol_rad: 0.01 };
+            let leaf_a = SelectorValue::leaf(SelectorKind::Face, target.clone(), q.clone()).unwrap();
+            let leaf_b = SelectorValue::leaf(SelectorKind::Face, target, q).unwrap();
+            let vu = Value::Selector(SelectorValue::union(vec![leaf_a.clone(), leaf_b.clone()]).unwrap());
+            let vi = Value::Selector(SelectorValue::intersect(vec![leaf_a, leaf_b]).unwrap());
+            assert_ne!(vu, vi, "Union and Intersect of same children must be not equal");
+        }
+
+        // (e) Display for Value::Selector produces a non-empty stable string.
+        #[test]
+        fn value_selector_display_non_empty() {
+            let target = ghr("B", 0, [0u8; 32], 1);
+            let q = LeafQuery::ByNormal { dir: [0., 0., 1.], tol_rad: 0.01 };
+            let sv = SelectorValue::leaf(SelectorKind::Face, target, q).unwrap();
+            let v = Value::Selector(sv);
+            let s = format!("{}", v);
+            assert!(!s.is_empty(), "Display of Value::Selector must be non-empty");
+            // Second construction produces the same Display string (stable)
+            let target2 = ghr("B", 0, [0u8; 32], 1);
+            let q2 = LeafQuery::ByNormal { dir: [0., 0., 1.], tol_rad: 0.01 };
+            let sv2 = SelectorValue::leaf(SelectorKind::Face, target2, q2).unwrap();
+            let v2 = Value::Selector(sv2);
+            assert_eq!(format!("{}", v), format!("{}", v2),
+                "Display of equal selectors must produce identical strings");
+        }
+    }
 }
