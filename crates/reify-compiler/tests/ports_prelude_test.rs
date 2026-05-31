@@ -31,10 +31,21 @@ fn example_ports_prelude_ri_compiles_without_import() {
         .expect("failed to read examples/stdlib/ports_prelude.ri");
 
     // Guard: the example must demonstrate PRELUDE resolution, not import resolution.
+    // Check statement-leading lines only to avoid false positives from prose in
+    // doc-comments that happen to mention the text "import std.ports".
+    let std_ports_imports: Vec<&str> = source
+        .lines()
+        .filter(|l| {
+            let t = l.trim();
+            !t.starts_with("//") && t.starts_with("import") && t.contains("std.ports")
+        })
+        .collect();
     assert!(
-        !source.contains("import std.ports"),
+        std_ports_imports.is_empty(),
         "examples/stdlib/ports_prelude.ri must not contain `import std.ports` — \
-         Port/Directionality/RotaryPort must resolve from the implicit prelude"
+         Port/Directionality/RotaryPort must resolve from the implicit prelude; \
+         found: {:?}",
+        std_ports_imports
     );
 
     let compiled = compile_source_with_stdlib(&source);
