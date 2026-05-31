@@ -1746,6 +1746,41 @@ mod tests {
         assert!(d.reused_assembly, "changing only n_modes must HIT the cached assembly");
     }
 
+    /// step-9 (RED → GREEN in step-10): cooperative cancellation in
+    /// `run_modal_analysis`.
+    ///
+    /// (a) A pre-cancelled handle short-circuits to `ComputeOutcome::Cancelled`
+    ///     (before the costly eigensolve completes). (b) Regression: a fresh
+    ///     handle still Completes — the added coarse polls don't break the happy
+    ///     path.
+    ///
+    /// RED: the core ignores the handle until step-10, so a pre-cancelled run
+    /// still Completes (assertion (a) fails).
+    #[test]
+    fn run_modal_analysis_honors_cancellation() {
+        let inputs = modal_inputs(0.02, 0.05, 0.1, STEEL_DENSITY, 2, None);
+
+        // (a) pre-cancelled → Cancelled.
+        let cancelled = CancellationHandle::new();
+        cancelled.cancel();
+        let run = run_modal_analysis(&inputs, None, &cancelled);
+        assert!(
+            matches!(run.outcome, ComputeOutcome::Cancelled),
+            "a pre-cancelled handle must yield ComputeOutcome::Cancelled, got {:?}",
+            run.outcome,
+        );
+        assert!(!run.reused_assembly, "a cancelled run reuses nothing");
+
+        // (b) fresh handle → Completed (the polls leave the happy path intact).
+        let fresh = CancellationHandle::new();
+        let ok = run_modal_analysis(&inputs, None, &fresh);
+        assert!(
+            matches!(ok.outcome, ComputeOutcome::Completed { .. }),
+            "a fresh handle must Complete, got {:?}",
+            ok.outcome,
+        );
+    }
+
     /// step-7 (RED → GREEN in step-8): the P2 (`ElementOrder::P2`) path of
     /// `solve_modal_core`.
     ///
