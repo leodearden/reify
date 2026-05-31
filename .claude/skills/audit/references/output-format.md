@@ -82,6 +82,17 @@ The `scope` field carries exactly the flags used for the invocation. When flags 
 ```json
 { "patterns": ["P5"] }
 ```
+```json
+{ "patterns": ["PDEAD"] }
+```
+```json
+{ "patterns": ["PUNTESTED"] }
+```
+```json
+{ "patterns": ["PLAYER"] }
+```
+
+> **Advisory P-\* patterns:** PDEAD, PUNTESTED, and PLAYER findings always carry `action_taken: "logged"` (Severity Low) — they are never escalated or auto-filed. See `references/severity-routing.md` for routing details.
 
 **Composed — `--task` + `--pattern`:**
 ```json
