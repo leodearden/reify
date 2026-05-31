@@ -1465,21 +1465,54 @@ fn cantilever_beam_p2_tip_deflection_slender_within_1pct_of_timoshenko() {
 
 // ─── thick-walled cylinder P2 validation ────────────────────────────────────
 
+/// Promote P1 inner-surface triangles to P2 6-node triangles.
+///
+/// For each P1 corner triple `(v0, v1, v2)`, the three edge-midpoint nodes
+/// `m_{01}`, `m_{12}`, `m_{20}` are recovered from `p2_nodes` by coordinate
+/// lookup (via [`find_node_at`]) at the exact geometric midpoints — no hash
+/// map threading required (see design decision: coordinate-lookup midpoint
+/// recovery).
+///
+/// Returns faces in canonical P2Tri order `[v0, v1, v2, m_{01}, m_{12}, m_{20}]`.
+fn p2_inner_faces(
+    p1_inner_faces: &[[usize; 3]],
+    p2_nodes: &[[f64; 3]],
+) -> Vec<[usize; 6]> {
+    let tol = 1e-9;
+    p1_inner_faces.iter().map(|&[v0, v1, v2]| {
+        let midpoint = |a: usize, b: usize| -> [f64; 3] {
+            let pa = p2_nodes[a];
+            let pb = p2_nodes[b];
+            [
+                0.5 * (pa[0] + pb[0]),
+                0.5 * (pa[1] + pb[1]),
+                0.5 * (pa[2] + pb[2]),
+            ]
+        };
+        let m01 = find_node_at(p2_nodes, midpoint(v0, v1), tol);
+        let m12 = find_node_at(p2_nodes, midpoint(v1, v2), tol);
+        let m20 = find_node_at(p2_nodes, midpoint(v2, v0), tol);
+        [v0, v1, v2, m01, m12, m20]
+    }).collect()
+}
+
 /// Thick-walled cylinder (Lamé) P2 max von Mises ≤ 2 % of reference.
 ///
 /// Promotes the P1 corner mesh to P2 via [`add_edge_midpoint_nodes`];
 /// builds P2 inner faces via `p2_inner_faces` (corner triple +
 /// coordinate-looked-up edge midpoints in `[v0,v1,v2,m01,m12,m20]` order).
-/// Inner pressure assembled with `FaceOrder::P2Tri`; solved with
-/// `solve_p2_pipeline` (well-conditioned cylinder, default CG cap suffices).
+/// Inner pressure assembled with `FaceOrder::P2Tri`; solved via
+/// `solve_p2_pipeline_with_opts` (raised CG cap — default 1000 iterations is
+/// insufficient at the resolution required for ≤2%; the cylinder is
+/// well-conditioned, b/a=2, so 5000 iterations comfortably suffices).
 #[test]
 fn thick_walled_cylinder_p2_max_von_mises_within_2pct_of_lame() {
     const A: f64 = 1.0;
     const B: f64 = 2.0;
     const L: f64 = 1.0;
     const P_I: f64 = 1.0;
-    const NR: usize = 12;
-    const NTHETA: usize = 12;
+    const NR: usize = 22;
+    const NTHETA: usize = 22;
     const NZ: usize = 2;
     const E: f64 = 1.0;
     const NU: f64 = 0.3;
@@ -1490,7 +1523,7 @@ fn thick_walled_cylinder_p2_max_von_mises_within_2pct_of_lame() {
     let (p2_nodes, p2_conns) = add_edge_midpoint_nodes(&corner_nodes, &p1_conns);
     let n_nodes = p2_nodes.len();
 
-    // Build P2 inner faces — p2_inner_faces is the RED function
+    // Promote corner triangles to 6-node P2 faces for consistent force assembly
     let p2_inner = p2_inner_faces(&p1_inner_faces, &p2_nodes);
 
     // Symmetry + plane-strain BCs on the P2 mesh
@@ -1499,7 +1532,13 @@ fn thick_walled_cylinder_p2_max_von_mises_within_2pct_of_lame() {
     // Assemble inner-pressure loads via the P2 helper
     let loads = inner_pressure_loads_p2(&p2_inner, &p2_nodes, P_I);
 
-    let u = solve_p2_pipeline(&p2_nodes, &p2_conns, &mut bcs, &loads, &mat);
+    // Default CG cap (1000) is insufficient at the resolution needed for ≤2%;
+    // use a raised cap. Cylinder is well-conditioned (b/a=2, no slenderness),
+    // so 5000 iterations provides the required head-room.
+    let u = solve_p2_pipeline_with_opts(
+        &p2_nodes, &p2_conns, &mut bcs, &loads, &mat,
+        CgSolverOptions { tolerance: 1e-8, max_iter: 5_000 },
+    );
 
     // Recover nodal stress + max von Mises over inner-ring nodes (r ≈ a)
     let sigma = recover_nodal_p2(&p2_nodes, &p2_conns, &u, &mat);
