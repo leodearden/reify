@@ -52,6 +52,30 @@ fn extract_field(result: &Value, field: &str) -> Option<Value> {
     }
 }
 
+/// Extract the `SampledField.data` vec from a named `Value::Field{Sampled}` in a result.
+///
+/// Panics if the field is absent, not `Value::Field{Sampled}`, or the lambda is not
+/// `Value::SampledField`.  Used in step-9 determinism/cache guard assertions.
+fn extract_sampled_field_data(result: &Value, field: &str) -> Vec<f64> {
+    let field_val = extract_field(result, field)
+        .unwrap_or_else(|| panic!("field '{}' not found in result", field));
+    match &field_val {
+        Value::Field { source, lambda, .. } => {
+            assert!(
+                matches!(source, FieldSourceKind::Sampled),
+                "field '{}' source must be Sampled, got: {:?}", field, source
+            );
+            match lambda.as_ref() {
+                Value::SampledField(sf) => sf.data.clone(),
+                other => panic!(
+                    "field '{}' lambda must be Value::SampledField, got: {:?}", field, other
+                ),
+            }
+        }
+        other => panic!("field '{}' must be Value::Field, got: {:?}", field, other),
+    }
+}
+
 // ── step-3: RED — API surface pin ────────────────────────────────────────────
 //
 // Compile-time test: coerce
@@ -398,6 +422,43 @@ fn e2e_cantilever_second_eval_hits_cache() {
         "both evals must produce bit-identical max_von_mises \
          (deterministic trampoline contract)"
     );
+
+    // ── (step-9/α) Both evals: displacement SampledField.data must be bit-identical ──
+    //
+    // The §8-η Final-gate (engine_eval.rs) short-circuits re-dispatch on the
+    // second eval, so result2 is the cached value from the first eval.
+    // Bit-identical data confirms the trampoline is deterministic AND that the
+    // populated Sampled fields do not break the cache-hit contract.
+    let disp1_data = extract_sampled_field_data(&result1, "displacement");
+    let disp2_data = extract_sampled_field_data(&result2, "displacement");
+    assert_eq!(
+        disp1_data.len(), disp2_data.len(),
+        "displacement data length differs between eval1 ({}) and eval2 ({})",
+        disp1_data.len(), disp2_data.len()
+    );
+    for (i, (v1, v2)) in disp1_data.iter().zip(disp2_data.iter()).enumerate() {
+        assert_eq!(
+            v1.to_bits(), v2.to_bits(),
+            "displacement data[{}] not bit-identical across evals: {:e} vs {:e}",
+            i, v1, v2
+        );
+    }
+
+    // ── (step-9/α) Both evals: stress SampledField.data must be bit-identical ────
+    let stress1_data = extract_sampled_field_data(&result1, "stress");
+    let stress2_data = extract_sampled_field_data(&result2, "stress");
+    assert_eq!(
+        stress1_data.len(), stress2_data.len(),
+        "stress data length differs between eval1 ({}) and eval2 ({})",
+        stress1_data.len(), stress2_data.len()
+    );
+    for (i, (v1, v2)) in stress1_data.iter().zip(stress2_data.iter()).enumerate() {
+        assert_eq!(
+            v1.to_bits(), v2.to_bits(),
+            "stress data[{}] not bit-identical across evals: {:e} vs {:e}",
+            i, v1, v2
+        );
+    }
 }
 
 // ── step-5: RED — tet trampoline I-1/I-3 ─────────────────────────────────────
