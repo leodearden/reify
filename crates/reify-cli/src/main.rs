@@ -631,6 +631,13 @@ fn cmd_eval(args: &[String]) -> ExitCode {
     let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None)
         .with_solver(Box::new(reify_constraints::DimensionalSolver));
+    // Register the compute trampolines so `@optimized` targets dispatch to their
+    // solver kernels instead of body-inlining their never-run fallback ctor (which
+    // emits an error-severity "no registered compute trampoline" diagnostic and
+    // exits non-zero). Without this, `reify eval` of ANY @optimized example
+    // (solver::form_find, solver::buckling, solver::elastic_static,
+    // modal::free_vibration) fails. See task 3794 / esc-3794-183.
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
     let result = engine.eval(&compiled);
 
     let mut cells: Vec<(String, String)> = result
