@@ -757,3 +757,74 @@ structure def ForcingTimeHistory {
     //   semantics, not a structure-def scalar predicate; deferred to the
     //   transient_response trampoline (task θ).
 }
+
+// ── DisplacementTimeHistory ────────────────────────────────────────────────────
+
+// `DisplacementTimeHistory` is the transient-response solver-output container
+// (PRD §5.2 / §10 task ι) — the modal-superposition twin of `ModalResult`. It
+// bundles the per-mode modal-coordinate time histories ξ_i(t_j) produced by the
+// `transient_response` trampoline together with the modal basis they were
+// integrated against, so a downstream `displacement_at(history, location,
+// direction)` query can lazily reconstruct the physical displacement
+// u(t_j) = Σ_i (Φ_i[node]·direction)·ξ_i(t_j) at a SINGLE location without ever
+// materializing the full n_nodes × n_times displacement matrix.
+//
+// Declared after `ModalResult` (above) so the `modal_result : ModalResult` field
+// resolves in-file. Solver-populated only: every field is determined by the
+// transient solve, so no caller-supplied defaults are meaningful and no scalar
+// constraints are declared at the structure-def level (mirrors `ModalResult`).
+// The meaningful invariants are COLLECTION invariants (`mode_coords` outer length
+// == `modal_result.modes` count, every inner length == `t_samples` count) which
+// Reify's `constraint` grammar cannot express (scalar predicates over same-scope
+// cells only); they are producer-enforced by the `transient_response` trampoline
+// (task ι), mirroring the `ModalResult.modes` discipline.
+//
+// Field semantics (PRD §5.2):
+//   part         — the analysed part. FIXME(part-structdef): encoded as `String`
+//                  PLACEHOLDER for the future `Part` type, identical to
+//                  `ModalResult.part` (modal_analysis.ri:241) and
+//                  `ForcingTimeHistory.part`. The trampoline echoes it from the
+//                  modal result (currently the `""` placeholder).
+//   modal_result — the `ModalResult` the response was integrated against, echoed
+//                  verbatim so `displacement_at` can read each mode's `shape`
+//                  (Φ_i) for the projection coefficient Φ_i[node]·direction
+//                  without re-running the eigensolve. Resolves to
+//                  `StructureRef("ModalResult")` (declared above).
+//   t_samples    — the uniform time grid the response was sampled on, one entry
+//                  per timestep. `List<Time>` (bare dimension name `Time` per the
+//                  `SampledForce.time_samples : List<Time>` precedent above). The
+//                  grid is produced by the trampoline from (t_start, t_end, dt).
+//   mode_coords  — the per-mode modal-coordinate time histories: `mode_coords[i]`
+//                  is the scalar ξ_i(t_j) series for mode `i` (outer index = mode,
+//                  inner index = timestep), so the outer length equals the modal
+//                  count and each inner length equals `t_samples.count`. Encoded
+//                  as `List<List<Real>>` — a nested-generic list, valid per the
+//                  `Tensegrity.struts : List<List<Int>>` (tensegrity.ri:76) and
+//                  `MotionEnvelope.nominal_pose : List<List<Pose3>>`
+//                  (trajectory.ri:322) precedents. `Real` (not a dimensioned
+//                  scalar) because a mass-normalized modal coordinate ξ_i carries
+//                  units of √mass·length (the dual of `Mode.shape`'s 1/√mass
+//                  components), not expressible in Reify's dimension grammar —
+//                  the same unrepresentable-SI-root limitation `Mode.shape`
+//                  documents (modal_analysis.ri:155-165).
+//
+// PRD reference: docs/prds/v0_3/modal-analysis.md §5.2.
+structure def DisplacementTimeHistory {
+    param part : String
+    param modal_result : ModalResult
+    param t_samples : List<Time>
+    param mode_coords : List<List<Real>>
+    // NOTE — explicitly NOT constrained:
+    //   part         : String      — no scalar invariant expressible on a String
+    //                                 placeholder; the future `Part` tighten
+    //                                 target does not change this.
+    //   modal_result : ModalResult — struct-typed; not scalar-predicable.
+    //   t_samples / mode_coords    — collection invariants (`mode_coords` outer
+    //                                 length == modes count, each inner length ==
+    //                                 `t_samples` count) are NOT expressible in
+    //                                 Reify's constraint grammar (single-cell
+    //                                 scalar predicates only); producer-enforced
+    //                                 by the transient_response trampoline
+    //                                 (task ι), mirroring the ModalResult.modes
+    //                                 discipline (modal_analysis.ri:248-258).
+}
