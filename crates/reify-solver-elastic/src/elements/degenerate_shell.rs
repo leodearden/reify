@@ -54,7 +54,67 @@
 //! 4065's. The element stiffness assembled from these pieces lives beside its
 //! flat-facet sibling in [`crate::shell_assembly`].
 
+use crate::elements::mitc3_plus::{Mitc3Plus, ShellReferenceCoord};
 use crate::shell_assembly::build_shell_frame;
+
+/// A 3D degenerate-shell reference coordinate `(ξ, η, ζ)`.
+///
+/// The in-plane pair `(ξ, η)` lives on the **unit reference triangle** with
+/// vertices `(0,0)`, `(1,0)`, `(0,1)` — identical to
+/// [`crate::elements::mitc3_plus::ShellReferenceCoord`] — so the linear
+/// triangle shape functions apply unchanged. The through-thickness coordinate
+/// `ζ ∈ [-1, 1]` runs from the bottom surface (`ζ = -1`) through the
+/// mid-surface (`ζ = 0`) to the top surface (`ζ = +1`).
+///
+/// This is the 3D analogue of the 2D `ShellReferenceCoord`; the extra `ζ` is
+/// what lets the degenerate element vary its Jacobian through the thickness.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShellRefCoord3 {
+    pub xi: f64,
+    pub eta: f64,
+    pub zeta: f64,
+}
+
+impl ShellRefCoord3 {
+    /// Construct a 3D degenerate-shell reference coordinate.
+    pub const fn new(xi: f64, eta: f64, zeta: f64) -> Self {
+        Self { xi, eta, zeta }
+    }
+
+    /// The in-plane `(ξ, η)` projection as a 2D [`ShellReferenceCoord`].
+    pub const fn in_plane(&self) -> ShellReferenceCoord {
+        ShellReferenceCoord::new(self.xi, self.eta)
+    }
+}
+
+/// Physical position `X(ξ, η, ζ)` of the degenerate-shell geometry map
+///
+/// ```text
+/// X = Σ_i N_i(ξ,η) · x_i  +  (ζ/2) · Σ_i N_i(ξ,η) · t_i · V_i
+/// ```
+///
+/// where `N_i` are the three linear triangle shape functions
+/// ([`Mitc3Plus::shape_at`]), `x_i = nodes[i]` the mid-surface vertices,
+/// `t_i = thicknesses[i]` the nodal thicknesses, and `V_i = directors[i]` the
+/// unit directors. At `ζ = 0` this is the pure mid-surface interpolation
+/// `Σ N_i x_i`; at `ζ = ±1` it reaches the top/bottom fibre endpoints.
+pub fn degenerate_position(
+    nodes: &[[f64; 3]; 3],
+    directors: &[Director; 3],
+    thicknesses: &[f64; 3],
+    coord: ShellRefCoord3,
+) -> [f64; 3] {
+    let n = Mitc3Plus.shape_at(coord.in_plane());
+    let half_zeta = 0.5 * coord.zeta;
+    let mut x = [0.0_f64; 3];
+    for i in 0..Mitc3Plus::N_NODES {
+        let fibre = half_zeta * thicknesses[i];
+        for k in 0..3 {
+            x[k] += n[i] * (nodes[i][k] + fibre * directors[i][k]);
+        }
+    }
+    x
+}
 
 /// A per-node shell **director**: the unit vector along the through-thickness
 /// fibre at a mesh vertex (the `V_i` of the degenerate-shell geometry map
