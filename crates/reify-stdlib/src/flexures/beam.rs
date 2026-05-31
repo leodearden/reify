@@ -6,8 +6,6 @@
 //! [`parse_beam_inputs`] validation path; they differ only in the closed-form
 //! stiffness, the validity range, and the joint kind.
 
-use std::f64::consts::PI;
-
 use reify_core::DimensionVector;
 use reify_ir::Value;
 
