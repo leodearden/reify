@@ -11,8 +11,8 @@
 
 use crate::{AuditContext, EvidenceRef, Finding, GitCommit, Pattern, Severity, TaskMetadata};
 
-// Empty/vacuous assertion patterns scanned for by H1.
-// Each is matched as a substring of added lines.
+// Empty/vacuous assertion patterns scanned for by H1 (gate b).
+// Each is matched as a substring of added lines within a fn body.
 const EMPTY_ASSERTION_PATTERNS: &[&str] = &[
     ".is_empty()",
     "vec![]",
@@ -23,6 +23,19 @@ const EMPTY_ASSERTION_PATTERNS: &[&str] = &[
     "assert_eq!([], ",
     "assert_eq!(vec![]",
     "assert_eq!(Vec::new()",
+];
+
+// Placeholder/stub markers for H1 fn-name gate (gate a, case-insensitive).
+// A test fn name containing any of these signals a deliberately-placeholder
+// test rather than a legitimate empty-result test (design caveat task 4140).
+const PLACEHOLDER_MARKERS: &[&str] = &[
+    "placeholder",
+    "empty",
+    "not_yet",
+    "notyet",
+    "stub",
+    "todo",
+    "unimplemented",
 ];
 
 /// The git ref the detector diffs claimed commits *against*. Production runs
@@ -128,14 +141,22 @@ fn check_task(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Finding> {
     findings
 }
 
-/// H1 — tests-assert-empty pass (naive initial version, step-4).
+/// H1 — tests-assert-empty pass (double-gate FP control, step-6).
 ///
 /// For each test-path entry in `metadata.files`, reads the added lines via
 /// `GitOps::diff_added_lines_in_commit(commit, path)` and emits a
-/// `P5TestsAssertEmpty` `Medium` finding when any added line contains an
-/// empty/vacuous assertion pattern. The double-gate (placeholder marker in fn
-/// name AND empty assertion) is added in step-6 to satisfy the FP control
-/// tests; this version fires on any empty assertion in a test file.
+/// `P5TestsAssertEmpty` `Medium` finding ONLY when an added test fn BOTH:
+///
+/// (a) carries a placeholder/empty/not_yet/notyet/stub/todo/unimplemented
+///     marker in its fn name (case-insensitive substring match on `fn <name>(`);
+/// (b) has an empty/vacuous assertion within that fn's added lines
+///     (see `EMPTY_ASSERTION_PATTERNS`).
+///
+/// The double-gate suppresses legitimately-empty capabilities (e.g.
+/// `fn returns_no_warnings_for_valid_input()` asserts `is_empty()`) while
+/// flagging the concrete 1638/1904/2199 incident pattern: a test named
+/// `activate_expands_geometric_params_placeholder_to_empty_list` that
+/// asserts `is_empty()`. Design caveat: task 4140 §FP-control.
 ///
 /// Skipped when `done_provenance.commit` is absent (no commit to diff).
 fn check_tests_assert_empty(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Finding> {
@@ -149,18 +170,57 @@ fn check_tests_assert_empty(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
             continue;
         }
         let added = ctx.git.diff_added_lines_in_commit(commit, path);
-        let has_empty_assertion = added.iter().any(|(_, line)| {
-            EMPTY_ASSERTION_PATTERNS.iter().any(|pat| line.contains(pat))
-        });
-        if has_empty_assertion {
+        // Walk added lines tracking the current fn name.
+        // State machine: once we see `fn <name>(`, we record the lowercased name
+        // until the next `fn` declaration, accumulating the fn's added lines.
+        // A placeholder-named fn whose accumulated lines contain a vacuous assertion
+        // fires the finding.
+        let mut current_fn_name: Option<String> = None;
+        let mut fn_has_placeholder = false;
+        let mut fn_has_empty_assertion = false;
+        let mut found_in_file = false;
+
+        for (_, line) in &added {
+            // Detect a new fn declaration.
+            if let Some(fn_start) = line.find("fn ") {
+                // Flush the previous fn if it triggered both gates.
+                if fn_has_placeholder && fn_has_empty_assertion {
+                    found_in_file = true;
+                }
+                // Extract the fn name (up to the first `(`).
+                let after_fn = &line[fn_start + 3..];
+                let fn_name = after_fn
+                    .split('(')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_lowercase();
+                current_fn_name = Some(fn_name.clone());
+                fn_has_placeholder = PLACEHOLDER_MARKERS.iter().any(|m| fn_name.contains(m));
+                fn_has_empty_assertion = false;
+            }
+
+            // Within a fn, check for vacuous assertions.
+            if current_fn_name.is_some() && fn_has_placeholder {
+                if EMPTY_ASSERTION_PATTERNS.iter().any(|pat| line.contains(pat)) {
+                    fn_has_empty_assertion = true;
+                }
+            }
+        }
+        // Flush the last fn.
+        if fn_has_placeholder && fn_has_empty_assertion {
+            found_in_file = true;
+        }
+
+        if found_in_file {
             findings.push(Finding {
                 pattern: Pattern::P5TestsAssertEmpty,
                 severity: Severity::Medium,
                 task_id: meta.task_id.clone(),
                 summary: format!(
-                    "added test in {} asserts an empty/vacuous result — \
-                     possible placeholder test masking a not-yet-implemented capability \
-                     (task 4140 H1; verify with double-gate in step-6)",
+                    "added test in {} carries a placeholder fn name AND asserts an \
+                     empty/vacuous result — possible placeholder test masking a \
+                     not-yet-implemented capability (task 4140 H1 double-gate)",
                     path
                 ),
                 evidence: vec![EvidenceRef::File { path: path.clone() }],
