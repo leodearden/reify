@@ -2280,13 +2280,25 @@ pub(crate) fn try_eval_topology_selector(
             dispatch_inertia_tensor(kernel, &query, &function.name, diagnostics)
         }
         TopologySelectorHelper::EdgesByLength => {
-            // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
-            let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            // args[0]: parent geometry ValueRef → values map → full Value::GeometryHandle.
+            // Must resolve from `values` (not `named_steps`) so we get the parent's
+            // realization_ref + upstream_values_hash for sub-handle construction (PRD §4).
+            // Falls through to None when the arg cell is not a hydrated Value::GeometryHandle
+            // (PRD invariant #2: never partially construct a sub-handle).
+            let (parent_rr, parent_hash, parent_kernel_handle) =
+                resolve_parent_geometry_handle_arg(&args[0], values)?;
             // args[1]: Range<Length> ValueRef/Literal → (lo_m, hi_m).
             let (lo, hi) =
                 resolve_range_dim_arg(&args[1], values, reify_core::DimensionVector::LENGTH)?;
-            dispatch_filtered_list(
-                crate::topology_selectors::edges_by_length(kernel, handle, lo, hi),
+            let filter_result =
+                crate::topology_selectors::edges_by_length(kernel, parent_kernel_handle, lo, hi);
+            dispatch_filtered_subhandles(
+                kernel,
+                parent_kernel_handle,
+                crate::topology_selectors::SubKind::Edge,
+                &parent_rr,
+                &parent_hash,
+                filter_result,
                 &function.name,
                 diagnostics,
             )
