@@ -86,7 +86,7 @@ fn munch_decode(text: &str) -> Result<Value, LoadError> {
     if !first_line.starts_with("#MUNCH/") {
         return Err(LoadError::Protocol(format!(
             "munch_decode: expected #MUNCH/ header, got: {:?}",
-            &first_line[..first_line.len().min(40)]
+            first_line.chars().take(40).collect::<String>()
         )));
     }
 
@@ -115,7 +115,10 @@ fn munch_decode(text: &str) -> Result<Value, LoadError> {
             continue;
         } else {
             // Data row: find matching table spec by prefix
-            let comma_pos = line.find(',').unwrap_or(line.len());
+            let Some(comma_pos) = line.find(',') else {
+                // No comma → no table prefix → silently skip malformed row
+                continue;
+            };
             let prefix = &line[..comma_pos];
             if let Some(spec) = table_specs.iter().find(|s| s.prefix == prefix) {
                 let fields = split_munch_row(&line[comma_pos + 1..]);
@@ -125,7 +128,7 @@ fn munch_decode(text: &str) -> Result<Value, LoadError> {
                         fields.len(),
                         spec.columns.len(),
                         spec.table_name,
-                        &line[..line.len().min(80)]
+                        line.chars().take(80).collect::<String>()
                     )));
                 }
                 let mut row_obj = serde_json::Map::new();
@@ -370,22 +373,17 @@ fn coerce_value(s: &str, col_type: &ColType) -> Value {
 
 /// Decode a JSON-RPC `result` value into the inner payload.
 ///
-/// - Prefers `result.structuredContent` if present.
-/// - Otherwise takes `content[0].text`:
-///   - If it starts with `#MUNCH/`, calls [`munch_decode`].
-///   - Otherwise parses as plain JSON.
+/// MUNCH payloads in `content[0].text` are always decoded via [`munch_decode`],
+/// even when `structuredContent` is also present — `structuredContent` (if any)
+/// would not carry the table shape the adapters expect for MUNCH tools.
+///
+/// For non-MUNCH tools (plain JSON text or no text content), `structuredContent`
+/// is preferred when present; otherwise `content[0].text` is parsed as JSON.
 ///
 /// This resolves the non-uniform wire shape described in the fixtures README:
 /// some tools return MUNCH, others return plain JSON.
 fn decode_tool_result(result: &Value) -> Result<Value, LoadError> {
-    // Prefer structuredContent
-    if let Some(sc) = result.get("structuredContent")
-        && !sc.is_null()
-    {
-        return Ok(sc.clone());
-    }
-
-    // Fall back to content[0].text
+    // Check content[0].text first — MUNCH must always route through munch_decode.
     if let Some(content) = result.get("content").and_then(|c| c.as_array()) {
         for entry in content {
             if entry.get("type").and_then(|t| t.as_str()) == Some("text")
@@ -393,14 +391,32 @@ fn decode_tool_result(result: &Value) -> Result<Value, LoadError> {
             {
                 if text.starts_with("#MUNCH/") {
                     return munch_decode(text);
-                } else {
-                    return serde_json::from_str(text).map_err(|e| {
-                        LoadError::Protocol(format!(
-                            "decode_tool_result: content text not JSON: {e}; text={:?}",
-                            &text[..text.len().min(80)]
-                        ))
-                    });
                 }
+                // Non-MUNCH text found — fall through to structuredContent check.
+                break;
+            }
+        }
+    }
+
+    // For non-MUNCH tools prefer structuredContent when present.
+    if let Some(sc) = result.get("structuredContent")
+        && !sc.is_null()
+    {
+        return Ok(sc.clone());
+    }
+
+    // Fall back to content[0].text as plain JSON.
+    if let Some(content) = result.get("content").and_then(|c| c.as_array()) {
+        for entry in content {
+            if entry.get("type").and_then(|t| t.as_str()) == Some("text")
+                && let Some(text) = entry.get("text").and_then(|t| t.as_str())
+            {
+                return serde_json::from_str(text).map_err(|e| {
+                    LoadError::Protocol(format!(
+                        "decode_tool_result: content text not JSON: {e}; text={:?}",
+                        text.chars().take(80).collect::<String>()
+                    ))
+                });
             }
         }
     }
@@ -894,13 +910,21 @@ impl JCodemunchOps for RealJCodemunchOps {
             }
         };
         let mut symbols = changed_symbols_from_wire(&decoded);
-        // Enrich suppression flags by reading the declaring source file
+        // Enrich suppression flags by reading the declaring source file.
+        // Cache by path: many symbols share the same file (e.g. decl.rs has
+        // 1110+ rows), so reading each file once avoids O(symbols) disk reads.
+        let mut file_cache: HashMap<PathBuf, Vec<String>> = HashMap::new();
         for sym in &mut symbols {
             let path = self.project_root.join(&sym.file);
-            if let Ok(source) = std::fs::read_to_string(&path) {
-                let lines: Vec<&str> = source.lines().collect();
+            let lines = file_cache.entry(path.clone()).or_insert_with(|| {
+                std::fs::read_to_string(&path)
+                    .map(|s| s.lines().map(str::to_owned).collect())
+                    .unwrap_or_default()
+            });
+            if !lines.is_empty() {
+                let lines_ref: Vec<&str> = lines.iter().map(String::as_str).collect();
                 let (has_allow_dead_code, has_cfg_test, g_allow_marker) =
-                    extract_suppression(&lines, sym.line);
+                    extract_suppression(&lines_ref, sym.line);
                 sym.has_allow_dead_code = has_allow_dead_code;
                 sym.has_cfg_test = has_cfg_test;
                 sym.g_allow_marker = g_allow_marker;
@@ -1298,5 +1322,144 @@ mod tests {
         assert_eq!(refs[0].line, 10);
         assert_eq!(refs[1].file, "src/bar.rs");
         assert_eq!(refs[1].line, 20);
+    }
+
+    // ------------------------------------------------------------------
+    // munch_decode: row field-count mismatch returns Protocol error
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn munch_decode_row_field_count_mismatch_returns_error() {
+        // Table expects 3 columns (a|b|c) but the data row only supplies 2.
+        let munch = concat!(
+            "#MUNCH/1 tool=t enc=gen1\n",
+            "\n",
+            "x=1 __stypes= __tables=t:rows:a|b|c:str|str|str\n",
+            "t,one,two\n", // only 2 fields, expected 3
+        );
+        match munch_decode(munch) {
+            Err(LoadError::Protocol(msg)) => {
+                assert!(
+                    msg.contains("row has") && msg.contains("fields"),
+                    "error should mention field count: {msg}"
+                );
+            }
+            Ok(_) => panic!("expected Protocol error for field-count mismatch, got Ok"),
+            Err(LoadError::Http(_)) => panic!("expected Protocol error, got Http"),
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // expand_ref: unknown @N and bare '@' fallbacks
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn expand_ref_unknown_n_leaves_as_is() {
+        let refs: HashMap<u32, String> = HashMap::new();
+        // @99 is not in the ref table
+        assert_eq!(expand_ref("@99suffix", &refs), "@99suffix");
+    }
+
+    #[test]
+    fn expand_ref_bare_at_no_digits_leaves_as_is() {
+        let refs: HashMap<u32, String> = HashMap::new();
+        // '@' with no following digits should be returned verbatim
+        assert_eq!(expand_ref("@", &refs), "@");
+        assert_eq!(expand_ref("@abc", &refs), "@abc");
+    }
+
+    // ------------------------------------------------------------------
+    // parse_signals_list: empty and quoted/unquoted variants
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parse_signals_list_empty_brackets() {
+        assert!(parse_signals_list("[]").is_empty());
+    }
+
+    #[test]
+    fn parse_signals_list_empty_string() {
+        assert!(parse_signals_list("").is_empty());
+    }
+
+    #[test]
+    fn parse_signals_list_single_quoted_elements() {
+        let v = parse_signals_list("['unreachable_file', 'no_callers']");
+        assert_eq!(v, vec!["unreachable_file", "no_callers"]);
+    }
+
+    #[test]
+    fn parse_signals_list_double_quoted_elements() {
+        let v = parse_signals_list(r#"["unreachable_file", "no_callers"]"#);
+        assert_eq!(v, vec!["unreachable_file", "no_callers"]);
+    }
+
+    #[test]
+    fn parse_signals_list_unquoted_elements() {
+        let v = parse_signals_list("[a, b, c]");
+        assert_eq!(v, vec!["a", "b", "c"]);
+    }
+
+    // ------------------------------------------------------------------
+    // extract_suppression: scan stops at blank/code line between attrs
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn extract_suppression_stops_at_blank_line() {
+        // The blank line between the attribute and the declaration means the
+        // attribute is NOT contiguous — scanner should stop and not see it.
+        let src = [
+            "#[allow(dead_code)]",
+            "",                    // blank line breaks contiguity
+            "pub fn my_fn() {}",
+        ];
+        let (allow, _cfg, _g) = extract_suppression(&src, 3);
+        assert!(
+            !allow,
+            "scanner should not cross blank line to find #[allow(dead_code)]"
+        );
+    }
+
+    #[test]
+    fn extract_suppression_stops_at_code_line() {
+        // A non-attribute, non-comment line stops the upward scan.
+        let src = [
+            "#[allow(dead_code)]",
+            "let x = 1;",          // code line breaks contiguity
+            "#[cfg(test)]",
+            "pub fn my_fn() {}",
+        ];
+        let (allow, cfg, _g) = extract_suppression(&src, 4);
+        // cfg(test) is directly above the declaration — should be found.
+        assert!(cfg, "cfg(test) is directly above the declaration");
+        // allow(dead_code) is separated by a code line — should NOT be found.
+        assert!(
+            !allow,
+            "scanner should not cross code line to find #[allow(dead_code)]"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // decode_tool_result: MUNCH takes priority over structuredContent
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn decode_tool_result_munch_beats_structured_content() {
+        // When both structuredContent and a MUNCH text body are present,
+        // the MUNCH body should win (structuredContent lacks the table shape).
+        let munch_text = concat!(
+            "#MUNCH/1 tool=t enc=gen1\n",
+            "\n",
+            "x=1 __stypes= __tables=t:rows:val:str\n",
+            "t,hello\n",
+        );
+        let result = serde_json::json!({
+            "structuredContent": {"wrong": "shape"},
+            "content": [{"type": "text", "text": munch_text}]
+        });
+        let decoded = decode_tool_result(&result).expect("should succeed");
+        // Must have 'rows' (from MUNCH), not 'wrong' (from structuredContent)
+        assert!(decoded.get("rows").is_some(), "MUNCH table 'rows' should be present");
+        assert!(decoded.get("wrong").is_none(), "structuredContent 'wrong' key must not appear");
     }
 }
