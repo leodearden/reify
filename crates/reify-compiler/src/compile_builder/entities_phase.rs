@@ -24,8 +24,7 @@
 use std::collections::{HashMap, HashSet};
 
 use reify_ast::ParsedModule;
-use reify_core::{Diagnostic, DiagnosticLabel};
-use reify_core::SourceSpan;
+use reify_core::{Diagnostic, DiagnosticLabel, SourceSpan, Type};
 use reify_ir::{CompiledExpr, CompiledExprKind, CompiledFunction, EnumDef};
 
 use crate::CompiledModule;
@@ -33,7 +32,7 @@ use crate::compile_builder::ctx::CompilationCtx;
 use crate::compile_builder::defs_phase::build_constraint_def_registry;
 use crate::compile_builder::traits_phase::build_trait_registry;
 use crate::conformance::{check_fn_arg_conformance, check_trait_arg_conformance};
-use crate::type_compat::type_carries_trait_object;
+use crate::type_compat::{type_carries_trait_object, resolve_function_overload, OverloadResolution};
 use crate::entity::{
     AutoResolutionRequest, EntityDefRef, PendingBoundCheck, PendingSubOverrideAuto,
     check_type_param_bounds, compile_entity,
@@ -490,10 +489,24 @@ pub(crate) fn phase_sub_override_autos(ctx: &mut CompilationCtx, prelude: &[&Com
 ///
 /// ## Eval-builtin protection
 ///
-/// Eval-builtins (bind/sweep/dim) have no `.ri` user-function signature so
-/// their calls lower to `CompiledExprKind::FunctionCall` (not `UserFunctionCall`)
-/// and are absent from `ctx.resolution_functions` — the `fn_sig` miss-skip
-/// provides double protection.
+/// Eval-builtins (bind/sweep/dim) have no `.ri` user-function signature, so
+/// their calls lower to `CompiledExprKind::FunctionCall` (not `UserFunctionCall`).
+/// For any remaining `UserFunctionCall`, we re-resolve the overload via
+/// `resolve_function_overload`; eval-builtins are absent from
+/// `ctx.resolution_functions` and produce `NoUserFunctions`, which is skipped.
+/// Calls that already produced `NoMatch` or `Ambiguous` at the original call
+/// site are also skipped here (they carry their own diagnostics).
+///
+/// ## Overload disambiguation (task-4081 design decision §5)
+///
+/// `resolution_functions` is a flat `Vec` that can contain multiple same-name
+/// overloads.  Collecting it into a `name → &CompiledFunction` HashMap would
+/// collapse overloads to the last-inserted entry, so conformance could target
+/// the wrong signature (e.g. `couple(DrivingJoint)` + `couple(Real)` → only
+/// `couple(Real)` checked → non-conformance silently missed).  Instead we
+/// re-resolve each call via `resolve_function_overload` using the args'
+/// `result_type`s, which reproduces exactly the overload selected at the
+/// original call site.
 pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&CompiledModule]) {
     // Build template registry (same composition as phase_pending_bound_checks).
     let template_registry: HashMap<String, &TopologyTemplate> = prelude
@@ -507,22 +520,19 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
     // Build trait registry (same composition as phase_pending_bound_checks).
     let trait_registry = build_trait_registry(&ctx.trait_defs, prelude);
 
-    // Build name → &CompiledFunction map from the merged resolution table.
-    let fn_sig: HashMap<&str, &CompiledFunction> = ctx
-        .resolution_functions
-        .iter()
-        .map(|f| (f.name.as_str(), f))
-        .collect();
+    // Take a reference to the full resolution_functions slice.  Re-resolution
+    // per call (see doc-comment) requires the full table, not a name-keyed map.
+    let resolution_functions: &[CompiledFunction] = &ctx.resolution_functions;
 
     // Collect diagnostics into a local vec to avoid borrow-checker conflicts
     // (we hold shared borrows on ctx.templates and ctx.resolution_functions via
-    // template_registry / fn_sig while also needing &mut ctx.diagnostics).
+    // template_registry / resolution_functions while also needing &mut ctx.diagnostics).
     let mut new_diagnostics: Vec<reify_core::Diagnostic> = Vec::new();
 
     let walk = |expr: &CompiledExpr, span: SourceSpan, diags: &mut Vec<reify_core::Diagnostic>| {
         check_expr_fn_arg_conformance(
             expr,
-            &fn_sig,
+            resolution_functions,
             &template_registry,
             &trait_registry,
             span,
@@ -557,10 +567,16 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
 }
 
 /// Walk a single `CompiledExpr` tree, calling `check_fn_arg_conformance` for
-/// every `UserFunctionCall` node whose params carry a trait object.
+/// every `UserFunctionCall` node whose resolved overload has trait-object params.
+///
+/// Re-resolves each call via `resolve_function_overload` using the args'
+/// `result_type`s to pick the correct overload when multiple same-name functions
+/// exist.  Only `OverloadResolution::Resolved` is acted upon; `NoMatch`,
+/// `Ambiguous`, and `NoUserFunctions` are skipped (they carry their own
+/// diagnostics from the original call site, or indicate an eval-builtin).
 fn check_expr_fn_arg_conformance(
     expr: &CompiledExpr,
-    fn_sig: &HashMap<&str, &CompiledFunction>,
+    functions: &[CompiledFunction],
     template_registry: &HashMap<String, &TopologyTemplate>,
     trait_registry: &HashMap<String, &CompiledTrait>,
     representative_span: SourceSpan,
@@ -570,9 +586,15 @@ fn check_expr_fn_arg_conformance(
         let CompiledExprKind::UserFunctionCall { function_name, args } = &node.kind else {
             return;
         };
-        // Miss-skip: eval-builtins are absent from fn_sig.
-        let Some(f) = fn_sig.get(function_name.as_str()) else {
-            return;
+        // Re-resolve the overload using the args' result_types.
+        // This correctly disambiguates same-name overloads and skips
+        // eval-builtins (NoUserFunctions) and already-diagnosed failures
+        // (NoMatch / Ambiguous).
+        let arg_result_types: Vec<Type> =
+            args.iter().map(|a| a.result_type.clone()).collect();
+        let f = match resolve_function_overload(function_name, &arg_result_types, functions) {
+            OverloadResolution::Resolved(f) => f,
+            _ => return,
         };
         // Check each param whose type carries a trait object.
         for ((param_name, param_ty), arg) in f.params.iter().zip(args.iter()) {
