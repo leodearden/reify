@@ -2333,4 +2333,137 @@ mod tests {
             "modes[0].shape must equal solve_modal_core phi_full[0] reshaped to List<Vector3>",
         );
     }
+
+    /// step-9 (RED → GREEN in step-10): the trampoline honors
+    /// `ModalOptions.element_order` end-to-end.
+    ///
+    /// `solve_modal_analysis_trampoline` must read the `element_order` enum field
+    /// and dispatch `solve_modal_core` at that order. An `ElementOrder.P2` option
+    /// promotes the beam mesh (inserting edge-midpoint nodes) BEFORE assembling
+    /// K/M, so the serialized `Mode.shape` carries one per-node `Vector3` for every
+    /// PROMOTED node — strictly more than the P1 node count. A missing
+    /// `element_order` field must keep the P1 path (back-compat), so its shape
+    /// length equals the P1 mesh node count.
+    ///
+    /// The two orders are distinguished by the serialized mode-shape length
+    /// (= node count): P2 > P1. Both must Complete with a non-empty modes list and
+    /// no Error diagnostics (the exact P2 mass is PD, so the eigensolve runs clean)
+    /// — i.e. the P2 path genuinely ran rather than silently falling back to P1.
+    ///
+    /// RED: the trampoline hard-codes `ElementOrder::P1` and ignores the field, so
+    /// the `element_order = P2` run produces the SAME (P1) node count as the
+    /// default run — the `p2 == promoted` / `p2 > p1` assertions fail until step 10
+    /// wires `extract_element_order` (and the promoted-node-set BC realization)
+    /// through.
+    #[test]
+    fn trampoline_honors_element_order_p2() {
+        let length = 0.02_f64; // X — beam axis (short → coarse promoted mesh)
+        let width = 0.05_f64; // Y — width
+        let height = 0.1_f64; // Z — bending axis
+
+        // Expected node counts, via the SAME shared helpers the trampoline /
+        // solve_modal_core use, so they track any mesh change: P1 = the beam-mesh
+        // node count; P2 = the promoted (edge-midpoint-inserted) node count.
+        let mesh = build_beam_mesh(length, width, height);
+        let n_nodes_p1 = mesh.nodes.len();
+        let (nodes_p2, _tets_p2) = promote_tets_to_p2(&mesh.nodes, &mesh.tets);
+        let n_nodes_p2 = nodes_p2.len();
+        assert!(
+            n_nodes_p2 > n_nodes_p1,
+            "P2 promotion must add nodes for the fixture to discriminate the order: \
+             {n_nodes_p2} !> {n_nodes_p1}",
+        );
+
+        // Shared cantilever fixture inputs; only the `element_order` field differs.
+        let make_inputs = |order_field: Option<Value>| {
+            let mut opt_fields = vec![
+                ("n_modes".to_string(), Value::Int(3)),
+                (
+                    "boundary_conditions".to_string(),
+                    Value::List(vec![fixed_support("x_min")]),
+                ),
+                (
+                    "reference_direction".to_string(),
+                    Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
+                ),
+            ];
+            if let Some(order) = order_field {
+                opt_fields.push(("element_order".to_string(), order));
+            }
+            vec![
+                material_with_density(Some(STEEL_DENSITY)),
+                length_scalar(length),
+                length_scalar(width),
+                length_scalar(height),
+                modal_options(opt_fields),
+            ]
+        };
+
+        // Run the trampoline and return the serialized `modes[0].shape` length
+        // (= the solve's node count for that order), asserting along the way that
+        // the outcome Completed cleanly with a non-empty modes list and no Error
+        // diagnostics (the P2 path actually ran, not a degenerate short-circuit).
+        let run = |inputs: Vec<Value>| -> usize {
+            let outcome = solve_modal_analysis_trampoline(
+                &inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            );
+            let ComputeOutcome::Completed { result, diagnostics, .. } = outcome else {
+                panic!("expected a Completed outcome");
+            };
+            assert!(
+                !diagnostics.iter().any(|d| d.severity == Severity::Error),
+                "clamped beam must not produce Error diagnostics; got {diagnostics:?}",
+            );
+            let data = match &result {
+                Value::StructureInstance(d) => d,
+                other => panic!("expected a ModalResult StructureInstance; got {other:?}"),
+            };
+            let modes = match data.fields.get(&"modes".to_string()) {
+                Some(Value::List(m)) => m,
+                other => panic!("ModalResult.modes must be a List; got {other:?}"),
+            };
+            assert!(!modes.is_empty(), "solve must return ≥ 1 mode");
+            let mode0 = match &modes[0] {
+                Value::StructureInstance(d) => d,
+                other => panic!("modes[0] must be a Mode StructureInstance; got {other:?}"),
+            };
+            match mode0.fields.get(&"shape".to_string()) {
+                Some(Value::List(nodes)) => nodes.len(),
+                other => panic!("modes[0].shape must be a List; got {other:?}"),
+            }
+        };
+
+        // (a) `element_order = ElementOrder.P2` → the P2 path → promoted node count.
+        let p2_order = Value::Enum {
+            type_name: "ElementOrder".to_string(),
+            variant: "P2".to_string(),
+        };
+        let p2_shape_len = run(make_inputs(Some(p2_order)));
+
+        // (b) absent `element_order` → the P1 path (back-compat) → P1 node count.
+        let p1_shape_len = run(make_inputs(None));
+
+        assert_eq!(
+            p2_shape_len, n_nodes_p2,
+            "element_order=P2 must run the P2 path (promoted node count {n_nodes_p2}); \
+             got a {p2_shape_len}-node mode shape",
+        );
+        assert_eq!(
+            p1_shape_len, n_nodes_p1,
+            "absent element_order must keep the P1 path (node count {n_nodes_p1}); \
+             got a {p1_shape_len}-node mode shape",
+        );
+
+        // (c) the two paths are observably distinct — proving the field switched the
+        //     element order rather than both falling through to a single default.
+        assert!(
+            p2_shape_len > p1_shape_len,
+            "P2 mode shape ({p2_shape_len} nodes) must exceed P1 ({p1_shape_len}); \
+             the trampoline must honor ModalOptions.element_order",
+        );
+    }
 }
