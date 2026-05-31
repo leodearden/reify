@@ -6,6 +6,7 @@
 //!   step-13/14 — trampoline registration + seam pin (always-run)
 //!   step-15/16 — cantilever first-mode-frequency e2e (release-gated)
 //!   step-17/18 — simply-supported first-mode + higher-mode band (release-gated)
+//!   task μ     — printer-gantry dogfood: 5-mode structural gate (release-gated)
 
 use reify_core::{Severity, ValueCellId};
 use reify_eval::ComputeFn;
@@ -22,6 +23,11 @@ fn cantilever_source() -> &'static str {
 /// Load and compile the simply-supported modal smoke fixture.
 fn simply_supported_source() -> &'static str {
     include_str!("../../../examples/modal/simply_supported_beam_modes.ri")
+}
+
+/// Load and compile the printer-gantry modal dogfood fixture (task μ).
+fn printer_gantry_source() -> &'static str {
+    include_str!("../../../examples/modal/printer_gantry_modes.ri")
 }
 
 /// Read a frequency cell (Hz) as `f64`, tolerating the `Real` placeholder
@@ -530,4 +536,126 @@ fn e2e_simply_supported_modes_match_analytic() {
             SS_P2_REL_TOL * 100.0
         );
     }
+}
+
+// ── task μ: printer-gantry dogfood — 5-mode structural gate ──────────────────
+//
+// The printer-gantry fixture (examples/modal/printer_gantry_modes.ri) models a
+// 500×60×40 mm Aluminium_6061_T6 crossbeam pinned at both ends (x_min and
+// x_max), requesting the first 5 natural frequencies. This is the 4th fixture
+// in the modal_analysis_e2e CI gate (PRD docs/prds/v0_3/modal-analysis.md §1).
+//
+// The user-observable signal is "runs end-to-end and prints the first 5 modes
+// of the printer-build gantry." PRD §1 specifies NO analytic accuracy bound for
+// the gantry (unlike the cantilever/SS 2% bands), so this test asserts
+// STRUCTURAL properties only:
+//   (a) no Error-severity diagnostics after parse + eval
+//   (b) a ComputeNode with target == "modal::free_vibration" in the graph
+//   (c) the `result` cell is a non-Undef StructureInstance/Map
+//   (d) cells f1..f5 are each finite, positive, and strictly ascending
+//       (the asymmetric 60×40 mm cross-section keeps the vertical/lateral
+//       bending families non-degenerate, so strict ordering holds robustly)
+//
+// The two-mount (x_min + x_max) pin-pin realization in the trampoline removes
+// all 6 rigid-body modes so K_free is non-singular and the 5 lowest modes are
+// real, positive, and distinct. No analytic tolerance is asserted — the mesh
+// density is not validated for this cross-section, so any threshold would be
+// a guessed/unvalidated number (the false-premise trap).
+//
+// Release-gated like the other e2e solves (heavy generalized eigensolve).
+// The registration pin (_seam_pin, step-13) runs always.
+//
+// RED until examples/modal/printer_gantry_modes.ri is created (include_str!
+// compile-fail, same convention as the _seam_pin step-13 → step-14 pair).
+
+/// Printer gantry: first 5 modes finite, positive, strictly ascending —
+/// the dogfood structural gate (task μ, PRD §1).
+#[cfg_attr(debug_assertions, ignore = "heavy modal solve; release-only")]
+#[test]
+fn e2e_printer_gantry_prints_five_modes() {
+    let source = printer_gantry_source();
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+
+    let eval_result = engine.eval(&compiled);
+
+    // (a) No Error-severity diagnostics.
+    let errors: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no Error diagnostics, got: {:?}", errors);
+
+    // (b) A ComputeNode with target == "modal::free_vibration" must be present.
+    let snapshot = engine
+        .eval_state()
+        .expect("eval_state must be Some after eval()")
+        .snapshot
+        .clone();
+    let has_compute_node = snapshot
+        .graph
+        .compute_nodes
+        .iter()
+        .any(|(_, data)| data.target == "modal::free_vibration");
+    assert!(
+        has_compute_node,
+        "expected a ComputeNode with target==\"modal::free_vibration\"; found targets: {:?}",
+        snapshot
+            .graph
+            .compute_nodes
+            .iter()
+            .map(|(_, d)| d.target.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    // (c) The `result` cell must hold a non-Undef StructureInstance/Map.
+    let result_cell = ValueCellId::new("PrinterGantryModes", "result");
+    let result_val = eval_result
+        .values
+        .get(&result_cell)
+        .unwrap_or_else(|| panic!("cell PrinterGantryModes.result not found in eval result"));
+    assert!(
+        matches!(result_val, Value::StructureInstance(_) | Value::Map(_)),
+        "expected result to be StructureInstance or Map (NOT Undef), got: {:?}",
+        result_val
+    );
+
+    // (d) f1..f5 are each finite, positive, and strictly ascending.
+    //     An asymmetric cross-section (width=60mm ≠ height=40mm) keeps the
+    //     vertical/lateral bending families non-degenerate so the strict
+    //     ordering holds without a knife-edge tie on degenerate modes.
+    let read_cell = |name: &str| -> f64 {
+        read_frequency(
+            eval_result
+                .values
+                .get(&ValueCellId::new("PrinterGantryModes", name))
+                .unwrap_or_else(|| {
+                    panic!("cell PrinterGantryModes.{name} not found in eval result")
+                }),
+        )
+    };
+    let f1 = read_cell("f1");
+    let f2 = read_cell("f2");
+    let f3 = read_cell("f3");
+    let f4 = read_cell("f4");
+    let f5 = read_cell("f5");
+
+    eprintln!(
+        "[modal gantry] f1={:.3} f2={:.3} f3={:.3} f4={:.3} f5={:.3} Hz",
+        f1, f2, f3, f4, f5
+    );
+
+    for (name, f) in [("f1", f1), ("f2", f2), ("f3", f3), ("f4", f4), ("f5", f5)] {
+        assert!(
+            f.is_finite() && f > 0.0,
+            "{name} must be finite and positive, got: {f}"
+        );
+    }
+    assert!(
+        f1 < f2 && f2 < f3 && f3 < f4 && f4 < f5,
+        "gantry frequencies must be strictly ascending: f1={f1} f2={f2} f3={f3} f4={f4} f5={f5}"
+    );
 }
