@@ -1827,6 +1827,265 @@ mod tests {
             h1_findings
         );
     }
+
+    /// H2 FP guard (a): a cross-crate done task with a changed symbol that HAS
+    /// a non-test workspace caller → not stranded → zero P5LivePathStranded findings.
+    ///
+    /// RED against naive step-8 impl if it doesn't check for non-test callers
+    /// (but step-8 does check, so this is GREEN already — included to lock the contract).
+    #[test]
+    fn h2_live_non_test_caller_not_flagged() {
+        let conn = seed_db();
+        insert_task_completed_event(&conn, "H2FP1");
+
+        let mut git = MockGitOps::new();
+        git.set_diff_changed_paths(
+            "main",
+            "h2fp1_commit",
+            vec![
+                "crates/reify-compiler/src/compile.rs".to_string(),
+                "crates/reify-eval/src/lib.rs".to_string(),
+            ],
+        );
+        git.set_log_grep("main", "H2FP1", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "H2FP1".to_string(),
+            TaskMetadata {
+                task_id: "H2FP1".to_string(),
+                status: "done".to_string(),
+                files: vec![
+                    "crates/reify-compiler/src/compile.rs".to_string(),
+                    "crates/reify-eval/src/lib.rs".to_string(),
+                ],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("h2fp1_commit".to_string()),
+                    note: None,
+                }),
+                title: "Cross-crate with live caller".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let mut jc = MockJCodemunchOps::new();
+        jc.set_changed_symbols(
+            "h2fp1_commit^1",
+            "h2fp1_commit",
+            vec![reify_audit::ChangedSymbol {
+                name: "compile_purpose".to_string(),
+                file: "crates/reify-eval/src/lib.rs".to_string(),
+                line: 42,
+                has_allow_dead_code: false,
+                has_cfg_test: false,
+                g_allow_marker: None,
+            }],
+        );
+        // There IS a non-test caller → symbol is not stranded.
+        jc.set_find_references(
+            "crates/reify-eval/src/lib.rs",
+            "compile_purpose",
+            vec![reify_audit::SymbolReference {
+                file: "crates/reify-gui/src/main.rs".to_string(),
+                line: 77,
+            }],
+        );
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        let h2_findings: Vec<_> = findings
+            .iter()
+            .filter(|f| f.pattern == Pattern::P5LivePathStranded)
+            .collect();
+        assert!(
+            h2_findings.is_empty(),
+            "symbol with a live non-test caller must NOT be flagged; got {:?}",
+            h2_findings
+        );
+    }
+
+    /// H2 FP guard (b): a done task whose changed symbol has no caller but whose
+    /// metadata.files stay within ONE crate root → not cross-crate → zero
+    /// P5LivePathStranded findings. Single-crate orphans are P1's domain.
+    ///
+    /// RED against naive step-8 impl (which doesn't check the cross-crate gate).
+    #[test]
+    fn h2_single_crate_not_flagged() {
+        let conn = seed_db();
+        insert_task_completed_event(&conn, "H2FP2");
+
+        let mut git = MockGitOps::new();
+        git.set_diff_changed_paths(
+            "main",
+            "h2fp2_commit",
+            vec![
+                "crates/reify-eval/src/lib.rs".to_string(),
+                "crates/reify-eval/src/expander.rs".to_string(),
+            ],
+        );
+        git.set_log_grep("main", "H2FP2", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "H2FP2".to_string(),
+            TaskMetadata {
+                task_id: "H2FP2".to_string(),
+                status: "done".to_string(),
+                // Both files are under crates/reify-eval/ → single crate root.
+                files: vec![
+                    "crates/reify-eval/src/lib.rs".to_string(),
+                    "crates/reify-eval/src/expander.rs".to_string(),
+                ],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("h2fp2_commit".to_string()),
+                    note: None,
+                }),
+                title: "Single-crate refactor".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let mut jc = MockJCodemunchOps::new();
+        // Symbol in the single crate, no callers → would be flagged by naive impl.
+        jc.set_changed_symbols(
+            "h2fp2_commit^1",
+            "h2fp2_commit",
+            vec![reify_audit::ChangedSymbol {
+                name: "expand_purpose".to_string(),
+                file: "crates/reify-eval/src/expander.rs".to_string(),
+                line: 15,
+                has_allow_dead_code: false,
+                has_cfg_test: false,
+                g_allow_marker: None,
+            }],
+        );
+        // No callers set → empty.
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        let h2_findings: Vec<_> = findings
+            .iter()
+            .filter(|f| f.pattern == Pattern::P5LivePathStranded)
+            .collect();
+        assert!(
+            h2_findings.is_empty(),
+            "single-crate task must NOT be flagged by H2; got {:?}",
+            h2_findings
+        );
+    }
+
+    /// H2 FP guard (c): a cross-crate done task with a changed symbol that carries
+    /// a suppression marker (has_allow_dead_code) → zero P5LivePathStranded findings.
+    ///
+    /// RED against naive step-8 impl (which doesn't apply suppression guards).
+    #[test]
+    fn h2_suppressed_symbol_not_flagged() {
+        let conn = seed_db();
+        insert_task_completed_event(&conn, "H2FP3");
+
+        let mut git = MockGitOps::new();
+        git.set_diff_changed_paths(
+            "main",
+            "h2fp3_commit",
+            vec![
+                "crates/reify-compiler/src/compile.rs".to_string(),
+                "crates/reify-eval/src/lib.rs".to_string(),
+            ],
+        );
+        git.set_log_grep("main", "H2FP3", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "H2FP3".to_string(),
+            TaskMetadata {
+                task_id: "H2FP3".to_string(),
+                status: "done".to_string(),
+                files: vec![
+                    "crates/reify-compiler/src/compile.rs".to_string(),
+                    "crates/reify-eval/src/lib.rs".to_string(),
+                ],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("h2fp3_commit".to_string()),
+                    note: None,
+                }),
+                title: "Cross-crate with suppressed symbol".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let mut jc = MockJCodemunchOps::new();
+        // Symbol carries #[allow(dead_code)] → intentional orphan, must be suppressed.
+        jc.set_changed_symbols(
+            "h2fp3_commit^1",
+            "h2fp3_commit",
+            vec![reify_audit::ChangedSymbol {
+                name: "internal_helper".to_string(),
+                file: "crates/reify-eval/src/lib.rs".to_string(),
+                line: 100,
+                has_allow_dead_code: true,  // opt-out
+                has_cfg_test: false,
+                g_allow_marker: None,
+            }],
+        );
+        // No callers.
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        let h2_findings: Vec<_> = findings
+            .iter()
+            .filter(|f| f.pattern == Pattern::P5LivePathStranded)
+            .collect();
+        assert!(
+            h2_findings.is_empty(),
+            "#[allow(dead_code)] symbol must NOT be flagged by H2; got {:?}",
+            h2_findings
+        );
+    }
 }
 
 
