@@ -276,6 +276,28 @@ fn fixture_d_priv_aux_sub_has_both_anonymous_children() {
     );
 }
 
+// ── Negative ordering test ────────────────────────────────────────────────
+
+/// Negative: `aux priv sub a : T` (reversed modifier order) must produce an ERROR node.
+///
+/// The grammar fixes ordering as `optional('priv'), optional('aux')`, mirroring
+/// `optional('pub'), optional('aux')` from `let_declaration`. The reversed form
+/// `aux priv sub` is therefore a parse error. This test pins the single-order
+/// contract so a future grammar refactor cannot silently start accepting both
+/// orders (reviewer suggestion, task 3976).
+#[test]
+fn reversed_aux_priv_order_is_rejected() {
+    let mut parser = make_parser();
+    let source = b"structure S { aux priv sub a : T }";
+    let tree = parser.parse(source, None).expect("parse failed");
+    assert!(
+        tree.root_node().has_error(),
+        "`aux priv sub a : T` (reversed modifier order) must produce an ERROR node; \
+         got node kinds: {:?}",
+        collect_kinds(tree.root_node())
+    );
+}
+
 // ── Fixture (e): mv-2/mv-3 fixture files (user-observable exit-0 signal) ─
 
 /// Fixture (e): `mv-2-priv-param.ri` parses with no error.

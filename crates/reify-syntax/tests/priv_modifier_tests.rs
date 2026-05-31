@@ -152,6 +152,23 @@ fn priv_port_has_is_priv_true() {
     );
 }
 
+/// `priv sub xs : List<Motor>` (collection form) lowers to `SubDecl.is_priv == true`.
+///
+/// Pins the third grammar alternative (collection form) at the lowering layer.
+/// `lower_sub` routes through `has_priv_keyword` uniformly for all three
+/// `sub_declaration` alternatives, but the collection arm was previously
+/// untested at the lowering layer (reviewer suggestion, task 3976).
+#[test]
+fn priv_sub_collection_has_is_priv_true() {
+    let source = "structure S { priv sub xs : List<Motor> }";
+    let members = parse_first_structure_members(source);
+    let sub = first_sub(&members);
+    assert!(
+        sub.is_priv,
+        "`priv sub xs : List<Motor>` must lower to is_priv == true"
+    );
+}
+
 /// `priv aux sub a : T` lowers to `SubDecl.is_priv == true` AND `is_aux == true`.
 ///
 /// Confirms the two bools are independent: both flags are set when both
