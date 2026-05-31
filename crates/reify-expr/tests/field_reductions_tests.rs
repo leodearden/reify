@@ -726,14 +726,18 @@ fn all_reductions_on_imported_field_return_undef() {
     assert_all_reductions_undef(field, field_type, "Imported");
 }
 
-/// `max`/`min`/`argmax`/`argmin` over a derived (e.g. `VonMises`-wrapped)
-/// field return `Value::Undef`. Sampled-subfield reduction for derived
-/// wrappers is deferred — see the TODO(future) note in
-/// `field_reductions.rs`.
+/// `max`/`min`/`argmax`/`argmin` over a derived source that is NOT
+/// `FieldSourceKind::VonMises` return `Value::Undef` (deferred — PRD §13
+/// line 238). Using `MaxShear` as the representative still-deferred source
+/// after `VonMises` was promoted to a fully-handled source kind in β.
+///
+/// This test is the surviving "other derived sources stay deferred" pin
+/// after `all_reductions_on_derived_field_return_undef` was repurposed from
+/// `VonMises` to `MaxShear` in task 4085 step S5.
 #[test]
-fn all_reductions_on_derived_field_return_undef() {
-    let (field, field_type) = make_constant_real_analytical_field(FieldSourceKind::VonMises);
-    assert_all_reductions_undef(field, field_type, "derived (VonMises)");
+fn all_reductions_on_derived_non_vonmises_field_return_undef() {
+    let (field, field_type) = make_constant_real_analytical_field(FieldSourceKind::MaxShear);
+    assert_all_reductions_undef(field, field_type, "derived (MaxShear — still deferred)");
 }
 
 // ── Step 17: NaN-skip and empty-data semantics ──────────────────────────────
@@ -1487,5 +1491,186 @@ fn argmax_von_mises_field_3d_length_domain_returns_point3_at_max() {
             },
         ]),
         "argmin(VonMises 3-D field) should return Point3 at projected min (linear idx 2)"
+    );
+}
+
+// ── Step S5: defensive / negative contract pins for the VonMises path ────────
+//
+// These tests verify the guards delivered in S2/S4 (`project_von_mises_sampled`
+// returning None on malformed inputs) and the NaN-skip behaviour.
+
+/// All four reductions return `Value::Undef` when the VonMises field's lambda
+/// is NOT a Sampled `Value::Field` (e.g. `Value::Undef`).
+///
+/// This pins the `project_von_mises_sampled` level-1 defensive arm and
+/// preserves a VonMises negative pin after the stale
+/// `all_reductions_on_derived_field_return_undef` test was repurposed to
+/// `MaxShear` in this step.
+#[test]
+fn all_reductions_on_vonmises_field_with_non_sampled_lambda_return_undef() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    // VonMises field whose lambda is Value::Undef (not a Sampled Field).
+    let (field, field_type) = make_field_with_source(
+        Type::Real,
+        pressure,
+        FieldSourceKind::VonMises,
+        Value::Undef,
+    );
+    assert_all_reductions_undef(field, field_type, "VonMises with non-Sampled lambda (Undef)");
+}
+
+/// All four reductions return `Value::Undef` when the VonMises field's backing
+/// `SampledField` violates the stride-9 contract (`data.len() != grid_count * 9`).
+///
+/// Pins the `grid_count == 0 || sf.data.len() != grid_count * 9` guard in
+/// `project_von_mises_sampled`.
+#[test]
+fn all_reductions_on_vonmises_field_with_stride_violation_return_undef() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    // Stride violation: axis has 3 points (grid_count=3), data has 3*8=24
+    // values instead of 3*9=27 — one short per window.
+    let bad_sf = {
+        let axis = vec![0.0, 1.0, 2.0];
+        let mut data = Vec::with_capacity(24);
+        for _ in 0..3 {
+            data.extend_from_slice(&[1.0_f64; 8]); // 8-float windows, not 9
+        }
+        SampledField {
+            name: "bad_stride".to_string(),
+            kind: SampledGridKind::Regular1D,
+            bounds_min: vec![0.0],
+            bounds_max: vec![2.0],
+            spacing: vec![1.0],
+            axis_grids: vec![axis],
+            interpolation: InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    };
+    let inner_tensor_field = Value::Field {
+        domain_type: Type::Real,
+        codomain_type: Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity: Box::new(pressure.clone()),
+        },
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(bad_sf)),
+    };
+    let (field, field_type) = make_field_with_source(
+        Type::Real,
+        pressure,
+        FieldSourceKind::VonMises,
+        inner_tensor_field,
+    );
+    assert_all_reductions_undef(
+        field,
+        field_type,
+        "VonMises with stride-contract violation (data.len() != grid_count*9)",
+    );
+}
+
+/// All four reductions return `Value::Undef` when every projected window is
+/// NaN (all-out-of-solid sentinel).
+///
+/// Pins the NaN-skip + all-finite-absent → Undef chain:
+/// `compute_von_mises_3x3` of an all-NaN window returns NaN,
+/// `argmax_argmin_index` skips NaN and returns `None`, → `Value::Undef`.
+#[test]
+fn all_reductions_on_vonmises_field_with_all_nan_windows_return_undef() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    // All-NaN windows — every window is [NaN; 9], simulating fully
+    // out-of-solid sentinel values from the FEA elaborator.
+    let nan_sf = make_sampled_tensor_1d(
+        "all_nan",
+        vec![0.0, 1.0],
+        vec![
+            [f64::NAN; 9],
+            [f64::NAN; 9],
+        ],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(nan_sf, Type::Real);
+    let (field, field_type) = make_field_with_source(
+        Type::Real,
+        pressure,
+        FieldSourceKind::VonMises,
+        inner_tensor_field,
+    );
+    assert_all_reductions_undef(
+        field,
+        field_type,
+        "VonMises with all-NaN projected windows (all-out-of-solid)",
+    );
+}
+
+/// Positive NaN-skip: when SOME windows are NaN (out-of-solid sentinel)
+/// and others are finite, the reduction operates only over the finite-projected
+/// windows.
+///
+/// Setup: 3 windows — NaN, σ=250e6, NaN — projected: NaN, 250e6, NaN.
+/// max → 250e6 Pa (only finite window), argmax → coord 1.0 m (axis[1]).
+#[test]
+fn reductions_on_vonmises_field_with_partial_nan_windows_skip_nan() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+
+    let sf = make_sampled_tensor_1d(
+        "partial_nan",
+        vec![0.0, 1.0, 2.0],
+        vec![
+            [f64::NAN; 9],        // out-of-solid sentinel
+            uniaxial_window(250e6), // finite: σ=250e6 Pa
+            [f64::NAN; 9],        // out-of-solid sentinel
+        ],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(sf, length.clone());
+    let (field, field_type) = make_field_with_source(
+        length.clone(),
+        pressure.clone(),
+        FieldSourceKind::VonMises,
+        inner_tensor_field,
+    );
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // max → the single finite projected window: 250e6 Pa
+    let max_expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(field.clone(), field_type.clone())],
+        pressure.clone(),
+    );
+    assert_eq!(
+        eval_expr(&max_expr, &ctx),
+        Value::Scalar {
+            si_value: 250e6,
+            dimension: DimensionVector::PRESSURE,
+        },
+        "max(VonMises field with partial NaN) should skip NaN and return 250e6 Pa"
+    );
+
+    // argmax → the finite window at axis index 1 → coord 1.0 m
+    let argmax_expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(field, field_type)],
+        length.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmax_expr, &ctx),
+        Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmax(VonMises field with partial NaN) should skip NaN and return coord 1.0 m"
     );
 }

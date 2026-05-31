@@ -47,7 +47,13 @@ pub fn compute_von_mises_3x3(d: &[f64]) -> f64 {
     );
     debug_assert!(
         {
-            let tol = |a: f64, b: f64| (a - b).abs() <= 1e-10 * (1.0 + a.abs().max(b.abs()));
+            // NaN inputs (out-of-solid sentinel windows from the FEA elaborator)
+            // are trivially "symmetric" — the assertion is only meaningful for
+            // non-NaN programmer-error catches.
+            let tol = |a: f64, b: f64| {
+                (a.is_nan() && b.is_nan())
+                    || (a - b).abs() <= 1e-10 * (1.0 + a.abs().max(b.abs()))
+            };
             tol(d[1], d[3]) && tol(d[2], d[6]) && tol(d[5], d[7])
         },
         "compute_von_mises_3x3: input matrix is not symmetric"
