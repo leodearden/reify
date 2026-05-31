@@ -415,15 +415,169 @@ pub(crate) fn compile_purpose(
                 scope.register(&let_decl.name, expr.result_type);
             }
             reify_ast::MemberDecl::GuardedGroup(g) => {
-                diagnostics.push(
-                    Diagnostic::error(
-                        "guarded blocks in purpose bodies are not yet supported".to_string(),
-                    )
-                    .with_label(DiagnosticLabel::new(
-                        g.span,
-                        "unsupported in purpose".to_string(),
-                    )),
+                // Task ε (4012): lower guarded blocks to implication constraints at
+                // compile time.  The activated graph must be deterministic (purposes are
+                // graph-level), so guards CANNOT branch graph shape at runtime.
+                //
+                // Lowering:
+                //   where C { constraint A }  →  inject `C implies A`
+                //   else { constraint B }     →  inject `(not C) implies B`
+                //   where C { let x = … }     →  append let to CompiledPurpose.lets and
+                //                                register the name in scope
+                //
+                // The condition is compiled once; cloned for each where-arm implication
+                // and negated+cloned for each else-arm implication, ensuring per-param β
+                // stamping is applied identically across all arms.
+                let cond = compile_expr(
+                    &g.condition,
+                    &scope,
+                    enum_defs,
+                    functions,
+                    diagnostics,
                 );
+
+                // Helper closure: emit an implication constraint from an already-compiled
+                // body expression.
+                let emit_implies =
+                    |antecedent: CompiledExpr,
+                     body: CompiledExpr,
+                     label: Option<String>,
+                     span: SourceSpan,
+                     constraints: &mut Vec<CompiledConstraint>,
+                     idx: &mut u32| {
+                        let implied_expr =
+                            CompiledExpr::binop(BinOp::Implies, antecedent, body, Type::Bool);
+                        let id = ConstraintNodeId::new(purpose_name, *idx);
+                        constraints.push(CompiledConstraint {
+                            id,
+                            label,
+                            expr: implied_expr,
+                            span,
+                            domain: None,
+                            optimized_target: None,
+                        });
+                        *idx += 1;
+                    };
+
+                // ── where-arm members ──────────────────────────────────────
+                for m in &g.members {
+                    match m {
+                        reify_ast::MemberDecl::Constraint(c) => {
+                            let body = compile_expr(
+                                &c.expr,
+                                &scope,
+                                enum_defs,
+                                functions,
+                                diagnostics,
+                            );
+                            emit_implies(
+                                cond.clone(),
+                                body,
+                                c.label.clone(),
+                                c.span,
+                                &mut constraints,
+                                &mut constraint_index,
+                            );
+                        }
+                        reify_ast::MemberDecl::Let(let_decl) => {
+                            // Guard-scoped lets: mirror the top-level Let arm (traits.rs:399-416).
+                            // Name is registered in scope after compiling so no forward refs are
+                            // possible within the same block (ordered semantics).
+                            // NOTE: The name leaks past the guard block into the enclosing scope
+                            // because CompilationScope has no cheap unregister; this is an accepted
+                            // v1 limitation (task ε design decisions).
+                            let expr = compile_expr(
+                                &let_decl.value,
+                                &scope,
+                                enum_defs,
+                                functions,
+                                diagnostics,
+                            );
+                            let cell_id = ValueCellId::new(
+                                purpose_name.as_str(),
+                                let_decl.name.as_str(),
+                            );
+                            lets.push(CompiledPurposeLet {
+                                name: let_decl.name.clone(),
+                                cell_id,
+                                expr: expr.clone(),
+                                span: let_decl.span,
+                            });
+                            scope.register(&let_decl.name, expr.result_type);
+                        }
+                        unsupported => {
+                            // Any member kind that is not Constraint or Let is unsupported
+                            // inside a purpose guarded block; emit the same pattern used by
+                            // the sibling top-level reject arms.
+                            let (msg, span) = unsupported_purpose_member_info(unsupported);
+                            diagnostics.push(
+                                Diagnostic::error(msg)
+                                    .with_label(DiagnosticLabel::new(
+                                        span,
+                                        "unsupported in purpose".to_string(),
+                                    )),
+                            );
+                        }
+                    }
+                }
+
+                // ── else-arm members ───────────────────────────────────────
+                for m in &g.else_members {
+                    match m {
+                        reify_ast::MemberDecl::Constraint(c) => {
+                            let body = compile_expr(
+                                &c.expr,
+                                &scope,
+                                enum_defs,
+                                functions,
+                                diagnostics,
+                            );
+                            let not_cond = CompiledExpr::unop(
+                                UnOp::Not,
+                                cond.clone(),
+                                Type::Bool,
+                            );
+                            emit_implies(
+                                not_cond,
+                                body,
+                                c.label.clone(),
+                                c.span,
+                                &mut constraints,
+                                &mut constraint_index,
+                            );
+                        }
+                        reify_ast::MemberDecl::Let(let_decl) => {
+                            let expr = compile_expr(
+                                &let_decl.value,
+                                &scope,
+                                enum_defs,
+                                functions,
+                                diagnostics,
+                            );
+                            let cell_id = ValueCellId::new(
+                                purpose_name.as_str(),
+                                let_decl.name.as_str(),
+                            );
+                            lets.push(CompiledPurposeLet {
+                                name: let_decl.name.clone(),
+                                cell_id,
+                                expr: expr.clone(),
+                                span: let_decl.span,
+                            });
+                            scope.register(&let_decl.name, expr.result_type);
+                        }
+                        unsupported => {
+                            let (msg, span) = unsupported_purpose_member_info(unsupported);
+                            diagnostics.push(
+                                Diagnostic::error(msg)
+                                    .with_label(DiagnosticLabel::new(
+                                        span,
+                                        "unsupported in purpose".to_string(),
+                                    )),
+                            );
+                        }
+                    }
+                }
             }
             reify_ast::MemberDecl::Param(p) => {
                 diagnostics.push(
@@ -603,6 +757,86 @@ pub(crate) fn compile_purpose(
         content_hash: purpose_def.content_hash,
         annotations,
         pragmas: purpose_def.pragmas.clone(),
+    }
+}
+
+/// Return `(diagnostic_message, span)` for an unsupported [`reify_ast::MemberDecl`] found
+/// inside a purpose-body guarded block (task ε).  Mirrors the wording used by the top-level
+/// reject arms in `compile_purpose` so all "not supported in purpose" errors look identical.
+///
+/// Panics (unreachable!) for `Constraint` and `Let` — those are the two supported kinds that
+/// callers must have already handled before reaching this helper.
+fn unsupported_purpose_member_info(m: &reify_ast::MemberDecl) -> (String, SourceSpan) {
+    use reify_ast::MemberDecl;
+    match m {
+        MemberDecl::Param(p) => (
+            "param declarations in purpose bodies are not supported".to_string(),
+            p.span,
+        ),
+        MemberDecl::Sub(s) => (
+            "sub declarations in purpose bodies are not supported".to_string(),
+            s.span,
+        ),
+        MemberDecl::Port(p) => (
+            "port declarations in purpose bodies are not supported".to_string(),
+            p.span,
+        ),
+        MemberDecl::Connect(c) => (
+            "connect declarations in purpose bodies are not supported".to_string(),
+            c.span,
+        ),
+        MemberDecl::Chain(c) => (
+            "chain declarations in purpose bodies are not supported".to_string(),
+            c.span,
+        ),
+        MemberDecl::AssociatedType(a) => (
+            "associated type declarations in purpose bodies are not supported".to_string(),
+            a.span,
+        ),
+        MemberDecl::MetaBlock(mb) => (
+            "meta blocks in purpose bodies are not supported".to_string(),
+            mb.span,
+        ),
+        MemberDecl::ConstraintInst(ci) => (
+            "constraint instantiations in purpose bodies are not supported".to_string(),
+            ci.span,
+        ),
+        MemberDecl::ForallConnect(f) => (
+            "forall connect/chain statements in purpose bodies are not supported".to_string(),
+            f.span,
+        ),
+        MemberDecl::ForallConstraint(f) => (
+            "forall constraint statements in purpose bodies are not supported".to_string(),
+            f.span,
+        ),
+        MemberDecl::MatchArmDeclGroup(mg) => (
+            "match-arm decl groups in purpose bodies are not supported".to_string(),
+            mg.span,
+        ),
+        MemberDecl::Minimize(min) => (
+            "minimize declarations in purpose bodies are not supported inside guarded blocks"
+                .to_string(),
+            min.span,
+        ),
+        MemberDecl::Maximize(max) => (
+            "maximize declarations in purpose bodies are not supported inside guarded blocks"
+                .to_string(),
+            max.span,
+        ),
+        MemberDecl::GuardedGroup(g) => (
+            "nested guarded blocks in purpose bodies are not supported".to_string(),
+            g.span,
+        ),
+        MemberDecl::Fn(f) => (
+            "fn declarations in purpose bodies are not supported".to_string(),
+            f.span,
+        ),
+        MemberDecl::Constraint(_) | MemberDecl::Let(_) => {
+            unreachable!(
+                "unsupported_purpose_member_info called with a Constraint or Let — \
+                 these are supported and must be handled by the caller"
+            )
+        }
     }
 }
 
