@@ -50,8 +50,8 @@ fn cell_f64(v: &Value) -> Option<f64> {
 fn body_material_density(body: &Value) -> Option<f64> {
     if let Value::StructureInstance(data) = body
         && let Some(Value::StructureInstance(material)) =
-            data.fields.get(&"material".to_string())
-        && let Some(cell) = material.fields.get(&"density".to_string())
+            data.fields.get("material")
+        && let Some(cell) = material.fields.get("density")
     {
         return cell_f64(cell);
     }
@@ -63,7 +63,7 @@ fn body_material_density(body: &Value) -> Option<f64> {
 /// nominal `type_name`, then a generic placeholder.
 fn body_label(body: &Value) -> String {
     if let Value::StructureInstance(data) = body {
-        if let Some(Value::String(name)) = data.fields.get(&"name".to_string()) {
+        if let Some(Value::String(name)) = data.fields.get("name") {
             return name.clone();
         }
         return data.type_name.clone();
@@ -370,10 +370,10 @@ mod tests {
             data.type_name, "MassProperties",
             "assembled instance must be type MassProperties"
         );
-        let mass = num(data.fields.get(&"mass".to_string()).expect("mass field"));
-        let com = point3(data.fields.get(&"com".to_string()).expect("com field"));
+        let mass = num(data.fields.get("mass").expect("mass field"));
+        let com = point3(data.fields.get("com").expect("com field"));
         let inertia = crate::dynamics_psd::inertia_3x3_from_value(
-            data.fields.get(&"inertia".to_string()).expect("inertia field"),
+            data.fields.get("inertia").expect("inertia field"),
         )
         .expect("inertia field must parse as a 3×3 matrix via inertia_3x3_from_value");
         (mass, com, inertia)
@@ -566,7 +566,7 @@ mod tests {
         );
         for f in ["mass", "com", "inertia"] {
             assert_eq!(
-                data.fields.get(&f.to_string()),
+                data.fields.get(f),
                 Some(&Value::Undef),
                 "geometric field `{f}` must be the deferred Undef sentinel (kernel seam unwired)"
             );
