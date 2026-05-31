@@ -2974,10 +2974,9 @@ fn resolve_owner_solid_handle(
             upstream_values_hash,
             kernel_handle,
         } = value
+            && *kernel_handle == parent_body_kh
         {
-            if *kernel_handle == parent_body_kh {
-                return Some((realization_ref.clone(), *upstream_values_hash));
-            }
+            return Some((realization_ref.clone(), *upstream_values_hash));
         }
     }
     None
