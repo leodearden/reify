@@ -90,7 +90,17 @@ structure PrinterGantryModes {
     let mount_left  = FixedSupport(target: "x_min")
     let mount_right = FixedSupport(target: "x_max")
 
-    // Modal options: extract the first 5 modes at element_order = ElementOrder.P2.
+    // Modal options: request n_modes = 7 at element_order = ElementOrder.P2.
+    //
+    // n_modes = 7 (not 5): requesting 2 extra modes beyond the 5 we expose as
+    // f1..f5 mirrors the sibling simply_supported_beam_modes.ri convention
+    // (n_modes=8 while reading 3 cells) and guards against a borderline-
+    // converging 5th mode — if the eigensolver returns only 6 converged modes,
+    // the 5 cells are still covered and mode_frequency(result, 4) never
+    // indexes out of bounds.  The 60×40 mm asymmetric section interleaves
+    // vertical and lateral bending families starting at mode 2 (f_lateral ≈
+    // 1.5 · f_vertical for this aspect ratio), but all 7 requested modes are
+    // real structural modes (not rigid-body), so strict ordering still holds.
     //
     // IMPORTANT — argument binding is POSITIONAL (name: labels are cosmetic;
     // the parser strips them and binds each value to the param in ModalOptions'
@@ -102,7 +112,7 @@ structure PrinterGantryModes {
     // RayleighDamping(alpha: 0.0, beta: 0.0001): structural damping for the
     // resonance-budget reference (damping does not affect natural frequencies).
     let opts = ModalOptions(
-        n_modes: 5,
+        n_modes: 7,
         boundary_conditions: [mount_left, mount_right],
         damping: RayleighDamping(alpha: 0.0, beta: 0.0001),
         sigma: 0.0,

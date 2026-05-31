@@ -565,8 +565,8 @@ fn e2e_simply_supported_modes_match_analytic() {
 // Release-gated like the other e2e solves (heavy generalized eigensolve).
 // The registration pin (_seam_pin, step-13) runs always.
 //
-// RED until examples/modal/printer_gantry_modes.ri is created (include_str!
-// compile-fail, same convention as the _seam_pin step-13 → step-14 pair).
+// The fixture (examples/modal/printer_gantry_modes.ri) was created in the same
+// diff, so this test is GREEN as landed (include_str! compile-fail is resolved).
 
 /// Printer gantry: first 5 modes finite, positive, strictly ascending —
 /// the dogfood structural gate (task μ, PRD §1).
@@ -654,6 +654,20 @@ fn e2e_printer_gantry_prints_five_modes() {
             "{name} must be finite and positive, got: {f}"
         );
     }
+
+    // Rigid-body-leak guard: the pin-pin BCs (x_min + x_max) must remove all
+    // 6 rigid-body modes so K_free is non-singular.  A leaked rigid-body mode
+    // would surface near zero (e.g. ~1e-3 Hz) and still pass `f > 0.0`.
+    // A real structural fundamental for this gantry geometry is in the
+    // hundreds-of-Hz range; the 1 Hz floor separates a genuine structural
+    // mode from a spurious residual.  This is NOT an analytic accuracy bound —
+    // it only guards against incomplete BC removal.
+    assert!(
+        f1 > 1.0,
+        "f1 rigid-body-leak guard: expected > 1.0 Hz (structural mode), got {f1:.6} Hz \
+         — suggests a leaked near-zero rigid-body mode from incomplete pin-pin BC removal"
+    );
+
     assert!(
         f1 < f2 && f2 < f3 && f3 < f4 && f4 < f5,
         "gantry frequencies must be strictly ascending: f1={f1} f2={f2} f3={f3} f4={f4} f5={f5}"
