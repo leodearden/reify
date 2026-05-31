@@ -324,6 +324,56 @@ fn inplane_lamina_strain(h: &[[f64; 3]; 3], q: &[[f64; 3]; 3]) -> [f64; 3] {
     [strain_pq(0, 0), strain_pq(1, 1), 2.0 * strain_pq(0, 1)]
 }
 
+/// Dot product of two 3-vectors. Shared by the exact-covariant strain builders
+/// ([`degenerate_exact_covariant_membrane_b`], [`degenerate_exact_covariant_shear_b`]).
+#[inline]
+fn dot3(a: &[f64; 3], b: &[f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// Columns of `C_i = −skew(V_i)` for a per-node director `v`, i.e.
+/// `C_i[:, c] = ∂(θ_i × V_i)/∂θ_c`. Returned as `[col0, col1, col2]`.
+///
+/// Single source of truth for the skew-symmetric rotation→displacement convention
+/// shared by the exact-covariant membrane ([`degenerate_exact_covariant_membrane_b`])
+/// and transverse-shear ([`degenerate_exact_covariant_shear_b`]) B builders.
+#[inline]
+fn director_rotation_columns(v: &Director) -> [[f64; 3]; 3] {
+    [
+        [0.0, -v[2], v[1]], // C_i[:,0] = (0, −V_z, V_y)
+        [v[2], 0.0, -v[0]], // C_i[:,1] = (V_z, 0, −V_x)
+        [-v[1], v[0], 0.0], // C_i[:,2] = (−V_y, V_x, 0)
+    ]
+}
+
+/// In-plane contravariant **lamina projection** at `coord`: the `2×2` block
+/// `m2 = (q·J⁻ᵀ)[0..2, 0..2]` and the through-thickness factor
+/// `s3 = (q·J⁻ᵀ)[2][2] = e'_3·g^ζ = 1/|g_ζ|`, with the lamina frame `q`
+/// ([`lamina_frame`]) and the degenerate Jacobian `J` ([`degenerate_jacobian`]) at
+/// `coord`. `m2` is the in-plane contravariant projection `e'_p·g^i`
+/// (`p, i ∈ {1, 2}`) that maps a covariant in-plane tensor into the physical lamina
+/// frame; `s3` strips the `g_ζ` metric the exact covariant shear carries.
+///
+/// Single source of truth for the covariant→physical map shared by the ANS membrane
+/// ([`degenerate_assumed_membrane_b`], which uses `m2`) and the ANS transverse-shear
+/// ([`degenerate_transverse_shear_b`], which uses both `m2` and `s3`) fields.
+fn lamina_contravariant_projection(
+    nodes: &[[f64; 3]; 3],
+    directors: &[Director; 3],
+    thicknesses: &[f64; 3],
+    coord: ShellRefCoord3,
+) -> ([[f64; 2]; 2], f64) {
+    let (j, _det) = degenerate_jacobian(nodes, directors, thicknesses, coord);
+    let (j_inv, _) = mat3_inverse(&j);
+    let n = Mitc3Plus.shape_at(coord.in_plane());
+    let q = lamina_frame(&j, &n, directors);
+    // (q · J⁻ᵀ)[a][b] = Σ_k q[a][k] · J⁻ᵀ[k][b] = Σ_k q[a][k] · J⁻¹[b][k].
+    let qjit = |a: usize, b: usize| -> f64 { (0..3).map(|k| q[a][k] * j_inv[b][k]).sum() };
+    let m2 = [[qjit(0, 0), qjit(0, 1)], [qjit(1, 0), qjit(1, 1)]];
+    let s3 = qjit(2, 2); // through-thickness normalization e'_3·g^ζ = 1/|g_ζ|
+    (m2, s3)
+}
+
 /// Membrane+bending strain–displacement matrix `B` (3 in-plane lamina strain
 /// rows `[ε'₁₁, ε'₂₂, 2ε'₁₂]` × 18 DOF columns) at `coord`.
 ///
@@ -449,8 +499,6 @@ fn degenerate_exact_covariant_membrane_b(
     let dn = Mitc3Plus.shape_grad_at(coord.in_plane());
     let half_zeta = 0.5 * coord.zeta;
 
-    let dot = |a: &[f64; 3], b: &[f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-
     let mut b = [[0.0_f64; 18]; 3];
     for i in 0..Mitc3Plus::N_NODES {
         let zt = half_zeta * thicknesses[i]; // ζ·t_i/2
@@ -469,15 +517,10 @@ fn degenerate_exact_covariant_membrane_b(
         //   ε_ξξ  col(6i+3+c) = g_ξ · (zt N_i,ξ C_i[:,c]) = zt N_i,ξ (g_ξ·C_i[:,c])
         //   ε_ηη  col         = zt N_i,η (g_η·C_i[:,c])
         //   2ε_ξη col         = zt N_i,η (g_ξ·C_i[:,c]) + zt N_i,ξ (g_η·C_i[:,c])
-        let v = directors[i];
-        let c_cols = [
-            [0.0, -v[2], v[1]], // C_i[:,0] = (0, −V_z, V_y)
-            [v[2], 0.0, -v[0]], // C_i[:,1] = (V_z, 0, −V_x)
-            [-v[1], v[0], 0.0], // C_i[:,2] = (−V_y, V_x, 0)
-        ];
+        let c_cols = director_rotation_columns(&directors[i]);
         for (c, cc) in c_cols.iter().enumerate() {
-            let g_xi_cc = dot(&g_xi, cc);
-            let g_eta_cc = dot(&g_eta, cc);
+            let g_xi_cc = dot3(&g_xi, cc);
+            let g_eta_cc = dot3(&g_eta, cc);
             let col = 6 * i + 3 + c;
             b[0][col] = zt * dn[i][0] * g_xi_cc;
             b[1][col] = zt * dn[i][1] * g_eta_cc;
@@ -594,8 +637,6 @@ fn degenerate_exact_covariant_shear_b(
     let dn = Mitc3Plus.shape_grad_at(coord.in_plane());
     let half_zeta = 0.5 * coord.zeta;
 
-    let dot = |a: &[f64; 3], b: &[f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-
     let mut b = [[0.0_f64; 18]; 2];
     for i in 0..Mitc3Plus::N_NODES {
         let half_t = 0.5 * thicknesses[i];
@@ -610,16 +651,11 @@ fn degenerate_exact_covariant_shear_b(
         // so ∂(θ×V)/∂θ_c = C_i[:,c]. Then
         //   γ_αζ col(6i+3+c) = g_α · (N_i (t_i/2) C_i[:,c])
         //                    + g_ζ · (ζ t_i/2 · N_i,α · C_i[:,c]).
-        let v = directors[i];
-        let c_cols = [
-            [0.0, -v[2], v[1]],  // C_i[:,0] = (0, −V_z, V_y)
-            [v[2], 0.0, -v[0]],  // C_i[:,1] = (V_z, 0, −V_x)
-            [-v[1], v[0], 0.0],  // C_i[:,2] = (−V_y, V_x, 0)
-        ];
+        let c_cols = director_rotation_columns(&directors[i]);
         for (c, cc) in c_cols.iter().enumerate() {
-            let g_xi_cc = dot(&g_xi, cc);
-            let g_eta_cc = dot(&g_eta, cc);
-            let g_zeta_cc = dot(&g_zeta, cc);
+            let g_xi_cc = dot3(&g_xi, cc);
+            let g_eta_cc = dot3(&g_eta, cc);
+            let g_zeta_cc = dot3(&g_zeta, cc);
             b[0][6 * i + 3 + c] = n[i] * half_t * g_xi_cc + zt * dn[i][0] * g_zeta_cc;
             b[1][6 * i + 3 + c] = n[i] * half_t * g_eta_cc + zt * dn[i][1] * g_zeta_cc;
         }
@@ -704,14 +740,7 @@ pub fn degenerate_transverse_shear_b(
     }
 
     // (3) Covariant→physical map at the varying J: s₃ · m2 · b_cov.
-    let (j, _det) = degenerate_jacobian(nodes, directors, thicknesses, coord);
-    let (j_inv, _) = mat3_inverse(&j);
-    let n = Mitc3Plus.shape_at(coord.in_plane());
-    let q = lamina_frame(&j, &n, directors);
-    // (q · J⁻ᵀ)[a][b] = Σ_k q[a][k] · J⁻ᵀ[k][b] = Σ_k q[a][k] · J⁻¹[b][k].
-    let qjit = |a: usize, b: usize| -> f64 { (0..3).map(|k| q[a][k] * j_inv[b][k]).sum() };
-    let m2 = [[qjit(0, 0), qjit(0, 1)], [qjit(1, 0), qjit(1, 1)]];
-    let s3 = qjit(2, 2); // through-thickness normalization e'_3·g^ζ = 1/|g_ζ|
+    let (m2, s3) = lamina_contravariant_projection(nodes, directors, thicknesses, coord);
 
     let mut b_phys = [[0.0_f64; 18]; 2];
     for dof in 0..18 {
@@ -795,13 +824,8 @@ pub fn degenerate_assumed_membrane_b(
     let b_cov = degenerate_exact_covariant_membrane_b(nodes, directors, thicknesses, centroid);
 
     // (3) Covariant→physical lamina map at (ξ, η, 0): ε'_pq = Σ m2[p][a] m2[q][b] ε_ab.
-    let (j, _det) = degenerate_jacobian(nodes, directors, thicknesses, mid);
-    let (j_inv, _) = mat3_inverse(&j);
-    let n = Mitc3Plus.shape_at(mid.in_plane());
-    let q = lamina_frame(&j, &n, directors);
-    // (q · J⁻ᵀ)[a][b] = Σ_k q[a][k] · J⁻¹[b][k].
-    let qjit = |a: usize, b: usize| -> f64 { (0..3).map(|k| q[a][k] * j_inv[b][k]).sum() };
-    let m2 = [[qjit(0, 0), qjit(0, 1)], [qjit(1, 0), qjit(1, 1)]];
+    // (s3 is the transverse-shear through-thickness factor — unused by the membrane.)
+    let (m2, _s3) = lamina_contravariant_projection(nodes, directors, thicknesses, mid);
 
     let mut b_phys = [[0.0_f64; 18]; 3];
     for dof in 0..18 {
