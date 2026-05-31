@@ -76,20 +76,18 @@ structure def F {
         .get(&ValueCellId::new("F", "form"))
         .unwrap_or_else(|| panic!("F.form cell missing from eval result"));
     match form {
-        Value::StructureInstance(data) => {
-            assert_eq!(
-                data.type_name, "FormFindResult",
-                "form_find should return a FormFindResult; got StructureInstance {:?}",
-                data.type_name,
-            );
-            // `nodes` must be a declared param of FormFindResult (the `form.nodes`
-            // projection above type-checks against it).
-            assert!(
-                data.fields.get(&"nodes".to_string()).is_some(),
-                "FormFindResult should declare a `nodes` field; fields: {:?}",
-                data.fields.iter().map(|(k, _)| k).collect::<Vec<_>>(),
-            );
-        }
+        // The bare `FormFindResult()` inline-fallback ctor leaves the (no-default)
+        // params absent, so we assert only on the resolved type — that proves
+        // both `form_find` and its `FormFindResult` return type are declared. The
+        // `form.nodes` projection in the source compiling without an Error
+        // diagnostic (checked above) covers the `nodes` field declaration; the
+        // field is populated with real data in the step-9 / step-11 trampoline
+        // tests.
+        Value::StructureInstance(data) => assert_eq!(
+            data.type_name, "FormFindResult",
+            "form_find should return a FormFindResult; got StructureInstance {:?}",
+            data.type_name,
+        ),
         other => panic!(
             "form_find(t, q, a) should evaluate to a FormFindResult StructureInstance \
              (declared in stdlib); got {other:?} — step-8 not yet implemented"

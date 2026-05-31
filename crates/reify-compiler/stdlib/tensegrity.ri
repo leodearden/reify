@@ -108,3 +108,85 @@ structure def TensegrityWire {
     param y2 : Length
     param z2 : Length
 }
+
+// ── FormFindResult ────────────────────────────────────────────────────────────
+//
+// Output container of `form_find` (PRD §4 / Tier-1 leaf T1a). Carries the
+// solved equilibrium geometry plus the derived per-member axial forces, the
+// echoed force densities, and a convergence flag — mirroring `ElasticResult`'s
+// "output container, no defaults, converged-flag" discipline.
+//
+//   nodes           — solved node coordinates, one Point per Tensegrity node in
+//                     the original node order (anchors unchanged; free nodes at
+//                     their force-density equilibrium positions).
+//   member_forces   — per-member axial force Nᵢ = qᵢ·Lᵢ on the solved geometry.
+//                     Tension (cables) is positive, compression (struts) is
+//                     negative. Ordered struts-then-cables, matching
+//                     `tensegrity_wires` and the `force_densities` input.
+//   force_densities — echo of the input force densities (struts-then-cables
+//                     order), so downstream consumers need not thread the input
+//                     list separately.
+//   converged       — true iff the reduced force-density system solved cleanly
+//                     (non-singular, sign-consistent). On infeasible input the
+//                     trampoline returns ComputeOutcome::Failed with an
+//                     `E_FormFindInfeasible` diagnostic rather than a result
+//                     with `converged: false`.
+//
+// All params are required (no defaults) — a `FormFindResult` is only ever
+// constructed by the solver trampoline (or, in the never-run fallback below,
+// as a bare sentinel). Forces and densities are signed quantities, so unlike
+// `ElasticResult` there is no non-negativity constraint to declare.
+structure def FormFindResult {
+    param nodes : List<Point3<Length>>
+    param member_forces : List<Force>
+    param force_densities : List<Real>
+    param converged : Bool
+}
+
+// ── form_find ─────────────────────────────────────────────────────────────────
+//
+// Anchored Force-Density form-finding (PRD §4 / T1a) — the first tensegrity
+// consumer of the landed ComputeNode contract (GR-002).
+//
+// At eval time the `@optimized("solver::form_find")` annotation causes the
+// engine (engine_eval.rs) to allocate a ComputeNode with
+//   target == "solver::form_find"
+// and dispatch to the registered trampoline in
+//   crates/reify-eval/src/compute_targets/form_find.rs
+// rather than inlining the body below. The trampoline cracks `structure` into
+// node coordinates + member connectivity, calls the pure FD kernel
+// (`reify_solver_elastic::form_find_anchored`), and rebuilds a FormFindResult.
+//
+// Body discipline: `{ FormFindResult() }` is the never-run inline fallback
+// (PRD §9 Q1 body-inline policy, per solver_elastic.ri's solve_elastic_static).
+// In normal operation the trampoline is always registered and the body is not
+// executed.
+//
+// Signature / ordering contract:
+//
+//   structure : Tensegrity
+//     The typed network. Anchor coordinates are read from `structure.nodes`
+//     indexed by `anchors`; free-node entries are an (unused) initial guess —
+//     the direct anchored solve is non-iterative.
+//
+//   force_densities : List<Real>
+//     One force density qᵢ per member, supplied in struts-then-cables order
+//     (the `tensegrity_wires` emission order) so q-to-member indexing is
+//     unambiguous. Sign convention (hard constraint): cables carry tension
+//     (q > 0), struts carry compression (q < 0); a violation is infeasible
+//     input and surfaces as an E_FormFindInfeasible diagnostic. Explicit
+//     per-member q (not ratios / eigenvalue auto-scaling) is the T1a scope;
+//     the free-standing eigenvalue/ratio search is deferred to T1b.
+//     `List<Real>` placeholder typing matches the LoadCase.loads convention.
+//
+//   anchors : List<Int>
+//     0-based indices into `structure.nodes` of the anchored (fixed) nodes.
+//     Every other node is free; an empty free set is infeasible input.
+@optimized("solver::form_find")
+pub fn form_find(
+    structure : Tensegrity,
+    force_densities : List<Real>,
+    anchors : List<Int>
+) -> FormFindResult {
+    FormFindResult()
+}
