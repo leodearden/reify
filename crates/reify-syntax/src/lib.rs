@@ -25,10 +25,10 @@ pub fn parse(source: &str, module_path: ModulePath) -> ParsedModule {
 
 /// Parse a source string into a `ParsedModule`, pre-seeding the lowering's
 /// `known_enums` set with `prelude_enum_names`. See [`ts_parser::parse_with_prelude_enums`].
-pub fn parse_with_prelude_enums(
-    source: &str,
+pub fn parse_with_prelude_enums<'a>(
+    source: &'a str,
     module_path: ModulePath,
-    prelude_enum_names: &[&'static str],
+    prelude_enum_names: &[&'a str],
 ) -> ParsedModule {
     ts_parser::parse_with_prelude_enums(source, module_path, prelude_enum_names)
 }

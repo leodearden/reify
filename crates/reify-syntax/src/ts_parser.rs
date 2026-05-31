@@ -51,10 +51,10 @@ pub fn parse(source: &str, module_path: ModulePath) -> ParsedModule {
 ///
 /// Companion to [`reify_compiler::parse_with_stdlib`], which flattens the
 /// stdlib's prelude enum names and delegates to this entry.
-pub fn parse_with_prelude_enums(
-    source: &str,
+pub fn parse_with_prelude_enums<'a>(
+    source: &'a str,
     module_path: ModulePath,
-    prelude_enum_names: &[&'static str],
+    prelude_enum_names: &[&'a str],
 ) -> ParsedModule {
     let mut ts_parser = tree_sitter::Parser::new();
     ts_parser
@@ -161,7 +161,7 @@ impl<'a> Lowering<'a> {
     /// `lower_source_file` then unions the current source's own enum names
     /// into the same set.  `HashSet::insert` deduplicates any overlap
     /// silently — see `parse_with_prelude_enums` for the full contract.
-    fn with_prelude_enums(source: &'a str, prelude_enum_names: &[&'static str]) -> Self {
+    fn with_prelude_enums(source: &'a str, prelude_enum_names: &[&'a str]) -> Self {
         let mut known_enums: HashSet<&'a str> = HashSet::new();
         for &name in prelude_enum_names {
             known_enums.insert(name);
@@ -4690,11 +4690,11 @@ mod tests {
     ///    (`SourceEnum`) and a prelude-supplied enum (`PreludeEnumB`) must BOTH
     ///    lower to `EnumAccess` in the same parse.
     ///
-    /// Note: the `&[&'static str]` API-surface constraint is enforced by the
-    /// compiler — a non-`'static` borrow at a call site will not compile.  This
-    /// test does not add dedicated coverage for that property (the compiler is
-    /// the authoritative check).  The no-allocation guarantee is a manual
-    /// profiling check (per task description), not encoded here.
+    /// Note: the API accepts `&[&'a str]` (source-lifetime bound, task 4108);
+    /// non-`'static` borrowed names are accepted and covered by
+    /// `parse_with_prelude_enums_accepts_non_static_borrowed_names`.  The
+    /// no-allocation guarantee is a manual profiling check (per task description),
+    /// not encoded here.
     #[test]
     fn parse_with_prelude_enums_borrows_static_names_across_calls() {
         static PRELUDE: &[&str] = &["PreludeEnumA", "PreludeEnumB"];
