@@ -87,6 +87,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
             MemberDecl::Param(ParamDecl {
                 name: "width".into(),
                 doc: None,
+                is_priv: false,
                 type_expr: Some(TypeExpr {
                     kind: TypeExprKind::Named {
                         name: "Scalar".into(),
@@ -109,6 +110,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
             MemberDecl::Param(ParamDecl {
                 name: "height".into(),
                 doc: None,
+                is_priv: false,
                 type_expr: Some(TypeExpr {
                     kind: TypeExprKind::Named {
                         name: "Scalar".into(),
@@ -131,6 +133,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
             MemberDecl::Param(ParamDecl {
                 name: "thickness".into(),
                 doc: None,
+                is_priv: false,
                 type_expr: Some(TypeExpr {
                     kind: TypeExprKind::Named {
                         name: "Scalar".into(),
@@ -153,6 +156,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
             MemberDecl::Param(ParamDecl {
                 name: "fillet_radius".into(),
                 doc: None,
+                is_priv: false,
                 type_expr: Some(TypeExpr {
                     kind: TypeExprKind::Named {
                         name: "Scalar".into(),
@@ -175,6 +179,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
             MemberDecl::Param(ParamDecl {
                 name: "hole_diameter".into(),
                 doc: None,
+                is_priv: false,
                 type_expr: Some(TypeExpr {
                     kind: TypeExprKind::Named {
                         name: "Scalar".into(),

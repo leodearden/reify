@@ -197,6 +197,9 @@ pub struct WhereClause {
 pub struct ParamDecl {
     pub name: String,
     pub doc: Option<String>,
+    /// Whether this param is marked `priv` (PRD §D-3/D-4: private to the structure).
+    /// `priv param` is hidden from importers; default-visible params have `is_priv == false`.
+    pub is_priv: bool,
     pub type_expr: Option<TypeExpr>,
     pub default: Option<Expr>,
     pub where_clause: Option<WhereClause>,
@@ -318,6 +321,9 @@ pub struct SubDecl {
     /// Parsed and stored here (task 3899); first consumed by the T2
     /// sub-placement compiler lowering task.
     pub is_aux: bool,
+    /// Whether this sub-component is marked `priv` (PRD §D-3/D-4: private to the structure).
+    /// `priv sub` is hidden from importers; default-visible subs have `is_priv == false`.
+    pub is_priv: bool,
     /// Optional placement pose expression from the `at <expr>` clause (PRD §2.2).
     /// `None` when no `at` clause is present; `Some(expr)` when the sub-component
     /// carries an explicit placement frame or transform.
@@ -356,6 +362,9 @@ pub struct PortDecl {
     pub name: String,
     pub direction: Option<PortDirection>,
     pub type_name: String,
+    /// Whether this port is marked `priv` (PRD §D-3/D-4: private to the structure).
+    /// `priv port` is hidden from importers; default-visible ports have `is_priv == false`.
+    pub is_priv: bool,
     pub members: Vec<MemberDecl>,
     pub frame_expr: Option<Expr>,
     pub span: SourceSpan,
