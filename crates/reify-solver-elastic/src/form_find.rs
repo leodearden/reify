@@ -100,3 +100,130 @@ pub fn form_find_anchored(
     let _ = (nodes, members, kinds, q, anchors);
     Err(FormFindError::DimensionMismatch)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Tolerance for the analytic FD-identity goldens. The reduced linear solve
+    /// reproduces these exact identities to ~1e-13; 1e-9 leaves ~4 orders of
+    /// margin while still catching a wrong solve.
+    const TOL: f64 = 1e-9;
+
+    /// Max absolute componentwise difference between two 3-vectors.
+    fn max_coord_err(a: [f64; 3], b: [f64; 3]) -> f64 {
+        a.iter()
+            .zip(b.iter())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0, f64::max)
+    }
+
+    // (a) A single free node cabled to 4 anchors with equal force density solves
+    // to the (unweighted) centroid of the anchors — the weighted-centroid FD
+    // identity x_f = Σ qᵢ x_{aᵢ} / Σ qᵢ with all qᵢ equal. Anchors are placed
+    // symmetrically in x,y so the centroid is (0, 0, 0.5).
+    #[test]
+    fn single_free_node_equal_q_solves_to_anchor_centroid() {
+        let nodes = vec![
+            [0.3, 0.2, 0.4], // free node 0 — deliberately off-solution
+            [1.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, 1.0, 1.0],
+            [0.0, -1.0, 1.0],
+        ];
+        let members = [(0, 1), (0, 2), (0, 3), (0, 4)];
+        let kinds = [MemberKind::Cable; 4];
+        let q = [1.0, 1.0, 1.0, 1.0];
+        let anchors = [1, 2, 3, 4];
+
+        let solve = form_find_anchored(&nodes, &members, &kinds, &q, &anchors)
+            .expect("equal-q anchored cable net must be feasible");
+
+        let expected = [0.0, 0.0, 0.5];
+        assert!(
+            max_coord_err(solve.nodes[0], expected) < TOL,
+            "nodes[0] = {:?}, expected anchor centroid {:?}",
+            solve.nodes[0],
+            expected,
+        );
+    }
+
+    // (b) Unequal force densities give the *weighted* centroid
+    // x_f = Σ qᵢ x_{aᵢ} / Σ qᵢ. Same geometry as (a) but q = [2,1,1,1]; the
+    // expected point is computed from the identity rather than hard-coded.
+    #[test]
+    fn single_free_node_unequal_q_solves_to_weighted_centroid() {
+        let anchor_pts = [
+            [1.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, 1.0, 1.0],
+            [0.0, -1.0, 1.0],
+        ];
+        let nodes = vec![
+            [0.3, 0.2, 0.4], // free node 0
+            anchor_pts[0],
+            anchor_pts[1],
+            anchor_pts[2],
+            anchor_pts[3],
+        ];
+        let members = [(0, 1), (0, 2), (0, 3), (0, 4)];
+        let kinds = [MemberKind::Cable; 4];
+        let q = [2.0, 1.0, 1.0, 1.0];
+        let anchors = [1, 2, 3, 4];
+
+        // Analytic weighted centroid Σ qᵢ x_i / Σ qᵢ.
+        let qsum: f64 = q.iter().sum();
+        let mut expected = [0.0_f64; 3];
+        for (w, p) in q.iter().zip(anchor_pts.iter()) {
+            for (e, c) in expected.iter_mut().zip(p.iter()) {
+                *e += w * c;
+            }
+        }
+        for e in expected.iter_mut() {
+            *e /= qsum;
+        }
+
+        let solve = form_find_anchored(&nodes, &members, &kinds, &q, &anchors)
+            .expect("unequal-q anchored cable net must be feasible");
+
+        assert!(
+            max_coord_err(solve.nodes[0], expected) < TOL,
+            "nodes[0] = {:?}, expected weighted centroid {:?}",
+            solve.nodes[0],
+            expected,
+        );
+    }
+
+    // (c) Two free nodes in a uniform-tension chain
+    // anchor(x=0) — node0 — node1 — anchor(x=3), all cables q=1. The interior
+    // nodes settle to evenly-spaced positions x0=1, x1=2. This exercises the
+    // off-diagonal D_ff coupling: the node0–node1 cable couples the two free
+    // equations, so a diagonal-only solve would get this wrong.
+    #[test]
+    fn two_free_node_chain_solves_to_uniform_spacing() {
+        let nodes = vec![
+            [0.5, 0.0, 0.0], // free node 0 — off-solution
+            [2.5, 0.0, 0.0], // free node 1 — off-solution
+            [0.0, 0.0, 0.0], // anchor at x=0
+            [3.0, 0.0, 0.0], // anchor at x=3
+        ];
+        let members = [(2, 0), (0, 1), (1, 3)];
+        let kinds = [MemberKind::Cable; 3];
+        let q = [1.0, 1.0, 1.0];
+        let anchors = [2, 3];
+
+        let solve = form_find_anchored(&nodes, &members, &kinds, &q, &anchors)
+            .expect("uniform-tension chain must be feasible");
+
+        assert!(
+            max_coord_err(solve.nodes[0], [1.0, 0.0, 0.0]) < TOL,
+            "free node 0 = {:?}, expected (1,0,0)",
+            solve.nodes[0],
+        );
+        assert!(
+            max_coord_err(solve.nodes[1], [2.0, 0.0, 0.0]) < TOL,
+            "free node 1 = {:?}, expected (2,0,0)",
+            solve.nodes[1],
+        );
+    }
+}
