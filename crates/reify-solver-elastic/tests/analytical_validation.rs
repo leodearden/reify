@@ -1462,3 +1462,58 @@ fn cantilever_beam_p2_tip_deflection_slender_within_1pct_of_timoshenko() {
         rel_err * 100.0,
     );
 }
+
+// ─── thick-walled cylinder P2 validation ────────────────────────────────────
+
+/// Thick-walled cylinder (Lamé) P2 max von Mises ≤ 2 % of reference.
+///
+/// Promotes the P1 corner mesh to P2 via [`add_edge_midpoint_nodes`];
+/// builds P2 inner faces via `p2_inner_faces` (corner triple +
+/// coordinate-looked-up edge midpoints in `[v0,v1,v2,m01,m12,m20]` order).
+/// Inner pressure assembled with `FaceOrder::P2Tri`; solved with
+/// `solve_p2_pipeline` (well-conditioned cylinder, default CG cap suffices).
+#[test]
+fn thick_walled_cylinder_p2_max_von_mises_within_2pct_of_lame() {
+    const A: f64 = 1.0;
+    const B: f64 = 2.0;
+    const L: f64 = 1.0;
+    const P_I: f64 = 1.0;
+    const NR: usize = 12;
+    const NTHETA: usize = 12;
+    const NZ: usize = 2;
+    const E: f64 = 1.0;
+    const NU: f64 = 0.3;
+    let tol_geom: f64 = 1e-9;
+
+    let mat = IsotropicElastic { youngs_modulus: E, poisson_ratio: NU };
+    let (corner_nodes, p1_conns, p1_inner_faces) = annular_p1_mesh(A, B, L, NR, NTHETA, NZ);
+    let (p2_nodes, p2_conns) = add_edge_midpoint_nodes(&corner_nodes, &p1_conns);
+    let n_nodes = p2_nodes.len();
+
+    // Build P2 inner faces — p2_inner_faces is the RED function
+    let p2_inner = p2_inner_faces(&p1_inner_faces, &p2_nodes);
+
+    // Symmetry + plane-strain BCs on the P2 mesh
+    let mut bcs = annular_symmetry_plane_strain_bcs(&p2_nodes, L, tol_geom);
+
+    // Assemble inner-pressure loads via the P2 helper
+    let loads = inner_pressure_loads_p2(&p2_inner, &p2_nodes, P_I);
+
+    let u = solve_p2_pipeline(&p2_nodes, &p2_conns, &mut bcs, &loads, &mat);
+
+    // Recover nodal stress + max von Mises over inner-ring nodes (r ≈ a)
+    let sigma = recover_nodal_p2(&p2_nodes, &p2_conns, &u, &mat);
+    let lame_ref = lame_von_mises(A, A, B, P_I, NU);
+    let max_vm = p2_nodes.iter().enumerate()
+        .filter(|(_, p)| ((p[0]*p[0]+p[1]*p[1]).sqrt() - A).abs() < tol_geom)
+        .map(|(ni, _)| von_mises_of_tensor(&sigma[ni]))
+        .fold(0.0_f64, f64::max);
+
+    let rel_err = (max_vm - lame_ref).abs() / lame_ref;
+    assert!(
+        rel_err <= 0.02,
+        "cylinder P2: max von Mises {max_vm:.6} vs Lamé ref {lame_ref:.6} \
+         — rel err {:.2}% > 2% (mesh: {NR}×{NTHETA}×{NZ}, n_nodes={n_nodes})",
+        rel_err * 100.0,
+    );
+}
