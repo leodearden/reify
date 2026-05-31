@@ -369,6 +369,55 @@ pub(crate) fn mesh_geometry(m: &Manifold) -> (Vec<[f64; 3]>, Vec<u64>) {
     (verts, tri_indices)
 }
 
+/// Order an unordered vertex-index pair into a canonical undirected key
+/// `(min, max)`. Shared by [`canonical_edges`] (deduping triangle edges) and
+/// `SharedEdges` (matching a shared vertex-pair to a canonical edge index).
+#[inline]
+fn undirected(a: u64, b: u64) -> (u64, u64) {
+    if a <= b {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
+/// Canonical undirected-edge enumeration for a triangle mesh.
+///
+/// Returns `(index_pairs, endpoints)` — the unique undirected edges of the
+/// mesh — where for each edge `e`:
+/// - `index_pairs[e] = (min_vertex_index, max_vertex_index)` is the canonical
+///   undirected vertex-index pair, and
+/// - `endpoints[e] = [p0, p1]` is the xyz of those two vertices.
+///
+/// Both vectors share one ordering: **ascending by `(min_idx, max_idx)`**
+/// (a `BTreeSet` supplies dedup + sort in a single pass). This is THE
+/// canonical edge index space of the kernel:
+/// - `extract_edges` stores `endpoints` in this order, so edge sub-handle
+///   `e` corresponds to `index_pairs[e]`;
+/// - `SharedEdges` maps a shared vertex-pair back to its position `e` in
+///   `index_pairs`.
+///
+/// Deriving both queries from this single helper guarantees their edge-index
+/// spaces never drift (mirrors OCCT's single global-edge enumeration).
+pub(crate) fn canonical_edges(
+    verts: &[[f64; 3]],
+    tri_indices: &[u64],
+) -> (Vec<(u64, u64)>, Vec<[[f64; 3]; 2]>) {
+    let mut set: std::collections::BTreeSet<(u64, u64)> = std::collections::BTreeSet::new();
+    for tri in tri_indices.chunks_exact(3) {
+        set.insert(undirected(tri[0], tri[1]));
+        set.insert(undirected(tri[1], tri[2]));
+        set.insert(undirected(tri[2], tri[0]));
+    }
+    // BTreeSet iterates ascending by (min,max) — the canonical order.
+    let index_pairs: Vec<(u64, u64)> = set.into_iter().collect();
+    let endpoints: Vec<[[f64; 3]; 2]> = index_pairs
+        .iter()
+        .map(|&(i, j)| [verts[i as usize], verts[j as usize]])
+        .collect();
+    (index_pairs, endpoints)
+}
+
 /// Extract `xyz` vertex triplets from a [`Manifold`]'s mesh.
 ///
 /// Mirrors the `n_props` guard in [`crate::kernel::ManifoldKernel::tessellate`]

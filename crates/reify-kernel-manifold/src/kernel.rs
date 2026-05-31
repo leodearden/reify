@@ -382,9 +382,42 @@ impl GeometryKernel for ManifoldKernel {
         Ok(faces)
     }
 
-    // extract_edges (step-4), extract_vertices, execute_with_history, and
-    // query_many use the trait defaults — they error in the standard
-    // "not supported" fashion.
+    /// Extract the unique undirected mesh edges of the stored Manifold as
+    /// edge sub-handles.
+    ///
+    /// Uses the canonical edge enumeration ([`crate::queries::canonical_edges`])
+    /// — deduped undirected vertex-index pairs, ordered ascending by
+    /// `(min_idx, max_idx)` — so the returned `Vec<GeometryHandleId>` is in
+    /// canonical edge order: `result[e]` names canonical edge `e`, the same
+    /// index space `SharedEdges` reports. The unit cube has 18 such edges
+    /// (Euler `V - E + F = 2`: `8 - E + 12 = 2`), matching
+    /// `Manifold::num_edge()`. Each edge's two xyz endpoints are stored as a
+    /// [`SubShape::Edge`]. An empty/degenerate mesh yields `Ok(empty vec)`.
+    fn extract_edges(
+        &mut self,
+        handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        // Read the parent mesh, dropping the immutable borrow before the
+        // mutable store_sub_shape calls below.
+        let (verts, tris) = {
+            let m = self
+                .get_manifold(handle)
+                .map_err(|e| QueryError::QueryFailed(format!("{e:?}")))?;
+            crate::queries::mesh_geometry(m)
+        };
+        if verts.is_empty() || tris.is_empty() {
+            return Ok(Vec::new());
+        }
+        let (_index_pairs, endpoints) = crate::queries::canonical_edges(&verts, &tris);
+        let mut edges = Vec::with_capacity(endpoints.len());
+        for ep in endpoints {
+            edges.push(self.store_sub_shape(SubShape::Edge(ep)));
+        }
+        Ok(edges)
+    }
+
+    // extract_vertices, execute_with_history, and query_many use the trait
+    // defaults — they error in the standard "not supported" fashion.
 
     /// Ingest an externally-supplied [`Mesh`] into the kernel, converting it
     /// to a `Manifold` and storing it under a fresh handle.
