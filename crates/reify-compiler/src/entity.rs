@@ -3848,6 +3848,7 @@ mod tests {
     ///    `UnresolvedKind::Name` as the exact pathway (not `GuardedMember`).  The
     ///    exact ICE wording and label format are already pinned by the tests in
     ///    `ice.rs`.
+    ///
     /// Regression guard for the `alias_registry.clone()` in
     /// `build_structure_def_skeleton` (task 3895 bugfix).
     ///
