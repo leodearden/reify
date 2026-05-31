@@ -75,7 +75,10 @@ invocation that travels over the MCP transport, not a shell command.
 $REIFY_AUDIT_BIN \
   [--task <id>] \
   [--since <iso-date>] \
-  [--pattern P1|P2|P5] \
+  [--pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER] \
+  [--jcodemunch-url <url>]   \  # default: $JCODEMUNCH_URL or http://127.0.0.1:8901/mcp
+  [--jcodemunch-repo <id>]   \  # default: leodearden/reify
+  [--no-jcodemunch]          \  # force inert stub (offline/test); P1/P-* yield nothing
   --tasks-file "$SNAPSHOT" \
   --runs-db    "$REPO_ROOT/data/orchestrator/runs.db" \
   --project-root "$REPO_ROOT" \
@@ -139,10 +142,10 @@ Each failure mode yields exit code 125. The skill should surface the human-reada
 
 ### §4.1 jcodemunch unreachable — fail-soft (NOT an infra error)
 
-When the jcodemunch MCP server is unreachable (the common case — jcodemunch is not in reify's `.mcp.json` and must be started separately), the default sweep and `--pattern P1` do **not** exit 125. Instead:
+When the jcodemunch MCP server is unreachable (the common case — jcodemunch is not in reify's `.mcp.json` and must be started separately), the default sweep, `--pattern P1`, and the advisory `--pattern PDEAD|PUNTESTED|PLAYER` do **not** exit 125. Instead:
 
-- P1 degrades to **zero findings** (the inert `NoopJCodemunchOps` stub is used).
-- P2 (consumer-stub) and P5 (phantom-done) **still run** and produce normal findings.
+- P1 **and** the advisory P-* patterns (PDEAD, PUNTESTED, PLAYER) degrade to **zero findings** (the inert `NoopJCodemunchOps` stub is used for all of them).
+- P2 (consumer-stub) and P5 (phantom-done) **still run** and produce normal findings — they never connect to jcodemunch.
 - A breadcrumb line appears on stderr before the JSON array:
   ```
   reify-audit: jcodemunch unreachable at 'http://127.0.0.1:8901/mcp': … — P1 degraded to zero findings; P2/P5 still run (pass --no-jcodemunch to silence)
@@ -150,9 +153,17 @@ When the jcodemunch MCP server is unreachable (the common case — jcodemunch is
 
 **This breadcrumb is NOT exit 125** — the exit code is determined by findings severity (0 = none, 1+ = findings), same as a normal run. The §3.1 disambiguator applies normally.
 
-**Escape hatch:** pass `--no-jcodemunch` to force the inert stub without connecting, silencing the breadcrumb. Useful for P2/P5-only sweeps where P1 is intentionally skipped.
+**Escape hatch:** pass `--no-jcodemunch` to force the inert stub without connecting, silencing the breadcrumb. Useful for P2/P5-only sweeps where P1 and the advisory P-* patterns are intentionally skipped.
 
-**Recovery:** provision jcodemunch-serve at the URL shown in the breadcrumb (default `$JCODEMUNCH_URL` or `http://127.0.0.1:8901/mcp`). Note that jcodemunch is not listed in reify's `.mcp.json` — it must be started out-of-band as a separate process before a live P1 sweep.
+**jcodemunch-serve prerequisite:** For P1 and the advisory P-* patterns (PDEAD/PUNTESTED/PLAYER) to produce **real** findings, the `jcodemunch-serve` systemd unit must be running and reachable at the configured URL. To check:
+
+```bash
+systemctl --user status jcodemunch-serve.service
+```
+
+For full activation instructions (port 8901, repo-id, enable command) see `docs/architecture-audit/jcodemunch-serve-activation.md` — that document is the single source of truth for serve operational identifiers. Note that jcodemunch is not listed in reify's `.mcp.json` — it must be started out-of-band before a live P1 or P-* sweep.
+
+**Trailing-slash gotcha:** use `/mcp` as the endpoint path, **not** `/mcp/` — the trailing slash triggers a 307 redirect that drops the `mcp-session-id` header, causing the connection to fail silently. The default `http://127.0.0.1:8901/mcp` is correct; do not add a trailing slash when overriding via `--jcodemunch-url`.
 
 ---
 
