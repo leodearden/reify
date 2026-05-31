@@ -4094,30 +4094,25 @@ pub structure Rack {
         );
     }
 
-    /// `compile_expr_guarded` placeholder arms for `TraitStaticCall` and
-    /// `TraitMethodCall` (task γ keep-green) emit a "not yet supported
-    /// (task δ/ζ)" diagnostic and return a poison `CompiledExpr`.
+    /// `TraitStaticCall` dispatch arm (task η 3945) — after the placeholder is
+    /// replaced with real dispatch, calling `C::make()` where trait `C` is unknown
+    /// must emit exactly one unknown-trait-static-fn diagnostic.
     ///
-    /// ## What this test pins
+    /// ## What this test pins (post-η)
     ///
-    /// * The placeholder arms reach correctly — no panic, no early return
-    ///   that silently drops the expression.
-    /// * Exactly **one** error fires per call site (no cascade from the
-    ///   poison `Type::Error` return propagating into downstream checks).
-    /// * The diagnostic message contains "not yet supported" so callers can
-    ///   identify it as a deliberate deferral rather than an ICE.
+    /// * Exactly one error fires (the "unknown static function" diagnostic).
+    /// * The message does NOT contain "not yet supported" (placeholder text gone).
+    /// * The message references the trait name `C` or method `make`.
     ///
-    /// These arms are replaced by real dispatch in task δ/ζ; at that point
-    /// this test can be updated to expect successful compilation instead.
+    /// RED until step-4 of task η implements the real dispatch arm.
     #[test]
-    fn trait_call_exprs_emit_not_yet_supported_diagnostic_and_return_poison() {
+    fn trait_static_call_unknown_trait_emits_unknown_fn_diagnostic() {
         use reify_core::Severity;
         use reify_test_support::compile_source;
 
-        // TraitStaticCall: `C::make()`.  The trait_name "C" is never resolved
-        // as an identifier — the TraitStaticCall arm short-circuits before any
-        // identifier lookup — so exactly one error should fire.
-        let source = "pub structure A { let s = C::make() }";
+        // `C::make()` — trait `C` does not exist in this module.  The real dispatch
+        // arm should emit an unknown-static-fn error, NOT "not yet supported".
+        let source = "pub structure A { let s : Real = C::make() }";
         let compiled = compile_source(source);
         let errors: Vec<_> = compiled
             .diagnostics
@@ -4127,15 +4122,35 @@ pub structure Rack {
         assert_eq!(
             errors.len(),
             1,
-            "TraitStaticCall: expected exactly one error (the not-yet-supported \
-             placeholder), got: {:?}",
+            "TraitStaticCall: expected exactly one error for unknown trait 'C', \
+             got: {:?}",
             errors.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
         assert!(
-            errors[0].message.contains("not yet supported"),
-            "TraitStaticCall: expected 'not yet supported' in diagnostic, got: {:?}",
+            !errors[0].message.contains("not yet supported"),
+            "TraitStaticCall: placeholder 'not yet supported' text must be gone; \
+             got: {:?}",
             errors[0].message
         );
+        assert!(
+            errors[0].message.contains("C") || errors[0].message.contains("make"),
+            "TraitStaticCall: diagnostic should name the unknown trait/method; \
+             got: {:?}",
+            errors[0].message
+        );
+    }
+
+    /// `TraitMethodCall` placeholder arm (task γ / task ζ=3941 keep-green).
+    ///
+    /// `pin.(C::area)()` emits a "not yet supported (task δ/ζ)" diagnostic and
+    /// returns a poison expr.  The placeholder arm uses `{ .. }` destructuring so
+    /// the `object` sub-expression (`pin`) is never compiled, preventing any
+    /// cascading "undefined variable" second diagnostic.  This half stays as-is
+    /// until task ζ implements instance dispatch.
+    #[test]
+    fn trait_method_call_still_emits_not_yet_supported_placeholder() {
+        use reify_core::Severity;
+        use reify_test_support::compile_source;
 
         // TraitMethodCall: `pin.(C::area)()`.  The placeholder arm uses `{ .. }`
         // destructuring so the `object` sub-expression (`pin`) is never compiled,
