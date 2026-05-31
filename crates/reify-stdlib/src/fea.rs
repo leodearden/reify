@@ -353,9 +353,15 @@ fn resolve_case_fields(
 /// propagates silently — same discipline as `stackup::diagnose`'s
 /// 'Not diagnosed' set.
 ///
-/// Check ordering mirrors `linear_combine`'s own `Undef` order (arity →
-/// cases_map → weights-map → empty-weights → unknown-case → incompatible-mesh)
-/// so the diagnosed reason matches the real failure cause.
+/// Check ordering faithfully mirrors `linear_combine`'s own per-entry `Undef`
+/// order: arity → cases_map → weights-map → empty-weights → then, per weight
+/// entry in BTreeMap key order, non-String key / non-finite weight / unknown
+/// case / non-Map case value → finally the incompatible-mesh comparison,
+/// resolved lazily per case. The FIRST entry to fail ANY check determines the
+/// verdict, exactly as `linear_combine` bails at its first failing entry, so a
+/// malformed earlier entry is never masked by — nor misattributed to — a later
+/// one (e.g. a non-Map case value at an earlier entry yields `None`, not a
+/// spurious unknown-case diagnostic for a later entry).
 ///
 /// **Diagnosed** (`linear_combine`):
 /// - `MultiLoadEmptyWeights` — weights map is empty
@@ -395,12 +401,19 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
         );
     }
 
-    // Mirror linear_combine's per-entry validation order so the diagnosed cause
-    // matches the real Undef cause. The first entry to fail a check is what
-    // linear_combine Undefs on: a non-String key or non-numeric / non-finite
-    // weight is left undiagnosed (None), exactly like stackup's 'Not diagnosed'
-    // set; the first entry with a valid key+weight but an unknown case name
-    // yields MultiLoadUnknownCaseInWeights.
+    // Phase 1 — single pass over weights in BTreeMap key order, mirroring
+    // linear_combine's first validation loop (fea.rs:140-173). The FIRST entry
+    // to fail ANY of these checks is exactly where linear_combine bails, so the
+    // diagnosed (or undiagnosed) cause matches the real Undef cause:
+    //   - non-String key            → undiagnosed (None)
+    //   - non-numeric/non-finite wt → undiagnosed (None)
+    //   - unknown case name         → MultiLoadUnknownCaseInWeights
+    //   - case value not a Map      → undiagnosed (None)
+    // The case-value-must-be-a-Map check (fea.rs:168-171) lives in THIS pass —
+    // not a later loop — so a non-Map case value at an earlier entry is never
+    // misattributed to a later unknown-case entry. Collect (name, case_val)
+    // pairs for phase 2, retaining the case NAMES linear_combine discards.
+    let mut cases: Vec<(&str, &Value)> = Vec::with_capacity(weights_map.len());
     for (name_val, weight_val) in weights_map {
         let case_name = match name_val {
             Value::String(s) => s,
@@ -420,55 +433,53 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
         if !weight_ok {
             return None; // non-numeric / non-finite weight: undiagnosed
         }
-        if !cases_map.contains_key(&Value::String(case_name.clone())) {
-            let mut available: Vec<&str> = cases_map
-                .keys()
-                .filter_map(|k| match k {
-                    Value::String(s) => Some(s.as_str()),
-                    _ => None,
-                })
-                .collect();
-            available.sort_unstable();
-            let list = available.join(", ");
-            return Some(
-                Diagnostic::error(format!(
-                    "linear_combine: weights map references unknown case '{case_name}'. Available cases: [{list}]. Did you misspell the case name?"
-                ))
-                .with_code(DiagnosticCode::MultiLoadUnknownCaseInWeights),
-            );
+        let case_val = match cases_map.get(&Value::String(case_name.clone())) {
+            Some(v) => v,
+            None => {
+                let mut available: Vec<&str> = cases_map
+                    .keys()
+                    .filter_map(|k| match k {
+                        Value::String(s) => Some(s.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                available.sort_unstable();
+                let list = available.join(", ");
+                return Some(
+                    Diagnostic::error(format!(
+                        "linear_combine: weights map references unknown case '{case_name}'. Available cases: [{list}]. Did you misspell the case name?"
+                    ))
+                    .with_code(DiagnosticCode::MultiLoadUnknownCaseInWeights),
+                );
+            }
+        };
+        // Case value must be a Map (ElasticResult struct instance). linear_combine
+        // bails here at the first offending entry, BEFORE examining later entries,
+        // so return None now rather than deferring this check to phase 2 — that
+        // deferral is what would otherwise misattribute the failure to a later
+        // unknown-case entry.
+        if !matches!(case_val, Value::Map(_)) {
+            return None; // non-Map case value: linear_combine Undefs, undiagnosed
         }
+        cases.push((case_name.as_str(), case_val));
     }
 
-    // Incompatible-mesh check. The unknown-case loop above confirmed every
-    // weight key is a String naming an existing case, so re-iterate weights in
-    // BTreeMap key order retaining the case NAMES (linear_combine discards them
-    // when building weighted_cases). Resolve each case's displacement+stress
-    // sampled fields; the first weighted case is the reference (matching
-    // linear_combine's weighted_cases[0]). On the first subsequent case whose
-    // displacement OR stress metadata fails metadata_matches against the
-    // reference, report the reference (name1) and mismatching (name2) names.
-    // Mirrors linear_combine's per-case validation at fea.rs:227-242. A case
-    // whose value is not a Map or whose fields are missing/non-Sampled stays
-    // undiagnosed (None) — linear_combine Undefs it with no task-specified
-    // message.
-    // Element type (case name + displacement/stress field triples) is inferred
-    // from the push below; spelling it out trips clippy::type_complexity.
-    let mut resolved = Vec::with_capacity(weights_map.len());
-    for name_val in weights_map.keys() {
-        let case_name = match name_val {
-            Value::String(s) => s.as_str(),
-            _ => return None,
-        };
-        let case_val = cases_map.get(name_val)?;
-        let (disp, stress) = resolve_case_fields(case_val)?;
-        resolved.push((case_name, disp, stress));
-    }
-    if let Some((
-        &(ref_name, (ref_dom_d, ref_cod_d, ref_sf_d), (ref_dom_s, ref_cod_s, ref_sf_s)),
-        rest,
-    )) = resolved.split_first()
-    {
-        for &(name, (dom_d, cod_d, sf_d), (dom_s, cod_s, sf_s)) in rest {
+    // Phase 2 — incompatible-mesh check, mirroring linear_combine's reference
+    // resolution (fea.rs:180-196) + per-case loop (fea.rs:209-250). Resolve the
+    // first weighted case as the reference, then walk the rest IN ORDER,
+    // resolving each case's displacement+stress and immediately comparing its
+    // metadata against the reference — bailing at the first case that fails,
+    // exactly as linear_combine does. Resolving lazily per case (rather than all
+    // up front) ensures a malformed LATER case can't mask an incompatible-mesh
+    // failure at an EARLIER case. On the first failure report the reference
+    // (name1) and mismatching (name2) names. A case whose displacement|stress
+    // field is missing/non-Sampled stays undiagnosed (None) — linear_combine
+    // Undefs it with no task-specified message.
+    if let Some((&(ref_name, ref_val), rest)) = cases.split_first() {
+        let ((ref_dom_d, ref_cod_d, ref_sf_d), (ref_dom_s, ref_cod_s, ref_sf_s)) =
+            resolve_case_fields(ref_val)?;
+        for &(name, case_val) in rest {
+            let ((dom_d, cod_d, sf_d), (dom_s, cod_s, sf_s)) = resolve_case_fields(case_val)?;
             let disp_ok = metadata_matches(ref_sf_d, sf_d, ref_dom_d, ref_cod_d, dom_d, cod_d);
             let stress_ok = metadata_matches(ref_sf_s, sf_s, ref_dom_s, ref_cod_s, dom_s, cod_s);
             if !disp_ok || !stress_ok {
@@ -4320,6 +4331,30 @@ mod tests {
         assert_eq!(
             diag.message,
             "linear_combine: cases 'operating' and 'overload' use incompatible meshes (different mesh_size or element_order in their ElasticOptions). Superposition requires matching mesh / element-order layouts. Re-solve with consistent options or compute envelopes instead."
+        );
+    }
+
+    // amend (task 3029): regression guard for the reviewer-flagged ordering
+    // divergence. A weight entry naming an EXISTING case whose value is a
+    // non-Map (e.g. a bare Int, not an ElasticResult struct) is where
+    // linear_combine bails — undiagnosed — at fea.rs:168-171, BEFORE it
+    // examines any later weight entry. diagnose must mirror that per-entry bail:
+    // visiting the non-Map case 'aaa' first (BTreeMap key order: 'aaa' < 'zzz')
+    // must yield None, NOT a spurious MultiLoadUnknownCaseInWeights for the
+    // later unknown case 'zzz'. (Before the phase-1 case-value-Map check was
+    // hoisted ahead of the later entries, diagnose mis-emitted unknown-case for
+    // 'zzz' even though linear_combine's real Undef cause was the non-Map 'aaa'.)
+    #[test]
+    fn diagnose_linear_combine_non_map_case_before_unknown_stays_undiagnosed() {
+        let mcr = multi_case_result_value(&[("aaa", Value::Int(5))]);
+        let mut weights = BTreeMap::new();
+        weights.insert(Value::String("aaa".to_string()), Value::Real(1.0));
+        weights.insert(Value::String("zzz".to_string()), Value::Real(1.0));
+        assert!(
+            diagnose("linear_combine", &[mcr, Value::Map(weights)]).is_none(),
+            "a non-Map case value at an earlier weight entry must stay undiagnosed \
+             (mirroring linear_combine's per-entry bail), not be misattributed to \
+             the later unknown-case entry"
         );
     }
 }
