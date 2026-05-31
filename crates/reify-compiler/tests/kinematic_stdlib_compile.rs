@@ -125,32 +125,26 @@ fn conforming_joints_have_driving_joint_bound() {
 // to Type::Real here.
 
 #[test]
-fn axis_joints_have_one_vec3_axis_param() {
+fn cylindrical_has_one_vec3_axis_param() {
     // Narrowed by task 3849: Prismatic and Revolute now have 4 params (axis +
     // spring_rate + damping + neutral); only Cylindrical still has exactly 1.
-    {
-        let name = &"Cylindrical";
-        let template = find_structure(name);
-        let params = param_cells(template);
-        assert_eq!(
-            params.len(),
-            1,
-            "{} should have exactly 1 param (axis), got: {:?}",
-            name,
-            params.iter().map(|p| &p.id.member).collect::<Vec<_>>()
-        );
-        assert_eq!(
-            params[0].id.member, "axis",
-            "{}.axis param missing or misnamed",
-            name
-        );
-        assert_eq!(
-            params[0].cell_type,
-            Type::Real,
-            "{}.axis should be Type::Real (Vec3 = Real alias, trajectory.ri:96)",
-            name
-        );
-    }
+    let template = find_structure("Cylindrical");
+    let params = param_cells(template);
+    assert_eq!(
+        params.len(),
+        1,
+        "Cylindrical should have exactly 1 param (axis), got: {:?}",
+        params.iter().map(|p| &p.id.member).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        params[0].id.member, "axis",
+        "Cylindrical.axis param missing or misnamed"
+    );
+    assert_eq!(
+        params[0].cell_type,
+        Type::Real,
+        "Cylindrical.axis should be Type::Real (Vec3 = Real alias, trajectory.ri:96)"
+    );
 }
 
 // ─── task 3849 step-5: flexure field shape tests ──────────────────────────────
@@ -204,14 +198,14 @@ fn revolute_has_four_params_with_correct_types() {
     );
 
     // All three new params default to `= none` (CompiledExprKind::OptionNone).
-    for (i, field_name) in [("spring_rate", 1usize), ("damping", 2), ("neutral", 3)] {
-        let default = params[field_name]
+    for (field_name, idx) in [("spring_rate", 1usize), ("damping", 2), ("neutral", 3)] {
+        let default = params[idx]
             .default_expr
             .as_ref()
-            .unwrap_or_else(|| panic!("Revolute.{i} missing default_expr"));
+            .unwrap_or_else(|| panic!("Revolute.{field_name} missing default_expr"));
         assert!(
             matches!(default.kind, CompiledExprKind::OptionNone),
-            "Revolute.{i} default should be OptionNone, got {:?}",
+            "Revolute.{field_name} default should be OptionNone, got {:?}",
             default.kind
         );
     }
@@ -266,14 +260,14 @@ fn prismatic_has_four_params_with_correct_types() {
     );
 
     // All three new params default to `= none` (CompiledExprKind::OptionNone).
-    for (i, field_name) in [("spring_rate", 1usize), ("damping", 2), ("neutral", 3)] {
-        let default = params[field_name]
+    for (field_name, idx) in [("spring_rate", 1usize), ("damping", 2), ("neutral", 3)] {
+        let default = params[idx]
             .default_expr
             .as_ref()
-            .unwrap_or_else(|| panic!("Prismatic.{i} missing default_expr"));
+            .unwrap_or_else(|| panic!("Prismatic.{field_name} missing default_expr"));
         assert!(
             matches!(default.kind, CompiledExprKind::OptionNone),
-            "Prismatic.{i} default should be OptionNone, got {:?}",
+            "Prismatic.{field_name} default should be OptionNone, got {:?}",
             default.kind
         );
     }

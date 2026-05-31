@@ -1752,49 +1752,40 @@ mod tests {
     }
 
     // ─── Step-3 (task 3849): NAMED_DIMENSIONS table registration for flexure types ──
+    //
+    // Table-driven: asserts both directions (dim→entry and name→dim) for all four
+    // flexure types in one pass.  The canonical_name direction (dim→first-match name)
+    // is tested separately below because it also covers the Stiffness/TranslationalStiffness
+    // alias ordering.
 
     #[test]
-    fn rotational_stiffness_is_registered_in_named_dimensions() {
-        let found = super::NAMED_DIMENSIONS
-            .iter()
-            .any(|(dim, name)| *name == "RotationalStiffness" && *dim == DimensionVector::ROTATIONAL_STIFFNESS);
-        assert!(
-            found,
-            "NAMED_DIMENSIONS must contain (ROTATIONAL_STIFFNESS, \"RotationalStiffness\")"
-        );
-    }
-
-    #[test]
-    fn rotational_damping_is_registered_in_named_dimensions() {
-        let found = super::NAMED_DIMENSIONS
-            .iter()
-            .any(|(dim, name)| *name == "RotationalDamping" && *dim == DimensionVector::ROTATIONAL_DAMPING);
-        assert!(
-            found,
-            "NAMED_DIMENSIONS must contain (ROTATIONAL_DAMPING, \"RotationalDamping\")"
-        );
-    }
-
-    #[test]
-    fn translational_stiffness_is_registered_in_named_dimensions() {
-        let found = super::NAMED_DIMENSIONS
-            .iter()
-            .any(|(dim, name)| *name == "TranslationalStiffness" && *dim == DimensionVector::TRANSLATIONAL_STIFFNESS);
-        assert!(
-            found,
-            "NAMED_DIMENSIONS must contain (TRANSLATIONAL_STIFFNESS, \"TranslationalStiffness\")"
-        );
-    }
-
-    #[test]
-    fn translational_damping_is_registered_in_named_dimensions() {
-        let found = super::NAMED_DIMENSIONS
-            .iter()
-            .any(|(dim, name)| *name == "TranslationalDamping" && *dim == DimensionVector::TRANSLATIONAL_DAMPING);
-        assert!(
-            found,
-            "NAMED_DIMENSIONS must contain (TRANSLATIONAL_DAMPING, \"TranslationalDamping\")"
-        );
+    fn flexure_dims_registered_and_resolve_by_name() {
+        let cases: &[(DimensionVector, &str)] = &[
+            (DimensionVector::ROTATIONAL_STIFFNESS, "RotationalStiffness"),
+            (DimensionVector::ROTATIONAL_DAMPING, "RotationalDamping"),
+            (DimensionVector::TRANSLATIONAL_STIFFNESS, "TranslationalStiffness"),
+            (DimensionVector::TRANSLATIONAL_DAMPING, "TranslationalDamping"),
+        ];
+        for &(dim, name) in cases {
+            // (a) forward: (dim, name) entry exists in the table
+            let registered = super::NAMED_DIMENSIONS
+                .iter()
+                .any(|(d, n)| *n == name && *d == dim);
+            assert!(
+                registered,
+                "NAMED_DIMENSIONS must contain an entry with dim={dim:?} and name=\"{name}\""
+            );
+            // (b) name→dim: the name resolves to the expected dim
+            let found_dim = super::NAMED_DIMENSIONS
+                .iter()
+                .find(|(_, n)| *n == name)
+                .map(|(d, _)| *d);
+            assert_eq!(
+                found_dim,
+                Some(dim),
+                "NAMED_DIMENSIONS name→dim lookup for \"{name}\" must return {dim:?}"
+            );
+        }
     }
 
     #[test]
@@ -1820,33 +1811,5 @@ mod tests {
             Some("Stiffness"),
             "STIFFNESS canonical_name must remain 'Stiffness' after TranslationalStiffness alias is added"
         );
-    }
-
-    #[test]
-    fn named_dimensions_forward_lookup_resolves_flexure_names() {
-        // name→dim direction: "RotationalStiffness" must find ROTATIONAL_STIFFNESS.
-        let rs = super::NAMED_DIMENSIONS
-            .iter()
-            .find(|(_, n)| *n == "RotationalStiffness")
-            .map(|(d, _)| *d);
-        assert_eq!(rs, Some(DimensionVector::ROTATIONAL_STIFFNESS));
-
-        let rd = super::NAMED_DIMENSIONS
-            .iter()
-            .find(|(_, n)| *n == "RotationalDamping")
-            .map(|(d, _)| *d);
-        assert_eq!(rd, Some(DimensionVector::ROTATIONAL_DAMPING));
-
-        let ts = super::NAMED_DIMENSIONS
-            .iter()
-            .find(|(_, n)| *n == "TranslationalStiffness")
-            .map(|(d, _)| *d);
-        assert_eq!(ts, Some(DimensionVector::TRANSLATIONAL_STIFFNESS));
-
-        let td = super::NAMED_DIMENSIONS
-            .iter()
-            .find(|(_, n)| *n == "TranslationalDamping")
-            .map(|(d, _)| *d);
-        assert_eq!(td, Some(DimensionVector::TRANSLATIONAL_DAMPING));
     }
 }

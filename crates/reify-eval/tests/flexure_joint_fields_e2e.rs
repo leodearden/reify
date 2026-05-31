@@ -149,6 +149,73 @@ structure def Probe {
                     "Prismatic.spring_rate should be Value::Option(Some(Scalar)), got {other:?}"
                 ),
             }
+
+            // damping omitted → Value::Option(None)
+            assert_eq!(
+                field(&data.fields, "damping"),
+                Some(&Value::Option(None)),
+                "Prismatic.damping default must be Value::Option(None)"
+            );
+
+            // neutral omitted → Value::Option(None)
+            assert_eq!(
+                field(&data.fields, "neutral"),
+                Some(&Value::Option(None)),
+                "Prismatic.neutral default must be Value::Option(None)"
+            );
+        }
+        other => panic!("expected Value::StructureInstance for Probe.p, got {other:?}"),
+    }
+}
+
+// ─── Prismatic with neutral supplied ─────────────────────────────────────────
+
+#[test]
+fn prismatic_neutral_some_round_trips_as_length() {
+    // Use a typed intermediate param to sidestep the unit-suffix ambiguity
+    // that `some(1m)` / `some(1000mm)` encounters in an untyped some() context.
+    // `ref_len` carries the Length annotation so its value is unambiguously
+    // resolved as LENGTH before being wrapped by some().
+    const SOURCE: &str = r#"
+structure def Probe {
+    param ref_len : Length = 1000mm
+    let p = Prismatic(axis: 0.0, neutral: some(ref_len))
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let id = ValueCellId::new("Probe", "p");
+    let p = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("Probe.p cell missing from eval result"));
+
+    match p {
+        Value::StructureInstance(data) => {
+            assert_eq!(data.type_name, "Prismatic");
+
+            // neutral = some(ref_len) where ref_len=1000mm=1.0m SI → Value::Option(Some(Scalar{LENGTH}))
+            match field(&data.fields, "neutral") {
+                Some(Value::Option(Some(inner))) => match inner.as_ref() {
+                    Value::Scalar { si_value, dimension } => {
+                        assert!(
+                            (*si_value - 1.0).abs() < 1e-12,
+                            "Prismatic.neutral si_value should be 1.0 (ref_len=1000mm), got {si_value}"
+                        );
+                        assert_eq!(
+                            *dimension,
+                            DimensionVector::LENGTH,
+                            "Prismatic.neutral dimension should be LENGTH"
+                        );
+                    }
+                    other => panic!("Prismatic.neutral inner should be Scalar, got {other:?}"),
+                },
+                other => panic!(
+                    "Prismatic.neutral should be Value::Option(Some(Scalar)), got {other:?}"
+                ),
+            }
         }
         other => panic!("expected Value::StructureInstance for Probe.p, got {other:?}"),
     }
