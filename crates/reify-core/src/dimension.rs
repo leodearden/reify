@@ -1739,4 +1739,103 @@ mod tests {
             DimensionVector::DYNAMIC_VISCOSITY
         );
     }
+
+    // ─── Step-3 (task 3849): NAMED_DIMENSIONS table registration for flexure types ──
+
+    #[test]
+    fn rotational_stiffness_is_registered_in_named_dimensions() {
+        let found = super::NAMED_DIMENSIONS
+            .iter()
+            .any(|(dim, name)| *name == "RotationalStiffness" && *dim == DimensionVector::ROTATIONAL_STIFFNESS);
+        assert!(
+            found,
+            "NAMED_DIMENSIONS must contain (ROTATIONAL_STIFFNESS, \"RotationalStiffness\")"
+        );
+    }
+
+    #[test]
+    fn rotational_damping_is_registered_in_named_dimensions() {
+        let found = super::NAMED_DIMENSIONS
+            .iter()
+            .any(|(dim, name)| *name == "RotationalDamping" && *dim == DimensionVector::ROTATIONAL_DAMPING);
+        assert!(
+            found,
+            "NAMED_DIMENSIONS must contain (ROTATIONAL_DAMPING, \"RotationalDamping\")"
+        );
+    }
+
+    #[test]
+    fn translational_stiffness_is_registered_in_named_dimensions() {
+        let found = super::NAMED_DIMENSIONS
+            .iter()
+            .any(|(dim, name)| *name == "TranslationalStiffness" && *dim == DimensionVector::TRANSLATIONAL_STIFFNESS);
+        assert!(
+            found,
+            "NAMED_DIMENSIONS must contain (TRANSLATIONAL_STIFFNESS, \"TranslationalStiffness\")"
+        );
+    }
+
+    #[test]
+    fn translational_damping_is_registered_in_named_dimensions() {
+        let found = super::NAMED_DIMENSIONS
+            .iter()
+            .any(|(dim, name)| *name == "TranslationalDamping" && *dim == DimensionVector::TRANSLATIONAL_DAMPING);
+        assert!(
+            found,
+            "NAMED_DIMENSIONS must contain (TRANSLATIONAL_DAMPING, \"TranslationalDamping\")"
+        );
+    }
+
+    #[test]
+    fn flexure_dims_have_correct_canonical_names() {
+        // RotationalStiffness and RotationalDamping are distinct dims — canonical_name is unambiguous.
+        assert_eq!(
+            DimensionVector::ROTATIONAL_STIFFNESS.canonical_name(),
+            Some("RotationalStiffness")
+        );
+        assert_eq!(
+            DimensionVector::ROTATIONAL_DAMPING.canonical_name(),
+            Some("RotationalDamping")
+        );
+        // TranslationalDamping is a distinct dim — canonical_name is unambiguous.
+        assert_eq!(
+            DimensionVector::TRANSLATIONAL_DAMPING.canonical_name(),
+            Some("TranslationalDamping")
+        );
+        // STIFFNESS canonical name must STILL be "Stiffness" (TranslationalStiffness alias
+        // placed AFTER Stiffness in table — first-match unchanged).
+        assert_eq!(
+            DimensionVector::STIFFNESS.canonical_name(),
+            Some("Stiffness"),
+            "STIFFNESS canonical_name must remain 'Stiffness' after TranslationalStiffness alias is added"
+        );
+    }
+
+    #[test]
+    fn named_dimensions_forward_lookup_resolves_flexure_names() {
+        // name→dim direction: "RotationalStiffness" must find ROTATIONAL_STIFFNESS.
+        let rs = super::NAMED_DIMENSIONS
+            .iter()
+            .find(|(_, n)| *n == "RotationalStiffness")
+            .map(|(d, _)| *d);
+        assert_eq!(rs, Some(DimensionVector::ROTATIONAL_STIFFNESS));
+
+        let rd = super::NAMED_DIMENSIONS
+            .iter()
+            .find(|(_, n)| *n == "RotationalDamping")
+            .map(|(d, _)| *d);
+        assert_eq!(rd, Some(DimensionVector::ROTATIONAL_DAMPING));
+
+        let ts = super::NAMED_DIMENSIONS
+            .iter()
+            .find(|(_, n)| *n == "TranslationalStiffness")
+            .map(|(d, _)| *d);
+        assert_eq!(ts, Some(DimensionVector::TRANSLATIONAL_STIFFNESS));
+
+        let td = super::NAMED_DIMENSIONS
+            .iter()
+            .find(|(_, n)| *n == "TranslationalDamping")
+            .map(|(d, _)| *d);
+        assert_eq!(td, Some(DimensionVector::TRANSLATIONAL_DAMPING));
+    }
 }
