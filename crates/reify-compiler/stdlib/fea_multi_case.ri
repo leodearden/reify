@@ -305,7 +305,12 @@ structure def PointLoad : Load {
 
 // FixedSupport — wave-1 replacement for the `FixedSupport` builtin
 // (supports.rs). The `target` field mirrors the `target` key emitted by the
-// pre-retirement `eval_supports("FixedSupport", ...)` Map.
+// pre-retirement `eval_supports("FixedSupport", ...)` Map. `target : String`
+// is a geometry-selector placeholder; actual migration to a Face/Body selector
+// type is owned by the FEA Load/Support follow-on PRD (depends on
+// docs/prds/topology-selector-value-type.md §10 + task 4092).
+//
+// PRD: docs/prds/topology-selector-value-type.md §8 (FEA loads cross-PRD table).
 structure def FixedSupport : Support {
     param target : String = ""
 }
@@ -319,9 +324,12 @@ structure def FixedSupport : Support {
 //   `magnitude`  — applied pressure. `Real` is a placeholder for
 //                  `Scalar<PRESSURE>` until the dimensional type aliases land;
 //                  mirrors the `magnitude` key in the retired builtin.
-//   `face`       — geometry selector. `String` is a placeholder for `Selector`
-//                  until the topology-selector type lands; mirrors the `face`
-//                  key in the retired builtin.
+//   `face`       — geometry selector. `String` is a placeholder for `FaceSelector`
+//                  (docs/prds/topology-selector-value-type.md — typed-selector
+//                  value-type design); actual String → FaceSelector migration is
+//                  owned by the FEA Load/Support follow-on PRD (depends on
+//                  topology-selector-value-type.md §10 + task 4092). Mirrors the
+//                  `face` key in the retired builtin.
 //   `direction`  — outward-normal sentinel or explicit direction. `String` is
 //                  a placeholder; mirrors the `direction` key in the retired
 //                  builtin. The `"normal"` sentinel means "outward face normal";
@@ -333,6 +341,9 @@ structure def FixedSupport : Support {
 // and the golden in `crates/reify-eval/tests/golden/structure_instance.txt`).
 //
 // PRD: docs/prds/v0_3/structure-instance-runtime.md §8 Phase 2 task SIR-β-load.
+// PRD: docs/prds/topology-selector-value-type.md §8 (FEA loads — string-to-selector
+//      migration; FEA follow-on PRD owns the field change, task 4092 owns
+//      selector→node-set mapping).
 structure def PressureLoad : Load {
     param magnitude : Real = 0.0
     param face      : String = ""
@@ -345,8 +356,11 @@ structure def PressureLoad : Load {
 // the `traction` key in the `make_kind_map("traction_load", ...)` call.
 //
 //   `face`     — geometry selector. `String` is a placeholder for `FaceSelector`
-//                until the topology-selector type alias lands; mirrors the `face`
-//                key emitted by the pre-retirement builtin.
+//                (docs/prds/topology-selector-value-type.md — typed-selector
+//                value-type design); actual String → FaceSelector migration is
+//                owned by the FEA Load/Support follow-on PRD (depends on
+//                topology-selector-value-type.md §10 + task 4092). Mirrors the
+//                `face` key emitted by the pre-retirement builtin.
 //   `traction` — applied traction. `Real` is a placeholder for
 //                `Vector3<Pressure>` until the dimensional vector type aliases
 //                land; mirrors the `traction` key in the retired builtin.
@@ -355,6 +369,9 @@ structure def PressureLoad : Load {
 // FEA-2 boundary tests in `crates/reify-eval/tests/fea_loads_stdlib_smoke.rs`).
 //
 // PRD: task 2881 (FEA-2) design decision 4.
+// PRD: docs/prds/topology-selector-value-type.md §8 (FEA loads — string-to-selector
+//      migration; FEA follow-on PRD owns the field change, task 4092 owns
+//      selector→node-set mapping).
 structure def TractionLoad : Load {
     param face     : String = ""
     param traction : Real   = 0.0
@@ -367,9 +384,12 @@ structure def TractionLoad : Load {
 // `make_kind_map("body_force", ...)` call.
 //
 //   `body`          — geometry selector. `String` is a placeholder for
-//                     `BodySelector` until the topology-selector type alias
-//                     lands; mirrors the `body` key emitted by the pre-retirement
-//                     builtin.
+//                     `BodySelector` (docs/prds/topology-selector-value-type.md —
+//                     typed-selector value-type design); actual String →
+//                     BodySelector migration is owned by the FEA Load/Support
+//                     follow-on PRD (depends on topology-selector-value-type.md
+//                     §10 + task 4092). Mirrors the `body` key emitted by the
+//                     pre-retirement builtin.
 //   `force_density` — applied body-force density. `Real` is a placeholder for
 //                     `Vector3<ForceDensity>` until the dimensional vector type
 //                     aliases land; mirrors the `force_density` key in the
@@ -379,6 +399,9 @@ structure def TractionLoad : Load {
 // FEA-2 boundary tests in `crates/reify-eval/tests/fea_loads_stdlib_smoke.rs`).
 //
 // PRD: task 2881 (FEA-2) design decision 4.
+// PRD: docs/prds/topology-selector-value-type.md §8 (FEA loads — string-to-selector
+//      migration; FEA follow-on PRD owns the field change, task 4092 owns
+//      selector→node-set mapping).
 structure def BodyForce : Load {
     param body          : String = ""
     param force_density : Real   = 0.0
