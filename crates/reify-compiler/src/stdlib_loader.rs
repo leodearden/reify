@@ -199,6 +199,23 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 "std.kinematic",
                 include_str!("../stdlib/kinematic.ri"),
             ),
+            // `std.ports` declares the Directionality enum and Port base trait.
+            // No inter-module dependencies beyond built-in types.
+            // Reconstruction of lost work per PRD task α.
+            (
+                "std.ports",
+                include_str!("../stdlib/ports.ri"),
+            ),
+            // `std.ports.mechanical` refines Port from std.ports and adds
+            // mechanical port traits (MechanicalPort, Bore, Shaft, RotaryPort,
+            // ThreadedPort, StructurePort) plus the Torque type alias.
+            // Must follow std.ports in the growing prelude sequence so Port is
+            // resolved when MechanicalPort : Port is compiled.
+            // Reconstruction of lost work per PRD task α.
+            (
+                "std.ports.mechanical",
+                include_str!("../stdlib/ports_mechanical.ri"),
+            ),
         ];
 
         // SEQUENTIAL COMPILATION WITH GROWING PRELUDE: each module is compiled

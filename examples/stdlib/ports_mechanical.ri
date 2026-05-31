@@ -1,0 +1,19 @@
+// std.ports.mechanical CI signal — examples/stdlib/ports_mechanical.ri
+//
+// Demonstrates the std.ports.mechanical trait surface via a generic shaft
+// coupling that accepts any two RotaryPort-typed connections.
+//
+// This file is auto-covered by examples_smoke.rs (directory walk) and
+// additionally compiled by the capstone test in ports_stdlib_compile.rs.
+
+import std.ports.mechanical
+
+// A generic shaft coupling that connects a driver port to a driven port.
+// D and N are type parameters constrained to RotaryPort; no concrete
+// RotaryPort conformer is instantiated here (a conformer would need
+// torque_capacity, max_speed, and direction literals — avoidable risk
+// for this zero-Error signal per PRD §4 decision 4).
+structure def Coupling<D: RotaryPort, N: RotaryPort> {
+    port driver : D
+    port driven : N
+}

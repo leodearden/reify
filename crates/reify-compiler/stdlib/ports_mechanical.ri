@@ -1,0 +1,69 @@
+// Stdlib: Mechanical Port Interfaces — MechanicalPort and refiners
+// Provides the trait surface for mechanical connection interfaces:
+// rotary shafts, threaded fasteners, bore/shaft mating pairs, and
+// structural joints.
+//
+// Reference: docs/prds/v0_6/stdlib-reconstruction.md task α, §11.3.
+//
+// Deviations from §11 spec (forced by current language scope):
+//   1. `Torque` type alias required. Torque is absent from NAMED_DIMENSIONS
+//      (reify-core/src/dimension.rs:443-494). Torque ≡ Force·Length/Angle
+//      (distinct from Energy via the Angle⁻¹ slot; see dimension.rs:1259 and
+//      reify-eval/tests/money_acceptance_sweep_eval.rs:114). Binary dimensional-
+//      operation expressions are admitted ONLY on type-alias RHS, not in
+//      `param x : <type>` position (units.ri esc-4026-121:80-91) — hence the
+//      alias indirection, mirroring `pub type Velocity = Length / Time`.
+//      The alias is `pub` to mirror units.ri's `pub type Velocity` convention.
+//   2. Traits are NOT `pub`, matching the io.ri/process.ri convention.
+//   3. No `#no_prelude` pragma. std.ports.mechanical refines Port from
+//      std.ports (inter-stdlib dependency), so the growing-prelude sequence
+//      in stdlib_loader.rs must include std.ports before this module. Adding
+//      `#no_prelude` would break both the refinement resolution and the
+//      stdlib_loader_tests bidirectional invariant test.
+
+// ── Torque type alias ─────────────────────────────────────────────────────────
+
+// Torque = Force · Length / Angle (N·m/rad).
+// Distinct from Energy (J = N·m) because of the Angle⁻¹ slot.
+pub type Torque = Force * Length / Angle
+
+// ── Mechanical port base ──────────────────────────────────────────────────────
+
+// Base trait for any mechanical connection interface.
+// Inherits `direction` from Port via refinement.
+// Bodies are empty — conformers supply Port's direction requirement directly.
+trait MechanicalPort : Port {}
+
+// ── Marker traits ─────────────────────────────────────────────────────────────
+
+// A cylindrical bore (female mating interface).
+// Mating interface per spec §11.3.
+trait Bore : MechanicalPort {}
+
+// A cylindrical shaft (male mating interface).
+// Mating interface per spec §11.3.
+trait Shaft : MechanicalPort {}
+
+// A structural attachment point (mounting, welding, bolting).
+// Marker per spec §11.3 listing.
+trait StructurePort : MechanicalPort {}
+
+// ── Parameterised rotary port ─────────────────────────────────────────────────
+
+// Rotary shaft port — carries torque and has a speed limit.
+// torque_capacity : Torque — the maximum continuous torque the port can transmit.
+// max_speed : AngularVelocity — maximum continuous rotational speed (rad/s).
+trait RotaryPort : MechanicalPort {
+    param torque_capacity : Torque
+    param max_speed : AngularVelocity
+}
+
+// ── Parameterised threaded port ───────────────────────────────────────────────
+
+// Threaded fastener port — geometry defined by diameter and pitch.
+// thread_diameter : Length — nominal major diameter of the thread.
+// pitch : Length — thread pitch (distance between adjacent thread crests).
+trait ThreadedPort : MechanicalPort {
+    param thread_diameter : Length
+    param pitch : Length
+}
