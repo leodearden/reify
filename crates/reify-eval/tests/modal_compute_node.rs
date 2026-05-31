@@ -1,6 +1,6 @@
-//! Integration tests for task κ (3825): the modal ComputeNode warm-state cache
-//! + cooperative cancellation, exercised end-to-end through the public §3.4
-//! dispatch seam (`Engine::run_compute_dispatch`) against the registered
+//! Integration tests for task κ (3825): the modal ComputeNode warm-state
+//! cache + cooperative cancellation, exercised end-to-end through the public
+//! §3.4 dispatch seam (`Engine::run_compute_dispatch`) against the registered
 //! `"modal::free_vibration"` target.
 //!
 //! These mirror `tests/cancellation_compute_dispatch.rs` Test D (lines 350-429):
