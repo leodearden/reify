@@ -102,4 +102,11 @@ structure FeaCantileverSmoke {
     let result = solve_elastic_static(
         ci.law, length, width, height, lc.loads, lc.supports, ElasticOptions()
     )
+
+    // Geometry realization: provides the surface mesh that task δ (4087) renders
+    // the FEA stress contour onto.  Produces a deferred Value::GeometryHandle
+    // (GHR-β) — realization only happens at build/export/tessellate, not at
+    // eval — so this adds no kernel call and no Error diagnostic under
+    // make_simple_engine() (no kernel).  PRD §4.5, consumed by task δ.
+    let body = box(length, width, height)
 }
