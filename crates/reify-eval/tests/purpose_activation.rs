@@ -2586,3 +2586,103 @@ purpose bounded(subject : Structure) {
          Kleene U⇒U=U, NOT Violated"
     );
 }
+
+/// E1 — else arm active when condition is false.
+///
+/// Condition `0.0 > 1.0` is always false.
+/// `(not false) implies (z > 0.0)` = `true implies true` = Satisfied (z=5.0).
+///
+/// RED (step-3): step-2 impl ignores `g.else_members`, so no constraint is
+/// injected → constraint_results.find(...) panics.
+#[test]
+fn guarded_else_arm_active_when_condition_false() {
+    let source = r#"
+structure Frame {
+    param z : Scalar = 5.0
+}
+
+purpose bounded(subject : Structure) {
+    where 0.0 > 1.0 {
+    } else {
+        constraint subject.z > 0.0
+    }
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_simple_engine();
+    let eval_result = engine.eval(&compiled);
+    engine.activate_purpose("bounded", "Frame");
+
+    let (constraint_results, _) = engine
+        .check_constraints_with_values(&eval_result.values)
+        .expect("check_constraints_with_values must not error");
+
+    let purpose_result = constraint_results
+        .iter()
+        .find(|e| e.id.entity.starts_with("purpose:bounded@Frame"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a purpose-injected constraint with entity prefix \
+                 'purpose:bounded@Frame'; found: {:?}",
+                constraint_results.iter().map(|e| &e.id).collect::<Vec<_>>()
+            )
+        });
+
+    assert_eq!(
+        purpose_result.satisfaction,
+        Satisfaction::Satisfied,
+        "E1: condition false → else-arm active: (not false) implies (5.0>0.0) = Satisfied"
+    );
+}
+
+/// E2 — else arm vacuous when condition is true.
+///
+/// Condition `1.0 > 0.0` is always true.
+/// `(not true) implies (z > 0.0)` = `false implies (z > 0.0)` = true (vacuous),
+/// even when z=-5.0 (which would normally Violate the raw constraint).
+///
+/// RED (step-3): step-2 impl ignores `g.else_members`, so no constraint is
+/// injected → constraint_results.find(...) panics.
+#[test]
+fn guarded_else_arm_vacuous_when_condition_true() {
+    // z = -5.0 would normally Violate `z > 0.0`; but the else-arm is vacuous
+    // (condition is true), so the injected constraint is always Satisfied.
+    let source = r#"
+structure Frame {
+    param z : Scalar = -5.0
+}
+
+purpose bounded(subject : Structure) {
+    where 1.0 > 0.0 {
+    } else {
+        constraint subject.z > 0.0
+    }
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_simple_engine();
+    let eval_result = engine.eval(&compiled);
+    engine.activate_purpose("bounded", "Frame");
+
+    let (constraint_results, _) = engine
+        .check_constraints_with_values(&eval_result.values)
+        .expect("check_constraints_with_values must not error");
+
+    let purpose_result = constraint_results
+        .iter()
+        .find(|e| e.id.entity.starts_with("purpose:bounded@Frame"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a purpose-injected constraint with entity prefix \
+                 'purpose:bounded@Frame'; found: {:?}",
+                constraint_results.iter().map(|e| &e.id).collect::<Vec<_>>()
+            )
+        });
+
+    // (not true) implies (-5.0 > 0.0) = false implies false = true → Satisfied.
+    assert_eq!(
+        purpose_result.satisfaction,
+        Satisfaction::Satisfied,
+        "E2: condition true → else-arm vacuous: (not true) implies B = false implies B = Satisfied"
+    );
+}

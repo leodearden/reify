@@ -1522,4 +1522,84 @@ purpose p(subject : Structure) {
             "expected a Severity::Error diagnostic for `param x` inside a guarded block"
         );
     }
+
+    /// (c) An else-arm constraint lowers to `(not C) implies B`.
+    ///
+    /// RED (step-3): step-2 impl only handles `g.members` (where-arm);
+    /// `g.else_members` is not yet processed → 0 constraints from the else-arm →
+    /// `assert_eq!(purpose.constraints.len(), 1)` fails.
+    #[test]
+    fn guarded_else_arm_lowers_to_not_implies() {
+        // Condition is always-false so the else arm is "active" semantically,
+        // but the compile test only checks the structural shape (not eval).
+        let source = r#"
+structure Frame {
+    param z : Scalar = 5.0
+}
+
+purpose p(subject : Structure) {
+    where 0.0 > 1.0 {
+    } else {
+        constraint subject.z > 0.0
+    }
+}
+"#;
+        let module = compile_module_with_diagnostics(source);
+
+        let errors: Vec<_> = module
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "expected no compile errors for else-arm in purpose, got: {:#?}",
+            errors
+        );
+
+        let purpose = module
+            .compiled_purposes
+            .iter()
+            .find(|p| p.name == "p")
+            .expect("expected compiled purpose 'p'");
+
+        assert_eq!(
+            purpose.constraints.len(),
+            1,
+            "expected 1 compiled constraint from the else-arm, got {}",
+            purpose.constraints.len()
+        );
+
+        // The constraint must be `(not C) implies B`.
+        let constraint = &purpose.constraints[0];
+        match &constraint.expr.kind {
+            CompiledExprKind::BinOp { op, left, .. } => {
+                assert_eq!(
+                    *op,
+                    BinOp::Implies,
+                    "else-arm must lower to BinOp::Implies, got {:?}",
+                    op
+                );
+                // left must be UnOp::Not wrapping the condition.
+                match &left.kind {
+                    CompiledExprKind::UnOp { op: unop, .. } => {
+                        assert_eq!(
+                            *unop,
+                            UnOp::Not,
+                            "else-arm antecedent must be UnOp::Not(condition), got {:?}",
+                            unop
+                        );
+                    }
+                    other => panic!(
+                        "expected UnOp::Not for else-arm antecedent, got {:?}",
+                        other
+                    ),
+                }
+            }
+            other => panic!(
+                "expected BinOp::Implies for else-arm constraint expr, got {:?}",
+                other
+            ),
+        }
+    }
 }
