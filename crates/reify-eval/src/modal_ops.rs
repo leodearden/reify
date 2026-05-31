@@ -936,10 +936,14 @@ pub(crate) fn run_modal_analysis(
         density,
         element_order_disc,
     );
-    let prior_cache =
-        prior_warm_state.and_then(|s| s.downcast_ref::<ModalAnalysisCache>().cloned());
+    // Borrow the prior cache first, then clone the assembled (K, M) ONLY on a
+    // confirmed key HIT. A deep clone copies both faer matrices (Vec-backed full
+    // copies); doing it unconditionally — before the `matches` check — would waste
+    // that work on a MISS (geometry/material/element_order changed), where the
+    // clone is immediately discarded and we re-assemble anyway.
+    let prior_cache = prior_warm_state.and_then(|s| s.downcast_ref::<ModalAnalysisCache>());
     let (assembly, reused_assembly) = match prior_cache {
-        Some(cache) if cache.key.matches(&key) => (cache.assembly, true),
+        Some(cache) if cache.key.matches(&key) => (cache.assembly.clone(), true),
         _ => (assemble_modal_km(modal_mesh, density, &material), false),
     };
 
