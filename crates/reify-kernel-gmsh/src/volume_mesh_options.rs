@@ -88,4 +88,34 @@ mod tests {
              not produce the same value as reify_eval::NO_OPTIONS",
         );
     }
+
+    /// Two options differing only in `force_tet` must produce different hashes
+    /// (M-024 discriminator — two volume-mesh solves differing only in force_tet
+    /// MUST get distinct cache slots).
+    #[test]
+    fn force_tet_sensitivity() {
+        let a = VolumeMeshOptions { force_tet: true, require_hex_wedge: false };
+        let b = VolumeMeshOptions { force_tet: false, require_hex_wedge: false };
+        assert_ne!(
+            a.content_hash(),
+            b.content_hash(),
+            "VolumeMeshOptions with different force_tet must produce different \
+             content_hash values — force_tet not hashed",
+        );
+    }
+
+    /// Identical `VolumeMeshOptions` must produce equal hashes (determinism).
+    /// Confirms the hash is purely a function of the field values — no
+    /// timestamp, no RNG, no pointer identity.
+    #[test]
+    fn identical_options_produce_equal_hashes() {
+        let a = VolumeMeshOptions { force_tet: true, require_hex_wedge: false };
+        let b = VolumeMeshOptions { force_tet: true, require_hex_wedge: false };
+        assert_eq!(
+            a.content_hash(),
+            b.content_hash(),
+            "identical VolumeMeshOptions must produce equal content_hash values \
+             (hash must be deterministic)",
+        );
+    }
 }
