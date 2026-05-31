@@ -890,7 +890,20 @@ impl EngineSession {
     ///
     /// Both `new` and `with_registered_kernel` delegate here so the field list
     /// stays in one place and the two constructors cannot drift.
-    fn from_engine(engine: Engine) -> Self {
+    ///
+    /// CRITICAL: `register_compute_fns` is called HERE (once) rather than in
+    /// `new` or `with_registered_kernel` individually.  Both public constructors
+    /// delegate to this method (`new` → `from_engine(Engine::new(..))`,
+    /// `with_registered_kernel` → `from_engine(Engine::with_registered_kernel(..))`),
+    /// so registering here covers both paths.  `register_compute_fns` **panics on
+    /// duplicate registration** (compute_targets/mod.rs:89); calling it in `new`
+    /// *and* here would register twice on the same `Engine` → guaranteed panic.
+    /// PRD §4.5 / esc-2962-66 root cause.
+    fn from_engine(mut engine: Engine) -> Self {
+        // Install FEA / buckling / modal compute trampolines once at session
+        // construction.  This is the single registration site — see doc above.
+        reify_eval::compute_targets::register_compute_fns(&mut engine);
+
         Self {
             core: CoreState::new(engine),
             def_preview_cache: HashMap::new(),
