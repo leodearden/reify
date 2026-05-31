@@ -523,10 +523,10 @@ impl<'a> Lowering<'a> {
         let mut variants = Vec::new();
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            if child.kind() == "enum_variant" {
-                if let Some(variant) = self.lower_enum_variant(child) {
-                    variants.push(variant);
-                }
+            if child.kind() == "enum_variant"
+                && let Some(variant) = self.lower_enum_variant(child)
+            {
+                variants.push(variant);
             }
         }
 
@@ -5247,17 +5247,17 @@ mod tests {
     fn lower_connect_body_error_node_emits_diagnostic() {
         // `{ >= }` produces an ERROR child inside connect_body.
         // When lower_connect_body is called directly, the ERROR arm fires.
-        // NOTE: `>=` as the first token inside `{` avoids a GLR ambiguity
-        // introduced by the variant_construction grammar production: after `b {`,
-        // the variant_construction fork needs an identifier as the field name.
-        // `>=` is NOT an identifier, so that fork dies immediately, and the
-        // connect_body fork cleanly handles `{ >= }` with an ERROR child.
-        // Using an identifier-first token (e.g. `shaft >= }`) would cause the
-        // variant_construction fork to partially match the identifier before
-        // dying at `>=`, which disrupts error recovery and may orphan `{ … }`
-        // as a member-level ERROR node instead of a connect_body node.
+        // NOTE: we use `: BoltSet` to specify a connector_type before the brace
+        // block, making `{` unambiguously the start of connect_body.  Without
+        // the connector_type, the new variant_construction GLR fork (task α,
+        // data-carrying-enums) keeps both a variant_construction fork and the
+        // connect_body fork alive after `b {`; even though `>=` immediately
+        // kills the variant_construction fork, GLR error recovery may orphan
+        // `{ … }` as a member-level ERROR node rather than a connect_body,
+        // causing `find_node_by_kind("connect_body")` to fail.  The connector
+        // type `: BoltSet` consumes the `b :` prefix so the `{` is unambiguous.
         let errors = lower_body_with_errors(
-            "structure S { port a : out T  port b : in T  connect a -> b { >= } }",
+            "structure S { port a : out T  port b : in T  connect a -> b : BoltSet { >= } }",
         );
         assert!(
             !errors.is_empty(),
