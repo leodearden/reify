@@ -64,9 +64,15 @@
 //! as a future refinement) once ComputeFn/ComputeOutcome are moved into reify-ir.
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use reify_core::DimensionVector;
-use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use reify_ir::{
+    FieldSourceKind, InterpolationKind, OpaqueState, PersistentMap, SampledField, SampledGridKind,
+    StructureInstanceData, StructureTypeId, Value,
+};
+
+use crate::persistent_cache::ShellChannels;
 use reify_solver_elastic::{
     AnisotropicMaterial, AssemblyElement, AssemblyMode, CgSolverOptions, CgWarmState,
     ConstantField, DirichletBc, ElementOrder, IsotropicElastic, OrthotropicMaterial,
@@ -134,8 +140,11 @@ pub(crate) struct CantileverFeaSolve {
 /// ```
 ///
 /// Returns an `ElasticResult`-shaped `Value::StructureInstance` with fields:
-/// `displacement`, `stress`, `frame` (all Undef — tet convention),
+/// `displacement`, `stress`, `frame`, `shell_channels` (all Undef — tet/solid
+/// convention; see `solver_elastic.ri` field-semantics doc for rationale),
 /// `max_von_mises` (Scalar[PRESSURE]), `converged` (Bool), `iterations` (Int).
+/// Task 3594/δ replaces `shell_channels = Undef` with a real `ShellStress`
+/// value on the shell-routing path by calling `shell_channels_to_value`.
 ///
 /// The warm-state donate→checkout round-trip is exercised via
 /// `CgWarmState::from_opaque_state` / `CgWarmState::into_opaque_state`.
@@ -176,8 +185,13 @@ pub fn solve_elastic_static_trampoline(
     // ── (7) Build ElasticResult StructureInstance ────────────────────────────
     //
     // StructureTypeId(u32::MAX) is a synthetic sentinel for this slice.
-    // The three Body/Field-typed slots (displacement, stress, frame) are Undef
-    // per the tet-result convention at solver_elastic.ri:280–284.
+    // The four Field/ShellStress-typed slots (displacement, stress, frame,
+    // shell_channels) are Undef per the tet/solid convention:
+    //   - displacement/stress/frame: tet nodes have no per-element local frame.
+    //   - shell_channels: through-thickness top/mid/bottom is undefined for
+    //     solid elements (PRD DR-3, task #4067 I-3). Task 3594/δ replaces
+    //     shell_channels=Undef with shell_channels_to_value(Some(_), mid) on
+    //     the shell path.
     // `cost_per_byte` is derived as 1/(warm-state size in bytes) — larger
     // warm states are more expensive per byte to retain in the pool.
     let n_iters    = fea.iterations as i64;
@@ -193,15 +207,19 @@ pub fn solve_elastic_static_trampoline(
     let new_warm_state = Some(fresh_warm.into_opaque_state());
 
     let fields: PersistentMap<String, Value> = [
-        ("displacement".to_string(), Value::Undef),
-        ("stress".to_string(),       Value::Undef),
-        ("frame".to_string(),        Value::Undef),
-        ("max_von_mises".to_string(), Value::Scalar {
+        ("displacement".to_string(),   Value::Undef),
+        ("stress".to_string(),         Value::Undef),
+        ("frame".to_string(),          Value::Undef),
+        // task #4067 (PRD S1 / DR-3 / I-3): tet/solid results always emit
+        // shell_channels=Undef (through-thickness data is undefined for solid
+        // elements). Task 3594/δ replaces this with shell_channels_to_value(Some(_), mid).
+        ("shell_channels".to_string(), Value::Undef),
+        ("max_von_mises".to_string(),  Value::Scalar {
             si_value:  fea.max_von_mises,
             dimension: DimensionVector::PRESSURE,
         }),
-        ("converged".to_string(),   Value::Bool(converged)),
-        ("iterations".to_string(),  Value::Int(n_iters)),
+        ("converged".to_string(),      Value::Bool(converged)),
+        ("iterations".to_string(),     Value::Int(n_iters)),
     ]
     .into_iter()
     .collect();
@@ -229,6 +247,136 @@ pub fn solve_elastic_static_trampoline(
         new_warm_state,
         cost_per_byte,
         diagnostics: vec![],
+    }
+}
+
+// ── shell_channels_to_value ───────────────────────────────────────────────────
+
+/// Map a `Option<ShellChannels>` + the mid-surface stress field into a DSL
+/// `ShellStress` `Value::StructureInstance` (task #4067, PRD S1 / DR-1).
+///
+/// # Contract
+///
+/// - `None`   → `Value::Undef` (I-3 honest absence: tet/solid results carry no
+///   through-thickness channels — PRD DR-3).
+/// - `Some(ch)` → a `ShellStress`-shaped `Value::StructureInstance` with three
+///   fields:
+///   - `mid`    = `mid_stress.clone()` — I-2 invariant: `shell_channels.mid ==
+///     `ElasticResult.stress` by construction.
+///   - `top`    = `mid_stress` metadata with `data` replaced by `ch.top`.
+///   - `bottom` = `mid_stress` metadata with `data` replaced by `ch.bottom`.
+///
+/// # Rationale for sharing mid_stress's grid
+///
+/// top/mid/bottom are sampled at the SAME mesh nodes (MITC3+ per-element
+/// integration points share the element geometry), so reusing mid's
+/// `SampledField` grid/bounds/spacing is physically correct, not a shortcut.
+/// Mirrors the metadata-clone/data-swap pattern in `reify-stdlib/src/fea.rs`
+/// (`out_stress_sf` construction at ~line 281).
+///
+/// # Defensive fallback
+///
+/// When `mid_stress` is not a `Value::Field { source: Sampled, lambda:
+/// SampledField(_) }` (shouldn't happen on the shell path but may occur in unit
+/// tests or partial results), `top` / `bottom` are built as minimal 1D
+/// `SampledField` wrappers over `ch.top` / `ch.bottom` with index-based grids.
+///
+/// # Called by
+///
+/// Task 3594/δ calls this on the shell-routing path with real `Some(_)` data.
+/// This task (#4067) ships the helper; 3594/δ wires the call site.
+pub fn shell_channels_to_value(channels: &Option<ShellChannels>, mid_stress: &Value) -> Value {
+    let ch = match channels {
+        None => return Value::Undef,
+        Some(ch) => ch,
+    };
+
+    let top = build_channel_field(mid_stress, ch.top.clone(), "shell_channels_top");
+    let bottom = build_channel_field(mid_stress, ch.bottom.clone(), "shell_channels_bottom");
+
+    let fields: PersistentMap<String, Value> = [
+        ("mid".to_string(), mid_stress.clone()),
+        ("top".to_string(), top),
+        ("bottom".to_string(), bottom),
+    ]
+    .into_iter()
+    .collect();
+
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "ShellStress".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
+/// Build a `Value::Field { source: Sampled }` carrying `data`, cloning the grid
+/// metadata from `template` (the mid-surface stress field) when possible.
+///
+/// Falls through to a 1D index-grid fallback when `template` is not a Sampled
+/// field OR when `data.len()` does not match the grid's node count (product of
+/// `axis_grids` lengths). The debug assertion fires in debug/test builds so the
+/// mismatch is caught early; release builds silently produce a 1D field instead
+/// of a malformed Sampled field that would panic downstream.
+fn build_channel_field(template: &Value, data: Vec<f64>, name: &str) -> Value {
+    if let Value::Field {
+        domain_type,
+        codomain_type,
+        source: FieldSourceKind::Sampled,
+        lambda,
+    } = template
+        && let Value::SampledField(ref sf) = **lambda
+    {
+        let expected_len: usize = sf.axis_grids.iter().map(|g| g.len()).product();
+        debug_assert_eq!(
+            data.len(),
+            expected_len,
+            "build_channel_field: channel data length {} != grid node count {} for '{}'",
+            data.len(),
+            expected_len,
+            name,
+        );
+        if data.len() == expected_len {
+            let channel_sf = SampledField {
+                name: name.to_string(),
+                kind: sf.kind,
+                bounds_min: sf.bounds_min.clone(),
+                bounds_max: sf.bounds_max.clone(),
+                spacing: sf.spacing.clone(),
+                axis_grids: sf.axis_grids.clone(),
+                interpolation: sf.interpolation,
+                data,
+                oob_emitted: AtomicBool::new(false),
+            };
+            return Value::Field {
+                domain_type: domain_type.clone(),
+                codomain_type: codomain_type.clone(),
+                source: FieldSourceKind::Sampled,
+                lambda: Arc::new(Value::SampledField(channel_sf)),
+            };
+        }
+    }
+    // Defensive fallback: template is not a Sampled field, OR data length does
+    // not match the grid's node count — wrap data in a minimal 1D index-grid
+    // SampledField with Real domain/codomain.
+    let n = data.len();
+    let axis_grid: Vec<f64> = (0..n).map(|i| i as f64).collect();
+    let fallback_sf = SampledField {
+        name: name.to_string(),
+        kind: SampledGridKind::Regular1D,
+        bounds_min: vec![0.0],
+        bounds_max: vec![n.saturating_sub(1) as f64],
+        spacing: vec![1.0],
+        axis_grids: vec![axis_grid],
+        interpolation: InterpolationKind::Linear,
+        data,
+        oob_emitted: AtomicBool::new(false),
+    };
+    Value::Field {
+        domain_type: reify_core::Type::Real,
+        codomain_type: reify_core::Type::Real,
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(fallback_sf)),
     }
 }
 
@@ -839,6 +987,125 @@ mod tests {
              of Euler–Bernoulli reference {delta_eb:.6e} m",
             0.5 * delta_eb,
             1.5 * delta_eb,
+        );
+    }
+
+    /// Row 3 (ε/3781 step-3): constant-field lift of an IsotropicElastic must
+    /// produce an ElasticResult identical to the native isotropic path.
+    ///
+    /// # Rationale
+    ///
+    /// β/3778 C4 guarantees that `element_stiffness_p1_with_field(&ConstantField{..})`
+    /// for an identity-frame isotropic lift is bitwise identical to the legacy
+    /// `element_stiffness(P1, ..)`. Since the same mesh, same f, and same
+    /// deterministic CG are used, the displacement vectors u must also be
+    /// bitwise identical.
+    ///
+    /// # Thresholds
+    ///
+    /// - **iterations**: exact equality (`assert_eq!`). Contingent on β/3778 C4
+    ///   bitwise-identity: identical K + deterministic preconditioned CG ⇒
+    ///   identical convergence path. If C4 is ever softened to a numerical
+    ///   tolerance, this assertion must be relaxed accordingly.
+    /// - **displacement u**: 1e-12 relative tolerance. The expected diff is 0.0
+    ///   ULPs (bit-identity propagates through CG), but a tolerance-based guard
+    ///   is used over `assert_eq!` as defensive style.
+    /// - **max_von_mises**: 1e-9 relative tolerance, reflecting the fact that
+    ///   the two stress-recovery code paths (`element_stress_p1` vs
+    ///   `element_von_mises_anisotropic`) share the same u but compute stress
+    ///   via different numerical sequences; 1e-9 is the expected agreement band
+    ///   for an identity-frame isotropic lift.
+    ///
+    /// This proves the C4 isotropic-lift equivalence flows end-to-end through
+    /// `solve_cantilever_fea` to the consumer `CantileverFeaSolve`.
+    #[test]
+    fn constant_field_lift_matches_isotropic_elastic_result() {
+        // Same geometry/load as the sibling orthotropic tests.
+        let length    = 0.8_f64;
+        let width     = 0.1_f64;
+        let height    = 0.1_f64;
+        let tip_force = 1000.0_f64;
+
+        let iso = IsotropicElastic {
+            youngs_modulus: 200e9,
+            poisson_ratio:  0.3,
+        };
+        let identity: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let aniso = AnisotropicMaterial::from_law(&iso, identity);
+
+        // Solve with the native isotropic path.
+        let (iso_result, _) = solve_cantilever_fea(
+            &MaterialModel::Isotropic(iso),
+            length, width, height, tip_force, None,
+        );
+        // Solve with the anisotropic identity-frame lift path.
+        let (aniso_result, _) = solve_cantilever_fea(
+            &MaterialModel::Anisotropic(aniso),
+            length, width, height, tip_force, None,
+        );
+
+        // Both must converge.
+        assert!(iso_result.converged,   "isotropic solve must converge");
+        assert!(aniso_result.converged, "anisotropic solve must converge");
+
+        // CG iteration count must be identical: same K (bit-identical per β/3778
+        // C4 guarantee), same f, same deterministic preconditioner ⇒ same
+        // convergence path.
+        //
+        // NOTE: this exact-equality assertion is contingent on the β/3778 C4
+        // bitwise-identity guarantee holding all the way through assembly.  If
+        // that guarantee is ever softened to a numerical tolerance, the two
+        // solves may converge in a different number of steps and this assertion
+        // must be relaxed to a tolerance-based comparison.
+        assert_eq!(
+            iso_result.iterations,
+            aniso_result.iterations,
+            "iso and identity-frame aniso must require identical CG iterations \
+             (same K + same f + deterministic CG ⇒ identical convergence path; \
+             contingent on β/3778 C4 bitwise-identity guarantee)",
+        );
+
+        // Displacement vectors must agree component-wise.
+        //
+        // The underlying guarantee is bitwise identity (β/3778 C4 ⇒ identical K
+        // + deterministic CG ⇒ bit-equal u), so the 1e-12 relative tolerance is
+        // a defensive guard rather than a numerically tight bound — the actual
+        // diff is expected to be 0.0 ULPs.  A tolerance-based assertion is used
+        // here rather than component-wise assert_eq! because floating-point
+        // equality assertions are considered fragile style even when the
+        // theoretical guarantee is exact; the 1e-12 budget leaves no practical
+        // room for divergence.
+        assert_eq!(
+            iso_result.u.len(),
+            aniso_result.u.len(),
+            "displacement vectors must have the same length",
+        );
+        for i in 0..iso_result.u.len() {
+            let tol  = 1e-12 * iso_result.u[i].abs().max(1.0);
+            let diff = (aniso_result.u[i] - iso_result.u[i]).abs();
+            assert!(
+                diff < tol,
+                "displacement at i={i}: |u_aniso−u_iso|={diff:.3e} ≥ tol={tol:.3e} \
+                 (u_iso={:.3e}, u_aniso={:.3e})",
+                iso_result.u[i], aniso_result.u[i],
+            );
+        }
+
+        // max_von_mises must agree to 1e-9 relative: the two stress-recovery
+        // code paths (element_stress_p1 vs element_von_mises_anisotropic)
+        // compute the same physical quantity for an identity-frame isotropic lift.
+        let vm_iso   = iso_result.max_von_mises;
+        let vm_aniso = aniso_result.max_von_mises;
+        assert!(
+            vm_iso > 0.0,
+            "isotropic max_von_mises must be positive (got {vm_iso})",
+        );
+        let vm_tol = 1e-9 * vm_iso.abs().max(1.0);
+        assert!(
+            (vm_aniso - vm_iso).abs() < vm_tol,
+            "max_von_mises: iso={vm_iso:.4e} Pa, aniso={vm_aniso:.4e} Pa, \
+             |diff|={:.3e}, tol={vm_tol:.3e}",
+            (vm_aniso - vm_iso).abs(),
         );
     }
 

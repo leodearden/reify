@@ -1,0 +1,7 @@
+/// Named-field enum declaration fixture — α parse-signal.
+/// Tests: bare variant + named-field variants in one enum body.
+enum Shape {
+    Point,
+    Circle { radius: Length },
+    Rect { width: Length, height: Length },
+}

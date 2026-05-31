@@ -187,6 +187,66 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 "std.stackup",
                 include_str!("../stdlib/stackup.ri"),
             ),
+            // `std.kinematic` declares the DrivingJoint marker trait, per-kind
+            // joint structures (Prismatic/Revolute/Cylindrical/Planar/Spherical),
+            // non-conforming joints (Coupling/Fixed), and top-level container types
+            // (BodyId/Mechanism/Snapshot/SweepDim). Depends on std.trajectory
+            // (Vec3 and JointValue aliases) and std.units (Bool/Int/Real).
+            // Tail placement after std.trajectory satisfies both alias dependencies.
+            // Joints stay Value::Map per PRD §7.1 (esc-3845-91); units.rs/sweep.rs
+            // per-name hooks KEPT per esc-3845-91. KCC-ζ task 3845.
+            (
+                "std.kinematic",
+                include_str!("../stdlib/kinematic.ri"),
+            ),
+            // `std.ports` declares the Directionality enum and Port base trait.
+            // No inter-module dependencies beyond built-in types.
+            // Reconstruction of lost work per PRD task α.
+            (
+                "std.ports",
+                include_str!("../stdlib/ports.ri"),
+            ),
+            // `std.ports.mechanical` refines Port from std.ports and adds
+            // mechanical port traits (MechanicalPort, Bore, Shaft, RotaryPort,
+            // ThreadedPort, StructurePort) plus the Torque type alias.
+            // Must follow std.ports in the growing prelude sequence so Port is
+            // resolved when MechanicalPort : Port is compiled.
+            // Reconstruction of lost work per PRD task α.
+            (
+                "std.ports.mechanical",
+                include_str!("../stdlib/ports_mechanical.ri"),
+            ),
+            // `std.ports.electrical` refines Port from std.ports and adds
+            // electrical port traits (ElectricalPort, PowerPort, SignalPort)
+            // plus the SignalKind enum.
+            // Must follow std.ports in the growing prelude sequence so Port is
+            // resolved when ElectricalPort : Port is compiled.
+            // Reconstruction of lost work per PRD task β.
+            (
+                "std.ports.electrical",
+                include_str!("../stdlib/ports_electrical.ri"),
+            ),
+            // `std.ports.thermal` refines Port from std.ports and adds the
+            // lumped-thermal-port trait ThermalPort (Modelica HeatPort convention:
+            // temperature potential + heat_flow through variable).
+            // Must follow std.ports in the growing prelude sequence so Port is
+            // resolved when ThermalPort : Port is compiled.
+            // Reconstruction of lost work per PRD task β.
+            (
+                "std.ports.thermal",
+                include_str!("../stdlib/ports_thermal.ri"),
+            ),
+            // `std.ports.fluid` refines Port from std.ports and adds the fluid
+            // port trait FluidPort (pressure + VolumetricFlowRate + medium).
+            // VolumetricFlowRate = Volume / Time type alias is pub (mirrors
+            // units.ri Velocity); binary dim-op requires alias indirection.
+            // Must follow std.ports in the growing prelude sequence so Port is
+            // resolved when FluidPort : Port is compiled.
+            // Reconstruction of lost work per PRD task β.
+            (
+                "std.ports.fluid",
+                include_str!("../stdlib/ports_fluid.ri"),
+            ),
         ];
 
         // SEQUENTIAL COMPILATION WITH GROWING PRELUDE: each module is compiled

@@ -51,28 +51,42 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use reify_audit::{
-    AuditContext, ChangedSymbol, Finding, JCodemunchOps, RealGitOps, Severity, SymbolReference,
-    TaskMetadata, TimeWindow,
+    AuditContext, ChangedSymbol, DeadSymbol, Finding, JCodemunchOps, LayerViolation, RealGitOps,
+    Severity, SymbolReference, TaskMetadata, TimeWindow, UntestedSymbol,
     fused_memory_client::FusedMemoryClient,
+    jcodemunch_client::RealJCodemunchOps,
 };
 
 // -----------------------------------------------------------------------
-// NoopJCodemunchOps — slice-1 stub per design §11 (D-1)
+// NoopJCodemunchOps — inert stub for non-P1 runs and --no-jcodemunch
 // -----------------------------------------------------------------------
 
-/// Slice-1 no-op implementation of [`JCodemunchOps`].
+/// Inert no-op implementation of [`JCodemunchOps`].
 ///
-/// The real jcodemunch-MCP-backed impl is D-1's concern. This stub keeps P1
-/// quiet on production runs until D-1 lands. Per design §11 ("hookless slice
-/// 1"). Never escapes this bin file; the library's `MockJCodemunchOps` remains
+/// Used in two cases:
+/// 1. `--no-jcodemunch` explicit escape hatch (offline/test mode — P1
+///    runs but produces zero findings without opening any socket).
+/// 2. Detector runs that don't need jcodemunch (P5/pre-done, P2-only) —
+///    `needs_jcodemunch` returns false, so no connection is ever attempted.
+///
+/// Never escapes this bin file; the library's `MockJCodemunchOps` remains
 /// test-only via the `test-support` feature.
 struct NoopJCodemunchOps;
 
 impl JCodemunchOps for NoopJCodemunchOps {
-    fn get_changed_symbols(&self, _branch: &str, _since_epoch: i64) -> Vec<ChangedSymbol> {
+    fn get_changed_symbols(&self, _since_sha: &str, _until_sha: &str) -> Vec<ChangedSymbol> {
         vec![]
     }
     fn find_references(&self, _symbol: &ChangedSymbol) -> Vec<SymbolReference> {
+        vec![]
+    }
+    fn get_dead_code(&self, _min_confidence: f64) -> Vec<DeadSymbol> {
+        vec![]
+    }
+    fn get_untested_symbols(&self, _min_confidence: f64) -> Vec<UntestedSymbol> {
+        vec![]
+    }
+    fn get_layer_violations(&self) -> Vec<LayerViolation> {
         vec![]
     }
 }
@@ -88,11 +102,14 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  --task <id>              Spot-check a single task (all detectors)");
     let _ = writeln!(out, "  --pre-done               With --task: run P5 pre-done check only");
     let _ = writeln!(out, "  --since <iso-date>       Window sweep from ISO date (all detectors)");
-    let _ = writeln!(out, "  --pattern P1|P2|P5       Restrict to one detector");
+    let _ = writeln!(out, "  --pattern P1|P2|P5|PDEAD Restrict to one detector");
     let _ = writeln!(out, "  --tasks-file <path>      JSON array of TaskMetadata (overrides live loader; for tests)");
     let _ = writeln!(out, "  --fused-memory-url <url> MCP endpoint (default: $FUSED_MEMORY_URL or http://localhost:8002/mcp)");
     let _ = writeln!(out, "  --runs-db <path>         SQLite runs.db path (default: data/orchestrator/runs.db)");
     let _ = writeln!(out, "  --project-root <path>    Repo root for git ops + fused-memory project key (default: .)");
+    let _ = writeln!(out, "  --jcodemunch-url <url>   jcodemunch MCP endpoint for P1 (default: $JCODEMUNCH_URL or http://127.0.0.1:8901/mcp)");
+    let _ = writeln!(out, "  --jcodemunch-repo <id>   jcodemunch repo identifier (default: leodearden/reify)");
+    let _ = writeln!(out, "  --no-jcodemunch          Use inert stub (offline/test); P1 yields nothing, no connection");
     let _ = writeln!(out, "  --help, -h               Show this help");
     let _ = writeln!(out, "  --version, -V            Print version");
     let _ = writeln!(out);
@@ -161,6 +178,16 @@ struct Args {
     fused_memory_url: String,
     runs_db: String,
     project_root: String,
+    /// jcodemunch MCP endpoint for P1; falls back to `JCODEMUNCH_URL` env
+    /// or `http://127.0.0.1:8901/mcp` (no trailing slash — `/mcp/` triggers
+    /// a 307 redirect that drops `mcp-session-id`).
+    jcodemunch_url: String,
+    /// Repo identifier passed to `RealJCodemunchOps::new`. Default is the
+    /// smoke-verified slash form `leodearden/reify`.
+    jcodemunch_repo: String,
+    /// When true, bind `NoopJCodemunchOps` even for P1 runs. Preserves
+    /// hermetic test behaviour and provides an offline escape hatch.
+    no_jcodemunch: bool,
 }
 
 fn parse_args(argv: &[String]) -> Result<Args, String> {
@@ -177,6 +204,12 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
         .unwrap_or_else(|_| "http://localhost:8002/mcp".to_string());
     let mut runs_db = "data/orchestrator/runs.db".to_string();
     let mut project_root = ".".to_string();
+    // Default uses `/mcp` (no trailing slash) — same redirect-avoidance
+    // rationale as fused_memory_url above.
+    let mut jcodemunch_url = std::env::var("JCODEMUNCH_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:8901/mcp".to_string());
+    let mut jcodemunch_repo = "leodearden/reify".to_string();
+    let mut no_jcodemunch = false;
 
     // NOTE: Last-wins semantics for duplicate flags.
     // When a flag appears more than once (e.g. the pre-done hook wrapper passes
@@ -213,10 +246,10 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
                 i += 1;
                 let p = argv.get(i).ok_or("--pattern requires a value")?.as_str();
                 match p {
-                    "P1" | "P2" | "P5" => pattern = Some(p.to_string()),
+                    "P1" | "P2" | "P5" | "PDEAD" => pattern = Some(p.to_string()),
                     other => {
                         return Err(format!(
-                            "unknown --pattern value '{}'; expected P1, P2, or P5",
+                            "unknown --pattern value '{}'; expected P1, P2, P5, or PDEAD",
                             other
                         ))
                     }
@@ -251,6 +284,23 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
                     .ok_or("--project-root requires a value")?
                     .clone();
             }
+            "--jcodemunch-url" => {
+                i += 1;
+                jcodemunch_url = argv
+                    .get(i)
+                    .ok_or("--jcodemunch-url requires a value")?
+                    .clone();
+            }
+            "--jcodemunch-repo" => {
+                i += 1;
+                jcodemunch_repo = argv
+                    .get(i)
+                    .ok_or("--jcodemunch-repo requires a value")?
+                    .clone();
+            }
+            "--no-jcodemunch" => {
+                no_jcodemunch = true;
+            }
             other => {
                 return Err(format!("unknown flag '{}'", other));
             }
@@ -267,6 +317,9 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
         fused_memory_url,
         runs_db,
         project_root,
+        jcodemunch_url,
+        jcodemunch_repo,
+        no_jcodemunch,
     })
 }
 
@@ -340,6 +393,27 @@ fn load_tasks_from_fused_memory(
             .map(|t| (t.task_id.clone(), t))
             .collect())
     }
+}
+
+// -----------------------------------------------------------------------
+// Dispatch helpers
+// -----------------------------------------------------------------------
+
+/// Return true when at least one jcodemunch-backed detector (P1) is in the
+/// run set for the given args.
+///
+/// Returns true when the selected pattern(s) require a live jcodemunch server.
+/// Currently: no pattern (all detectors include P1), P1, or PDEAD.
+/// P2/P5 run without jcodemunch; pre_done always skips it.
+///
+/// The connect decision (RealJCodemunchOps vs NoopJCodemunchOps) is separated
+/// from the per-detector dispatch predicates (run_p1, run_pdead, …) so that
+/// adding PDEAD here does not accidentally make P1 run on `--pattern PDEAD`.
+fn needs_jcodemunch(args: &Args) -> bool {
+    if args.pre_done {
+        return false;
+    }
+    args.pattern.as_deref().is_none_or(|p| p == "P1" || p == "PDEAD")
 }
 
 // -----------------------------------------------------------------------
@@ -420,7 +494,29 @@ fn main() -> ExitCode {
 
     // Construct seam impls.
     let git = RealGitOps::new(PathBuf::from(&args.project_root));
-    let jcodemunch = NoopJCodemunchOps;
+
+    // Construct jcodemunch seam: Noop for --no-jcodemunch, P5/pre-done,
+    // and P2-only runs (never connects); Real for P1 runs (connects in
+    // constructor — fail-fast to 125 if the serve is unreachable).
+    let jcodemunch: Box<dyn JCodemunchOps> =
+        if args.no_jcodemunch || !needs_jcodemunch(&args) {
+            Box::new(NoopJCodemunchOps)
+        } else {
+            match RealJCodemunchOps::new(
+                args.jcodemunch_url.clone(),
+                args.jcodemunch_repo.clone(),
+                PathBuf::from(&args.project_root),
+            ) {
+                Ok(r) => Box::new(r),
+                Err(e) => {
+                    eprintln!(
+                        "reify-audit: error connecting to jcodemunch at '{}': {}",
+                        args.jcodemunch_url, e
+                    );
+                    return ExitCode::from(ERROR_EXIT);
+                }
+            }
+        };
 
     // Build window (for --since).
     let window = args.since.as_ref().map(|s| TimeWindow {
@@ -428,12 +524,13 @@ fn main() -> ExitCode {
         until: None,
     });
 
-    // Build context.
+    // Build context.  Box<dyn JCodemunchOps>::as_ref() coerces to
+    // &dyn JCodemunchOps, satisfying the borrowed seam; the Box outlives ctx.
     let ctx = AuditContext {
         project_root: PathBuf::from(&args.project_root),
         conn: &conn,
         git: &git,
-        jcodemunch: &jcodemunch,
+        jcodemunch: jcodemunch.as_ref(),
         task_metadata,
         target_task_id: args.task_id.clone(),
         window,
@@ -448,9 +545,14 @@ fn main() -> ExitCode {
         reify_audit::p5_phantom_done::check_pre_done(&ctx, task_id)
     } else {
         // Spot-check or window sweep: run selected detectors.
+        // run_p1 is DECOUPLED from needs_jcodemunch: needs_jcodemunch now also
+        // covers PDEAD (which needs the live server), but run_p1 must not fire
+        // on `--pattern PDEAD`. Each detector has its own explicit predicate.
         let run_p1 = args.pattern.as_deref().is_none_or(|p| p == "P1");
         let run_p2 = args.pattern.as_deref().is_none_or(|p| p == "P2");
         let run_p5 = args.pattern.as_deref().is_none_or(|p| p == "P5");
+        // PDEAD is opt-in only — not part of the default all-detector sweep.
+        let run_pdead = args.pattern.as_deref() == Some("PDEAD");
 
         let mut all = Vec::new();
         if run_p1 {
@@ -461,6 +563,9 @@ fn main() -> ExitCode {
         }
         if run_p5 {
             all.extend(reify_audit::p5_phantom_done::check(&ctx));
+        }
+        if run_pdead {
+            all.extend(reify_audit::pdead_dead_code::check(&ctx));
         }
         all
     };
@@ -569,6 +674,11 @@ mod tests {
         assert!(args.tasks_file.is_none());
         assert_eq!(args.runs_db, "data/orchestrator/runs.db");
         assert_eq!(args.project_root, ".");
+        // New jcodemunch flags: no_jcodemunch and jcodemunch_repo have
+        // deterministic defaults; jcodemunch_url is env-dependent (JCODEMUNCH_URL
+        // fallback) so we do not assert its exact value here.
+        assert!(!args.no_jcodemunch);
+        assert_eq!(args.jcodemunch_repo, "leodearden/reify");
     }
 
     #[test]
@@ -591,6 +701,8 @@ mod tests {
             "--tasks-file",
             "--runs-db",
             "--project-root",
+            "--jcodemunch-url",
+            "--jcodemunch-repo",
         ] {
             let err = unwrap_err(parse_args(&[flag.to_string()]));
             assert!(
@@ -612,8 +724,19 @@ mod tests {
             "error must name the offending literal; got: {err}"
         );
         assert!(
-            err.contains("P1, P2, or P5"),
-            "error must list the valid pattern literals; got: {err}"
+            err.contains("PDEAD"),
+            "error must list PDEAD as a valid pattern literal; got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_args_accepts_pdead_pattern() {
+        let args = parse_args(&["--pattern".to_string(), "PDEAD".to_string()])
+            .unwrap_or_else(|e| panic!("--pattern PDEAD must parse successfully; got: {e}"));
+        assert_eq!(
+            args.pattern.as_deref(),
+            Some("PDEAD"),
+            "parsed pattern must be Some(\"PDEAD\")"
         );
     }
 
@@ -633,6 +756,11 @@ mod tests {
             "/tmp/runs.db",
             "--project-root",
             "/tmp/repo",
+            "--jcodemunch-url",
+            "http://127.0.0.1:9/mcp",
+            "--jcodemunch-repo",
+            "my/repo",
+            "--no-jcodemunch",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -645,5 +773,50 @@ mod tests {
         assert_eq!(args.tasks_file.as_deref(), Some("/tmp/tasks.json"));
         assert_eq!(args.runs_db, "/tmp/runs.db");
         assert_eq!(args.project_root, "/tmp/repo");
+        assert_eq!(args.jcodemunch_url, "http://127.0.0.1:9/mcp");
+        assert_eq!(args.jcodemunch_repo, "my/repo");
+        assert!(args.no_jcodemunch);
+    }
+
+    // -------------------------------------------------------------------
+    // needs_jcodemunch
+    // -------------------------------------------------------------------
+
+    /// Build a minimal `Args` for needs_jcodemunch tests.
+    fn make_args(pre_done: bool, pattern: Option<&str>) -> Args {
+        Args {
+            task_id: None,
+            pre_done,
+            since: None,
+            pattern: pattern.map(|s| s.to_string()),
+            tasks_file: None,
+            fused_memory_url: String::new(),
+            runs_db: String::new(),
+            project_root: String::new(),
+            jcodemunch_url: String::new(),
+            jcodemunch_repo: String::new(),
+            no_jcodemunch: false,
+        }
+    }
+
+    #[test]
+    fn needs_jcodemunch_pre_done_always_false() {
+        // pre_done ⇒ false regardless of pattern
+        assert!(!needs_jcodemunch(&make_args(true, None)));
+        assert!(!needs_jcodemunch(&make_args(true, Some("P1"))));
+    }
+
+    #[test]
+    fn needs_jcodemunch_pattern_routing() {
+        // No pattern (all detectors) → true (P1 is in the run set)
+        assert!(needs_jcodemunch(&make_args(false, None)));
+        // P1 explicitly → true
+        assert!(needs_jcodemunch(&make_args(false, Some("P1"))));
+        // P2-only → false
+        assert!(!needs_jcodemunch(&make_args(false, Some("P2"))));
+        // P5-only → false
+        assert!(!needs_jcodemunch(&make_args(false, Some("P5"))));
+        // PDEAD explicitly → true (needs live jcodemunch server)
+        assert!(needs_jcodemunch(&make_args(false, Some("PDEAD"))));
     }
 }

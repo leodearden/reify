@@ -1,0 +1,23 @@
+// std.ports.electrical / std.ports.thermal / std.ports.fluid CI signal
+// examples/stdlib/ports_domains.ri
+//
+// Demonstrates the three domain port trait surfaces (electrical, thermal,
+// fluid) via a generic actuator interface structure.
+//
+// This file is auto-covered by examples_smoke.rs (directory walk) and
+// additionally compiled by the capstone test in ports_stdlib_compile.rs.
+
+import std.ports.electrical
+import std.ports.thermal
+import std.ports.fluid
+
+// A generic actuator interface carrying one port of each domain kind.
+// P, T, F are type parameters constrained to the respective port traits;
+// no concrete conformer is instantiated here (conformers would need direction,
+// voltage, max_current, temperature, heat_flow, pressure, flow_rate, and medium
+// literals — avoidable complexity for this zero-Error signal per PRD §4 decision 4).
+structure def ActuatorInterface<P: PowerPort, T: ThermalPort, F: FluidPort> {
+    port power : P
+    port heat : T
+    port supply : F
+}

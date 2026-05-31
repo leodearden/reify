@@ -25,7 +25,7 @@ use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeI
 use reify_solver_elastic::{
     AssemblyElement, AssemblyMode, DirichletBc, EigenSolverOptions, EigenSolverResult, ElementOrder,
     ElementStiffness, IsotropicElastic, assemble_global_stiffness, consistent_element_mass_tet_p1,
-    element_stiffness, solve_eigen_dense, solve_eigen_shift_invert,
+    consistent_element_mass_tet_p2, element_stiffness, solve_eigen_dense, solve_eigen_shift_invert,
 };
 use reify_stdlib::modal::free_vibration::{
     eigenvalue_to_frequency_hz, is_rigid_body_mode, mass_normalization_scale,
@@ -115,6 +115,37 @@ pub(crate) fn build_beam_mesh(length: f64, width: f64, height: f64) -> BeamMesh 
     BeamMesh { nodes, tets }
 }
 
+/// The finite-element discretization [`solve_modal_core`] assembles `K`/`M` over,
+/// with the element order carried by the variant.
+///
+/// `P1` borrows the original 4-node [`BeamMesh`] and assembles the constant-strain
+/// path directly. `P2` carries a *pre-promoted* 10-node tet mesh (edge-midpoint
+/// nodes already inserted). Promoting once in the caller and handing the result
+/// here lets the Dirichlet BC realization and the K/M assembly share a single
+/// `promote_beam_mesh_to_p2` walk instead of each recomputing it — eliminating the
+/// duplicated O(elements) promotion and the latent risk of the two promotion sites
+/// drifting (the trampoline previously promoted once for BCs and `solve_modal_core`
+/// promoted again for assembly).
+pub(crate) enum ModalMesh<'a> {
+    /// P1 constant-strain path: the 4-node beam mesh, used directly.
+    P1(&'a BeamMesh),
+    /// P2 path: the pre-promoted 10-node tet mesh (`nodes`, `tets`).
+    P2 { nodes: &'a [[f64; 3]], tets: &'a [[usize; 10]] },
+}
+
+impl ModalMesh<'_> {
+    /// The node coordinates this discretization assembles against — the P1 mesh
+    /// nodes, or the promoted P2 node set. The BC realization selects constrained
+    /// DOFs by node coordinate over exactly this set, so the BC DOF indices line up
+    /// with the assembled `K`/`M` node numbering.
+    fn nodes(&self) -> &[[f64; 3]] {
+        match self {
+            ModalMesh::P1(mesh) => &mesh.nodes,
+            ModalMesh::P2 { nodes, .. } => nodes,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Core modal solve
 // ---------------------------------------------------------------------------
@@ -172,11 +203,13 @@ pub(crate) struct ModalCoreResult {
 /// `K_free φ = λ M_free φ`, and scatter the mode shapes back to the full DOF
 /// space.
 ///
-/// Takes the mesh by reference rather than rebuilding it from geometry scalars,
-/// so the trampoline builds it once and shares it with the BC realization
-/// ([`build_dirichlet_bcs`]); both then index DOFs against the same node
-/// numbering, with no redundant rebuild. The unit tests likewise build their
-/// fixture mesh once and pass it here.
+/// Takes the discretization as a [`ModalMesh`] rather than rebuilding it from
+/// geometry scalars, so the caller builds (and, for P2, promotes) it once and
+/// shares it with the BC realization ([`build_dirichlet_bcs`]); both then index
+/// DOFs against the same node numbering, with no redundant rebuild or
+/// re-promotion. The element order is encoded in the `ModalMesh` variant (P1 ⇒
+/// the 4-node mesh used directly; P2 ⇒ a pre-promoted 10-node mesh). The unit
+/// tests likewise build their fixture mesh once and pass it here.
 ///
 /// Operates in the free-DOF subspace (extracting `K_free` / `M_free` over the
 /// non-Dirichlet DOFs) rather than via row elimination, which would inject
@@ -190,53 +223,45 @@ pub(crate) struct ModalCoreResult {
 /// `d_free` (the caller is responsible for supplying a unit vector — see the
 /// trampoline). It does not affect the eigensolve, only the participation field.
 pub(crate) fn solve_modal_core(
-    mesh: &BeamMesh,
+    mesh: ModalMesh<'_>,
     density: f64,
     material: &IsotropicElastic,
     reference_direction: [f64; 3],
     bcs: &[DirichletBc],
     eigen_opts: &EigenSolverOptions,
 ) -> ModalCoreResult {
-    let n_nodes = mesh.nodes.len();
+    // ---- Assemble (K, M) at the discretization's element order ------------
+    // P1 keeps the original constant-strain path bit-for-bit. P2 receives a
+    // pre-promoted 10-node mesh (edge-midpoint nodes already inserted by the
+    // caller) and assembles the quadratic stiffness + the exact
+    // (degree-4-integrated) consistent mass over it — the lever that resolves
+    // bending curvature and removes the P1 lock (task 4066). Both orders route
+    // through the shared generic `assemble_global_matrix` (K and M differ only in
+    // the per-element kernel). Everything downstream (free-DOF projection,
+    // participation metric, eigensolve, scatter-back) is DOF-index based and
+    // element-order agnostic, so it consumes the resulting `(n_nodes, k_full,
+    // m_full)` unchanged regardless of order.
+    let (n_nodes, k_full, m_full) = match mesh {
+        ModalMesh::P1(mesh) => {
+            let k_full = assemble_global_matrix(&mesh.nodes, &mesh.tets, |phys| {
+                element_stiffness(ElementOrder::P1, &phys[..], material)
+            });
+            let m_full = assemble_global_matrix(&mesh.nodes, &mesh.tets, |phys| {
+                consistent_element_mass_tet_p1(phys, density)
+            });
+            (mesh.nodes.len(), k_full, m_full)
+        }
+        ModalMesh::P2 { nodes, tets } => {
+            let k_full = assemble_global_matrix(nodes, tets, |phys| {
+                element_stiffness(ElementOrder::P2, &phys[..], material)
+            });
+            let m_full = assemble_global_matrix(nodes, tets, |phys| {
+                consistent_element_mass_tet_p2(phys, density)
+            });
+            (nodes.len(), k_full, m_full)
+        }
+    };
     let n_dofs = 3 * n_nodes;
-
-    // ---- Assemble K (P1 element stiffness) --------------------------------
-    let k_elems: Vec<ElementStiffness> = mesh
-        .tets
-        .iter()
-        .map(|tet| {
-            let phys: [[f64; 3]; 4] =
-                [mesh.nodes[tet[0]], mesh.nodes[tet[1]], mesh.nodes[tet[2]], mesh.nodes[tet[3]]];
-            element_stiffness(ElementOrder::P1, &phys[..], material)
-        })
-        .collect();
-    let k_assembly: Vec<AssemblyElement<'_>> = mesh
-        .tets
-        .iter()
-        .zip(k_elems.iter())
-        .enumerate()
-        .map(|(id, (conn, k_e))| AssemblyElement { id, connectivity: conn, k_e })
-        .collect();
-    let k_full = assemble_global_stiffness(n_nodes, &k_assembly, AssemblyMode::Deterministic);
-
-    // ---- Assemble M (consistent P1 mass) ----------------------------------
-    let m_elems: Vec<ElementStiffness> = mesh
-        .tets
-        .iter()
-        .map(|tet| {
-            let phys: [[f64; 3]; 4] =
-                [mesh.nodes[tet[0]], mesh.nodes[tet[1]], mesh.nodes[tet[2]], mesh.nodes[tet[3]]];
-            consistent_element_mass_tet_p1(&phys, density)
-        })
-        .collect();
-    let m_assembly: Vec<AssemblyElement<'_>> = mesh
-        .tets
-        .iter()
-        .zip(m_elems.iter())
-        .enumerate()
-        .map(|(id, (conn, m_e))| AssemblyElement { id, connectivity: conn, k_e: m_e })
-        .collect();
-    let m_full = assemble_global_stiffness(n_nodes, &m_assembly, AssemblyMode::Deterministic);
 
     // ---- Matrix-norm diagnostics (‖K‖_F, ‖M‖_F over the full assembly) -----
     // Computed before the free-DOF projection consumes the matrices: these are
@@ -399,6 +424,54 @@ pub(crate) fn solve_modal_core(
         stiffness_matrix_norm,
         diagnostics,
     }
+}
+
+/// Promote a P1 [`BeamMesh`] to a P2 (10-node) tet mesh by inserting
+/// edge-midpoint nodes, returning the promoted `(nodes, tets)`.
+///
+/// Delegates to the shared `assembly::test_support::promote_tets_to_p2` — the
+/// single source of truth for P1→P2 promotion (also driving the kernel-side
+/// `tests/modal_benchmarks.rs` accuracy gate and the euler P2 buckling test) — so
+/// the eval-side P2 modal path and the kernel-side benchmark promote with
+/// identical node numbering. The trampoline calls this once and feeds the
+/// promoted `(nodes, tets)` into BOTH the Dirichlet BC realization and
+/// [`solve_modal_core`] (as a [`ModalMesh::P2`]), so the BC DOF indices and the
+/// assembled `K`/`M` node numbering come from a single shared promotion.
+fn promote_beam_mesh_to_p2(mesh: &BeamMesh) -> (Vec<[f64; 3]>, Vec<[usize; 10]>) {
+    reify_solver_elastic::assembly::test_support::promote_tets_to_p2(&mesh.nodes, &mesh.tets)
+}
+
+/// Assemble one global matrix (`K` or `M`) for an `N`-node tet mesh: build each
+/// element matrix via `element_matrix` (gathering the element's `N`
+/// physical-node coordinates from the connectivity with `std::array::from_fn`),
+/// then scatter through the shared `assemble_global_stiffness`.
+///
+/// Generic over the element node-count `N` so the P1 (`N = 4`) and P2 (`N = 10`)
+/// paths share one assembly loop — called twice per order, once for stiffness and
+/// once for the consistent mass. `assemble_global_stiffness` treats each element
+/// matrix opaquely, so `K` and `M` scatter through the identical path; the only
+/// per-call difference is the `element_matrix` kernel. This collapses the former
+/// `assemble_p1_k_m` / `assemble_p2_k_m` (four near-identical assembly blocks)
+/// into a single source of truth, so the K and M loops cannot diverge.
+fn assemble_global_matrix<const N: usize>(
+    nodes: &[[f64; 3]],
+    tets: &[[usize; N]],
+    element_matrix: impl Fn(&[[f64; 3]; N]) -> ElementStiffness,
+) -> SparseRowMat<usize, f64> {
+    let elems: Vec<ElementStiffness> = tets
+        .iter()
+        .map(|tet| {
+            let phys: [[f64; 3]; N] = std::array::from_fn(|i| nodes[tet[i]]);
+            element_matrix(&phys)
+        })
+        .collect();
+    let assembly: Vec<AssemblyElement<'_>> = tets
+        .iter()
+        .zip(elems.iter())
+        .enumerate()
+        .map(|(id, (conn, k_e))| AssemblyElement { id, connectivity: conn, k_e })
+        .collect();
+    assemble_global_stiffness(nodes.len(), &assembly, AssemblyMode::Deterministic)
 }
 
 /// Extract the free×free submatrix of `full` over the non-Dirichlet DOFs.
@@ -662,12 +735,32 @@ pub fn solve_modal_analysis_trampoline(
     let (n_modes, tol, max_iters, sigma) = extract_eigen_knobs(options);
     let reference_direction = extract_reference_direction(options);
     let (alpha, beta) = extract_damping(options);
-    let bcs = build_dirichlet_bcs(options, &mesh, length, width, height);
+    let element_order = extract_element_order(options);
+    // P2 promotes the beam mesh to 10-node tets ONCE here; the promoted node set
+    // then drives BOTH the Dirichlet BC realization AND the K/M assembly in
+    // `solve_modal_core` (handed across as `ModalMesh::P2`). P2 promotion inserts
+    // edge-midpoint nodes, so the face-coordinate BC selection must run over the
+    // PROMOTED nodes — otherwise a clamped/pinned face would miss its midpoint
+    // nodes and be only partially constrained. Promoting once (instead of once for
+    // BCs and again inside the core solve) removes the duplicated O(elements) walk
+    // and the risk of the two promotions drifting. P1 borrows the original mesh.
+    let promoted_p2 = match element_order {
+        ElementOrder::P1 => None,
+        ElementOrder::P2 => Some(promote_beam_mesh_to_p2(&mesh)),
+    };
+    let modal_mesh = match &promoted_p2 {
+        None => ModalMesh::P1(&mesh),
+        Some((nodes, tets)) => ModalMesh::P2 { nodes, tets },
+    };
+    // BC selection reads only node coordinates, so it takes the order-correct node
+    // slice directly (no half-populated `BeamMesh` sentinel): the P1 mesh nodes or
+    // the promoted P2 node set, whichever `modal_mesh` carries.
+    let bcs = build_dirichlet_bcs(options, modal_mesh.nodes(), length, width, height);
     let eigen_opts = EigenSolverOptions { n_modes, tol, max_iters, sigma };
 
     // ── (5) core free-vibration eigensolve ───────────────────────────────────
     let core = solve_modal_core(
-        &mesh,
+        modal_mesh,
         density,
         &material,
         reference_direction,
@@ -852,6 +945,28 @@ fn extract_damping(val: &Value) -> (f64, f64) {
     (0.0, 0.0)
 }
 
+/// Extract the requested finite-element order from a `ModalOptions`
+/// StructureInstance's `element_order` field.
+///
+/// An `ElementOrder.P2` enum value (runtime `Value::Enum { variant: "P2", .. }`)
+/// selects [`ElementOrder::P2`] — the quadratic 10-node-tet path that resolves
+/// bending curvature (task 4066). Everything else — a missing field, a non-enum
+/// value, or the explicit `ElementOrder.P1` — defaults to [`ElementOrder::P1`],
+/// keeping the constant-strain path and every existing P1 fixture/test bit-for-bit
+/// unchanged (matching `ModalOptions.element_order`'s declared `ElementOrder.P1`
+/// default). Mirrors [`extract_damping`]'s match-then-default defensive field read;
+/// the enum is discriminated solely by its `variant` tag, the runtime
+/// representation of an `ElementOrder` value (reify-ir `Value::Enum`).
+fn extract_element_order(val: &Value) -> ElementOrder {
+    if let Value::StructureInstance(data) = val
+        && let Some(Value::Enum { variant, .. }) = data.fields.get(&"element_order".to_string())
+        && variant == "P2"
+    {
+        return ElementOrder::P2;
+    }
+    ElementOrder::P1
+}
+
 /// Build the homogeneous Dirichlet BCs from the `boundary_conditions` faces.
 ///
 /// Two realizations, discriminated by the named faces (design_decision #1; the
@@ -870,14 +985,17 @@ fn extract_damping(val: &Value) -> (f64, f64) {
 ///     (`"x_min"`/`"x_max"`/`"y_min"`/`"y_max"`/`"z_min"`/`"z_max"`) has all three
 ///     translational DOFs clamped — the cantilever root clamp (step-16).
 ///
-/// Takes the same [`BeamMesh`] the trampoline hands to [`solve_modal_core`], so
-/// the DOF indices line up with the solve's mesh without a redundant rebuild
-/// (suggestion 4 / performance). `length`/`width`/`height` still parameterize the
-/// face-coordinate thresholds. Duplicate DOFs (a corner shared by two named
-/// faces) are harmless — `solve_modal_core` records constraints idempotently.
+/// Takes only the node coordinates (`&[[f64; 3]]`) of the discretization the
+/// trampoline hands to [`solve_modal_core`] — BC selection is coordinate-only and
+/// never touches element connectivity, so the node slice is the whole contract
+/// (no half-populated `BeamMesh` sentinel needed for the P2 path). The DOF indices
+/// line up with the solve's mesh because both index the same node set.
+/// `length`/`width`/`height` still parameterize the face-coordinate thresholds.
+/// Duplicate DOFs (a corner shared by two named faces) are harmless —
+/// `solve_modal_core` records constraints idempotently.
 fn build_dirichlet_bcs(
     options: &Value,
-    mesh: &BeamMesh,
+    nodes: &[[f64; 3]],
     length: f64,
     width: f64,
     height: f64,
@@ -888,14 +1006,14 @@ fn build_dirichlet_bcs(
     let pins_x_min = targets.iter().any(|t| t == "x_min");
     let pins_x_max = targets.iter().any(|t| t == "x_max");
     if pins_x_min && pins_x_max {
-        return simply_supported_pin_pin_bcs(mesh, length, height);
+        return simply_supported_pin_pin_bcs(nodes, length, height);
     }
 
     // General "clamp the named face" realization (cantilever root clamp).
     let eps = 1e-9_f64;
     let mut bcs = Vec::new();
     for target in &targets {
-        for (n, coord) in mesh.nodes.iter().enumerate() {
+        for (n, coord) in nodes.iter().enumerate() {
             let on_face = match target.as_str() {
                 "x_min" => coord[0] <= eps,
                 "x_max" => coord[0] >= length - eps,
@@ -947,14 +1065,14 @@ fn build_dirichlet_bcs(
 /// (so the X anchor sits on its node line) and `v = 0` everywhere (so the Y
 /// anchors never load it). Anchoring at the neutral axis — rather than clamping
 /// `u` across a full face — is precisely what keeps the support rotation free.
-fn simply_supported_pin_pin_bcs(mesh: &BeamMesh, length: f64, height: f64) -> Vec<DirichletBc> {
+fn simply_supported_pin_pin_bcs(nodes: &[[f64; 3]], length: f64, height: f64) -> Vec<DirichletBc> {
     // `width` is not a parameter: the Z simple-support spans the full end face by
     // node coordinate, and the anchors sit on the y = 0 neutral-axis node line.
     let eps = 1e-9_f64;
     let mut bcs = Vec::new();
 
     // (1) Simple supports: pin the transverse (Z) DOF on both end faces.
-    for (n, coord) in mesh.nodes.iter().enumerate() {
+    for (n, coord) in nodes.iter().enumerate() {
         let on_end = coord[0] <= eps || coord[0] >= length - eps;
         if on_end {
             bcs.push(DirichletBc { dof: 3 * n + 2, value: 0.0 }); // Z (bending)
@@ -962,8 +1080,8 @@ fn simply_supported_pin_pin_bcs(mesh: &BeamMesh, length: f64, height: f64) -> Ve
     }
 
     // (2) Minimal anchors at the two end-face neutral-axis nodes (z = h/2).
-    let root = nearest_node(mesh, [0.0, 0.0, height / 2.0]);
-    let tip = nearest_node(mesh, [length, 0.0, height / 2.0]);
+    let root = nearest_node(nodes, [0.0, 0.0, height / 2.0]);
+    let tip = nearest_node(nodes, [length, 0.0, height / 2.0]);
     bcs.push(DirichletBc { dof: 3 * root, value: 0.0 }); // X anchor (axial)
     bcs.push(DirichletBc { dof: 3 * root + 1, value: 0.0 }); // Y anchor (lateral, root)
     bcs.push(DirichletBc { dof: 3 * tip + 1, value: 0.0 }); // Y anchor (lateral, tip)
@@ -975,14 +1093,14 @@ fn simply_supported_pin_pin_bcs(mesh: &BeamMesh, length: f64, height: f64) -> Ve
 /// Used to place the simply-supported anchors on the end-face neutral-axis nodes
 /// robustly — by coordinate, independent of `build_beam_mesh`'s internal node
 /// numbering (mirroring the unit tests' coordinate-based face selection).
-fn nearest_node(mesh: &BeamMesh, target: [f64; 3]) -> usize {
+fn nearest_node(nodes: &[[f64; 3]], target: [f64; 3]) -> usize {
     let dist2 = |p: &[f64; 3]| -> f64 {
         let dx = p[0] - target[0];
         let dy = p[1] - target[1];
         let dz = p[2] - target[2];
         dx * dx + dy * dy + dz * dz
     };
-    mesh.nodes
+    nodes
         .iter()
         .enumerate()
         .min_by(|(_, a), (_, b)| {
@@ -1047,11 +1165,12 @@ mod tests {
     use faer::sparse::SparseRowMat;
     use reify_core::{DimensionVector, Severity};
     use reify_ir::{StructureInstanceData, StructureTypeId, Value};
+    use reify_solver_elastic::assembly::test_support::promote_tets_to_p2;
     use reify_solver_elastic::{DirichletBc, EigenSolverOptions, IsotropicElastic};
     use reify_stdlib::modal::free_vibration::{is_rigid_body_mode, rayleigh_damping_ratio};
 
     use super::{
-        ModalCoreResult, build_beam_mesh, build_dirichlet_bcs, extract_damping,
+        ModalCoreResult, ModalMesh, build_beam_mesh, build_dirichlet_bcs, extract_damping,
         extract_density_or_degenerate, extract_eigen_knobs, extract_reference_direction,
         simply_supported_pin_pin_bcs, solve_modal_analysis_trampoline, solve_modal_core,
     };
@@ -1130,7 +1249,7 @@ mod tests {
             EigenSolverOptions { n_modes: 3, tol: 1e-8, max_iters: 200, sigma: 0.0 };
 
         let result: ModalCoreResult = solve_modal_core(
-            &mesh,
+            ModalMesh::P1(&mesh),
             STEEL_DENSITY,
             &steel(),
             [0.0, 0.0, 1.0], // reference_direction; unused by this assertion
@@ -1193,6 +1312,127 @@ mod tests {
         }
     }
 
+    /// step-7 (RED → GREEN in step-8): the P2 (`ElementOrder::P2`) path of
+    /// `solve_modal_core`.
+    ///
+    /// A STRUCTURAL pin, not an accuracy check — the headline P2 modal-frequency
+    /// accuracy gate lives in `reify-solver-elastic`'s
+    /// `tests/modal_benchmarks.rs` (which can call `solve_eigen_dense` directly;
+    /// this eval-side test only proves the orchestration runs the quadratic path
+    /// end-to-end and returns a well-shaped result).
+    ///
+    /// The same coarse root-clamped cantilever fixture as the P1 pin above,
+    /// solved with `ElementOrder::P2`. P2 promotion inserts edge-midpoint nodes,
+    /// so the solve must operate over the PROMOTED node set:
+    ///   • `result.n_nodes` equals the promoted node count, strictly greater than
+    ///     the P1 count (proving the promotion ran, not the P1 mesh);
+    ///   • the exact P2 consistent mass `M` is PD enough that the generalized
+    ///     eigensolve completes (converged, no Cholesky panic) — the
+    ///     degree-4-exact integration guarantee from steps 1–2;
+    ///   • frequencies are finite, strictly positive, ascending, with one
+    ///     full-DOF mode shape (length `3·n_nodes_p2`) per frequency.
+    ///
+    /// BCs are built over the PROMOTED node set (clamping the `x ≈ 0` root face by
+    /// coordinate so the new edge-midpoint nodes on the face are caught too). The
+    /// same promoted `(nodes_p2, tets_p2)` is then passed to `solve_modal_core` as
+    /// a `ModalMesh::P2`, so the BC DOF indices line up with the assembled K/M node
+    /// numbering by construction (a single shared promotion, no internal re-walk).
+    ///
+    /// RED: `solve_modal_core` has no `element_order` parameter / no P2 branch yet
+    /// (compile-fail).
+    #[test]
+    fn solve_modal_core_p2_path_returns_well_shaped_promoted_result() {
+        let length = 0.02_f64; // X — beam axis (short → coarse promoted mesh)
+        let width = 0.05_f64; // Y — width
+        let height = 0.1_f64; // Z — bending axis
+
+        let mesh = build_beam_mesh(length, width, height);
+
+        // Promote once with the shared helper; the SAME promoted mesh is handed to
+        // solve_modal_core (as ModalMesh::P2) AND used to build the BCs, so the BC
+        // DOF indices match the assembled K/M node numbering exactly.
+        let (nodes_p2, tets_p2) = promote_tets_to_p2(&mesh.nodes, &mesh.tets);
+        assert!(
+            nodes_p2.len() > mesh.nodes.len(),
+            "P2 promotion must add edge-midpoint nodes: {} !> {}",
+            nodes_p2.len(),
+            mesh.nodes.len(),
+        );
+
+        // Clamp the x ≈ 0 root face over the PROMOTED node set (catches P2
+        // edge-midpoints by coordinate).
+        let mut bcs = Vec::new();
+        for (n, coord) in nodes_p2.iter().enumerate() {
+            if coord[0] <= 1e-9 {
+                for axis in 0..3 {
+                    bcs.push(DirichletBc { dof: 3 * n + axis, value: 0.0 });
+                }
+            }
+        }
+        assert!(!bcs.is_empty(), "fixture must clamp at least one root-face DOF");
+
+        let eigen_opts =
+            EigenSolverOptions { n_modes: 3, tol: 1e-8, max_iters: 200, sigma: 0.0 };
+
+        let result: ModalCoreResult = solve_modal_core(
+            ModalMesh::P2 { nodes: &nodes_p2, tets: &tets_p2 },
+            STEEL_DENSITY,
+            &steel(),
+            [0.0, 0.0, 1.0], // reference_direction; unused by this assertion
+            &bcs,
+            &eigen_opts,
+        );
+
+        // (a) n_nodes is the PROMOTED P2 count (> the P1 count) — the P2 branch
+        //     assembled K/M over the promoted mesh, not the P1 one.
+        assert_eq!(
+            result.n_nodes,
+            nodes_p2.len(),
+            "P2 result.n_nodes must equal the promoted node count {}",
+            nodes_p2.len(),
+        );
+
+        // (b) ≥ 1 mode returned and (d) the eigensolve converged — the exact P2
+        //     mass is PD, so the generalized solve completes without panicking.
+        assert!(
+            !result.frequencies.is_empty(),
+            "expect ≥ 1 P2 mode; got {}",
+            result.frequencies.len(),
+        );
+        assert!(result.converged, "P2 generalized eigensolve must converge");
+
+        // (c) frequencies finite, strictly positive, ascending.
+        for (i, &f) in result.frequencies.iter().enumerate() {
+            assert!(
+                f.is_finite() && f > 0.0,
+                "P2 frequency[{i}] = {f} must be finite and strictly positive",
+            );
+        }
+        for w in result.frequencies.windows(2) {
+            assert!(
+                w[0] <= w[1],
+                "P2 frequencies must be sorted ascending: {} > {}",
+                w[0],
+                w[1],
+            );
+        }
+
+        // (e) one full-DOF mode shape per frequency, each length 3·n_nodes_p2.
+        assert_eq!(
+            result.phi_full.len(),
+            result.frequencies.len(),
+            "one full mode shape per returned P2 frequency",
+        );
+        for (i, phi) in result.phi_full.iter().enumerate() {
+            assert_eq!(
+                phi.len(),
+                3 * result.n_nodes,
+                "P2 mode {i} shape length must be 3·n_nodes_p2 = {}",
+                3 * result.n_nodes,
+            );
+        }
+    }
+
     /// step-5 (RED → GREEN in step-6): mass-normalization invariant.
     ///
     /// On the same coarse root-clamped fixture, after normalization each mode
@@ -1214,7 +1454,7 @@ mod tests {
             EigenSolverOptions { n_modes: 3, tol: 1e-8, max_iters: 200, sigma: 0.0 };
 
         let result: ModalCoreResult = solve_modal_core(
-            &mesh,
+            ModalMesh::P1(&mesh),
             STEEL_DENSITY,
             &steel(),
             [0.0, 0.0, 1.0], // reference_direction; unused by this assertion
@@ -1288,7 +1528,7 @@ mod tests {
             EigenSolverOptions { n_modes: n_free, tol: 1e-8, max_iters: 200, sigma: 0.0 };
 
         let result: ModalCoreResult = solve_modal_core(
-            &mesh,
+            ModalMesh::P1(&mesh),
             STEEL_DENSITY,
             &steel(),
             reference_direction,
@@ -1363,7 +1603,7 @@ mod tests {
         };
 
         let result: ModalCoreResult = solve_modal_core(
-            &mesh,
+            ModalMesh::P1(&mesh),
             STEEL_DENSITY,
             &steel(),
             [0.0, 0.0, 1.0],
@@ -1421,7 +1661,7 @@ mod tests {
         };
 
         let result: ModalCoreResult = solve_modal_core(
-            &mesh,
+            ModalMesh::P1(&mesh),
             STEEL_DENSITY,
             &steel(),
             [0.0, 0.0, 1.0],
@@ -1475,7 +1715,7 @@ mod tests {
             EigenSolverOptions { n_modes: 10, tol: 1e-8, max_iters: 200, sigma: 0.0 };
 
         let result: ModalCoreResult = solve_modal_core(
-            &mesh,
+            ModalMesh::P1(&mesh),
             STEEL_DENSITY,
             &steel(),
             [0.0, 0.0, 1.0],
@@ -1745,7 +1985,7 @@ mod tests {
             Value::List(vec![fixed_support("x_min"), fixed_support("x_max")]),
         )]);
         let pin_set: std::collections::HashSet<usize> =
-            build_dirichlet_bcs(&pin_opts, &mesh, length, width, height)
+            build_dirichlet_bcs(&pin_opts, &mesh.nodes, length, width, height)
                 .iter()
                 .map(|b| b.dof)
                 .collect();
@@ -1763,7 +2003,7 @@ mod tests {
             Value::List(vec![fixed_support("x_min")]),
         )]);
         let clamp_set: std::collections::HashSet<usize> =
-            build_dirichlet_bcs(&clamp_opts, &mesh, length, width, height)
+            build_dirichlet_bcs(&clamp_opts, &mesh.nodes, length, width, height)
                 .iter()
                 .map(|b| b.dof)
                 .collect();
@@ -1790,7 +2030,7 @@ mod tests {
         let mesh = build_beam_mesh(length, width, height);
         let eps = 1e-9_f64;
 
-        let bcs = simply_supported_pin_pin_bcs(&mesh, length, height);
+        let bcs = simply_supported_pin_pin_bcs(&mesh.nodes, length, height);
 
         // Count constraints per axis (dof % 3): X = axial anchor, Y = lateral
         // anchors, Z = simple supports.
@@ -2043,7 +2283,7 @@ mod tests {
         let (bcs, _) = clamp_x_min_face(&mesh.nodes);
         let eigen_opts = EigenSolverOptions { n_modes: 3, tol: 1e-9, max_iters: 200, sigma: 0.0 };
         let core = solve_modal_core(
-            &mesh,
+            ModalMesh::P1(&mesh),
             STEEL_DENSITY,
             &steel(),
             [0.0, 0.0, 1.0],
@@ -2110,6 +2350,139 @@ mod tests {
         assert_eq!(
             got_shape, expected,
             "modes[0].shape must equal solve_modal_core phi_full[0] reshaped to List<Vector3>",
+        );
+    }
+
+    /// step-9 (RED → GREEN in step-10): the trampoline honors
+    /// `ModalOptions.element_order` end-to-end.
+    ///
+    /// `solve_modal_analysis_trampoline` must read the `element_order` enum field
+    /// and dispatch `solve_modal_core` at that order. An `ElementOrder.P2` option
+    /// promotes the beam mesh (inserting edge-midpoint nodes) BEFORE assembling
+    /// K/M, so the serialized `Mode.shape` carries one per-node `Vector3` for every
+    /// PROMOTED node — strictly more than the P1 node count. A missing
+    /// `element_order` field must keep the P1 path (back-compat), so its shape
+    /// length equals the P1 mesh node count.
+    ///
+    /// The two orders are distinguished by the serialized mode-shape length
+    /// (= node count): P2 > P1. Both must Complete with a non-empty modes list and
+    /// no Error diagnostics (the exact P2 mass is PD, so the eigensolve runs clean)
+    /// — i.e. the P2 path genuinely ran rather than silently falling back to P1.
+    ///
+    /// RED: the trampoline hard-codes `ElementOrder::P1` and ignores the field, so
+    /// the `element_order = P2` run produces the SAME (P1) node count as the
+    /// default run — the `p2 == promoted` / `p2 > p1` assertions fail until step 10
+    /// wires `extract_element_order` (and the promoted-node-set BC realization)
+    /// through.
+    #[test]
+    fn trampoline_honors_element_order_p2() {
+        let length = 0.02_f64; // X — beam axis (short → coarse promoted mesh)
+        let width = 0.05_f64; // Y — width
+        let height = 0.1_f64; // Z — bending axis
+
+        // Expected node counts, via the SAME shared helpers the trampoline /
+        // solve_modal_core use, so they track any mesh change: P1 = the beam-mesh
+        // node count; P2 = the promoted (edge-midpoint-inserted) node count.
+        let mesh = build_beam_mesh(length, width, height);
+        let n_nodes_p1 = mesh.nodes.len();
+        let (nodes_p2, _tets_p2) = promote_tets_to_p2(&mesh.nodes, &mesh.tets);
+        let n_nodes_p2 = nodes_p2.len();
+        assert!(
+            n_nodes_p2 > n_nodes_p1,
+            "P2 promotion must add nodes for the fixture to discriminate the order: \
+             {n_nodes_p2} !> {n_nodes_p1}",
+        );
+
+        // Shared cantilever fixture inputs; only the `element_order` field differs.
+        let make_inputs = |order_field: Option<Value>| {
+            let mut opt_fields = vec![
+                ("n_modes".to_string(), Value::Int(3)),
+                (
+                    "boundary_conditions".to_string(),
+                    Value::List(vec![fixed_support("x_min")]),
+                ),
+                (
+                    "reference_direction".to_string(),
+                    Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
+                ),
+            ];
+            if let Some(order) = order_field {
+                opt_fields.push(("element_order".to_string(), order));
+            }
+            vec![
+                material_with_density(Some(STEEL_DENSITY)),
+                length_scalar(length),
+                length_scalar(width),
+                length_scalar(height),
+                modal_options(opt_fields),
+            ]
+        };
+
+        // Run the trampoline and return the serialized `modes[0].shape` length
+        // (= the solve's node count for that order), asserting along the way that
+        // the outcome Completed cleanly with a non-empty modes list and no Error
+        // diagnostics (the P2 path actually ran, not a degenerate short-circuit).
+        let run = |inputs: Vec<Value>| -> usize {
+            let outcome = solve_modal_analysis_trampoline(
+                &inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            );
+            let ComputeOutcome::Completed { result, diagnostics, .. } = outcome else {
+                panic!("expected a Completed outcome");
+            };
+            assert!(
+                !diagnostics.iter().any(|d| d.severity == Severity::Error),
+                "clamped beam must not produce Error diagnostics; got {diagnostics:?}",
+            );
+            let data = match &result {
+                Value::StructureInstance(d) => d,
+                other => panic!("expected a ModalResult StructureInstance; got {other:?}"),
+            };
+            let modes = match data.fields.get(&"modes".to_string()) {
+                Some(Value::List(m)) => m,
+                other => panic!("ModalResult.modes must be a List; got {other:?}"),
+            };
+            assert!(!modes.is_empty(), "solve must return ≥ 1 mode");
+            let mode0 = match &modes[0] {
+                Value::StructureInstance(d) => d,
+                other => panic!("modes[0] must be a Mode StructureInstance; got {other:?}"),
+            };
+            match mode0.fields.get(&"shape".to_string()) {
+                Some(Value::List(nodes)) => nodes.len(),
+                other => panic!("modes[0].shape must be a List; got {other:?}"),
+            }
+        };
+
+        // (a) `element_order = ElementOrder.P2` → the P2 path → promoted node count.
+        let p2_order = Value::Enum {
+            type_name: "ElementOrder".to_string(),
+            variant: "P2".to_string(),
+        };
+        let p2_shape_len = run(make_inputs(Some(p2_order)));
+
+        // (b) absent `element_order` → the P1 path (back-compat) → P1 node count.
+        let p1_shape_len = run(make_inputs(None));
+
+        assert_eq!(
+            p2_shape_len, n_nodes_p2,
+            "element_order=P2 must run the P2 path (promoted node count {n_nodes_p2}); \
+             got a {p2_shape_len}-node mode shape",
+        );
+        assert_eq!(
+            p1_shape_len, n_nodes_p1,
+            "absent element_order must keep the P1 path (node count {n_nodes_p1}); \
+             got a {p1_shape_len}-node mode shape",
+        );
+
+        // (c) the two paths are observably distinct — proving the field switched the
+        //     element order rather than both falling through to a single default.
+        assert!(
+            p2_shape_len > p1_shape_len,
+            "P2 mode shape ({p2_shape_len} nodes) must exceed P1 ({p1_shape_len}); \
+             the trampoline must honor ModalOptions.element_order",
         );
     }
 }

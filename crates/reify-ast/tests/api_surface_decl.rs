@@ -16,14 +16,14 @@
 // ── flat root imports ────────────────────────────────────────────────────────
 use reify_ast::{
     Annotation, AssociatedTypeDecl, ChainDecl, ConnectDecl, ConnectOp, ConstraintDecl,
-    ConstraintDef, ConstraintInstDecl, Declaration, EnumDecl, Expr, ExprKind, FieldDef,
-    FieldSource, FnBody, FnDef, FnParam, ForallConnectBody, ForallConnectDecl,
+    ConstraintDef, ConstraintInstDecl, Declaration, EnumDecl, EnumVariantDecl, Expr, ExprKind,
+    FieldDef, FieldSource, FnBody, FnDef, FnParam, ForallConnectBody, ForallConnectDecl,
     ForallConstraintBody, ForallConstraintDecl, GuardedGroupDecl, ImportDecl, ImportKind,
     LetDecl, MAX_MEMBER_NESTING_DEPTH, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MaximizeDecl,
     MemberDecl, MemberSpanInfo, MetaBlockDecl, MinimizeDecl, ModuleDecl, NumberClass,
     OccurrenceDef, ParamDecl, ParseError, ParsedModule, PortDecl, PortRef, Pragma, PragmaArg,
     PragmaValue, PurposeDef, PurposeParam, StructureDef, SubDecl, TraitBoundRef, TraitDecl,
-    TypeAliasDecl, TypeParamDecl, UnitDecl, WhereClause, classify_number_literal,
+    TypeAliasDecl, TypeParamDecl, UnitDecl, VariantPayload, WhereClause, classify_number_literal,
     find_named_member_span, has_test_annotation, walk_specialization_scope_members,
 };
 
@@ -31,6 +31,7 @@ use reify_ast::{
 use reify_ast::decl::{
     Annotation as AnnotationMod,
     Declaration as DeclarationMod,
+    EnumVariantDecl as EnumVariantDeclMod,
     MAX_MEMBER_NESTING_DEPTH as MAX_MOD,
     ModuleDecl as ModuleDeclMod,
     NumberClass as NumberClassMod,
@@ -40,6 +41,7 @@ use reify_ast::decl::{
     PragmaArg as PragmaArgMod,
     PragmaValue as PragmaValueMod,
     StructureDef as StructureDefMod,
+    VariantPayload as VariantPayloadMod,
     classify_number_literal as classify_mod,
     has_test_annotation as has_test_mod,
 };
@@ -76,7 +78,8 @@ fn declaration_flat_and_module_path_cross_assign() {
         name: "Dir".into(),
         doc: None,
         is_pub: false,
-        variants: vec!["In".into()],
+        type_params: vec![],
+        variants: vec![EnumVariantDecl::unit("In")],
         span: SourceSpan::empty(0),
         content_hash: ContentHash(0),
         annotations: vec![],
@@ -200,4 +203,139 @@ fn parsed_module_with_declared_module_path() {
     assert_eq!(m.declarations.len(), 1);
     // Cross-assign to module-path alias.
     let _same: ParsedModuleMod = m;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-1 RED: AST surface contract for EnumVariantDecl / VariantPayload /
+// ExprKind::VariantConstruct.
+// These tests FAIL TO COMPILE until step-2 adds the new types.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn enum_variant_decl_unit_constructible() {
+    // EnumVariantDecl::unit helper — wraps a bare variant name.
+    let v: EnumVariantDecl = EnumVariantDecl::unit("Point");
+    assert_eq!(v.name, "Point");
+    match &v.payload {
+        VariantPayload::Unit => {}
+        other => panic!("expected Unit payload, got {:?}", other),
+    }
+    // Cross-assign via module-path alias proves same type.
+    let _same: EnumVariantDeclMod = v;
+}
+
+#[test]
+fn enum_variant_decl_named_constructible() {
+    use reify_ast::ast::{TypeExpr, TypeExprKind};
+    // VariantPayload::Named carries a Vec<(String, TypeExpr)>.
+    let radius_type = TypeExpr {
+        kind: TypeExprKind::Named { name: "Length".into(), type_args: vec![] },
+        span: SourceSpan::empty(0),
+    };
+    let v = EnumVariantDecl {
+        name: "Circle".into(),
+        payload: VariantPayload::Named(vec![("radius".into(), radius_type)]),
+        span: SourceSpan::empty(0),
+    };
+    match &v.payload {
+        VariantPayload::Named(fields) => {
+            assert_eq!(fields.len(), 1);
+            assert_eq!(fields[0].0, "radius");
+        }
+        other => panic!("expected Named payload, got {:?}", other),
+    }
+    // module-path cross-assign
+    let _same: EnumVariantDeclMod = v;
+}
+
+#[test]
+fn enum_variant_decl_from_str_and_string() {
+    // From<&str> and From<String> convenience impls — both produce Unit payloads.
+    let a: EnumVariantDecl = EnumVariantDecl::from("In");
+    let b: EnumVariantDecl = EnumVariantDecl::from("Out".to_string());
+    assert_eq!(a.name, "In");
+    assert_eq!(b.name, "Out");
+    let _same_a: VariantPayloadMod = a.payload;
+    let _same_b: VariantPayloadMod = b.payload;
+}
+
+#[test]
+fn enum_decl_with_named_field_variants() {
+    use reify_ast::ast::{TypeExpr, TypeExprKind};
+    let point = EnumVariantDecl::unit("Point");
+    let radius_type = TypeExpr {
+        kind: TypeExprKind::Named { name: "Length".into(), type_args: vec![] },
+        span: SourceSpan::empty(0),
+    };
+    let circle = EnumVariantDecl {
+        name: "Circle".into(),
+        payload: VariantPayload::Named(vec![("radius".into(), radius_type)]),
+        span: SourceSpan::empty(0),
+    };
+    let e = EnumDecl {
+        name: "Shape".into(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![],
+        variants: vec![point, circle],
+        span: SourceSpan::empty(0),
+        content_hash: ContentHash(0),
+        annotations: vec![],
+    };
+    assert_eq!(e.variants.len(), 2);
+    assert_eq!(e.variants[0].name, "Point");
+    assert_eq!(e.variants[1].name, "Circle");
+}
+
+#[test]
+fn expr_kind_variant_construct_constructible() {
+    use reify_ast::ast::ExprKind;
+    // ExprKind::VariantConstruct { name, fields: Vec<(String, Expr)> }
+    let width_val = Expr {
+        kind: ExprKind::QuantityLiteral {
+            value: 20.0,
+            unit: reify_ast::ast::UnitExpr::Unit("mm".into()),
+        },
+        span: SourceSpan::empty(0),
+    };
+    let vc = ExprKind::VariantConstruct {
+        name: "Rect".into(),
+        fields: vec![("width".into(), width_val)],
+    };
+    match &vc {
+        ExprKind::VariantConstruct { name, fields } => {
+            assert_eq!(name, "Rect");
+            assert_eq!(fields.len(), 1);
+            assert_eq!(fields[0].0, "width");
+        }
+        _ => panic!("unexpected variant"),
+    }
+}
+
+// ── Task 4029 α: EnumDecl.type_params contract ────────────────────────────────
+//
+// step-3 RED: EnumDecl has no `type_params` field yet — this test does not
+// compile until step-4 adds `pub type_params: Vec<TypeParamDecl>` to EnumDecl.
+// step-4 GREEN: the field exists and is accessible.
+
+#[test]
+fn enum_decl_type_params_field_accessible() {
+    // Compile-time contract: EnumDecl has a `type_params: Vec<TypeParamDecl>` field.
+    // Name/bounds/default semantics are covered in reify-syntax lowering tests.
+    let e = EnumDecl {
+        name: "Maybe".into(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![TypeParamDecl {
+            name: "T".into(),
+            bounds: vec![],
+            default: None,
+            span: SourceSpan::empty(0),
+        }],
+        variants: vec![EnumVariantDecl::unit("Nothing")],
+        span: SourceSpan::empty(0),
+        content_hash: ContentHash(0),
+        annotations: vec![],
+    };
+    assert_eq!(e.type_params.len(), 1, "EnumDecl.type_params field must be accessible");
 }

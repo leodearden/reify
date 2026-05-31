@@ -399,3 +399,74 @@ fn e2e_cantilever_second_eval_hits_cache() {
          (deterministic trampoline contract)"
     );
 }
+
+// ── step-5: RED — tet trampoline I-1/I-3 ─────────────────────────────────────
+//
+// Confirms that the tet-path trampoline result has:
+//   (a) `shell_channels == Undef` (I-3 honest absence — no through-thickness
+//       data for solid elements)
+//   (b) `stress == Undef` (I-1 non-breaking — the flat stress field is
+//       unchanged from pre-task baseline)
+//
+// RED until step-6 adds ("shell_channels", Value::Undef) to the fields map
+// in `elastic_static.rs:195-207`.  Before that, `extract_field(result,
+// "shell_channels")` returns `None` (key absent), not `Some(Undef)`.
+
+/// I-3 (tet): `result.shell_channels` must be `Value::Undef` — honest
+/// absence signal for solid elements (no through-thickness data).
+///
+/// RED until step-6 emits the `shell_channels = Undef` key.
+#[test]
+fn tet_trampoline_shell_channels_is_undef() {
+    let source = cantilever_source();
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    let eval_result = engine.eval(&compiled);
+
+    let result_cell = ValueCellId::new("FeaCantileverSmoke", "result");
+    let result_val = eval_result
+        .values
+        .get(&result_cell)
+        .unwrap_or_else(|| panic!("cell FeaCantileverSmoke.result not found"));
+
+    assert_eq!(
+        extract_field(result_val, "shell_channels"),
+        Some(Value::Undef),
+        "tet result.shell_channels must be Undef (I-3 honest absence); \
+         got: {:?} — step-6 adds the shell_channels=Undef key to the trampoline",
+        extract_field(result_val, "shell_channels")
+    );
+}
+
+/// I-1 (tet): `result.stress` must be `Value::Undef` — unchanged from the
+/// pre-task baseline (only a new key was added, not a restructure).
+///
+/// This is a non-breaking guarantee: the existing `stress` value is preserved
+/// bit-for-bit; step-6 only ADDS `shell_channels`, it does NOT touch `stress`.
+///
+/// GREEN after step-4 (trampoline already emits stress=Undef); stays GREEN
+/// through step-6 (additive change).
+#[test]
+fn tet_trampoline_stress_is_undef() {
+    let source = cantilever_source();
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    let eval_result = engine.eval(&compiled);
+
+    let result_cell = ValueCellId::new("FeaCantileverSmoke", "result");
+    let result_val = eval_result
+        .values
+        .get(&result_cell)
+        .unwrap_or_else(|| panic!("cell FeaCantileverSmoke.result not found"));
+
+    assert_eq!(
+        extract_field(result_val, "stress"),
+        Some(Value::Undef),
+        "tet result.stress must be Undef (I-1 non-breaking); got: {:?}",
+        extract_field(result_val, "stress")
+    );
+}

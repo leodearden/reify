@@ -472,6 +472,12 @@ fn walk_expr_depth(expr: &Expr, diagnostics: &mut Vec<Diagnostic>, depth: usize)
                 walk_expr_depth(a, diagnostics, next);
             }
         }
+        // VariantConstruct — recurse into field value exprs.
+        ExprKind::VariantConstruct { fields, .. } => {
+            for (_, v) in fields {
+                walk_expr_depth(v, diagnostics, next);
+            }
+        }
         // Leaf expressions — no children. `EnumAccess`, like `IndexAccess` and
         // `FunctionCall`, acts as a chain root simply by virtue of not being
         // `ExprKind::MemberAccess` — chain detection in the MemberAccess arm

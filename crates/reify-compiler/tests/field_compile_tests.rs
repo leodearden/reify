@@ -776,3 +776,4 @@ fn compile_field_imported_unsupported_format_emits_error() {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+

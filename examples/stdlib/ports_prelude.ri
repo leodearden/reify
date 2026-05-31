@@ -1,0 +1,25 @@
+// std.ports implicit-prelude CI signal — examples/stdlib/ports_prelude.ri
+//
+// Spec §7.6: Port, Directionality, and refining port traits (e.g. RotaryPort)
+// are implicit-prelude contents — they resolve WITHOUT an explicit import.
+//
+// This file deliberately carries NO import statement.  The structure below
+// exercises all three §7.6 prelude symbols at once:
+//   • Port          — base trait (bound on N)
+//   • RotaryPort    — refining trait (bound on D)
+//   • Directionality / Directionality.Bidi — enum + variant
+//
+// This file is auto-covered by examples_smoke.rs (directory walk) and
+// additionally compiled by the capstone test in ports_prelude_test.rs.
+
+// A generic coupling with mixed port-type bounds:
+//   D must satisfy RotaryPort (a mechanical refining trait)
+//   N may be any Port (the base trait)
+// The orientation param demonstrates Directionality enum resolution from the
+// implicit prelude.  No concrete conformer is instantiated (PRD §4 decision 4;
+// mirrors Coupling in examples/stdlib/ports_mechanical.ri).
+structure def PreludeCoupling<D: RotaryPort, N: Port> {
+    param orientation : Directionality = Directionality.Bidi
+    port driver : D
+    port driven : N
+}

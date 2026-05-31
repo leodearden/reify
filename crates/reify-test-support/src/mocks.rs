@@ -582,6 +582,22 @@ enum QueryKey {
         py_bits: u64,
         pz_bits: u64,
     },
+    /// CurveCurvatureAt keys the edge handle + world query point (f64 bits).
+    /// Powers the v0.3 stdlib `curvature(curve, point)` helper (task 3621, KGQ-μ).
+    CurveCurvatureAt {
+        handle: GeometryHandleId,
+        px_bits: u64,
+        py_bits: u64,
+        pz_bits: u64,
+    },
+    /// SurfaceCurvatureAt keys the face handle + parametric (u, v) coordinates
+    /// (f64 bits). Powers the v0.3 stdlib `curvature(surface, point)` helper
+    /// (task 3621, KGQ-μ).
+    SurfaceCurvatureAt {
+        handle: GeometryHandleId,
+        u_bits: u64,
+        v_bits: u64,
+    },
 }
 
 /// Normalize a distance pair to canonical (min, max) order so that
@@ -747,6 +763,21 @@ impl QueryKey {
                     px_bits: density_bits(*px),
                     py_bits: density_bits(*py),
                     pz_bits: density_bits(*pz),
+                }
+            }
+            GeometryQuery::CurveCurvatureAt { handle, px, py, pz } => {
+                QueryKey::CurveCurvatureAt {
+                    handle: *handle,
+                    px_bits: density_bits(*px),
+                    py_bits: density_bits(*py),
+                    pz_bits: density_bits(*pz),
+                }
+            }
+            GeometryQuery::SurfaceCurvatureAt { handle, u, v } => {
+                QueryKey::SurfaceCurvatureAt {
+                    handle: *handle,
+                    u_bits: density_bits(*u),
+                    v_bits: density_bits(*v),
                 }
             }
         }
@@ -1036,6 +1067,58 @@ impl MockGeometryKernel {
                 px_bits: density_bits(point[0]),
                 py_bits: density_bits(point[1]),
                 pz_bits: density_bits(point[2]),
+            },
+            value,
+        );
+        self
+    }
+
+    /// Configure a `CurveCurvatureAt` query result for a specific
+    /// (edge handle, world query point) pair.
+    ///
+    /// `value` should be a `Value::Real(κ)` where κ is the signed Frenet curvature
+    /// in SI units (m⁻¹), matching the OCCT kernel's `curve_curvature_at` return.
+    /// Point coordinates are hashed via `density_bits` for stable keying.
+    ///
+    /// Powers the v0.3 stdlib `curvature(curve, point)` helper (task 3621, KGQ-μ).
+    pub fn with_curve_curvature_at_result(
+        mut self,
+        handle: GeometryHandleId,
+        point: [f64; 3],
+        value: Value,
+    ) -> Self {
+        self.typed_queries.insert(
+            QueryKey::CurveCurvatureAt {
+                handle,
+                px_bits: density_bits(point[0]),
+                py_bits: density_bits(point[1]),
+                pz_bits: density_bits(point[2]),
+            },
+            value,
+        );
+        self
+    }
+
+    /// Configure a `SurfaceCurvatureAt` query result for a specific
+    /// (face handle, parametric (u, v)) pair.
+    ///
+    /// `value` should be a nested `Value::List([[kappa_max, 0.0], [0.0, kappa_min]])`
+    /// matching the OCCT kernel's diagonal principal-curvature wire format for
+    /// `GeometryQuery::SurfaceCurvatureAt`. The (u, v) coordinates are hashed
+    /// via `density_bits` for stable keying.
+    ///
+    /// Powers the v0.3 stdlib `curvature(surface, point)` helper (task 3621, KGQ-μ).
+    pub fn with_surface_curvature_at_result(
+        mut self,
+        handle: GeometryHandleId,
+        uv: [f64; 2],
+        value: Value,
+    ) -> Self {
+        self.typed_queries.insert(
+            QueryKey::SurfaceCurvatureAt {
+                handle,
+                u_bits: density_bits(uv[0]),
+                v_bits: density_bits(uv[1]),
             },
             value,
         );
@@ -1469,6 +1552,8 @@ impl GeometryKernel for MockGeometryKernel {
             GeometryQuery::GeoEquiv { left, .. } => left,
             GeometryQuery::SurfaceAngle { face_a, .. } => face_a,
             GeometryQuery::FaceNormalAt { handle, .. } => handle,
+            GeometryQuery::CurveCurvatureAt { handle, .. } => handle,
+            GeometryQuery::SurfaceCurvatureAt { handle, .. } => handle,
         };
 
         self.queries

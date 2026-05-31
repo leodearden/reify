@@ -15,10 +15,16 @@
 //
 //   f₁ ≈ 41.3 Hz   (L/r ≈ 346 — a slender beam)
 //
-// The integration test at `crates/reify-eval/tests/modal_analysis_e2e.rs`
-// asserts the first-mode frequency is within 10% of this value — the committed
-// PRD §1/§9.1 bound (NOT the aspirational 2%, moved to P2-tet follow-up 4066).
-// The measured P1-tet floor is pinned in that test (steps 15/16).
+// This fixture runs at `element_order: ElementOrder.P2` (second-order, 10-node
+// quadratic tets — task 4066). P2 shape functions resolve bending curvature and
+// remove the P1 constant-strain bending lock (f ∝ √K, which biases P1 high), so
+// the integration test at `crates/reify-eval/tests/modal_analysis_e2e.rs` asserts
+// the first-mode frequency is within 2% of this analytic value — the
+// bending-lock-free P2 band, distinctly tighter than the prior P1 10% floor and
+// reachable only when the solve runs at P2. The honest measured P2 error is 1.35%
+// at the coarse example-practical mesh (nx=16); pinned as CANTILEVER_P2_REL_TOL
+// in that test, mirroring the kernel accuracy gate
+// `crates/reify-solver-elastic/tests/modal_benchmarks.rs`.
 //
 // The `@optimized("modal::free_vibration")` annotation on `modal_analysis`
 // causes the engine to insert a ComputeNode with target == "modal::free_vibration"
@@ -65,15 +71,31 @@ structure CantileverBeamModes {
     // the clamped-free configuration to the trampoline (step-16).
     let root = FixedSupport(target: "x_min")
 
-    // Modal options: extract the first 3 modes, undamped, bending in z.
-    // reference_direction = vec3(0,0,1) is the dimensionless unit excitation
-    // direction along which participation mass is projected (the slender
-    // bending direction). tol / max_iters / sigma use ModalOptions defaults.
+    // Modal options: extract the first 3 modes, undamped, bending in z, at
+    // element_order = ElementOrder.P2 — the P2-tet path that resolves bending
+    // curvature and removes the P1 bending lock (task 4066). reference_direction
+    // = vec3(0,0,1) is the dimensionless unit excitation direction along which
+    // participation mass is projected (the slender bending direction).
+    //
+    // IMPORTANT — argument binding is POSITIONAL (the `name:` labels are
+    // cosmetic; the parser strips them and binds each value to the param in
+    // ModalOptions' DECLARATION order — see ts_parser.rs lower_call_argument).
+    // `element_order` is the LAST declared param, so every preceding param must
+    // be supplied here in order to reach it: a partial keyword-style call would
+    // silently bind `element_order`'s value to an earlier param and leave the
+    // real `element_order` at its `ElementOrder.P1` default (the P1 bending lock
+    // would never lift). sigma / tol / max_iters are therefore spelled out at
+    // their ModalOptions defaults (0.0 / 1e-9 / 200) so the trailing
+    // reference_direction and element_order land in the right slots.
     let opts = ModalOptions(
         n_modes: 3,
         boundary_conditions: [root],
         damping: NoDamping(),
-        reference_direction: vec3(0.0, 0.0, 1.0)
+        sigma: 0.0,
+        tol: 0.000000001,
+        max_iters: 200,
+        reference_direction: vec3(0.0, 0.0, 1.0),
+        element_order: ElementOrder.P2
     )
 
     // Modal solve: the @optimized dispatcher routes this call to the

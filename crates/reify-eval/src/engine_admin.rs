@@ -256,6 +256,7 @@ impl Engine {
             active_purpose_bindings: HashMap::new(),
             active_tolerance_scope: HashMap::new(),
             active_objective_map: HashMap::new(),
+            active_purpose_let_cells: HashMap::new(),
             objectives: HashMap::new(),
             compiled_fields: Arc::new(Vec::new()),
             meta_map: Arc::new(HashMap::new()),

@@ -1,0 +1,55 @@
+// Stdlib: Electrical Port Interfaces — ElectricalPort, PowerPort, SignalPort
+// Provides the trait surface for electrical connection interfaces:
+// power delivery ports and signal ports with analog/digital/differential kinds.
+//
+// Reference: docs/prds/v0_6/stdlib-reconstruction.md task β, §11.4.
+//
+// Deviations from §11 spec (forced by current language scope):
+//   1. `impedance` carries the Resistance/Ω dimension. Reify has no distinct
+//      `Impedance` named dimension in reify-core/src/dimension.rs; electrical
+//      impedance is dimensionally identical to resistance (kg·m²·s⁻³·A⁻²).
+//      Using `Resistance` directly is safe — it is a named dim valid in param
+//      position like Voltage/Current. The param name `impedance` conveys intent.
+//   2. Traits are NOT `pub`, matching the io.ri/process.ri convention.
+//   3. No `#no_prelude` pragma. std.ports.electrical refines Port from
+//      std.ports (inter-stdlib dependency), so the growing-prelude sequence
+//      in stdlib_loader.rs must include std.ports before this module. Adding
+//      `#no_prelude` would break both the refinement resolution and the
+//      stdlib_loader_tests bidirectional invariant test.
+
+// ── Signal kind enumeration ───────────────────────────────────────────────────
+
+// Classification of the signal carried by a signal port.
+// Analog    — continuous voltage/current signal.
+// Digital   — discrete high/low logic signal.
+// Differential — balanced pair differential signal (e.g. RS-485, CAN).
+enum SignalKind { Analog, Digital, Differential }
+
+// ── Electrical port base ──────────────────────────────────────────────────────
+
+// Base trait for any electrical connection interface.
+// Inherits `direction` from Port via refinement.
+// Body is empty — conformers supply Port's direction requirement directly.
+trait ElectricalPort : Port {}
+
+// ── Power port ────────────────────────────────────────────────────────────────
+
+// Electrical power delivery port.
+// voltage : Voltage — nominal operating voltage of the port (V).
+// max_current : Current — maximum continuous current the port can carry (A).
+trait PowerPort : ElectricalPort {
+    param voltage : Voltage
+    param max_current : Current
+}
+
+// ── Signal port ───────────────────────────────────────────────────────────────
+
+// Electrical signal port — typed by signal kind and characteristic impedance.
+// signal_kind : SignalKind — Analog, Digital, or Differential.
+// impedance : Resistance — characteristic port impedance (Ω).
+//   Uses the Resistance dimension (no distinct Impedance named dim — see
+//   deviation #1 in header).
+trait SignalPort : ElectricalPort {
+    param signal_kind : SignalKind
+    param impedance : Resistance
+}

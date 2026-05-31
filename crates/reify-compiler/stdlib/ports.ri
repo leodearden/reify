@@ -1,0 +1,31 @@
+// Stdlib: Port Interfaces — Directionality, Port
+// Provides the base trait surface for representing directional port interfaces
+// on parametric structures (connectors, interfaces, joints).
+//
+// Reference: docs/prds/v0_6/stdlib-reconstruction.md task α.
+//
+// Deviations from §11 spec (forced by current language scope):
+//   1. `Directionality` mirrors the Rust `PortDirection` enum at
+//      reify-core/src/primitives.rs:11 (In/Out/Bidi). The DSL enum is declared
+//      WITHOUT `pub`, matching the io.ri/process.ri convention.
+//   2. No `#no_prelude` pragma. std.ports is a general-purpose stdlib module
+//      with no inter-module dependencies that would require prelude isolation;
+//      adding the pragma would violate the stdlib_loader_tests invariant that
+//      only {std/units, std/materials/mechanical, std/analysis, std/tolerancing}
+//      may carry it.
+
+// ── Enumerations ─────────────────────────────────────────────────────────────
+
+// Direction of a port connection.
+// In  — data/material/energy flows INTO this structure.
+// Out — data/material/energy flows OUT OF this structure.
+// Bidi — bidirectional flow (e.g. mechanical shaft, hydraulic line).
+enum Directionality { In, Out, Bidi }
+
+// ── Base port trait ───────────────────────────────────────────────────────────
+
+// Base trait for any port interface on a parametric structure.
+// direction: which way the port is oriented (In/Out/Bidi).
+trait Port {
+    param direction : Directionality
+}

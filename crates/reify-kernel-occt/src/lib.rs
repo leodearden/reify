@@ -1074,6 +1074,40 @@ impl OcctKernel {
         })
     }
 
+    /// Signed curvature of an edge at the closest point on the edge's underlying
+    /// curve to the world-space query point `(px, py, pz)` (in metres).
+    ///
+    /// Delegates to `occt::curve_curvature_at` which:
+    ///   (a) extracts the underlying `Geom_Curve` from the edge via
+    ///       `BRep_Tool::Curve(edge, f, l)`,
+    ///   (b) projects `(px, py, pz)` onto [f, l] via `GeomAPI_ProjectPointOnCurve`,
+    ///   (c) evaluates curvature at the projected parameter via `BRepLProp_CLProps`.
+    ///
+    /// Sign follows the Frenet frame (positive toward principal normal). For a
+    /// full circle in the XY plane OCCT returns κ > 0.
+    ///
+    /// Returns `Err(QueryError::InvalidHandle)` if `handle` is unknown.
+    /// Returns `Err(QueryError::QueryFailed)` if the shape is not an edge, has
+    /// no underlying curve, projection fails, or the tangent is undefined.
+    pub fn curve_curvature_at(
+        &self,
+        handle: GeometryHandleId,
+        px: f64,
+        py: f64,
+        pz: f64,
+    ) -> Result<f64, QueryError> {
+        let s = self
+            .get_shape(handle)
+            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        if !px.is_finite() || !py.is_finite() || !pz.is_finite() {
+            return Err(QueryError::QueryFailed(
+                "curve_curvature_at: query point coordinates must be finite".into(),
+            ));
+        }
+        ffi::ffi::curve_curvature_at(s, px, py, pz)
+            .map_err(|e| QueryError::QueryFailed(e.to_string()))
+    }
+
     /// Test whether the query point `(px, py, pz)` lies on the BREP boundary
     /// (face/edge/vertex) of the shape identified by `handle`, within `tolerance`.
     ///
@@ -2697,6 +2731,20 @@ impl OcctKernel {
             GeometryQuery::FaceNormalAt { handle, px, py, pz } => {
                 let [x, y, z] = self.surface_normal_at_point(*handle, *px, *py, *pz)?;
                 Ok(Value::String(format!("{{\"x\":{x},\"y\":{y},\"z\":{z}}}")))
+            }
+            // KGQ-μ: curve curvature at a world point — implementation added by step-4.
+            GeometryQuery::CurveCurvatureAt { handle, px, py, pz } => {
+                self.curve_curvature_at(*handle, *px, *py, *pz).map(Value::Real)
+            }
+            // KGQ-μ: surface principal curvatures at (u,v) — returns nested
+            // Value::List [[kappa_max, 0.0], [0.0, kappa_min]] (InertiaTensor wire format).
+            GeometryQuery::SurfaceCurvatureAt { handle, u, v } => {
+                let c = self.curvature_at(*handle, *u, *v)?;
+                // Diagonal principal-curvature matrix: trace/2 = mean H, det = Gaussian K.
+                // Encoding: outer List of rows, each row a List of Values.
+                let row0 = Value::List(vec![Value::Real(c.kappa_max), Value::Real(0.0)]);
+                let row1 = Value::List(vec![Value::Real(0.0), Value::Real(c.kappa_min)]);
+                Ok(Value::List(vec![row0, row1]))
             }
         }
     }

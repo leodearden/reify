@@ -2518,6 +2518,7 @@ fn mode_shape_frame_serde_round_trip_with_exact_key_names() {
         mode_index: 2,
         phase: 0.75_f32,
         displaced_positions: vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0],
+        eigenvalue: None, // base-frame case; None must be omitted from wire (step-1)
     };
 
     // (a) Serialize.
@@ -2560,4 +2561,93 @@ fn mode_shape_frame_serde_round_trip_with_exact_key_names() {
         vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0],
         "displaced_positions must survive round-trip"
     );
+}
+
+// ── task-4072 step-1: ModeShapeFrame eigenvalue field serde contract ──────────
+
+/// (a) PEAK frame: `eigenvalue: Some(1234.5)` must serialize with the
+/// `"eigenvalue"` key present and the value must be exactly 4 top-level keys.
+/// Also round-trips back to an equal struct.
+///
+/// **RED at step-1**: compile-fails because `ModeShapeFrame` has no `eigenvalue`
+/// field yet. GREEN after step-2 adds the field to `types.rs`.
+#[test]
+fn mode_shape_frame_peak_eigenvalue_serializes_with_4_keys() {
+    use crate::types::ModeShapeFrame;
+    use serde_json::json;
+
+    let frame = ModeShapeFrame {
+        mode_index: 1,
+        phase: 1.0_f32,
+        displaced_positions: vec![0.1_f32, 0.0, 0.0],
+        eigenvalue: Some(1234.5_f64),
+    };
+
+    let v = serde_json::to_value(&frame)
+        .expect("ModeShapeFrame (peak) must serialize without error");
+
+    // "eigenvalue" key present with correct value.
+    assert_eq!(
+        v["eigenvalue"],
+        json!(1234.5_f64),
+        "eigenvalue must be serialized as a JSON number"
+    );
+
+    // Exactly 4 top-level keys (mode_index, phase, displaced_positions, eigenvalue).
+    let obj = v.as_object().unwrap();
+    assert_eq!(
+        obj.len(),
+        4,
+        "peak ModeShapeFrame must have exactly 4 JSON keys; got {:?}",
+        obj.keys().collect::<Vec<_>>()
+    );
+
+    // Round-trip.
+    let rt: ModeShapeFrame = serde_json::from_value(v)
+        .expect("peak ModeShapeFrame must deserialize from its own JSON");
+    assert_eq!(rt.eigenvalue, Some(1234.5_f64), "eigenvalue must survive round-trip");
+    assert_eq!(rt.mode_index, 1);
+    assert!((rt.phase - 1.0_f32).abs() < f32::EPSILON);
+}
+
+/// (b) BASE frame: `eigenvalue: None` must serialize WITHOUT the `"eigenvalue"`
+/// key (exactly 3 top-level keys) due to `#[serde(skip_serializing_if = "Option::is_none")]`.
+/// Deserializing a 3-key payload back must yield `eigenvalue: None` via
+/// `#[serde(default)]`.
+///
+/// **RED at step-1**: compile-fails for the same reason as (a).
+#[test]
+fn mode_shape_frame_base_eigenvalue_none_omits_key() {
+    use crate::types::ModeShapeFrame;
+
+    let frame = ModeShapeFrame {
+        mode_index: 0,
+        phase: 0.0_f32,
+        displaced_positions: vec![0.0_f32, 0.0, 0.0],
+        eigenvalue: None,
+    };
+
+    let v = serde_json::to_value(&frame)
+        .expect("base ModeShapeFrame must serialize without error");
+
+    // The "eigenvalue" key must be absent.
+    let obj = v.as_object().unwrap();
+    assert!(
+        !obj.contains_key("eigenvalue"),
+        "eigenvalue: None must be omitted from wire (skip_serializing_if); got keys: {:?}",
+        obj.keys().collect::<Vec<_>>()
+    );
+
+    // Exactly 3 keys.
+    assert_eq!(
+        obj.len(),
+        3,
+        "base ModeShapeFrame must have exactly 3 JSON keys; got {:?}",
+        obj.keys().collect::<Vec<_>>()
+    );
+
+    // Round-trip: a 3-key JSON payload must deserialize with eigenvalue=None.
+    let rt: ModeShapeFrame = serde_json::from_value(v)
+        .expect("base ModeShapeFrame must deserialize from 3-key JSON");
+    assert_eq!(rt.eigenvalue, None, "absent 'eigenvalue' key must deserialize to None");
 }

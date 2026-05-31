@@ -16,8 +16,12 @@
 #                                  When DF_VERIFY_ROLE=merge and no explicit --profile
 #                                  is given, defaults to 'both' automatically so the
 #                                  orchestrator merge path gets release coverage.
-#   --scope   all|staged           all     = verify everything (orchestrator / merges).
+#   --scope   all|staged|branch    all     = verify everything (orchestrator / merges).
 #                                  staged  = scope by `git diff --cached` (hook fast path).
+#                                  branch  = scope by merge-base(main,HEAD) → working tree;
+#                                            tracked changes only (committed, staged, unstaged
+#                                            tracked modifications — untracked new files not
+#                                            classified). Fails wide to all on error.
 #                                  Default: all.
 #   --include-infra                Also run the cheap static infra checks
 #                                  (sync_comments / run_all on the test side;
@@ -81,7 +85,7 @@ fi
 source "$SCRIPT_DIR/occt-scope-lib.sh"
 
 usage() {
-    sed -n '2,46p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,48p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 # ---------------------------------------------------------------------------
@@ -256,8 +260,8 @@ fi
 case "$PROFILE" in debug|release|both) ;; *)
     echo "verify.sh: ERROR — invalid --profile '$PROFILE' (want debug|release|both)" >&2; exit 64 ;;
 esac
-case "$SCOPE" in all|staged) ;; *)
-    echo "verify.sh: ERROR — invalid --scope '$SCOPE' (want all|staged)" >&2; exit 64 ;;
+case "$SCOPE" in all|staged|branch) ;; *)
+    echo "verify.sh: ERROR — invalid --scope '$SCOPE' (want all|staged|branch)" >&2; exit 64 ;;
 esac
 DF_VERIFY_ROLE="${DF_VERIFY_ROLE:-task}"
 # Role-based PROFILE default: when no explicit --profile was given and the
@@ -309,14 +313,28 @@ fi
 # merge result, not a curated stage), so force a full verification. Detected via
 # the git-dir-relative MERGE_HEAD so it works correctly inside linked worktrees.
 _MERGE_HEAD="$(git -C "$REPO_ROOT" rev-parse --git-path MERGE_HEAD 2>/dev/null || echo '')"
-if [ -n "$_MERGE_HEAD" ] && [ -f "$_MERGE_HEAD" ] && [ "$SCOPE" = "staged" ]; then
-    echo "verify.sh: MERGE_HEAD present — forcing --scope all (merge index is not a curated stage)" >&2
+if [ -n "$_MERGE_HEAD" ] && [ -f "$_MERGE_HEAD" ] && [ "$SCOPE" != "all" ]; then
+    echo "verify.sh: MERGE_HEAD present — forcing --scope all (merge in progress)" >&2
     SCOPE="all"
 fi
 
 # Run all relative-path commands from the repo root, matching how both the
 # orchestrator (project_root) and the git hook ($ROOT) invoke verification.
 cd "$REPO_ROOT"
+
+# --scope branch: resolve merge-base(main, HEAD) -> working tree diff.
+# Fail WIDE (contract C5): detached HEAD / missing local 'main' ref / any
+# git failure forces SCOPE=all (full plan) — under-verify ships breakage,
+# over-verify just wastes CPU. Assignment inside `if` test keeps set -e clean.
+_MERGE_BASE=""
+if [ "$SCOPE" = "branch" ]; then
+    if _MERGE_BASE="$(git -C "$REPO_ROOT" merge-base main HEAD 2>/dev/null)" && [ -n "$_MERGE_BASE" ]; then
+        :
+    else
+        echo "verify.sh: WARNING — --scope branch could not resolve 'git merge-base main HEAD' (detached HEAD / missing local main ref / merge-base failure) — failing WIDE to --scope all (contract C5)" >&2
+        SCOPE="all"
+    fi
+fi
 
 # Action → which check families run.
 case "$ACTION" in
@@ -393,14 +411,34 @@ decide_scope() {
         return
     fi
 
-    # --scope staged: classify staged files (added/copied/modified/renamed),
-    # ignoring the agent scratch dir. Map each path to its impact:
+    # Classify the changed files for staged/branch scope, ignoring the agent
+    # scratch dir (.task/). Source depends on scope:
+    #   staged: git diff --cached (added/copied/modified/renamed index entries)
+    #   branch: git diff "$_MERGE_BASE" (working tree vs merge-base(main,HEAD);
+    #           tracked changes only — committed, staged, unstaged tracked
+    #           modifications; untracked new files are not included)
+    # Map each path to its impact:
     #   rust+gui+gate   workspace-global or OCCT-touching crate change
     #   rust+gui        a non-OCCT Rust crate / Tauri crate change (Rust ⊇ GUI)
     #   gui             frontend-only TS change (Rust ⊥ GUI)
     #   ignore          docs / markdown / yaml config
     #   conservative    anything unrecognised -> treat as rust+gui+gate
     local rust=0 gui=0 gate=0 f crate
+    # Determine the changed-file list up front. For branch scope, check git diff's
+    # exit status explicitly: if it fails after merge-base resolution (e.g. corrupt
+    # object), fail WIDE rather than silently classifying nothing (contract C5).
+    # The staged path keeps || true to absorb grep's harmless "no matches" exit-1.
+    local _files="" _diff_out=""
+    if [ "$SCOPE" = "branch" ]; then
+        if ! _diff_out="$(git -C "$REPO_ROOT" diff --name-only --diff-filter=ACMR "$_MERGE_BASE")"; then
+            echo "verify.sh: WARNING — --scope branch git diff failed — failing WIDE to --scope all (contract C5)" >&2
+            RUN_RUST=1; RUN_GUI=1; RUN_OCCT_GATE=1
+            return
+        fi
+        _files="$(grep -v '^\.task/' <<< "$_diff_out" || true)"
+    else
+        _files="$(git -C "$REPO_ROOT" diff --cached --name-only --diff-filter=ACMR | grep -v '^\.task/' || true)"
+    fi
     while IFS= read -r f; do
         [ -z "$f" ] && continue
         case "$f" in
@@ -433,7 +471,7 @@ decide_scope() {
                 rust=1; gui=1; gate=1
                 ;;
         esac
-    done < <(git -C "$REPO_ROOT" diff --cached --name-only --diff-filter=ACMR | grep -v '^\.task/' || true)
+    done <<< "$_files"
 
     RUN_RUST=$rust
     # Any Rust change implies the (fast) GUI checks too.
@@ -537,8 +575,8 @@ build_plan() {
     # GUI ecosystem (npm). Rust changes imply these too; they are fast. Only
     # meaningful when there is a GUI check to run — the GUI has a test side
     # (npm test) and a lint side (npm run typecheck) but no `cargo check`
-    # analogue, so a pure typecheck action skips it entirely (matching the
-    # orchestrator's cargo-check-only type_check_command).
+    # analogue, so a pure typecheck action skips it entirely (verify.sh's own
+    # `typecheck` action is cargo-check-only; the GUI ecosystem has no equivalent).
     if [ "$RUN_GUI" -eq 1 ] && { [ "$DO_TEST" -eq 1 ] || [ "$DO_LINT" -eq 1 ]; }; then
         local gui_inner="npm ci"
         [ "$DO_LINT" -eq 1 ] && gui_inner+=" && npm run typecheck"

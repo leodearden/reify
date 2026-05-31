@@ -214,6 +214,19 @@ impl OcctKernel {
         Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
     }
 
+    /// Stub curve-curvature-at probe — always errors because OCCT is unavailable.
+    /// Mirrors the real `OcctKernel::curve_curvature_at` signature so call sites
+    /// compile under both `has_occt` and `!has_occt`.
+    pub fn curve_curvature_at(
+        &self,
+        _handle: GeometryHandleId,
+        _px: f64,
+        _py: f64,
+        _pz: f64,
+    ) -> Result<f64, QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
+    }
+
     /// Stub point-on-shape membership probe — always errors because OCCT is unavailable.
     /// Mirrors the real `OcctKernel::point_on_shape` signature so call sites
     /// compile under both `has_occt` and `!has_occt`.

@@ -21,6 +21,10 @@ pub(crate) fn check_trait_conformance(
     functions: &[CompiledFunction],
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
+    // task 3939 δ: out-param receiving the resolved assoc-fn table, populated by
+    // `check_phase_resolve_assoc_fns` (step-8). entity.rs stores it on the
+    // conformer's TopologyTemplate (step-12).
+    assoc_fns_out: &mut Vec<CompiledAssocFn>,
 ) {
     let (structure_param_members, structure_let_members, structure_constraint_labels) =
         check_phase_resolve_structure_members(
@@ -44,6 +48,11 @@ pub(crate) fn check_trait_conformance(
         .chain(structure_param_members.iter())
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
+
+    // Derive the structure's own assoc-fn signatures (task 3939 δ) so phase 5
+    // can exact-match a provided `fn` override against its trait requirement.
+    let structure_fn_sigs =
+        collect_structure_assoc_fn_sigs(structure, alias_registry, structure_names, trait_names);
 
     let ctx = check_phase_collect_trait_bounds(
         structure,
@@ -77,7 +86,25 @@ pub(crate) fn check_trait_conformance(
         &structure_param_members,
         &structure_let_members,
         &available_defaults,
+        &structure_fn_sigs,
         diagnostics,
+    );
+
+    // task 3939 δ: resolve the override-or-injected-default assoc-fn table.
+    // Runs after phase 5 (satisfaction checks) but is independent of default
+    // injection — it compiles fn bodies into `assoc_fns_out`, it does not touch
+    // value cells / constraints.
+    check_phase_resolve_assoc_fns(
+        &ctx,
+        structure,
+        enum_defs,
+        functions,
+        alias_registry,
+        structure_names,
+        trait_names,
+        &structure_fn_sigs,
+        diagnostics,
+        assoc_fns_out,
     );
 
     check_phase_inject_defaults(
@@ -768,15 +795,387 @@ mod tests {
     /// Run `check_trait_conformance` against the given traits and structure, returning all
     /// diagnostics emitted.
     ///
-    /// Centralises the ~20-line scaffolding (scope/value_cells/constraints init, registry
-    /// construction, alias_registry, the call itself) that would otherwise be repeated
-    /// verbatim in every conformance unit test.  Each test only needs to build its trait
-    /// and structure fixtures and then assert on the returned `Vec<Diagnostic>`.
+    /// Thin wrapper over [`run_conformance_with_assoc_fns`] that discards the
+    /// populated assoc-fn table — the two differ ONLY in whether they surface
+    /// that table, so the shared ~20-line scaffolding (scope/value_cells/
+    /// constraints init, registry construction, alias_registry, the 13-arg call
+    /// itself) lives in exactly one place and a future signature change to
+    /// `check_trait_conformance` is edited once. Each test only needs to build
+    /// its trait and structure fixtures and then assert on the returned
+    /// `Vec<Diagnostic>`.
     fn run_conformance(
         traits: &[CompiledTrait],
         structure_def: &reify_ast::StructureDef,
         enum_defs: &[reify_ir::EnumDef],
     ) -> Vec<Diagnostic> {
+        run_conformance_with_assoc_fns(traits, structure_def, enum_defs).0
+    }
+
+    /// RED (task 3939 δ, step-3): a required associated function that the
+    /// conforming structure does not provide must surface an
+    /// `E_TRAIT_FN_NOT_SATISFIED` (`DiagnosticCode::TraitFnNotSatisfied`)
+    /// diagnostic naming the declaring trait and the missing fn.
+    ///
+    /// Lives here (not in `checker.rs`) because the `run_conformance` harness
+    /// and the `pub(crate) check_trait_conformance` entry point are in this
+    /// module — integration-test crates can only see `pub` items.
+    ///
+    /// Fails until step-4 wires the phase-5 `RequirementKind::Fn` satisfaction
+    /// check (today `collect_all_requirements` drops Fn requirements and the
+    /// phase-5 arm is a placeholder `continue`, so zero diagnostics fire).
+    #[test]
+    fn required_assoc_fn_not_provided_emits_trait_fn_not_satisfied() {
+        // Trait `Shape` requires a bodyless `fn req(self) -> Real`.
+        let shape = CompiledTrait {
+            name: "Shape".to_string(),
+            is_pub: false,
+            doc: None,
+            type_params: vec![],
+            refinements: vec![],
+            required_members: vec![TraitRequirement {
+                name: "req".to_string(),
+                kind: RequirementKind::Fn(CompiledAssocFnSig {
+                    name: "req".to_string(),
+                    has_self: true,
+                    params: vec![],
+                    return_type: Type::Real,
+                }),
+                span: SourceSpan::empty(0),
+            }],
+            defaults: vec![],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+
+        // Structure `S : Shape { }` provides NO `fn req` member.
+        let structure_def = reify_ast::StructureDef {
+            name: "S".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![reify_ast::TraitBoundRef {
+                name: "Shape".to_string(),
+                type_args: vec![],
+                span: SourceSpan::empty(0),
+            }],
+            members: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+            annotations: vec![],
+        };
+
+        let diagnostics = run_conformance(&[shape], &structure_def, &[]);
+
+        let fn_not_satisfied: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::TraitFnNotSatisfied))
+            .collect();
+        assert_eq!(
+            fn_not_satisfied.len(),
+            1,
+            "expected exactly one TraitFnNotSatisfied diagnostic for the missing \
+             required assoc fn 'req'; got: {:?}",
+            diagnostics
+        );
+        let msg = &fn_not_satisfied[0].message;
+        assert!(
+            msg.contains("Shape"),
+            "diagnostic should name the declaring trait 'Shape'; got: {}",
+            msg
+        );
+        assert!(
+            msg.contains("req"),
+            "diagnostic should name the missing fn 'req'; got: {}",
+            msg
+        );
+    }
+
+    // --- task 3939 δ step-5/6 fixtures: assoc-fn signature exact-match ---
+
+    /// The implicit `self` receiver: `is_self == true` with the sentinel `self`
+    /// named type (per decl.rs:818-823). Excluded from the derived signature's
+    /// `params` and recorded as `has_self`.
+    fn assoc_self_param() -> reify_ast::FnParam {
+        reify_ast::FnParam {
+            name: "self".to_string(),
+            is_self: true,
+            type_expr: reify_ast::TypeExpr {
+                kind: reify_ast::TypeExprKind::Named {
+                    name: "self".to_string(),
+                    type_args: vec![],
+                },
+                span: SourceSpan::empty(0),
+            },
+            default: None,
+            span: SourceSpan::empty(0),
+        }
+    }
+
+    /// A non-self param `name : type_name` (bare named type).
+    fn assoc_named_param(name: &str, type_name: &str) -> reify_ast::FnParam {
+        reify_ast::FnParam {
+            name: name.to_string(),
+            is_self: false,
+            type_expr: reify_ast::TypeExpr {
+                kind: reify_ast::TypeExprKind::Named {
+                    name: type_name.to_string(),
+                    type_args: vec![],
+                },
+                span: SourceSpan::empty(0),
+            },
+            default: None,
+            span: SourceSpan::empty(0),
+        }
+    }
+
+    /// A structure-body `fn <name>(<params>) -> <return_type_name> { 0.0 }` member.
+    /// The trivial body is irrelevant to signature matching — δ compares only the
+    /// receiver / param / return signature.
+    fn assoc_fn_member(
+        name: &str,
+        params: Vec<reify_ast::FnParam>,
+        return_type_name: &str,
+    ) -> reify_ast::MemberDecl {
+        reify_ast::MemberDecl::Fn(reify_ast::FnDef {
+            name: name.to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            params,
+            return_type: Some(reify_ast::TypeExpr {
+                kind: reify_ast::TypeExprKind::Named {
+                    name: return_type_name.to_string(),
+                    type_args: vec![],
+                },
+                span: SourceSpan::empty(0),
+            }),
+            body: Some(reify_ast::FnBody {
+                let_bindings: vec![],
+                result_expr: reify_ast::Expr {
+                    kind: reify_ast::ExprKind::NumberLiteral {
+                        value: 0.0,
+                        is_real: true,
+                    },
+                    span: SourceSpan::empty(0),
+                },
+            }),
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+            annotations: vec![],
+        })
+    }
+
+    /// Build trait `Shape` requiring a single bodyless `fn <fn_name>(self) -> Real`.
+    fn shape_requiring_fn(fn_name: &str) -> CompiledTrait {
+        CompiledTrait {
+            name: "Shape".to_string(),
+            is_pub: false,
+            doc: None,
+            type_params: vec![],
+            refinements: vec![],
+            required_members: vec![TraitRequirement {
+                name: fn_name.to_string(),
+                kind: RequirementKind::Fn(CompiledAssocFnSig {
+                    name: fn_name.to_string(),
+                    has_self: true,
+                    params: vec![],
+                    return_type: Type::Real,
+                }),
+                span: SourceSpan::empty(0),
+            }],
+            defaults: vec![],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        }
+    }
+
+    /// Build structure `S : Shape { <members> }`.
+    fn structure_s_conforming_shape(
+        members: Vec<reify_ast::MemberDecl>,
+    ) -> reify_ast::StructureDef {
+        reify_ast::StructureDef {
+            name: "S".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![reify_ast::TraitBoundRef {
+                name: "Shape".to_string(),
+                type_args: vec![],
+                span: SourceSpan::empty(0),
+            }],
+            members,
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+            annotations: vec![],
+        }
+    }
+
+    /// RED (task 3939 δ, step-5): a provided assoc fn whose RETURN TYPE differs
+    /// from the trait requirement must surface `TraitFnSignatureMismatch`
+    /// (§8.8 same-name-different-type) and must NOT also surface
+    /// `TraitFnNotSatisfied` — the fn IS present, it is just mis-typed.
+    ///
+    /// Fails until step-6 adds exact-match signature comparison (today the
+    /// phase-5 Fn arm checks the fn NAME only, so a wrong-typed `area` is
+    /// silently treated as satisfying the requirement).
+    #[test]
+    fn provided_assoc_fn_with_wrong_return_type_emits_signature_mismatch() {
+        let shape = shape_requiring_fn("area");
+        // Structure provides `fn area(self) -> Length { 0.0 }` (Length != Real).
+        let structure_def = structure_s_conforming_shape(vec![assoc_fn_member(
+            "area",
+            vec![assoc_self_param()],
+            "Length",
+        )]);
+
+        let diagnostics = run_conformance(&[shape], &structure_def, &[]);
+
+        let mismatch: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::TraitFnSignatureMismatch))
+            .collect();
+        assert_eq!(
+            mismatch.len(),
+            1,
+            "expected exactly one TraitFnSignatureMismatch for the wrong-return-type \
+             provided fn 'area'; got: {:?}",
+            diagnostics
+        );
+        assert!(
+            mismatch[0].message.contains("area"),
+            "signature-mismatch diagnostic should name the fn 'area'; got: {}",
+            mismatch[0].message
+        );
+
+        let not_satisfied: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::TraitFnNotSatisfied))
+            .collect();
+        assert!(
+            not_satisfied.is_empty(),
+            "the fn 'area' is present (just mis-typed) — TraitFnNotSatisfied must NOT \
+             fire; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// RED (task 3939 δ, step-5): a provided assoc fn with the wrong ARITY (an
+    /// extra non-self param) is also a signature mismatch. Same assertions as
+    /// the return-type case. Fails until step-6.
+    #[test]
+    fn provided_assoc_fn_with_wrong_arity_emits_signature_mismatch() {
+        let shape = shape_requiring_fn("area");
+        // Structure provides `fn area(self, extra: Real) -> Real { 0.0 }`
+        // (params [Real] != the required []).
+        let structure_def = structure_s_conforming_shape(vec![assoc_fn_member(
+            "area",
+            vec![assoc_self_param(), assoc_named_param("extra", "Real")],
+            "Real",
+        )]);
+
+        let diagnostics = run_conformance(&[shape], &structure_def, &[]);
+
+        let mismatch: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::TraitFnSignatureMismatch))
+            .collect();
+        assert_eq!(
+            mismatch.len(),
+            1,
+            "expected exactly one TraitFnSignatureMismatch for the wrong-arity \
+             provided fn 'area'; got: {:?}",
+            diagnostics
+        );
+        assert!(
+            mismatch[0].message.contains("area"),
+            "signature-mismatch diagnostic should name the fn 'area'; got: {}",
+            mismatch[0].message
+        );
+
+        let not_satisfied: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::TraitFnNotSatisfied))
+            .collect();
+        assert!(
+            not_satisfied.is_empty(),
+            "the fn 'area' is present (just wrong arity) — TraitFnNotSatisfied must \
+             NOT fire; got: {:?}",
+            diagnostics
+        );
+    }
+
+    // --- task 3939 δ step-7/8 fixtures: assoc-fn table population ---
+
+    /// Build a body-carrying `fn <name>(<params>) -> <return_type_name> { <value> }`
+    /// `FnDef`. The distinct `value` lets the override/default tests assert that
+    /// override and default bodies compile to different content hashes.
+    fn assoc_fn_def(
+        name: &str,
+        params: Vec<reify_ast::FnParam>,
+        return_type_name: &str,
+        value: f64,
+    ) -> reify_ast::FnDef {
+        reify_ast::FnDef {
+            name: name.to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            params,
+            return_type: Some(reify_ast::TypeExpr {
+                kind: reify_ast::TypeExprKind::Named {
+                    name: return_type_name.to_string(),
+                    type_args: vec![],
+                },
+                span: SourceSpan::empty(0),
+            }),
+            body: Some(reify_ast::FnBody {
+                let_bindings: vec![],
+                result_expr: reify_ast::Expr {
+                    kind: reify_ast::ExprKind::NumberLiteral {
+                        value,
+                        is_real: true,
+                    },
+                    span: SourceSpan::empty(0),
+                },
+            }),
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+            annotations: vec![],
+        }
+    }
+
+    /// Trait `Shape` with a single default-providing assoc fn
+    /// `fn <fn_name>(self) -> Real { <value> }` and NO required members.
+    fn shape_with_default_fn(fn_name: &str, value: f64) -> CompiledTrait {
+        CompiledTrait {
+            name: "Shape".to_string(),
+            is_pub: false,
+            doc: None,
+            type_params: vec![],
+            refinements: vec![],
+            required_members: vec![],
+            defaults: vec![TraitDefault {
+                name: Some(fn_name.to_string()),
+                kind: DefaultKind::Fn(assoc_fn_def(fn_name, vec![assoc_self_param()], "Real", value)),
+                span: SourceSpan::empty(0),
+            }],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        }
+    }
+
+    /// Sibling of [`run_conformance`] that also surfaces the populated assoc-fn
+    /// table so the table-population tests can assert on its contents.
+    fn run_conformance_with_assoc_fns(
+        traits: &[CompiledTrait],
+        structure_def: &reify_ast::StructureDef,
+        enum_defs: &[reify_ir::EnumDef],
+    ) -> (Vec<Diagnostic>, Vec<CompiledAssocFn>) {
         let entity_ref = EntityDefRef::from(structure_def);
         let trait_registry: HashMap<String, &CompiledTrait> =
             traits.iter().map(|t| (t.name.clone(), t)).collect();
@@ -789,6 +1188,7 @@ mod tests {
         let functions: &[CompiledFunction] = &[];
         let alias_registry = TypeAliasRegistry::new();
         let mut diagnostics: Vec<Diagnostic> = vec![];
+        let mut assoc_fns: Vec<CompiledAssocFn> = vec![];
 
         check_trait_conformance(
             &entity_ref,
@@ -803,9 +1203,198 @@ mod tests {
             functions,
             &alias_registry,
             &mut diagnostics,
+            &mut assoc_fns,
         );
 
-        diagnostics
+        (diagnostics, assoc_fns)
+    }
+
+    /// RED (task 3939 δ, step-7a): a trait's default-providing assoc fn is
+    /// injected into the conformer's assoc-fn table when the structure does NOT
+    /// override it — `is_override == false`, keyed by `(trait, fn)`.
+    ///
+    /// Fails until step-8 wires `check_phase_resolve_assoc_fns` (today
+    /// `DefaultKind::Fn` defaults are dropped during the merge and no phase
+    /// populates the out-param, so the table is empty).
+    #[test]
+    fn default_assoc_fn_injected_into_table_when_not_overridden() {
+        let shape = shape_with_default_fn("area", 1.0);
+        let structure_def = structure_s_conforming_shape(vec![]); // no override
+
+        let (diagnostics, assoc_fns) =
+            run_conformance_with_assoc_fns(&[shape], &structure_def, &[]);
+
+        // A default-providing fn imposes no requirement, so conformance is clean.
+        assert!(
+            !diagnostics.iter().any(|d| {
+                d.code == Some(DiagnosticCode::TraitFnNotSatisfied)
+                    || d.code == Some(DiagnosticCode::TraitFnSignatureMismatch)
+            }),
+            "a default-providing assoc fn should conform cleanly; got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            assoc_fns.len(),
+            1,
+            "expected exactly one injected assoc-fn table entry; got: {:?}",
+            assoc_fns
+        );
+        let entry = &assoc_fns[0];
+        assert_eq!(entry.trait_name, "Shape", "entry should be keyed by the declaring trait");
+        assert_eq!(entry.fn_name, "area", "entry should be keyed by the fn name");
+        assert!(
+            !entry.is_override,
+            "a non-overridden default must have is_override == false; got: {:?}",
+            entry
+        );
+        assert_eq!(entry.function.name, "area");
+        assert_eq!(
+            entry.function.return_type,
+            Type::Real,
+            "the injected default's compiled return type should be Real"
+        );
+    }
+
+    /// RED (task 3939 δ, step-7b): when the structure overrides a trait's
+    /// default-providing assoc fn, the table entry is the OVERRIDE
+    /// (`is_override == true`) and its compiled `function.content_hash` differs
+    /// from the injected-default's (distinct body ⇒ distinct hash). Fails until
+    /// step-8.
+    #[test]
+    fn override_assoc_fn_beats_default_in_table() {
+        // Reference run: no override → the injected default body (1.0).
+        let s_default = structure_s_conforming_shape(vec![]);
+        let (_d0, assoc_default) =
+            run_conformance_with_assoc_fns(&[shape_with_default_fn("area", 1.0)], &s_default, &[]);
+        assert_eq!(assoc_default.len(), 1, "default run should populate one entry");
+        assert!(!assoc_default[0].is_override);
+
+        // Override run: structure provides `fn area(self) -> Real { 2.0 }`.
+        let s_override = structure_s_conforming_shape(vec![reify_ast::MemberDecl::Fn(
+            assoc_fn_def("area", vec![assoc_self_param()], "Real", 2.0),
+        )]);
+        let (_d1, assoc_override) =
+            run_conformance_with_assoc_fns(&[shape_with_default_fn("area", 1.0)], &s_override, &[]);
+        assert_eq!(assoc_override.len(), 1, "override run should populate one entry");
+        let entry = &assoc_override[0];
+        assert_eq!(entry.trait_name, "Shape");
+        assert_eq!(entry.fn_name, "area");
+        assert!(
+            entry.is_override,
+            "a structure-provided body must set is_override == true; got: {:?}",
+            entry
+        );
+
+        // override-beats-default: distinct body (2.0 vs 1.0) ⇒ distinct hash.
+        assert_ne!(
+            entry.function.content_hash, assoc_default[0].function.content_hash,
+            "the override body (2.0) must compile to a different content hash than \
+             the injected default body (1.0)"
+        );
+    }
+
+    /// Regression (task 3939 δ, reviewer amendment): overriding a trait's
+    /// default-providing assoc fn with a MISMATCHED signature must surface
+    /// `TraitFnSignatureMismatch` and keep the wrongly-typed override OUT of the
+    /// dispatch table. A default-only fn produces no `RequirementKind::Fn`, so
+    /// phase 5 never checks it — `check_phase_resolve_assoc_fns` is the sole
+    /// validation site (PRD §5.4 exact-match-for-overrides). Before the
+    /// amendment the bad override landed in the table with no diagnostic.
+    #[test]
+    fn override_of_default_assoc_fn_with_wrong_signature_emits_mismatch_and_skips_table() {
+        // Trait default `fn area(self) -> Real { 1.0 }`.
+        let shape = shape_with_default_fn("area", 1.0);
+        // Structure overrides with `fn area(self) -> Length { 0.0 }` (Length != Real).
+        let s_override = structure_s_conforming_shape(vec![assoc_fn_member(
+            "area",
+            vec![assoc_self_param()],
+            "Length",
+        )]);
+
+        let (diagnostics, assoc_fns) = run_conformance_with_assoc_fns(&[shape], &s_override, &[]);
+
+        let mismatch: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::TraitFnSignatureMismatch))
+            .collect();
+        assert_eq!(
+            mismatch.len(),
+            1,
+            "a default override with a wrong return type must emit exactly one \
+             TraitFnSignatureMismatch; got: {:?}",
+            diagnostics
+        );
+        assert!(
+            mismatch[0].message.contains("area"),
+            "signature-mismatch diagnostic should name the fn 'area'; got: {}",
+            mismatch[0].message
+        );
+        // The wrongly-typed override must NOT enter the dispatch table — task ζ
+        // would otherwise key dispatch on an entry inconsistent with the error.
+        assert!(
+            assoc_fns.is_empty(),
+            "a signature-mismatched default override must be kept out of the \
+             assoc-fn table; got: {:?}",
+            assoc_fns
+        );
+    }
+
+    /// Regression (task 3939 δ, reviewer amendment): a required-fn override whose
+    /// return annotation is UNRESOLVABLE must yield exactly one diagnostic — the
+    /// `UnresolvedType` from `compile_assoc_function` — with NO accompanying
+    /// `TraitFnSignatureMismatch`. The structure-derived sig carries `Type::Error`,
+    /// which `assoc_fn_sig_has_error` recognises so the otherwise-spurious mismatch
+    /// is suppressed (the sig "differs" only because resolution failed). Locks in
+    /// the documented anti-cascade contract (one root cause → one diagnostic) and
+    /// confirms the errored override is also kept out of the dispatch table.
+    #[test]
+    fn required_assoc_fn_override_with_unresolved_annotation_yields_single_diagnostic() {
+        // Trait requires bodyless `fn area(self) -> Real`.
+        let shape = shape_requiring_fn("area");
+        // Structure provides `fn area(self) -> Nonexistent { 0.0 }` — the return
+        // annotation does not resolve to any built-in / alias / structure / trait.
+        let s_override = structure_s_conforming_shape(vec![assoc_fn_member(
+            "area",
+            vec![assoc_self_param()],
+            "Nonexistent",
+        )]);
+
+        let (diagnostics, assoc_fns) = run_conformance_with_assoc_fns(&[shape], &s_override, &[]);
+
+        let unresolved: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::UnresolvedType))
+            .collect();
+        assert_eq!(
+            unresolved.len(),
+            1,
+            "the unresolved return annotation should produce exactly one \
+             UnresolvedType diagnostic; got: {:?}",
+            diagnostics
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.code == Some(DiagnosticCode::TraitFnSignatureMismatch)),
+            "the Type::Error sig must suppress a spurious TraitFnSignatureMismatch \
+             (anti-cascade: one root cause, one diagnostic); got: {:?}",
+            diagnostics
+        );
+        // The fn IS present (just mis-annotated), so absence is not the failure.
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.code == Some(DiagnosticCode::TraitFnNotSatisfied)),
+            "the fn 'area' is present — TraitFnNotSatisfied must NOT fire; got: {:?}",
+            diagnostics
+        );
+        // The errored override must not enter the dispatch table.
+        assert!(
+            assoc_fns.is_empty(),
+            "an errored / sig-mismatched required override must be kept out of the \
+             assoc-fn table; got: {:?}",
+            assoc_fns
+        );
     }
 
     /// Characterization test that enum-typed `param` and `let` members resolve to
@@ -1342,6 +1931,8 @@ mod tests {
             &empty_param_members,
             &empty_let_members,
             &available_defaults,
+            // No structure assoc fns in this test.
+            &HashMap::<String, CompiledAssocFnSig>::new(),
             &mut diagnostics,
         );
 
@@ -3170,6 +3761,8 @@ mod tests {
             &structure_param_members,
             &structure_let_members,
             &available_defaults,
+            // No structure assoc fns in this test.
+            &HashMap::<String, CompiledAssocFnSig>::new(),
             &mut diagnostics,
         );
 
@@ -3240,6 +3833,8 @@ mod tests {
             &structure_param_members,
             &structure_let_members,
             &available_defaults,
+            // No structure assoc fns in this test.
+            &HashMap::<String, CompiledAssocFnSig>::new(),
             &mut diagnostics,
         );
 
@@ -3310,6 +3905,8 @@ mod tests {
             &structure_param_members,
             &structure_let_members,
             &available_defaults,
+            // No structure assoc fns in this test.
+            &HashMap::<String, CompiledAssocFnSig>::new(),
             &mut diagnostics,
         );
 
@@ -3377,6 +3974,8 @@ mod tests {
             &structure_param_members,
             &structure_let_members,
             &available_defaults,
+            // No structure assoc fns in this test.
+            &HashMap::<String, CompiledAssocFnSig>::new(),
             &mut diagnostics,
         );
 
@@ -3439,6 +4038,8 @@ mod tests {
             &structure_param_members,
             &structure_let_members,
             &available_defaults,
+            // No structure assoc fns in this test.
+            &HashMap::<String, CompiledAssocFnSig>::new(),
             &mut diagnostics,
         );
 
@@ -3982,6 +4583,7 @@ mod tests {
             pragmas: vec![],
             match_arm_groups: vec![],
             forall_templates: vec![],
+            assoc_fns: vec![],
         }
     }
 

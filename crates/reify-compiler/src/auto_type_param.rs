@@ -2357,6 +2357,7 @@ mod helper_tests {
             pragmas: vec![],
             match_arm_groups: vec![],
             forall_templates: vec![],
+            assoc_fns: vec![],
         }
     }
 

@@ -524,15 +524,16 @@ pub struct Engine {
     /// Currently active purposes: maps purpose name → injected constraint IDs.
     /// Used by deactivate_purpose to remove the injected constraints.
     active_purposes: HashMap<String, Vec<ConstraintNodeId>>,
-    /// Per-purpose entity bindings: maps purpose name → bound entity_ref.
+    /// Per-purpose param bindings: maps purpose name → ordered list of `(param, entity)` pairs.
     /// Populated/cleared in lockstep with `active_purposes`. Required for
-    /// `recompute_tolerance_scope` (task 2647) — `active_purposes` only
+    /// `recompute_tolerance_scope` (task 2647 / task 4070) — `active_purposes` only
     /// records injected ConstraintNodeIds, but the tolerance-scope rebuild
-    /// needs the original `(purpose_name → entity_ref)` mapping. See
-    /// `crates/reify-eval/src/tolerance_scope.rs` and the design decision
-    /// "Track per-purpose bound entity_ref via a new sibling HashMap" in
-    /// `.task/plan.json`.
-    active_purpose_bindings: HashMap<String, String>,
+    /// needs the original per-param `(param → entity)` mapping. Storing the full
+    /// bindings slice (not a single entity) enables multi-param purposes to route
+    /// each `RepresentationWithin` constraint's tolerance to its own bound entity.
+    /// See `crates/reify-eval/src/tolerance_scope.rs` and the design decision
+    /// "Generalize to per-param Vec<(String,String)>" in `.task/plan.json`.
+    active_purpose_bindings: HashMap<String, Vec<(String, String)>>,
     /// Active tolerance scope: maps entity_ref → SI tolerance (metres).
     /// Rebuilt from scratch on every `activate_purpose` / `deactivate_purpose`
     /// call. The map's value at `entity_ref` is the *minimum* tolerance
@@ -544,6 +545,13 @@ pub struct Engine {
     /// Active optimization objectives injected by purposes.
     /// Maps purpose name → optimization objective.
     active_objective_map: HashMap<String, OptimizationObjective>,
+    /// Injected let-cell ids for each active purpose.
+    /// Maps purpose name → ordered list of injected `ValueCellId`s (one per let
+    /// in declaration order). Populated by `activate_purpose*` alongside
+    /// `active_purposes`; cleared by `deactivate_purpose`. Used by
+    /// `check_constraints_with_values` to overlay the evaluated let-cell values
+    /// onto the incoming `values` map (task 4009 δ).
+    active_purpose_let_cells: HashMap<String, Vec<ValueCellId>>,
     /// Template meta entries from the last eval() call.
     /// Maps template name → meta key/value pairs from the template's meta block.
     /// Populated during eval() so that edit_param() and other incremental paths

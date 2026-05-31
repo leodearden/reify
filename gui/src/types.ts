@@ -663,4 +663,7 @@ export interface ModeShapeFrame {
   phase: number;
   /** Flat XYZ array: [x0, y0, z0, x1, y1, z1, …], length 3·n_nodes. */
   displaced_positions: number[];
+  /** Buckling load multiplier λ for this mode (task 4072, GR-016).
+   * Present on peak frames (phase≈1.0); absent on the undeformed base frame. */
+  eigenvalue?: number;
 }

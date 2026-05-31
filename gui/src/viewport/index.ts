@@ -15,3 +15,5 @@ export { applyColormap, bakeColours, viridisLut, magmaLut, rainbowLut } from './
 export type { Palette, Range, ColormapOptions } from './colormap';
 export { createBucklingAnimator } from './bucklingAnimator';
 export type { BucklingAnimator } from './bucklingAnimator';
+export { computeModeThumbnail } from './modeThumbnail';
+export type { ModeThumbnail } from './modeThumbnail';

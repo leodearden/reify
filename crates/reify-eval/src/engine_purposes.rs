@@ -6,7 +6,7 @@ use crate::deps::ReverseDependencyIndex;
 use crate::graph::ValueCellNode;
 use reify_compiler::{ResolvedSchemaQuery, ValueCellKind};
 use reify_core::{ConstraintNodeId, ContentHash, Type, ValueCellId};
-use reify_ir::{CompiledExpr, CompiledExprKind, OptimizationObjective, PersistentMap};
+use reify_ir::{CompiledExpr, CompiledExprKind, DeterminacyState, OptimizationObjective, PersistentMap, Value, ValueMap};
 use std::sync::Arc;
 
 impl Engine {
@@ -159,8 +159,9 @@ impl Engine {
     /// Returns `true` if injection was performed, `false` on any early-return
     /// condition (purpose already active, not found, no eval state).
     ///
-    /// **Does NOT** rebuild infrastructure or record `active_purpose_bindings`
-    /// for multi-binding activations — callers handle both.
+    /// Records `active_purpose_bindings` unconditionally for ALL activations
+    /// (single- and multi-param alike); only infrastructure rebuild is left to
+    /// callers.
     pub(crate) fn activate_purpose_constraints_with_bindings_inner(
         &mut self,
         purpose_name: &str,
@@ -186,6 +187,12 @@ impl Engine {
         // - multi-binding  → ContentHash of sorted "{param}={entity}" pairs
         let token = purpose_binding_token(bindings);
         let purpose_entity = format!("purpose:{}@{}", purpose_name, token);
+
+        // Clone Arc handles BEFORE the &mut eval_state borrow so the closures
+        // below can use them without conflicting with the mutable state borrow.
+        // Mirrors rebuild_purpose_infrastructure's Arc::clone(&self.compiled_fields).
+        let functions = Arc::clone(&self.functions);
+        let meta_map = Arc::clone(&self.meta_map);
 
         // Get mutable access to the evaluation state.
         let state = match self.eval_state.as_mut() {
@@ -241,6 +248,122 @@ impl Engine {
             obj
         });
 
+        // Release the closure's borrow on state.snapshot.graph.value_cells so
+        // we can mutate it below for let-cell injection (task 4009 δ).
+        let _ = expand_placeholders;
+
+        // ── Let-cell injection (task 4009 δ) ─────────────────────────────────
+        //
+        // For each `let` in the purpose (in declaration order):
+        //   1. Clone + remap the compiled let expr (entity remap for params,
+        //      cell remap for earlier lets so forward-ref chains resolve).
+        //   2. Evaluate the remapped expr against the current snapshot values.
+        //   3. Inject a synthetic ValueCellNode into graph.value_cells.
+        //   4. Seed (value, determinacy) into snapshot.values and a local
+        //      values map so subsequent lets and constraint dispatch can read it.
+        //
+        // After injection, remap_cell rewrites let-references in constraints
+        // and the objective (compile-time `{purpose_name}::{let_name}` →
+        // injected `{purpose_entity}::__let_{name}`) so they resolve correctly.
+
+        // Build a local values map from the current snapshot so eval_expr can
+        // resolve earlier lets and entity params.  Skip the O(n) copy when the
+        // purpose has no lets at all — local_values is only read inside the loop.
+        let mut local_values = if purpose.lets.is_empty() {
+            ValueMap::new()
+        } else {
+            let mut v = ValueMap::new();
+            for (id, (val, _det)) in state.snapshot.values.iter() {
+                v.insert(id.clone(), val.clone());
+            }
+            v
+        };
+
+        // Accumulate (compile_id → injected_id) pairs for remap_cell below.
+        let mut let_remaps: Vec<(ValueCellId, ValueCellId)> = Vec::new();
+        let mut injected_let_ids: Vec<ValueCellId> = Vec::new();
+
+        for let_decl in &purpose.lets {
+            // Clone and remap the let expression.
+            let mut remapped_expr = let_decl.expr.clone();
+
+            // Apply per-param entity remap (same as constraints above).
+            for (param, entity) in bindings {
+                let from_stamp = format!("{}::{}", purpose_name, param);
+                remapped_expr.remap_entity(&from_stamp, entity);
+            }
+
+            // Apply remap_cell for earlier lets (so chained lets resolve).
+            for (compile_id, injected_id) in &let_remaps {
+                remapped_expr.remap_cell(compile_id, injected_id);
+            }
+
+            // Build the injected cell id: "{purpose_entity}::__let_{name}".
+            let injected_id =
+                ValueCellId::new(&purpose_entity, format!("__let_{}", let_decl.name));
+
+            // Evaluate the remapped expression against the current local values.
+            let val = reify_expr::eval_expr(
+                &remapped_expr,
+                &crate::eval_ctx_with_meta(&local_values, &functions, &meta_map)
+                    .with_determinacy(&state.snapshot.values),
+            );
+
+            // Determine the determinacy state of the evaluated value.
+            let det = if matches!(val, Value::Undef) {
+                DeterminacyState::Undetermined
+            } else {
+                DeterminacyState::Determined
+            };
+
+            // Inject a synthetic ValueCellNode into the evaluation graph.
+            state.snapshot.graph.value_cells.insert(
+                injected_id.clone(),
+                ValueCellNode {
+                    id: injected_id.clone(),
+                    kind: reify_compiler::ValueCellKind::Let,
+                    cell_type: remapped_expr.result_type.clone(),
+                    default_expr: Some(remapped_expr),
+                    content_hash: ContentHash::of_str(&format!(
+                        "purpose:{}:let:{}",
+                        purpose_name, let_decl.name
+                    )),
+                },
+            );
+
+            // Seed (value, determinacy) into snapshot.values and local_values so
+            // subsequent lets see this let's value during their own evaluation.
+            state
+                .snapshot
+                .values
+                .insert(injected_id.clone(), (val.clone(), det));
+            local_values.insert(injected_id.clone(), val);
+
+            // Record for constraint/objective remap_cell pass below.
+            let_remaps.push((let_decl.cell_id.clone(), injected_id.clone()));
+            injected_let_ids.push(injected_id);
+        }
+
+        // Rewrite let-references in constraints: compile-time cell id →
+        // injected cell id (renames member to __let_{name}).
+        for constraint in &mut rewritten_constraints {
+            for (compile_id, injected_id) in &let_remaps {
+                constraint.expr.remap_cell(compile_id, injected_id);
+            }
+        }
+
+        // Same rewrite for the objective expression.
+        let rewritten_objective = rewritten_objective.map(|mut obj| {
+            match &mut obj {
+                OptimizationObjective::Minimize(expr) | OptimizationObjective::Maximize(expr) => {
+                    for (compile_id, injected_id) in &let_remaps {
+                        expr.remap_cell(compile_id, injected_id);
+                    }
+                }
+            }
+            obj
+        });
+
         // Inject each constraint into the evaluation graph.
         let mut injected_ids = Vec::new();
         for (i, constraint) in rewritten_constraints.iter().enumerate() {
@@ -277,13 +400,23 @@ impl Engine {
                 .insert(purpose_name.to_string(), objective.clone());
         }
 
-        // Record the per-purpose entity binding ONLY for single-binding activations
-        // (byte-identical to today, C6). Multi-param tolerance-scope contribution
-        // and eval()-round-trip persistence are deferred (scope boundary documented
-        // in the plan; extract_tolerance_bindings docstring names this seam).
-        if bindings.len() == 1 {
-            self.active_purpose_bindings
-                .insert(purpose_name.to_string(), bindings[0].1.clone());
+        // Record the full per-param bindings for ALL activations — single- and multi-param
+        // alike. The stored Vec<(param,entity)> is consumed by recompute_tolerance_scope
+        // (per-param routing via extract_tolerance_bindings) and by eval()'s round-trip
+        // preservation (mem::take + re-apply). Unconditional recording unifies both paths;
+        // single-param behaviour is byte-identical (a 1-entry Vec).
+        self.active_purpose_bindings
+            .insert(purpose_name.to_string(), bindings.to_vec());
+
+        // Record injected let-cell ids for check_constraints_with_values overlay
+        // (task 4009 δ).  Only insert when there are actual let cells; skipping
+        // the insert for let-less purposes keeps active_purpose_let_cells empty
+        // (fast-path in check_constraints_with_values) as long as no let-bearing
+        // purpose is active.  deactivate_purpose's unwrap_or_default() handles
+        // the missing-key case without panicking.
+        if !injected_let_ids.is_empty() {
+            self.active_purpose_let_cells
+                .insert(purpose_name.to_string(), injected_let_ids);
         }
 
         true
@@ -421,6 +554,12 @@ impl Engine {
             None => return, // Not active — no-op
         };
 
+        // Remove injected let-cell ids (bookkeeping for byte-identity restore).
+        let let_ids = self
+            .active_purpose_let_cells
+            .remove(purpose_name)
+            .unwrap_or_default();
+
         // Update demand registry: remove demand for each ejected constraint node.
         for id in &injected_ids {
             self.demand.remove_demand(&NodeId::Constraint(id.clone()));
@@ -438,6 +577,10 @@ impl Engine {
         if let Some(state) = self.eval_state.as_mut() {
             for constraint_id in &injected_ids {
                 state.snapshot.graph.constraints.remove(constraint_id);
+            }
+            for let_id in &let_ids {
+                state.snapshot.graph.value_cells.remove(let_id);
+                state.snapshot.values.remove(let_id);
             }
             state.reverse_index = ReverseDependencyIndex::build_from_graph_and_fields(
                 &state.snapshot.graph,
@@ -529,7 +672,7 @@ impl Engine {
             None => return,
         };
 
-        for (purpose_name, entity_ref) in &self.active_purpose_bindings {
+        for (purpose_name, param_bindings) in &self.active_purpose_bindings {
             let purpose = match self
                 .compiled_purposes
                 .iter()
@@ -538,11 +681,11 @@ impl Engine {
                 Some(p) => p,
                 None => continue, // Compiled purpose disappeared (e.g. across re-eval) — skip.
             };
-            // NOTE: single-binding contract — `entity_ref` is substituted for every matched
-            // constraint's subject unambiguously because today's API binds at most one
-            // entity-ref per purpose. See `extract_tolerance_bindings` § "Single-binding
-            // contract" for what a future multi-param producer must change at this call site.
-            let bindings = crate::tolerance_scope::extract_tolerance_bindings(purpose, entity_ref);
+            // Pass the stored per-param bindings slice directly: each matched
+            // RepresentationWithin constraint is routed to its own bound entity.
+            // Single-param purposes produce one binding (byte-identical to before);
+            // multi-param produce one per param.
+            let bindings = crate::tolerance_scope::extract_tolerance_bindings(purpose, param_bindings);
             for binding in bindings {
                 let descendants = crate::tolerance_scope::propagate_subject_to_descendants(
                     &binding.subject_entity,

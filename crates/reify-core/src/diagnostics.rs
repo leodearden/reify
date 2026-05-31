@@ -1179,6 +1179,73 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_StackupBadSamples`
     /// (see `docs/prds/v0_6/tolerance-stackup-analysis.md` §4.4).
     StackupBadSamples,
+    /// Origin: `crates/reify-expr/src/lib.rs` (`eval_solve_load_cases` emission
+    /// site).
+    ///
+    /// Emitted as `Severity::Error` when `solve_load_cases` receives an empty
+    /// `cases` list (`[]`). Multi-load-case analysis requires at least one
+    /// `LoadCase`; single-case analysis should use `solve_elastic_static`.
+    ///
+    /// Canonical message form:
+    /// `"Multi-load case analysis requires at least one LoadCase. Use solve_elastic_static for single-case analysis."`.
+    ///
+    /// Maps the PRD's illustrative `multi-load-case::empty-cases` code
+    /// (v0.3.x multi-load-case FEA PRD task #10).
+    MultiLoadEmptyCases,
+    /// Origin: `crates/reify-expr/src/lib.rs` (`eval_solve_load_cases` emission
+    /// site).
+    ///
+    /// Emitted as `Severity::Error` when two `LoadCase` values passed to a
+    /// single `solve_load_cases` call share the same `name` field. Each load
+    /// case must have a unique name so that downstream `linear_combine` weight
+    /// maps can reference cases unambiguously.
+    ///
+    /// Canonical message form:
+    /// `"Duplicate load case name: '<name>'. Each LoadCase in a single solve_load_cases call must have a unique name."`.
+    ///
+    /// Maps the PRD's illustrative `multi-load-case::duplicate-case-name` code
+    /// (v0.3.x multi-load-case FEA PRD task #10).
+    MultiLoadDuplicateCaseName,
+    /// Origin: `crates/reify-stdlib/src/fea.rs` (`diagnose` classifier) +
+    ///          `crates/reify-expr/src/lib.rs` (Undef-site emission).
+    ///
+    /// Emitted as `Severity::Error` when a `linear_combine` weights map
+    /// references a case name that is not present in the `MultiCaseResult`
+    /// being combined (typically a misspelled case name).
+    ///
+    /// Canonical message form:
+    /// `"linear_combine: weights map references unknown case '<name>'. Available cases: [<list>]. Did you misspell the case name?"`.
+    ///
+    /// Maps the PRD's illustrative `multi-load-case::unknown-case-in-weights`
+    /// code (v0.3.x multi-load-case FEA PRD task #10).
+    MultiLoadUnknownCaseInWeights,
+    /// Origin: `crates/reify-stdlib/src/fea.rs` (`diagnose` classifier) +
+    ///          `crates/reify-expr/src/lib.rs` (Undef-site emission).
+    ///
+    /// Emitted as `Severity::Error` when two cases combined by
+    /// `linear_combine` use incompatible meshes (different `mesh_size` or
+    /// `element_order` in their `ElasticOptions`), detected structurally via a
+    /// sampled-field grid/domain/codomain mismatch. Superposition requires
+    /// matching mesh / element-order layouts.
+    ///
+    /// Canonical message form:
+    /// `"linear_combine: cases '<name1>' and '<name2>' use incompatible meshes (different mesh_size or element_order in their ElasticOptions). Superposition requires matching mesh / element-order layouts. Re-solve with consistent options or compute envelopes instead."`.
+    ///
+    /// Maps the PRD's illustrative `multi-load-case::incompatible-meshes` code
+    /// (v0.3.x multi-load-case FEA PRD task #10).
+    MultiLoadIncompatibleMeshes,
+    /// Origin: `crates/reify-stdlib/src/fea.rs` (`diagnose` classifier) +
+    ///          `crates/reify-expr/src/lib.rs` (Undef-site emission).
+    ///
+    /// Emitted as `Severity::Error` when a `linear_combine` weights map is
+    /// empty (`{}`). At least one weighted base case must be specified.
+    ///
+    /// Canonical message form:
+    /// `"linear_combine: weights map is empty. Specify at least one weighted base case."`.
+    ///
+    /// Maps the PRD's illustrative `multi-load-case::empty-weights` code
+    /// (v0.3.x multi-load-case FEA PRD task #10).
+    MultiLoadEmptyWeights,
     /// Origin: `crates/reify-compiler/src/entity.rs` (main sub-lowering arm).
     ///
     /// Canonical message form:
@@ -1247,6 +1314,49 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_DynamicsInertiaNotPSD`.
     /// Registered in task 3822 (RBD-α, PRD §dynamics).
     DynamicsInertiaNotPSD,
+    /// Origin: `crates/reify-compiler/src/conformance` (assoc-fn satisfaction
+    /// phase) and `crates/reify-compiler/src/trait_requirements.rs`.
+    ///
+    /// Canonical message form:
+    /// `"trait '<Trait>' requires associated function '<fn>', but '<Structure>' does not provide it"`.
+    ///
+    /// Emitted as a `Severity::Error` when a structure declares conformance to a
+    /// trait that has a bodyless required associated function
+    /// (`RequirementKind::Fn`), the structure does not declare a `fn` member of
+    /// that name, and the trait provides no default body (`DefaultKind::Fn`) for
+    /// it. A single label is attached at the structure span naming the missing
+    /// associated function.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_TRAIT_FN_NOT_SATISFIED`
+    /// (see `docs/prds/v0_6/trait-associated-functions.md` §5.4 / §8 Phase 3).
+    TraitFnNotSatisfied,
+    /// Origin: `crates/reify-compiler/src/conformance` (assoc-fn satisfaction
+    /// phase, override check) and `crates/reify-compiler/src/trait_requirements.rs`
+    /// (refinement signature-lock in `collect_all_requirements`).
+    ///
+    /// Canonical message form:
+    /// `"associated function '<fn>' signature mismatch: trait requires <expected>, found <actual>"`
+    /// (override case) or
+    /// `"refining trait may not change inherited associated-function signature for '<fn>'"`
+    /// (refinement case).
+    ///
+    /// Emitted as a `Severity::Error` in two situations, both PRD §5.4 / §8.8
+    /// (associated-function signatures match exactly — self-ness, parameter
+    /// types, and return type — with no subtyping):
+    ///
+    /// 1. A structure provides a `fn` of the required/default name but with a
+    ///    different signature than the trait declares (override mismatch).
+    /// 2. A refining trait re-declares an inherited associated function with a
+    ///    different signature than the trait it refines (refinement
+    ///    signature-lock).
+    ///
+    /// Distinct from [`TraitFnNotSatisfied`] (which covers the absent-fn case):
+    /// here the function is present, just mis-typed. A dedicated code rather than
+    /// reusing [`TypeMismatchForTraitMember`] gives the override-mismatch and
+    /// refinement signature-lock tests an unambiguous signal.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_TRAIT_FN_SIGNATURE_MISMATCH`.
+    TraitFnSignatureMismatch,
 }
 
 /// A diagnostic message with location and optional labels.

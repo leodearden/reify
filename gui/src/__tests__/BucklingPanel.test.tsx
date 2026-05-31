@@ -12,8 +12,10 @@
  * (d) clicking play/pause toggles store.playing
  * (e) moving the scale slider calls store.setScale
  * (f) toggling the undeformed-overlay checkbox calls store.setShowUndeformed
- * (g) render-path: constructs scene/renderer and renders each frame
- * (h) render-path: disposes the renderer on cleanup
+ * (g) mode row text includes the formatted eigenvalue (task 4072)
+ * (h) each mode row renders a thumbnail SVG (task 4072)
+ * (i) render-path: constructs scene/renderer and renders each frame (task 4105)
+ * (j) render-path: disposes the renderer on cleanup (task 4105)
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -83,7 +85,7 @@ vi.mock('three', () => ({
 }));
 
 import { createBucklingStore } from '../stores/bucklingStore';
-import { BucklingPanel } from '../panels/BucklingPanel';
+import { BucklingPanel, formatEigenvalue } from '../panels/BucklingPanel';
 import { computePointCloudBounds } from '../viewport/bucklingAnimator';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -198,6 +200,39 @@ describe('BucklingPanel', () => {
     expect(setShowSpy).toHaveBeenCalledWith(true);
   });
 
+  // ── task-4072 step-11: eigenvalue label + thumbnail ──────────────────────
+
+  it('(g) mode row text includes formatted eigenvalue when eigenvalue is present', () => {
+    let store;
+    createRoot((dispose) => {
+      store = createBucklingStore();
+      store.ingestFrame({ mode_index: 0, phase: 0.0, displaced_positions: BASE });
+      store.ingestFrame({ mode_index: 0, phase: 1.0, displaced_positions: PEAK, eigenvalue: 1000 });
+      render(() => <BucklingPanel store={store!} />);
+      dispose();
+    });
+    const expected = formatEigenvalue(1000);
+    expect(typeof expected).toBe('string');
+    expect(expected.length).toBeGreaterThan(0);
+    // The mode row should contain the formatted value somewhere in its text
+    const modeRow = screen.getByTestId('buckling-mode-row-0');
+    expect(modeRow.textContent).toContain(expected);
+  });
+
+  it('(h) each mode row renders a thumbnail SVG element', () => {
+    let store;
+    createRoot((dispose) => {
+      store = createBucklingStore();
+      store.ingestFrame({ mode_index: 0, phase: 0.0, displaced_positions: BASE });
+      store.ingestFrame({ mode_index: 0, phase: 1.0, displaced_positions: PEAK, eigenvalue: 1000 });
+      store.ingestFrame({ mode_index: 1, phase: 1.0, displaced_positions: PEAK, eigenvalue: 2000 });
+      render(() => <BucklingPanel store={store!} />);
+      dispose();
+    });
+    expect(screen.getByTestId('buckling-mode-thumbnail-0')).toBeTruthy();
+    expect(screen.getByTestId('buckling-mode-thumbnail-1')).toBeTruthy();
+  });
+
   // ── Render-path tests (getContext→truthy, rAF captured) ────────────────────
   //
   // These stubs are scoped to this describe so the (a)–(f) tests above still
@@ -223,7 +258,7 @@ describe('BucklingPanel', () => {
       vi.restoreAllMocks();
     });
 
-    it('(g) adds object3d and undeformedOverlay to scene, binds renderer to canvas, renders each frame', () => {
+    it('(i) adds object3d and undeformedOverlay to scene, binds renderer to canvas, renders each frame', () => {
       // Solid.js flushes effects AFTER the createRoot callback completes
       // (runUpdates calls runEffects post-synchronously), so assertions must
       // live OUTSIDE the callback.  We collect dispose() instead of calling it
@@ -271,7 +306,7 @@ describe('BucklingPanel', () => {
       rootDispose();
     });
 
-    it('(h) disposes the renderer on root cleanup', () => {
+    it('(j) disposes the renderer on root cleanup', () => {
       const store = createBucklingStore();
       store.ingestFrame({ mode_index: 0, phase: 0.0, displaced_positions: BASE });
       const { unmount } = render(() => <BucklingPanel store={store} />);
@@ -283,5 +318,27 @@ describe('BucklingPanel', () => {
       unmount();
       expect(rendererDisposeSpy).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+// ── direct unit tests for exported formatEigenvalue ───────────────────────────
+
+describe('formatEigenvalue', () => {
+  it('returns a non-empty string for a finite number', () => {
+    const result = formatEigenvalue(1000);
+    expect(typeof result).toBe('string');
+    expect(result.length).toBeGreaterThan(0);
+  });
+
+  it('returns "—" for null', () => {
+    expect(formatEigenvalue(null)).toBe('—');
+  });
+
+  it('returns "—" for undefined', () => {
+    expect(formatEigenvalue(undefined)).toBe('—');
+  });
+
+  it('returns "—" for NaN', () => {
+    expect(formatEigenvalue(NaN)).toBe('—');
   });
 });

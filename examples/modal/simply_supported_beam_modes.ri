@@ -15,11 +15,16 @@
 //
 //   f₁ ≈ 115.8 Hz, f₂ ≈ 463 Hz, f₃ ≈ 1042 Hz   (fₙ ∝ n²)
 //
-// The integration test at `crates/reify-eval/tests/modal_analysis_e2e.rs`
-// asserts the FIRST-mode frequency is within 10% of f₁ (the committed PRD
-// §1/§9.1 bound, anchored on the fundamental). Higher modes (2-3) lock harder
-// for P1 tets (PRD §9.1) and are checked present/finite/sorted within a looser
-// measured band; the measured tolerances are pinned in that test (steps 17/18).
+// This fixture runs at `element_order: ElementOrder.P2` (second-order, 10-node
+// quadratic tets — task 4066). P2 shape functions resolve bending curvature and
+// remove the P1 constant-strain bending lock (f ∝ √K, which biases P1 high), so
+// the integration test at `crates/reify-eval/tests/modal_analysis_e2e.rs` asserts
+// ALL THREE bending modes (f₁/f₂/f₃) are within 2% of their analytic (nπ)²
+// values — the bending-lock-free P2 band, replacing the prior looser P1 10%/12%
+// bands (higher P1 modes locked harder per PRD §9.1; P2 resolves all three
+// uniformly). The honest measured P2 error is ≤1.01% at the coarse
+// example-practical mesh (nx=24); pinned as SS_P2_REL_TOL in that test, mirroring
+// the kernel accuracy gate `crates/reify-solver-elastic/tests/modal_benchmarks.rs`.
 //
 // The `@optimized("modal::free_vibration")` annotation routes this call to the
 // `modal::free_vibration` trampoline (crates/reify-eval/src/modal_ops.rs) when
@@ -58,22 +63,58 @@ structure SimplySupportedBeamModes {
     let pin_min = FixedSupport(target: "x_min")
     let pin_max = FixedSupport(target: "x_max")
 
-    // Modal options: extract the first 3 modes, undamped, bending in z.
-    // reference_direction = vec3(0,0,1) is the dimensionless unit excitation
-    // direction (the slender bending direction). tol / max_iters / sigma use
-    // ModalOptions defaults.
+    // Modal options: extract the first 3 modes, undamped, bending in z, at
+    // element_order = ElementOrder.P2 — the P2-tet path that resolves bending
+    // curvature and removes the P1 bending lock (task 4066). reference_direction
+    // = vec3(0,0,1) is the dimensionless unit excitation direction (the slender
+    // bending direction).
+    //
+    // IMPORTANT — argument binding is POSITIONAL (the `name:` labels are
+    // cosmetic; the parser strips them and binds each value to the param in
+    // ModalOptions' DECLARATION order — see ts_parser.rs lower_call_argument).
+    // `element_order` is the LAST declared param, so every preceding param must
+    // be supplied here in order to reach it: a partial keyword-style call would
+    // silently bind `element_order`'s value to an earlier param and leave the
+    // real `element_order` at its `ElementOrder.P1` default (the P1 bending lock
+    // would never lift). sigma / tol / max_iters are therefore spelled out at
+    // their ModalOptions defaults (0.0 / 1e-9 / 200) so the trailing
+    // reference_direction and element_order land in the right slots.
+    // n_modes = 8 (not 3): this beam is wide (b=10mm) and thin (h=2mm), so the
+    // lateral Y-bending family is ≈ (b/h) = 5× stiffer in frequency than the
+    // vertical Z-bending family. The first lateral mode (≈ 5·f₁,z ≈ 579 Hz) lands
+    // BETWEEN vertical modes 2 (≈ 463 Hz) and 3 (≈ 1043 Hz). Requesting only 3
+    // modes would return z1, z2, y1 — never reaching vertical mode 3. Solving a
+    // generous low spectrum (8) lets the consumer/e2e select the first three
+    // Z-dominant (high z-participation_mass) modes, mirroring the kernel gate
+    // crates/reify-solver-elastic/tests/modal_benchmarks.rs (task 4066).
     let opts = ModalOptions(
-        n_modes: 3,
+        n_modes: 8,
         boundary_conditions: [pin_min, pin_max],
         damping: NoDamping(),
-        reference_direction: vec3(0.0, 0.0, 1.0)
+        sigma: 0.0,
+        tol: 0.000000001,
+        max_iters: 200,
+        reference_direction: vec3(0.0, 0.0, 1.0),
+        element_order: ElementOrder.P2
     )
 
     // Modal solve: @optimized dispatcher → modal::free_vibration trampoline.
     let result = modal_analysis(mi.material, length, width, height, opts)
 
-    // First three natural frequencies in Hz. f1 is the headline 10%-bounded
-    // signal; f2/f3 are checked present/finite/sorted (looser band, steps 17/18).
+    // Natural frequencies in Hz from the raw frequency-sorted spectrum. f1 is the
+    // headline signal — the lowest mode, unambiguously the vertical (Z-bending)
+    // fundamental — and clears the 2% band at P2. f2/f3 are the next raw spectrum
+    // entries (checked present/finite/sorted-ascending in the e2e).
+    //
+    // The three VERTICAL bending modes do NOT map 1:1 to raw indices 0/1/2: this
+    // wide-thin section places the lateral Y-bending mode (≈ 5·f₁,z ≈ 579 Hz)
+    // BETWEEN vertical modes 2 (≈ 463 Hz) and 3 (≈ 1043 Hz), so raw index 2 is the
+    // lateral mode, not vertical mode 3. The rigorous per-mode 2% accuracy gate
+    // over the three vertical (Z-dominant) modes is therefore applied in the e2e
+    // (crates/reify-eval/tests/modal_analysis_e2e.rs) by eigenvector dominant-axis
+    // classification over result.modes — exactly as the kernel gate
+    // crates/reify-solver-elastic/tests/modal_benchmarks.rs does (task 4066). The
+    // generous n_modes = 8 above guarantees ≥3 vertical modes are in the spectrum.
     let f1 = first_frequency(result)
     let f2 = mode_frequency(result, 1)
     let f3 = mode_frequency(result, 2)

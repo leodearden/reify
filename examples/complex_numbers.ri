@@ -1,0 +1,45 @@
+// complex_numbers.ri — combined Complex demo (PRD v0_6 task ζ / task-3955).
+//
+// Exercises in one structure:
+//   - dimensioned complex via constructor (RLC series impedance)
+//   - abs/arg (modulus/argument) on dimensioned Complex<Resistance>
+//   - imaginary-literal sugar (3 + 4j) for dimensionless Complex
+//   - complex_pow(w, 2) — integer exponent, any dimension
+//   - Complex / Complex division
+//   - abs/arg on dimensionless Complex
+
+structure def ComplexNumbersDemo {
+    // ── A: RLC series impedance ─────────────────────────────────────────
+    // Dimensioned complex is built via complex(re, im); literal sugar 4j
+    // is DIMENSIONLESS only (D2/D6).
+    let impedance = complex(50ohm, -30ohm)  // Complex<Resistance>
+
+    // |Z| = sqrt(50² + 30²) = sqrt(3400) ≈ 58.31 ohm  (Scalar<Resistance>)
+    let z_mag = abs(impedance)
+
+    // arg(Z) = atan2(-30, 50) ≈ -0.5404 rad  (Angle)
+    let z_phase = arg(impedance)
+
+    // Im(Z) = -30 ohm
+    let reactance = imag(impedance)
+
+    // ── B: Dimensionless 3-4-5 worked example ───────────────────────────
+    // Imaginary-literal sugar: Int + imaginary-literal → Complex{3, 4}
+    let w = 3 + 4j
+
+    // |w| = 5.0 exactly (Real — 3-4-5 Pythagorean triple)
+    let w_abs = abs(w)
+
+    // arg(w) = atan2(4, 3) ≈ 0.9273 rad  (Angle)
+    let w_arg = arg(w)
+
+    // w² = (3+4i)² = 9 - 16 + 24i = -7 + 24i  →  Display: -7+24i
+    let w_sq = complex_pow(w, 2)
+
+    // w / (1 + 2i) — Complex / Complex division
+    let w_div = w / complex(1.0, 2.0)
+
+    // Tight constraints on the exact 3-4-5 magnitude (dimensionless Real)
+    constraint w_abs > 4.999
+    constraint w_abs < 5.001
+}

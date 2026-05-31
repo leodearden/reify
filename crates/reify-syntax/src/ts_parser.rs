@@ -517,26 +517,77 @@ impl<'a> Lowering<'a> {
         // Detect 'pub' keyword by checking anonymous children
         let is_pub = self.has_pub_keyword(node);
 
-        // Collect variant identifiers — skip 'enum', name, '{', '}', ','
+        // Iterate enum_variant children (grammar production introduced in task α,
+        // step-4).  Each enum_variant holds a name field and optionally
+        // variant_field_decl children for named-field payloads.
         let mut variants = Vec::new();
         let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() == "identifier" && child.id() != name_node.id() {
-                variants.push(self.node_text(child).to_string());
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "enum_variant"
+                && let Some(variant) = self.lower_enum_variant(child)
+            {
+                variants.push(variant);
             }
         }
 
         let doc = self.extract_doc_comment(node);
 
+        let type_params = self.lower_type_parameters(node);
+
         Some(EnumDecl {
             name,
             doc,
             is_pub,
+            type_params,
             variants,
             span: self.span(node),
             content_hash: self.content_hash(node),
             annotations: vec![],
         })
+    }
+
+    /// Lower a single `enum_variant` CST node to an `EnumVariantDecl`.
+    ///
+    /// Bare variants (`Point`) produce `VariantPayload::Unit`.
+    /// Named-field variants (`Circle { radius: Length }`) produce
+    /// `VariantPayload::Named` with fields in source-declaration order.
+    fn lower_enum_variant(&self, node: tree_sitter::Node) -> Option<EnumVariantDecl> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+        let span = self.span(node);
+
+        // Collect variant_field_decl children for named-field payloads.
+        let mut fields: Vec<(String, TypeExpr)> = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "variant_field_decl" {
+                let field_name_node = match child.child_by_field_name("field") {
+                    Some(n) => n,
+                    // TODO(δ/3942): tree-sitter error-recovery may produce a
+                    // `variant_field_decl` without the expected 'field' child.
+                    // Silently elide the affected field rather than panic; a
+                    // Named variant whose fields all elide collapses to Unit —
+                    // task δ will add a diagnostic for this case.
+                    None => continue,
+                };
+                let type_node = match child.child_by_field_name("type") {
+                    Some(n) => n,
+                    // TODO(δ/3942): same — missing 'type' child from error recovery.
+                    None => continue,
+                };
+                let field_name = self.node_text(field_name_node).to_string();
+                let type_expr = self.lower_type_expr_node(type_node);
+                fields.push((field_name, type_expr));
+            }
+        }
+
+        let payload = if fields.is_empty() {
+            VariantPayload::Unit
+        } else {
+            VariantPayload::Named(fields)
+        };
+
+        Some(EnumVariantDecl { name, payload, span })
     }
 
     /// Extract identifiers from a trait_bound_list node (e.g., `Rigid + Printable`).
@@ -2566,6 +2617,7 @@ impl<'a> Lowering<'a> {
             "qualified_access" => self.lower_qualified_access(node),
             "instance_qualified_access" => self.lower_instance_qualified_access(node),
             "trait_method_call" => self.lower_trait_method_call(node),
+            "variant_construction" => self.lower_variant_construction(node),
             "parenthesized_expression" => {
                 // Unwrap parenthesized expression — find the inner expression
                 let mut cursor = node.walk();
@@ -3533,6 +3585,52 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Lower a `variant_construction` CST node to `ExprKind::VariantConstruct`.
+    ///
+    /// Grammar (task α, step-6):
+    ///   `Name { field: value, ... }` — ≥1 named field, optional trailing comma.
+    ///
+    /// The lowered node carries the variant name and a Vec of (field_name, Expr)
+    /// in source-declaration order.  No `known_enums` gating — whether `Name` is
+    /// a real enum variant is resolved by task δ (3942).  At α the compiler emits
+    /// a "not yet supported" poison literal for every VariantConstruct node.
+    fn lower_variant_construction(&self, node: tree_sitter::Node) -> Option<Expr> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        let mut fields: Vec<(String, Expr)> = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "variant_construction_field" {
+                let field_name_node = match child.child_by_field_name("field") {
+                    Some(n) => n,
+                    // TODO(δ/3942): error-recovery node missing 'field' child — elide.
+                    None => continue,
+                };
+                let value_node = match child.child_by_field_name("value") {
+                    Some(n) => n,
+                    // TODO(δ/3942): error-recovery node missing 'value' child — elide.
+                    None => continue,
+                };
+                let field_name = self.node_text(field_name_node).to_string();
+                let value_expr = match self.lower_expr(value_node) {
+                    Some(e) => e,
+                    // TODO(δ/3942): lower_expr returned None for the field value
+                    // (unsupported or error-recovery expression kind) — elide rather
+                    // than panic; task δ adds a diagnostic once VariantConstruct is
+                    // fully resolved.
+                    None => continue,
+                };
+                fields.push((field_name, value_expr));
+            }
+        }
+
+        Some(Expr {
+            kind: ExprKind::VariantConstruct { name, fields },
+            span: self.span(node),
+        })
+    }
+
     fn lower_member_access(&self, node: tree_sitter::Node) -> Option<Expr> {
         let object_node = node.child_by_field_name("object")?;
         let member_node = node.child_by_field_name("member")?;
@@ -4364,7 +4462,9 @@ mod tests {
         match &module.declarations[0] {
             Declaration::Enum(e) => {
                 assert_eq!(e.name, "Direction");
-                assert_eq!(e.variants, vec!["In", "Out", "Bidi"]);
+                let variant_names: Vec<&str> =
+                    e.variants.iter().map(|v| v.name.as_str()).collect();
+                assert_eq!(variant_names, vec!["In", "Out", "Bidi"]);
             }
             other => panic!("expected Enum, got {:?}", other),
         }
@@ -5162,8 +5262,17 @@ mod tests {
     fn lower_connect_body_error_node_emits_diagnostic() {
         // `{ >= }` produces an ERROR child inside connect_body.
         // When lower_connect_body is called directly, the ERROR arm fires.
+        // NOTE: we use `: BoltSet` to specify a connector_type before the brace
+        // block, making `{` unambiguously the start of connect_body.  Without
+        // the connector_type, the new variant_construction GLR fork (task α,
+        // data-carrying-enums) keeps both a variant_construction fork and the
+        // connect_body fork alive after `b {`; even though `>=` immediately
+        // kills the variant_construction fork, GLR error recovery may orphan
+        // `{ … }` as a member-level ERROR node rather than a connect_body,
+        // causing `find_node_by_kind("connect_body")` to fail.  The connector
+        // type `: BoltSet` consumes the `b :` prefix so the `{` is unambiguous.
         let errors = lower_body_with_errors(
-            "structure S { port a : out T  port b : in T  connect a -> b { >= } }",
+            "structure S { port a : out T  port b : in T  connect a -> b : BoltSet { >= } }",
         );
         assert!(
             !errors.is_empty(),

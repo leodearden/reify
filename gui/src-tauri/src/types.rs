@@ -943,6 +943,17 @@ pub struct ModeShapeFrame {
     pub phase: f32,
     /// Flat xyz displaced positions, length `3·n_nodes`.
     pub displaced_positions: Vec<f32>,
+    /// Per-mode buckling load multiplier λ (task 4072, GR-016).
+    ///
+    /// `None` on the undeformed base frame (phase ≈ 0.0); `Some(λ)` on each
+    /// peak frame (phase ≈ 1.0).  Field name matches the TypeScript
+    /// `ModeShapeFrame.eigenvalue` interface exactly (no `rename_all`).
+    ///
+    /// Omitted from the wire when `None` so the base frame retains its existing
+    /// 3-key shape — mirrors the `eta_ms: Option<u64>` precedent on
+    /// `SolverProgress`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eigenvalue: Option<f64>,
 }
 
 /// IPC payload for the `solver-progress` Tauri event channel (GR-016 ζ).

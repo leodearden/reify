@@ -371,9 +371,14 @@ pub mod elements;
 pub mod error_estimator;
 pub mod geometric_stiffness;
 pub mod interpolation;
+// Task 3868: κ — additive joint-stiffness kernel (PRD compliant-joints-flexures.md §7.2).
+pub mod joint_stiffness;
 pub mod mass_matrix;
 pub mod material_field;
 pub mod math;
+// Task 4066: P2-tet consistent mass-matrix kernel (closed-form degree-4-exact
+// barycentric integration) — the missing primitive for P2 modal analysis.
+pub mod p2_tet;
 pub mod mesher;
 pub mod mpc;
 pub mod progressive;
@@ -472,6 +477,11 @@ pub use geometric_stiffness::{
 // `k_e` opaquely — K vs K_g vs M).
 // PRD: docs/prds/v0_3/modal-analysis.md §10 Phase 1 task δ.
 pub use mass_matrix::consistent_element_mass_tet_p1;
+// Task 4066: P2-tet consistent mass-matrix element kernel (closed-form
+// degree-4-exact barycentric integration). Pairs with the P2 stiffness
+// (`element_stiffness` at `ElementOrder::P2`) for the modal eigenproblem
+// `K φ = λ M φ`; assembled via the same `assemble_global_stiffness` scatter.
+pub use p2_tet::consistent_element_mass_tet_p2;
 pub use solver::{
     CgIterationControl, CgResult, CgSolverOptions, SolverMode, solve_cg, solve_cg_warm,
     solve_cg_with_progress,
@@ -504,3 +514,32 @@ pub use sweep::{
 // is enforced by the orchestrator, not by the projector itself. External
 // callers cannot misuse it with a short slice.
 pub use volume_refine::{RefineError, refine_with_size_field};
+// Task 3868: κ — additive joint-stiffness kernel.
+// PRD compliant-joints-flexures.md §7.2: each spring-loaded joint contributes
+// K[dof,dof] += k to the global stiffness matrix; empty contributions → rigid
+// joint (zero addition), preserving existing modal-analysis behaviour.
+//
+// # Usage example
+//
+// ```
+// use reify_solver_elastic::{JointStiffness, add_joint_stiffness};
+// use faer::sparse::{SparseRowMat, Triplet};
+//
+// // 2×2 K = [[5, 0], [0, 0]] with (1,1) absent
+// let trips: Vec<Triplet<usize, usize, f64>> = vec![Triplet::new(0, 0, 5.0)];
+// let k = SparseRowMat::try_new_from_triplets(2, 2, &trips).unwrap();
+//
+// // Add a spring of stiffness 3.0 at DOF 1 (structurally absent → created).
+// let k2 = add_joint_stiffness(&k, &[JointStiffness { dof: 1, stiffness: 3.0 }]);
+//
+// // K[0,0] unchanged; K[1,1] created as 3.0.
+// let sym = k2.symbolic();
+// let get = |r, c| {
+//     let cols = sym.col_idx_of_row_raw(r);
+//     let vals = k2.val_of_row(r);
+//     cols.iter().zip(vals.iter()).find(|(&col, _)| col == c).map(|(_, &v)| v).unwrap_or(0.0)
+// };
+// assert_eq!(get(0, 0), 5.0);
+// assert_eq!(get(1, 1), 3.0);
+// ```
+pub use joint_stiffness::{JointStiffness, add_joint_stiffness};

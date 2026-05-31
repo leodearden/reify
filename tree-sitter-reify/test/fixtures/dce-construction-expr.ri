@@ -1,0 +1,5 @@
+/// Brace-construction expression fixture — α parse-signal.
+/// Uses param-default position to avoid match/where scrutinee ambiguity.
+structure def Widget {
+    param outline : Shape = Rect { width: 20mm, height: 10mm }
+}

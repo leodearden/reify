@@ -107,7 +107,8 @@ fn parse_pub_enum() {
         Declaration::Enum(e) => {
             assert_eq!(e.name, "Direction");
             assert!(e.is_pub, "expected is_pub == true for pub enum");
-            assert_eq!(e.variants, vec!["In", "Out"]);
+            let variant_names: Vec<&str> = e.variants.iter().map(|v| v.name.as_str()).collect();
+            assert_eq!(variant_names, vec!["In", "Out"]);
         }
         other => panic!("expected Enum, got {:?}", other),
     }
