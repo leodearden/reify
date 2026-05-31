@@ -143,9 +143,10 @@ impl GeometryKernel for ManifoldKernel {
 
     fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
         match query {
-            // Distance between two manifold meshes — vertex-based min Euclidean
-            // (exact for axis-aligned fixtures; KGQ-ο extends to vertex-to-triangle).
-            // PRD §9 KGQ-α / task 3610.
+            // Distance between two manifold meshes — exact surface-to-surface
+            // via Manifold::min_gap (manifold3d 0.2).  Returns 0.0 for
+            // touching/interpenetrating; returns the true gap for disjoint solids.
+            // PRD §9 KGQ-α / task 3610; generalised to min_gap by KGQ-ο / task 3624.
             GeometryQuery::Distance { from, to } => {
                 let a = self
                     .get_manifold(*from)

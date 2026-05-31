@@ -2,74 +2,96 @@
 //!
 //! This module provides query helpers for [`crate::ManifoldKernel`] wired to
 //! the PRD §5.4 geometry-query surface.  It is the **skeleton** created by
-//! task 3610 (KGQ-α); later tasks extend it:
+//! task 3610 (KGQ-α); task 3624 (KGQ-ο) extends it with:
 //!
-//! - KGQ-ο/π (depends on KGQ-α/β/γ/δ): generalise mesh-to-mesh distance to
-//!   vertex-to-triangle and add the cross-kernel #kernel(manifold) parity gate.
+//! - `distance`: generalised from vertex-to-vertex to exact surface-to-surface
+//!   via `Manifold::min_gap` (manifold3d 0.2).
+//! - `contains`: point-in-solid via `Manifold::ray_cast` crossing count.
+//! - `geo_equiv`: topology-signature + N=8 sampled-vertex comparison.
 //!
-//! ## Implementation note — manifold3d 0.1 distance API
+//! ## Implementation note — manifold3d 0.2 distance API
 //!
-//! `manifold3d` 0.1 (`zmerlynn/manifold-csg` fork) does **not** expose a
-//! built-in distance / nearest-point primitive.  `GeometryQuery::Distance`
-//! carries two handles only (no query point), so point-to-mesh routing via
-//! this kernel is deferred to KGQ-ο.  The current implementation computes the
-//! minimum pairwise vertex-to-vertex Euclidean distance by iterating the
-//! `to_mesh_f64()` vertex arrays — exact for axis-aligned mesh fixtures.
+//! `manifold3d` 0.2 (re-exports `manifold-csg` 0.2.0) exposes
+//! `Manifold::min_gap(other, search_length) -> f64` — the exact
+//! surface-to-surface minimum gap (returns 0.0 for touching/interpenetrating
+//! meshes).  The search_length is derived from both bounding boxes so the
+//! true gap is never capped; an absent/empty bounding box signals a
+//! degenerate manifold and yields `f64::INFINITY` to trigger the
+//! `QueryError::QueryFailed` path in the caller.
 
 use manifold3d::Manifold;
 
-/// Compute the minimum vertex-to-vertex Euclidean distance between two
-/// [`Manifold`] meshes.
+/// Compute the exact surface-to-surface minimum gap between two [`Manifold`]
+/// meshes using `Manifold::min_gap`.
 ///
-/// Iterates the `xyz` triplets produced by `to_mesh_f64()` for each manifold
-/// and returns the global minimum pairwise distance.
+/// Returns `0.0` for touching or interpenetrating solids; returns the
+/// Euclidean surface gap for disjoint solids.
 ///
-/// # Complexity
+/// # Algorithm (manifold3d 0.2)
 ///
-/// **O(|verts_a| × |verts_b|)** — quadratic in the vertex counts of both
-/// meshes.  `extract_xyz` also materialises both vertex `Vec`s before the
-/// nested loop begins, so peak allocation is O(|verts_a| + |verts_b|).
-/// This is acceptable for the small axis-aligned test fixtures used in
-/// KGQ-α; it is **not** production-ready for large meshes.  KGQ-ο
-/// generalises this to vertex-to-triangle and should introduce a spatial
-/// acceleration structure (BVH/kd-tree) or at minimum stream one side to
-/// avoid the second `Vec` allocation.
-///
-/// # Exactness
-///
-/// For axis-aligned meshes (e.g. the `unit_cube_mesh` test fixture) the
-/// closest vertex pair is always a surface vertex, so the result is exact.
-/// For general meshes, the true distance may be smaller (a point interior to
-/// a face on one mesh could be closer to a vertex on the other) — vertex
-/// parity is generalised to vertex-to-triangle in KGQ-ο.
+/// Delegates to `Manifold::min_gap(other, search_length)` — the C++
+/// manifold library's exact BVH-accelerated gap query — rather than the
+/// prior O(n²) vertex-to-vertex loop.  `search_length` is set to the sum of
+/// both bounding-box diagonals plus the centre-to-centre distance, multiplied
+/// by a 1.5× safety factor, so the true gap is never artificially capped
+/// (min_gap caps its internal search at `search_length`; if the true gap
+/// exceeds it, the result is clamped at `search_length`, which is a false
+/// positive for large search lengths — our over-estimate avoids this).
 ///
 /// # Empty / degenerate meshes
 ///
-/// An empty or degenerate mesh (zero vertices after the `n_props` guard)
-/// yields `f64::INFINITY` as the minimum.  **Callers must check for this
-/// sentinel and treat it as an error** — the direct caller
+/// If either bounding box is absent (empty or degenerate manifold), this
+/// function returns `f64::INFINITY`.  **Callers must check for this sentinel
+/// and treat it as an error** — the direct caller
 /// [`crate::ManifoldKernel::query`] converts `INFINITY` to a
 /// `QueryError::QueryFailed` so that the eval layer can emit a diagnostic
-/// rather than propagating a silent infinite length value.  Do not rely on
-/// an `INFINITY` result flowing cleanly to the user.
+/// rather than propagating a silent infinite length value.
+///
+/// # Exactness
+///
+/// `min_gap` is exact for smooth surfaces; on triangle meshes it returns the
+/// exact triangle-mesh distance.  For the axis-aligned `unit_cube_mesh`
+/// fixtures, this matches the prior vertex-to-vertex result for disjoint cubes
+/// (4.0 at 1e-9) and correctly returns 0.0 for overlapping/touching solids
+/// (where vertex-to-vertex was wrong).
 pub(crate) fn distance(a: &Manifold, b: &Manifold) -> f64 {
-    let verts_a = extract_xyz(a);
-    let verts_b = extract_xyz(b);
+    // Compute a search_length guaranteed to exceed the true gap so min_gap
+    // is never capped.  We use both bounding boxes: diagonal of each plus
+    // the centre-to-centre distance, with a 1.5× safety margin.
+    let search_length = {
+        let bb_a = match a.bounding_box() {
+            Some(bb) => bb,
+            None => return f64::INFINITY, // degenerate/empty manifold
+        };
+        let bb_b = match b.bounding_box() {
+            Some(bb) => bb,
+            None => return f64::INFINITY,
+        };
 
-    let mut min_dist_sq = f64::INFINITY;
-    for va in &verts_a {
-        for vb in &verts_b {
-            let dx = va[0] - vb[0];
-            let dy = va[1] - vb[1];
-            let dz = va[2] - vb[2];
-            let dist_sq = dx * dx + dy * dy + dz * dz;
-            if dist_sq < min_dist_sq {
-                min_dist_sq = dist_sq;
-            }
-        }
-    }
+        // Diagonal of bounding box A.
+        let [ax0, ay0, az0] = bb_a.min();
+        let [ax1, ay1, az1] = bb_a.max();
+        let diag_a = ((ax1 - ax0).powi(2) + (ay1 - ay0).powi(2) + (az1 - az0).powi(2)).sqrt();
 
-    min_dist_sq.sqrt()
+        // Diagonal of bounding box B.
+        let [bx0, by0, bz0] = bb_b.min();
+        let [bx1, by1, bz1] = bb_b.max();
+        let diag_b = ((bx1 - bx0).powi(2) + (by1 - by0).powi(2) + (bz1 - bz0).powi(2)).sqrt();
+
+        // Centre-to-centre distance.
+        let cax = (ax0 + ax1) / 2.0;
+        let cay = (ay0 + ay1) / 2.0;
+        let caz = (az0 + az1) / 2.0;
+        let cbx = (bx0 + bx1) / 2.0;
+        let cby = (by0 + by1) / 2.0;
+        let cbz = (bz0 + bz1) / 2.0;
+        let c2c = ((cax - cbx).powi(2) + (cay - cby).powi(2) + (caz - cbz).powi(2)).sqrt();
+
+        // 1.5× safety margin: true gap is always < diag_a + diag_b + c2c.
+        (diag_a + diag_b + c2c) * 1.5
+    };
+
+    a.min_gap(b, search_length)
 }
 
 /// Test whether two [`Manifold`] meshes intersect (have non-empty boolean
