@@ -1607,4 +1607,107 @@ mod tests {
             );
         }
     }
+
+    // ─── Step-1 (task 3849): flexure dimensioned-type const existence + exponents ──
+    //
+    // Four new pub const DimensionVectors for compliant-joint/flexure types (task α,
+    // Phase-1 of docs/prds/v0_3/compliant-joints-flexures.md):
+    //
+    //   ROTATIONAL_STIFFNESS  = N·m/rad   = kg·m²·s⁻²·rad⁻¹  (index: 0=+2,1=+1,2=-2,7=-1)
+    //   ROTATIONAL_DAMPING    = N·m·s/rad = kg·m²·s⁻¹·rad⁻¹  (index: 0=+2,1=+1,2=-1,7=-1)
+    //   TRANSLATIONAL_STIFFNESS = N/m     = kg·s⁻²             (index: 1=+1,2=-2; == STIFFNESS)
+    //   TRANSLATIONAL_DAMPING = N·s/m     = kg·s⁻¹             (index: 1=+1,2=-1)
+
+    #[test]
+    fn rotational_stiffness_has_correct_exponents() {
+        // N·m/rad = kg·m²·s⁻²·rad⁻¹
+        assert_eq!(
+            DimensionVector::ROTATIONAL_STIFFNESS,
+            DimensionVector::from_exps(&[(0, 2), (1, 1), (2, -2), (7, -1)])
+        );
+    }
+
+    #[test]
+    fn rotational_damping_has_correct_exponents() {
+        // N·m·s/rad = kg·m²·s⁻¹·rad⁻¹
+        assert_eq!(
+            DimensionVector::ROTATIONAL_DAMPING,
+            DimensionVector::from_exps(&[(0, 2), (1, 1), (2, -1), (7, -1)])
+        );
+    }
+
+    #[test]
+    fn translational_stiffness_equals_stiffness_alias() {
+        // N/m = kg·s⁻² — identical to the existing STIFFNESS constant.
+        assert_eq!(
+            DimensionVector::TRANSLATIONAL_STIFFNESS,
+            DimensionVector::from_exps(&[(1, 1), (2, -2)])
+        );
+        assert_eq!(
+            DimensionVector::TRANSLATIONAL_STIFFNESS,
+            DimensionVector::STIFFNESS,
+            "TRANSLATIONAL_STIFFNESS must equal STIFFNESS (same N/m physics)"
+        );
+    }
+
+    #[test]
+    fn translational_damping_has_correct_exponents() {
+        // N·s/m = kg·s⁻¹
+        assert_eq!(
+            DimensionVector::TRANSLATIONAL_DAMPING,
+            DimensionVector::from_exps(&[(1, 1), (2, -1)])
+        );
+    }
+
+    #[test]
+    fn flexure_dims_are_mutually_distinct_except_documented_alias() {
+        // ROTATIONAL_STIFFNESS ≠ ROTATIONAL_DAMPING (time exponent differs: -2 vs -1)
+        assert_ne!(
+            DimensionVector::ROTATIONAL_STIFFNESS,
+            DimensionVector::ROTATIONAL_DAMPING
+        );
+        // ROTATIONAL_STIFFNESS ≠ TRANSLATIONAL_STIFFNESS (length and angle slots differ)
+        assert_ne!(
+            DimensionVector::ROTATIONAL_STIFFNESS,
+            DimensionVector::TRANSLATIONAL_STIFFNESS
+        );
+        // ROTATIONAL_STIFFNESS ≠ TRANSLATIONAL_DAMPING
+        assert_ne!(
+            DimensionVector::ROTATIONAL_STIFFNESS,
+            DimensionVector::TRANSLATIONAL_DAMPING
+        );
+        // ROTATIONAL_DAMPING ≠ TRANSLATIONAL_STIFFNESS
+        assert_ne!(
+            DimensionVector::ROTATIONAL_DAMPING,
+            DimensionVector::TRANSLATIONAL_STIFFNESS
+        );
+        // ROTATIONAL_DAMPING ≠ TRANSLATIONAL_DAMPING
+        assert_ne!(
+            DimensionVector::ROTATIONAL_DAMPING,
+            DimensionVector::TRANSLATIONAL_DAMPING
+        );
+        // TRANSLATIONAL_STIFFNESS == STIFFNESS (documented alias — NOT an error)
+        assert_eq!(
+            DimensionVector::TRANSLATIONAL_STIFFNESS,
+            DimensionVector::STIFFNESS
+        );
+        // TRANSLATIONAL_DAMPING ≠ TRANSLATIONAL_STIFFNESS
+        assert_ne!(
+            DimensionVector::TRANSLATIONAL_DAMPING,
+            DimensionVector::TRANSLATIONAL_STIFFNESS
+        );
+    }
+
+    #[test]
+    fn flexure_dims_distinct_from_energy_and_dynamic_viscosity() {
+        // ROTATIONAL_STIFFNESS (kg·m²·s⁻²·rad⁻¹) ≠ ENERGY (kg·m²·s⁻²) — differs by angle slot.
+        assert_ne!(DimensionVector::ROTATIONAL_STIFFNESS, DimensionVector::ENERGY);
+        // ROTATIONAL_DAMPING (kg·m²·s⁻¹·rad⁻¹) ≠ ENERGY (kg·m²·s⁻²) — time AND angle differ.
+        assert_ne!(DimensionVector::ROTATIONAL_DAMPING, DimensionVector::ENERGY);
+        // TRANSLATIONAL_DAMPING (kg·s⁻¹) ≠ DYNAMIC_VISCOSITY (kg·m⁻¹·s⁻¹) — length slot differs.
+        assert_ne!(
+            DimensionVector::TRANSLATIONAL_DAMPING,
+            DimensionVector::DYNAMIC_VISCOSITY
+        );
+    }
 }
