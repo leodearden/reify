@@ -1530,6 +1530,185 @@ mod tests {
             pre_done
         );
     }
+
+    /// H1 FP guard (a): a done task whose added test fn has NO placeholder/empty/
+    /// not_yet/stub marker in its name, but DOES assert an empty result.
+    ///
+    /// A test like `fn returns_no_warnings_for_valid_input()` that asserts
+    /// `is_empty()` is a LEGITIMATE empty-result test — not a placeholder.
+    /// The double-gate must suppress it: zero P5TestsAssertEmpty findings.
+    ///
+    /// RED against the naive step-4 impl (which fires on any empty assertion).
+    #[test]
+    fn h1_legit_empty_assertion_without_marker_not_flagged() {
+        let conn = seed_db();
+        insert_task_completed_event(&conn, "H1FP1");
+
+        let mut git = MockGitOps::new();
+        git.set_diff_changed_paths(
+            "main",
+            "h1fp1_commit",
+            vec![
+                "crates/reify-lint/src/checker.rs".to_string(),
+                "crates/reify-lint/tests/checker_tests.rs".to_string(),
+            ],
+        );
+        git.set_log_grep("main", "H1FP1", vec![]);
+
+        // Test fn name has NO placeholder/stub/empty/not_yet marker.
+        // It legitimately tests that a valid input produces no warnings.
+        git.set_diff_added_lines_in_commit(
+            "h1fp1_commit",
+            "crates/reify-lint/tests/checker_tests.rs",
+            vec![
+                (5, "    #[test]".to_string()),
+                (6, "    fn returns_no_warnings_for_valid_input() {".to_string()),
+                (7, "        let result = check_valid_input();".to_string()),
+                (8, "        assert!(result.is_empty(), \"valid input should produce no warnings\");".to_string()),
+                (9, "    }".to_string()),
+            ],
+        );
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "H1FP1".to_string(),
+            TaskMetadata {
+                task_id: "H1FP1".to_string(),
+                status: "done".to_string(),
+                files: vec![
+                    "crates/reify-lint/src/checker.rs".to_string(),
+                    "crates/reify-lint/tests/checker_tests.rs".to_string(),
+                ],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("h1fp1_commit".to_string()),
+                    note: None,
+                }),
+                title: "Add lint checker for valid input".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        let h1_findings: Vec<_> = findings
+            .iter()
+            .filter(|f| f.pattern == Pattern::P5TestsAssertEmpty)
+            .collect();
+        assert!(
+            h1_findings.is_empty(),
+            "legit empty-assertion test without placeholder marker must NOT be flagged; \
+             got {:?}",
+            h1_findings
+        );
+    }
+
+    /// H1 FP guard (b): a done task whose added test fn name DOES carry a
+    /// placeholder marker (e.g. "stub") but whose added lines assert a
+    /// NON-empty result.
+    ///
+    /// A test named `fn stub_returns_items()` that asserts `len() == 3` is not
+    /// vacuous — the name has a marker but the assertion is real.
+    /// The double-gate must suppress it: zero P5TestsAssertEmpty findings.
+    ///
+    /// RED against the naive step-4 impl (which doesn't check the fn name at all).
+    /// This test is GREEN even on the naive impl because the naive impl
+    /// checks for empty assertion patterns, and `len() == 3` doesn't match.
+    /// Step-5 is designed to produce RED only for case (a) above.
+    /// This test is included for completeness to lock in the double-gate contract.
+    #[test]
+    fn h1_marker_without_empty_assertion_not_flagged() {
+        let conn = seed_db();
+        insert_task_completed_event(&conn, "H1FP2");
+
+        let mut git = MockGitOps::new();
+        git.set_diff_changed_paths(
+            "main",
+            "h1fp2_commit",
+            vec![
+                "crates/reify-eval/src/evaluator.rs".to_string(),
+                "crates/reify-eval/tests/eval_tests.rs".to_string(),
+            ],
+        );
+        git.set_log_grep("main", "H1FP2", vec![]);
+
+        // Test fn name has "stub" marker but the assertion is non-empty (len == 3).
+        git.set_diff_added_lines_in_commit(
+            "h1fp2_commit",
+            "crates/reify-eval/tests/eval_tests.rs",
+            vec![
+                (20, "    #[test]".to_string()),
+                (21, "    fn stub_returns_items() {".to_string()),
+                (22, "        let result = evaluate_stub();".to_string()),
+                (23, "        assert_eq!(result.len(), 3, \"stub should return 3 items\");".to_string()),
+                (24, "    }".to_string()),
+            ],
+        );
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "H1FP2".to_string(),
+            TaskMetadata {
+                task_id: "H1FP2".to_string(),
+                status: "done".to_string(),
+                files: vec![
+                    "crates/reify-eval/src/evaluator.rs".to_string(),
+                    "crates/reify-eval/tests/eval_tests.rs".to_string(),
+                ],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("h1fp2_commit".to_string()),
+                    note: None,
+                }),
+                title: "Evaluate stub items".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        let h1_findings: Vec<_> = findings
+            .iter()
+            .filter(|f| f.pattern == Pattern::P5TestsAssertEmpty)
+            .collect();
+        assert!(
+            h1_findings.is_empty(),
+            "placeholder-named fn with non-empty assertion must NOT be flagged; \
+             got {:?}",
+            h1_findings
+        );
+    }
 }
+
 
 } // mod p5
