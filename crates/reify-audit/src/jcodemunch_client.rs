@@ -1462,4 +1462,47 @@ mod tests {
         assert!(decoded.get("rows").is_some(), "MUNCH table 'rows' should be present");
         assert!(decoded.get("wrong").is_none(), "structuredContent 'wrong' key must not appear");
     }
+
+    // ------------------------------------------------------------------
+    // read_source_lines_for_enrichment
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn read_source_lines_for_enrichment_nonexistent_path() {
+        use std::path::Path;
+        let path = Path::new("/nonexistent/path/that/does/not/exist.rs");
+        let (lines, diagnostic) = read_source_lines_for_enrichment(path);
+        assert!(lines.is_empty(), "nonexistent path must return empty lines");
+        assert!(
+            diagnostic.is_some(),
+            "nonexistent path must return a diagnostic message"
+        );
+        let msg = diagnostic.unwrap();
+        assert!(
+            msg.contains("/nonexistent/path/that/does/not/exist.rs"),
+            "diagnostic must contain the path; got: {msg}"
+        );
+        assert!(
+            msg.contains("read"),
+            "diagnostic must mention 'read'; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn read_source_lines_for_enrichment_readable_file() {
+        use std::path::Path;
+        let tmp = tempfile::NamedTempFile::new().expect("create tempfile");
+        std::fs::write(tmp.path(), "line one\nline two\nline three\n")
+            .expect("write tempfile");
+        let (lines, diagnostic) = read_source_lines_for_enrichment(tmp.path());
+        assert_eq!(
+            lines,
+            vec!["line one", "line two", "line three"],
+            "readable file must return its lines"
+        );
+        assert!(
+            diagnostic.is_none(),
+            "readable file must return no diagnostic; got: {diagnostic:?}"
+        );
+    }
 }
