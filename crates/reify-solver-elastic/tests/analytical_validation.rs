@@ -975,3 +975,62 @@ fn boussinesq_subsurface_sigma_z_p2_within_10pct() {
         rel_err * 100.0,
     );
 }
+
+// ─── slender cantilever P2 tip-deflection ≤1% validation ────────────────────
+
+/// Slender-cantilever P2 tip-deflection validation against Timoshenko (≤1%).
+///
+/// # Why this fixture achieves ≤1%
+///
+/// At L/H = 15 the 1-D Timoshenko reference is accurate vs 3-D elasticity to
+/// ~0.04% (the residual from 2.1% at L/H=2 scales as ~(H/L)²). The remaining
+/// error is P2-FEA discretisation (bending), which P2 tets suppress far better
+/// than P1 (no locking) and which is mesh-reducible. Total error clears 1% with
+/// wide margin. P1 is excluded: it bending-locks badly at this slenderness.
+///
+/// # Why a raised CG cap is required
+///
+/// Slender beams are ill-conditioned — the condition number of the stiffness
+/// matrix grows as ~(L/H)², so at L/H=15 it is ~225× worse than L/H=1. The
+/// default Jacobi-preconditioned CG cap of 1000 iterations is insufficient; a
+/// raised cap (e.g. 20000) is needed. This is the blocker task 2928 documented
+/// (CG non-convergence at L/H≥4) that this task resolves.
+///
+/// # Geometry / material
+///
+/// `L × H × B = 15 × 1 × 0.5` (dimensionless), `E = 1`, `ν = 0.3`.
+///
+/// # Load / measurement (faithful — see module header)
+///
+/// `x=0` fully clamped; end shear of resultant `F = 1` in −y **distributed
+/// over the free-end face**; tip deflection = **mean −y displacement over
+/// that face** (neutral-axis deflection, mesh-stable).
+#[test]
+fn cantilever_beam_p2_tip_deflection_slender_within_1pct_of_timoshenko() {
+    const L: f64 = 15.0;
+    const H: f64 = 1.0;
+    const B: f64 = 0.5;
+    const NX: usize = 40; // along x (length)
+    const NY: usize = 6;  // along y (height) — bending resolution
+    const NZ: usize = 3;  // along z (width)
+    const F: f64 = 1.0;
+
+    let mat = IsotropicElastic { youngs_modulus: 1.0, poisson_ratio: 0.3 };
+
+    let (p2_nodes, p2_conns, mut bcs, end) = cantilever_clamped_p2(L, H, B, NX, NY, NZ);
+    let n_nodes = p2_nodes.len();
+    let loads = distributed_tip_load(&end, F);
+    let u = solve_p2_pipeline(&p2_nodes, &p2_conns, &mut bcs, &loads, &mat);
+
+    let tip_disp = mean_tip_deflection(&u, &end);
+    let delta_ref = timoshenko_tip_deflection(F, L, H, B, &mat);
+
+    let rel_err = (tip_disp - delta_ref).abs() / delta_ref;
+    assert!(
+        rel_err <= 0.01,
+        "cantilever P2 slender: tip deflection {tip_disp:.6e} vs Timoshenko reference \
+         {delta_ref:.6e} — relative error {:.2}% > 1% tolerance \
+         (mesh: {NX}×{NY}×{NZ}, n_nodes={n_nodes})",
+        rel_err * 100.0,
+    );
+}
