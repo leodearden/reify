@@ -30,6 +30,79 @@ impl GeometryHandleId {
     }
 }
 
+/// Typed kernel discriminator for the v0.2+ multi-kernel runtime.
+///
+/// Pairs with [`GeometryHandleId`] inside `KernelHandle` so the executor can
+/// record *which* kernel produced a given handle, and stands in for the
+/// dispatcher's registry-name ordering: variants are declared in lexicographic
+/// order of their [`as_registry_name`](KernelId::as_registry_name) strings
+/// (`"fidget" < "gmsh" < "manifold" < "occt" < "openvdb"`), so the derived
+/// [`Ord`] equals the dispatcher's `BTreeMap<String, _>` registry-name
+/// iteration order (the determinism contract in `reify_eval::dispatcher`).
+///
+/// # Relationship to `reify_config::KernelId`
+///
+/// This is a deliberate *second* `KernelId`, distinct from the one in
+/// `reify-config`. reify-ir's B3 dependency invariant (locked by
+/// `reify-ir/tests/dag_invariant.rs`) permits only `reify-core` and
+/// `reify-ast` as intra-workspace deps, so reify-ir physically cannot import
+/// `reify-config`'s `KernelId`. The two enums MUST be kept in sync — same
+/// variants, same canonical name strings (each kernel crate's registration
+/// const documents `name == KernelId::*.to_string()`). A future consolidation
+/// could host a single shared `KernelId` in `reify-core`.
+///
+/// # Extensibility
+///
+/// Marked `#[non_exhaustive]` so new kernel adapters can be added without a
+/// breaking change to downstream `match` sites. Exhaustive enumeration for
+/// in-crate use is provided by [`KernelId::ALL`]; external crates must use a
+/// wildcard arm — which is why the exhaustive Ord / round-trip tests live
+/// inside reify-ir.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
+pub enum KernelId {
+    /// Fidget — pure-Rust SDF kernel (`"fidget"`).
+    Fidget,
+    /// Gmsh — surface→volume tetrahedral mesher (`"gmsh"`).
+    Gmsh,
+    /// Manifold — triangle-mesh Boolean kernel (`"manifold"`).
+    Manifold,
+    /// OCCT / OpenCASCADE — B-rep kernel (`"occt"`).
+    Occt,
+    /// OpenVDB — voxel-grid kernel (`"openvdb"`).
+    OpenVdb,
+}
+
+impl KernelId {
+    /// All `KernelId` variants in declaration (== registry-name lexical) order.
+    ///
+    /// Provides a stable enumeration handle for exhaustive in-crate tests and
+    /// callers, since `#[non_exhaustive]` forbids external exhaustive `match`.
+    pub const ALL: [KernelId; 5] = [
+        KernelId::Fidget,
+        KernelId::Gmsh,
+        KernelId::Manifold,
+        KernelId::Occt,
+        KernelId::OpenVdb,
+    ];
+
+    /// Canonical lowercase registry name for this kernel.
+    ///
+    /// Equals the `*_KERNEL_NAME` const each kernel crate registers as its
+    /// `KernelRegistration::name` (and the dispatcher's `BTreeMap` key), so
+    /// `from_registry_name` is its exact inverse. Exhaustive in-crate `match`
+    /// — adding a variant forces updating this bridge at the same diff site.
+    pub const fn as_registry_name(self) -> &'static str {
+        match self {
+            KernelId::Fidget => "fidget",
+            KernelId::Gmsh => "gmsh",
+            KernelId::Manifold => "manifold",
+            KernelId::Occt => "occt",
+            KernelId::OpenVdb => "openvdb",
+        }
+    }
+}
+
 #[cfg(test)]
 mod kernel_id_tests {
     use super::*;
