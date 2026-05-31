@@ -29,6 +29,81 @@
 //! bit patterns rather than IEEE `==` (so [`ModalCacheKey`] is intentionally
 //! `Copy`/`Debug` but NOT `PartialEq`/`Eq`).
 
+/// The forcing-independent precompute determinants of a transient-response
+/// solve, used to decide whether a cached [`TransientCache`] can be reused for
+/// a new call (see the module docs and the `reify-eval` `TransientCache` for
+/// what the cache holds).
+///
+/// The key captures EXACTLY the inputs that determine the per-mode integrator
+/// coefficients and the uniform time grid:
+/// - `t_start`, `t_end`, `dt` — fix the grid (`uniform_time_grid`).
+/// - per-mode `(frequency_hz, damping_ratio)` — fix the Duhamel coefficients
+///   or the Newmark routing choice for every mode.
+///
+/// It deliberately EXCLUDES:
+/// - `forcing` — the cheap-varying input in the PRD §7.8 / §9.1 input-shaping
+///   loop; excluding it makes a forcing-only change a HIT that re-runs only
+///   the projection + ODE recurrence (skipping coefficient derivation),
+///   mirroring [`ModalCacheKey`]'s exclusion of the eigensolve knobs.
+/// - mode SHAPES — shapes feed only the always-recomputed forcing projection;
+///   the cached coefficients depend only on (freq, damping, dt, t_range), so
+///   a key match over those fields fully certifies the cache without the
+///   O(n_modes · n_nodes) bit-compare that shape inclusion would require.
+///
+/// Compared via [`matches`](TransientCacheKey::matches) — per-field
+/// `f64::to_bits` equality plus a leading mode-count check — NOT via
+/// `PartialEq`/`Eq` (the `f64` fields are not `Eq`; bit equality gives
+/// deterministic, `-0.0`/`NaN`-correct matching). NOT `Copy` (holds a `Vec`).
+#[derive(Clone, Debug)]
+pub struct TransientCacheKey {
+    /// Start of the time window (SI seconds).
+    pub t_start: f64,
+    /// End of the time window (SI seconds).
+    pub t_end: f64,
+    /// Uniform time step Δt (SI seconds).
+    pub dt: f64,
+    /// Per-mode `(frequency_hz, damping_ratio)` pairs — determines the
+    /// integrator selection and Duhamel/Newmark coefficients for each mode.
+    pub modes: Vec<(f64, f64)>,
+}
+
+impl TransientCacheKey {
+    /// Build a key from the forcing-independent precompute determinants.
+    ///
+    /// `modes` is a `Vec` of `(frequency_hz, damping_ratio)` pairs, one per
+    /// mode in the cached `ModalResult`. The order must match the mode list;
+    /// a different mode count is a cache MISS even if all shared fields match.
+    pub fn new(t_start: f64, t_end: f64, dt: f64, modes: Vec<(f64, f64)>) -> Self {
+        Self { t_start, t_end, dt, modes }
+    }
+
+    /// `true` iff every forcing-independent precompute determinant bit-matches
+    /// `other`.
+    ///
+    /// Checks `modes.len()` equality first (a mode-count change is always a
+    /// MISS), then per-field [`f64::to_bits`] equality for `t_start`, `t_end`,
+    /// `dt`, and each mode's `(frequency_hz, damping_ratio)` pair. Bit equality
+    /// is collision-free and deterministic: `-0.0` ≠ `+0.0` (bits differ) and
+    /// two identical `NaN` bit patterns DO match (unlike IEEE `==`). A `true`
+    /// result certifies that the cached grid + integrators are valid for the new
+    /// call — only the forcing projection and ODE recurrence need to re-run.
+    pub fn matches(&self, other: &TransientCacheKey) -> bool {
+        if self.modes.len() != other.modes.len() {
+            return false;
+        }
+        self.t_start.to_bits() == other.t_start.to_bits()
+            && self.t_end.to_bits() == other.t_end.to_bits()
+            && self.dt.to_bits() == other.dt.to_bits()
+            && self
+                .modes
+                .iter()
+                .zip(other.modes.iter())
+                .all(|((f1, z1), (f2, z2))| {
+                    f1.to_bits() == f2.to_bits() && z1.to_bits() == z2.to_bits()
+                })
+    }
+}
+
 /// The `(K, M)`-determining inputs of a modal assembly, used to decide whether a
 /// cached [`ModalAssembly`](../../../reify_eval/modal_ops/index.html) can be
 /// reused for a new modal request (see the module docs for what is and is not
