@@ -2,6 +2,14 @@
 //                and curvature(Curve,   Point3<Length>) → Scalar<Curvature>
 // (task 3621, KGQ-μ, PRD docs/prds/v0_3/kernel-geometry-queries.md §9)
 //
+// v0.3 wire-form note (forward pointer):
+//   At EVAL time the surface form returns a 2×2 Value::Matrix of
+//   Curvature-dimensioned scalars [[κ_max,0],[0,κ_min]] (v0.3 wire form,
+//   KGQ-μ design decision §2). The COMPILE-TIME type remains Scalar<Curvature>
+//   because units.rs is NOT modified by KGQ-μ (PRD §7); arg-type-aware return
+//   typing (Surface→Matrix, Curve→Scalar) is deferred to a later phase. Any
+//   compile-time type tension on the surface form surfaces as Warning only.
+//
 // User-observable signals:
 //   curvature(face_of_sphere_r5mm, pt)  → Matrix<2,2,Curvature>, mean ≈ 1/5mm = 200 m⁻¹
 //   curvature(circular_edge_r10mm, pt)  → Scalar<Curvature> ≈ 1/10mm = 100 m⁻¹
