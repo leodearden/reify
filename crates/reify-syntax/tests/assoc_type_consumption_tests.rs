@@ -1,14 +1,16 @@
 //! Lowering tests for associated-type consumption surfaces (task 3971, ιₐ).
 //!
+//! All tests in this file are GREEN after the full task-3971 implementation:
+//!
 //! (a) Characterization: structure-body `type X = Concrete` binding
 //!     → `MemberDecl::AssociatedType` (rides the existing `lower_member` arm;
-//!     becomes GREEN once grammar step-2 lands, no new Rust needed).
-//! (b) New: qualified type-expr in `param`/`let` type position
+//!     no new Rust code was required — grammar step-2 sufficed).
+//! (b) Bare qualified type-expr in `param`/`let` type position
 //!     → `TypeExprKind::QualifiedAssoc { base, trait_name: None, member }`
-//!     RED until step-6 adds the `qualified_type` branch in `lower_type_expr_node`.
+//!     (step-6 added the `qualified_type` branch in `lower_type_expr_node`).
 //! (d) Disambiguated FORK-G form: `Beam::(HasMaterial::Material)`
 //!     → `TypeExprKind::QualifiedAssoc { base, trait_name: Some("HasMaterial"), member }`
-//!     Step-7 adds this test; step-8 extends the lowering if needed.
+//!     (step-8 extended the lowering for the parenthesised trait disambiguator).
 
 use reify_ast::*;
 

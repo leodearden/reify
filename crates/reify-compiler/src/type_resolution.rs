@@ -1704,6 +1704,14 @@ pub(crate) fn collect_type_expr_names(type_expr: &reify_ast::TypeExpr) -> Vec<St
         // Qualified assoc-type refs contribute the base names (recursed), the member name,
         // and the trait disambiguator name (if present) so that dep-graph edges are preserved.
         // Resolution is deferred to task ιₑ.
+        //
+        // Note: `member` and `trait_name` are not top-level type names; they are the
+        // associated-type member and optional trait-disambiguation identifiers within a
+        // `Base::Member` / `Base::(Trait::Member)` path.  They are included here
+        // intentionally to ensure forward-compatibility dep-graph edges — the sole current
+        // consumer (alias-dependency resolution) filters by `alias_decls.contains_key`, so
+        // spurious entries are harmless today.  Task ιₑ will replace this placeholder with
+        // proper resolved-assoc-type dep tracking and can narrow the set at that point.
         reify_ast::TypeExprKind::QualifiedAssoc { base, trait_name, member } => {
             let mut names = collect_type_expr_names(base);
             names.push(member.clone());

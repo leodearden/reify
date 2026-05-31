@@ -749,9 +749,25 @@ impl<'a> Lowering<'a> {
     /// unresolved AST node only.
     fn lower_qualified_type(&self, node: tree_sitter::Node) -> TypeExpr {
         // `base` field: the leading identifier (e.g. "Beam" or a type-param "T").
-        let base_node = node
-            .child_by_field_name("base")
-            .unwrap_or(node);
+        //
+        // Under well-formed input the `base` field is always present.  Under
+        // tree-sitter error recovery it may be absent; rather than silently
+        // substituting the whole-node text (which would produce a structurally-
+        // valid but semantically wrong QualifiedAssoc), we log a debug warning so
+        // the malformed input is visible in debug builds.
+        let base_node = match node.child_by_field_name("base") {
+            Some(n) => n,
+            None => {
+                debug_assert!(
+                    false,
+                    "lower_qualified_type: missing `base` field in node '{}' at {:?} — \
+                     likely tree-sitter error-recovery output; substituting whole-node text",
+                    node.kind(),
+                    node.range(),
+                );
+                node
+            }
+        };
         let base = Box::new(TypeExpr {
             kind: TypeExprKind::Named {
                 name: self.node_text(base_node).to_string(),
@@ -766,10 +782,22 @@ impl<'a> Lowering<'a> {
             .map(|n| self.node_text(n).to_string());
 
         // `member` field: the associated-type name (present in both forms).
-        let member = node
-            .child_by_field_name("member")
-            .map(|n| self.node_text(n).to_string())
-            .unwrap_or_default();
+        //
+        // Under tree-sitter error recovery this field may be absent; an empty
+        // string would be a silent wrong result, so we assert in debug builds.
+        let member = match node.child_by_field_name("member") {
+            Some(n) => self.node_text(n).to_string(),
+            None => {
+                debug_assert!(
+                    false,
+                    "lower_qualified_type: missing `member` field in node '{}' at {:?} — \
+                     likely tree-sitter error-recovery output; using empty string",
+                    node.kind(),
+                    node.range(),
+                );
+                String::new()
+            }
+        };
 
         TypeExpr {
             kind: TypeExprKind::QualifiedAssoc { base, trait_name, member },
