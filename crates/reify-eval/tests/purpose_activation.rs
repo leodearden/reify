@@ -29,7 +29,7 @@
 
 use reify_eval::Engine;
 use reify_test_support::{
-    make_engine, make_simple_engine, parse_and_compile, parse_and_compile_with_stdlib,
+    make_engine, make_simple_engine, mm, parse_and_compile, parse_and_compile_with_stdlib,
 };
 use reify_core::{ContentHash, ModulePath, Severity, Type, ValueCellId, VersionId};
 use reify_ir::{CompiledExprKind, OptimizationObjective, Satisfaction};
@@ -2260,5 +2260,213 @@ purpose marg(subject : Structure) {
         purpose_result.satisfaction,
         reify_ir::Satisfaction::Violated,
         "let m = 50mm - 80mm = -30mm; -30mm > 0mm is false → purpose constraint must be Violated"
+    );
+}
+
+// ── §13: Staleness / incremental freshness (task 4009 amendment, suggestion 1) ──────────────
+//
+// After activate_purpose, injected let-cells must participate in the incremental
+// reverse-dependency walk so that a subsequent edit_param() refreshes snapshot.values
+// for the let before check_constraints_with_values reads it.  Without this, the
+// constraint would silently evaluate against a stale let value after an edit.
+
+/// Staleness regression: activate a let-purpose, edit a param so the let's
+/// value flips sign, verify the purpose constraint transitions Satisfied → Violated.
+///
+/// Confirms that injected `__let_` cells are wired into the reverse-dependency
+/// index (rebuilt by rebuild_purpose_infrastructure after activation) so that
+/// edit_param's dirty-cone walk re-evaluates them and updates snapshot.values.
+#[test]
+fn let_binding_constraint_updates_after_edit_param() {
+    let source = r#"
+structure Bracket {
+    param a : Length = 80mm
+    param b : Length = 50mm
+}
+
+purpose marg(subject : Structure) {
+    let m = subject.a - subject.b
+    constraint m > 0mm
+}
+"#;
+    let compiled = parse_and_compile(source);
+    assert!(
+        compiled.diagnostics.iter().all(|d| d.severity != Severity::Error),
+        "fixture must compile without errors: {:?}",
+        compiled.diagnostics
+    );
+
+    let mut engine = make_simple_engine();
+    let eval_result = engine.eval(&compiled);
+    engine.activate_purpose("marg", "Bracket");
+
+    // Pre-edit: a=80mm, b=50mm → m=30mm > 0mm → Satisfied.
+    let (results, _) = engine
+        .check_constraints_with_values(&eval_result.values)
+        .expect("pre-edit check must not error");
+    let before = results
+        .iter()
+        .find(|e| e.id.entity.starts_with("purpose:marg@Bracket"))
+        .expect("must find injected constraint before edit");
+    assert_eq!(
+        before.satisfaction,
+        Satisfaction::Satisfied,
+        "pre-edit: m = 80mm - 50mm = 30mm > 0mm → Satisfied"
+    );
+
+    // Edit a: 80mm → 40mm so m = 40mm - 50mm = -10mm < 0mm.
+    let bracket_a = ValueCellId::new("Bracket", "a");
+    let edit_result = engine
+        .edit_param(bracket_a, mm(40.0))
+        .expect("edit_param must succeed");
+
+    // Post-edit: m=-10mm > 0mm is false → Violated.
+    let (results, _) = engine
+        .check_constraints_with_values(&edit_result.values)
+        .expect("post-edit check must not error");
+    let after = results
+        .iter()
+        .find(|e| e.id.entity.starts_with("purpose:marg@Bracket"))
+        .expect("must find injected constraint after edit");
+    assert_eq!(
+        after.satisfaction,
+        Satisfaction::Violated,
+        "after edit_param(a=40mm): let m = 40mm - 50mm = -10mm; -10mm > 0mm is false → Violated"
+    );
+}
+
+// ── §14: Objective referencing a let-bound expression (task 4009 amendment, suggestion 4) ──
+//
+// When a purpose body has both a `let` and an `objective`, the objective expression
+// must be remapped to the injected `__let_` cell id at activation time, and the
+// injected let-cell value must be present in snapshot.values so that the
+// optimizer/solve path can resolve it without a separate overlay.
+
+/// Architecture coverage: objective expression referencing a let-bound cell.
+///
+/// After activation the Minimize objective must be active and the injected
+/// `__let_m` cell must be present in snapshot.values, confirming that the
+/// optimizer can read the let value directly from the snapshot.
+#[test]
+fn let_binding_referenced_in_objective_is_present_in_snapshot() {
+    let source = r#"
+structure Widget {
+    param a : Length = 80mm
+    param b : Length = 50mm
+}
+
+purpose min_margin(subject : Structure) {
+    let m = subject.a - subject.b
+    objective minimize m
+}
+"#;
+    let compiled = parse_and_compile(source);
+    assert!(
+        compiled.diagnostics.iter().all(|d| d.severity != Severity::Error),
+        "fixture must compile without errors: {:?}",
+        compiled.diagnostics
+    );
+
+    let mut engine = make_simple_engine();
+    engine.eval(&compiled);
+    engine.activate_purpose("min_margin", "Widget");
+
+    // Objective must be present as Minimize.
+    let objectives = engine.active_objectives();
+    assert_eq!(objectives.len(), 1, "must have 1 active objective");
+    assert!(
+        matches!(objectives[0], OptimizationObjective::Minimize(_)),
+        "objective must be Minimize after activation"
+    );
+
+    // The injected let-cell value must be in snapshot.values so the optimizer
+    // can resolve it directly (snapshot.values is the optimizer's value source,
+    // no separate overlay is applied on that path).
+    let snapshot = engine.snapshot().expect("snapshot must exist after activation");
+    let let_in_values = snapshot.values.iter().any(|(id, _)| {
+        id.entity.starts_with("purpose:min_margin@Widget") && id.member == "__let_m"
+    });
+    assert!(
+        let_in_values,
+        "injected let-cell '__let_m' must be present in snapshot.values so the \
+         optimizer can resolve let-bound objective terms"
+    );
+}
+
+// ── §15: Chained let activation (task 4009 amendment, suggestion 5) ─────────────────────────
+//
+// The activation-time remap_cell chaining path — where a later let's compiled
+// expression references an earlier let's compile-time cell id that must be
+// rewritten to the injected id before evaluation — is the most intricate part
+// of the δ injection logic.  This end-to-end test verifies that both lets are
+// evaluated correctly and that the constraint derives its value through both.
+
+/// Chained lets: `let m = subject.a - subject.b; let n = m * 2`.
+/// m=30mm, n=60mm; constraint n > 0mm → Satisfied.
+///
+/// Uses multiplication by the dimensionless literal `2` so both let types are
+/// consistent under compile-time type inference (subject params resolve to Real
+/// for a wildcard Structure subject, and `Real * Real` is valid).
+///
+/// Verifies remap_cell chaining: `n`'s expr references the compile-time `m`
+/// cell id, which must be rewritten to the injected `__let_m` id before
+/// evaluation so `n` reads the correct value (not Undef).
+#[test]
+fn chained_let_bindings_resolve_through_both_lets() {
+    let source = r#"
+structure Widget {
+    param a : Length = 80mm
+    param b : Length = 50mm
+}
+
+purpose analysis(subject : Structure) {
+    let m = subject.a - subject.b
+    let n = m * 2
+    constraint n > 0mm
+}
+"#;
+    let compiled = parse_and_compile(source);
+    assert!(
+        compiled.diagnostics.iter().all(|d| d.severity != Severity::Error),
+        "fixture must compile without errors: {:?}",
+        compiled.diagnostics
+    );
+
+    let mut engine = make_simple_engine();
+    let eval_result = engine.eval(&compiled);
+    engine.activate_purpose("analysis", "Widget");
+
+    // m = 80mm - 50mm = 30mm; n = 30mm * 2 = 60mm; 60mm > 0mm → Satisfied.
+    let (results, _) = engine
+        .check_constraints_with_values(&eval_result.values)
+        .expect("check_constraints_with_values must not error");
+    let purpose_result = results
+        .iter()
+        .find(|e| e.id.entity.starts_with("purpose:analysis@Widget"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected injected constraint with prefix 'purpose:analysis@Widget'; found: {:?}",
+                results.iter().map(|e| &e.id).collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        purpose_result.satisfaction,
+        Satisfaction::Satisfied,
+        "m=30mm, n=60mm; 60mm > 0mm → purpose constraint must be Satisfied"
+    );
+
+    // Both let-cells must be present in graph.value_cells.
+    let snapshot = engine.snapshot().expect("snapshot must exist after activation");
+    assert!(
+        snapshot.graph.value_cells.iter().any(|(id, _)| {
+            id.entity.starts_with("purpose:analysis@Widget") && id.member == "__let_m"
+        }),
+        "injected __let_m cell must be present in graph.value_cells"
+    );
+    assert!(
+        snapshot.graph.value_cells.iter().any(|(id, _)| {
+            id.entity.starts_with("purpose:analysis@Widget") && id.member == "__let_n"
+        }),
+        "injected __let_n cell must be present in graph.value_cells"
     );
 }
