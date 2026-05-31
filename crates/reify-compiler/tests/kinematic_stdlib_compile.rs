@@ -16,6 +16,7 @@
 
 use reify_compiler::*;
 use reify_core::*;
+use reify_ir::CompiledExprKind;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -125,7 +126,9 @@ fn conforming_joints_have_driving_joint_bound() {
 
 #[test]
 fn axis_joints_have_one_vec3_axis_param() {
-    for name in &["Prismatic", "Revolute", "Cylindrical"] {
+    // Narrowed by task 3849: Prismatic and Revolute now have 4 params (axis +
+    // spring_rate + damping + neutral); only Cylindrical still has exactly 1.
+    for name in &["Cylindrical"] {
         let template = find_structure(name);
         let params = param_cells(template);
         assert_eq!(
@@ -145,6 +148,132 @@ fn axis_joints_have_one_vec3_axis_param() {
             Type::Real,
             "{}.axis should be Type::Real (Vec3 = Real alias, trajectory.ri:96)",
             name
+        );
+    }
+}
+
+// ─── task 3849 step-5: flexure field shape tests ──────────────────────────────
+
+/// Revolute now has four params: axis (Vec3=Real), spring_rate
+/// (Option<RotationalStiffness>), damping (Option<RotationalDamping>),
+/// neutral (Option<Angle>). The three new params default to `none`.
+#[test]
+fn revolute_has_four_params_with_correct_types() {
+    let template = find_structure("Revolute");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["axis", "spring_rate", "damping", "neutral"],
+        "Revolute should have exactly (axis, spring_rate, damping, neutral) in that order"
+    );
+
+    // axis: Vec3 = Real alias
+    assert_eq!(
+        params[0].cell_type,
+        Type::Real,
+        "Revolute.axis should be Type::Real (Vec3 = Real alias)"
+    );
+
+    // spring_rate: Option<RotationalStiffness>
+    assert_eq!(
+        params[1].cell_type,
+        Type::Option(Box::new(Type::Scalar {
+            dimension: DimensionVector::ROTATIONAL_STIFFNESS
+        })),
+        "Revolute.spring_rate should be Option<RotationalStiffness>"
+    );
+
+    // damping: Option<RotationalDamping>
+    assert_eq!(
+        params[2].cell_type,
+        Type::Option(Box::new(Type::Scalar {
+            dimension: DimensionVector::ROTATIONAL_DAMPING
+        })),
+        "Revolute.damping should be Option<RotationalDamping>"
+    );
+
+    // neutral: Option<Angle>
+    assert_eq!(
+        params[3].cell_type,
+        Type::Option(Box::new(Type::Scalar {
+            dimension: DimensionVector::ANGLE
+        })),
+        "Revolute.neutral should be Option<Angle>"
+    );
+
+    // All three new params default to `= none` (CompiledExprKind::OptionNone).
+    for (i, field_name) in [("spring_rate", 1usize), ("damping", 2), ("neutral", 3)] {
+        let default = params[field_name]
+            .default_expr
+            .as_ref()
+            .unwrap_or_else(|| panic!("Revolute.{i} missing default_expr"));
+        assert!(
+            matches!(default.kind, CompiledExprKind::OptionNone),
+            "Revolute.{i} default should be OptionNone, got {:?}",
+            default.kind
+        );
+    }
+}
+
+/// Prismatic now has four params: axis (Vec3=Real), spring_rate
+/// (Option<TranslationalStiffness>), damping (Option<TranslationalDamping>),
+/// neutral (Option<Length>). The three new params default to `none`.
+#[test]
+fn prismatic_has_four_params_with_correct_types() {
+    let template = find_structure("Prismatic");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["axis", "spring_rate", "damping", "neutral"],
+        "Prismatic should have exactly (axis, spring_rate, damping, neutral) in that order"
+    );
+
+    // axis: Vec3 = Real alias
+    assert_eq!(
+        params[0].cell_type,
+        Type::Real,
+        "Prismatic.axis should be Type::Real (Vec3 = Real alias)"
+    );
+
+    // spring_rate: Option<TranslationalStiffness>
+    assert_eq!(
+        params[1].cell_type,
+        Type::Option(Box::new(Type::Scalar {
+            dimension: DimensionVector::TRANSLATIONAL_STIFFNESS
+        })),
+        "Prismatic.spring_rate should be Option<TranslationalStiffness>"
+    );
+
+    // damping: Option<TranslationalDamping>
+    assert_eq!(
+        params[2].cell_type,
+        Type::Option(Box::new(Type::Scalar {
+            dimension: DimensionVector::TRANSLATIONAL_DAMPING
+        })),
+        "Prismatic.damping should be Option<TranslationalDamping>"
+    );
+
+    // neutral: Option<Length>
+    assert_eq!(
+        params[3].cell_type,
+        Type::Option(Box::new(Type::Scalar {
+            dimension: DimensionVector::LENGTH
+        })),
+        "Prismatic.neutral should be Option<Length>"
+    );
+
+    // All three new params default to `= none` (CompiledExprKind::OptionNone).
+    for (i, field_name) in [("spring_rate", 1usize), ("damping", 2), ("neutral", 3)] {
+        let default = params[field_name]
+            .default_expr
+            .as_ref()
+            .unwrap_or_else(|| panic!("Prismatic.{i} missing default_expr"));
+        assert!(
+            matches!(default.kind, CompiledExprKind::OptionNone),
+            "Prismatic.{i} default should be OptionNone, got {:?}",
+            default.kind
         );
     }
 }
