@@ -504,4 +504,74 @@ mod tests {
             "axis is length-dimensioned",
         );
     }
+
+    // ── step-9: RED -- prb_double_parallelogram_flexure series stiffness ───────
+
+    #[test]
+    fn prb_double_parallelogram_flexure_structure_and_series_stiffness() {
+        let result = crate::eval_builtin("prb_double_parallelogram_flexure", &compound_args());
+
+        // kind == "prismatic"
+        assert_eq!(
+            map_get(&result, "kind"),
+            Some(&Value::String("prismatic".to_string())),
+            "double parallelogram presents as a prismatic joint; got {result:?}"
+        );
+
+        // axis, pivot, damping
+        assert_eq!(map_get(&result, "axis"), Some(&axis_y()), "axis preserved");
+        assert_eq!(map_get(&result, "pivot"), Some(&origin()), "pivot preserved");
+        assert_eq!(
+            map_get(&result, "damping"),
+            Some(&Value::Option(None)),
+            "damping is None"
+        );
+
+        let length = 0.02_f64;
+        let width  = 0.005_f64;
+        let thick  = 0.0005_f64;
+        let e      = 205e9_f64;
+        let i = width * thick.powi(3) / 12.0;
+
+        // Series stiffness halves: spring_rate = k_stage/2 = 24·E·I/L³
+        let k_expected = 2.0 * 12.0 * e * i / length.powi(3); // = 24*E*I/L^3
+        match map_get(&result, "spring_rate") {
+            Some(Value::Scalar { si_value, dimension }) => {
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::TRANSLATIONAL_STIFFNESS,
+                    "spring_rate carries TRANSLATIONAL_STIFFNESS"
+                );
+                let rel = (si_value - k_expected).abs() / k_expected;
+                assert!(rel < 1e-9, "spring_rate {si_value} vs {k_expected} (rel {rel})");
+            }
+            other => panic!("expected spring_rate Scalar, got {other:?}"),
+        }
+
+        // Transverse stiffness also halves: (4·E·b·t/L)/2
+        let k_transverse_expected = 2.0 * e * (width * thick) / length; // = (4*E*b*t/L)/2
+        match map_get(&result, "transverse_stiffness") {
+            Some(Value::Scalar { si_value, dimension }) => {
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::TRANSLATIONAL_STIFFNESS,
+                    "transverse_stiffness carries TRANSLATIONAL_STIFFNESS"
+                );
+                let rel = (si_value - k_transverse_expected).abs() / k_transverse_expected;
+                assert!(
+                    rel < 1e-9,
+                    "transverse_stiffness {si_value} vs {k_transverse_expected} (rel {rel})"
+                );
+            }
+            other => panic!("expected transverse_stiffness Scalar, got {other:?}"),
+        }
+
+        // Smoke: invalid call (6 args) => Undef
+        {
+            let mut a = compound_args();
+            a.truncate(6);
+            let r = crate::eval_builtin("prb_double_parallelogram_flexure", &a);
+            assert!(r.is_undef(), "6-arg double call => Undef");
+        }
+    }
 }
