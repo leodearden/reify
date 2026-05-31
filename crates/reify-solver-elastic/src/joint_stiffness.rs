@@ -47,6 +47,27 @@ pub fn add_joint_stiffness(
     contributions: &[JointStiffness],
 ) -> SparseRowMat<usize, f64> {
     let n = k_global.nrows();
+    // Public-surface contract checks. Unconditional `assert!` (not `debug_assert!`)
+    // per the project's Task-2544 contract-explicitness convention (see
+    // assembly/global.rs:345-346 and the per-entry guards at :363-401).
+    // The kernel is sign-agnostic: negative but finite stiffness is allowed; SPD-ness
+    // of the resulting K is the caller's/eigensolve's contract, mirroring how
+    // `solve_eigen_shift_invert` documents its own SPD precondition.
+    for c in contributions {
+        assert!(
+            c.dof < n,
+            "JointStiffness dof {} is out of range: k_global has n = {} DOFs (valid range 0..{})",
+            c.dof,
+            n,
+            n,
+        );
+        assert!(
+            c.stiffness.is_finite(),
+            "JointStiffness stiffness {} is not finite: NaN/Inf would poison \
+             the downstream generalized eigenproblem",
+            c.stiffness,
+        );
+    }
     // Extract K's stored triplets — mirror project_free (modal_ops.rs:484-508) and
     // m_matvec (modal_ops.rs:515-528): symbolic() gives the sparsity structure;
     // col_idx_of_row_raw + val_of_row iterate the stored (col, value) pairs per row.
