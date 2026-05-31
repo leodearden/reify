@@ -111,6 +111,25 @@ pub enum Pattern {
     /// as reported by `mcp__jcodemunch__get_layer_violations`.
     /// See `docs/prds/reify-audit-p1-jcodemunch-substrate.md` §3.
     PLayerViolation,
+    /// P5 — tests-assert-empty: a `done` task whose added test function BOTH
+    /// (a) carries a placeholder/empty/not_yet/notyet/stub/todo/unimplemented
+    /// marker in its fn name AND (b) asserts an empty/vacuous result
+    /// (`is_empty()`, `vec![]`, `Vec::new()`, `assert_eq!(.., 0)`,
+    /// `assert_eq!(.., [])`). The double-gate suppresses legitimately-empty
+    /// capability tests while flagging placeholder tests that mask a missing
+    /// implementation. See task 4140 / esc-4137-196 and
+    /// `docs/architecture-audit/f-infra-design.md` §5 P5.
+    P5TestsAssertEmpty,
+    /// P5 — live-path-stranded: a `done` task whose changed capability symbol
+    /// has no non-test workspace caller (stranded by a live-path relocation).
+    /// Requires cross-crate scope (metadata.files span ≥2 distinct
+    /// `crates/<name>/` roots) to scope to the documented cross-crate relocation
+    /// pattern and avoid duplicating P1's single-crate orphan domain.
+    /// Reuses P1's per-symbol suppression guards (stdlib scope-exclude,
+    /// `#[allow(dead_code)]`, `#[cfg(test)]`, non-blank `// G-allow:`).
+    /// See task 4140 / esc-4137-196 and
+    /// `docs/architecture-audit/f-infra-design.md` §5 P5.
+    P5LivePathStranded,
 }
 
 /// A pointer to forensic evidence supporting a [`Finding`]. Renders verbatim
