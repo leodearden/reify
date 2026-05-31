@@ -121,6 +121,23 @@ impl KernelId {
     }
 }
 
+/// A geometry handle tagged with the kernel that produced it.
+///
+/// Pairs an opaque [`GeometryHandleId`] with the [`KernelId`] of the kernel
+/// session that allocated it, so the executor can route a handle back to the
+/// right kernel for follow-on operations. `Copy + Eq + Hash`, so it serves as
+/// a `reify_eval::RealizationCache` value or a `HashMap` key/value directly.
+/// Per-kernel trait methods keep operating on the bare
+/// [`GeometryHandleId`]; the executor projects [`KernelHandle::id`] before a
+/// trait call and re-wraps the result with that kernel's [`KernelId`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KernelHandle {
+    /// The kernel that produced (and owns) `id`.
+    pub kernel: KernelId,
+    /// The kernel-local geometry handle.
+    pub id: GeometryHandleId,
+}
+
 #[cfg(test)]
 mod kernel_id_tests {
     use super::*;
