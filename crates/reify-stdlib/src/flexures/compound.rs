@@ -61,14 +61,10 @@ struct CompoundInputs<'a> {
 /// compound-flexure constructors:
 /// `(length, width, thickness, blade_spacing, material, motion_axis, pivot)`.
 ///
-/// Returns `None` (⇒ `Value::Undef`) on: arity ≠ 7; non-finite geometry or
-/// blade_spacing; a material that is not a `Value::StructureInstance` with a
-/// finite `youngs_modulus`; or a motion_axis that is not a finite, non-zero,
-/// dimensionless 3-vector.
-///
-/// **Positivity / degeneracy guards are added in step-8** — this early version
-/// intentionally accepts non-positive geometry to keep the RED→GREEN steps
-/// incremental (step-7 tests that those guards are absent, step-8 adds them).
+/// Returns `None` (⇒ `Value::Undef`) on: arity ≠ 7; non-positive or non-finite
+/// geometry (including `blade_spacing`); thickness ≥ length; a material that is
+/// not a `Value::StructureInstance` with a finite positive `youngs_modulus`; or a
+/// motion_axis that is not a finite, non-zero, dimensionless 3-vector.
 fn parse_compound_inputs(args: &[Value]) -> Option<CompoundInputs<'_>> {
     if args.len() != 7 {
         return None;
@@ -76,11 +72,20 @@ fn parse_compound_inputs(args: &[Value]) -> Option<CompoundInputs<'_>> {
     let length = length_si(&args[0])?;
     let width = length_si(&args[1])?;
     let thickness = length_si(&args[2])?;
-    // blade_spacing validated for presence/finitude but does NOT enter §6.1/§6.2
-    // closed forms — accepted for signature fidelity (PRD §6.1 prescribes it).
-    let _blade_spacing = length_si(&args[3])?;
+    // blade_spacing validated (positive, finite, LENGTH) but does NOT enter
+    // §6.1/§6.2 closed forms — accepted for signature fidelity (PRD §6.1).
+    let blade_spacing = length_si(&args[3])?;
+    if length <= 0.0 || width <= 0.0 || thickness <= 0.0 || blade_spacing <= 0.0 {
+        return None;
+    }
+    if thickness >= length {
+        return None;
+    }
     let material = &args[4];
     let e = material_field_si(material, "youngs_modulus")?;
+    if e <= 0.0 {
+        return None;
+    }
     let axis = &args[5];
     crate::helpers::validate_dimensionless_unit_axis_vec3(axis)?;
     Some(CompoundInputs {
