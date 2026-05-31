@@ -541,6 +541,81 @@ mod tests {
         }
     }
 
+    // ─── step 13: solve_modal_response dispatcher (RED) ─────────────────────
+
+    /// Tests the `solve_modal_response` dispatcher across all four routing cases.
+    /// RED: `Integrator`, `ModalResponse`, and `solve_modal_response` are absent.
+    #[test]
+    fn solve_modal_response_dispatcher() {
+        let omega = 50.0_f64;
+        let zeta  = 0.05_f64;
+        let p0    = 2.0_f64;
+        let n     = 60_usize;
+        let dt    = 0.001_f64;
+
+        // (a) Uniform grid + underdamped ζ<1 → DuhamelUniform; coords exact.
+        {
+            let times:   Vec<f64> = (0..n).map(|i| i as f64 * dt).collect();
+            let forcing: Vec<f64> = vec![p0; n];
+            let resp = solve_modal_response(omega, zeta, &times, &forcing, 0.0, 0.0);
+            assert_eq!(resp.integrator, Integrator::DuhamelUniform,
+                "uniform+underdamped must choose DuhamelUniform");
+            for (j, &got) in resp.coords.iter().enumerate() {
+                let want = analytic_step_response(p0, omega, zeta, j as f64 * dt);
+                assert!(
+                    (got - want).abs() < 1e-12,
+                    "case (a) step {j}: got {got:.6e} want {want:.6e} diff {:.2e}",
+                    (got - want).abs()
+                );
+            }
+        }
+
+        // (b) Non-uniform grid → Newmark; coords within method tolerance.
+        {
+            let mut times = Vec::with_capacity(n);
+            times.push(0.0_f64);
+            let mut step = 0.001_f64;
+            for _ in 1..n {
+                times.push(times.last().unwrap() + step);
+                step *= 1.02;
+            }
+            let forcing: Vec<f64> = vec![p0; n];
+            let resp = solve_modal_response(omega, zeta, &times, &forcing, 0.0, 0.0);
+            assert_eq!(resp.integrator, Integrator::Newmark,
+                "non-uniform grid must choose Newmark");
+            let max_rel = resp.coords.iter().enumerate().map(|(j, &g)| {
+                let want = analytic_step_response(p0, omega, zeta, times[j]);
+                (g - want).abs()
+            }).fold(0.0_f64, f64::max) * omega * omega / p0;
+            assert!(max_rel < 2e-2,
+                "case (b) Newmark non-uniform rel err {max_rel:.3e} ≥ 2e-2");
+        }
+
+        // (c) Uniform grid but ζ≥1 (critically/over-damped) → Newmark; all finite.
+        {
+            let zeta_over = 1.5_f64;
+            let times:   Vec<f64> = (0..n).map(|i| i as f64 * dt).collect();
+            let forcing: Vec<f64> = vec![p0; n];
+            let resp = solve_modal_response(omega, zeta_over, &times, &forcing, 0.0, 0.0);
+            assert_eq!(resp.integrator, Integrator::Newmark,
+                "ζ≥1 must route to Newmark even on uniform grid");
+            assert!(resp.coords.iter().all(|x| x.is_finite()),
+                "case (c) ζ≥1: coords must all be finite");
+        }
+
+        // (d) Uniform grid but ω≈0 (rigid-body) → Newmark; all finite (no NaN).
+        {
+            let omega_zero = 1e-10_f64;
+            let times:   Vec<f64> = (0..n).map(|i| i as f64 * dt).collect();
+            let forcing: Vec<f64> = vec![p0; n];
+            let resp = solve_modal_response(omega_zero, zeta, &times, &forcing, 0.0, 0.0);
+            assert_eq!(resp.integrator, Integrator::Newmark,
+                "ω≈0 (rigid-body) must route to Newmark");
+            assert!(resp.coords.iter().all(|x| x.is_finite()),
+                "case (d) ω≈0: coords must all be finite (no NaN)");
+        }
+    }
+
     // ─── step 09: is_uniformly_sampled (RED) ─────────────────────────────────
 
     /// Asserts the correct behaviour of `is_uniformly_sampled`.
