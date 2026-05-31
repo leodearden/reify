@@ -188,7 +188,7 @@ mod tests {
         ]
     }
 
-    // ── step-1: RED — prb_prismatic_blade smoke + scaling ────────────────────
+    // ── step-1/2: prb_prismatic_blade smoke + scaling ────────────────────────
 
     /// (a) kind, damping, spring_rate dimension + closed-form value.
     #[test]
@@ -274,5 +274,58 @@ mod tests {
         let ratio_w = k(length, 2.0 * width, thickness, e) / k_base;
         let rel_w = (ratio_w - 2.0).abs() / 2.0;
         assert!(rel_w < 1e-9, "width scaling: ratio {ratio_w} vs 2 (rel {rel_w})");
+    }
+
+    // ── step-3: RED — prb_two_axis_pivot smoke + multi-DOF invariant ─────────
+
+    /// (a) kind, spring_rate invariant, damping, effective_stiffness closed-form.
+    ///
+    /// The §8.6/§13.1 multi-DOF invariant: `spring_rate == Option(None)` for any
+    /// spherical (multi-DOF) joint — stiffness is surfaced only via
+    /// `effective_stiffness`.
+    #[test]
+    fn prb_two_axis_pivot_structure_and_stiffness() {
+        let result = crate::eval_builtin("prb_two_axis_pivot", &prismatic_args());
+
+        assert_eq!(
+            map_get(&result, "kind"),
+            Some(&Value::String("spherical".to_string())),
+            "two-axis pivot presents as a spherical joint"
+        );
+        // §8.6/§13.1 multi-DOF invariant: spring_rate is None for spherical joints.
+        assert_eq!(
+            map_get(&result, "spring_rate"),
+            Some(&Value::Option(None)),
+            "spring_rate is Option(None) [§8.6 multi-DOF invariant]"
+        );
+        assert_eq!(
+            map_get(&result, "damping"),
+            Some(&Value::Option(None)),
+            "damping is Option(None)"
+        );
+
+        let length = 0.02_f64;
+        let width = 0.005_f64;
+        let thickness = 0.0005_f64;
+        let e = 205e9_f64;
+        let i = width * thickness.powi(3) / 12.0;
+        // γ = 1: symmetric per-axis slender blade (Henein 2010).
+        let k_expected = e * i / length;
+
+        match map_get(&result, "effective_stiffness") {
+            Some(Value::Scalar { si_value, dimension }) => {
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::ROTATIONAL_STIFFNESS,
+                    "effective_stiffness carries ROTATIONAL_STIFFNESS"
+                );
+                let rel = (si_value - k_expected).abs() / k_expected;
+                assert!(
+                    rel < 1e-9,
+                    "effective_stiffness {si_value} vs {k_expected} (rel {rel})"
+                );
+            }
+            other => panic!("expected effective_stiffness Scalar, got {other:?}"),
+        }
     }
 }
