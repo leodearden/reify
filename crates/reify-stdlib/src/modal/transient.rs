@@ -428,6 +428,40 @@ pub fn duhamel_solve(
     out
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Task ι pure helpers — time grid, forcing samplers, node resolution, series
+// reconstruction
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Dependency-free `f64` math consumed by the `modal::transient_response` /
+// `modal::displacement_at` trampolines (crates/reify-eval/src/modal_ops.rs); the
+// `Value` marshalling, node-string parsing, and diagnostics live there. These
+// helpers build the uniform grid the θ solver integrates on, sample each forcing
+// primitive's scalar p_src(t), resolve a geometry-free node from a mode shape,
+// and reconstruct one location's modal-superposition series.
+
+/// Build the uniform time grid `[t_start, t_start + dt, …]` that
+/// [`solve_modal_response`] integrates on (uniform spacing auto-selects the exact
+/// Duhamel path).
+///
+/// The sample count is `floor((t_end − t_start) / dt) + 1`, computed via `floor`
+/// (not repeated accumulation) so the grid length is deterministic and free of
+/// floating-point drift: `grid[j] = t_start + j·dt` for `j ∈ [0, count)`, and the
+/// last sample `t_start + floor(span/dt)·dt ≤ t_end` by construction.
+///
+/// Degenerate inputs return early:
+/// * `dt ≤ 0` → empty (no positive spacing → no grid).
+/// * `t_end < t_start` → empty (negative span → a `floor` count ≤ 0).
+/// * `t_end == t_start` → `[t_start]` (a single sample, `floor(0)+1 = 1`).
+pub fn uniform_time_grid(t_start: f64, t_end: f64, dt: f64) -> Vec<f64> {
+    if dt <= 0.0 || t_end < t_start {
+        return Vec::new();
+    }
+    // span ≥ 0 and dt > 0 here, so the floor is ≥ 0 and the `as usize` cast is safe.
+    let count = ((t_end - t_start) / dt).floor() as usize + 1;
+    (0..count).map(|j| t_start + j as f64 * dt).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
