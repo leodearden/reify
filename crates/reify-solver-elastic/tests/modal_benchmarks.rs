@@ -439,3 +439,305 @@ fn cantilever_beam_p2_modal_within_two_percent() {
         m.f1, m.f1_analytic, m.rel_err * 100.0, CANTILEVER_P2_REL_TOL * 100.0,
     );
 }
+
+// ---------------------------------------------------------------------------
+// Simply-supported (pin-pin) P2 modal measurement
+// ---------------------------------------------------------------------------
+
+/// Index of the node nearest `target` in Euclidean distance — used to place the
+/// simply-supported neutral-axis anchors by coordinate over the promoted P2 node
+/// set (mirrors `modal_ops::nearest_node`).
+fn nearest_node(nodes: &[[f64; 3]], target: [f64; 3]) -> usize {
+    let dist2 = |p: &[f64; 3]| {
+        let dx = p[0] - target[0];
+        let dy = p[1] - target[1];
+        let dz = p[2] - target[2];
+        dx * dx + dy * dy + dz * dz
+    };
+    nodes
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| {
+            dist2(a).partial_cmp(&dist2(b)).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(i, _)| i)
+        .expect("mesh must have at least one node")
+}
+
+/// Realize the simply-supported (pin-pin) Dirichlet BCs over the *promoted P2*
+/// node set — a verbatim port of `modal_ops::simply_supported_pin_pin_bcs`:
+///
+///   1. Pin ONLY the transverse Z DOF on every node of both end faces
+///      (`x ≈ 0` and `x ≈ L`), selected by x-coordinate so the P2 edge-midpoint
+///      nodes on each face are caught too. Pinning `w` (not the axial `u`) leaves
+///      the bending rotation `dw/dx` free, giving the `(nπ)²` simply-supported
+///      family rather than the fixed-fixed family.
+///   2. Minimal anchors at the two end-face neutral-axis nodes (`z = h/2`,
+///      `y = 0`): X at the root node (removes axial rigid translation), Y at the
+///      root AND tip nodes (the two x-separated anchors remove the Y rigid
+///      translation *and* the in-plane Z-rotation). Both anchor families sit off
+///      the vertical bending mode (`u = 0` at the neutral axis, `v = 0`
+///      everywhere), so they do not load the headline signal.
+fn simply_supported_bcs(nodes_p2: &[[f64; 3]], length: f64, height: f64) -> Vec<DirichletBc> {
+    let eps = 1e-10_f64;
+    let mut bcs = Vec::new();
+
+    // (1) Simple supports: pin the transverse Z DOF on both end faces.
+    for (n, xyz) in nodes_p2.iter().enumerate() {
+        let on_end = xyz[0].abs() < eps || (xyz[0] - length).abs() < eps;
+        if on_end {
+            bcs.push(DirichletBc { dof: 3 * n + 2, value: 0.0 }); // Z (bending)
+        }
+    }
+
+    // (2) Minimal anchors at the two end-face neutral-axis nodes (z = h/2).
+    let root = nearest_node(nodes_p2, [0.0, 0.0, height / 2.0]);
+    let tip = nearest_node(nodes_p2, [length, 0.0, height / 2.0]);
+    bcs.push(DirichletBc { dof: 3 * root, value: 0.0 }); // X anchor (axial)
+    bcs.push(DirichletBc { dof: 3 * root + 1, value: 0.0 }); // Y anchor (root)
+    bcs.push(DirichletBc { dof: 3 * tip + 1, value: 0.0 }); // Y anchor (tip)
+    bcs
+}
+
+/// Per-axis energy fractions `(x, y, z)` of an eigenvector over the free DOFs:
+/// `e[α] = Σ_i φ_i² · [axis(i) == α]`, normalized to sum 1. The vertical
+/// (Z-dominant) bending modes have `z ≈ 1`; lateral (Y) and axial (X) modes have
+/// their energy on the other axes. This is the mode-identification lever the SS
+/// benchmark needs because — unlike the locked P1 `ny=1` mesh — the P2 mesh
+/// resolves the lateral Y-bending mode (`≈ 5× f₁,z ≈ 579 Hz`) *within* the first
+/// few eigenvalues, so it intrudes between the 2nd and 3rd vertical modes.
+fn axis_energy_fractions(eigvec: &[f64], full_of_free: &[usize]) -> [f64; 3] {
+    let mut e = [0.0_f64; 3];
+    for (free_idx, &comp) in eigvec.iter().enumerate() {
+        e[full_of_free[free_idx] % 3] += comp * comp;
+    }
+    let total = e[0] + e[1] + e[2];
+    if total > 0.0 { [e[0] / total, e[1] / total, e[2] / total] } else { [0.0; 3] }
+}
+
+/// Analytic Euler-Bernoulli simply-supported natural frequency for the given
+/// dimensionless eigen-coefficient `βL = nπ`:
+/// `fₙ = (nπ)²/(2π) · √(EI / (ρ A L⁴))`, `I = b·h³/12`, `A = b·h`.
+fn analytic_ss_frequency(grid: &BeamFixture, beta_l: f64) -> f64 {
+    beta_l.powi(2) / (2.0 * PI)
+        * (STEEL_E_PA * grid.i_bending_z() / (STEEL_DENSITY * grid.area() * grid.lx.powi(4))).sqrt()
+}
+
+/// One measured spectrum entry: frequency plus the `(x, y, z)` energy fractions
+/// used to classify the mode family.
+struct ModeInfo {
+    freq: f64,
+    fracs: [f64; 3],
+}
+
+/// Outcome of one simply-supported P2 modal solve on a given mesh.
+struct SimplySupportedMeasurement {
+    /// First three Z-dominant (vertical bending) frequencies, ascending (Hz).
+    f_bending: [f64; 3],
+    /// Analytic pin-pin references for modes 1..=3 (Hz).
+    f_analytic: [f64; 3],
+    /// Per-mode relative error of `f_bending` vs `f_analytic`.
+    rel_err: [f64; 3],
+    /// Full measured low spectrum (freq + axis fractions) for the tuning print.
+    spectrum: Vec<ModeInfo>,
+    /// Count of Z-dominant modes found in the requested spectrum.
+    n_bending_found: usize,
+    n_free: usize,
+    n_nodes_p2: usize,
+    mass_rel: f64,
+    converged: bool,
+}
+
+/// Build the simply-supported beam at the given mesh, assemble (K, M) at P2, pin
+/// both end faces in Z + minimal neutral-axis anchors, project to free DOFs,
+/// dense-eigensolve a generous low spectrum, classify each mode by dominant
+/// axis, and return the first three vertical (Z-bending) frequencies vs the
+/// Euler-Bernoulli pin-pin references.
+fn measure_simply_supported(grid: &BeamFixture) -> SimplySupportedMeasurement {
+    let nodes_p1 = build_node_xyz(grid);
+    let tets_p1 = build_tet_mesh(grid);
+    let (nodes_p2, tets_p2) = promote_tets_to_p2(&nodes_p1, &tets_p1);
+    let n_nodes_p2 = nodes_p2.len();
+    let n_dofs = 3 * n_nodes_p2;
+
+    let material = IsotropicElastic { youngs_modulus: STEEL_E_PA, poisson_ratio: STEEL_NU };
+
+    // BCs over the promoted node set (coordinate selection catches P2 midpoints).
+    let bcs = simply_supported_bcs(&nodes_p2, grid.lx, grid.lz);
+    assert!(!bcs.is_empty(), "simply-supported must pin at least one end-face DOF");
+
+    let (k_full, m_full) = assemble_p2_k_and_m(&nodes_p2, &tets_p2, &material, STEEL_DENSITY);
+
+    // Total-mass sanity: Σ M = 3·ρ·V_total (exact box fill).
+    let v_total = grid.lx * grid.ly * grid.lz;
+    let total_mass_sum = sum_all_entries(&m_full);
+    let expected_mass_sum = 3.0 * STEEL_DENSITY * v_total;
+    let mass_rel = (total_mass_sum - expected_mass_sum).abs() / expected_mass_sum;
+
+    // Project to the free-DOF subspace (and build the inverse free→full map for
+    // the per-axis eigenvector classification).
+    let (free_of_full, n_free) = free_dof_map(n_dofs, &bcs);
+    let mut full_of_free = vec![0_usize; n_free];
+    for (g, &f) in free_of_full.iter().enumerate() {
+        if f != usize::MAX {
+            full_of_free[f] = g;
+        }
+    }
+    let k_free = project_free(&k_full, &free_of_full, n_free);
+    let m_free = project_free(&m_full, &free_of_full, n_free);
+
+    // Solve a generous low spectrum: the lateral Y-bending mode (≈ 5× f₁,z)
+    // sits between the 2nd and 3rd vertical modes under P2, so 8 eigenpairs
+    // comfortably cover z1, z2, y1, z3.
+    let opts = EigenSolverOptions { n_modes: 8, tol: 1e-9, max_iters: 300, sigma: 0.0 };
+    let eig = solve_eigen_dense(&k_free, &m_free, opts);
+
+    let to_hz = |l: f64| l.sqrt() / (2.0 * PI);
+    // `eigenvectors` is a faer `Mat<f64>` (column j = mode j, row = free DOF);
+    // `col_as_slice(j)` views column j as a contiguous `&[f64]` over the free
+    // DOFs (the `modal_ops` idiom). `j < eigenvalues.len() == ncols`, so the
+    // column index is always in range.
+    let spectrum: Vec<ModeInfo> = eig
+        .eigenvalues
+        .iter()
+        .enumerate()
+        .map(|(j, &l)| ModeInfo {
+            freq: to_hz(l),
+            fracs: axis_energy_fractions(eig.eigenvectors.col_as_slice(j), &full_of_free),
+        })
+        .collect();
+
+    // Vertical (Z-dominant) family, ascending by frequency.
+    let bending: Vec<f64> = spectrum
+        .iter()
+        .filter(|m| m.fracs[2] >= m.fracs[0] && m.fracs[2] >= m.fracs[1])
+        .map(|m| m.freq)
+        .collect();
+    let n_bending_found = bending.len();
+
+    let mut f_bending = [f64::NAN; 3];
+    for (i, slot) in f_bending.iter_mut().enumerate() {
+        if let Some(&f) = bending.get(i) {
+            *slot = f;
+        }
+    }
+
+    let f_analytic = [
+        analytic_ss_frequency(grid, PI),
+        analytic_ss_frequency(grid, 2.0 * PI),
+        analytic_ss_frequency(grid, 3.0 * PI),
+    ];
+    let rel_err: [f64; 3] =
+        std::array::from_fn(|i| (f_bending[i] - f_analytic[i]).abs() / f_analytic[i]);
+
+    SimplySupportedMeasurement {
+        f_bending,
+        f_analytic,
+        rel_err,
+        spectrum,
+        n_bending_found,
+        n_free,
+        n_nodes_p2,
+        mass_rel,
+        converged: eig.converged,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Step-5 (RED) / Step-6 (GREEN): simply-supported P2 modal frequencies within 2%
+// ---------------------------------------------------------------------------
+
+/// Calibrated relative-error bound on the simply-supported FUNDAMENTAL (f₁).
+///
+/// Initialized to the 2% aspirational target for the step-5 RED; step-6 (GREEN)
+/// pins it to the honest measured P2 floor at an example-practical mesh (the
+/// same escape-hatch discipline as `CANTILEVER_P2_REL_TOL`).
+const SS_P2_REL_TOL: f64 = 0.02;
+
+/// Calibrated relative-error band on the higher vertical modes (f₂, f₃).
+///
+/// Higher simply-supported modes have shorter half-wavelengths (`L/2`, `L/3`),
+/// so a fixed span mesh resolves them less well than the fundamental; step-6
+/// pins this to their honest measured floor (which may be looser than f₁'s).
+const SS_P2_HIGHER_MODE_TOL: f64 = 0.02;
+
+/// Simply-supported (pin-pin) P2 modal-frequency accuracy benchmark — task 4066.
+///
+/// Same slender steel beam as the cantilever (`L = 200 mm` × `b = 10 mm` ×
+/// `h = 2 mm`, AISI 1045). BCs realize a genuine pin-pin: the transverse Z DOF
+/// is pinned on both `x ≈ 0` and `x ≈ L` end faces (catching P2 edge-midpoints
+/// by coordinate) with minimal neutral-axis anchors, so the bending rotation
+/// stays free and the modes follow the `fₙ = (nπ)²/(2π)·√(EI/ρAL⁴)` family
+/// (`f₁ ≈ 115.8 Hz, f₂ ≈ 463 Hz, f₃ ≈ 1042 Hz`), NOT fixed-fixed.
+///
+/// Unlike the locked P1 `ny=1` mesh, the P2 mesh resolves the lateral Y-bending
+/// mode (`≈ 579 Hz`) within the first few eigenvalues — so it intrudes between
+/// the 2nd and 3rd vertical modes. The first three VERTICAL (Z-dominant) modes
+/// are therefore selected by eigenvector dominant-axis classification, not by
+/// blindly taking the first three eigenvalues.
+///
+/// Passes when each of f₁, f₂, f₃ is within its calibrated tolerance of the
+/// analytic pin-pin reference.
+#[cfg_attr(
+    debug_assertions,
+    ignore = "heavy (dense modal eigensolve): release-only at the merge gate; debug skips it for per-task speed — task 4066"
+)]
+#[test]
+fn simply_supported_beam_p2_modal_within_two_percent() {
+    let grid = BeamFixture { nx: 16, ny: 1, nz: 1, lx: 0.2, ly: 0.01, lz: 0.002 };
+    let m = measure_simply_supported(&grid);
+
+    eprintln!(
+        "simply-supported P2 (nx={}, ny={}, nz={}, P2 nodes={}, n_free={}): Σ M rel = {:.2e}",
+        grid.nx, grid.ny, grid.nz, m.n_nodes_p2, m.n_free, m.mass_rel,
+    );
+    for (j, mode) in m.spectrum.iter().enumerate() {
+        eprintln!(
+            "  mode {j}: f = {:.4} Hz  axis fracs (x, y, z) = ({:.3}, {:.3}, {:.3})",
+            mode.freq, mode.fracs[0], mode.fracs[1], mode.fracs[2],
+        );
+    }
+    eprintln!(
+        "  vertical family: f1 = {:.4} (analytic {:.4}, err {:.4}%), \
+         f2 = {:.4} (analytic {:.4}, err {:.4}%), f3 = {:.4} (analytic {:.4}, err {:.4}%)",
+        m.f_bending[0], m.f_analytic[0], m.rel_err[0] * 100.0,
+        m.f_bending[1], m.f_analytic[1], m.rel_err[1] * 100.0,
+        m.f_bending[2], m.f_analytic[2], m.rel_err[2] * 100.0,
+    );
+
+    assert!(m.converged, "dense modal eigensolve must converge for the simply-supported beam");
+    assert!(
+        m.n_bending_found >= 3,
+        "need ≥3 vertical (Z-dominant) bending modes in the spectrum, found {}",
+        m.n_bending_found,
+    );
+    assert!(
+        m.mass_rel < 1e-9,
+        "global consistent-mass total Σ M off by rel {:.2e} from 3ρV",
+        m.mass_rel,
+    );
+    for (i, &f) in m.f_bending.iter().enumerate() {
+        assert!(f.is_finite() && f > 0.0, "f{} must be finite and positive, got {}", i + 1, f);
+    }
+    assert!(
+        m.f_bending[0] < m.f_bending[1] && m.f_bending[1] < m.f_bending[2],
+        "vertical frequencies must be strictly ascending: f1={} f2={} f3={}",
+        m.f_bending[0], m.f_bending[1], m.f_bending[2],
+    );
+
+    assert!(
+        m.rel_err[0] < SS_P2_REL_TOL,
+        "ss f1 = {:.4} Hz, analytic = {:.4} Hz, rel_err = {:.4}% > {:.2}%",
+        m.f_bending[0], m.f_analytic[0], m.rel_err[0] * 100.0, SS_P2_REL_TOL * 100.0,
+    );
+    assert!(
+        m.rel_err[1] < SS_P2_HIGHER_MODE_TOL,
+        "ss f2 = {:.4} Hz, analytic = {:.4} Hz, rel_err = {:.4}% > {:.2}%",
+        m.f_bending[1], m.f_analytic[1], m.rel_err[1] * 100.0, SS_P2_HIGHER_MODE_TOL * 100.0,
+    );
+    assert!(
+        m.rel_err[2] < SS_P2_HIGHER_MODE_TOL,
+        "ss f3 = {:.4} Hz, analytic = {:.4} Hz, rel_err = {:.4}% > {:.2}%",
+        m.f_bending[2], m.f_analytic[2], m.rel_err[2] * 100.0, SS_P2_HIGHER_MODE_TOL * 100.0,
+    );
+}
