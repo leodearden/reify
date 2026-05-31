@@ -6,20 +6,16 @@
 //! to iterate `enum_variant` children and builds VariantPayload::Named for
 //! field-carrying variants.
 //!
-//! Source: the shared fixture at tree-sitter-reify/test/fixtures/dce-2-nameddecl.ri.
+//! Source: loaded directly from tree-sitter-reify/test/fixtures/dce-2-nameddecl.ri
+//! via `include_str!` so any drift in the fixture is caught at compile time.
 
 use reify_ast::{Declaration, VariantPayload};
 use reify_core::ModulePath;
 
-const FIXTURE_SOURCE: &str = r#"
-/// Named-field enum declaration fixture — α parse-signal.
-/// Tests: bare variant + named-field variants in one enum body.
-enum Shape {
-    Point,
-    Circle { radius: Length },
-    Rect { width: Length, height: Length },
-}
-"#;
+// The source-of-truth fixture shared with the grammar tests.  Using include_str!
+// ensures this test exercises the actual file rather than a potentially stale copy.
+const FIXTURE_SOURCE: &str =
+    include_str!("../../../tree-sitter-reify/test/fixtures/dce-2-nameddecl.ri");
 
 fn parse_shape_enum() -> reify_ast::EnumDecl {
     let module = reify_syntax::parse(FIXTURE_SOURCE, ModulePath::single("test_dce"));
@@ -211,6 +207,33 @@ fn variant_construction_lowers_to_expr_kind() {
             other
         ),
     }
+}
+
+// ── (f) Malformed input — no panic ──────────────────────────────────────────
+
+/// A named-field variant with a syntactically invalid field (missing type
+/// annotation) must not panic during lowering.  tree-sitter's error-recovery
+/// may produce a partial or ERROR CST node rather than a well-formed
+/// `variant_field_decl`; in that case `lower_enum_variant` silently elides
+/// the affected fields (see TODO(δ/3942) comments in `ts_parser.rs`).
+///
+/// This test locks in the "elide on error-recovery, don't panic" contract.
+/// It does not assert on `module.errors` because tree-sitter error-recovery
+/// can succeed at the grammar level without surfacing a top-level ERROR node,
+/// meaning `module.errors` may legitimately be empty here.
+///
+/// TODO(δ/3942): task δ will add a diagnostic for silently-elided fields.
+#[test]
+fn malformed_named_field_variant_no_panic() {
+    // `field` has no type annotation — tree-sitter attempts error recovery.
+    // Lower_enum_variant elides any unrecognized/partial field nodes.
+    let module = reify_syntax::parse(
+        "enum Bad { Broken { field } }",
+        ModulePath::single("test_malformed_variant"),
+    );
+    // No panic above = pass.  The recovered variant shape is not pinned
+    // because it depends on tree-sitter's recovery heuristics.
+    let _ = module;
 }
 
 /// The field values in `Rect { width: 20mm, height: 10mm }` lower to
