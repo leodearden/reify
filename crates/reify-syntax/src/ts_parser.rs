@@ -517,14 +517,16 @@ impl<'a> Lowering<'a> {
         // Detect 'pub' keyword by checking anonymous children
         let is_pub = self.has_pub_keyword(node);
 
-        // Collect variants — wrap each bare identifier in EnumVariantDecl::unit().
-        // (The grammar still emits bare identifiers for now; the enum_variant rewrite
-        // is step-4 where named-field support lands.)
+        // Iterate enum_variant children (grammar production introduced in task α,
+        // step-4).  Each enum_variant holds a name field and optionally
+        // variant_field_decl children for named-field payloads.
         let mut variants = Vec::new();
         let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() == "identifier" && child.id() != name_node.id() {
-                variants.push(EnumVariantDecl::unit(self.node_text(child)));
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "enum_variant" {
+                if let Some(variant) = self.lower_enum_variant(child) {
+                    variants.push(variant);
+                }
             }
         }
 
@@ -539,6 +541,44 @@ impl<'a> Lowering<'a> {
             content_hash: self.content_hash(node),
             annotations: vec![],
         })
+    }
+
+    /// Lower a single `enum_variant` CST node to an `EnumVariantDecl`.
+    ///
+    /// Bare variants (`Point`) produce `VariantPayload::Unit`.
+    /// Named-field variants (`Circle { radius: Length }`) produce
+    /// `VariantPayload::Named` with fields in source-declaration order.
+    fn lower_enum_variant(&self, node: tree_sitter::Node) -> Option<EnumVariantDecl> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+        let span = self.span(node);
+
+        // Collect variant_field_decl children for named-field payloads.
+        let mut fields: Vec<(String, TypeExpr)> = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "variant_field_decl" {
+                let field_name_node = match child.child_by_field_name("field") {
+                    Some(n) => n,
+                    None => continue,
+                };
+                let type_node = match child.child_by_field_name("type") {
+                    Some(n) => n,
+                    None => continue,
+                };
+                let field_name = self.node_text(field_name_node).to_string();
+                let type_expr = self.lower_type_expr_node(type_node);
+                fields.push((field_name, type_expr));
+            }
+        }
+
+        let payload = if fields.is_empty() {
+            VariantPayload::Unit
+        } else {
+            VariantPayload::Named(fields)
+        };
+
+        Some(EnumVariantDecl { name, payload, span })
     }
 
     /// Extract identifiers from a trait_bound_list node (e.g., `Rigid + Printable`).
