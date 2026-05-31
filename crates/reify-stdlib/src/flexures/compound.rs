@@ -19,15 +19,141 @@
 //! term; the residual scales as (δ/L)³ instead of (δ/L):
 //!   δ_rot_double = δ_rot_single · (δ_max/L)²
 
+use reify_core::DimensionVector;
 use reify_ir::Value;
+
+use super::common::{length_si, make_flexure_joint, material_field_si};
+
+/// Fixed-guided stiffness coefficient γ_pp = 12 (Howell §5 / PRD §6.1 parallelogram
+/// blade). Identical to `beam::FIXED_FIXED_GAMMA` — the same boundary condition.
+const FIXED_GUIDED_GAMMA: f64 = 12.0;
+
+/// Fallback transverse-displacement validity limit as a fraction of beam length,
+/// used when the material carries no `yield_stress`.
+const SMALL_DEFLECTION_FRACTION: f64 = 0.1;
+
+/// Shared validated inputs for compound-flexure constructors.
+///
+/// Argument layout: `(length, width, thickness, blade_spacing, material, motion_axis, pivot)`
+/// — note that `blade_spacing` is arg[3] (differs from beam ctors where material is arg[3]).
+struct CompoundInputs<'a> {
+    /// Blade length L (metres).
+    length: f64,
+    /// Blade width b (metres) — in-plane dimension.
+    width: f64,
+    /// Blade thickness t (metres) — bending direction.
+    thickness: f64,
+    /// Young's modulus E (Pa).
+    e: f64,
+    /// Rectangular-section second moment of area `I = width·thickness³/12`.
+    i: f64,
+    /// Material yield stress σ_y (Pa), if the material carries one.
+    yield_si: Option<f64>,
+    /// The raw motion-axis argument (stored verbatim on the joint Map).
+    axis: &'a Value,
+    /// The raw pivot argument (stored verbatim on the joint Map).
+    pivot: &'a Value,
+}
+
+/// Parse and validate the shared positional argument layout of both
+/// compound-flexure constructors:
+/// `(length, width, thickness, blade_spacing, material, motion_axis, pivot)`.
+///
+/// Returns `None` (⇒ `Value::Undef`) on: arity ≠ 7; non-finite geometry or
+/// blade_spacing; a material that is not a `Value::StructureInstance` with a
+/// finite `youngs_modulus`; or a motion_axis that is not a finite, non-zero,
+/// dimensionless 3-vector.
+///
+/// **Positivity / degeneracy guards are added in step-8** — this early version
+/// intentionally accepts non-positive geometry to keep the RED→GREEN steps
+/// incremental (step-7 tests that those guards are absent, step-8 adds them).
+fn parse_compound_inputs(args: &[Value]) -> Option<CompoundInputs<'_>> {
+    if args.len() != 7 {
+        return None;
+    }
+    let length = length_si(&args[0])?;
+    let width = length_si(&args[1])?;
+    let thickness = length_si(&args[2])?;
+    // blade_spacing validated for presence/finitude but does NOT enter §6.1/§6.2
+    // closed forms — accepted for signature fidelity (PRD §6.1 prescribes it).
+    let _blade_spacing = length_si(&args[3])?;
+    let material = &args[4];
+    let e = material_field_si(material, "youngs_modulus")?;
+    let axis = &args[5];
+    crate::helpers::validate_dimensionless_unit_axis_vec3(axis)?;
+    Some(CompoundInputs {
+        length,
+        width,
+        thickness,
+        e,
+        i: width * thickness.powi(3) / 12.0,
+        yield_si: material_field_si(material, "yield_stress"),
+        axis,
+        pivot: &args[6],
+    })
+}
+
+/// Compute the fixed-guided transverse displacement validity half-width δ_max.
+///
+/// Fixed-guided bending stress σ = 3·E·t·δ / L²
+/// ⇒ δ_yield = yield·L²/(3·E·t).
+/// No `yield_stress` ⇒ small-deflection fallback δ = 0.1·L.
+fn delta_max(c: &CompoundInputs<'_>) -> f64 {
+    match c.yield_si {
+        Some(yield_si) => yield_si * c.length.powi(2) / (3.0 * c.e * c.thickness),
+        None => SMALL_DEFLECTION_FRACTION * c.length,
+    }
+}
 
 /// Evaluate a compound-flexure constructor by name.
 ///
 /// Returns `Some(Value)` for recognised names (including `Some(Value::Undef)` on
 /// validation failure) and `None` for any unknown name, so `eval_builtin` falls
 /// through to the next module.
-pub(crate) fn eval_compound(_name: &str, _args: &[Value]) -> Option<Value> {
-    None
+pub(crate) fn eval_compound(name: &str, args: &[Value]) -> Option<Value> {
+    match name {
+        "prb_parallelogram_flexure" => Some(prb_parallelogram_flexure(args)),
+        _ => None,
+    }
+}
+
+/// `prb_parallelogram_flexure(length, width, thickness, blade_spacing, material, motion_axis, pivot)`
+/// — PRB parallelogram flexure stage presented as a prismatic joint.
+///
+/// Returns a joint `Value::Map` (`kind == "prismatic"`) with:
+/// - `spring_rate` = k_stage = 48·E·I/L³ (TRANSLATIONAL_STIFFNESS)
+/// - `range` = ±δ_max (symmetric LENGTH-bounded range)
+///
+/// Returns `Value::Undef` on the invalid-input classes in [`parse_compound_inputs`].
+fn prb_parallelogram_flexure(args: &[Value]) -> Value {
+    let Some(c) = parse_compound_inputs(args) else {
+        return Value::Undef;
+    };
+
+    // Motion stiffness: k_blade = 12·E·I/L³ (fixed-guided, γ_pp=12), k_stage = 4 blades.
+    let k_blade = FIXED_GUIDED_GAMMA * c.e * c.i / c.length.powi(3);
+    let k_stage = 4.0 * k_blade;
+
+    // Validity range ±δ_max (symmetric LENGTH-bounded range).
+    let delta = delta_max(&c);
+    let range = Value::range(
+        Some(Value::length(-delta)),
+        Some(Value::length(delta)),
+        true,
+        true,
+    );
+
+    make_flexure_joint(
+        "prismatic",
+        c.axis.clone(),
+        range,
+        Value::Scalar {
+            si_value: k_stage,
+            dimension: DimensionVector::TRANSLATIONAL_STIFFNESS,
+        },
+        Value::length(0.0),
+        c.pivot.clone(),
+    )
 }
 
 #[cfg(test)]
