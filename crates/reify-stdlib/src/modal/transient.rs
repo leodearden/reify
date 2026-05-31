@@ -145,7 +145,7 @@ pub fn solve_modal_response(
 /// * `zeta`    — modal damping ratio ζ (dimensionless).  Valid for any ζ ≥ 0.
 /// * `times`   — time sample points (s), monotonically increasing; length ≥ 1.
 /// * `forcing` — scalar modal forcing samples at each time point; same length
-///               as `times`.  `forcing[0]` is the force at `times[0]`.
+///   as `times`.  `forcing[0]` is the force at `times[0]`.
 /// * `xi0`     — initial modal displacement ξ(t₀).
 /// * `v0`      — initial modal velocity ξ̇(t₀).
 ///
@@ -362,11 +362,11 @@ pub fn duhamel_coefficients(omega: f64, zeta: f64, dt: f64) -> DuhamelCoeffs {
 ///
 /// # Arguments
 /// * `omega`   — natural angular frequency ω (rad/s); must satisfy ω > 0 and
-///               ζ < 1 for the underdamped closed form.
+///   ζ < 1 for the underdamped closed form.
 /// * `zeta`    — modal damping ratio ζ (dimensionless, 0 ≤ ζ < 1).
 /// * `dt`      — uniform time step Δt (s).
 /// * `forcing` — scalar pre-projected modal forcing samples fᵢ(tⱼ), one per
-///               output time point; `forcing[0]` is the force at t=0.
+///   output time point; `forcing[0]` is the force at t=0.
 /// * `xi0`     — initial modal displacement ξ(0).
 /// * `v0`      — initial modal velocity ξ̇(0).
 ///
