@@ -869,4 +869,52 @@ mod tests {
             );
         }
     }
+
+    // ─── step-1: uniform_time_grid (RED) ─────────────────────────────────────
+
+    /// `uniform_time_grid(t_start, t_end, dt)` builds the uniform grid
+    /// `[t_start, t_start+dt, …]` with the last sample ≤ t_end,
+    /// count = floor((t_end−t_start)/dt)+1, an exact start endpoint, and the
+    /// documented degenerate edge cases (dt ≤ 0 → empty; t_end < t_start → empty;
+    /// t_end == t_start → `[t_start]`). This grid feeds `solve_modal_response`
+    /// (uniform → Duhamel path).
+    /// RED: `uniform_time_grid` is absent — fails to compile.
+    #[test]
+    fn uniform_time_grid_cases() {
+        // Evenly-divisible span: dt = 0.25 over [0, 1] → 5 points, last == t_end.
+        let g = uniform_time_grid(0.0, 1.0, 0.25);
+        assert_eq!(g.len(), 5, "floor(1.0/0.25)+1 = 5");
+        assert_eq!(g[0], 0.0, "exact start endpoint");
+        assert_eq!(*g.last().unwrap(), 1.0, "exact end endpoint when span divides dt");
+        for (j, &t) in g.iter().enumerate() {
+            assert!((t - j as f64 * 0.25).abs() < 1e-15, "grid[{j}] = t_start + j·dt");
+        }
+
+        // Non-divisible span: dt = 0.3 over [0, 1] → floor(3.333)+1 = 4 points,
+        // last = 0.9 ≤ 1.0 (NOT clamped up to t_end).
+        let g = uniform_time_grid(0.0, 1.0, 0.3);
+        assert_eq!(g.len(), 4, "floor(1.0/0.3)+1 = 4");
+        assert!(*g.last().unwrap() <= 1.0, "last sample must not exceed t_end");
+        assert!((*g.last().unwrap() - 0.9).abs() < 1e-12, "last = t_start + 3·0.3 = 0.9");
+
+        // Non-zero start: [1, 2] step 0.5 → [1.0, 1.5, 2.0], last == t_end.
+        let g = uniform_time_grid(1.0, 2.0, 0.5);
+        assert_eq!(g.len(), 3);
+        assert_eq!(g[0], 1.0);
+        assert_eq!(*g.last().unwrap(), 2.0);
+
+        // Strictly increasing.
+        let g = uniform_time_grid(0.0, 5.0, 0.7);
+        assert!(g.windows(2).all(|w| w[1] > w[0]), "grid must be strictly increasing");
+
+        // t_end == t_start → single sample [t_start] (count = floor(0)+1 = 1).
+        assert_eq!(uniform_time_grid(2.0, 2.0, 0.1), vec![2.0]);
+
+        // dt ≤ 0 → empty.
+        assert!(uniform_time_grid(0.0, 1.0, 0.0).is_empty(), "dt = 0 → empty");
+        assert!(uniform_time_grid(0.0, 1.0, -0.1).is_empty(), "dt < 0 → empty");
+
+        // t_end < t_start → empty (count clamps to 0).
+        assert!(uniform_time_grid(1.0, 0.5, 0.1).is_empty(), "t_end < t_start → empty");
+    }
 }
