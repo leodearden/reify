@@ -320,6 +320,8 @@ fn expr_kind_variant_construct_constructible() {
 
 #[test]
 fn enum_decl_type_params_field_accessible() {
+    // Compile-time contract: EnumDecl has a `type_params: Vec<TypeParamDecl>` field.
+    // Name/bounds/default semantics are covered in reify-syntax lowering tests.
     let e = EnumDecl {
         name: "Maybe".into(),
         doc: None,
@@ -335,8 +337,5 @@ fn enum_decl_type_params_field_accessible() {
         content_hash: ContentHash(0),
         annotations: vec![],
     };
-    assert_eq!(e.type_params.len(), 1, "EnumDecl must have 1 type_param");
-    assert_eq!(e.type_params[0].name, "T", "type_param name must be 'T'");
-    assert!(e.type_params[0].bounds.is_empty(), "T must have no bounds");
-    assert!(e.type_params[0].default.is_none(), "T must have no default");
+    assert_eq!(e.type_params.len(), 1, "EnumDecl.type_params field must be accessible");
 }

@@ -88,3 +88,23 @@ enum Tree<T> { Leaf { value: T }, Node { left: Tree<T>, right: Tree<T> } }
             type_args: (type_arg_list
               (type_expr
                 (identifier)))))))))
+
+================================================================================
+Bounded type parameter on enum (E<T: Numeric>)
+================================================================================
+
+enum E<T: Numeric> { V }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (enum_declaration
+    name: (identifier)
+    (type_parameters
+      (type_parameter
+        name: (identifier)
+        bounds: (trait_bound_list
+          (trait_bound_entry
+            name: (identifier)))))
+    (enum_variant
+      name: (identifier))))

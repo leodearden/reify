@@ -189,3 +189,33 @@ fn enum_with_bounded_type_param_lowers_bounds() {
         "T must have bound 'Numeric'"
     );
 }
+
+// ── (f) Default form — type_param with a default type ────────────────────────
+
+/// `enum E<T = Int> { V }` lowers type_params[0].default == Some(Named("Int")).
+///
+/// The `default` path in lower_type_params_inner (child_by_field_name("default"))
+/// is exercised here for enums — complementing the bounded-param case (e).
+#[test]
+fn enum_with_default_type_param_lowers_default() {
+    let e = parse_enum("enum E<T = Int> { V }");
+    assert_eq!(
+        e.type_params.len(),
+        1,
+        "E<T = Int> must have 1 type_param; got {:?}",
+        e.type_params.iter().map(|p| &p.name).collect::<Vec<_>>()
+    );
+    assert_eq!(e.type_params[0].name, "T");
+    assert!(e.type_params[0].bounds.is_empty(), "T must have no bounds");
+    let default = e.type_params[0]
+        .default
+        .as_ref()
+        .expect("T must have a default type");
+    match &default.kind {
+        TypeExprKind::Named { name, type_args } => {
+            assert_eq!(name, "Int", "default type must be 'Int'");
+            assert!(type_args.is_empty(), "Int must have no type_args");
+        }
+        other => panic!("expected Named TypeExpr for default 'Int', got {:?}", other),
+    }
+}
