@@ -353,7 +353,7 @@ pub fn degenerate_membrane_bending_b(
 
 /// Assumed **covariant** transverse-shear B-matrix (`2 × 18`) at the in-plane
 /// reference coordinate `coord`, carried VERBATIM from the MITC3+ formulation
-/// (task 3392).
+/// (task 3392) using the **flat-facet** (global `u_z/θ_x/θ_y`) kinematics.
 ///
 /// Rows are the covariant components `(γ_ξζ, γ_ηζ)`; columns the 18 nodal DOFs
 /// (`6·node + {u_x,u_y,u_z,θ_x,θ_y,θ_z}`). Construction — identical to the inline
@@ -367,8 +367,21 @@ pub fn degenerate_membrane_bending_b(
 ///
 /// This field is **geometry-free** (pure natural coordinates): it is *exactly*
 /// task 3392's assumed transverse-shear field — no new shear formulation is
-/// introduced here. The varying Jacobian enters only through the
-/// covariant→physical map applied downstream by [`degenerate_transverse_shear_b`].
+/// introduced here.
+///
+/// # Role: a documented flat-equivalence reference, NOT the stiffness path
+///
+/// `Mitc3Plus::covariant_shear_b_nodal` hard-codes the flat-facet Reissner–Mindlin
+/// kinematics — it reads the *global* `u_z` (DOF 2), `θ_x` (DOF 3), `θ_y` (DOF 4)
+/// and assumes the shell normal is the global `+z`; it carries neither `θ_z` nor
+/// the per-node director `V_i`. On a curved (tilted-director) patch no linear
+/// covariant→physical map of this flat field can simultaneously satisfy the
+/// rigid-body null-space and 3D-rotation isotropy (esc-4068-127). It is therefore
+/// **not** the field the stiffness uses; [`degenerate_transverse_shear_b`] builds
+/// the covariant shear from the *exact* degenerate kinematics instead. This
+/// function is retained as the documented witness that, when flat, the exact
+/// kinematics coincide with task 3392's carried DISP3 covariant field
+/// (`degenerate_assumed_covariant_shear_is_carried_verbatim_from_mitc3_plus`).
 pub fn degenerate_assumed_covariant_shear_b(coord: ShellReferenceCoord) -> [[f64; 18]; 2] {
     use crate::elements::mitc3_plus::ShearStrain;
     let interior = Mitc3Plus.interior_tying_points();
@@ -395,103 +408,175 @@ pub fn degenerate_assumed_covariant_shear_b(coord: ShellReferenceCoord) -> [[f64
     b
 }
 
-/// Physical (lamina) transverse-shear B-matrix (`2 × 18`) at `coord`: the
-/// carried covariant assumed-shear field ([`degenerate_assumed_covariant_shear_b`])
-/// mapped covariant→physical by the in-plane `2×2` sub-block of `J⁻ᵀ` expressed
-/// in the per-point lamina frame, at the now-**varying** Jacobian.
+/// Exact degenerate-kinematics **covariant** transverse-shear B-matrix (`2 × 18`)
+/// at the 3D reference coordinate `coord`, before the MITC3+ tying interpolation.
+///
+/// Rows are the covariant components `(γ_ξζ, γ_ηζ)`; columns the 18 nodal DOFs
+/// (`6·node + {u_x,u_y,u_z,θ_x,θ_y,θ_z}`).
+///
+/// # Kinematics (the actual covariant strain)
+///
+/// With the degenerate base vectors `g_α = ∂X/∂ξ_α` and `g_ζ = ∂X/∂ζ` (the
+/// columns of [`degenerate_jacobian`]) and the displacement field
+/// `u = Σ_i N_i u_i + (ζ t_i/2) Σ_i N_i (θ_i × V_i)`, the (engineering) covariant
+/// transverse shear is the genuine `2·ε_αζ`:
+///
+/// ```text
+/// γ_αζ = g_α · u_,ζ + g_ζ · u_,α        (α ∈ {ξ, η})
+/// u_,ζ = Σ_i N_i (t_i/2)(θ_i × V_i)                     (translations contribute 0)
+/// u_,α = Σ_i N_i,α u_i + (ζ t_i/2) Σ_i N_i,α (θ_i × V_i)
+/// ```
+///
+/// reading translation `u_i` (DOFs 0–2) and ALL THREE rotations `θ_i` (DOFs 3–5)
+/// via `(θ_i × V_i) = C_i·θ_i`, `C_i = −skew(V_i)` — exactly mirroring the
+/// membrane/bending construction in [`degenerate_membrane_bending_b`]. Because it
+/// IS the covariant strain, a rigid-body mode (which has zero strain) gives an
+/// identically-zero `γ_αζ`, and the field rotates as a tensor under a rigid 3D
+/// rotation — the two properties no linear remap of the flat global-DOF field
+/// could provide together (esc-4068-127).
+///
+/// On a flat facet (`V_i ∥ +z`, planar nodes) this reduces — after the
+/// through-thickness `1/|g_ζ|` and in-plane `J⁻ᵀ` map of
+/// [`degenerate_transverse_shear_b`] — to task 3392's carried DISP3 covariant
+/// field, so the flat reduction is preserved.
+fn degenerate_exact_covariant_shear_b(
+    nodes: &[[f64; 3]; 3],
+    directors: &[Director; 3],
+    thicknesses: &[f64; 3],
+    coord: ShellRefCoord3,
+) -> [[f64; 18]; 2] {
+    let (j, _det) = degenerate_jacobian(nodes, directors, thicknesses, coord);
+    // Covariant base vectors = columns of J.
+    let g_xi = [j[0][0], j[1][0], j[2][0]];
+    let g_eta = [j[0][1], j[1][1], j[2][1]];
+    let g_zeta = [j[0][2], j[1][2], j[2][2]];
+    let n = Mitc3Plus.shape_at(coord.in_plane());
+    let dn = Mitc3Plus.shape_grad_at(coord.in_plane());
+    let half_zeta = 0.5 * coord.zeta;
+
+    let dot = |a: &[f64; 3], b: &[f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
+    let mut b = [[0.0_f64; 18]; 2];
+    for i in 0..Mitc3Plus::N_NODES {
+        let half_t = 0.5 * thicknesses[i];
+        let zt = half_zeta * thicknesses[i]; // ζ·t_i/2
+        // Translation DOFs (a = 0,1,2): u_,α = N_i,α e_a, u_,ζ = 0, so
+        // γ_αζ col(6i+a) = g_ζ · (N_i,α e_a) = N_i,α · (g_ζ)_a.
+        for a in 0..3 {
+            b[0][6 * i + a] = dn[i][0] * g_zeta[a]; // α = ξ
+            b[1][6 * i + a] = dn[i][1] * g_zeta[a]; // α = η
+        }
+        // Rotation DOFs (c = 0,1,2 → θ_x,θ_y,θ_z): (θ × V) = C_i·θ, C_i = −skew(V_i),
+        // so ∂(θ×V)/∂θ_c = C_i[:,c]. Then
+        //   γ_αζ col(6i+3+c) = g_α · (N_i (t_i/2) C_i[:,c])
+        //                    + g_ζ · (ζ t_i/2 · N_i,α · C_i[:,c]).
+        let v = directors[i];
+        let c_cols = [
+            [0.0, -v[2], v[1]],  // C_i[:,0] = (0, −V_z, V_y)
+            [v[2], 0.0, -v[0]],  // C_i[:,1] = (V_z, 0, −V_x)
+            [-v[1], v[0], 0.0],  // C_i[:,2] = (−V_y, V_x, 0)
+        ];
+        for (c, cc) in c_cols.iter().enumerate() {
+            let g_xi_cc = dot(&g_xi, cc);
+            let g_eta_cc = dot(&g_eta, cc);
+            let g_zeta_cc = dot(&g_zeta, cc);
+            b[0][6 * i + 3 + c] = n[i] * half_t * g_xi_cc + zt * dn[i][0] * g_zeta_cc;
+            b[1][6 * i + 3 + c] = n[i] * half_t * g_eta_cc + zt * dn[i][1] * g_zeta_cc;
+        }
+    }
+    b
+}
+
+/// Physical (lamina) transverse-shear B-matrix (`2 × 18`) at `coord`: the EXACT
+/// degenerate-kinematics covariant shear ([`degenerate_exact_covariant_shear_b`])
+/// run through the MITC3+ interior-tying assumed-strain interpolation (task 3392's
+/// locking cure, carried verbatim) and mapped covariant→physical against the
+/// now-**varying** Jacobian.
 ///
 /// Rows are the physical lamina transverse-shear components `(γ_1ζ', γ_2ζ')`
 /// (lamina axes `e1, e2` against the director `e3`); columns the 18 nodal DOFs.
 ///
-/// # Map
+/// # Pipeline
 ///
-/// With `J = ∂X/∂(ξ,η,ζ)` ([`degenerate_jacobian`]) and the lamina rotation `q`
-/// (rows `e1, e2, e3`; [`lamina_frame`]), the Jacobian in the lamina frame is
-/// `J_lam = q · J`, so `J_lam⁻ᵀ = q · J⁻ᵀ`. The physical lamina transverse shear
-/// is the in-plane `2×2` sub-block of `J_lam⁻ᵀ` applied to the covariant pair:
+/// 1. **Exact covariant samples.** Sample the exact covariant shear B
+///    ([`degenerate_exact_covariant_shear_b`]) at the six interior tying points
+///    ([`Mitc3Plus::interior_tying_points`]), all at the current integration `ζ`.
+/// 2. **Carried MITC3+ locking cure (verbatim).** Re-interpolate each DOF column
+///    via [`Mitc3Plus::interpolate_assumed_shear_mitc3_plus`] (Lee–Lee–Bathe
+///    Eq. 9) to the in-plane `(ξ, η)`. This is task 3392's assumed-strain field
+///    UNCHANGED — only the per-tying-point covariant *samples* now come from the
+///    true curved kinematics instead of the flat global-DOF field.
+/// 3. **Covariant→physical map.** Map the assumed covariant pair to the physical
+///    lamina shear with the in-plane `2×2` sub-block of `J_lam⁻ᵀ = q·J⁻ᵀ` plus the
+///    through-thickness normalization scalar:
 ///
-/// ```text
-/// [γ_1ζ'; γ_2ζ'] = (J_lam⁻ᵀ)[0..2, 0..2] · [γ_ξζ; γ_ηζ]
-/// ```
+///    ```text
+///    [γ_1ζ'; γ_2ζ'] = s₃ · (J_lam⁻ᵀ)[0..2, 0..2] · [γ_ξζ; γ_ηζ]
+///    ```
 ///
-/// The carried covariant pair `[γ_ξζ; γ_ηζ]` is first expressed in the per-point
-/// **lamina DOFs** (`d' = blkdiag(q)·d_global` per node): the carried field reads
-/// the *global* `u_z/θ_x/θ_y`, which name the through-thickness kinematics only
-/// when the normal is the global `+z`, so on a tilted element the shear block
-/// must read the lamina-frame deflection/rotations or `K` is not frame-objective.
-/// On a flat xy facet `q = I`, so this DOF transform is a no-op.
+///    Here `q` (rows `e1,e2,e3`; [`lamina_frame`]) gives `J_lam = q·J`, so
+///    `J_lam⁻ᵀ = q·J⁻ᵀ`; `m2 = (q·J⁻ᵀ)[0..2,0..2]` is the in-plane contravariant
+///    projection `e'_p·g^i` (`p,i ∈ {1,2}`), and `s₃ = (q·J⁻ᵀ)[2][2] = e'_3·g^ζ`
+///    is the through-thickness factor `1/|g_ζ|` that strips the `g_ζ` metric the
+///    exact covariant field carries (the flat-facet DISP3 field of task 3392 was
+///    pre-normalized, so it needed only the in-plane block; the exact field needs
+///    both). Every factor is built from the rotated geometry, so the product is
+///    invariant under a rigid 3D rotation (frame-objective) and vanishes for a
+///    rigid mode (zero covariant strain).
 ///
-/// This is exactly task 3392's `J2⁻ᵀ` covariant→physical map, only re-expressed
-/// against the varying 3×3 `J` instead of the flat element's constant 2×2 `J2`
-/// — the carried natural-coordinate field is unchanged; only the geometric map
-/// varies per integration point. On a flat facet `J` is `ζ`-invariant, `q`
-/// reduces to [`crate::shell_assembly::build_shell_frame`], and the sub-block
-/// equals `shell_kinematics(...).jac2_inv_t`, so the carry-over reduces to 3392.
-/// Sharing `lamina_frame` with [`degenerate_membrane_bending_b`] keeps the
-/// transverse shear in the same lamina frame as membrane/bending for assembly.
+/// # Flat reduction
+///
+/// On a flat facet `J` is `ζ`-invariant, `q` reduces to
+/// [`crate::shell_assembly::build_shell_frame`], `s₃ = 2/t = 1/|g_ζ|`, and the
+/// exact covariant samples × `s₃·m2` reduce to task 3392's
+/// `jac2_inv_t · covariant_shear_b_nodal` flat map at every `ζ`.
 pub fn degenerate_transverse_shear_b(
     nodes: &[[f64; 3]; 3],
     directors: &[Director; 3],
     thicknesses: &[f64; 3],
     coord: ShellRefCoord3,
 ) -> [[f64; 18]; 2] {
-    // (1) Carried covariant assumed-shear field (geometry-free, natural coords).
-    let b_cov = degenerate_assumed_covariant_shear_b(coord.in_plane());
+    use crate::elements::mitc3_plus::ShearStrain;
 
-    // (2) Varying-J covariant→physical map in the lamina frame.
+    // (1) Sample the EXACT covariant shear B at the six interior tying points, at
+    // the current integration ζ (the tying is in-plane; ζ rides along).
+    let interior = Mitc3Plus.interior_tying_points();
+    let mut b_tp = [[[0.0_f64; 18]; 2]; Mitc3Plus::N_INTERIOR_TYING_POINTS];
+    for (k, tp) in interior.iter().enumerate() {
+        let c3 = ShellRefCoord3::new(tp.coord.xi, tp.coord.eta, coord.zeta);
+        b_tp[k] = degenerate_exact_covariant_shear_b(nodes, directors, thicknesses, c3);
+    }
+
+    // (2) Carried MITC3+ Eq. 9 assumed-strain re-interpolation, column by column.
+    let mut b_cov = [[0.0_f64; 18]; 2];
+    for dof in 0..18 {
+        let samples: [ShearStrain; Mitc3Plus::N_INTERIOR_TYING_POINTS] = [
+            ShearStrain { gamma_xi_zeta: b_tp[0][0][dof], gamma_eta_zeta: b_tp[0][1][dof] },
+            ShearStrain { gamma_xi_zeta: b_tp[1][0][dof], gamma_eta_zeta: b_tp[1][1][dof] },
+            ShearStrain { gamma_xi_zeta: b_tp[2][0][dof], gamma_eta_zeta: b_tp[2][1][dof] },
+            ShearStrain { gamma_xi_zeta: b_tp[3][0][dof], gamma_eta_zeta: b_tp[3][1][dof] },
+            ShearStrain { gamma_xi_zeta: b_tp[4][0][dof], gamma_eta_zeta: b_tp[4][1][dof] },
+            ShearStrain { gamma_xi_zeta: b_tp[5][0][dof], gamma_eta_zeta: b_tp[5][1][dof] },
+        ];
+        let proj = Mitc3Plus.interpolate_assumed_shear_mitc3_plus(&samples, coord.in_plane());
+        b_cov[0][dof] = proj.gamma_xi_zeta;
+        b_cov[1][dof] = proj.gamma_eta_zeta;
+    }
+
+    // (3) Covariant→physical map at the varying J: s₃ · m2 · b_cov.
     let (j, _det) = degenerate_jacobian(nodes, directors, thicknesses, coord);
     let (j_inv, _) = mat3_inverse(&j);
     let n = Mitc3Plus.shape_at(coord.in_plane());
     let q = lamina_frame(&j, &n, directors);
-    // In-plane sub-block m2[a][b] = (J_lam⁻ᵀ)[a][b] = (q · J⁻ᵀ)[a][b],
-    // a,b ∈ {0,1}, with J⁻ᵀ[k][b] = J⁻¹[b][k].
-    let mut m2 = [[0.0_f64; 2]; 2];
-    for a in 0..2 {
-        for b in 0..2 {
-            let mut v = 0.0;
-            for k in 0..3 {
-                v += q[a][k] * j_inv[b][k];
-            }
-            m2[a][b] = v;
-        }
-    }
+    // (q · J⁻ᵀ)[a][b] = Σ_k q[a][k] · J⁻ᵀ[k][b] = Σ_k q[a][k] · J⁻¹[b][k].
+    let qjit = |a: usize, b: usize| -> f64 { (0..3).map(|k| q[a][k] * j_inv[b][k]).sum() };
+    let m2 = [[qjit(0, 0), qjit(0, 1)], [qjit(1, 0), qjit(1, 1)]];
+    let s3 = qjit(2, 2); // through-thickness normalization e'_3·g^ζ = 1/|g_ζ|
 
-    // (2.5) Express the carried covariant shear in the per-point LAMINA DOFs.
-    // The carried field ([`degenerate_assumed_covariant_shear_b`], via
-    // [`Mitc3Plus::covariant_shear_b_nodal`]) reads GLOBAL u_z/θ_x/θ_y — correct
-    // only when the shell normal is the global +z. For an element tilted in 3D the
-    // transverse-shear block must instead read the lamina-frame normal deflection
-    // and the rotations about the lamina axes, else K is not frame-objective (its
-    // eigenvalue spectrum drifts under a rigid 3D rotation — the membrane/bending
-    // block is already objective via its lamina-strain projection, but the shear
-    // was not). The lamina DOFs are `d' = blkdiag(q)·d_global` per node (q rows =
-    // lamina basis e1,e2,e3), so `B_cov_lam = b_cov · blkdiag(q)`, i.e.
-    // `(b_cov·T)[r][6n+m] = Σ_k b_cov[r][6n+k]·q[k][m]` over each node's disp and
-    // rot triple. On a flat xy facet q = I (e1,e2,e3 = x,y,z), so this is a no-op
-    // and the exact flat reduction to 3392 is preserved. Both the map `m2` and the
-    // assumed-shear interpolation are linear in the columns, so transforming the
-    // already-interpolated field equals interpolating the transformed field.
-    let mut b_cov_lam = [[0.0_f64; 18]; 2];
-    for r in 0..2 {
-        for node in 0..Mitc3Plus::N_NODES {
-            for triple in 0..2 {
-                let off = 6 * node + 3 * triple; // 0 = disp triple, 3 = rot triple
-                for m in 0..3 {
-                    let mut v = 0.0;
-                    for k in 0..3 {
-                        v += b_cov[r][off + k] * q[k][m];
-                    }
-                    b_cov_lam[r][off + m] = v;
-                }
-            }
-        }
-    }
-
-    // (3) Physical lamina shear B = m2 · (lamina-frame covariant B).
     let mut b_phys = [[0.0_f64; 18]; 2];
     for dof in 0..18 {
-        b_phys[0][dof] = m2[0][0] * b_cov_lam[0][dof] + m2[0][1] * b_cov_lam[1][dof];
-        b_phys[1][dof] = m2[1][0] * b_cov_lam[0][dof] + m2[1][1] * b_cov_lam[1][dof];
+        b_phys[0][dof] = s3 * (m2[0][0] * b_cov[0][dof] + m2[0][1] * b_cov[1][dof]);
+        b_phys[1][dof] = s3 * (m2[1][0] * b_cov[0][dof] + m2[1][1] * b_cov[1][dof]);
     }
     b_phys
 }
