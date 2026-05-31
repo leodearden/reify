@@ -742,6 +742,53 @@ fn hemisphere_quadrant_mesh(nx: usize, ny: usize) -> (Vec<[f64; 3]>, Vec<[usize;
     (nodes, connectivity)
 }
 
+/// Antisymmetry Dirichlet BCs for the MacNeal-Harder hemisphere quadrant model.
+///
+/// The hemisphere quadrant (x≥0, y≥0) has two symmetry planes:
+///
+/// | Plane      | Physical role     | Constrained DOFs          |
+/// |------------|-------------------|---------------------------|
+/// | x=0 (θ=90°) | x-antisymmetry  | u_x=0, θ_y=0, θ_z=0      |
+/// | y=0 (θ=0°)  | y-antisymmetry  | u_y=0, θ_x=0, θ_z=0      |
+///
+/// `tol` must be well below the mesh spacing so no interior node is
+/// accidentally pinned as a boundary node.  On the 4×4 quadrant mesh
+/// `tol=0.5` is well inside every inter-node arc-length.
+fn hemisphere_antisymmetry_bcs(nodes: &[[f64; 3]], tol: f64) -> Vec<DirichletBc> {
+    let mut bcs = Vec::new();
+    for (node, n) in nodes.iter().enumerate() {
+        let dof = |d: usize| node * 6 + d;
+        let is_x0 = n[0].abs() < tol; // θ=90° meridian
+        let is_y0 = n[1].abs() < tol; // θ=0°  meridian
+        if is_x0 {
+            bcs.push(DirichletBc { dof: dof(0), value: 0.0 }); // u_x = 0
+            bcs.push(DirichletBc { dof: dof(4), value: 0.0 }); // θ_y = 0
+            bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z = 0
+        }
+        if is_y0 {
+            bcs.push(DirichletBc { dof: dof(1), value: 0.0 }); // u_y = 0
+            bcs.push(DirichletBc { dof: dof(3), value: 0.0 }); // θ_x = 0
+            bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z = 0
+        }
+    }
+    bcs
+}
+
+/// Locate the equator corner (R, 0, 0) in the hemisphere mesh.
+///
+/// Returns the index of the node satisfying
+/// `|x − R| < tol  &&  |y| < tol  &&  |z| < tol`.
+///
+/// # Panics
+///
+/// Panics if no such node exists — use a `tol` well below the mesh spacing.
+fn hemisphere_load_node(nodes: &[[f64; 3]], r: f64, tol: f64) -> usize {
+    nodes
+        .iter()
+        .position(|n| (n[0] - r).abs() < tol && n[1].abs() < tol && n[2].abs() < tol)
+        .expect("hemisphere_load_node: (R, 0, 0) not found in hemisphere mesh")
+}
+
 /// Mesh the helicoid mid-surface of the MacNeal-Harder twisted cantilever beam.
 ///
 /// # Geometry
@@ -1069,58 +1116,14 @@ fn hemisphere_with_point_loads_smoke_test_radial_displacement_is_finite_and_outw
     let stiffness = build_shell_stiffnesses(&nodes, &connectivity, T, &mat);
     let elements = assembly_elements_for(&connectivity, &stiffness);
 
-    // BCs: detect nodes by position.
-    // Mesh spacing: arc-length ≈ R·72°·π/180 / NX ≈ 3.1 in φ-direction;
-    // similar in θ-direction. tol=0.5 is well inside each spacing.
+    // BCs: x=0/y=0 antisymmetry.  tol=0.5 is well inside every inter-node
+    // arc-length on the 4×4 mesh (≈ 3.1 in the φ-direction).
     let tol = 0.5_f64;
-    let mut bcs: Vec<DirichletBc> = Vec::new();
-
-    for (node, n) in nodes.iter().enumerate() {
-        let dof = |d: usize| node * 6 + d;
-        let is_x0 = n[0].abs() < tol; // x=0 symmetry plane (θ=90°)
-        let is_y0 = n[1].abs() < tol; // y=0 symmetry plane (θ=0°)
-
-        // x-antisymmetry at the x=0 plane (θ=90° meridian).
-        // u_x is antisymmetric under x-reflection ⇒ u_x=0 on this plane.
-        if is_x0 {
-            bcs.push(DirichletBc {
-                dof: dof(0),
-                value: 0.0,
-            }); // u_x = 0
-            bcs.push(DirichletBc {
-                dof: dof(4),
-                value: 0.0,
-            }); // θ_y = 0
-            bcs.push(DirichletBc {
-                dof: dof(5),
-                value: 0.0,
-            }); // θ_z = 0
-        }
-        // y-antisymmetry at the y=0 plane (θ=0° meridian).
-        // u_y is antisymmetric under y-reflection ⇒ u_y=0 on this plane.
-        if is_y0 {
-            bcs.push(DirichletBc {
-                dof: dof(1),
-                value: 0.0,
-            }); // u_y = 0
-            bcs.push(DirichletBc {
-                dof: dof(3),
-                value: 0.0,
-            }); // θ_x = 0
-            bcs.push(DirichletBc {
-                dof: dof(5),
-                value: 0.0,
-            }); // θ_z = 0
-        }
-    }
+    let bcs = hemisphere_antisymmetry_bcs(&nodes, tol);
 
     // Load: P/4 in the +x direction at the equator corner (R, 0, 0).
-    // This is the node at φ=90° (equator), θ=0° (y=0 meridian).
-    // Radial direction at this point is +x, so F_x = +P/4 (outward).
-    let load_node = nodes
-        .iter()
-        .position(|n| (n[0] - R).abs() < tol && n[1].abs() < tol && n[2].abs() < tol)
-        .expect("load node (R, 0, 0) not found in hemisphere mesh");
+    // The radial direction at (R, 0, 0) is +x, so F_x = +P/4 (outward).
+    let load_node = hemisphere_load_node(&nodes, R, tol);
     let point_loads = vec![(load_node * 6 + 0, P / 4.0)]; // F_x = +P/4
 
     let u = solve_shell_system(&elements, n_nodes, &bcs, &point_loads);
@@ -1957,9 +1960,24 @@ fn degenerate_shell_ans_membrane_pinched_cylinder_moves_toward_reference() {
 /// **RED / orientation-robustness unit test (task 4128 step-1).**
 ///
 /// A single degenerate element on a flat CCW xy-triangle with per-node
-/// directors *opposing* the in-plane winding must produce a positive-semidefinite
-/// (PSD) stiffness matrix.  This test drives the sign-fix in
+/// directors *opposing* the in-plane winding must have non-negative diagonal
+/// entries in its stiffness matrix.  This test drives the sign-fix in
 /// `degenerate_stiffness_core` (task 4068 bug).
+///
+/// # What is asserted (and what is not)
+///
+/// The test checks two necessary conditions:
+///   (a) node-0 translational diagonals are strictly positive — a unit displacement
+///       stores positive energy;
+///   (b) no diagonal is negative beyond a 1e-9·kmax relative tolerance (the
+///       drilling DOF θ_z about the flat normal is legitimately zero).
+///
+/// Diagonal non-negativity is a necessary but not sufficient condition for PSD.
+/// It is sufficient here because the specific failure mode being guarded against
+/// — a global sign flip of the entire K from the signed Jacobian determinant —
+/// negates *all* entries uniformly, so non-negative diagonals directly catch the
+/// bug.  A full eigenvalue / Cholesky PSD check is not added to keep the test
+/// self-contained (no extra linear-algebra dependencies in the test crate).
 ///
 /// # Why this configuration forces det(J) < 0
 ///
@@ -1985,7 +2003,7 @@ fn degenerate_shell_ans_membrane_pinched_cylinder_moves_toward_reference() {
 ///   satisfies both.
 /// * The test is completely deterministic (no randomness, no mesh subtleties).
 #[test]
-fn degenerate_element_stiffness_stays_positive_definite_when_directors_oppose_winding() {
+fn degenerate_element_stiffness_diagonals_stay_nonnegative_when_directors_oppose_winding() {
     // Flat CCW triangle in the xy-plane.  Winding g_ξ×g_η = +z.
     let nodes: [[f64; 3]; 3] = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
 
@@ -2016,8 +2034,8 @@ fn degenerate_element_stiffness_stays_positive_definite_when_directors_oppose_wi
         assert!(
             diag > 0.0,
             "node-0 translational diagonal k[{dof},{dof}] = {diag:.6e} must be \
-             positive (PSD required); a negative value means the signed Jacobian \
-             determinant negated the stiffness (task 4068 bug)"
+             positive; a negative value means the signed Jacobian determinant \
+             negated the entire stiffness matrix (task 4068 bug)"
         );
     }
 
@@ -2030,7 +2048,7 @@ fn degenerate_element_stiffness_stays_positive_definite_when_directors_oppose_wi
         assert!(
             diag >= -tol,
             "diagonal k[{i},{i}] = {diag:.6e} is negative (below −{tol:.2e}); \
-             the stiffness matrix must be positive-semidefinite"
+             stiffness diagonals must be non-negative"
         );
     }
 }
@@ -2099,31 +2117,13 @@ fn degenerate_shell_hemisphere_outward_load_radial_displacement_is_outward() {
     let directors: Vec<[f64; 3]> =
         nodes.iter().map(|n| normalize3([n[0], n[1], n[2]])).collect();
 
-    // BCs: x=0/y=0 antisymmetry, replicated verbatim from the smoke test.
-    // tol=0.5 is well inside every inter-node spacing on the 4×4 mesh.
+    // BCs: x=0/y=0 antisymmetry.  tol=0.5 is well inside every inter-node
+    // arc-length on the 4×4 mesh.
     let tol = 0.5_f64;
-    let mut bcs: Vec<DirichletBc> = Vec::new();
-    for (node, n) in nodes.iter().enumerate() {
-        let dof = |d: usize| node * 6 + d;
-        let is_x0 = n[0].abs() < tol; // θ=90° meridian
-        let is_y0 = n[1].abs() < tol; // θ=0° meridian
-        if is_x0 {
-            bcs.push(DirichletBc { dof: dof(0), value: 0.0 }); // u_x = 0
-            bcs.push(DirichletBc { dof: dof(4), value: 0.0 }); // θ_y = 0
-            bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z = 0
-        }
-        if is_y0 {
-            bcs.push(DirichletBc { dof: dof(1), value: 0.0 }); // u_y = 0
-            bcs.push(DirichletBc { dof: dof(3), value: 0.0 }); // θ_x = 0
-            bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z = 0
-        }
-    }
+    let bcs = hemisphere_antisymmetry_bcs(&nodes, tol);
 
     // Outward +x load P/4 at the equator corner (R, 0, 0).
-    let load_node = nodes
-        .iter()
-        .position(|n| (n[0] - R).abs() < tol && n[1].abs() < tol && n[2].abs() < tol)
-        .expect("load node (R, 0, 0) not found in hemisphere mesh");
+    let load_node = hemisphere_load_node(&nodes, R, tol);
     let point_loads = vec![(load_node * 6 + 0, P / 4.0)]; // F_x = +P/4 (outward)
 
     // ── Non-ANS degenerate substrate ─────────────────────────────────────────
