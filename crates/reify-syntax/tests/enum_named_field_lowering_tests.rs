@@ -8,7 +8,7 @@
 //!
 //! Source: the shared fixture at tree-sitter-reify/test/fixtures/dce-2-nameddecl.ri.
 
-use reify_ast::{Declaration, EnumVariantDecl, VariantPayload};
+use reify_ast::{Declaration, VariantPayload};
 use reify_core::ModulePath;
 
 const FIXTURE_SOURCE: &str = r#"
@@ -164,7 +164,7 @@ structure def Widget {
 "#;
 
 fn parse_widget_outline_default() -> reify_ast::Expr {
-    use reify_ast::{Declaration, MemberDecl, StructureDef};
+    use reify_ast::{Declaration, MemberDecl};
     let module = reify_syntax::parse(CONSTRUCTION_SOURCE, ModulePath::single("test_dce_construct"));
     assert!(
         module.errors.is_empty(),

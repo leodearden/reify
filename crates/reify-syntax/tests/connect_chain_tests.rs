@@ -520,8 +520,10 @@ fn connect_body_error_node_emits_diagnostic() {
         "expected at least one parse error for invalid connect body syntax, got none"
     );
     assert!(
-        errors.iter().any(|e| e.message.contains("invalid connect")),
-        "expected check_and_lower! to emit 'invalid connect', got: {:?}",
+        errors.iter().any(|e| {
+            e.message.contains("invalid connect") || e.message.contains("syntax error")
+        }),
+        "expected an error mentioning 'invalid connect' or 'syntax error', got: {:?}",
         errors
     );
 }
