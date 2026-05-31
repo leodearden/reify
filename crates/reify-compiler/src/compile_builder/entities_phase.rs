@@ -486,8 +486,10 @@ pub(crate) fn phase_sub_override_autos(ctx: &mut CompilationCtx, prelude: &[&Com
 /// members/constraints/frame_expr, `guarded_groups[*]`
 /// guard/members/constraints/else_*, `match_arm_groups[*]` arm guards,
 /// `sub_components[*]` args/pose, and `forall_templates[*]` bodies (enumerated by
-/// [`for_each_template_root_expr`]) — plus function bodies (param_defaults +
-/// let-bindings + result_expr).
+/// [`for_each_template_root_expr`]) — plus free-function bodies (`ctx.functions`:
+/// param_defaults + let-bindings + result_expr) and associated-function bodies
+/// (`ctx.templates[*].assoc_fns[*].function`, trait-default-injected or
+/// structure-override: param_defaults + let-bindings + result_expr).
 ///
 /// This breadth deliberately matches the GLOBAL step-2 resolution relaxation:
 /// because a trait-carrying param acts as a resolution wildcard at EVERY call
@@ -600,6 +602,39 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
         walk(&f.body.result_expr, SourceSpan::empty(0), &mut new_diagnostics);
     }
 
+    // Walk associated-function bodies on every LOCAL template (step-14).
+    //
+    // The step-2 wildcard relaxation is GLOBAL and also reaches assoc-fn bodies
+    // (compiled via compile_assoc_function -> compile_expr ->
+    // resolve_function_overload), so a non-conforming `couple(self)` inside an
+    // assoc fn now resolves to a `UserFunctionCall` instead of the previous
+    // `no matching overload` hard error. `assoc_fns` live on `TopologyTemplate`
+    // yet are NOT enumerated by `for_each_template_root_expr` and are NOT in
+    // `ctx.functions`, so without this loop that hard error would be silently
+    // lost (a soundness regression shipping in this same diff).
+    //
+    // Mirrors the free-function loop above exactly — assoc fns ARE
+    // `CompiledFunction`s. Only `ctx.templates` (local) assoc fns are walked, not
+    // prelude templates' assoc fns: those were checked when the prelude compiled,
+    // consistent with walking `ctx.functions` (local) rather than prelude fns.
+    //
+    // No double-count: assoc fns are disjoint from `value_cells`, the template
+    // root fields enumerated by `for_each_template_root_expr`, and `ctx.functions`
+    // (module/free fns); each expr tree is visited exactly once. `SourceSpan::empty(0)`
+    // because assoc-fn bodies carry no per-expr spans (same gap as free-fn bodies).
+    for template in &ctx.templates {
+        for af in &template.assoc_fns {
+            let f = &af.function;
+            for default in f.param_defaults.iter().flatten() {
+                walk(default, SourceSpan::empty(0), &mut new_diagnostics);
+            }
+            for (_, expr) in &f.body.let_bindings {
+                walk(expr, SourceSpan::empty(0), &mut new_diagnostics);
+            }
+            walk(&f.body.result_expr, SourceSpan::empty(0), &mut new_diagnostics);
+        }
+    }
+
     ctx.diagnostics.extend(new_diagnostics);
 }
 
@@ -675,12 +710,19 @@ fn check_expr_fn_arg_conformance(
 /// diagnostic provenance — conformance correctness depends only on the
 /// param/arg types, not the span.
 ///
-/// ## Residual (not walked)
+/// ## Walked separately (not by this enumerator)
+///
+/// Associated-function bodies (`template.assoc_fns[*].function`) are walked
+/// directly by [`phase_fn_arg_conformance`], mirroring its `ctx.functions`
+/// free-function loop — NOT by this template-root enumerator. They are excluded
+/// here so each expr tree is visited exactly once.
+///
+/// ## Residual (not walked at all)
 ///
 /// `connections` carry only `ConstraintNodeId` references + string
 /// `port_mappings` (no inline `CompiledExpr`), and `compiled_purposes` are
 /// compiled after this pass (lib.rs:382). See `phase_fn_arg_conformance`
-/// doc-comment and task-4081 design decision §6.
+/// doc-comment and task-4081 design decision §6/§7.
 fn for_each_template_root_expr(
     template: &TopologyTemplate,
     f: &mut impl FnMut(&CompiledExpr, SourceSpan),
