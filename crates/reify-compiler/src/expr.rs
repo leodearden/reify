@@ -1264,25 +1264,24 @@ pub(crate) fn compile_expr_guarded(
                 .and_then(|r| r.get(name.as_str()))
                 .map(|t| t.entity_kind == EntityKind::Structure)
                 .unwrap_or(false);
-            if !is_structure_ctor {
-                if let Some(auto_arg) =
+            if !is_structure_ctor
+                && let Some(auto_arg) =
                     args.iter().find(|a| matches!(a.kind, reify_ast::ExprKind::Auto { .. }))
-                {
-                    return make_poison_literal(
-                        diagnostics,
-                        Diagnostic::error(format!(
-                            "auto is not allowed in a function-call argument \
-                             (function '{}'); to expose a free parameter, declare \
-                             `param <name> = auto` at a binding site instead",
-                            name,
-                        ))
-                        .with_code(DiagnosticCode::AutoNotAtBindingSite)
-                        .with_label(DiagnosticLabel::new(
-                            auto_arg.span,
-                            "auto not allowed in a function-call argument",
-                        )),
-                    );
-                }
+            {
+                return make_poison_literal(
+                    diagnostics,
+                    Diagnostic::error(format!(
+                        "auto is not allowed in a function-call argument \
+                         (function '{}'); to expose a free parameter, declare \
+                         `param <name> = auto` at a binding site instead",
+                        name,
+                    ))
+                    .with_code(DiagnosticCode::AutoNotAtBindingSite)
+                    .with_label(DiagnosticLabel::new(
+                        auto_arg.span,
+                        "auto not allowed in a function-call argument",
+                    )),
+                );
             }
 
             // Intercept `some(expr)` before general function resolution.
