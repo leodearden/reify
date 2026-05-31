@@ -51,6 +51,32 @@ fn is_pdead_finding(v: &serde_json::Value) -> bool {
 // Finding-shape predicate unit tests (hermetic; always run — no serve needed)
 // -----------------------------------------------------------------------
 
+// -----------------------------------------------------------------------
+// Serve-availability preflight unit test (hermetic; always run — no serve needed)
+// -----------------------------------------------------------------------
+
+#[cfg(test)]
+mod serve_preflight {
+    use super::*;
+    use std::net::TcpListener;
+
+    /// A freed port (bind → record → drop listener) must be reported as
+    /// unreachable.  This mirrors cli.rs's `closed_port_url` idiom and
+    /// exercises the TCP-connect gate the `#[ignore]` capstone uses to
+    /// skip cleanly when jcodemunch-serve is not running.
+    #[test]
+    fn closed_port_is_not_reachable() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let port = listener.local_addr().expect("local_addr").port();
+        drop(listener); // port is now freed
+        let url = format!("http://127.0.0.1:{port}/mcp");
+        assert!(
+            !jcodemunch_serve_reachable(&url),
+            "freed port {port} must not be reported as reachable"
+        );
+    }
+}
+
 #[cfg(test)]
 mod finding_shape {
     use super::*;
