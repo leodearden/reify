@@ -25,7 +25,8 @@ use reify_core::DimensionVector;
 use reify_ir::Value;
 
 use super::common::{
-    fixed_guided_delta_max, length_si, make_flexure_joint, material_field_si, FIXED_GUIDED_GAMMA,
+    fixed_guided_delta_max, length_si, make_flexure_joint, material_field_si, neutral_angle_si,
+    symmetric_angle_range, CANTILEVER_GAMMA, FIXED_GUIDED_GAMMA, PRB_ANGLE_LIMIT_RAD,
 };
 
 /// Shared validated inputs for compound-flexure constructors.
@@ -162,8 +163,125 @@ pub(crate) fn eval_compound(name: &str, args: &[Value]) -> Option<Value> {
     match name {
         "prb_parallelogram_flexure" => Some(prb_parallelogram_flexure(args)),
         "prb_double_parallelogram_flexure" => Some(prb_double_parallelogram_flexure(args)),
+        "prb_cartwheel_flexure" => Some(prb_cartwheel_flexure(args)),
         _ => None,
     }
+}
+
+/// Validated inputs for the cartwheel flexure constructor.
+///
+/// Argument layout (§6.3): `(blade_count:Int, blade_length, blade_width,
+/// blade_thickness, material, pivot, axis[, neutral])` — note that blade_count
+/// is arg[0], pivot is arg[5] BEFORE axis at arg[6] (matches the beam/hinge
+/// family, not the compound parallelogram layout). A new dedicated parser is
+/// required because the layouts differ structurally.
+struct CartwheelInputs<'a> {
+    /// Number of radial blades N (≥ 1), stored as f64 for arithmetic.
+    blade_count: f64,
+    /// Blade length L (metres).
+    length: f64,
+    /// Blade second moment of area `I = width·thickness³/12` (m⁴).
+    i: f64,
+    /// Young's modulus E (Pa).
+    e: f64,
+    /// Material yield stress σ_y (Pa), if the material carries one.
+    yield_si: Option<f64>,
+    /// The raw axis argument (stored verbatim on the joint Map).
+    axis: &'a Value,
+    /// The raw pivot argument (stored verbatim on the joint Map).
+    pivot: &'a Value,
+    /// Optional trailing `neutral` argument (present only in the 8-arg form).
+    neutral_arg: Option<&'a Value>,
+}
+
+/// Parse and validate the cartwheel flexure argument layout:
+/// `(blade_count:Int, blade_length, blade_width, blade_thickness,
+/// material, pivot, axis[, neutral])`.
+///
+/// Returns `None` (⇒ `Value::Undef`) on: arity ∉ {7, 8}; blade_count not a
+/// recognised numeric type; non-positive or non-finite geometry; thickness ≥
+/// length; a material without a finite positive `youngs_modulus`; or an axis
+/// that is not a finite, non-zero, dimensionless 3-vector.
+///
+/// Note: the strict blade_count ≥ 1 and integer-only guards are added in step-6;
+/// this initial version accepts any finite numeric blade_count.
+fn parse_cartwheel_inputs(args: &[Value]) -> Option<CartwheelInputs<'_>> {
+    if args.len() != 7 && args.len() != 8 {
+        return None;
+    }
+    // Loose blade_count extraction (strict guards added in step-6).
+    let blade_count = match &args[0] {
+        Value::Int(n) => *n as f64,
+        Value::Real(r) if r.is_finite() => *r,
+        _ => return None,
+    };
+    let length = length_si(&args[1])?;
+    let width = length_si(&args[2])?;
+    let thickness = length_si(&args[3])?;
+    if length <= 0.0 || width <= 0.0 || thickness <= 0.0 || thickness >= length {
+        return None;
+    }
+    let material = &args[4];
+    let e = material_field_si(material, "youngs_modulus")?;
+    if e <= 0.0 {
+        return None;
+    }
+    crate::helpers::validate_dimensionless_unit_axis_vec3(&args[6])?;
+    Some(CartwheelInputs {
+        blade_count,
+        length,
+        i: width * thickness.powi(3) / 12.0,
+        e,
+        yield_si: material_field_si(material, "yield_stress"),
+        axis: &args[6],
+        pivot: &args[5],
+        neutral_arg: if args.len() == 8 { Some(&args[7]) } else { None },
+    })
+}
+
+/// `prb_cartwheel_flexure(blade_count, blade_length, blade_width,
+/// blade_thickness, material, pivot, axis[, neutral])` — PRB cartwheel flexure
+/// presented as a revolute joint (Compliant-Joints PRD §6.3).
+///
+/// Returns a joint `Value::Map` (`kind == "revolute"`) whose rotational
+/// stiffness is `k_θ = N · γ · E · I / L` (§6.3, γ = 2.65 Howell §5.1
+/// cantilever coefficient, N = blade_count, I = width·thickness³/12).
+///
+/// The symmetric `prb_validity` rotation range is `±min(θ_yield, 5°)`, where
+/// `θ_yield = yield·L/(E·t/2)` is the cantilever surface-yield rotation
+/// (each radial blade is a cantilever — the cartwheel rotation equals the
+/// per-blade rotation). When the material carries no `yield_stress`, only
+/// the 5° PRB limit applies.
+///
+/// Returns `Value::Undef` on the invalid-input classes enumerated in
+/// [`parse_cartwheel_inputs`].
+fn prb_cartwheel_flexure(args: &[Value]) -> Value {
+    let Some(c) = parse_cartwheel_inputs(args) else {
+        return Value::Undef;
+    };
+
+    // PRB pivot stiffness: k_pivot = N · γ · E · I / L (§6.3).
+    // Each blade contributes k_blade = γ·E·I/L (Howell §5.1 cantilever).
+    let k_pivot = c.blade_count * CANTILEVER_GAMMA * c.e * c.i / c.length;
+
+    // PROVISIONAL: ±5° PRB cap only (yield-aware refinement added in step-4).
+    let range = symmetric_angle_range(PRB_ANGLE_LIMIT_RAD);
+
+    // Optional trailing neutral angle (default 0 for the 7-arg form; step-8
+    // wires the 8-arg form — neutral_arg is already populated by the parser).
+    let neutral_si = c.neutral_arg.map(neutral_angle_si).unwrap_or(0.0);
+
+    make_flexure_joint(
+        "revolute",
+        c.axis.clone(),
+        range,
+        Value::Scalar {
+            si_value: k_pivot,
+            dimension: DimensionVector::ROTATIONAL_STIFFNESS,
+        },
+        Value::angle(neutral_si),
+        c.pivot.clone(),
+    )
 }
 
 /// `prb_parallelogram_flexure(length, width, thickness, blade_spacing, material, motion_axis, pivot)`
