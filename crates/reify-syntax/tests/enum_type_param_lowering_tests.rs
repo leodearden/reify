@@ -128,7 +128,7 @@ fn tree_t_recursive_node_left_is_parameterized_type() {
         .expect("expected Node variant");
     match &node_variant.payload {
         VariantPayload::Named(fields) => {
-            assert!(fields.len() >= 1, "Node must have at least 1 field");
+            assert!(!fields.is_empty(), "Node must have at least 1 field");
             let left_field = fields.iter().find(|(n, _)| n == "left").expect("Node must have 'left' field");
             match &left_field.1.kind {
                 TypeExprKind::Named { name, type_args } => {
