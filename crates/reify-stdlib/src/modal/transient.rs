@@ -1112,4 +1112,46 @@ mod tests {
         // dt ≤ 0 → 0 (no pulse width).
         assert_eq!(impulse_force_at(2.0, 0.12, 0.1, 0.0), 0.0, "dt = 0 → 0");
     }
+
+    // ─── step-5: dominant_antinode_index (RED) ───────────────────────────────
+
+    /// `dominant_antinode_index(shapes)` returns the node index of maximum
+    /// displacement norm ‖Φ[node]‖ (the geometry-free node resolver: the
+    /// fundamental-mode antinode = the cantilever free-end tip). Ties resolve to
+    /// the LOWEST index (deterministic); empty input → 0.
+    /// RED: function absent — fails to compile.
+    #[test]
+    fn dominant_antinode_index_cases() {
+        // Unambiguous max at node 2 (a cantilever-like ramp toward the free end).
+        let shapes = [
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.5],
+            [0.0, 0.0, 1.0], // ‖·‖ = 1.0, the antinode
+            [0.0, 0.0, 0.7],
+        ];
+        assert_eq!(dominant_antinode_index(&shapes), 2);
+
+        // Mixed-axis magnitudes: node 1 has the largest norm (3-4-0 → 5).
+        let shapes = [
+            [1.0, 1.0, 1.0], // √3 ≈ 1.73
+            [3.0, 4.0, 0.0], // 5.0 ← max
+            [0.0, 2.0, 2.0], // √8 ≈ 2.83
+        ];
+        assert_eq!(dominant_antinode_index(&shapes), 1);
+
+        // Ties resolve to the LOWEST index (deterministic).
+        let shapes = [
+            [0.0, 0.0, 2.0], // 2.0
+            [2.0, 0.0, 0.0], // 2.0 (tie, but higher index)
+            [0.0, 1.0, 0.0], // 1.0
+        ];
+        assert_eq!(dominant_antinode_index(&shapes), 0, "ties → lowest index");
+
+        // Single node → 0.
+        assert_eq!(dominant_antinode_index(&[[5.0, 0.0, 0.0]]), 0);
+
+        // Empty → 0 (degenerate; the trampoline guards against a zero-node shape).
+        let empty: [[f64; 3]; 0] = [];
+        assert_eq!(dominant_antinode_index(&empty), 0);
+    }
 }
