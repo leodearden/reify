@@ -503,10 +503,11 @@ fn moment_of_inertia_let_resolves_to_rank2_tensor_via_kernel_reply() {
 }
 
 /// `let es = edges_by_length(body, r)` with `let r = 0mm..50mm` must resolve
-/// to the filtered `Value::List` of edge sub-handles whose `EdgeLength` falls
-/// in `[0, 0.05] m`. Both staged edges (10 mm and 20 mm) are within range, so
-/// both survive. Pins the Range-arg resolution + delegation to
-/// `topology_selectors::edges_by_length`.
+/// to the filtered `Value::List` of edge sub-handles (PRD §4 KGQ-θ) whose
+/// `EdgeLength` falls in `[0, 0.05] m`. Both staged edges (10 mm and 20 mm)
+/// are within range, so both survive. Pins the Range-arg resolution +
+/// delegation to `topology_selectors::edges_by_length` and the sub-handle
+/// output contract (task 3617).
 #[test]
 fn edges_by_length_let_resolves_to_filtered_list_via_helper() {
     let source = "structure def Bracket {\n    \
@@ -526,14 +527,35 @@ fn edges_by_length_let_resolves_to_filtered_list_via_helper() {
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let cell = ValueCellId::new("Bracket", "es");
-    assert_eq!(
-        result.values.get(&cell),
-        Some(&Value::List(vec![Value::Int(2), Value::Int(3)])),
-        "Bracket.es must resolve to the length-filtered Value::List (both \
-         edges within [0, 50] mm) via topology_selectors::edges_by_length, \
-         got {:?}",
-        result.values.get(&cell),
-    );
+    let list = match result.values.get(&cell) {
+        Some(Value::List(elems)) => elems.clone(),
+        other => panic!(
+            "Bracket.es must be Value::List of GeometryHandle sub-handles \
+             (PRD §4 KGQ-θ); got {:?}",
+            other
+        ),
+    };
+    assert_eq!(list.len(), 2, "expected 2 edge sub-handles (both within [0,50]mm)");
+    let mut hashes: Vec<[u8; 32]> = Vec::new();
+    for (i, (elem, expected_kh)) in list.iter().zip([GeometryHandleId(2), GeometryHandleId(3)].iter()).enumerate() {
+        match elem {
+            Value::GeometryHandle { kernel_handle, upstream_values_hash, .. } => {
+                assert_eq!(
+                    kernel_handle,
+                    expected_kh,
+                    "es[{i}] kernel_handle must be {expected_kh:?}"
+                );
+                assert_ne!(
+                    upstream_values_hash,
+                    &[0u8; 32],
+                    "es[{i}] upstream_values_hash must be non-zero (PRD §4)"
+                );
+                hashes.push(*upstream_values_hash);
+            }
+            other => panic!("es[{i}] must be Value::GeometryHandle, got {:?}", other),
+        }
+    }
+    assert_ne!(hashes[0], hashes[1], "es[0] and es[1] upstream_values_hash must be pairwise-distinct (PRD §4 iii)");
 }
 
 /// `let fs = faces_by_area(body, r)` with `let r = 0mm*0mm..1m*1m` must
