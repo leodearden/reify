@@ -322,6 +322,26 @@ fn linear_combine(args: &[Value]) -> Value {
     Value::Map(result_map)
 }
 
+/// Resolve a case Map's displacement and stress sampled-field triples
+/// `((domain, codomain, field), (domain, codomain, field))`, or `None` if the
+/// case value is not a `Value::Map` or either field is missing / non-Sampled.
+/// Used by `diagnose`'s incompatible-mesh check to mirror `linear_combine`'s
+/// own `as_sampled_field` resolution of the per-case `displacement`/`stress`
+/// fields (fea.rs:181-196), so the diagnosed cause matches the real `Undef`
+/// cause and the structural fields fed to `metadata_matches` are identical.
+#[allow(clippy::type_complexity)]
+fn resolve_case_fields(
+    case_val: &Value,
+) -> Option<((&Type, &Type, &SampledField), (&Type, &Type, &SampledField))> {
+    let case_map = match case_val {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    let disp = as_sampled_field(case_map.get(&Value::String("displacement".to_string()))?)?;
+    let stress = as_sampled_field(case_map.get(&Value::String("stress".to_string()))?)?;
+    Some((disp, stress))
+}
+
 /// Post-hoc classifier for `linear_combine` failures, mirroring
 /// `stackup::diagnose`. Called at the `eval_builtin` `Undef` site (which has no
 /// `EvalContext`/diagnostics sink of its own) to re-derive the specific
@@ -341,6 +361,10 @@ fn linear_combine(args: &[Value]) -> Value {
 /// - `MultiLoadEmptyWeights` — weights map is empty
 /// - `MultiLoadUnknownCaseInWeights` — a weight references a case name absent
 ///   from the `MultiCaseResult` (first such entry, in BTreeMap key order)
+/// - `MultiLoadIncompatibleMeshes` — two weighted cases have
+///   structurally-mismatched displacement/stress fields (the proxy for
+///   differing `mesh_size`/`element_order`); the first weighted case is the
+///   reference and the first case that fails `metadata_matches` is reported
 ///
 /// **Not diagnosed** (Undef propagates silently, no code):
 /// - arity error (`args.len() != 2`)
@@ -412,6 +436,49 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
                 ))
                 .with_code(DiagnosticCode::MultiLoadUnknownCaseInWeights),
             );
+        }
+    }
+
+    // Incompatible-mesh check. The unknown-case loop above confirmed every
+    // weight key is a String naming an existing case, so re-iterate weights in
+    // BTreeMap key order retaining the case NAMES (linear_combine discards them
+    // when building weighted_cases). Resolve each case's displacement+stress
+    // sampled fields; the first weighted case is the reference (matching
+    // linear_combine's weighted_cases[0]). On the first subsequent case whose
+    // displacement OR stress metadata fails metadata_matches against the
+    // reference, report the reference (name1) and mismatching (name2) names.
+    // Mirrors linear_combine's per-case validation at fea.rs:227-242. A case
+    // whose value is not a Map or whose fields are missing/non-Sampled stays
+    // undiagnosed (None) — linear_combine Undefs it with no task-specified
+    // message.
+    // Element type (case name + displacement/stress field triples) is inferred
+    // from the push below; spelling it out trips clippy::type_complexity.
+    let mut resolved = Vec::with_capacity(weights_map.len());
+    for name_val in weights_map.keys() {
+        let case_name = match name_val {
+            Value::String(s) => s.as_str(),
+            _ => return None,
+        };
+        let case_val = cases_map.get(name_val)?;
+        let (disp, stress) = resolve_case_fields(case_val)?;
+        resolved.push((case_name, disp, stress));
+    }
+    if let Some((
+        &(ref_name, (ref_dom_d, ref_cod_d, ref_sf_d), (ref_dom_s, ref_cod_s, ref_sf_s)),
+        rest,
+    )) = resolved.split_first()
+    {
+        for &(name, (dom_d, cod_d, sf_d), (dom_s, cod_s, sf_s)) in rest {
+            let disp_ok = metadata_matches(ref_sf_d, sf_d, ref_dom_d, ref_cod_d, dom_d, cod_d);
+            let stress_ok = metadata_matches(ref_sf_s, sf_s, ref_dom_s, ref_cod_s, dom_s, cod_s);
+            if !disp_ok || !stress_ok {
+                return Some(
+                    Diagnostic::error(format!(
+                        "linear_combine: cases '{ref_name}' and '{name}' use incompatible meshes (different mesh_size or element_order in their ElasticOptions). Superposition requires matching mesh / element-order layouts. Re-solve with consistent options or compute envelopes instead."
+                    ))
+                    .with_code(DiagnosticCode::MultiLoadIncompatibleMeshes),
+                );
+            }
         }
     }
     None
