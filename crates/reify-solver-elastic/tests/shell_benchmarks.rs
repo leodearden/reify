@@ -1953,3 +1953,84 @@ fn degenerate_shell_ans_membrane_pinched_cylinder_moves_toward_reference() {
          {err_noans:.6e}"
     );
 }
+
+/// **RED / orientation-robustness unit test (task 4128 step-1).**
+///
+/// A single degenerate element on a flat CCW xy-triangle with per-node
+/// directors *opposing* the in-plane winding must produce a positive-semidefinite
+/// (PSD) stiffness matrix.  This test drives the sign-fix in
+/// `degenerate_stiffness_core` (task 4068 bug).
+///
+/// # Why this configuration forces det(J) < 0
+///
+/// The triangle nodes [[0,0,0],[1,0,0],[0,1,0]] are wound CCW in the xy-plane,
+/// so g_ξ × g_η ∝ +z.  The per-node directors are all [0,0,-1] (−z), so
+/// g_ζ = (t/2)·d = (0.05)·[0,0,-1] ∝ −z.
+/// det(J) = (g_ξ × g_η)·g_ζ < 0.
+///
+/// On the current (bug-present) code `scale = w * det < 0`, which negates the
+/// entire BᵀDB contribution, flipping K to negative-definite.  The
+/// translational diagonal entries k[0,0], k[1,1], k[2,2] (DOFs 0–2 of node 0)
+/// become *negative* → RED.
+///
+/// After the fix (`det.abs()`), those diagonals are positive and no diagonal
+/// is negative beyond a 1e-9 · kmax tolerance (the drilling DOF θ_z about the
+/// flat normal is legitimately zero) → GREEN.
+///
+/// # Premises verified before writing this test
+///
+/// * `mat3_inverse` has a `debug_assert!(|det|>1e-12)` — the flat Jacobian
+///   |det| = 0.05 >> 1e-12, so the assert passes.
+/// * `lamina_frame` asserts coplanarity and non-zero area — the CCW triangle
+///   satisfies both.
+/// * The test is completely deterministic (no randomness, no mesh subtleties).
+#[test]
+fn degenerate_element_stiffness_stays_positive_definite_when_directors_oppose_winding() {
+    // Flat CCW triangle in the xy-plane.  Winding g_ξ×g_η = +z.
+    let nodes: [[f64; 3]; 3] = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+
+    // Directors −z: opposing the +z winding → det(J) = (g_ξ×g_η)·g_ζ < 0.
+    let dirs: [[f64; 3]; 3] = [[0.0, 0.0, -1.0], [0.0, 0.0, -1.0], [0.0, 0.0, -1.0]];
+
+    let th: [f64; 3] = [0.1; 3];
+
+    let mat = IsotropicElastic {
+        youngs_modulus: 1.0e3,
+        poisson_ratio: 0.3,
+    };
+
+    let k_e = shell_element_stiffness_degenerate(&nodes, &dirs, &th, &mat);
+
+    const NDOF: usize = 18; // 3 nodes × 6 DOFs/node
+
+    // Find the maximum diagonal value (used to set a relative tolerance on
+    // the drilling DOF, which is legitimately zero on a flat element).
+    let kmax = (0..NDOF)
+        .map(|i| k_e.data[i * NDOF + i].abs())
+        .fold(0.0_f64, f64::max);
+
+    // (a) Node-0 translational diagonals must be strictly positive.
+    //     On buggy code (signed det) the entire K is negated → they are negative.
+    for dof in 0..3usize {
+        let diag = k_e.data[dof * NDOF + dof];
+        assert!(
+            diag > 0.0,
+            "node-0 translational diagonal k[{dof},{dof}] = {diag:.6e} must be \
+             positive (PSD required); a negative value means the signed Jacobian \
+             determinant negated the stiffness (task 4068 bug)"
+        );
+    }
+
+    // (b) No diagonal may be negative beyond a 1e-9·kmax tolerance.
+    //     The drilling DOF θ_z (about the flat normal) is exactly 0 on a flat
+    //     element; the >= bound (not >) accommodates that exact zero.
+    let tol = 1.0e-9 * kmax;
+    for i in 0..NDOF {
+        let diag = k_e.data[i * NDOF + i];
+        assert!(
+            diag >= -tol,
+            "diagonal k[{i},{i}] = {diag:.6e} is negative (below −{tol:.2e}); \
+             the stiffness matrix must be positive-semidefinite"
+        );
+    }
+}
