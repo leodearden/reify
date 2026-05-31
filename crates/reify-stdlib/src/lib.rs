@@ -27,6 +27,16 @@ pub use stackup::diagnose as stackup_diagnose;
 /// (empty/unknown-case weights or incompatible meshes).
 pub use fea::diagnose as fea_diagnose;
 
+/// Public re-export of the von Mises scalar kernel for cross-crate reuse.
+///
+/// Called by `crates/reify-expr/src/field_reductions.rs` in the
+/// `project_von_mises_sampled` helper to project each 9-float stride-1 window
+/// of a Sampled tensor field to a scalar von Mises value during field
+/// reduction (max/min/argmax/argmin of a VonMises-derived field). Avoids
+/// duplicating the formula inlined at
+/// `crates/reify-eval/src/compute_targets/elastic_static.rs:667`.
+pub use analysis::compute_von_mises_3x3;
+
 #[cfg(test)]
 #[macro_use]
 mod test_macros;

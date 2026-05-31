@@ -28,14 +28,18 @@ pub(crate) fn eval_analysis(name: &str, args: &[Value]) -> Option<Value> {
 ///                         d[3]=σ_yx, d[4]=σ_yy, d[5]=σ_yz,
 ///                         d[6]=σ_zx, d[7]=σ_zy, d[8]=σ_zz
 ///
-/// `pub(crate)` so the formula has a single home — both the
-/// `Value::Tensor`-shaped `von_mises` builtin (below) and the SampledField
-/// hot-path projection in `crates/reify-stdlib/src/fea.rs` route through
-/// this kernel. Mirrors the `pub(crate)` promotion of
-/// `compute_eigenvalues_3x3` for the same cross-module reuse pattern.
+/// `pub` (widened from `pub(crate)`) so the formula has a single home — the
+/// `Value::Tensor`-shaped `von_mises` builtin (below), the SampledField
+/// hot-path projection in `crates/reify-stdlib/src/fea.rs`, AND the
+/// cross-crate VonMises field reduction in
+/// `crates/reify-expr/src/field_reductions.rs` all route through this kernel.
+/// Re-exported via `pub use analysis::compute_von_mises_3x3` in `lib.rs` so
+/// the call site in reify-expr is `reify_stdlib::compute_von_mises_3x3`.
+/// Mirrors the `pub(crate)` promotion of `compute_eigenvalues_3x3` for the
+/// same cross-module reuse pattern.
 ///
 /// Window must be at least 9 floats long; only `d[0..9]` is read.
-pub(crate) fn compute_von_mises_3x3(d: &[f64]) -> f64 {
+pub fn compute_von_mises_3x3(d: &[f64]) -> f64 {
     debug_assert!(
         d.len() >= 9,
         "compute_von_mises_3x3 requires at least 9 elements, got {}",
