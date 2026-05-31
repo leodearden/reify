@@ -998,3 +998,99 @@ fn cancel_solve_impl_returns_ok_when_slot_empty() {
     let result = cancel_solve_impl(&state);
     assert!(result.is_ok(), "cancel_solve_impl must return Ok when slot is empty; got: {:?}", result);
 }
+
+// ── Task 4086 step-7: RED — production sink + consumer interplay ──
+//
+// Verifies PendingSolveCancelSink (the production SolveCancellationSink impl):
+//   (a) solve_started writes the handle into the shared slot
+//   (b) solve_finished clears the slot
+//   (c) cancel_solve_impl (the existing consumer) fires the handle and clears
+//       the slot — producer→consumer contract
+//
+// Fails with compile error until step-8 adds PendingSolveCancelSink to commands.rs.
+
+/// (a) + (b): PendingSolveCancelSink sets the slot on solve_started and clears
+/// it on solve_finished — the Some-during/None-after lifecycle.
+///
+/// Constructs a shared slot directly, builds PendingSolveCancelSink from it,
+/// and drives the two lifecycle calls manually without a full EngineSession.
+#[test]
+fn pending_solve_cancel_sink_sets_then_clears_slot() {
+    use reify_eval::CancellationHandle;
+    use crate::commands::PendingSolveCancelSink;
+    use crate::engine::SolveCancellationSink;
+
+    let slot: Arc<Mutex<Option<CancellationHandle>>> = Arc::new(Mutex::new(None));
+    let sink = PendingSolveCancelSink::new(slot.clone());
+
+    let handle = CancellationHandle::new();
+    let handle_clone = handle.clone();
+
+    // solve_started must write the handle into the slot.
+    sink.solve_started(handle_clone);
+    let slot_after_start = slot.lock().unwrap();
+    assert!(
+        slot_after_start.is_some(),
+        "slot must be Some after solve_started"
+    );
+    // Verify the handle in the slot is the same one we published (shares Arc).
+    let stored = slot_after_start.clone().unwrap();
+    assert!(
+        !stored.is_cancelled(),
+        "stored handle must not be cancelled immediately after solve_started"
+    );
+    drop(slot_after_start);
+
+    // solve_finished must clear the slot.
+    sink.solve_finished();
+    let slot_after_finish = slot.lock().unwrap();
+    assert!(
+        slot_after_finish.is_none(),
+        "slot must be None after solve_finished"
+    );
+}
+
+/// (c): After solve_started publishes a handle, cancel_solve_impl fires it
+/// and clears the slot — the producer→consumer contract.
+///
+/// Uses an AppState built with the shared slot so the consumer reads the same
+/// Arc as the producer.
+#[test]
+fn pending_solve_cancel_cancelled_by_consumer_during_solve() {
+    use reify_eval::CancellationHandle;
+    use crate::commands::{cancel_solve_impl, PendingSolveCancelSink};
+    use crate::engine::SolveCancellationSink;
+
+    let slot: Arc<Mutex<Option<CancellationHandle>>> = Arc::new(Mutex::new(None));
+    let sink = PendingSolveCancelSink::new(slot.clone());
+
+    // Simulate solve_started: publish a handle into the slot.
+    let handle = CancellationHandle::new();
+    let handle_clone = handle.clone();
+    sink.solve_started(handle_clone);
+
+    // Build AppState with the SAME slot Arc so cancel_solve_impl reads it.
+    let session = make_session();
+    let state = AppState {
+        engine: Arc::new(Mutex::new(session)),
+        last_state: Mutex::new(None),
+        watcher: Mutex::new(None),
+        sidecar: tokio::sync::Mutex::new(None),
+        selection: Arc::new(RwLock::new(SelectionInfo::default())),
+        initial_file: Mutex::new(None),
+        pending_solve_cancel: slot.clone(),
+    };
+
+    // cancel_solve_impl must: (1) cancel the handle, (2) clear the slot.
+    let result = cancel_solve_impl(&state);
+    assert!(result.is_ok(), "cancel_solve_impl must return Ok; got: {:?}", result);
+    assert!(
+        handle.is_cancelled(),
+        "CancellationHandle must be cancelled after cancel_solve_impl fires it"
+    );
+    let slot_after_cancel = state.pending_solve_cancel.lock().unwrap();
+    assert!(
+        slot_after_cancel.is_none(),
+        "slot must be cleared after cancel_solve_impl"
+    );
+}
