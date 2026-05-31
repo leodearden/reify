@@ -19,6 +19,50 @@ import {
 } from 'three';
 
 // ---------------------------------------------------------------------------
+// Bounds helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute the bounding-box center and half-space-diagonal radius for a flat
+ * XYZ position array.  Pure function — no three.js dependency.
+ *
+ * Deliberately avoids three.Box3 / BufferGeometry.computeBoundingSphere so
+ * the helper is unit-testable with plain numbers (no WebGL infrastructure)
+ * and keeps the BucklingPanel.test.tsx mock surface minimal (only
+ * Scene/Camera/Renderer need stubs, not Box3/Vector3).  For the three.Box3
+ * pattern used elsewhere see: viewport/scene.ts, viewport/selection.ts,
+ * gui/src/debug/bridge.ts.
+ *
+ * Returns { center:[0,0,0], radius:0 } for an empty / zero-length input.
+ */
+export function computePointCloudBounds(
+  positions: number[],
+): { center: [number, number, number]; radius: number } {
+  if (positions.length === 0) return { center: [0, 0, 0], radius: 0 };
+
+  let xMin = Infinity, xMax = -Infinity;
+  let yMin = Infinity, yMax = -Infinity;
+  let zMin = Infinity, zMax = -Infinity;
+
+  for (let i = 0; i < positions.length; i += 3) {
+    const x = positions[i]!;
+    const y = positions[i + 1]!;
+    const z = positions[i + 2]!;
+    if (x < xMin) xMin = x; if (x > xMax) xMax = x;
+    if (y < yMin) yMin = y; if (y > yMax) yMax = y;
+    if (z < zMin) zMin = z; if (z > zMax) zMax = z;
+  }
+
+  const cx = (xMin + xMax) / 2;
+  const cy = (yMin + yMax) / 2;
+  const cz = (zMin + zMax) / 2;
+  const dx = xMax - xMin, dy = yMax - yMin, dz = zMax - zMin;
+  const radius = 0.5 * Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+  return { center: [cx, cy, cz], radius };
+}
+
+// ---------------------------------------------------------------------------
 // Public interface
 // ---------------------------------------------------------------------------
 

@@ -15,8 +15,9 @@
  */
 
 import { For, Show, onMount, onCleanup, createMemo } from 'solid-js';
+import { Scene, PerspectiveCamera, WebGLRenderer } from 'three';
 import type { BucklingStore } from '../stores/bucklingStore';
-import { createBucklingAnimator } from '../viewport/bucklingAnimator';
+import { createBucklingAnimator, computePointCloudBounds } from '../viewport/bucklingAnimator';
 import { computeModeThumbnail } from '../viewport/modeThumbnail';
 
 // ---------------------------------------------------------------------------
@@ -62,19 +63,39 @@ export function BucklingPanel(props: BucklingPanelProps) {
     if (!canvasRef) return;
 
     // Guard: jsdom and non-WebGL environments return null here.
-    let gl: WebGLRenderingContext | null = null;
+    // Probe webgl2 before webgl so Three's WebGLRenderer can still acquire the
+    // webgl2 context; probing 'webgl' first permanently commits this canvas to
+    // WebGL1 (per spec, a canvas cannot switch context type once acquired).
+    let hasWebGL: boolean;
     try {
-      gl = canvasRef.getContext('webgl') as WebGLRenderingContext | null;
+      hasWebGL = !!(canvasRef.getContext('webgl2') ?? canvasRef.getContext('webgl'));
     } catch (_) {
-      // Swallow — environments where getContext throws (rare but possible).
+      hasWebGL = false;
     }
-    if (!gl) return;
+    if (!hasWebGL) return;
 
     // 3D initialisation — only reached in a real WebGL environment.
     const base = store.state.base;
     if (!base) return;
 
     const animator = createBucklingAnimator(base);
+
+    // Build a self-contained mini-scene for the panel canvas.
+    const scene = new Scene();
+    scene.add(animator.object3d);
+    scene.add(animator.undeformedOverlay);
+
+    const { center, radius } = computePointCloudBounds(base);
+    const d = radius > 0 ? radius * 3 : 1;
+    const camera = new PerspectiveCamera(60, canvasRef.width / canvasRef.height, 0.1, 10000);
+    camera.up.set(0, 0, 1); // Z-up — matches kernel convention
+    camera.position.set(center[0] + d, center[1] + d, center[2] + d);
+    camera.lookAt(center[0], center[1], center[2]);
+    camera.updateProjectionMatrix();
+
+    const renderer = new WebGLRenderer({ canvas: canvasRef, antialias: true });
+    renderer.setSize(canvasRef.width, canvasRef.height);
+
     let rafId: number;
     let lastTime: number | null = null;
 
@@ -85,6 +106,7 @@ export function BucklingPanel(props: BucklingPanelProps) {
       const positions = store.currentDisplacedPositions();
       if (positions) animator.update(positions);
       animator.setUndeformedVisible(store.state.showUndeformed);
+      renderer.render(scene, camera);
       rafId = requestAnimationFrame(frame);
     }
 
@@ -93,6 +115,7 @@ export function BucklingPanel(props: BucklingPanelProps) {
     onCleanup(() => {
       cancelAnimationFrame(rafId);
       animator.dispose();
+      renderer.dispose();
     });
   });
 
