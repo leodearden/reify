@@ -17,11 +17,14 @@ use reify_ir::Value;
 mod common;
 mod beam;
 mod notch;
+mod hinge;
 
 /// Evaluate a flexure stdlib function by name.
 ///
 /// Returns `Some(Value)` for known flexure constructors (including
 /// `Some(Value::Undef)` on validation failure), or `None` for unknown names.
 pub(crate) fn eval_flexures(name: &str, args: &[Value]) -> Option<Value> {
-    beam::eval_beam(name, args).or_else(|| notch::eval_notch(name, args))
+    beam::eval_beam(name, args)
+        .or_else(|| notch::eval_notch(name, args))
+        .or_else(|| hinge::eval_hinge(name, args))
 }
