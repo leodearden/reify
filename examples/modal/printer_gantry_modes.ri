@@ -1,0 +1,128 @@
+// Printer-gantry modal-analysis dogfood fixture for `fn modal_analysis`.
+//
+// PRD reference: docs/prds/v0_3/modal-analysis.md §1, task μ (4th CI-gate
+// fixture). User-observable signal: "runs end-to-end and prints the first 5
+// modes of the printer-build gantry."
+//
+// Model: the printer X-axis gantry crossbeam is represented as an equivalent
+// rectangular box beam (length × width × height = 500 × 60 × 40 mm,
+// Aluminium_6061_T6) with both ends resting on mounts (pin-pin boundary
+// conditions). This is the box-beam API available in v0.3:
+//
+//   fn modal_analysis(material: ElasticMaterial, length: Length, width: Length,
+//                     height: Length, options: ModalOptions) -> ModalResult
+//
+// Signature deviation from PRD §1 pseudocode: the PRD shows a Part-based API
+// `modal_analysis(printer_gantry_part(), opts)`, but the `Part` topology type
+// has not landed in v0.3 — `ModalResult.part` is a String placeholder and
+// there is no `Body → trampoline` geometry channel, no `printer_gantry_part()`
+// builtin, and no `report()` builtin. The box-beam signature is what the two
+// sibling fixtures (cantilever_beam_modes.ri, simply_supported_beam_modes.ri)
+// use; the gantry crossbeam's dominant resonance is transverse bending, which
+// a rectangular box faithfully represents for a resonance-budget reference.
+// (Documented in crates/reify-compiler/stdlib/modal_analysis_fns.ri:28-36.)
+//
+// Boundary conditions — pin-pin realization:
+//   A gantry crossbeam rests on two end mounts. Two `FixedSupport`s targeting
+//   "x_min" and "x_max" signal the pin-pin (simply-supported) configuration to
+//   the trampoline. `build_dirichlet_bcs` (modal_ops.rs:1222) routes this
+//   two-support set to `simply_supported_pin_pin_bcs` (modal_ops.rs:1294),
+//   which pins transverse Z on both end faces and adds minimal axial/lateral
+//   anchors at the neutral-axis nodes — coordinate-based (catches P2
+//   edge-midpoints), removes all 6 rigid-body modes, and yields real/positive/
+//   distinct natural frequencies. There is no fixed-fixed branch; a single
+//   support is the cantilever clamp. Two end-mounts ⇒ pin-pin is the correct
+//   and only multi-support realization.
+//
+// Material coercion (same pattern as sibling fixtures):
+//   `modal_analysis` declares `material : ElasticMaterial`. Wrap the material
+//   in `FEAMaterialInput(material: mat)` and pass `mi.material` (compile-time
+//   type `ElasticMaterial`). The runtime value is an Aluminium_6061_T6
+//   StructureInstance; the trampoline reads youngs_modulus / poisson_ratio /
+//   density off it. Aluminium_6061_T6 is defined in materials_fea.ri:170 and
+//   is authentic for extruded-aluminium printer gantry rails.
+//
+// Asymmetric cross-section: width = 60 mm ≠ height = 40 mm. A square section
+//   would make vertical (Z) and lateral (Y) bending families degenerate
+//   (equal second moment of area → equal frequencies), making the "strictly
+//   ascending f1 < … < f5" gate knife-edge. The asymmetric section separates
+//   the bending families so all 5 requested modes are distinct and strictly
+//   ordered, which the e2e gate
+//   (crates/reify-eval/tests/modal_analysis_e2e.rs::e2e_printer_gantry_prints_five_modes)
+//   verifies as the sole accuracy criterion (no analytic tolerance; see PRD §1).
+//
+// Positional binding (IMPORTANT):
+//   ModalOptions argument binding is POSITIONAL — `name:` labels are cosmetic;
+//   the parser binds each value to the param in ModalOptions' DECLARATION order
+//   (n_modes, boundary_conditions, damping, sigma, tol, max_iters,
+//   reference_direction, element_order). Every param must be spelled out in
+//   order so that `element_order: ElementOrder.P2` lands in the last slot.
+//   A partial keyword-style call would silently bind `element_order`'s value
+//   to an earlier param and leave the real `element_order` at the P1 default.
+//
+// RayleighDamping: matches the PRD §1 dogfood snippet and the resonance-budget
+//   purpose (per-mode damping ratios ζₙ = (α + β·ωₙ²) / (2·ωₙ)). It is a
+//   real stdlib structure def (modal_analysis.ri:46-48), fully supported by the
+//   trampoline (extract_damping:1162, rayleigh_damping_ratio:981). Damping does
+//   NOT affect the extracted natural frequencies, so the frequency gate is
+//   unaffected. Fall back to `NoDamping()` if ctor-lowering ever misbehaves.
+
+structure PrinterGantryModes {
+    // Geometry: 500 mm span, 60 × 40 mm rectangular cross-section.
+    // Asymmetric width ≠ height keeps vertical/lateral bending families
+    // non-degenerate so the 5 lowest modes are strictly distinct.
+    param length : Length = 500mm
+    param width  : Length = 60mm
+    param height : Length = 40mm
+
+    // Material: Aluminium 6061-T6 (E ≈ 68.9 GPa, ν ≈ 0.33, ρ ≈ 2700 kg/m³ —
+    // density is required for the mass matrix M; matches printer extrusion).
+    let material = Aluminium_6061_T6()
+
+    // Wrap material in FEAMaterialInput so that member-access .material has
+    // compile-time type ElasticMaterial (matching the fn param type).
+    let mi = FEAMaterialInput(material: material)
+
+    // Gantry end mounts: pin BOTH end faces (x_min and x_max). Two FixedSupports
+    // signal the pin-pin (simply-supported) configuration to the trampoline —
+    // removes all 6 rigid-body modes so K_free is non-singular and the lowest
+    // 5 modes are real, positive, and distinct.
+    let mount_left  = FixedSupport(target: "x_min")
+    let mount_right = FixedSupport(target: "x_max")
+
+    // Modal options: extract the first 5 modes at element_order = ElementOrder.P2.
+    //
+    // IMPORTANT — argument binding is POSITIONAL (name: labels are cosmetic;
+    // the parser strips them and binds each value to the param in ModalOptions'
+    // DECLARATION order: n_modes, boundary_conditions, damping, sigma, tol,
+    // max_iters, reference_direction, element_order). Every preceding param must
+    // be spelled out in order so that element_order = ElementOrder.P2 lands in
+    // the last slot — a partial call would silently misplace it.
+    //
+    // RayleighDamping(alpha: 0.0, beta: 0.0001): structural damping for the
+    // resonance-budget reference (damping does not affect natural frequencies).
+    let opts = ModalOptions(
+        n_modes: 5,
+        boundary_conditions: [mount_left, mount_right],
+        damping: RayleighDamping(alpha: 0.0, beta: 0.0001),
+        sigma: 0.0,
+        tol: 0.000000001,
+        max_iters: 200,
+        reference_direction: vec3(0.0, 0.0, 1.0),
+        element_order: ElementOrder.P2
+    )
+
+    // Modal solve: @optimized dispatcher → modal::free_vibration trampoline
+    // (crates/reify-eval/src/modal_ops.rs::solve_modal_analysis_trampoline).
+    let result = modal_analysis(mi.material, length, width, height, opts)
+
+    // First 5 natural frequencies in Hz — the "report the first 5 modes" cells
+    // read by the e2e gate via ValueCellId. f1 = lowest (vertical Z-bending
+    // fundamental for the pin-pin gantry). f2..f5 = next four raw-spectrum modes.
+    // The asymmetric section ensures they are strictly ascending.
+    let f1 = first_frequency(result)
+    let f2 = mode_frequency(result, 1)
+    let f3 = mode_frequency(result, 2)
+    let f4 = mode_frequency(result, 3)
+    let f5 = mode_frequency(result, 4)
+}
