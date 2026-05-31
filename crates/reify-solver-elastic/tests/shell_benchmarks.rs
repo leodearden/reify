@@ -64,7 +64,8 @@
 use reify_solver_elastic::{
     AssemblyElement, AssemblyMode, DirichletBc, ElementStiffness, IsotropicElastic,
     apply_dirichlet_row_elimination, assemble_global_stiffness, shell_element_stiffness,
-    shell_element_stiffness_degenerate, shell_element_stiffness_mitc3_plus,
+    shell_element_stiffness_degenerate, shell_element_stiffness_degenerate_ans,
+    shell_element_stiffness_mitc3_plus,
 };
 
 // ─── test-local helpers ──────────────────────────────────────────────────────
@@ -222,6 +223,32 @@ fn build_shell_stiffnesses_degenerate(
             let elem_dirs = [directors[conn[0]], directors[conn[1]], directors[conn[2]]];
             let elem_th = [thickness; 3];
             shell_element_stiffness_degenerate(&elem_nodes, &elem_dirs, &elem_th, mat)
+        })
+        .collect()
+}
+
+/// ANS-membrane counterpart of [`build_shell_stiffnesses_degenerate`]: one
+/// per-element stiffness via the curved substrate with the assumed-natural-strain
+/// **membrane** field active ([`shell_element_stiffness_degenerate_ans`], task
+/// 4069). Identical wiring to [`build_shell_stiffnesses_degenerate`] — same
+/// per-node directors, same uniform thickness — so a benchmark can run the
+/// non-ANS and ANS degenerate elements on the IDENTICAL mesh / BCs / loads and
+/// observe the membrane-locking cure end-to-end (the ANS field softens the
+/// over-stiff response strictly toward the reference).
+fn build_shell_stiffnesses_degenerate_ans(
+    nodes: &[[f64; 3]],
+    connectivity: &[[usize; 3]],
+    directors: &[[f64; 3]],
+    thickness: f64,
+    mat: &IsotropicElastic,
+) -> Vec<ElementStiffness> {
+    connectivity
+        .iter()
+        .map(|conn| {
+            let elem_nodes = [nodes[conn[0]], nodes[conn[1]], nodes[conn[2]]];
+            let elem_dirs = [directors[conn[0]], directors[conn[1]], directors[conn[2]]];
+            let elem_th = [thickness; 3];
+            shell_element_stiffness_degenerate_ans(&elem_nodes, &elem_dirs, &elem_th, mat)
         })
         .collect()
 }
@@ -1812,5 +1839,117 @@ fn degenerate_shell_pinched_cylinder_is_closer_to_reference_than_flat_mitc3_plus
          reference than flat MITC3+: |{radial_deg:.6e} − {MACNEAL_HARDER_REF:.6e}| = \
          {err_deg:.6e} must be < |{radial_flat:.6e} − {MACNEAL_HARDER_REF:.6e}| = \
          {err_flat:.6e}"
+    );
+}
+
+/// **Observable signal (task 4069 step-13/14).** Activating the
+/// assumed-natural-strain **membrane** field on the curved degenerate substrate
+/// — [`shell_element_stiffness_degenerate_ans`] — moves the pinched-cylinder
+/// radial displacement STRICTLY closer to the MacNeal-Harder reference than the
+/// non-ANS degenerate substrate ([`shell_element_stiffness_degenerate`], task
+/// 4068) on the IDENTICAL mesh / BCs / loads / directors. This is the
+/// membrane-locking cure: per-node directors + a varying Jacobian REINTRODUCE
+/// membrane locking (the displacement-based membrane strain carries parasitic
+/// curvature-coupled energy that over-stiffens the inextensional bending mode);
+/// the ANS membrane field re-interpolates the covariant membrane strain from the
+/// interior tying points so that parasitic energy is filtered, softening the
+/// over-stiff response toward the reference.
+///
+/// # Relative / directional ONLY — no absolute band is claimed
+///
+/// The absolute ~50% / 4×4 MacNeal-Harder accuracy band (the published
+/// Bathe-Lee 2014 figure) stays gated on tasks 4065 (full integration +
+/// hemisphere/pinched GREEN) and 3513 (Scordelis-Lo), per
+/// `docs/architecture-audit/fea-accuracy-achievability-survey-2026-05-29.md` §6.
+/// Asserting an absolute tolerance HERE would be a formulation-vs-bound false
+/// premise. This test mirrors the established relative template
+/// (`degenerate_shell_pinched_cylinder_is_closer_to_reference_than_flat_mitc3_plus`,
+/// swapping flat-vs-degenerate for non-ANS-vs-ANS): the non-ANS degenerate
+/// substrate is ~6.4× under-predicting (ample headroom for a clean directional
+/// move with no overshoot), so the ANS cure can only soften toward the reference.
+///
+/// # Why the pinched cylinder (bending-dominated) and not the roof / hemisphere
+///
+/// The pinched cylinder already runs the degenerate element end-to-end and is
+/// ~6.4× under — clear, well-signed headroom for a clean directional move. Per
+/// task 4068's findings the Scordelis-Lo free-edge mode is sign-reversed at 4×4
+/// (no clean directional signal; that GREEN is 3513's job) and the
+/// membrane-dominated hemisphere (R/t=250) would let the residual lock mask the
+/// gain (4065's job).
+#[test]
+fn degenerate_shell_ans_membrane_pinched_cylinder_moves_toward_reference() {
+    const R: f64 = 300.0;
+    const L: f64 = 600.0;
+    const T: f64 = 3.0;
+    const NX: usize = 4; // θ-direction divisions
+    const NY: usize = 4; // z-direction divisions
+    const P: f64 = 1.0;
+    const MACNEAL_HARDER_REF: f64 = 1.8248e-5;
+
+    let mat = IsotropicElastic {
+        youngs_modulus: 3e6,
+        poisson_ratio: 0.3,
+    };
+
+    let (nodes, connectivity) = cylinder_octant_mesh(NX, NY, R, L);
+    let n_nodes = nodes.len();
+
+    // Analytic per-node radial directors (the extraction-supplied stand-in): the
+    // cylinder axis is z, so the outward surface normal at (x, y, z) is
+    // (x/R, y/R, 0). Shared verbatim with the non-ANS degenerate benchmark so the
+    // ONLY difference between the two solves is the membrane B.
+    let directors: Vec<[f64; 3]> = nodes.iter().map(|n| normalize3([n[0], n[1], 0.0])).collect();
+
+    // Octant symmetry + rigid-diaphragm BCs (shared with the smoke test).
+    let tol = 1.0_f64;
+    let bcs = pinched_cylinder_octant_symmetry_bcs(&nodes, L, tol);
+
+    // Inward radial point load F_y = −P/4 at the loaded corner (0, R, 0).
+    let load_node = nodes
+        .iter()
+        .position(|n| n[0].abs() < tol && (n[1] - R).abs() < tol && n[2].abs() < tol)
+        .expect("load node (0, R, 0) not found in mesh");
+    let point_loads = vec![(load_node * 6 + 1, -P / 4.0)];
+
+    // Non-ANS degenerate substrate (the baseline to beat) — task 4068.
+    let k_noans = build_shell_stiffnesses_degenerate(&nodes, &connectivity, &directors, T, &mat);
+    let e_noans = assembly_elements_for(&connectivity, &k_noans);
+    let u_noans = solve_shell_system(&e_noans, n_nodes, &bcs, &point_loads);
+    let radial_noans = -u_noans[load_node * 6 + 1]; // inward = positive
+
+    // ANS-membrane degenerate substrate (same mesh / BCs / loads / directors).
+    let k_ans = build_shell_stiffnesses_degenerate_ans(&nodes, &connectivity, &directors, T, &mat);
+    let e_ans = assembly_elements_for(&connectivity, &k_ans);
+    let u_ans = solve_shell_system(&e_ans, n_nodes, &bcs, &point_loads);
+    let radial_ans = -u_ans[load_node * 6 + 1];
+
+    let err_noans = (radial_noans - MACNEAL_HARDER_REF).abs();
+    let err_ans = (radial_ans - MACNEAL_HARDER_REF).abs();
+
+    // Finite & physically signed (inward, positive) under the inward radial load.
+    assert!(
+        radial_noans.is_finite() && radial_ans.is_finite(),
+        "radial displacements must be finite: noans={radial_noans}, ans={radial_ans}"
+    );
+    assert!(
+        radial_ans > 0.0,
+        "ANS-degenerate radial displacement {radial_ans:.4e} must be positive (inward) \
+         under inward radial load; a sign reversal indicates a membrane-B/BC/load bug"
+    );
+    // Runaway ceiling (the reference is 1.8248e-5; the ANS cure softens toward it
+    // but must NOT overshoot into a runaway).
+    assert!(
+        radial_ans < 1.0e-3,
+        "ANS-degenerate radial displacement {radial_ans:.4e} exceeds the runaway ceiling 1e-3"
+    );
+    // The task 4069 deliverable: the ANS membrane field is STRICTLY closer to the
+    // MacNeal-Harder reference than the non-ANS degenerate substrate on the
+    // identical mesh — the directional membrane-locking-cure signal.
+    assert!(
+        err_ans < err_noans,
+        "ANS membrane field must move the radial displacement strictly toward the \
+         MacNeal-Harder reference: |{radial_ans:.6e} − {MACNEAL_HARDER_REF:.6e}| = \
+         {err_ans:.6e} must be < |{radial_noans:.6e} − {MACNEAL_HARDER_REF:.6e}| = \
+         {err_noans:.6e}"
     );
 }
