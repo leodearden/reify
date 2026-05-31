@@ -2058,10 +2058,10 @@ pub(crate) fn try_eval_topology_selector(
             //   (Shape, Point) / (Point, Shape) → ClosestPointOnShape + Euclidean
             //   (Shape, Shape) / (Point, Point) → placeholder (step-5/6 RED/GREEN)
             //
-            // Step-2: implement Shape×Point and Point×Shape with naive `.ok()?`
-            // error handling. The Err-downgrade contract is driven RED by step-3
-            // and hardened by step-4 (replacing `.ok()?` with
-            // `dispatch_point3_length_reply`).
+            // Kernel-error-downgrade contract (invariant #3): on Err or malformed
+            // ClosestPointOnShape reply, `dispatch_point3_length_reply` returns
+            // `Some(Value::Undef)` with exactly one Warning diagnostic (not None),
+            // so the cell is visibly degraded rather than silently preserved.
             let arg0_shape = resolve_geometry_handle_arg(&args[0], named_steps);
             let arg0_point = if arg0_shape.is_none() {
                 resolve_point3_length_arg(&args[0], values)
@@ -2077,39 +2077,66 @@ pub(crate) fn try_eval_topology_selector(
 
             match (arg0_shape, arg0_point, arg1_shape, arg1_point) {
                 (Some(handle), None, None, Some(point)) => {
-                    // Shape × Point: query ClosestPointOnShape on the shape for the point.
+                    // Shape × Point: ClosestPointOnShape on the shape; Euclidean to point.
                     let query = reify_ir::GeometryQuery::ClosestPointOnShape {
                         handle,
                         px: point[0],
                         py: point[1],
                         pz: point[2],
                     };
-                    // Naive `.ok()?` — hardened to dispatch_point3_length_reply in step-4.
-                    let reply = kernel.query(&query).ok()?;
-                    let [cx, cy, cz] =
-                        crate::topology_selectors::parse_xyz_value(&reply, &function.name).ok()?;
-                    let dx = point[0] - cx;
-                    let dy = point[1] - cy;
-                    let dz = point[2] - cz;
-                    let d = (dx * dx + dy * dy + dz * dz).sqrt();
-                    Some(reify_ir::Value::length(d))
+                    // dispatch_point3_length_reply handles Err/malformed with
+                    // Some(Value::Undef) + one Warning (invariant #3). On success
+                    // it returns Some(Value::Point([length, length, length])).
+                    match dispatch_point3_length_reply(kernel, &query, &function.name, diagnostics) {
+                        Some(reify_ir::Value::Point(comps)) if comps.len() == 3 => {
+                            let extract_si = |v: &reify_ir::Value| match v {
+                                reify_ir::Value::Scalar { si_value, .. } => *si_value,
+                                reify_ir::Value::Real(r) => *r,
+                                _ => f64::NAN,
+                            };
+                            let cx = extract_si(&comps[0]);
+                            let cy = extract_si(&comps[1]);
+                            let cz = extract_si(&comps[2]);
+                            let dx = point[0] - cx;
+                            let dy = point[1] - cy;
+                            let dz = point[2] - cz;
+                            let d = (dx * dx + dy * dy + dz * dz).sqrt();
+                            Some(reify_ir::Value::length(d))
+                        }
+                        // Undef reply (error already warned by dispatch helper) or
+                        // malformed Point shape → propagate Undef.
+                        Some(reify_ir::Value::Undef) => Some(reify_ir::Value::Undef),
+                        // None from dispatch_point3_length_reply (shouldn't happen) → None.
+                        _ => None,
+                    }
                 }
                 (None, Some(point), Some(handle), None) => {
-                    // Point × Shape: symmetric — issue ClosestPointOnShape on the shape.
+                    // Point × Shape: symmetric — ClosestPointOnShape on the shape.
                     let query = reify_ir::GeometryQuery::ClosestPointOnShape {
                         handle,
                         px: point[0],
                         py: point[1],
                         pz: point[2],
                     };
-                    let reply = kernel.query(&query).ok()?;
-                    let [cx, cy, cz] =
-                        crate::topology_selectors::parse_xyz_value(&reply, &function.name).ok()?;
-                    let dx = point[0] - cx;
-                    let dy = point[1] - cy;
-                    let dz = point[2] - cz;
-                    let d = (dx * dx + dy * dy + dz * dz).sqrt();
-                    Some(reify_ir::Value::length(d))
+                    match dispatch_point3_length_reply(kernel, &query, &function.name, diagnostics) {
+                        Some(reify_ir::Value::Point(comps)) if comps.len() == 3 => {
+                            let extract_si = |v: &reify_ir::Value| match v {
+                                reify_ir::Value::Scalar { si_value, .. } => *si_value,
+                                reify_ir::Value::Real(r) => *r,
+                                _ => f64::NAN,
+                            };
+                            let cx = extract_si(&comps[0]);
+                            let cy = extract_si(&comps[1]);
+                            let cz = extract_si(&comps[2]);
+                            let dx = point[0] - cx;
+                            let dy = point[1] - cy;
+                            let dz = point[2] - cz;
+                            let d = (dx * dx + dy * dy + dz * dz).sqrt();
+                            Some(reify_ir::Value::length(d))
+                        }
+                        Some(reify_ir::Value::Undef) => Some(reify_ir::Value::Undef),
+                        _ => None,
+                    }
                 }
                 // (Shape, Shape) and (Point, Point) — placeholder for step-5 RED test.
                 // Non-ValueRef / unresolvable args — fall through to None.
