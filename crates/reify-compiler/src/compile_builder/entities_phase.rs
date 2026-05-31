@@ -25,7 +25,7 @@ use std::collections::{HashMap, HashSet};
 
 use reify_ast::ParsedModule;
 use reify_core::{Diagnostic, DiagnosticLabel};
-use reify_core::{SourceSpan, Type};
+use reify_core::SourceSpan;
 use reify_ir::{CompiledExpr, CompiledExprKind, CompiledFunction, EnumDef};
 
 use crate::CompiledModule;
