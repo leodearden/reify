@@ -1945,10 +1945,93 @@ mod tests {
                 tp.coord.xi,
                 tp.coord.eta,
             );
+            // The ANS covariant membrane is translation-only at ζ=0, so a
+            // translation-free director-rotation mode produces EXACTLY zero ANS
+            // membrane strain — assert that machine-zero directly (the real
+            // property under test). It implies a fortiori the relative locking-cure
+            // inequality ans < disp, since disp > 1e-6.
             assert!(
-                ans < disp,
-                "ANS membrane strain {ans} must be strictly less than displacement \
-                 membrane {disp} @ ({},{}) — the locking cure",
+                ans < 1e-12,
+                "ANS membrane strain {ans} must be ~machine-zero for a translation-free \
+                 director-rotation mode @ ({},{}) — the parasitic lock is filtered entirely",
+                tp.coord.xi,
+                tp.coord.eta,
+            );
+        }
+    }
+
+    /// Quantitative filtering on a curved element with a MIXED translation+rotation
+    /// mode — a NON-trivial companion to the pure-rotation witness above (where the
+    /// ANS strain is structurally zero). The translation part is a genuine in-plane
+    /// stretch (nonzero membrane strain); the rotation part is a uniform director
+    /// rotation (the parasitic bending mode). Because the B operators are linear and
+    /// the ANS covariant membrane is translation-only at ζ=0, this pins the locking
+    /// cure with a nonzero ANS witness, without any fragile magnitude ordering of
+    /// summed strain vectors:
+    ///
+    /// - the ANS membrane strain is genuinely NONZERO (it captures the real stretch
+    ///   — the filter does not over-soften the membrane);
+    /// - adding the director rotation leaves the ANS membrane strain EXACTLY
+    ///   unchanged (the parasitic rotation is filtered to machine precision) — the
+    ///   cure;
+    /// - the displacement membrane strain DOES change when the rotation is added
+    ///   (it carries the parasitic membrane the ANS field removes) — the disease.
+    #[test]
+    fn degenerate_assumed_membrane_b_keeps_stretch_filters_rotation_on_curved_patch() {
+        let (nodes, directors, thicknesses) = tilted_fixture();
+        // Translation part: an isotropic in-plane stretch u_i = s·(x_i, y_i, 0) — a
+        // genuine membrane mode (nonzero ANS membrane strain).
+        let s = 1.0e-3_f64;
+        let mut u_trans = [0.0_f64; 18];
+        for i in 0..3 {
+            u_trans[6 * i] = s * nodes[i][0];
+            u_trans[6 * i + 1] = s * nodes[i][1];
+        }
+        // Mixed mode: add a uniform director rotation θ_i = ω (the parasitic bending
+        // mode) on top of the stretch.
+        let omega = [0.01_f64, -0.02, 0.015];
+        let mut u_mixed = u_trans;
+        for i in 0..3 {
+            u_mixed[6 * i + 3] = omega[0];
+            u_mixed[6 * i + 4] = omega[1];
+            u_mixed[6 * i + 5] = omega[2];
+        }
+        let mag = |e: [f64; 3]| (e[0] * e[0] + e[1] * e[1] + e[2] * e[2]).sqrt();
+        let diff = |a: [f64; 3], b: [f64; 3]| mag([a[0] - b[0], a[1] - b[1], a[2] - b[2]]);
+        let interior = Mitc3Plus.interior_tying_points();
+        for tp in interior.iter().take(3) {
+            let c = ShellRefCoord3::new(tp.coord.xi, tp.coord.eta, 0.0);
+            let ans_b = degenerate_assumed_membrane_b(&nodes, &directors, &thicknesses, c);
+            let disp_b = degenerate_membrane_bending_b(&nodes, &directors, &thicknesses, c);
+            let ans_mixed = b_times_u(&ans_b, &u_mixed);
+            let ans_trans = b_times_u(&ans_b, &u_trans);
+            let disp_mixed = b_times_u(&disp_b, &u_mixed);
+            let disp_trans = b_times_u(&disp_b, &u_trans);
+            // (a) ANS captures the genuine stretch — it is not over-filtered.
+            assert!(
+                mag(ans_mixed) > 1e-9,
+                "ANS membrane strain {} must be genuinely nonzero for a stretch mode @ ({},{})",
+                mag(ans_mixed),
+                tp.coord.xi,
+                tp.coord.eta,
+            );
+            // (b) The director rotation contributes EXACTLY nothing to the ANS
+            // membrane (translation-only covariant field at ζ=0) — the cure.
+            assert!(
+                diff(ans_mixed, ans_trans) < 1e-12,
+                "ANS membrane must be unchanged by the director rotation (filtered \
+                 exactly); changed by {} @ ({},{})",
+                diff(ans_mixed, ans_trans),
+                tp.coord.xi,
+                tp.coord.eta,
+            );
+            // (c) The displacement membrane DOES carry the parasitic rotation — the
+            // lock the ANS field removes.
+            assert!(
+                diff(disp_mixed, disp_trans) > 1e-9,
+                "displacement membrane must carry the parasitic rotation strain (the \
+                 lock); changed by only {} @ ({},{})",
+                diff(disp_mixed, disp_trans),
                 tp.coord.xi,
                 tp.coord.eta,
             );
