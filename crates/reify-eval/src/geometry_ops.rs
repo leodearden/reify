@@ -1835,6 +1835,7 @@ pub(crate) fn try_eval_topology_selector(
         "geo_equiv" => TopologySelectorHelper::GeoEquiv,
         "normal" => TopologySelectorHelper::Normal,
         "curvature" => TopologySelectorHelper::Curvature,
+        "length" => TopologySelectorHelper::Length,
         _ => return None,
     };
 
@@ -1902,7 +1903,8 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::Contains
                 | TopologySelectorHelper::GeoEquiv
                 | TopologySelectorHelper::Normal
-                | TopologySelectorHelper::Curvature => {
+                | TopologySelectorHelper::Curvature
+                | TopologySelectorHelper::Length => {
                     unreachable!("ClosestPoint/IsOn outer match guarantees this")
                 }
             }
@@ -2024,6 +2026,15 @@ pub(crate) fn try_eval_topology_selector(
             let point = resolve_point3_length_arg(&args[1], values)?;
             dispatch_curvature(kernel, handle, point, &function.name, diagnostics)
         }
+        TopologySelectorHelper::Length => {
+            // `length(curve) -> Scalar<Length>` (task 3622, KGQ-ν).
+            // arg[0]: edge sub-handle ValueRef → values → kernel_handle.
+            // Falls through (None) when arg is not a hydrated Value::GeometryHandle
+            // (PRD invariant #2).
+            let (_, _, kernel_handle) =
+                resolve_parent_geometry_handle_arg(&args[0], values)?;
+            dispatch_edge_length(kernel, kernel_handle, &function.name, diagnostics)
+        }
         TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => {
             // args[0]: geometry ValueRef → values map → full parent GeometryHandle.
             // The parent's realization_ref + upstream_values_hash are needed to
@@ -2057,7 +2068,8 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::Contains
                 | TopologySelectorHelper::GeoEquiv
                 | TopologySelectorHelper::Normal
-                | TopologySelectorHelper::Curvature => {
+                | TopologySelectorHelper::Curvature
+                | TopologySelectorHelper::Length => {
                     unreachable!("Edges/Faces outer match guarantees this")
                 }
             };
@@ -2618,6 +2630,11 @@ enum TopologySelectorHelper {
     /// (surface) and `OcctKernel::curve_curvature_at` (curve).
     /// Arg order: Shape=args[0] (named_steps), Point3<Length>=args[1] (values).
     Curvature,
+    /// `length(curve) -> Scalar<Length>` — arc length of a single-edge
+    /// sub-handle (task 3622, KGQ-ν, PRD §9 Phase 4). Backed by
+    /// `GeometryQuery::EdgeLength`. Arg: Curve=args[0] (values sub-handle).
+    /// Multi-edge Curve composition deferred per PRD Open Question §10.6.
+    Length,
 }
 
 impl TopologySelectorHelper {
@@ -2640,7 +2657,9 @@ impl TopologySelectorHelper {
             | TopologySelectorHelper::Contains
             | TopologySelectorHelper::Normal
             | TopologySelectorHelper::Curvature => 2,
-            TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => 1,
+            TopologySelectorHelper::Edges
+            | TopologySelectorHelper::Faces
+            | TopologySelectorHelper::Length => 1,
             TopologySelectorHelper::FacesByNormal
             | TopologySelectorHelper::EdgesParallelTo
             | TopologySelectorHelper::EdgesAtHeight
@@ -3142,6 +3161,37 @@ const CURVATURE_DIM: reify_core::dimension::DimensionVector = {
     d[0] = reify_core::dimension::Rational::new(-1, 1);
     reify_core::dimension::DimensionVector(d)
 };
+
+/// Dispatch a `length(curve)` query for `TopologySelectorHelper::Length`
+/// (task 3622, KGQ-ν).
+///
+/// Issues `GeometryQuery::EdgeLength(handle)` and wraps the reply as
+/// `Value::length(metres)`. Returns `Some(Value::Undef)` + one Warning on
+/// Err or an unexpected kernel reply type (PRD §4 defensive-downgrade contract).
+fn dispatch_edge_length(
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    handle: reify_ir::GeometryHandleId,
+    helper_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    match kernel.query(&reify_ir::GeometryQuery::EdgeLength(handle)) {
+        Ok(reify_ir::Value::Real(l)) => Some(reify_ir::Value::length(l)),
+        Ok(reify_ir::Value::Scalar { si_value, .. }) => Some(reify_ir::Value::length(si_value)),
+        Ok(unexpected) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{helper_name} kernel reply has unexpected type (expected Real, got {unexpected:?}); \
+                 cell left at Undef",
+            )));
+            Some(reify_ir::Value::Undef)
+        }
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{helper_name} kernel query failed: {err}",
+            )));
+            Some(reify_ir::Value::Undef)
+        }
+    }
+}
 
 /// Dispatch a `curvature(shape, point)` query for `TopologySelectorHelper::Curvature`
 /// (task 3621, KGQ-μ).
