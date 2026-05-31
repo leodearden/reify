@@ -262,6 +262,13 @@ impl Engine {
         //   4. Seed (value, determinacy) into snapshot.values and a local
         //      values map so subsequent lets and constraint dispatch can read it.
         //
+        // NOTE (task 4012 ε): guard-scoped purpose lets (from `where C { let x = ...
+        // }` blocks) are appended to `CompiledPurpose.lets` by the compiler and flow
+        // through this SAME injection loop unchanged — no new eval primitive is
+        // required.  The corresponding guarded constraints are already lowered to
+        // ordinary `Implies` CompiledConstraints by `compile_purpose`, so they are
+        // also injected by the constraint loop below without any special-casing.
+        //
         // After injection, remap_cell rewrites let-references in constraints
         // and the objective (compile-time `{purpose_name}::{let_name}` →
         // injected `{purpose_entity}::__let_{name}`) so they resolve correctly.
