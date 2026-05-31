@@ -250,7 +250,7 @@ impl Engine {
 
         // Release the closure's borrow on state.snapshot.graph.value_cells so
         // we can mutate it below for let-cell injection (task 4009 δ).
-        drop(expand_placeholders);
+        let _ = expand_placeholders;
 
         // ── Let-cell injection (task 4009 δ) ─────────────────────────────────
         //
