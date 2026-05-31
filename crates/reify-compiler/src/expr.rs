@@ -975,6 +975,39 @@ pub(crate) fn compile_expr_guarded(
                             }
                     }
 
+                    // Int-only guard for modulo (task-3916 / spec §5.1 / E_MODULO_REQUIRES_INT).
+                    //
+                    // `%` is "Int % Int -> Int ONLY"; Real, dimensioned Scalar, Bool, and any
+                    // other shape are rejected.  The check is skipped when either operand is
+                    // already Type::Error (anti-cascade — a prior unresolved variable should not
+                    // produce a spurious secondary ModuloRequiresInt).
+                    //
+                    // Poison to Type::Error (anti-cascade), matching the Pow guard precedent
+                    // (task-3805).  The pure predicate `modulo_operands_are_int` lives in
+                    // type_compat.rs (co-located with resolve_binop/infer_binop_type) so it can
+                    // be unit-tested independently of the compiler pipeline.
+                    if bin_op == BinOp::Mod
+                        && !compiled_left.result_type.is_error()
+                        && !compiled_right.result_type.is_error()
+                        && !type_compat::modulo_operands_are_int(
+                            &compiled_left.result_type,
+                            &compiled_right.result_type,
+                        )
+                    {
+                        result_type = make_poison_type(
+                            diagnostics,
+                            Diagnostic::error(format!(
+                                "modulo `%` requires Int operands, got `{}` % `{}`",
+                                compiled_left.result_type, compiled_right.result_type,
+                            ))
+                            .with_code(DiagnosticCode::ModuloRequiresInt)
+                            .with_label(DiagnosticLabel::new(
+                                expr.span,
+                                "operands must be Int",
+                            )),
+                        );
+                    }
+
                     // Dimension compatibility check for Add/Sub
                     if matches!(bin_op, BinOp::Add | BinOp::Sub) {
                         let op_name = if bin_op == BinOp::Add {

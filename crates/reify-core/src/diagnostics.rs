@@ -1295,6 +1295,25 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_NONINT_EXP_ON_DIMENSIONED`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     NonIntegerExponentOnDimensioned,
+    /// Origin: `crates/reify-compiler/src/expr.rs` (BinOp::Mod compile site).
+    ///
+    /// Emitted as a `Severity::Error` when a `%` expression has at least one
+    /// non-`Int` operand.  Both operands must be `Type::Int` for modulo to be
+    /// well-typed; `Real`, dimensioned scalars, `Bool`, and any other shape are
+    /// rejected.  The result type is poisoned to `Type::Error` (anti-cascade).
+    ///
+    /// Canonical message form:
+    ///   `"modulo \`%\` requires Int operands, got \`L\` % \`R\`"`
+    /// with a label `"operands must be Int"` on the expression span.
+    ///
+    /// Applies spec §5.1 "modulo is Int % Int -> Int ONLY".  A dedicated code is
+    /// minted rather than reusing `DimensionMismatch` because `DimensionMismatch`
+    /// semantics ("dimension mismatch in op: L vs R") do not fit `Real % Int`
+    /// (same reasoning task-3805 used for `NonIntegerExponentOnDimensioned`).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_MODULO_REQUIRES_INT`
+    /// (severity convention: `E_*` → Error).
+    ModuloRequiresInt,
     /// Origin: `crates/reify-eval/src/engine_eval.rs` (post-eval MassProperties
     /// PSD hook in the RBD-α dynamics foundation pass).
     ///
