@@ -128,7 +128,8 @@ fn conforming_joints_have_driving_joint_bound() {
 fn axis_joints_have_one_vec3_axis_param() {
     // Narrowed by task 3849: Prismatic and Revolute now have 4 params (axis +
     // spring_rate + damping + neutral); only Cylindrical still has exactly 1.
-    for name in &["Cylindrical"] {
+    {
+        let name = &"Cylindrical";
         let template = find_structure(name);
         let params = param_cells(template);
         assert_eq!(
