@@ -3910,6 +3910,98 @@ fn quaternion_from_z_to_axis(nx: f64, ny: f64, nz: f64) -> reify_ir::Value {
     }
 }
 
+/// Evaluate an `at <pose>` sub-component placement expression into a rigid
+/// child→parent [`reify_ir::Value::Transform`].
+///
+/// # Convention (resolves PRD §11 Q1)
+///
+/// A `Transform { rotation: Q, translation: t }` maps a child-local point `p`
+/// to parent-space via `Q·p + t`.  Carrying the child's identity origin-frame
+/// onto target `Frame { origin: o, basis: R }` (target in parent coords) forces:
+///
+/// - child-origin 0 → o  ⇒  t = o (origin components copied as-is, dimension preserved)
+/// - child-axes   I → R  ⇒  Q = R (basis copied; no normalization — frame3 guarantees unit basis)
+///
+/// Hence `Frame { origin: o, basis: R }` → `Transform { rotation: R, translation: o_as_vector }`.
+///
+/// | `pose` result                       | outcome                                               |
+/// |-------------------------------------|-------------------------------------------------------|
+/// | `None`                              | identity (Orientation(1,0,0,0), Vector[len 0,0,0])    |
+/// | `Some(_)` → `Value::Transform`      | pass through unchanged                                |
+/// | `Some(_)` → `Value::Frame`          | lowered per the convention above                      |
+/// | anything else (incl. `Value::Undef`)| one `Diagnostic::error`; returns `Value::Undef`       |
+#[allow(dead_code)] // used in #[cfg(test)]; consumed by T5 (full-tree composition)
+pub(crate) fn eval_sub_pose(
+    pose: Option<&reify_ir::CompiledExpr>,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> reify_ir::Value {
+    let Some(expr) = pose else {
+        return reify_ir::Value::Transform {
+            rotation: Box::new(reify_ir::Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            translation: Box::new(reify_ir::Value::Vector(vec![
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+            ])),
+        };
+    };
+
+    let value = reify_expr::eval_expr(expr, &eval_ctx_with_meta(values, functions, meta_map));
+    match value {
+        reify_ir::Value::Transform { .. } => value,
+        reify_ir::Value::Frame { origin, basis } => {
+            let components = match *origin {
+                reify_ir::Value::Point(c) => c,
+                other => {
+                    diagnostics.push(Diagnostic::error(format!(
+                        "`at` pose Frame origin must be a Point; got {:?}",
+                        other
+                    )));
+                    return reify_ir::Value::Undef;
+                }
+            };
+            if components.len() != 3
+                || !components.iter().all(|c| {
+                    if let reify_ir::Value::Scalar { si_value, dimension } = c {
+                        *dimension == reify_core::DimensionVector::LENGTH && si_value.is_finite()
+                    } else {
+                        false
+                    }
+                })
+            {
+                diagnostics.push(Diagnostic::error(
+                    "`at` pose Frame origin must be a 3-component LENGTH-dimensioned Point with finite coordinates",
+                ));
+                return reify_ir::Value::Undef;
+            }
+            if !matches!(*basis, reify_ir::Value::Orientation { .. }) {
+                diagnostics.push(Diagnostic::error(
+                    "`at` pose Frame basis must be a unit Orientation quaternion",
+                ));
+                return reify_ir::Value::Undef;
+            }
+            reify_ir::Value::Transform {
+                rotation: basis,
+                translation: Box::new(reify_ir::Value::Vector(components)),
+            }
+        }
+        _ => {
+            diagnostics.push(Diagnostic::error(
+                "`at` pose expression must evaluate to a Transform or Frame",
+            ));
+            reify_ir::Value::Undef
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
