@@ -1452,7 +1452,7 @@ pub(crate) fn run_transient_response(
         };
     }
 
-    // ── (2) extract per-mode (frequency_hz, damping_ratio, shape) ────────────
+    // ── (3) extract per-mode (frequency_hz, damping_ratio, shape) ────────────
     // Shapes are extracted fresh every call (they feed only the always-recomputed
     // forcing projection, not the cached coefficients; the echoed modal_result
     // supplies them, so a key match over (freq, zeta, dt, t_range) fully certifies
@@ -1471,7 +1471,7 @@ pub(crate) fn run_transient_response(
         })
         .collect();
 
-    // ── (3) cache lookup: try to reuse the grid + prepared integrators ────────
+    // ── (4) cache lookup: try to reuse the grid + prepared integrators ────────
     // Key excludes `forcing` (cheap-varying) and mode shapes (not needed by
     // the coefficients); see TransientCacheKey docs.
     let key = TransientCacheKey::new(t_start, t_end, dt, mode_params.clone());
@@ -1515,7 +1515,7 @@ pub(crate) fn run_transient_response(
         }
     };
 
-    // ── (4) forcing projection (always, even on a cache HIT) ─────────────────
+    // ── (5) forcing projection (always, even on a cache HIT) ─────────────────
     // Per source: resolve node, direction, sample p_src(tⱼ) over the grid.
     let mode0_shape: &[[f64; 3]] = shapes.first().map(Vec::as_slice).unwrap_or(&[]);
     struct SourceProjection {
@@ -1538,7 +1538,7 @@ pub(crate) fn run_transient_response(
         })
         .collect();
 
-    // ── (5) per-mode integration (+ cancellation poll between modes) ──────────
+    // ── (6) per-mode integration (+ cancellation poll between modes) ──────────
     let mut mode_coords: Vec<Value> = Vec::with_capacity(modes.len());
     for (i, (_freq, zeta)) in mode_params.iter().enumerate() {
         // Between-modes cancellation poll (PRD §6 "between modes (per timestep)").
@@ -1576,7 +1576,7 @@ pub(crate) fn run_transient_response(
         mode_coords.push(Value::List(coords.into_iter().map(Value::Real).collect()));
     }
 
-    // ── (6) shape the DisplacementTimeHistory ────────────────────────────────
+    // ── (7) shape the DisplacementTimeHistory ────────────────────────────────
     let t_samples = Value::List(
         grid.iter()
             .map(|&t| Value::Scalar { si_value: t, dimension: DimensionVector::TIME })
@@ -1597,7 +1597,7 @@ pub(crate) fn run_transient_response(
         fields,
     }));
 
-    // ── (7) donate the grid + prepared integrators as warm state (task λ) ─────
+    // ── (8) donate the grid + prepared integrators as warm state (task λ) ─────
     let cache = TransientCache { key, grid, prepared };
     let (state, size_bytes) = cache.into_opaque_state();
     let cost_per_byte = if size_bytes > 0 { Some(1.0 / size_bytes as f64) } else { None };
@@ -4060,11 +4060,20 @@ mod tests {
              degenerate-grid guard masks the missing-modal-result guard",
         );
 
-        // Two degenerate modal_result shapes: Undef (upstream node errored) and a
-        // well-formed ModalResult struct with an empty `modes` list.
+        // Four degenerate modal_result shapes: Undef (upstream node errored),
+        // a well-formed ModalResult with an empty `modes` list, a ModalResult
+        // whose `modes` field is absent, and a non-ModalResult struct. All four
+        // route through the same `modal_result_modes(&modal_result).is_empty()`
+        // branch and must emit the same E_TransientModalResultMissing diagnostic.
+        let modal_result_no_modes_field =
+            struct_instance("ModalResult", vec![("part".to_string(), Value::String(String::new()))]);
+        let non_modal_result_struct =
+            struct_instance("SomeOtherStruct", vec![("modes".to_string(), Value::List(vec![]))]);
         for (label, modal_result) in [
             ("Value::Undef", Value::Undef),
             ("modal_result_with_modes(vec![])", modal_result_with_modes(vec![])),
+            ("ModalResult without modes field", modal_result_no_modes_field),
+            ("non-ModalResult struct", non_modal_result_struct),
         ] {
             let value_inputs = vec![
                 modal_result,
