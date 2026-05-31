@@ -397,6 +397,59 @@ mod tests {
         }
     }
 
+    // ── body_label regression guard: name field and type_name fallback ──────
+    //
+    // L66's `name`-field read is the only swept read with no direct existing
+    // assertion: no prior test builds a body carrying a `name` field, and the
+    // default-water tests assert only severity/code (not the warning message).
+    // These two tests close that gap: they pin body_label's behaviour so a
+    // mis-keyed borrow of "name" (or any typo in the type_name fallback) would
+    // be caught immediately.
+
+    #[test]
+    fn body_label_uses_name_field_in_default_density_warning() {
+        // Build a body carrying an explicit `name` field AND a material with no
+        // density (forces the default-water path, which embeds body_label in the
+        // warning message).
+        let fields: PersistentMap<String, Value> = [
+            ("name".to_string(), Value::String("WidgetA".to_string())),
+            ("material".to_string(), material(None)),
+        ]
+        .into_iter()
+        .collect();
+        let b = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "Block".to_string(),
+            version: 1,
+            fields,
+        }));
+        let mut diags = Vec::new();
+        eval_body_mass_props_core(&b, None, |d| uniform_box_inertia(DIMS, d), &mut diags);
+
+        assert_eq!(diags.len(), 1, "default-water fallback must emit exactly one diagnostic");
+        assert!(
+            diags[0].message.contains("WidgetA"),
+            "warning message must use the body's `name` field; got: {:?}",
+            diags[0].message,
+        );
+    }
+
+    #[test]
+    fn body_label_falls_back_to_type_name_without_name_field() {
+        // body(None) has no `name` field and type_name "Block"; no density forces
+        // the default-water path so body_label's type_name fallback is exercised.
+        let b = body(None);
+        let mut diags = Vec::new();
+        eval_body_mass_props_core(&b, None, |d| uniform_box_inertia(DIMS, d), &mut diags);
+
+        assert_eq!(diags.len(), 1, "default-water fallback must emit exactly one diagnostic");
+        assert!(
+            diags[0].message.contains("Block"),
+            "warning message must fall back to the body's type_name 'Block'; got: {:?}",
+            diags[0].message,
+        );
+    }
+
     // ── Case A: material density, no explicit arg, no warning ────────────────
 
     #[test]
