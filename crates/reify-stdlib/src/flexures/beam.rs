@@ -56,6 +56,13 @@ fn prb_cantilever_beam(args: &[Value]) -> Value {
     ) else {
         return Value::Undef;
     };
+    // Geometry must be physically positive and the beam non-degenerate
+    // (thickness < length). The thickness ≥ length case is the
+    // E_FlexureGeometryInvalid regime — γ returns Undef here without emitting
+    // the diagnostic, which task λ (3821) owns.
+    if length <= 0.0 || width <= 0.0 || thickness <= 0.0 || thickness >= length {
+        return Value::Undef;
+    }
     let material = &args[3];
     let pivot = &args[4];
     let axis = &args[5];
@@ -63,6 +70,9 @@ fn prb_cantilever_beam(args: &[Value]) -> Value {
     let Some(e) = material_field_si(material, "youngs_modulus") else {
         return Value::Undef;
     };
+    if e <= 0.0 {
+        return Value::Undef;
+    }
     // Axis must be a finite, non-zero, dimensionless 3-vector; stored verbatim.
     if crate::helpers::validate_dimensionless_unit_axis_vec3(axis).is_none() {
         return Value::Undef;
