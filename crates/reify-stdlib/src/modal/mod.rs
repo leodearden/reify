@@ -7,4 +7,5 @@
 //! math the trampoline calls. See task ζ / docs/prds/v0_3/modal-analysis.md §10.
 
 pub mod free_vibration;
+pub mod trampoline;
 pub mod transient;
