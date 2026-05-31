@@ -533,30 +533,45 @@ const MIN_VOLUME: f64 = 1e-12;
 /// Mass properties of a closed triangle mesh, from [`mass_properties`].
 ///
 /// `centroid` is the geometric (uniform-density) centre of mass — density-free,
-/// matching OCCT's density-ignoring `CenterOfMass`.
+/// matching OCCT's density-ignoring `CenterOfMass`. `inertia` is the centroidal
+/// inertia tensor **per unit density**; callers multiply by ρ for kg·m².
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct MassProperties {
     /// Volume centroid `(x, y, z)`.
     pub centroid: [f64; 3],
+    /// Centroidal inertia tensor per unit density, row-major 3×3, in OCCT's
+    /// sign convention: diagonal `Iₖₖ = ∫ (x_l² + x_m²) dV` (the two axes ≠ k),
+    /// off-diagonal `Iᵢⱼ = −∫ xᵢ xⱼ dV`, taken about the centroid. Symmetric.
+    /// Multiply every entry by density ρ to obtain the mass-weighted tensor.
+    pub inertia: [[f64; 3]; 3],
 }
 
-/// Volume and volume-centroid of a closed triangle mesh, by the
-/// signed-tetrahedron (divergence-theorem) method.
+/// Volume, centroid, and centroidal inertia tensor of a closed triangle mesh,
+/// by the signed-tetrahedron (divergence-theorem) method.
 ///
 /// Each triangle `(a, b, c)` forms a signed tetrahedron with the origin whose
-/// signed volume is `v = a · (b × c) / 6`; summing `v` over an outward-wound
-/// closed mesh gives the enclosed volume `V`, and summing each tet's first
-/// moment `v · (a+b+c)/4` gives the first volume moment, whose ratio to `V` is
-/// the centroid. Exact for polyhedra (zero tessellation error), so the unit
-/// cube yields exactly `V = 1`, `C = (0.5, 0.5, 0.5)`.
+/// signed volume is `v = a · (b × c) / 6`. Summing over an outward-wound closed
+/// mesh:
+/// - `V = Σ v` — the enclosed volume;
+/// - `Σ v · (a+b+c)/4` — the first volume moment `∫ x_i dV`; `C = moment / V`;
+/// - the per-tet second-moment contribution (the canonical origin-tetrahedron
+///   covariance, exact for polyhedra) gives `P_ij = ∫ x_i x_j dV` about the
+///   origin.
+///
+/// `P` is shifted to the centroid by the parallel-axis theorem
+/// (`P_ij' = P_ij − V·C_i·C_j`) and assembled into the centroidal inertia
+/// tensor (per unit density) in OCCT's sign convention. Exact for polyhedra
+/// (zero tessellation error), so the unit cube yields exactly `V = 1`,
+/// `C = (0.5, 0.5, 0.5)`, diagonal `1/6`, off-diagonal `0`.
 ///
 /// Returns `None` when `|V| < MIN_VOLUME` (empty/degenerate mesh) so callers
 /// surface a `QueryError` rather than dividing by zero. Assumes consistent
-/// outward winding (Manifold solids are so oriented); the centroid is in fact
-/// winding-sign-independent (numerator and denominator share `V`'s sign).
+/// outward winding (Manifold solids are so oriented); centroid and inertia are
+/// in fact winding-sign-independent.
 pub(crate) fn mass_properties(verts: &[[f64; 3]], tri_indices: &[u64]) -> Option<MassProperties> {
     let mut volume = 0.0;
     let mut moment = [0.0; 3]; // ∫ x_i dV = Σ v_tet · (a_i + b_i + c_i)/4
+    let mut p = [[0.0f64; 3]; 3]; // ∫ x_i x_j dV about the origin
     for tri in tri_indices.chunks_exact(3) {
         let a = verts[tri[0] as usize];
         let b = verts[tri[1] as usize];
@@ -566,13 +581,44 @@ pub(crate) fn mass_properties(verts: &[[f64; 3]], tri_indices: &[u64]) -> Option
         for k in 0..3 {
             moment[k] += v_tet * (a[k] + b[k] + c[k]) / 4.0;
         }
+        // Canonical second-moment integral of the origin-tetrahedron (0,a,b,c):
+        // ∫ x_i x_j dV = v·[ (aᵢaⱼ+bᵢbⱼ+cᵢcⱼ)/10
+        //                  + (aᵢbⱼ+aⱼbᵢ + aᵢcⱼ+aⱼcᵢ + bᵢcⱼ+bⱼcᵢ)/20 ].
+        for i in 0..3 {
+            for j in 0..3 {
+                p[i][j] += v_tet
+                    * ((a[i] * a[j] + b[i] * b[j] + c[i] * c[j]) / 10.0
+                        + (a[i] * b[j]
+                            + a[j] * b[i]
+                            + a[i] * c[j]
+                            + a[j] * c[i]
+                            + b[i] * c[j]
+                            + b[j] * c[i])
+                            / 20.0);
+            }
+        }
     }
     if volume.abs() < MIN_VOLUME {
         return None;
     }
-    Some(MassProperties {
-        centroid: [moment[0] / volume, moment[1] / volume, moment[2] / volume],
-    })
+    let centroid = [moment[0] / volume, moment[1] / volume, moment[2] / volume];
+    // Parallel-axis shift of the second moments to the centroid:
+    // ∫ x_i' x_j' dV = ∫ x_i x_j dV − V·C_i·C_j.
+    let mut pc = [[0.0f64; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            pc[i][j] = p[i][j] - volume * centroid[i] * centroid[j];
+        }
+    }
+    // Assemble the centroidal inertia tensor (per unit density), OCCT sign
+    // convention: diagonal Iₖₖ = sum of the other two ∫x_l² ; off-diagonal
+    // Iᵢⱼ = −∫xᵢxⱼ. `pc` is symmetric, so the tensor is symmetric.
+    let inertia = [
+        [pc[1][1] + pc[2][2], -pc[0][1], -pc[0][2]],
+        [-pc[1][0], pc[0][0] + pc[2][2], -pc[1][2]],
+        [-pc[2][0], -pc[2][1], pc[0][0] + pc[1][1]],
+    ];
+    Some(MassProperties { centroid, inertia })
 }
 
 // ---------------------------------------------------------------------------

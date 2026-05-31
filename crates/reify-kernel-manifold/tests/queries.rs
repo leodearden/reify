@@ -1028,6 +1028,12 @@ fn query_inertia_tensor(
 ///
 /// RED (step-15): `query()` returns `Err(QueryFailed(STUB_MSG))` for
 /// `InertiaTensor`. GREEN is step-16.
+// 3×3 matrix assertions read most clearly with explicit (i, j) indices —
+// especially the transpose access `t[j][i]` in the symmetry check, which an
+// `.iter().enumerate()` rewrite cannot express cleanly. The sibling OCCT
+// mass-property tests take the same exemption
+// (crates/reify-kernel-occt/src/lib.rs:3279).
+#[allow(clippy::needless_range_loop)]
 #[test]
 fn query_inertia_tensor_unit_cube_density_scaled() {
     let mut kernel = ManifoldKernel::new();

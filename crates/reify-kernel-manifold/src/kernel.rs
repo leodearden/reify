@@ -403,6 +403,36 @@ impl GeometryKernel for ManifoldKernel {
                     )),
                 }
             }
+            // Full 3×3 centroidal inertia tensor (kg·m²), density-scaled, via
+            // signed-tetrahedron mesh integration with a parallel-axis shift to
+            // the centroid (matching OCCT's centroidal MatrixOfInertia) and
+            // OCCT's sign convention (off-diagonal = −ρ∫xy dV). Value::List of 3
+            // row Value::Lists of 3 Value::Real, row-major. Degenerate mesh =>
+            // QueryFailed. (KGQ-π / task 3625.)
+            GeometryQuery::InertiaTensor { handle, density } => {
+                let rho = *density;
+                let (verts, tris) = {
+                    let m = self
+                        .get_manifold(*handle)
+                        .map_err(|e| QueryError::QueryFailed(format!("{e:?}")))?;
+                    crate::queries::mesh_geometry(m)
+                };
+                match crate::queries::mass_properties(&verts, &tris) {
+                    Some(mp) => Ok(Value::List(
+                        mp.inertia
+                            .iter()
+                            .map(|row| {
+                                Value::List(
+                                    row.iter().map(|&e| Value::Real(e * rho)).collect(),
+                                )
+                            })
+                            .collect(),
+                    )),
+                    None => Err(QueryError::QueryFailed(
+                        "InertiaTensor: empty/degenerate mesh has no inertia tensor".into(),
+                    )),
+                }
+            }
             // All other queries remain follow-up work (see STUB_MSG).
             _ => Err(QueryError::QueryFailed(STUB_MSG.into())),
         }
