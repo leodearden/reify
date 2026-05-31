@@ -204,7 +204,7 @@ fn e2e_cantilever_step_response_decay_matches_modal_damping() {
         snapshot.graph.compute_nodes.iter().map(|(_, d)| d.target.as_str()).collect();
     for want in ["modal::transient_response", "modal::displacement_at"] {
         assert!(
-            targets.iter().any(|t| *t == want),
+            targets.contains(&want),
             "expected a ComputeNode with target==\"{want}\"; found targets: {:?}",
             targets
         );

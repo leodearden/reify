@@ -3696,6 +3696,7 @@ mod tests {
     /// mode_coords is queried along Z (the bending axis) at two locations:
     ///   - a NUMERIC "1" → explicit node index 1, and
     ///   - a NON-NUMERIC "tip" → the fundamental antinode (node 2, max ‖Φ₀‖).
+    ///
     /// Each returns a finite `List<Real>` of length n_times equal to the
     /// closed-form reconstruction. The two cases resolve to DIFFERENT nodes
     /// (1 vs 2) and so yield different series — proving the resolver discriminates
