@@ -1,0 +1,35 @@
+// examples/stdlib/fields.ri — std.fields module worked example.
+//
+// Demonstrates importing std.fields and using the built-in sample() operator
+// with a Point3-domain analytical field. All differential operators
+// (gradient, divergence, curl, laplacian, sample) are intercepting builtins
+// that resolve via the prelude; the import provides a stable, named packaging
+// path per PRD §Slice C.
+//
+// Note: `Scalar` in a field codomain annotation resolves to the Length
+// dimension (Scalar[m]) in the current compiler. Temperature-codomain fields
+// are expressed as `Real -> Real` with dimensionless bodies; this example
+// uses a Point3-domain constant field returning a Length value to demonstrate
+// the 3-D spatial sampling path.
+
+import std.fields
+
+// ── Analytical spatial field ──────────────────────────────────────────────────
+
+// A constant spatial field: returns 1 m everywhere in 3-D space.
+// The lambda ignores its Point3 argument (constant-field precedent:
+// m11's `field def constant_field : Real -> Real { source = analytical { |x| 42.0 } }`).
+field def temp : Point3 -> Scalar { source = analytical { |p| 1.0m } }
+
+// ── Structure exercising sample() ─────────────────────────────────────────────
+
+structure def FieldsModuleDemo {
+    // sample() evaluates the analytical lambda at the given point.
+    // For a constant lambda `|p| 1.0m`, the result is exactly 1 m
+    // regardless of the sample point (value passthrough, not numerical).
+    let temp_sample = sample(temp, point3(1m, 2m, 3m))
+
+    // Range constraints — both Satisfied since temp_sample == 1m exactly.
+    constraint temp_sample > 0.999m
+    constraint temp_sample < 1.001m
+}
