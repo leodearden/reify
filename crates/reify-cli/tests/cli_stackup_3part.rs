@@ -13,6 +13,13 @@ mod common;
 /// `reify eval` prints Map entries as `"key": <value>`.  For LENGTH scalars the
 /// value is `<si_value> <dimension>`, so the first whitespace-bounded token after
 /// `": "` is the numeric SI value — independent of the dimension suffix.
+///
+/// SI-base-unit contract: `Value::Scalar` Display always emits the raw SI value
+/// followed by a dimension string (e.g. `0.003 m`, not `3 mm`).  This is
+/// guaranteed by `crates/reify-ir/src/value.rs` (`Display for Value`, Scalar arm).
+/// If that impl ever switched to source-unit output the oracle assertions below
+/// would silently compare the wrong magnitude (e.g. `3.0` vs `3.0e-3`), so any
+/// change to that formatting should update the oracles here in tandem.
 fn extract_scalar(stdout: &str, key: &str) -> f64 {
     let needle = format!("\"{key}\": ");
     let start = stdout
@@ -48,12 +55,22 @@ fn rss_band_oracle() -> f64 {
     (1.42e-8f64).sqrt()
 }
 
-/// `reify eval examples/tolerance-stackup-3part.ri` exits 0 and worst-case/RSS
-/// values match the in-file hand-calc oracle to 1e-12 relative tolerance.
+/// `reify eval examples/tolerance-stackup-3part.ri` exits 0 and all stack-up
+/// values match the in-file hand-calc oracle.
 ///
-/// RED until step-2 creates the example file.
+/// Exact-math (worst-case/RSS) assertions use 1e-12 relative tolerance.
+/// Monte-Carlo gate: mc_sigma within 2% of rss_sigma (PRD §3.3, all-Normal
+/// chain, N=100k, seed=42); mc_mean within 1% of nominal_gap (unbiased
+/// estimator); mc_yield_fraction ≥ 0.999 for the [2.5mm, 3.5mm] spec window
+/// (~±12σ_gap); two `reify eval` runs produce byte-identical stdout (INV-3).
+///
+/// A single eval call is shared by all assertions; the second eval is run only
+/// for the INV-3 determinism check, saving one redundant 100k-sample MC run.
+///
+/// RED until step-2 (example absent → non-zero exit); MC assertions RED until
+/// step-4 (monte_carlo_stackup cell absent → mc_sigma key missing).
 #[test]
-fn eval_tolerance_stackup_3part_exact_values() {
+fn eval_tolerance_stackup_3part() {
     let path = common::example_path("tolerance-stackup-3part.ri");
     let (status, stdout, stderr) = common::run_subcommand("eval", &path);
 
@@ -69,35 +86,20 @@ fn eval_tolerance_stackup_3part_exact_values() {
         stdout.contains("rss_sigma"),
         "stdout should contain 'rss_sigma';\n{stdout}"
     );
-
-    // Exact-math oracle assertions at 1e-12 relative.
-    assert_rel_close(extract_scalar(&stdout, "nominal_gap"),     3.0e-3,              1e-12, "nominal_gap");
-    assert_rel_close(extract_scalar(&stdout, "worst_case_band"), 2.0e-4,              1e-12, "worst_case_band");
-    assert_rel_close(extract_scalar(&stdout, "worst_case_max"),  3.2e-3,              1e-12, "worst_case_max");
-    assert_rel_close(extract_scalar(&stdout, "worst_case_min"),  2.8e-3,              1e-12, "worst_case_min");
-    assert_rel_close(extract_scalar(&stdout, "rss_band"),        rss_band_oracle(),         1e-12, "rss_band");
-    assert_rel_close(extract_scalar(&stdout, "rss_sigma"),       rss_band_oracle() / 3.0,   1e-12, "rss_sigma");
-}
-
-/// Monte-Carlo gate: mc_sigma converges to rss_sigma within 2% (all-Normal chain,
-/// N=100k, seed=42 — PRD §3.3); mc_yield_fraction ≈ 1.0 for the [2.5mm, 3.5mm]
-/// spec window (~±12σ_gap); two runs are byte-identical (INV-3).
-///
-/// RED until step-4 adds the monte_carlo_stackup cell to the example.
-#[test]
-fn eval_tolerance_stackup_3part_mc_gate() {
-    let path = common::example_path("tolerance-stackup-3part.ri");
-    let (status, stdout, stderr) = common::run_subcommand("eval", &path);
-
-    assert!(
-        status.success(),
-        "reify eval tolerance-stackup-3part.ri should exit 0;\nstdout: {stdout}\nstderr: {stderr}"
-    );
     assert!(
         stdout.contains("mc_sigma"),
         "stdout should contain 'mc_sigma' (MC cell missing from example);\n{stdout}"
     );
 
+    // --- Exact-math oracle assertions at 1e-12 relative ---
+    assert_rel_close(extract_scalar(&stdout, "nominal_gap"),     3.0e-3,                  1e-12, "nominal_gap");
+    assert_rel_close(extract_scalar(&stdout, "worst_case_band"), 2.0e-4,                  1e-12, "worst_case_band");
+    assert_rel_close(extract_scalar(&stdout, "worst_case_max"),  3.2e-3,                  1e-12, "worst_case_max");
+    assert_rel_close(extract_scalar(&stdout, "worst_case_min"),  2.8e-3,                  1e-12, "worst_case_min");
+    assert_rel_close(extract_scalar(&stdout, "rss_band"),        rss_band_oracle(),        1e-12, "rss_band");
+    assert_rel_close(extract_scalar(&stdout, "rss_sigma"),       rss_band_oracle() / 3.0, 1e-12, "rss_sigma");
+
+    // --- Monte-Carlo gate ---
     let rss_sigma = extract_scalar(&stdout, "rss_sigma");
     let mc_sigma  = extract_scalar(&stdout, "mc_sigma");
     let rel_err   = (mc_sigma - rss_sigma).abs() / rss_sigma;
@@ -105,6 +107,10 @@ fn eval_tolerance_stackup_3part_mc_gate() {
         rel_err <= 0.02,
         "mc_sigma not within 2% of rss_sigma: mc_sigma={mc_sigma:.6e}, rss_sigma={rss_sigma:.6e}, rel_err={rel_err:.4}"
     );
+
+    // mc_mean ≈ nominal_gap: unbiased estimator (all-Normal, E[gap] = Σ sign·nominal).
+    // 1% tolerance is ~240×SE(μ̂) at N=100k — effectively non-flaky.
+    assert_rel_close(extract_scalar(&stdout, "mc_mean"), 3.0e-3, 0.01, "mc_mean");
 
     let mc_yf = extract_scalar(&stdout, "mc_yield_fraction");
     assert!(
