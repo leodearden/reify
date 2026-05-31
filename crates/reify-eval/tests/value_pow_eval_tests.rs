@@ -112,6 +112,110 @@ fn pow_int_int_evaluates_to_8() {
     }
 }
 
+// ─── NaN/Inf → Undef sanitization tests (task 4106 / step-5 RED) ─────────────
+//
+// These tests are RED until step-6 routes eval_pow's result through
+// sanitize::sanitize_value.  None of these inputs produce a compile error,
+// so eval_source does not panic.
+//
+// (a) (-2.0) ^ 0.5  → Real(NaN)   → Undef
+// (b) 0.0 ^ -2.0    → Real(+Inf)  → Undef
+// (c) 0mm ^ -2      → Scalar{+Inf, LENGTH^-2} → Undef
+// (d) 0 ^ -2        → Real(+Inf)  → Undef  (Int^Int negative-exp path)
+
+/// `(-2.0) ^ 0.5` must evaluate to `Value::Undef`.
+///
+/// `(-2.0).powf(0.5)` = NaN (square root of a negative).  Without sanitization
+/// the eval path returns `Value::Real(NaN)`, violating the "arithmetic produces
+/// Undef, not NaN/Inf" contract.
+///
+/// RED (step-5): eval_pow returns Real(NaN).
+/// GREEN (step-6): sanitize_value(Real(NaN)) → Undef.
+#[test]
+fn pow_negative_real_fractional_exp_is_undef() {
+    let source = "structure S { let p = (-2.0) ^ 0.5 }";
+    let result = eval_source(source);
+    let id = ValueCellId::new("S", "p");
+    let val = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("'p' not found in eval result"));
+    assert!(
+        val.is_undef(),
+        "(-2.0) ^ 0.5 should evaluate to Undef (NaN sanitized), got {:?}",
+        val
+    );
+}
+
+/// `0.0 ^ -2.0` must evaluate to `Value::Undef`.
+///
+/// `(0.0_f64).powf(-2.0)` = +Inf.  Without sanitization the eval path returns
+/// `Value::Real(+Inf)`.
+///
+/// RED (step-5): eval_pow returns Real(+Inf).
+/// GREEN (step-6): sanitize_value(Real(+Inf)) → Undef.
+#[test]
+fn pow_zero_real_negative_exp_is_undef() {
+    let source = "structure S { let p = 0.0 ^ -2.0 }";
+    let result = eval_source(source);
+    let id = ValueCellId::new("S", "p");
+    let val = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("'p' not found in eval result"));
+    assert!(
+        val.is_undef(),
+        "0.0 ^ -2.0 should evaluate to Undef (+Inf sanitized), got {:?}",
+        val
+    );
+}
+
+/// `0mm ^ -2` must evaluate to `Value::Undef`.
+///
+/// Scalar^Int path: `si_value = 0.0.powi(-2)` = +Inf.  Without sanitization
+/// the eval path returns `Value::Scalar { si_value: +Inf, .. }`.
+///
+/// RED (step-5): eval_pow returns Scalar{+Inf, LENGTH^-2}.
+/// GREEN (step-6): sanitize_value(Scalar{+Inf,..}) → Undef.
+#[test]
+fn pow_zero_scalar_negative_int_exp_is_undef() {
+    let source = "structure S { let p = 0mm ^ -2 }";
+    let result = eval_source(source);
+    let id = ValueCellId::new("S", "p");
+    let val = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("'p' not found in eval result"));
+    assert!(
+        val.is_undef(),
+        "0mm ^ -2 should evaluate to Undef (+Inf sanitized), got {:?}",
+        val
+    );
+}
+
+/// `0 ^ -2` must evaluate to `Value::Undef`.
+///
+/// Int^Int path with a negative exponent: the `else` branch at lib.rs:3025
+/// computes `(0_i64 as f64).powi(-2)` = +Inf and returns `Value::Real(+Inf)`.
+///
+/// RED (step-5): eval_pow returns Real(+Inf).
+/// GREEN (step-6): sanitize_value(Real(+Inf)) → Undef.
+#[test]
+fn pow_zero_int_negative_exp_is_undef() {
+    let source = "structure S { let p = 0 ^ -2 }";
+    let result = eval_source(source);
+    let id = ValueCellId::new("S", "p");
+    let val = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("'p' not found in eval result"));
+    assert!(
+        val.is_undef(),
+        "0 ^ -2 should evaluate to Undef (+Inf sanitized), got {:?}",
+        val
+    );
+}
+
 // ─── test 4: `5mm ^ -2 → Scalar{LENGTH^-2, 40000.0}` ────────────────────────
 
 /// At runtime, `5mm ^ -2` must evaluate to
