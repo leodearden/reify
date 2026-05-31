@@ -649,16 +649,51 @@ fn measure_simply_supported(grid: &BeamFixture) -> SimplySupportedMeasurement {
 
 /// Calibrated relative-error bound on the simply-supported FUNDAMENTAL (f₁).
 ///
-/// Initialized to the 2% aspirational target for the step-5 RED; step-6 (GREEN)
-/// pins it to the honest measured P2 floor at an example-practical mesh (the
-/// same escape-hatch discipline as `CANTILEVER_P2_REL_TOL`).
+/// **The 2% aspirational target is achieved** on the fundamental with room to
+/// spare: the honest measured error is **0.12%** at the `nx=24` example-practical
+/// mesh (see the tuning history on `SS_P2_HIGHER_MODE_TOL`). The pin-pin
+/// fundamental is markedly more accurate than the cantilever fundamental
+/// (1.35%) — the cantilever carries a 3-D root-clamp stress-concentration error
+/// the pinned ends do not — so f₁ clears 2% by a wide margin and this bound
+/// stays at the deliverable's 2% (NOT a loosened measured floor). The dense QZ
+/// eigensolve is fully deterministic, so there is no Lanczos cross-platform
+/// variance to absorb.
 const SS_P2_REL_TOL: f64 = 0.02;
 
 /// Calibrated relative-error band on the higher vertical modes (f₂, f₃).
 ///
-/// Higher simply-supported modes have shorter half-wavelengths (`L/2`, `L/3`),
-/// so a fixed span mesh resolves them less well than the fundamental; step-6
-/// pins this to their honest measured floor (which may be looser than f₁'s).
+/// **Resolved by a finer span mesh, NOT a loosened band** (the step-6 choice the
+/// plan asks to record): higher simply-supported modes have shorter
+/// half-wavelengths (`L/2`, `L/3`), so the binding mode f₃ (3rd bending,
+/// half-wave `L/3 ≈ 67 mm`) needs more span elements than the cantilever's
+/// fundamental did. At the cantilever's `nx=16` f₃ misses 2% (2.27%); refining
+/// the span to `nx=24` brings every vertical mode comfortably under 2% — so this
+/// band stays at the deliverable's 2% rather than being loosened. The almost-all
+/// of f₃'s `nx=16` error is mesh-discretization stiffening (`f₃ > analytic` and
+/// falling monotonically as the span refines), not the 3-D-vs-Euler-Bernoulli
+/// model gap: the Timoshenko shear/rotary-inertia correction at f₃ is only
+/// ≈ 0.13% for this `L/r ≈ 346` beam, so f₃ converges to the reference rather
+/// than flooring above 2%. Because 2% is met on all three modes, the dedicated
+/// lock-free 1-D beam/frame element (the route a >2% floor would have required)
+/// is NOT needed here.
+///
+/// # Tuning history (release mode; analytic f₁ = 115.86, f₂ = 463.45,
+/// f₃ = 1042.76 Hz; 8-mode dense QZ, vertical family selected by eigenvector
+/// dominant-axis classification)
+///
+/// | nx×ny×nz | n_free | f₁ err | f₂ err | f₃ err | note                          |
+/// |----------|--------|--------|--------|--------|-------------------------------|
+/// | 16×1×1   | 870    | 0.265% | 1.038% | 2.265% | step-5 RED — f₃ fails 2%      |
+/// | 20×1×1   | 1086   | 0.170% | 0.665% | 1.447% | passes, f₃ margin 0.55%       |
+/// | **24×1×1** | **1302** | **0.119%** | **0.464%** | **1.006%** | **chosen** — f₃ margin ≈ 1%, ~35 s |
+/// | 28×1×1   | 1518   | 0.089% | 0.347% | 0.749% | finer: f₃ −0.26% only         |
+/// | 32×1×1   | 1734   | 0.071% | 0.275% | 0.590% | finer: f₃ −0.16% only         |
+///
+/// Every mode's error falls monotonically as the span refines. `nx=24` is the
+/// smallest span mesh whose binding mode (f₃) clears 2% with a margin (≈ 0.99%)
+/// exceeding the cantilever's 0.65% precedent, at a sane release runtime; `nx=20`
+/// clears 2% but only by 0.55% on f₃, and `nx ≥ 28` buys < 0.3% more on f₃ for a
+/// markedly larger dense solve.
 const SS_P2_HIGHER_MODE_TOL: f64 = 0.02;
 
 /// Simply-supported (pin-pin) P2 modal-frequency accuracy benchmark — task 4066.
@@ -684,7 +719,12 @@ const SS_P2_HIGHER_MODE_TOL: f64 = 0.02;
 )]
 #[test]
 fn simply_supported_beam_p2_modal_within_two_percent() {
-    let grid = BeamFixture { nx: 16, ny: 1, nz: 1, lx: 0.2, ly: 0.01, lz: 0.002 };
+    // Example-practical P2 mesh (step-6 calibrated): nx=24 along the span clears
+    // 2% on all three vertical modes (f₃ — the binding 3rd bending mode — at
+    // 1.01%, margin ≈ 1%) in ~35 s. The finer span vs the cantilever's nx=16 is
+    // needed for f₃'s shorter half-wavelength (L/3); see SS_P2_HIGHER_MODE_TOL's
+    // tuning history for the full nx sweep.
+    let grid = BeamFixture { nx: 24, ny: 1, nz: 1, lx: 0.2, ly: 0.01, lz: 0.002 };
     let m = measure_simply_supported(&grid);
 
     eprintln!(
