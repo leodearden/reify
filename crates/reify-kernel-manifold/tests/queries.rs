@@ -258,6 +258,47 @@ fn contains_exterior_point_returns_false() {
     }
 }
 
+/// Exterior point whose ray passes *through* the cube — 2 crossings, even count.
+///
+/// Validates the `hits.len() % 2 == 1` parity logic rather than just the
+/// zero-crossing case.  A faulty `hits.len() > 0` guard would return `true`
+/// here instead of `false`.
+///
+/// `unit_cube_mesh([0,0,0])` spans `[0,1]³`.  The `contains` implementation
+/// casts a ray from the query point in the fixed direction
+/// `d = normalize([0.7, 0.5, 0.3])`.  From the origin `(-5.0, -3.0, -2.0)`:
+///
+/// * **Entry** — at `t ≈ 6.51` the ray crosses the `x = 0` face at
+///   `y ≈ 0.57`, `z ≈ 0.14` (both ∈ [0,1]).
+/// * **Exit**  — at `t ≈ 7.29` the ray exits through the `y = 1` face at
+///   `x ≈ 0.60`, `z ≈ 0.40` (both ∈ [0,1]).
+///
+/// That yields exactly **2 crossings** — even count → `false`.
+#[test]
+fn contains_exterior_2crossing_ray_returns_false() {
+    let mut kernel = ManifoldKernel::new();
+    let handle = ingest(&mut kernel, [0.0, 0.0, 0.0]);
+
+    // (-5, -3, -2) is outside the cube; the ray in direction
+    // normalize([0.7, 0.5, 0.3]) traverses the solid (enter x=0, exit y=1) →
+    // 2 crossings → even → false.
+    let result = kernel.query(&GeometryQuery::Contains {
+        handle,
+        px: -5.0,
+        py: -3.0,
+        pz: -2.0,
+        tolerance: reify_ir::DEFAULT_CONTAINS_TOLERANCE_M,
+    });
+
+    match result {
+        Ok(Value::Bool(false)) => {}
+        other => panic!(
+            "contains(unit_cube, (-5.0,-3.0,-2.0)) must return Ok(Value::Bool(false)); \
+             ray passes through solid (2 crossings → even → outside); got {other:?}"
+        ),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // GeoEquiv tests (steps 5 + 6)
 // ---------------------------------------------------------------------------
@@ -317,32 +358,35 @@ fn geo_equiv_translated_cube_returns_false() {
     }
 }
 
-/// A cube shifted by 1e-9 (sub-tolerance) must be geo-equivalent within 1e-6.
+/// A cube shifted by 1e-4 (sub-tolerance) must be geo-equivalent within 1e-3.
 ///
-/// `unit_cube_mesh([1e-9,0,0])` — f32 precision means this tiny offset is
-/// within float representation limits.  With tolerance `1e-6`, the per-vertex
-/// difference is negligible and `geo_equiv` must return `true`.
+/// `unit_cube_mesh([1e-4,0,0])` — the offset is well within f32 precision
+/// (~7 decimal digits) so every shifted vertex has a genuine non-zero
+/// x-difference of ≈ 1e-4 after f32→f64 widening.  With tolerance `1e-3`,
+/// each per-vertex Euclidean distance (≈ 1e-4) is below the threshold, so
+/// `geo_equiv` must return `true`.  This exercises a real sub-tolerance
+/// per-vertex difference, not a degenerate bit-identical case.
 ///
 /// **RED (step 5)**: same stub issue; becomes GREEN in step 6.
 #[test]
 fn geo_equiv_within_tolerance_perturbation_returns_true() {
     let mut kernel = ManifoldKernel::new();
     let left = ingest(&mut kernel, [0.0, 0.0, 0.0]);
-    // 1e-9 is below f32 precision (~1.2e-7) so the vertices are bit-for-bit
-    // identical after f32→f64 widening in ingest_mesh; geo_equiv must be true.
-    let right = ingest(&mut kernel, [1e-9_f32, 0.0, 0.0]);
+    // 1e-4 (= 0.0001) is representable in f32; all shifted vertices differ
+    // by exactly 1e-4 in x after f32→f64 widening.  Tolerance 1e-3 > 1e-4.
+    let right = ingest(&mut kernel, [1e-4_f32, 0.0, 0.0]);
 
     let result = kernel.query(&GeometryQuery::GeoEquiv {
         left,
         right,
-        tolerance: 1e-6,
+        tolerance: 1e-3,
     });
 
     match result {
         Ok(Value::Bool(true)) => {}
         other => panic!(
-            "geo_equiv(unit_cube, sub-tolerance-shifted cube (1e-9)) must return \
-             Ok(Value::Bool(true)) within tolerance 1e-6; got {other:?}"
+            "geo_equiv(unit_cube, sub-tolerance-shifted cube (1e-4)) must return \
+             Ok(Value::Bool(true)) within tolerance 1e-3; got {other:?}"
         ),
     }
 }

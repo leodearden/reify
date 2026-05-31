@@ -20,7 +20,36 @@
 //! `QueryError::QueryFailed` path in the caller.
 
 use manifold3d::Manifold;
-use reify_ir;
+use reify_ir::DEFAULT_GEO_EQUIV_SAMPLE_COUNT;
+
+// ---------------------------------------------------------------------------
+// Bounding-box geometry helpers (private)
+// ---------------------------------------------------------------------------
+
+/// Returns the Euclidean diagonal length of a bounding box (min-corner to
+/// max-corner distance).
+///
+/// Shared by [`distance`] (both bounding boxes and centre-to-centre gap) and
+/// [`contains`] (bbox diagonal + query-point-to-corner distance).  Extracting
+/// this avoids copy-paste sign/axis mistakes in each caller.
+fn bbox_diagonal(min: [f64; 3], max: [f64; 3]) -> f64 {
+    let dx = max[0] - min[0];
+    let dy = max[1] - min[1];
+    let dz = max[2] - min[2];
+    (dx * dx + dy * dy + dz * dz).sqrt()
+}
+
+/// Returns the centre point of a bounding box.
+///
+/// Used by [`distance`] to compute the centre-to-centre separation between
+/// the two input bounding boxes.
+fn bbox_center(min: [f64; 3], max: [f64; 3]) -> [f64; 3] {
+    [
+        (min[0] + max[0]) / 2.0,
+        (min[1] + max[1]) / 2.0,
+        (min[2] + max[2]) / 2.0,
+    ]
+}
 
 /// Compute the exact surface-to-surface minimum gap between two [`Manifold`]
 /// meshes using `Manifold::min_gap`.
@@ -69,24 +98,17 @@ pub(crate) fn distance(a: &Manifold, b: &Manifold) -> f64 {
             None => return f64::INFINITY,
         };
 
-        // Diagonal of bounding box A.
-        let [ax0, ay0, az0] = bb_a.min();
-        let [ax1, ay1, az1] = bb_a.max();
-        let diag_a = ((ax1 - ax0).powi(2) + (ay1 - ay0).powi(2) + (az1 - az0).powi(2)).sqrt();
-
-        // Diagonal of bounding box B.
-        let [bx0, by0, bz0] = bb_b.min();
-        let [bx1, by1, bz1] = bb_b.max();
-        let diag_b = ((bx1 - bx0).powi(2) + (by1 - by0).powi(2) + (bz1 - bz0).powi(2)).sqrt();
-
-        // Centre-to-centre distance.
-        let cax = (ax0 + ax1) / 2.0;
-        let cay = (ay0 + ay1) / 2.0;
-        let caz = (az0 + az1) / 2.0;
-        let cbx = (bx0 + bx1) / 2.0;
-        let cby = (by0 + by1) / 2.0;
-        let cbz = (bz0 + bz1) / 2.0;
-        let c2c = ((cax - cbx).powi(2) + (cay - cby).powi(2) + (caz - cbz).powi(2)).sqrt();
+        let a_min = bb_a.min();
+        let a_max = bb_a.max();
+        let b_min = bb_b.min();
+        let b_max = bb_b.max();
+        let diag_a = bbox_diagonal(a_min, a_max);
+        let diag_b = bbox_diagonal(b_min, b_max);
+        let ca = bbox_center(a_min, a_max);
+        let cb = bbox_center(b_min, b_max);
+        // Centre-to-centre: reuse bbox_diagonal as a Euclidean point-distance
+        // (squaring removes the sign, so parameter order is immaterial).
+        let c2c = bbox_diagonal(ca, cb);
 
         // 1.5× safety margin: true gap is always < diag_a + diag_b + c2c.
         (diag_a + diag_b + c2c) * 1.5
@@ -140,11 +162,11 @@ pub(crate) fn contains(m: &Manifold, px: f64, py: f64, pz: f64, _tolerance: f64)
     let dz = 0.3 / len;
 
     // Step 3: far endpoint guaranteed outside bbox.
-    let [bx0, by0, bz0] = bb.min();
-    let [bx1, by1, bz1] = bb.max();
-    let bbox_diag = ((bx1 - bx0).powi(2) + (by1 - by0).powi(2) + (bz1 - bz0).powi(2)).sqrt();
-    // Also include query-point-to-bbox distance for points far outside.
-    let to_corner = ((px - bx0).powi(2) + (py - by0).powi(2) + (pz - bz0).powi(2)).sqrt();
+    let bb_min = bb.min();
+    let bbox_diag = bbox_diagonal(bb_min, bb.max());
+    // Also include query-point-to-bbox distance for points far outside;
+    // bbox_diagonal used here as a Euclidean point-distance.
+    let to_corner = bbox_diagonal(bb_min, [px, py, pz]);
     let l = 2.0 * (bbox_diag + to_corner) + 1.0; // +1 avoids zero for tiny bbox
 
     let end = [px + dx * l, py + dy * l, pz + dz * l];
@@ -249,6 +271,17 @@ pub(crate) fn intersects(a: &Manifold, b: &Manifold) -> bool {
 /// that the comparison is order-independent for vertices in general position.
 /// Duplicate vertices at the same position will cluster together in both sorted
 /// lists — they compare equal, satisfying the tolerance check.
+///
+/// # Approximation gap (known limitation)
+///
+/// The N=8 sampled-vertex check cannot detect per-vertex differences at
+/// positions that fall between sample indices.  Two meshes differing only at
+/// unsampled vertices would compare equal here.  This is an intentional
+/// approximation; the exact symmetric-Hausdorff variant (`geo_equiv_strict`,
+/// deferred to v0.4 per PRD §5.1 / Open Question §10) would close this gap.
+/// For the axis-aligned cube fixtures in the integration tests the 8-sample
+/// stride always covers the critical positions; a regression that widened the
+/// stride would be visible in the `geo_equiv_*` integration tests.
 pub(crate) fn geo_equiv(a: &Manifold, b: &Manifold, tolerance: f64) -> bool {
     // Step 1: Topology signature — cheap early-out.
     if a.num_vert() != b.num_vert() {
@@ -289,7 +322,7 @@ pub(crate) fn geo_equiv(a: &Manifold, b: &Manifold, tolerance: f64) -> bool {
     verts_b.sort_unstable_by(lex_cmp);
 
     // N evenly-spaced sample indices (DEFAULT_GEO_EQUIV_SAMPLE_COUNT = 8).
-    let n = reify_ir::DEFAULT_GEO_EQUIV_SAMPLE_COUNT.min(verts_a.len());
+    let n = DEFAULT_GEO_EQUIV_SAMPLE_COUNT.min(verts_a.len());
     let step = verts_a.len() / n; // ≥ 1 since n ≤ verts_a.len()
 
     for i in 0..n {
