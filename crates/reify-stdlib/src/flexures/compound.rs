@@ -841,6 +841,83 @@ mod tests {
         assert_angle_close(up_c, prb_limit, "no-yield upper (c)");
     }
 
+    // ── θ/step-5: RED -- prb_cartwheel_flexure rejects invalid inputs ────────────
+
+    #[test]
+    fn prb_cartwheel_flexure_rejects_invalid_inputs() {
+        let undef = |args: Vec<Value>, label: &str| {
+            let r = crate::eval_builtin("prb_cartwheel_flexure", &args);
+            assert!(r.is_undef(), "{label}: expected Undef, got {r:?}");
+        };
+        let with = |idx: usize, v: Value| {
+            let mut a = cartwheel_args(4);
+            a[idx] = v;
+            a
+        };
+
+        // Wrong arity.
+        undef(vec![], "0 args");
+        {
+            let mut a = cartwheel_args(4);
+            a.truncate(6); // 6 args
+            undef(a, "6 args");
+        }
+        {
+            let mut a = cartwheel_args(4);
+            a.push(Value::angle(0.0));
+            a.push(Value::angle(0.0)); // 9 args
+            undef(a, "9 args");
+        }
+
+        // Invalid blade_count.
+        undef(with(0, Value::Int(0)), "blade_count = 0");
+        undef(with(0, Value::Int(-1)), "blade_count = -1");
+        undef(with(0, Value::Real(1.5)), "blade_count = 1.5 (non-integer Real)");
+        undef(with(0, Value::String("4".to_string())), "blade_count not numeric");
+
+        // Non-positive / non-finite geometry.
+        undef(with(1, Value::length(0.0)), "length = 0");
+        undef(with(1, Value::length(-0.02)), "length < 0");
+        undef(with(2, Value::length(0.0)), "width = 0");
+        undef(with(3, Value::length(f64::NAN)), "thickness = NaN");
+
+        // Degenerate beam: thickness >= length.
+        undef(with(3, Value::length(0.02)), "thickness == length");
+        undef(
+            {
+                let mut a = cartwheel_args(4);
+                a[3] = Value::length(0.03); // thickness > L=0.02
+                a
+            },
+            "thickness > length",
+        );
+
+        // Bad material.
+        undef(with(4, Value::Real(1.0)), "material not a StructureInstance");
+        undef(with(4, material("NoModulus", &[])), "material missing youngs_modulus");
+
+        // Bad axis (args[6]).
+        undef(with(6, Value::Real(1.0)), "axis not a vector");
+        undef(
+            with(
+                6,
+                Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]),
+            ),
+            "axis is zero vector",
+        );
+        undef(
+            with(
+                6,
+                Value::Vector(vec![
+                    Value::length(0.0),
+                    Value::length(1.0),
+                    Value::length(0.0),
+                ]),
+            ),
+            "axis is length-dimensioned",
+        );
+    }
+
     // ── step-9: RED -- prb_double_parallelogram_flexure series stiffness ───────
 
     #[test]
