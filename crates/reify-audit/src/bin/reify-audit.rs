@@ -718,8 +718,19 @@ mod tests {
             "error must name the offending literal; got: {err}"
         );
         assert!(
-            err.contains("P1, P2, or P5"),
-            "error must list the valid pattern literals; got: {err}"
+            err.contains("PDEAD"),
+            "error must list PDEAD as a valid pattern literal; got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_args_accepts_pdead_pattern() {
+        let args = parse_args(&["--pattern".to_string(), "PDEAD".to_string()])
+            .unwrap_or_else(|e| panic!("--pattern PDEAD must parse successfully; got: {e}"));
+        assert_eq!(
+            args.pattern.as_deref(),
+            Some("PDEAD"),
+            "parsed pattern must be Some(\"PDEAD\")"
         );
     }
 
@@ -799,5 +810,7 @@ mod tests {
         assert!(!needs_jcodemunch(&make_args(false, Some("P2"))));
         // P5-only → false
         assert!(!needs_jcodemunch(&make_args(false, Some("P5"))));
+        // PDEAD explicitly → true (needs live jcodemunch server)
+        assert!(needs_jcodemunch(&make_args(false, Some("PDEAD"))));
     }
 }
