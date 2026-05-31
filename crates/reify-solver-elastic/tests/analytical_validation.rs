@@ -984,6 +984,85 @@ fn boussinesq_subsurface_sigma_z_p2_within_10pct() {
 
 // ─── thick-walled cylinder (Lamé) validation ────────────────────────────────
 
+/// Build a structured P1 tet mesh for a quarter-annulus
+/// `a ≤ r ≤ b`, `θ ∈ [0, π/2]`, `z ∈ [0, l]`
+/// with `nr × ntheta × nz` hex cells (Kuhn-split into 6 tets each).
+///
+/// # Node indexing
+///
+/// `node(ir, iθ, iz) = iz·(nθ+1)·(nr+1) + iθ·(nr+1) + ir`  (radial fastest).
+///
+/// Physical positions: `x = r_ir·cos(θ_iθ)`, `y = r_ir·sin(θ_iθ)`, `z = z_iz`
+/// where `r_ir = a + ir·(b−a)/nr`, `θ_iθ = iθ·π/(2·nθ)`, `z_iz = iz·l/nz`.
+///
+/// Corner ordering per hex cell matches [`box_p1_mesh`]'s `c[0..8]` (radial → x,
+/// angular → y, axial → z), so the existing `kuhn_split_hex_to_six_tets` yields
+/// positive-volume tets on a right-handed cylindrical grid.
+///
+/// # Returns
+///
+/// `(nodes, tet_connectivity, inner_p1_faces)` — `inner_p1_faces` are the
+/// `2·nθ·nz` P1 triangles on the inner surface (`r = a`).
+fn annular_p1_mesh(
+    a: f64, b: f64, l: f64,
+    nr: usize, ntheta: usize, nz: usize,
+) -> (Vec<[f64; 3]>, Vec<[usize; 4]>, Vec<[usize; 3]>) {
+    use std::f64::consts::PI;
+
+    let nnr = nr + 1;
+    let nntheta = ntheta + 1;
+    let nnz = nz + 1;
+
+    let mut nodes = Vec::with_capacity(nnr * nntheta * nnz);
+    for iz in 0..nnz {
+        for itheta in 0..nntheta {
+            for ir in 0..nnr {
+                let r = a + ir as f64 * (b - a) / nr as f64;
+                let theta = itheta as f64 * PI / (2.0 * ntheta as f64);
+                let z = iz as f64 * l / nz as f64;
+                nodes.push([r * theta.cos(), r * theta.sin(), z]);
+            }
+        }
+    }
+
+    let node_idx = |ir: usize, itheta: usize, iz: usize| -> usize {
+        iz * nntheta * nnr + itheta * nnr + ir
+    };
+
+    let mut connectivity = Vec::with_capacity(6 * nr * ntheta * nz);
+    let mut inner_faces = Vec::with_capacity(2 * ntheta * nz);
+
+    for iz in 0..nz {
+        for itheta in 0..ntheta {
+            for ir in 0..nr {
+                // 8 hex corners in box_p1_mesh order (radial→x, angular→y, axial→z)
+                let c = [
+                    node_idx(ir,     itheta,     iz),
+                    node_idx(ir + 1, itheta,     iz),
+                    node_idx(ir + 1, itheta + 1, iz),
+                    node_idx(ir,     itheta + 1, iz),
+                    node_idx(ir,     itheta,     iz + 1),
+                    node_idx(ir + 1, itheta,     iz + 1),
+                    node_idx(ir + 1, itheta + 1, iz + 1),
+                    node_idx(ir,     itheta + 1, iz + 1),
+                ];
+                for tet in kuhn_split_hex_to_six_tets(c) {
+                    connectivity.push(tet);
+                }
+                // Inner surface (ir=0): two Kuhn triangles on the low-r (low-x) face.
+                // Face quad {c0,c3,c7,c4}; the triangles wholly in this face are
+                // (c0,c3,c7) and (c0,c4,c7) — verified against the Kuhn split.
+                if ir == 0 {
+                    inner_faces.push([c[0], c[3], c[7]]);
+                    inner_faces.push([c[0], c[4], c[7]]);
+                }
+            }
+        }
+    }
+
+    (nodes, connectivity, inner_faces)
+}
+
 /// Mesh validation: annular P1 quarter-cylinder mesh geometry.
 ///
 /// Checks node count, positive tet volumes (polar Kuhn-split orientation
