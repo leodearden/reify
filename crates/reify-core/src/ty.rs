@@ -1535,4 +1535,106 @@ mod tests {
     fn type_affine_map_ne_orientation() {
         assert_ne!(Type::AffineMap(3), Type::Orientation(3));
     }
+
+    // ── SelectorKind + Type::Selector tests (step-1 RED / task 4116 α) ─────────
+
+    #[test]
+    fn selector_kind_display() {
+        // (a) Display: Face=>"FaceSelector", Edge=>"EdgeSelector", Body=>"BodySelector"
+        assert_eq!(format!("{}", SelectorKind::Face), "FaceSelector");
+        assert_eq!(format!("{}", SelectorKind::Edge), "EdgeSelector");
+        assert_eq!(format!("{}", SelectorKind::Body), "BodySelector");
+    }
+
+    #[test]
+    fn selector_kind_dimensionality() {
+        // (b) Face=>2, Edge=>1, Body=>3 (per D2/§4.1)
+        assert_eq!(SelectorKind::Face.dimensionality(), 2);
+        assert_eq!(SelectorKind::Edge.dimensionality(), 1);
+        assert_eq!(SelectorKind::Body.dimensionality(), 3);
+    }
+
+    #[test]
+    fn selector_kind_eq_and_hash() {
+        use std::collections::HashMap;
+
+        // (c) eq/inequality
+        assert_eq!(SelectorKind::Face, SelectorKind::Face);
+        assert_ne!(SelectorKind::Face, SelectorKind::Edge);
+        assert_ne!(SelectorKind::Face, SelectorKind::Body);
+        assert_ne!(SelectorKind::Edge, SelectorKind::Body);
+
+        // HashMap round-trip (derives Eq+Hash)
+        let mut map: HashMap<SelectorKind, &str> = HashMap::new();
+        map.insert(SelectorKind::Face, "face");
+        map.insert(SelectorKind::Edge, "edge");
+        assert_eq!(map.get(&SelectorKind::Face), Some(&"face"));
+        assert_eq!(map.get(&SelectorKind::Edge), Some(&"edge"));
+        assert_eq!(map.get(&SelectorKind::Body), None);
+    }
+
+    #[test]
+    fn type_selector_construction_and_equality() {
+        // (d) Type::Selector construction + equality
+        assert_eq!(Type::Selector(SelectorKind::Face), Type::Selector(SelectorKind::Face));
+        assert_ne!(Type::Selector(SelectorKind::Face), Type::Selector(SelectorKind::Edge));
+        assert_ne!(Type::Selector(SelectorKind::Face), Type::Selector(SelectorKind::Body));
+        assert_ne!(Type::Selector(SelectorKind::Edge), Type::Selector(SelectorKind::Body));
+        // Factory: Type::selector(kind) == Type::Selector(kind)
+        assert_eq!(Type::selector(SelectorKind::Face), Type::Selector(SelectorKind::Face));
+        assert_eq!(Type::selector(SelectorKind::Edge), Type::Selector(SelectorKind::Edge));
+        assert_eq!(Type::selector(SelectorKind::Body), Type::Selector(SelectorKind::Body));
+    }
+
+    #[test]
+    fn type_selector_display() {
+        // (e) Display delegates to SelectorKind::Display
+        assert_eq!(format!("{}", Type::Selector(SelectorKind::Face)), "FaceSelector");
+        assert_eq!(format!("{}", Type::Selector(SelectorKind::Edge)), "EdgeSelector");
+        assert_eq!(format!("{}", Type::Selector(SelectorKind::Body)), "BodySelector");
+    }
+
+    #[test]
+    fn type_selector_not_numeric() {
+        // (f) is_numeric() returns false
+        assert!(!Type::Selector(SelectorKind::Face).is_numeric());
+        assert!(!Type::Selector(SelectorKind::Edge).is_numeric());
+        assert!(!Type::Selector(SelectorKind::Body).is_numeric());
+    }
+
+    #[test]
+    fn type_selector_as_name_none() {
+        // (f) as_name() returns None
+        assert_eq!(Type::Selector(SelectorKind::Face).as_name(), None);
+        assert_eq!(Type::Selector(SelectorKind::Edge).as_name(), None);
+        assert_eq!(Type::Selector(SelectorKind::Body).as_name(), None);
+    }
+
+    #[test]
+    fn type_selector_eq_and_hash() {
+        use std::collections::HashMap;
+
+        let sf_a = Type::Selector(SelectorKind::Face);
+        let sf_b = Type::Selector(SelectorKind::Face);
+        let se = Type::Selector(SelectorKind::Edge);
+
+        assert_eq!(sf_a, sf_b);
+        assert_ne!(sf_a, se);
+        // Selector(Face) != Real
+        assert_ne!(sf_a, Type::Real);
+
+        // Hash consistency
+        let mut map: HashMap<Type, &str> = HashMap::new();
+        map.insert(sf_a.clone(), "face_sel");
+        assert_eq!(map.get(&sf_b), Some(&"face_sel"));
+        assert_eq!(map.get(&se), None);
+    }
+
+    #[test]
+    fn type_selector_ne_other_types() {
+        // Selector kind != non-Selector types
+        assert_ne!(Type::Selector(SelectorKind::Face), Type::Plane);
+        assert_ne!(Type::Selector(SelectorKind::Face), Type::Geometry);
+        assert_ne!(Type::Selector(SelectorKind::Body), Type::Real);
+    }
 }
