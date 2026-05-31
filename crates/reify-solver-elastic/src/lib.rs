@@ -440,7 +440,7 @@ pub use result::{
 };
 pub use shell_assembly::{
     ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness,
-    shell_element_stiffness_mitc3_plus,
+    shell_element_stiffness_degenerate, shell_element_stiffness_mitc3_plus,
 };
 pub use shell_boundary::{SupportBodyKind, SupportCompatibility, SupportKind, build_support_bcs};
 pub use shell_kinematics::{ShellKinematics, shell_kinematics};
