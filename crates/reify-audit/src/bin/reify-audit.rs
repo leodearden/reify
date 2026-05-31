@@ -102,7 +102,7 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  --task <id>              Spot-check a single task (all detectors)");
     let _ = writeln!(out, "  --pre-done               With --task: run P5 pre-done check only");
     let _ = writeln!(out, "  --since <iso-date>       Window sweep from ISO date (all detectors)");
-    let _ = writeln!(out, "  --pattern P1|P2|P5       Restrict to one detector");
+    let _ = writeln!(out, "  --pattern P1|P2|P5|PDEAD Restrict to one detector");
     let _ = writeln!(out, "  --tasks-file <path>      JSON array of TaskMetadata (overrides live loader; for tests)");
     let _ = writeln!(out, "  --fused-memory-url <url> MCP endpoint (default: $FUSED_MEMORY_URL or http://localhost:8002/mcp)");
     let _ = writeln!(out, "  --runs-db <path>         SQLite runs.db path (default: data/orchestrator/runs.db)");
@@ -246,10 +246,10 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
                 i += 1;
                 let p = argv.get(i).ok_or("--pattern requires a value")?.as_str();
                 match p {
-                    "P1" | "P2" | "P5" => pattern = Some(p.to_string()),
+                    "P1" | "P2" | "P5" | "PDEAD" => pattern = Some(p.to_string()),
                     other => {
                         return Err(format!(
-                            "unknown --pattern value '{}'; expected P1, P2, or P5",
+                            "unknown --pattern value '{}'; expected P1, P2, P5, or PDEAD",
                             other
                         ))
                     }
@@ -402,18 +402,18 @@ fn load_tasks_from_fused_memory(
 /// Return true when at least one jcodemunch-backed detector (P1) is in the
 /// run set for the given args.
 ///
-/// P1 is currently the only jcodemunch-backed detector the CLI dispatches.
-/// When downstream leaves (L-PDEAD, L-PUNTESTED, L-PLAYER) wire their
-/// patterns into the --pattern parser, add those values here so the connect
-/// decision and the dispatch decision remain a single source of truth.
+/// Returns true when the selected pattern(s) require a live jcodemunch server.
+/// Currently: no pattern (all detectors include P1), P1, or PDEAD.
+/// P2/P5 run without jcodemunch; pre_done always skips it.
 ///
-/// main() derives run_p1 directly from this predicate, so the two cannot
-/// diverge even as new jcodemunch-backed patterns are added.
+/// The connect decision (RealJCodemunchOps vs NoopJCodemunchOps) is separated
+/// from the per-detector dispatch predicates (run_p1, run_pdead, …) so that
+/// adding PDEAD here does not accidentally make P1 run on `--pattern PDEAD`.
 fn needs_jcodemunch(args: &Args) -> bool {
     if args.pre_done {
         return false;
     }
-    args.pattern.as_deref().is_none_or(|p| p == "P1")
+    args.pattern.as_deref().is_none_or(|p| p == "P1" || p == "PDEAD")
 }
 
 // -----------------------------------------------------------------------
@@ -545,11 +545,14 @@ fn main() -> ExitCode {
         reify_audit::p5_phantom_done::check_pre_done(&ctx, task_id)
     } else {
         // Spot-check or window sweep: run selected detectors.
-        // run_p1 is derived from needs_jcodemunch so the connect decision and
-        // the dispatch decision always agree.
-        let run_p1 = needs_jcodemunch(&args);
+        // run_p1 is DECOUPLED from needs_jcodemunch: needs_jcodemunch now also
+        // covers PDEAD (which needs the live server), but run_p1 must not fire
+        // on `--pattern PDEAD`. Each detector has its own explicit predicate.
+        let run_p1 = args.pattern.as_deref().is_none_or(|p| p == "P1");
         let run_p2 = args.pattern.as_deref().is_none_or(|p| p == "P2");
         let run_p5 = args.pattern.as_deref().is_none_or(|p| p == "P5");
+        // PDEAD is opt-in only — not part of the default all-detector sweep.
+        let run_pdead = args.pattern.as_deref() == Some("PDEAD");
 
         let mut all = Vec::new();
         if run_p1 {
@@ -560,6 +563,9 @@ fn main() -> ExitCode {
         }
         if run_p5 {
             all.extend(reify_audit::p5_phantom_done::check(&ctx));
+        }
+        if run_pdead {
+            all.extend(reify_audit::pdead_dead_code::check(&ctx));
         }
         all
     };
