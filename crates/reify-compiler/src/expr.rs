@@ -229,8 +229,9 @@ pub(crate) fn try_emit_cross_sub_geometry(
 /// synthetic shape unambiguously via pattern match, rather than the fragile
 /// `entity.contains('.')` heuristic.
 ///
-/// Returns `None` when the member is not a realisation on the child template,
-/// allowing the caller to fall through to its existing "unknown member" branch.
+/// Returns `None` when the member is neither a geometry realisation nor a
+/// forward-declared member, allowing the caller to fall through to its existing
+/// "unknown member" branch.
 ///
 /// **No diagnostic emitted on success.**  The eval side (engine_build.rs) is
 /// responsible for plumbing the realised geometry handle into
@@ -240,37 +241,67 @@ pub(crate) fn try_emit_cross_sub_geometry(
 /// The collection-sub call sites continue to use [`try_emit_cross_sub_geometry`]
 /// to emit the v0.1 diagnostic until per-instance handles are implemented.
 ///
-/// # Forward-declared sub (runtime fallback)
+/// # Forward-declared sub (scalar fallback, task 3806 step-10)
 ///
 /// When the parent template is compiled before the child template (i.e., the sub's
 /// `structure_name` was not yet in `compiled_templates` at the time the parent's
 /// scope was built), `scope.sub_member_types` and `scope.sub_realization_names`
-/// are both empty for that sub.  In that case this helper still emits the
-/// working-path value-ref optimistically: the compile-side cannot distinguish a
-/// forward-declared geometry member from a forward-declared scalar member, so we
-/// trust the runtime to flag the missing handle via the
-/// `unresolvable GeomRef::Sub('<sub>.<member>')` diagnostic produced by
-/// `geometry_ops.rs::resolve_geom_ref`.  The optimism is centralized in
-/// `CompilationScope::sub_member_is_cross_sub_geometry_or_forward_declared`
-/// (task 3455), shared with `geometry.rs::try_resolve_cross_sub_geom_ref`.
+/// are both empty for that sub.
+///
+/// The two cases are handled differently to avoid a panic in eval:
+///
+/// * **Genuine geometry realization** (`sub_realization_names[sub].contains(member)`):
+///   emit `CrossSubGeometryRef` — the bare-let drop site in entity.rs silently drops
+///   it.  `CrossSubGeometryRef` must only appear at bare-let top-level (hence the
+///   `unreachable!()` guard in `eval_expr`).
+///
+/// * **Forward-declared child, non-geometry member**: emit `ValueCellRef(scoped_id,
+///   Type::Geometry)` instead.  `CrossSubGeometryRef` would panic in `eval_expr` when
+///   it appears inside a constraint BinOp (not at bare-let top-level), so we use
+///   `ValueCellRef` — which the solver evaluates by snapshot lookup, not by panicking.
+///   The deferred post-pass (`phase_sub_override_autos`) pushes the scoped Auto
+///   `ValueCellDecl` into the parent template once all entities are compiled, and
+///   the M3 solver resolves it against the parent's constraints.
+///
+/// Note: `geometry.rs::try_resolve_cross_sub_geom_ref` still uses the combined
+/// `sub_member_is_cross_sub_geometry_or_forward_declared` predicate for GeomRef::Sub
+/// resolution; only the value-ref path (this function) distinguishes the two cases.
 fn try_resolve_cross_sub_geometry_value_ref(
     scope: &CompilationScope<'_>,
     sub_name: &str,
     member: &str,
 ) -> Option<CompiledExpr> {
-    // Forward-declared optimism + realization check (task 3455): single
-    // source of truth shared with `geometry.rs::try_resolve_cross_sub_geom_ref`
-    // so the value-ref / GeomRef::Sub handshake cannot drift.  See the
-    // helper's docstring for the predicate semantics.
-    if scope.sub_member_is_cross_sub_geometry_or_forward_declared(sub_name, member) {
-        let scoped_entity = format!("{}.{}", scope.entity_name, sub_name);
-        let scoped_id = ValueCellId::new(&scoped_entity, member);
-        // Emit the typed discriminator (task-3508) so the bare-let drop site in
-        // entity.rs can recognise this synthetic shape via pattern match on the
-        // variant, rather than the fragile `entity.contains('.')` heuristic.
+    // Split the two reasons a member might be absent from sub_member_types:
+    //   1. Genuine geometry realization — sub_realization_names contains the member.
+    //   2. Forward-declared child — sub_component_types has the sub but
+    //      sub_member_types does not (child not yet compiled).
+    let has_realization = scope
+        .sub_realization_names
+        .get(sub_name)
+        .is_some_and(|s| s.contains(member));
+    let is_forward_declared = scope.sub_component_types.contains_key(sub_name)
+        && !scope.sub_member_types.contains_key(sub_name);
+
+    if !has_realization && !is_forward_declared {
+        return None;
+    }
+
+    let scoped_entity = format!("{}.{}", scope.entity_name, sub_name);
+    let scoped_id = ValueCellId::new(&scoped_entity, member);
+
+    if has_realization {
+        // Genuine geometry member: emit the typed CrossSubGeometryRef discriminator
+        // so the bare-let drop site in entity.rs can recognise and silently drop it
+        // (V0.1 no-op with a warning).  Safe only at bare-let top-level; the
+        // `unreachable!()` in eval_expr guards this invariant.
         Some(CompiledExpr::cross_sub_geometry_ref(scoped_id, Type::Geometry))
     } else {
-        None
+        // Forward-declared child (is_forward_declared, !has_realization):
+        // emit ValueCellRef so constraint expressions can be evaluated by the
+        // solver without panicking.  Type::Geometry is a placeholder — the
+        // compiler does not cascade-error on this type in comparison contexts,
+        // and eval looks up values from the snapshot by ID, not by type.
+        Some(CompiledExpr::value_ref(scoped_id, Type::Geometry))
     }
 }
 
