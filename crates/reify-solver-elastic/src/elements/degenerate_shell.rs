@@ -223,4 +223,133 @@ mod tests {
             );
         }
     }
+
+    // ── step-3: degenerate-shell geometry map ───────────────────────────────
+
+    /// Tilted-director fixture with clean closed-form fibre offsets.
+    ///
+    /// Mid-surface nodes (0,0,0),(2,0,0),(0,2,0); directors V_0=+z,
+    /// V_1=(1,0,1)/√2, V_2=(0,1,1)/√2; thicknesses chosen so `(t_i/2)·V_i` is a
+    /// clean vector: t_0=0.5 → (0,0,0.25); t_1=t_2=2√2 → (1,0,1) and (0,1,1).
+    fn tilted_fixture() -> ([[f64; 3]; 3], [Director; 3], [f64; 3]) {
+        let inv_sqrt2 = 1.0 / 2.0_f64.sqrt();
+        let nodes = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]];
+        let directors = [
+            [0.0, 0.0, 1.0],
+            [inv_sqrt2, 0.0, inv_sqrt2],
+            [0.0, inv_sqrt2, inv_sqrt2],
+        ];
+        let thicknesses = [0.5, 2.0 * 2.0_f64.sqrt(), 2.0 * 2.0_f64.sqrt()];
+        (nodes, directors, thicknesses)
+    }
+
+    fn assert_pt(got: [f64; 3], want: [f64; 3], ctx: &str) {
+        for k in 0..3 {
+            assert!(
+                (got[k] - want[k]).abs() < 1e-9,
+                "{ctx}: component {k} = {}, expected {}",
+                got[k],
+                want[k],
+            );
+        }
+    }
+
+    /// At ζ=0 the geometry map returns the pure mid-surface interpolation
+    /// Σ N_i x_i — independent of the directors — equalling each vertex at the
+    /// reference vertices and the node centroid at the reference centroid.
+    #[test]
+    fn degenerate_position_at_zeta_zero_is_midsurface() {
+        let (nodes, directors, thicknesses) = tilted_fixture();
+        // Reference vertices map to the physical vertices.
+        let ref_vtx = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)];
+        for (i, &(xi, eta)) in ref_vtx.iter().enumerate() {
+            let x = degenerate_position(
+                &nodes,
+                &directors,
+                &thicknesses,
+                ShellRefCoord3::new(xi, eta, 0.0),
+            );
+            assert_pt(x, nodes[i], &format!("vertex {i} @ ζ=0"));
+        }
+        // Reference centroid → node centroid (2/3, 2/3, 0).
+        let xc = degenerate_position(
+            &nodes,
+            &directors,
+            &thicknesses,
+            ShellRefCoord3::new(1.0 / 3.0, 1.0 / 3.0, 0.0),
+        );
+        assert_pt(xc, [2.0 / 3.0, 2.0 / 3.0, 0.0], "centroid @ ζ=0");
+    }
+
+    /// At a reference vertex with ζ=±1 the map returns the top/bottom fibre
+    /// endpoints x_i ± (t_i/2) V_i. Covers both the flat (+z) director at node 0
+    /// and the tilted directors at nodes 1, 2.
+    #[test]
+    fn degenerate_position_at_zeta_pm1_is_fibre_endpoint() {
+        let (nodes, directors, thicknesses) = tilted_fixture();
+        // (node index, (xi, eta), top X, bottom X)
+        let cases = [
+            (0_usize, (0.0, 0.0), [0.0, 0.0, 0.25], [0.0, 0.0, -0.25]),
+            (1_usize, (1.0, 0.0), [3.0, 0.0, 1.0], [1.0, 0.0, -1.0]),
+            (2_usize, (0.0, 1.0), [0.0, 3.0, 1.0], [0.0, 1.0, -1.0]),
+        ];
+        for (i, (xi, eta), top, bottom) in cases {
+            let xt = degenerate_position(
+                &nodes,
+                &directors,
+                &thicknesses,
+                ShellRefCoord3::new(xi, eta, 1.0),
+            );
+            assert_pt(xt, top, &format!("node {i} top (ζ=+1)"));
+            let xb = degenerate_position(
+                &nodes,
+                &directors,
+                &thicknesses,
+                ShellRefCoord3::new(xi, eta, -1.0),
+            );
+            assert_pt(xb, bottom, &format!("node {i} bottom (ζ=−1)"));
+        }
+    }
+
+    /// Interior point with ζ≠0 exercises the full formula
+    /// X = Σ N_i x_i + (ζ/2) Σ N_i t_i V_i. At the centroid with ζ=+1 the
+    /// hand-computed result is (1, 1, 0.75) (see plan step-3 arithmetic).
+    #[test]
+    fn degenerate_position_interior_point_matches_full_formula() {
+        let (nodes, directors, thicknesses) = tilted_fixture();
+        let x = degenerate_position(
+            &nodes,
+            &directors,
+            &thicknesses,
+            ShellRefCoord3::new(1.0 / 3.0, 1.0 / 3.0, 1.0),
+        );
+        assert_pt(x, [1.0, 1.0, 0.75], "centroid @ ζ=+1");
+    }
+
+    /// Flat case: planar nodes, all directors +z, uniform thickness. The fibre
+    /// offset is purely ±(t/2) in z, so top/bottom surfaces are the mid-surface
+    /// shifted in z and nothing tilts.
+    #[test]
+    fn degenerate_position_flat_case_is_pure_z_offset() {
+        let nodes = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let directors = [[0.0, 0.0, 1.0]; 3];
+        let t = 0.2;
+        let thicknesses = [t; 3];
+        let probe = (0.25, 0.35);
+        let mid = degenerate_position(
+            &nodes,
+            &directors,
+            &thicknesses,
+            ShellRefCoord3::new(probe.0, probe.1, 0.0),
+        );
+        let top = degenerate_position(
+            &nodes,
+            &directors,
+            &thicknesses,
+            ShellRefCoord3::new(probe.0, probe.1, 1.0),
+        );
+        // Mid-surface is in-plane (z=0); top is shifted +t/2 in z only.
+        assert!((mid[2]).abs() < 1e-12, "flat mid z must be 0");
+        assert_pt(top, [mid[0], mid[1], mid[2] + t / 2.0], "flat top");
+    }
 }
