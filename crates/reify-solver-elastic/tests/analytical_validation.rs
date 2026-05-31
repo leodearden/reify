@@ -501,12 +501,16 @@ fn add_edge_midpoint_nodes(
 }
 
 /// Assemble, apply BCs, and CG-solve a P2 tetrahedral FEA system.
-fn solve_p2_pipeline(
+///
+/// `opts` controls the CG solver's convergence criterion and iteration cap.
+/// For slender or otherwise ill-conditioned problems, pass a raised `max_iter`.
+fn solve_p2_pipeline_with_opts(
     nodes: &[[f64; 3]],
     conns: &[[usize; 10]],
     bcs: &mut Vec<DirichletBc>,
     point_loads: &[(usize, f64)],
     mat: &IsotropicElastic,
+    opts: CgSolverOptions,
 ) -> Vec<f64> {
     let n_nodes = nodes.len();
     let ndof = 3 * n_nodes;
@@ -540,7 +544,6 @@ fn solve_p2_pipeline(
     dedup_bcs(bcs);
     apply_dirichlet_row_elimination(&mut k, &mut f, bcs);
 
-    let opts = CgSolverOptions::default();
     let result: CgResult = solve_cg(&k, &f, opts, SolverMode::Deterministic);
     assert!(
         result.converged,
@@ -548,6 +551,21 @@ fn solve_p2_pipeline(
         result.iterations,
     );
     result.u.to_vec()
+}
+
+/// Assemble, apply BCs, and CG-solve a P2 tetrahedral FEA system using the
+/// default CG options (`max_iter = 1000`, `tolerance = 1e-8`).
+///
+/// For slender or otherwise ill-conditioned problems use
+/// [`solve_p2_pipeline_with_opts`] with a raised `max_iter`.
+fn solve_p2_pipeline(
+    nodes: &[[f64; 3]],
+    conns: &[[usize; 10]],
+    bcs: &mut Vec<DirichletBc>,
+    point_loads: &[(usize, f64)],
+    mat: &IsotropicElastic,
+) -> Vec<f64> {
+    solve_p2_pipeline_with_opts(nodes, conns, bcs, point_loads, mat, CgSolverOptions::default())
 }
 
 /// Timoshenko cantilever tip deflection under an end shear `F`:
