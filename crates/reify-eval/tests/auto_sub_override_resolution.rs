@@ -25,8 +25,8 @@
 //! Step 7 (RED): Adds `example_auto_binding_sites_ri_resolves` which reads
 //! `examples/auto_binding_sites.ri` via a compile-time path, parses + compiles
 //! + evals it, and asserts no error-severity diagnostics plus that the
-//! sub-override bore cell resolved to `Determined`.  RED until step 8 creates
-//! the file.
+//!   sub-override bore cell resolved to `Determined`.  RED until step 8 creates
+//!   the file.
 //!
 //! Step 8 (GREEN): Creates `examples/auto_binding_sites.ri`.
 
