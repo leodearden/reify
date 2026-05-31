@@ -414,6 +414,13 @@ pub fn degenerate_assumed_covariant_shear_b(coord: ShellReferenceCoord) -> [[f64
 /// [γ_1ζ'; γ_2ζ'] = (J_lam⁻ᵀ)[0..2, 0..2] · [γ_ξζ; γ_ηζ]
 /// ```
 ///
+/// The carried covariant pair `[γ_ξζ; γ_ηζ]` is first expressed in the per-point
+/// **lamina DOFs** (`d' = blkdiag(q)·d_global` per node): the carried field reads
+/// the *global* `u_z/θ_x/θ_y`, which name the through-thickness kinematics only
+/// when the normal is the global `+z`, so on a tilted element the shear block
+/// must read the lamina-frame deflection/rotations or `K` is not frame-objective.
+/// On a flat xy facet `q = I`, so this DOF transform is a no-op.
+///
 /// This is exactly task 3392's `J2⁻ᵀ` covariant→physical map, only re-expressed
 /// against the varying 3×3 `J` instead of the flat element's constant 2×2 `J2`
 /// — the carried natural-coordinate field is unchanged; only the geometric map
@@ -449,11 +456,42 @@ pub fn degenerate_transverse_shear_b(
         }
     }
 
-    // (3) Physical lamina shear B = m2 · b_cov.
+    // (2.5) Express the carried covariant shear in the per-point LAMINA DOFs.
+    // The carried field ([`degenerate_assumed_covariant_shear_b`], via
+    // [`Mitc3Plus::covariant_shear_b_nodal`]) reads GLOBAL u_z/θ_x/θ_y — correct
+    // only when the shell normal is the global +z. For an element tilted in 3D the
+    // transverse-shear block must instead read the lamina-frame normal deflection
+    // and the rotations about the lamina axes, else K is not frame-objective (its
+    // eigenvalue spectrum drifts under a rigid 3D rotation — the membrane/bending
+    // block is already objective via its lamina-strain projection, but the shear
+    // was not). The lamina DOFs are `d' = blkdiag(q)·d_global` per node (q rows =
+    // lamina basis e1,e2,e3), so `B_cov_lam = b_cov · blkdiag(q)`, i.e.
+    // `(b_cov·T)[r][6n+m] = Σ_k b_cov[r][6n+k]·q[k][m]` over each node's disp and
+    // rot triple. On a flat xy facet q = I (e1,e2,e3 = x,y,z), so this is a no-op
+    // and the exact flat reduction to 3392 is preserved. Both the map `m2` and the
+    // assumed-shear interpolation are linear in the columns, so transforming the
+    // already-interpolated field equals interpolating the transformed field.
+    let mut b_cov_lam = [[0.0_f64; 18]; 2];
+    for r in 0..2 {
+        for node in 0..Mitc3Plus::N_NODES {
+            for triple in 0..2 {
+                let off = 6 * node + 3 * triple; // 0 = disp triple, 3 = rot triple
+                for m in 0..3 {
+                    let mut v = 0.0;
+                    for k in 0..3 {
+                        v += b_cov[r][off + k] * q[k][m];
+                    }
+                    b_cov_lam[r][off + m] = v;
+                }
+            }
+        }
+    }
+
+    // (3) Physical lamina shear B = m2 · (lamina-frame covariant B).
     let mut b_phys = [[0.0_f64; 18]; 2];
     for dof in 0..18 {
-        b_phys[0][dof] = m2[0][0] * b_cov[0][dof] + m2[0][1] * b_cov[1][dof];
-        b_phys[1][dof] = m2[1][0] * b_cov[0][dof] + m2[1][1] * b_cov[1][dof];
+        b_phys[0][dof] = m2[0][0] * b_cov_lam[0][dof] + m2[0][1] * b_cov_lam[1][dof];
+        b_phys[1][dof] = m2[1][0] * b_cov_lam[0][dof] + m2[1][1] * b_cov_lam[1][dof];
     }
     b_phys
 }
