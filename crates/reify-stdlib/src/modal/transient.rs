@@ -951,4 +951,69 @@ mod tests {
         // t_end < t_start → empty (count clamps to 0).
         assert!(uniform_time_grid(1.0, 0.5, 0.1).is_empty(), "t_end < t_start → empty");
     }
+
+    // ─── step-3: forcing samplers (RED) ──────────────────────────────────────
+
+    /// The four per-source scalar forcing samplers against their closed forms.
+    /// RED: `step_force_at` / `harmonic_force_at` / `sampled_force_at` /
+    /// `impulse_force_at` are absent — fails to compile.
+    #[test]
+    fn forcing_samplers_closed_form() {
+        use std::f64::consts::PI;
+
+        // StepForce: 0 before start_time, magnitude from start_time onward.
+        assert_eq!(step_force_at(10.0, 1.0, 0.5), 0.0, "before start → 0");
+        assert_eq!(step_force_at(10.0, 1.0, 1.0), 10.0, "at start → magnitude (step on)");
+        assert_eq!(step_force_at(10.0, 1.0, 2.0), 10.0, "after start → magnitude");
+
+        // HarmonicForce: A·sin(2π·f·t + φ).
+        let (a, f, phi) = (3.0_f64, 2.0_f64, PI / 6.0);
+        for &t in &[0.0, 0.05, 0.123, 0.25, 1.0] {
+            let want = a * (2.0 * PI * f * t + phi).sin();
+            assert!(
+                (harmonic_force_at(a, f, phi, t) - want).abs() < 1e-12,
+                "harmonic at t={t}: got {}, want {want}",
+                harmonic_force_at(a, f, phi, t)
+            );
+        }
+        // phase = 0 → sin(0) = 0 at t = 0.
+        assert!(harmonic_force_at(5.0, 1.0, 0.0, 0.0).abs() < 1e-12, "zero-phase at t=0 → 0");
+
+        // SampledForce: linear interp inside the table, zero outside (the v0.3
+        // finite-window convention). Includes a non-uniform interval [2, 4].
+        let times = [0.0, 1.0, 2.0, 4.0];
+        let forces = [0.0, 10.0, 20.0, 0.0];
+        assert_eq!(sampled_force_at(&times, &forces, 0.0), 0.0, "first sample exact");
+        assert_eq!(sampled_force_at(&times, &forces, 1.0), 10.0, "interior sample exact");
+        assert!((sampled_force_at(&times, &forces, 0.5) - 5.0).abs() < 1e-12, "midpoint interp");
+        assert!((sampled_force_at(&times, &forces, 1.5) - 15.0).abs() < 1e-12, "midpoint interp");
+        assert!(
+            (sampled_force_at(&times, &forces, 3.0) - 10.0).abs() < 1e-12,
+            "interp across the non-uniform [2,4] interval"
+        );
+        assert_eq!(sampled_force_at(&times, &forces, -1.0), 0.0, "before table → 0");
+        assert_eq!(sampled_force_at(&times, &forces, 5.0), 0.0, "after table → 0");
+        // Empty / single-sample degenerate.
+        assert_eq!(sampled_force_at(&[], &[], 1.0), 0.0, "empty table → 0");
+        assert_eq!(sampled_force_at(&[2.0], &[7.0], 2.0), 7.0, "single sample, at point");
+        assert_eq!(sampled_force_at(&[2.0], &[7.0], 2.5), 0.0, "single sample, outside → 0");
+
+        // ImpulseForce: impulse/dt at the sample whose [t−dt/2, t+dt/2) window
+        // contains `time`, else 0 (discrete-pulse v0.3 approximation).
+        let dt = 0.1;
+        assert!(
+            (impulse_force_at(2.0, 0.12, 0.1, dt) - 20.0).abs() < 1e-12,
+            "nearest sample carries impulse/dt = 2.0/0.1 = 20"
+        );
+        assert_eq!(impulse_force_at(2.0, 0.12, 0.2, dt), 0.0, "non-nearest sample → 0");
+        assert_eq!(impulse_force_at(2.0, 0.12, 0.0, dt), 0.0, "non-nearest sample → 0");
+        // Half-open window: a `time` exactly on a window edge goes to the upper sample.
+        assert_eq!(impulse_force_at(2.0, 0.15, 0.1, dt), 0.0, "upper edge excluded from lower sample");
+        assert!(
+            (impulse_force_at(2.0, 0.15, 0.2, dt) - 20.0).abs() < 1e-12,
+            "upper edge included in upper sample"
+        );
+        // dt ≤ 0 → 0 (no pulse width).
+        assert_eq!(impulse_force_at(2.0, 0.12, 0.1, 0.0), 0.0, "dt = 0 → 0");
+    }
 }
