@@ -127,6 +127,7 @@ fn parasitic_single(length: f64, delta: f64) -> f64 {
 pub(crate) fn eval_compound(name: &str, args: &[Value]) -> Option<Value> {
     match name {
         "prb_parallelogram_flexure" => Some(prb_parallelogram_flexure(args)),
+        "prb_double_parallelogram_flexure" => Some(prb_double_parallelogram_flexure(args)),
         _ => None,
     }
 }
@@ -193,6 +194,69 @@ fn prb_parallelogram_flexure(args: &[Value]) -> Value {
         Value::String("parasitic_error".to_string()),
         Value::Option(Some(Box::new(Value::length(delta_rot)))),
     );
+    Value::Map(m)
+}
+
+/// `prb_double_parallelogram_flexure(length, width, thickness, blade_spacing, material, motion_axis, pivot)`
+/// — PRB double-parallelogram flexure stage: two single stages in mirror-symmetric series.
+///
+/// Mirror symmetry cancels the first-order Roberts-approximation parasitic error,
+/// leaving a residual that scales as (δ/L)³ instead of (δ/L) (PRD §6.2).
+///
+/// Returns a joint `Value::Map` (`kind == "prismatic"`) with:
+/// - `spring_rate` = k_stage/2 = 24·E·I/L³ (series composition halves)
+/// - `transverse_stiffness` = (4·E·(b·t)/L)/2
+/// - `range` = ±δ_max (same per-stage range as single, for apples-to-apples §10.1 comparison)
+/// - `parasitic_error` = Option(Some(Length(δ_rot_double))) (added in step-12)
+///
+/// Returns `Value::Undef` on the same invalid-input classes as [`prb_parallelogram_flexure`].
+fn prb_double_parallelogram_flexure(args: &[Value]) -> Value {
+    let Some(c) = parse_compound_inputs(args) else {
+        return Value::Undef;
+    };
+
+    // Single-stage stiffnesses.
+    let k_blade = FIXED_GUIDED_GAMMA * c.e * c.i / c.length.powi(3);
+    let k_stage_single = 4.0 * k_blade;
+    let k_transverse_single = 4.0 * c.e * (c.width * c.thickness) / c.length;
+
+    // Series composition: two stages in series → stiffness halves for both DOFs.
+    let k_stage = k_stage_single / 2.0;
+    let k_transverse = k_transverse_single / 2.0;
+
+    // Same per-stage δ_max for apples-to-apples §10.1 row-4 comparison.
+    let delta = delta_max(&c);
+    let range = Value::range(
+        Some(Value::length(-delta)),
+        Some(Value::length(delta)),
+        true,
+        true,
+    );
+
+    // Build the joint Map.
+    let base = make_flexure_joint(
+        "prismatic",
+        c.axis.clone(),
+        range,
+        Value::Scalar {
+            si_value: k_stage,
+            dimension: DimensionVector::TRANSLATIONAL_STIFFNESS,
+        },
+        Value::length(0.0),
+        c.pivot.clone(),
+    );
+    let mut m: BTreeMap<Value, Value> = match base {
+        Value::Map(m) => m,
+        _ => unreachable!("make_flexure_joint always returns a Map"),
+    };
+    m.insert(
+        Value::String("transverse_stiffness".to_string()),
+        Value::Scalar {
+            si_value: k_transverse,
+            dimension: DimensionVector::TRANSLATIONAL_STIFFNESS,
+        },
+    );
+    // parasitic_error added in step-12.
     Value::Map(m)
 }
 
