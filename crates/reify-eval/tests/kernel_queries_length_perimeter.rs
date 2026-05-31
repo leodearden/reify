@@ -25,6 +25,17 @@
 //!      boundary edges, sum their `EdgeLength` → assert within 1e-9 of
 //!      0.040 m (40 mm = 4 × 10 mm).
 //!
+//! **Coverage note:** The OCCT-backed section calls the kernel FFI directly
+//! (via `OcctKernelHandle`) and does NOT drive `dispatch_edge_length` or
+//! `dispatch_perimeter` from `geometry_ops.rs`. It validates that the OCCT
+//! primitives (`EdgeLength`, `extract_edges-on-face`) are correct, which is
+//! the necessary foundation for the dispatch functions. The dispatch
+//! composition — argument resolution, Scalar-reply handling, empty-edge
+//! guard, and defensive-downgrade paths — is fully covered by the mock-kernel
+//! unit tests in `crates/reify-eval/src/geometry_ops.rs` (see
+//! `try_eval_topology_selector_length_*` and
+//! `try_eval_topology_selector_perimeter_*`).
+//!
 //! Modelled on `kernel_queries_curvature_smoke.rs` and
 //! `kernel_queries_normal_smoke.rs`.
 
