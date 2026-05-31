@@ -1333,4 +1333,162 @@ mod tests {
             }
         }
     }
+
+    // ── amendment (reviewer #1): curved-patch rigid rotation & frame objectivity ─
+
+    /// Cross product `a × b`.
+    fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    }
+
+    /// Apply a 3×3 matrix to a 3-vector (`m · v`).
+    fn matvec(m: &[[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
+        [
+            m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+            m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+            m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
+        ]
+    }
+
+    /// A fixed *proper* rigid rotation `R = Rz(γ)·Ry(β)·Rx(α)` (det = +1), in
+    /// closed form (ZYX Euler, α=0.3, β=−0.4, γ=0.5 rad). Rotates the whole patch
+    /// (nodes, directors, DOFs) for the frame-objectivity test.
+    fn rot_matrix() -> [[f64; 3]; 3] {
+        let (a, b, c) = (0.3_f64, -0.4_f64, 0.5_f64);
+        let (sa, ca) = (a.sin(), a.cos());
+        let (sb, cb) = (b.sin(), b.cos());
+        let (sc, cc) = (c.sin(), c.cos());
+        [
+            [cb * cc, sa * sb * cc - ca * sc, ca * sb * cc + sa * sc],
+            [cb * sc, sa * sb * sc + ca * cc, ca * sb * sc - sa * cc],
+            [-sb, sa * cb, ca * cb],
+        ]
+    }
+
+    /// Headline esc-4068-127 property, part 1 — **rigid-body compatibility on a
+    /// CURVED patch.** A consistent infinitesimal rigid rotation of the degenerate
+    /// element is `u_i = ω × x_i`, `θ_i = ω` (each director co-rotates as
+    /// `θ_i × V_i = ω × V_i`), which reproduces the exact rigid field
+    /// `u(X) = ω × X` at every fibre point. The membrane/bending operator
+    /// (`ε = sym ∂u/∂x = sym skew(ω) = 0`) AND the exact-covariant transverse shear
+    /// (`γ_αζ = g_α·(ω×g_ζ) + g_ζ·(ω×g_α) = 0` by the scalar triple product) must
+    /// both annihilate it at every `(ξ,η,ζ)`. This is exactly why the flat
+    /// global-DOF shear field of task 3392 was rejected on curved geometry — and
+    /// the most error-prone claim of the module — so it is verified directly on the
+    /// tilted-director fixture (not just on a flat facet).
+    #[test]
+    fn degenerate_b_rigid_rotation_on_curved_patch_yields_zero_strain() {
+        let (nodes, directors, thicknesses) = tilted_fixture();
+        let omega = [0.02_f64, -0.05, 0.03];
+        let mut u = [0.0_f64; 18];
+        for (i, x_i) in nodes.iter().enumerate() {
+            let t = cross(omega, *x_i); // translation u_i = ω × x_i
+            u[6 * i] = t[0];
+            u[6 * i + 1] = t[1];
+            u[6 * i + 2] = t[2];
+            u[6 * i + 3] = omega[0]; // rotation θ_i = ω
+            u[6 * i + 4] = omega[1];
+            u[6 * i + 5] = omega[2];
+        }
+        for &(xi, eta) in &[(1.0 / 3.0, 1.0 / 3.0), (0.2, 0.3), (0.5, 0.25)] {
+            for &zeta in &[-0.6_f64, 0.0, 0.6] {
+                let c = ShellRefCoord3::new(xi, eta, zeta);
+                let e_mb = b_times_u(
+                    &degenerate_membrane_bending_b(&nodes, &directors, &thicknesses, c),
+                    &u,
+                );
+                for (r, &er) in e_mb.iter().enumerate() {
+                    assert!(
+                        er.abs() < 1e-9,
+                        "rigid-rotation membrane/bending strain[{r}] = {er} @ ({xi},{eta},{zeta})",
+                    );
+                }
+                let e_s = shear_b_times_u(
+                    &degenerate_transverse_shear_b(&nodes, &directors, &thicknesses, c),
+                    &u,
+                );
+                for (r, &er) in e_s.iter().enumerate() {
+                    assert!(
+                        er.abs() < 1e-9,
+                        "rigid-rotation transverse shear[{r}] = {er} @ ({xi},{eta},{zeta})",
+                    );
+                }
+            }
+        }
+    }
+
+    /// Headline esc-4068-127 property, part 2 — **frame objectivity.** Rotating the
+    /// whole configuration (nodes, directors, AND the DOF vector — translations by
+    /// `R`, rotation pseudo-vectors by `R`) by a fixed rigid `R` leaves the lamina
+    /// strains unchanged: the strain tensor and the lamina frame co-rotate
+    /// together (`q → qRᵀ`, `J⁻ᵀ → RJ⁻ᵀ`, so `q·J⁻ᵀ` and every dot-product are
+    /// invariant), hence the lamina Voigt components `[ε'₁₁, ε'₂₂, 2ε'₁₂]` and the
+    /// physical transverse shear `(γ'_1ζ, γ'_2ζ)` are invariant. An arbitrary
+    /// (non-rigid) DOF field is used so the strains are genuinely non-zero — a
+    /// non-objective formulation would differ by O(strain), ~1e7× the tolerance.
+    #[test]
+    fn degenerate_b_is_frame_objective_under_rigid_rotation() {
+        let (nodes, directors, thicknesses) = tilted_fixture();
+        // Arbitrary small DOF field (6 per node) to exercise real, non-zero strain.
+        let u: [f64; 18] = [
+            0.010, -0.020, 0.015, 0.030, -0.010, 0.020, // node 0
+            -0.005, 0.012, -0.008, -0.020, 0.025, -0.015, // node 1
+            0.018, -0.006, 0.022, 0.010, -0.030, 0.005, // node 2
+        ];
+        let r = rot_matrix();
+        let nodes_r = [matvec(&r, nodes[0]), matvec(&r, nodes[1]), matvec(&r, nodes[2])];
+        let directors_r =
+            [matvec(&r, directors[0]), matvec(&r, directors[1]), matvec(&r, directors[2])];
+        // Rotate DOFs: block-diagonal R on each node's (uᵢ) and (θᵢ).
+        let mut u_r = [0.0_f64; 18];
+        for i in 0..3 {
+            let ut = matvec(&r, [u[6 * i], u[6 * i + 1], u[6 * i + 2]]);
+            let tt = matvec(&r, [u[6 * i + 3], u[6 * i + 4], u[6 * i + 5]]);
+            u_r[6 * i] = ut[0];
+            u_r[6 * i + 1] = ut[1];
+            u_r[6 * i + 2] = ut[2];
+            u_r[6 * i + 3] = tt[0];
+            u_r[6 * i + 4] = tt[1];
+            u_r[6 * i + 5] = tt[2];
+        }
+        for &(xi, eta) in &[(1.0 / 3.0, 1.0 / 3.0), (0.25, 0.4), (0.5, 0.2)] {
+            for &zeta in &[-0.6_f64, 0.0, 0.6] {
+                let c = ShellRefCoord3::new(xi, eta, zeta);
+                // Membrane/bending lamina strains: invariant under the frame rotation.
+                let e0 = b_times_u(
+                    &degenerate_membrane_bending_b(&nodes, &directors, &thicknesses, c),
+                    &u,
+                );
+                let e1 = b_times_u(
+                    &degenerate_membrane_bending_b(&nodes_r, &directors_r, &thicknesses, c),
+                    &u_r,
+                );
+                for (k, (&a, &b)) in e0.iter().zip(e1.iter()).enumerate() {
+                    assert!(
+                        (a - b).abs() < 1e-9,
+                        "membrane/bending strain[{k}] not frame-objective: {a} vs {b} @ ({xi},{eta},{zeta})",
+                    );
+                }
+                // Physical transverse shear: invariant under the frame rotation.
+                let s0 = shear_b_times_u(
+                    &degenerate_transverse_shear_b(&nodes, &directors, &thicknesses, c),
+                    &u,
+                );
+                let s1 = shear_b_times_u(
+                    &degenerate_transverse_shear_b(&nodes_r, &directors_r, &thicknesses, c),
+                    &u_r,
+                );
+                for (k, (&a, &b)) in s0.iter().zip(s1.iter()).enumerate() {
+                    assert!(
+                        (a - b).abs() < 1e-9,
+                        "transverse shear[{k}] not frame-objective: {a} vs {b} @ ({xi},{eta},{zeta})",
+                    );
+                }
+            }
+        }
+    }
 }
