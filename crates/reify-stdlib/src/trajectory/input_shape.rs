@@ -109,20 +109,52 @@ pub fn build_train_for_shaper(shaper: &Value) -> Option<ImpulseTrain> {
     }
 }
 
-/// Evaluate `input_shape(profile, shaper)`.
+/// Evaluate `input_shape(profile, shaper)` — the thin `eval_trajectory`
+/// dispatch arm (wired for both the `input_shape` and `input_shape_apply`
+/// names; see [`crate::trajectory::eval_trajectory`]).
 ///
-/// STUB (prereq-1): always returns [`Value::Undef`]. The real marshalling
-/// (arity / `StructureInstance` guards, `build_train_for_shaper` dispatch,
-/// shaped-Profile result) is wired in step-6.
+/// Argument contract — any deviation returns [`Value::Undef`] (the stdlib
+/// bad-args convention, mirroring [`super::gcode_import::eval_gcode_import`]):
+/// - exactly two arguments `(profile, shaper)`;
+/// - both must be a [`Value::StructureInstance`];
+/// - the shaper must resolve to an [`ImpulseTrain`] via
+///   [`build_train_for_shaper`] — an unrecognised / unsupported shaper
+///   (`None`) returns `Value::Undef`. Building the train is what makes the
+///   dispatch *real*: ZV/ZVD/EI/Cascaded are recognised; anything else is
+///   rejected.
 ///
-/// `#[allow(dead_code)]`: this fn is implemented ahead of the `eval_trajectory`
-/// registrar arm that calls it (step-6), so it is written-but-never-read in the
-/// prereq-1/step-4 builds. Same "implemented ahead of wiring" suppression the
-/// sibling `gcode_import` / `spline` / `impulse_shaper` modules use; removed
-/// once the registrar arm lands.
-#[allow(dead_code)]
-pub(crate) fn eval_input_shape(_args: &[Value]) -> Value {
-    Value::Undef
+/// On success the shaped `Profile` is returned as a registry-free
+/// [`Value::StructureInstance`] that **echoes the input profile's own**
+/// [`StructureInstanceData`] — its existing `type_id` (so the value binds
+/// cleanly into a typed `Profile` cell whose `type_id` the engine may validate
+/// against the `StructureRegistry`), `type_name` (`"PiecewisePolynomialProfile"`),
+/// `version`, and `fields`. Command-waveform resampling to new waypoints (via
+/// `train.trailing_time` / `convolve_at`) is deferred to task θ — at ζ the
+/// Profile↔spline `Value` marshalling (`evaluate_profile`) is still a stub, so a
+/// fully sample-evaluable shaped profile cannot be produced yet; echoing keeps
+/// the result type-correct and the shaping observable now.
+pub(crate) fn eval_input_shape(args: &[Value]) -> Value {
+    // Arity guard: exactly (profile, shaper).
+    let [profile, shaper] = args else {
+        return Value::Undef;
+    };
+    // Both arguments must be StructureInstances.
+    let Value::StructureInstance(profile_data) = profile else {
+        return Value::Undef;
+    };
+    let Value::StructureInstance(_) = shaper else {
+        return Value::Undef;
+    };
+    // A valid, recognised shaper is required: build (and validate) its impulse
+    // train, returning Undef when the shaper is unknown / unsupported. The train
+    // itself is not yet stored on the result (waveform resampling is θ's job);
+    // computing it here is the meaningful dispatch + bad-shaper rejection.
+    if build_train_for_shaper(shaper).is_none() {
+        return Value::Undef;
+    }
+    // Shaped Profile stand-in: echo the input profile's StructureInstanceData
+    // verbatim (preserving its registered type_id — NOT a u32::MAX/0 sentinel).
+    Value::StructureInstance(profile_data.clone())
 }
 
 #[cfg(test)]

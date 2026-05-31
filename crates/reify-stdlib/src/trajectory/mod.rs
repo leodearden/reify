@@ -40,6 +40,14 @@ mod tots;
 /// name is kept so that the Rust eval-boundary tests in `mod.rs::tests` that call
 /// `eval_builtin("gcode_import", …)` directly remain green with zero churn.
 ///
+/// `input_shape` (task ζ) follows the identical delegate pattern: the stdlib
+/// `.ri` `input_shape` declaration delegates to the undeclared `input_shape_apply`
+/// name, so both route here to [`input_shape::eval_input_shape`], which builds the
+/// shaper's `ImpulseTrain` (the impulse arms ZV/ZVD/EI/Cascaded) and returns the
+/// shaped `Profile` as a `Value::StructureInstance` (or `Value::Undef` on bad args
+/// / an unrecognised shaper). See [`input_shape::eval_input_shape`] for the
+/// argument contract.
+///
 /// The Phase β spline intrinsics still unconditionally return `Some(Value::Undef)`:
 /// the pure-Rust spline math is implemented in the `spline` submodule but is
 /// not yet wired to the Value API.  Full marshalling (parsing a
@@ -51,6 +59,7 @@ mod tots;
 pub(crate) fn eval_trajectory(name: &str, args: &[Value]) -> Option<Value> {
     match name {
         "gcode_import" | "gcode_import_lower" => Some(gcode_import::eval_gcode_import(args)),
+        "input_shape" | "input_shape_apply" => Some(input_shape::eval_input_shape(args)),
         "piecewise_polynomial"
         | "evaluate_profile"
         | "evaluate_profile_dot"
