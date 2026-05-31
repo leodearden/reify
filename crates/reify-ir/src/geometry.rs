@@ -3408,6 +3408,57 @@ mod tests {
         }
     }
 
+    /// RED until step-2 adds `GeometryQuery::CurveCurvatureAt` variant,
+    /// `kind_name()` arm, and `capability_kind()` arm.
+    ///
+    /// Pins (a) `kind_name() == "CurveCurvatureAt"` and (b)
+    /// `capability_kind() == QueryCapability::BRepOnly` per PRD §5.4 (KGQ-μ).
+    /// World-point at-point form `{handle, px, py, pz}` mirrors FaceNormalAt.
+    #[test]
+    fn curve_curvature_at_variant_has_brep_only_capability_and_stable_kind_name() {
+        let q = GeometryQuery::CurveCurvatureAt {
+            handle: GeometryHandleId(1),
+            px: 0.0,
+            py: 0.0,
+            pz: 0.0,
+        };
+        assert_eq!(
+            q.capability_kind(),
+            QueryCapability::BRepOnly,
+            "CurveCurvatureAt must map to QueryCapability::BRepOnly per PRD §5.4"
+        );
+        assert_eq!(
+            q.kind_name(),
+            "CurveCurvatureAt",
+            "kind_name() for CurveCurvatureAt must be the stable token \"CurveCurvatureAt\""
+        );
+    }
+
+    /// RED until step-2 adds `GeometryQuery::SurfaceCurvatureAt` variant,
+    /// `kind_name()` arm, and `capability_kind()` arm.
+    ///
+    /// Pins (a) `kind_name() == "SurfaceCurvatureAt"` and (b)
+    /// `capability_kind() == QueryCapability::BRepOnly` per PRD §5.4 (KGQ-μ).
+    /// Parametric form `{handle, u, v}` mirrors the existing curvature_at(face,u,v).
+    #[test]
+    fn surface_curvature_at_variant_has_brep_only_capability_and_stable_kind_name() {
+        let q = GeometryQuery::SurfaceCurvatureAt {
+            handle: GeometryHandleId(1),
+            u: 0.0,
+            v: 0.0,
+        };
+        assert_eq!(
+            q.capability_kind(),
+            QueryCapability::BRepOnly,
+            "SurfaceCurvatureAt must map to QueryCapability::BRepOnly per PRD §5.4"
+        );
+        assert_eq!(
+            q.kind_name(),
+            "SurfaceCurvatureAt",
+            "kind_name() for SurfaceCurvatureAt must be the stable token \"SurfaceCurvatureAt\""
+        );
+    }
+
     #[test]
     fn debug_assert_query_many_invariant_passes_when_lengths_match() {
         // Empty batch: the boundary case most likely to expose an off-by-one
@@ -5895,12 +5946,38 @@ mod tests {
                     face_b: GeometryHandleId(2),
                 },
             ),
+            (
+                "FaceNormalAt",
+                GeometryQuery::FaceNormalAt {
+                    handle: GeometryHandleId(1),
+                    px: 0.0,
+                    py: 0.0,
+                    pz: 0.0,
+                },
+            ),
+            (
+                "CurveCurvatureAt",
+                GeometryQuery::CurveCurvatureAt {
+                    handle: GeometryHandleId(1),
+                    px: 0.0,
+                    py: 0.0,
+                    pz: 0.0,
+                },
+            ),
+            (
+                "SurfaceCurvatureAt",
+                GeometryQuery::SurfaceCurvatureAt {
+                    handle: GeometryHandleId(1),
+                    u: 0.0,
+                    v: 0.0,
+                },
+            ),
         ];
         // Changing this constant forces the test to be updated whenever a
         // variant is added or removed from GeometryQuery — compile-time
         // exhaustiveness on kind_name() guarantees correctness, this assertion
         // guarantees the token list here stays in sync.
-        const GEOMETRY_QUERY_VARIANT_COUNT: usize = 25;
+        const GEOMETRY_QUERY_VARIANT_COUNT: usize = 28;
         assert_eq!(
             cases.len(),
             GEOMETRY_QUERY_VARIANT_COUNT,
