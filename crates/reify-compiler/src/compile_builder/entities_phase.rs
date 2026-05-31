@@ -25,7 +25,7 @@ use std::collections::{HashMap, HashSet};
 
 use reify_ast::ParsedModule;
 use reify_core::{Diagnostic, DiagnosticLabel, SourceSpan, Type};
-use reify_ir::{CompiledExpr, CompiledExprKind, CompiledFunction, EnumDef};
+use reify_ir::{CompiledExpr, CompiledExprKind, CompiledFunction, EnumDef, OptimizationObjective};
 
 use crate::CompiledModule;
 use crate::compile_builder::ctx::CompilationCtx;
@@ -40,8 +40,8 @@ use crate::entity::{
 use crate::type_resolution::TypeAliasRegistry;
 use reify_core::ValueCellId;
 use crate::types::{
-    CompiledConstraintDef, CompiledField, CompiledImport, CompiledTrait, EntityKind,
-    TopologyTemplate, ValueCellDecl, ValueCellKind, Visibility,
+    CompiledConstraintDef, CompiledField, CompiledForallBody, CompiledGeometryOp, CompiledImport,
+    CompiledTrait, EntityKind, TopologyTemplate, ValueCellDecl, ValueCellKind, Visibility,
 };
 use crate::units::UnitRegistry;
 
@@ -480,12 +480,26 @@ pub(crate) fn phase_sub_override_autos(ctx: &mut CompilationCtx, prelude: &[&Com
 ///
 /// ## Scope coverage
 ///
-/// Covers: entity value-cell `default_expr`s, entity `constraints[*].expr`,
-/// and function bodies (param_defaults + let-bindings + result_expr).
-/// Out of scope: ports/connections/objective/realizations/match-arm-groups and
-/// compiled_purposes (compiled after this pass). This bound matches the existing
-/// structure-conformance baseline (sub-component-only, runs before purposes);
-/// see task-4081 design decision §4.
+/// Covers ALL `CompiledExpr`-bearing fields of every entity template — value-cell
+/// `default_expr`s, `constraints[*].expr`, `objective`,
+/// `realizations[*].operations[*]` geometry-op args, `ports[*]`
+/// members/constraints/frame_expr, `guarded_groups[*]`
+/// guard/members/constraints/else_*, `match_arm_groups[*]` arm guards,
+/// `sub_components[*]` args/pose, and `forall_templates[*]` bodies (enumerated by
+/// [`for_each_template_root_expr`]) — plus function bodies (param_defaults +
+/// let-bindings + result_expr).
+///
+/// This breadth deliberately matches the GLOBAL step-2 resolution relaxation:
+/// because a trait-carrying param acts as a resolution wildcard at EVERY call
+/// site, a non-conforming call must be diagnosed wherever it can appear, else the
+/// previously-existing "no matching overload" hard error is silently lost (a
+/// soundness regression). See task-4081 design decision §6.
+///
+/// Residual (documented, no silent cap): `connections` carry only
+/// `ConstraintNodeId` references + string `port_mappings` (no inline
+/// `CompiledExpr` to walk), and `compiled_purposes` are compiled AFTER this pass
+/// (lib.rs:382) — matching the existing structure-conformance baseline, which
+/// also runs before purposes.
 ///
 /// ## Eval-builtin protection
 ///
@@ -540,16 +554,15 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
         );
     };
 
-    // Walk entity value-cell default_expr fields and constraint exprs.
+    // Walk EVERY CompiledExpr-bearing root field of each entity template via the
+    // centralized enumerator (value cells, constraints, objective, realizations,
+    // ports, guarded groups, match-arm guards, sub-components, forall bodies).
+    // Coverage deliberately matches the GLOBAL step-2 resolution relaxation so a
+    // non-conforming call is diagnosed wherever it can appear (see doc-comment).
     for template in &ctx.templates {
-        for vc in &template.value_cells {
-            if let Some(expr) = &vc.default_expr {
-                walk(expr, vc.span, &mut new_diagnostics);
-            }
-        }
-        for constraint in &template.constraints {
-            walk(&constraint.expr, constraint.span, &mut new_diagnostics);
-        }
+        for_each_template_root_expr(template, &mut |expr, span| {
+            walk(expr, span, &mut new_diagnostics);
+        });
     }
 
     // Walk function bodies: param defaults, let-bindings, result expr.
@@ -612,4 +625,147 @@ fn check_expr_fn_arg_conformance(
             );
         }
     });
+}
+
+/// Enumerate every ROOT `CompiledExpr` of `template` exactly once, invoking `f`
+/// with the expr and a representative `SourceSpan`.
+///
+/// "Root" means the top of a distinct expression tree; the recursive
+/// `CompiledExpr::walk` inside [`check_expr_fn_arg_conformance`] descends into
+/// nested calls, so callers must NOT pre-walk.
+///
+/// ## No double-count
+///
+/// Each field is visited once and the fields are mutually disjoint: geometry
+/// `let`s are excluded from `value_cells` (`is_geometry_let` `continue` at
+/// entity.rs:1175-1177) so realization args never overlap a value cell, and
+/// guard / port / forall / sub members live in their own vecs, never in
+/// `template.value_cells`.
+///
+/// ## Representative spans
+///
+/// Fields that carry their own span use it (value cells, constraints,
+/// realizations via `realization.span`, sub-components via `sub.span`); fields
+/// with no span of their own (objective, guard exprs, match-arm guards, port
+/// `frame_expr`, forall bodies) use `SourceSpan::empty(0)`. The span is purely
+/// diagnostic provenance — conformance correctness depends only on the
+/// param/arg types, not the span.
+///
+/// ## Residual (not walked)
+///
+/// `connections` carry only `ConstraintNodeId` references + string
+/// `port_mappings` (no inline `CompiledExpr`), and `compiled_purposes` are
+/// compiled after this pass (lib.rs:382). See `phase_fn_arg_conformance`
+/// doc-comment and task-4081 design decision §6.
+fn for_each_template_root_expr(
+    template: &TopologyTemplate,
+    f: &mut impl FnMut(&CompiledExpr, SourceSpan),
+) {
+    // Value cells: param / let default expressions.
+    for vc in &template.value_cells {
+        if let Some(expr) = &vc.default_expr {
+            f(expr, vc.span);
+        }
+    }
+
+    // Constraints.
+    for constraint in &template.constraints {
+        f(&constraint.expr, constraint.span);
+    }
+
+    // Objective (the objective enum carries no span of its own).
+    if let Some(objective) = &template.objective {
+        match objective {
+            OptimizationObjective::Minimize(expr) | OptimizationObjective::Maximize(expr) => {
+                f(expr, SourceSpan::empty(0));
+            }
+        }
+    }
+
+    // Realizations: geometry-op argument expressions. The Boolean arm has no
+    // inline `CompiledExpr` args (its operands are `GeomRef`s).
+    for realization in &template.realizations {
+        for op in &realization.operations {
+            match op {
+                CompiledGeometryOp::Primitive { args, .. }
+                | CompiledGeometryOp::Modify { args, .. }
+                | CompiledGeometryOp::Transform { args, .. }
+                | CompiledGeometryOp::Pattern { args, .. }
+                | CompiledGeometryOp::Sweep { args, .. }
+                | CompiledGeometryOp::Curve { args, .. } => {
+                    for (_, arg) in args {
+                        f(arg, realization.span);
+                    }
+                }
+                CompiledGeometryOp::Boolean { .. } => {}
+            }
+        }
+    }
+
+    // Ports: member defaults, constraints, and optional frame expression.
+    for port in &template.ports {
+        for member in &port.members {
+            if let Some(expr) = &member.default_expr {
+                f(expr, member.span);
+            }
+        }
+        for constraint in &port.constraints {
+            f(&constraint.expr, constraint.span);
+        }
+        if let Some(frame_expr) = &port.frame_expr {
+            f(frame_expr, SourceSpan::empty(0));
+        }
+    }
+
+    // Guarded groups: guard expr + then/else members and constraints.
+    for group in &template.guarded_groups {
+        f(&group.guard_expr, SourceSpan::empty(0));
+        for member in &group.members {
+            if let Some(expr) = &member.default_expr {
+                f(expr, member.span);
+            }
+        }
+        for constraint in &group.constraints {
+            f(&constraint.expr, constraint.span);
+        }
+        for member in &group.else_members {
+            if let Some(expr) = &member.default_expr {
+                f(expr, member.span);
+            }
+        }
+        for constraint in &group.else_constraints {
+            f(&constraint.expr, constraint.span);
+        }
+    }
+
+    // Match-arm decl groups: per-arm guard expressions.
+    for group in &template.match_arm_groups {
+        for arm in &group.arms {
+            f(&arm.guard_expr, SourceSpan::empty(0));
+        }
+    }
+
+    // Sub-components: argument expressions and optional `at <pose>`.
+    for sub in &template.sub_components {
+        for (_, arg) in &sub.args {
+            f(arg, sub.span);
+        }
+        if let Some(pose) = &sub.pose {
+            f(pose, sub.span);
+        }
+    }
+
+    // Captured forall templates: per-element constraint / connect body exprs.
+    for forall in &template.forall_templates {
+        match &forall.body {
+            CompiledForallBody::Constraint { body_expr } => {
+                f(body_expr, SourceSpan::empty(0));
+            }
+            CompiledForallBody::Connect { params, .. } => {
+                for (_, expr) in params {
+                    f(expr, SourceSpan::empty(0));
+                }
+            }
+        }
+    }
 }
