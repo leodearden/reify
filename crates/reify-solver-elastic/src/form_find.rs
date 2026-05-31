@@ -284,4 +284,62 @@ mod tests {
             solve.nodes[1],
         );
     }
+
+    // Member forces, force-density echo, and convergence flag on the case-(a)
+    // geometry. Each axial force is Nᵢ = qᵢ · Lᵢ where Lᵢ is the Euclidean
+    // length of member i measured on the *solved* coordinates (here all four
+    // cables are √1.25 long and q=1, so each force equals that length). The
+    // expected length is recomputed from the returned nodes so the assertion
+    // tracks the solve rather than a hard-coded constant.
+    #[test]
+    fn member_forces_are_q_times_solved_length_and_q_is_echoed() {
+        let nodes = vec![
+            [0.3, 0.2, 0.4], // free node 0 — off-solution
+            [1.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, 1.0, 1.0],
+            [0.0, -1.0, 1.0],
+        ];
+        let members = [(0, 1), (0, 2), (0, 3), (0, 4)];
+        let kinds = [MemberKind::Cable; 4];
+        let q = [1.0, 1.0, 1.0, 1.0];
+        let anchors = [1, 2, 3, 4];
+
+        let solve = form_find_anchored(&nodes, &members, &kinds, &q, &anchors)
+            .expect("equal-q anchored cable net must be feasible");
+
+        assert_eq!(
+            solve.member_forces.len(),
+            members.len(),
+            "one axial force per member",
+        );
+        for (i, &(j, k)) in members.iter().enumerate() {
+            let pj = solve.nodes[j];
+            let pk = solve.nodes[k];
+            let len = ((pj[0] - pk[0]).powi(2)
+                + (pj[1] - pk[1]).powi(2)
+                + (pj[2] - pk[2]).powi(2))
+            .sqrt();
+            let expected = q[i] * len;
+            assert!(
+                (solve.member_forces[i] - expected).abs() < TOL,
+                "member_forces[{i}] = {}, expected q·L = {}",
+                solve.member_forces[i],
+                expected,
+            );
+        }
+
+        // force_densities is an exact echo of the input q (a copy, not a
+        // computed quantity), so exact equality must hold.
+        assert_eq!(
+            solve.force_densities,
+            q.to_vec(),
+            "force_densities must echo input q exactly",
+        );
+
+        assert!(
+            solve.converged,
+            "a well-posed anchored solve must report converged == true",
+        );
+    }
 }
