@@ -1241,12 +1241,14 @@ mod tests {
     use reify_solver_elastic::assembly::test_support::promote_tets_to_p2;
     use reify_solver_elastic::{DirichletBc, EigenSolverOptions, IsotropicElastic};
     use reify_stdlib::modal::free_vibration::{is_rigid_body_mode, rayleigh_damping_ratio};
+    use reify_stdlib::modal::trampoline::ModalCacheKey;
 
     use super::{
-        ModalAssembly, ModalCoreResult, ModalMesh, assemble_modal_km, build_beam_mesh,
-        build_dirichlet_bcs, eigensolve_modal, extract_damping, extract_density_or_degenerate,
-        extract_eigen_knobs, extract_reference_direction, simply_supported_pin_pin_bcs,
-        solve_modal_analysis_trampoline, solve_modal_core,
+        ModalAnalysisCache, ModalAssembly, ModalCoreResult, ModalMesh, ModalTrampolineRun,
+        assemble_modal_km, build_beam_mesh, build_dirichlet_bcs, eigensolve_modal, extract_damping,
+        extract_density_or_degenerate, extract_eigen_knobs, extract_reference_direction,
+        run_modal_analysis, simply_supported_pin_pin_bcs, solve_modal_analysis_trampoline,
+        solve_modal_core,
     };
     use crate::{CancellationHandle, ComputeOutcome};
 
@@ -1464,6 +1466,115 @@ mod tests {
             rel < 1e-9,
             "fundamental must be invariant across n_modes on one reused assembly: \
              {f2} vs {f4} (rel {rel:e})",
+        );
+    }
+
+    // ── task-κ cache-aware core (`run_modal_analysis`) fixtures ──────────────
+
+    /// Build the 5 modal `value_inputs` (material, length, width, height,
+    /// ModalOptions) the cache tests drive `run_modal_analysis` with. Geometry +
+    /// `density` are the `(K,M)`-determining inputs; `n_modes` is excluded from
+    /// the key; `element_order` (when `Some`) is the runtime enum value the
+    /// trampoline maps to the key's discriminant. A single `x_min` clamp keeps
+    /// `K_free` SPD (well-posed eigenproblem).
+    fn modal_inputs(
+        length: f64,
+        width: f64,
+        height: f64,
+        density: f64,
+        n_modes: i64,
+        element_order: Option<Value>,
+    ) -> Vec<Value> {
+        let mut opts = vec![
+            ("n_modes".to_string(), Value::Int(n_modes)),
+            (
+                "boundary_conditions".to_string(),
+                Value::List(vec![fixed_support("x_min")]),
+            ),
+            (
+                "reference_direction".to_string(),
+                Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
+            ),
+        ];
+        if let Some(eo) = element_order {
+            opts.push(("element_order".to_string(), eo));
+        }
+        vec![
+            material_with_density(Some(density)),
+            length_scalar(length),
+            length_scalar(width),
+            length_scalar(height),
+            modal_options(opts),
+        ]
+    }
+
+    /// Number of `Mode`s in a `Completed` `ModalResult` outcome (panics if the
+    /// outcome is not a well-shaped Completed ModalResult).
+    fn modes_len(outcome: &ComputeOutcome) -> usize {
+        let ComputeOutcome::Completed { result, .. } = outcome else {
+            panic!("expected a Completed outcome, got {outcome:?}");
+        };
+        let Value::StructureInstance(data) = result else {
+            panic!("expected a ModalResult StructureInstance, got {result:?}");
+        };
+        match data.fields.get(&"modes".to_string()) {
+            Some(Value::List(m)) => m.len(),
+            other => panic!("ModalResult.modes must be a List; got {other:?}"),
+        }
+    }
+
+    /// step-5 (RED → GREEN in step-6): the cache-aware core `run_modal_analysis`
+    /// donates a `ModalAnalysisCache` warm state and reuses it when only
+    /// `n_modes` changes.
+    ///
+    /// (1) A cold call (`prior = None`) assembles fresh (`reused_assembly ==
+    ///     false`), Completes, and donates a `new_warm_state` that downcasts to a
+    ///     `ModalAnalysisCache` whose `key` matches the inputs' `ModalCacheKey`.
+    /// (2) Feeding that cache back as `prior` with IDENTICAL geometry + material +
+    ///     element_order but a DIFFERENT `n_modes` HITs the cache
+    ///     (`reused_assembly == true`), Completes, and returns the NEW mode count
+    ///     — the assembly was amortized across the `n_modes` change (the PRD
+    ///     amortization goal).
+    ///
+    /// RED: `run_modal_analysis` / `ModalTrampolineRun` / `ModalAnalysisCache` do
+    /// not exist until step-6.
+    #[test]
+    fn run_modal_analysis_caches_and_reuses_assembly_across_n_modes() {
+        let handle = CancellationHandle::new();
+
+        // ── (1) cold call → fresh assembly, donates a matching cache ──────────
+        let inputs2 = modal_inputs(0.02, 0.05, 0.1, STEEL_DENSITY, 2, None);
+        let run1: ModalTrampolineRun = run_modal_analysis(&inputs2, None, &handle);
+        assert!(!run1.reused_assembly, "cold call (prior None) must assemble fresh");
+        assert_eq!(modes_len(&run1.outcome), 2, "cold call returns n_modes = 2 modes");
+
+        let ComputeOutcome::Completed { new_warm_state, .. } = &run1.outcome else {
+            panic!("cold call must Complete, got {:?}", run1.outcome);
+        };
+        let cache: &ModalAnalysisCache = new_warm_state
+            .as_ref()
+            .expect("a Completed outcome must donate a warm state")
+            .downcast_ref::<ModalAnalysisCache>()
+            .expect("donated warm state must be a ModalAnalysisCache");
+        // Inputs' (K,M) key: steel (E = 205e9, ν = 0.29), P1 → discriminant 0.
+        let expected_key = ModalCacheKey::new(0.02, 0.05, 0.1, 205e9, 0.29, STEEL_DENSITY, 0);
+        assert!(
+            cache.key.matches(&expected_key),
+            "donated cache key must match the inputs' (K,M) key",
+        );
+
+        // ── (2) feed the cache back, differing only in n_modes → HIT ──────────
+        let prior = cache.clone().into_opaque_state();
+        let inputs4 = modal_inputs(0.02, 0.05, 0.1, STEEL_DENSITY, 4, None);
+        let run2 = run_modal_analysis(&inputs4, Some(&prior), &handle);
+        assert!(
+            run2.reused_assembly,
+            "inputs differing only in n_modes must HIT the cached assembly",
+        );
+        assert_eq!(
+            modes_len(&run2.outcome),
+            4,
+            "a cache HIT still returns the newly-requested n_modes = 4",
         );
     }
 
