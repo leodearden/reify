@@ -1675,6 +1675,77 @@ mod tests {
         );
     }
 
+    /// step-7κ (RED → GREEN in step-8): the cache key discriminates EXACTLY the
+    /// `(K, M)`-determining inputs — geometry + material + element_order — and
+    /// nothing else.
+    ///
+    /// With a prior `ModalAnalysisCache` built for geometry L1 + steel + P1, drive
+    /// `run_modal_analysis` with that cache as `prior`:
+    /// (a) DIFFERENT geometry (length L2 ≠ L1) → MISS — a stale `K`/`M` must never
+    ///     be served for a different shape.
+    /// (b) DIFFERENT material density → MISS — the consistent mass `M` depends on ρ.
+    /// (c) DIFFERENT element_order (P2 vs the P1 prior) → MISS — task 4066: P2
+    ///     assembles a distinct `K`/`M` and node count.
+    /// (d) SAME geometry + material + element_order, changing ONLY `n_modes` → HIT.
+    #[test]
+    fn run_modal_analysis_cache_key_discriminates_km_inputs_only() {
+        let handle = CancellationHandle::new();
+        let (l1, w, h) = (0.02_f64, 0.05_f64, 0.1_f64);
+
+        // Prior cache: geometry L1 + steel + P1.
+        let cold =
+            run_modal_analysis(&modal_inputs(l1, w, h, STEEL_DENSITY, 3, None), None, &handle);
+        let ComputeOutcome::Completed { new_warm_state, .. } = &cold.outcome else {
+            panic!("prior cold call must Complete, got {:?}", cold.outcome);
+        };
+        let prior = new_warm_state
+            .as_ref()
+            .expect("cold call must donate a cache")
+            .downcast_ref::<ModalAnalysisCache>()
+            .expect("donated state must be a ModalAnalysisCache")
+            .clone()
+            .into_opaque_state();
+
+        // (a) different length → MISS (re-assembled).
+        let a = run_modal_analysis(
+            &modal_inputs(l1 * 2.0, w, h, STEEL_DENSITY, 3, None),
+            Some(&prior),
+            &handle,
+        );
+        assert!(!a.reused_assembly, "different geometry must re-assemble (no stale K/M)");
+
+        // (b) different density → MISS.
+        let b = run_modal_analysis(
+            &modal_inputs(l1, w, h, STEEL_DENSITY * 1.1, 3, None),
+            Some(&prior),
+            &handle,
+        );
+        assert!(!b.reused_assembly, "different density must re-assemble (M depends on ρ)");
+
+        // (c) different element_order (P2 vs the P1 prior) → MISS.
+        let p2 = Value::Enum {
+            type_name: "ElementOrder".to_string(),
+            variant: "P2".to_string(),
+        };
+        let c = run_modal_analysis(
+            &modal_inputs(l1, w, h, STEEL_DENSITY, 3, Some(p2)),
+            Some(&prior),
+            &handle,
+        );
+        assert!(
+            !c.reused_assembly,
+            "P2 must re-assemble against a P1-built prior (distinct K/M per task 4066)",
+        );
+
+        // (d) only n_modes differs → HIT.
+        let d = run_modal_analysis(
+            &modal_inputs(l1, w, h, STEEL_DENSITY, 5, None),
+            Some(&prior),
+            &handle,
+        );
+        assert!(d.reused_assembly, "changing only n_modes must HIT the cached assembly");
+    }
+
     /// step-7 (RED → GREEN in step-8): the P2 (`ElementOrder::P2`) path of
     /// `solve_modal_core`.
     ///
