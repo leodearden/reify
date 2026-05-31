@@ -26,7 +26,7 @@ fn extract_scalar(stdout: &str, key: &str) -> f64 {
     // Scalar (LENGTH) values print as `<si_value> <dimension>`, so the numeric
     // token is already whitespace-delimited.  Real/Int values print bare — they
     // pick up trailing map punctuation (`,` or `}`).  Strip both.
-    let clean = token.trim_end_matches(|c: char| matches!(c, ',' | '}'));
+    let clean = token.trim_end_matches([',', '}']);
     clean
         .parse::<f64>()
         .unwrap_or_else(|e| panic!("parse f64 for '{key}' (token={token:?}): {e}"))
