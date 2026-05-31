@@ -751,7 +751,27 @@ pub fn solve_modal_analysis_trampoline(
     let (n_modes, tol, max_iters, sigma) = extract_eigen_knobs(options);
     let reference_direction = extract_reference_direction(options);
     let (alpha, beta) = extract_damping(options);
-    let bcs = build_dirichlet_bcs(options, &mesh, length, width, height);
+    let element_order = extract_element_order(options);
+    // Realize the Dirichlet BCs against the node set `solve_modal_core` assembles
+    // K/M over: the P1 mesh for P1, or the promoted P2 node set for P2. P2
+    // promotion inserts edge-midpoint nodes, so the face-coordinate BC selection
+    // must run over the PROMOTED nodes (BC construction ordered AFTER promotion) —
+    // otherwise a clamped/pinned face would miss its midpoint nodes and be only
+    // partially constrained. `solve_modal_core` re-promotes the same P1 `mesh`
+    // internally with the SAME shared `promote_beam_mesh_to_p2` helper, so the
+    // promoted node numbering — and therefore these BC DOF indices — line up.
+    let bcs = match element_order {
+        ElementOrder::P1 => build_dirichlet_bcs(options, &mesh, length, width, height),
+        ElementOrder::P2 => {
+            let (nodes_p2, _tets_p2) = promote_beam_mesh_to_p2(&mesh);
+            // BC selection reads only node coordinates (never `tets`), so a
+            // nodes-only `BeamMesh` over the promoted set is sufficient as the
+            // selection view; the actual P2 K/M assembly uses the original `mesh`
+            // (promoted inside `solve_modal_core`), not this BC view.
+            let mesh_p2 = BeamMesh { nodes: nodes_p2, tets: Vec::new() };
+            build_dirichlet_bcs(options, &mesh_p2, length, width, height)
+        }
+    };
     let eigen_opts = EigenSolverOptions { n_modes, tol, max_iters, sigma };
 
     // ── (5) core free-vibration eigensolve ───────────────────────────────────
@@ -762,9 +782,7 @@ pub fn solve_modal_analysis_trampoline(
         reference_direction,
         &bcs,
         &eigen_opts,
-        // P1 for now; step 10 reads `element_order` from ModalOptions and threads
-        // it (with a promoted-node-set BC realization) through here.
-        ElementOrder::P1,
+        element_order,
     );
 
     // ── (6) modes list: one Mode StructureInstance per returned mode ─────────
@@ -942,6 +960,28 @@ fn extract_damping(val: &Value) -> (f64, f64) {
         return (alpha, beta);
     }
     (0.0, 0.0)
+}
+
+/// Extract the requested finite-element order from a `ModalOptions`
+/// StructureInstance's `element_order` field.
+///
+/// An `ElementOrder.P2` enum value (runtime `Value::Enum { variant: "P2", .. }`)
+/// selects [`ElementOrder::P2`] — the quadratic 10-node-tet path that resolves
+/// bending curvature (task 4066). Everything else — a missing field, a non-enum
+/// value, or the explicit `ElementOrder.P1` — defaults to [`ElementOrder::P1`],
+/// keeping the constant-strain path and every existing P1 fixture/test bit-for-bit
+/// unchanged (matching `ModalOptions.element_order`'s declared `ElementOrder.P1`
+/// default). Mirrors [`extract_damping`]'s match-then-default defensive field read;
+/// the enum is discriminated solely by its `variant` tag, the runtime
+/// representation of an `ElementOrder` value (reify-ir `Value::Enum`).
+fn extract_element_order(val: &Value) -> ElementOrder {
+    if let Value::StructureInstance(data) = val
+        && let Some(Value::Enum { variant, .. }) = data.fields.get(&"element_order".to_string())
+        && variant == "P2"
+    {
+        return ElementOrder::P2;
+    }
+    ElementOrder::P1
 }
 
 /// Build the homogeneous Dirichlet BCs from the `boundary_conditions` faces.
