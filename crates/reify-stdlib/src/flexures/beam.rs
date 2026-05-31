@@ -539,4 +539,135 @@ mod tests {
             "axis is length-dimensioned",
         );
     }
+
+    /// Assert `v` is a LENGTH-dimensioned Scalar and return its si_value.
+    fn length_scalar_si(v: &Value, label: &str) -> f64 {
+        match v {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::LENGTH,
+                    "{label}: bound carries LENGTH dimension"
+                );
+                *si_value
+            }
+            other => panic!("{label}: expected LENGTH Scalar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prb_fixed_fixed_beam_returns_prismatic_with_spring_rate() {
+        let length = 0.02_f64;
+        let width = 0.005_f64;
+        let thickness = 0.0005_f64;
+        let e = 205e9_f64;
+        let result = crate::eval_builtin(
+            "prb_fixed_fixed_beam",
+            &[
+                Value::length(length),
+                Value::length(width),
+                Value::length(thickness),
+                steel(),
+                origin(),
+                axis_y(),
+            ],
+        );
+        assert_eq!(
+            map_get(&result, "kind"),
+            Some(&Value::String("prismatic".to_string())),
+            "fixed-fixed flexure presents as a prismatic joint"
+        );
+        assert_eq!(
+            map_get(&result, "axis"),
+            Some(&axis_y()),
+            "axis is preserved verbatim"
+        );
+        assert_eq!(
+            map_get(&result, "damping"),
+            Some(&Value::Option(None)),
+            "damping is None in γ scope"
+        );
+        assert_eq!(
+            map_get(&result, "neutral"),
+            Some(&Value::length(0.0)),
+            "6-arg call defaults neutral to length(0) (transverse translation)"
+        );
+
+        // Closed-form reproduction: k_trans = γ_ff·E·I / L³ with γ_ff = 12.
+        let i = width * thickness.powi(3) / 12.0;
+        let k_expected = 12.0 * e * i / length.powi(3);
+        match map_get(&result, "spring_rate") {
+            Some(Value::Scalar {
+                si_value,
+                dimension,
+            }) => {
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::TRANSLATIONAL_STIFFNESS,
+                    "spring_rate carries TRANSLATIONAL_STIFFNESS"
+                );
+                let rel = (si_value - k_expected).abs() / k_expected;
+                assert!(
+                    rel < 1e-9,
+                    "spring_rate {si_value} vs {k_expected} (rel {rel})"
+                );
+            }
+            other => panic!("expected spring_rate Scalar, got {other:?}"),
+        }
+
+        // Range shape only (no magnitude pin): finite, LENGTH-dimensioned,
+        // symmetric (lower == -upper), and non-zero.
+        let range = map_get(&result, "range").expect("range key present");
+        let (lo, up) = range_lower_upper(range);
+        let lo_si = length_scalar_si(lo, "range lower");
+        let up_si = length_scalar_si(up, "range upper");
+        assert!(
+            lo_si.is_finite() && up_si.is_finite(),
+            "range bounds are finite (lo={lo_si}, up={up_si})"
+        );
+        assert!(up_si != 0.0, "range is non-zero (up={up_si})");
+        let sym = (lo_si + up_si).abs() / up_si.abs();
+        assert!(sym < 1e-9, "range is symmetric: lower {lo_si} == -upper {up_si}");
+    }
+
+    #[test]
+    fn prb_fixed_fixed_beam_rejects_invalid_inputs() {
+        let undef = |args: Vec<Value>, label: &str| {
+            let r = crate::eval_builtin("prb_fixed_fixed_beam", &args);
+            assert!(r.is_undef(), "{label}: expected Undef, got {r:?}");
+        };
+        let with = |idx: usize, v: Value| {
+            let mut a = valid_cantilever_args();
+            a[idx] = v;
+            a
+        };
+
+        undef(vec![], "0 args");
+        {
+            let mut a = valid_cantilever_args();
+            a.truncate(3);
+            undef(a, "3 args");
+        }
+        undef(with(0, Value::length(0.0)), "length = 0");
+        undef(with(0, Value::length(-0.02)), "length < 0");
+        undef(with(1, Value::length(0.0)), "width = 0");
+        undef(with(2, Value::length(f64::NAN)), "thickness = NaN");
+        undef(with(2, Value::length(0.02)), "thickness == length");
+        undef(with(3, Value::Real(1.0)), "material not a StructureInstance");
+        undef(
+            with(3, material("NoModulus", &[])),
+            "material missing youngs_modulus",
+        );
+        undef(with(5, Value::Real(1.0)), "axis not a vector");
+        undef(
+            with(
+                5,
+                Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]),
+            ),
+            "axis is zero vector",
+        );
+    }
 }
