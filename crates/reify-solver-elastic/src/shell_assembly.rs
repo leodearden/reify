@@ -1937,4 +1937,107 @@ mod tests {
             );
         }
     }
+
+    // ====================================================================
+    // Degenerate (continuum-based) shell element (task 4068): per-node
+    // directors + a varying Jacobian, carrying the MITC3+ assumed transverse
+    // shear (task 3392). Tested on a CURVED patch (non-coplanar directors) so
+    // the varying J is exercised — states the flat constant-J element cannot
+    // reach. Sibling of `shell_element_stiffness_mitc3_plus` above.
+    // ====================================================================
+
+    /// Non-coplanar (radially tilted) per-node unit directors on the UNIT_TRI
+    /// mid-surface: V_0 = +z, V_1 and V_2 tilted 30° outward. Non-parallel ⇒ the
+    /// degenerate Jacobian varies in ζ and (ξ,η) — a curved patch whose curvature
+    /// is carried by the directors (the mid-surface itself stays planar, which
+    /// keeps the rigid-mode arithmetic clean while still exercising the varying J).
+    fn curved_directors() -> [[f64; 3]; 3] {
+        let c30 = 30.0_f64.to_radians().cos();
+        let s30 = 30.0_f64.to_radians().sin();
+        [[0.0, 0.0, 1.0], [s30, 0.0, c30], [0.0, s30, c30]]
+    }
+
+    #[test]
+    fn degenerate_stiffness_is_18x18_symmetric_finite_with_rigid_body_null_space() {
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let directors = curved_directors();
+        let thicknesses = [t; 3];
+        let k = shell_element_stiffness_degenerate(&UNIT_TRI, &directors, &thicknesses, &mat);
+
+        // (i) Shape: 18×18 after static condensation of the 2 bubble DOFs.
+        assert_eq!(
+            k.n_dofs,
+            Mitc3Plus::N_DOFS,
+            "degenerate element must condense to N_DOFS = 18"
+        );
+        assert_eq!(
+            k.data.len(),
+            Mitc3Plus::N_DOFS * Mitc3Plus::N_DOFS,
+            "degenerate data length must be 18×18 = 324"
+        );
+
+        // (ii) Entrywise finite + symmetric to 1e-9 relative.
+        for i in 0..Mitc3Plus::N_DOFS {
+            for j in 0..Mitc3Plus::N_DOFS {
+                let kij = k.get(i, j);
+                let kji = k.get(j, i);
+                assert!(kij.is_finite(), "degenerate K[{i}][{j}] = {kij} is not finite");
+                let scale = kij.abs().max(kji.abs()).max(1.0);
+                assert!(
+                    (kij - kji).abs() < 1e-9 * scale,
+                    "degenerate asymmetry at ({i},{j}): {kij} vs {kji}",
+                );
+            }
+        }
+
+        // (iii) Rigid-body null space on the CURVED patch. The degenerate
+        // rigid-rotation mode u_i = ω×(x_i−c), θ_i = ω is strain-free for ANY
+        // directors: u_h(ξ,η,ζ) ≡ ω×(X−c), so the velocity gradient is skew(ω)
+        // (symmetric strain 0) and the geometry-free covariant shear coincides
+        // with flat MITC3+'s (already proven to annihilate this mode).
+        let k_max = k.data.iter().copied().fold(0.0_f64, |a, x| a.max(x.abs()));
+        let tol = 1e-9 * k_max.max(1.0);
+
+        // (a) Rigid translations along each global axis.
+        for axis in 0..3 {
+            let mut u = [0.0_f64; Mitc3Plus::N_DOFS];
+            for node in 0..Mitc3Plus::N_NODES {
+                u[Mitc3Plus::N_DOFS_PER_NODE * node + axis] = 1.0;
+            }
+            let ku = matvec(&k, &u);
+            assert!(
+                linf(&ku) < tol,
+                "degenerate translation axis {axis}: linf(K·u) = {}, tol = {tol}",
+                linf(&ku),
+            );
+        }
+
+        // (b) Rigid rotations about the mid-surface centroid.
+        let c = [1.0 / 3.0_f64, 1.0 / 3.0, 0.0_f64];
+        let omega = [[1.0_f64, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        for &w in &omega {
+            let mut u = [0.0_f64; Mitc3Plus::N_DOFS];
+            for node in 0..Mitc3Plus::N_NODES {
+                let dx = [
+                    UNIT_TRI[node][0] - c[0],
+                    UNIT_TRI[node][1] - c[1],
+                    UNIT_TRI[node][2] - c[2],
+                ];
+                let ndp = Mitc3Plus::N_DOFS_PER_NODE;
+                u[ndp * node + 0] = w[1] * dx[2] - w[2] * dx[1];
+                u[ndp * node + 1] = w[2] * dx[0] - w[0] * dx[2];
+                u[ndp * node + 2] = w[0] * dx[1] - w[1] * dx[0];
+                u[ndp * node + 3] = w[0];
+                u[ndp * node + 4] = w[1];
+                u[ndp * node + 5] = w[2];
+            }
+            let ku = matvec(&k, &u);
+            assert!(
+                linf(&ku) < tol,
+                "degenerate rotation ω={w:?}: linf(K·u) = {}, tol = {tol}",
+                linf(&ku),
+            );
+        }
+    }
 }
