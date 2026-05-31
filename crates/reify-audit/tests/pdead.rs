@@ -25,7 +25,15 @@ use rusqlite::Connection;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-fn dead_sym(id: &str, name: &str, kind: &str, file: &str, line: usize, confidence: f64, signals: Vec<&str>) -> DeadSymbol {
+fn dead_sym(
+    id: &str,
+    name: &str,
+    kind: &str,
+    file: &str,
+    line: usize,
+    confidence: f64,
+    signals: Vec<&str>,
+) -> DeadSymbol {
     DeadSymbol {
         id: id.to_string(),
         name: name.to_string(),
@@ -110,7 +118,9 @@ mod tests {
         let summary_b = findings
             .iter()
             .find(|f| {
-                f.evidence.iter().any(|e| matches!(e, EvidenceRef::File { path } if path == "crates/reify-x/src/b.rs"))
+                f.evidence.iter().any(|e| {
+                    matches!(e, EvidenceRef::File { path } if path == "crates/reify-x/src/b.rs")
+                })
             })
             .map(|f| f.summary.clone())
             .expect("finding for b.rs must exist");
@@ -159,6 +169,59 @@ mod tests {
             findings
         );
     }
-}
+
+    /// Scope-excludes: stdlib prefix and test paths are suppressed.
+    ///
+    /// Seeds four above-threshold (confidence 0.9) DeadSymbols:
+    /// - stdlib: crates/reify-stdlib/src/prelude.rs → excluded
+    /// - test dir: crates/reify-x/tests/it.rs → excluded
+    /// - _test.rs suffix: crates/reify-x/src/foo_test.rs → excluded
+    /// - normal src: crates/reify-x/src/live.rs → survives
+    ///
+    /// check() must yield exactly ONE finding citing live.rs.
+    #[test]
+    fn scope_excludes_stdlib_and_test_paths() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let mut jc = MockJCodemunchOps::new();
+
+        jc.set_dead_code(vec![
+            dead_sym("s1", "stdlib_sym",   "function", "crates/reify-stdlib/src/prelude.rs", 1, 0.9, vec!["no_callers"]),
+            dead_sym("s2", "test_dir_sym", "function", "crates/reify-x/tests/it.rs",         2, 0.9, vec!["no_callers"]),
+            dead_sym("s3", "test_src_sym", "function", "crates/reify-x/src/foo_test.rs",     3, 0.9, vec!["no_callers"]),
+            dead_sym("s4", "live_sym",     "function", "crates/reify-x/src/live.rs",         4, 0.9, vec!["no_callers"]),
+        ]);
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata: HashMap::new(),
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = pdead_dead_code::check(&ctx);
+
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly 1 finding (stdlib+test paths excluded); got {:?}",
+            findings
+        );
+
+        assert!(
+            findings[0].evidence.iter().any(|e| {
+                matches!(e, EvidenceRef::File { path } if path == "crates/reify-x/src/live.rs")
+            }),
+            "surviving finding must cite live.rs; got {:?}",
+            findings[0].evidence
+        );
+    }
+
+} // mod tests
 
 } // mod pdead
