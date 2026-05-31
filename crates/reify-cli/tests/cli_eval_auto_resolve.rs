@@ -39,8 +39,8 @@ fn eval_resolves_auto_param_via_default_solver() {
 
     // 2. RHS must not be "undef"
     let rhs = thickness_line
-        .splitn(2, '=')
-        .nth(1)
+        .split_once('=')
+        .map(|x| x.1)
         .unwrap_or("")
         .trim();
 
