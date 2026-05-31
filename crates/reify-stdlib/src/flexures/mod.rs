@@ -19,6 +19,7 @@ mod beam;
 mod notch;
 mod hinge;
 mod prismatic;
+mod compound;
 
 #[cfg(test)]
 mod test_util;
@@ -32,4 +33,5 @@ pub(crate) fn eval_flexures(name: &str, args: &[Value]) -> Option<Value> {
         .or_else(|| notch::eval_notch(name, args))
         .or_else(|| hinge::eval_hinge(name, args))
         .or_else(|| prismatic::eval_prismatic(name, args))
+        .or_else(|| compound::eval_compound(name, args))
 }
