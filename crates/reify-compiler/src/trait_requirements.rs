@@ -844,6 +844,7 @@ mod tests {
         reify_ast::ParamDecl {
             name: name.to_string(),
             doc: None,
+            is_priv: false,
             type_expr: None,
             default: None,
             where_clause: None,

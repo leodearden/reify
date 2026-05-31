@@ -266,6 +266,20 @@ impl<'a> Lowering<'a> {
         false
     }
 
+    /// Check if a node has an anonymous 'priv' keyword child.
+    ///
+    /// Mirrors `has_aux_keyword`. Used by `lower_param`, `lower_sub`, and
+    /// `lower_port` to set `is_priv` (PRD §D-3/D-4, task 3976 step-6).
+    fn has_priv_keyword(&self, node: tree_sitter::Node) -> bool {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if !child.is_named() && self.node_text(child) == "priv" {
+                return true;
+            }
+        }
+        false
+    }
+
     // ── Top-level lowering ──────────────────────────────────
 
     fn lower_source_file(&mut self, node: tree_sitter::Node) {
@@ -1910,7 +1924,7 @@ impl<'a> Lowering<'a> {
         Some(ParamDecl {
             name,
             doc,
-            is_priv: false,
+            is_priv: self.has_priv_keyword(node),
             type_expr,
             default,
             where_clause,
@@ -2153,7 +2167,7 @@ impl<'a> Lowering<'a> {
             param_overrides,
             keyed_members,
             is_aux,
-            is_priv: false,
+            is_priv: self.has_priv_keyword(node),
             pose_expr,
             span: self.span(node),
             content_hash: self.content_hash(node),
@@ -2229,7 +2243,7 @@ impl<'a> Lowering<'a> {
             name,
             direction: final_direction,
             type_name,
-            is_priv: false,
+            is_priv: self.has_priv_keyword(node),
             members,
             frame_expr,
             span: self.span(node),

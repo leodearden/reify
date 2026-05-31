@@ -232,6 +232,7 @@ fn type_error_dimension_mismatch() {
                 MemberDecl::Param(ParamDecl {
                     name: "thickness".into(),
                     doc: None,
+                    is_priv: false,
                     type_expr: Some(TypeExpr {
                         kind: TypeExprKind::Named {
                             name: "Scalar".into(),
@@ -326,6 +327,7 @@ fn constraint_non_bool_produces_warning() {
                 MemberDecl::Param(ParamDecl {
                     name: "width".into(),
                     doc: None,
+                    is_priv: false,
                     type_expr: Some(TypeExpr {
                         kind: TypeExprKind::Named {
                             name: "Scalar".into(),
@@ -348,6 +350,7 @@ fn constraint_non_bool_produces_warning() {
                 MemberDecl::Param(ParamDecl {
                     name: "height".into(),
                     doc: None,
+                    is_priv: false,
                     type_expr: Some(TypeExpr {
                         kind: TypeExprKind::Named {
                             name: "Scalar".into(),
@@ -737,6 +740,7 @@ fn mul_div_different_dimensions_no_diagnostic() {
                 MemberDecl::Param(ParamDecl {
                     name: "width".into(),
                     doc: None,
+                    is_priv: false,
                     type_expr: Some(TypeExpr {
                         kind: TypeExprKind::Named {
                             name: "Scalar".into(),
@@ -759,6 +763,7 @@ fn mul_div_different_dimensions_no_diagnostic() {
                 MemberDecl::Param(ParamDecl {
                     name: "height".into(),
                     doc: None,
+                    is_priv: false,
                     type_expr: Some(TypeExpr {
                         kind: TypeExprKind::Named {
                             name: "Scalar".into(),
@@ -1786,6 +1791,7 @@ fn scalar_plus_int_type_error() {
                 MemberDecl::Param(ParamDecl {
                     name: "width".into(),
                     doc: None,
+                    is_priv: false,
                     type_expr: Some(TypeExpr {
                         kind: TypeExprKind::Named {
                             name: "Scalar".into(),

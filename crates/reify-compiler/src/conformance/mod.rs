@@ -1478,6 +1478,7 @@ mod tests {
                 reify_ast::MemberDecl::Param(reify_ast::ParamDecl {
                     name: "dir".to_string(),
                     doc: None,
+                    is_priv: false,
                     type_expr: Some(direction_type_expr.clone()),
                     default: None,
                     where_clause: None,
@@ -1615,6 +1616,7 @@ mod tests {
                     default_decl: reify_ast::ParamDecl {
                         name: "x".to_string(),
                         doc: None,
+                        is_priv: false,
                         type_expr: None,
                         default: None, // no default expression
                         where_clause: None,
@@ -2016,6 +2018,7 @@ mod tests {
             members: vec![reify_ast::MemberDecl::Param(reify_ast::ParamDecl {
                 name: "dir".to_string(),
                 doc: None,
+                is_priv: false,
                 type_expr: Some(direction_with_args),
                 default: None,
                 where_clause: None,
@@ -2085,6 +2088,7 @@ mod tests {
             members: vec![reify_ast::MemberDecl::Param(reify_ast::ParamDecl {
                 name: "p".to_string(),
                 doc: None,
+                is_priv: false,
                 type_expr: Some(non_enum_with_args),
                 default: None,
                 where_clause: None,
@@ -2413,6 +2417,7 @@ mod tests {
                 reify_ast::MemberDecl::Param(reify_ast::ParamDecl {
                     name: "width".to_string(),
                     doc: None,
+                    is_priv: false,
                     type_expr: Some(real_type_expr),
                     default: None,
                     where_clause: None,
@@ -2570,6 +2575,7 @@ mod tests {
         let param_decl = reify_ast::ParamDecl {
             name: "x".to_string(),
             doc: None,
+            is_priv: false,
             type_expr: None,
             default: None,
             where_clause: None,
@@ -2752,6 +2758,7 @@ mod tests {
         let param_decl = reify_ast::ParamDecl {
             name: "x".to_string(),
             doc: None,
+            is_priv: false,
             type_expr: None,
             default: None,
             where_clause: None,
@@ -2877,6 +2884,7 @@ mod tests {
         let param_decl = reify_ast::ParamDecl {
             name: "x".to_string(),
             doc: None,
+            is_priv: false,
             type_expr: None,
             default: None,
             where_clause: None,
@@ -3027,6 +3035,7 @@ mod tests {
         let param_decl = reify_ast::ParamDecl {
             name: "x".to_string(),
             doc: None,
+            is_priv: false,
             type_expr: None,
             default: None,
             where_clause: None,
@@ -3454,6 +3463,7 @@ mod tests {
         let param_decl = reify_ast::ParamDecl {
             name: "x".to_string(),
             doc: None,
+            is_priv: false,
             type_expr: None,
             default: None,
             where_clause: None,
@@ -3656,6 +3666,7 @@ mod tests {
         let param_decl = reify_ast::ParamDecl {
             name: "x".to_string(),
             doc: None,
+            is_priv: false,
             type_expr: None,
             default: None,
             where_clause: None,
@@ -4074,6 +4085,7 @@ mod tests {
         let param_decl = reify_ast::ParamDecl {
             name: "x".to_string(),
             doc: None,
+            is_priv: false,
             type_expr: None,
             default: None, // No default expression
             where_clause: None,
@@ -4336,6 +4348,7 @@ mod tests {
         let param_decl = reify_ast::ParamDecl {
             name: "x".to_string(),
             doc: None,
+            is_priv: false,
             type_expr: None,
             default: None,
             where_clause: None,
