@@ -1,8 +1,8 @@
 #![allow(clippy::doc_overindented_list_items)]
 //! Tests for `crates/reify-compiler/stdlib/flexures.ri` —
-//! `std.flexures` module: `FlexureCompliance` structure_def and the
-//! `flexure_compliance(joint)` accessor stdlib fn — the value-type substrate
-//! for the v0.3 compliant-joints-flexures PRD.
+//! `std.flexures` module: `RotationalStiffness` alias, `FlexureCompliance`
+//! structure_def, and the `flexure_compliance(joint)` accessor stdlib fn —
+//! all in a single module, enabled by the skeleton pre-pass (task 3895).
 //!
 //! Observable signal for PRD §11 Phase 1 label β
 //! (docs/prds/v0_3/compliant-joints-flexures.md). Per the PRD, this file
@@ -17,7 +17,7 @@
 //!
 //! All tests use the production-path `load_stdlib_module()` helper that
 //! exercises the same embedded + sequential-prelude compilation path as
-//! production. This mirrors the helper trio in `trajectory_stdlib_compile.rs`.
+//! production. This mirrors the helper pattern in `trajectory_stdlib_compile.rs`.
 
 use reify_ir::*;
 use reify_compiler::*;
@@ -46,37 +46,17 @@ fn load_stdlib_module() -> &'static CompiledModule {
         })
 }
 
-/// Return the `std/flexures.types` CompiledModule — value types
-/// (`RotationalStiffness` alias + `FlexureCompliance` structure_def) live
-/// in a separate stdlib module, loaded immediately before `std.flexures`.
-/// See SPLIT RATIONALE in `flexures_types.ri` (esc-3851-32).
-fn load_stdlib_types_module() -> &'static CompiledModule {
-    stdlib_loader::load_stdlib()
-        .iter()
-        .find(|m| m.path.to_string() == "std/flexures/types")
-        .unwrap_or_else(|| {
-            panic!(
-                "stdlib should contain std/flexures.types module; \
-                 available paths: {:?}",
-                stdlib_loader::load_stdlib()
-                    .iter()
-                    .map(|m| m.path.to_string())
-                    .collect::<Vec<_>>()
-            )
-        })
-}
-
-/// Look up a structure template by name within the `std/flexures.types`
-/// module (the value-types module — see `load_stdlib_types_module`).
+/// Look up a structure template by name within the `std/flexures` module
+/// (task 3895: structure_def and accessor fn now live in the single module).
 fn find_structure(name: &str) -> &'static TopologyTemplate {
-    let module = load_stdlib_types_module();
+    let module = load_stdlib_module();
     module
         .templates
         .iter()
         .find(|t| t.name == name && t.entity_kind == EntityKind::Structure)
         .unwrap_or_else(|| {
             panic!(
-                "expected `structure def {}` template in std/flexures.types, \
+                "expected `structure def {}` template in std/flexures, \
                  got templates: {:?}",
                 name,
                 module
@@ -150,12 +130,13 @@ fn std_flexures_module_loads_with_no_errors() {
 /// user code can reference the canonical spelling, (c) the alias resolves
 /// transitively to `Type::Real`. Assertion shape mirrors
 /// `type_alias_compile_tests.rs:33-52` and `:481-498`.
+///
+/// `RotationalStiffness` now lives in `std.flexures` (single module, task
+/// 3895 re-merge — previously split into `std.flexures.types` as a
+/// workaround for the pre-skeleton same-module ctor limitation, esc-3851-32).
 #[test]
 fn rotational_stiffness_alias_resolves_to_real() {
-    // RotationalStiffness now lives in `std.flexures.types` after the
-    // split filed under esc-3851-32 — see SPLIT RATIONALE in
-    // `flexures_types.ri`.
-    let module = load_stdlib_types_module();
+    let module = load_stdlib_module();
 
     let alias = module
         .type_aliases
@@ -163,7 +144,7 @@ fn rotational_stiffness_alias_resolves_to_real() {
         .find(|a| a.name == "RotationalStiffness")
         .unwrap_or_else(|| {
             panic!(
-                "expected `pub type RotationalStiffness` in std/flexures.types, \
+                "expected `pub type RotationalStiffness` in std/flexures, \
                  got type_aliases: {:?}",
                 module
                     .type_aliases
