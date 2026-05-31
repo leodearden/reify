@@ -381,6 +381,14 @@ fn undirected(a: u64, b: u64) -> (u64, u64) {
     }
 }
 
+/// Return type of [`canonical_edges`]: the two parallel vectors describing a
+/// mesh's unique undirected edges in one shared canonical ordering —
+/// `index_pairs[e] = (min_idx, max_idx)` and `endpoints[e] = [p0, p1]`.
+///
+/// Named to keep the [`canonical_edges`] signature under clippy's
+/// `type_complexity` threshold (the verify gate runs `-D warnings`).
+pub(crate) type CanonicalEdges = (Vec<(u64, u64)>, Vec<[[f64; 3]; 2]>);
+
 /// Canonical undirected-edge enumeration for a triangle mesh.
 ///
 /// Returns `(index_pairs, endpoints)` — the unique undirected edges of the
@@ -399,10 +407,7 @@ fn undirected(a: u64, b: u64) -> (u64, u64) {
 ///
 /// Deriving both queries from this single helper guarantees their edge-index
 /// spaces never drift (mirrors OCCT's single global-edge enumeration).
-pub(crate) fn canonical_edges(
-    verts: &[[f64; 3]],
-    tri_indices: &[u64],
-) -> (Vec<(u64, u64)>, Vec<[[f64; 3]; 2]>) {
+pub(crate) fn canonical_edges(verts: &[[f64; 3]], tri_indices: &[u64]) -> CanonicalEdges {
     let mut set: std::collections::BTreeSet<(u64, u64)> = std::collections::BTreeSet::new();
     for tri in tri_indices.chunks_exact(3) {
         set.insert(undirected(tri[0], tri[1]));
@@ -416,6 +421,55 @@ pub(crate) fn canonical_edges(
         .map(|&(i, j)| [verts[i as usize], verts[j as usize]])
         .collect();
     (index_pairs, endpoints)
+}
+
+/// The mesh's triangles as vertex-index triplets.
+///
+/// Each consecutive triplet of `tri_indices` (the `to_mesh_f64` flat
+/// corner-index list) becomes one `[v0, v1, v2]`. Shared by `AdjacentFaces`
+/// and `SharedEdges`, which both reason over triangles as vertex-index sets
+/// (their indices into this `Vec` are the "face indices" the queries report).
+pub(crate) fn triangles_of(tri_indices: &[u64]) -> Vec<[u64; 3]> {
+    tri_indices
+        .chunks_exact(3)
+        .map(|t| [t[0], t[1], t[2]])
+        .collect()
+}
+
+/// The three undirected edges of a triangle, as canonical `(min, max)`
+/// vertex-index pairs (the same keys [`canonical_edges`] dedups on).
+#[inline]
+fn tri_edges(t: &[u64; 3]) -> [(u64, u64); 3] {
+    [
+        undirected(t[0], t[1]),
+        undirected(t[1], t[2]),
+        undirected(t[2], t[0]),
+    ]
+}
+
+/// Triangle indices sharing at least one undirected edge with triangle
+/// `face_index` — self excluded, ascending, distinct.
+///
+/// Returns `None` when `face_index` is out of range (the caller maps this to a
+/// `QueryError`). On a closed 2-manifold every triangle has exactly 3 such
+/// neighbours: each of its 3 edges is shared with exactly one other triangle,
+/// and two distinct triangles cannot share two edges without coinciding.
+pub(crate) fn adjacent_faces(triangles: &[[u64; 3]], face_index: usize) -> Option<Vec<usize>> {
+    let target_edges = tri_edges(triangles.get(face_index)?);
+    let mut neighbours: Vec<usize> = Vec::new();
+    for (i, t) in triangles.iter().enumerate() {
+        if i == face_index {
+            continue;
+        }
+        if tri_edges(t).iter().any(|e| target_edges.contains(e)) {
+            neighbours.push(i);
+        }
+    }
+    // Ascending by construction (i increases monotonically; each i pushed at
+    // most once → distinct). The explicit sort makes the contract robust to
+    // any future reordering of the scan.
+    neighbours.sort_unstable();
+    Some(neighbours)
 }
 
 // ---------------------------------------------------------------------------

@@ -330,6 +330,29 @@ impl GeometryKernel for ManifoldKernel {
                     Err(QueryError::InvalidHandle(*id))
                 }
             }
+            // Faces (mesh triangles) sharing at least one edge with triangle
+            // `face_index`, self excluded, ascending — Value::List<Value::Int>
+            // mirroring OCCT's AdjacentFaces wire format. On the closed cube
+            // each triangle has exactly 3 such neighbours. (KGQ-π / task 3625.)
+            GeometryQuery::AdjacentFaces { shape, face_index } => {
+                let (_verts, tris) = {
+                    let m = self
+                        .get_manifold(*shape)
+                        .map_err(|e| QueryError::QueryFailed(format!("{e:?}")))?;
+                    crate::queries::mesh_geometry(m)
+                };
+                let triangles = crate::queries::triangles_of(&tris);
+                match crate::queries::adjacent_faces(&triangles, *face_index) {
+                    Some(neighbours) => Ok(Value::List(
+                        neighbours.into_iter().map(|i| Value::Int(i as i64)).collect(),
+                    )),
+                    None => Err(QueryError::QueryFailed(format!(
+                        "AdjacentFaces: face_index {} out of range 0..{}",
+                        face_index,
+                        triangles.len()
+                    ))),
+                }
+            }
             // All other queries remain follow-up work (see STUB_MSG).
             _ => Err(QueryError::QueryFailed(STUB_MSG.into())),
         }
