@@ -26,7 +26,7 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -628,6 +628,26 @@ fn find_references_from_wire(decoded: &Value) -> Vec<SymbolReference> {
 }
 
 // -----------------------------------------------------------------------
+// read_source_lines_for_enrichment helper
+
+/// Read source lines for suppression-flag enrichment.
+///
+/// Returns `(lines, None)` on success and `(vec![], Some(diagnostic))` on
+/// read failure, where the diagnostic includes the path and the I/O error so
+/// callers can `eprintln!` it once per path without swallowing read errors.
+fn read_source_lines_for_enrichment(path: &Path) -> (Vec<String>, Option<String>) {
+    match std::fs::read_to_string(path) {
+        Ok(s) => (s.lines().map(str::to_owned).collect(), None),
+        Err(e) => (
+            Vec::new(),
+            Some(format!(
+                "reify-audit: jcodemunch suppression enrichment: failed to read {}: {e}",
+                path.display()
+            )),
+        ),
+    }
+}
+
 // extract_suppression helper
 // -----------------------------------------------------------------------
 
@@ -916,11 +936,14 @@ impl JCodemunchOps for RealJCodemunchOps {
         let mut file_cache: HashMap<PathBuf, Vec<String>> = HashMap::new();
         for sym in &mut symbols {
             let path = self.project_root.join(&sym.file);
-            let lines = file_cache.entry(path.clone()).or_insert_with(|| {
-                std::fs::read_to_string(&path)
-                    .map(|s| s.lines().map(str::to_owned).collect())
-                    .unwrap_or_default()
-            });
+            if !file_cache.contains_key(&path) {
+                let (lines, diagnostic) = read_source_lines_for_enrichment(&path);
+                if let Some(msg) = diagnostic {
+                    eprintln!("{msg}");
+                }
+                file_cache.insert(path.clone(), lines);
+            }
+            let lines = &file_cache[&path];
             if !lines.is_empty() {
                 let lines_ref: Vec<&str> = lines.iter().map(String::as_str).collect();
                 let (has_allow_dead_code, has_cfg_test, g_allow_marker) =
