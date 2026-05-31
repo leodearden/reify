@@ -2,6 +2,9 @@
 
 Status: deferred to v0.3 per 2026-04-28 decision. Sibling task: 2392 (v0.2 OpenVDB-only narrowing).
 
+**Cross-reference — std.fields / stdlib-reconstruction (Slice C task ν):** `docs/prds/v0_6/stdlib-reconstruction.md`
+HDF5/CSV imported fields realize as the same built-in `Field<D,C>` parametric type as the v0.2 OpenVDB imported fields (see `docs/prds/v0_2/imported-field-source.md`). The `std.fields` stdlib module (`crates/reify-compiler/stdlib/fields.ri`) documents this type and the prelude field operators (gradient/divergence/curl/laplacian/sample). `Field<D,C>` is a built-in parametric type that resolves without import; the schema-declaration work in this PRD concerns only the ingestion path that populates the sample buffer, not the realized type.
+
 > **2026-05-12 grammar-fiction sweep** (docs/architecture-audit/phase-3-grammar-fiction-triage-log.md):
 > The sketches below assume **three grammar surfaces that are not in v0.1**:
 > (a) extended `imported`-block keys (`schema`, `dataset`, `axis_arrays`,
@@ -35,7 +38,7 @@ Extend the v0.2 `imported` source kind (currently OpenVDB-only after the 2026-04
 
 ## Background
 
-The v0.2 PRD (`docs/prds/v0_2/imported-field-source.md`) was narrowed on 2026-04-28 to OpenVDB-only because OpenVDB's semantics align natively with Reify's field type: OpenVDB grids carry an embedded coordinate transform, embedded sparsity structure, and format-native metadata that maps directly onto Reify's sample-buffer model without user-supplied schema.
+The v0.2 PRD (`docs/prds/v0_2/imported-field-source.md`) was narrowed on 2026-04-28 to OpenVDB-only because OpenVDB's semantics align natively with Reify's field type: OpenVDB grids carry an embedded coordinate transform, embedded sparsity structure, and format-native metadata that maps directly onto Reify's sample-buffer model without user-supplied schema. All three formats (OpenVDB, HDF5, CSV) ultimately realize as the same built-in `Field<D,C>` parametric type documented by the `std.fields` stdlib module (`crates/reify-compiler/stdlib/fields.ri`); the schema-declaration design below concerns only the ingestion path, not the realized type.
 
 HDF5 and CSV lack those native handles:
 
