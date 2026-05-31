@@ -532,6 +532,7 @@ module.exports = grammar({
 
     // ── Param ───────────────────────────────────────────────
     param_declaration: $ => seq(
+      optional('priv'),
       'param',
       field('name', $.identifier),
       optional(seq(':', field('type', $.type_expr))),
@@ -594,6 +595,7 @@ module.exports = grammar({
     sub_declaration: $ => choice(
       // Instantiation form: sub name = StructName<TypeArgs>(args)
       seq(
+        optional('priv'),
         optional('aux'),
         'sub',
         field('name', $.identifier),
@@ -618,6 +620,7 @@ module.exports = grammar({
       // `pose_expr.is_some()` on a collection-form `SubDecl`; this grammar
       // deliberately does not enforce that restriction at parse time.
       seq(
+        optional('priv'),
         optional('aux'),
         'sub',
         field('name', $.identifier),
@@ -666,6 +669,7 @@ module.exports = grammar({
       // Bare `'List'` (relying on rules #1 + #2) is the correct mechanism.
       // See escalation esc-3712-201 for the empirical evidence.
       seq(
+        optional('priv'),
         optional('aux'),
         'sub',
         field('name', $.identifier),
@@ -741,6 +745,7 @@ module.exports = grammar({
 
     // ── Port ─────────────────────────────────────────────────
     port_declaration: $ => seq(
+      optional('priv'),
       'port',
       field('name', $.identifier),
       ':',
