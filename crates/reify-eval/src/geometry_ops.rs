@@ -2280,26 +2280,50 @@ pub(crate) fn try_eval_topology_selector(
             dispatch_inertia_tensor(kernel, &query, &function.name, diagnostics)
         }
         TopologySelectorHelper::EdgesByLength => {
-            // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
-            let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            // args[0]: parent geometry ValueRef → values map → full Value::GeometryHandle.
+            // Must resolve from `values` (not `named_steps`) so we get the parent's
+            // realization_ref + upstream_values_hash for sub-handle construction (PRD §4).
+            // Falls through to None when the arg cell is not a hydrated Value::GeometryHandle
+            // (PRD invariant #2: never partially construct a sub-handle).
+            let (parent_rr, parent_hash, parent_kernel_handle) =
+                resolve_parent_geometry_handle_arg(&args[0], values)?;
             // args[1]: Range<Length> ValueRef/Literal → (lo_m, hi_m).
             let (lo, hi) =
                 resolve_range_dim_arg(&args[1], values, reify_core::DimensionVector::LENGTH)?;
-            dispatch_filtered_list(
-                crate::topology_selectors::edges_by_length(kernel, handle, lo, hi),
+            let filter_result =
+                crate::topology_selectors::edges_by_length(kernel, parent_kernel_handle, lo, hi);
+            dispatch_filtered_subhandles(
+                kernel,
+                parent_kernel_handle,
+                crate::topology_selectors::SubKind::Edge,
+                &parent_rr,
+                &parent_hash,
+                filter_result,
                 &function.name,
                 diagnostics,
             )
         }
         TopologySelectorHelper::FacesByArea => {
-            // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
-            let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            // args[0]: parent geometry ValueRef → values map → full Value::GeometryHandle.
+            // Must resolve from `values` (not `named_steps`) so we get the parent's
+            // realization_ref + upstream_values_hash for sub-handle construction (PRD §4).
+            // Falls through to None when the arg cell is not a hydrated Value::GeometryHandle
+            // (PRD invariant #2: never partially construct a sub-handle).
+            let (parent_rr, parent_hash, parent_kernel_handle) =
+                resolve_parent_geometry_handle_arg(&args[0], values)?;
             // args[1]: Range<Area> ValueRef/Literal → (lo_m2, hi_m2). `mm*mm`
             // canonicalises to AREA (LENGTH² == AREA per dimension algebra).
             let (lo, hi) =
                 resolve_range_dim_arg(&args[1], values, reify_core::DimensionVector::AREA)?;
-            dispatch_filtered_list(
-                crate::topology_selectors::faces_by_area(kernel, handle, lo, hi),
+            let filter_result =
+                crate::topology_selectors::faces_by_area(kernel, parent_kernel_handle, lo, hi);
+            dispatch_filtered_subhandles(
+                kernel,
+                parent_kernel_handle,
+                crate::topology_selectors::SubKind::Face,
+                &parent_rr,
+                &parent_hash,
+                filter_result,
                 &function.name,
                 diagnostics,
             )
@@ -2359,14 +2383,30 @@ pub(crate) fn try_eval_topology_selector(
             )
         }
         TopologySelectorHelper::EdgesAtHeight => {
-            // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
-            let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            // args[0]: parent geometry ValueRef → values map → full Value::GeometryHandle.
+            // Must resolve from `values` (not `named_steps`) so we get the parent's
+            // realization_ref + upstream_values_hash for sub-handle construction (PRD §4).
+            // Falls through to None when the arg cell is not a hydrated Value::GeometryHandle
+            // (PRD invariant #2: never partially construct a sub-handle).
+            let (parent_rr, parent_hash, parent_kernel_handle) =
+                resolve_parent_geometry_handle_arg(&args[0], values)?;
             // args[1]: z plane ValueRef → values map → LENGTH Scalar (SI metres).
             let z_m = resolve_length_scalar_arg(&args[1], values)?;
             // args[2]: tolerance ValueRef → values map → LENGTH Scalar (SI metres).
             let tol_m = resolve_length_scalar_arg(&args[2], values)?;
-            dispatch_filtered_list(
-                crate::topology_selectors::edges_at_height(kernel, handle, z_m, tol_m),
+            let filter_result = crate::topology_selectors::edges_at_height(
+                kernel,
+                parent_kernel_handle,
+                z_m,
+                tol_m,
+            );
+            dispatch_filtered_subhandles(
+                kernel,
+                parent_kernel_handle,
+                crate::topology_selectors::SubKind::Edge,
+                &parent_rr,
+                &parent_hash,
+                filter_result,
                 &function.name,
                 diagnostics,
             )
@@ -2597,33 +2637,6 @@ fn dispatch_shared_edges(
     )
 }
 
-/// Map a filtered-selector helper `Result<Vec<GeometryHandleId>, QueryError>`
-/// onto the dispatcher's `Option<Value>` contract: `Ok` → `Value::List` of
-/// Int handle ids; `Err` → Warning diagnostic + `Value::Undef`. Shared by all
-/// `topology_selectors::*` delegating arms (task 3560).
-///
-/// NOTE: arms using this helper emit `Value::List([Value::Int])` (raw kernel-handle ids),
-/// NOT the canonical `List<Geometry>` = `List<Value::GeometryHandle>` contract required by
-/// PRD §4. They must be migrated to `dispatch_filtered_subhandles` in KGQ-θ (edges_by_length,
-/// faces_by_area, edges_at_height) and subsequent tasks; do not mistake the Int-list output
-/// for the intended final shape.
-fn dispatch_filtered_list(
-    result: Result<Vec<GeometryHandleId>, reify_ir::QueryError>,
-    helper_name: &str,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Option<reify_ir::Value> {
-    match result {
-        Ok(handles) => Some(handle_list_value(handles)),
-        Err(err) => {
-            diagnostics.push(Diagnostic::warning(format!(
-                "{} kernel query failed: {}",
-                helper_name, err
-            )));
-            Some(reify_ir::Value::Undef)
-        }
-    }
-}
-
 /// Run a pre-computed filtered-selector result and emit a `Value::List` of
 /// `Value::GeometryHandle` sub-handles whose `upstream_values_hash` encodes the
 /// canonical TopExp index of each retained sub-shape (PRD §4 iii/iv).
@@ -2700,18 +2713,6 @@ fn dispatch_filtered_subhandles(
         }
     }
     Some(reify_ir::Value::List(elements))
-}
-
-/// Wrap a `Vec<GeometryHandleId>` as `Value::List(Vec<Value::Int>)` whose
-/// elements are the raw u64 handle ids cast to `i64`. Shared by all
-/// list-returning topology selectors (task 3560).
-fn handle_list_value(handles: Vec<GeometryHandleId>) -> reify_ir::Value {
-    reify_ir::Value::List(
-        handles
-            .into_iter()
-            .map(|h| reify_ir::Value::Int(h.0 as i64))
-            .collect(),
-    )
 }
 
 #[derive(Clone, Copy)]
@@ -8020,17 +8021,16 @@ mod tests {
         }
     }
 
-    // ── step-5 (task 3616): edges/faces dispatch RED unit tests ─────────────
+    // ── step-5 (task 3616): edges/faces dispatch unit tests ─────────────────
     //
-    // These tests are RED because the current arm returns Value::List(Value::Int)
-    // via handle_list_value instead of Value::List(Value::GeometryHandle).
+    // These tests verify that the arm emits Value::List(Value::GeometryHandle)
+    // via dispatch_filtered_subhandles.
 
     /// `edges` dispatch returns `Value::List` of three `Value::GeometryHandle`
     /// elements when the mock kernel returns [GHId(2),GHId(3),GHId(4)] and the
     /// `values` map carries the parent `Value::GeometryHandle`. Each element
     /// must carry the parent's `realization_ref`, and the three
     /// `upstream_values_hash` fields must be pairwise distinct (PRD §4 iii).
-    /// RED: current arm returns `Value::Int` via `handle_list_value`.
     #[test]
     fn edges_dispatch_returns_geometry_handle_list() {
         use reify_test_support::mocks::MockGeometryKernel;
@@ -11949,10 +11949,10 @@ mod tests {
         );
     }
 
-    // ── step-1 (task 3619): adjacent_faces dispatch RED unit tests ───────────
+    // ── step-1 (task 3619): adjacent_faces dispatch unit tests ──────────────
     //
-    // These tests are RED because the current arm returns Value::List(Value::Int)
-    // via dispatch_filtered_list instead of Value::List(Value::GeometryHandle).
+    // These tests verify that the arm emits Value::List(Value::GeometryHandle)
+    // via dispatch_filtered_subhandles.
 
     /// `adjacent_faces` dispatch returns `Value::List` of one
     /// `Value::GeometryHandle` when the mock kernel returns the adjacent face
@@ -12102,11 +12102,10 @@ mod tests {
         );
     }
 
-    // ── step-3 (task 3619): shared_edges dispatch RED unit tests ─────────────
+    // ── step-3 (task 3619): shared_edges dispatch unit tests ─────────────────
     //
-    // These tests are RED because the current arm returns Value::List(Value::Int)
-    // via handle_list_value (inside dispatch_shared_edges) instead of
-    // Value::List(Value::GeometryHandle).
+    // These tests verify that the arm emits Value::List(Value::GeometryHandle)
+    // via dispatch_filtered_subhandles.
 
     /// `shared_edges` dispatch returns `Value::List` of one
     /// `Value::GeometryHandle` (kernel_handle GHId(4)) when the mock kernel
