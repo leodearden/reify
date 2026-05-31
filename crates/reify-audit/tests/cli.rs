@@ -1162,7 +1162,7 @@ mod cli {
             "stderr must name the offending token 'BOGUS' (with surrounding quotes); stderr: {stderr}"
         );
         assert!(
-            stderr.contains("expected P1, P2, P5, PDEAD, or PUNTESTED"),
+            stderr.contains("expected P1, P2, P5, PDEAD, PUNTESTED, or PLAYER"),
             "stderr must list the known tokens; stderr: {stderr}"
         );
     }

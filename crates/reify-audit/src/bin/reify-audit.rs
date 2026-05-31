@@ -993,8 +993,8 @@ mod tests {
     }
 
     /// `--pattern P1,BOGUS` must fail with an error that names `BOGUS` (the
-    /// specific bad token) and contains the 5-token expected wording, but does
-    /// NOT contain the whole `P1,BOGUS` string.
+    /// specific bad token) and contains the known-token expected wording, but
+    /// does NOT contain the whole `P1,BOGUS` string.
     #[test]
     fn parse_args_pattern_unknown_token_in_list_names_token() {
         let err = unwrap_err(parse_args(&["--pattern".to_string(), "P1,BOGUS".to_string()]));
@@ -1003,7 +1003,7 @@ mod tests {
             "error must name the offending token 'BOGUS' (with surrounding quotes); got: {err}"
         );
         assert!(
-            err.contains("expected P1, P2, P5, PDEAD, or PUNTESTED"),
+            err.contains("expected P1, P2, P5, PDEAD, PUNTESTED, or PLAYER"),
             "error must list all known tokens; got: {err}"
         );
         // NOTE: we do not assert !err.contains("P1,BOGUS") — a future message
