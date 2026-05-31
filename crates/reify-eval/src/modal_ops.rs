@@ -1057,6 +1057,79 @@ pub fn solve_modal_analysis_trampoline(
     run_modal_analysis(value_inputs, prior_warm_state, cancellation).outcome
 }
 
+// ---------------------------------------------------------------------------
+// Trampolines (modal::transient_response, modal::displacement_at) — task ι
+// ---------------------------------------------------------------------------
+
+/// Build a degenerate `DisplacementTimeHistory` `Value::StructureInstance`: an
+/// empty `t_samples` list and empty `mode_coords`, echoing a degenerate (empty)
+/// `ModalResult`. This is the result returned when the transient solve is
+/// short-circuited (the step-14 empty-forcing guard) and by the step-10 stub
+/// before the full mode-superposition solve lands (step-12). Shaped to the ι
+/// structure-def (4 fields, `modal_analysis.ri`); `StructureTypeId(u32::MAX)` is
+/// the registry-free sentinel, mirroring [`degenerate_modal_result`].
+fn degenerate_displacement_history() -> Value {
+    let fields: PersistentMap<String, Value> = [
+        ("part".to_string(), Value::String(String::new())),
+        ("modal_result".to_string(), degenerate_modal_result()),
+        ("t_samples".to_string(), Value::List(Vec::new())),
+        ("mode_coords".to_string(), Value::List(Vec::new())),
+    ]
+    .into_iter()
+    .collect();
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "DisplacementTimeHistory".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
+/// `@optimized("modal::transient_response")` public `ComputeFn` (task ι;
+/// registered in `compute_targets::mod`).
+///
+/// STUB (step-10): returns a degenerate empty `DisplacementTimeHistory`. The full
+/// mode-superposition solve (grid → per-source forcing projection → per-mode
+/// `solve_modal_response`) lands in step-12, and the empty-forcing guard
+/// (`E_TransientForcingMissing`) in step-14. No warm state is donated — ι owns
+/// fn+dispatch; warm-state caching is λ's job — mirroring [`no_mass_matrix_outcome`].
+pub fn solve_transient_response_trampoline(
+    _value_inputs: &[Value],
+    _realization_inputs: &[RealizationReadHandle],
+    _options: &Value,
+    _prior_warm_state: Option<&OpaqueState>,
+    _cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    ComputeOutcome::Completed {
+        result: degenerate_displacement_history(),
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: Vec::new(),
+    }
+}
+
+/// `@optimized("modal::displacement_at")` public `ComputeFn` (task ι; registered
+/// in `compute_targets::mod`).
+///
+/// STUB (step-10): returns an empty `Value::List`. The full Φ-projected
+/// single-location reconstruction (`u(tⱼ) = Σᵢ (Φᵢ[node]·dir)·mode_coords[i][j]`)
+/// lands in step-16. Unlike the other modal trampolines this returns a non-struct
+/// `Value::List(Real)` (PRD §5.2). No warm state is donated.
+pub fn displacement_at_trampoline(
+    _value_inputs: &[Value],
+    _realization_inputs: &[RealizationReadHandle],
+    _options: &Value,
+    _prior_warm_state: Option<&OpaqueState>,
+    _cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    ComputeOutcome::Completed {
+        result: Value::List(Vec::new()),
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: Vec::new(),
+    }
+}
+
 /// Read an SI scalar magnitude from a numeric `Value`, tolerating the runtime
 /// spellings a stdlib numeric field takes: `Scalar { si_value }` (dimensioned —
 /// geometry, density, E), `Real`, and `Int`. Non-numeric values read as `0.0`

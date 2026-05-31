@@ -43,4 +43,14 @@ pub fn register_compute_fns(engine: &mut crate::Engine) {
         "modal::free_vibration",
         crate::modal_ops::solve_modal_analysis_trampoline as crate::ComputeFn,
     );
+    // The transient-response trampolines (task ι) also live in `crate::modal_ops`,
+    // alongside the free-vibration trampoline whose Φ serialization they consume.
+    engine.register_compute_fn(
+        "modal::transient_response",
+        crate::modal_ops::solve_transient_response_trampoline as crate::ComputeFn,
+    );
+    engine.register_compute_fn(
+        "modal::displacement_at",
+        crate::modal_ops::displacement_at_trampoline as crate::ComputeFn,
+    );
 }
