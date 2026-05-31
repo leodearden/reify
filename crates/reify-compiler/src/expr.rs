@@ -1481,9 +1481,10 @@ pub(crate) fn compile_expr_guarded(
                     // below are checked in order: `is_geometry_query_helper` →
                     // `is_geometry_kinematic_query` → `is_geometry_topology_selector` →
                     // `is_geometry_query` → `is_geometry_function` →
-                    // `infer_list_helper_return_type` → first-arg fallback. The four
-                    // geometry-name families are pinned disjoint in
-                    // `units.rs::tests::geometry_query_names_are_disjoint_from_other_families`,
+                    // `infer_list_helper_return_type` → `is_dynamics_query` →
+                    // first-arg fallback. The five geometry-name families plus the
+                    // RBD-β `is_dynamics_query` family (task 3829) are pinned disjoint
+                    // in `units.rs::tests::{geometry,dynamics}_query_names_are_disjoint_from_other_families`,
                     // so within this arm the ordering is unobservable — no name can
                     // satisfy two predicates.
                     let resolved = ResolvedFunction {
@@ -1547,6 +1548,19 @@ pub(crate) fn compile_expr_guarded(
                         Type::dimensionless_scalar()
                     } else if let Some(t) = infer_list_helper_return_type(name, &compiled_args) {
                         t
+                    } else if is_dynamics_query(name) {
+                        // body_mass_props(body, density?): RBD-β dynamics-query
+                        // builtin (task 3829), dispatched at eval time by
+                        // `reify_eval::dynamics_ops::try_eval_body_mass_props`
+                        // (a build post-process). The result type is the
+                        // `MassProperties` structure_def (std.dynamics, task
+                        // 3822), set up-front so the cell typechecks; the
+                        // post-process overwrites the `Value::Undef` left by the
+                        // pure `eval_expr` path. Falling through to the first-arg
+                        // default would mismatch — the first arg is the body (a
+                        // `Solid` / structure), not a `MassProperties`. Mirrors
+                        // the `is_geometry_query_helper => Type::Bool` arm.
+                        Type::StructureRef("MassProperties".to_string())
                     } else {
                         compiled_args
                             .first()

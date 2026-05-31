@@ -323,6 +323,46 @@ pub(crate) fn is_geometry_query(name: &str) -> bool {
     GEOMETRY_QUERY_NAMES.contains(&name)
 }
 
+/// The complete set of stdlib **dynamics-query** helper names recognised by
+/// the compiler (RBD-β, task 3829). Sixth name family, structurally parallel
+/// to the five geometry families above ([`GEOMETRY_FUNCTION_NAMES`],
+/// [`GEOMETRY_QUERY_HELPER_NAMES`], [`GEOMETRY_KINEMATIC_QUERY_NAMES`],
+/// [`GEOMETRY_TOPOLOGY_SELECTOR_NAMES`], [`GEOMETRY_QUERY_NAMES`]).
+///
+/// `body_mass_props(body, density?)` is a name-recognised builtin — NOT a
+/// `pub fn` — so that a call site lowers to a `CompiledExprKind::FunctionCall`
+/// (which `reify_eval::dynamics_ops::try_eval_body_mass_props` dispatches as a
+/// build post-process) rather than a `UserFunctionCall`. This mirrors the
+/// geometry-query-helper convention exactly: keeping it a builtin (a) makes the
+/// eval-side `FunctionCall` dispatch reachable for every real call site, and
+/// (b) avoids the `OverloadResolution::NoMatch` default-padding path, so a
+/// 1-arg `body_mass_props(body)` call stays 1-arg and the "no explicit
+/// density" rung (and thus the `W_DynamicsDefaultDensity` warning) stays
+/// reachable. Declaring it as a `pub fn` with an optional `density` default
+/// would route to `UserFunctionCall` AND pad the call to 2 args — defeating
+/// both — which is why the steward decision reversed the original `pub fn`
+/// plan in favour of this builtin registration.
+///
+/// **Disjointness contract**: like the geometry families, this list MUST
+/// remain disjoint from all five geometry families so a name cannot satisfy
+/// two classification predicates. Pinned by
+/// `dynamics_query_names_are_disjoint_from_other_families` (and the converse
+/// extension to `geometry_query_names_are_disjoint_from_other_families`).
+///
+/// **Result type**: every entry resolves to `Type::StructureRef("MassProperties")`,
+/// set up-front in `expr.rs::infer_type`'s `NoUserFunctions` ladder (the
+/// `is_dynamics_query` arm, immediately before the first-arg fallback) so the
+/// cell typechecks; eval-time dispatch overwrites the `Value::Undef` left by
+/// the pure `eval_expr` path. Because the type is uniform there is no per-name
+/// result-type table (mirrors `GEOMETRY_QUERY_HELPER_NAMES → Type::Bool`).
+///
+/// Case-sensitive: Reify function names are snake_case.
+pub const DYNAMICS_QUERY_NAMES: &[&str] = &["body_mass_props"];
+
+pub(crate) fn is_dynamics_query(name: &str) -> bool {
+    DYNAMICS_QUERY_NAMES.contains(&name)
+}
+
 /// Result type per geometry-query helper. Sets the cell's `result_type` so
 /// that downstream `value_type_kind_matches` accepts the post-process
 /// `Value` (which is `Value::Undef` until GHR-ζ Phase 6 wires kernel
@@ -1172,6 +1212,49 @@ mod tests {
                 !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
                 "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
                  GEOMETRY_TOPOLOGY_SELECTOR_NAMES (topology-selector family)"
+            );
+            assert!(
+                !DYNAMICS_QUERY_NAMES.contains(name),
+                "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_QUERY_NAMES (dynamics-query family, RBD-β task 3829)"
+            );
+        }
+    }
+
+    /// Disjointness invariant for the RBD-β dynamics-query family (task 3829).
+    /// Every `DYNAMICS_QUERY_NAMES` entry (`body_mass_props`) must be absent
+    /// from all five geometry families, so a name can satisfy at most one
+    /// classification predicate in `expr.rs::infer_type`'s `NoUserFunctions`
+    /// ladder. Sibling to `geometry_query_names_are_disjoint_from_other_families`
+    /// (extended above with the converse `DYNAMICS_QUERY_NAMES` assert) — the
+    /// pair pins disjointness in both directions.
+    #[test]
+    fn dynamics_query_names_are_disjoint_from_other_families() {
+        for name in DYNAMICS_QUERY_NAMES {
+            assert!(
+                !GEOMETRY_FUNCTION_NAMES.contains(name),
+                "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_FUNCTION_NAMES (constructor family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_HELPER_NAMES.contains(name),
+                "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_HELPER_NAMES (conformance-query family)"
+            );
+            assert!(
+                !GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name),
+                "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_KINEMATIC_QUERY_NAMES (kinematic-query family)"
+            );
+            assert!(
+                !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
+                "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_TOPOLOGY_SELECTOR_NAMES (topology-selector family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_NAMES.contains(name),
+                "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_NAMES (geometry-query family)"
             );
         }
     }
