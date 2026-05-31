@@ -850,3 +850,69 @@ pub fn gcode_import(source: String, dialect: GcodeDialect) -> List<Profile> { gc
 pub structure def GcodeDialectInput {
     param dialect : GcodeDialect
 }
+
+// input_shape — apply an input shaper to a motion profile
+// (PRD §5.3, §11 Phase 2 task ζ).
+//
+// `profile : Profile` is the command trajectory to shape; `shaper : Shaper`
+// selects the shaping strategy via the SIR-α nominal type-tag — the impulse
+// shapers `ZVShaper` / `ZVDShaper` / `EIShaper` (convolution of the impulse
+// train derived from the shaper's target_frequency / damping_ratio /
+// vibration_tolerance, task ε) and `CascadedShaper` (the fold of its component
+// shapers). The result is a shaped `Profile` whose command waveform suppresses
+// residual vibration at the shaper's design frequency.
+//
+// Runtime dispatch lives in the Rust eval path
+// (`reify-stdlib/src/trajectory/input_shape.rs::eval_input_shape`, wired through
+// `trajectory/mod.rs::eval_trajectory`): it marshals the
+// `(StructureInstance, StructureInstance)` arguments, builds the shaper's
+// impulse train (the Hz→rad/s `ω_n = 2π·f` conversion happens at this
+// marshalling boundary), and returns the shaped profile as a
+// `Value::StructureInstance`. Command-waveform resampling to new waypoints is
+// deferred to task θ; an unrecognised / unsupported shaper ⇒ `Value::Undef`.
+//
+// The body delegates to the `input_shape_apply` intrinsic via the identical
+// pattern `gcode_import` (above) uses. Because this fn has a `.ri` declaration,
+// `resolve_function_overload` returns `Resolved` → `UserFunctionCall`, so the
+// evaluator runs the body. `input_shape_apply` has no `.ri` declaration, so the
+// call to it resolves `NoUserFunctions` → `FunctionCall` → `eval_builtin` →
+// `eval_trajectory("input_shape_apply", …)` → `eval_input_shape`. Both names
+// route to the single `eval_input_shape` impl, so a direct
+// `eval_builtin("input_shape", …)` Rust test stays green. The inner-call type is
+// `Profile` (first-arg fallback on `profile`), matching the declared `-> Profile`
+// return; `compile_function` applies no body-vs-return-type check, so the
+// delegate body produces zero Error diagnostics. The IR dispatch contract
+// (UserFunctionCall at the call site, FunctionCall inside the body) is pinned by
+// `input_shape_dispatch_ir_contract` in
+// `crates/reify-eval/tests/input_shape_eval_e2e.rs`.
+pub fn input_shape(profile: Profile, shaper: Shaper) -> Profile { input_shape_apply(profile, shaper) }
+
+// ── ProfileInput / ShaperInput ───────────────────────────────────────────────
+//
+// Type-coercion shims for passing a concrete `Profile` / `Shaper` structure
+// (`PiecewisePolynomialProfile(...)` / `ZVDShaper(...)` / …) to `input_shape`.
+// The Reify overload resolver uses exact type equality
+// (crates/reify-compiler/src/type_compat.rs); a concrete
+// `StructureRef("PiecewisePolynomialProfile")` does NOT match the declared
+// `Profile` trait param at a fn call site — the identical situation
+// `GcodeDialectInput` (above) and `FEAMaterialInput` (solver_elastic.ri) work
+// around.
+//
+// Workaround (one shim per trait param):
+//   1. Wrap: `let pi = ProfileInput(profile: PiecewisePolynomialProfile(...))`
+//      (structure ctors accept any value — no call-site type check).
+//   2. Pass `pi.profile` — whose compile-time type is `Profile` (the declared
+//      param type) — to `input_shape`. Exact match. ✓  Likewise `si.shaper`.
+//   The runtime value is still the concrete StructureInstance; the eval path
+//   (`eval_input_shape`) reads it via `Value::StructureInstance` and dispatches
+//   on `type_name`.
+//
+// TODO(trait-coerce): remove these structs and pass the profile/shaper directly
+// once the type checker supports trait-object coercion at fn call sites.
+pub structure def ProfileInput {
+    param profile : Profile
+}
+
+pub structure def ShaperInput {
+    param shaper : Shaper
+}
