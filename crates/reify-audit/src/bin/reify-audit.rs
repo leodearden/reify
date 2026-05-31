@@ -388,6 +388,27 @@ fn load_tasks_from_fused_memory(
 }
 
 // -----------------------------------------------------------------------
+// Dispatch helpers
+// -----------------------------------------------------------------------
+
+/// Return true when at least one jcodemunch-backed detector (P1) is in the
+/// run set for the given args.
+///
+/// P1 is currently the only jcodemunch-backed detector the CLI dispatches.
+/// When downstream leaves (L-PDEAD, L-PUNTESTED, L-PLAYER) wire their
+/// patterns into the --pattern parser, this function must also return true
+/// for those pattern values.
+///
+/// The predicate mirrors the run_p1 computation in main() exactly so that
+/// the connect decision and the actual P1-runs decision can never diverge.
+fn needs_jcodemunch(args: &Args) -> bool {
+    if args.pre_done {
+        return false;
+    }
+    args.pattern.as_deref().is_none_or(|p| p == "P1")
+}
+
+// -----------------------------------------------------------------------
 // Main
 // -----------------------------------------------------------------------
 
