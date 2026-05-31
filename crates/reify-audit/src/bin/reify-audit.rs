@@ -706,4 +706,44 @@ mod tests {
         assert_eq!(args.jcodemunch_repo, "my/repo");
         assert!(args.no_jcodemunch);
     }
+
+    // -------------------------------------------------------------------
+    // needs_jcodemunch
+    // -------------------------------------------------------------------
+
+    /// Build a minimal `Args` for needs_jcodemunch tests.
+    fn make_args(pre_done: bool, pattern: Option<&str>) -> Args {
+        Args {
+            task_id: None,
+            pre_done,
+            since: None,
+            pattern: pattern.map(|s| s.to_string()),
+            tasks_file: None,
+            fused_memory_url: String::new(),
+            runs_db: String::new(),
+            project_root: String::new(),
+            jcodemunch_url: String::new(),
+            jcodemunch_repo: String::new(),
+            no_jcodemunch: false,
+        }
+    }
+
+    #[test]
+    fn needs_jcodemunch_pre_done_always_false() {
+        // pre_done ⇒ false regardless of pattern
+        assert!(!needs_jcodemunch(&make_args(true, None)));
+        assert!(!needs_jcodemunch(&make_args(true, Some("P1"))));
+    }
+
+    #[test]
+    fn needs_jcodemunch_pattern_routing() {
+        // No pattern (all detectors) → true (P1 is in the run set)
+        assert!(needs_jcodemunch(&make_args(false, None)));
+        // P1 explicitly → true
+        assert!(needs_jcodemunch(&make_args(false, Some("P1"))));
+        // P2-only → false
+        assert!(!needs_jcodemunch(&make_args(false, Some("P2"))));
+        // P5-only → false
+        assert!(!needs_jcodemunch(&make_args(false, Some("P5"))));
+    }
 }
