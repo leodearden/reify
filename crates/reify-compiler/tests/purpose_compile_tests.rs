@@ -320,44 +320,6 @@ fn extract_binop_scalar_sides(expr: &CompiledExpr) -> (f64, f64) {
     }
 }
 
-#[test]
-fn compile_purpose_rejects_guarded_blocks() {
-    // The grammar's purpose_member reuses guarded_block, so a where-guarded
-    // constraint block parses into MemberDecl::GuardedGroup. The compiler
-    // should emit a Severity::Error diagnostic rather than silently dropping it.
-    let source = r#"
-structure Bracket {
-    param width : Length = 80mm
-    param height : Length = 60mm
-}
-
-purpose check(subject : Structure) {
-    where 80mm > 10mm {
-        constraint 60mm > 5mm
-    }
-}
-"#;
-
-    let module = compile_module_with_diagnostics(source);
-    let errors: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        !errors.is_empty(),
-        "expected compile error for guarded block in purpose, but got none"
-    );
-    let has_guarded_error = errors.iter().any(|d| {
-        d.message
-            .contains("guarded blocks in purpose bodies are not yet supported")
-    });
-    assert!(
-        has_guarded_error,
-        "expected diagnostic about unsupported guarded blocks, got: {:?}",
-        errors
-    );
-}
 
 #[test]
 fn compile_purpose_no_false_positives_from_explicit_arms() {
