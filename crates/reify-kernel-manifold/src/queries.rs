@@ -72,6 +72,40 @@ pub(crate) fn distance(a: &Manifold, b: &Manifold) -> f64 {
     min_dist_sq.sqrt()
 }
 
+/// Test whether two [`Manifold`] meshes intersect (have non-empty boolean
+/// intersection).
+///
+/// # Implementation
+///
+/// Computes `a.intersection(b)` — the same CSG boolean that powers
+/// `GeometryOp::Intersection` in [`crate::kernel::ManifoldKernel`]
+/// (kernel.rs:135) — and returns `true` iff the result mesh has at least one
+/// vertex (i.e. the intersection volume is non-empty).
+///
+/// The empty-mesh-for-disjoint-inputs contract is established by
+/// `tessellate_of_intersection_of_disjoint_cubes_returns_empty_mesh`
+/// (kernel.rs:507), which confirms that `Manifold::intersection` on two cubes
+/// with a 4-unit gap returns an empty Manifold with no vertices.
+///
+/// # Why NOT reuse `queries::distance`
+///
+/// Vertex-to-vertex distance **cannot** detect interpenetration: two
+/// overlapping boxes share no coincident vertices (each box retains its own
+/// surface geometry), so their minimum pairwise vertex distance is always > 0.
+/// A `distance ≤ 0` test would therefore wrongly report "no intersection" for
+/// fully overlapping solids.  The CSG boolean test is the correct tool for
+/// this query — it detects shared volume rather than surface proximity.
+///
+/// # Forward reference
+///
+/// This standalone function is wired into `ManifoldKernel::query()` and the
+/// cross-kernel `#kernel(manifold)` parity gate by KGQ-ο (Phase 5).  This
+/// task (KGQ-γ/3612) ships the function + unit tests only; the `query()`
+/// wiring lives in `kernel.rs` which is out of this task's file scope.
+pub(crate) fn intersects(a: &Manifold, b: &Manifold) -> bool {
+    !extract_xyz(&a.intersection(b)).is_empty()
+}
+
 /// Extract `xyz` vertex triplets from a [`Manifold`]'s mesh.
 ///
 /// Mirrors the `n_props` guard in [`crate::kernel::ManifoldKernel::tessellate`]
