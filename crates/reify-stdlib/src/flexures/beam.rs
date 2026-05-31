@@ -11,11 +11,8 @@ use reify_ir::Value;
 
 use super::common::{
     fixed_guided_delta_max, length_si, make_flexure_joint, material_field_si, neutral_angle_si,
-    symmetric_angle_range, FIXED_GUIDED_GAMMA, PRB_ANGLE_LIMIT_RAD,
+    symmetric_angle_range, CANTILEVER_GAMMA, FIXED_GUIDED_GAMMA, PRB_ANGLE_LIMIT_RAD,
 };
-
-/// Howell pseudo-rigid-body coefficient for a cantilever beam (Howell §5.1).
-const CANTILEVER_GAMMA: f64 = 2.65;
 
 /// Evaluate a beam-flexure constructor by name.
 ///

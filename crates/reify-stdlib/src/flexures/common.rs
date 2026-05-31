@@ -13,6 +13,12 @@ use reify_ir::Value;
 /// this the pseudo-rigid-body small-deflection model loses fidelity (Howell §5).
 pub(super) const PRB_ANGLE_LIMIT_RAD: f64 = 5.0 * PI / 180.0;
 
+/// Howell pseudo-rigid-body coefficient for a cantilever beam (Howell §5.1).
+/// Used by `beam::prb_cantilever_beam` (revolute joint) and
+/// `compound::prb_cartwheel_flexure` (cartwheel blade — same cantilever
+/// boundary condition, N blades contributing k_pivot = N·k_blade).
+pub(super) const CANTILEVER_GAMMA: f64 = 2.65;
+
 /// Fixed-guided (fixed-fixed) stiffness coefficient γ_ff = 12 (Howell §5 /
 /// PRD §6.1). Used by `beam::prb_fixed_fixed_beam` (transverse prismatic joint)
 /// and `compound::{prb_parallelogram_flexure, prb_double_parallelogram_flexure}`
