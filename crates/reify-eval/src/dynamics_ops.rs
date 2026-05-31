@@ -188,6 +188,10 @@ mod tests {
     use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
     use reify_stdlib::dynamics::mass_props::uniform_box_inertia;
 
+    use reify_core::{ContentHash, Type, ValueCellId};
+    use reify_ir::{CompiledExpr, CompiledExprKind, ResolvedFunction, ValueMap};
+    use reify_test_support::mocks::MockGeometryKernel;
+
     /// Fixed box extents for the injected geometric-query stub. Distinct so all
     /// three inertia diagonal entries differ.
     const DIMS: [f64; 3] = [0.1, 0.2, 0.3];
@@ -346,6 +350,169 @@ mod tests {
         assert!(
             diags.is_empty(),
             "explicit-density resolution must emit no diagnostics, got {diags:?}"
+        );
+    }
+
+    // ── try_eval_body_mass_props dispatch (step-7) ───────────────────────────
+    //
+    // Dispatch recognition for a `body_mass_props(...)` call cell, mirroring
+    // `geometry_ops::try_eval_*`. The density-aware KGQ kernel mass/com/inertia
+    // query (KGQ Phase 4 / task 3620) is NOT wired by this batch, so a
+    // recognised call yields a `MassProperties` whose geometric fields
+    // (`mass`/`com`/`inertia`) are the deferred `Value::Undef` sentinel — while
+    // the density ladder and the `W_DynamicsDefaultDensity` warning still run.
+
+    /// Build a `<fn_name>(<args…>)` `FunctionCall` expr, each arg a `ValueRef`
+    /// to the supplied cell. Mirrors the `geometry_ops` `conformance_call`
+    /// content-hash construction so the synthetic expr is well-formed.
+    fn call_expr(fn_name: &str, arg_cells: &[ValueCellId]) -> CompiledExpr {
+        let args: Vec<CompiledExpr> = arg_cells
+            .iter()
+            .map(|c| CompiledExpr::value_ref(c.clone(), Type::Real))
+            .collect();
+        let mut content_hash = ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(ContentHash::of_str(fn_name));
+        for a in &args {
+            content_hash = content_hash.combine(a.content_hash);
+        }
+        CompiledExpr {
+            kind: CompiledExprKind::FunctionCall {
+                function: ResolvedFunction {
+                    name: fn_name.to_string(),
+                    qualified_name: fn_name.to_string(),
+                },
+                args,
+            },
+            result_type: Type::StructureRef("MassProperties".to_string()),
+            content_hash,
+        }
+    }
+
+    /// Assert `result` is a `MassProperties` `StructureInstance` whose three
+    /// geometric fields are the deferred `Value::Undef` sentinel (the unwired
+    /// kernel seam) — the dispatch still produces a well-typed instance.
+    fn assert_deferred_mass_props(result: &Value) {
+        let data = match result {
+            Value::StructureInstance(d) => d,
+            other => panic!("expected a MassProperties StructureInstance, got {other:?}"),
+        };
+        assert_eq!(
+            data.type_name, "MassProperties",
+            "dispatch must assemble a MassProperties instance"
+        );
+        for f in ["mass", "com", "inertia"] {
+            assert_eq!(
+                data.fields.get(&f.to_string()),
+                Some(&Value::Undef),
+                "geometric field `{f}` must be the deferred Undef sentinel (kernel seam unwired)"
+            );
+        }
+    }
+
+    // ── (a) recognised call + Material density -> Some, Undef geom, no warning ─
+
+    #[test]
+    fn dispatch_recognises_body_mass_props_with_material_density() {
+        let body_cell = ValueCellId::new("Design", "blk");
+        let mut values = ValueMap::new();
+        values.insert(body_cell.clone(), body(Some(2700.0)));
+        let expr = call_expr("body_mass_props", &[body_cell]);
+        let kernel = MockGeometryKernel::new();
+        let mut diags = Vec::new();
+
+        let result = try_eval_body_mass_props(&expr, &values, &kernel, &mut diags)
+            .expect("recognised body_mass_props call must return Some(MassProperties)");
+        assert_deferred_mass_props(&result);
+        assert!(
+            diags.is_empty(),
+            "Material-rung resolution must emit no diagnostics, got {diags:?}"
+        );
+    }
+
+    // ── default-water fallback still emits the warning on the dispatch path ────
+
+    #[test]
+    fn dispatch_emits_default_density_warning_when_no_material_density() {
+        let body_cell = ValueCellId::new("Design", "blk");
+        let mut values = ValueMap::new();
+        values.insert(body_cell.clone(), body(None)); // material present, no density
+        let expr = call_expr("body_mass_props", &[body_cell]);
+        let kernel = MockGeometryKernel::new();
+        let mut diags = Vec::new();
+
+        let result = try_eval_body_mass_props(&expr, &values, &kernel, &mut diags)
+            .expect("recognised call must return Some even on the default-density path");
+        assert_deferred_mass_props(&result);
+        assert_eq!(
+            diags.len(),
+            1,
+            "default-water fallback must emit exactly one diagnostic, got {diags:?}"
+        );
+        assert_eq!(diags[0].severity, Severity::Warning);
+        assert_eq!(
+            diags[0].code,
+            Some(DiagnosticCode::DynamicsDefaultDensity),
+            "default-water diagnostic must carry the DynamicsDefaultDensity code"
+        );
+    }
+
+    // ── explicit density arg (2-arg form) wins, suppresses the warning ────────
+
+    #[test]
+    fn dispatch_explicit_density_arg_suppresses_warning() {
+        let body_cell = ValueCellId::new("Design", "blk");
+        let rho_cell = ValueCellId::new("Design", "rho");
+        let mut values = ValueMap::new();
+        values.insert(body_cell.clone(), body(None)); // no Material density…
+        values.insert(rho_cell.clone(), Value::Real(5000.0)); // …but explicit arg present
+        let expr = call_expr("body_mass_props", &[body_cell, rho_cell]);
+        let kernel = MockGeometryKernel::new();
+        let mut diags = Vec::new();
+
+        let result = try_eval_body_mass_props(&expr, &values, &kernel, &mut diags)
+            .expect("recognised 2-arg call must return Some(MassProperties)");
+        assert_deferred_mass_props(&result);
+        assert!(
+            diags.is_empty(),
+            "explicit-density resolution must emit no diagnostics, got {diags:?}"
+        );
+    }
+
+    // ── (b) unrelated fn name -> None (engine leaves the cell untouched) ───────
+
+    #[test]
+    fn dispatch_returns_none_for_unrelated_fn() {
+        let body_cell = ValueCellId::new("Design", "blk");
+        let mut values = ValueMap::new();
+        values.insert(body_cell.clone(), body(Some(2700.0)));
+        let expr = call_expr("volume", &[body_cell]);
+        let kernel = MockGeometryKernel::new();
+        let mut diags = Vec::new();
+
+        let result = try_eval_body_mass_props(&expr, &values, &kernel, &mut diags);
+        assert!(
+            result.is_none(),
+            "unrelated fn `volume` must return None, got {result:?}"
+        );
+        assert!(diags.is_empty(), "None-dispatch must not emit diagnostics, got {diags:?}");
+    }
+
+    // ── (b) non-call expr -> None ─────────────────────────────────────────────
+
+    #[test]
+    fn dispatch_returns_none_for_non_call_expr() {
+        let body_cell = ValueCellId::new("Design", "blk");
+        let mut values = ValueMap::new();
+        values.insert(body_cell.clone(), body(Some(2700.0)));
+        // A bare `ValueRef`, not a `FunctionCall`.
+        let expr = CompiledExpr::value_ref(body_cell, Type::StructureRef("Block".to_string()));
+        let kernel = MockGeometryKernel::new();
+        let mut diags = Vec::new();
+
+        let result = try_eval_body_mass_props(&expr, &values, &kernel, &mut diags);
+        assert!(
+            result.is_none(),
+            "non-call expr must return None, got {result:?}"
         );
     }
 }
