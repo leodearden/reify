@@ -383,6 +383,26 @@ impl GeometryKernel for ManifoldKernel {
                     ))),
                 }
             }
+            // Center of mass via signed-tetrahedron mesh integration. `density`
+            // is intentionally ignored (bound to `_`): for a uniform-density
+            // solid the centre of mass IS the geometric volume centroid, so the
+            // result matches OCCT's density-ignoring CenterOfMass exactly.
+            // Value::String {"x","y","z"} (OCCT wire format); empty/degenerate
+            // mesh (V≈0) => QueryFailed. (KGQ-π / task 3625.)
+            GeometryQuery::CenterOfMass { handle, density: _ } => {
+                let (verts, tris) = {
+                    let m = self
+                        .get_manifold(*handle)
+                        .map_err(|e| QueryError::QueryFailed(format!("{e:?}")))?;
+                    crate::queries::mesh_geometry(m)
+                };
+                match crate::queries::mass_properties(&verts, &tris) {
+                    Some(mp) => Ok(Value::String(crate::queries::json_xyz(mp.centroid))),
+                    None => Err(QueryError::QueryFailed(
+                        "CenterOfMass: empty/degenerate mesh has no centroid".into(),
+                    )),
+                }
+            }
             // All other queries remain follow-up work (see STUB_MSG).
             _ => Err(QueryError::QueryFailed(STUB_MSG.into())),
         }

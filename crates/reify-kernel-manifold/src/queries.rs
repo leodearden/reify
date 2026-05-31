@@ -516,6 +516,66 @@ pub(crate) fn shared_edges(
 }
 
 // ---------------------------------------------------------------------------
+// Mass properties via signed-tetrahedron (divergence-theorem) integration
+// ---------------------------------------------------------------------------
+
+/// Dot product `a · b`.
+#[inline]
+fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// Meshes whose absolute signed volume falls below this are treated as
+/// degenerate/empty (centroid/inertia then undefined). The unit cube has
+/// `V = 1`; any genuine solid is many orders of magnitude above this floor.
+const MIN_VOLUME: f64 = 1e-12;
+
+/// Mass properties of a closed triangle mesh, from [`mass_properties`].
+///
+/// `centroid` is the geometric (uniform-density) centre of mass — density-free,
+/// matching OCCT's density-ignoring `CenterOfMass`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MassProperties {
+    /// Volume centroid `(x, y, z)`.
+    pub centroid: [f64; 3],
+}
+
+/// Volume and volume-centroid of a closed triangle mesh, by the
+/// signed-tetrahedron (divergence-theorem) method.
+///
+/// Each triangle `(a, b, c)` forms a signed tetrahedron with the origin whose
+/// signed volume is `v = a · (b × c) / 6`; summing `v` over an outward-wound
+/// closed mesh gives the enclosed volume `V`, and summing each tet's first
+/// moment `v · (a+b+c)/4` gives the first volume moment, whose ratio to `V` is
+/// the centroid. Exact for polyhedra (zero tessellation error), so the unit
+/// cube yields exactly `V = 1`, `C = (0.5, 0.5, 0.5)`.
+///
+/// Returns `None` when `|V| < MIN_VOLUME` (empty/degenerate mesh) so callers
+/// surface a `QueryError` rather than dividing by zero. Assumes consistent
+/// outward winding (Manifold solids are so oriented); the centroid is in fact
+/// winding-sign-independent (numerator and denominator share `V`'s sign).
+pub(crate) fn mass_properties(verts: &[[f64; 3]], tri_indices: &[u64]) -> Option<MassProperties> {
+    let mut volume = 0.0;
+    let mut moment = [0.0; 3]; // ∫ x_i dV = Σ v_tet · (a_i + b_i + c_i)/4
+    for tri in tri_indices.chunks_exact(3) {
+        let a = verts[tri[0] as usize];
+        let b = verts[tri[1] as usize];
+        let c = verts[tri[2] as usize];
+        let v_tet = dot3(a, cross3(b, c)) / 6.0;
+        volume += v_tet;
+        for k in 0..3 {
+            moment[k] += v_tet * (a[k] + b[k] + c[k]) / 4.0;
+        }
+    }
+    if volume.abs() < MIN_VOLUME {
+        return None;
+    }
+    Some(MassProperties {
+        centroid: [moment[0] / volume, moment[1] / volume, moment[2] / volume],
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Sub-element geometry helpers + OCCT-compatible JSON wire formatters
 // ---------------------------------------------------------------------------
 
