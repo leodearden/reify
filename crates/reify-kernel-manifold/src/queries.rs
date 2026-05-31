@@ -24,6 +24,17 @@ use manifold3d::Manifold;
 /// Iterates the `xyz` triplets produced by `to_mesh_f64()` for each manifold
 /// and returns the global minimum pairwise distance.
 ///
+/// # Complexity
+///
+/// **O(|verts_a| × |verts_b|)** — quadratic in the vertex counts of both
+/// meshes.  `extract_xyz` also materialises both vertex `Vec`s before the
+/// nested loop begins, so peak allocation is O(|verts_a| + |verts_b|).
+/// This is acceptable for the small axis-aligned test fixtures used in
+/// KGQ-α; it is **not** production-ready for large meshes.  KGQ-ο
+/// generalises this to vertex-to-triangle and should introduce a spatial
+/// acceleration structure (BVH/kd-tree) or at minimum stream one side to
+/// avoid the second `Vec` allocation.
+///
 /// # Exactness
 ///
 /// For axis-aligned meshes (e.g. the `unit_cube_mesh` test fixture) the
@@ -32,11 +43,15 @@ use manifold3d::Manifold;
 /// a face on one mesh could be closer to a vertex on the other) — vertex
 /// parity is generalised to vertex-to-triangle in KGQ-ο.
 ///
-/// # Panics
+/// # Empty / degenerate meshes
 ///
-/// Does not panic.  An empty or degenerate mesh (zero vertices after the
-/// `n_props` guard) yields `f64::INFINITY` as the minimum, which the caller
-/// can detect as a sentinel.
+/// An empty or degenerate mesh (zero vertices after the `n_props` guard)
+/// yields `f64::INFINITY` as the minimum.  **Callers must check for this
+/// sentinel and treat it as an error** — the direct caller
+/// [`crate::ManifoldKernel::query`] converts `INFINITY` to a
+/// `QueryError::QueryFailed` so that the eval layer can emit a diagnostic
+/// rather than propagating a silent infinite length value.  Do not rely on
+/// an `INFINITY` result flowing cleanly to the user.
 pub(crate) fn distance(a: &Manifold, b: &Manifold) -> f64 {
     let verts_a = extract_xyz(a);
     let verts_b = extract_xyz(b);

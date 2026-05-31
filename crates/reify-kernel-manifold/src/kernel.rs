@@ -153,7 +153,22 @@ impl GeometryKernel for ManifoldKernel {
                 let b = self
                     .get_manifold(*to)
                     .map_err(|e| QueryError::QueryFailed(format!("{e:?}")))?;
-                Ok(Value::Real(crate::queries::distance(a, b)))
+                let d = crate::queries::distance(a, b);
+                // queries::distance returns f64::INFINITY when one or both
+                // meshes have no usable vertices (extract_xyz is empty).
+                // Propagating an infinite length would be silently wrong —
+                // the invariant-#3 contract requires visible degradation, so
+                // we convert the sentinel to a QueryError here and let the
+                // kernel_distance helper emit exactly one Warning diagnostic
+                // (reviewer suggestion on empty-mesh robustness).
+                if d.is_infinite() {
+                    return Err(QueryError::QueryFailed(
+                        "distance: one or both meshes have no usable vertices \
+                         (degenerate or empty manifold)"
+                            .into(),
+                    ));
+                }
+                Ok(Value::Real(d))
             }
             // All other queries remain follow-up work (see STUB_MSG).
             _ => Err(QueryError::QueryFailed(STUB_MSG.into())),

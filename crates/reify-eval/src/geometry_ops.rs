@@ -2056,12 +2056,35 @@ pub(crate) fn try_eval_topology_selector(
             //
             // 2×2 dispatch matrix:
             //   (Shape, Point) / (Point, Shape) → ClosestPointOnShape + Euclidean
-            //   (Shape, Shape) / (Point, Point) → placeholder (step-5/6 RED/GREEN)
+            //   (Shape, Shape)                  → GeometryQuery::Distance{from,to}
+            //   (Point, Point)                  → pure Euclidean, no kernel call
             //
             // Kernel-error-downgrade contract (invariant #3): on Err or malformed
             // ClosestPointOnShape reply, `dispatch_point3_length_reply` returns
             // `Some(Value::Undef)` with exactly one Warning diagnostic (not None),
             // so the cell is visibly degraded rather than silently preserved.
+
+            // Extract the SI-metre f64 from a length-typed Value component.
+            // Returns None for non-numeric variants (dead-code guard: in practice
+            // dispatch_point3_length_reply always yields Value::Scalar{LENGTH}
+            // components; returning None rather than NAN makes misbehaviour
+            // visible so the caller can downgrade to Undef + Warning).
+            let extract_si = |v: &reify_ir::Value| -> Option<f64> {
+                match v {
+                    reify_ir::Value::Scalar { si_value, .. } => Some(*si_value),
+                    reify_ir::Value::Real(r) => Some(*r),
+                    _ => None,
+                }
+            };
+
+            // Euclidean distance between two SI-metre 3-D points.
+            let euclidean_3d = |a: [f64; 3], b: [f64; 3]| -> f64 {
+                let dx = a[0] - b[0];
+                let dy = a[1] - b[1];
+                let dz = a[2] - b[2];
+                (dx * dx + dy * dy + dz * dz).sqrt()
+            };
+
             let arg0_shape = resolve_geometry_handle_arg(&args[0], named_steps);
             let arg0_point = if arg0_shape.is_none() {
                 resolve_point3_length_arg(&args[0], values)
@@ -2075,89 +2098,77 @@ pub(crate) fn try_eval_topology_selector(
                 None
             };
 
-            match (arg0_shape, arg0_point, arg1_shape, arg1_point) {
-                (Some(handle), None, None, Some(point)) => {
-                    // Shape × Point: ClosestPointOnShape on the shape; Euclidean to point.
-                    let query = reify_ir::GeometryQuery::ClosestPointOnShape {
-                        handle,
-                        px: point[0],
-                        py: point[1],
-                        pz: point[2],
-                    };
-                    // dispatch_point3_length_reply handles Err/malformed with
-                    // Some(Value::Undef) + one Warning (invariant #3). On success
-                    // it returns Some(Value::Point([length, length, length])).
-                    match dispatch_point3_length_reply(kernel, &query, &function.name, diagnostics) {
-                        Some(reify_ir::Value::Point(comps)) if comps.len() == 3 => {
-                            let extract_si = |v: &reify_ir::Value| match v {
-                                reify_ir::Value::Scalar { si_value, .. } => *si_value,
-                                reify_ir::Value::Real(r) => *r,
-                                _ => f64::NAN,
-                            };
-                            let cx = extract_si(&comps[0]);
-                            let cy = extract_si(&comps[1]);
-                            let cz = extract_si(&comps[2]);
-                            let dx = point[0] - cx;
-                            let dy = point[1] - cy;
-                            let dz = point[2] - cz;
-                            let d = (dx * dx + dy * dy + dz * dz).sqrt();
-                            Some(reify_ir::Value::length(d))
-                        }
-                        // Undef reply (error already warned by dispatch helper) or
-                        // malformed Point shape → propagate Undef.
-                        Some(reify_ir::Value::Undef) => Some(reify_ir::Value::Undef),
-                        // None from dispatch_point3_length_reply (shouldn't happen) → None.
-                        _ => None,
-                    }
-                }
-                (None, Some(point), Some(handle), None) => {
-                    // Point × Shape: symmetric — ClosestPointOnShape on the shape.
-                    let query = reify_ir::GeometryQuery::ClosestPointOnShape {
-                        handle,
-                        px: point[0],
-                        py: point[1],
-                        pz: point[2],
-                    };
-                    match dispatch_point3_length_reply(kernel, &query, &function.name, diagnostics) {
-                        Some(reify_ir::Value::Point(comps)) if comps.len() == 3 => {
-                            let extract_si = |v: &reify_ir::Value| match v {
-                                reify_ir::Value::Scalar { si_value, .. } => *si_value,
-                                reify_ir::Value::Real(r) => *r,
-                                _ => f64::NAN,
-                            };
-                            let cx = extract_si(&comps[0]);
-                            let cy = extract_si(&comps[1]);
-                            let cz = extract_si(&comps[2]);
-                            let dx = point[0] - cx;
-                            let dy = point[1] - cy;
-                            let dz = point[2] - cz;
-                            let d = (dx * dx + dy * dy + dz * dz).sqrt();
-                            Some(reify_ir::Value::length(d))
-                        }
-                        Some(reify_ir::Value::Undef) => Some(reify_ir::Value::Undef),
-                        _ => None,
-                    }
-                }
-                (Some(from), None, Some(to), None) => {
-                    // Shape × Shape: issue GeometryQuery::Distance{from,to} via
-                    // kernel_distance. Returns None on Err/non-numeric (already
-                    // warned); map None → Some(Value::Undef) per invariant #3.
-                    // Exactly one kernel query (invariant #4).
-                    match kernel_distance(kernel, from, to, diagnostics, &function.name) {
-                        Some(d) => Some(reify_ir::Value::length(d)),
-                        None => Some(reify_ir::Value::Undef),
-                    }
-                }
-                (None, Some(pa), None, Some(pb)) => {
-                    // Point × Point: pure Euclidean, no kernel call (invariant #4: 0 queries).
-                    let dx = pa[0] - pb[0];
-                    let dy = pa[1] - pb[1];
-                    let dz = pa[2] - pb[2];
-                    let d = (dx * dx + dy * dy + dz * dz).sqrt();
-                    Some(reify_ir::Value::length(d))
-                }
-                // Non-ValueRef / unresolvable args — fall through to None (invariants #1/#2).
+            // Normalise Shape×Point and Point×Shape to a single (handle, point)
+            // pair — both cases are symmetric and share one ClosestPointOnShape
+            // block, eliminating the 40-line duplication that was a maintenance
+            // hazard (reviewer note: each arm was byte-for-byte identical).
+            let shape_point_pair = match (arg0_shape, arg0_point, arg1_shape, arg1_point) {
+                (Some(h), None, None, Some(p)) | (None, Some(p), Some(h), None) => Some((h, p)),
                 _ => None,
+            };
+
+            if let Some((handle, point)) = shape_point_pair {
+                // Shape × Point / Point × Shape: issue ClosestPointOnShape on the
+                // shape then compute Euclidean distance from the query point.
+                //
+                // `dispatch_point3_length_reply` handles Err/malformed with
+                // Some(Value::Undef) + one Warning (invariant #3). On success it
+                // returns Some(Value::Point([length, length, length])).
+                let query = reify_ir::GeometryQuery::ClosestPointOnShape {
+                    handle,
+                    px: point[0],
+                    py: point[1],
+                    pz: point[2],
+                };
+                match dispatch_point3_length_reply(kernel, &query, &function.name, diagnostics) {
+                    Some(reify_ir::Value::Point(comps)) if comps.len() == 3 => {
+                        let cx = extract_si(&comps[0]);
+                        let cy = extract_si(&comps[1]);
+                        let cz = extract_si(&comps[2]);
+                        match (cx, cy, cz) {
+                            (Some(cx), Some(cy), Some(cz)) => Some(reify_ir::Value::length(
+                                euclidean_3d(point, [cx, cy, cz]),
+                            )),
+                            // Non-numeric component — unexpected but guarded;
+                            // downgrade visibly rather than silently emitting NaN
+                            // (invariant #3, reviewer note on robustness).
+                            _ => {
+                                diagnostics.push(Diagnostic::warning(format!(
+                                    "{}: ClosestPointOnShape reply contained a \
+                                     non-numeric component; treating distance as undefined",
+                                    &function.name
+                                )));
+                                Some(reify_ir::Value::Undef)
+                            }
+                        }
+                    }
+                    // Undef reply (error already warned by dispatch helper) →
+                    // propagate.
+                    Some(reify_ir::Value::Undef) => Some(reify_ir::Value::Undef),
+                    // None from dispatch_point3_length_reply (shouldn't happen) → None.
+                    _ => None,
+                }
+            } else {
+                match (arg0_shape, arg0_point, arg1_shape, arg1_point) {
+                    (Some(from), None, Some(to), None) => {
+                        // Shape × Shape: issue GeometryQuery::Distance{from,to} via
+                        // kernel_distance. Returns None on Err/non-numeric (already
+                        // warned); map None → Some(Value::Undef) per invariant #3.
+                        // Exactly one kernel query (invariant #4).
+                        match kernel_distance(kernel, from, to, diagnostics, &function.name) {
+                            Some(d) => Some(reify_ir::Value::length(d)),
+                            None => Some(reify_ir::Value::Undef),
+                        }
+                    }
+                    (None, Some(pa), None, Some(pb)) => {
+                        // Point × Point: pure Euclidean, no kernel call (invariant
+                        // #4: 0 queries).
+                        Some(reify_ir::Value::length(euclidean_3d(pa, pb)))
+                    }
+                    // Non-ValueRef / unresolvable args — fall through to None
+                    // (invariants #1/#2).
+                    _ => None,
+                }
             }
         }
         TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => {
@@ -9871,6 +9882,241 @@ mod tests {
             diagnostics.is_empty(),
             "Point×Point distance must emit zero diagnostics; got: {:?}",
             diagnostics
+        );
+    }
+
+    // ── Amendment tests for distance dispatch (reviewer suggestions) ─────────
+    //
+    // These tests were added as part of the code-review amendment pass to
+    // address three reviewer observations:
+    //
+    //   1. Point×Shape happy-path (symmetric arm — could regress independently
+    //      of Shape×Point after the deduplication refactor).
+    //   2. Shape×Shape error-downgrade (invariant #3 for the S×S branch: kernel
+    //      Err → Some(Value::Undef) + one Warning, not None).
+    //   3. Invariant #4 (exactly one kernel query) for Shape×Point and Shape×Shape
+    //      success paths (previously only the zero-query Point cases were pinned).
+
+    #[test]
+    fn try_eval_topology_selector_distance_point_shape_happy_path() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        // Point × Shape: args swapped versus the Shape×Point test; the
+        // normalised dispatch should route to the same ClosestPointOnShape block.
+        let box_handle = reify_ir::GeometryHandleId(99);
+        let mut kernel = MockGeometryKernel::new().with_closest_point_on_shape_result(
+            box_handle,
+            [0.02, 0.0, 0.0],
+            reify_ir::Value::String("{\"x\":0.005,\"y\":0.0,\"z\":0.0}".to_string()),
+        );
+
+        // arg0 = p (Point3<Length>) → values map
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            reify_core::ValueCellId::new("PointShape", "p"),
+            point3_length_value(0.02, 0.0, 0.0),
+        );
+        // arg1 = b (Shape) → named_steps
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        named_steps.insert("b".to_string(), box_handle);
+
+        // distance(p, b): args[0]=p (Point3), args[1]=b (Geometry)
+        let expr = topology_selector_call_two_value_refs(
+            "distance",
+            "PointShape",
+            "p",
+            reify_core::Type::point3(reify_core::Type::length()),
+            "b",
+            reify_core::Type::Geometry,
+            reify_core::Type::length(),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        match result {
+            Some(reify_ir::Value::Scalar { si_value, dimension })
+                if dimension == reify_core::DimensionVector::LENGTH =>
+            {
+                let expected = 0.015_f64;
+                let epsilon = 1e-12;
+                assert!(
+                    (si_value - expected).abs() < epsilon,
+                    "distance(point, shape) si_value should be 0.015 (≈{expected:.15}), \
+                     got {si_value:.15} (delta {delta:.3e})",
+                    delta = (si_value - expected).abs()
+                );
+            }
+            other => panic!(
+                "distance(point, shape) with canned ClosestPointOnShape reply must return \
+                 Some(Value::Scalar{{LENGTH, ≈0.015}}); got {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "happy-path Point×Shape distance must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_distance_shape_shape_kernel_err_returns_undef_with_warning() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        // Shape × Shape with NO seeded Distance result → mock returns Err for
+        // the unregistered (handle_a, handle_b) pair.  Invariant #3 contract:
+        // kernel_distance maps Err → None → Some(Value::Undef) + one Warning.
+        let handle_a = reify_ir::GeometryHandleId(10);
+        let handle_b = reify_ir::GeometryHandleId(11);
+        let mut kernel = MockGeometryKernel::new(); // no Distance reply seeded
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        named_steps.insert("a".to_string(), handle_a);
+        named_steps.insert("b".to_string(), handle_b);
+        let values = reify_ir::ValueMap::new();
+
+        let expr = topology_selector_call_two_value_refs(
+            "distance",
+            "ShapeShape",
+            "a",
+            reify_core::Type::Geometry,
+            "b",
+            reify_core::Type::Geometry,
+            reify_core::Type::length(),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "distance(shapeA, shapeB) with kernel Err must yield Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "Shape×Shape kernel Err must emit exactly one Warning; got {} diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Warning,
+            "diagnostic severity must be Warning; got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("distance"),
+            "diagnostic must mention the helper name 'distance'; got: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_distance_shape_point_query_count_is_one() {
+        use reify_test_support::mocks::{CountingMockKernel, MockGeometryKernel};
+        // Invariant #4: Shape×Point success path issues exactly one kernel query.
+        let box_handle = reify_ir::GeometryHandleId(99);
+        let inner = MockGeometryKernel::new().with_closest_point_on_shape_result(
+            box_handle,
+            [0.02, 0.0, 0.0],
+            reify_ir::Value::String("{\"x\":0.005,\"y\":0.0,\"z\":0.0}".to_string()),
+        );
+        let mut kernel = CountingMockKernel::new(inner);
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        named_steps.insert("b".to_string(), box_handle);
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            reify_core::ValueCellId::new("DistanceBoxPoint", "p"),
+            point3_length_value(0.02, 0.0, 0.0),
+        );
+        let expr = topology_selector_call_two_value_refs(
+            "distance",
+            "DistanceBoxPoint",
+            "b",
+            reify_core::Type::Geometry,
+            "p",
+            reify_core::Type::point3(reify_core::Type::length()),
+            reify_core::Type::length(),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_some(),
+            "Shape×Point happy path must return Some; got {:?}",
+            result
+        );
+        assert_eq!(
+            kernel.total_query_count(),
+            1,
+            "Shape×Point distance must issue exactly one kernel query (invariant #4); got {}",
+            kernel.total_query_count()
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_distance_shape_shape_query_count_is_one() {
+        use reify_test_support::mocks::{CountingMockKernel, MockGeometryKernel};
+        use reify_test_support::values::meters;
+        // Invariant #4: Shape×Shape success path issues exactly one kernel query.
+        let handle_a = reify_ir::GeometryHandleId(10);
+        let handle_b = reify_ir::GeometryHandleId(11);
+        let inner =
+            MockGeometryKernel::new().with_distance_result(handle_a, handle_b, meters(0.04));
+        let mut kernel = CountingMockKernel::new(inner);
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        named_steps.insert("a".to_string(), handle_a);
+        named_steps.insert("b".to_string(), handle_b);
+        let values = reify_ir::ValueMap::new();
+        let expr = topology_selector_call_two_value_refs(
+            "distance",
+            "ShapeShape",
+            "a",
+            reify_core::Type::Geometry,
+            "b",
+            reify_core::Type::Geometry,
+            reify_core::Type::length(),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_some(),
+            "Shape×Shape happy path must return Some; got {:?}",
+            result
+        );
+        assert_eq!(
+            kernel.total_query_count(),
+            1,
+            "Shape×Shape distance must issue exactly one kernel query (invariant #4); got {}",
+            kernel.total_query_count()
         );
     }
 
