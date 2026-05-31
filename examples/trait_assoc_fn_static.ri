@@ -1,0 +1,43 @@
+// Trait-static associated-fn dispatch example (task η 3945)
+//
+// PRD reference: docs/prds/v0_6/trait-associated-functions.md §5.2, §6
+//
+// Demonstrates: a trait-static fn (no `self`, no receiver) called as
+// `Trait::fn(args)` from a structure body — static dispatch that resolves
+// directly to the trait's body, no conformance or receiver needed.
+//
+// Two static fns are exercised:
+//   make_default()              — zero-arg, returns a constant Length (10mm)
+//   scaled(factor: Real)        — one-arg, returns 10mm * factor
+//
+// `Spacer` does NOT need to conform to `Defaultable` — static dispatch
+// requires no receiver or conformance relationship (PRD §5.2).
+//
+// This file is auto-discovered by
+//   crates/reify-compiler/tests/examples_smoke.rs (clean-compile gate) and
+//   crates/reify-eval/tests/trait_assoc_fn_static_e2e.rs (eval-value gate).
+
+// ── Trait definition: two static (no-self) body-carrying assoc fns ────────────
+
+trait Defaultable {
+    // Returns a fixed default Length of 10mm.
+    // Static — no `self` receiver, no per-conformer override.
+    fn make_default() -> Length { 10mm }
+
+    // Returns 10mm scaled by `factor`.
+    // Static — calls from any context with no receiver, e.g. Defaultable::scaled(3.0).
+    fn scaled(factor : Real) -> Length { 10mm * factor }
+}
+
+// ── Structure exercising both static calls ────────────────────────────────────
+
+// Spacer does not need to conform to Defaultable.
+// Static calls resolve directly to the trait body (PRD §5.2).
+pub structure def Spacer {
+    // gap = Defaultable::make_default() → 10mm (= 0.01 m SI)
+    let gap : Length = Defaultable::make_default()
+
+    // wide = Defaultable::scaled(3.0) → 10mm * 3.0 = 30mm (= 0.03 m SI)
+    // Note: 3.0 not 3 — integer literals have type Int, not Real.
+    let wide : Length = Defaultable::scaled(3.0)
+}
