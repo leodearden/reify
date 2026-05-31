@@ -1618,6 +1618,125 @@ mod tests {
         );
     }
 
+    /// H2 integration test: a done task whose file-level corroboration is clean
+    /// and whose metadata.files span >=2 distinct crates/<name>/ roots. A
+    /// changed capability symbol has no non-test workspace caller (stranded by
+    /// a live-path relocation). Expects exactly one P5LivePathStranded Medium finding.
+    ///
+    /// Replicates the cross-crate relocation pattern from task 1638/1904/2199:
+    /// compile_purpose moved from reify-compiler to reify-eval, leaving the old
+    /// symbol unreachable on the live path.
+    ///
+    /// RED until check_live_path_stranded is implemented (step-8).
+    #[test]
+    fn h2_cross_crate_stranded_symbol_flags_phantom_done() {
+        let conn = seed_db();
+        insert_task_completed_event(&conn, "H2T1");
+
+        let mut git = MockGitOps::new();
+        // File-level corroboration is clean: diff covers all metadata.files.
+        git.set_diff_changed_paths(
+            "main",
+            "h2_commit",
+            vec![
+                "crates/reify-compiler/src/compile.rs".to_string(),
+                "crates/reify-eval/src/lib.rs".to_string(),
+            ],
+        );
+        git.set_log_grep("main", "H2T1", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "H2T1".to_string(),
+            TaskMetadata {
+                task_id: "H2T1".to_string(),
+                status: "done".to_string(),
+                // Two distinct crates/<name>/ roots: reify-compiler + reify-eval.
+                files: vec![
+                    "crates/reify-compiler/src/compile.rs".to_string(),
+                    "crates/reify-eval/src/lib.rs".to_string(),
+                ],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("h2_commit".to_string()),
+                    note: None,
+                }),
+                title: "Relocate compile_purpose to reify-eval".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        // The changed symbol is in crates/reify-eval/src/lib.rs with no callers.
+        let mut jc = MockJCodemunchOps::new();
+        jc.set_changed_symbols(
+            "h2_commit^1",
+            "h2_commit",
+            vec![reify_audit::ChangedSymbol {
+                name: "compile_purpose".to_string(),
+                file: "crates/reify-eval/src/lib.rs".to_string(),
+                line: 42,
+                has_allow_dead_code: false,
+                has_cfg_test: false,
+                g_allow_marker: None,
+            }],
+        );
+        // No callers returned → stranded.
+        // (set_find_references not called → defaults to empty vec)
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        let h2_findings: Vec<_> = findings
+            .iter()
+            .filter(|f| f.pattern == Pattern::P5LivePathStranded)
+            .collect();
+        assert_eq!(
+            h2_findings.len(),
+            1,
+            "expected exactly one P5LivePathStranded finding; got {:?}",
+            findings
+        );
+        let f = h2_findings[0];
+        assert_eq!(f.severity, Severity::Medium, "H2 must fire at Medium; got {:?}", f.severity);
+        assert_eq!(f.task_id, "H2T1");
+        // Evidence must cite the symbol's file.
+        let file_ev = f.evidence.iter().find_map(|e| match e {
+            EvidenceRef::File { path } => Some(path.as_str()),
+            _ => None,
+        });
+        assert!(
+            file_ev.is_some_and(|p| p.contains("reify-eval")),
+            "evidence must cite the symbol's file in reify-eval; got {:?}",
+            f.evidence
+        );
+
+        // check_pre_done must also return the H2 finding (D-1 parity).
+        let pre_done = p5_phantom_done::check_pre_done(&ctx, "H2T1");
+        let h2_pre: Vec<_> = pre_done
+            .iter()
+            .filter(|f| f.pattern == Pattern::P5LivePathStranded)
+            .collect();
+        assert_eq!(
+            h2_pre.len(),
+            1,
+            "check_pre_done must also find P5LivePathStranded; got {:?}",
+            pre_done
+        );
+    }
+
     /// H1 FP guard (b): a done task whose added test fn name DOES carry a
     /// placeholder marker (e.g. "stub") but whose added lines assert a
     /// NON-empty result.
