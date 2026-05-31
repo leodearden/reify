@@ -102,6 +102,7 @@ pub(crate) fn distance(a: &Manifold, b: &Manifold) -> f64 {
 /// cross-kernel `#kernel(manifold)` parity gate by KGQ-ο (Phase 5).  This
 /// task (KGQ-γ/3612) ships the function + unit tests only; the `query()`
 /// wiring lives in `kernel.rs` which is out of this task's file scope.
+#[allow(dead_code)] // wired into ManifoldKernel::query() by KGQ-ο (Phase 5)
 pub(crate) fn intersects(a: &Manifold, b: &Manifold) -> bool {
     !extract_xyz(&a.intersection(b)).is_empty()
 }
