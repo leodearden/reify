@@ -116,6 +116,84 @@ pub fn degenerate_position(
     x
 }
 
+/// Degenerate-shell Jacobian `J = ∂X/∂(ξ,η,ζ)` and its determinant at `coord`.
+///
+/// `matrix[row][col] = ∂X_row/∂ξ_col` (the `elements::Jacobian` convention),
+/// with columns
+///
+/// ```text
+/// J[:,0] = ∂X/∂ξ = Σ_i (∂N_i/∂ξ) · (x_i + (ζ/2) t_i V_i)
+/// J[:,1] = ∂X/∂η = Σ_i (∂N_i/∂η) · (x_i + (ζ/2) t_i V_i)
+/// J[:,2] = ∂X/∂ζ = Σ_i N_i · (t_i/2) V_i
+/// ```
+///
+/// The `(ζ/2) Σ ∇N_i t_i V_i` contribution to the first two columns is the
+/// **director-tilt term**: it vanishes when the directors are parallel (flat
+/// facet, `Σ∇N_i = 0`) — making `J` invariant in `ζ` — and is non-zero once
+/// the directors tilt, which is exactly how a curved patch acquires a Jacobian
+/// that varies through the thickness. The determinant reuses
+/// [`crate::elements::Jacobian::from_matrix`] for a shared cofactor convention.
+pub fn degenerate_jacobian(
+    nodes: &[[f64; 3]; 3],
+    directors: &[Director; 3],
+    thicknesses: &[f64; 3],
+    coord: ShellRefCoord3,
+) -> ([[f64; 3]; 3], f64) {
+    let n = Mitc3Plus.shape_at(coord.in_plane());
+    let dn = Mitc3Plus.shape_grad_at(coord.in_plane());
+    let half_zeta = 0.5 * coord.zeta;
+
+    let mut m = [[0.0_f64; 3]; 3];
+    for i in 0..Mitc3Plus::N_NODES {
+        let half_t = 0.5 * thicknesses[i];
+        // Fibre point p_i = x_i + (ζ/2) t_i V_i feeds the in-plane columns.
+        let mut p_i = [0.0_f64; 3];
+        for k in 0..3 {
+            p_i[k] = nodes[i][k] + half_zeta * thicknesses[i] * directors[i][k];
+        }
+        for row in 0..3 {
+            // ∂X/∂ξ and ∂X/∂η from the fibre point.
+            m[row][0] += dn[i][0] * p_i[row];
+            m[row][1] += dn[i][1] * p_i[row];
+            // ∂X/∂ζ = Σ N_i (t_i/2) V_i.
+            m[row][2] += n[i] * half_t * directors[i][row];
+        }
+    }
+    let det = crate::elements::Jacobian::from_matrix(m).det;
+    (m, det)
+}
+
+/// Inverse of a 3×3 matrix via the adjugate (cofactor) method, returned with
+/// its determinant.
+///
+/// Used to push reference gradients into physical gradients: a reference
+/// gradient column `g_ref = [∂/∂ξ, ∂/∂η, ∂/∂ζ]ᵀ` maps to the physical gradient
+/// `g_phys = Jᵀ⁻¹ · g_ref` (i.e. `(J⁻¹)ᵀ · g_ref`). The determinant is returned
+/// alongside so callers can guard against a singular Jacobian without a second
+/// pass. Shares the cofactor convention of
+/// [`crate::elements::Jacobian::from_matrix`].
+pub fn mat3_inverse(m: &[[f64; 3]; 3]) -> ([[f64; 3]; 3], f64) {
+    // Cofactors C[i][j] = (−1)^(i+j) · minor(i,j).
+    let c00 = m[1][1] * m[2][2] - m[1][2] * m[2][1];
+    let c01 = -(m[1][0] * m[2][2] - m[1][2] * m[2][0]);
+    let c02 = m[1][0] * m[2][1] - m[1][1] * m[2][0];
+    let c10 = -(m[0][1] * m[2][2] - m[0][2] * m[2][1]);
+    let c11 = m[0][0] * m[2][2] - m[0][2] * m[2][0];
+    let c12 = -(m[0][0] * m[2][1] - m[0][1] * m[2][0]);
+    let c20 = m[0][1] * m[1][2] - m[0][2] * m[1][1];
+    let c21 = -(m[0][0] * m[1][2] - m[0][2] * m[1][0]);
+    let c22 = m[0][0] * m[1][1] - m[0][1] * m[1][0];
+    let det = m[0][0] * c00 + m[0][1] * c01 + m[0][2] * c02;
+    let inv_det = 1.0 / det;
+    // inverse = adj/det = (cofactorᵀ)/det → inv[i][j] = C[j][i]/det.
+    let inv = [
+        [c00 * inv_det, c10 * inv_det, c20 * inv_det],
+        [c01 * inv_det, c11 * inv_det, c21 * inv_det],
+        [c02 * inv_det, c12 * inv_det, c22 * inv_det],
+    ];
+    (inv, det)
+}
+
 /// A per-node shell **director**: the unit vector along the through-thickness
 /// fibre at a mesh vertex (the `V_i` of the degenerate-shell geometry map
 /// `X = Σ N_i x_i + (ζ/2) Σ N_i t_i V_i`).
