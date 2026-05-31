@@ -1,17 +1,17 @@
 // Fixture for task 4132: exercises default-solver auto-resolution via `reify eval`.
 //
-// AutoMinimize has one auto param `thickness` (no default), bounded by box
-// constraints (1mm < thickness < 20mm) and a structure-level `minimize thickness`
+// AutoMinimize has one auto param `thickness` (no default), a single upper-bound
+// constraint (thickness < 20mm), and a structure-level `minimize thickness`
 // objective.  When the default DimensionalSolver is wired into cmd_eval the
-// resolution phase runs Nelder-Mead and pushes thickness toward its lower bound,
-// printing a numeric SI value instead of `undef`.
+// resolution phase runs Nelder-Mead and pushes thickness toward the natural
+// lower bound (~1 micron), printing a numeric SI value ≤ 5 mm instead of `undef`.
 //
-// This mirrors the proven config in
-// crates/reify-eval/tests/resolution.rs:876 (e2e_minimize_through_real_solver).
+// A single upper-bound constraint is used intentionally (no lower-bound constraint)
+// to avoid floating-point boundary issues at the lower bound — the same design
+// as crates/reify-eval/tests/resolution.rs:876 (e2e_minimize_through_real_solver).
 structure AutoMinimize {
     param thickness: Scalar = auto
 
-    constraint thickness > 1mm
     constraint thickness < 20mm
 
     minimize thickness
