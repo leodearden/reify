@@ -324,6 +324,56 @@ fn inplane_lamina_strain(h: &[[f64; 3]; 3], q: &[[f64; 3]; 3]) -> [f64; 3] {
     [strain_pq(0, 0), strain_pq(1, 1), 2.0 * strain_pq(0, 1)]
 }
 
+/// Dot product of two 3-vectors. Shared by the exact-covariant strain builders
+/// ([`degenerate_exact_covariant_membrane_b`], [`degenerate_exact_covariant_shear_b`]).
+#[inline]
+fn dot3(a: &[f64; 3], b: &[f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// Columns of `C_i = −skew(V_i)` for a per-node director `v`, i.e.
+/// `C_i[:, c] = ∂(θ_i × V_i)/∂θ_c`. Returned as `[col0, col1, col2]`.
+///
+/// Single source of truth for the skew-symmetric rotation→displacement convention
+/// shared by the exact-covariant membrane ([`degenerate_exact_covariant_membrane_b`])
+/// and transverse-shear ([`degenerate_exact_covariant_shear_b`]) B builders.
+#[inline]
+fn director_rotation_columns(v: &Director) -> [[f64; 3]; 3] {
+    [
+        [0.0, -v[2], v[1]], // C_i[:,0] = (0, −V_z, V_y)
+        [v[2], 0.0, -v[0]], // C_i[:,1] = (V_z, 0, −V_x)
+        [-v[1], v[0], 0.0], // C_i[:,2] = (−V_y, V_x, 0)
+    ]
+}
+
+/// In-plane contravariant **lamina projection** at `coord`: the `2×2` block
+/// `m2 = (q·J⁻ᵀ)[0..2, 0..2]` and the through-thickness factor
+/// `s3 = (q·J⁻ᵀ)[2][2] = e'_3·g^ζ = 1/|g_ζ|`, with the lamina frame `q`
+/// ([`lamina_frame`]) and the degenerate Jacobian `J` ([`degenerate_jacobian`]) at
+/// `coord`. `m2` is the in-plane contravariant projection `e'_p·g^i`
+/// (`p, i ∈ {1, 2}`) that maps a covariant in-plane tensor into the physical lamina
+/// frame; `s3` strips the `g_ζ` metric the exact covariant shear carries.
+///
+/// Single source of truth for the covariant→physical map shared by the ANS membrane
+/// ([`degenerate_assumed_membrane_b`], which uses `m2`) and the ANS transverse-shear
+/// ([`degenerate_transverse_shear_b`], which uses both `m2` and `s3`) fields.
+fn lamina_contravariant_projection(
+    nodes: &[[f64; 3]; 3],
+    directors: &[Director; 3],
+    thicknesses: &[f64; 3],
+    coord: ShellRefCoord3,
+) -> ([[f64; 2]; 2], f64) {
+    let (j, _det) = degenerate_jacobian(nodes, directors, thicknesses, coord);
+    let (j_inv, _) = mat3_inverse(&j);
+    let n = Mitc3Plus.shape_at(coord.in_plane());
+    let q = lamina_frame(&j, &n, directors);
+    // (q · J⁻ᵀ)[a][b] = Σ_k q[a][k] · J⁻ᵀ[k][b] = Σ_k q[a][k] · J⁻¹[b][k].
+    let qjit = |a: usize, b: usize| -> f64 { (0..3).map(|k| q[a][k] * j_inv[b][k]).sum() };
+    let m2 = [[qjit(0, 0), qjit(0, 1)], [qjit(1, 0), qjit(1, 1)]];
+    let s3 = qjit(2, 2); // through-thickness normalization e'_3·g^ζ = 1/|g_ζ|
+    (m2, s3)
+}
+
 /// Membrane+bending strain–displacement matrix `B` (3 in-plane lamina strain
 /// rows `[ε'₁₁, ε'₂₂, 2ε'₁₂]` × 18 DOF columns) at `coord`.
 ///
@@ -400,6 +450,81 @@ pub fn degenerate_membrane_bending_b(
             for r in 0..3 {
                 b[r][col] = e[r];
             }
+        }
+    }
+    b
+}
+
+/// Exact degenerate-kinematics **covariant** in-plane MEMBRANE strain B-matrix
+/// (`3 × 18`) at the 3D reference coordinate `coord`, before any assumed-strain
+/// re-interpolation.
+///
+/// Rows are the covariant membrane components `(ε_ξξ, ε_ηη, 2ε_ξη)` (engineering
+/// in-plane shear in the third row); columns the 18 nodal DOFs
+/// (`6·node + {u_x,u_y,u_z,θ_x,θ_y,θ_z}`).
+///
+/// # Kinematics (the actual covariant strain)
+///
+/// With the degenerate in-plane base vectors `g_α = ∂X/∂ξ_α` (α ∈ {ξ, η}, the
+/// first two columns of [`degenerate_jacobian`]) and the displacement field
+/// `u = Σ_i N_i u_i + (ζ t_i/2) Σ_i N_i (θ_i × V_i)`, the covariant membrane
+/// strain is the genuine in-plane `ε_αβ`:
+///
+/// ```text
+/// ε_αβ = ½ (g_α · u_,β + g_β · u_,α)        (α, β ∈ {ξ, η})
+/// u_,α = Σ_i N_i,α u_i + (ζ t_i/2) Σ_i N_i,α (θ_i × V_i)
+/// ```
+///
+/// reading translation `u_i` (DOFs 0–2) and ALL THREE rotations `θ_i` (DOFs 3–5)
+/// via `(θ_i × V_i) = C_i·θ_i`, `C_i = −skew(V_i)` — structurally mirroring
+/// [`degenerate_exact_covariant_shear_b`]. Because it IS the covariant strain a
+/// rigid-body mode gives an identically-zero `ε_αβ`, and the field rotates as a
+/// tensor under a rigid 3D rotation.
+///
+/// At the mid-surface (`ζ = 0`) the rotation contribution vanishes (the `ζ t/2`
+/// factor), so the covariant MEMBRANE strain is translation-only and — for a
+/// linear triangle with constant `∇N_i` and `ζ`-independent in-plane base vectors
+/// — element-CONSTANT in `(ξ, η)`. [`degenerate_assumed_membrane_b`] samples this
+/// at the mid-surface to build the assumed-natural-strain membrane field.
+fn degenerate_exact_covariant_membrane_b(
+    nodes: &[[f64; 3]; 3],
+    directors: &[Director; 3],
+    thicknesses: &[f64; 3],
+    coord: ShellRefCoord3,
+) -> [[f64; 18]; 3] {
+    let (j, _det) = degenerate_jacobian(nodes, directors, thicknesses, coord);
+    // In-plane covariant base vectors = first two columns of J.
+    let g_xi = [j[0][0], j[1][0], j[2][0]];
+    let g_eta = [j[0][1], j[1][1], j[2][1]];
+    let dn = Mitc3Plus.shape_grad_at(coord.in_plane());
+    let half_zeta = 0.5 * coord.zeta;
+
+    let mut b = [[0.0_f64; 18]; 3];
+    for i in 0..Mitc3Plus::N_NODES {
+        let zt = half_zeta * thicknesses[i]; // ζ·t_i/2
+        // Translation DOFs (a = 0,1,2): u_,α = N_i,α e_a, so
+        //   ε_ξξ  col(6i+a) = g_ξ · (N_i,ξ e_a) = N_i,ξ · (g_ξ)_a
+        //   ε_ηη  col       = N_i,η · (g_η)_a
+        //   2ε_ξη col       = N_i,η · (g_ξ)_a + N_i,ξ · (g_η)_a
+        for a in 0..3 {
+            let col = 6 * i + a;
+            b[0][col] = dn[i][0] * g_xi[a];
+            b[1][col] = dn[i][1] * g_eta[a];
+            b[2][col] = dn[i][1] * g_xi[a] + dn[i][0] * g_eta[a];
+        }
+        // Rotation DOFs (c = 0,1,2 → θ_x,θ_y,θ_z): u_,α[θ_c] = (ζ t_i/2) N_i,α C_i[:,c],
+        // C_i = −skew(V_i). So
+        //   ε_ξξ  col(6i+3+c) = g_ξ · (zt N_i,ξ C_i[:,c]) = zt N_i,ξ (g_ξ·C_i[:,c])
+        //   ε_ηη  col         = zt N_i,η (g_η·C_i[:,c])
+        //   2ε_ξη col         = zt N_i,η (g_ξ·C_i[:,c]) + zt N_i,ξ (g_η·C_i[:,c])
+        let c_cols = director_rotation_columns(&directors[i]);
+        for (c, cc) in c_cols.iter().enumerate() {
+            let g_xi_cc = dot3(&g_xi, cc);
+            let g_eta_cc = dot3(&g_eta, cc);
+            let col = 6 * i + 3 + c;
+            b[0][col] = zt * dn[i][0] * g_xi_cc;
+            b[1][col] = zt * dn[i][1] * g_eta_cc;
+            b[2][col] = zt * dn[i][1] * g_xi_cc + zt * dn[i][0] * g_eta_cc;
         }
     }
     b
@@ -512,8 +637,6 @@ fn degenerate_exact_covariant_shear_b(
     let dn = Mitc3Plus.shape_grad_at(coord.in_plane());
     let half_zeta = 0.5 * coord.zeta;
 
-    let dot = |a: &[f64; 3], b: &[f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-
     let mut b = [[0.0_f64; 18]; 2];
     for i in 0..Mitc3Plus::N_NODES {
         let half_t = 0.5 * thicknesses[i];
@@ -528,16 +651,11 @@ fn degenerate_exact_covariant_shear_b(
         // so ∂(θ×V)/∂θ_c = C_i[:,c]. Then
         //   γ_αζ col(6i+3+c) = g_α · (N_i (t_i/2) C_i[:,c])
         //                    + g_ζ · (ζ t_i/2 · N_i,α · C_i[:,c]).
-        let v = directors[i];
-        let c_cols = [
-            [0.0, -v[2], v[1]],  // C_i[:,0] = (0, −V_z, V_y)
-            [v[2], 0.0, -v[0]],  // C_i[:,1] = (V_z, 0, −V_x)
-            [-v[1], v[0], 0.0],  // C_i[:,2] = (−V_y, V_x, 0)
-        ];
+        let c_cols = director_rotation_columns(&directors[i]);
         for (c, cc) in c_cols.iter().enumerate() {
-            let g_xi_cc = dot(&g_xi, cc);
-            let g_eta_cc = dot(&g_eta, cc);
-            let g_zeta_cc = dot(&g_zeta, cc);
+            let g_xi_cc = dot3(&g_xi, cc);
+            let g_eta_cc = dot3(&g_eta, cc);
+            let g_zeta_cc = dot3(&g_zeta, cc);
             b[0][6 * i + 3 + c] = n[i] * half_t * g_xi_cc + zt * dn[i][0] * g_zeta_cc;
             b[1][6 * i + 3 + c] = n[i] * half_t * g_eta_cc + zt * dn[i][1] * g_zeta_cc;
         }
@@ -622,19 +740,111 @@ pub fn degenerate_transverse_shear_b(
     }
 
     // (3) Covariant→physical map at the varying J: s₃ · m2 · b_cov.
-    let (j, _det) = degenerate_jacobian(nodes, directors, thicknesses, coord);
-    let (j_inv, _) = mat3_inverse(&j);
-    let n = Mitc3Plus.shape_at(coord.in_plane());
-    let q = lamina_frame(&j, &n, directors);
-    // (q · J⁻ᵀ)[a][b] = Σ_k q[a][k] · J⁻ᵀ[k][b] = Σ_k q[a][k] · J⁻¹[b][k].
-    let qjit = |a: usize, b: usize| -> f64 { (0..3).map(|k| q[a][k] * j_inv[b][k]).sum() };
-    let m2 = [[qjit(0, 0), qjit(0, 1)], [qjit(1, 0), qjit(1, 1)]];
-    let s3 = qjit(2, 2); // through-thickness normalization e'_3·g^ζ = 1/|g_ζ|
+    let (m2, s3) = lamina_contravariant_projection(nodes, directors, thicknesses, coord);
 
     let mut b_phys = [[0.0_f64; 18]; 2];
     for dof in 0..18 {
         b_phys[0][dof] = s3 * (m2[0][0] * b_cov[0][dof] + m2[0][1] * b_cov[1][dof]);
         b_phys[1][dof] = s3 * (m2[1][0] * b_cov[0][dof] + m2[1][1] * b_cov[1][dof]);
+    }
+    b_phys
+}
+
+/// Physical (lamina) assumed-natural-strain **membrane** B-matrix (`3 × 18`) at
+/// the mid-surface above the in-plane reference coordinate `coord` (the `ζ`
+/// component of `coord` is ignored — the membrane is a mid-surface quantity).
+///
+/// Rows are the physical lamina membrane strains `(ε'₁₁, ε'₂₂, 2ε'₁₂)` (lamina
+/// axes `e1, e2`); columns the 18 nodal DOFs. This is the assumed-natural-strain
+/// MEMBRANE field that cures membrane locking on the curved (varying-J)
+/// substrate — the membrane analogue of [`degenerate_transverse_shear_b`].
+///
+/// # Pipeline (mirrors the transverse-shear ANS pipeline)
+///
+/// 1. **Exact covariant sample.** Sample the exact covariant membrane strain
+///    ([`degenerate_exact_covariant_membrane_b`]) once, at the element centroid
+///    on the mid-surface `ζ = 0`.
+/// 2. **Constant-state-consistent assumed field.** For a linear triangle the
+///    covariant membrane natural strain is element-CONSTANT at the mid-surface
+///    (constant `∇N_i`, `ζ`-independent in-plane base vectors, and the rotation
+///    term carries a `ζ` factor that vanishes at `ζ = 0`). The constant-state-
+///    consistent assumed field is therefore just that common constant — a single
+///    collocation sample reproduces any constant covariant state exactly (the
+///    step-3 consistency prerequisite) and is the membrane analogue of the
+///    constant-reproduction property of `interpolate_assumed_shear_mitc3_plus`.
+///    (Sampling all six interior tying points and averaging would yield the
+///    identical constant; the single evaluation just avoids five redundant
+///    [`degenerate_jacobian`] builds.)
+/// 3. **Covariant→physical lamina map.** Map the (constant) covariant membrane
+///    tensor to the physical lamina membrane strain with the in-plane `2×2`
+///    sub-block `m2 = (q·J⁻ᵀ)[0..2, 0..2]` of the lamina contravariant projection
+///    (`q` from [`lamina_frame`]), via the rank-2 tensor transformation
+///    `ε'_pq = Σ_{a,b} m2[p][a] m2[q][b] ε_ab` (`a, b ∈ {ξ, η}`).
+///
+/// # The locking cure (esc-4068-127 mechanism, membrane analogue)
+///
+/// The displacement-based membrane ([`degenerate_membrane_bending_b`] at `ζ = 0`)
+/// projects the full velocity gradient into the lamina frame, so on a curved
+/// (tilted-director) element the OUT-OF-PLANE component of the lamina axes `e_p`
+/// (the director `e3` is not the surface normal there) leaks director-rotation
+/// energy into the membrane strain — the parasitic membrane lock. The ANS field
+/// instead maps the genuine covariant membrane tensor through the in-plane
+/// contravariant projection `m2`, which contracts `e_p` onto the tangent plane
+/// and filters that parasitic coupling. Because `m2 = q·J⁻ᵀ` co-rotates with the
+/// configuration and the covariant strain vanishes for any rigid mode, the field
+/// is frame-objective and rigid-body-compatible by construction.
+///
+/// # Flat reduction
+///
+/// On a flat facet the lamina axes lie in the tangent plane (`e3` ∥ facet normal),
+/// so the in-plane projection is exact and the ANS membrane B equals the
+/// displacement-based membrane B at `ζ = 0` (the flat-inertness anchor, step-5).
+pub fn degenerate_assumed_membrane_b(
+    nodes: &[[f64; 3]; 3],
+    directors: &[Director; 3],
+    thicknesses: &[f64; 3],
+    coord: ShellRefCoord3,
+) -> [[f64; 18]; 3] {
+    // The membrane is a mid-surface quantity: evaluate everything at ζ = 0 above
+    // the requested in-plane location.
+    let mid = ShellRefCoord3::new(coord.xi, coord.eta, 0.0);
+
+    // (1)+(2) Sample the exact covariant membrane strain ONCE, at the element
+    // centroid on the mid-surface (ζ = 0). For a linear triangle this covariant
+    // membrane natural strain is element-CONSTANT at ζ = 0 (constant ∇N_i,
+    // ζ-independent in-plane base vectors, and the rotation term carries a ζ
+    // factor that vanishes at ζ = 0), so a single collocation sample IS the
+    // constant-state-consistent assumed field: it reproduces any constant
+    // covariant state exactly (the step-3 consistency prerequisite) — the membrane
+    // analogue of the constant-reproduction property of
+    // interpolate_assumed_shear_mitc3_plus. Sampling all six interior tying points
+    // and averaging would yield the identical constant, so the single evaluation
+    // just avoids five redundant degenerate_jacobian builds.
+    let centroid = ShellRefCoord3::new(1.0 / 3.0, 1.0 / 3.0, 0.0);
+    let b_cov = degenerate_exact_covariant_membrane_b(nodes, directors, thicknesses, centroid);
+
+    // (3) Covariant→physical lamina map at (ξ, η, 0): ε'_pq = Σ m2[p][a] m2[q][b] ε_ab.
+    // (s3 is the transverse-shear through-thickness factor — unused by the membrane.)
+    let (m2, _s3) = lamina_contravariant_projection(nodes, directors, thicknesses, mid);
+
+    let mut b_phys = [[0.0_f64; 18]; 3];
+    for dof in 0..18 {
+        let e_xx = b_cov[0][dof];
+        let e_yy = b_cov[1][dof];
+        let e_xy = 0.5 * b_cov[2][dof]; // tensor ε_ξη from engineering 2ε_ξη
+        // ε'_11 = Σ_{a,b} m2[0][a] m2[0][b] ε_ab
+        b_phys[0][dof] = m2[0][0] * m2[0][0] * e_xx
+            + m2[0][1] * m2[0][1] * e_yy
+            + 2.0 * m2[0][0] * m2[0][1] * e_xy;
+        // ε'_22
+        b_phys[1][dof] = m2[1][0] * m2[1][0] * e_xx
+            + m2[1][1] * m2[1][1] * e_yy
+            + 2.0 * m2[1][0] * m2[1][1] * e_xy;
+        // 2ε'_12
+        let e12 = m2[0][0] * m2[1][0] * e_xx
+            + m2[0][1] * m2[1][1] * e_yy
+            + (m2[0][0] * m2[1][1] + m2[0][1] * m2[1][0]) * e_xy;
+        b_phys[2][dof] = 2.0 * e12;
     }
     b_phys
 }
@@ -1434,6 +1644,397 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    // ── task 4069 step-1/2: exact covariant MEMBRANE strain B ────────────────
+
+    /// (i) On the flat patch, a constant in-plane stretch `u_x = a·x`, `u_y = b·y`
+    /// yields the constant COVARIANT membrane strain at `ζ=0`. The covariant strain
+    /// carries the un-normalized base-vector metric: with `g_ξ = x₁−x₀ = (2,0,0)`,
+    /// `g_η = x₂−x₀ = (0,1.5,0)`, `u_,ξ = (2a,0,0)`, `u_,η = (0,1.5b,0)`,
+    ///   `ε_ξξ = g_ξ·u_,ξ = 4a`, `ε_ηη = g_η·u_,η = 2.25b`, `2ε_ξη = 0`.
+    /// Evaluated at several `(ξ,η)` — the covariant membrane strain of a linear
+    /// triangle is element-constant at the mid-surface. Mirrors
+    /// `degenerate_b_constant_stretch_yields_constant_membrane_strain` (covariant
+    /// rather than physical-lamina components).
+    #[test]
+    fn degenerate_exact_covariant_membrane_b_constant_stretch_at_zeta_zero() {
+        let (nodes, directors, thicknesses) = flat_patch();
+        let a = 0.01_f64;
+        let b = -0.004_f64;
+        let mut u = [0.0_f64; 18];
+        for i in 0..3 {
+            u[6 * i] = a * nodes[i][0]; // u_x = a·x
+            u[6 * i + 1] = b * nodes[i][1]; // u_y = b·y
+        }
+        // g_ξ = (2,0,0), g_η = (0,1.5,0); u_,ξ = (2a,0,0), u_,η = (0,1.5b,0).
+        let want = [4.0 * a, 2.25 * b, 0.0];
+        for &(xi, eta) in &[(1.0 / 3.0, 1.0 / 3.0), (0.2, 0.3), (0.5, 0.25)] {
+            let bm = degenerate_exact_covariant_membrane_b(
+                &nodes,
+                &directors,
+                &thicknesses,
+                ShellRefCoord3::new(xi, eta, 0.0),
+            );
+            let e = b_times_u(&bm, &u);
+            for r in 0..3 {
+                assert!(
+                    (e[r] - want[r]).abs() < TOL,
+                    "covariant membrane strain[{r}] at ({xi},{eta}) = {} expected {}",
+                    e[r],
+                    want[r],
+                );
+            }
+        }
+    }
+
+    /// (ii) A rigid translation yields ZERO covariant membrane strain
+    /// (`Σ ∇N_i = 0`, so `u_,ξ = u_,η = 0`).
+    #[test]
+    fn degenerate_exact_covariant_membrane_b_rigid_translation_yields_zero() {
+        let (nodes, directors, thicknesses) = flat_patch();
+        let mut u = [0.0_f64; 18];
+        for i in 0..3 {
+            u[6 * i] = 0.7;
+            u[6 * i + 1] = -0.3;
+            u[6 * i + 2] = 0.4;
+        }
+        for &(xi, eta) in &[(1.0 / 3.0, 1.0 / 3.0), (0.25, 0.4)] {
+            let bm = degenerate_exact_covariant_membrane_b(
+                &nodes,
+                &directors,
+                &thicknesses,
+                ShellRefCoord3::new(xi, eta, 0.0),
+            );
+            let e = b_times_u(&bm, &u);
+            for (r, &er) in e.iter().enumerate() {
+                assert!(
+                    er.abs() < TOL,
+                    "rigid translation covariant membrane strain[{r}] = {er}",
+                );
+            }
+        }
+    }
+
+    // ── task 4069 step-3/4: assumed (ANS) membrane B — constant-state prereq ──
+
+    /// Constant-state reproduction (the consistency / patch prerequisite). On the
+    /// flat patch (a constant-Jacobian configuration, lamina = global xy) an affine
+    /// in-plane field `u_x = a·x + p·y`, `u_y = q·x + b·y` drives a CONSTANT
+    /// covariant membrane state, which maps to the constant physical lamina strain
+    /// `[a, b, p+q]`. The assumed-natural-strain membrane field
+    /// [`degenerate_assumed_membrane_b`] must reproduce it EXACTLY at every `(ξ,η)`
+    /// to `TOL = 1e-12`. Mirrors
+    /// `degenerate_assumed_covariant_shear_reproduces_constant_state`.
+    #[test]
+    fn degenerate_assumed_membrane_reproduces_constant_state() {
+        let (nodes, directors, thicknesses) = flat_patch();
+        let (a, b, p, q) = (0.012_f64, -0.006, 0.004, -0.002);
+        let mut u = [0.0_f64; 18];
+        for i in 0..3 {
+            let (x, y) = (nodes[i][0], nodes[i][1]);
+            u[6 * i] = a * x + p * y; // u_x = a·x + p·y
+            u[6 * i + 1] = q * x + b * y; // u_y = q·x + b·y
+        }
+        let want = [a, b, p + q];
+        for &(xi, eta) in &[(1.0 / 3.0, 1.0 / 3.0), (0.2, 0.3), (0.5, 0.25), (0.1, 0.6)] {
+            let bm = degenerate_assumed_membrane_b(
+                &nodes,
+                &directors,
+                &thicknesses,
+                ShellRefCoord3::new(xi, eta, 0.0),
+            );
+            let e = b_times_u(&bm, &u);
+            for r in 0..3 {
+                assert!(
+                    (e[r] - want[r]).abs() < TOL,
+                    "ANS membrane constant-state strain[{r}] at ({xi},{eta}) = {} expected {}",
+                    e[r],
+                    want[r],
+                );
+            }
+        }
+    }
+
+    // ── task 4069 step-5/6: flat inertness ───────────────────────────────────
+
+    /// Flat-inertness anchor. On a flat facet (planar nodes, directors ∥ +z,
+    /// uniform thickness) the assumed-natural-strain membrane B must equal the
+    /// membrane part of the displacement-based [`degenerate_membrane_bending_b`]
+    /// evaluated at `ζ = 0`, ENTRY-for-entry to 1e-12, at several `(ξ,η)`. This
+    /// pins the requirement that the ANS membrane field stays inert when the
+    /// element is flat — it must not spuriously soften a flat patch (whose
+    /// displacement membrane already carries no parasitic lock). Mirrors
+    /// `degenerate_transverse_shear_b_flat_reduces_to_mitc3_plus_j2_inv_t`.
+    ///
+    /// On a flat facet the lamina axes lie in the tangent plane, so the covariant
+    /// in-plane projection `m2` is exact and the ANS membrane equals the direct
+    /// lamina projection of the displacement gradient; the rotation columns are
+    /// zero in both (the ANS covariant membrane is translation-only at `ζ = 0`,
+    /// and the displacement membrane's through-thickness rotation gradient lies
+    /// along the flat normal, contributing no in-plane strain).
+    #[test]
+    fn degenerate_assumed_membrane_b_flat_reduces_to_displacement_membrane() {
+        let (nodes, directors, thicknesses) = flat_patch();
+        for &(xi, eta) in &[(1.0 / 3.0, 1.0 / 3.0), (0.2, 0.3), (0.5, 0.25), (0.1, 0.6)] {
+            let b_ans = degenerate_assumed_membrane_b(
+                &nodes,
+                &directors,
+                &thicknesses,
+                ShellRefCoord3::new(xi, eta, 0.0),
+            );
+            // Membrane part of the displacement-based B = the operator at ζ = 0.
+            let b_disp = degenerate_membrane_bending_b(
+                &nodes,
+                &directors,
+                &thicknesses,
+                ShellRefCoord3::new(xi, eta, 0.0),
+            );
+            for r in 0..3 {
+                for c in 0..18 {
+                    assert!(
+                        (b_ans[r][c] - b_disp[r][c]).abs() < 1e-12,
+                        "flat ANS membrane B[{r}][{c}] @ ({xi},{eta}) = {} ≠ displacement {}",
+                        b_ans[r][c],
+                        b_disp[r][c],
+                    );
+                }
+            }
+        }
+    }
+
+    // ── task 4069 step-7/8: rigid-body compatibility & frame objectivity ─────
+
+    /// (a) Rigid-body compatibility on the CURVED tilted fixture. A consistent
+    /// rigid rotation `u_i = ω×x_i`, `θ_i = ω` is strain-free, so the ANS membrane
+    /// field must annihilate it (`<1e-9`) at several `(ξ,η)`. The covariant
+    /// membrane strain IS the genuine strain (zero for any rigid mode), so this
+    /// holds by construction — verified directly on tilted directors. Mirrors
+    /// `degenerate_b_rigid_rotation_on_curved_patch_yields_zero_strain`.
+    #[test]
+    fn degenerate_assumed_membrane_b_rigid_rotation_on_curved_patch_yields_zero() {
+        let (nodes, directors, thicknesses) = tilted_fixture();
+        let omega = [0.02_f64, -0.05, 0.03];
+        let mut u = [0.0_f64; 18];
+        for (i, x_i) in nodes.iter().enumerate() {
+            let t = cross(omega, *x_i);
+            u[6 * i] = t[0];
+            u[6 * i + 1] = t[1];
+            u[6 * i + 2] = t[2];
+            u[6 * i + 3] = omega[0];
+            u[6 * i + 4] = omega[1];
+            u[6 * i + 5] = omega[2];
+        }
+        for &(xi, eta) in &[(1.0 / 3.0, 1.0 / 3.0), (0.2, 0.3), (0.5, 0.25)] {
+            let e = b_times_u(
+                &degenerate_assumed_membrane_b(
+                    &nodes,
+                    &directors,
+                    &thicknesses,
+                    ShellRefCoord3::new(xi, eta, 0.0),
+                ),
+                &u,
+            );
+            for (r, &er) in e.iter().enumerate() {
+                assert!(
+                    er.abs() < 1e-9,
+                    "rigid-rotation ANS membrane strain[{r}] = {er} @ ({xi},{eta})",
+                );
+            }
+        }
+    }
+
+    /// (b) Frame objectivity on the CURVED tilted fixture. Rotating the whole
+    /// configuration (nodes, directors, DOFs) by a fixed proper `R` leaves the ANS
+    /// membrane lamina strains unchanged (`<1e-9`): the covariant strain
+    /// (`g_a·u_,b`) and the covariant→physical map `m2 = q·J⁻ᵀ` co-rotate
+    /// together. An arbitrary non-rigid DOF field is used so the strains are
+    /// genuinely non-zero — a non-objective map would differ by O(strain). Mirrors
+    /// `degenerate_b_is_frame_objective_under_rigid_rotation`.
+    #[test]
+    fn degenerate_assumed_membrane_b_is_frame_objective_under_rigid_rotation() {
+        let (nodes, directors, thicknesses) = tilted_fixture();
+        let u: [f64; 18] = [
+            0.010, -0.020, 0.015, 0.030, -0.010, 0.020, // node 0
+            -0.005, 0.012, -0.008, -0.020, 0.025, -0.015, // node 1
+            0.018, -0.006, 0.022, 0.010, -0.030, 0.005, // node 2
+        ];
+        let r = rot_matrix();
+        let nodes_r = [matvec(&r, nodes[0]), matvec(&r, nodes[1]), matvec(&r, nodes[2])];
+        let directors_r =
+            [matvec(&r, directors[0]), matvec(&r, directors[1]), matvec(&r, directors[2])];
+        let mut u_r = [0.0_f64; 18];
+        for i in 0..3 {
+            let ut = matvec(&r, [u[6 * i], u[6 * i + 1], u[6 * i + 2]]);
+            let tt = matvec(&r, [u[6 * i + 3], u[6 * i + 4], u[6 * i + 5]]);
+            u_r[6 * i] = ut[0];
+            u_r[6 * i + 1] = ut[1];
+            u_r[6 * i + 2] = ut[2];
+            u_r[6 * i + 3] = tt[0];
+            u_r[6 * i + 4] = tt[1];
+            u_r[6 * i + 5] = tt[2];
+        }
+        let mut max_strain = 0.0_f64;
+        for &(xi, eta) in &[(1.0 / 3.0, 1.0 / 3.0), (0.25, 0.4), (0.5, 0.2)] {
+            let c = ShellRefCoord3::new(xi, eta, 0.0);
+            let e0 = b_times_u(
+                &degenerate_assumed_membrane_b(&nodes, &directors, &thicknesses, c),
+                &u,
+            );
+            let e1 = b_times_u(
+                &degenerate_assumed_membrane_b(&nodes_r, &directors_r, &thicknesses, c),
+                &u_r,
+            );
+            for (k, (&a, &b)) in e0.iter().zip(e1.iter()).enumerate() {
+                assert!(
+                    (a - b).abs() < 1e-9,
+                    "ANS membrane strain[{k}] not frame-objective: {a} vs {b} @ ({xi},{eta})",
+                );
+                max_strain = max_strain.max(a.abs());
+            }
+        }
+        assert!(
+            max_strain > 1e-6,
+            "non-rigid membrane strain magnitude {max_strain} too small to test objectivity",
+        );
+    }
+
+    // ── task 4069 step-9/10: parasitic-membrane-reduction witness ────────────
+
+    /// Parasitic-membrane-reduction witness (the locking-cure purpose). On the
+    /// curved tilted fixture under a curvature-coupled bending mode (uniform
+    /// director rotation, NO translation — an inextensional-type mode), the ANS
+    /// membrane strain magnitude `‖ANS·u‖` must be STRICTLY LESS than the
+    /// displacement-based membrane strain magnitude `‖disp·u‖` at the in-plane
+    /// integration points. RELATIVE inequality only — no absolute tolerance, hence
+    /// no numeric-bound premise.
+    ///
+    /// The displacement membrane spuriously couples director rotation into
+    /// membrane strain on a curved element (the parasitic lock); the ANS membrane,
+    /// being translation-only in covariant form at the mid-surface, carries none
+    /// of it (‖ANS·u‖ = 0 for a translation-free mode), so the inequality is
+    /// strict with ample margin.
+    #[test]
+    fn degenerate_assumed_membrane_b_filters_parasitic_membrane_on_curved_patch() {
+        let (nodes, directors, thicknesses) = tilted_fixture();
+        // Pure director-rotation mode (bending): θ_i = ω at every node, u_i = 0.
+        let omega = [0.01_f64, -0.02, 0.015];
+        let mut u = [0.0_f64; 18];
+        for i in 0..3 {
+            u[6 * i + 3] = omega[0];
+            u[6 * i + 4] = omega[1];
+            u[6 * i + 5] = omega[2];
+        }
+        let interior = Mitc3Plus.interior_tying_points();
+        let mag = |e: [f64; 3]| (e[0] * e[0] + e[1] * e[1] + e[2] * e[2]).sqrt();
+        for tp in interior.iter().take(3) {
+            let c = ShellRefCoord3::new(tp.coord.xi, tp.coord.eta, 0.0);
+            let ans = mag(b_times_u(
+                &degenerate_assumed_membrane_b(&nodes, &directors, &thicknesses, c),
+                &u,
+            ));
+            let disp = mag(b_times_u(
+                &degenerate_membrane_bending_b(&nodes, &directors, &thicknesses, c),
+                &u,
+            ));
+            assert!(
+                disp > 1e-6,
+                "displacement membrane strain {disp} must be a meaningful parasitic lock \
+                 @ ({},{})",
+                tp.coord.xi,
+                tp.coord.eta,
+            );
+            // The ANS covariant membrane is translation-only at ζ=0, so a
+            // translation-free director-rotation mode produces EXACTLY zero ANS
+            // membrane strain — assert that machine-zero directly (the real
+            // property under test). It implies a fortiori the relative locking-cure
+            // inequality ans < disp, since disp > 1e-6.
+            assert!(
+                ans < 1e-12,
+                "ANS membrane strain {ans} must be ~machine-zero for a translation-free \
+                 director-rotation mode @ ({},{}) — the parasitic lock is filtered entirely",
+                tp.coord.xi,
+                tp.coord.eta,
+            );
+        }
+    }
+
+    /// Quantitative filtering on a curved element with a MIXED translation+rotation
+    /// mode — a NON-trivial companion to the pure-rotation witness above (where the
+    /// ANS strain is structurally zero). The translation part is a genuine in-plane
+    /// stretch (nonzero membrane strain); the rotation part is a uniform director
+    /// rotation (the parasitic bending mode). Because the B operators are linear and
+    /// the ANS covariant membrane is translation-only at ζ=0, this pins the locking
+    /// cure with a nonzero ANS witness, without any fragile magnitude ordering of
+    /// summed strain vectors:
+    ///
+    /// - the ANS membrane strain is genuinely NONZERO (it captures the real stretch
+    ///   — the filter does not over-soften the membrane);
+    /// - adding the director rotation leaves the ANS membrane strain EXACTLY
+    ///   unchanged (the parasitic rotation is filtered to machine precision) — the
+    ///   cure;
+    /// - the displacement membrane strain DOES change when the rotation is added
+    ///   (it carries the parasitic membrane the ANS field removes) — the disease.
+    #[test]
+    fn degenerate_assumed_membrane_b_keeps_stretch_filters_rotation_on_curved_patch() {
+        let (nodes, directors, thicknesses) = tilted_fixture();
+        // Translation part: an isotropic in-plane stretch u_i = s·(x_i, y_i, 0) — a
+        // genuine membrane mode (nonzero ANS membrane strain).
+        let s = 1.0e-3_f64;
+        let mut u_trans = [0.0_f64; 18];
+        for i in 0..3 {
+            u_trans[6 * i] = s * nodes[i][0];
+            u_trans[6 * i + 1] = s * nodes[i][1];
+        }
+        // Mixed mode: add a uniform director rotation θ_i = ω (the parasitic bending
+        // mode) on top of the stretch.
+        let omega = [0.01_f64, -0.02, 0.015];
+        let mut u_mixed = u_trans;
+        for i in 0..3 {
+            u_mixed[6 * i + 3] = omega[0];
+            u_mixed[6 * i + 4] = omega[1];
+            u_mixed[6 * i + 5] = omega[2];
+        }
+        let mag = |e: [f64; 3]| (e[0] * e[0] + e[1] * e[1] + e[2] * e[2]).sqrt();
+        let diff = |a: [f64; 3], b: [f64; 3]| mag([a[0] - b[0], a[1] - b[1], a[2] - b[2]]);
+        let interior = Mitc3Plus.interior_tying_points();
+        for tp in interior.iter().take(3) {
+            let c = ShellRefCoord3::new(tp.coord.xi, tp.coord.eta, 0.0);
+            let ans_b = degenerate_assumed_membrane_b(&nodes, &directors, &thicknesses, c);
+            let disp_b = degenerate_membrane_bending_b(&nodes, &directors, &thicknesses, c);
+            let ans_mixed = b_times_u(&ans_b, &u_mixed);
+            let ans_trans = b_times_u(&ans_b, &u_trans);
+            let disp_mixed = b_times_u(&disp_b, &u_mixed);
+            let disp_trans = b_times_u(&disp_b, &u_trans);
+            // (a) ANS captures the genuine stretch — it is not over-filtered.
+            assert!(
+                mag(ans_mixed) > 1e-9,
+                "ANS membrane strain {} must be genuinely nonzero for a stretch mode @ ({},{})",
+                mag(ans_mixed),
+                tp.coord.xi,
+                tp.coord.eta,
+            );
+            // (b) The director rotation contributes EXACTLY nothing to the ANS
+            // membrane (translation-only covariant field at ζ=0) — the cure.
+            assert!(
+                diff(ans_mixed, ans_trans) < 1e-12,
+                "ANS membrane must be unchanged by the director rotation (filtered \
+                 exactly); changed by {} @ ({},{})",
+                diff(ans_mixed, ans_trans),
+                tp.coord.xi,
+                tp.coord.eta,
+            );
+            // (c) The displacement membrane DOES carry the parasitic rotation — the
+            // lock the ANS field removes.
+            assert!(
+                diff(disp_mixed, disp_trans) > 1e-9,
+                "displacement membrane must carry the parasitic rotation strain (the \
+                 lock); changed by only {} @ ({},{})",
+                diff(disp_mixed, disp_trans),
+                tp.coord.xi,
+                tp.coord.eta,
+            );
         }
     }
 }

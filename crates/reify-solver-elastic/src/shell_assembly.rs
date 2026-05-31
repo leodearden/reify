@@ -844,16 +844,27 @@ pub fn shell_element_stiffness_mitc3_plus(
 /// activating the bubble on the director substrate is task 4065's ANS-membrane).
 /// So the closed-form condensation is a no-op and `K* = K_NN`, structurally
 /// identical to the flat MITC3+ path.
+///
+/// # Shared core for the displacement-membrane and ANS-membrane variants
+///
+/// `use_ans_membrane` selects the membrane strain–displacement operator: `false`
+/// is the displacement-based membrane (the task 4068 substrate, exposed verbatim
+/// as [`shell_element_stiffness_degenerate`]); `true` swaps ONLY the membrane
+/// (`ζ=0`) part of `B_mb` for the assumed-natural-strain membrane field
+/// ([`shell_element_stiffness_degenerate_ans`], task 4069). Everything else —
+/// transverse shear, the bubble skeleton (`K_NB ≡ 0`), and the quadrature — is
+/// identical for both, so the non-ANS path is behaviourally unchanged.
 #[allow(clippy::needless_range_loop)]
-pub fn shell_element_stiffness_degenerate(
+fn degenerate_stiffness_core(
     nodes: &[[f64; 3]; 3],
     directors: &[crate::elements::degenerate_shell::Director; 3],
     thicknesses: &[f64; 3],
     material: &IsotropicElastic,
+    use_ans_membrane: bool,
 ) -> ElementStiffness {
     use crate::elements::degenerate_shell::{
-        ShellRefCoord3, degenerate_jacobian, degenerate_membrane_bending_b,
-        degenerate_transverse_shear_b,
+        ShellRefCoord3, degenerate_assumed_membrane_b, degenerate_jacobian,
+        degenerate_membrane_bending_b, degenerate_transverse_shear_b,
     };
     use crate::elements::mitc3_plus::Mitc3Plus;
 
@@ -888,10 +899,45 @@ pub fn shell_element_stiffness_degenerate(
     let w_zeta = 1.0_f64;
 
     for ip in inplane.iter() {
+        // For the ANS variant, the membrane reference (displacement membrane at
+        // ζ=0) and the ANS membrane field depend ONLY on the in-plane point — not
+        // on the through-thickness Gauss point ζ — so hoist them out of the ζ loop
+        // and evaluate them once per `ip`. degenerate_assumed_membrane_b is the
+        // expensive term (a covariant tying-point evaluation + a Jacobian inverse +
+        // lamina frame), and the ζ loop runs twice, so this halves the per-`ip` ANS
+        // overhead. The non-ANS path never evaluates these (no extra cost).
+        let (b_mem_ans, b_mem_disp) = if use_ans_membrane {
+            let mid = ShellRefCoord3::new(ip.xi, ip.eta, 0.0);
+            (
+                degenerate_assumed_membrane_b(nodes, directors, thicknesses, mid),
+                degenerate_membrane_bending_b(nodes, directors, thicknesses, mid),
+            )
+        } else {
+            ([[0.0_f64; NDOF]; 3], [[0.0_f64; NDOF]; 3])
+        };
         for &zeta in zeta_gauss.iter() {
             let c3 = ShellRefCoord3::new(ip.xi, ip.eta, zeta);
             let (_jm, det) = degenerate_jacobian(nodes, directors, thicknesses, c3);
-            let b_mb = degenerate_membrane_bending_b(nodes, directors, thicknesses, c3);
+            let b_mb = if use_ans_membrane {
+                // ANS membrane + displacement bending remainder: swap ONLY the
+                // membrane (ζ=0) part of B_mb for the assumed-natural-strain
+                // field, keeping the displacement bending and transverse shear
+                // exactly as the 4068 substrate built them:
+                //   B_ans(ζ) = B_mem_ANS + B_full(ζ) − B_mem_disp(ζ=0)
+                // On a flat facet B_mem_ANS = B_mem_disp(ζ=0), so B_ans = B_full
+                // (zero change to the flat element). B_mem_ANS and B_mem_disp are
+                // ζ-independent (hoisted above); only B_full(ζ) varies with ζ.
+                let b_full = degenerate_membrane_bending_b(nodes, directors, thicknesses, c3);
+                let mut b = [[0.0_f64; NDOF]; 3];
+                for r in 0..3 {
+                    for col in 0..NDOF {
+                        b[r][col] = b_mem_ans[r][col] + b_full[r][col] - b_mem_disp[r][col];
+                    }
+                }
+                b
+            } else {
+                degenerate_membrane_bending_b(nodes, directors, thicknesses, c3)
+            };
             let b_s = degenerate_transverse_shear_b(nodes, directors, thicknesses, c3);
             let scale = w_inplane * w_zeta * det;
 
@@ -1016,6 +1062,41 @@ pub fn shell_element_stiffness_degenerate(
         }
     }
     k_e
+}
+
+/// Degenerated (continuum-based) shell element stiffness with the
+/// **displacement-based** membrane operator — the task 4068 substrate. Thin
+/// wrapper over [`degenerate_stiffness_core`] with the assumed-membrane field
+/// DISABLED, so the element is behaviourally identical to the original 4068
+/// formulation and its patch / rigid-body / symmetry tests keep guarding the
+/// substrate unchanged. See the core's docs for the full formulation.
+pub fn shell_element_stiffness_degenerate(
+    nodes: &[[f64; 3]; 3],
+    directors: &[crate::elements::degenerate_shell::Director; 3],
+    thicknesses: &[f64; 3],
+    material: &IsotropicElastic,
+) -> ElementStiffness {
+    degenerate_stiffness_core(nodes, directors, thicknesses, material, false)
+}
+
+/// Degenerated shell element stiffness with the assumed-natural-strain
+/// **membrane** field active — the task 4069 membrane-locking cure. Identical to
+/// [`shell_element_stiffness_degenerate`] except the membrane part of `B_mb` is
+/// replaced by
+/// [`degenerate_assumed_membrane_b`](crate::elements::degenerate_shell::degenerate_assumed_membrane_b)
+/// (ANS membrane + displacement bending remainder); the transverse shear, the
+/// cubic bubble (`K_NB ≡ 0`), and the quadrature are unchanged. The ANS membrane
+/// filters the curvature-induced parasitic membrane energy the displacement field
+/// carries on a curved (tilted-director) element, softening the over-stiff
+/// response toward the reference. On a flat facet it reduces exactly to
+/// [`shell_element_stiffness_degenerate`].
+pub fn shell_element_stiffness_degenerate_ans(
+    nodes: &[[f64; 3]; 3],
+    directors: &[crate::elements::degenerate_shell::Director; 3],
+    thicknesses: &[f64; 3],
+    material: &IsotropicElastic,
+) -> ElementStiffness {
+    degenerate_stiffness_core(nodes, directors, thicknesses, material, true)
 }
 
 /// Rotation matrix Q = Ry(45°) · Rz(30°) used as a shared test fixture by
@@ -2367,6 +2448,134 @@ mod tests {
             "degenerate bending patch: U_K={u_k}, U_analytical={u_analytical} \
              (bending={u_bending}, shear={u_shear}), rel_err={}",
             (u_k - u_analytical).abs() / scale,
+        );
+    }
+
+    // --- Task 4069: ANS-membrane degenerate stiffness acceptance tests. The
+    // additive shell_element_stiffness_degenerate_ans swaps only the membrane part
+    // of B_mb for the assumed-natural-strain membrane field; these mirror the
+    // non-ANS degenerate acceptance tests above to pin the same well-posedness
+    // (18×18, symmetric, finite, 6-dim rigid null space) and the constant-strain
+    // membrane patch-test energy on a flat (constant-Jacobian) configuration where
+    // the ANS membrane reduces to the displacement membrane. ---
+
+    #[test]
+    fn degenerate_ans_stiffness_is_18x18_symmetric_finite_with_rigid_body_null_space() {
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let directors = curved_directors();
+        let thicknesses = [t; 3];
+        let k = shell_element_stiffness_degenerate_ans(&UNIT_TRI, &directors, &thicknesses, &mat);
+
+        // (i) Shape: 18×18 after static condensation of the 2 bubble DOFs.
+        assert_eq!(
+            k.n_dofs,
+            Mitc3Plus::N_DOFS,
+            "ANS degenerate element must condense to N_DOFS = 18"
+        );
+        assert_eq!(
+            k.data.len(),
+            Mitc3Plus::N_DOFS * Mitc3Plus::N_DOFS,
+            "ANS degenerate data length must be 18×18 = 324"
+        );
+
+        // (ii) Entrywise finite + symmetric to 1e-9 relative.
+        for i in 0..Mitc3Plus::N_DOFS {
+            for j in 0..Mitc3Plus::N_DOFS {
+                let kij = k.get(i, j);
+                let kji = k.get(j, i);
+                assert!(kij.is_finite(), "ANS degenerate K[{i}][{j}] = {kij} is not finite");
+                let scale = kij.abs().max(kji.abs()).max(1.0);
+                assert!(
+                    (kij - kji).abs() < 1e-9 * scale,
+                    "ANS degenerate asymmetry at ({i},{j}): {kij} vs {kji}",
+                );
+            }
+        }
+
+        // (iii) Rigid-body null space on the CURVED patch (3 translations + 3
+        // rotations about the mid-surface centroid). The ANS membrane annihilates
+        // any rigid mode (covariant membrane strain is the genuine strain); the
+        // displacement bending remainder and transverse shear are unchanged from
+        // the non-ANS substrate, so the 6-dim null space is preserved.
+        let k_max = k.data.iter().copied().fold(0.0_f64, |a, x| a.max(x.abs()));
+        let tol = 1e-9 * k_max.max(1.0);
+
+        for axis in 0..3 {
+            let mut u = [0.0_f64; Mitc3Plus::N_DOFS];
+            for node in 0..Mitc3Plus::N_NODES {
+                u[Mitc3Plus::N_DOFS_PER_NODE * node + axis] = 1.0;
+            }
+            let ku = matvec(&k, &u);
+            assert!(
+                linf(&ku) < tol,
+                "ANS degenerate translation axis {axis}: linf(K·u) = {}, tol = {tol}",
+                linf(&ku),
+            );
+        }
+
+        let c = [1.0 / 3.0_f64, 1.0 / 3.0, 0.0_f64];
+        let omega = [[1.0_f64, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        for &w in &omega {
+            let mut u = [0.0_f64; Mitc3Plus::N_DOFS];
+            for node in 0..Mitc3Plus::N_NODES {
+                let dx = [
+                    UNIT_TRI[node][0] - c[0],
+                    UNIT_TRI[node][1] - c[1],
+                    UNIT_TRI[node][2] - c[2],
+                ];
+                let ndp = Mitc3Plus::N_DOFS_PER_NODE;
+                u[ndp * node] = w[1] * dx[2] - w[2] * dx[1];
+                u[ndp * node + 1] = w[2] * dx[0] - w[0] * dx[2];
+                u[ndp * node + 2] = w[0] * dx[1] - w[1] * dx[0];
+                u[ndp * node + 3] = w[0];
+                u[ndp * node + 4] = w[1];
+                u[ndp * node + 5] = w[2];
+            }
+            let ku = matvec(&k, &u);
+            assert!(
+                linf(&ku) < tol,
+                "ANS degenerate rotation ω={w:?}: linf(K·u) = {}, tol = {tol}",
+                linf(&ku),
+            );
+        }
+    }
+
+    #[test]
+    fn degenerate_ans_membrane_patch_test_matches_analytical_energy() {
+        // On a flat (constant-Jacobian) patch the ANS membrane reduces to the
+        // displacement membrane (flat-inertness anchor), so the constant in-plane
+        // strain u_x = a·x, u_y = b·y reproduces the analytical membrane energy
+        // exactly — the ANS wiring must not perturb the flat patch test.
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let a = 0.01_f64;
+        let b = -0.005_f64;
+        let directors = flat_patch_directors();
+        let thicknesses = [t; 3];
+        let k = shell_element_stiffness_degenerate_ans(&UNIT_TRI, &directors, &thicknesses, &mat);
+
+        const NDP: usize = Mitc3Plus::N_DOFS_PER_NODE;
+        let mut u = [0.0_f64; Mitc3Plus::N_DOFS];
+        u[NDP] = a; // node1 at x=1 → u_x = a
+        u[NDP * 2 + 1] = b; // node2 at y=1 → u_y = b
+
+        let ku = matvec(&k, &u);
+        let u_k: f64 = 0.5 * ku.iter().zip(u.iter()).map(|(ki, ui)| ki * ui).sum::<f64>();
+
+        let d = plane_stress_d(&mat);
+        let eps = [a, b, 0.0_f64];
+        let d_eps = [
+            d[0][0] * eps[0] + d[0][1] * eps[1],
+            d[1][0] * eps[0] + d[1][1] * eps[1],
+            0.0,
+        ];
+        let area = 0.5_f64;
+        let u_analytical = 0.5 * (eps[0] * d_eps[0] + eps[1] * d_eps[1]) * t * area;
+        let scale = u_analytical.abs().max(1.0);
+        assert!(
+            (u_k - u_analytical).abs() < 1e-9 * scale,
+            "ANS degenerate membrane patch: U_K={u_k}, U_analytical={u_analytical}",
         );
     }
 
