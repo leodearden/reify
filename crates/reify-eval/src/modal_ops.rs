@@ -1089,6 +1089,33 @@ fn degenerate_displacement_history() -> Value {
     }))
 }
 
+/// Build the degenerate short-circuit outcome for a `ForcingTimeHistory` that
+/// carries no usable sources (`sources` empty or absent): an
+/// `E_TransientForcingMissing` `Error` diagnostic plus a degenerate (empty
+/// `t_samples` / `mode_coords`) `DisplacementTimeHistory` — no transient was
+/// integrated. The transient twin of [`no_mass_matrix_outcome`]; message-based
+/// diagnostic (`code: None`) per design_decision #6, and no warm state is
+/// donated (ι owns fn+dispatch; caching is λ's job).
+///
+/// The `ForcingTimeHistory` ctor's `sources.count > 0` constraint
+/// (`modal_analysis.ri`) catches the common case at construction, so an e2e
+/// cannot normally reach the trampoline with empty sources; this guard defends
+/// the dispatch boundary against a hand-built / Undef / degenerate forcing.
+fn forcing_missing_outcome() -> ComputeOutcome {
+    let diagnostic = Diagnostic::error(
+        "E_TransientForcingMissing: the forcing time-history carries no sources \
+         (`sources` empty or absent), so there is no load to project onto the \
+         modes and the mode-superposition transient is undefined; returning an \
+         empty displacement history.",
+    );
+    ComputeOutcome::Completed {
+        result: degenerate_displacement_history(),
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: vec![diagnostic],
+    }
+}
+
 /// Fetch field `name` from a StructureInstance `val` by reference (no clone);
 /// `None` if `val` is not a StructureInstance or lacks the field. The borrowing
 /// companion to [`field_or`], used by the transient trampolines to read forcing /
@@ -1230,6 +1257,15 @@ pub fn solve_transient_response_trampoline(
     let t_end = value_inputs.get(3).map(read_scalar_si).unwrap_or(0.0);
     let dt = value_inputs.get(4).map(read_scalar_si).unwrap_or(0.0);
 
+    // First guard (mirrors the density guard `no_mass_matrix_outcome`): a forcing
+    // time-history with no sources carries no load to project onto the modes, so
+    // short-circuit with E_TransientForcingMissing + a degenerate history rather
+    // than silently integrate a zero forcing over the grid.
+    let sources = extract_forcing_sources(&forcing);
+    if sources.is_empty() {
+        return forcing_missing_outcome();
+    }
+
     let grid = uniform_time_grid(t_start, t_end, dt);
     // Degenerate time params (dt ≤ 0 or t_end < t_start) → no grid → empty history
     // (keeps t_samples / mode_coords mutually consistent and avoids the solver's
@@ -1253,7 +1289,6 @@ pub fn solve_transient_response_trampoline(
         dir: [f64; 3],
         samples: Vec<f64>,
     }
-    let sources = extract_forcing_sources(&forcing);
     let projections: Vec<SourceProjection> = sources
         .iter()
         .map(|src| {
