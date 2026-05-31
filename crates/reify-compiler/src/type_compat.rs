@@ -929,19 +929,20 @@ mod tests {
         );
     }
 
-    /// `try_default_padding` fires a `debug_assert!` (panics in debug builds)
-    /// when a candidate violates the length invariant
-    /// (`param_defaults.len() != params.len()`).
-    ///
-    /// This is the "bad shape" that was previously silently skipped by the
-    /// defensive filter; after task-3702 it is a programming error surfaced in
-    /// debug builds.
-    ///
-    /// Candidate: deliberately constructed via struct-literal with
-    /// `params = vec![("x", Real)]` but `param_defaults = Vec::new()` —
-    /// the legacy empty form that violates the invariant.
-    ///
-    /// task-3702 (tighten try_default_padding signature)
+    // `try_default_padding` fires a `debug_assert!` (panics in debug builds)
+    // when a candidate violates the length invariant
+    // (`param_defaults.len() != params.len()`).
+    //
+    // This is the "bad shape" that was previously silently skipped by the
+    // defensive filter; after task-3702 it is a programming error surfaced in
+    // debug builds.
+    //
+    // Candidate: deliberately constructed via struct-literal with
+    // `params = vec![("x", Real)]` but `param_defaults = Vec::new()` —
+    // the legacy empty form that violates the invariant.
+    //
+    // task-3702 (tighten try_default_padding signature)
+
     // ── modulo_operands_are_int predicate (task-3916) ────────────────────────
 
     /// `(Int, Int)` is the one valid modulo shape → `true`.
