@@ -5931,4 +5931,65 @@ mod tests {
             result
         );
     }
+
+    /// `determined(cell)` must return `false` when the cell is present in the
+    /// snapshot but holds `Value::Undef` (geometry-undef param case: the eval
+    /// pipeline stores `(Undef, DeterminacyState::Determined)` for cells that
+    /// have a binding expression but whose value depends on geometry not yet
+    /// resolved).
+    ///
+    /// RED: current code returns `Bool(true)` — the `Determined` arm checks only
+    /// the state field and ignores the value field of the snapshot tuple.
+    ///
+    /// Also guards the happy path: a concrete `(Value::Real(2.5), Determined)`
+    /// cell must still return `Bool(true)` both before and after the fix (guards
+    /// against over-correction).
+    #[test]
+    fn determined_false_for_present_undef_value_cell() {
+        let undef_cell = ValueCellId::new("S", "geom_param");
+        let concrete_cell = ValueCellId::new("S", "concrete_param");
+
+        // Build the determinacy snapshot:
+        //   undef_cell:    (Undef, Determined)    ← geometry-undef param — NOT determined
+        //   concrete_cell: (Real(2.5), Determined) ← resolved param — IS determined
+        let mut det_map: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::new();
+        det_map.insert(
+            undef_cell.clone(),
+            (Value::Undef, DeterminacyState::Determined),
+        );
+        det_map.insert(
+            concrete_cell.clone(),
+            (Value::Real(2.5), DeterminacyState::Determined),
+        );
+
+        let values = ValueMap::new();
+        let ctx = EvalContext::new(&values, &[]).with_determinacy(&det_map);
+
+        // RED: present-but-Undef cell must NOT count as determined.
+        let undef_pred = CompiledExpr::determinacy_predicate(
+            DeterminacyPredicateKind::Determined,
+            undef_cell.clone(),
+        );
+        let undef_result = eval_expr(&undef_pred, &ctx);
+        assert_eq!(
+            undef_result,
+            Value::Bool(false),
+            "determined(geom_param) must be false for a present-but-Undef cell (got {:?})",
+            undef_result,
+        );
+
+        // Happy-path guard: concrete resolved cell must still be determined.
+        let concrete_pred = CompiledExpr::determinacy_predicate(
+            DeterminacyPredicateKind::Determined,
+            concrete_cell.clone(),
+        );
+        let concrete_result = eval_expr(&concrete_pred, &ctx);
+        assert_eq!(
+            concrete_result,
+            Value::Bool(true),
+            "determined(concrete_param) must be true for a concrete resolved cell (got {:?})",
+            concrete_result,
+        );
+    }
 }
