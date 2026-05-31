@@ -25,13 +25,15 @@ use std::collections::{HashMap, HashSet};
 
 use reify_ast::ParsedModule;
 use reify_core::{Diagnostic, DiagnosticLabel};
-use reify_ir::{CompiledFunction, EnumDef};
+use reify_core::{SourceSpan, Type};
+use reify_ir::{CompiledExpr, CompiledExprKind, CompiledFunction, EnumDef};
 
 use crate::CompiledModule;
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::compile_builder::defs_phase::build_constraint_def_registry;
 use crate::compile_builder::traits_phase::build_trait_registry;
-use crate::conformance::check_trait_arg_conformance;
+use crate::conformance::{check_fn_arg_conformance, check_trait_arg_conformance};
+use crate::type_compat::type_carries_trait_object;
 use crate::entity::{
     AutoResolutionRequest, EntityDefRef, PendingBoundCheck, PendingSubOverrideAuto,
     check_type_param_bounds, compile_entity,
@@ -465,4 +467,108 @@ pub(crate) fn phase_sub_override_autos(ctx: &mut CompilationCtx, prelude: &[&Com
             });
         }
     }
+}
+
+/// Post-compilation pass: walk compiled entity value-cell `default_expr`s,
+/// looking for `UserFunctionCall` nodes whose function has trait-object params,
+/// and validate each such arg against its declared param type.
+///
+/// ## Registry composition
+///
+/// Rebuilds `template_registry` and `trait_registry` using the same
+/// prelude-then-local composition as `phase_pending_bound_checks` so the
+/// conformance walker sees the same templates as the structure path does.
+///
+/// ## Scope coverage (step-6)
+///
+/// Entity value-cell `default_expr`s only. Entity constraints and function
+/// bodies are added in step-8. Ports/connections/objective/realizations/
+/// match-arm-groups and compiled_purposes are out of scope — consistent with
+/// the structure-conformance baseline (sub-component-only, runs before
+/// purposes). See task-4081 design decision §4.
+///
+/// ## Eval-builtin protection
+///
+/// Eval-builtins (bind/sweep/dim) have no `.ri` user-function signature so
+/// their calls lower to `CompiledExprKind::FunctionCall` (not
+/// `UserFunctionCall`) and are never in `ctx.resolution_functions` —
+/// a `fn_sig` miss-skip provides double protection.
+pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&CompiledModule]) {
+    // Build template registry (same composition as phase_pending_bound_checks).
+    let template_registry: HashMap<String, &TopologyTemplate> = prelude
+        .iter()
+        .flat_map(|m| m.templates.iter())
+        .filter(|t| t.entity_kind == EntityKind::Structure)
+        .map(|t: &TopologyTemplate| (t.name.clone(), t))
+        .chain(ctx.templates.iter().map(|t| (t.name.clone(), t)))
+        .collect();
+
+    // Build trait registry (same composition as phase_pending_bound_checks).
+    let trait_registry = build_trait_registry(&ctx.trait_defs, prelude);
+
+    // Build name → &CompiledFunction map from the merged resolution table.
+    let fn_sig: HashMap<&str, &CompiledFunction> = ctx
+        .resolution_functions
+        .iter()
+        .map(|f| (f.name.as_str(), f))
+        .collect();
+
+    // Collect diagnostics into a local vec to avoid borrow-checker conflicts
+    // (we hold shared borrows on ctx.templates and ctx.resolution_functions via
+    // template_registry / fn_sig while also needing &mut ctx.diagnostics).
+    let mut new_diagnostics: Vec<reify_core::Diagnostic> = Vec::new();
+
+    // Walk entity value-cell default_expr fields.
+    for template in &ctx.templates {
+        for vc in &template.value_cells {
+            if let Some(expr) = &vc.default_expr {
+                check_expr_fn_arg_conformance(
+                    expr,
+                    &fn_sig,
+                    &template_registry,
+                    &trait_registry,
+                    vc.span,
+                    &mut new_diagnostics,
+                );
+            }
+        }
+    }
+
+    ctx.diagnostics.extend(new_diagnostics);
+}
+
+/// Walk a single `CompiledExpr` tree, calling `check_fn_arg_conformance` for
+/// every `UserFunctionCall` node whose params carry a trait object.
+fn check_expr_fn_arg_conformance(
+    expr: &CompiledExpr,
+    fn_sig: &HashMap<&str, &CompiledFunction>,
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    representative_span: SourceSpan,
+    diagnostics: &mut Vec<reify_core::Diagnostic>,
+) {
+    expr.walk(&mut |node: &CompiledExpr| {
+        let CompiledExprKind::UserFunctionCall { function_name, args } = &node.kind else {
+            return;
+        };
+        // Miss-skip: eval-builtins are absent from fn_sig.
+        let Some(f) = fn_sig.get(function_name.as_str()) else {
+            return;
+        };
+        // Check each param whose type carries a trait object.
+        for ((param_name, param_ty), arg) in f.params.iter().zip(args.iter()) {
+            if !type_carries_trait_object(param_ty) {
+                continue;
+            }
+            check_fn_arg_conformance(
+                param_ty,
+                param_name,
+                arg,
+                representative_span,
+                template_registry,
+                trait_registry,
+                diagnostics,
+            );
+        }
+    });
 }

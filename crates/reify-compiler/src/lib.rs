@@ -383,6 +383,13 @@ pub fn compile_with_prelude_context(
 
     compile_builder::entities_phase::phase_pending_bound_checks(&mut compile_ctx, prelude_refs);
 
+    // Function-call-argument trait conformance post-pass (task-4081).
+    // Runs immediately after phase_pending_bound_checks using the same
+    // template+trait registry composition. Walks entity value-cell default_expr
+    // fields for UserFunctionCall nodes and validates each trait-carrying param
+    // against its arg via check_fn_arg_conformance.
+    compile_builder::entities_phase::phase_fn_arg_conformance(&mut compile_ctx, prelude_refs);
+
     compile_builder::post_passes::phase_recursion_detection(&mut compile_ctx);
     compile_builder::post_passes::phase_dup_sig_check(&mut compile_ctx);
     compile_builder::post_passes::phase_field_composition(&mut compile_ctx);
