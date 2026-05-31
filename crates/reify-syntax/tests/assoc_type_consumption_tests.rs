@@ -6,7 +6,9 @@
 //! (b) New: qualified type-expr in `param`/`let` type position
 //!     → `TypeExprKind::QualifiedAssoc { base, trait_name: None, member }`
 //!     RED until step-6 adds the `qualified_type` branch in `lower_type_expr_node`.
-//! Step-7 adds the disambiguated (trait_name: Some) form; tested separately below.
+//! (d) Disambiguated FORK-G form: `Beam::(HasMaterial::Material)`
+//!     → `TypeExprKind::QualifiedAssoc { base, trait_name: Some("HasMaterial"), member }`
+//!     Step-7 adds this test; step-8 extends the lowering if needed.
 
 use reify_ast::*;
 
@@ -145,6 +147,46 @@ fn let_bare_qualified_type_with_type_param_base_lowers_to_qualified_assoc() {
         }
         other => panic!(
             "expected TypeExprKind::QualifiedAssoc, got {:?}",
+            other
+        ),
+    }
+}
+
+// ── (d) Disambiguated FORK-G form: Beam::(HasMaterial::Material) ─────────────
+//
+// Tests that the parenthesized `(trait :: member)` form lowers to
+// `TypeExprKind::QualifiedAssoc` with `trait_name: Some("HasMaterial")`.
+// Step-7 (RED) adds this test; step-8 extends the lowering.
+
+#[test]
+fn param_disambiguated_qualified_type_lowers_to_qualified_assoc_with_trait_name() {
+    let (decls, errors) = parse_decls(
+        "structure def UseAssoc { param n : Beam::(HasMaterial::Material) }",
+    );
+    assert!(errors.is_empty(), "unexpected parse errors: {:?}", errors);
+
+    let s = as_structure(&decls);
+    assert_eq!(s.members.len(), 1);
+
+    let p = as_param_member(&s.members[0]);
+    assert_eq!(p.name, "n");
+
+    let ty = p.type_expr.as_ref().expect("expected Some(type_expr) for param n");
+    match &ty.kind {
+        TypeExprKind::QualifiedAssoc { base, trait_name, member } => {
+            match &base.kind {
+                TypeExprKind::Named { name, .. } => assert_eq!(name, "Beam"),
+                other => panic!("expected base Named(Beam), got {:?}", other),
+            }
+            assert_eq!(
+                trait_name.as_deref(),
+                Some("HasMaterial"),
+                "expected trait_name = Some(\"HasMaterial\")"
+            );
+            assert_eq!(member, "Material");
+        }
+        other => panic!(
+            "expected TypeExprKind::QualifiedAssoc (disambiguated), got {:?}",
             other
         ),
     }
