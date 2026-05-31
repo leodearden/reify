@@ -33,7 +33,7 @@ compile_error!(
      in [dev-dependencies]."
 );
 
-use reify_ir::{GeometryHandleId, GeometryKernel, GeometryQuery, Value};
+use reify_ir::{GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Value};
 use reify_kernel_manifold::{kernel::ManifoldKernel, test_fixtures::unit_cube_mesh};
 
 // ---------------------------------------------------------------------------
@@ -1084,6 +1084,119 @@ fn query_inertia_tensor_unit_cube_density_scaled() {
                 "density scaling must be linear: 2·I(ρ=1)[{i}][{j}]={} != I(ρ=2)[{i}][{j}]={}",
                 t1[i][j] * 2.0,
                 t[i][j],
+            );
+        }
+    }
+}
+
+/// `InertiaTensor` on an **asymmetric L-tromino** — pins the off-diagonal sign
+/// convention the symmetric unit cube cannot reach.
+///
+/// `query_inertia_tensor_unit_cube_density_scaled` exercises an axis-aligned
+/// cube, whose products of inertia are all *exactly zero*. That case cannot
+/// distinguish OCCT's `Iᵢⱼ = −∫xᵢxⱼ dV` convention (which the implementation
+/// hard-codes via `-pc[i][j]`) from the opposite sign, and cannot catch a
+/// transposed / mis-slotted off-diagonal. This test uses an L-tromino — three
+/// unit cubes unioned into an L in the xy-plane, extruded 1 unit in z — which
+/// has a single non-zero, closed-form product of inertia, so both the sign and
+/// the placement are pinned.
+///
+/// # Closed-form expected tensor (per unit density)
+///
+/// The L-tromino is the three unit cells `[0,1]³`, `[1,2]×[0,1]×[0,1]`,
+/// `[0,1]×[1,2]×[0,1]` (volume `V = 3`), centroid `(5/6, 5/6, 1/2)`. Each cell's
+/// own cross moment about its centre is zero (it is a box), so the product of
+/// inertia is just `Σ dxᵢ·dyᵢ` over the cell-centroid offsets:
+///
+/// * `∫(x−cx)(y−cy) dV = 1/9 − 2/9 − 2/9 = −1/3`
+/// * `∫(x−cx)(z−cz) dV = ∫(y−cy)(z−cz) dV = 0` (every cell has `zᵢ = cz`)
+/// * `∫(x−cx)² dV = ∫(y−cy)² dV = 11/12`, `∫(z−cz)² dV = 1/4`
+///
+/// In OCCT's convention `Iₖₖ = ∫(x_l² + x_m²) dV`, `Iᵢⱼ = −∫xᵢxⱼ dV`:
+///
+/// ```text
+///        ⎡  7/6   1/3    0  ⎤
+///   I =  ⎢  1/3   7/6    0  ⎥   (× ρ)
+///        ⎣   0     0   11/6 ⎦
+/// ```
+///
+/// The off-diagonal `Iₓᵧ = −(−1/3) = +1/3` is the discriminating value: the
+/// L's mass sits where `(x−cx)` and `(y−cy)` have *opposite* signs (the missing
+/// fourth cell is the high-x/high-y one), so `∫xy dV < 0` and the OCCT-convention
+/// product of inertia is **positive**. The opposite sign convention would yield
+/// `−1/3`, and a transposed off-diagonal would move the non-zero term into
+/// `Iₓz`/`Iᵧz`. Cross-kernel byte-parity against OCCT for the same solid is
+/// KGQ-ρ's integration gate; here the values are pinned analytically.
+///
+/// The L is built by `Union`-ing face-sharing cubes, so its mesh may carry
+/// Manifold's merge-tolerance-level coordinate noise (unlike the directly
+/// ingested cube) — hence a 1e-6 tolerance rather than 1e-9, still four orders
+/// of magnitude tighter than the ±1/3 sign gap under test.
+// 3×3 matrix assertions read most clearly with explicit (i, j) indices — see
+// the sibling cube test's note (and crates/reify-kernel-occt/src/lib.rs:3279).
+#[allow(clippy::needless_range_loop)]
+#[test]
+fn query_inertia_tensor_l_tromino_pins_offdiagonal_sign() {
+    let mut kernel = ManifoldKernel::new();
+    let c1 = ingest(&mut kernel, [0.0, 0.0, 0.0]);
+    let c2 = ingest(&mut kernel, [1.0, 0.0, 0.0]); // shares face x=1 with c1
+    let c3 = ingest(&mut kernel, [0.0, 1.0, 0.0]); // shares face y=1 with c1
+
+    // L = c1 ∪ c2 ∪ c3 — an L-tromino (3 unit cells, asymmetric in x/y).
+    let bar = kernel
+        .execute(&GeometryOp::Union {
+            left: c1,
+            right: c2,
+        })
+        .expect("union of two face-sharing cubes must succeed")
+        .id;
+    let ell = kernel
+        .execute(&GeometryOp::Union {
+            left: bar,
+            right: c3,
+        })
+        .expect("union of the bar with the third cube must succeed")
+        .id;
+
+    let rho = 2.0;
+    let t = query_inertia_tensor(&kernel, ell, rho);
+
+    // Closed-form per-unit-density tensor (see doc comment), scaled by ρ.
+    let expected = [
+        [7.0 / 6.0 * rho, 1.0 / 3.0 * rho, 0.0],
+        [1.0 / 3.0 * rho, 7.0 / 6.0 * rho, 0.0],
+        [0.0, 0.0, 11.0 / 6.0 * rho],
+    ];
+    const TOL: f64 = 1e-6;
+    for i in 0..3 {
+        for j in 0..3 {
+            assert!(
+                (t[i][j] - expected[i][j]).abs() < TOL,
+                "L-tromino inertia[{i}][{j}] must be {} within {TOL}; got {}",
+                expected[i][j],
+                t[i][j],
+            );
+        }
+    }
+
+    // The discriminating assertion, called out explicitly: the xy product of
+    // inertia is *positive* (ρ/3) under OCCT's Iᵢⱼ = −∫xᵢxⱼ dV convention. A
+    // positive value pins the sign; the opposite convention would give −ρ/3.
+    assert!(
+        t[0][1] > 0.0,
+        "L-tromino product of inertia Iₓᵧ must be POSITIVE under the −∫xy dV \
+         convention; the sign is the contract under test (got {})",
+        t[0][1],
+    );
+
+    // Symmetry (independent of the closed-form magnitudes).
+    for i in 0..3 {
+        for j in 0..3 {
+            assert!(
+                (t[i][j] - t[j][i]).abs() < 1e-12,
+                "L-tromino inertia tensor must be symmetric: [{i}][{j}]={} != [{j}][{i}]={}",
+                t[i][j],
+                t[j][i],
             );
         }
     }
