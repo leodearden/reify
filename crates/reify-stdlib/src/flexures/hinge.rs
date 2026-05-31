@@ -13,8 +13,8 @@ use reify_core::DimensionVector;
 use reify_ir::Value;
 
 use super::common::{
-    length_si, make_flexure_joint, material_field_si, neutral_angle_si, symmetric_angle_range,
-    PRB_ANGLE_LIMIT_RAD,
+    length_si, make_flexure_joint, material_field_si, material_numeric_field, neutral_angle_si,
+    symmetric_angle_range, PRB_ANGLE_LIMIT_RAD,
 };
 
 /// Howell §5.7 small-length flexural pivot (SLFP) stiffness coefficient.
@@ -159,25 +159,6 @@ fn prb_cross_spring_pivot(args: &[Value]) -> Value {
     }
 }
 
-/// Extract an f64 from a material `Value::StructureInstance` field, accepting
-/// `Value::Scalar{si_value}`, `Value::Real`, or `Value::Int` — the
-/// `read_scalar_si` pattern (reify-eval/src/modal_ops.rs:839). Used for
-/// `poisson_ratio`, which is a bare `Value::Real` at runtime (unlike
-/// `youngs_modulus`, which arrives as a `Value::Scalar`).
-fn material_real_field(material: &Value, key: &str) -> Option<f64> {
-    let fields = match material {
-        Value::StructureInstance(data) => &data.fields,
-        _ => return None,
-    };
-    let v = fields.get(&key.to_string())?;
-    match v {
-        Value::Scalar { si_value, .. } if si_value.is_finite() => Some(*si_value),
-        Value::Real(r) if r.is_finite() => Some(*r),
-        Value::Int(i) => Some(*i as f64),
-        _ => None,
-    }
-}
-
 /// Validated inputs for `prb_let_joint`.
 struct LetInputs<'a> {
     length: f64,
@@ -219,7 +200,7 @@ fn parse_let_inputs(args: &[Value]) -> Option<LetInputs<'_>> {
     if e <= 0.0 {
         return None;
     }
-    let nu = material_real_field(material, "poisson_ratio")?;
+    let nu = material_numeric_field(material, "poisson_ratio")?;
     if !(0.0..0.5).contains(&nu) {
         return None;
     }

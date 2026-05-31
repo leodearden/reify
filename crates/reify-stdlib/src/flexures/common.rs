@@ -95,6 +95,38 @@ pub(super) fn material_field_si(material: &Value, key: &str) -> Option<f64> {
     scalar_si(fields.get(&key.to_string())?)
 }
 
+/// Extract a numeric `f64` from a material `Value::StructureInstance` field,
+/// accepting `Value::Scalar{si_value}`, `Value::Option(Some(inner))`,
+/// `Value::Real`, or `Value::Int` — the `read_scalar_si` pattern
+/// (reify-eval/src/modal_ops.rs:839).
+///
+/// Unlike [`material_field_si`] (which only matches `Scalar` / `Option<Scalar>`),
+/// this also accepts bare `Value::Real` and `Value::Int`, making it suitable
+/// for fields such as `poisson_ratio` that land as a bare `Value::Real` at
+/// runtime. `Option(Some(_))` is unwrapped recursively for parity with
+/// [`material_field_si`]'s option-handling — so if `poisson_ratio` is ever
+/// stored as `Option<Real>`, it still reads correctly rather than returning
+/// `None`.
+pub(super) fn material_numeric_field(material: &Value, key: &str) -> Option<f64> {
+    let fields = match material {
+        Value::StructureInstance(data) => &data.fields,
+        _ => return None,
+    };
+    numeric_from_value(fields.get(&key.to_string())?)
+}
+
+/// Unwrap a numeric `f64` from any scalar-like `Value` variant, recursing into
+/// `Option(Some(_))` wrappers.
+fn numeric_from_value(v: &Value) -> Option<f64> {
+    match v {
+        Value::Scalar { si_value, .. } if si_value.is_finite() => Some(*si_value),
+        Value::Option(Some(inner)) => numeric_from_value(inner),
+        Value::Real(r) if r.is_finite() => Some(*r),
+        Value::Int(i) => Some(*i as f64),
+        _ => None,
+    }
+}
+
 /// Extract a neutral angle in radians from a trailing constructor argument.
 ///
 /// Accepts an ANGLE-dimensioned `Value::Scalar` (e.g. `Value::angle`), a bare
