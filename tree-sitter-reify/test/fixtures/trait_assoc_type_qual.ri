@@ -1,0 +1,9 @@
+// Fixture for task 3971 (trait-assoc-type ιₐ): qualified type-expr uses in type position.
+// Exercises Beam::Material, T::Material, and the FORK-G disambiguator Beam::(HasMaterial::Material)
+// as type annotations inside a structure body.
+// No tuples (project constraint).
+structure def UseAssocTypes<T> : HasMaterial {
+    param m : Beam::Material
+    let y : T::Material = steel_instance
+    param n : Beam::(HasMaterial::Material)
+}
