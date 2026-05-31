@@ -150,6 +150,7 @@ When the jcodemunch MCP server is unreachable (the common case — jcodemunch is
   ```
   reify-audit: jcodemunch unreachable at 'http://127.0.0.1:8901/mcp': … — P1 degraded to zero findings; P2/P5 still run (pass --no-jcodemunch to silence)
   ```
+  *(Note: the breadcrumb text names "P1" generically, even when an advisory P-* pattern such as PDEAD, PUNTESTED, or PLAYER is the pattern that degraded — the message text in the binary was written before the P-* patterns existed. All of P1/PDEAD/PUNTESTED/PLAYER degrade identically; the breadcrumb wording is not a reliable indicator of which pattern triggered the degradation.)*
 
 **This breadcrumb is NOT exit 125** — the exit code is determined by findings severity (0 = none, 1+ = findings), same as a normal run. The §3.1 disambiguator applies normally.
 
