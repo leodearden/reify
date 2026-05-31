@@ -489,8 +489,13 @@ fn emit_leaf_conformance_for_arg_type(
 ///
 /// Used when the compiled arg is not a literal (e.g. a `ValueRef`), so its inner
 /// expressions are not available for inspection. Walks the wrapper structure of
-/// `arg_type` in lockstep with `param_type`, deferring to a type-only leaf check at
-/// `Type::TraitObject` via `emit_leaf_conformance_for_arg_type`.
+/// `arg_type` in lockstep with `param_type`. At a `Type::TraitObject` leaf,
+/// `StructureRef`/`TraitObject` args defer to `emit_leaf_conformance_for_arg_type`;
+/// `Geometry`/`Error` args are skipped (unverifiable at the type level / anti-cascade);
+/// any other leaf type (scalar, enum, point, …) cannot carry trait bounds and emits a
+/// `TypeNotConformingToTrait` directly — mirroring the literal walker's fallback so a
+/// wrapper-nested trait param reached with a non-literal scalar arg is not silently
+/// accepted (task-4081 soundness, esc-4081-174).
 ///
 /// Wrapper-shape mismatches (e.g. `Option<T>` param vs `List<T>` arg, or bare leaf arg
 /// vs wrapper param) emit a `TypeNotConformingToTrait` diagnostic when `param_type` is
@@ -526,11 +531,43 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
             walk_param_against_arg_type(key_p, key_a, ctx);
             walk_param_against_arg_type(val_p, val_a, ctx);
         }
-        // Leaf: param type is a trait object — delegate to shared helper.
+        // Leaf: param type is a trait object.
         // No FunctionCall promotion needed here — we work with the resolved result_type.
-        (Type::TraitObject(required_trait), arg_ty) => {
-            emit_leaf_conformance_for_arg_type(arg_ty, required_trait, ctx);
-        }
+        (Type::TraitObject(required_trait), arg_ty) => match arg_ty {
+            // StructureRef / TraitObject args: walk trait bounds via the shared helper.
+            Type::StructureRef(_) | Type::TraitObject(_) => {
+                emit_leaf_conformance_for_arg_type(arg_ty, required_trait, ctx);
+            }
+            // Geometry conformance (Bounded/Connected/Convex) is decided from the
+            // compiled op-array, which is only reachable through the literal walker
+            // (`check_leaf_trait_conformance`). A type-level `Type::Geometry` leaf
+            // (e.g. an `Option<Geometry>` ValueRef) carries no op-array here, so we
+            // cannot verify it — skip rather than risk a false positive. `Type::Error`
+            // is anti-cascade (a nested poison sentinel reaching this leaf).
+            Type::Geometry | Type::Error => {}
+            // Any other leaf type (scalar, enum, point, vector, …) can never carry
+            // trait bounds, so it cannot conform to a trait param. Emit the same
+            // diagnostic the literal walker emits for non-struct/non-trait leaves.
+            // Without this arm, a wrapper-nested trait param reached with a
+            // non-literal arg — e.g. `param j : Option<DrivingJoint>` given an
+            // `Option<Real>` ValueRef — would silently lose the previously-existing
+            // "no matching overload" hard error (task-4081 soundness regression,
+            // esc-4081-174). The bare (unwrapped) trait-param case is already
+            // covered by the literal walker's own fallback arm.
+            _ => {
+                ctx.diagnostics.push(
+                    Diagnostic::error(format!(
+                        "type '{}' does not conform to trait '{}' required by param '{}'",
+                        arg_ty, required_trait, ctx.arg_name
+                    ))
+                    .with_code(DiagnosticCode::TypeNotConformingToTrait)
+                    .with_label(DiagnosticLabel::new(
+                        ctx.span,
+                        format!("expected a type conforming to trait '{}'", required_trait),
+                    )),
+                );
+            }
+        },
         // Wrapper-shape mismatch or non-wrapper/non-trait param type.
         // Emit a diagnostic when param_type is a wrapper (Option/List/Set/Map) and
         // arg_type doesn't match that wrapper — e.g. bare leaf passed to Option<T>,

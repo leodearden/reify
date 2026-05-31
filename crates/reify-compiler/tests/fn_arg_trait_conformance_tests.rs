@@ -353,6 +353,133 @@ structure Test {
     );
 }
 
+// ── Soundness: scalar args to trait params must not be silently accepted ─────
+
+/// Regression (task-4081 soundness, esc-4081-174): a non-conforming SCALAR arg
+/// passed to a SOLE trait-object overload must still produce a diagnostic.
+///
+/// The wildcard relaxation in `resolve_function_overload` lets a trait param
+/// match any arg type, so `couple(2.0)` against a lone `fn couple(DrivingJoint)`
+/// resolves to that overload instead of producing a hard "no matching overload"
+/// error. The conformance pass must then catch the scalar arg — otherwise the
+/// previously-existing hard error is silently lost. The bare (unwrapped) leaf is
+/// caught by the literal walker's fallback arm.
+#[test]
+fn bare_scalar_arg_to_sole_trait_overload_emits_conformance_error() {
+    let source = r#"
+trait DrivingJoint {}
+
+fn couple(joint : DrivingJoint) -> Real { 0.0 }
+
+structure Test {
+    let r = couple(2.0)
+}
+"#;
+    let module = compile_source(source);
+
+    let conformance_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
+        .collect();
+
+    assert_eq!(
+        conformance_errors.len(),
+        1,
+        "scalar `couple(2.0)` against a sole trait overload must emit exactly 1 \
+         TypeNotConformingToTrait; got {}: {:?}",
+        conformance_errors.len(),
+        module.diagnostics
+    );
+    assert!(
+        conformance_errors[0].message.contains("DrivingJoint"),
+        "diagnostic should mention 'DrivingJoint'; got: {}",
+        conformance_errors[0].message
+    );
+}
+
+/// Regression (task-4081 soundness, esc-4081-174): the WRAPPER-nested variant
+/// reached through the type-level walker.
+///
+/// `couple_opt(joint : Option<DrivingJoint>)` called with a **non-literal**
+/// (`ValueRef`) `Option<Real>` arg routes through `walk_param_against_arg_type`,
+/// whose `Type::TraitObject` leaf previously delegated to
+/// `emit_leaf_conformance_for_arg_type` and silently skipped non-struct/non-trait
+/// leaf types. The scalar leaf must now emit a `TypeNotConformingToTrait`.
+///
+/// This is the path the literal walker does NOT cover (it only sees inline
+/// `OptionSome(...)` literals, not a `ValueRef` bound to `some(2.0)`).
+#[test]
+fn wrapper_nested_valueref_scalar_arg_emits_conformance_error() {
+    let source = r#"
+trait DrivingJoint {}
+
+fn couple_opt(joint : Option<DrivingJoint>) -> Real { 0.0 }
+
+structure Test {
+    let n = some(2.0)
+    let r = couple_opt(n)
+}
+"#;
+    let module = compile_source(source);
+
+    let conformance_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
+        .collect();
+
+    assert_eq!(
+        conformance_errors.len(),
+        1,
+        "wrapper-nested ValueRef scalar arg `couple_opt(n)` must emit exactly 1 \
+         TypeNotConformingToTrait; got {}: {:?}",
+        conformance_errors.len(),
+        module.diagnostics
+    );
+    assert!(
+        conformance_errors[0].message.contains("DrivingJoint"),
+        "diagnostic should mention 'DrivingJoint'; got: {}",
+        conformance_errors[0].message
+    );
+}
+
+/// Companion positive guard: a CONFORMING struct nested in an `Option<trait>`
+/// param and passed as a `ValueRef` must NOT trip a conformance error — the new
+/// scalar-leaf arm must not over-fire on the struct path that flows through the
+/// type-level walker.
+#[test]
+fn wrapper_nested_valueref_conforming_struct_emits_no_error() {
+    let source = r#"
+trait DrivingJoint {}
+
+structure RevoluteJoint : DrivingJoint {
+    param x : Real = 0.0
+}
+
+fn couple_opt(joint : Option<DrivingJoint>) -> Real { 0.0 }
+
+structure Test {
+    let n = some(RevoluteJoint())
+    let r = couple_opt(n)
+}
+"#;
+    let module = compile_source(source);
+
+    let conformance_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
+        .collect();
+
+    assert!(
+        conformance_errors.is_empty(),
+        "conforming struct in Option<trait> via ValueRef must produce no \
+         TypeNotConformingToTrait errors; got: {:?}",
+        conformance_errors
+    );
+}
+
 // ── Step-11: objective / realization / guarded-group coverage (soundness) ────
 //
 // The step-2 trait-object wildcard relaxation in `resolve_function_overload` is
