@@ -252,6 +252,13 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
                 // Validate each comma-separated token individually.
                 for tok in p.split(',') {
                     let tok = tok.trim();
+                    if tok.is_empty() {
+                        return Err(
+                            "empty --pattern token; remove the stray comma \
+                             (e.g. use 'P1,P2' not 'P1,P2,')"
+                                .to_string(),
+                        );
+                    }
                     if !matches!(tok, "P1" | "P2" | "P5" | "PDEAD" | "PUNTESTED" | "PLAYER") {
                         return Err(format!(
                             "unknown --pattern value '{}'; expected P1, P2, P5, PDEAD, PUNTESTED, or PLAYER",
@@ -999,9 +1006,26 @@ mod tests {
             err.contains("expected P1, P2, P5, PDEAD, or PUNTESTED"),
             "error must list all known tokens; got: {err}"
         );
+        // NOTE: we do not assert !err.contains("P1,BOGUS") — a future message
+        // that echoes the input but still names BOGUS would be equally valid.
+        // The positive assertions above (token named + known-token list) are
+        // the meaningful contract.
+    }
+
+    /// Trailing or leading commas (`--pattern P1,` / `--pattern ,P2`) produce
+    /// a dedicated "empty --pattern token" diagnostic rather than the generic
+    /// `unknown --pattern value ''` message.
+    #[test]
+    fn parse_args_pattern_empty_token_gives_clear_error() {
+        let err = unwrap_err(parse_args(&["--pattern".to_string(), "P1,".to_string()]));
         assert!(
-            !err.contains("P1,BOGUS"),
-            "error must NOT echo the whole comma string 'P1,BOGUS'; got: {err}"
+            err.contains("empty --pattern token"),
+            "trailing comma must produce empty-token diagnostic; got: {err}"
+        );
+        let err2 = unwrap_err(parse_args(&["--pattern".to_string(), ",P2".to_string()]));
+        assert!(
+            err2.contains("empty --pattern token"),
+            "leading comma must produce empty-token diagnostic; got: {err2}"
         );
     }
 
