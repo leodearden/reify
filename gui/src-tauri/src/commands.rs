@@ -56,7 +56,7 @@ pub struct AppState {
     /// slot via `.take()`, so a successful cancel also cleans up.  No run-id
     /// matching is performed; the assumption is that at most one FEA solve runs
     /// at a time (enforced by the engine mutex).
-    pub pending_solve_cancel: Mutex<Option<CancellationHandle>>,
+    pub pending_solve_cancel: Arc<Mutex<Option<CancellationHandle>>>,
 }
 
 // --- Helper functions for testability ---

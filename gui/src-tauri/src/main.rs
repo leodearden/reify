@@ -652,7 +652,7 @@ fn main() {
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::clone(&selection_arc),
         initial_file: Mutex::new(initial_file.clone()),
-        pending_solve_cancel: Mutex::new(None),
+        pending_solve_cancel: Arc::new(Mutex::new(None)),
     };
 
     tauri::Builder::default()

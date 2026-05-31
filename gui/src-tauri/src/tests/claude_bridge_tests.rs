@@ -862,7 +862,7 @@ fn app_state_has_sidecar_field() {
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo::default())),
         initial_file: Mutex::new(None),
-        pending_solve_cancel: Mutex::new(None),
+        pending_solve_cancel: Arc::new(Mutex::new(None)),
     };
 }
 

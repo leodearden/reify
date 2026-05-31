@@ -33,7 +33,7 @@ fn app_state_constructible() {
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo::default())),
         initial_file: Mutex::new(None),
-        pending_solve_cancel: Mutex::new(None),
+        pending_solve_cancel: Arc::new(Mutex::new(None)),
     };
 }
 
@@ -51,7 +51,7 @@ fn app_state_selection_is_accessible() {
             hovered_entity: None,
         })),
         initial_file: Mutex::new(None),
-        pending_solve_cancel: Mutex::new(None),
+        pending_solve_cancel: Arc::new(Mutex::new(None)),
     };
     let sel = state.selection.read().unwrap();
     assert_eq!(sel.selected_entity, Some("Bracket".to_string()));
@@ -71,7 +71,7 @@ fn app_state_selection_multi() {
             hovered_entity: None,
         })),
         initial_file: Mutex::new(None),
-        pending_solve_cancel: Mutex::new(None),
+        pending_solve_cancel: Arc::new(Mutex::new(None)),
     };
     let sel = state.selection.read().unwrap();
     assert_eq!(sel.selected_entity, Some("A".to_string()));
@@ -967,7 +967,7 @@ fn cancel_solve_impl_fires_published_handle_and_clears_slot() {
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo::default())),
         initial_file: Mutex::new(None),
-        pending_solve_cancel: Mutex::new(Some(handle_clone)),
+        pending_solve_cancel: Arc::new(Mutex::new(Some(handle_clone))),
     };
 
     let result = cancel_solve_impl(&state);
@@ -992,7 +992,7 @@ fn cancel_solve_impl_returns_ok_when_slot_empty() {
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo::default())),
         initial_file: Mutex::new(None),
-        pending_solve_cancel: Mutex::new(None),
+        pending_solve_cancel: Arc::new(Mutex::new(None)),
     };
 
     let result = cancel_solve_impl(&state);
