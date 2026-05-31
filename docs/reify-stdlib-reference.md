@@ -481,6 +481,17 @@ fn edges_parallel_to(solid: Solid, direction: Vector3<Dimensionless>, tolerance:
 fn edges_at_height(solid: Solid, height: Length, tolerance: Length) -> List<Curve>
 ```
 
+**Kernel note (mesh vs B-rep).** `faces()`/`edges()` cardinality and the
+indices returned by `adjacent_faces()`/`shared_edges()` are **kernel-dependent**
+(selected by the `#kernel(...)` pragma). On the **B-rep** kernel (OCCT) a face
+is a smooth parametric surface patch, so a box has 6 faces; on the **mesh**
+kernel (Manifold) a face is a mesh triangle, so the same box has 12 faces. Face
+counts and the triangle-vs-patch indices the adjacency selectors return are
+therefore **not comparable across kernels**. `edges_by_length` is **B-rep-only**
+(the mesh kernel has no curves — querying it on a mesh solid is unsupported);
+the other selectors and the mass properties (`center_of_mass`,
+`moment_of_inertia`) have parity on both kernels.
+
 ### 3.10 `std.geometry.traits`
 
 ```

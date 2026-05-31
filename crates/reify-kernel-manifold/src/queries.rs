@@ -9,6 +9,39 @@
 //! - `contains`: point-in-solid via `Manifold::ray_cast` crossing count.
 //! - `geo_equiv`: topology-signature + N=8 sampled-vertex comparison.
 //!
+//! Task 3625 (KGQ-π) adds the topology selectors and mass properties:
+//! `extract_faces`/`extract_edges` sub-shape enumeration; the per-element
+//! `tri_area` / `tri_unit_normal` / `edge_unit_tangent` / `points_bbox`
+//! helpers; the `canonical_edges` / `triangles_of` / `adjacent_faces` /
+//! `shared_edges` topology helpers; and `mass_properties` (signed-tetrahedron
+//! volume / centroid / inertia integration). Every reply reproduces OCCT's
+//! exact wire format so KGQ-ρ's cross-kernel parity gate reads both kernels
+//! identically. See the semantic-gap note below.
+//!
+//! ## Manifold mesh-face vs BRep-face semantic gap
+//!
+//! A Manifold "face" is a **mesh triangle** (or a coalesced set of coplanar
+//! triangles); a BRep "face" is a **smooth parametric surface patch**. The two
+//! kernels therefore disagree on face cardinality: `faces(mesh_box)` returns
+//! **12** sub-handles (one per triangle) while `faces(brep_box)` returns **6**
+//! (one per planar patch). Consequently [`adjacent_faces`] and [`shared_edges`]
+//! index **mesh triangles** on the Manifold side, not BRep patches, so a
+//! `len(faces(...))` or an adjacency-index result depends on the active
+//! `#kernel(occt)` / `#kernel(manifold)` pragma and is **not** directly
+//! comparable across the kernel boundary. This honest per-triangle model is the
+//! resolution of PRD Open Question §10.5
+//! (`docs/prds/v0_3/kernel-geometry-queries.md`); the `12 ≠ 6` inequality is
+//! pinned at runtime by the `extract_faces` smoke test, not asserted as prose.
+//!
+//! ### `EdgeLength` is BRep-only (no `EdgesByLength` parity)
+//!
+//! Per the task-3623 (KGQ-ξ) capability table, `EdgeLength` is
+//! `QueryCapability::BRepOnly` ("Manifold has no curves"). This crate
+//! deliberately does **not** implement a mesh `EdgeLength`, so the
+//! `edges_by_length` stdlib selector has **no Manifold parity** — on a mesh
+//! solid it is BRep-only (eval emits `QueryNotSupportedOnRepr`). The other
+//! eight topology selectors and both mass properties do have Manifold parity.
+//!
 //! ## Implementation note — manifold3d 0.2 distance API
 //!
 //! `manifold3d` 0.2 (re-exports `manifold-csg` 0.2.0) exposes
