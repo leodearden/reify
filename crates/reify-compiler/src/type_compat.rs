@@ -445,6 +445,22 @@ pub(crate) fn resolve_binop(op: &str) -> Option<BinOp> {
     }
 }
 
+/// Enforce spec §5.1: "modulo is `Int % Int -> Int` ONLY".
+///
+/// Returns `true` only when both operands are `Type::Int`.  All other shapes
+/// (`Real`, `Scalar{Q}`, `Bool`, …) are rejected.
+///
+/// This is a pure predicate co-located with `resolve_binop` / `infer_binop_type`
+/// so it can be unit-tested independently of the compiler pipeline.  Diagnostic
+/// *emission* lives in `crates/reify-compiler/src/expr.rs` (the only site with a
+/// `&mut Vec<Diagnostic>` sink), following the same split used for the Pow guard
+/// (task-3805 / `E_NONINT_EXP_ON_DIMENSIONED`).
+///
+/// The PRD-prose mnemonic is `E_MODULO_REQUIRES_INT` (severity `E_` → Error).
+pub(crate) fn modulo_operands_are_int(left: &Type, right: &Type) -> bool {
+    matches!(left, Type::Int) && matches!(right, Type::Int)
+}
+
 /// Parse a string unary operator into a `UnOp`.
 pub(crate) fn resolve_unop(op: &str) -> Option<UnOp> {
     match op {
