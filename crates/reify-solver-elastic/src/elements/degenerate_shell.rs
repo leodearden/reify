@@ -1737,4 +1737,51 @@ mod tests {
             }
         }
     }
+
+    // ── task 4069 step-5/6: flat inertness ───────────────────────────────────
+
+    /// Flat-inertness anchor. On a flat facet (planar nodes, directors ∥ +z,
+    /// uniform thickness) the assumed-natural-strain membrane B must equal the
+    /// membrane part of the displacement-based [`degenerate_membrane_bending_b`]
+    /// evaluated at `ζ = 0`, ENTRY-for-entry to 1e-12, at several `(ξ,η)`. This
+    /// pins the requirement that the ANS membrane field stays inert when the
+    /// element is flat — it must not spuriously soften a flat patch (whose
+    /// displacement membrane already carries no parasitic lock). Mirrors
+    /// `degenerate_transverse_shear_b_flat_reduces_to_mitc3_plus_j2_inv_t`.
+    ///
+    /// On a flat facet the lamina axes lie in the tangent plane, so the covariant
+    /// in-plane projection `m2` is exact and the ANS membrane equals the direct
+    /// lamina projection of the displacement gradient; the rotation columns are
+    /// zero in both (the ANS covariant membrane is translation-only at `ζ = 0`,
+    /// and the displacement membrane's through-thickness rotation gradient lies
+    /// along the flat normal, contributing no in-plane strain).
+    #[test]
+    fn degenerate_assumed_membrane_b_flat_reduces_to_displacement_membrane() {
+        let (nodes, directors, thicknesses) = flat_patch();
+        for &(xi, eta) in &[(1.0 / 3.0, 1.0 / 3.0), (0.2, 0.3), (0.5, 0.25), (0.1, 0.6)] {
+            let b_ans = degenerate_assumed_membrane_b(
+                &nodes,
+                &directors,
+                &thicknesses,
+                ShellRefCoord3::new(xi, eta, 0.0),
+            );
+            // Membrane part of the displacement-based B = the operator at ζ = 0.
+            let b_disp = degenerate_membrane_bending_b(
+                &nodes,
+                &directors,
+                &thicknesses,
+                ShellRefCoord3::new(xi, eta, 0.0),
+            );
+            for r in 0..3 {
+                for c in 0..18 {
+                    assert!(
+                        (b_ans[r][c] - b_disp[r][c]).abs() < 1e-12,
+                        "flat ANS membrane B[{r}][{c}] @ ({xi},{eta}) = {} ≠ displacement {}",
+                        b_ans[r][c],
+                        b_disp[r][c],
+                    );
+                }
+            }
+        }
+    }
 }
