@@ -594,4 +594,128 @@ mod tests {
             mat3_max_abs_diff(&j_a, &j_b),
         );
     }
+
+    // ── step-7: membrane/bending strain-displacement B ──────────────────────
+
+    /// Contract a 3×18 B-matrix with an 18-DOF vector → 3-component strain.
+    fn b_times_u(b: &[[f64; 18]; 3], u: &[f64; 18]) -> [f64; 3] {
+        let mut e = [0.0_f64; 3];
+        for (r, row) in b.iter().enumerate() {
+            for (c, &bc) in row.iter().enumerate() {
+                e[r] += bc * u[c];
+            }
+        }
+        e
+    }
+
+    /// Flat patch in the xy-plane: directors +z, uniform thickness. The lamina
+    /// frame is global xy, so the in-plane strain components are global.
+    fn flat_patch() -> ([[f64; 3]; 3], [Director; 3], [f64; 3]) {
+        let nodes = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 1.5, 0.0]];
+        let directors = [[0.0, 0.0, 1.0]; 3];
+        let thicknesses = [0.25; 3];
+        (nodes, directors, thicknesses)
+    }
+
+    /// (i) A rigid-body translation yields ZERO membrane/bending strain at every
+    /// integration point (Σ ∇N_i = 0).
+    #[test]
+    fn degenerate_b_rigid_translation_yields_zero_strain() {
+        let (nodes, directors, thicknesses) = flat_patch();
+        // Uniform translation (0.7, −0.3, 0.4) at all nodes, rotations zero.
+        let mut u = [0.0_f64; 18];
+        for i in 0..3 {
+            u[6 * i] = 0.7;
+            u[6 * i + 1] = -0.3;
+            u[6 * i + 2] = 0.4;
+        }
+        for &zeta in &[-0.6, 0.0, 0.6] {
+            let b = degenerate_membrane_bending_b(
+                &nodes,
+                &directors,
+                &thicknesses,
+                ShellRefCoord3::new(0.3, 0.3, zeta),
+            );
+            let e = b_times_u(&b, &u);
+            for (r, &er) in e.iter().enumerate() {
+                assert!(er.abs() < 1e-12, "rigid translation strain[{r}] = {er} @ ζ={zeta}");
+            }
+        }
+    }
+
+    /// (ii) A constant in-plane stretch field u_x = a·x, u_y = b·y yields the
+    /// constant membrane strain [a, b, 0] (lamina = global xy on the flat patch).
+    #[test]
+    fn degenerate_b_constant_stretch_yields_constant_membrane_strain() {
+        let (nodes, directors, thicknesses) = flat_patch();
+        let a = 0.01_f64;
+        let b = -0.004_f64;
+        let mut u = [0.0_f64; 18];
+        for i in 0..3 {
+            u[6 * i] = a * nodes[i][0]; // u_x = a·x
+            u[6 * i + 1] = b * nodes[i][1]; // u_y = b·y
+        }
+        for &zeta in &[-0.6, 0.0, 0.6] {
+            let bm = degenerate_membrane_bending_b(
+                &nodes,
+                &directors,
+                &thicknesses,
+                ShellRefCoord3::new(0.25, 0.4, zeta),
+            );
+            let e = b_times_u(&bm, &u);
+            assert!((e[0] - a).abs() < 1e-12, "ε_xx = {} expected {a} @ ζ={zeta}", e[0]);
+            assert!((e[1] - b).abs() < 1e-12, "ε_yy = {} expected {b} @ ζ={zeta}", e[1]);
+            assert!(e[2].abs() < 1e-12, "γ_xy = {} expected 0 @ ζ={zeta}", e[2]);
+        }
+    }
+
+    /// (iii) Column sparsity matches the 18-DOF (6-per-node) layout: the matrix
+    /// is 3×18; the drilling rotation about the director (col 6i+5 on a +z-flat
+    /// patch) produces no in-plane strain at any ζ; and at the mid-surface
+    /// (ζ=0) the out-of-plane translation column (6i+2) produces no membrane
+    /// strain.
+    #[test]
+    fn degenerate_b_column_sparsity_matches_layout() {
+        let (nodes, directors, thicknesses) = flat_patch();
+
+        // Drilling (θ_z) column zero at several ζ.
+        for &zeta in &[-0.7, 0.0, 0.7] {
+            let b = degenerate_membrane_bending_b(
+                &nodes,
+                &directors,
+                &thicknesses,
+                ShellRefCoord3::new(0.3, 0.3, zeta),
+            );
+            assert_eq!(b.len(), 3, "B must have 3 strain rows");
+            assert_eq!(b[0].len(), 18, "B must have 18 DOF columns");
+            for i in 0..3 {
+                let drill = 6 * i + 5;
+                for r in 0..3 {
+                    assert!(
+                        b[r][drill].abs() < 1e-12,
+                        "drilling col {drill} row {r} = {} must be 0 @ ζ={zeta}",
+                        b[r][drill],
+                    );
+                }
+            }
+        }
+
+        // Out-of-plane translation (u_z) column zero at the mid-surface.
+        let b0 = degenerate_membrane_bending_b(
+            &nodes,
+            &directors,
+            &thicknesses,
+            ShellRefCoord3::new(0.3, 0.3, 0.0),
+        );
+        for i in 0..3 {
+            let uz = 6 * i + 2;
+            for r in 0..3 {
+                assert!(
+                    b0[r][uz].abs() < 1e-12,
+                    "u_z col {uz} row {r} = {} must be 0 at ζ=0",
+                    b0[r][uz],
+                );
+            }
+        }
+    }
 }
