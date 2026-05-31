@@ -1242,6 +1242,49 @@ pub(crate) fn compile_expr_guarded(
             )
         }
         reify_ast::ExprKind::FunctionCall { name, args } => {
+            // ── task 3808 (δ): semantic gate — reject `auto` in function-call args ──
+            // Named-arg `auto` (both strict `ExprKind::Auto { free: false }` and free
+            // `ExprKind::Auto { free: true }`) is valid only at a BINDING SITE (sub
+            // override, param default, etc.).  When it appears as an argument to a
+            // non-structure callee, emit `AutoNotAtBindingSite` (E_AUTO_NOT_AT_BINDING_SITE)
+            // and return a poison literal to suppress cascading type errors.
+            //
+            // Structure construction (`Bolt(length: auto)`) is explicitly exempt:
+            // named-arg `auto` at a construction site adopts determinacy-Auto on the
+            // field cell (task ε).  The exemption reuses the identical condition from the
+            // StructureInstanceCtor branch (lines 1297-1300 below) so the gate decision
+            // and the ctor-vs-function dispatch stay in sync.
+            //
+            // Positional `auto` is already a parse error (α), so any `ExprKind::Auto`
+            // in `args` at this arm necessarily came from a named arg.  Scanning raw AST
+            // args before any compilation avoids wasted effort on poisoned subtrees.
+            // Only the first offending arg is reported (anti-cascade; task-448/1912/1921).
+            let is_structure_ctor = scope
+                .template_registry
+                .and_then(|r| r.get(name.as_str()))
+                .map(|t| t.entity_kind == EntityKind::Structure)
+                .unwrap_or(false);
+            if !is_structure_ctor {
+                if let Some(auto_arg) =
+                    args.iter().find(|a| matches!(a.kind, reify_ast::ExprKind::Auto { .. }))
+                {
+                    return make_poison_literal(
+                        diagnostics,
+                        Diagnostic::error(format!(
+                            "auto is not allowed in a function-call argument \
+                             (function '{}'); to expose a free parameter, declare \
+                             `param <name> = auto` at a binding site instead",
+                            name,
+                        ))
+                        .with_code(DiagnosticCode::AutoNotAtBindingSite)
+                        .with_label(DiagnosticLabel::new(
+                            auto_arg.span,
+                            "auto not allowed in a function-call argument",
+                        )),
+                    );
+                }
+            }
+
             // Intercept `some(expr)` before general function resolution.
             // some() is a language-level constructor, not a user-defined function.
             if name == "some" {
