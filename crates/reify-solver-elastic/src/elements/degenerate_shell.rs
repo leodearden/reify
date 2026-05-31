@@ -732,18 +732,20 @@ pub fn degenerate_transverse_shear_b(
 ///
 /// # Pipeline (mirrors the transverse-shear ANS pipeline)
 ///
-/// 1. **Exact covariant samples.** Sample the exact covariant membrane strain
-///    ([`degenerate_exact_covariant_membrane_b`]) at the six interior tying
-///    points ([`Mitc3Plus::interior_tying_points`]), all at the mid-surface
-///    `ζ = 0`.
-/// 2. **Constant-state-consistent re-interpolation.** For a linear triangle the
+/// 1. **Exact covariant sample.** Sample the exact covariant membrane strain
+///    ([`degenerate_exact_covariant_membrane_b`]) once, at the element centroid
+///    on the mid-surface `ζ = 0`.
+/// 2. **Constant-state-consistent assumed field.** For a linear triangle the
 ///    covariant membrane natural strain is element-CONSTANT at the mid-surface
 ///    (constant `∇N_i`, `ζ`-independent in-plane base vectors, and the rotation
-///    term carries a `ζ` factor that vanishes at `ζ = 0`). The collocation
-///    re-interpolation therefore reduces to the common constant — implemented as
-///    the tying-point mean, which reproduces any constant covariant state exactly
-///    (the step-3 consistency prerequisite) and is the membrane analogue of the
+///    term carries a `ζ` factor that vanishes at `ζ = 0`). The constant-state-
+///    consistent assumed field is therefore just that common constant — a single
+///    collocation sample reproduces any constant covariant state exactly (the
+///    step-3 consistency prerequisite) and is the membrane analogue of the
 ///    constant-reproduction property of `interpolate_assumed_shear_mitc3_plus`.
+///    (Sampling all six interior tying points and averaging would yield the
+///    identical constant; the single evaluation just avoids five redundant
+///    [`degenerate_jacobian`] builds.)
 /// 3. **Covariant→physical lamina map.** Map the (constant) covariant membrane
 ///    tensor to the physical lamina membrane strain with the in-plane `2×2`
 ///    sub-block `m2 = (q·J⁻ᵀ)[0..2, 0..2]` of the lamina contravariant projection
@@ -778,26 +780,19 @@ pub fn degenerate_assumed_membrane_b(
     // the requested in-plane location.
     let mid = ShellRefCoord3::new(coord.xi, coord.eta, 0.0);
 
-    // (1) Sample the exact covariant membrane strain at the six interior tying
-    // points, all at the mid-surface, and (2) accumulate for the constant-state-
-    // consistent mean re-interpolation.
-    let interior = Mitc3Plus.interior_tying_points();
-    let mut b_cov = [[0.0_f64; 18]; 3];
-    for tp in interior.iter() {
-        let c3 = ShellRefCoord3::new(tp.coord.xi, tp.coord.eta, 0.0);
-        let s = degenerate_exact_covariant_membrane_b(nodes, directors, thicknesses, c3);
-        for r in 0..3 {
-            for dof in 0..18 {
-                b_cov[r][dof] += s[r][dof];
-            }
-        }
-    }
-    let inv_n = 1.0 / (interior.len() as f64);
-    for row in b_cov.iter_mut() {
-        for v in row.iter_mut() {
-            *v *= inv_n;
-        }
-    }
+    // (1)+(2) Sample the exact covariant membrane strain ONCE, at the element
+    // centroid on the mid-surface (ζ = 0). For a linear triangle this covariant
+    // membrane natural strain is element-CONSTANT at ζ = 0 (constant ∇N_i,
+    // ζ-independent in-plane base vectors, and the rotation term carries a ζ
+    // factor that vanishes at ζ = 0), so a single collocation sample IS the
+    // constant-state-consistent assumed field: it reproduces any constant
+    // covariant state exactly (the step-3 consistency prerequisite) — the membrane
+    // analogue of the constant-reproduction property of
+    // interpolate_assumed_shear_mitc3_plus. Sampling all six interior tying points
+    // and averaging would yield the identical constant, so the single evaluation
+    // just avoids five redundant degenerate_jacobian builds.
+    let centroid = ShellRefCoord3::new(1.0 / 3.0, 1.0 / 3.0, 0.0);
+    let b_cov = degenerate_exact_covariant_membrane_b(nodes, directors, thicknesses, centroid);
 
     // (3) Covariant→physical lamina map at (ξ, η, 0): ε'_pq = Σ m2[p][a] m2[q][b] ε_ab.
     let (j, _det) = degenerate_jacobian(nodes, directors, thicknesses, mid);
