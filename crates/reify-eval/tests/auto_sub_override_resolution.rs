@@ -29,6 +29,20 @@
 //!   the file.
 //!
 //! Step 8 (GREEN): Creates `examples/auto_binding_sites.ri`.
+//!
+//! ## Forward-reference regression (steps 9–10)
+//!
+//! Step 9 (RED): Test (e) asserts that the sub-override `bore = auto` resolves
+//! correctly when the **parent** structure is declared BEFORE the child
+//! (`Bearing`) in source.  A determining constraint forces a NON-default value
+//! (25 mm ≠ child default 10 mm), so the test discriminates "override honored →
+//! solver resolves 25 mm" from "override dropped → child default 10 mm →
+//! constraint 25 mm == 10 mm violated".  This is RED until step 10 wires the
+//! deferred post-pass.
+//!
+//! Step 10 (GREEN): After the deferred post-pass resolves the forward-declared
+//! child's member type, the scoped Auto cell is pushed and the solver resolves
+//! 25 mm correctly.
 
 use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
 use reify_core::{Severity, ValueCellId};
@@ -381,5 +395,78 @@ fn example_auto_binding_sites_ri_resolves() {
         DeterminacyState::Determined,
         "AutoBindingSites.b.bore should be Determined after auto resolution; got {:?}",
         det
+    );
+}
+
+// ── Test (e): forward-reference (step 9 RED → step 10 GREEN) ─────────────────
+
+/// (e) `bore = auto` resolves correctly when the **parent** is declared BEFORE
+/// the child in source (legal forward-reference).
+///
+/// Source order: `structure A { … }  structure Bearing { … }`.  The constraint
+/// forces `bore == 25mm` — deliberately different from Bearing's own default
+/// (10mm here) — so the test discriminates two failure modes:
+///  - Override honored → solver produces 25 mm  ✓
+///  - Override dropped → child default 10 mm → `25mm == 10mm` → error  ✗
+///
+/// RED (step 9): the current inline lookup emits a spurious "no such param"
+///   error and drops the override because Bearing is not yet compiled when A is
+///   processed.
+/// GREEN (step 10): the deferred post-pass resolves Bearing's `bore` type after
+///   all templates are compiled and pushes the scoped Auto cell; the solver then
+///   resolves it to 25 mm.
+#[test]
+fn sub_override_auto_strict_forward_declared_child_resolves_determined() {
+    // Parent before child; constraint forces 25mm ≠ Bearing default 10mm.
+    let source = r#"
+structure A {
+    sub b : Bearing { bore = auto }
+    constraint self.b.bore == 25mm
+}
+structure Bearing { param bore : Length = 10mm }
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let compile_errors = errors_only(&compiled.diagnostics);
+    assert!(
+        compile_errors.is_empty(),
+        "forward-declared child: unexpected compile errors: {:?}",
+        compile_errors
+    );
+
+    let mut engine = engine_with_solver();
+    let result = engine.eval(&compiled);
+
+    let eval_errors = errors_only(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "forward-declared child: expected no error-severity eval diagnostics; got: {:?}",
+        eval_errors
+    );
+
+    let snap = engine.snapshot().expect("snapshot should exist");
+    let id = ValueCellId::new("A.b", "bore");
+    let (val, det) = snap.values.get(&id).unwrap_or_else(|| {
+        panic!(
+            "forward-declared child: A.b.bore should be in snapshot; keys: {:?}",
+            snap.values
+                .iter()
+                .map(|(k, _)| format!("{}", k))
+                .collect::<Vec<_>>()
+        )
+    });
+
+    assert_eq!(
+        *det,
+        DeterminacyState::Determined,
+        "forward-declared child: A.b.bore should be Determined; got {:?}",
+        det
+    );
+
+    // Must be 25mm (0.025 SI), NOT the child's default 10mm (0.010 SI).
+    assert!(
+        matches!(val, Value::Scalar { si_value, .. } if (*si_value - 0.025).abs() < 1e-6),
+        "forward-declared child: A.b.bore should equal 25mm (0.025 SI); got {:?}",
+        val
     );
 }
