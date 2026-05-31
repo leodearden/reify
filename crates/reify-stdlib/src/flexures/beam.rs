@@ -375,4 +375,51 @@ mod tests {
         assert_angle_close(lo, -prb_limit, "prb-limited lower bound");
         assert_angle_close(up, prb_limit, "prb-limited upper bound");
     }
+
+    /// Invoke `prb_cantilever_beam` on the step-1 geometry, optionally appending
+    /// a 7th `neutral` arg.
+    fn cantilever_with_neutral(neutral: Option<Value>) -> Value {
+        let mut args = vec![
+            Value::length(0.02),
+            Value::length(0.005),
+            Value::length(0.0005),
+            steel(),
+            origin(),
+            axis_y(),
+        ];
+        if let Some(n) = neutral {
+            args.push(n);
+        }
+        crate::eval_builtin("prb_cantilever_beam", &args)
+    }
+
+    #[test]
+    fn prb_cantilever_beam_neutral_angle_handling() {
+        let two_deg = 2.0_f64 * std::f64::consts::PI / 180.0;
+
+        // (a) 6-arg call → neutral defaults to angle(0).
+        let six = cantilever_with_neutral(None);
+        assert_eq!(
+            map_get(&six, "neutral"),
+            Some(&Value::angle(0.0)),
+            "6-arg call defaults neutral to angle(0)"
+        );
+
+        // (b) 7-arg call with a bare angle(2°) → neutral == angle(2°).
+        let seven = cantilever_with_neutral(Some(Value::angle(two_deg)));
+        assert_angle_close(
+            map_get(&seven, "neutral").expect("neutral key present"),
+            two_deg,
+            "7-arg bare-angle neutral",
+        );
+
+        // (c) 7-arg call with Option(Some(angle(2°))) → unwraps to angle(2°).
+        let seven_opt =
+            cantilever_with_neutral(Some(Value::Option(Some(Box::new(Value::angle(two_deg))))));
+        assert_angle_close(
+            map_get(&seven_opt, "neutral").expect("neutral key present"),
+            two_deg,
+            "7-arg optional-angle neutral",
+        );
+    }
 }
