@@ -1333,6 +1333,26 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_DynamicsInertiaNotPSD`.
     /// Registered in task 3822 (RBD-α, PRD §dynamics).
     DynamicsInertiaNotPSD,
+    /// Origin: `crates/reify-eval/src/dynamics_ops.rs` (`body_mass_props`
+    /// density-resolution ladder in the RBD-β stdlib-fn dispatch pass).
+    ///
+    /// Emitted as a `Severity::Warning` once per body when `body_mass_props`
+    /// resolves the body's mass density by falling all the way through the
+    /// priority ladder to the default 1000 kg/m³ (water) — i.e. the call site
+    /// supplied no explicit `density` argument AND the body's `Material`
+    /// carries no `density`. The warning records that the inertial computation
+    /// proceeds using the water default; the resulting `MassProperties` is
+    /// still produced (this is advisory, not an error — unlike
+    /// [`DynamicsInertiaNotPSD`](DiagnosticCode::DynamicsInertiaNotPSD) it does
+    /// NOT replace the cell with `Value::Undef`).
+    ///
+    /// Canonical message form:
+    /// `"body_mass_props('<name>'): no explicit density and no Material density; defaulting to 1000 kg/m³ (water)"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_DynamicsDefaultDensity`
+    /// (severity convention: `W_*` → Warning). Registered in task 3829
+    /// (RBD-β, PRD `docs/prds/v0_3/rigid-body-dynamics.md` §5.4).
+    DynamicsDefaultDensity,
     /// Origin: `crates/reify-compiler/src/conformance` (assoc-fn satisfaction
     /// phase) and `crates/reify-compiler/src/trait_requirements.rs`.
     ///
