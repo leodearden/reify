@@ -999,9 +999,22 @@ mod tests {
     /// for an identity-frame isotropic lift is bitwise identical to the legacy
     /// `element_stiffness(P1, ..)`. Since the same mesh, same f, and same
     /// deterministic CG are used, the displacement vectors u must also be
-    /// bitwise identical — which implies max_von_mises must agree to 1e-9
-    /// relative tolerance across the two stress-recovery code paths
-    /// (`element_stress_p1` vs `element_von_mises_anisotropic`).
+    /// bitwise identical.
+    ///
+    /// # Thresholds
+    ///
+    /// - **iterations**: exact equality (`assert_eq!`). Contingent on β/3778 C4
+    ///   bitwise-identity: identical K + deterministic preconditioned CG ⇒
+    ///   identical convergence path. If C4 is ever softened to a numerical
+    ///   tolerance, this assertion must be relaxed accordingly.
+    /// - **displacement u**: 1e-12 relative tolerance. The expected diff is 0.0
+    ///   ULPs (bit-identity propagates through CG), but a tolerance-based guard
+    ///   is used over `assert_eq!` as defensive style.
+    /// - **max_von_mises**: 1e-9 relative tolerance, reflecting the fact that
+    ///   the two stress-recovery code paths (`element_stress_p1` vs
+    ///   `element_von_mises_anisotropic`) share the same u but compute stress
+    ///   via different numerical sequences; 1e-9 is the expected agreement band
+    ///   for an identity-frame isotropic lift.
     ///
     /// This proves the C4 isotropic-lift equivalence flows end-to-end through
     /// `solve_cantilever_fea` to the consumer `CantileverFeaSolve`.
@@ -1035,17 +1048,33 @@ mod tests {
         assert!(iso_result.converged,   "isotropic solve must converge");
         assert!(aniso_result.converged, "anisotropic solve must converge");
 
-        // CG iteration count must be identical: same K (bit-identical per β C4),
-        // same f, same deterministic preconditioner ⇒ same iteration history.
+        // CG iteration count must be identical: same K (bit-identical per β/3778
+        // C4 guarantee), same f, same deterministic preconditioner ⇒ same
+        // convergence path.
+        //
+        // NOTE: this exact-equality assertion is contingent on the β/3778 C4
+        // bitwise-identity guarantee holding all the way through assembly.  If
+        // that guarantee is ever softened to a numerical tolerance, the two
+        // solves may converge in a different number of steps and this assertion
+        // must be relaxed to a tolerance-based comparison.
         assert_eq!(
             iso_result.iterations,
             aniso_result.iterations,
             "iso and identity-frame aniso must require identical CG iterations \
-             (same K + same f + deterministic CG ⇒ identical convergence path)",
+             (same K + same f + deterministic CG ⇒ identical convergence path; \
+             contingent on β/3778 C4 bitwise-identity guarantee)",
         );
 
-        // Displacement vectors must agree component-wise to 1e-12 relative.
-        // β C4 bit-identity ⇒ identical K ⇒ deterministic CG produces bit-equal u.
+        // Displacement vectors must agree component-wise.
+        //
+        // The underlying guarantee is bitwise identity (β/3778 C4 ⇒ identical K
+        // + deterministic CG ⇒ bit-equal u), so the 1e-12 relative tolerance is
+        // a defensive guard rather than a numerically tight bound — the actual
+        // diff is expected to be 0.0 ULPs.  A tolerance-based assertion is used
+        // here rather than component-wise assert_eq! because floating-point
+        // equality assertions are considered fragile style even when the
+        // theoretical guarantee is exact; the 1e-12 budget leaves no practical
+        // room for divergence.
         assert_eq!(
             iso_result.u.len(),
             aniso_result.u.len(),

@@ -72,8 +72,20 @@ fn material_field_retick_fn(
         }
         std::thread::sleep(Duration::from_millis(RETICK_POLL_MS));
     }
-    // Not reached in a correctly-formed test run.
-    ComputeOutcome::Cancelled
+    // Safety-cap fall-through: return a Completed sentinel, NOT Cancelled.
+    //
+    // A correctly-formed run always fires cancel() within the poll loop above.
+    // If the cancel signal never propagates (misconfigured test), returning
+    // Completed here causes dispatch to return Ok(_), which immediately fails
+    // the `matches!(result, Err(DispatchError::Cancelled))` assertion —
+    // independently of the SLA timing check.  The previous Cancelled return
+    // would have silently masked the misconfiguration.
+    ComputeOutcome::Completed {
+        result: Value::Int(0),
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: vec![],
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
