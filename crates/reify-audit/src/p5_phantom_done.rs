@@ -572,21 +572,30 @@ fn build_high_finding(meta: &TaskMetadata, missing: &[String], summary: &str) ->
     }
 }
 
-/// H2 — live-path-stranded pass (initial behavior, step-8).
+/// H2 — live-path-stranded pass (with cross-crate gate + suppression guards, step-10).
 ///
-/// For cross-crate tasks (metadata.files spanning >=2 distinct `crates/<name>/`
-/// roots), queries `JCodemunchOps::get_changed_symbols({commit}^1, commit)` and
-/// for each symbol calls `find_references` to determine whether a non-test
-/// workspace caller exists. Symbols with no non-test caller (stranded by a
-/// live-path relocation) emit a `P5LivePathStranded` `Medium` finding.
+/// Emits `P5LivePathStranded` `Medium` only when ALL of:
 ///
-/// Initial version (step-8): fires whenever a changed symbol has no non-test
-/// caller in a cross-crate task. The cross-crate gate and per-symbol suppression
-/// guards (stdlib scope-exclude, `#[allow(dead_code)]`, `#[cfg(test)]`,
-/// non-blank `// G-allow:`) are added in step-10.
+/// 1. **Cross-crate gate**: `metadata.files` span >=2 distinct `crates/<name>/`
+///    roots (computed by [`crate_root_count`]). Single-crate orphans are P1's
+///    grace-windowed domain; H2 scopes to the documented cross-crate relocation
+///    pattern to avoid duplicating noisy P1 findings.
+/// 2. **No commit**: skipped when `done_provenance.commit` is absent.
+/// 3. **Per-symbol suppression guards** (reuses P1's opt-out set):
+///    - Symbol file starts with `crates/reify-stdlib/` (scope-exclude).
+///    - `has_allow_dead_code` or `has_cfg_test` (intentional-orphan opt-outs).
+///    - Non-blank `// G-allow:` marker (mirrors `p1_producer_orphan::is_g_allow_suppressed`).
+/// 4. **No non-test workspace caller**: `find_references` returns only test-path
+///    refs (or none) for the symbol.
 ///
-/// Skipped when `done_provenance.commit` is absent (no commit range to diff).
+/// Design rationale: cross-crate gate keeps H2 off of P1's single-crate turf;
+/// suppression guards keep H2 and P1 semantically consistent. Task 4140 §H2.
 fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Finding> {
+    // Cross-crate gate: requires >=2 distinct crates/<name>/ roots.
+    if crate_root_count(&meta.files) < 2 {
+        return vec![];
+    }
+
     let Some(commit) = meta.done_provenance.as_ref().and_then(|p| p.commit.as_deref()) else {
         return vec![];
     };
@@ -596,6 +605,18 @@ fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
     let symbols = ctx.jcodemunch.get_changed_symbols(&since_sha, until_sha);
     let mut findings = Vec::new();
     for symbol in symbols {
+        // Per-symbol guard: stdlib scope-exclude.
+        if symbol.file.starts_with("crates/reify-stdlib/") {
+            continue;
+        }
+        // Per-symbol guard: intentional-orphan opt-outs (mirrors P1).
+        if symbol.has_allow_dead_code || symbol.has_cfg_test {
+            continue;
+        }
+        // Per-symbol guard: non-blank G-allow marker (mirrors p1_producer_orphan::is_g_allow_suppressed).
+        if symbol.g_allow_marker.as_deref().is_some_and(|r| !r.trim().is_empty()) {
+            continue;
+        }
         let has_non_test_caller = ctx
             .jcodemunch
             .find_references(&symbol)
@@ -609,7 +630,7 @@ fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
                 summary: format!(
                     "changed symbol `{}` at {}:{} has no non-test workspace caller — \
                      possible live-path stranding from a cross-crate relocation \
-                     (task 4140 H2; cross-crate gate + suppression guards added in step-10)",
+                     (task 4140 H2)",
                     symbol.name, symbol.file, symbol.line
                 ),
                 evidence: vec![EvidenceRef::File { path: symbol.file.clone() }],
@@ -617,6 +638,27 @@ fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
         }
     }
     findings
+}
+
+/// Count the number of distinct `crates/<name>/` roots referenced by `files`.
+///
+/// A path contributes a root if it starts with `crates/` and has at least one
+/// more path component (the crate name). For example:
+/// - `crates/reify-eval/src/lib.rs` → root `reify-eval`
+/// - `crates/reify-compiler/src/compile.rs` → root `reify-compiler`
+/// - `gui/src/main.rs` → no root (not under `crates/`)
+/// - `Cargo.lock` → no root
+///
+/// Used by H2 to enforce the cross-crate gate (>=2 roots required).
+fn crate_root_count(files: &[String]) -> usize {
+    let roots: std::collections::HashSet<&str> = files
+        .iter()
+        .filter_map(|f| {
+            let rest = f.strip_prefix("crates/")?;
+            rest.split('/').next()
+        })
+        .collect();
+    roots.len()
 }
 
 #[cfg(test)]
