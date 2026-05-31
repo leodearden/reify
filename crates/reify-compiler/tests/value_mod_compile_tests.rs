@@ -56,11 +56,11 @@ fn compile_let_expr(expr: &str) -> reify_ir::CompiledExpr {
         .unwrap_or_else(|| panic!("cell p has no default_expr for `{expr}`"))
 }
 
-/// Compile `structure def S { param x : Int = 2  let p = <expr> }` and return
-/// all Error-severity diagnostics.  Used for error-path tests where we expect
-/// compilation to fail with a specific diagnostic code.
+/// Compile `structure def S { let p = <expr> }` and return all Error-severity
+/// diagnostics.  Used for error-path tests where we expect compilation to fail
+/// with a specific diagnostic code.
 fn compile_let_expr_errors(expr: &str) -> Vec<reify_core::Diagnostic> {
-    let source = format!("structure def S {{ param x : Int = 2  let p = {expr} }}");
+    let source = format!("structure def S {{ let p = {expr} }}");
     let module = compile_source(&source);
     module
         .diagnostics
@@ -145,6 +145,39 @@ fn mod_plain_int_no_error() {
     assert!(
         !flagged,
         "5 % 2 should NOT produce DiagnosticCode::ModuloRequiresInt, got errors: {:?}",
+        errors
+    );
+}
+
+// ── Anti-cascade tests ────────────────────────────────────────────────────────
+//
+// When an operand is already Type::Error (e.g. an unresolved variable), the
+// guard must NOT emit a spurious secondary ModuloRequiresInt — only the
+// underlying error should surface.
+
+/// `unknown_var % 2` — the left operand fails to resolve (Type::Error).
+/// The guard must stay silent: zero `ModuloRequiresInt` diagnostics, and the
+/// underlying unresolved-variable error is the only error emitted.
+///
+/// This exercises the anti-cascade check:
+///   `if !compiled_left.result_type.is_error() && ...`
+/// in `expr.rs` at the BinOp::Mod site.
+#[test]
+fn mod_error_typed_left_no_spurious_modulo_diagnostic() {
+    let errors = compile_let_expr_errors("unknown_var % 2");
+    // The unresolved-variable error must be present (guard wasn't skipped entirely).
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for `unknown_var % 2` (unresolved variable), got none"
+    );
+    // No secondary ModuloRequiresInt must appear.
+    let spurious = errors
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::ModuloRequiresInt));
+    assert!(
+        !spurious,
+        "unknown_var % 2 must NOT produce a spurious ModuloRequiresInt — \
+         left operand is already Type::Error (anti-cascade). got errors: {:?}",
         errors
     );
 }
