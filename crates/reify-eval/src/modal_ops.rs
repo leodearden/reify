@@ -716,7 +716,7 @@ fn solve_generalized_eigen(
 #[allow(clippy::result_large_err)]
 fn extract_density_or_degenerate(material: &Value) -> Result<f64, ComputeOutcome> {
     if let Value::StructureInstance(data) = material
-        && let Some(Value::Scalar { si_value, .. }) = data.fields.get(&"density".to_string())
+        && let Some(Value::Scalar { si_value, .. }) = data.fields.get("density")
         && *si_value > 0.0
     {
         return Ok(*si_value);
@@ -1120,17 +1120,9 @@ fn forcing_missing_outcome() -> ComputeOutcome {
 /// `None` if `val` is not a StructureInstance or lacks the field. The borrowing
 /// companion to [`field_or`], used by the transient trampolines to read forcing /
 /// mode sub-values without cloning the whole field map.
-///
-/// The `name.to_string()` allocates an owned key per lookup. This is forced by
-/// the map API, not an oversight (reviewer suggestion 2): `PersistentMap::get`
-/// (`reify-ir`) exposes only `get(&self, key: &K)` — i.e. `&String` — with no
-/// `Borrow<str>`-based overload, so passing a `&str` key does not type-check.
-/// Adding that overload means editing `reify-ir`, which is outside this task's
-/// lock scope; if/when it lands, this and the other `&"…".to_string()` field
-/// reads in this module can drop the allocation. Tracked as a follow-up.
 fn field_ref<'a>(val: &'a Value, name: &str) -> Option<&'a Value> {
     if let Value::StructureInstance(data) = val {
-        return data.fields.get(&name.to_string());
+        return data.fields.get(name);
     }
     None
 }
@@ -1161,12 +1153,10 @@ fn read_real_list(val: &Value) -> Vec<f64> {
 }
 
 /// The `modes` list of a `ModalResult` StructureInstance, by reference; an empty
-/// slice if absent / mis-shaped. The `"modes".to_string()` owned-key lookup is
-/// forced by `PersistentMap::get`'s `&K` signature — see [`field_ref`] (reviewer
-/// suggestion 2) for why a `&str` key is not yet possible.
+/// slice if absent / mis-shaped.
 fn modal_result_modes(modal_result: &Value) -> &[Value] {
     if let Value::StructureInstance(data) = modal_result
-        && let Some(Value::List(modes)) = data.fields.get(&"modes".to_string())
+        && let Some(Value::List(modes)) = data.fields.get("modes")
     {
         return modes;
     }
@@ -1527,10 +1517,10 @@ fn extract_isotropic_material(val: &Value) -> IsotropicElastic {
     let mut youngs_modulus = 0.0;
     let mut poisson_ratio = 0.0;
     if let Value::StructureInstance(data) = val {
-        if let Some(v) = data.fields.get(&"youngs_modulus".to_string()) {
+        if let Some(v) = data.fields.get("youngs_modulus") {
             youngs_modulus = read_scalar_si(v);
         }
-        if let Some(v) = data.fields.get(&"poisson_ratio".to_string()) {
+        if let Some(v) = data.fields.get("poisson_ratio") {
             poisson_ratio = read_scalar_si(v);
         }
     }
@@ -1552,19 +1542,19 @@ fn extract_eigen_knobs(val: &Value) -> (usize, f64, usize, f64) {
         Value::StructureInstance(d) => d,
         _ => return (default_n_modes, default_tol, default_max_iters, default_sigma),
     };
-    let n_modes = match data.fields.get(&"n_modes".to_string()) {
+    let n_modes = match data.fields.get("n_modes") {
         Some(Value::Int(n)) => (*n).max(1) as usize,
         _ => default_n_modes,
     };
-    let tol = match data.fields.get(&"tol".to_string()) {
+    let tol = match data.fields.get("tol") {
         Some(Value::Real(r)) if r.is_finite() && *r > 0.0 => *r,
         _ => default_tol,
     };
-    let max_iters = match data.fields.get(&"max_iters".to_string()) {
+    let max_iters = match data.fields.get("max_iters") {
         Some(Value::Int(n)) => (*n).max(1) as usize,
         _ => default_max_iters,
     };
-    let sigma = match data.fields.get(&"sigma".to_string()) {
+    let sigma = match data.fields.get("sigma") {
         Some(Value::Real(r)) if r.is_finite() => *r,
         _ => default_sigma,
     };
@@ -1582,7 +1572,7 @@ fn extract_reference_direction(val: &Value) -> [f64; 3] {
     let default_dir = [0.0, 0.0, 1.0];
     let raw = match val {
         Value::StructureInstance(data) => {
-            match data.fields.get(&"reference_direction".to_string()) {
+            match data.fields.get("reference_direction") {
                 Some(Value::Vector(items)) if items.len() == 3 => [
                     read_scalar_si(&items[0]),
                     read_scalar_si(&items[1]),
@@ -1609,11 +1599,11 @@ fn extract_reference_direction(val: &Value) -> [f64; 3] {
 /// the structure-defs document.
 fn extract_damping(val: &Value) -> (f64, f64) {
     if let Value::StructureInstance(data) = val
-        && let Some(Value::StructureInstance(damping)) = data.fields.get(&"damping".to_string())
+        && let Some(Value::StructureInstance(damping)) = data.fields.get("damping")
         && damping.type_name == "RayleighDamping"
     {
-        let alpha = damping.fields.get(&"alpha".to_string()).map(read_scalar_si).unwrap_or(0.0);
-        let beta = damping.fields.get(&"beta".to_string()).map(read_scalar_si).unwrap_or(0.0);
+        let alpha = damping.fields.get("alpha").map(read_scalar_si).unwrap_or(0.0);
+        let beta = damping.fields.get("beta").map(read_scalar_si).unwrap_or(0.0);
         return (alpha, beta);
     }
     (0.0, 0.0)
@@ -1633,7 +1623,7 @@ fn extract_damping(val: &Value) -> (f64, f64) {
 /// representation of an `ElementOrder` value (reify-ir `Value::Enum`).
 fn extract_element_order(val: &Value) -> ElementOrder {
     if let Value::StructureInstance(data) = val
-        && let Some(Value::Enum { variant, .. }) = data.fields.get(&"element_order".to_string())
+        && let Some(Value::Enum { variant, .. }) = data.fields.get("element_order")
         && variant == "P2"
     {
         return ElementOrder::P2;
@@ -1790,11 +1780,11 @@ fn nearest_node(nodes: &[[f64; 3]], target: [f64; 3]) -> usize {
 fn support_targets(options: &Value) -> Vec<String> {
     let mut targets = Vec::new();
     if let Value::StructureInstance(data) = options
-        && let Some(Value::List(items)) = data.fields.get(&"boundary_conditions".to_string())
+        && let Some(Value::List(items)) = data.fields.get("boundary_conditions")
     {
         for item in items {
             if let Value::StructureInstance(support) = item
-                && let Some(Value::String(target)) = support.fields.get(&"target".to_string())
+                && let Some(Value::String(target)) = support.fields.get("target")
             {
                 targets.push(target.clone());
             }
@@ -1827,7 +1817,7 @@ fn mode_shape_value(phi_full: &[f64]) -> Value {
 /// echo the input `boundary_conditions` / `damping` onto the `ModalResult`.
 fn field_or(val: &Value, name: &str, fallback: Value) -> Value {
     if let Value::StructureInstance(data) = val
-        && let Some(v) = data.fields.get(&name.to_string())
+        && let Some(v) = data.fields.get(name)
     {
         return v.clone();
     }
@@ -2121,7 +2111,7 @@ mod tests {
         let Value::StructureInstance(data) = result else {
             panic!("expected a ModalResult StructureInstance, got {result:?}");
         };
-        match data.fields.get(&"modes".to_string()) {
+        match data.fields.get("modes") {
             Some(Value::List(m)) => m.len(),
             other => panic!("ModalResult.modes must be a List; got {other:?}"),
         }
@@ -2771,7 +2761,7 @@ mod tests {
             "degenerate result must be a ModalResult, got {}",
             data.type_name,
         );
-        match data.fields.get(&"modes".to_string()) {
+        match data.fields.get("modes") {
             Some(Value::List(modes)) => assert!(
                 modes.is_empty(),
                 "degenerate ModalResult.modes must be empty; got {} modes",
@@ -3087,7 +3077,7 @@ mod tests {
             }
         }
 
-        let modes = match data.fields.get(&"modes".to_string()) {
+        let modes = match data.fields.get("modes") {
             Some(Value::List(m)) => m,
             other => panic!("ModalResult.modes must be a List; got {other:?}"),
         };
@@ -3103,7 +3093,7 @@ mod tests {
             };
             assert_eq!(m.type_name, "Mode");
 
-            let f = match m.fields.get(&"frequency".to_string()) {
+            let f = match m.fields.get("frequency") {
                 Some(Value::Real(f)) => *f,
                 other => panic!("mode {i} frequency must be Real; got {other:?}"),
             };
@@ -3114,7 +3104,7 @@ mod tests {
             let omega = 2.0 * std::f64::consts::PI * f;
             let expected = rayleigh_damping_ratio(alpha, beta, omega);
             assert!(expected > 0.0, "fixture (α, β) must give nonzero ζ (≠ NoDamping)");
-            match m.fields.get(&"damping_ratio".to_string()) {
+            match m.fields.get("damping_ratio") {
                 Some(Value::Real(zeta)) => assert!(
                     (zeta - expected).abs() < 1e-12,
                     "mode {i} damping_ratio {zeta} != Rayleigh {expected}",
@@ -3123,7 +3113,7 @@ mod tests {
             }
             assert!(
                 matches!(
-                    m.fields.get(&"participation_mass".to_string()),
+                    m.fields.get("participation_mass"),
                     Some(Value::Real(_))
                 ),
                 "mode {i} participation_mass must be Real",
@@ -3171,7 +3161,7 @@ mod tests {
             Value::StructureInstance(d) => d,
             other => panic!("expected a ModalResult StructureInstance; got {other:?}"),
         };
-        let modes = match data.fields.get(&"modes".to_string()) {
+        let modes = match data.fields.get("modes") {
             Some(Value::List(m)) => m,
             other => panic!("ModalResult.modes must be a List; got {other:?}"),
         };
@@ -3185,7 +3175,7 @@ mod tests {
                 Value::StructureInstance(d) => d,
                 other => panic!("mode {i} must be a Mode StructureInstance; got {other:?}"),
             };
-            let shape = match m.fields.get(&"shape".to_string()) {
+            let shape = match m.fields.get("shape") {
                 Some(v) => v,
                 None => panic!("mode {i} missing 'shape' field"),
             };
@@ -3311,7 +3301,7 @@ mod tests {
             Value::StructureInstance(d) => d,
             other => panic!("expected ModalResult StructureInstance; got {other:?}"),
         };
-        let modes = match data.fields.get(&"modes".to_string()) {
+        let modes = match data.fields.get("modes") {
             Some(Value::List(m)) => m,
             other => panic!("ModalResult.modes must be a List; got {other:?}"),
         };
@@ -3320,7 +3310,7 @@ mod tests {
             Value::StructureInstance(d) => d,
             other => panic!("modes[0] must be a Mode StructureInstance; got {other:?}"),
         };
-        let got_shape = match mode0.fields.get(&"shape".to_string()) {
+        let got_shape = match mode0.fields.get("shape") {
             Some(v) => v.clone(),
             None => panic!("modes[0] missing 'shape' field"),
         };
@@ -3418,7 +3408,7 @@ mod tests {
                 Value::StructureInstance(d) => d,
                 other => panic!("expected a ModalResult StructureInstance; got {other:?}"),
             };
-            let modes = match data.fields.get(&"modes".to_string()) {
+            let modes = match data.fields.get("modes") {
                 Some(Value::List(m)) => m,
                 other => panic!("ModalResult.modes must be a List; got {other:?}"),
             };
@@ -3427,7 +3417,7 @@ mod tests {
                 Value::StructureInstance(d) => d,
                 other => panic!("modes[0] must be a Mode StructureInstance; got {other:?}"),
             };
-            match mode0.fields.get(&"shape".to_string()) {
+            match mode0.fields.get("shape") {
                 Some(Value::List(nodes)) => nodes.len(),
                 other => panic!("modes[0].shape must be a List; got {other:?}"),
             }
@@ -3622,7 +3612,7 @@ mod tests {
         assert!(n_times > 1, "fixture grid must have > 1 sample (got {n_times})");
 
         // t_samples: one finite Time scalar per grid point.
-        match data.fields.get(&"t_samples".to_string()) {
+        match data.fields.get("t_samples") {
             Some(Value::List(ts)) => {
                 assert_eq!(ts.len(), n_times, "t_samples length must equal the grid count");
                 assert!(
@@ -3634,7 +3624,7 @@ mod tests {
         }
 
         // mode_coords: outer length == n_modes, each inner length == n_times, finite.
-        match data.fields.get(&"mode_coords".to_string()) {
+        match data.fields.get("mode_coords") {
             Some(Value::List(modes)) => {
                 assert_eq!(modes.len(), 2, "mode_coords outer length must equal n_modes");
                 for (i, coords) in modes.iter().enumerate() {
@@ -3658,10 +3648,10 @@ mod tests {
         }
 
         // modal_result echoed: a ModalResult StructureInstance with the 2 modes.
-        match data.fields.get(&"modal_result".to_string()) {
+        match data.fields.get("modal_result") {
             Some(Value::StructureInstance(mr)) => {
                 assert_eq!(mr.type_name, "ModalResult", "echoed modal_result type");
-                match mr.fields.get(&"modes".to_string()) {
+                match mr.fields.get("modes") {
                     Some(Value::List(m)) => {
                         assert_eq!(m.len(), 2, "echoed modal_result must carry the 2 input modes")
                     }
@@ -3746,7 +3736,7 @@ mod tests {
             other => panic!("expected a DisplacementTimeHistory StructureInstance; got {other:?}"),
         };
         assert_eq!(data.type_name, "DisplacementTimeHistory");
-        match data.fields.get(&"t_samples".to_string()) {
+        match data.fields.get("t_samples") {
             Some(Value::List(ts)) => assert!(
                 ts.is_empty(),
                 "degenerate t_samples must be empty; got {} samples",
@@ -3754,7 +3744,7 @@ mod tests {
             ),
             other => panic!("t_samples must be a Value::List; got {other:?}"),
         }
-        match data.fields.get(&"mode_coords".to_string()) {
+        match data.fields.get("mode_coords") {
             Some(Value::List(mc)) => assert!(
                 mc.is_empty(),
                 "degenerate mode_coords must be empty; got {} modes",
@@ -3817,7 +3807,7 @@ mod tests {
                 Value::StructureInstance(d) => d,
                 other => panic!("expected a DisplacementTimeHistory; got {other:?}"),
             };
-            match data.fields.get(&"t_samples".to_string()) {
+            match data.fields.get("t_samples") {
                 Some(Value::List(ts)) => {
                     assert!(ts.is_empty(), "degenerate grid must yield empty t_samples")
                 }

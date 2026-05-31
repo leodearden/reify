@@ -23,16 +23,38 @@ impl<K: Clone + Hash + Eq, V: Clone> PersistentMap<K, V> {
     }
 
     /// Look up a value by key.
-    pub fn get(&self, key: &K) -> Option<&V> {
-        self.inner.get(key)
+    ///
+    /// Accepts any borrowed form of the key: `get("name")` works on a
+    /// `PersistentMap<String, V>` without allocating a temporary `String`,
+    /// exactly as `std::collections::HashMap::get` does.  The bound
+    /// `K: Borrow<Q>` is satisfied for `Q = K` by the standard blanket
+    /// `impl<T: ?Sized> Borrow<T> for T`, so all existing `&K` / `&String`
+    /// callers continue to compile unchanged.
+    pub fn get<Q>(&self, k: &Q) -> Option<&V>
+    where
+        K: std::borrow::Borrow<Q>,
+        Q: std::hash::Hash + Eq + ?Sized,
+    {
+        self.inner.get(k)
     }
 
-    /// Look up a mutable reference to a value by key. Uses `im::HashMap`'s
-    /// copy-on-write semantics: if the underlying trie node is shared with
-    /// another (cloned) map, it is cloned before the mutable borrow is
-    /// returned, preserving structural-sharing invariants for siblings.
-    pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
-        self.inner.get_mut(key)
+    /// Look up a mutable reference to a value by key.
+    ///
+    /// Uses `im::HashMap`'s copy-on-write semantics: if the underlying trie
+    /// node is shared with another (cloned) map, it is cloned before the
+    /// mutable borrow is returned, preserving structural-sharing invariants
+    /// for siblings.
+    ///
+    /// Accepts any borrowed form of the key (e.g. `&str` on a
+    /// `PersistentMap<String, V>`) via the same `K: Borrow<Q>` bound as
+    /// `get`.  All existing `&K` / `&String` callers continue to compile
+    /// unchanged (Q=K via the blanket `impl<T:?Sized> Borrow<T> for T`).
+    pub fn get_mut<Q>(&mut self, k: &Q) -> Option<&mut V>
+    where
+        K: std::borrow::Borrow<Q>,
+        Q: std::hash::Hash + Eq + ?Sized,
+    {
+        self.inner.get_mut(k)
     }
 
     /// Insert a key-value pair, mutating in place (but sharing structure on clone).
@@ -307,6 +329,36 @@ mod tests {
 
         assert_eq!(map1, map2);
         assert_ne!(map1, map3);
+    }
+
+    #[test]
+    fn get_mut_accepts_borrowed_str_key() {
+        // Verifies the Borrow-generic `get_mut<Q>` overload: a bare `&str` must
+        // be accepted as a key without any `to_string()` allocation.
+        let mut map: PersistentMap<String, i32> = PersistentMap::new();
+        map.insert("key".to_string(), 42);
+        *map.get_mut("key").unwrap() = 99;
+        assert_eq!(map.get("key"), Some(&99));
+        assert!(map.get_mut("missing").is_none());
+    }
+
+    #[test]
+    fn get_accepts_borrowed_str_key() {
+        // Verifies the Borrow-generic `get<Q>` overload: a bare `&str` must be
+        // accepted as a key into a `PersistentMap<String, i32>` without any
+        // intermediate `to_string()` allocation.
+        //
+        // Also pins the Q=K backward-compatible path: an existing `&String`
+        // caller must still compile unchanged (the blanket `Borrow<T> for T`
+        // gives `String: Borrow<String>`).
+        let mut map: PersistentMap<String, i32> = PersistentMap::new();
+        map.insert("key".to_string(), 42);
+        // New capability: bare &str lookup — no allocation required.
+        assert_eq!(map.get("key"), Some(&42));
+        assert_eq!(map.get("missing"), None);
+        // Backward compatibility: existing &String callers continue to compile
+        // unchanged via the Q=K blanket impl.
+        assert_eq!(map.get(&"key".to_string()), Some(&42));
     }
 
     #[test]
