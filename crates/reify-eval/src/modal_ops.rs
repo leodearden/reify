@@ -1721,7 +1721,8 @@ mod tests {
 
     use super::{
         ModalAnalysisCache, ModalAssembly, ModalCoreResult, ModalMesh, ModalTrampolineRun,
-        assemble_modal_km, build_beam_mesh, build_dirichlet_bcs, eigensolve_modal, extract_damping,
+        assemble_modal_km, build_beam_mesh, build_dirichlet_bcs, displacement_at_trampoline,
+        eigensolve_modal, extract_damping,
         extract_density_or_degenerate, extract_eigen_knobs, extract_reference_direction,
         mode_shape_value, read_scalar_si, run_modal_analysis, simply_supported_pin_pin_bcs,
         solve_modal_analysis_trampoline, solve_modal_core, solve_transient_response_trampoline,
@@ -3407,6 +3408,33 @@ mod tests {
         )
     }
 
+    /// A synthetic `DisplacementTimeHistory { part, modal_result, t_samples,
+    /// mode_coords }` instance — the fields `displacement_at` reads. `t_samples_s`
+    /// is a List<Time> (SI seconds); `mode_coords` is the n_modes × n_times modal
+    /// coordinate matrix, shaped as a List<List<Real>>.
+    fn displacement_history(
+        modal_result: Value,
+        t_samples_s: &[f64],
+        mode_coords: &[Vec<f64>],
+    ) -> Value {
+        let t_samples = Value::List(t_samples_s.iter().map(|&s| time_scalar(s)).collect());
+        let coords = Value::List(
+            mode_coords
+                .iter()
+                .map(|series| Value::List(series.iter().map(|&c| Value::Real(c)).collect()))
+                .collect(),
+        );
+        struct_instance(
+            "DisplacementTimeHistory",
+            vec![
+                ("part".to_string(), Value::String(String::new())),
+                ("modal_result".to_string(), modal_result),
+                ("t_samples".to_string(), t_samples),
+                ("mode_coords".to_string(), coords),
+            ],
+        )
+    }
+
     /// step-11 (RED → GREEN in step-12): the `transient_response` trampoline
     /// happy path produces a well-shaped `DisplacementTimeHistory`.
     ///
@@ -3607,5 +3635,94 @@ mod tests {
             ),
             other => panic!("mode_coords must be a Value::List; got {other:?}"),
         }
+    }
+
+    /// step-15 (RED → GREEN in step-16): `displacement_at` reconstructs the exact
+    /// Φ-projected single-location series u(tⱼ) = Σᵢ (Φᵢ[node]·dir)·mode_coords[i][j],
+    /// returning a non-Undef `List<Real>` (PRD §5.2) — covering the task's
+    /// "displacement_at returns the Φ-projected time history, not Undef" premise.
+    ///
+    /// A 2-mode DisplacementTimeHistory with known per-node Φ shapes and known
+    /// mode_coords is queried along Z (the bending axis) at two locations:
+    ///   - a NUMERIC "1" → explicit node index 1, and
+    ///   - a NON-NUMERIC "tip" → the fundamental antinode (node 2, max ‖Φ₀‖).
+    /// Each returns a finite `List<Real>` of length n_times equal to the
+    /// closed-form reconstruction. The two cases resolve to DIFFERENT nodes
+    /// (1 vs 2) and so yield different series — proving the resolver discriminates
+    /// explicit-index from antinode.
+    ///
+    /// RED: the step-10 stub returns an empty list (length 0, not n_times).
+    #[test]
+    fn displacement_at_reconstructs_phi_projected_series() {
+        // node 2 is the fundamental antinode (max ‖Φ₀‖); node 1 is a distinct,
+        // lower-deflection node, so "1" and "tip" must give different series.
+        let mode0 = mode_struct(40.0, 0.01, &[0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 1.0]);
+        let mode1 = mode_struct(250.0, 0.02, &[0.0, 0.0, 0.0, 0.0, 0.0, -0.7, 0.0, 0.0, 0.4]);
+        let modal_result = modal_result_with_modes(vec![mode0, mode1]);
+
+        let mc0 = vec![1.0, 2.0, 3.0, 4.0];
+        let mc1 = vec![0.1, 0.2, 0.3, 0.4];
+        let mode_coords = vec![mc0.clone(), mc1.clone()];
+        let t_samples_s = [0.0, 0.01, 0.02, 0.03];
+        let n_times = t_samples_s.len();
+        let history = displacement_history(modal_result, &t_samples_s, &mode_coords);
+
+        let dir = [0.0, 0.0, 1.0];
+
+        // Invoke the trampoline for `location` and return the List<Real> as Vec<f64>.
+        let query = |location: &str| -> Vec<f64> {
+            let value_inputs =
+                vec![history.clone(), Value::String(location.to_string()), vec3_value(dir)];
+            let outcome = displacement_at_trampoline(
+                &value_inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            );
+            let ComputeOutcome::Completed { result, diagnostics, .. } = outcome else {
+                panic!("expected a Completed outcome");
+            };
+            assert!(
+                !diagnostics.iter().any(|d| d.severity == Severity::Error),
+                "displacement_at must not emit Error diagnostics; got {diagnostics:?}",
+            );
+            match result {
+                Value::List(items) => {
+                    assert!(!items.is_empty(), "displacement_at must not return an empty list");
+                    assert_eq!(items.len(), n_times, "series length must equal n_times");
+                    assert!(
+                        items.iter().map(read_scalar_si).all(f64::is_finite),
+                        "every reconstructed sample must be finite",
+                    );
+                    items.iter().map(read_scalar_si).collect()
+                }
+                other => panic!("displacement_at must return a Value::List(Real); got {other:?}"),
+            }
+        };
+
+        // Closed-form expectation u[j] = c0·mc0[j] + c1·mc1[j] (same mode-order
+        // summation as `reconstruct_series`).
+        let expect = |c0: f64, c1: f64| -> Vec<f64> {
+            (0..n_times).map(|j| c0 * mc0[j] + c1 * mc1[j]).collect::<Vec<_>>()
+        };
+
+        // Case A — numeric "1" → node 1: c0 = Φ₀[1]·ẑ = 0.5, c1 = Φ₁[1]·ẑ = -0.7.
+        let got_node1 = query("1");
+        let want_node1 = expect(0.5, -0.7);
+        for (j, (g, w)) in got_node1.iter().zip(want_node1.iter()).enumerate() {
+            assert!((g - w).abs() < 1e-12, "node-1 series[{j}]: got {g}, want {w}");
+        }
+
+        // Case B — non-numeric "tip" → antinode node 2: c0 = Φ₀[2]·ẑ = 1.0,
+        // c1 = Φ₁[2]·ẑ = 0.4.
+        let got_tip = query("tip");
+        let want_tip = expect(1.0, 0.4);
+        for (j, (g, w)) in got_tip.iter().zip(want_tip.iter()).enumerate() {
+            assert!((g - w).abs() < 1e-12, "tip (antinode) series[{j}]: got {g}, want {w}");
+        }
+
+        // The two locations resolve to different nodes → observably different series.
+        assert_ne!(got_node1, got_tip, "numeric index and antinode must resolve distinctly");
     }
 }
