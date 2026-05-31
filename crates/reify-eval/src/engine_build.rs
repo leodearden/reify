@@ -3972,6 +3972,19 @@ impl Engine {
         // automatically (task 3745 consolidation contract). Reborrows the
         // `&mut` kernel as `&dyn`: the dispatch only holds the kernel for the
         // (deferred, task 3620) geometric query and does not mutate it.
+        //
+        // ORDERING — TODO(3620): this pass runs BEFORE the selector passes
+        // (`post_process_topology_selectors` / `post_process_ad_hoc_selectors`).
+        // That is safe ONLY while the geometric mass/com/inertia query is
+        // deferred: `body_mass_props`'s body arg resolves to an already-eval'd
+        // let-bound `Value` and the geometric fields are the `Undef` sentinel,
+        // so reading the body before the selector passes cannot observe a stale
+        // value. When the KGQ kernel seam (task 3620) is wired and geometry stops
+        // being deferred, RE-EVALUATE this position: a body produced by a
+        // selector post-process would not yet be populated when this pass reads
+        // it, yielding incorrect geometry — at which point this call likely must
+        // move AFTER the selector passes (or gain an explicit dependency
+        // ordering). Do not wire 3620 without revisiting this ordering.
         Engine::post_process_body_mass_props(template, values, &*kernel, diagnostics);
         Engine::post_process_topology_selectors(template, named_steps, values, kernel, diagnostics);
         Engine::post_process_ad_hoc_selectors(
