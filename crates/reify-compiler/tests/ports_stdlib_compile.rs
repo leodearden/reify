@@ -866,8 +866,6 @@ fn std_ports_fluid_module_cardinality_locked() {
 ///   `structure def ActuatorInterface<P: PowerPort, T: ThermalPort, F: FluidPort>`
 /// with three ports.  No concrete conformer is instantiated (PRD §4 decision 4;
 /// mirrors Coupling in examples/stdlib/ports_mechanical.ri).
-///
-/// RED: the example file does not yet exist on disk — .canonicalize() panics.
 #[test]
 fn example_ports_domains_ri_compiles_clean() {
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
