@@ -99,6 +99,7 @@ fn curve_curvature_at_on_invalid_handle_returns_error() {
     match result {
         Err(QueryError::InvalidHandle(_)) | Err(QueryError::QueryFailed(_)) => {}
         Ok(v) => panic!("expected Err for invalid handle, got Ok({v:?})"),
+        Err(e) => panic!("expected InvalidHandle or QueryFailed, got {e:?}"),
     }
 }
 

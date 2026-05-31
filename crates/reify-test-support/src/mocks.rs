@@ -582,6 +582,22 @@ enum QueryKey {
         py_bits: u64,
         pz_bits: u64,
     },
+    /// CurveCurvatureAt keys the edge handle + world query point (f64 bits).
+    /// Powers the v0.3 stdlib `curvature(curve, point)` helper (task 3621, KGQ-μ).
+    CurveCurvatureAt {
+        handle: GeometryHandleId,
+        px_bits: u64,
+        py_bits: u64,
+        pz_bits: u64,
+    },
+    /// SurfaceCurvatureAt keys the face handle + parametric (u, v) coordinates
+    /// (f64 bits). Powers the v0.3 stdlib `curvature(surface, point)` helper
+    /// (task 3621, KGQ-μ).
+    SurfaceCurvatureAt {
+        handle: GeometryHandleId,
+        u_bits: u64,
+        v_bits: u64,
+    },
 }
 
 /// Normalize a distance pair to canonical (min, max) order so that
@@ -747,6 +763,21 @@ impl QueryKey {
                     px_bits: density_bits(*px),
                     py_bits: density_bits(*py),
                     pz_bits: density_bits(*pz),
+                }
+            }
+            GeometryQuery::CurveCurvatureAt { handle, px, py, pz } => {
+                QueryKey::CurveCurvatureAt {
+                    handle: *handle,
+                    px_bits: density_bits(*px),
+                    py_bits: density_bits(*py),
+                    pz_bits: density_bits(*pz),
+                }
+            }
+            GeometryQuery::SurfaceCurvatureAt { handle, u, v } => {
+                QueryKey::SurfaceCurvatureAt {
+                    handle: *handle,
+                    u_bits: density_bits(*u),
+                    v_bits: density_bits(*v),
                 }
             }
         }
@@ -1469,6 +1500,8 @@ impl GeometryKernel for MockGeometryKernel {
             GeometryQuery::GeoEquiv { left, .. } => left,
             GeometryQuery::SurfaceAngle { face_a, .. } => face_a,
             GeometryQuery::FaceNormalAt { handle, .. } => handle,
+            GeometryQuery::CurveCurvatureAt { handle, .. } => handle,
+            GeometryQuery::SurfaceCurvatureAt { handle, .. } => handle,
         };
 
         self.queries
