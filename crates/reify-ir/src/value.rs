@@ -9463,5 +9463,211 @@ mod tests {
             assert_eq!(format!("{}", v), format!("{}", v2),
                 "Display of equal selectors must produce identical strings");
         }
+
+        // ── K1 (kind-closure) constructor tests (step-5 / RED) ─────────────────
+        // NOTE: K1 validation was implemented in step-4 (plan allowed this as
+        // "acceptable"), so these tests are immediately GREEN.
+
+        use crate::value::SelectorError;
+
+        // K1 leaf↔query: ByNormal requires Face; supplying Edge must Err.
+        #[test]
+        fn k1_leaf_bynormal_rejects_edge() {
+            let target = ghr("B", 0, [0u8; 32], 1);
+            let q = LeafQuery::ByNormal { dir: [0., 0., 1.], tol_rad: 0.01 };
+            let result = SelectorValue::leaf(SelectorKind::Edge, target, q);
+            assert_eq!(
+                result,
+                Err(SelectorError::KindMismatch {
+                    expected: SelectorKind::Face,
+                    found: SelectorKind::Edge,
+                }),
+                "ByNormal requires Face; Edge must be rejected"
+            );
+        }
+
+        // K1 leaf↔query: ByLength requires Edge; supplying Face must Err.
+        #[test]
+        fn k1_leaf_bylength_rejects_face() {
+            let target = ghr("B", 0, [0u8; 32], 1);
+            let q = LeafQuery::ByLength { min_m: 0.0, max_m: 1.0 };
+            let result = SelectorValue::leaf(SelectorKind::Face, target, q);
+            assert_eq!(
+                result,
+                Err(SelectorError::KindMismatch {
+                    expected: SelectorKind::Edge,
+                    found: SelectorKind::Face,
+                }),
+                "ByLength requires Edge; Face must be rejected"
+            );
+        }
+
+        // K1 leaf↔query: ByArea requires Face; supplying Edge must Err.
+        #[test]
+        fn k1_leaf_byarea_rejects_edge() {
+            let target = ghr("B", 0, [0u8; 32], 1);
+            let q = LeafQuery::ByArea { min_m2: 0.0, max_m2: 1.0 };
+            let result = SelectorValue::leaf(SelectorKind::Edge, target, q);
+            assert_eq!(
+                result,
+                Err(SelectorError::KindMismatch {
+                    expected: SelectorKind::Face,
+                    found: SelectorKind::Edge,
+                })
+            );
+        }
+
+        // K1 leaf↔query: ByHeight requires Edge; supplying Face must Err.
+        #[test]
+        fn k1_leaf_byheight_rejects_face() {
+            let target = ghr("B", 0, [0u8; 32], 1);
+            let q = LeafQuery::ByHeight { z_m: 0.0, tol_m: 0.01 };
+            let result = SelectorValue::leaf(SelectorKind::Face, target, q);
+            assert_eq!(
+                result,
+                Err(SelectorError::KindMismatch {
+                    expected: SelectorKind::Edge,
+                    found: SelectorKind::Face,
+                })
+            );
+        }
+
+        // K1 leaf↔query: ByParallel requires Edge; supplying Body must Err.
+        #[test]
+        fn k1_leaf_byparallel_rejects_body() {
+            let target = ghr("B", 0, [0u8; 32], 1);
+            let q = LeafQuery::ByParallel { axis: [0., 0., 1.], tol_rad: 0.01 };
+            let result = SelectorValue::leaf(SelectorKind::Body, target, q);
+            assert_eq!(
+                result,
+                Err(SelectorError::KindMismatch {
+                    expected: SelectorKind::Edge,
+                    found: SelectorKind::Body,
+                })
+            );
+        }
+
+        // K1 leaf↔query: Named and All accept any kind.
+        #[test]
+        fn k1_leaf_named_and_all_accept_any_kind() {
+            let t1 = ghr("B", 0, [0u8; 32], 1);
+            let t2 = ghr("B", 0, [0u8; 32], 1);
+            let t3 = ghr("B", 0, [0u8; 32], 1);
+            assert!(SelectorValue::leaf(SelectorKind::Body, t1, LeafQuery::All).is_ok());
+            assert!(SelectorValue::leaf(SelectorKind::Face, t2, LeafQuery::Named("top".into())).is_ok());
+            assert!(SelectorValue::leaf(SelectorKind::Edge, t3, LeafQuery::Named("rim".into())).is_ok());
+        }
+
+        // K1 composition: union of face + edge selector must Err.
+        #[test]
+        fn k1_union_rejects_mixed_kinds() {
+            let face_sel = SelectorValue::leaf(
+                SelectorKind::Face, ghr("B", 0, [0u8; 32], 1),
+                LeafQuery::All,
+            ).unwrap();
+            let edge_sel = SelectorValue::leaf(
+                SelectorKind::Edge, ghr("B", 0, [0u8; 32], 1),
+                LeafQuery::All,
+            ).unwrap();
+            let result = SelectorValue::union(vec![face_sel, edge_sel]);
+            assert_eq!(
+                result,
+                Err(SelectorError::KindMismatch {
+                    expected: SelectorKind::Face,
+                    found: SelectorKind::Edge,
+                }),
+                "union of Face+Edge must be rejected"
+            );
+        }
+
+        // K1 composition: union of same-kind selectors must Ok with correct kind.
+        #[test]
+        fn k1_union_same_kind_ok() {
+            let fa = SelectorValue::leaf(SelectorKind::Face, ghr("B", 0, [0u8; 32], 1), LeafQuery::All).unwrap();
+            let fb = SelectorValue::leaf(SelectorKind::Face, ghr("C", 0, [0u8; 32], 1), LeafQuery::All).unwrap();
+            let u = SelectorValue::union(vec![fa, fb]).unwrap();
+            assert_eq!(u.kind, SelectorKind::Face);
+        }
+
+        // K1 composition: intersect of mixed kinds must Err.
+        #[test]
+        fn k1_intersect_rejects_mixed_kinds() {
+            let face_sel = SelectorValue::leaf(SelectorKind::Face, ghr("B", 0, [0u8; 32], 1), LeafQuery::All).unwrap();
+            let edge_sel = SelectorValue::leaf(SelectorKind::Edge, ghr("B", 0, [0u8; 32], 1), LeafQuery::All).unwrap();
+            assert!(
+                SelectorValue::intersect(vec![face_sel, edge_sel]).is_err(),
+                "intersect of Face+Edge must be rejected"
+            );
+        }
+
+        // K1 composition: intersect of same-kind must Ok.
+        #[test]
+        fn k1_intersect_same_kind_ok() {
+            let ea = SelectorValue::leaf(SelectorKind::Edge, ghr("B", 0, [0u8; 32], 1), LeafQuery::All).unwrap();
+            let eb = SelectorValue::leaf(SelectorKind::Edge, ghr("C", 0, [0u8; 32], 1), LeafQuery::All).unwrap();
+            let i = SelectorValue::intersect(vec![ea, eb]).unwrap();
+            assert_eq!(i.kind, SelectorKind::Edge);
+        }
+
+        // K1 composition: difference of mixed kinds must Err.
+        #[test]
+        fn k1_difference_rejects_mixed_kinds() {
+            let face_sel = SelectorValue::leaf(SelectorKind::Face, ghr("B", 0, [0u8; 32], 1), LeafQuery::All).unwrap();
+            let edge_sel = SelectorValue::leaf(SelectorKind::Edge, ghr("B", 0, [0u8; 32], 1), LeafQuery::All).unwrap();
+            assert!(
+                SelectorValue::difference(face_sel, edge_sel).is_err(),
+                "difference of Face-Edge must be rejected"
+            );
+        }
+
+        // K1 composition: difference of same kind must Ok with correct kind.
+        #[test]
+        fn k1_difference_same_kind_ok() {
+            let fa = SelectorValue::leaf(SelectorKind::Face, ghr("B", 0, [0u8; 32], 1), LeafQuery::All).unwrap();
+            let fb = SelectorValue::leaf(SelectorKind::Face, ghr("C", 0, [0u8; 32], 1), LeafQuery::All).unwrap();
+            let d = SelectorValue::difference(fa, fb).unwrap();
+            assert_eq!(d.kind, SelectorKind::Face);
+        }
+
+        // K1 empty: union([]) => EmptyComposition.
+        #[test]
+        fn k1_empty_union_returns_empty_composition() {
+            assert_eq!(
+                SelectorValue::union(vec![]),
+                Err(SelectorError::EmptyComposition)
+            );
+        }
+
+        // K1 empty: intersect([]) => EmptyComposition.
+        #[test]
+        fn k1_empty_intersect_returns_empty_composition() {
+            assert_eq!(
+                SelectorValue::intersect(vec![]),
+                Err(SelectorError::EmptyComposition)
+            );
+        }
+
+        // K2: constructing a full nested tree (Difference(Union(leaf,leaf), leaf))
+        // requires no kernel, proving construction is kernel-free.
+        #[test]
+        fn k2_nested_construction_is_kernel_free() {
+            // All of this runs without any GeometryKernel in scope — reify-ir
+            // has no kernel dependency, so constructors are pure by crate layering.
+            let leaf_a = SelectorValue::leaf(
+                SelectorKind::Face, ghr("Body", 0, [1u8; 32], 1),
+                LeafQuery::ByNormal { dir: [0., 0., 1.], tol_rad: 0.01 },
+            ).unwrap();
+            let leaf_b = SelectorValue::leaf(
+                SelectorKind::Face, ghr("Body", 0, [2u8; 32], 1),
+                LeafQuery::ByArea { min_m2: 0.01, max_m2: 0.1 },
+            ).unwrap();
+            let leaf_c = SelectorValue::leaf(
+                SelectorKind::Face, ghr("Body", 0, [3u8; 32], 1),
+                LeafQuery::Named("top".into()),
+            ).unwrap();
+            let union = SelectorValue::union(vec![leaf_a, leaf_b]).unwrap();
+            let result = SelectorValue::difference(union, leaf_c).unwrap();
+            assert_eq!(result.kind, SelectorKind::Face);
+        }
     }
 }
