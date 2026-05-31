@@ -11,6 +11,20 @@
 
 use crate::{AuditContext, EvidenceRef, Finding, GitCommit, Pattern, Severity, TaskMetadata};
 
+// Empty/vacuous assertion patterns scanned for by H1.
+// Each is matched as a substring of added lines.
+const EMPTY_ASSERTION_PATTERNS: &[&str] = &[
+    ".is_empty()",
+    "vec![]",
+    "Vec::new()",
+    "assert_eq!(result, 0)",
+    "assert_eq!(result, [])",
+    "assert_eq!(0,",
+    "assert_eq!([], ",
+    "assert_eq!(vec![]",
+    "assert_eq!(Vec::new()",
+];
+
 /// The git ref the detector diffs claimed commits *against*. Production runs
 /// against `main`; the integration tests configure their `MockGitOps` with
 /// this exact string so the keys line up.
@@ -109,6 +123,49 @@ fn check_task(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Finding> {
     }
     if let Some(f) = check_gitignored(ctx, meta) {
         findings.push(f);
+    }
+    findings.extend(check_tests_assert_empty(ctx, meta));
+    findings
+}
+
+/// H1 — tests-assert-empty pass (naive initial version, step-4).
+///
+/// For each test-path entry in `metadata.files`, reads the added lines via
+/// `GitOps::diff_added_lines_in_commit(commit, path)` and emits a
+/// `P5TestsAssertEmpty` `Medium` finding when any added line contains an
+/// empty/vacuous assertion pattern. The double-gate (placeholder marker in fn
+/// name AND empty assertion) is added in step-6 to satisfy the FP control
+/// tests; this version fires on any empty assertion in a test file.
+///
+/// Skipped when `done_provenance.commit` is absent (no commit to diff).
+fn check_tests_assert_empty(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Finding> {
+    let Some(commit) = meta.done_provenance.as_ref().and_then(|p| p.commit.as_deref()) else {
+        return vec![];
+    };
+
+    let mut findings = Vec::new();
+    for path in &meta.files {
+        if !crate::is_test_path(path) {
+            continue;
+        }
+        let added = ctx.git.diff_added_lines_in_commit(commit, path);
+        let has_empty_assertion = added.iter().any(|(_, line)| {
+            EMPTY_ASSERTION_PATTERNS.iter().any(|pat| line.contains(pat))
+        });
+        if has_empty_assertion {
+            findings.push(Finding {
+                pattern: Pattern::P5TestsAssertEmpty,
+                severity: Severity::Medium,
+                task_id: meta.task_id.clone(),
+                summary: format!(
+                    "added test in {} asserts an empty/vacuous result — \
+                     possible placeholder test masking a not-yet-implemented capability \
+                     (task 4140 H1; verify with double-gate in step-6)",
+                    path
+                ),
+                evidence: vec![EvidenceRef::File { path: path.clone() }],
+            });
+        }
     }
     findings
 }
