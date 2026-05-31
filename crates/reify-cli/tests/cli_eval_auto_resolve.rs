@@ -63,6 +63,11 @@ fn eval_resolves_auto_param_via_default_solver() {
         "resolved thickness SI value should be finite, got {si_value}"
     );
     assert!(
+        si_value > 0.0,
+        "resolved thickness must be physically positive (> 0), got {si_value:.9} m;\n\
+         line: {thickness_line:?}"
+    );
+    assert!(
         si_value <= 0.005,
         "expected thickness ≤ 5 mm (0.005 m) after minimize, got {si_value:.6} m;\n\
          line: {thickness_line:?}"
