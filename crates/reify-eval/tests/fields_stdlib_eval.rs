@@ -23,7 +23,7 @@ const EXAMPLE_PATH: &str = concat!(
 /// around 300K (constraints >299.999K and <300.001K), confirming the
 /// constant analytical lambda resolves via the imported module path.
 #[test]
-fn example_fields_sample_evaluates_to_300K() {
+fn example_fields_sample_evaluates_to_300_k() {
     let source =
         std::fs::read_to_string(EXAMPLE_PATH).expect("examples/stdlib/fields.ri should exist");
 
