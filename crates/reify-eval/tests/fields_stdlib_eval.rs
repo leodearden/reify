@@ -1,8 +1,9 @@
 //! Eval integration test for `examples/stdlib/fields.ri` (task 4025).
 //!
 //! Exercises the full pipeline: parse → compile-with-stdlib → eval → check,
-//! verifying that sample(temp, point3(...)) evaluates to 1m exactly and both
-//! range constraints are Satisfied.
+//! verifying that the two range constraints on `temp_sample` (>299.999K and
+//! <300.001K) are Satisfied, confirming sample(temp, point3(...)) resolves
+//! through the imported module path and evaluates near 300K.
 //!
 //! Pattern lifted from `m11_field_calculus.rs` (field_calculus_all_constraints_satisfied).
 
@@ -18,10 +19,11 @@ const EXAMPLE_PATH: &str = concat!(
 
 /// Read examples/stdlib/fields.ri, compile-with-stdlib, eval, and verify
 /// all constraints in FieldsModuleDemo are Satisfied.
-/// Pins that sample(temp, point3(1m,2m,3m)) evaluates to 1m exactly
-/// (value passthrough through a constant analytical lambda — not numerical).
+/// Pins that sample(temp, point3(1m,2m,3m)) satisfies the ±0.001K window
+/// around 300K (constraints >299.999K and <300.001K), confirming the
+/// constant analytical lambda resolves via the imported module path.
 #[test]
-fn example_fields_sample_evaluates_to_1m() {
+fn example_fields_sample_evaluates_to_300K() {
     let source =
         std::fs::read_to_string(EXAMPLE_PATH).expect("examples/stdlib/fields.ri should exist");
 

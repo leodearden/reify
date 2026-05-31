@@ -15,8 +15,7 @@ use reify_core::{ModulePath, Severity};
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
 /// Return the `std/fields` CompiledModule from the production stdlib loader.
-/// Panics if absent — which is the expected failure mode until step-2
-/// registers the module and creates fields.ri.
+/// Panics with a diagnostic listing available modules if the path is absent.
 fn load_stdlib_module() -> &'static reify_compiler::CompiledModule {
     reify_compiler::stdlib_loader::load_stdlib()
         .iter()
@@ -32,18 +31,16 @@ fn load_stdlib_module() -> &'static reify_compiler::CompiledModule {
         })
 }
 
-// ─── step-1: module loads clean + no circular Field alias ────────────────────
+// ─── invariant: std/fields module loads clean ────────────────────────────────
 
 /// The std/fields module must load through the production stdlib path with zero
-/// error-severity diagnostics, and the source must NOT contain a `pub type Field`
-/// declaration (esc-4025-76: a `type Field<D,C> = Field<D,C>` self-alias is a
-/// HARD circular-alias Error that panics stdlib_loader's assert! and breaks
-/// the whole build; the builtin Field<D,C> resolves everywhere without import).
+/// error-severity diagnostics. Any circular `pub type Field<D,C> = Field<D,C>`
+/// self-alias (esc-4025-76) would produce an Error diagnostic and fail here,
+/// so the diagnostics check is the authoritative guard — no source-text grep needed.
 #[test]
-fn std_fields_loads_clean_and_has_no_field_alias() {
+fn std_fields_loads_clean() {
     let module = load_stdlib_module();
 
-    // Zero Error diagnostics.
     let errors: Vec<_> = module
         .diagnostics
         .iter()
@@ -54,22 +51,9 @@ fn std_fields_loads_clean_and_has_no_field_alias() {
         "unexpected error diagnostics in fields.ri: {:?}",
         errors
     );
-
-    // Regression guard: no `pub type Field` (circular-alias esc-4025-76).
-    let src = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/stdlib/fields.ri"
-    ))
-    .expect("stdlib/fields.ri should exist");
-    assert!(
-        !src.contains("pub type Field"),
-        "fields.ri must NOT declare `pub type Field` — \
-         the builtin Field<D,C> resolves without import and a self-alias \
-         is a circular-alias Error (esc-4025-76)"
-    );
 }
 
-// ─── step-3: examples/stdlib/fields.ri compiles clean ────────────────────────
+// ─── invariant: examples/stdlib/fields.ri compiles clean ────────────────────
 
 /// `examples/stdlib/fields.ri` must parse without errors, compile under stdlib
 /// with zero Error diagnostics, contain `import std.fields`, and declare a
