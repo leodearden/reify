@@ -1117,6 +1117,36 @@ fn forcing_missing_outcome() -> ComputeOutcome {
     }
 }
 
+/// Build the degenerate short-circuit outcome for a `modal_result` input that
+/// carries no usable modes (`modal_result` absent / `Value::Undef`, or a
+/// `ModalResult` struct whose `modes` list is empty / absent): an
+/// `E_TransientModalResultMissing` `Error` diagnostic plus a degenerate (empty
+/// `t_samples` / `mode_coords`) `DisplacementTimeHistory` — no transient was
+/// integrated. Mirrors [`forcing_missing_outcome`]; message-based diagnostic
+/// (`code: None`) per design_decision #6, and no warm state is donated.
+///
+/// This guard closes the third silent-failure path in `run_transient_response`:
+/// without it, the per-mode loop runs zero times and the trampoline returns a
+/// structurally-valid but all-zero result that masks an upstream failed
+/// `modal::free_vibration` node. Placed before the empty-forcing guard so that
+/// a failed modal-analysis node (the root cause) is surfaced first.
+fn modal_result_missing_outcome() -> ComputeOutcome {
+    let diagnostic = Diagnostic::error(
+        "E_TransientModalResultMissing: the modal result carries no modes \
+         (`modal_result` absent/Undef or its `modes` list empty), so there are \
+         no mode shapes to project the forcing onto and the mode-superposition \
+         transient is undefined; returning an empty displacement history. This \
+         typically indicates the upstream modal analysis (modal::free_vibration) \
+         failed or was not yet evaluated.",
+    );
+    ComputeOutcome::Completed {
+        result: degenerate_displacement_history(),
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: vec![diagnostic],
+    }
+}
+
 /// Fetch field `name` from a StructureInstance `val` by reference (no clone);
 /// `None` if `val` is not a StructureInstance or lacks the field. The borrowing
 /// companion to [`field_or`], used by the transient trampolines to read forcing /
@@ -1399,7 +1429,21 @@ pub(crate) fn run_transient_response(
     let t_end = value_inputs.get(3).map(read_scalar_si).unwrap_or(0.0);
     let dt = value_inputs.get(4).map(read_scalar_si).unwrap_or(0.0);
 
-    // ── (1) empty-forcing guard (no cache — mirrors density guard) ────────────
+    // ── (1) missing-modal-result guard ───────────────────────────────────────
+    // modal_result is the primary positional input: Undef / non-ModalResult /
+    // ModalResult with empty modes all yield &[] from modal_result_modes, which
+    // would silently produce a zero-displacement history by summing over zero
+    // modes. Fire this guard first (even when forcing is also empty) so the
+    // diagnostic points at the root cause — the upstream modal solve — rather
+    // than the secondary empty-forcing symptom. Mirrors forcing_missing_outcome.
+    if modal_result_modes(&modal_result).is_empty() {
+        return TransientTrampolineRun {
+            outcome: modal_result_missing_outcome(),
+            reused_setup: false,
+        };
+    }
+
+    // ── (2) empty-forcing guard (no cache — mirrors density guard) ────────────
     let sources = extract_forcing_sources(&forcing);
     if sources.is_empty() {
         return TransientTrampolineRun {
