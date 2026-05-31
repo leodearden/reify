@@ -2368,4 +2368,127 @@ mod tests {
             (u_k - u_analytical).abs() / scale,
         );
     }
+
+    // --- Degenerate element-quality acceptance tests (task 4068 steps 15–19):
+    // isotropy, no spurious zero-energy modes, and bit-compatible flat-reduction.
+    // These mirror the standard degenerated-shell acceptance suite. ---
+
+    /// All `n_dofs` eigenvalues of an element stiffness matrix, ascending by
+    /// `|λ|`. Reuses the crate's dense generalized eigensolver (the "dense path",
+    /// [`crate::eigensolve::solve_eigen_dense`]) with `B = I`, so the generalized
+    /// problem `K φ = λ I φ` collapses to the standard symmetric spectrum. Used by
+    /// the isotropy (spectra-coincide) and no-spurious-modes (kernel-count) tests.
+    fn element_eigenvalues(k: &ElementStiffness) -> Vec<f64> {
+        use crate::eigensolve::{EigenSolverOptions, solve_eigen_dense};
+        use faer::sparse::{SparseRowMat, Triplet};
+        let n = k.n_dofs;
+        let mut k_trips: Vec<Triplet<usize, usize, f64>> = Vec::with_capacity(n * n);
+        for i in 0..n {
+            for j in 0..n {
+                let v = k.get(i, j);
+                if v != 0.0 {
+                    k_trips.push(Triplet::new(i, j, v));
+                }
+            }
+        }
+        let k_sp = SparseRowMat::try_new_from_triplets(n, n, &k_trips).unwrap();
+        let id_trips: Vec<Triplet<usize, usize, f64>> =
+            (0..n).map(|i| Triplet::new(i, i, 1.0)).collect();
+        let id_sp = SparseRowMat::try_new_from_triplets(n, n, &id_trips).unwrap();
+        let opts = EigenSolverOptions {
+            n_modes: n,
+            ..Default::default()
+        };
+        let res = solve_eigen_dense(&k_sp, &id_sp, opts);
+        assert_eq!(
+            res.eigenvalues.len(),
+            n,
+            "dense eigensolve must recover all {n} eigenvalues with B = I (got {})",
+            res.eigenvalues.len(),
+        );
+        res.eigenvalues
+    }
+
+    /// Max absolute entry of an element stiffness matrix (the matrix scale used
+    /// for relative tolerances).
+    fn element_k_max(k: &ElementStiffness) -> f64 {
+        k.data.iter().copied().fold(0.0_f64, |a, x| a.max(x.abs()))
+    }
+
+    /// Equilateral triangle in the xy-plane (unit edge), so a cyclic node
+    /// permutation is a true 120° in-plane symmetry of the element — an isotropic
+    /// element must give the identical eigenvalue spectrum under it. Directors are
+    /// the facet normal `+z`.
+    fn equilateral_tri() -> [[f64; 3]; 3] {
+        let h = 3.0_f64.sqrt() / 2.0;
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, h, 0.0]]
+    }
+
+    #[test]
+    fn degenerate_element_is_isotropic_eigenvalue_spectra_coincide() {
+        // Frame-invariance / isotropy: an isotropic element's energy is independent
+        // of in-plane orientation and node labeling, so its eigenvalue spectrum is
+        // invariant under (a) a rigid 3D rotation of the element and (b) a cyclic
+        // node permutation. Both transforms are orthogonal similarities of K
+        // (K → T K Tᵀ, T orthogonal/permutation), which preserve eigenvalues
+        // exactly; any in-plane-direction or node-labeling bias in the lamina
+        // frame / quadrature would break the spectrum match.
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let nodes = equilateral_tri();
+        let directors = [[0.0, 0.0, 1.0]; 3]; // facet normal
+        let thicknesses = [t; 3];
+        let k_orig = shell_element_stiffness_degenerate(&nodes, &directors, &thicknesses, &mat);
+        let eig_orig = element_eigenvalues(&k_orig);
+        let k_max = element_k_max(&k_orig);
+        let tol = 1e-9 * k_max.max(1.0);
+
+        // (a) Rigid 3D rotation: rotate nodes AND directors by Q (directors are the
+        // facet normal, which rotates with the element).
+        let q = super::tilted_q_for_shell_tests();
+        let rotate = |v: [f64; 3]| -> [f64; 3] {
+            [
+                q[0][0] * v[0] + q[0][1] * v[1] + q[0][2] * v[2],
+                q[1][0] * v[0] + q[1][1] * v[1] + q[1][2] * v[2],
+                q[2][0] * v[0] + q[2][1] * v[1] + q[2][2] * v[2],
+            ]
+        };
+        let rot_nodes = [rotate(nodes[0]), rotate(nodes[1]), rotate(nodes[2])];
+        let rot_dirs = [
+            rotate(directors[0]),
+            rotate(directors[1]),
+            rotate(directors[2]),
+        ];
+        let k_rot = shell_element_stiffness_degenerate(&rot_nodes, &rot_dirs, &thicknesses, &mat);
+        let eig_rot = element_eigenvalues(&k_rot);
+        for (i, (&a, &b)) in eig_orig.iter().zip(eig_rot.iter()).enumerate() {
+            assert!(
+                (a - b).abs() < tol,
+                "isotropy under 3D rotation: spectrum[{i}] = {a} vs {b} (tol {tol})",
+            );
+        }
+
+        // (b) Cyclic node permutation [0,1,2] → [1,2,0] (a 120° symmetry of the
+        // equilateral triangle): same element, relabeled nodes ⇒ same spectrum.
+        let perm = [1_usize, 2, 0];
+        let perm_nodes = [nodes[perm[0]], nodes[perm[1]], nodes[perm[2]]];
+        let perm_dirs = [
+            directors[perm[0]],
+            directors[perm[1]],
+            directors[perm[2]],
+        ];
+        let perm_th = [
+            thicknesses[perm[0]],
+            thicknesses[perm[1]],
+            thicknesses[perm[2]],
+        ];
+        let k_perm = shell_element_stiffness_degenerate(&perm_nodes, &perm_dirs, &perm_th, &mat);
+        let eig_perm = element_eigenvalues(&k_perm);
+        for (i, (&a, &b)) in eig_orig.iter().zip(eig_perm.iter()).enumerate() {
+            assert!(
+                (a - b).abs() < tol,
+                "isotropy under cyclic node permutation: spectrum[{i}] = {a} vs {b} (tol {tol})",
+            );
+        }
+    }
 }
