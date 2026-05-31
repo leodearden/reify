@@ -2613,4 +2613,94 @@ mod tests {
             first_positive / k_max,
         );
     }
+
+    // --- Degenerate flat-reduction anchor (task 4068 steps 19/20) + the positive
+    // metric-improvement proof (esc-4068-134 directive 2). ---
+
+    #[test]
+    fn degenerate_flat_reduces_to_mitc3_plus_on_unit_metric_triangle() {
+        // "Bit-compatible flat reduction" realized as numerical equivalence at FP
+        // round-off: on the UNIT-metric orthogonal reference triangle with
+        // directors ∥ +z and uniform thickness, the degenerate element matrix
+        // equals flat MITC3+'s (max entrywise diff / k_max < 1e-9). This is the
+        // load-bearing correctness anchor — the element provably degrades to the
+        // reviewed task-3392 behaviour when flat.
+        //
+        // Why the UNIT-metric triangle (esc-4068-134): membrane+bending reduce on
+        // ANY flat triangle, but the degenerate transverse shear is the physically-
+        // correct standard-MITC3 shear, which equals task 3392's metric-simplified
+        // flat shear only where |g_ξ| = |g_η| = 1 and g_ξ ⊥ g_η — i.e. the unit
+        // reference triangle. On a general flat triangle the two K differ by the
+        // in-plane metric on the shear (a strict improvement, pinned positively by
+        // the non-unit shear patch test below). Literal `to_bits()` identity is
+        // precluded by the differing (but exact) ζ-quadrature, so it is not
+        // asserted; 1e-9 relative is the standard FE meaning of "reduces to flat".
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let directors = [[0.0, 0.0, 1.0]; 3]; // ∥ +z facet normal
+        let thicknesses = [t; 3];
+        let k_deg = shell_element_stiffness_degenerate(&UNIT_TRI, &directors, &thicknesses, &mat);
+        let k_ref = shell_element_stiffness_mitc3_plus(&UNIT_TRI, t, &mat);
+        let k_max = element_k_max(&k_ref);
+
+        let mut max_diff = 0.0_f64;
+        for i in 0..Mitc3Plus::N_DOFS {
+            for j in 0..Mitc3Plus::N_DOFS {
+                max_diff = max_diff.max((k_deg.get(i, j) - k_ref.get(i, j)).abs());
+            }
+        }
+        assert!(
+            max_diff < 1e-9 * k_max,
+            "flat degenerate K differs from flat MITC3+ by {max_diff} \
+             (k_max {k_max}, rel {})",
+            max_diff / k_max,
+        );
+    }
+
+    #[test]
+    fn degenerate_transverse_shear_constant_state_patch_test_nonunit_triangle() {
+        // POSITIVE proof of the metric improvement (esc-4068-134 directive 2): on a
+        // NON-UNIT flat triangle, a uniform θ_y = α (w = 0) is a constant physical
+        // transverse-shear state γ_xz = α, γ_yz = 0 — no membrane (u = 0) and no
+        // bending (θ uniform ⇒ zero curvature). A physically-correct element must
+        // reproduce the analytical constant-shear energy ½·α²·κ·G·t·A for ANY
+        // triangle (A = mid-surface area). The degenerate element's exact covariant
+        // kinematics + s3·m2 contravariant map deliver this FULL value.
+        //
+        // Sanity / contrast: task 3392's metric-simplified flat shear would give
+        // only ¼ of this on the [(0,0),(2,0),(0,1.5)] triangle (the in-plane metric
+        // |g_x| = 2 it drops); we assert the CORRECT full value, NOT 3392's. Per
+        // the esc-4068-134 directive, if this does not pass the s3·m2 map has a
+        // residual bug and the failure must be escalated, not hidden.
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let alpha = 0.003_f64;
+        let nodes = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 1.5, 0.0]];
+        let directors = [[0.0, 0.0, 1.0]; 3];
+        let thicknesses = [t; 3];
+        let k = shell_element_stiffness_degenerate(&nodes, &directors, &thicknesses, &mat);
+
+        let mut u = [0.0_f64; Mitc3Plus::N_DOFS];
+        for node in 0..Mitc3Plus::N_NODES {
+            u[Mitc3Plus::N_DOFS_PER_NODE * node + 4] = alpha; // uniform θ_y
+        }
+        let ku = matvec(&k, &u);
+        let u_k: f64 = 0.5 * ku.iter().zip(u.iter()).map(|(ki, ui)| ki * ui).sum::<f64>();
+
+        let e = mat.youngs_modulus;
+        let nu = mat.poisson_ratio;
+        let gmod = e / (2.0 * (1.0 + nu));
+        let kappa = 5.0_f64 / 6.0;
+        let area = 1.5_f64; // ½·2·1.5, the mid-surface area of this triangle
+        let u_analytical = 0.5 * alpha * alpha * kappa * gmod * t * area;
+        let scale = u_analytical.abs().max(1.0);
+        assert!(
+            (u_k - u_analytical).abs() < 1e-9 * scale,
+            "degenerate non-unit shear patch: U_K = {u_k}, U_analytical = \
+             {u_analytical}, rel_err = {} (the ¼-value {} would flag a fallback to \
+             3392's metric-simplified shear)",
+            (u_k - u_analytical).abs() / scale,
+            0.25 * u_analytical,
+        );
+    }
 }
