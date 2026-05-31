@@ -23,7 +23,7 @@
 //! user function to avoid any ambiguity with stdlib overloads.  The structure
 //! `Bolt` is defined inline to keep tests self-contained.
 
-use reify_core::DiagnosticCode;
+use reify_core::{DiagnosticCode, Severity};
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -39,8 +39,10 @@ const BOLT_STRUCTURE: &str = "structure Bolt { param length : Length = 10mm }";
 
 /// (a) `clamp(x: auto)` — strict auto in a function-call argument.
 ///
-/// Must emit exactly one diagnostic with `code == AutoNotAtBindingSite`,
+/// Must emit **exactly one** diagnostic with `code == AutoNotAtBindingSite`,
 /// `severity == Error`, and a message that contains the callee name `"clamp"`.
+/// Total error count must also be 1 (the poison return suppresses cascading
+/// type errors — anti-cascade contract from task-448/1912/1921).
 #[test]
 fn function_call_strict_auto_emits_auto_not_at_binding_site() {
     let source = format!("{CLAMP_FN}  structure S {{ let y = clamp(x: auto) }}");
@@ -52,14 +54,28 @@ fn function_call_strict_auto_emits_auto_not_at_binding_site() {
         .filter(|d| d.code == Some(DiagnosticCode::AutoNotAtBindingSite))
         .collect();
 
-    assert!(
-        !gate_errors.is_empty(),
-        "expected at least one AutoNotAtBindingSite error for `clamp(x: auto)`;\
+    assert_eq!(
+        gate_errors.len(),
+        1,
+        "expected exactly one AutoNotAtBindingSite error for `clamp(x: auto)`;\
+         \n  gate errors: {:?}",
+        gate_errors
+    );
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one total error (no cascading errors) for `clamp(x: auto)`;\
          \n  all errors: {:?}",
         errors
     );
 
     let first = gate_errors[0];
+    assert_eq!(
+        first.severity,
+        Severity::Error,
+        "expected Error severity; got: {:?}",
+        first.severity
+    );
     assert!(
         first.message.contains("clamp"),
         "expected error message to name the callee 'clamp'; got: {:?}",
@@ -70,7 +86,9 @@ fn function_call_strict_auto_emits_auto_not_at_binding_site() {
 /// (b) `clamp(x: auto(free))` — free auto in a function-call argument.
 ///
 /// Both strict and free `auto` are invalid at a function-call argument site.
-/// Must emit exactly one `AutoNotAtBindingSite` error with message containing "clamp".
+/// Must emit **exactly one** `AutoNotAtBindingSite` error with `severity == Error`
+/// and message containing `"clamp"`.  Total error count must also be 1
+/// (anti-cascade contract — same as test (a)).
 #[test]
 fn function_call_free_auto_emits_auto_not_at_binding_site() {
     let source = format!("{CLAMP_FN}  structure S {{ let y = clamp(x: auto(free)) }}");
@@ -82,14 +100,28 @@ fn function_call_free_auto_emits_auto_not_at_binding_site() {
         .filter(|d| d.code == Some(DiagnosticCode::AutoNotAtBindingSite))
         .collect();
 
-    assert!(
-        !gate_errors.is_empty(),
-        "expected at least one AutoNotAtBindingSite error for `clamp(x: auto(free))`;\
+    assert_eq!(
+        gate_errors.len(),
+        1,
+        "expected exactly one AutoNotAtBindingSite error for `clamp(x: auto(free))`;\
+         \n  gate errors: {:?}",
+        gate_errors
+    );
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one total error (no cascading errors) for `clamp(x: auto(free))`;\
          \n  all errors: {:?}",
         errors
     );
 
     let first = gate_errors[0];
+    assert_eq!(
+        first.severity,
+        Severity::Error,
+        "expected Error severity; got: {:?}",
+        first.severity
+    );
     assert!(
         first.message.contains("clamp"),
         "expected error message to name the callee 'clamp'; got: {:?}",
@@ -143,5 +175,57 @@ fn non_auto_function_call_produces_no_gate_error() {
         "unexpected AutoNotAtBindingSite diagnostic for plain `clamp(x: 5mm)`;\
          \n  gate diagnostics: {:?}",
         gate_errors
+    );
+}
+
+/// (e) Multi-auto-arg: `two_auto(a: auto, b: auto)` — only the FIRST offending arg
+/// is reported (anti-cascade contract).
+///
+/// The gate uses `.find()` to locate the first `ExprKind::Auto` and emits a single
+/// poison literal; the second `auto` is never reached.  Asserting `len() == 1`
+/// locks in that invariant so a future change to iterate over all offending args
+/// (breaking the anti-cascade contract) would be caught here.
+///
+/// The diagnostic label span is also verified to point at the first `auto` arg —
+/// i.e. its start offset is less than the byte offset of the second `auto` in the
+/// source string.
+#[test]
+fn function_call_multi_auto_reports_only_first_arg() {
+    let source = format!(
+        "fn two_auto(a: Length, b: Length) -> Length = a  \
+         structure S {{ let y = two_auto(a: auto, b: auto) }}"
+    );
+    let module = compile_source_with_stdlib(&source);
+
+    let errors = errors_only(&module);
+    let gate_errors: Vec<_> = errors
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::AutoNotAtBindingSite))
+        .collect();
+
+    assert_eq!(
+        gate_errors.len(),
+        1,
+        "expected exactly one AutoNotAtBindingSite error for two-auto call (anti-cascade);\
+         \n  gate errors: {:?}",
+        gate_errors
+    );
+
+    // Verify the diagnostic label points at the FIRST `auto` arg (before `b: auto`).
+    let second_auto_offset =
+        source.rfind("b: auto").expect("source must contain 'b: auto'") + "b: ".len();
+    let label_start = gate_errors[0]
+        .labels
+        .first()
+        .expect("gate diagnostic must carry a label")
+        .span
+        .start as usize;
+    assert!(
+        label_start < second_auto_offset,
+        "label should point at the first `auto` arg (offset < {});\
+         \n  label span start: {}, second `auto` starts at: {}",
+        second_auto_offset,
+        label_start,
+        second_auto_offset,
     );
 }

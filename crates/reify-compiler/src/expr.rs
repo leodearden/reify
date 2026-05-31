@@ -1252,7 +1252,7 @@ pub(crate) fn compile_expr_guarded(
             // Structure construction (`Bolt(length: auto)`) is explicitly exempt:
             // named-arg `auto` at a construction site adopts determinacy-Auto on the
             // field cell (task ε).  The exemption reuses the identical condition from the
-            // StructureInstanceCtor branch (lines 1297-1300 below) so the gate decision
+            // task 3540 (SIR-α) StructureInstanceCtor branch below, so the gate decision
             // and the ctor-vs-function dispatch stay in sync.
             //
             // Positional `auto` is already a parse error (α), so any `ExprKind::Auto`
