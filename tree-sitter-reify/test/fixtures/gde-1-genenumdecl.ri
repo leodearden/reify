@@ -1,0 +1,10 @@
+/// Generic enum with named-field variants — α parse-signal.
+/// Combines the type-param-on-enum head (this task) with named-field payload
+/// (task 3936): `Result<T, E>` with payload fields referencing type params.
+/// RED (pre step-2): `<T, E>` after the enum name produces ERROR nodes.
+/// GREEN (step-2): `optional($.type_parameters)` added to enum_declaration.
+/// PRD §4.5 / task α.
+enum Result<T, E> {
+    Ok { value: T },
+    Err { error: E },
+}

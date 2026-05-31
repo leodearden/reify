@@ -697,6 +697,9 @@ pub struct EnumDecl {
     pub name: String,
     pub doc: Option<String>,
     pub is_pub: bool,
+    /// Type parameters declared on the enum head: `enum Maybe<T>` → `[T]`.
+    /// Empty for non-generic enums (invariant INV-6). Mirrors `StructureDef.type_params`.
+    pub type_params: Vec<TypeParamDecl>,
     pub variants: Vec<EnumVariantDecl>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,

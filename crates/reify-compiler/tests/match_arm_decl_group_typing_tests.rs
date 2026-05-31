@@ -138,6 +138,7 @@ fn head_type_enum() -> Declaration {
         name: "HeadType".to_string(),
         doc: None,
         is_pub: false,
+        type_params: vec![],
         variants: vec!["Hex".into(), "Socket".into()],
         span: zero_span(),
         content_hash: ContentHash(0),
@@ -296,6 +297,7 @@ fn self_dot_match_cluster_pipe_arm_collapses_to_one_union_member() {
                 name: "HeadType".to_string(),
                 doc: None,
                 is_pub: false,
+                type_params: vec![],
                 variants: vec![
                     "Hex".into(),
                     "Socket".into(),

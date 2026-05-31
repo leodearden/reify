@@ -532,10 +532,13 @@ impl<'a> Lowering<'a> {
 
         let doc = self.extract_doc_comment(node);
 
+        let type_params = self.lower_type_parameters(node);
+
         Some(EnumDecl {
             name,
             doc,
             is_pub,
+            type_params,
             variants,
             span: self.span(node),
             content_hash: self.content_hash(node),

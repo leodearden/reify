@@ -78,6 +78,7 @@ fn declaration_flat_and_module_path_cross_assign() {
         name: "Dir".into(),
         doc: None,
         is_pub: false,
+        type_params: vec![],
         variants: vec![EnumVariantDecl::unit("In")],
         span: SourceSpan::empty(0),
         content_hash: ContentHash(0),
@@ -275,6 +276,7 @@ fn enum_decl_with_named_field_variants() {
         name: "Shape".into(),
         doc: None,
         is_pub: false,
+        type_params: vec![],
         variants: vec![point, circle],
         span: SourceSpan::empty(0),
         content_hash: ContentHash(0),
@@ -308,4 +310,32 @@ fn expr_kind_variant_construct_constructible() {
         }
         _ => panic!("unexpected variant"),
     }
+}
+
+// ── Task 4029 α: EnumDecl.type_params contract ────────────────────────────────
+//
+// step-3 RED: EnumDecl has no `type_params` field yet — this test does not
+// compile until step-4 adds `pub type_params: Vec<TypeParamDecl>` to EnumDecl.
+// step-4 GREEN: the field exists and is accessible.
+
+#[test]
+fn enum_decl_type_params_field_accessible() {
+    // Compile-time contract: EnumDecl has a `type_params: Vec<TypeParamDecl>` field.
+    // Name/bounds/default semantics are covered in reify-syntax lowering tests.
+    let e = EnumDecl {
+        name: "Maybe".into(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![TypeParamDecl {
+            name: "T".into(),
+            bounds: vec![],
+            default: None,
+            span: SourceSpan::empty(0),
+        }],
+        variants: vec![EnumVariantDecl::unit("Nothing")],
+        span: SourceSpan::empty(0),
+        content_hash: ContentHash(0),
+        annotations: vec![],
+    };
+    assert_eq!(e.type_params.len(), 1, "EnumDecl.type_params field must be accessible");
 }
