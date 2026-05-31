@@ -504,3 +504,117 @@ fn extract_edges_unit_cube_returns_18_distinct_handles() {
 
     assert_handles_valid_and_distinct(&edges, "edge");
 }
+
+// ---------------------------------------------------------------------------
+// Sub-element property queries: SurfaceArea + FaceNormal (steps 5 + 6),
+// EdgeTangent + BoundingBox (steps 7 + 8)
+// ---------------------------------------------------------------------------
+
+/// Parse the OCCT-compatible `{"x":_,"y":_,"z":_}` JSON wire format emitted by
+/// the FaceNormal / EdgeTangent / CenterOfMass query arms into `[x, y, z]`.
+///
+/// Mirrors OCCT's `parse_centroid_json` test decoder so both kernels' replies
+/// are read identically (the cross-kernel parity contract).
+fn parse_xyz(s: &str) -> [f64; 3] {
+    let mut out = [f64::NAN; 3];
+    let trimmed = s.trim().trim_start_matches('{').trim_end_matches('}');
+    for field in trimmed.split(',') {
+        let (key, val) = field
+            .split_once(':')
+            .unwrap_or_else(|| panic!("malformed xyz field {field:?} in {s:?}"));
+        let key = key.trim().trim_matches('"');
+        let val: f64 = val
+            .trim()
+            .parse()
+            .unwrap_or_else(|_| panic!("non-numeric value in field {field:?} of {s:?}"));
+        match key {
+            "x" => out[0] = val,
+            "y" => out[1] = val,
+            "z" => out[2] = val,
+            other => panic!("unexpected key {other:?} in xyz JSON {s:?}"),
+        }
+    }
+    for (i, c) in out.iter().enumerate() {
+        assert!(!c.is_nan(), "xyz JSON {s:?} missing component {i}");
+    }
+    out
+}
+
+/// Assert that `n` is a unit vector and axis-aligned (exactly one component
+/// ≈ ±1, the other two ≈ 0). Every facet/edge of an axis-aligned unit cube
+/// has this property, so the check is triangle-order-independent.
+fn assert_unit_axis_aligned(n: [f64; 3], label: &str) {
+    let mag = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+    assert!(
+        (mag - 1.0).abs() < 1e-6,
+        "{label} must be a unit vector; got {n:?} (|v|={mag})",
+    );
+    let near_one = n.iter().filter(|c| (c.abs() - 1.0).abs() < 1e-6).count();
+    let near_zero = n.iter().filter(|c| c.abs() < 1e-6).count();
+    assert_eq!(
+        (near_one, near_zero),
+        (1, 2),
+        "{label} of an axis-aligned cube must have one ±1 and two ≈0 components; got {n:?}",
+    );
+}
+
+/// Sub-face `SurfaceArea` and `FaceNormal` over the unit cube's 12 facets.
+///
+/// Each `unit_cube_mesh` facet is a right triangle with legs 1 and 1, so its
+/// area is `1/2·1·1 = 0.5` and the 12 facets sum to the cube's total surface
+/// area `6.0`. Every facet of an axis-aligned cube has an axis-aligned unit
+/// normal (both triangles of a cube face share that face's normal), so the
+/// FaceNormal check is triangle-order-independent; we additionally confirm a
+/// ±Z facet exists to exercise the Z axis explicitly (plan step-5(c)). Sign
+/// is accepted either way per the FaceNormal contract.
+///
+/// RED (step-5): `ManifoldKernel::query` returns `Err(QueryFailed(STUB_MSG))`
+/// for `SurfaceArea`/`FaceNormal`. GREEN is step-6.
+#[test]
+fn query_sub_face_surface_area_and_normal_unit_cube() {
+    let mut kernel = ManifoldKernel::new();
+    let handle = ingest(&mut kernel, [0.0, 0.0, 0.0]);
+    let faces = kernel
+        .extract_faces(handle)
+        .expect("extract_faces must succeed");
+    assert_eq!(faces.len(), 12, "unit cube must have 12 facets");
+
+    let mut area_sum = 0.0;
+    let mut saw_z_facet = false;
+    for (i, &f) in faces.iter().enumerate() {
+        // (a) per-facet area == 0.5.
+        let area = match kernel.query(&GeometryQuery::SurfaceArea(f)) {
+            Ok(Value::Real(a)) => a,
+            other => panic!(
+                "SurfaceArea(face[{i}]) must return Ok(Value::Real(_)); got {other:?}"
+            ),
+        };
+        assert!(
+            (area - 0.5).abs() < 1e-6,
+            "unit-cube facet [{i}] is a right triangle (legs 1,1) => area 0.5; got {area}",
+        );
+        area_sum += area;
+
+        // (c) per-facet normal is a unit, axis-aligned vector.
+        let n = match kernel.query(&GeometryQuery::FaceNormal(f)) {
+            Ok(Value::String(s)) => parse_xyz(&s),
+            other => panic!(
+                "FaceNormal(face[{i}]) must return Ok(Value::String(_)); got {other:?}"
+            ),
+        };
+        assert_unit_axis_aligned(n, &format!("FaceNormal(face[{i}])"));
+        if (n[2].abs() - 1.0).abs() < 1e-6 {
+            saw_z_facet = true;
+        }
+    }
+
+    // (b) sum of all 12 facet areas == total cube surface area 6.0.
+    assert!(
+        (area_sum - 6.0).abs() < 1e-6,
+        "sum of 12 unit-cube facet areas must be 6.0; got {area_sum}",
+    );
+    assert!(
+        saw_z_facet,
+        "unit cube must have at least one facet whose normal is ≈ ±Z",
+    );
+}
