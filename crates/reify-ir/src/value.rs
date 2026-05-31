@@ -371,12 +371,28 @@ pub enum FieldSourceKind {
 /// `kernel_handle` is **excluded** from [`SelectorValue::content_hash`] and
 /// from Value-level equality/ordering (GHR-β §DD: same geometry rebuilt in a
 /// new session must compare equal and hash identically).
-#[derive(Clone, Debug, PartialEq)]
+///
+/// ## Equality semantics
+///
+/// `PartialEq` deliberately excludes `kernel_handle`, matching the
+/// content-hash contract.  Use field access (`a.kernel_handle`) if you need
+/// to compare ephemeral handles directly.
+#[derive(Clone, Debug)]
 pub struct GeometryHandleRef {
     pub realization_ref: reify_core::identity::RealizationNodeId,
     pub upstream_values_hash: [u8; 32],
     pub kernel_handle: crate::geometry::GeometryHandleId,
 }
+
+impl PartialEq for GeometryHandleRef {
+    /// Equality excludes `kernel_handle` (ephemeral, GHR-β §DD).
+    fn eq(&self, other: &Self) -> bool {
+        self.realization_ref == other.realization_ref
+            && self.upstream_values_hash == other.upstream_values_hash
+    }
+}
+
+impl Eq for GeometryHandleRef {}
 
 impl GeometryHandleRef {
     /// Extract a `GeometryHandleRef` from a `Value::GeometryHandle`.
@@ -448,14 +464,51 @@ pub enum SelectorNode {
 /// A first-class topology-selector value pairing a [`SelectorKind`] with a
 /// [`SelectorNode`] tree.  All constructors enforce kind-closure (K1).
 ///
-/// `SelectorValue` derives `PartialEq` for ergonomic `assert_eq!` in tests.
-/// Value-level equality and ordering use [`content_hash`](Self::content_hash)
-/// instead (Lambda-body pattern; see `impl PartialEq for Value`).
-#[derive(Clone, Debug, PartialEq)]
+/// ## Equality semantics
+///
+/// `PartialEq` delegates to [`content_hash`](Self::content_hash) so that
+/// `sv_a == sv_b` is always consistent with
+/// `Value::Selector(sv_a) == Value::Selector(sv_b)`.
+/// This means:
+/// * `kernel_handle` is excluded (ephemeral, GHR-β §DD).
+/// * `Union`/`Intersect` children are order-independent (commutative sets;
+///   hashed after sorting — see `compute_content_hash`).
+/// * NaN-bearing float fields compare reflexively (NaN-canonicalized).
+///
+/// The content hash is computed once at construction time and cached, giving
+/// O(1) equality and ordering comparisons.
+#[derive(Clone)]
 pub struct SelectorValue {
     pub kind: SelectorKind,
     pub node: SelectorNode,
+    /// Cached content hash, computed eagerly in every constructor.
+    /// Never construct this field manually — always go through the public
+    /// constructors (`leaf`, `union`, `intersect`, `difference`) so the hash
+    /// stays in sync with `kind` and `node`.
+    hash: ContentHash,
 }
+
+impl std::fmt::Debug for SelectorValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Omit `hash` from Debug output — it's a derived cache field, not
+        // part of the logical identity.
+        f.debug_struct("SelectorValue")
+            .field("kind", &self.kind)
+            .field("node", &self.node)
+            .finish()
+    }
+}
+
+impl PartialEq for SelectorValue {
+    /// Equality goes through `content_hash` so kernel_handle, NaN, and
+    /// child ordering are all handled consistently with `Value::Selector`
+    /// equality and `SelectorValue::content_hash`.
+    fn eq(&self, other: &Self) -> bool {
+        self.hash == other.hash
+    }
+}
+
+impl Eq for SelectorValue {}
 
 impl SelectorValue {
     /// Construct a leaf selector.
@@ -475,7 +528,9 @@ impl SelectorValue {
                 found: kind,
             });
         }
-        Ok(Self { kind, node: SelectorNode::Leaf { target, query } })
+        let node = SelectorNode::Leaf { target, query };
+        let hash = Self::compute_content_hash(kind, &node);
+        Ok(Self { kind, node, hash })
     }
 
     /// Construct a union of same-kind selectors.
@@ -484,7 +539,9 @@ impl SelectorValue {
     /// or [`SelectorError::KindMismatch`] if any child has a different kind.
     pub fn union(children: Vec<SelectorValue>) -> Result<Self, SelectorError> {
         let kind = Self::check_composition(&children)?;
-        Ok(Self { kind, node: SelectorNode::Union(children) })
+        let node = SelectorNode::Union(children);
+        let hash = Self::compute_content_hash(kind, &node);
+        Ok(Self { kind, node, hash })
     }
 
     /// Construct an intersection of same-kind selectors.
@@ -493,7 +550,9 @@ impl SelectorValue {
     /// or [`SelectorError::KindMismatch`] if any child has a different kind.
     pub fn intersect(children: Vec<SelectorValue>) -> Result<Self, SelectorError> {
         let kind = Self::check_composition(&children)?;
-        Ok(Self { kind, node: SelectorNode::Intersect(children) })
+        let node = SelectorNode::Intersect(children);
+        let hash = Self::compute_content_hash(kind, &node);
+        Ok(Self { kind, node, hash })
     }
 
     /// Construct a difference of two same-kind selectors.
@@ -507,7 +566,9 @@ impl SelectorValue {
             });
         }
         let kind = a.kind;
-        Ok(Self { kind, node: SelectorNode::Difference(Box::new(a), Box::new(b)) })
+        let node = SelectorNode::Difference(Box::new(a), Box::new(b));
+        let hash = Self::compute_content_hash(kind, &node);
+        Ok(Self { kind, node, hash })
     }
 
     /// Validate that `children` is non-empty and all share the same kind.
@@ -525,11 +586,27 @@ impl SelectorValue {
         Ok(kind)
     }
 
-    /// Content-hash for this selector value.
+    /// Return the cached content hash for this selector.
+    ///
+    /// Computed once at construction time (O(direct children)); O(1) after
+    /// that, making equality and ordering comparisons on `Value::Selector`
+    /// values O(1) as well.
     ///
     /// Tag 30 (after AffineMap=29).  All f64 fields are NaN-canonicalized.
     /// `kernel_handle` inside leaf targets is excluded (GHR-β §DD).
+    /// `Union`/`Intersect` child hashes are sorted before combining so
+    /// commutative compositions always produce the same hash regardless of
+    /// child order.
     pub fn content_hash(&self) -> ContentHash {
+        self.hash
+    }
+
+    /// Compute the content hash from a `(kind, node)` pair.
+    ///
+    /// Called once from each constructor to populate `Self::hash`.
+    /// `Union`/`Intersect` children are sorted by their own hash values so
+    /// that the two operations are recognised as commutative set operations.
+    fn compute_content_hash(kind: SelectorKind, node: &SelectorNode) -> ContentHash {
         fn nan_bits(v: f64) -> u64 {
             if v.is_nan() { f64::NAN.to_bits() } else { v.to_bits() }
         }
@@ -593,18 +670,27 @@ impl SelectorValue {
                     .combine(hash_ghr(target))
                     .combine(hash_query(query)),
                 SelectorNode::Union(children) => {
+                    // Sort child hashes before combining: Union is a commutative
+                    // set operation, so union(vec![a,b]) == union(vec![b,a]).
+                    let mut child_hashes: Vec<u128> =
+                        children.iter().map(|c| c.content_hash().0).collect();
+                    child_hashes.sort_unstable();
                     let mut h = ContentHash::of(&[1u8]);
                     h = h.combine(ContentHash::of(&(children.len() as u64).to_le_bytes()));
-                    for child in children {
-                        h = h.combine(child.content_hash());
+                    for ch in child_hashes {
+                        h = h.combine(ContentHash(ch));
                     }
                     h
                 }
                 SelectorNode::Intersect(children) => {
+                    // Same canonicalization as Union: Intersect is also commutative.
+                    let mut child_hashes: Vec<u128> =
+                        children.iter().map(|c| c.content_hash().0).collect();
+                    child_hashes.sort_unstable();
                     let mut h = ContentHash::of(&[2u8]);
                     h = h.combine(ContentHash::of(&(children.len() as u64).to_le_bytes()));
-                    for child in children {
-                        h = h.combine(child.content_hash());
+                    for ch in child_hashes {
+                        h = h.combine(ContentHash(ch));
                     }
                     h
                 }
@@ -614,13 +700,13 @@ impl SelectorValue {
             }
         }
 
-        let kind_byte: u8 = match self.kind {
+        let kind_byte: u8 = match kind {
             SelectorKind::Face => 0,
             SelectorKind::Edge => 1,
             SelectorKind::Body => 2,
         };
         // tag=30
-        ContentHash::of(&[30, kind_byte]).combine(hash_node(&self.node))
+        ContentHash::of(&[30, kind_byte]).combine(hash_node(node))
     }
 }
 
@@ -632,6 +718,21 @@ pub enum SelectorError {
     /// Union/Intersect was called with an empty children list.
     EmptyComposition,
 }
+
+impl std::fmt::Display for SelectorError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SelectorError::KindMismatch { expected, found } => {
+                write!(f, "selector kind mismatch: expected {expected}, found {found}")
+            }
+            SelectorError::EmptyComposition => {
+                write!(f, "union/intersect requires at least one child selector")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SelectorError {}
 
 /// Runtime values in Reify (M1 subset).
 #[derive(Debug, Clone)]
@@ -9322,12 +9423,22 @@ mod tests {
         #[test]
         fn geometry_handle_ref_kernel_handle_excluded_from_selector_value_equality() {
             // Two selectors whose target refs differ only in kernel_handle must
-            // compare equal (kernel_handle is ephemeral — GHR-β §DD).
+            // compare equal at both the SelectorValue and Value::Selector levels
+            // (kernel_handle is ephemeral — GHR-β §DD).
             let target_a = ghr("Bracket", 0, [7u8; 32], 42);
             let target_b = ghr("Bracket", 0, [7u8; 32], 99); // different kernel_handle
             let q = LeafQuery::ByNormal { dir: [0., 0., 1.], tol_rad: 0.01 };
             let sv_a = SelectorValue::leaf(SelectorKind::Face, target_a, q.clone()).unwrap();
             let sv_b = SelectorValue::leaf(SelectorKind::Face, target_b, q).unwrap();
+            // SelectorValue-level equality (impl PartialEq via content_hash):
+            assert_eq!(sv_a, sv_b,
+                "SelectorValue equality must exclude kernel_handle (GHR-β §DD)");
+            // GeometryHandleRef-level equality also excludes kernel_handle:
+            let ghr_a = ghr("Bracket", 0, [7u8; 32], 42);
+            let ghr_b = ghr("Bracket", 0, [7u8; 32], 99);
+            assert_eq!(ghr_a, ghr_b,
+                "GeometryHandleRef equality must exclude kernel_handle (GHR-β §DD)");
+            // Value-level equality:
             let va = Value::Selector(sv_a);
             let vb = Value::Selector(sv_b);
             assert_eq!(va, vb,
@@ -9337,6 +9448,72 @@ mod tests {
                 vb.content_hash(),
                 "content_hash must exclude kernel_handle"
             );
+        }
+
+        #[test]
+        fn selector_value_union_commutative_hash() {
+            // union([a, b]) and union([b, a]) must produce the same hash and
+            // compare equal, because Union is a commutative set operation.
+            let qa = LeafQuery::ByNormal { dir: [0., 0., 1.], tol_rad: 0.01 };
+            let qb = LeafQuery::ByNormal { dir: [1., 0., 0.], tol_rad: 0.02 };
+            let leaf_a =
+                SelectorValue::leaf(SelectorKind::Face, ghr("B", 0, [1u8; 32], 1), qa)
+                    .unwrap();
+            let leaf_b =
+                SelectorValue::leaf(SelectorKind::Face, ghr("B", 0, [2u8; 32], 1), qb)
+                    .unwrap();
+            let union_ab = SelectorValue::union(vec![leaf_a.clone(), leaf_b.clone()]).unwrap();
+            let union_ba = SelectorValue::union(vec![leaf_b, leaf_a]).unwrap();
+            assert_eq!(
+                union_ab.content_hash(),
+                union_ba.content_hash(),
+                "union([a,b]) and union([b,a]) must hash identically (commutative)"
+            );
+            assert_eq!(union_ab, union_ba,
+                "union([a,b]) and union([b,a]) must be equal (commutative)");
+        }
+
+        #[test]
+        fn selector_value_intersect_commutative_hash() {
+            // intersect([a, b]) == intersect([b, a]) for the same reason.
+            let qa = LeafQuery::ByNormal { dir: [0., 0., 1.], tol_rad: 0.01 };
+            let qb = LeafQuery::ByNormal { dir: [1., 0., 0.], tol_rad: 0.02 };
+            let leaf_a =
+                SelectorValue::leaf(SelectorKind::Face, ghr("B", 0, [1u8; 32], 1), qa)
+                    .unwrap();
+            let leaf_b =
+                SelectorValue::leaf(SelectorKind::Face, ghr("B", 0, [2u8; 32], 1), qb)
+                    .unwrap();
+            let i_ab = SelectorValue::intersect(vec![leaf_a.clone(), leaf_b.clone()]).unwrap();
+            let i_ba = SelectorValue::intersect(vec![leaf_b, leaf_a]).unwrap();
+            assert_eq!(
+                i_ab.content_hash(),
+                i_ba.content_hash(),
+                "intersect([a,b]) and intersect([b,a]) must hash identically (commutative)"
+            );
+            assert_eq!(i_ab, i_ba,
+                "intersect([a,b]) and intersect([b,a]) must be equal (commutative)");
+        }
+
+        #[test]
+        fn selector_error_display_kind_mismatch() {
+            use crate::value::SelectorError;
+            let e = SelectorError::KindMismatch {
+                expected: SelectorKind::Face,
+                found: SelectorKind::Edge,
+            };
+            let s = e.to_string();
+            assert!(s.contains("FaceSelector") && s.contains("EdgeSelector"),
+                "KindMismatch Display must include both kind names; got: {s}");
+        }
+
+        #[test]
+        fn selector_error_display_empty_composition() {
+            use crate::value::SelectorError;
+            let e = SelectorError::EmptyComposition;
+            let s = e.to_string();
+            assert!(!s.is_empty(),
+                "EmptyComposition Display must be non-empty; got: {s}");
         }
 
         // (b) Type inference: Value::Selector carries SelectorKind; infer_type delegates.
