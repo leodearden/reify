@@ -1443,6 +1443,34 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_EXPONENT_OUT_OF_RANGE`
     /// (severity convention: `E_*` → Error).
     ExponentOutOfRange,
+    /// Origin: `crates/reify-compiler/src/expr.rs`
+    /// (`ExprKind::FunctionCall` arm — semantic gate for VALUE-position `auto`).
+    ///
+    /// Canonical message form:
+    /// `"auto is not allowed in a function-call argument (function '<name>'); \
+    ///  to expose a free parameter, declare `param <name> = auto` at a binding site instead"`.
+    ///
+    /// Emitted as `Severity::Error` when an `ExprKind::Auto` node reaches a
+    /// FUNCTION-call argument position.  Structure construction (`Bolt(length: auto)`)
+    /// is explicitly exempt: named-arg `auto` at a construction site adopts
+    /// determinacy-Auto on the field cell, which is resolved by downstream task ε;
+    /// only non-structure callees trigger this gate.
+    ///
+    /// The result is poisoned to `Type::Error` (anti-cascade), with a label at
+    /// the offending `auto` argument's span.  Only the first offending argument
+    /// is reported per call site (subsequent `auto` args are suppressed to avoid
+    /// multiplied noise).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_AUTO_NOT_AT_BINDING_SITE`
+    /// (see `docs/prds/auto-binding-site-positions.md` §"δ — function-call gate").
+    ///
+    /// **Distinction from `AutoTypeParam*` family.** The existing
+    /// `AutoTypeParam*` codes (`AutoTypeParamPoolOverflow`, `AutoTypeParamNoCandidate`,
+    /// etc.) all concern TYPE-POSITION `auto:` bindings resolved during phase-C
+    /// auto-type-param resolution.  This code is VALUE-POSITION: it fires when
+    /// the `auto` keyword appears as a VALUE argument to a function, not as a
+    /// type-bound annotation.
+    AutoNotAtBindingSite,
 }
 
 /// A diagnostic message with location and optional labels.
