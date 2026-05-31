@@ -1026,11 +1026,28 @@ impl EngineSession {
     /// Mirrors the established `#[cfg(test)] pub(crate)` test-support pattern
     /// (emit_fea_case_for_test_with_result, drain_and_emit_warm_pool_events_for_test,
     /// warm_pool_mut_for_test) — delegates to `core.last_check()` without exposing
-    /// the private `core` field.  Lets GUI tests read raw cell Values (incl.
-    /// `result` / `body`) from `CheckResult.values` for B4 / fixture assertions.
+    /// the private `core` field.  Lets GUI tests read raw cell Values from
+    /// `CheckResult.values` for B4 / value-cell assertions.
+    ///
+    /// Note: geometry-let cells (e.g. `let body = box(...)`) are NOT in
+    /// `CheckResult.values` — they compile to realization nodes, not value cells.
+    /// Use `compiled_for_test()` to inspect a template's `realizations` instead.
     #[cfg(test)]
     pub(crate) fn last_check_for_test(&self) -> Option<&reify_eval::CheckResult> {
         self.core.last_check()
+    }
+
+    /// Return a reference to the currently compiled `CompiledModule`, or `None`
+    /// if no module has been compiled yet.
+    ///
+    /// Mirrors `last_check_for_test` — delegates to `core.compiled()` without
+    /// exposing the private `core` field.  Lets GUI tests inspect a template's
+    /// `realizations` (geometry-let bindings like `let body = box(...)` compile
+    /// to realization nodes, not value cells, so they are absent from
+    /// `CheckResult.values` but present in `template.realizations`).
+    #[cfg(test)]
+    pub(crate) fn compiled_for_test(&self) -> Option<&CompiledModule> {
+        self.core.compiled()
     }
 
     /// Emit auto-resolve events if an emitter is installed and the check produced

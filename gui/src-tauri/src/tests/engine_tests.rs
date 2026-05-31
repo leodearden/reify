@@ -9709,19 +9709,23 @@ fn mode_shape_scale_degenerate_fallback() {
 
 // ── Task 4086 step-3: RED — fixture body realization ─────────────────────────
 //
-// Asserts that fea_cantilever_smoke.ri exposes a `body` cell as a
-// Value::GeometryHandle (deferred realization, GHR-β).
+// Asserts that fea_cantilever_smoke.ri has a `body` realization in the compiled
+// FeaCantileverSmoke template.
 //
 // FAILS until step-4 adds `let body = box(length, width, height)` to the fixture:
-// without the binding, no `body` cell exists in CheckResult.values.
+// without the binding, the template has no realization named "body".
+//
+// Implementation note: `let body = box(...)` is a geometry-let — the compiler
+// classifies it via `is_geometry_let` and routes it to a `RealizationDecl` in
+// the template's `realizations` list (entity.rs:1175-1176 `continue`s geometry-lets
+// out of the `ValueCellDecl` path).  It therefore does NOT appear in
+// `CheckResult.values`; use `compiled_for_test()` to inspect `template.realizations`.
 
-/// Fixture body cell: fea_cantilever_smoke.ri must contain a `body` binding
-/// that evaluates to a Value::GeometryHandle (deferred realization for δ to
-/// render the FEA contour onto).
+/// Fixture body realization: fea_cantilever_smoke.ri must contain a `body`
+/// geometry-let (`let body = box(length, width, height)`) so that task δ (4087)
+/// has a realization to render the FEA stress contour onto.
 #[test]
 fn cantilever_fixture_realizes_body() {
-    use reify_ir::Value;
-
     let source = include_str!("../../../../examples/fea_cantilever_smoke.ri");
 
     let checker = SimpleConstraintChecker;
@@ -9732,25 +9736,25 @@ fn cantilever_fixture_realizes_body() {
         .load_from_source(source, "FeaCantileverSmoke")
         .expect("load_from_source must succeed for fea_cantilever_smoke.ri");
 
-    let check = session
-        .last_check_for_test()
-        .expect("last_check_for_test must be Some after load_from_source");
+    let compiled = session
+        .compiled_for_test()
+        .expect("compiled_for_test must be Some after load_from_source");
 
-    let body_cell = ValueCellId::new("FeaCantileverSmoke", "body");
-    let body_val = check
-        .values
-        .get(&body_cell)
-        .unwrap_or_else(|| panic!(
-            "cell FeaCantileverSmoke.body not found in CheckResult.values; \
-             fixture is missing `let body = box(...)`. Present cells: {:?}",
-            check.values.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>()
-        ));
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "FeaCantileverSmoke")
+        .expect("FeaCantileverSmoke template must exist in compiled module");
 
     assert!(
-        matches!(body_val, Value::GeometryHandle { .. }),
-        "expected FeaCantileverSmoke.body to be Value::GeometryHandle (deferred realization), \
-         got: {:?}",
-        body_val
+        template.realizations.iter().any(|r| r.name.as_deref() == Some("body")),
+        "FeaCantileverSmoke must have a realization named 'body' (from `let body = box(...)`); \
+         fixture is missing the body binding. Present realizations: {:?}",
+        template
+            .realizations
+            .iter()
+            .map(|r| r.name.as_deref().unwrap_or("<unnamed>"))
+            .collect::<Vec<_>>()
     );
 }
 
