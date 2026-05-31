@@ -2689,8 +2689,7 @@ mod tests {
     /// no orphans). Nodes 4,5 are shell-only (d_e_max_local=6=D, no orphans).
     ///
     /// Also asserts the sorted `examples` list equals the first-9 canonical
-    /// `(node, axis)` pairs. With step-4's count logic this passes the `count`
-    /// assertion, but fails the `examples` assertion until step-6 populates them.
+    /// `(node, axis)` pairs.
     #[test]
     fn detect_orphan_dofs_mixed_tet_shell_reports_tet_only_node_rotation_dofs() {
         let mat = dimensionless_steel_like();
