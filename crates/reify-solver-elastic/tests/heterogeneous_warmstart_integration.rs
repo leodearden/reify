@@ -9,7 +9,7 @@
 //! Both tests exercise the foundation seam at the reify-solver-elastic level
 //! via `element_stiffness_p1_with_field` + `DiscreteCellField`/`ConstantField`
 //! + `solve_cg`/`solve_cg_warm` — the solver path proven by β/3778 and the
-//! v0.3 warm-start CG.
+//!   v0.3 warm-start CG.
 //!
 //! Design decisions (ε/3781):
 //! - Two-zone fixture: parallel (shared-strain) cross-section split in Z,
