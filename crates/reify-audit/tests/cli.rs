@@ -841,9 +841,13 @@ mod cli {
 
     /// `--pattern PDEAD --no-jcodemunch` exits 0 with an empty findings array.
     ///
-    /// Confirms PDEAD is an accepted pattern (not exit 125 / parser error) and
-    /// that the dispatch arm is wired: with NoopJCodemunchOps, get_dead_code
-    /// returns `vec![]`, so zero findings are emitted.
+    /// Confirms PDEAD is an accepted pattern (parser does not exit 125) and that
+    /// with NoopJCodemunchOps the tool exits cleanly with zero findings.
+    ///
+    /// Note: this cannot verify that the `if run_pdead { ... }` dispatch arm is
+    /// present in main() — NoopJCodemunchOps returns `vec![]` regardless, so a
+    /// dropped arm would still pass. Actual wiring is covered by the bin unit
+    /// tests (`parse_args_accepts_pdead_pattern`, `needs_jcodemunch_pattern_routing`).
     #[test]
     fn pdead_no_jcodemunch_exits_0_with_empty_findings() {
         let tmp = tempfile::tempdir().expect("create tempdir");

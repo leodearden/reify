@@ -91,6 +91,8 @@ mod tests {
         for f in &findings {
             assert_eq!(f.pattern, Pattern::PDeadCode, "pattern must be PDeadCode");
             assert_eq!(f.severity, Severity::Low, "severity must be Low");
+            // PDEAD is repo-wide: task_id must be empty (contract for downstream consumers).
+            assert!(f.task_id.is_empty(), "PDEAD findings must have empty task_id; got {:?}", f.task_id);
         }
 
         // Each finding cites its symbol's file via EvidenceRef::File.

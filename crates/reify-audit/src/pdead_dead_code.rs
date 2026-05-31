@@ -41,19 +41,26 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
             continue;
         }
 
+        let signals_part = if sym.signals.is_empty() {
+            String::new()
+        } else {
+            format!("; signals: {}", sym.signals.join(", "))
+        };
         let summary = format!(
-            "{kind} `{name}` in {file}:{line} — confidence {confidence:.2}; signals: {signals}",
+            "{kind} `{name}` in {file}:{line} — confidence {confidence:.2}{signals_part}",
             kind = sym.kind,
             name = sym.name,
             file = sym.file,
             line = sym.line,
             confidence = sym.confidence,
-            signals = sym.signals.join(", "),
+            signals_part = signals_part,
         );
 
         findings.push(Finding {
             pattern: Pattern::PDeadCode,
             severity: Severity::Low,
+            // Empty task_id is intentional: PDEAD is repo-wide, not task-scoped.
+            // Downstream consumers must tolerate empty task_id for repo-wide detectors.
             task_id: String::new(),
             summary,
             evidence: vec![EvidenceRef::File { path: sym.file.clone() }],
