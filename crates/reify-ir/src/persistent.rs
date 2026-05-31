@@ -310,6 +310,17 @@ mod tests {
     }
 
     #[test]
+    fn get_accepts_borrowed_str_key() {
+        // Verifies the Borrow-generic `get<Q>` overload: a bare `&str` must be
+        // accepted as a key into a `PersistentMap<String, i32>` without any
+        // intermediate `to_string()` allocation.
+        let mut map: PersistentMap<String, i32> = PersistentMap::new();
+        map.insert("key".to_string(), 42);
+        assert_eq!(map.get("key"), Some(&42));
+        assert_eq!(map.get("missing"), None);
+    }
+
+    #[test]
     fn works_with_value_cell_id_and_value() {
         use reify_core::identity::ValueCellId;
         use crate::value::Value;
