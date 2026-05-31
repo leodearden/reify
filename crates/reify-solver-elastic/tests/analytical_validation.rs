@@ -1063,6 +1063,33 @@ fn annular_p1_mesh(
     (nodes, connectivity, inner_faces)
 }
 
+/// Lamé thick-walled cylinder plane-strain analytical stress components.
+///
+/// For a cylinder `a ≤ r ≤ b` with inner pressure `P_i` and zero outer pressure:
+/// - `σ_r(r) = P_i·a²/(b²−a²)·(1 − b²/r²)`
+/// - `σ_θ(r) = P_i·a²/(b²−a²)·(1 + b²/r²)`
+/// - `σ_z(r) = ν·(σ_r+σ_θ)`  [plane-strain constraint, ε_z=0]
+///
+/// Returns `(σ_r, σ_θ, σ_z)`.
+fn lame_stresses(r: f64, a: f64, b: f64, p_i: f64, nu: f64) -> (f64, f64, f64) {
+    let denom = b * b - a * a;
+    let c = p_i * a * a / denom;
+    let sr = c * (1.0 - b * b / (r * r));
+    let st = c * (1.0 + b * b / (r * r));
+    let sz = nu * (sr + st);
+    (sr, st, sz)
+}
+
+/// von Mises stress for the Lamé plane-strain cylinder at radius `r`.
+///
+/// The stress state is purely diagonal (principal stresses = `(σ_r, σ_θ, σ_z)`)
+/// with no shear, so von Mises reduces to the principal-stress formula.
+fn lame_von_mises(r: f64, a: f64, b: f64, p_i: f64, nu: f64) -> f64 {
+    let (sr, st, sz) = lame_stresses(r, a, b, p_i, nu);
+    let s = [[sr, 0.0, 0.0], [0.0, st, 0.0], [0.0, 0.0, sz]];
+    von_mises_of_tensor(&s)
+}
+
 /// Lamé closed-form stresses satisfy textbook invariants (non-circular check).
 ///
 /// Tests `lame_stresses` and `lame_von_mises` against identities that are
