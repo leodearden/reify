@@ -1,0 +1,44 @@
+// Stdlib: Fluid Port Interface — FluidPort
+// Provides the trait surface for fluid connection interfaces using pressure
+// (across variable) and volumetric flow rate (through variable).
+//
+// Reference: docs/prds/v0_6/stdlib-reconstruction.md task β, §11.6.
+//
+// Deviations from §11 spec (forced by current language scope):
+//   1. `VolumetricFlowRate` type alias required. Volumetric flow rate (m³/s)
+//      is absent from NAMED_DIMENSIONS (reify-core/src/dimension.rs:443-494).
+//      Binary dimensional-operation expressions are admitted ONLY on type-alias
+//      RHS, not in `param x : <type>` position (units.ri esc-4026-121:80-91) —
+//      hence the alias indirection `pub type VolumetricFlowRate = Volume / Time`,
+//      exactly mirroring `pub type Velocity = Length / Time` in units.ri and
+//      `pub type Torque = Force * Length / Angle` in ports_mechanical.ri.
+//      The alias is `pub` to mirror units.ri's `pub type Velocity` convention.
+//   2. `medium` is Type::String (open medium set). Fluid media (water, air,
+//      hydraulic oil, etc.) are best represented as free-form identifiers rather
+//      than a fixed enum — matches the free-form-identifier precedent in io.ri.
+//   3. Traits are NOT `pub`, matching the io.ri/process.ri convention.
+//   4. No `#no_prelude` pragma. std.ports.fluid refines Port from std.ports
+//      (inter-stdlib dependency), so the growing-prelude sequence in
+//      stdlib_loader.rs must include std.ports before this module. Adding
+//      `#no_prelude` would break both the refinement resolution and the
+//      stdlib_loader_tests bidirectional invariant test.
+
+// ── Volumetric flow rate type alias ──────────────────────────────────────────
+
+// VolumetricFlowRate = Volume / Time (m³/s).
+// Required alias indirection: binary dim-op only valid on type-alias RHS,
+// not directly in `param x : <type>` position.
+pub type VolumetricFlowRate = Volume / Time
+
+// ── Fluid port ────────────────────────────────────────────────────────────────
+
+// Fluid connection port — pressure-flow interface.
+// pressure  : Pressure             — port pressure potential (Pa).
+// flow_rate : VolumetricFlowRate   — volumetric flow rate through the port (m³/s).
+// medium    : String               — free-form fluid medium identifier
+//                                    (e.g. "water", "hydraulic_oil", "air").
+trait FluidPort : Port {
+    param pressure : Pressure
+    param flow_rate : VolumetricFlowRate
+    param medium : String
+}

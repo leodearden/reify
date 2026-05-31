@@ -236,6 +236,17 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 "std.ports.thermal",
                 include_str!("../stdlib/ports_thermal.ri"),
             ),
+            // `std.ports.fluid` refines Port from std.ports and adds the fluid
+            // port trait FluidPort (pressure + VolumetricFlowRate + medium).
+            // VolumetricFlowRate = Volume / Time type alias is pub (mirrors
+            // units.ri Velocity); binary dim-op requires alias indirection.
+            // Must follow std.ports in the growing prelude sequence so Port is
+            // resolved when FluidPort : Port is compiled.
+            // Reconstruction of lost work per PRD task β.
+            (
+                "std.ports.fluid",
+                include_str!("../stdlib/ports_fluid.ri"),
+            ),
         ];
 
         // SEQUENTIAL COMPILATION WITH GROWING PRELUDE: each module is compiled
