@@ -20,7 +20,7 @@ use std::f64::consts::PI;
 
 use faer::sparse::{SparseRowMat, Triplet};
 
-use reify_core::Diagnostic;
+use reify_core::{Diagnostic, DimensionVector};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_solver_elastic::{
     AssemblyElement, AssemblyMode, DirichletBc, EigenSolverOptions, EigenSolverResult, ElementOrder,
@@ -32,6 +32,10 @@ use reify_stdlib::modal::free_vibration::{
     modal_participation_mass, rayleigh_damping_ratio,
 };
 use reify_stdlib::modal::trampoline::ModalCacheKey;
+use reify_stdlib::modal::transient::{
+    dominant_antinode_index, harmonic_force_at, impulse_force_at, sampled_force_at,
+    solve_modal_response, step_force_at, uniform_time_grid,
+};
 
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
@@ -1085,23 +1089,233 @@ fn degenerate_displacement_history() -> Value {
     }))
 }
 
+/// Fetch field `name` from a StructureInstance `val` by reference (no clone);
+/// `None` if `val` is not a StructureInstance or lacks the field. The borrowing
+/// companion to [`field_or`], used by the transient trampolines to read forcing /
+/// mode sub-values without cloning the whole field map.
+fn field_ref<'a>(val: &'a Value, name: &str) -> Option<&'a Value> {
+    if let Value::StructureInstance(data) = val {
+        return data.fields.get(&name.to_string());
+    }
+    None
+}
+
+/// Read a `Vector3` runtime value into `[f64; 3]`, tolerating both the
+/// `Value::Vector` encoding [`mode_shape_value`] emits and a `Value::List` of
+/// numerics; missing components / non-vector values read as `0.0` (defensive —
+/// the type-checker guarantees the shape upstream).
+fn read_vec3(val: &Value) -> [f64; 3] {
+    let comps = match val {
+        Value::Vector(c) | Value::List(c) => c,
+        _ => return [0.0; 3],
+    };
+    let mut out = [0.0; 3];
+    for (slot, v) in out.iter_mut().zip(comps.iter()) {
+        *slot = read_scalar_si(v);
+    }
+    out
+}
+
+/// Read a `List<Scalar>` runtime value into `Vec<f64>` (SI magnitudes); a
+/// non-list reads as empty. Used for `SampledForce.time_samples / force_samples`.
+fn read_real_list(val: &Value) -> Vec<f64> {
+    match val {
+        Value::List(items) => items.iter().map(read_scalar_si).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The `modes` list of a `ModalResult` StructureInstance, by reference; an empty
+/// slice if absent / mis-shaped.
+fn modal_result_modes(modal_result: &Value) -> &[Value] {
+    if let Value::StructureInstance(data) = modal_result
+        && let Some(Value::List(modes)) = data.fields.get(&"modes".to_string())
+    {
+        return modes;
+    }
+    &[]
+}
+
+/// Read one `Mode`'s `shape` field (a `List<Vector3>`) into per-node `[f64; 3]`
+/// displacements; empty if absent / mis-shaped.
+fn read_mode_shape(mode: &Value) -> Vec<[f64; 3]> {
+    match field_ref(mode, "shape") {
+        Some(Value::List(nodes)) => nodes.iter().map(read_vec3).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Per-mode node shapes Φᵢ of a `ModalResult` (one `Vec<[f64; 3]>` per mode).
+/// Shared by [`solve_transient_response_trampoline`] (forcing projection) and
+/// [`displacement_at_trampoline`] (reconstruction) — both form Φᵢ[node]·dir.
+fn extract_mode_shapes(modal_result: &Value) -> Vec<Vec<[f64; 3]>> {
+    modal_result_modes(modal_result).iter().map(read_mode_shape).collect()
+}
+
+/// The forcing sources of a `ForcingTimeHistory` StructureInstance, cloned; empty
+/// if absent / mis-shaped. The step-14 guard distinguishes "empty-but-present"
+/// (the `E_TransientForcingMissing` condition) from a well-formed source list.
+fn extract_forcing_sources(forcing: &Value) -> Vec<Value> {
+    match field_ref(forcing, "sources") {
+        Some(Value::List(sources)) => sources.clone(),
+        _ => Vec::new(),
+    }
+}
+
+/// Resolve a forcing/query `location` string to a node index, geometry-free
+/// (design-decision-3). A string that parses as a non-negative integer is an
+/// explicit node index (clamped into range); any other string resolves to the
+/// fundamental-mode (mode 0) antinode `dominant_antinode_index(Φ₀)` — the
+/// cantilever free-end tip. The forcing projection and `displacement_at` share
+/// this resolver, so "force at tip" / "query at tip" hit the same node.
+fn resolve_location_node(location: &str, mode0_shape: &[[f64; 3]]) -> usize {
+    if let Ok(idx) = location.trim().parse::<usize>() {
+        return idx.min(mode0_shape.len().saturating_sub(1));
+    }
+    dominant_antinode_index(mode0_shape)
+}
+
+/// Scalar forcing `p_src(t)` for one source, dispatched by `type_name` to the
+/// θ-solver closed-form samplers (`reify-stdlib::modal::transient`). `dt` is the
+/// uniform grid step (only the `ImpulseForce` discrete-pulse approximation needs
+/// it). An unrecognised / non-struct source reads as `0`.
+fn sample_forcing_source(source: &Value, t: f64, dt: f64) -> f64 {
+    let type_name = match source {
+        Value::StructureInstance(data) => data.type_name.as_str(),
+        _ => return 0.0,
+    };
+    let scalar = |name: &str| field_ref(source, name).map(read_scalar_si).unwrap_or(0.0);
+    match type_name {
+        "StepForce" => step_force_at(scalar("magnitude"), scalar("start_time"), t),
+        "HarmonicForce" => {
+            harmonic_force_at(scalar("amplitude"), scalar("frequency"), scalar("phase"), t)
+        }
+        "ImpulseForce" => impulse_force_at(scalar("impulse"), scalar("time"), t, dt),
+        "SampledForce" => {
+            let times = field_ref(source, "time_samples").map(read_real_list).unwrap_or_default();
+            let forces = field_ref(source, "force_samples").map(read_real_list).unwrap_or_default();
+            sampled_force_at(&times, &forces, t)
+        }
+        _ => 0.0,
+    }
+}
+
 /// `@optimized("modal::transient_response")` public `ComputeFn` (task ι;
 /// registered in `compute_targets::mod`).
 ///
-/// STUB (step-10): returns a degenerate empty `DisplacementTimeHistory`. The full
-/// mode-superposition solve (grid → per-source forcing projection → per-mode
-/// `solve_modal_response`) lands in step-12, and the empty-forcing guard
-/// (`E_TransientForcingMissing`) in step-14. No warm state is donated — ι owns
-/// fn+dispatch; warm-state caching is λ's job — mirroring [`no_mass_matrix_outcome`].
+/// Mode-superposition transient solve (PRD §5.3 / §10 task ι):
+///   1. read `t_start/t_end/dt`, build the uniform grid (`uniform_time_grid`);
+///   2. read each mode's `(ω = 2π·frequency, ζ = damping_ratio, Φ shape)`;
+///   3. per forcing source: resolve its node (`resolve_location_node`), read its
+///      direction, and sample its scalar `p_src(tⱼ)` (`sample_forcing_source`);
+///   4. project onto each mode: `f_i[j] = Σ_src (Φ_i[node]·dir)·p_src(tⱼ)`;
+///   5. integrate each decoupled SDOF mode (`solve_modal_response`) → ξ_i(tⱼ);
+///   6. shape the `DisplacementTimeHistory`, echoing the input `ModalResult` so
+///      `displacement_at` can read each Φᵢ without re-running the eigensolve.
+///
+/// No warm state is donated — ι owns fn+dispatch; warm-state caching is λ's job —
+/// mirroring [`no_mass_matrix_outcome`]. The empty-forcing guard
+/// (`E_TransientForcingMissing`) lands in step-14.
 pub fn solve_transient_response_trampoline(
-    _value_inputs: &[Value],
+    value_inputs: &[Value],
     _realization_inputs: &[RealizationReadHandle],
     _options: &Value,
     _prior_warm_state: Option<&OpaqueState>,
     _cancellation: &CancellationHandle,
 ) -> ComputeOutcome {
+    // value_inputs = [modal_result, forcing, t_start, t_end, dt] (pre-2 signature).
+    let modal_result = value_inputs.first().cloned().unwrap_or(Value::Undef);
+    let forcing = value_inputs.get(1).cloned().unwrap_or(Value::Undef);
+    let t_start = value_inputs.get(2).map(read_scalar_si).unwrap_or(0.0);
+    let t_end = value_inputs.get(3).map(read_scalar_si).unwrap_or(0.0);
+    let dt = value_inputs.get(4).map(read_scalar_si).unwrap_or(0.0);
+
+    let grid = uniform_time_grid(t_start, t_end, dt);
+    // Degenerate time params (dt ≤ 0 or t_end < t_start) → no grid → empty history
+    // (keeps t_samples / mode_coords mutually consistent and avoids the solver's
+    // 1-sample floor on an empty grid).
+    if grid.is_empty() {
+        return ComputeOutcome::Completed {
+            result: degenerate_displacement_history(),
+            new_warm_state: None,
+            cost_per_byte: None,
+            diagnostics: Vec::new(),
+        };
+    }
+
+    let shapes = extract_mode_shapes(&modal_result);
+    let mode0_shape: &[[f64; 3]] = shapes.first().map(Vec::as_slice).unwrap_or(&[]);
+
+    // Per source: resolved node, direction unit-vector, and the scalar p_src(tⱼ)
+    // series (sampled once over the grid — independent of mode).
+    struct SourceProjection {
+        node: usize,
+        dir: [f64; 3],
+        samples: Vec<f64>,
+    }
+    let sources = extract_forcing_sources(&forcing);
+    let projections: Vec<SourceProjection> = sources
+        .iter()
+        .map(|src| {
+            let at = match field_ref(src, "at") {
+                Some(Value::String(s)) => s.as_str(),
+                _ => "",
+            };
+            let node = resolve_location_node(at, mode0_shape);
+            let dir = field_ref(src, "direction").map(read_vec3).unwrap_or([0.0; 3]);
+            let samples = grid.iter().map(|&t| sample_forcing_source(src, t, dt)).collect();
+            SourceProjection { node, dir, samples }
+        })
+        .collect();
+
+    // Per mode: assemble the projected modal forcing f_i[j], integrate the
+    // decoupled SDOF ODE, and collect ξ_i(tⱼ) as a List<Real>.
+    let modes = modal_result_modes(&modal_result);
+    let mut mode_coords: Vec<Value> = Vec::with_capacity(modes.len());
+    for (i, mode) in modes.iter().enumerate() {
+        let frequency_hz = field_ref(mode, "frequency").map(read_scalar_si).unwrap_or(0.0);
+        let omega = 2.0 * PI * frequency_hz;
+        let zeta = field_ref(mode, "damping_ratio").map(read_scalar_si).unwrap_or(0.0);
+        let shape_i: &[[f64; 3]] = shapes.get(i).map(Vec::as_slice).unwrap_or(&[]);
+
+        let mut f_i = vec![0.0_f64; grid.len()];
+        for p in &projections {
+            let phi = shape_i.get(p.node).copied().unwrap_or([0.0; 3]);
+            let coeff = phi[0] * p.dir[0] + phi[1] * p.dir[1] + phi[2] * p.dir[2];
+            if coeff == 0.0 {
+                continue;
+            }
+            for (slot, &p_t) in f_i.iter_mut().zip(p.samples.iter()) {
+                *slot += coeff * p_t;
+            }
+        }
+
+        let response = solve_modal_response(omega, zeta, &grid, &f_i, 0.0, 0.0);
+        mode_coords.push(Value::List(response.coords.into_iter().map(Value::Real).collect()));
+    }
+
+    // Shape the DisplacementTimeHistory (part = "" placeholder; ModalResult echoed
+    // verbatim; t_samples as a List<Scalar{TIME}>; mode_coords as List<List<Real>>).
+    let t_samples = Value::List(
+        grid.iter()
+            .map(|&t| Value::Scalar { si_value: t, dimension: DimensionVector::TIME })
+            .collect(),
+    );
+    let fields: PersistentMap<String, Value> = [
+        ("part".to_string(), Value::String(String::new())),
+        ("modal_result".to_string(), modal_result),
+        ("t_samples".to_string(), t_samples),
+        ("mode_coords".to_string(), Value::List(mode_coords)),
+    ]
+    .into_iter()
+    .collect();
     ComputeOutcome::Completed {
-        result: degenerate_displacement_history(),
+        result: Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "DisplacementTimeHistory".to_string(),
+            version: 1,
+            fields,
+        })),
         new_warm_state: None,
         cost_per_byte: None,
         diagnostics: Vec::new(),
