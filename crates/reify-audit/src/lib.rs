@@ -229,11 +229,11 @@ pub struct AuditContext<'a> {
     /// boundaries are deterministic. Epoch-seconds keeps the crate's dep-set
     /// minimal (no chrono/time) per `f-infra-design.md` §12.
     pub now: Option<i64>,
-    /// Branch P1 queries via `get_changed_symbols`. `None` defaults to
-    /// `"main"` inside the P1 detector (via `.as_deref().unwrap_or("main")`),
-    /// keeping all existing fixtures unchanged. The periodic-sweep CLI (T-4
-    /// #3672) sets this when running against a non-main branch. Per
-    /// `f-infra-design.md` §5 P1.
+    /// Reserved for future sweep CLI use (T-4 #3672). P1 no longer reads this
+    /// field — it now resolves symbols via `done_provenance.commit` (commit-range
+    /// `{commit}^1..{commit}`) rather than a branch+timestamp query. Kept pub
+    /// because ~50 construction sites set it to `None`; removing it is outside
+    /// the scope of L-TRAIT and deferred to a later cleanup pass.
     pub producer_branch: Option<String>,
 }
 

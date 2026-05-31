@@ -1069,6 +1069,150 @@ mod tests {
             violations
         );
     }
+
+    /// Pin the `>= min_confidence` boundary semantics of the MockJCodemunchOps
+    /// filters. Seeds dead_code and untested with confidences {0.3, 0.5, 0.9}
+    /// and asserts that querying at 0.5 returns exactly the two entries at the
+    /// boundary and above (0.5 inclusive, 0.3 excluded). L-PDEAD / L-PUNTESTED
+    /// detector tests rely on this mock faithfully reflecting the real tool's
+    /// `>=` contract, so a wrong comparison direction would silently mislead
+    /// every future detector fixture built on this foundation.
+    #[test]
+    fn mock_confidence_filter_semantics() {
+        let mut jc = MockJCodemunchOps::new();
+
+        jc.set_dead_code(vec![
+            DeadSymbol {
+                id: "d1".to_string(),
+                name: "below_threshold".to_string(),
+                kind: "function".to_string(),
+                file: "crates/x/src/a.rs".to_string(),
+                line: 1,
+                confidence: 0.3,
+                signals: vec![],
+            },
+            DeadSymbol {
+                id: "d2".to_string(),
+                name: "at_threshold".to_string(),
+                kind: "function".to_string(),
+                file: "crates/x/src/b.rs".to_string(),
+                line: 2,
+                confidence: 0.5,
+                signals: vec![],
+            },
+            DeadSymbol {
+                id: "d3".to_string(),
+                name: "above_threshold".to_string(),
+                kind: "function".to_string(),
+                file: "crates/x/src/c.rs".to_string(),
+                line: 3,
+                confidence: 0.9,
+                signals: vec![],
+            },
+        ]);
+
+        jc.set_untested_symbols(vec![
+            UntestedSymbol {
+                symbol_id: "u1".to_string(),
+                name: "below_threshold".to_string(),
+                file: "crates/y/src/a.rs".to_string(),
+                reached: false,
+                confidence: 0.3,
+            },
+            UntestedSymbol {
+                symbol_id: "u2".to_string(),
+                name: "at_threshold".to_string(),
+                file: "crates/y/src/b.rs".to_string(),
+                reached: false,
+                confidence: 0.5,
+            },
+            UntestedSymbol {
+                symbol_id: "u3".to_string(),
+                name: "above_threshold".to_string(),
+                file: "crates/y/src/c.rs".to_string(),
+                reached: false,
+                confidence: 0.9,
+            },
+        ]);
+
+        let dead = jc.get_dead_code(0.5);
+        assert_eq!(
+            dead.len(),
+            2,
+            "get_dead_code(0.5) must return the two entries at >= 0.5 (boundary inclusive); got {:?}",
+            dead
+        );
+        assert!(dead.iter().all(|s| s.confidence >= 0.5));
+        assert!(!dead.iter().any(|s| s.confidence < 0.5));
+
+        let untested = jc.get_untested_symbols(0.5);
+        assert_eq!(
+            untested.len(),
+            2,
+            "get_untested_symbols(0.5) must return the two entries at >= 0.5 (boundary inclusive); got {:?}",
+            untested
+        );
+        assert!(untested.iter().all(|s| s.confidence >= 0.5));
+        assert!(!untested.iter().any(|s| s.confidence < 0.5));
+    }
+
+    /// P1 intentionally skips a `done` task whose `done_provenance.commit` is
+    /// absent (no commit to diff → no range → no symbols). Asserting zero
+    /// findings here documents the skip as expected behavior, not a bug, and
+    /// guards against a future re-introduction of pre-resolution scanning that
+    /// would silently reactivate phantom findings.
+    #[test]
+    fn done_task_without_commit_yields_no_findings() {
+        let done_at = NOW - 30 * DAY; // well past grace window
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let mut jc = MockJCodemunchOps::new();
+        // Seed a symbol under the old-style key — unreachable because
+        // P1 will skip the task before ever calling get_changed_symbols.
+        jc.set_changed_symbols("sentinel^1", "sentinel", vec![
+            changed_symbol("orphan_fn", "crates/x/src/lib.rs"),
+        ]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "8001".to_string(),
+            TaskMetadata {
+                task_id: "8001".to_string(),
+                status: "done".to_string(),
+                files: vec![],
+                // commit is None — cannot derive a range
+                done_provenance: Some(reify_audit::DoneProvenance {
+                    kind: Some("manual".to_string()),
+                    commit: None,
+                    note: Some("cherry-picked without tracking".to_string()),
+                }),
+                title: "Wire foo into bar".to_string(),
+                prd: Some("docs/x.md".to_string()),
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: Some(done_at),
+            },
+        );
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: Some(NOW),
+            producer_branch: None,
+        };
+
+        let findings = p1_producer_orphan::check(&ctx);
+        assert!(
+            findings.is_empty(),
+            "done task with no done_provenance.commit must yield zero findings (skip is intentional); got {:?}",
+            findings
+        );
+    }
 }
 
 } // mod p1
