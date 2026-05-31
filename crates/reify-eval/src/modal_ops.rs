@@ -1367,6 +1367,7 @@ pub(crate) struct TransientTrampolineRun {
 /// Cancellation (between-modes granularity, PRD §6):
 /// - Entry checkpoint — cancel before any work.
 /// - Per-mode poll at the top of each integration loop step.
+///
 /// Finer within-mode per-timestep polling is a localized future refinement
 /// (would thread a probe closure into `integrate_prepared`, keeping
 /// `reify-stdlib` dependency-free).
