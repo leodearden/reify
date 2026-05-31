@@ -1,0 +1,5 @@
+// Stub placeholder — replaced with the real cantilever-beam PRB worked example
+// in the γ GREEN step (task 3853, step-12).
+structure def CantileverBeamPrb {
+    let placeholder = 0
+}
