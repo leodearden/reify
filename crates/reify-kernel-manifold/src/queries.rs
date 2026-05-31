@@ -20,6 +20,7 @@
 //! `QueryError::QueryFailed` path in the caller.
 
 use manifold3d::Manifold;
+use reify_ir;
 
 /// Compute the exact surface-to-surface minimum gap between two [`Manifold`]
 /// meshes using `Manifold::min_gap`.
@@ -211,6 +212,100 @@ pub(crate) fn contains(m: &Manifold, px: f64, py: f64, pz: f64, _tolerance: f64)
 #[allow(dead_code)] // wired into ManifoldKernel::query() by KGQ-ο (Phase 5)
 pub(crate) fn intersects(a: &Manifold, b: &Manifold) -> bool {
     !extract_xyz(&a.intersection(b)).is_empty()
+}
+
+/// Test whether two [`Manifold`] solids are geometrically equivalent within
+/// `tolerance` using a topology-signature comparison followed by sampled-vertex
+/// proximity checking.
+///
+/// # STRICT-VARIANT NOTE
+///
+/// This is the **approximate** geo_equiv implementation (topology counts + N=8
+/// sampled vertices).  A future `geo_equiv_strict` using symmetric Hausdorff
+/// distance is deferred to v0.4 per PRD §5.1 + Open Question §10.  When that
+/// follow-up lands, the body of this function should be superseded, not
+/// extended.
+///
+/// # Algorithm
+///
+/// 1. **Topology signature**: `num_vert`, `num_tri`, `num_edge`, and `genus`
+///    must all match.  A mismatch returns `false` immediately — these counts
+///    are a cheap structural fingerprint that detects fundamentally different
+///    meshes without touching the vertex data.
+///
+/// 2. **Sampled vertices**: Extract both vertex lists via [`extract_xyz`], sort
+///    each lexicographically (compare x, then y, then z with `total_cmp`) to
+///    make the comparison **vertex-ordering-independent** across two
+///    independently-built manifolds.  Then for `N = DEFAULT_GEO_EQUIV_SAMPLE_COUNT`
+///    evenly-spaced indices (clamped to the actual vertex count), require
+///    `‖va − vb‖ < tolerance` on the sorted lists.  Any sample that exceeds the
+///    tolerance returns `false`.
+///
+/// # Ordering independence
+///
+/// Two independently-constructed identical manifolds may have different
+/// internal vertex orderings (e.g. different winding / reindex outcomes from
+/// `Manifold::from_mesh_f64`).  Lexicographic sorting before sampling ensures
+/// that the comparison is order-independent for vertices in general position.
+/// Duplicate vertices at the same position will cluster together in both sorted
+/// lists — they compare equal, satisfying the tolerance check.
+pub(crate) fn geo_equiv(a: &Manifold, b: &Manifold, tolerance: f64) -> bool {
+    // Step 1: Topology signature — cheap early-out.
+    if a.num_vert() != b.num_vert() {
+        return false;
+    }
+    if a.num_tri() != b.num_tri() {
+        return false;
+    }
+    if a.num_edge() != b.num_edge() {
+        return false;
+    }
+    if a.genus() != b.genus() {
+        return false;
+    }
+
+    // Step 2: Sampled vertices — ordering-independent.
+    let mut verts_a = extract_xyz(a);
+    let mut verts_b = extract_xyz(b);
+
+    if verts_a.len() != verts_b.len() {
+        // Defensive: topology counts matched but extract_xyz lengths differ
+        // (e.g. degenerate mesh with n_props < 3).
+        return false;
+    }
+
+    if verts_a.is_empty() {
+        // Both empty — topology matched (all zeros), no vertex samples needed.
+        return true;
+    }
+
+    // Lexicographic sort for vertex-ordering independence.
+    let lex_cmp = |p: &[f64; 3], q: &[f64; 3]| -> std::cmp::Ordering {
+        p[0].total_cmp(&q[0])
+            .then(p[1].total_cmp(&q[1]))
+            .then(p[2].total_cmp(&q[2]))
+    };
+    verts_a.sort_unstable_by(lex_cmp);
+    verts_b.sort_unstable_by(lex_cmp);
+
+    // N evenly-spaced sample indices (DEFAULT_GEO_EQUIV_SAMPLE_COUNT = 8).
+    let n = reify_ir::DEFAULT_GEO_EQUIV_SAMPLE_COUNT.min(verts_a.len());
+    let step = verts_a.len() / n; // ≥ 1 since n ≤ verts_a.len()
+
+    for i in 0..n {
+        let idx = i * step;
+        let va = verts_a[idx];
+        let vb = verts_b[idx];
+        let dx = va[0] - vb[0];
+        let dy = va[1] - vb[1];
+        let dz = va[2] - vb[2];
+        let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+        if dist >= tolerance {
+            return false;
+        }
+    }
+
+    true
 }
 
 /// Extract `xyz` vertex triplets from a [`Manifold`]'s mesh.

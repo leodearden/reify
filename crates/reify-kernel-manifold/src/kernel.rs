@@ -185,6 +185,21 @@ impl GeometryKernel for ManifoldKernel {
                     .map_err(|e| QueryError::QueryFailed(format!("{e:?}")))?;
                 Ok(Value::Bool(crate::queries::contains(m, *px, *py, *pz, *tolerance)))
             }
+            // Topology-signature + sampled-vertex geometric equivalence check.
+            // PRD §5.1 KGQ-δ / task 3624 (KGQ-ο).
+            GeometryQuery::GeoEquiv {
+                left,
+                right,
+                tolerance,
+            } => {
+                let l = self
+                    .get_manifold(*left)
+                    .map_err(|e| QueryError::QueryFailed(format!("{e:?}")))?;
+                let r = self
+                    .get_manifold(*right)
+                    .map_err(|e| QueryError::QueryFailed(format!("{e:?}")))?;
+                Ok(Value::Bool(crate::queries::geo_equiv(l, r, *tolerance)))
+            }
             // All other queries remain follow-up work (see STUB_MSG).
             _ => Err(QueryError::QueryFailed(STUB_MSG.into())),
         }
