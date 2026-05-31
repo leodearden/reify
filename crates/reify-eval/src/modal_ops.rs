@@ -1311,13 +1311,25 @@ pub fn solve_transient_response_trampoline(
     let grid = uniform_time_grid(t_start, t_end, dt);
     // Degenerate time params (dt ≤ 0 or t_end < t_start) → no grid → empty history
     // (keeps t_samples / mode_coords mutually consistent and avoids the solver's
-    // 1-sample floor on an empty grid).
+    // 1-sample floor on an empty grid). Flag it: unlike a legitimately small but
+    // valid window, an empty grid means the (t_start, t_end, dt) triple is itself
+    // malformed (a uniform grid needs dt > 0 and t_end ≥ t_start), so emit an
+    // Error rather than silently return an empty history — note the params also
+    // default to 0.0 when inputs are absent, collapsing a malformed call here.
+    // Mirrors the message-based E_TransientForcingMissing pattern.
     if grid.is_empty() {
+        let diagnostic = Diagnostic::error(format!(
+            "E_TransientTimeGridDegenerate: the transient time parameters are \
+             degenerate (t_start = {t_start}, t_end = {t_end}, dt = {dt}); a \
+             uniform time grid requires dt > 0 and t_end ≥ t_start, so no \
+             timesteps were generated and an empty displacement history is \
+             returned.",
+        ));
         return ComputeOutcome::Completed {
             result: degenerate_displacement_history(),
             new_warm_state: None,
             cost_per_byte: None,
-            diagnostics: Vec::new(),
+            diagnostics: vec![diagnostic],
         };
     }
 
@@ -3729,6 +3741,68 @@ mod tests {
                 mc.len(),
             ),
             other => panic!("mode_coords must be a Value::List; got {other:?}"),
+        }
+    }
+
+    /// Amendment (reviewer suggestion 3): a degenerate transient time grid
+    /// (`dt ≤ 0` or `t_end < t_start` → no timesteps) is FLAGGED, not silent.
+    ///
+    /// With a well-formed 2-mode ModalResult and a non-empty forcing (so the
+    /// empty-forcing guard does not fire first), a malformed `(t_start, t_end,
+    /// dt)` must short-circuit to a *flagged* degenerate history: an `Error`
+    /// diagnostic containing `"E_TransientTimeGridDegenerate"` plus an empty
+    /// `DisplacementTimeHistory` — so swapped endpoints / `dt = 0` are observable
+    /// rather than silently masked as an empty result.
+    #[test]
+    fn transient_response_degenerate_grid_is_flagged() {
+        let mode0 = mode_struct(40.0, 0.01, &[0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 1.0]);
+        let mode1 = mode_struct(250.0, 0.02, &[0.0, 0.0, 0.0, 0.0, 0.0, -0.7, 0.0, 0.0, 0.4]);
+        let modal_result = modal_result_with_modes(vec![mode0, mode1]);
+        // Non-empty forcing so the E_TransientForcingMissing guard is NOT what fires.
+        let forcing = forcing_history(vec![step_force("tip", [0.0, 0.0, 1.0], 10.0, 0.0)]);
+
+        // Two degenerate triples: dt = 0, and swapped endpoints (t_end < t_start);
+        // uniform_time_grid returns empty for both.
+        for (t_start, t_end, dt) in [(0.0_f64, 0.1_f64, 0.0_f64), (0.1_f64, 0.0_f64, 0.005_f64)] {
+            assert!(
+                uniform_time_grid(t_start, t_end, dt).is_empty(),
+                "fixture ({t_start}, {t_end}, {dt}) must yield an empty grid",
+            );
+            let value_inputs = vec![
+                modal_result.clone(),
+                forcing.clone(),
+                time_scalar(t_start),
+                time_scalar(t_end),
+                time_scalar(dt),
+            ];
+            let outcome = solve_transient_response_trampoline(
+                &value_inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            );
+            let ComputeOutcome::Completed { result, diagnostics, .. } = outcome else {
+                panic!("expected a Completed outcome");
+            };
+            assert!(
+                diagnostics.iter().any(|d| {
+                    d.severity == Severity::Error
+                        && d.message.contains("E_TransientTimeGridDegenerate")
+                }),
+                "degenerate grid ({t_start}, {t_end}, {dt}) must emit an Error \
+                 containing \"E_TransientTimeGridDegenerate\"; got {diagnostics:?}",
+            );
+            let data = match &result {
+                Value::StructureInstance(d) => d,
+                other => panic!("expected a DisplacementTimeHistory; got {other:?}"),
+            };
+            match data.fields.get(&"t_samples".to_string()) {
+                Some(Value::List(ts)) => {
+                    assert!(ts.is_empty(), "degenerate grid must yield empty t_samples")
+                }
+                other => panic!("t_samples must be a Value::List; got {other:?}"),
+            }
         }
     }
 
