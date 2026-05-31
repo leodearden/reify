@@ -414,6 +414,201 @@ fn std_ports_mechanical_module_cardinality_locked() {
     );
 }
 
+// ─── step-1 (electrical): std/ports/electrical surface ───────────────────────
+
+/// std/ports/electrical must load with zero Severity::Error diagnostics.
+/// enum SignalKind has exactly [Analog, Digital, Differential] in that order.
+/// ElectricalPort refines exactly [Port] with no own required members.
+#[test]
+fn std_ports_electrical_loads_with_no_errors_and_signal_kind_enum() {
+    let module = load_module("std/ports/electrical");
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "unexpected error diagnostics in ports_electrical.ri: {:?}",
+        errors
+    );
+
+    let enum_def = find_enum("std/ports/electrical", "SignalKind");
+    assert_eq!(
+        enum_def.variants,
+        vec![
+            "Analog".to_string(),
+            "Digital".to_string(),
+            "Differential".to_string(),
+        ],
+        "SignalKind variants must be [Analog, Digital, Differential] in order; got: {:?}",
+        enum_def.variants
+    );
+
+    let electrical_port = find_trait("std/ports/electrical", "ElectricalPort");
+    assert_eq!(
+        electrical_port.refinements.as_slice(),
+        ["Port".to_string()].as_slice(),
+        "ElectricalPort should refine exactly [Port], got: {:?}",
+        electrical_port.refinements
+    );
+    assert!(
+        electrical_port.required_members.is_empty(),
+        "ElectricalPort should have no own required_members, got: {:?}",
+        electrical_port
+            .required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// PowerPort refines [ElectricalPort] with required members [voltage, max_current]
+/// in order, resolving to Scalar<VOLTAGE> and Scalar<CURRENT>.
+#[test]
+fn power_port_trait_surface() {
+    let t = find_trait("std/ports/electrical", "PowerPort");
+
+    assert_eq!(
+        t.refinements.as_slice(),
+        ["ElectricalPort".to_string()].as_slice(),
+        "PowerPort should refine exactly [ElectricalPort], got: {:?}",
+        t.refinements
+    );
+
+    assert_eq!(
+        t.required_members.len(),
+        2,
+        "PowerPort should have exactly 2 required members; got: {:?}",
+        t.required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        t.required_members[0].name,
+        "voltage",
+        "PowerPort required_members[0] should be 'voltage'"
+    );
+    assert_eq!(
+        t.required_members[1].name,
+        "max_current",
+        "PowerPort required_members[1] should be 'max_current'"
+    );
+
+    assert_eq!(
+        param_type("std/ports/electrical", "PowerPort", "voltage"),
+        Type::Scalar {
+            dimension: DimensionVector::VOLTAGE
+        },
+        "PowerPort.voltage must be Scalar<VOLTAGE>"
+    );
+    assert_eq!(
+        param_type("std/ports/electrical", "PowerPort", "max_current"),
+        Type::Scalar {
+            dimension: DimensionVector::CURRENT
+        },
+        "PowerPort.max_current must be Scalar<CURRENT>"
+    );
+}
+
+/// SignalPort refines [ElectricalPort] with required members [signal_kind, impedance]
+/// in order, resolving to Enum("SignalKind") and Scalar<RESISTANCE>.
+/// impedance uses the Resistance/Ω dimension (no distinct Impedance named dim;
+/// dimensionally identical — documented deviation in ports_electrical.ri header).
+#[test]
+fn signal_port_trait_surface() {
+    let t = find_trait("std/ports/electrical", "SignalPort");
+
+    assert_eq!(
+        t.refinements.as_slice(),
+        ["ElectricalPort".to_string()].as_slice(),
+        "SignalPort should refine exactly [ElectricalPort], got: {:?}",
+        t.refinements
+    );
+
+    assert_eq!(
+        t.required_members.len(),
+        2,
+        "SignalPort should have exactly 2 required members; got: {:?}",
+        t.required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        t.required_members[0].name,
+        "signal_kind",
+        "SignalPort required_members[0] should be 'signal_kind'"
+    );
+    assert_eq!(
+        t.required_members[1].name,
+        "impedance",
+        "SignalPort required_members[1] should be 'impedance'"
+    );
+
+    assert_eq!(
+        param_type("std/ports/electrical", "SignalPort", "signal_kind"),
+        Type::Enum("SignalKind".into()),
+        "SignalPort.signal_kind must be Type::Enum(\"SignalKind\")"
+    );
+    assert_eq!(
+        param_type("std/ports/electrical", "SignalPort", "impedance"),
+        Type::Scalar {
+            dimension: DimensionVector::RESISTANCE
+        },
+        "SignalPort.impedance must be Scalar<RESISTANCE> \
+         (no distinct Impedance dimension; electrically identical to Resistance)"
+    );
+}
+
+/// std/ports/electrical cardinality lock: exactly 3 traits (ElectricalPort,
+/// PowerPort, SignalPort), 1 enum (SignalKind), 0 structures.
+#[test]
+fn std_ports_electrical_module_cardinality_locked() {
+    let module = load_module("std/ports/electrical");
+
+    let enum_names: Vec<&str> = module.enum_defs.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(
+        module.enum_defs.len(),
+        1,
+        "std/ports/electrical should declare exactly 1 enum (SignalKind), got: {:?}",
+        enum_names
+    );
+    assert!(
+        module.enum_defs.iter().any(|e| e.name == "SignalKind"),
+        "std/ports/electrical should contain the 'SignalKind' enum, got: {:?}",
+        enum_names
+    );
+
+    let trait_names: Vec<&str> = module
+        .trait_defs
+        .iter()
+        .map(|t| t.name.as_str())
+        .collect();
+    assert_eq!(
+        module.trait_defs.len(),
+        3,
+        "std/ports/electrical should declare exactly 3 traits \
+         (ElectricalPort, PowerPort, SignalPort), got: {:?}",
+        trait_names
+    );
+
+    let structure_names: Vec<&str> = module
+        .templates
+        .iter()
+        .filter(|t| t.entity_kind == EntityKind::Structure)
+        .map(|t| t.name.as_str())
+        .collect();
+    assert_eq!(
+        structure_names.len(),
+        0,
+        "std/ports/electrical should declare 0 structures, got: {:?}",
+        structure_names
+    );
+}
+
 // ─── step-9: capstone example compile ─────────────────────────────────────────
 
 /// examples/stdlib/ports_mechanical.ri must compile without errors and
