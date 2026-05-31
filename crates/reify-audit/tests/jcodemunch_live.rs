@@ -61,14 +61,20 @@ fn run_reify_audit(args: &[&str]) -> (Option<i32>, Vec<serde_json::Value>) {
 /// Local copy of cli.rs's `parse_findings_from_stderr`: searches for the
 /// LAST `\n[` in the output (to skip any git-diagnostic lines that precede
 /// the JSON block) and deserializes the JSON from that position onward.
+///
+/// Returns `Vec::new()` when no JSON block is present — this happens when the
+/// binary exits with code 125 (infra/connection error) and only emits a plain
+/// "reify-audit: error connecting…" line.  The caller's `assert_ne!(code,
+/// Some(125))` owns the infra-error diagnostic in that case.
 fn parse_findings_from_stderr(stderr: &str) -> Vec<serde_json::Value> {
-    let json_start = stderr
+    let json_start = match stderr
         .rfind("\n[")
         .map(|pos| pos + 1)
-        .or_else(|| {
-            if stderr.starts_with('[') { Some(0) } else { None }
-        })
-        .unwrap_or_else(|| panic!("no JSON array found in stderr; full stderr:\n{stderr}"));
+        .or_else(|| if stderr.starts_with('[') { Some(0) } else { None })
+    {
+        Some(pos) => pos,
+        None => return Vec::new(),
+    };
     serde_json::from_str(&stderr[json_start..]).unwrap_or_else(|e| {
         panic!(
             "stderr does not contain valid JSON after '[': {e}\nstderr:\n{stderr}"
@@ -137,25 +143,34 @@ fn write_synthetic_done_task(
 /// Returns true iff the jcodemunch-serve process is accepting TCP connections
 /// at the address encoded in `url`.
 ///
-/// Parses `host:port` from the URL and attempts
-/// [`TcpStream::connect_timeout`] with a 2-second timeout.  A bare TCP
+/// Extracts `host:port` from the URL and resolves it via [`ToSocketAddrs`] so
+/// both IP literals (`127.0.0.1:8901`) and hostnames (`localhost:8901`) work.
+/// Attempts [`TcpStream::connect_timeout`] (2-second limit) against each
+/// resolved address; returns true on the first successful connect.  A bare TCP
 /// connect is sufficient to distinguish "serve process listening" from "serve
 /// down" for the skip gate; the binary's own MCP handshake does the deeper
 /// protocol check on the live legs.
 ///
-/// Returns false on parse failure, connection refused, or timeout.
+/// Returns false on resolution failure, connection refused, or timeout.
 fn jcodemunch_serve_reachable(url: &str) -> bool {
+    use std::net::ToSocketAddrs;
     // Strip scheme to get "host:port[/path]"
     let without_scheme = url
         .trim_start_matches("https://")
         .trim_start_matches("http://");
     // Take just the "host:port" part (before any slash)
     let host_port = without_scheme.split('/').next().unwrap_or("");
-    let addr: std::net::SocketAddr = match host_port.parse() {
+    // to_socket_addrs resolves hostnames (e.g. localhost) as well as IP literals.
+    let addrs = match host_port.to_socket_addrs() {
         Ok(a) => a,
         Err(_) => return false,
     };
-    std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(2)).is_ok()
+    for addr in addrs {
+        if std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(2)).is_ok() {
+            return true;
+        }
+    }
+    false
 }
 
 /// Returns true iff `v` is a P1ProducerOrphan finding.
