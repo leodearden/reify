@@ -13,6 +13,12 @@ use reify_ir::Value;
 /// this the pseudo-rigid-body small-deflection model loses fidelity (Howell §5).
 pub(super) const PRB_ANGLE_LIMIT_RAD: f64 = 5.0 * PI / 180.0;
 
+/// Howell pseudo-rigid-body coefficient for a cantilever beam (Howell §5.1).
+/// Used by `beam::prb_cantilever_beam` (revolute joint) and
+/// `compound::prb_cartwheel_flexure` (cartwheel blade — same cantilever
+/// boundary condition, N blades contributing k_pivot = N·k_blade).
+pub(super) const CANTILEVER_GAMMA: f64 = 2.65;
+
 /// Fixed-guided (fixed-fixed) stiffness coefficient γ_ff = 12 (Howell §5 /
 /// PRD §6.1). Used by `beam::prb_fixed_fixed_beam` (transverse prismatic joint)
 /// and `compound::{prb_parallelogram_flexure, prb_double_parallelogram_flexure}`
@@ -135,6 +141,23 @@ fn numeric_from_value(v: &Value) -> Option<f64> {
         Value::Real(r) if r.is_finite() => Some(*r),
         Value::Int(i) => Some(*i as f64),
         _ => None,
+    }
+}
+
+/// Compute the cantilever surface-yield rotation limit θ_lim, capped at the
+/// PRB small-deflection limit.
+///
+/// Cantilever bending stress σ = E·(t/2)·θ/L (Howell §5.1)
+/// ⇒ θ_yield = yield·L/(E·t/2), capped at [`PRB_ANGLE_LIMIT_RAD`] (5°).
+/// No `yield_stress` ⇒ only the PRB cap applies.
+///
+/// Shared by `beam::prb_cantilever_beam` (revolute joint) and
+/// `compound::prb_cartwheel_flexure` (each radial blade is a cantilever) —
+/// a single definition prevents the two modules drifting on the surface-yield model.
+pub(super) fn cantilever_theta_lim(length: f64, thickness: f64, e: f64, yield_si: Option<f64>) -> f64 {
+    match yield_si {
+        Some(y) => (y * length / (e * thickness / 2.0)).min(PRB_ANGLE_LIMIT_RAD),
+        None => PRB_ANGLE_LIMIT_RAD,
     }
 }
 

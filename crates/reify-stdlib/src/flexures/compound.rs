@@ -25,7 +25,9 @@ use reify_core::DimensionVector;
 use reify_ir::Value;
 
 use super::common::{
-    fixed_guided_delta_max, length_si, make_flexure_joint, material_field_si, FIXED_GUIDED_GAMMA,
+    cantilever_theta_lim, fixed_guided_delta_max, length_si, make_flexure_joint,
+    material_field_si, neutral_angle_si, symmetric_angle_range, CANTILEVER_GAMMA,
+    FIXED_GUIDED_GAMMA,
 };
 
 /// Shared validated inputs for compound-flexure constructors.
@@ -162,8 +164,133 @@ pub(crate) fn eval_compound(name: &str, args: &[Value]) -> Option<Value> {
     match name {
         "prb_parallelogram_flexure" => Some(prb_parallelogram_flexure(args)),
         "prb_double_parallelogram_flexure" => Some(prb_double_parallelogram_flexure(args)),
+        "prb_cartwheel_flexure" => Some(prb_cartwheel_flexure(args)),
         _ => None,
     }
+}
+
+/// Validated inputs for the cartwheel flexure constructor.
+///
+/// Argument layout (§6.3): `(blade_count:Int, blade_length, blade_width,
+/// blade_thickness, material, pivot, axis[, neutral])` — note that blade_count
+/// is arg[0], pivot is arg[5] BEFORE axis at arg[6] (matches the beam/hinge
+/// family, not the compound parallelogram layout). A new dedicated parser is
+/// required because the layouts differ structurally.
+struct CartwheelInputs<'a> {
+    /// Number of radial blades N (≥ 1), stored as f64 for arithmetic.
+    blade_count: f64,
+    /// Blade length L (metres).
+    length: f64,
+    /// Blade thickness t in the bending direction (metres).
+    /// Required for the surface-yield rotation θ_yield = yield·L/(E·t/2).
+    thickness: f64,
+    /// Blade second moment of area `I = width·thickness³/12` (m⁴).
+    i: f64,
+    /// Young's modulus E (Pa).
+    e: f64,
+    /// Material yield stress σ_y (Pa), if the material carries one.
+    yield_si: Option<f64>,
+    /// The raw axis argument (stored verbatim on the joint Map).
+    axis: &'a Value,
+    /// The raw pivot argument (stored verbatim on the joint Map).
+    pivot: &'a Value,
+    /// Optional trailing `neutral` argument (present only in the 8-arg form).
+    neutral_arg: Option<&'a Value>,
+}
+
+/// Parse and validate the cartwheel flexure argument layout:
+/// `(blade_count:Int, blade_length, blade_width, blade_thickness,
+/// material, pivot, axis[, neutral])`.
+///
+/// Returns `None` (⇒ `Value::Undef`) on: arity ∉ {7, 8}; blade_count not an
+/// integer-valued finite number ≥ 1 (i.e. `Int` ≥ 1, or a whole finite `Real`
+/// ≥ 1.0 — non-integers and values < 1 are rejected); non-positive or
+/// non-finite geometry; thickness ≥ length; a material without a finite
+/// positive `youngs_modulus`; or an axis that is not a finite, non-zero,
+/// dimensionless 3-vector.
+fn parse_cartwheel_inputs(args: &[Value]) -> Option<CartwheelInputs<'_>> {
+    if args.len() != 7 && args.len() != 8 {
+        return None;
+    }
+    // Strict blade_count: Int ≥ 1, or a whole finite Real ≥ 1.
+    // Mirrors parse_let_inputs n_blades arm (hinge.rs).
+    let blade_count = match &args[0] {
+        Value::Int(n) if *n >= 1 => *n as f64,
+        Value::Real(r) if r.is_finite() && *r >= 1.0 && r.fract() == 0.0 => *r,
+        _ => return None,
+    };
+    let length = length_si(&args[1])?;
+    let width = length_si(&args[2])?;
+    let thickness = length_si(&args[3])?;
+    if length <= 0.0 || width <= 0.0 || thickness <= 0.0 || thickness >= length {
+        return None;
+    }
+    let material = &args[4];
+    let e = material_field_si(material, "youngs_modulus")?;
+    if e <= 0.0 {
+        return None;
+    }
+    crate::helpers::validate_dimensionless_unit_axis_vec3(&args[6])?;
+    Some(CartwheelInputs {
+        blade_count,
+        length,
+        thickness,
+        i: width * thickness.powi(3) / 12.0,
+        e,
+        yield_si: material_field_si(material, "yield_stress"),
+        axis: &args[6],
+        pivot: &args[5],
+        neutral_arg: if args.len() == 8 { Some(&args[7]) } else { None },
+    })
+}
+
+/// `prb_cartwheel_flexure(blade_count, blade_length, blade_width,
+/// blade_thickness, material, pivot, axis[, neutral])` — PRB cartwheel flexure
+/// presented as a revolute joint (Compliant-Joints PRD §6.3).
+///
+/// Returns a joint `Value::Map` (`kind == "revolute"`) whose rotational
+/// stiffness is `k_θ = N · γ · E · I / L` (§6.3, γ = 2.65 Howell §5.1
+/// cantilever coefficient, N = blade_count, I = width·thickness³/12).
+///
+/// The symmetric `prb_validity` rotation range is `±min(θ_yield, 5°)`, where
+/// `θ_yield = yield·L/(E·t/2)` is the cantilever surface-yield rotation
+/// (each radial blade is a cantilever — the cartwheel rotation equals the
+/// per-blade rotation). When the material carries no `yield_stress`, only
+/// the 5° PRB limit applies.
+///
+/// Returns `Value::Undef` on the invalid-input classes enumerated in
+/// [`parse_cartwheel_inputs`].
+fn prb_cartwheel_flexure(args: &[Value]) -> Value {
+    let Some(c) = parse_cartwheel_inputs(args) else {
+        return Value::Undef;
+    };
+
+    // PRB pivot stiffness: k_pivot = N · γ · E · I / L (§6.3).
+    // Each blade contributes k_blade = γ·E·I/L (Howell §5.1 cantilever).
+    let k_pivot = c.blade_count * CANTILEVER_GAMMA * c.e * c.i / c.length;
+
+    // Symmetric prb_validity range = ±min(θ_yield, 5°). Each radial blade is a
+    // cantilever; the cartwheel rotation equals the per-blade rotation, so the
+    // cantilever surface-yield rotation IS the pivot's yield-limited range
+    // (shared formula with beam::prb_cantilever_beam via common::cantilever_theta_lim).
+    let theta_lim = cantilever_theta_lim(c.length, c.thickness, c.e, c.yield_si);
+    let range = symmetric_angle_range(theta_lim);
+
+    // Optional trailing neutral angle (default 0 for the 7-arg form; step-8
+    // wires the 8-arg form — neutral_arg is already populated by the parser).
+    let neutral_si = c.neutral_arg.map(neutral_angle_si).unwrap_or(0.0);
+
+    make_flexure_joint(
+        "revolute",
+        c.axis.clone(),
+        range,
+        Value::Scalar {
+            si_value: k_pivot,
+            dimension: DimensionVector::ROTATIONAL_STIFFNESS,
+        },
+        Value::angle(neutral_si),
+        c.pivot.clone(),
+    )
 }
 
 /// `prb_parallelogram_flexure(length, width, thickness, blade_spacing, material, motion_axis, pivot)`
@@ -513,6 +640,321 @@ mod tests {
                 ]),
             ),
             "axis is length-dimensioned",
+        );
+    }
+
+    // ── θ/step-1: RED -- prb_cartwheel_flexure structure + spring rate ──────────
+
+    /// 7-arg cartwheel argument list:
+    /// (blade_count:Int, L, b, t, material, pivot, axis)
+    fn cartwheel_args(blade_count: i64) -> Vec<Value> {
+        vec![
+            Value::Int(blade_count), // args[0] = N
+            Value::length(0.02),     // args[1] = L = 20 mm
+            Value::length(0.005),    // args[2] = b = 5 mm
+            Value::length(0.0005),   // args[3] = t = 0.5 mm
+            steel(),                 // args[4] = material
+            origin(),                // args[5] = pivot
+            axis_y(),                // args[6] = axis
+        ]
+    }
+
+    #[test]
+    fn prb_cartwheel_flexure_structure_and_spring_rate() {
+        let n = 4_i64;
+        let result = crate::eval_builtin("prb_cartwheel_flexure", &cartwheel_args(n));
+
+        // kind == "revolute"
+        assert_eq!(
+            map_get(&result, "kind"),
+            Some(&Value::String("revolute".to_string())),
+            "cartwheel flexure presents as a revolute joint; got {result:?}"
+        );
+
+        // axis and pivot are preserved verbatim
+        assert_eq!(map_get(&result, "axis"), Some(&axis_y()), "axis preserved verbatim");
+        assert_eq!(map_get(&result, "pivot"), Some(&origin()), "pivot preserved verbatim");
+
+        // damping == Value::Option(None) (γ-scope)
+        assert_eq!(
+            map_get(&result, "damping"),
+            Some(&Value::Option(None)),
+            "damping is None in γ scope"
+        );
+
+        // spring_rate: ROTATIONAL_STIFFNESS, si_value == N·γ·E·I/L (§6.3 k_pivot = N·k_blade)
+        let l: f64 = 0.02;
+        let b: f64 = 0.005;
+        let t: f64 = 0.0005;
+        let e: f64 = 205e9;
+        let i = b * t.powi(3) / 12.0;
+        let gamma: f64 = 2.65;
+        let k_blade = gamma * e * i / l;
+        let k_pivot_expected = n as f64 * k_blade;
+
+        match map_get(&result, "spring_rate") {
+            Some(Value::Scalar { si_value, dimension }) => {
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::ROTATIONAL_STIFFNESS,
+                    "spring_rate carries ROTATIONAL_STIFFNESS"
+                );
+                let rel = (si_value - k_pivot_expected).abs() / k_pivot_expected;
+                assert!(
+                    rel < 1e-9,
+                    "spring_rate {si_value} vs {k_pivot_expected} (rel {rel})"
+                );
+            }
+            other => panic!("expected spring_rate Scalar, got {other:?}"),
+        }
+
+        // Coefficient-independent scaling checks:
+
+        // (a) Linear blade-count scaling: k(N=8) / k(N=4) == 2
+        let k8 = spring_rate_si(&crate::eval_builtin("prb_cartwheel_flexure", &cartwheel_args(8)));
+        let k4 = spring_rate_si(&crate::eval_builtin("prb_cartwheel_flexure", &cartwheel_args(4)));
+        let ratio_n = k8 / k4;
+        let rel_n = (ratio_n - 2.0).abs() / 2.0;
+        assert!(rel_n < 1e-9, "k(N=8)/k(N=4) should be 2, got {ratio_n} (rel {rel_n})");
+
+        // (b) Double thickness → ×8 (I ∝ t³)
+        let thick_args: Vec<Value> = vec![
+            Value::Int(4),
+            Value::length(0.02),
+            Value::length(0.005),
+            Value::length(0.001), // 2×t
+            steel(),
+            origin(),
+            axis_y(),
+        ];
+        let k_thick = spring_rate_si(&crate::eval_builtin("prb_cartwheel_flexure", &thick_args));
+        let ratio_t = k_thick / k4;
+        let rel_t = (ratio_t - 8.0).abs() / 8.0;
+        assert!(rel_t < 1e-9, "doubling t should give ×8 stiffness, got ×{ratio_t} (rel {rel_t})");
+
+        // (c) Double length → ×0.5 (k ∝ 1/L)
+        let long_args: Vec<Value> = vec![
+            Value::Int(4),
+            Value::length(0.04), // 2×L
+            Value::length(0.005),
+            Value::length(0.0005),
+            steel(),
+            origin(),
+            axis_y(),
+        ];
+        let k_long = spring_rate_si(&crate::eval_builtin("prb_cartwheel_flexure", &long_args));
+        let ratio_l = k_long / k4;
+        let rel_l = (ratio_l - 0.5).abs() / 0.5;
+        assert!(rel_l < 1e-9, "doubling L should give ×0.5 stiffness, got ×{ratio_l} (rel {rel_l})");
+
+        // (d) Double E → ×2
+        let e_args: Vec<Value> = vec![
+            Value::Int(4),
+            Value::length(0.02),
+            Value::length(0.005),
+            Value::length(0.0005),
+            steel_with_e(2.0 * e),
+            origin(),
+            axis_y(),
+        ];
+        let k_2e = spring_rate_si(&crate::eval_builtin("prb_cartwheel_flexure", &e_args));
+        let ratio_e = k_2e / k4;
+        let rel_e = (ratio_e - 2.0).abs() / 2.0;
+        assert!(rel_e < 1e-9, "doubling E should give ×2 stiffness, got ×{ratio_e} (rel {rel_e})");
+    }
+
+    // ── θ/step-3: RED -- prb_cartwheel_flexure range branches ───────────────────
+
+    #[test]
+    fn prb_cartwheel_flexure_range_branches() {
+        let prb_limit = 5.0_f64 * std::f64::consts::PI / 180.0;
+        let e: f64 = 205e9;
+        let yield_stress: f64 = 310e6;
+
+        // (a) Yield-capped: L=5mm, t=0.5mm → θ_yield = yield·L/(E·t/2) < 5°
+        let l_a: f64 = 0.005;
+        let t_a: f64 = 0.0005;
+        let theta_yield_a = yield_stress * l_a / (e * t_a / 2.0);
+        assert!(
+            theta_yield_a < prb_limit,
+            "fixture (a) must have θ_yield < 5°: θ_yield={theta_yield_a:.4} rad ≈ {}°",
+            theta_yield_a * 180.0 / std::f64::consts::PI
+        );
+        let result_a = crate::eval_builtin(
+            "prb_cartwheel_flexure",
+            &[
+                Value::Int(4),
+                Value::length(l_a),
+                Value::length(0.005),
+                Value::length(t_a),
+                steel(),
+                origin(),
+                axis_y(),
+            ],
+        );
+        let range_a = map_get(&result_a, "range").expect("range key present (a)");
+        let (lo_a, up_a) = range_lower_upper(range_a);
+        assert_angle_close(lo_a, -theta_yield_a, "yield-capped lower (a)");
+        assert_angle_close(up_a, theta_yield_a, "yield-capped upper (a)");
+
+        // (b) PRB-capped: L=20mm, t=0.5mm → θ_yield ≈ 6.93° > 5° → range == ±5°
+        let l_b: f64 = 0.02;
+        let t_b: f64 = 0.0005;
+        let theta_yield_b = yield_stress * l_b / (e * t_b / 2.0);
+        assert!(
+            theta_yield_b > prb_limit,
+            "fixture (b) must have θ_yield > 5°: θ_yield={theta_yield_b:.4} rad ≈ {}°",
+            theta_yield_b * 180.0 / std::f64::consts::PI
+        );
+        let result_b = crate::eval_builtin("prb_cartwheel_flexure", &cartwheel_args(4));
+        let range_b = map_get(&result_b, "range").expect("range key present (b)");
+        let (lo_b, up_b) = range_lower_upper(range_b);
+        assert_angle_close(lo_b, -prb_limit, "prb-limited lower (b)");
+        assert_angle_close(up_b, prb_limit, "prb-limited upper (b)");
+
+        // (c) No yield_stress → range == ±5° PRB cap
+        let result_c = crate::eval_builtin(
+            "prb_cartwheel_flexure",
+            &[
+                Value::Int(4),
+                Value::length(0.02),
+                Value::length(0.005),
+                Value::length(0.0005),
+                steel_no_yield(),
+                origin(),
+                axis_y(),
+            ],
+        );
+        let range_c = map_get(&result_c, "range").expect("range key present (c)");
+        let (lo_c, up_c) = range_lower_upper(range_c);
+        assert_angle_close(lo_c, -prb_limit, "no-yield lower (c)");
+        assert_angle_close(up_c, prb_limit, "no-yield upper (c)");
+    }
+
+    // ── θ/step-5: RED -- prb_cartwheel_flexure rejects invalid inputs ────────────
+
+    #[test]
+    fn prb_cartwheel_flexure_rejects_invalid_inputs() {
+        let undef = |args: Vec<Value>, label: &str| {
+            let r = crate::eval_builtin("prb_cartwheel_flexure", &args);
+            assert!(r.is_undef(), "{label}: expected Undef, got {r:?}");
+        };
+        let with = |idx: usize, v: Value| {
+            let mut a = cartwheel_args(4);
+            a[idx] = v;
+            a
+        };
+
+        // Wrong arity.
+        undef(vec![], "0 args");
+        {
+            let mut a = cartwheel_args(4);
+            a.truncate(6); // 6 args
+            undef(a, "6 args");
+        }
+        {
+            let mut a = cartwheel_args(4);
+            a.push(Value::angle(0.0));
+            a.push(Value::angle(0.0)); // 9 args
+            undef(a, "9 args");
+        }
+
+        // Invalid blade_count.
+        undef(with(0, Value::Int(0)), "blade_count = 0");
+        undef(with(0, Value::Int(-1)), "blade_count = -1");
+        undef(with(0, Value::Real(1.5)), "blade_count = 1.5 (non-integer Real)");
+        undef(with(0, Value::String("4".to_string())), "blade_count not numeric");
+
+        // Non-positive / non-finite geometry.
+        undef(with(1, Value::length(0.0)), "length = 0");
+        undef(with(1, Value::length(-0.02)), "length < 0");
+        undef(with(2, Value::length(0.0)), "width = 0");
+        undef(with(3, Value::length(f64::NAN)), "thickness = NaN");
+
+        // Degenerate beam: thickness >= length.
+        undef(with(3, Value::length(0.02)), "thickness == length");
+        undef(
+            {
+                let mut a = cartwheel_args(4);
+                a[3] = Value::length(0.03); // thickness > L=0.02
+                a
+            },
+            "thickness > length",
+        );
+
+        // Bad material.
+        undef(with(4, Value::Real(1.0)), "material not a StructureInstance");
+        undef(with(4, material("NoModulus", &[])), "material missing youngs_modulus");
+
+        // Bad axis (args[6]).
+        undef(with(6, Value::Real(1.0)), "axis not a vector");
+        undef(
+            with(
+                6,
+                Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]),
+            ),
+            "axis is zero vector",
+        );
+        undef(
+            with(
+                6,
+                Value::Vector(vec![
+                    Value::length(0.0),
+                    Value::length(1.0),
+                    Value::length(0.0),
+                ]),
+            ),
+            "axis is length-dimensioned",
+        );
+    }
+
+    // ── θ/step-7: RED -- prb_cartwheel_flexure neutral angle handling ────────────
+
+    /// Invoke `prb_cartwheel_flexure` on the base 7-arg fixture, optionally
+    /// appending an 8th `neutral` argument.
+    fn cartwheel_with_neutral(neutral: Option<Value>) -> Value {
+        let mut args = cartwheel_args(4);
+        if let Some(n) = neutral {
+            args.push(n);
+        }
+        crate::eval_builtin("prb_cartwheel_flexure", &args)
+    }
+
+    #[test]
+    fn prb_cartwheel_flexure_neutral_angle_handling() {
+        let two_deg = 2.0_f64 * std::f64::consts::PI / 180.0;
+
+        // (a) 7-arg → neutral defaults to angle(0).
+        let seven = cartwheel_with_neutral(None);
+        assert_eq!(
+            map_get(&seven, "neutral"),
+            Some(&Value::angle(0.0)),
+            "7-arg call defaults neutral to angle(0)"
+        );
+
+        // (b) 8-arg bare angle(2°) → neutral == angle(2°).
+        let eight_bare = cartwheel_with_neutral(Some(Value::angle(two_deg)));
+        assert_angle_close(
+            map_get(&eight_bare, "neutral").expect("neutral key present (b)"),
+            two_deg,
+            "8-arg bare-angle neutral",
+        );
+
+        // (c) 8-arg Option(Some(angle(2°))) → unwraps to angle(2°).
+        let eight_opt =
+            cartwheel_with_neutral(Some(Value::Option(Some(Box::new(Value::angle(two_deg))))));
+        assert_angle_close(
+            map_get(&eight_opt, "neutral").expect("neutral key present (c)"),
+            two_deg,
+            "8-arg optional-angle neutral",
+        );
+
+        // (d) 8-arg Option(None) → neutral defaults to angle(0).
+        let eight_none = cartwheel_with_neutral(Some(Value::Option(None)));
+        assert_eq!(
+            map_get(&eight_none, "neutral"),
+            Some(&Value::angle(0.0)),
+            "8-arg Option(None) neutral defaults to angle(0)"
         );
     }
 
