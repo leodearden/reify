@@ -1189,36 +1189,52 @@ fn annular_symmetry_plane_strain_bcs(
     bcs
 }
 
-/// Assemble inner-pressure nodal loads for P1 inner-surface triangles.
+/// Shared implementation for P1 and P2 inner-pressure load assembly.
 ///
-/// For each P1 face `[v0, v1, v2]`:
-/// 1. Compute the centroid radial direction `r̂ = (cx, cy, 0) / ||(cx,cy)||`.
-/// 2. Apply traction `t = P_i · r̂` via `apply_traction_load` into a scratch
-///    vector (pressure on the inner wall = outward traction = inward normal
-///    sign times P_i in the +r̂ direction).
+/// For each face in `inner_faces`:
+/// 1. Build `face_phys` from the node indices (all nodes, P1 or P2 count).
+/// 2. Compute the centroid radial direction `r̂ = (cx, cy, 0) / ||(cx,cy)||`
+///    from the **first 3 corner nodes** (`face[0..3]`).
+/// 3. Apply traction `t = P_i · r̂` via `apply_traction_load` using `face_order`.
 ///
-/// Returns nonzero `(dof, value)` pairs suitable for `solve_p1_pipeline`.
-fn inner_pressure_loads(
-    inner_faces: &[[usize; 3]],
+/// `face_order` selects `FaceOrder::P1Tri` (3-node) or `FaceOrder::P2Tri`
+/// (6-node) quadrature.  Returns nonzero `(dof, value)` pairs.
+fn inner_pressure_loads_core<F: AsRef<[usize]>>(
+    inner_faces: &[F],
     nodes: &[[f64; 3]],
     p_i: f64,
+    face_order: FaceOrder,
 ) -> Vec<(usize, f64)> {
     let ndof = 3 * nodes.len();
     let mut f = vec![0.0_f64; ndof];
     for face in inner_faces {
-        let face_phys = [nodes[face[0]], nodes[face[1]], nodes[face[2]]];
-        // Centroid radial unit direction
+        let face = face.as_ref();
+        let face_phys: Vec<[f64; 3]> = face.iter().map(|&n| nodes[n]).collect();
+        // Centroid radial unit direction from the first 3 corner nodes
         let cx = (face_phys[0][0] + face_phys[1][0] + face_phys[2][0]) / 3.0;
         let cy = (face_phys[0][1] + face_phys[1][1] + face_phys[2][1]) / 3.0;
         let r_c = (cx * cx + cy * cy).sqrt();
         let traction = [p_i * cx / r_c, p_i * cy / r_c, 0.0];
-        apply_traction_load(&mut f, FaceOrder::P1Tri, &face[..], &face_phys, traction);
+        apply_traction_load(&mut f, face_order, face, &face_phys, traction);
     }
     // Lower to (dof, value) pairs; drop exact zeros
     f.iter().enumerate()
         .filter(|(_, v)| v.abs() > 1e-15)
         .map(|(i, v)| (i, *v))
         .collect()
+}
+
+/// Assemble inner-pressure nodal loads for P1 inner-surface triangles.
+///
+/// Per-face centroid radial traction (`t = P_i · r̂`), assembled via
+/// [`apply_traction_load`] with `FaceOrder::P1Tri` and lowered to
+/// `(dof, value)` pairs for `solve_p1_pipeline`.
+fn inner_pressure_loads(
+    inner_faces: &[[usize; 3]],
+    nodes: &[[f64; 3]],
+    p_i: f64,
+) -> Vec<(usize, f64)> {
+    inner_pressure_loads_core(inner_faces, nodes, p_i, FaceOrder::P1Tri)
 }
 
 /// Assemble inner-pressure nodal loads for P2 inner-surface triangles.
@@ -1231,21 +1247,32 @@ fn inner_pressure_loads_p2(
     nodes: &[[f64; 3]],
     p_i: f64,
 ) -> Vec<(usize, f64)> {
-    let ndof = 3 * nodes.len();
-    let mut f = vec![0.0_f64; ndof];
-    for face in inner_faces {
-        let face_phys: Vec<[f64; 3]> = face.iter().map(|&n| nodes[n]).collect();
-        // Centroid from corner nodes (first 3)
-        let cx = (face_phys[0][0] + face_phys[1][0] + face_phys[2][0]) / 3.0;
-        let cy = (face_phys[0][1] + face_phys[1][1] + face_phys[2][1]) / 3.0;
-        let r_c = (cx * cx + cy * cy).sqrt();
-        let traction = [p_i * cx / r_c, p_i * cy / r_c, 0.0];
-        apply_traction_load(&mut f, FaceOrder::P2Tri, &face[..], &face_phys, traction);
-    }
-    f.iter().enumerate()
-        .filter(|(_, v)| v.abs() > 1e-15)
-        .map(|(i, v)| (i, *v))
-        .collect()
+    inner_pressure_loads_core(inner_faces, nodes, p_i, FaceOrder::P2Tri)
+}
+
+/// Build the annular P1 mesh, solve, recover nodal stress, and return the
+/// maximum von Mises stress over inner-ring nodes (r ≈ a).
+///
+/// Shared between `thick_walled_cylinder_p1_max_von_mises_within_5pct_of_lame`
+/// and `cylinder_lame_convergence_study` to guarantee both exercise the same
+/// code path and prevent the diagnostic study from diverging silently.
+///
+/// Returns `(nodes, sigma, max_vm_inner)`.
+fn cylinder_p1_solve_and_recover(
+    a: f64, b: f64, l: f64,
+    nr: usize, ntheta: usize, nz: usize,
+    p_i: f64, mat: &IsotropicElastic, tol_geom: f64,
+) -> (Vec<[f64; 3]>, Vec<[[f64; 3]; 3]>, f64) {
+    let (nodes, conns, inner_faces) = annular_p1_mesh(a, b, l, nr, ntheta, nz);
+    let mut bcs = annular_symmetry_plane_strain_bcs(&nodes, l, tol_geom);
+    let loads = inner_pressure_loads(&inner_faces, &nodes, p_i);
+    let u = solve_p1_pipeline(&nodes, &conns, &mut bcs, &loads, mat);
+    let sigma = recover_nodal_p1(&nodes, &conns, &u, mat);
+    let max_vm = nodes.iter().enumerate()
+        .filter(|(_, p)| ((p[0]*p[0]+p[1]*p[1]).sqrt() - a).abs() < tol_geom)
+        .map(|(ni, _)| von_mises_of_tensor(&sigma[ni]))
+        .fold(0.0_f64, f64::max);
+    (nodes, sigma, max_vm)
 }
 
 /// Thick-walled cylinder (Lamé) P1 max von Mises ≤ 5 % of reference.
@@ -1269,23 +1296,16 @@ fn thick_walled_cylinder_p1_max_von_mises_within_5pct_of_lame() {
     let tol_geom: f64 = 1e-9;
 
     let mat = IsotropicElastic { youngs_modulus: E, poisson_ratio: NU };
-    let (nodes, conns, inner_faces) = annular_p1_mesh(A, B, L, NR, NTHETA, NZ);
+    let (nodes, sigma, max_vm) =
+        cylinder_p1_solve_and_recover(A, B, L, NR, NTHETA, NZ, P_I, &mat, tol_geom);
     let n_nodes = nodes.len();
-
-    let mut bcs = annular_symmetry_plane_strain_bcs(&nodes, L, tol_geom);
-    let loads = inner_pressure_loads(&inner_faces, &nodes, P_I);
-    let u = solve_p1_pipeline(&nodes, &conns, &mut bcs, &loads, &mat);
-
-    // Recover nodal stress + von Mises over inner-ring nodes (r ≈ a)
-    let sigma = recover_nodal_p1(&nodes, &conns, &u, &mat);
     let lame_ref = lame_von_mises(A, A, B, P_I, NU);
-    let mut max_vm = 0.0_f64;
+
+    // Secondary: min σ_r over inner-ring nodes (r ≈ a) — BC sanity check
     let mut min_sr_inner = f64::INFINITY;
     for (ni, &p) in nodes.iter().enumerate() {
         let r = (p[0] * p[0] + p[1] * p[1]).sqrt();
         if (r - A).abs() < tol_geom {
-            let vm = von_mises_of_tensor(&sigma[ni]);
-            max_vm = max_vm.max(vm);
             // σ_r at inner node: radial components from cylindrical coords
             let costh = p[0] / r;
             let sinth = p[1] / r;
@@ -1337,15 +1357,8 @@ fn cylinder_lame_convergence_study() {
         (20, 20, 2),
         (24, 24, 2),
     ] {
-        let (nodes, conns, inner_faces) = annular_p1_mesh(A, B, L, nr, ntheta, nz);
-        let mut bcs = annular_symmetry_plane_strain_bcs(&nodes, L, tol_geom);
-        let loads = inner_pressure_loads(&inner_faces, &nodes, P_I);
-        let u = solve_p1_pipeline(&nodes, &conns, &mut bcs, &loads, &mat);
-        let sigma = recover_nodal_p1(&nodes, &conns, &u, &mat);
-        let max_vm = nodes.iter().enumerate()
-            .filter(|(_, p)| ((p[0]*p[0]+p[1]*p[1]).sqrt() - A).abs() < tol_geom)
-            .map(|(ni, _)| von_mises_of_tensor(&sigma[ni]))
-            .fold(0.0_f64, f64::max);
+        let (nodes, _sigma, max_vm) =
+            cylinder_p1_solve_and_recover(A, B, L, nr, ntheta, nz, P_I, &mat, tol_geom);
         let err = (max_vm - lame_ref).abs() / lame_ref * 100.0;
         println!("P1 {nr}×{ntheta}×{nz}: max_vm={max_vm:.6} err={err:.2}% n_nodes={}", nodes.len());
     }
@@ -1540,7 +1553,11 @@ fn thick_walled_cylinder_p2_max_von_mises_within_2pct_of_lame() {
         CgSolverOptions { tolerance: 1e-8, max_iter: 5_000 },
     );
 
-    // Recover nodal stress + max von Mises over inner-ring nodes (r ≈ a)
+    // Recover nodal stress + max von Mises over inner-ring nodes (r ≈ a).
+    // Note: only corner nodes and axial-edge midpoints lie exactly at r=a.
+    // Angular edge-midpoint nodes sit at the chord midpoint of two arc points
+    // (radius = a·cos(Δθ/2) < a) and are excluded by tol_geom=1e-9.  The
+    // Lamé peak is at r=a and is fully captured by the included corner nodes.
     let sigma = recover_nodal_p2(&p2_nodes, &p2_conns, &u, &mat);
     let lame_ref = lame_von_mises(A, A, B, P_I, NU);
     let max_vm = p2_nodes.iter().enumerate()
