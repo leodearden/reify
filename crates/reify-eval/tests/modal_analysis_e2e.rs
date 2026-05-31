@@ -290,6 +290,67 @@ fn modes_freq_participation(result: &Value) -> Vec<(f64, f64)> {
     }
 }
 
+/// Frequencies (Hz, ascending) of the VERTICAL (Z-dominant) bending modes in a
+/// `ModalResult`, selected by eigenvector dominant-axis classification: a mode
+/// is Z-dominant when its shape energy along Z (`Σ_node φ_z²`) is ≥ the energy
+/// along both X and Y.
+///
+/// This is the e2e mirror of the kernel gate's selection
+/// (`modal_benchmarks.rs::axis_energy_fractions` →
+/// `simply_supported_beam_p2_modal_within_two_percent`). It is required because
+/// the wide-thin section (b = 10 mm, h = 2 mm) places the lateral Y-bending mode
+/// (≈ 579 Hz) BETWEEN vertical modes 2 (≈ 463 Hz) and 3 (≈ 1043 Hz) in the raw
+/// frequency-sorted spectrum, so the raw mode index does NOT map 1:1 to the
+/// vertical (nπ)² family — `mode_frequency(result, 2)` is the lateral mode, not
+/// vertical mode 3. Dominant-axis classification recovers the vertical family
+/// (including the even vertical mode 2, whose net participation_mass is ≈ 0 by
+/// antisymmetry but whose shape energy is unambiguously Z-aligned).
+///
+/// `Mode.shape` is `List<Vector([Real;3])>` (one per-node displacement;
+/// modal_ops::mode_shape_value). Modes are producer-ordered ascending by
+/// frequency, so the returned vector is ascending.
+fn z_dominant_frequencies(result: &Value) -> Vec<f64> {
+    let modes = match result {
+        Value::StructureInstance(d) => d.fields.get(&"modes".to_string()).cloned(),
+        Value::Map(m) => m.get(&Value::String("modes".to_string())).cloned(),
+        _ => None,
+    };
+    let mode_list = match modes {
+        Some(Value::List(items)) => items,
+        _ => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for mode in &mode_list {
+        let fields = match mode {
+            Value::StructureInstance(d) => d,
+            _ => continue,
+        };
+        let freq = match fields.fields.get(&"frequency".to_string()) {
+            Some(Value::Real(r)) => *r,
+            Some(Value::Scalar { si_value, .. }) => *si_value,
+            _ => continue,
+        };
+        let shape = match fields.fields.get(&"shape".to_string()) {
+            Some(Value::List(nodes)) => nodes,
+            _ => continue,
+        };
+        let mut energy = [0.0f64; 3];
+        for node in shape {
+            if let Value::Vector(comps) = node {
+                for (a, slot) in energy.iter_mut().enumerate() {
+                    if let Some(Value::Real(c)) = comps.get(a) {
+                        *slot += c * c;
+                    }
+                }
+            }
+        }
+        if energy[2] >= energy[0] && energy[2] >= energy[1] {
+            out.push(freq);
+        }
+    }
+    out
+}
+
 /// Simply-supported: first-mode frequency within 10% of the analytic value; the
 /// higher modes (2-3) present, sorted, and within a measured band (step-18).
 #[cfg_attr(debug_assertions, ignore = "heavy modal solve; release-only")]
@@ -393,7 +454,9 @@ fn e2e_simply_supported_modes_match_analytic() {
     }
 
     // (d) f1 within the P2 2% band of the analytic simply-supported fundamental
-    //     (βL = π). RED at P1 (~8.54%); GREEN once the fixture runs at P2.
+    //     (βL = π). f1 = first_frequency(result) is the lowest mode, which is
+    //     unambiguously the vertical (Z-bending) fundamental. RED at P1 (~8.54%);
+    //     GREEN once the fixture runs at P2.
     assert!(f1.is_finite() && f1 > 0.0, "f1 must be finite and positive, got: {}", f1);
     let f1_err = (f1 - f1_analytic).abs() / f1_analytic;
     assert!(
@@ -405,9 +468,15 @@ fn e2e_simply_supported_modes_match_analytic() {
         SS_P2_REL_TOL * 100.0
     );
 
-    // (e) f2, f3 present, finite, positive, strictly ascending, and within the
-    //     same P2 2% band of their analytic (nπ)² values (P2 resolves all three
-    //     bending modes uniformly; RED at P1 ~+8.23% / +7.14%).
+    // (e) The fixture's raw-index f2/f3 cells (mode_frequency(result, 1/2)) are
+    //     present, finite, positive, and strictly ascending — proving the stdlib
+    //     accessor is wired end-to-end. NOTE: the raw frequency-sorted spectrum
+    //     interleaves the lateral Y-bending mode (≈ 579 Hz) between vertical
+    //     modes 2 and 3, so f3 (= mode index 2) is the LATERAL mode here, not
+    //     vertical mode 3. The rigorous per-mode 2% accuracy gate over the three
+    //     VERTICAL bending modes is asserted in (f) by dominant-axis
+    //     classification, mirroring the kernel gate
+    //     modal_benchmarks.rs::simply_supported_beam_p2_modal_within_two_percent.
     for (name, f) in [("f2", f2), ("f3", f3)] {
         assert!(f.is_finite() && f > 0.0, "{} must be finite and positive, got: {}", name, f);
     }
@@ -419,22 +488,42 @@ fn e2e_simply_supported_modes_match_analytic() {
         f3
     );
 
-    let f2_err = (f2 - f2_analytic).abs() / f2_analytic;
+    // (f) The three VERTICAL (Z-dominant) bending modes each within the P2 2%
+    //     band of their analytic (nπ)² values (f₁ ≈ 115.9, f₂ ≈ 463.4,
+    //     f₃ ≈ 1042.8 Hz). The lateral Y-bending mode intrudes between vertical
+    //     modes 2 and 3 in the raw spectrum (see (e)), so the vertical family is
+    //     selected by eigenvector dominant-axis classification (shape energy
+    //     along Z ≥ along X and Y) over the result's modes list — exactly as the
+    //     kernel benchmark does. P2 resolves all three uniformly; RED at P1
+    //     (~+8.5% / +8.2% / +7.1%, before the fixture runs at element_order = P2).
+    let vertical = z_dominant_frequencies(result_val);
+    eprintln!("[modal ss] vertical (Z-dominant) family: {:?}", vertical);
     assert!(
-        f2_err < SS_P2_REL_TOL,
-        "ss f2 = {:.3} Hz, analytic = {:.3} Hz, rel_err = {:.2}% > {:.2}% (P2 band)",
-        f2,
-        f2_analytic,
-        f2_err * 100.0,
-        SS_P2_REL_TOL * 100.0
+        vertical.len() >= 3,
+        "need ≥3 vertical (Z-dominant) bending modes in the spectrum, found {}: {:?}",
+        vertical.len(),
+        vertical
     );
-    let f3_err = (f3 - f3_analytic).abs() / f3_analytic;
     assert!(
-        f3_err < SS_P2_REL_TOL,
-        "ss f3 = {:.3} Hz, analytic = {:.3} Hz, rel_err = {:.2}% > {:.2}% (P2 band)",
-        f3,
-        f3_analytic,
-        f3_err * 100.0,
-        SS_P2_REL_TOL * 100.0
+        vertical[0] < vertical[1] && vertical[1] < vertical[2],
+        "vertical frequencies must be strictly ascending: {:?}",
+        &vertical[..3]
     );
+    for (i, (&f, &f_analytic)) in vertical
+        .iter()
+        .zip([f1_analytic, f2_analytic, f3_analytic].iter())
+        .take(3)
+        .enumerate()
+    {
+        let err = (f - f_analytic).abs() / f_analytic;
+        assert!(
+            err < SS_P2_REL_TOL,
+            "ss vertical mode {} = {:.3} Hz, analytic = {:.3} Hz, rel_err = {:.2}% > {:.2}% (P2 band)",
+            i + 1,
+            f,
+            f_analytic,
+            err * 100.0,
+            SS_P2_REL_TOL * 100.0
+        );
+    }
 }

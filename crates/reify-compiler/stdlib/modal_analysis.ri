@@ -13,7 +13,8 @@
 //   - `ModalResult`        — solver-output container (part, modes, BCs,
 //                            damping, mass-/stiffness-matrix-norms)
 //   - `ModalOptions`       — solver-input knobs (n_modes, BCs, damping,
-//                            sigma, tol, max_iters, reference_direction)
+//                            sigma, tol, max_iters, reference_direction,
+//                            element_order)
 //
 // Module placement: `std.modal.analysis` is the v0.3 sibling reserved by
 // `std.trajectory`'s header — "registered last … ready for the planned
@@ -262,6 +263,32 @@ structure def ModalResult {
     //   part / *_norm       — solver-populated outputs; no caller invariant.
 }
 
+// ── ElementOrder ─────────────────────────────────────────────────────────────
+
+// `ElementOrder` selects between first-order (P1, linear constant-strain) and
+// second-order (P2, quadratic 10-node) tetrahedral elements for the modal
+// (K, M) assembly. Nominally IDENTICAL to `std.solver.elastic`'s `ElementOrder`
+// (solver_elastic.ri:49 — same name, same `{ P1, P2 }` variants); the runtime
+// enum representation is `Value::Enum { type_name: "ElementOrder", variant }`
+// either way, so the modal trampoline's `variant == "P2"` read is agnostic to
+// which module's copy a caller's `ElementOrder.P2` literal resolved against.
+//
+// Why re-declared here rather than reused from the growing prelude (task 4066):
+// the prelude makes solver_elastic's `ElementOrder` resolvable as a TYPE here
+// (`param element_order : ElementOrder` type-checks via the prelude enum
+// fallback), but the stdlib self-compilation parse (`stdlib_loader.rs` plain
+// `reify_syntax::parse`, NOT `parse_with_prelude_enums`) seeds only the
+// CURRENT module's enum names for value-position lowering. So a prelude-enum
+// VALUE literal like the `= ElementOrder.P1` default below would NOT lower to
+// an `EnumAccess` and fails with "unresolved name: ElementOrder". Declaring the
+// enum locally seeds the parser so the default literal lowers correctly. A
+// follow-up to unify cross-module enum value/type resolution (so this local
+// copy can be dropped in favour of the truly shared `std.solver.elastic` enum)
+// is bookmarked via task 4066's escalate_info. Same-name nominal coexistence
+// across modules is the documented first-wins discipline already relied on by
+// `Mode` (modal vs buckling; see the `Mode` doc above).
+enum ElementOrder { P1, P2 }
+
 // ── ModalOptions ─────────────────────────────────────────────────────────────
 
 // `ModalOptions` is the configuration object passed to the v0.3 modal
@@ -356,6 +383,17 @@ structure def ModalOptions {
     param tol : Real = 0.000000001            // = 1e-9 (no scientific notation in Reify grammar)
     param max_iters : Int = 200               // PRD §4.3 — NOT 1000 (modal converges faster than buckling)
     param reference_direction : Vector3<Dimensionless>
+    // Finite-element order for the (K, M) assembly. `ElementOrder.P1` (default,
+    // first-order constant-strain tets) preserves back-compat for every existing
+    // caller bit-for-bit; `ElementOrder.P2` (second-order, 10-node quadratic
+    // tets) resolves bending curvature and removes the P1 bending lock, closing
+    // the slender-beam modal-frequency error to ~2% (task 4066 — the P2-tet
+    // follow-up the prior 10% P1 floor deferred). `ElementOrder` is the
+    // module-local enum declared above (nominally identical to
+    // `std.solver.elastic`'s — see its doc for why it is re-declared here rather
+    // than reused from the growing prelude); declared exactly like
+    // `ElasticOptions.element_order` (solver_elastic.ri), same default.
+    param element_order : ElementOrder = ElementOrder.P1
 
     // A non-positive `n_modes` requests zero eigenmodes — a degenerate solve.
     // Declaring the lower bound at the structure-def level makes the contract
