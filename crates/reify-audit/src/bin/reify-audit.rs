@@ -863,4 +863,40 @@ mod tests {
             "PUNTESTED must be opt-in only (not part of the default sweep)"
         );
     }
+
+    // -------------------------------------------------------------------
+    // PLAYER CLI-wiring tests (step-3 RED / step-4 GREEN)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn parse_args_accepts_player_pattern() {
+        let args = parse_args(&["--pattern".to_string(), "PLAYER".to_string()])
+            .unwrap_or_else(|e| panic!("--pattern PLAYER must parse successfully; got: {e}"));
+        assert_eq!(
+            args.pattern.as_deref(),
+            Some("PLAYER"),
+            "parsed pattern must be Some(\"PLAYER\")"
+        );
+    }
+
+    #[test]
+    fn needs_jcodemunch_player_routes_true() {
+        // PLAYER explicitly → true (needs live jcodemunch server)
+        assert!(
+            needs_jcodemunch(&make_args(false, Some("PLAYER"))),
+            "PLAYER must require jcodemunch (needs live server)"
+        );
+    }
+
+    /// Guard: PLAYER is opt-in only — must not run in the default (no --pattern)
+    /// all-detector sweep. A future refactor that accidentally folds PLAYER into
+    /// the default run will trip this test.
+    #[test]
+    fn player_not_in_default_sweep() {
+        let default_args = make_args(false, None);
+        assert!(
+            default_args.pattern.as_deref() != Some("PLAYER"),
+            "PLAYER must be opt-in only (not part of the default sweep)"
+        );
+    }
 }
