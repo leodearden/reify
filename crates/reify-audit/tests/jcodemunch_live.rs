@@ -30,6 +30,24 @@
 //! in the wire shape.
 
 // -----------------------------------------------------------------------
+// Finding-shape predicates (pure; no serve needed)
+// -----------------------------------------------------------------------
+
+/// Returns true iff `v` is a P1ProducerOrphan finding.
+///
+/// Mirrors cli.rs's pattern-string comparison: `Pattern` serializes to its
+/// bare variant name (`"P1ProducerOrphan"`) with no serde rename, so we
+/// compare against the raw string.
+fn is_p1_finding(v: &serde_json::Value) -> bool {
+    v["pattern"].as_str() == Some("P1ProducerOrphan")
+}
+
+/// Returns true iff `v` is a PDeadCode finding.
+fn is_pdead_finding(v: &serde_json::Value) -> bool {
+    v["pattern"].as_str() == Some("PDeadCode")
+}
+
+// -----------------------------------------------------------------------
 // Finding-shape predicate unit tests (hermetic; always run — no serve needed)
 // -----------------------------------------------------------------------
 
