@@ -2153,4 +2153,32 @@ mod tests {
             "Vec on span_c should return true — non-skipped name must not pollute emitted-spans set"
         );
     }
+
+    /// `structure def Foo<T = Beam::Material>` parses to a `QualifiedAssoc` default.
+    /// `convert_type_params` must defer gracefully (default = None) rather than
+    /// panicking — resolution is deferred to task ιₑ.
+    #[test]
+    fn convert_type_params_qualified_assoc_default_defers_to_none() {
+        let span = reify_core::SourceSpan::new(0, 0);
+        let decl = reify_ast::TypeParamDecl {
+            name: "T".into(),
+            bounds: vec![],
+            default: Some(reify_ast::TypeExpr {
+                kind: reify_ast::TypeExprKind::QualifiedAssoc {
+                    base: Box::new(named_type_expr("Beam")),
+                    trait_name: None,
+                    member: "Material".into(),
+                },
+                span,
+            }),
+            span,
+        };
+        let result = convert_type_params(&[decl]);
+        assert_eq!(result.len(), 1, "expected one TypeParam");
+        assert_eq!(result[0].name, "T");
+        assert_eq!(
+            result[0].default, None,
+            "QualifiedAssoc default must be deferred (None) until task ιₑ resolves it"
+        );
+    }
 }
