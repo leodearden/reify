@@ -254,4 +254,48 @@ mod tests {
         let sym = (lo_si + up_si).abs() / up_si.abs();
         assert!(sym < 1e-9, "range symmetric: lower {lo_si} == -upper {up_si}");
     }
+
+    // ── step-3: RED -- transverse stiffness + ratio ────────────────────────────
+
+    #[test]
+    fn prb_parallelogram_flexure_transverse_stiffness_and_ratio() {
+        let result = crate::eval_builtin("prb_parallelogram_flexure", &compound_args());
+
+        let length = 0.02_f64;
+        let width  = 0.005_f64;
+        let thick  = 0.0005_f64;
+        let e      = 205e9_f64;
+
+        // k_transverse = 4·E·(b·t)/L  (axial stretching of 4 blades)
+        let k_transverse_expected = 4.0 * e * (width * thick) / length;
+        match map_get(&result, "transverse_stiffness") {
+            Some(Value::Scalar { si_value, dimension }) => {
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::TRANSLATIONAL_STIFFNESS,
+                    "transverse_stiffness carries TRANSLATIONAL_STIFFNESS"
+                );
+                let rel = (si_value - k_transverse_expected).abs() / k_transverse_expected;
+                assert!(
+                    rel < 1e-9,
+                    "transverse_stiffness {si_value} vs {k_transverse_expected} (rel {rel})"
+                );
+            }
+            other => panic!("expected transverse_stiffness Scalar, got {other:?}"),
+        }
+
+        // ratio = k_transverse / spring_rate = (L/t)² ≥ 1000 for fixture (L/t=40 → 1600)
+        let k_stage_expected = 4.0 * 12.0 * e * (width * thick.powi(3) / 12.0) / length.powi(3);
+        let ratio_expected = (length / thick).powi(2); // (L/t)² = 1600
+        let ratio_actual = k_transverse_expected / k_stage_expected;
+        let rel_ratio = (ratio_actual - ratio_expected).abs() / ratio_expected;
+        assert!(
+            rel_ratio < 1e-9,
+            "ratio = k_transverse/spring_rate = {ratio_actual} vs (L/t)^2 = {ratio_expected} (rel {rel_ratio})"
+        );
+        assert!(
+            ratio_actual >= 1000.0,
+            "ratio {ratio_actual} >= 1000 (§10.1 row 3)"
+        );
+    }
 }
