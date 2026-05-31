@@ -1834,6 +1834,7 @@ pub(crate) fn try_eval_topology_selector(
         "contains" => TopologySelectorHelper::Contains,
         "geo_equiv" => TopologySelectorHelper::GeoEquiv,
         "normal" => TopologySelectorHelper::Normal,
+        "curvature" => TopologySelectorHelper::Curvature,
         _ => return None,
     };
 
@@ -1900,7 +1901,8 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::Angle
                 | TopologySelectorHelper::Contains
                 | TopologySelectorHelper::GeoEquiv
-                | TopologySelectorHelper::Normal => {
+                | TopologySelectorHelper::Normal
+                | TopologySelectorHelper::Curvature => {
                     unreachable!("ClosestPoint/IsOn outer match guarantees this")
                 }
             }
@@ -2013,6 +2015,15 @@ pub(crate) fn try_eval_topology_selector(
             };
             dispatch_normal_vector3(kernel, &query, &function.name, diagnostics)
         }
+        TopologySelectorHelper::Curvature => {
+            // `curvature(shape, point) -> Scalar<Curvature>|Matrix<2,2,Curvature>` (task 3621, KGQ-μ).
+            // Arg order: Shape=args[0], Point3<Length>=args[1].
+            // args[0]: geometry ValueRef → named_steps → GeometryHandleId.
+            // args[1]: point ValueRef → values → [f64;3] SI metres (px, py, pz).
+            let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            let point = resolve_point3_length_arg(&args[1], values)?;
+            dispatch_curvature(kernel, handle, point, &function.name, diagnostics)
+        }
         TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => {
             // args[0]: geometry ValueRef → values map → full parent GeometryHandle.
             // The parent's realization_ref + upstream_values_hash are needed to
@@ -2045,7 +2056,8 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::Angle
                 | TopologySelectorHelper::Contains
                 | TopologySelectorHelper::GeoEquiv
-                | TopologySelectorHelper::Normal => {
+                | TopologySelectorHelper::Normal
+                | TopologySelectorHelper::Curvature => {
                     unreachable!("Edges/Faces outer match guarantees this")
                 }
             };
@@ -2596,6 +2608,16 @@ enum TopologySelectorHelper {
     /// `surface_normal_at_point` in crates/reify-kernel-occt/src/lib.rs.
     /// Arg order: Surface=args[0] (named_steps), Point3<Length>=args[1] (values).
     Normal,
+    /// `curvature(shape, point) -> Scalar<Curvature>|Matrix<2,2,Curvature>` —
+    /// at-point curvature (task 3621, KGQ-μ, PRD §9). For a surface (face),
+    /// returns a 2×2 `Value::Matrix` of principal curvatures [[κ_max,0],[0,κ_min]]
+    /// as `Value::Scalar{ dimension: 1/Length }` cells; for a curve (edge),
+    /// returns `Value::Scalar{ si_value: κ, dimension: 1/Length }`. Dispatches
+    /// `GeometryQuery::SurfaceCurvatureAt` first; on error retries as
+    /// `GeometryQuery::CurveCurvatureAt`. Backed by `OcctKernel::curvature_at`
+    /// (surface) and `OcctKernel::curve_curvature_at` (curve).
+    /// Arg order: Shape=args[0] (named_steps), Point3<Length>=args[1] (values).
+    Curvature,
 }
 
 impl TopologySelectorHelper {
@@ -2616,7 +2638,8 @@ impl TopologySelectorHelper {
             | TopologySelectorHelper::SharedEdges
             | TopologySelectorHelper::Angle
             | TopologySelectorHelper::Contains
-            | TopologySelectorHelper::Normal => 2,
+            | TopologySelectorHelper::Normal
+            | TopologySelectorHelper::Curvature => 2,
             TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => 1,
             TopologySelectorHelper::FacesByNormal
             | TopologySelectorHelper::EdgesParallelTo
@@ -3109,6 +3132,127 @@ fn dispatch_normal_vector3(
             Some(reify_ir::Value::Undef)
         }
     }
+}
+
+/// Curvature dimension constant: 1/Length = Length^-1 (m⁻¹ in SI).
+/// Used by `dispatch_curvature` to tag scalar and matrix cells.
+/// The curvature dimension is LENGTH^-1. index 0 = LENGTH in DimensionVector.
+const CURVATURE_DIM: reify_core::dimension::DimensionVector = {
+    let mut d = [reify_core::dimension::Rational::ZERO; 10];
+    d[0] = reify_core::dimension::Rational::new(-1, 1);
+    reify_core::dimension::DimensionVector(d)
+};
+
+/// Dispatch a `curvature(shape, point)` query for `TopologySelectorHelper::Curvature`
+/// (task 3621, KGQ-μ).
+///
+/// Strategy: try `SurfaceCurvatureAt{handle, u=px, v=py}` first. If the kernel
+/// returns Ok, decode the `[[κ_max,0],[0,κ_min]]` nested-List wire value into a
+/// `Value::Matrix` of `Value::Scalar{si_value, dimension: 1/Length}` cells. If
+/// the kernel returns Err, retry as `CurveCurvatureAt{handle,px,py,pz}` and
+/// return `Value::Scalar{si_value: κ, dimension: 1/Length}`. If both fail, emit
+/// exactly one Warning naming `helper_name` and return `Some(Value::Undef)`.
+///
+/// The surface wire note: the kernel encodes the principal-curvature matrix as a
+/// diagonal `[[kappa_max, 0.0], [0.0, kappa_min]]` (InertiaTensor wire convention)
+/// so trace/2 = mean curvature H and det = Gaussian curvature K.
+fn dispatch_curvature(
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    handle: reify_ir::GeometryHandleId,
+    point: [f64; 3],
+    helper_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    // Try surface first: (px, py) → (u, v) per design decision §3.
+    let surface_query = reify_ir::GeometryQuery::SurfaceCurvatureAt {
+        handle,
+        u: point[0],
+        v: point[1],
+    };
+    match kernel.query(&surface_query) {
+        Ok(value) => return Some(parse_curvature_matrix_reply(&value, helper_name, diagnostics)),
+        Err(_) => {} // fall through to curve form
+    }
+
+    // Retry as curve: full 3D world point.
+    let curve_query = reify_ir::GeometryQuery::CurveCurvatureAt {
+        handle,
+        px: point[0],
+        py: point[1],
+        pz: point[2],
+    };
+    match kernel.query(&curve_query) {
+        Ok(reify_ir::Value::Real(kappa)) => Some(reify_ir::Value::Scalar {
+            si_value: kappa,
+            dimension: CURVATURE_DIM,
+        }),
+        Ok(unexpected) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{helper_name} kernel reply has unexpected type (expected Real for curve curvature, \
+                 got {unexpected:?}); cell left at Undef",
+            )));
+            Some(reify_ir::Value::Undef)
+        }
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{helper_name} kernel query failed: {err}",
+            )));
+            Some(reify_ir::Value::Undef)
+        }
+    }
+}
+
+/// Decode the kernel's `[[κ_max, 0.0], [0.0, κ_min]]` nested-List reply into a
+/// `Value::Matrix` of `Value::Scalar{si_value, dimension: 1/Length}` cells.
+///
+/// On any parse failure emits a Warning and returns `Value::Undef` (same
+/// defensive-downgrade contract as `dispatch_normal_vector3`).
+fn parse_curvature_matrix_reply(
+    value: &reify_ir::Value,
+    helper_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> reify_ir::Value {
+    let rows = match value {
+        reify_ir::Value::List(rows) if rows.len() == 2 => rows,
+        other => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{helper_name} kernel reply parse failed: expected 2-row List, got {other:?}",
+            )));
+            return reify_ir::Value::Undef;
+        }
+    };
+    let mut matrix_rows: Vec<Vec<reify_ir::Value>> = Vec::with_capacity(2);
+    for (i, row) in rows.iter().enumerate() {
+        let cells = match row {
+            reify_ir::Value::List(cells) if cells.len() == 2 => cells,
+            other => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "{helper_name} kernel reply parse failed: row {i} is not a 2-element List, \
+                     got {other:?}",
+                )));
+                return reify_ir::Value::Undef;
+            }
+        };
+        let mut matrix_row: Vec<reify_ir::Value> = Vec::with_capacity(2);
+        for (j, cell) in cells.iter().enumerate() {
+            let si_value = match cell {
+                reify_ir::Value::Real(v) => *v,
+                other => {
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "{helper_name} kernel reply parse failed: cell [{i}][{j}] is not Real, \
+                         got {other:?}",
+                    )));
+                    return reify_ir::Value::Undef;
+                }
+            };
+            matrix_row.push(reify_ir::Value::Scalar {
+                si_value,
+                dimension: CURVATURE_DIM,
+            });
+        }
+        matrix_rows.push(matrix_row);
+    }
+    reify_ir::Value::Matrix(matrix_rows)
 }
 
 /// Issue an `InertiaTensor` query and re-wrap the kernel's row-of-row
