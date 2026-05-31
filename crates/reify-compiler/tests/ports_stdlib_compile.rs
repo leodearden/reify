@@ -855,6 +855,58 @@ fn std_ports_fluid_module_cardinality_locked() {
     );
 }
 
+// ─── step-7: capstone example (ports_domains) ────────────────────────────────
+
+/// examples/stdlib/ports_domains.ri must compile without errors and
+/// structurally declare a template named "ActuatorInterface" of
+/// EntityKind::Structure.
+///
+/// The example imports std.ports.electrical, std.ports.thermal, and
+/// std.ports.fluid; declares
+///   `structure def ActuatorInterface<P: PowerPort, T: ThermalPort, F: FluidPort>`
+/// with three ports.  No concrete conformer is instantiated (PRD §4 decision 4;
+/// mirrors Coupling in examples/stdlib/ports_mechanical.ri).
+///
+/// RED: the example file does not yet exist on disk — .canonicalize() panics.
+#[test]
+fn example_ports_domains_ri_compiles_clean() {
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let example_path = manifest_dir
+        .join("../../examples/stdlib/ports_domains.ri")
+        .canonicalize()
+        .expect("examples/stdlib/ports_domains.ri should exist on disk");
+
+    let source = std::fs::read_to_string(&example_path)
+        .expect("failed to read examples/stdlib/ports_domains.ri");
+
+    let compiled = compile_source_with_stdlib(&source);
+
+    let example_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        example_errors.is_empty(),
+        "examples/stdlib/ports_domains.ri should compile without errors; got: {:?}",
+        example_errors
+    );
+
+    assert!(
+        compiled.templates.iter().any(|t| {
+            t.name == "ActuatorInterface" && t.entity_kind == EntityKind::Structure
+        }),
+        "examples/stdlib/ports_domains.ri should declare \
+         'structure def ActuatorInterface<P: PowerPort, T: ThermalPort, F: FluidPort>'; \
+         found templates: {:?}",
+        compiled
+            .templates
+            .iter()
+            .map(|t| (&t.name, &t.entity_kind))
+            .collect::<Vec<_>>()
+    );
+}
+
 // ─── step-9: capstone example compile ─────────────────────────────────────────
 
 /// examples/stdlib/ports_mechanical.ri must compile without errors and
