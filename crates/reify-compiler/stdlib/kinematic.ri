@@ -8,8 +8,14 @@
 //
 // Surface:
 //   - trait DrivingJoint               (marker — independent-motion-variable joints)
-//   - structure def Prismatic          : DrivingJoint (axis : Vec3)
-//   - structure def Revolute           : DrivingJoint (axis : Vec3)
+//   - structure def Prismatic          : DrivingJoint (axis : Vec3,
+//                                        spring_rate : Option<TranslationalStiffness> = none,
+//                                        damping     : Option<TranslationalDamping>  = none,
+//                                        neutral     : Option<Length>                = none)
+//   - structure def Revolute           : DrivingJoint (axis : Vec3,
+//                                        spring_rate : Option<RotationalStiffness>   = none,
+//                                        damping     : Option<RotationalDamping>     = none,
+//                                        neutral     : Option<Angle>                 = none)
 //   - structure def Cylindrical        : DrivingJoint (axis : Vec3)
 //   - structure def Planar             : DrivingJoint (axis_x : Vec3, axis_y : Vec3)
 //   - structure def Spherical          : DrivingJoint (axis-isotropic; no axis field)
@@ -61,14 +67,32 @@ trait DrivingJoint { }
 // Prismatic — translational sliding joint (1 translational DOF).
 // `axis` is the translation direction in the parent body frame.
 // Vec3 = Real alias (trajectory.ri:96) — placeholder for a proper 3-vector type.
+//
+// Compliant-joint fields (task 3849 / Phase-1, §8.2):
+//   spring_rate : N/m    — linear spring coefficient; None = rigid (no spring).
+//   damping     : N·s/m  — linear damping coefficient; None = rigid (no damper).
+//   neutral     : m      — rest position; None = consumer-applied (task ι/RBD default:
+//                          range midpoint). Cannot be a literal default because the
+//                          KCC-ζ Prismatic has no `range` field.
 structure def Prismatic : DrivingJoint {
     param axis : Vec3 // TODO(vec3-type): proper 3-vector; Vec3 = Real alias for now
+    param spring_rate : Option<TranslationalStiffness> = none // N/m; None = rigid
+    param damping     : Option<TranslationalDamping>   = none // N·s/m; None = rigid
+    param neutral     : Option<Length>                 = none // m; None → task ι default
 }
 
 // Revolute — single-axis rotation joint (1 rotational DOF).
 // `axis` is the rotation axis in the parent body frame.
+//
+// Compliant-joint fields (task 3849 / Phase-1, §8.2):
+//   spring_rate : N·m/rad    — rotational spring coefficient; None = rigid (no spring).
+//   damping     : N·m·s/rad  — rotational damping coefficient; None = rigid (no damper).
+//   neutral     : rad        — rest angle; None = consumer-applied (task ι/RBD default: 0).
 structure def Revolute : DrivingJoint {
     param axis : Vec3 // TODO(vec3-type): proper 3-vector; Vec3 = Real alias for now
+    param spring_rate : Option<RotationalStiffness> = none // N·m/rad; None = rigid
+    param damping     : Option<RotationalDamping>   = none // N·m·s/rad; None = rigid
+    param neutral     : Option<Angle>               = none // rad; None → task ι default: 0
 }
 
 // Cylindrical — combined sliding + rotation joint (2 DOF: 1 translational + 1 rotational).
