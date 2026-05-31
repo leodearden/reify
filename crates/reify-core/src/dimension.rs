@@ -518,6 +518,17 @@ pub static NAMED_DIMENSIONS: &[(DimensionVector, &str)] = &[
     ),
     (DimensionVector::DIELECTRIC_STRENGTH, "DielectricStrength"),
     (DimensionVector::STIFFNESS, "Stiffness"),
+    // Task 3849 / flexure Phase-1: TranslationalStiffness is dimensionally identical
+    // to STIFFNESS (N/m = kg·s⁻²). Placed AFTER "Stiffness" so first-match
+    // canonical_name() continues to return "Stiffness" for the shared dim
+    // (preserves materials golden behaviour). The name→dim direction
+    // (resolve_dimension_type / resolve_type_name) finds this entry when source
+    // syntax says `TranslationalStiffness`. Mirrors the Curvature/AbsorptionCoeff
+    // alias precedent (task 3603 / GHR-α).
+    (DimensionVector::TRANSLATIONAL_STIFFNESS, "TranslationalStiffness"),
+    (DimensionVector::ROTATIONAL_STIFFNESS, "RotationalStiffness"),
+    (DimensionVector::ROTATIONAL_DAMPING, "RotationalDamping"),
+    (DimensionVector::TRANSLATIONAL_DAMPING, "TranslationalDamping"),
     (DimensionVector::ABSORPTION_COEFF, "AbsorptionCoeff"),
     // Task 3603 / GHR-α: `Curvature` is dimensionally identical to
     // `AbsorptionCoeff` (both `1/Length`). The entry is placed AFTER
