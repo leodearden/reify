@@ -1,0 +1,29 @@
+// Double-parallelogram-stage PRB flexure worked example
+//
+// Demonstrates the pseudo-rigid-body double-parallelogram compound-flexure
+// constructor `prb_double_parallelogram_flexure(...)`, which returns a compliant
+// prismatic joint: two single parallelogram stages in mirror-symmetric series.
+// Mirror symmetry cancels the first-order Roberts-approximation parasitic error.
+//
+// PRD ref:  docs/prds/v0_3/compliant-joints.md §6.2, §10.1 row 4
+//
+// Geometry (§10.1 row 4): same as row 3 — L=20mm, b=5mm, t=0.5mm,
+//   blade_spacing=10mm, AISI-1045 steel (E=205 GPa, σ_y=310 MPa).
+//
+//   k_stage      = 24·E·I/L³ (series-halved)  ≈ 7.61e3 N/m
+//   k_transverse = (4·E·b·t/L)/2              ≈ 1.282e7 N/m
+//   ratio        = (L/t)² = 1600              ≥ 1000 (§10.1 row 4 ✓)
+//   δ_max        = σ_y·L²/(3·E·t)            ≈ 0.403 mm
+//   parasitic    = δ_rot_single·(δ_max/L)²   ≈ 1.65e-9 m  < L/100000 = 2e-7 m (§10.1 row 4 ✓)
+//
+// The flexure is positional-only (native builtin, no .ri signature):
+//   prb_double_parallelogram_flexure(length, width, thickness, blade_spacing,
+//                                    material, motion_axis, pivot)
+structure def DoubleParallelogramPrb {
+    // Material: general-purpose medium-carbon steel (E = 205 GPa, σ_y = 310 MPa).
+    let steel = Steel_AISI_1045()
+
+    // The compliant prismatic joint (two stages in series). Pivot at origin; motion along +X.
+    let stage_flexure = prb_double_parallelogram_flexure(
+        20mm, 5mm, 0.5mm, 10mm, steel, vec3(1, 0, 0), point3(0mm, 0mm, 0mm))
+}

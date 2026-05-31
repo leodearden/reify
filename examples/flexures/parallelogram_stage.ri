@@ -1,0 +1,29 @@
+// Parallelogram-stage PRB flexure worked example
+//
+// Demonstrates the pseudo-rigid-body parallelogram compound-flexure constructor
+// `prb_parallelogram_flexure(...)`, which returns a compliant prismatic joint:
+// a closed-form translational spring stage built from four fixed-guided blades.
+//
+// PRD ref:  docs/prds/v0_3/compliant-joints.md §6.1, §10.1 row 3
+//
+// Geometry (§10.1 row 3): L=20mm, b=5mm, t=0.5mm, blade_spacing=10mm,
+//   AISI-1045 steel (E=205 GPa, σ_y=310 MPa).
+//
+//   I           = b·t³/12 = 5mm·(0.5mm)³/12  ≈ 5.21e-14 m⁴
+//   k_stage     = 48·E·I/L³                  ≈ 1.522e4 N/m
+//   k_transverse= 4·E·b·t/L                  ≈ 2.563e7 N/m
+//   ratio       = (L/t)² = (20mm/0.5mm)²     = 1600  ≥ 1000 (§10.1 row 3 ✓)
+//   δ_max       = σ_y·L²/(3·E·t)             ≈ 0.403 mm
+//   parasitic   = L·(1−cos(δ_max/L))         ≈ 4.07e-6 m  < L/1000 = 2e-5 m (§10.1 row 3 ✓)
+//
+// The flexure is positional-only (native builtin, no .ri signature):
+//   prb_parallelogram_flexure(length, width, thickness, blade_spacing,
+//                              material, motion_axis, pivot)
+structure def ParallelogramStagePrb {
+    // Material: general-purpose medium-carbon steel (E = 205 GPa, σ_y = 310 MPa).
+    let steel = Steel_AISI_1045()
+
+    // The compliant prismatic joint. Pivot at the origin; motion along +X.
+    let stage_flexure = prb_parallelogram_flexure(
+        20mm, 5mm, 0.5mm, 10mm, steel, vec3(1, 0, 0), point3(0mm, 0mm, 0mm))
+}
