@@ -638,4 +638,59 @@ mod tests {
             assert!(r.is_undef(), "6-arg double call => Undef");
         }
     }
+
+    // ── step-11: RED -- double-parallelogram parasitic residual ───────────────
+
+    #[test]
+    fn prb_double_parallelogram_flexure_parasitic_residual() {
+        let result = crate::eval_builtin("prb_double_parallelogram_flexure", &compound_args());
+
+        let length   = 0.02_f64;
+        let thick    = 0.0005_f64;
+        let e        = 205e9_f64;
+        let yield_si = 310e6_f64;
+
+        // Single-stage: δ_max = yield·L²/(3·E·t), δ_rot_single = L·(1−cos(δ_max/L))
+        let delta_max_val = yield_si * length.powi(2) / (3.0 * e * thick);
+        let theta = delta_max_val / length;
+        let delta_rot_single = length * (1.0 - theta.cos());
+
+        // Double-stage residual: δ_rot_double = δ_rot_single · (δ_max/L)²
+        let delta_rot_double_expected = delta_rot_single * (delta_max_val / length).powi(2);
+
+        match map_get(&result, "parasitic_error") {
+            Some(Value::Option(Some(inner))) => {
+                match inner.as_ref() {
+                    Value::Scalar { si_value, dimension } => {
+                        assert_eq!(
+                            *dimension,
+                            DimensionVector::LENGTH,
+                            "double parasitic_error carries LENGTH dimension"
+                        );
+                        let rel = (si_value - delta_rot_double_expected).abs()
+                            / delta_rot_double_expected;
+                        assert!(
+                            rel < 1e-9,
+                            "double parasitic_error {si_value} vs {delta_rot_double_expected} (rel {rel})"
+                        );
+                        // §10.1 row 4: parasitic < L/100000
+                        assert!(
+                            *si_value < length / 100_000.0,
+                            "double parasitic {si_value} < L/100000 = {} (§10.1 row 4)",
+                            length / 100_000.0
+                        );
+                        // double is significantly smaller than single (4+ orders better)
+                        assert!(
+                            *si_value < delta_rot_single,
+                            "double parasitic {si_value} < single {delta_rot_single}"
+                        );
+                    }
+                    other => panic!("double parasitic inner: expected Scalar, got {other:?}"),
+                }
+            }
+            other => {
+                panic!("expected double parasitic_error Option(Some(Scalar)), got {other:?}")
+            }
+        }
+    }
 }
