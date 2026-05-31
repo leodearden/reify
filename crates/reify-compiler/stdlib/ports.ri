@@ -21,3 +21,11 @@
 // Out — data/material/energy flows OUT OF this structure.
 // Bidi — bidirectional flow (e.g. mechanical shaft, hydraulic line).
 enum Directionality { In, Out, Bidi }
+
+// ── Base port trait ───────────────────────────────────────────────────────────
+
+// Base trait for any port interface on a parametric structure.
+// direction: which way the port is oriented (In/Out/Bidi).
+trait Port {
+    param direction : Directionality
+}
