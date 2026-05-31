@@ -1838,6 +1838,7 @@ pub(crate) fn try_eval_topology_selector(
         "length" => TopologySelectorHelper::Length,
         "perimeter" => TopologySelectorHelper::Perimeter,
         "distance" => TopologySelectorHelper::Distance,
+        "intersects" => TopologySelectorHelper::Intersects,
         _ => return None,
     };
 
@@ -1908,7 +1909,8 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::Curvature
                 | TopologySelectorHelper::Length
                 | TopologySelectorHelper::Perimeter
-                | TopologySelectorHelper::Distance => {
+                | TopologySelectorHelper::Distance
+                | TopologySelectorHelper::Intersects => {
                     unreachable!("ClosestPoint/IsOn outer match guarantees this")
                 }
             }
@@ -2171,6 +2173,30 @@ pub(crate) fn try_eval_topology_selector(
                 }
             }
         }
+        TopologySelectorHelper::Intersects => {
+            // `intersects(a, b) -> Bool` (task 3612, KGQ-γ, PRD §9).
+            //
+            // Routes through GeometryQuery::Distance{from,to} via kernel_distance,
+            // classifying d <= 0.0 → Bool(true) (shapes touching or overlapping)
+            // and d > 0.0 → Bool(false) (shapes apart).
+            //
+            // This reproduces the shipped shapes_intersect adapter semantics
+            // (reify-kernel-occt/src/lib.rs:770: "Ok(true) iff min BREP distance
+            // ≤ 0.0") and the kinematic interferes_with precedent
+            // (geometry_ops.rs:1601: `Some(d) => Bool(d <= 0.0)`).
+            //
+            // Both args must be Shape ValueRefs. Non-ValueRef/non-geometry args
+            // return None from resolve_geometry_handle_arg → fall through to None
+            // (invariants #1/#2). Kernel Err/non-numeric already emitted one
+            // Warning and returns None → mapped to Some(Undef) (invariant #3).
+            // Exactly one kernel query (invariant #4).
+            let from = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            let to = resolve_geometry_handle_arg(&args[1], named_steps)?;
+            match kernel_distance(kernel, from, to, diagnostics, &function.name) {
+                Some(d) => Some(reify_ir::Value::Bool(d <= 0.0)),
+                None => Some(reify_ir::Value::Undef),
+            }
+        }
         TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => {
             // args[0]: geometry ValueRef → values map → full parent GeometryHandle.
             // The parent's realization_ref + upstream_values_hash are needed to
@@ -2207,7 +2233,8 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::Curvature
                 | TopologySelectorHelper::Length
                 | TopologySelectorHelper::Perimeter
-                | TopologySelectorHelper::Distance => {
+                | TopologySelectorHelper::Distance
+                | TopologySelectorHelper::Intersects => {
                     unreachable!("Edges/Faces outer match guarantees this")
                 }
             };
@@ -2793,6 +2820,26 @@ enum TopologySelectorHelper {
     /// `Some(Value::Undef)` + one Warning (invariant #3). At most one kernel
     /// query per call (invariant #4).
     Distance,
+    /// `intersects(a, b) -> Bool` — test whether two geometry objects intersect
+    /// (task 3612, KGQ-γ, PRD §9).
+    ///
+    /// Routes through `GeometryQuery::Distance{from,to}` via `kernel_distance`,
+    /// classifying `d <= 0.0` → `Bool(true)` and `d > 0.0` → `Bool(false)`.
+    /// This reproduces the shipped `shapes_intersect` adapter semantics
+    /// (`reify-kernel-occt/src/lib.rs:770`: "Ok(true) iff min BREP distance ≤ 0.0")
+    /// and the kinematic `interferes_with` precedent (`geometry_ops.rs:1601`).
+    ///
+    /// Both args must be Shape ValueRefs (resolved via `resolve_geometry_handle_arg`
+    /// from `named_steps`). Non-ValueRef/non-geometry args fall through to `None`
+    /// (PRD §4 invariants #1/#2). Kernel Err/non-numeric already emits one Warning
+    /// and returns `None` → mapped to `Some(Undef)` (invariant #3). Exactly one
+    /// kernel query (invariant #4).
+    ///
+    /// NOTE: A dedicated `GeometryQuery::Intersects` variant + `ManifoldKernel::query()`
+    /// wiring + `#kernel(manifold)` cross-kernel parity gate is KGQ-ο (Phase 5).
+    /// This task ships the eval dispatch arm only; the Manifold standalone function
+    /// ships alongside in `crates/reify-kernel-manifold/src/queries.rs`.
+    Intersects,
 }
 
 impl TopologySelectorHelper {
@@ -2815,7 +2862,8 @@ impl TopologySelectorHelper {
             | TopologySelectorHelper::Contains
             | TopologySelectorHelper::Normal
             | TopologySelectorHelper::Curvature
-            | TopologySelectorHelper::Distance => 2,
+            | TopologySelectorHelper::Distance
+            | TopologySelectorHelper::Intersects => 2,
             TopologySelectorHelper::Edges
             | TopologySelectorHelper::Faces
             | TopologySelectorHelper::Length
