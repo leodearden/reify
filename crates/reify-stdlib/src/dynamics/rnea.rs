@@ -61,7 +61,7 @@ fn sv_dot(s: &SpatialVector6, f: &SpatialVector6) -> f64 {
 /// `parent_to_child.as_matrix()` rather than adding a method to spatial.rs
 /// (which is out of scope for this task).
 #[inline]
-fn xT_apply_force(x: &SpatialTransform6, f: &SpatialVector6) -> SpatialVector6 {
+fn xt_apply_force(x: &SpatialTransform6, f: &SpatialVector6) -> SpatialVector6 {
     let m = x.as_matrix();
     let fv = f.as_array();
     let mut out = [0.0f64; 6];
@@ -181,7 +181,7 @@ pub fn inverse_dynamics_open_chain(links: &[RneaLink], gravity: [f64; 3]) -> Vec
     for i in (0..n).rev() {
         // Transmit force to parent.
         if let Some(p) = links[i].parent {
-            let ft = xT_apply_force(&links[i].parent_to_child, &f[i]);
+            let ft = xt_apply_force(&links[i].parent_to_child, &f[i]);
             f[p] = sv_add(&f[p], &ft);
         }
     }
@@ -203,8 +203,8 @@ mod tests {
     //
     // A 1 kg point mass hanging at L = 100 mm along the link's −z axis when
     // θ = 0 (so com = [0, 0, −0.1] in the body frame).  The joint is revolute
-    // about +y; at θ = +30° = π/6 (pivot at origin, link frame rotated by θ
-    // about y), the mass swings toward −x.
+    // about +y; at θ = −30° (pivot at origin, link frame rotated by −θ about y
+    // so the body z-axis swings toward +x), the mass is at world [+0.05, 0, −0.0866].
     //
     // Expected actuator torque holding the pendulum static:
     //     τ = m · g · L · sin(30°) = 1 · 9.81 · 0.1 · 0.5 = 0.4905 N·m
@@ -213,12 +213,13 @@ mod tests {
     // vanish, so only the gravity/inertia/transmission path is exercised.
     #[test]
     fn single_pendulum_static_gravity_torque() {
-        // Rotation: +30° about the +y axis.
-        // Unit quaternion for angle θ about axis (0,1,0):
-        //   w = cos(θ/2), x = 0, y = sin(θ/2), z = 0
+        // Rotation: −30° about the +y axis.
+        // Frame3 encodes the child-to-parent rotation, so the joint transform
+        // that places the link at −30° uses the −θ quaternion:
+        //   w = cos(θ/2), x = 0, y = −sin(θ/2), z = 0
         let theta = std::f64::consts::PI / 6.0; // 30°
         let (half_sin, half_cos) = ((theta / 2.0).sin(), (theta / 2.0).cos());
-        let q = [half_cos, 0.0, half_sin, 0.0]; // (w, x, y, z)
+        let q = [half_cos, 0.0, -half_sin, 0.0]; // (w, x, y, z) — −30° about y
 
         let link = RneaLink {
             parent: None,
