@@ -33,22 +33,29 @@
 //!
 //! # Cache-hit contract (§3 + significance_filter.rs)
 //!
-//! `significance_filter::is_opted_in("solver::elastic_static")` returns `true`
-//! (pinned at `significance_filter.rs:76`), opting this target into the output
-//! significance filter.
+//! `significance_filter::is_opted_in("solver::elastic_static")` returns `true`,
+//! registering this target in the v1 significance-filter allowlist
+//! (see `significance_filter::is_opted_in`).  However, the tolerance-based output
+//! significance filter (`significance_filter::significance_filter`) is **not yet
+//! wired** into the live cache path — it has no production caller.  Wiring it
+//! (the P3.3 freshness-walk hook that would invoke `significance_filter` via
+//! `Engine::active_tolerance_for`) is deferred to task 3382.  Until then the
+//! in-memory cache-hit signal relies solely on the EXACT-hash §8-η Final-gate,
+//! not on tolerance equivalence.
 //!
 //! **Cache-hit mechanism (§8-η / §3 Final-gate):** the `evaluate_let_bindings`
-//! loop in `engine_eval.rs` carries a pre-dispatch Final-gate at lines 2808-2860
-//! (§8-η comment label). When all inputs are `Freshness::Final` and the output VC
-//! is also already `Freshness::Final` from a prior `Engine::eval()`, the gate
-//! short-circuits re-dispatch and returns the cached `CachedResult::Value` directly.
-//! This is the in-memory cache-hit path that prevents redundant FEA solves across
-//! successive `eval()` calls on the same `CompiledModule`.
+//! loop in `engine_eval.rs` carries a pre-dispatch Final-gate (see the
+//! `§8-η FINAL-GATE` comment banner in `engine_eval.rs`). When all inputs are
+//! `Freshness::Final` and the output VC is also already `Freshness::Final` from a
+//! prior `Engine::eval()`, the gate short-circuits re-dispatch and returns the
+//! cached `CachedResult::Value` directly.  This is the in-memory cache-hit path
+//! that prevents redundant FEA solves across successive `eval()` calls on the
+//! same `CompiledModule`.
 //!
 //! The integration test `e2e_cantilever_second_eval_hits_cache` (step-9) verifies
 //! this contract: `DISPATCH_COUNT` must equal 1 after two sequential `engine.eval()`
-//! calls on the same module — the test passes as of the Final-gate landing in
-//! `engine_eval.rs:2809-2860`.
+//! calls on the same module — the gate is the §8-η Final-gate in `engine_eval.rs`,
+//! not the significance filter (which is not yet wired).
 //!
 //! # Placement rationale
 //!
