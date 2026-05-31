@@ -65,7 +65,8 @@ pub use geometry::{
     DeletedRecord, EdgeCurveKind, ElementOrderTag, ExportError, ExportFormat, FaceSurfaceKind,
     FeatureId, FeatureTag, FeatureTagTable, GeometryError, GeometryHandle, GeometryHandleId,
     GeometryKernel, GeometryOp, GeometryQuery, HistoryRecord, KernelAttributeHook,
-    KernelAttributeOutcome, KernelRegistration, LoftOpHistoryRecords, Mesh, ModEntry, Operation,
+    KernelAttributeOutcome, KernelHandle, KernelId, KernelRegistration, LoftOpHistoryRecords,
+    Mesh, ModEntry, Operation,
     QueryCapability, QueryError, ReprKind, Role, StepKind, SweepOpHistoryRecords, TessError,
     TopologyAttribute, TopologyAttributeTable, VolumeMesh, debug_assert_query_many_invariant,
 };
