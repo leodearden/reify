@@ -521,6 +521,30 @@ pub(crate) fn phase_sub_override_autos(ctx: &mut CompilationCtx, prelude: &[&Com
 /// re-resolve each call via `resolve_function_overload` using the args'
 /// `result_type`s, which reproduces exactly the overload selected at the
 /// original call site.
+///
+/// ## Diagnostic spans
+///
+/// Template-rooted diagnostics carry a representative span from the enclosing
+/// field / realization / sub-component (threaded through
+/// [`for_each_template_root_expr`]). Function-body diagnostics (param defaults,
+/// `let`-bindings, `result_expr`), however, use `SourceSpan::empty(0)`: neither
+/// `CompiledFunction` nor `CompiledFnBody` records per-binding spans, and
+/// `CompiledExpr` nodes carry no span of their own. A non-conforming call inside a
+/// function body therefore reports without a precise source location. This is a
+/// documented (not silent) gap; threading body spans is deferred until the IR
+/// records them (esc-4081 amend, reviewer_comprehensive diagnostics_quality).
+///
+/// ## Performance
+///
+/// Each `UserFunctionCall` node clones its args' `result_type`s into a fresh
+/// `Vec<Type>` and calls `resolve_function_overload`, which linearly scans the
+/// whole `resolution_functions` table — i.e. O(calls × functions) with a per-call
+/// allocation. This is fine for typical modules. A `name → Vec<&CompiledFunction>`
+/// index (built once, preserving all overloads — unlike the rejected collapsing
+/// HashMap of design decision §5) would avoid the full-table scan, but
+/// `resolve_function_overload` filters by name on a `&[CompiledFunction]` slice, so
+/// an index would require changing that shared signature; deferred pending
+/// profiling that warrants it (esc-4081 amend, reviewer_comprehensive performance).
 pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&CompiledModule]) {
     // Build template registry (same composition as phase_pending_bound_checks).
     let template_registry: HashMap<String, &TopologyTemplate> = prelude
