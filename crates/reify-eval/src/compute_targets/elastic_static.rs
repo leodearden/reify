@@ -86,6 +86,7 @@ use reify_solver_elastic::{
     SolverMode, TransverseIsotropicMaterial,
     apply_dirichlet_row_elimination, apply_point_load, assemble_global_stiffness,
     element_stiffness, element_stiffness_p1_with_field, element_stress_p1,
+    recover_nodal_stress_p1, StressElement, tet_volume_p1,
     solve_cg_with_warm_state,
 };
 
@@ -113,8 +114,9 @@ pub(crate) enum MaterialModel {
 // ── CantileverFeaSolve ────────────────────────────────────────────────────────
 
 /// Outputs from `solve_cantilever_fea` exposed to callers (unit tests + trampoline).
-// `u`, `coords`, and `tip_nodes` are read in `#[cfg(test)]` code; the lib-target
-// dead_code lint fires because it doesn't see test-only reads.
+// `u`, `coords`, `tip_nodes`, `tet_connectivity`, `nodal_stress`, and
+// `nx/ny/nz` are read in `#[cfg(test)]` code; the lib-target dead_code lint
+// fires because it doesn't see test-only reads.
 #[allow(dead_code)]
 pub(crate) struct CantileverFeaSolve {
     /// Displacement vector (length 3 × n_nodes): u[3n], u[3n+1], u[3n+2] for node n.
@@ -130,6 +132,19 @@ pub(crate) struct CantileverFeaSolve {
     pub converged: bool,
     /// Number of CG iterations performed.
     pub iterations: usize,
+    /// Tet connectivity (length n_tets = nx·ny·nz·6).
+    /// Added by task 4084/α: exposed for GridSpec construction + stress assembly.
+    pub tet_connectivity: Vec<[usize; 4]>,
+    /// Volume-weighted nodal stress field (length n_nodes).
+    /// Each entry is the recovered 3×3 Cauchy stress at that node.
+    /// Added by task 4084/α: fed stride-9 row-major into resample_nodal_to_grid.
+    pub nodal_stress: Vec<[[f64; 3]; 3]>,
+    /// Number of element intervals along x (beam length axis).
+    pub nx: usize,
+    /// Number of element intervals along y (beam width axis).
+    pub ny: usize,
+    /// Number of element intervals along z (beam height axis).
+    pub nz: usize,
 }
 
 /// Trampoline for `solver::elastic_static`.
@@ -597,8 +612,18 @@ pub(crate) fn solve_cantilever_fea(
     // Anisotropic: mirrors the B-matrix computation inside element_stress_p1
     //   (same engineering-shear Voigt convention) but substitutes D_global for
     //   IsotropicElastic::d_matrix. Von Mises computed from σ_voigt directly.
+    // ── Stress recovery: per-element tensor + element-max von Mises ──────────────
+    //
+    // Isotropic:   element_stress_p1  → 3×3 tensor  → scalar vM from tensor.
+    // Anisotropic: element_stress_anisotropic → 3×3 tensor → scalar vM from tensor.
+    //
+    // Per-element tensors are collected into `stress_elements` to feed
+    // recover_nodal_stress_p1 (task 4084/α). The element-max max_von_mises
+    // loop is byte-identical to the pre-α code (same formula, same ordering).
     let u_disp = &cg_result.u;
     let mut max_von_mises = 0.0f64;
+    let mut stress_elements: Vec<[[f64; 3]; 3]> = Vec::with_capacity(tet_connectivity.len());
+
     for conn in &tet_connectivity {
         let phys: [[f64; 3]; 4] = [
             coords[conn[0]],
@@ -612,35 +637,57 @@ pub(crate) fn solve_cantilever_fea(
             u_disp[3 * conn[2]],     u_disp[3 * conn[2] + 1], u_disp[3 * conn[2] + 2],
             u_disp[3 * conn[3]],     u_disp[3 * conn[3] + 1], u_disp[3 * conn[3] + 2],
         ];
-        let vm = match model {
+        let sigma: [[f64; 3]; 3] = match model {
             MaterialModel::Isotropic(iso) => {
-                let sigma = element_stress_p1(&phys, iso, &u_e);
-                let sxx = sigma[0][0];
-                let syy = sigma[1][1];
-                let szz = sigma[2][2];
-                let sxy = sigma[0][1];
-                let syz = sigma[1][2];
-                let szx = sigma[0][2];
-                f64::sqrt(0.5 * (
-                    (sxx - syy).powi(2)
-                    + (syy - szz).powi(2)
-                    + (szz - sxx).powi(2)
-                    + 6.0 * (sxy * sxy + syz * syz + szx * szx)
-                ))
+                element_stress_p1(&phys, iso, &u_e)
             }
             MaterialModel::Anisotropic(_) => {
                 // Use the hoisted d_global (computed once above).
-                element_von_mises_anisotropic(
+                element_stress_anisotropic(
                     &phys,
                     &aniso_precomp.as_ref().unwrap().1,
                     &u_e,
                 )
             }
         };
+
+        // vM from the tensor (byte-identical to the pre-α scalar calculation).
+        let (sxx, syy, szz) = (sigma[0][0], sigma[1][1], sigma[2][2]);
+        let (sxy, syz, szx) = (sigma[0][1], sigma[1][2], sigma[0][2]);
+        let vm = f64::sqrt(0.5 * (
+            (sxx - syy).powi(2)
+            + (syy - szz).powi(2)
+            + (szz - sxx).powi(2)
+            + 6.0 * (sxy * sxy + syz * syz + szx * szx)
+        ));
+
+        stress_elements.push(sigma);
         if vm > max_von_mises {
             max_von_mises = vm;
         }
     }
+
+    // ── Recover nodal stress field (volume-weighted averaging) ───────────────
+    //
+    // Build StressElement for each tet (borrows connectivity slice) and call
+    // recover_nodal_stress_p1. The nodal_stress Vec is stored on CantileverFeaSolve
+    // and fed stride-9 row-major to resample_nodal_to_grid by the trampoline.
+    let se_refs: Vec<StressElement<'_>> = tet_connectivity
+        .iter()
+        .zip(stress_elements.iter())
+        .map(|(conn, sigma)| {
+            let phys4: [[f64; 3]; 4] = [
+                coords[conn[0]], coords[conn[1]], coords[conn[2]], coords[conn[3]],
+            ];
+            StressElement {
+                connectivity: conn.as_slice(),
+                stress: *sigma,
+                volume: tet_volume_p1(&phys4),
+            }
+        })
+        .collect();
+
+    let nodal_stress = recover_nodal_stress_p1(n_nodes, &se_refs);
 
     let fea = CantileverFeaSolve {
         u: cg_result.u,
@@ -649,27 +696,40 @@ pub(crate) fn solve_cantilever_fea(
         max_von_mises,
         converged: cg_result.converged,
         iterations: cg_result.iterations,
+        tet_connectivity,
+        nodal_stress,
+        nx,
+        ny,
+        nz,
     };
     (fea, fresh_warm)
 }
 
-/// Compute von Mises stress for a P1 tet with a given 6×6 global D matrix.
+/// Compute the full 3×3 Cauchy stress tensor for a P1 tet with a given
+/// 6×6 global D matrix (anisotropic / orthotropic material path).
 ///
-/// Mirrors the B-matrix construction in `element_stress_p1` (same engineering-shear
-/// Voigt convention: ε = [ε_xx, ε_yy, ε_zz, γ_xy, γ_yz, γ_xz]) but substitutes
-/// `d_global` for `IsotropicElastic::d_matrix`. Used by the anisotropic branch.
+/// Mirrors `element_von_mises_anisotropic` — same Jacobian, J⁻ᵀ, B-matrix,
+/// and D_global·ε_voigt multiply — but returns the symmetric 3×3 tensor
+/// instead of the scalar vM.
 ///
-/// Von Mises: sqrt(½·[(σ_xx−σ_yy)²+(σ_yy−σ_zz)²+(σ_zz−σ_xx)²+6·(σ_xy²+σ_yz²+σ_zx²)])
-fn element_von_mises_anisotropic(
+/// # Voigt convention
+///
+/// Identical to `element_stress_p1` (result.rs):
+///   σ_voigt = [σ_xx, σ_yy, σ_zz, σ_xy, σ_yz, σ_xz]
+///
+/// Tensor layout:
+///   m[0] = [σxx, σxy, σxz]
+///   m[1] = [σxy, σyy, σyz]
+///   m[2] = [σxz, σyz, σzz]
+///
+/// Added by task 4084/α: used by solve_cantilever_fea (anisotropic branch)
+/// and by the step-3 vM-consistency test.
+fn element_stress_anisotropic(
     phys_nodes: &[[f64; 3]; 4],
     d_global: &[[f64; 6]; 6],
     u_e: &[f64; 12],
-) -> f64 {
-    // Jacobian (same as element_stress_p1).
-    // Use a fixed reference point — gradients are constant for P1.
-    // Reference gradients of the P1 shape functions at (1/4, 1/4, 1/4):
-    //   N1 = 1-ξ-η-ζ, N2 = ξ, N3 = η, N4 = ζ
-    //   ∇ξ = [[-1,-1,-1],[1,0,0],[0,1,0],[0,0,1]]
+) -> [[f64; 3]; 3] {
+    // Jacobian (same as element_stress_p1 / element_von_mises_anisotropic).
     let grads_ref: [[f64; 3]; 4] = [
         [-1.0, -1.0, -1.0],
         [ 1.0,  0.0,  0.0],
@@ -677,7 +737,6 @@ fn element_von_mises_anisotropic(
         [ 0.0,  0.0,  1.0],
     ];
 
-    // J_ij = Σ_k phys_nodes[k][i] · grads_ref[k][j]
     let mut j_mat = [[0.0_f64; 3]; 3];
     for k in 0..4 {
         for i in 0..3 {
@@ -690,21 +749,15 @@ fn element_von_mises_anisotropic(
         - j_mat[0][1] * (j_mat[1][0] * j_mat[2][2] - j_mat[1][2] * j_mat[2][0])
         + j_mat[0][2] * (j_mat[1][0] * j_mat[2][1] - j_mat[1][1] * j_mat[2][0]);
 
-    // Degenerate-element guard — mirrors `element_stress_p1` (result.rs:94-100).
-    // `det.is_normal()` catches ±0, ±∞, NaN, and subnormals; the absolute-value
-    // floor matches `reify_solver_elastic::math::MIN_JACOBIAN_DET` (1e-30).
-    // A degenerate tet with |det J| at or below this threshold would produce
-    // NaN/Inf stress via the division in the J⁻ᵀ computation below.
     const MIN_JACOBIAN_DET: f64 = 1.0e-30;
     debug_assert!(
         det.is_normal() && det.abs() > MIN_JACOBIAN_DET,
-        "element_von_mises_anisotropic: degenerate tet |det J| = {:.3e} \
+        "element_stress_anisotropic: degenerate tet |det J| = {:.3e} \
          (must be > {:.3e} and finite — see PRD task #21 for the future diagnostic path)",
         det.abs(),
         MIN_JACOBIAN_DET,
     );
 
-    // J⁻ᵀ via cofactor / det (same formula as element_stress_p1 → inverse_transpose_3x3)
     let j_inv_t = [
         [
             (j_mat[1][1]*j_mat[2][2] - j_mat[1][2]*j_mat[2][1]) / det,
@@ -723,7 +776,6 @@ fn element_von_mises_anisotropic(
         ],
     ];
 
-    // Physical gradients: ∇x N_i = J⁻ᵀ · ∇ξ N_i
     let mut grads_phys = [[0.0_f64; 3]; 4];
     for i in 0..4 {
         for r in 0..3 {
@@ -735,8 +787,6 @@ fn element_von_mises_anisotropic(
         }
     }
 
-    // Build B and compute ε_voigt = B · u_e in one fused loop.
-    // Convention matches element_stress_p1 (rows 0-5: ε_xx, ε_yy, ε_zz, γ_xy, γ_yz, γ_xz)
     let mut eps = [0.0_f64; 6];
     for i in 0..4 {
         let (gx, gy, gz) = (grads_phys[i][0], grads_phys[i][1], grads_phys[i][2]);
@@ -759,11 +809,30 @@ fn element_von_mises_anisotropic(
         sigma_voigt[i] = s;
     }
 
-    // σ_voigt = [σ_xx, σ_yy, σ_zz, σ_xy, σ_yz, σ_xz]
-    let (sxx, syy, szz, sxy, syz, szx) = (
-        sigma_voigt[0], sigma_voigt[1], sigma_voigt[2],
-        sigma_voigt[3], sigma_voigt[4], sigma_voigt[5],
-    );
+    // Unpack to symmetric 3×3 tensor (same layout as element_stress_p1):
+    //   σ_voigt = [σxx, σyy, σzz, σxy, σyz, σxz]
+    [
+        [sigma_voigt[0], sigma_voigt[3], sigma_voigt[5]],
+        [sigma_voigt[3], sigma_voigt[1], sigma_voigt[4]],
+        [sigma_voigt[5], sigma_voigt[4], sigma_voigt[2]],
+    ]
+}
+
+/// Compute von Mises stress for a P1 tet with a given 6×6 global D matrix.
+///
+/// Refactored (task 4084/α) to delegate to [`element_stress_anisotropic`]
+/// and derive the scalar vM from the returned 3×3 tensor.  vM is
+/// byte-identical to the pre-α implementation (same σ_voigt, same formula).
+///
+/// Von Mises: sqrt(½·[(σ_xx−σ_yy)²+(σ_yy−σ_zz)²+(σ_zz−σ_xx)²+6·(σ_xy²+σ_yz²+σ_zx²)])
+fn element_von_mises_anisotropic(
+    phys_nodes: &[[f64; 3]; 4],
+    d_global: &[[f64; 6]; 6],
+    u_e: &[f64; 12],
+) -> f64 {
+    let sigma = element_stress_anisotropic(phys_nodes, d_global, u_e);
+    let (sxx, syy, szz) = (sigma[0][0], sigma[1][1], sigma[2][2]);
+    let (sxy, syz, szx) = (sigma[0][1], sigma[1][2], sigma[0][2]);
     f64::sqrt(0.5 * (
         (sxx - syy).powi(2)
         + (syy - szz).powi(2)
