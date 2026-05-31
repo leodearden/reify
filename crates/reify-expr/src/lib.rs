@@ -510,6 +510,18 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     {
                         sink.borrow_mut().push(diag);
                     }
+                    // Same post-Undef classification for multi-load-case
+                    // (task #10) failures: when `linear_combine` returns Undef,
+                    // emit the specific diagnostic via `fea_diagnose`. stackup
+                    // names and "linear_combine" are disjoint, so at most one of
+                    // the two diagnose helpers ever fires for a single Undef.
+                    if matches!(result, Value::Undef)
+                        && let Some(sink) = ctx.diagnostics
+                        && let Some(diag) =
+                            reify_stdlib::fea_diagnose(&function.name, &evaluated_args)
+                    {
+                        sink.borrow_mut().push(diag);
+                    }
                     result
                 }
             }
