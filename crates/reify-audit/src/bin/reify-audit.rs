@@ -938,4 +938,78 @@ mod tests {
             "PLAYER must activate when --pattern PLAYER is given"
         );
     }
+
+    // -------------------------------------------------------------------
+    // comma-separated --pattern tests (step-1 RED, step-2 GREEN)
+    // -------------------------------------------------------------------
+
+    /// `--pattern P1,P2,P5` must be accepted; the stored value must contain
+    /// all three tokens when split on ','.
+    #[test]
+    fn parse_args_pattern_accepts_comma_list() {
+        let args = parse_args(&["--pattern".to_string(), "P1,P2,P5".to_string()])
+            .expect("--pattern P1,P2,P5 must parse successfully");
+        let val = args.pattern.as_deref().expect("pattern must be Some");
+        let tokens: Vec<&str> = val.split(',').map(str::trim).collect();
+        assert!(tokens.contains(&"P1"), "tokens must contain P1; got: {tokens:?}");
+        assert!(tokens.contains(&"P2"), "tokens must contain P2; got: {tokens:?}");
+        assert!(tokens.contains(&"P5"), "tokens must contain P5; got: {tokens:?}");
+    }
+
+    /// `--pattern P1, P2 , P5` (with spaces around commas) must be accepted —
+    /// per-token whitespace trimming during validation must not reject valid tokens.
+    #[test]
+    fn parse_args_pattern_trims_whitespace_around_tokens() {
+        let args = parse_args(&["--pattern".to_string(), "P1, P2 , P5".to_string()])
+            .expect("--pattern with spaces around commas must parse successfully");
+        assert!(
+            args.pattern.is_some(),
+            "pattern must be Some; whitespace-padded comma list must be accepted"
+        );
+    }
+
+    /// `--pattern P1,BOGUS` must fail with an error that names `BOGUS` (the
+    /// specific bad token) and contains the 5-token expected wording, but does
+    /// NOT contain the whole `P1,BOGUS` string.
+    #[test]
+    fn parse_args_pattern_unknown_token_in_list_names_token() {
+        let err = unwrap_err(parse_args(&["--pattern".to_string(), "P1,BOGUS".to_string()]));
+        assert!(
+            err.contains("'BOGUS'"),
+            "error must name the offending token 'BOGUS' (with surrounding quotes); got: {err}"
+        );
+        assert!(
+            err.contains("expected P1, P2, P5, PDEAD, or PUNTESTED"),
+            "error must list all known tokens; got: {err}"
+        );
+        assert!(
+            !err.contains("P1,BOGUS"),
+            "error must NOT echo the whole comma string 'P1,BOGUS'; got: {err}"
+        );
+    }
+
+    /// needs_jcodemunch must route comma-separated patterns correctly:
+    /// - P2,P5 → false (neither P1/PDEAD/PUNTESTED present)
+    /// - P2,P1 → true  (P1 present)
+    /// - P5,PDEAD → true (PDEAD present)
+    /// - P2,PUNTESTED → true (PUNTESTED present)
+    #[test]
+    fn needs_jcodemunch_comma_pattern_routing() {
+        assert!(
+            !needs_jcodemunch(&make_args(false, Some("P2,P5"))),
+            "P2,P5 must not need jcodemunch"
+        );
+        assert!(
+            needs_jcodemunch(&make_args(false, Some("P2,P1"))),
+            "P2,P1 must need jcodemunch (P1 present)"
+        );
+        assert!(
+            needs_jcodemunch(&make_args(false, Some("P5,PDEAD"))),
+            "P5,PDEAD must need jcodemunch (PDEAD present)"
+        );
+        assert!(
+            needs_jcodemunch(&make_args(false, Some("P2,PUNTESTED"))),
+            "P2,PUNTESTED must need jcodemunch (PUNTESTED present)"
+        );
+    }
 }
