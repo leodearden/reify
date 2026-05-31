@@ -602,6 +602,104 @@ mod tests {
     //! to match the codebase-standard `mod tests` convention.
     use super::*;
 
+    // ── task-4081: resolve_function_overload trait-param wildcard ────────────
+
+    /// Helper: build a minimal stub body returning Real(0.0).
+    fn stub_body() -> CompiledFnBody {
+        CompiledFnBody {
+            let_bindings: vec![],
+            result_expr: CompiledExpr::literal(Value::Real(0.0), Type::Real),
+        }
+    }
+
+    /// Build a minimal `CompiledFunction` with the given name and params.
+    fn make_fn(name: &str, params: Vec<(&str, Type)>) -> CompiledFunction {
+        let params: Vec<(String, Type)> = params
+            .into_iter()
+            .map(|(n, t)| (n.to_string(), t))
+            .collect();
+        let param_defaults = CompiledFunction::no_defaults_for(&params);
+        CompiledFunction {
+            name: name.to_string(),
+            doc: None,
+            is_pub: false,
+            params,
+            param_defaults,
+            return_type: Type::Real,
+            body: stub_body(),
+            content_hash: ContentHash::of_str(name),
+            annotations: vec![],
+            optimized_target: None,
+        }
+    }
+
+    /// (a) A single TraitObject param matches any arg type (StructureRef).
+    /// RED until step-2: current exact-match makes this NoMatch.
+    #[test]
+    fn overload_trait_param_matches_any_structure_ref_arg() {
+        let fns = vec![make_fn("f", vec![("j", Type::TraitObject("DrivingJoint".to_string()))])];
+        let result = resolve_function_overload("f", &[Type::StructureRef("X".to_string())], &fns);
+        assert!(
+            matches!(result, OverloadResolution::Resolved(_)),
+            "trait-object param should resolve against any StructureRef arg"
+        );
+    }
+
+    /// (a2) A single TraitObject param also matches a different TraitObject arg.
+    /// RED until step-2.
+    #[test]
+    fn overload_trait_param_matches_any_trait_object_arg() {
+        let fns = vec![make_fn("f", vec![("j", Type::TraitObject("DrivingJoint".to_string()))])];
+        let result =
+            resolve_function_overload("f", &[Type::TraitObject("Other".to_string())], &fns);
+        assert!(
+            matches!(result, OverloadResolution::Resolved(_)),
+            "trait-object param should resolve against any TraitObject arg"
+        );
+    }
+
+    /// (b) Mixed fn: trait param is a wildcard, concrete param keeps exact equality.
+    /// `fn g(j: TraitObject("DrivingJoint"), k: Real)` — calling with (X, Int)
+    /// must NOT resolve because the concrete Real param doesn't accept Int.
+    /// RED until step-2 (currently both params fail exact-equality, same result).
+    #[test]
+    fn overload_mixed_fn_concrete_param_still_requires_exact_type() {
+        let fns = vec![make_fn(
+            "g",
+            vec![
+                ("j", Type::TraitObject("DrivingJoint".to_string())),
+                ("k", Type::Real),
+            ],
+        )];
+        // arg k is Int, not Real → no match
+        let result = resolve_function_overload(
+            "g",
+            &[Type::StructureRef("X".to_string()), Type::Int],
+            &fns,
+        );
+        assert!(
+            matches!(result, OverloadResolution::NoMatch(_)),
+            "concrete Real param must not accept Int; expected NoMatch"
+        );
+    }
+
+    /// (c) Baseline all-concrete fn is unchanged: Real matches, Int does not.
+    /// Must hold both before and after step-2 (no regression).
+    #[test]
+    fn overload_all_concrete_fn_unchanged() {
+        let fns = vec![make_fn("h", vec![("x", Type::Real)])];
+        let resolved = resolve_function_overload("h", &[Type::Real], &fns);
+        assert!(
+            matches!(resolved, OverloadResolution::Resolved(_)),
+            "h(Real) should resolve on Real arg"
+        );
+        let no_match = resolve_function_overload("h", &[Type::Int], &fns);
+        assert!(
+            matches!(no_match, OverloadResolution::NoMatch(_)),
+            "h(Real) should not resolve on Int arg"
+        );
+    }
+
     // --- format_dimension_mismatch_diagnostic tests (step-5) ---
 
     fn test_span() -> SourceSpan {
