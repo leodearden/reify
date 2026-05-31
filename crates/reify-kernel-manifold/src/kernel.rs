@@ -353,6 +353,36 @@ impl GeometryKernel for ManifoldKernel {
                     ))),
                 }
             }
+            // Canonical edge indices shared by triangles `face_a` and `face_b`,
+            // ascending — Value::List<Value::Int> mirroring OCCT. `face_a ==
+            // face_b` yields an empty list (design decision). Edge indices are
+            // into the same canonical_edges enumeration extract_edges exposes,
+            // so SharedEdges and extract_edges agree. (KGQ-π / task 3625.)
+            GeometryQuery::SharedEdges {
+                shape,
+                face_a,
+                face_b,
+            } => {
+                let (verts, tris) = {
+                    let m = self
+                        .get_manifold(*shape)
+                        .map_err(|e| QueryError::QueryFailed(format!("{e:?}")))?;
+                    crate::queries::mesh_geometry(m)
+                };
+                let triangles = crate::queries::triangles_of(&tris);
+                let (index_pairs, _endpoints) = crate::queries::canonical_edges(&verts, &tris);
+                match crate::queries::shared_edges(&triangles, &index_pairs, *face_a, *face_b) {
+                    Some(shared) => Ok(Value::List(
+                        shared.into_iter().map(|i| Value::Int(i as i64)).collect(),
+                    )),
+                    None => Err(QueryError::QueryFailed(format!(
+                        "SharedEdges: face index out of range 0..{} (face_a={}, face_b={})",
+                        triangles.len(),
+                        face_a,
+                        face_b
+                    ))),
+                }
+            }
             // All other queries remain follow-up work (see STUB_MSG).
             _ => Err(QueryError::QueryFailed(STUB_MSG.into())),
         }

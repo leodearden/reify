@@ -472,6 +472,49 @@ pub(crate) fn adjacent_faces(triangles: &[[u64; 3]], face_index: usize) -> Optio
     Some(neighbours)
 }
 
+/// Canonical edge indices shared by triangles `face_a` and `face_b`, ascending.
+///
+/// Returns:
+/// - `Some(empty)` when `face_a == face_b` (a face shares nothing with itself —
+///   the documented design decision, checked before any range validation);
+/// - `None` when either (distinct) index is out of range (the caller maps this
+///   to a `QueryError`);
+/// - otherwise the sorted canonical edge indices of the shared undirected
+///   vertex-pairs.
+///
+/// `index_pairs` is [`canonical_edges`]' enumeration (its position `e` is the
+/// edge index `extract_edges` / `SharedEdges` report); each shared `(min, max)`
+/// pair is mapped to its index by binary search, since `index_pairs` is sorted
+/// ascending. Two distinct triangles share at most one undirected edge, so the
+/// result has length 0 or 1 on a closed 2-manifold — but the general
+/// intersect-and-map logic holds for any triangle pair.
+pub(crate) fn shared_edges(
+    triangles: &[[u64; 3]],
+    index_pairs: &[(u64, u64)],
+    face_a: usize,
+    face_b: usize,
+) -> Option<Vec<usize>> {
+    if face_a == face_b {
+        return Some(Vec::new());
+    }
+    let a_edges = tri_edges(triangles.get(face_a)?);
+    let b_edges = tri_edges(triangles.get(face_b)?);
+    let mut out: Vec<usize> = Vec::new();
+    for e in a_edges {
+        if !b_edges.contains(&e) {
+            continue;
+        }
+        // A shared edge must be in the canonical enumeration (every triangle
+        // edge is); binary_search Err is therefore unreachable for a consistent
+        // mesh — skipped defensively rather than panicking.
+        if let Ok(idx) = index_pairs.binary_search(&e) {
+            out.push(idx);
+        }
+    }
+    out.sort_unstable();
+    Some(out)
+}
+
 // ---------------------------------------------------------------------------
 // Sub-element geometry helpers + OCCT-compatible JSON wire formatters
 // ---------------------------------------------------------------------------
