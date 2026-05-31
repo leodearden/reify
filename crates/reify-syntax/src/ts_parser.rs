@@ -4756,6 +4756,39 @@ mod tests {
         );
     }
 
+    /// (e) Compile-level regression guard for the lifetime relaxation (task 4108).
+    /// Proves that `parse_with_prelude_enums` accepts a name slice whose
+    /// elements are borrowed from a non-`'static` local allocation.
+    ///
+    /// Under the OLD `&[&'static str]` bound this test DOES NOT COMPILE:
+    /// the compiler rejects `&names` because `names: Vec<&str>` borrows from
+    /// `owned: Vec<String>` — a local, non-`'static` value.  After step-2
+    /// relaxes the bound to `&[&'a str]` the test compiles and passes.
+    ///
+    /// Runtime behavior (EnumAccess disambiguation for a non-`'static` name)
+    /// is already covered by `parse_with_prelude_enums_resolves_prelude_only_enum`
+    /// with the same source pattern; this test's sole new capability under test
+    /// is accepting a non-`'static` borrow.
+    #[test]
+    fn parse_with_prelude_enums_accepts_non_static_borrowed_names() {
+        let owned: Vec<String> = vec!["Foo".to_string()];
+        let names: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+        let module = parse_with_prelude_enums(
+            "structure S { let v = Foo.Bar }",
+            ModulePath::single("test_nonstatic"),
+            &names,
+        );
+        assert!(
+            module.errors.is_empty(),
+            "parse errors: {:?}",
+            module.errors
+        );
+        let (type_name, variant) =
+            find_first_enum_access(&module).expect("expected EnumAccess from non-static names");
+        assert_eq!(type_name, "Foo");
+        assert_eq!(variant, "Bar");
+    }
+
     #[test]
     fn tree_sitter_parses_bracket_source_without_errors() {
         let source = reify_test_support::bracket_source();
