@@ -121,6 +121,11 @@
 // OCCT local surface properties (curvature via GeomLProp_SLProps)
 #include <GeomLProp_SLProps.hxx>
 
+// OCCT local curve properties (curvature via BRepLProp_CLProps) — KGQ-μ
+#include <BRepLProp_CLProps.hxx>
+// OCCT curve projection (project world point to curve parameter) — KGQ-μ
+#include <GeomAPI_ProjectPointOnCurve.hxx>
+
 // OCCT BRep serialization
 #include <BRepTools.hxx>
 #include <BRep_Builder.hxx>
@@ -2950,6 +2955,67 @@ CurvatureProps curvature_at(const OcctShape& shape, double u, double v) {
         Point3 dmin_pt{ d_min.X(), d_min.Y(), d_min.Z() };
         Point3 dmax_pt{ d_max.X(), d_max.Y(), d_max.Z() };
         return CurvatureProps{ K, H, kappa_min, kappa_max, dmin_pt, dmax_pt };
+    });
+}
+
+/// Signed curvature of an edge (curve) at the closest point on the curve to
+/// the world-space query point `(px, py, pz)`.
+///
+/// Algorithm:
+///   (a) Verify the shape is a `TopoDS_EDGE`; extract the underlying
+///       `Geom_Curve` via `BRep_Tool::Curve(edge, f, l)`.
+///   (b) Project `(px, py, pz)` onto the curve in parameter range [f, l]
+///       via `GeomAPI_ProjectPointOnCurve`; use the nearest-point parameter.
+///   (c) Evaluate curvature at that parameter via `BRepLProp_CLProps` (order=2).
+///
+/// Sign convention follows the Frenet frame: positive curvature bends toward
+/// the principal normal. For a circle in the XY plane the sign is positive.
+///
+/// Throws `std::runtime_error` if:
+/// - `shape` is not an edge,
+/// - the edge has no underlying curve (degenerate edge),
+/// - projection yields no nearest point (should not occur for bounded curves),
+/// - the tangent is undefined at the projected parameter (degenerate point).
+double curve_curvature_at(const OcctShape& shape, double px, double py, double pz) {
+    return wrap_occt_call("curve_curvature_at", [&]() {
+        if (shape.shape.ShapeType() != TopAbs_EDGE) {
+            throw std::runtime_error("curve_curvature_at: shape is not an edge");
+        }
+        TopoDS_Edge edge = TopoDS::Edge(shape.shape);
+        if (edge.IsNull()) {
+            throw std::runtime_error("curve_curvature_at: edge is null");
+        }
+
+        // Extract the underlying geometric curve and its parameter range.
+        // BRep_Tool::Curve applies the edge's TopLoc_Location so the curve
+        // is already in world frame — consistent with BRepAdaptor_Curve.
+        double f = 0.0, l = 0.0;
+        Handle(Geom_Curve) geom_curve = BRep_Tool::Curve(edge, f, l);
+        if (geom_curve.IsNull()) {
+            throw std::runtime_error(
+                "curve_curvature_at: edge has no underlying curve (degenerate edge)"
+            );
+        }
+
+        // Project the world-space query point to the nearest parameter on [f, l].
+        GeomAPI_ProjectPointOnCurve projector(gp_Pnt(px, py, pz), geom_curve, f, l);
+        if (projector.NbPoints() == 0) {
+            throw std::runtime_error(
+                "curve_curvature_at: point projection failed (no nearest point found)"
+            );
+        }
+        double t = projector.LowerDistanceParameter();
+
+        // Evaluate curvature at t.  BRepAdaptor_Curve honours TopLoc_Location
+        // consistently with BRep_Tool::Curve above.  Order=2 → curvature available.
+        BRepAdaptor_Curve adaptor(edge);
+        BRepLProp_CLProps clprops(adaptor, t, 2, Precision::Confusion());
+        if (!clprops.IsTangentDefined()) {
+            throw std::runtime_error(
+                "curve_curvature_at: tangent undefined at projected parameter (degenerate point)"
+            );
+        }
+        return clprops.Curvature();
     });
 }
 

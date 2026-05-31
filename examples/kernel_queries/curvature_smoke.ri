@@ -1,0 +1,62 @@
+// Smoke fixture for curvature(Surface, Point3<Length>) → Matrix<2,2,Curvature>
+//                and curvature(Curve,   Point3<Length>) → Scalar<Curvature>
+// (task 3621, KGQ-μ, PRD docs/prds/v0_3/kernel-geometry-queries.md §9)
+//
+// v0.3 wire-form note (forward pointer):
+//   At EVAL time the surface form returns a 2×2 Value::Matrix of
+//   Curvature-dimensioned scalars [[κ_max,0],[0,κ_min]] (v0.3 wire form,
+//   KGQ-μ design decision §2). The COMPILE-TIME type remains Scalar<Curvature>
+//   because units.rs is NOT modified by KGQ-μ (PRD §7); arg-type-aware return
+//   typing (Surface→Matrix, Curve→Scalar) is deferred to a later phase. Any
+//   compile-time type tension on the surface form surfaces as Warning only.
+//
+// User-observable signals:
+//   curvature(face_of_sphere_r5mm, pt)  → Matrix<2,2,Curvature>, mean ≈ 1/5mm = 200 m⁻¹
+//   curvature(circular_edge_r10mm, pt)  → Scalar<Curvature> ≈ 1/10mm = 100 m⁻¹
+//
+// Compile-type: Scalar<Curvature> for both cells (units.rs KGQ-μ registration,
+// PRD §7 — units.rs is NOT modified by this task; arg-type-aware return typing
+// deferred). The eval layer produces the correct Matrix/Scalar Value; compile-time
+// type tension surfaces as Warning, not Error.
+//
+// Pre-Phase-3 runtime note: curvature(solid, pt) evaluates to Value::Undef at
+// DSL eval time because the dispatch requires a face sub-handle (SurfaceCurvatureAt)
+// or edge sub-handle (CurveCurvatureAt) as arg[0], not a solid handle. Solid
+// handles do resolve via named_steps; both kernel queries fail (solid ≠ face/edge)
+// → dispatch_curvature returns Undef with Warning. The numeric OCCT-backed
+// assertions bypass DSL eval and use OcctKernelHandle direct query
+// (kernel_queries_curvature_smoke.rs), mirroring the normal_smoke.ri/rs pattern.
+//
+// Arg-shape contract (same as normal()):
+//   Both args must be let-bound ValueRefs. Inline FunctionCall or Subscript
+//   args fall through to None in the dispatcher.
+//
+// Unit-qualification contract:
+//   resolve_point3_length_arg requires every point component to carry a
+//   LENGTH dimension. Use unit-qualified literals (5mm, 0mm, not bare 0).
+//
+// Pinning tests:
+//   crates/reify-eval/tests/kernel_queries_curvature_smoke.rs::
+//     curvature_smoke_compiles_and_occt_query_chain_live
+//   crates/reify-kernel-occt/tests/curve_curvature_integration.rs
+//     (deterministic OCCT-level numeric pins at 1e-9)
+
+structure def CurvatureSmoke {
+    let s       = sphere(5mm)
+    let cyl     = cylinder(10mm, 20mm)
+
+    // Let-bound query points — ValueRef arg-shape contract requires these to be
+    // separate let bindings so the dispatcher resolves them via values map.
+    let pt_s    = point3(5mm, 0mm, 0mm)
+    let pt_c    = point3(10mm, 0mm, 0mm)
+
+    // Surface curvature at pt_s on sphere s.
+    // Compile-type: Scalar<Curvature> (units.rs).
+    // Runtime: Value::Undef (s is a solid; SurfaceCurvatureAt needs a face handle).
+    let k_surf  = curvature(s, pt_s)
+
+    // Curve curvature at pt_c on cylinder cyl.
+    // Compile-type: Scalar<Curvature>.
+    // Runtime: Value::Undef (cyl is a solid; CurveCurvatureAt needs an edge handle).
+    let k_curve = curvature(cyl, pt_c)
+}

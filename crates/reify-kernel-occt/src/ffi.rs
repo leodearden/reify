@@ -707,6 +707,19 @@ pub mod ffi {
         /// Throws (surfaces as `Err`) if the shape is not a face, has no
         /// underlying surface, or curvature is undefined at `(u, v)`.
         fn curvature_at(face: &OcctShape, u: f64, v: f64) -> Result<CurvatureProps>;
+
+        /// Signed curvature of an edge at the closest point on the curve to the
+        /// world-space query point `(px, py, pz)`.
+        ///
+        /// Projects the query point onto the edge's underlying `Geom_Curve` via
+        /// `GeomAPI_ProjectPointOnCurve`, then evaluates curvature via
+        /// `BRepLProp_CLProps`. Sign follows the Frenet frame (positive toward
+        /// principal normal).
+        ///
+        /// Throws (surfaced as `Err`) if the shape is not an edge, the edge is
+        /// degenerate (no underlying curve), projection fails, or the tangent is
+        /// undefined at the projected parameter.
+        fn curve_curvature_at(edge: &OcctShape, px: f64, py: f64, pz: f64) -> Result<f64>;
         fn query_centroid(shape: &OcctShape) -> Result<Point3>;
         /// Surface-properties centroid for a 2D sub-shape (TopoDS_Face).
         /// Used by the `Centroid` query path when the stored repr is

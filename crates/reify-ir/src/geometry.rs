@@ -1073,6 +1073,65 @@ pub enum GeometryQuery {
         py: f64,
         pz: f64,
     },
+    /// Compute the signed curvature of an edge (curve) at the closest point on
+    /// the curve to the Cartesian query point `(px, py, pz)` (in metres).
+    ///
+    /// The query point is projected onto the underlying curve via
+    /// `GeomAPI_ProjectPointOnCurve` to obtain the curve parameter `t`, then
+    /// curvature is evaluated via `BRepLProp_CLProps(...).Curvature()`. The
+    /// sign convention follows the Frenet frame: positive curvature bends
+    /// toward the principal normal.
+    ///
+    /// Returns `Value::Real` (SI units: 1/m = m⁻¹, i.e. the `Curvature`
+    /// dimension = 1/Length). The eval-side dispatcher wraps this in
+    /// `Value::Scalar { si_value, dimension: Dimension::Curvature }`.
+    ///
+    /// Powers the v0.3 stdlib helper
+    /// `curvature(curve: Curve, point: Point3<Length>) -> Scalar<Curvature>`
+    /// (PRD `docs/prds/v0_3/kernel-geometry-queries.md` §9 KGQ-μ).
+    ///
+    /// # Wire format
+    /// `Value::Real(kappa)` where `kappa` is in SI units (1/m).
+    ///
+    /// # Capability
+    /// `BRepOnly` — requires a BRep (OCCT) edge; mesh-only representations
+    /// do not support differential curve properties.
+    CurveCurvatureAt {
+        handle: GeometryHandleId,
+        px: f64,
+        py: f64,
+        pz: f64,
+    },
+    /// Compute the principal curvatures of a face (surface) at the parametric
+    /// point `(u, v)`.
+    ///
+    /// Delegates to the existing `OcctKernel::curvature_at(handle, u, v)`
+    /// safe wrapper, which calls `BRepAdaptor_Surface::D2` to compute the
+    /// first and second fundamental forms, then extracts the principal
+    /// curvatures via `BRepLProp_SLProps`.
+    ///
+    /// Returns a 2×2 diagonal principal-curvature matrix encoded as nested
+    /// `Value::List`: `[[kappa_max, 0.0], [0.0, kappa_min]]` where both
+    /// values are in SI units (1/m). The trace/2 equals the mean curvature H
+    /// and the det equals the Gaussian curvature K = kappa_max * kappa_min.
+    /// The eval-side dispatcher repackages this as `Value::Matrix`.
+    ///
+    /// Powers the v0.3 stdlib helper
+    /// `curvature(surface: Surface, point: Point3<Length>) -> Matrix<2,2,Curvature>`
+    /// (PRD `docs/prds/v0_3/kernel-geometry-queries.md` §9 KGQ-μ).
+    ///
+    /// # Wire format
+    /// `Value::List([Value::List([Value::Real(kappa_max), Value::Real(0.0)]),
+    ///               Value::List([Value::Real(0.0), Value::Real(kappa_min)])])`
+    ///
+    /// # Capability
+    /// `BRepOnly` — requires a BRep (OCCT) face; mesh-only representations
+    /// do not support differential surface properties.
+    SurfaceCurvatureAt {
+        handle: GeometryHandleId,
+        u: f64,
+        v: f64,
+    },
 }
 
 impl GeometryQuery {
@@ -1112,6 +1171,8 @@ impl GeometryQuery {
             GeometryQuery::GeoEquiv { .. } => "GeoEquiv",
             GeometryQuery::SurfaceAngle { .. } => "SurfaceAngle",
             GeometryQuery::FaceNormalAt { .. } => "FaceNormalAt",
+            GeometryQuery::CurveCurvatureAt { .. } => "CurveCurvatureAt",
+            GeometryQuery::SurfaceCurvatureAt { .. } => "SurfaceCurvatureAt",
         }
     }
 }
@@ -1168,9 +1229,12 @@ impl GeometryQuery {
     // G-allow: task #3623 QueryCapability enum mapping; consumer is the capability-dispatch arm in subsequent #3623 steps
     pub fn capability_kind(&self) -> QueryCapability {
         match self {
-            // §5.4 BRepOnly set (extant as of this commit; KGQ-μ adds
-            // CurveCurvatureAt + SurfaceCurvatureAt; KGQ-ν adds Perimeter)
+            // §5.4 BRepOnly set (extant as of this commit; KGQ-ν adds Perimeter)
             GeometryQuery::EdgeLength(_) => QueryCapability::BRepOnly,
+            // KGQ-μ: curvature of a curve or surface requires OCCT differential
+            // property evaluation — not available on Mesh representations.
+            GeometryQuery::CurveCurvatureAt { .. } => QueryCapability::BRepOnly,
+            GeometryQuery::SurfaceCurvatureAt { .. } => QueryCapability::BRepOnly,
 
             // All other extant variants default to BRepAndMesh.
             GeometryQuery::Volume(_) => QueryCapability::BRepAndMesh,
@@ -3406,6 +3470,57 @@ mod tests {
             }
             _ => panic!("expected SurfaceAngle variant"),
         }
+    }
+
+    /// RED until step-2 adds `GeometryQuery::CurveCurvatureAt` variant,
+    /// `kind_name()` arm, and `capability_kind()` arm.
+    ///
+    /// Pins (a) `kind_name() == "CurveCurvatureAt"` and (b)
+    /// `capability_kind() == QueryCapability::BRepOnly` per PRD §5.4 (KGQ-μ).
+    /// World-point at-point form `{handle, px, py, pz}` mirrors FaceNormalAt.
+    #[test]
+    fn curve_curvature_at_variant_has_brep_only_capability_and_stable_kind_name() {
+        let q = GeometryQuery::CurveCurvatureAt {
+            handle: GeometryHandleId(1),
+            px: 0.0,
+            py: 0.0,
+            pz: 0.0,
+        };
+        assert_eq!(
+            q.capability_kind(),
+            QueryCapability::BRepOnly,
+            "CurveCurvatureAt must map to QueryCapability::BRepOnly per PRD §5.4"
+        );
+        assert_eq!(
+            q.kind_name(),
+            "CurveCurvatureAt",
+            "kind_name() for CurveCurvatureAt must be the stable token \"CurveCurvatureAt\""
+        );
+    }
+
+    /// RED until step-2 adds `GeometryQuery::SurfaceCurvatureAt` variant,
+    /// `kind_name()` arm, and `capability_kind()` arm.
+    ///
+    /// Pins (a) `kind_name() == "SurfaceCurvatureAt"` and (b)
+    /// `capability_kind() == QueryCapability::BRepOnly` per PRD §5.4 (KGQ-μ).
+    /// Parametric form `{handle, u, v}` mirrors the existing curvature_at(face,u,v).
+    #[test]
+    fn surface_curvature_at_variant_has_brep_only_capability_and_stable_kind_name() {
+        let q = GeometryQuery::SurfaceCurvatureAt {
+            handle: GeometryHandleId(1),
+            u: 0.0,
+            v: 0.0,
+        };
+        assert_eq!(
+            q.capability_kind(),
+            QueryCapability::BRepOnly,
+            "SurfaceCurvatureAt must map to QueryCapability::BRepOnly per PRD §5.4"
+        );
+        assert_eq!(
+            q.kind_name(),
+            "SurfaceCurvatureAt",
+            "kind_name() for SurfaceCurvatureAt must be the stable token \"SurfaceCurvatureAt\""
+        );
     }
 
     #[test]
@@ -5895,12 +6010,38 @@ mod tests {
                     face_b: GeometryHandleId(2),
                 },
             ),
+            (
+                "FaceNormalAt",
+                GeometryQuery::FaceNormalAt {
+                    handle: GeometryHandleId(1),
+                    px: 0.0,
+                    py: 0.0,
+                    pz: 0.0,
+                },
+            ),
+            (
+                "CurveCurvatureAt",
+                GeometryQuery::CurveCurvatureAt {
+                    handle: GeometryHandleId(1),
+                    px: 0.0,
+                    py: 0.0,
+                    pz: 0.0,
+                },
+            ),
+            (
+                "SurfaceCurvatureAt",
+                GeometryQuery::SurfaceCurvatureAt {
+                    handle: GeometryHandleId(1),
+                    u: 0.0,
+                    v: 0.0,
+                },
+            ),
         ];
         // Changing this constant forces the test to be updated whenever a
         // variant is added or removed from GeometryQuery — compile-time
         // exhaustiveness on kind_name() guarantees correctness, this assertion
         // guarantees the token list here stays in sync.
-        const GEOMETRY_QUERY_VARIANT_COUNT: usize = 25;
+        const GEOMETRY_QUERY_VARIANT_COUNT: usize = 28;
         assert_eq!(
             cases.len(),
             GEOMETRY_QUERY_VARIANT_COUNT,

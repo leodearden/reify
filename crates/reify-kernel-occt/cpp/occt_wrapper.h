@@ -1105,6 +1105,23 @@ struct CurvatureProps;
 /// surface, or curvature is undefined at `(u, v)` (e.g. at a singular point).
 CurvatureProps curvature_at(const OcctShape& face, double u, double v);
 
+/// Signed curvature of an edge at the closest point to the world-space query
+/// point `(px, py, pz)`.
+///
+/// Projects `(px, py, pz)` onto the edge's underlying curve via
+/// `GeomAPI_ProjectPointOnCurve`, then evaluates curvature via
+/// `BRepLProp_CLProps` at the projected parameter.
+///
+/// Returns the curvature scalar (SI unit: 1/m = m⁻¹; positive for convex
+/// toward the Frenet principal normal).
+///
+/// Throws `std::runtime_error` if:
+/// - `shape` is not a `TopoDS_EDGE`,
+/// - the edge has no underlying curve (degenerate),
+/// - projection yields no nearest point,
+/// - the tangent is undefined at the projected parameter.
+double curve_curvature_at(const OcctShape& edge, double px, double py, double pz);
+
 // --- Conformance queries ---
 
 /// Check whether `shape` is watertight (closed, no free edges).
