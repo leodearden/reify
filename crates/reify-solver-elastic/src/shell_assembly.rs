@@ -53,7 +53,8 @@
 //! a softer field than the bare edge-midpoint Eq. 5. The bubble (carried through
 //! the retained 20×20 skeleton + 2×2 condensation, a no-op here since `K_NB = 0`)
 //! enriches bending only and becomes live in shear/membrane on the curved
-//! director substrate of task 4065. See the doc comment on
+//! director substrate of task 4068 (its ANS-membrane companion is task 4065).
+//! See the doc comment on
 //! [`shell_element_stiffness_mitc3_plus`] for the full block breakdown.
 
 use crate::assembly::ElementStiffness;
@@ -565,7 +566,7 @@ pub fn shell_element_stiffness(
 ///   condensation correction `K_NB·K_BB⁻¹·K_BN` is therefore zero and
 ///   `K* = K_NN` exactly. The 20×20 skeleton + 2×2 condensation are retained for
 ///   faithfulness to the formulation and as the substrate the curved/director
-///   element (task 4065) activates — there `K_NB ≠ 0` and the bubble does work.
+///   element (task 4068) activates — there `K_NB ≠ 0` and the bubble does work.
 ///
 /// ## Patch-test consistency
 ///
@@ -652,7 +653,7 @@ pub fn shell_element_stiffness_mitc3_plus(
     // — so K_BB's only consumer is the `det_bb > 0` SPD `debug_assert`. The
     // six-interior-point sum below is therefore NOT an exact quadrature rule for
     // the degree-4 integrand ∇f_b·D_b·∇f_b; it only needs to preserve positive
-    // definiteness (sign), which it does. Task 4065 — where the curved/director
+    // definiteness (sign), which it does. Task 4068 — where the curved/director
     // substrate makes K_NB ≠ 0 and K_BB's value actually feeds K* — must replace
     // this with an exact rule before trusting the numeric block.
     for tp in interior.iter() {
@@ -735,7 +736,7 @@ pub fn shell_element_stiffness_mitc3_plus(
     // self-term writes only the (BX,BY) block, and the bubble is inert in shear
     // (K_NB^shear ≡ 0; DD#2 retracted). So K_NB ≡ 0 (bit-zero), the correction
     // K_NB·K_BB⁻¹·K_BN is identically zero, and K* = K_NN exactly. The full 2×2
-    // condensation is retained as faithful scaffolding for task 4065, where the
+    // condensation is retained as faithful scaffolding for task 4068, where the
     // curved/director substrate makes K_NB ≠ 0 and the bubble does work.
     debug_assert!(
         (0..NDOF).all(|i| {
@@ -780,6 +781,238 @@ pub fn shell_element_stiffness_mitc3_plus(
     for i in 0..NDOF {
         for j in 0..NDOF {
             k_e.data[i * NDOF + j] = k_glob[i][j];
+        }
+    }
+    k_e
+}
+
+/// Compute the 18×18 element stiffness for the **degenerated (continuum-based)
+/// shell** element (task 4068): per-node directors + a varying element Jacobian,
+/// carrying the MITC3+ assumed transverse-shear field (task 3392).
+///
+/// `nodes` are the three mid-surface vertex positions (global coords),
+/// `directors` the per-node unit directors `V_i` (provenance-agnostic — supplied
+/// explicitly by the caller; see [`crate::elements::degenerate_shell`] for the
+/// neighbour-averaged fallback), `thicknesses` the per-node thicknesses `t_i`,
+/// and `material` the isotropic linear-elastic law. DOF ordering, the drilling
+/// singularity, and the [`ElementStiffness`] container are exactly as documented
+/// on [`shell_element_stiffness`].
+///
+/// # Formulation (Ahmad/Bathe degenerated shell)
+///
+/// The element integrates `K = ∫_V Bᵀ D B dV` directly over the reference
+/// triangle × `[-1, 1]`:
+///
+/// ```text
+/// K = Σ_qp  w_inplane · w_ζ · ( B_mbᵀ D_pl B_mb  +  B_sᵀ (κG) B_s ) · det(J)
+/// ```
+///
+/// - **B_mb** (3×18) — the membrane+bending strain–displacement operator from
+///   the director-fibre displacement field pushed through `J⁻¹`
+///   ([`crate::elements::degenerate_shell::degenerate_membrane_bending_b`]). The
+///   through-thickness `ζ`-dependence makes a single operator carry *both*
+///   membrane (ζ⁰) and bending (ζ²) — no separate `t` / `t³/12` split.
+/// - **B_s** (2×18) — the carried MITC3+ interior-tying assumed transverse-shear
+///   field, covariant→physical-mapped against the **varying** `J`
+///   ([`crate::elements::degenerate_shell::degenerate_transverse_shear_b`]).
+/// - **D_pl** (3×3) — the per-point local-lamina plane-stress law
+///   ([`plane_stress_d`]); both B-matrices express strain in the same per-point
+///   lamina frame, so the constitutive law applies without a separate rotation.
+///
+/// Because both B-matrices map **global** DOFs to lamina-frame strains, `K` is
+/// assembled directly in the global frame — there is no `Rᵀ·K·R` step (unlike the
+/// flat-facet siblings, which build `K` in a local frame first).
+///
+/// ## Quadrature
+///
+/// - In-plane: the symmetric 3-point interior-tying orbit (`interior[0..3]`,
+///   weight `1/6` each) — the same rule [`shell_element_stiffness_mitc3_plus`]
+///   uses for its shear, so it integrates the quadratic assumed-shear energy
+///   exactly and reduces to the flat MITC3+ shear quadrature when flat.
+/// - Through-thickness: 2-point Gauss in `ζ` (nodes `±1/√3`, weight `1`), exact
+///   for the degree-≤2 `ζ`-integrand of a linear-director shell. (On a flat facet
+///   `J` is `ζ`-invariant and this reproduces the closed-form `t` / `t³/12`
+///   thickness integrals exactly — the flat-reduction anchor.)
+///
+/// # Retained MITC3+ skeleton
+///
+/// The 20×20 uncondensed skeleton + 2×2 bubble static condensation of
+/// [`shell_element_stiffness_mitc3_plus`] is retained: the nodal block `K_NN` is
+/// the degenerate integral above, the bubble bending self-term `K_BB` is carried
+/// for a well-posed (SPD) condensation, and the nodal↔bubble coupling `K_NB` is
+/// **zero** here (the carried nodal B-matrices do not write the bubble columns —
+/// activating the bubble on the director substrate is task 4065's ANS-membrane).
+/// So the closed-form condensation is a no-op and `K* = K_NN`, structurally
+/// identical to the flat MITC3+ path.
+#[allow(clippy::needless_range_loop)]
+pub fn shell_element_stiffness_degenerate(
+    nodes: &[[f64; 3]; 3],
+    directors: &[crate::elements::degenerate_shell::Director; 3],
+    thicknesses: &[f64; 3],
+    material: &IsotropicElastic,
+) -> ElementStiffness {
+    use crate::elements::degenerate_shell::{
+        ShellRefCoord3, degenerate_jacobian, degenerate_membrane_bending_b,
+        degenerate_transverse_shear_b,
+    };
+    use crate::elements::mitc3_plus::Mitc3Plus;
+
+    for (i, &t) in thicknesses.iter().enumerate() {
+        assert!(
+            t > 0.0,
+            "shell_element_stiffness_degenerate: thickness[{i}] must be positive, got {t}"
+        );
+    }
+    const NDOF: usize = Mitc3Plus::N_DOFS; // 18 nodal DOFs
+    const NU: usize = Mitc3Plus::N_DOFS_UNCONDENSED; // 20 = 18 + 2 bubble DOFs
+    const BX: usize = NDOF; // 18 = Δβ_x bubble column
+    const BY: usize = NDOF + 1; // 19 = Δβ_y bubble column
+
+    let d_pl = plane_stress_d(material);
+    let e = material.youngs_modulus;
+    let nu = material.poisson_ratio;
+    let g = e / (2.0 * (1.0 + nu));
+    let kappa_g = KAPPA * g;
+
+    // --- 20×20 uncondensed local matrix (nodal 18 + 2 bubble) ---
+    let mut k = [[0.0_f64; NU]; NU];
+
+    // ---- Nodal K_NN: numerically integrate membrane+bending + transverse shear
+    // over the reference triangle × [-1, 1]. In-plane: the 3-point interior-tying
+    // orbit (weight 1/6); through-thickness: 2-point Gauss in ζ (±1/√3, weight 1).
+    let interior = Mitc3Plus.interior_tying_points();
+    let inplane = [interior[0].coord, interior[1].coord, interior[2].coord];
+    let w_inplane = 1.0 / 6.0;
+    let zeta_node = 1.0 / 3.0_f64.sqrt();
+    let zeta_gauss = [-zeta_node, zeta_node];
+    let w_zeta = 1.0_f64;
+
+    for ip in inplane.iter() {
+        for &zeta in zeta_gauss.iter() {
+            let c3 = ShellRefCoord3::new(ip.xi, ip.eta, zeta);
+            let (_jm, det) = degenerate_jacobian(nodes, directors, thicknesses, c3);
+            let b_mb = degenerate_membrane_bending_b(nodes, directors, thicknesses, c3);
+            let b_s = degenerate_transverse_shear_b(nodes, directors, thicknesses, c3);
+            let scale = w_inplane * w_zeta * det;
+
+            // D_pl · B_mb (3×18), reused across the symmetric outer product.
+            let mut db = [[0.0_f64; NDOF]; 3];
+            for r in 0..3 {
+                for col in 0..NDOF {
+                    db[r][col] = d_pl[r][0] * b_mb[0][col]
+                        + d_pl[r][1] * b_mb[1][col]
+                        + d_pl[r][2] * b_mb[2][col];
+                }
+            }
+            for a in 0..NDOF {
+                for b in 0..NDOF {
+                    // membrane+bending: B_mbᵀ · (D_pl · B_mb)
+                    let mut v = b_mb[0][a] * db[0][b]
+                        + b_mb[1][a] * db[1][b]
+                        + b_mb[2][a] * db[2][b];
+                    // transverse shear: B_sᵀ · (κG·I₂) · B_s
+                    v += kappa_g * (b_s[0][a] * b_s[0][b] + b_s[1][a] * b_s[1][b]);
+                    k[a][b] += v * scale;
+                }
+            }
+        }
+    }
+
+    // ---- Bubble bending self-term K_BB (retained 3392 skeleton) ----
+    // Computed from the flat mid-surface kinematics (three nodes are always
+    // coplanar, so build_shell_frame is well-posed). On a flat facet this equals
+    // the MITC3+ K_BB exactly; on a curved-director patch it is a well-posed SPD
+    // block. Either way K_NB ≡ 0 (the nodal B-matrices above never touch the
+    // bubble columns), so K_BB is condensed away — its only role here is a
+    // well-posed (SPD) static condensation. Bubble activation (K_NB ≠ 0) is the
+    // ANS-membrane work of task 4065.
+    let frame = build_shell_frame(nodes);
+    let kin = crate::shell_kinematics::shell_kinematics(nodes, &frame);
+    let inv_t = kin.jac2_inv_t;
+    let det2 = kin.det2;
+    let t_avg = (thicknesses[0] + thicknesses[1] + thicknesses[2]) / 3.0;
+    let t3_dpl = {
+        let factor = t_avg * t_avg * t_avg / 12.0;
+        let mut td = [[0.0_f64; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                td[i][j] = factor * d_pl[i][j];
+            }
+        }
+        td
+    };
+    let w_ref = 0.5 / (interior.len() as f64);
+    for tp in interior.iter() {
+        let g_ref = Mitc3Plus.bubble_grad_at(tp.coord);
+        // physical bubble gradient = J2⁻ᵀ · ∇_ref f_b
+        let fbx = inv_t[0][0] * g_ref[0] + inv_t[0][1] * g_ref[1];
+        let fby = inv_t[1][0] * g_ref[0] + inv_t[1][1] * g_ref[1];
+        let bb = [[0.0, -fbx], [fby, 0.0], [fbx, -fby]];
+        for a in 0..2 {
+            for b in 0..2 {
+                let mut v = 0.0;
+                for rr in 0..3 {
+                    for s in 0..3 {
+                        v += bb[rr][a] * t3_dpl[rr][s] * bb[s][b];
+                    }
+                }
+                let ca = if a == 0 { BX } else { BY };
+                let cb = if b == 0 { BX } else { BY };
+                k[ca][cb] += v * w_ref * det2;
+            }
+        }
+    }
+
+    // ---- Static condensation of the 2 bubble DOFs (no-op here: K_NB ≡ 0) ----
+    // K* = K_NN − K_NB · K_BB⁻¹ · K_BN. The nodal B-matrices never write the
+    // bubble columns, so K_NB/K_BN are bit-zero and the correction vanishes
+    // (K* = K_NN). The full 2×2 condensation is retained as faithful scaffolding
+    // for task 4068, where the bubble couples (K_NB ≠ 0) and does work.
+    debug_assert!(
+        (0..NDOF).all(|i| {
+            k[i][BX].to_bits() == 0
+                && k[i][BY].to_bits() == 0
+                && k[BX][i].to_bits() == 0
+                && k[BY][i].to_bits() == 0
+        }),
+        "degenerate flat-skeleton invariant: K_NB/K_BN must be bit-zero so condensation is a no-op (K* = K_NN)"
+    );
+    let k_bb = [[k[BX][BX], k[BX][BY]], [k[BY][BX], k[BY][BY]]];
+    let det_bb = k_bb[0][0] * k_bb[1][1] - k_bb[0][1] * k_bb[1][0];
+    debug_assert!(
+        det_bb > 0.0,
+        "degenerate bubble block K_BB must be SPD (det = {det_bb})"
+    );
+    let inv_bb = [
+        [k_bb[1][1] / det_bb, -k_bb[0][1] / det_bb],
+        [-k_bb[1][0] / det_bb, k_bb[0][0] / det_bb],
+    ];
+    let mut k_loc = [[0.0_f64; NDOF]; NDOF];
+    for i in 0..NDOF {
+        let nb_i = [k[i][BX], k[i][BY]]; // K_NB row i
+        for j in 0..NDOF {
+            let bn_j = [k[BX][j], k[BY][j]]; // K_BN col j
+            let mut corr = 0.0;
+            for p in 0..2 {
+                for q in 0..2 {
+                    corr += nb_i[p] * inv_bb[p][q] * bn_j[q];
+                }
+            }
+            k_loc[i][j] = k[i][j] - corr;
+        }
+    }
+
+    // ---- Symmetrize and pack ----
+    // The degenerate B-matrices map global DOFs to lamina-frame strains, so K is
+    // already in the global frame — there is NO local→global rotation (unlike the
+    // flat-facet siblings). Each Bᵀ·D·B contribution is symmetric in form;
+    // averaging the triangles minimises residual asymmetry before packing.
+    symmetrize_in_place(&mut k_loc);
+
+    let mut k_e = ElementStiffness::zeros(NDOF);
+    for i in 0..NDOF {
+        for j in 0..NDOF {
+            k_e.data[i * NDOF + j] = k_loc[i][j];
         }
     }
     k_e
@@ -1936,5 +2169,539 @@ mod tests {
                 "local_to_global() column {col} norm² = {norm_sq}, expected 1.0",
             );
         }
+    }
+
+    // ====================================================================
+    // Degenerate (continuum-based) shell element (task 4068): per-node
+    // directors + a varying Jacobian, carrying the MITC3+ assumed transverse
+    // shear (task 3392). Tested on a CURVED patch (non-coplanar directors) so
+    // the varying J is exercised — states the flat constant-J element cannot
+    // reach. Sibling of `shell_element_stiffness_mitc3_plus` above.
+    // ====================================================================
+
+    /// Non-coplanar (radially tilted) per-node unit directors on the UNIT_TRI
+    /// mid-surface: V_0 = +z, V_1 and V_2 tilted 30° outward. Non-parallel ⇒ the
+    /// degenerate Jacobian varies in ζ and (ξ,η) — a curved patch whose curvature
+    /// is carried by the directors (the mid-surface itself stays planar, which
+    /// keeps the rigid-mode arithmetic clean while still exercising the varying J).
+    fn curved_directors() -> [[f64; 3]; 3] {
+        let c30 = 30.0_f64.to_radians().cos();
+        let s30 = 30.0_f64.to_radians().sin();
+        [[0.0, 0.0, 1.0], [s30, 0.0, c30], [0.0, s30, c30]]
+    }
+
+    #[test]
+    fn degenerate_stiffness_is_18x18_symmetric_finite_with_rigid_body_null_space() {
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let directors = curved_directors();
+        let thicknesses = [t; 3];
+        let k = shell_element_stiffness_degenerate(&UNIT_TRI, &directors, &thicknesses, &mat);
+
+        // (i) Shape: 18×18 after static condensation of the 2 bubble DOFs.
+        assert_eq!(
+            k.n_dofs,
+            Mitc3Plus::N_DOFS,
+            "degenerate element must condense to N_DOFS = 18"
+        );
+        assert_eq!(
+            k.data.len(),
+            Mitc3Plus::N_DOFS * Mitc3Plus::N_DOFS,
+            "degenerate data length must be 18×18 = 324"
+        );
+
+        // (ii) Entrywise finite + symmetric to 1e-9 relative.
+        for i in 0..Mitc3Plus::N_DOFS {
+            for j in 0..Mitc3Plus::N_DOFS {
+                let kij = k.get(i, j);
+                let kji = k.get(j, i);
+                assert!(kij.is_finite(), "degenerate K[{i}][{j}] = {kij} is not finite");
+                let scale = kij.abs().max(kji.abs()).max(1.0);
+                assert!(
+                    (kij - kji).abs() < 1e-9 * scale,
+                    "degenerate asymmetry at ({i},{j}): {kij} vs {kji}",
+                );
+            }
+        }
+
+        // (iii) Rigid-body null space on the CURVED patch. The degenerate
+        // rigid-rotation mode u_i = ω×(x_i−c), θ_i = ω is strain-free for ANY
+        // directors: u_h(ξ,η,ζ) ≡ ω×(X−c), so the velocity gradient is skew(ω)
+        // (symmetric strain 0) and the geometry-free covariant shear coincides
+        // with flat MITC3+'s (already proven to annihilate this mode).
+        let k_max = k.data.iter().copied().fold(0.0_f64, |a, x| a.max(x.abs()));
+        let tol = 1e-9 * k_max.max(1.0);
+
+        // (a) Rigid translations along each global axis.
+        for axis in 0..3 {
+            let mut u = [0.0_f64; Mitc3Plus::N_DOFS];
+            for node in 0..Mitc3Plus::N_NODES {
+                u[Mitc3Plus::N_DOFS_PER_NODE * node + axis] = 1.0;
+            }
+            let ku = matvec(&k, &u);
+            assert!(
+                linf(&ku) < tol,
+                "degenerate translation axis {axis}: linf(K·u) = {}, tol = {tol}",
+                linf(&ku),
+            );
+        }
+
+        // (b) Rigid rotations about the mid-surface centroid.
+        let c = [1.0 / 3.0_f64, 1.0 / 3.0, 0.0_f64];
+        let omega = [[1.0_f64, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        for &w in &omega {
+            let mut u = [0.0_f64; Mitc3Plus::N_DOFS];
+            for node in 0..Mitc3Plus::N_NODES {
+                let dx = [
+                    UNIT_TRI[node][0] - c[0],
+                    UNIT_TRI[node][1] - c[1],
+                    UNIT_TRI[node][2] - c[2],
+                ];
+                let ndp = Mitc3Plus::N_DOFS_PER_NODE;
+                u[ndp * node + 0] = w[1] * dx[2] - w[2] * dx[1];
+                u[ndp * node + 1] = w[2] * dx[0] - w[0] * dx[2];
+                u[ndp * node + 2] = w[0] * dx[1] - w[1] * dx[0];
+                u[ndp * node + 3] = w[0];
+                u[ndp * node + 4] = w[1];
+                u[ndp * node + 5] = w[2];
+            }
+            let ku = matvec(&k, &u);
+            assert!(
+                linf(&ku) < tol,
+                "degenerate rotation ω={w:?}: linf(K·u) = {}, tol = {tol}",
+                linf(&ku),
+            );
+        }
+    }
+
+    // --- Degenerate patch tests (task 4068 step-13): the standard degenerated-
+    // shell consistency acceptance tests, on a FLAT patch (directors ∥ facet
+    // normal, uniform thickness) so the closed-form analytical energy is exact.
+    // Mirror the MITC3+ membrane patch test and the bare-MITC3 bending patch
+    // test — driving the degenerate element with constant in-plane strain and
+    // with a constant-curvature (linear-θ) field, respectively.
+
+    /// Flat-patch directors (∥ +z facet normal) + uniform thickness — the
+    /// constant-Jacobian configuration in which the degenerate element's
+    /// 2-point-Gauss-in-ζ through-thickness integral reproduces the closed-form
+    /// `t` (membrane) and `t³/12` (bending) factors exactly.
+    fn flat_patch_directors() -> [[f64; 3]; 3] {
+        [[0.0, 0.0, 1.0]; 3]
+    }
+
+    #[test]
+    fn degenerate_membrane_patch_test_matches_analytical_energy() {
+        // Uniform in-plane strain u_x = a·x, u_y = b·y → ε = (a, b, 0). The
+        // degenerate membrane B reproduces the constant strain and the in-plane
+        // rule × 2-pt Gauss in ζ integrates the (constant) membrane integrand
+        // exactly, so ½uᵀKu equals the analytical membrane energy.
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let a = 0.01_f64;
+        let b = -0.005_f64;
+        let directors = flat_patch_directors();
+        let thicknesses = [t; 3];
+        let k = shell_element_stiffness_degenerate(&UNIT_TRI, &directors, &thicknesses, &mat);
+
+        const NDP: usize = Mitc3Plus::N_DOFS_PER_NODE;
+        let mut u = [0.0_f64; Mitc3Plus::N_DOFS];
+        u[NDP] = a; // node1 at x=1 → u_x = a
+        u[NDP * 2 + 1] = b; // node2 at y=1 → u_y = b
+
+        let ku = matvec(&k, &u);
+        let u_k: f64 = 0.5 * ku.iter().zip(u.iter()).map(|(ki, ui)| ki * ui).sum::<f64>();
+
+        let d = plane_stress_d(&mat);
+        let eps = [a, b, 0.0_f64];
+        let d_eps = [
+            d[0][0] * eps[0] + d[0][1] * eps[1],
+            d[1][0] * eps[0] + d[1][1] * eps[1],
+            0.0,
+        ];
+        let area = 0.5_f64;
+        let u_analytical = 0.5 * (eps[0] * d_eps[0] + eps[1] * d_eps[1]) * t * area;
+        let scale = u_analytical.abs().max(1.0);
+        assert!(
+            (u_k - u_analytical).abs() < 1e-9 * scale,
+            "degenerate membrane patch: U_K={u_k}, U_analytical={u_analytical}",
+        );
+    }
+
+    #[test]
+    fn degenerate_bending_patch_test_linear_theta_y_matches_analytical_total_energy() {
+        // Constant-curvature field θ_y(node_i) = α·x_i (node0→0, node1→α,
+        // node2→0): uniform curvature κ_xx = α plus the carried MITC3+
+        // assumed-shear projection of the linear physical shear γ_xz = α·x to the
+        // constant α/2 (verified: the MITC3+ interior-tying field, like bare
+        // MITC3's edge field, averages a linear shear to its midpoint value). So
+        //   U_total = ½·α²·D_pl[0][0]·(t³/12)·A  +  ½·(α/2)²·κ·G·t·A
+        // and the degenerate element (which integrates bending via 2-pt Gauss in
+        // ζ, exact for the ζ² integrand) reproduces it. On this flat patch the
+        // element is numerically identical to flat MITC3+ for this mode.
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let alpha = 0.002_f64;
+        let directors = flat_patch_directors();
+        let thicknesses = [t; 3];
+        let k = shell_element_stiffness_degenerate(&UNIT_TRI, &directors, &thicknesses, &mat);
+
+        const NDP: usize = Mitc3Plus::N_DOFS_PER_NODE;
+        let mut u = [0.0_f64; Mitc3Plus::N_DOFS];
+        u[NDP + 4] = alpha; // θ_y = α at node1 (x=1) → θ_y = α·x
+
+        let ku = matvec(&k, &u);
+        let u_k: f64 = 0.5 * ku.iter().zip(u.iter()).map(|(ki, ui)| ki * ui).sum::<f64>();
+
+        let d = plane_stress_d(&mat);
+        let e = mat.youngs_modulus;
+        let nu = mat.poisson_ratio;
+        let g = e / (2.0 * (1.0 + nu));
+        let kappa = 5.0_f64 / 6.0;
+        let area = 0.5_f64;
+        let u_bending = 0.5 * alpha * alpha * d[0][0] * (t * t * t / 12.0) * area;
+        let u_shear = 0.5 * (alpha / 2.0) * (alpha / 2.0) * kappa * g * t * area;
+        let u_analytical = u_bending + u_shear;
+        let scale = u_analytical.abs().max(1.0);
+        assert!(
+            (u_k - u_analytical).abs() < 1e-9 * scale,
+            "degenerate bending patch: U_K={u_k}, U_analytical={u_analytical} \
+             (bending={u_bending}, shear={u_shear}), rel_err={}",
+            (u_k - u_analytical).abs() / scale,
+        );
+    }
+
+    // --- Degenerate element-quality acceptance tests (task 4068 steps 15–19):
+    // isotropy, no spurious zero-energy modes, and bit-compatible flat-reduction.
+    // These mirror the standard degenerated-shell acceptance suite. ---
+
+    /// All `n_dofs` eigenvalues of an element stiffness matrix, ascending by
+    /// `|λ|`. Reuses the crate's dense generalized eigensolver (the "dense path",
+    /// [`crate::eigensolve::solve_eigen_dense`]) with `B = I`, so the generalized
+    /// problem `K φ = λ I φ` collapses to the standard symmetric spectrum. Used by
+    /// the isotropy (spectra-coincide) and no-spurious-modes (kernel-count) tests.
+    fn element_eigenvalues(k: &ElementStiffness) -> Vec<f64> {
+        use crate::eigensolve::{EigenSolverOptions, solve_eigen_dense};
+        use faer::sparse::{SparseRowMat, Triplet};
+        let n = k.n_dofs;
+        let mut k_trips: Vec<Triplet<usize, usize, f64>> = Vec::with_capacity(n * n);
+        for i in 0..n {
+            for j in 0..n {
+                let v = k.get(i, j);
+                if v != 0.0 {
+                    k_trips.push(Triplet::new(i, j, v));
+                }
+            }
+        }
+        let k_sp = SparseRowMat::try_new_from_triplets(n, n, &k_trips).unwrap();
+        let id_trips: Vec<Triplet<usize, usize, f64>> =
+            (0..n).map(|i| Triplet::new(i, i, 1.0)).collect();
+        let id_sp = SparseRowMat::try_new_from_triplets(n, n, &id_trips).unwrap();
+        let opts = EigenSolverOptions {
+            n_modes: n,
+            ..Default::default()
+        };
+        let res = solve_eigen_dense(&k_sp, &id_sp, opts);
+        assert_eq!(
+            res.eigenvalues.len(),
+            n,
+            "dense eigensolve must recover all {n} eigenvalues with B = I (got {})",
+            res.eigenvalues.len(),
+        );
+        res.eigenvalues
+    }
+
+    /// Max absolute entry of an element stiffness matrix (the matrix scale used
+    /// for relative tolerances).
+    fn element_k_max(k: &ElementStiffness) -> f64 {
+        k.data.iter().copied().fold(0.0_f64, |a, x| a.max(x.abs()))
+    }
+
+    /// Equilateral triangle in the xy-plane (unit edge), so a cyclic node
+    /// permutation is a true 120° in-plane symmetry of the element — an isotropic
+    /// element must give the identical eigenvalue spectrum under it. Directors are
+    /// the facet normal `+z`.
+    fn equilateral_tri() -> [[f64; 3]; 3] {
+        let h = 3.0_f64.sqrt() / 2.0;
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, h, 0.0]]
+    }
+
+    #[test]
+    fn degenerate_element_is_isotropic_eigenvalue_spectra_coincide() {
+        // Frame-invariance / isotropy: an isotropic element's energy is independent
+        // of in-plane orientation and node labeling, so its eigenvalue spectrum is
+        // invariant under (a) a rigid 3D rotation of the element and (b) a cyclic
+        // node permutation. Both transforms are orthogonal similarities of K
+        // (K → T K Tᵀ, T orthogonal/permutation), which preserve eigenvalues
+        // exactly; any in-plane-direction or node-labeling bias in the lamina
+        // frame / quadrature would break the spectrum match.
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let nodes = equilateral_tri();
+        let directors = [[0.0, 0.0, 1.0]; 3]; // facet normal
+        let thicknesses = [t; 3];
+        let k_orig = shell_element_stiffness_degenerate(&nodes, &directors, &thicknesses, &mat);
+        let eig_orig = element_eigenvalues(&k_orig);
+        let k_max = element_k_max(&k_orig);
+        let tol = 1e-9 * k_max.max(1.0);
+
+        // (a) Rigid 3D rotation: rotate nodes AND directors by Q (directors are the
+        // facet normal, which rotates with the element).
+        let q = super::tilted_q_for_shell_tests();
+        let rotate = |v: [f64; 3]| -> [f64; 3] {
+            [
+                q[0][0] * v[0] + q[0][1] * v[1] + q[0][2] * v[2],
+                q[1][0] * v[0] + q[1][1] * v[1] + q[1][2] * v[2],
+                q[2][0] * v[0] + q[2][1] * v[1] + q[2][2] * v[2],
+            ]
+        };
+        let rot_nodes = [rotate(nodes[0]), rotate(nodes[1]), rotate(nodes[2])];
+        let rot_dirs = [
+            rotate(directors[0]),
+            rotate(directors[1]),
+            rotate(directors[2]),
+        ];
+        let k_rot = shell_element_stiffness_degenerate(&rot_nodes, &rot_dirs, &thicknesses, &mat);
+        let eig_rot = element_eigenvalues(&k_rot);
+        for (i, (&a, &b)) in eig_orig.iter().zip(eig_rot.iter()).enumerate() {
+            assert!(
+                (a - b).abs() < tol,
+                "isotropy under 3D rotation: spectrum[{i}] = {a} vs {b} (tol {tol})",
+            );
+        }
+
+        // (b) Cyclic node permutation [0,1,2] → [1,2,0] (a 120° symmetry of the
+        // equilateral triangle): same element, relabeled nodes ⇒ same spectrum.
+        let perm = [1_usize, 2, 0];
+        let perm_nodes = [nodes[perm[0]], nodes[perm[1]], nodes[perm[2]]];
+        let perm_dirs = [
+            directors[perm[0]],
+            directors[perm[1]],
+            directors[perm[2]],
+        ];
+        let perm_th = [
+            thicknesses[perm[0]],
+            thicknesses[perm[1]],
+            thicknesses[perm[2]],
+        ];
+        let k_perm = shell_element_stiffness_degenerate(&perm_nodes, &perm_dirs, &perm_th, &mat);
+        let eig_perm = element_eigenvalues(&k_perm);
+        for (i, (&a, &b)) in eig_orig.iter().zip(eig_perm.iter()).enumerate() {
+            assert!(
+                (a - b).abs() < tol,
+                "isotropy under cyclic node permutation: spectrum[{i}] = {a} vs {b} (tol {tol})",
+            );
+        }
+    }
+
+    /// The 9 legitimate zero-energy modes of the degenerate shell element on the
+    /// patch (`nodes`, `directors`): 3 rigid translations, 3 rigid rotations
+    /// about the mid-surface centroid, and 3 nodal drilling rotations (`θ_i = V_i`
+    /// at node `i`, all else 0). The drilling modes are EXACT zero-energy: every
+    /// strain term reads a nodal rotation only through `(θ_i × V_i) =
+    /// −skew(V_i)·θ_i`, which annihilates `θ_i ∥ V_i`. On a curved patch
+    /// (non-parallel directors) these 9 vectors are linearly independent (no
+    /// uniform `ω` can equal a per-node multiple of three non-parallel
+    /// directors), so they span a 9-dimensional kernel.
+    fn legitimate_kernel_modes(
+        nodes: &[[f64; 3]; 3],
+        directors: &[[f64; 3]; 3],
+    ) -> Vec<[f64; Mitc3Plus::N_DOFS]> {
+        const NDP: usize = Mitc3Plus::N_DOFS_PER_NODE;
+        let mut modes: Vec<[f64; Mitc3Plus::N_DOFS]> = Vec::with_capacity(9);
+        // (a) 3 rigid translations along each global axis.
+        for axis in 0..3 {
+            let mut u = [0.0_f64; Mitc3Plus::N_DOFS];
+            for node in 0..Mitc3Plus::N_NODES {
+                u[NDP * node + axis] = 1.0;
+            }
+            modes.push(u);
+        }
+        // (b) 3 rigid rotations about the mid-surface centroid: u_i = ω×(x_i−c),
+        // θ_i = ω.
+        let c = [
+            (nodes[0][0] + nodes[1][0] + nodes[2][0]) / 3.0,
+            (nodes[0][1] + nodes[1][1] + nodes[2][1]) / 3.0,
+            (nodes[0][2] + nodes[1][2] + nodes[2][2]) / 3.0,
+        ];
+        for w in [[1.0_f64, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] {
+            let mut u = [0.0_f64; Mitc3Plus::N_DOFS];
+            for node in 0..Mitc3Plus::N_NODES {
+                let dx = [
+                    nodes[node][0] - c[0],
+                    nodes[node][1] - c[1],
+                    nodes[node][2] - c[2],
+                ];
+                u[NDP * node] = w[1] * dx[2] - w[2] * dx[1];
+                u[NDP * node + 1] = w[2] * dx[0] - w[0] * dx[2];
+                u[NDP * node + 2] = w[0] * dx[1] - w[1] * dx[0];
+                u[NDP * node + 3] = w[0];
+                u[NDP * node + 4] = w[1];
+                u[NDP * node + 5] = w[2];
+            }
+            modes.push(u);
+        }
+        // (c) 3 nodal drilling rotations θ_i = V_i (zero translation).
+        for node in 0..Mitc3Plus::N_NODES {
+            let mut u = [0.0_f64; Mitc3Plus::N_DOFS];
+            u[NDP * node + 3] = directors[node][0];
+            u[NDP * node + 4] = directors[node][1];
+            u[NDP * node + 5] = directors[node][2];
+            modes.push(u);
+        }
+        modes
+    }
+
+    #[test]
+    fn degenerate_element_has_no_spurious_zero_energy_modes() {
+        // On a CURVED patch (non-parallel directors ⇒ the varying J is active),
+        // the free element's kernel must be EXACTLY the legitimate rigid-body +
+        // MITC3 drilling kernel and nothing more — no spurious (hourglass)
+        // mechanism. We do NOT assert "exactly 6 zero modes": pure MITC3/MITC3+
+        // carries a drilling-rotation kernel by construction (no local θ_z
+        // stiffness — see the drilling-singularity note on
+        // `shell_element_stiffness_mitc3_plus`), so the legitimate kernel here is
+        // 9-dimensional (6 rigid + 3 nodal drilling). The assertion targets the
+        // absence of a mode BEYOND rigid+drilling.
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let nodes = UNIT_TRI;
+        let directors = curved_directors();
+        let thicknesses = [t; 3];
+        let k = shell_element_stiffness_degenerate(&nodes, &directors, &thicknesses, &mat);
+        let k_max = element_k_max(&k);
+        // Kernel eigenvalues measure ~1e-16·k_max; the first deformational
+        // eigenvalue ~5.4e-4·k_max — a ~12-order gap, so 1e-9·k_max cleanly
+        // separates them.
+        let zero_tol = 1e-9 * k_max;
+
+        // (A) Each of the 9 KNOWN kernel modes is zero-energy (Rayleigh quotient
+        // ≈ 0). This pins WHICH 9-dimensional subspace the kernel is.
+        let modes = legitimate_kernel_modes(&nodes, &directors);
+        assert_eq!(modes.len(), 9, "expected 9 legitimate kernel modes");
+        for (m, u) in modes.iter().enumerate() {
+            let ku = matvec(&k, u);
+            let energy: f64 = 0.5 * ku.iter().zip(u.iter()).map(|(a, b)| a * b).sum::<f64>();
+            let unorm2: f64 = u.iter().map(|x| x * x).sum::<f64>();
+            assert!(
+                energy.abs() < zero_tol * unorm2,
+                "legitimate kernel mode {m} not zero-energy: ½uᵀKu = {energy} \
+                 (tol {})",
+                zero_tol * unorm2,
+            );
+        }
+
+        // (B) EXACTLY 9 near-zero eigenvalues ⇒ the kernel is exactly the
+        // 9-dim span of the known modes (≥9 because (A) gives 9 independent
+        // zero-energy modes; =9 because no 10th eigenvalue is near zero), so
+        // there is NO spurious zero mode.
+        let mut eig = element_eigenvalues(&k);
+        eig.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let n_zero = eig.iter().filter(|&&l| l.abs() < zero_tol).count();
+        assert_eq!(
+            n_zero, 9,
+            "degenerate kernel dimension = {n_zero}, expected 9 (6 rigid + 3 \
+             drilling); spectrum = {eig:?}",
+        );
+
+        // (C) The first deformational eigenvalue (10th smallest) is STRICTLY
+        // positive with a wide gap above the kernel — every mode outside
+        // rigid+drilling carries genuine stiffness.
+        let first_positive = eig[9];
+        assert!(
+            first_positive > 1e-6 * k_max,
+            "first deformational eigenvalue {first_positive} not strictly positive \
+             (λ/k_max = {}, expected > 1e-6)",
+            first_positive / k_max,
+        );
+    }
+
+    // --- Degenerate flat-reduction anchor (task 4068 steps 19/20) + the positive
+    // metric-improvement proof (esc-4068-134 directive 2). ---
+
+    #[test]
+    fn degenerate_flat_reduces_to_mitc3_plus_on_unit_metric_triangle() {
+        // "Bit-compatible flat reduction" realized as numerical equivalence at FP
+        // round-off: on the UNIT-metric orthogonal reference triangle with
+        // directors ∥ +z and uniform thickness, the degenerate element matrix
+        // equals flat MITC3+'s (max entrywise diff / k_max < 1e-9). This is the
+        // load-bearing correctness anchor — the element provably degrades to the
+        // reviewed task-3392 behaviour when flat.
+        //
+        // Why the UNIT-metric triangle (esc-4068-134): membrane+bending reduce on
+        // ANY flat triangle, but the degenerate transverse shear is the physically-
+        // correct standard-MITC3 shear, which equals task 3392's metric-simplified
+        // flat shear only where |g_ξ| = |g_η| = 1 and g_ξ ⊥ g_η — i.e. the unit
+        // reference triangle. On a general flat triangle the two K differ by the
+        // in-plane metric on the shear (a strict improvement, pinned positively by
+        // the non-unit shear patch test below). Literal `to_bits()` identity is
+        // precluded by the differing (but exact) ζ-quadrature, so it is not
+        // asserted; 1e-9 relative is the standard FE meaning of "reduces to flat".
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let directors = [[0.0, 0.0, 1.0]; 3]; // ∥ +z facet normal
+        let thicknesses = [t; 3];
+        let k_deg = shell_element_stiffness_degenerate(&UNIT_TRI, &directors, &thicknesses, &mat);
+        let k_ref = shell_element_stiffness_mitc3_plus(&UNIT_TRI, t, &mat);
+        let k_max = element_k_max(&k_ref);
+
+        let mut max_diff = 0.0_f64;
+        for i in 0..Mitc3Plus::N_DOFS {
+            for j in 0..Mitc3Plus::N_DOFS {
+                max_diff = max_diff.max((k_deg.get(i, j) - k_ref.get(i, j)).abs());
+            }
+        }
+        assert!(
+            max_diff < 1e-9 * k_max,
+            "flat degenerate K differs from flat MITC3+ by {max_diff} \
+             (k_max {k_max}, rel {})",
+            max_diff / k_max,
+        );
+    }
+
+    #[test]
+    fn degenerate_transverse_shear_constant_state_patch_test_nonunit_triangle() {
+        // POSITIVE proof of the metric improvement (esc-4068-134 directive 2): on a
+        // NON-UNIT flat triangle, a uniform θ_y = α (w = 0) is a constant physical
+        // transverse-shear state γ_xz = α, γ_yz = 0 — no membrane (u = 0) and no
+        // bending (θ uniform ⇒ zero curvature). A physically-correct element must
+        // reproduce the analytical constant-shear energy ½·α²·κ·G·t·A for ANY
+        // triangle (A = mid-surface area). The degenerate element's exact covariant
+        // kinematics + s3·m2 contravariant map deliver this FULL value.
+        //
+        // Sanity / contrast: task 3392's metric-simplified flat shear would give
+        // only ¼ of this on the [(0,0),(2,0),(0,1.5)] triangle (the in-plane metric
+        // |g_x| = 2 it drops); we assert the CORRECT full value, NOT 3392's. Per
+        // the esc-4068-134 directive, if this does not pass the s3·m2 map has a
+        // residual bug and the failure must be escalated, not hidden.
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let alpha = 0.003_f64;
+        let nodes = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 1.5, 0.0]];
+        let directors = [[0.0, 0.0, 1.0]; 3];
+        let thicknesses = [t; 3];
+        let k = shell_element_stiffness_degenerate(&nodes, &directors, &thicknesses, &mat);
+
+        let mut u = [0.0_f64; Mitc3Plus::N_DOFS];
+        for node in 0..Mitc3Plus::N_NODES {
+            u[Mitc3Plus::N_DOFS_PER_NODE * node + 4] = alpha; // uniform θ_y
+        }
+        let ku = matvec(&k, &u);
+        let u_k: f64 = 0.5 * ku.iter().zip(u.iter()).map(|(ki, ui)| ki * ui).sum::<f64>();
+
+        let e = mat.youngs_modulus;
+        let nu = mat.poisson_ratio;
+        let gmod = e / (2.0 * (1.0 + nu));
+        let kappa = 5.0_f64 / 6.0;
+        let area = 1.5_f64; // ½·2·1.5, the mid-surface area of this triangle
+        let u_analytical = 0.5 * alpha * alpha * kappa * gmod * t * area;
+        let scale = u_analytical.abs().max(1.0);
+        assert!(
+            (u_k - u_analytical).abs() < 1e-9 * scale,
+            "degenerate non-unit shear patch: U_K = {u_k}, U_analytical = \
+             {u_analytical}, rel_err = {} (the ¼-value {} would flag a fallback to \
+             3392's metric-simplified shear)",
+            (u_k - u_analytical).abs() / scale,
+            0.25 * u_analytical,
+        );
     }
 }
