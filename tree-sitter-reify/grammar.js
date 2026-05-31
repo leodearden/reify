@@ -116,6 +116,7 @@ module.exports = grammar({
       optional('pub'),
       'enum',
       field('name', $.identifier),
+      optional($.type_parameters),
       '{',
       commaSep($.enum_variant),
       '}',
