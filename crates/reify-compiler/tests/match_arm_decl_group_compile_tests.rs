@@ -44,6 +44,7 @@ fn named_type_expr(name: &str) -> TypeExpr {
 
 fn param_member(name: &str, type_name: &str) -> MemberDecl {
     MemberDecl::Param(ParamDecl {
+        is_priv: false,
         name: name.to_string(),
         doc: None,
         type_expr: Some(named_type_expr(type_name)),
@@ -61,6 +62,7 @@ fn sub_member(name: &str, structure_name: &str) -> MemberDecl {
 
 fn sub_member_with_span(name: &str, structure_name: &str, span: SourceSpan) -> MemberDecl {
     MemberDecl::Sub(SubDecl {
+        is_priv: false,
         name: name.to_string(),
         structure_name: structure_name.to_string(),
         type_args: vec![],
@@ -79,6 +81,7 @@ fn sub_member_with_span(name: &str, structure_name: &str, span: SourceSpan) -> M
 
 fn param_member_with_span(name: &str, type_name: &str, span: SourceSpan) -> MemberDecl {
     MemberDecl::Param(ParamDecl {
+        is_priv: false,
         name: name.to_string(),
         doc: None,
         type_expr: Some(named_type_expr(type_name)),

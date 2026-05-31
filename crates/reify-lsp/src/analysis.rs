@@ -1591,6 +1591,7 @@ mod tests {
         let leaf = vec![MemberDecl::Param(ParamDecl {
             name: target.to_string(),
             doc: None,
+            is_priv: false,
             type_expr: None,
             default: None,
             where_clause: None,

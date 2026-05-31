@@ -33,6 +33,7 @@ fn reject_unresolved_type_names() {
             type_params: vec![],
             trait_bounds: vec![],
             members: vec![MemberDecl::Param(ParamDecl {
+                is_priv: false,
                 name: "x".into(),
                 doc: None,
                 type_expr: Some(TypeExpr {
@@ -233,6 +234,7 @@ fn handle_parse_errors_gracefully() {
             type_params: vec![],
             trait_bounds: vec![],
             members: vec![MemberDecl::Param(ParamDecl {
+                is_priv: false,
                 name: "width".into(),
                 doc: None,
                 type_expr: Some(TypeExpr {
@@ -300,6 +302,7 @@ fn reject_unresolved_type_in_trait_conformance() {
                 type_params: vec![],
                 refinements: vec![],
                 members: vec![MemberDecl::Param(ParamDecl {
+                    is_priv: false,
                     name: "x".into(),
                     doc: None,
                     type_expr: Some(TypeExpr {
@@ -332,6 +335,7 @@ fn reject_unresolved_type_in_trait_conformance() {
                     span: SourceSpan::new(50, 51),
                 }],
                 members: vec![MemberDecl::Param(ParamDecl {
+                    is_priv: false,
                     name: "x".into(),
                     doc: None,
                     type_expr: Some(TypeExpr {

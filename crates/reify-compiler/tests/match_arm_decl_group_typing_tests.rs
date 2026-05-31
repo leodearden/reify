@@ -52,6 +52,7 @@ fn named_type_expr(name: &str) -> TypeExpr {
 
 fn param_member(name: &str, type_name: &str) -> MemberDecl {
     MemberDecl::Param(ParamDecl {
+        is_priv: false,
         name: name.to_string(),
         doc: None,
         type_expr: Some(named_type_expr(type_name)),
@@ -65,6 +66,7 @@ fn param_member(name: &str, type_name: &str) -> MemberDecl {
 
 fn sub_member(name: &str, structure_name: &str) -> MemberDecl {
     MemberDecl::Sub(SubDecl {
+        is_priv: false,
         name: name.to_string(),
         structure_name: structure_name.to_string(),
         type_args: vec![],
@@ -739,6 +741,7 @@ fn external_sub_dot_cluster_dot_arm_specific_field_emits_diagnostic() {
 /// `sub <name> : List<<structure_name>>` in the AST.
 fn collection_sub_member(name: &str, structure_name: &str) -> MemberDecl {
     MemberDecl::Sub(SubDecl {
+        is_priv: false,
         name: name.to_string(),
         structure_name: structure_name.to_string(),
         type_args: vec![],

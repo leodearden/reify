@@ -415,6 +415,7 @@ mod tests {
                 DefaultKind::Param {
                     cell_type: Type::Real,
                     default_decl: reify_ast::ParamDecl {
+                        is_priv: false,
                         name: "d".to_string(),
                         doc: None,
                         type_expr: None,

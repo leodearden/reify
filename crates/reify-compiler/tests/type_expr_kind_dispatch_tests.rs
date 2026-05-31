@@ -225,6 +225,7 @@ fn module_with_structure_param(type_expr: TypeExpr) -> ParsedModule {
             type_params: vec![],
             trait_bounds: vec![],
             members: vec![MemberDecl::Param(ParamDecl {
+                is_priv: false,
                 name: "p".into(),
                 doc: None,
                 type_expr: Some(type_expr),
@@ -256,6 +257,7 @@ fn module_with_trait_param(type_expr: TypeExpr) -> ParsedModule {
             type_params: vec![],
             refinements: vec![],
             members: vec![MemberDecl::Param(ParamDecl {
+                is_priv: false,
                 name: "p".into(),
                 doc: None,
                 type_expr: Some(type_expr),

@@ -342,6 +342,7 @@ fn match_arm_sub_pose_is_lowered() {
     // Both variants must be covered (exhaustiveness check); both arms carry a pose.
     let make_arm_sub = |structure: &str| {
         MemberDecl::Sub(SubDecl {
+            is_priv: false,
             name: "comp".to_string(),
             structure_name: structure.to_string(),
             type_args: vec![],
@@ -384,6 +385,7 @@ fn match_arm_sub_pose_is_lowered() {
         trait_bounds: vec![],
         members: vec![
             MemberDecl::Param(ParamDecl {
+                is_priv: false,
                 name: "kind".to_string(),
                 doc: None,
                 type_expr: Some(named_type("ShapeKind")),
