@@ -1468,13 +1468,14 @@ mod tests {
     use reify_solver_elastic::{DirichletBc, EigenSolverOptions, IsotropicElastic};
     use reify_stdlib::modal::free_vibration::{is_rigid_body_mode, rayleigh_damping_ratio};
     use reify_stdlib::modal::trampoline::ModalCacheKey;
+    use reify_stdlib::modal::transient::uniform_time_grid;
 
     use super::{
         ModalAnalysisCache, ModalAssembly, ModalCoreResult, ModalMesh, ModalTrampolineRun,
         assemble_modal_km, build_beam_mesh, build_dirichlet_bcs, eigensolve_modal, extract_damping,
         extract_density_or_degenerate, extract_eigen_knobs, extract_reference_direction,
-        run_modal_analysis, simply_supported_pin_pin_bcs, solve_modal_analysis_trampoline,
-        solve_modal_core,
+        mode_shape_value, read_scalar_si, run_modal_analysis, simply_supported_pin_pin_bcs,
+        solve_modal_analysis_trampoline, solve_modal_core, solve_transient_response_trampoline,
     };
     use crate::{CancellationHandle, ComputeOutcome};
 
@@ -3083,5 +3084,187 @@ mod tests {
             "P2 mode shape ({p2_shape_len} nodes) must exceed P1 ({p1_shape_len}); \
              the trampoline must honor ModalOptions.element_order",
         );
+    }
+
+    // -- task ι: transient_response / displacement_at trampoline fixtures ------
+
+    /// A `Vector3<Dimensionless>` runtime value — the per-node `Value::Vector(
+    /// [Real;3])` encoding `mode_shape_value` and `read_vec3` traffic in.
+    fn vec3_value(v: [f64; 3]) -> Value {
+        Value::Vector(vec![Value::Real(v[0]), Value::Real(v[1]), Value::Real(v[2])])
+    }
+
+    /// A `Time` scalar (SI seconds), as the trampoline reads `t_start/t_end/dt`.
+    fn time_scalar(s: f64) -> Value {
+        Value::Scalar { si_value: s, dimension: DimensionVector::TIME }
+    }
+
+    /// Build a synthetic `Mode` StructureInstance with a known frequency (Hz),
+    /// damping ratio, and full-DOF mode shape `phi_full` (length 3·n_nodes,
+    /// serialized via the production `mode_shape_value`). `participation_mass` is
+    /// a placeholder — the transient trampolines never read it.
+    fn mode_struct(frequency_hz: f64, damping_ratio: f64, phi_full: &[f64]) -> Value {
+        struct_instance(
+            "Mode",
+            vec![
+                ("frequency".to_string(), Value::Real(frequency_hz)),
+                ("shape".to_string(), mode_shape_value(phi_full)),
+                ("participation_mass".to_string(), Value::Real(0.0)),
+                ("damping_ratio".to_string(), Value::Real(damping_ratio)),
+            ],
+        )
+    }
+
+    /// Build a synthetic `ModalResult` carrying the given `modes` — the only field
+    /// the transient trampolines read; the rest mirror the degenerate shape.
+    fn modal_result_with_modes(modes: Vec<Value>) -> Value {
+        struct_instance(
+            "ModalResult",
+            vec![
+                ("part".to_string(), Value::String(String::new())),
+                ("modes".to_string(), Value::List(modes)),
+                ("boundary_conditions".to_string(), Value::List(Vec::new())),
+                ("damping".to_string(), Value::Undef),
+                ("mass_matrix_norm".to_string(), Value::Real(0.0)),
+                ("stiffness_matrix_norm".to_string(), Value::Real(0.0)),
+            ],
+        )
+    }
+
+    /// A `StepForce { at, direction, magnitude, start_time }` instance.
+    fn step_force(at: &str, dir: [f64; 3], magnitude_n: f64, start_time_s: f64) -> Value {
+        struct_instance(
+            "StepForce",
+            vec![
+                ("at".to_string(), Value::String(at.to_string())),
+                ("direction".to_string(), vec3_value(dir)),
+                (
+                    "magnitude".to_string(),
+                    Value::Scalar { si_value: magnitude_n, dimension: DimensionVector::FORCE },
+                ),
+                ("start_time".to_string(), time_scalar(start_time_s)),
+            ],
+        )
+    }
+
+    /// A `ForcingTimeHistory { part, sources }` instance.
+    fn forcing_history(sources: Vec<Value>) -> Value {
+        struct_instance(
+            "ForcingTimeHistory",
+            vec![
+                ("part".to_string(), Value::String(String::new())),
+                ("sources".to_string(), Value::List(sources)),
+            ],
+        )
+    }
+
+    /// step-11 (RED → GREEN in step-12): the `transient_response` trampoline
+    /// happy path produces a well-shaped `DisplacementTimeHistory`.
+    ///
+    /// Build a synthetic 2-mode ModalResult (known frequency / damping_ratio /
+    /// per-node Φ shape) and a ForcingTimeHistory carrying one StepForce at the
+    /// fundamental antinode ("tip"), then call the trampoline over a uniform grid.
+    /// Assert the returned DisplacementTimeHistory:
+    ///   - `t_samples` length == the `uniform_time_grid` count,
+    ///   - `mode_coords` outer length == n_modes (2),
+    ///   - each `mode_coords` inner length == n_times,
+    ///   - `modal_result` is echoed (a 2-mode ModalResult),
+    ///   - every modal coordinate (and time sample) is finite.
+    ///
+    /// RED: the step-10 stub returns a degenerate empty history (0 samples / 0
+    /// modes), so the length assertions fail.
+    #[test]
+    fn transient_response_happy_path_shapes_displacement_history() {
+        // Two modes, each a 3-node shape; node 2 is the fundamental antinode
+        // (max ‖Φ₀‖), so a "tip" StepForce projects onto it with a nonzero coeff.
+        let mode0 = mode_struct(40.0, 0.01, &[0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 1.0]);
+        let mode1 = mode_struct(250.0, 0.02, &[0.0, 0.0, 0.0, 0.0, 0.0, -0.7, 0.0, 0.0, 0.4]);
+        let modal_result = modal_result_with_modes(vec![mode0, mode1]);
+
+        let forcing = forcing_history(vec![step_force("tip", [0.0, 0.0, 1.0], 10.0, 0.0)]);
+
+        let (t_start, t_end, dt) = (0.0_f64, 0.1_f64, 0.005_f64);
+        let value_inputs = vec![
+            modal_result,
+            forcing,
+            time_scalar(t_start),
+            time_scalar(t_end),
+            time_scalar(dt),
+        ];
+
+        let outcome = solve_transient_response_trampoline(
+            &value_inputs,
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+        let ComputeOutcome::Completed { result, diagnostics, .. } = outcome else {
+            panic!("expected a Completed outcome");
+        };
+        // The happy path (non-empty forcing) emits no Error diagnostics.
+        assert!(
+            !diagnostics.iter().any(|d| d.severity == Severity::Error),
+            "happy-path transient_response must not emit Error diagnostics; got {diagnostics:?}",
+        );
+
+        let data = match &result {
+            Value::StructureInstance(d) => d,
+            other => panic!("expected a DisplacementTimeHistory StructureInstance; got {other:?}"),
+        };
+        assert_eq!(data.type_name, "DisplacementTimeHistory");
+
+        let n_times = uniform_time_grid(t_start, t_end, dt).len();
+        assert!(n_times > 1, "fixture grid must have > 1 sample (got {n_times})");
+
+        // t_samples: one finite Time scalar per grid point.
+        match data.fields.get(&"t_samples".to_string()) {
+            Some(Value::List(ts)) => {
+                assert_eq!(ts.len(), n_times, "t_samples length must equal the grid count");
+                assert!(
+                    ts.iter().all(|v| read_scalar_si(v).is_finite()),
+                    "every t_sample must be finite",
+                );
+            }
+            other => panic!("t_samples must be a Value::List; got {other:?}"),
+        }
+
+        // mode_coords: outer length == n_modes, each inner length == n_times, finite.
+        match data.fields.get(&"mode_coords".to_string()) {
+            Some(Value::List(modes)) => {
+                assert_eq!(modes.len(), 2, "mode_coords outer length must equal n_modes");
+                for (i, coords) in modes.iter().enumerate() {
+                    match coords {
+                        Value::List(series) => {
+                            assert_eq!(
+                                series.len(),
+                                n_times,
+                                "mode_coords[{i}] inner length must equal n_times",
+                            );
+                            assert!(
+                                series.iter().all(|v| read_scalar_si(v).is_finite()),
+                                "mode_coords[{i}] must be all finite",
+                            );
+                        }
+                        other => panic!("mode_coords[{i}] must be a Value::List; got {other:?}"),
+                    }
+                }
+            }
+            other => panic!("mode_coords must be a Value::List; got {other:?}"),
+        }
+
+        // modal_result echoed: a ModalResult StructureInstance with the 2 modes.
+        match data.fields.get(&"modal_result".to_string()) {
+            Some(Value::StructureInstance(mr)) => {
+                assert_eq!(mr.type_name, "ModalResult", "echoed modal_result type");
+                match mr.fields.get(&"modes".to_string()) {
+                    Some(Value::List(m)) => {
+                        assert_eq!(m.len(), 2, "echoed modal_result must carry the 2 input modes")
+                    }
+                    other => panic!("echoed modal_result.modes must be a List; got {other:?}"),
+                }
+            }
+            other => panic!("modal_result must echo a ModalResult StructureInstance; got {other:?}"),
+        }
     }
 }
