@@ -98,6 +98,34 @@ pub fn form_find_anchored(
 ) -> Result<FormFindSolve, FormFindError> {
     let n = nodes.len();
 
+    // ---- Up-front feasibility guards (PRD §8.1: infeasible input must yield a
+    // clean diagnostic, never a silent wrong answer or a panic). ----
+
+    // `members`, `kinds`, and `q` describe the same member set in the same
+    // (struts-then-cables) order; disagreeing lengths mean the caller mis-built
+    // the problem, so reject before indexing them together below.
+    if members.len() != kinds.len() || members.len() != q.len() {
+        return Err(FormFindError::DimensionMismatch);
+    }
+
+    // Sign convention (PRD §4), enforced as a HARD per-member constraint:
+    // cables carry tension (q > 0), struts carry compression (q < 0). A
+    // violation is *infeasible input*, not something to silently coerce — the
+    // FD system would still factor and return a geometry, but it would be a
+    // sign-inconsistent (physically meaningless) one, so we surface a clean
+    // diagnostic instead of a silent wrong answer. The deferred T1b alternative
+    // is the free-standing eigenvalue/ratio search, which *solves for* a
+    // feasible q (and the self-stress mode) rather than taking q as given here.
+    for (&kind, &qi) in kinds.iter().zip(q.iter()) {
+        let sign_ok = match kind {
+            MemberKind::Cable => qi > 0.0,
+            MemberKind::Strut => qi < 0.0,
+        };
+        if !sign_ok {
+            return Err(FormFindError::SignViolation);
+        }
+    }
+
     // Force-density Laplacian D = Cᵀ Q C, accumulated directly without
     // materialising the m×N connectivity C. For a member (j, k) with force
     // density qᵢ, the row Cᵢ has +1 at j and −1 at k, so the rank-1 update
@@ -120,6 +148,12 @@ pub fn form_find_anchored(
     let anchor_indices: Vec<usize> = (0..n).filter(|&i| is_anchor[i]).collect();
     let nf = free_indices.len();
 
+    // Every node anchored ⇒ no free DOF to solve for. Guard before assembling a
+    // 0×0 system (whose LU/solve is degenerate).
+    if nf == 0 {
+        return Err(FormFindError::EmptyFreeSet);
+    }
+
     // Reduced free-node system D_ff X_f = −D_fa X_a (prestress-only: no external
     // load term). All three coordinate axes are solved at once as an |F|×3 RHS
     // so D_ff is factored only once.
@@ -138,6 +172,10 @@ pub fn form_find_anchored(
         }
     }
 
+    // Retain the unmodified RHS — `solve_in_place` overwrites `rhs` with the
+    // solution, but the post-solve residual check below needs the original.
+    let rhs_orig = rhs.clone();
+
     let plu = dff.partial_piv_lu();
     plu.solve_in_place(&mut rhs);
 
@@ -146,6 +184,34 @@ pub fn form_find_anchored(
     let mut out_nodes = nodes.to_vec();
     for (fi, &gi) in free_indices.iter().enumerate() {
         out_nodes[gi] = [rhs[(fi, 0)], rhs[(fi, 1)], rhs[(fi, 2)]];
+    }
+
+    // ---- Post-solve guard: a singular / disconnected D_ff (e.g. a free node
+    // with no member path to any anchor leaves a zero row) makes the LU solve
+    // produce a non-finite or non-equilibrium result. Detect both and surface
+    // SingularReducedStiffness rather than returning NaNs or a silently wrong
+    // geometry. ----
+    let any_nonfinite = out_nodes
+        .iter()
+        .any(|p| p.iter().any(|c| !c.is_finite()));
+    // Residual ‖D_ff · X_f − RHS‖∞, scaled by the RHS magnitude so the
+    // tolerance is meaningful regardless of the system's coordinate scale.
+    // (NaN/Inf in the solution slip past this max-reduction, but are caught by
+    // the non-finite check above — the two guards are complementary.)
+    let mut residual_inf = 0.0_f64;
+    let mut rhs_scale = 0.0_f64;
+    for fi in 0..nf {
+        for axis in 0..3 {
+            let mut row_dot = 0.0;
+            for fj in 0..nf {
+                row_dot += dff[(fi, fj)] * rhs[(fj, axis)];
+            }
+            residual_inf = residual_inf.max((row_dot - rhs_orig[(fi, axis)]).abs());
+            rhs_scale = rhs_scale.max(rhs_orig[(fi, axis)].abs());
+        }
+    }
+    if any_nonfinite || residual_inf > 1e-6 * (1.0 + rhs_scale) {
+        return Err(FormFindError::SingularReducedStiffness);
     }
 
     // Per-member axial force Nᵢ = qᵢ · Lᵢ on the solved geometry, in
@@ -164,9 +230,6 @@ pub fn form_find_anchored(
         })
         .collect();
 
-    // `kinds` drives the per-member sign validation added in step-6; the
-    // happy-path solve here does not yet consume it.
-    let _ = kinds;
     Ok(FormFindSolve {
         nodes: out_nodes,
         member_forces,
