@@ -1,0 +1,83 @@
+// Reify crate-layer rules for jcodemunch get_layer_violations.
+//
+// Schema: upstream jcodemunch v1.108.27 get_layer_violations.py
+// (on-disk: ~/.cache/uv/.../jcodemunch_mcp/tools/get_layer_violations.py;
+//  deployed ref: deploy/systemd/jcodemunch-serve.service).
+//
+// Layer assignment: path-prefix, first-match-wins. A file not matched by any
+// prefix is unassigned and skipped by the upstream tool — no violation fires.
+//
+// Invariant basis: scripts/assert-crate-dag.sh B1–B6 + actual Cargo.toml
+// normal-dep edges (verified against current main). Every forbidden edge listed
+// in `may_not_import` is CLEAN against the current codebase, so a live
+// `--pattern PLAYER` run returns an empty finding set.
+//
+// IMPORTANT: paths are scoped to crates/<crate>/src/ — NOT to whole crate
+// directories. reify-eval has reify-runtime as a cyclic dev-dep (cargo
+// permits this; see crates/reify-eval/Cargo.toml [dev-dependencies]). Using
+// a whole-dir path like "crates/reify-eval/" would assign eval's test files
+// to the eval layer and falsely flag eval→runtime imports from test code,
+// breaking the "clean when clean" requirement. Restricting to src/ keeps
+// dev-dep and test imports unassigned.
+{
+  "architecture": {
+    "layers": [
+      {
+        // Foundation: zero reify-* dependencies (B1 invariant).
+        "name": "core",
+        "paths": ["crates/reify-core/src/"],
+        "may_not_import": ["ast", "ir_syntax", "expr", "compiler", "eval", "application"]
+      },
+      {
+        // Parser/tree layer: depends on core only (B2 invariant).
+        "name": "ast",
+        "paths": ["crates/reify-ast/src/"],
+        "may_not_import": ["ir_syntax", "expr", "compiler", "eval", "application"]
+      },
+      {
+        // IR and surface-syntax layer: depends on core + ast only (B3/B4 invariants).
+        "name": "ir_syntax",
+        "paths": [
+          "crates/reify-ir/src/",
+          "crates/reify-syntax/src/"
+        ],
+        "may_not_import": ["expr", "compiler", "eval", "application"]
+      },
+      {
+        // Expression evaluation primitives: depends on core + ast + ir + stdlib.
+        // Does not depend on compiler, eval, or application.
+        "name": "expr",
+        "paths": ["crates/reify-expr/src/"],
+        "may_not_import": ["compiler", "eval", "application"]
+      },
+      {
+        // Compiler pipeline: depends on core + ast + ir + syntax + config.
+        // Does not depend on eval or application.
+        "name": "compiler",
+        "paths": ["crates/reify-compiler/src/"],
+        "may_not_import": ["eval", "application"]
+      },
+      {
+        // Evaluator: top of the compilation spine. Depends on all layers below.
+        // Does not depend on application-layer crates.
+        "name": "eval",
+        "paths": ["crates/reify-eval/src/"],
+        "may_not_import": ["application"]
+      },
+      {
+        // Application layer: CLI, LSP, MCP, runtime, doc-build, GUI.
+        // No higher layer exists, so may_not_import is empty.
+        "name": "application",
+        "paths": [
+          "crates/reify-cli/src/",
+          "crates/reify-lsp/src/",
+          "crates/reify-mcp/src/",
+          "crates/reify-runtime/src/",
+          "crates/reify-doc-build/src/",
+          "gui/src-tauri/src/"
+        ],
+        "may_not_import": []
+      }
+    ]
+  }
+}
