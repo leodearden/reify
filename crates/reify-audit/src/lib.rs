@@ -39,6 +39,7 @@ pub mod p5_phantom_done;
 pub mod p2_consumer_stub;
 pub mod p1_producer_orphan;
 pub mod fused_memory_client;
+pub mod jcodemunch_client;
 
 // -----------------------------------------------------------------------
 // Public surface — finding shape
