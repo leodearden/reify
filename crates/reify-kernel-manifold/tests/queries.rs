@@ -618,3 +618,131 @@ fn query_sub_face_surface_area_and_normal_unit_cube() {
         "unit cube must have at least one facet whose normal is ≈ ±Z",
     );
 }
+
+/// Parse the OCCT-compatible `{"xmin":_,...,"zmax":_}` BoundingBox JSON wire
+/// format into `[xmin, ymin, zmin, xmax, ymax, zmax]`.
+fn parse_bbox(s: &str) -> [f64; 6] {
+    let mut out = [f64::NAN; 6];
+    let trimmed = s.trim().trim_start_matches('{').trim_end_matches('}');
+    for field in trimmed.split(',') {
+        let (key, val) = field
+            .split_once(':')
+            .unwrap_or_else(|| panic!("malformed bbox field {field:?} in {s:?}"));
+        let key = key.trim().trim_matches('"');
+        let val: f64 = val
+            .trim()
+            .parse()
+            .unwrap_or_else(|_| panic!("non-numeric value in field {field:?} of {s:?}"));
+        let idx = match key {
+            "xmin" => 0,
+            "ymin" => 1,
+            "zmin" => 2,
+            "xmax" => 3,
+            "ymax" => 4,
+            "zmax" => 5,
+            other => panic!("unexpected key {other:?} in bbox JSON {s:?}"),
+        };
+        out[idx] = val;
+    }
+    for (i, c) in out.iter().enumerate() {
+        assert!(!c.is_nan(), "bbox JSON {s:?} missing component {i}");
+    }
+    out
+}
+
+/// Sub-edge `EdgeTangent` and `BoundingBox` over the unit cube's 18 edges.
+///
+/// The closed cube mesh's 18 unique edges partition exactly into **12
+/// axis-aligned unit edges** (the cube's geometric edges, length 1) and **6
+/// face diagonals** (one per cube face, splitting it into two triangles,
+/// length √2 spanning two axes). This partition is grounded in the fixture's
+/// triangulation, so the test is triangle-order-independent.
+///
+/// Assertions:
+/// - every edge's `EdgeTangent` is a unit vector (sign-agnostic per contract);
+/// - every edge's `BoundingBox` parses with all 6 keys and `min ≤ max`;
+/// - the 12 axis-aligned edges each span exactly one axis by 1.0 (the other
+///   two degenerate, `min == max`) — the per-edge bbox the eval-side
+///   `edges_at_height` Z-filter consumes — and their tangent is axis-aligned
+///   along that spanned axis;
+/// - the 6 diagonals each span exactly two axes by 1.0;
+/// - the partition counts are exactly 12 + 6 = 18.
+///
+/// RED (step-7): `ManifoldKernel::query` returns `Err(QueryFailed(STUB_MSG))`
+/// for `EdgeTangent`/`BoundingBox`. GREEN is step-8.
+#[test]
+fn query_sub_edge_tangent_and_bbox_unit_cube() {
+    let mut kernel = ManifoldKernel::new();
+    let handle = ingest(&mut kernel, [0.0, 0.0, 0.0]);
+    let edges = kernel
+        .extract_edges(handle)
+        .expect("extract_edges must succeed");
+    assert_eq!(edges.len(), 18, "unit cube must have 18 edges");
+
+    let mut axis_aligned = 0usize;
+    let mut diagonals = 0usize;
+    for (i, &e) in edges.iter().enumerate() {
+        // (a) EdgeTangent: a unit vector.
+        let t = match kernel.query(&GeometryQuery::EdgeTangent(e)) {
+            Ok(Value::String(s)) => parse_xyz(&s),
+            other => panic!(
+                "EdgeTangent(edge[{i}]) must return Ok(Value::String(_)); got {other:?}"
+            ),
+        };
+        let tmag = (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt();
+        assert!(
+            (tmag - 1.0).abs() < 1e-6,
+            "EdgeTangent(edge[{i}]) must be a unit vector; got {t:?} (|t|={tmag})",
+        );
+
+        // (b) BoundingBox: 6 keys, min <= max per axis.
+        let bb = match kernel.query(&GeometryQuery::BoundingBox(e)) {
+            Ok(Value::String(s)) => parse_bbox(&s),
+            other => panic!(
+                "BoundingBox(edge[{i}]) must return Ok(Value::String(_)); got {other:?}"
+            ),
+        };
+        let span = [bb[3] - bb[0], bb[4] - bb[1], bb[5] - bb[2]];
+        for (axis, &sp) in span.iter().enumerate() {
+            assert!(
+                sp >= -1e-9,
+                "BoundingBox(edge[{i}]) min must be ≤ max on axis {axis}; got span {sp}",
+            );
+        }
+        let spanning = span.iter().filter(|&&s| (s - 1.0).abs() < 1e-6).count();
+        let degenerate = span.iter().filter(|&&s| s.abs() < 1e-6).count();
+
+        if spanning == 1 && degenerate == 2 {
+            // Axis-aligned unit edge: tangent axis-aligned and pointing along
+            // the single spanned axis.
+            axis_aligned += 1;
+            assert_unit_axis_aligned(t, &format!("EdgeTangent(edge[{i}])"));
+            let span_axis = span
+                .iter()
+                .position(|&s| (s - 1.0).abs() < 1e-6)
+                .expect("a spanning axis exists");
+            assert!(
+                (t[span_axis].abs() - 1.0).abs() < 1e-6,
+                "axis-aligned edge[{i}] tangent must point along its spanned axis \
+                 {span_axis}; got {t:?}",
+            );
+        } else if spanning == 2 && degenerate == 1 {
+            // Face diagonal (length √2): spans two axes by 1.0.
+            diagonals += 1;
+        } else {
+            panic!(
+                "edge[{i}] bbox span {span:?} is neither an axis-aligned unit edge \
+                 (1 spanning, 2 degenerate) nor a face diagonal (2 spanning, 1 degenerate)",
+            );
+        }
+    }
+
+    assert_eq!(
+        axis_aligned, 12,
+        "unit cube must have 12 axis-aligned unit edges; got {axis_aligned}",
+    );
+    assert_eq!(
+        diagonals, 6,
+        "unit cube must have 6 face-diagonal edges; got {diagonals}",
+    );
+}
