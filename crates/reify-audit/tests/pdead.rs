@@ -81,6 +81,15 @@ mod tests {
 
         let findings = pdead_dead_code::check(&ctx);
 
+        // Pin the threshold contract: check() must request exactly 0.5 from the seam.
+        // This ensures the detector's DEFAULT_MIN_CONFIDENCE constant is the one
+        // actually passed to get_dead_code(), independent of the mock's filter behavior.
+        assert_eq!(
+            jc.last_dead_code_min_confidence(),
+            Some(0.5),
+            "check() must pass DEFAULT_MIN_CONFIDENCE (0.5) to get_dead_code"
+        );
+
         assert_eq!(
             findings.len(),
             2,

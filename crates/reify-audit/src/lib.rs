@@ -921,6 +921,9 @@ pub struct MockJCodemunchOps {
     dead_code: Vec<DeadSymbol>,
     untested: Vec<UntestedSymbol>,
     layer_violations: Vec<LayerViolation>,
+    // Records the min_confidence last passed to get_dead_code() so tests can
+    // assert the detector passes the intended threshold to the seam.
+    last_dead_code_min_confidence: std::cell::Cell<Option<f64>>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -952,6 +955,11 @@ impl MockJCodemunchOps {
     }
 
     // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn last_dead_code_min_confidence(&self) -> Option<f64> {
+        self.last_dead_code_min_confidence.get()
+    }
+
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
     pub fn set_untested_symbols(&mut self, symbols: Vec<UntestedSymbol>) {
         self.untested = symbols;
     }
@@ -979,6 +987,7 @@ impl JCodemunchOps for MockJCodemunchOps {
     }
 
     fn get_dead_code(&self, min_confidence: f64) -> Vec<DeadSymbol> {
+        self.last_dead_code_min_confidence.set(Some(min_confidence));
         self.dead_code
             .iter()
             .filter(|s| s.confidence >= min_confidence)
