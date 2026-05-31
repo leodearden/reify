@@ -621,6 +621,14 @@ fn frobenius_norm(a: &SparseRowMat<usize, f64>) -> f64 {
     sum_sq.sqrt()
 }
 
+/// Count the stored nonzeros of a CSR matrix (sum of per-row stored entries).
+/// Used to size the donated warm state (`ModalAnalysisCache::estimated_size_bytes`)
+/// for pool budgeting + `cost_per_byte`. Uses the same `val_of_row` row walk as
+/// [`frobenius_norm`], so it counts exactly the entries the cache retains.
+fn csr_nnz(a: &SparseRowMat<usize, f64>) -> usize {
+    (0..a.nrows()).map(|r| a.val_of_row(r).len()).sum()
+}
+
 /// Reorder `items` so that result position `i` holds the original
 /// `items[order[i]]`, moving elements out (no deep clone) via `std::mem::take`.
 /// `order` must be a permutation of `0..items.len()` (each index used exactly
@@ -773,12 +781,25 @@ pub(crate) struct ModalAnalysisCache {
 }
 
 impl ModalAnalysisCache {
-    /// Wrap this cache in an [`OpaqueState`] for donation to the warm-state pool.
-    /// The size hint is a placeholder until step-12 derives the real, nnz-based
-    /// estimate (and the matching `cost_per_byte`).
+    /// Estimated retained size of this cache in bytes: the CSR payload of the
+    /// assembled `K` and `M` (one `usize` column index + one `f64` value per
+    /// stored nonzero) plus the flat `ModalCacheKey`. Drives both the
+    /// [`OpaqueState`] size hint (pool LRU budgeting) and the donated
+    /// `cost_per_byte` — a bigger cached `(K, M)` is pricier to retain. Always
+    /// ≥ `size_of::<ModalCacheKey>() > 0`, so the `cost_per_byte` reciprocal is
+    /// well-defined for any real assembly.
+    fn estimated_size_bytes(&self) -> usize {
+        let per_nz = std::mem::size_of::<usize>() + std::mem::size_of::<f64>();
+        let nnz = csr_nnz(&self.assembly.k_full) + csr_nnz(&self.assembly.m_full);
+        nnz * per_nz + std::mem::size_of::<ModalCacheKey>()
+    }
+
+    /// Wrap this cache in an [`OpaqueState`] for donation to the warm-state
+    /// pool, sized by [`estimated_size_bytes`](Self::estimated_size_bytes) so
+    /// the pool's LRU budget accounts for the assembled `(K, M)` it holds.
     fn into_opaque_state(self) -> OpaqueState {
-        // Placeholder size; step-12 replaces it with `estimated_size_bytes()`.
-        OpaqueState::new(self, 1)
+        let size = self.estimated_size_bytes();
+        OpaqueState::new(self, size)
     }
 }
 
@@ -992,12 +1013,18 @@ pub(crate) fn run_modal_analysis(
     // `run_compute_dispatch` donates `new_warm_state` to the Compute node on a
     // Completed outcome (and restores the prior on Cancelled/Failed). `key` is a
     // `Copy` ModalCacheKey, so reusing it from the (5) match guard is fine.
-    // `cost_per_byte` stays None until step-12 sizes the cache.
-    let new_warm_state = Some(ModalAnalysisCache { key, assembly }.into_opaque_state());
+    // `cost_per_byte` is the reciprocal of the cache's estimated byte size — a
+    // bigger cached (K, M) is pricier to retain in the warm-state pool (mirrors
+    // elastic_static.rs). `size_bytes` always includes the flat key (> 0), so
+    // the `None` branch is unreachable for a real assembly but kept for parity.
+    let cache = ModalAnalysisCache { key, assembly };
+    let size_bytes = cache.estimated_size_bytes();
+    let cost_per_byte = if size_bytes > 0 { Some(1.0 / size_bytes as f64) } else { None };
+    let new_warm_state = Some(cache.into_opaque_state());
     let outcome = ComputeOutcome::Completed {
         result,
         new_warm_state,
-        cost_per_byte: None,
+        cost_per_byte,
         diagnostics: core.diagnostics,
     };
     ModalTrampolineRun { outcome, reused_assembly }
