@@ -603,8 +603,12 @@ fn cmd_build(args: &[String]) -> ExitCode {
 /// This is the SIR-α user-observable signal (task 3540): structure
 /// constructors evaluate to inspectable `Value::StructureInstance` values
 /// (`TypeName { field: value, ... }` via `Value`'s `Display`) instead of
-/// opaque `undef`. Cells are sorted for deterministic output so the
-/// `structure_instance.txt` golden test is stable.
+/// opaque `undef`. Cells are sorted for deterministic output.
+///
+/// The default [`reify_constraints::DimensionalSolver`] is wired so `auto`
+/// params resolve: given box constraints and a `minimize`/`maximize` objective
+/// the solver runs Nelder-Mead and prints the resulting numeric SI value
+/// rather than `undef` (task 4132).
 fn cmd_eval(args: &[String]) -> ExitCode {
     if args.is_empty() {
         eprintln!("Usage: reify eval <file>");
@@ -625,7 +629,8 @@ fn cmd_eval(args: &[String]) -> ExitCode {
     }
 
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None)
+        .with_solver(Box::new(reify_constraints::DimensionalSolver));
     let result = engine.eval(&compiled);
 
     let mut cells: Vec<(String, String)> = result
