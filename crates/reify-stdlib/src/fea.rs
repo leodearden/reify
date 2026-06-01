@@ -97,6 +97,42 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
 ///   - `converged`:   `Value::Bool(true)`
 ///   - `iterations`:  `Value::Undef` (synthesised, not solved — distinguishes from solver-converged-on-iter-0)
 ///
+/// Per-field accessor for a per-case ElasticResult value, handling both
+/// `Value::Map` (legacy / synthetic fixture shape) and
+/// `Value::StructureInstance` (the shape that `solve_load_cases` emits at
+/// runtime, task 4088).
+///
+/// Mirrors the e2e dual-shape accessor in
+/// `crates/reify-eval/tests/buckling_mode_shape.rs:77-83`.
+///
+/// Returns `Some(&value)` when `case_val` is a Map or StructureInstance that
+/// contains `field`, `None` otherwise.  Returning `Option<&Value>` (not a
+/// normalised `BTreeMap`) preserves borrows into the per-case value, so
+/// callers that return `&SampledField` / `&Type` references do not need to
+/// clone.
+///
+/// **Key layouts differ:**
+/// - `Value::Map` keys by `Value::String(field)` (BTreeMap<Value,Value>)
+/// - `Value::StructureInstance` keys by plain `String` (PersistentMap<String,Value>)
+fn case_field<'a>(case_val: &'a Value, field: &str) -> Option<&'a Value> {
+    match case_val {
+        Value::Map(m) => m.get(&Value::String(field.to_string())),
+        Value::StructureInstance(data) => data.fields.get(&field.to_string()),
+        _ => None,
+    }
+}
+
+/// True iff `case_val` is a valid per-case ElasticResult container:
+/// either `Value::Map` or `Value::StructureInstance`.
+///
+/// NOTE: any `StructureInstance` type_name is accepted here (mirrors the
+/// pre-existing any-`Map` behaviour). If a future diagnostic ever needs to
+/// distinguish a foreign struct (e.g. `BucklingResult` passed by mistake),
+/// gate on `data.type_name == "ElasticResult"` in this function.
+fn is_case_container(case_val: &Value) -> bool {
+    matches!(case_val, Value::Map(_) | Value::StructureInstance(_))
+}
+
 /// # Failure modes (silent-Undef per PRD task #10 deferral)
 ///
 /// - arity != 2
@@ -109,8 +145,8 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
 ///   such as `1.4 m` is rejected)
 /// - any weight value has a non-finite representation (NaN, ±Inf)
 /// - a weight name is absent from `base_results.cases`
-/// - a case value is not `Value::Map`
-/// - a case Map is missing `displacement` or `stress` key
+/// - a case value is not a `Value::Map` or `Value::StructureInstance`
+/// - a case Map/StructureInstance is missing `displacement` or `stress` key
 /// - a displacement or stress field is not Sampled-source
 /// - a displacement or stress field has Sampled-source but non-SampledField lambda
 /// - displacement or stress fields across cases fail `metadata_matches`
@@ -135,11 +171,10 @@ fn linear_combine(args: &[Value]) -> Value {
         return Value::Undef;
     }
 
-    // Validate weights: collect (weight: f64, case_map: &BTreeMap) pairs.
+    // Validate weights: collect (weight: f64, case_val: &Value) pairs.
     // Each entry must have a String key, a finite numeric weight, a known case
-    // name, and a Map-typed case entry.
-    let mut weighted_cases: Vec<(f64, &BTreeMap<Value, Value>)> =
-        Vec::with_capacity(weights_map.len());
+    // name, and a Map-or-StructureInstance case entry.
+    let mut weighted_cases: Vec<(f64, &Value)> = Vec::with_capacity(weights_map.len());
     for (name_val, weight_val) in weights_map {
         // Key must be a string.
         let case_name = match name_val {
@@ -167,12 +202,13 @@ fn linear_combine(args: &[Value]) -> Value {
             Some(v) => v,
             None => return Value::Undef,
         };
-        // Case value must be a Map (ElasticResult struct instance).
-        let case_map = match case_val {
-            Value::Map(m) => m,
-            _ => return Value::Undef,
-        };
-        weighted_cases.push((weight, case_map));
+        // Case value must be a Map or StructureInstance (ElasticResult).
+        // Accepts both: Value::Map (synthetic / legacy shape) and
+        // Value::StructureInstance (solve_load_cases real-solver shape).
+        if !is_case_container(case_val) {
+            return Value::Undef;
+        }
+        weighted_cases.push((weight, case_val));
     }
 
     // Borrow the first weighted case's sampled fields as the reference for
@@ -180,8 +216,8 @@ fn linear_combine(args: &[Value]) -> Value {
     // axis_grids, types) is cloned for the output; the data buffer is accessed
     // via slice — no per-case Vec<f64> clone for large field buffers.
     // Safety: weighted_cases is non-empty by the is_empty() guard above.
-    let ref_cm = weighted_cases[0].1;
-    let ref_disp_val = match ref_cm.get(&Value::String("displacement".to_string())) {
+    let ref_case = weighted_cases[0].1;
+    let ref_disp_val = match case_field(ref_case, "displacement") {
         Some(v) => v,
         None => return Value::Undef,
     };
@@ -189,7 +225,7 @@ fn linear_combine(args: &[Value]) -> Value {
         Some(t) => t,
         None => return Value::Undef,
     };
-    let ref_stress_val = match ref_cm.get(&Value::String("stress".to_string())) {
+    let ref_stress_val = match case_field(ref_case, "stress") {
         Some(v) => v,
         None => return Value::Undef,
     };
@@ -209,8 +245,8 @@ fn linear_combine(args: &[Value]) -> Value {
     // Mirrors envelope_reduce's outer-cases / inner-indices nesting for
     // vectorisation and bounds-check-free iteration.
     // Borrows each case's SampledField data slice — no per-case Vec clone.
-    for (i, (weight, case_map)) in weighted_cases.iter().enumerate() {
-        let disp_val = match case_map.get(&Value::String("displacement".to_string())) {
+    for (i, (weight, case_val)) in weighted_cases.iter().enumerate() {
+        let disp_val = match case_field(case_val, "displacement") {
             Some(v) => v,
             None => return Value::Undef,
         };
@@ -218,7 +254,7 @@ fn linear_combine(args: &[Value]) -> Value {
             Some(t) => t,
             None => return Value::Undef,
         };
-        let stress_val = match case_map.get(&Value::String("stress".to_string())) {
+        let stress_val = match case_field(case_val, "stress") {
             Some(v) => v,
             None => return Value::Undef,
         };
@@ -325,23 +361,20 @@ fn linear_combine(args: &[Value]) -> Value {
     Value::Map(result_map)
 }
 
-/// Resolve a case Map's displacement and stress sampled-field triples
-/// `((domain, codomain, field), (domain, codomain, field))`, or `None` if the
-/// case value is not a `Value::Map` or either field is missing / non-Sampled.
+/// Resolve a per-case ElasticResult's displacement and stress sampled-field
+/// triples `((domain, codomain, field), (domain, codomain, field))`, or `None`
+/// if the case value is not a `Value::Map` or `Value::StructureInstance`, or
+/// either field is missing / non-Sampled.
 /// Used by `diagnose`'s incompatible-mesh check to mirror `linear_combine`'s
 /// own `as_sampled_field` resolution of the per-case `displacement`/`stress`
-/// fields (fea.rs:181-196), so the diagnosed cause matches the real `Undef`
-/// cause and the structural fields fed to `metadata_matches` are identical.
+/// fields, so the diagnosed cause matches the real `Undef` cause and the
+/// structural fields fed to `metadata_matches` are identical.
 #[allow(clippy::type_complexity)]
 fn resolve_case_fields(
     case_val: &Value,
 ) -> Option<((&Type, &Type, &SampledField), (&Type, &Type, &SampledField))> {
-    let case_map = match case_val {
-        Value::Map(m) => m,
-        _ => return None,
-    };
-    let disp = as_sampled_field(case_map.get(&Value::String("displacement".to_string()))?)?;
-    let stress = as_sampled_field(case_map.get(&Value::String("stress".to_string()))?)?;
+    let disp = as_sampled_field(case_field(case_val, "displacement")?)?;
+    let stress = as_sampled_field(case_field(case_val, "stress")?)?;
     Some((disp, stress))
 }
 
@@ -359,12 +392,12 @@ fn resolve_case_fields(
 /// Check ordering faithfully mirrors `linear_combine`'s own per-entry `Undef`
 /// order: arity → cases_map → weights-map → empty-weights → then, per weight
 /// entry in BTreeMap key order, non-String key / non-finite weight / unknown
-/// case / non-Map case value → finally the incompatible-mesh comparison,
+/// case / non-container case value → finally the incompatible-mesh comparison,
 /// resolved lazily per case. The FIRST entry to fail ANY check determines the
 /// verdict, exactly as `linear_combine` bails at its first failing entry, so a
 /// malformed earlier entry is never masked by — nor misattributed to — a later
-/// one (e.g. a non-Map case value at an earlier entry yields `None`, not a
-/// spurious unknown-case diagnostic for a later entry).
+/// one (e.g. a non-container case value at an earlier entry yields `None`, not
+/// a spurious unknown-case diagnostic for a later entry).
 ///
 /// **Diagnosed** (`linear_combine`):
 /// - `MultiLoadEmptyWeights` — weights map is empty
@@ -379,7 +412,7 @@ fn resolve_case_fields(
 /// - arity error (`args.len() != 2`)
 /// - `args[0]` not a `MultiCaseResult`, or `args[1]` not a `Value::Map`
 /// - non-String weight key / non-numeric or non-finite weight value
-/// - case value not a Map / missing `displacement`|`stress` / non-Sampled field
+/// - case value not a Map or StructureInstance / missing `displacement`|`stress` / non-Sampled field
 pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
     // Only `linear_combine` produces these multi-load-case diagnostics.
     if name != "linear_combine" {
@@ -408,14 +441,14 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
     // linear_combine's first validation loop (fea.rs:140-173). The FIRST entry
     // to fail ANY of these checks is exactly where linear_combine bails, so the
     // diagnosed (or undiagnosed) cause matches the real Undef cause:
-    //   - non-String key            → undiagnosed (None)
-    //   - non-numeric/non-finite wt → undiagnosed (None)
-    //   - unknown case name         → MultiLoadUnknownCaseInWeights
-    //   - case value not a Map      → undiagnosed (None)
-    // The case-value-must-be-a-Map check (fea.rs:168-171) lives in THIS pass —
-    // not a later loop — so a non-Map case value at an earlier entry is never
-    // misattributed to a later unknown-case entry. Collect (name, case_val)
-    // pairs for phase 2, retaining the case NAMES linear_combine discards.
+    //   - non-String key                     → undiagnosed (None)
+    //   - non-numeric/non-finite wt          → undiagnosed (None)
+    //   - unknown case name                  → MultiLoadUnknownCaseInWeights
+    //   - case value not Map/StructureInstance → undiagnosed (None)
+    // The is_case_container check lives in THIS pass — not a later loop — so a
+    // non-container case value at an earlier entry is never misattributed to a
+    // later unknown-case entry. Collect (name, case_val) pairs for phase 2,
+    // retaining the case NAMES linear_combine discards.
     let mut cases: Vec<(&str, &Value)> = Vec::with_capacity(weights_map.len());
     for (name_val, weight_val) in weights_map {
         let case_name = match name_val {
@@ -456,13 +489,13 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
                 );
             }
         };
-        // Case value must be a Map (ElasticResult struct instance). linear_combine
+        // Case value must be a Map or StructureInstance (ElasticResult). linear_combine
         // bails here at the first offending entry, BEFORE examining later entries,
         // so return None now rather than deferring this check to phase 2 — that
         // deferral is what would otherwise misattribute the failure to a later
         // unknown-case entry.
-        if !matches!(case_val, Value::Map(_)) {
-            return None; // non-Map case value: linear_combine Undefs, undiagnosed
+        if !is_case_container(case_val) {
+            return None; // non-Map/non-SI case value: linear_combine Undefs, undiagnosed
         }
         cases.push((case_name.as_str(), case_val));
     }
@@ -836,8 +869,10 @@ fn envelope_tensor_projection(
 /// `envelope_displacement_magnitude`).
 ///
 /// Returns `Some((domain, codomain, sf))` when ALL of the following hold:
-///   - `elastic_result` is `Value::Map` (the ElasticResult struct shape)
-///   - the Map has the `field_name` key
+///   - `elastic_result` is `Value::Map` or `Value::StructureInstance`
+///     (the ElasticResult struct shape — both the synthetic/fixture Map shape
+///     and the real solve_load_cases StructureInstance shape are accepted)
+///   - the container has the `field_name` key
 ///   - the value at that key is `Value::Field { source: Sampled, .. }`
 ///   - the Sampled lambda slot carries `Value::SampledField`
 ///   - `sf.data.len() == axis_grids product * expected_stride`
@@ -858,11 +893,7 @@ fn extract_per_case_sampled_field<'a>(
     field_name: &str,
     expected_stride: usize,
 ) -> Option<(&'a Type, &'a Type, &'a SampledField)> {
-    let case_map = match elastic_result {
-        Value::Map(m) => m,
-        _ => return None,
-    };
-    let field_val = case_map.get(&Value::String(field_name.to_string()))?;
+    let field_val = case_field(elastic_result, field_name)?;
     let (dom, cod, sf) = as_sampled_field(field_val)?;
     let grid_count: usize = sf.axis_grids.iter().map(|g| g.len()).product();
     if sf.data.len() != grid_count * expected_stride {
@@ -1263,7 +1294,10 @@ mod tests {
 
     use reify_test_support::multi_case_result_value;
     use reify_core::{DimensionVector, Type};
-    use reify_ir::{FieldSourceKind, InterpolationKind, SampledField, SampledGridKind, Value};
+    use reify_ir::{
+        FieldSourceKind, InterpolationKind, PersistentMap, SampledField, SampledGridKind,
+        StructureInstanceData, StructureTypeId, Value,
+    };
 
     // ── test helpers ────────────────────────────────────────────────────────
 
@@ -2572,6 +2606,30 @@ mod tests {
         Value::Map(m)
     }
 
+    /// Build a fixture `ElasticResult`-shaped `Value::StructureInstance` with
+    /// Field-typed displacement and stress fields. Parallel to
+    /// `make_fixture_elastic_result_with_fields` but emits
+    /// `Value::StructureInstance` — matching the shape that `solve_load_cases`
+    /// (task 4088, multi_case.rs:214-249) emits for each per-case result at
+    /// runtime.
+    fn make_elastic_result_si_with_fields(displacement: Value, stress: Value) -> Value {
+        let fields: PersistentMap<String, Value> = [
+            ("displacement".to_string(), displacement),
+            ("stress".to_string(), stress),
+            ("max_von_mises".to_string(), Value::Real(0.0)),
+            ("converged".to_string(), Value::Bool(true)),
+            ("iterations".to_string(), Value::Int(0)),
+        ]
+        .into_iter()
+        .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "ElasticResult".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
     // ── linear_combine happy path ────────────────────────────────────────────
 
     #[test]
@@ -2657,8 +2715,11 @@ mod tests {
         a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| (x - y).abs() <= tol)
     }
 
-    #[test]
-    fn linear_combine_lrfd_d_and_l_produces_correct_weighted_sum() {
+    /// Shared body for the Map-shape and SI-shape LRFD weighted-sum tests.
+    /// `make_er(displacement, stress)` builds one per-case ElasticResult;
+    /// calling it twice with different builders verifies both shapes produce
+    /// identical numerical output.
+    fn run_linear_combine_lrfd_body(make_er: impl Fn(Value, Value) -> Value) {
         // Two cases "D" and "L" with the LRFD combination 1.4D + 1.7L.
         // Expected combined disp: [1.4*1+1.7*10, 1.4*2+1.7*20] = [18.4, 36.8]
         // Expected combined stress: [1.4*100+1.7*1000, 1.4*200+1.7*2000] = [1840, 3680]
@@ -2685,8 +2746,8 @@ mod tests {
             Type::Real,
         );
 
-        let case_d = make_fixture_elastic_result_with_fields(d_disp, d_stress);
-        let case_l = make_fixture_elastic_result_with_fields(l_disp, l_stress);
+        let case_d = make_er(d_disp, d_stress);
+        let case_l = make_er(l_disp, l_stress);
         let mcr = multi_case_result_value(&[("D", case_d), ("L", case_l)]);
 
         let mut weights_map = BTreeMap::new();
@@ -2728,6 +2789,18 @@ mod tests {
             Value::Real(v) => assert!((v - 3680.0).abs() <= 1e-9, "max_von_mises mismatch: {}", v),
             other => panic!("expected Value::Real for max_von_mises, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn linear_combine_lrfd_d_and_l_produces_correct_weighted_sum() {
+        run_linear_combine_lrfd_body(make_fixture_elastic_result_with_fields);
+    }
+
+    // SI per-case ElasticResults (solve_load_cases real-solver shape) must
+    // produce identical output to Map per-cases for the same LRFD fixture.
+    #[test]
+    fn linear_combine_structure_instance_per_case_superposes_not_undef() {
+        run_linear_combine_lrfd_body(make_elastic_result_si_with_fields);
     }
 
     #[test]
@@ -3559,31 +3632,15 @@ mod tests {
     ///                     d[3]=σ_yx, d[4]=σ_yy, d[5]=σ_yz,
     ///                     d[6]=σ_zx, d[7]=σ_zy, d[8]=σ_zz
     /// (matches the layout `analysis.rs::von_mises` expects.)
-
-    #[test]
-    fn envelope_von_mises_two_case_round_trip_returns_per_grid_max_of_per_case_von_mises() {
-        // 1-D 3-grid-point fixture exercising the round-trip property:
-        //   envelope_von_mises(mcr).data[i] == max over cases of vm(case[i])
-        //
-        // Hand-crafted tensors at each point with known closed-form von_mises
-        // (computed off-line — the test pins explicit numeric literals rather
-        // than re-implementing the closed-form formula in a duplicate
-        // `von_mises_window` helper, so a regression in either side surfaces
-        // as a literal-mismatch instead of two coupled implementations
-        // drifting in lockstep):
-        //   Case A:
-        //     P0 = uniaxial 100 MPa σ_xx               → vm = 100
-        //     P1 = pure shear 50 MPa σ_xy = σ_yx       → vm = 50·√3
-        //     P2 = hydrostatic 200 MPa diagonal        → vm = 0
-        //   Case B:
-        //     P0 = hydrostatic 50 MPa diagonal         → vm = 0
-        //     P1 = uniaxial 200 MPa σ_xx               → vm = 200
-        //     P2 = pure shear 100 MPa σ_xy = σ_yx      → vm = 100·√3
-        //
-        // Per-grid envelope (max over cases of per-case vm):
-        //   data[0] = max(100, 0)             = 100.0
-        //   data[1] = max(50·√3 ≈ 86.6, 200)  = 200.0
-        //   data[2] = max(0, 100·√3 ≈ 173.2)  = 100·√3
+    /// Shared body for the Map-shape and SI-shape von_Mises envelope round-trip
+    /// tests. `make_er(displacement, stress)` builds one per-case ElasticResult.
+    ///
+    /// 1-D 3-grid-point fixture: hand-crafted tensors with known closed-form vm
+    /// (computed off-line — pins literals instead of re-implementing the formula):
+    ///   Case A: P0 uniaxial 100→vm=100, P1 pure-shear 50→vm=50√3, P2 hydrostatic→vm=0
+    ///   Case B: P0 hydrostatic→vm=0, P1 uniaxial 200→vm=200, P2 pure-shear 100→vm=100√3
+    ///   Envelope: data=[100, 200, 100·√3]
+    fn run_envelope_von_mises_two_case_round_trip(make_er: impl Fn(Value, Value) -> Value) {
         let axis = vec![0.0, 1.0, 2.0];
         let pressure = Type::Scalar {
             dimension: DimensionVector::PRESSURE,
@@ -3617,25 +3674,21 @@ mod tests {
             tensor_codomain.clone(),
         );
 
-        // Per-case ElasticResult with displacement = Real placeholder (not read).
-        // envelope_von_mises only inspects `stress`, mirroring the per-helper
-        // field-extraction discipline documented in the plan analysis.
+        // envelope_von_mises only inspects `stress`; displacement is a placeholder.
         let disp_placeholder = wrap_sampled_field(
             make_sampled_1d("disp", axis.clone(), vec![0.0, 0.0, 0.0]),
             domain.clone(),
             Type::Real,
         );
-        let case_a = make_fixture_elastic_result_with_fields(disp_placeholder.clone(), a_stress);
-        let case_b = make_fixture_elastic_result_with_fields(disp_placeholder, b_stress);
+        let case_a = make_er(disp_placeholder.clone(), a_stress);
+        let case_b = make_er(disp_placeholder, b_stress);
         let mcr = multi_case_result_value(&[("A", case_a), ("B", case_b)]);
 
         let result = eval_fea("envelope_von_mises", &[mcr]).unwrap();
         let result_sf = extract_sampled(&result);
 
-        // Hand-computed expected per-grid envelope (no duplicate helper —
-        // see comment block above for the per-case vm derivation). The
-        // `3.0_f64.sqrt()` literal is the closed-form √3; `f64::consts`
-        // does not yet stabilise `SQRT_3`.
+        // Hand-computed expected per-grid envelope (see doc comment above).
+        // `3.0_f64.sqrt()` is the closed-form √3.
         let expected: [f64; 3] = [
             100.0,                  // max(vm_A=100, vm_B=0)
             200.0,                  // max(vm_A=50·√3, vm_B=200)
@@ -3654,12 +3707,16 @@ mod tests {
             );
         }
 
-        // Output codomain must be Pressure — the round-trip projection produces
-        // a scalar with the same Pressure dimension as the input tensor's quantity.
+        // Output codomain must be Pressure (same dimension as input tensor quantity).
         match &result {
             Value::Field { codomain_type, .. } => assert_eq!(*codomain_type, pressure),
             other => panic!("expected Value::Field, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn envelope_von_mises_two_case_round_trip_returns_per_grid_max_of_per_case_von_mises() {
+        run_envelope_von_mises_two_case_round_trip(make_fixture_elastic_result_with_fields);
     }
 
     // ── envelope_max_principal round-trip ───────────────────────────────────
@@ -3683,27 +3740,14 @@ mod tests {
         diag[2]
     }
 
-    #[test]
-    fn envelope_max_principal_two_case_round_trip_returns_per_grid_max_of_per_case_max_eigenvalue()
-    {
-        // 1-D 3-grid-point fixture with diagonal stress tensors at every
-        // point — eigenvalues equal the diagonal entries exactly, so the
-        // expected per-grid max-principal is the max of (σ_xx, σ_yy, σ_zz)
-        // at each point. Round-trip: max over cases of max-principal[i].
-        //
-        //   Case A (diagonal):
-        //     P0 = diag(100, 50, 20)   → max_eig = 100
-        //     P1 = diag(-30, 80, 60)   → max_eig = 80
-        //     P2 = diag(10, 10, 10)    → max_eig = 10 (hydrostatic)
-        //   Case B (diagonal):
-        //     P0 = diag(40, 200, 60)   → max_eig = 200
-        //     P1 = diag(50, 50, 50)    → max_eig = 50
-        //     P2 = diag(0, -10, 150)   → max_eig = 150
-        //
-        // Per-grid envelope (max over cases of per-case max_principal):
-        //   data[0] = max(100, 200) = 200
-        //   data[1] = max(80, 50)   = 80
-        //   data[2] = max(10, 150)  = 150
+    /// Shared body for the Map-shape and SI-shape max_principal envelope round-trip
+    /// tests. `make_er(displacement, stress)` builds one per-case ElasticResult.
+    ///
+    /// Diagonal stress tensors — eigenvalues = diagonal entries exactly, giving
+    /// closed-form max-principal = max(σ_xx, σ_yy, σ_zz):
+    ///   Case A: P0→100, P1→80, P2→10  |  Case B: P0→200, P1→50, P2→150
+    ///   Envelope: data=[200, 80, 150]
+    fn run_envelope_max_principal_two_case_round_trip(make_er: impl Fn(Value, Value) -> Value) {
         let axis = vec![0.0, 1.0, 2.0];
         let pressure = Type::Scalar {
             dimension: DimensionVector::PRESSURE,
@@ -3737,19 +3781,20 @@ mod tests {
             tensor_codomain.clone(),
         );
 
+        // envelope_max_principal only inspects `stress`; displacement is a placeholder.
         let disp_placeholder = wrap_sampled_field(
             make_sampled_1d("disp", axis.clone(), vec![0.0, 0.0, 0.0]),
             domain.clone(),
             Type::Real,
         );
-        let case_a = make_fixture_elastic_result_with_fields(disp_placeholder.clone(), a_stress);
-        let case_b = make_fixture_elastic_result_with_fields(disp_placeholder, b_stress);
+        let case_a = make_er(disp_placeholder.clone(), a_stress);
+        let case_b = make_er(disp_placeholder, b_stress);
         let mcr = multi_case_result_value(&[("A", case_a), ("B", case_b)]);
 
         let result = eval_fea("envelope_max_principal", &[mcr]).unwrap();
         let result_sf = extract_sampled(&result);
 
-        // Independently compute expected per-grid envelope.
+        // Independently compute expected per-grid envelope via max_principal_diagonal.
         let expected: Vec<f64> = (0..axis.len())
             .map(|i| {
                 max_principal_diagonal(&a_tensors[i]).max(max_principal_diagonal(&b_tensors[i]))
@@ -3775,6 +3820,12 @@ mod tests {
         }
     }
 
+    #[test]
+    fn envelope_max_principal_two_case_round_trip_returns_per_grid_max_of_per_case_max_eigenvalue()
+    {
+        run_envelope_max_principal_two_case_round_trip(make_fixture_elastic_result_with_fields);
+    }
+
     // ── envelope_displacement_magnitude round-trip ──────────────────────────
 
     /// Closed-form Euclidean magnitude of a 3-vector window.
@@ -3785,26 +3836,17 @@ mod tests {
         (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
     }
 
-    #[test]
-    fn envelope_displacement_magnitude_two_case_round_trip_returns_per_grid_max_of_per_case_norm() {
-        // 1-D 3-grid-point fixture exercising the round-trip property:
-        //   envelope_displacement_magnitude(mcr).data[i]
-        //     == max over cases of |displacement[case].data[i*3..i*3+3]|
-        //
-        // Hand-crafted vectors at each point with known closed-form magnitudes:
-        //   Case A:
-        //     P0 = [3, 4, 0]      → |·| = 5
-        //     P1 = [0, 0, 0]      → |·| = 0
-        //     P2 = [1, 1, 1]      → |·| = √3 ≈ 1.7320508
-        //   Case B:
-        //     P0 = [0, 0, 0]      → |·| = 0
-        //     P1 = [6, 8, 0]      → |·| = 10
-        //     P2 = [2, 0, 0]      → |·| = 2
-        //
-        // Per-grid envelope (max over cases of per-case magnitude):
-        //   data[0] = max(5,    0)     = 5
-        //   data[1] = max(0,    10)    = 10
-        //   data[2] = max(√3,   2)     = 2
+    /// Shared body for the Map-shape and SI-shape displacement-magnitude envelope
+    /// round-trip tests. `make_er(displacement, stress)` builds one per-case
+    /// ElasticResult.
+    ///
+    /// Hand-crafted vectors with known closed-form magnitudes:
+    ///   Case A: P0=[3,4,0]→5, P1=[0,0,0]→0, P2=[1,1,1]→√3
+    ///   Case B: P0=[0,0,0]→0, P1=[6,8,0]→10, P2=[2,0,0]→2
+    ///   Envelope: data=[5, 10, 2]
+    fn run_envelope_displacement_magnitude_two_case_round_trip(
+        make_er: impl Fn(Value, Value) -> Value,
+    ) {
         let axis = vec![0.0, 1.0, 2.0];
         let length = Type::Scalar {
             dimension: DimensionVector::LENGTH,
@@ -3829,22 +3871,20 @@ mod tests {
             vector_codomain.clone(),
         );
 
-        // Per-case ElasticResult with stress = Real placeholder (not read).
-        // envelope_displacement_magnitude only inspects `displacement`,
-        // mirroring the per-helper field-extraction discipline.
+        // envelope_displacement_magnitude only inspects `displacement`; stress is a placeholder.
         let stress_placeholder = wrap_sampled_field(
             make_sampled_1d("stress", axis.clone(), vec![0.0, 0.0, 0.0]),
             domain.clone(),
             Type::Real,
         );
-        let case_a = make_fixture_elastic_result_with_fields(a_disp, stress_placeholder.clone());
-        let case_b = make_fixture_elastic_result_with_fields(b_disp, stress_placeholder);
+        let case_a = make_er(a_disp, stress_placeholder.clone());
+        let case_b = make_er(b_disp, stress_placeholder);
         let mcr = multi_case_result_value(&[("A", case_a), ("B", case_b)]);
 
         let result = eval_fea("envelope_displacement_magnitude", &[mcr]).unwrap();
         let result_sf = extract_sampled(&result);
 
-        // Independently compute expected per-grid envelope.
+        // Independently compute expected per-grid envelope via vector3_magnitude.
         let expected: Vec<f64> = (0..axis.len())
             .map(|i| vector3_magnitude(&a_vectors[i]).max(vector3_magnitude(&b_vectors[i])))
             .collect();
@@ -3866,6 +3906,36 @@ mod tests {
             Value::Field { codomain_type, .. } => assert_eq!(*codomain_type, length),
             other => panic!("expected Value::Field, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn envelope_displacement_magnitude_two_case_round_trip_returns_per_grid_max_of_per_case_norm() {
+        run_envelope_displacement_magnitude_two_case_round_trip(
+            make_fixture_elastic_result_with_fields,
+        );
+    }
+
+    // ── step-3: envelope_* accept per-case StructureInstance ─────────────────
+    //
+    // SI per-case ElasticResults (solve_load_cases shape) must produce the same
+    // per-grid-maximum output as Map per-cases for the same fixture.
+    // Each test delegates to the shared round-trip helper defined above.
+
+    #[test]
+    fn envelope_von_mises_structure_instance_per_case_returns_per_grid_max_not_undef() {
+        run_envelope_von_mises_two_case_round_trip(make_elastic_result_si_with_fields);
+    }
+
+    #[test]
+    fn envelope_max_principal_structure_instance_per_case_not_undef() {
+        run_envelope_max_principal_two_case_round_trip(make_elastic_result_si_with_fields);
+    }
+
+    #[test]
+    fn envelope_displacement_magnitude_structure_instance_per_case_not_undef() {
+        run_envelope_displacement_magnitude_two_case_round_trip(
+            make_elastic_result_si_with_fields,
+        );
     }
 
     // ── envelope_{von_mises,max_principal,displacement_magnitude} negatives ─
@@ -4288,9 +4358,14 @@ mod tests {
     // is named in <name2>. A grid-length mismatch is the structural proxy for
     // differing mesh_size / element_order in ElasticOptions. RED until the
     // incompatible-mesh arm lands in step-10.
-    #[test]
-    fn diagnose_linear_combine_incompatible_meshes() {
-        // 'operating' displacement/stress have 5 grid points; 'overload' has 4.
+    /// Shared body for the Map-shape and SI-shape incompatible-mesh diagnose tests.
+    /// `make_er(displacement, stress)` builds one per-case ElasticResult.
+    ///
+    /// 'operating' has 5 grid points; 'overload' has 4 — grid-length mismatch is
+    /// the proxy for differing mesh_size / element_order in ElasticOptions.
+    fn run_diagnose_linear_combine_incompatible_meshes_body(
+        make_er: impl Fn(Value, Value) -> Value,
+    ) {
         let op_disp = wrap_sampled_field(
             make_sampled_1d(
                 "od",
@@ -4319,8 +4394,8 @@ mod tests {
             Type::Real,
             Type::Real,
         );
-        let operating = make_fixture_elastic_result_with_fields(op_disp, op_stress);
-        let overload = make_fixture_elastic_result_with_fields(ov_disp, ov_stress);
+        let operating = make_er(op_disp, op_stress);
+        let overload = make_er(ov_disp, ov_stress);
         let mcr = multi_case_result_value(&[("operating", operating), ("overload", overload)]);
         let mut weights = BTreeMap::new();
         weights.insert(Value::String("operating".to_string()), Value::Real(1.0));
@@ -4333,7 +4408,17 @@ mod tests {
         );
         assert_eq!(
             diag.message,
-            "linear_combine: cases 'operating' and 'overload' use incompatible meshes (different mesh_size or element_order in their ElasticOptions). Superposition requires matching mesh / element-order layouts. Re-solve with consistent options or compute envelopes instead."
+            "linear_combine: cases 'operating' and 'overload' use incompatible meshes \
+             (different mesh_size or element_order in their ElasticOptions). \
+             Superposition requires matching mesh / element-order layouts. \
+             Re-solve with consistent options or compute envelopes instead."
+        );
+    }
+
+    #[test]
+    fn diagnose_linear_combine_incompatible_meshes() {
+        run_diagnose_linear_combine_incompatible_meshes_body(
+            make_fixture_elastic_result_with_fields,
         );
     }
 
@@ -4359,5 +4444,14 @@ mod tests {
              (mirroring linear_combine's per-entry bail), not be misattributed to \
              the later unknown-case entry"
         );
+    }
+
+    // SI per-case ElasticResults (solve_load_cases shape) must trigger the same
+    // MultiLoadIncompatibleMeshes diagnostic as Map per-cases for identical mesh
+    // mismatch — verifying the diagnose-mirrors-linear_combine invariant holds
+    // for real-solver inputs.
+    #[test]
+    fn diagnose_linear_combine_incompatible_meshes_over_structure_instance_cases() {
+        run_diagnose_linear_combine_incompatible_meshes_body(make_elastic_result_si_with_fields);
     }
 }
