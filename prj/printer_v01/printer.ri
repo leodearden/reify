@@ -1,34 +1,40 @@
 // printer_v01 — single-file integration.
 //
 // Multi-material CoreXY toolchanger build. See docs/projects/printer_v01.md
-// for the full design spec. This file declares a small library of construction
-// primitives, composed motion-system assemblies (CoreXY = X stage + Y stage,
-// each = mirrored LinearStages), the non-motion sub-assembly placeholders
-// (A, D–J), the global Envelope, and a top-level Printer that wires them.
+// for the full design spec. Construction primitives + a directly-composed
+// CoreXY motion system, the non-motion sub-assembly placeholders (A, D–J), the
+// global Envelope, and a top-level Printer.
 //
 // PLACEMENT MODEL (v0_6 sub-placement-and-surfacing, task 3903/T5 — landed):
-// Hierarchical placement is DECLARATIVE. Each leaf primitive is modelled in its
-// own local frame (a solid of revolution along its local +Z, centred on the
-// origin). A composing structure positions a child once, at the `sub` site, via
-// a trailing `at transform3(orient, translation)` clause; the placed child
-// geometry auto-surfaces, composed into the parent's frame, all the way up the
-// tree. No manual `let placed = translate(self.sub.body, …)` lifts, no parallel
-// *View structs — those were the pre-3903 workaround and are gone.
+// Hierarchical placement is DECLARATIVE. Each leaf is modelled in its own local
+// frame (a solid of revolution along local +Z, centred on the origin; boxes
+// centred too). A composing structure positions a child once, at the `sub`
+// site, via `at transform3(orient, translation)`; placed child geometry
+// auto-surfaces, composed into the parent's frame, all the way up the tree.
+// Rotate a leaf's local +Z onto a world axis with
+// `orient_axis_angle(vec3(1m,0,0), 90deg)` (→Y) / `(vec3(0,1m,0), 90deg)` (→X).
 //
-// CAVEAT (per-instance param overrides): on current main, constructor-arg
-// overrides at a `sub` site (`Foo(x: 1mm)`) do NOT yet flow into the surfaced
-// child geometry — the child realises with its DEFINITION DEFAULTS (PRD §11.4,
-// the seed_cross_sub_named_steps hook is still being wired). So all per-instance
-// variation here is expressed through the `at` TRANSFORM (position + orientation,
-// built from each structure's own default params + literals), NOT through size
-// overrides. Where two instances would need different SIZES (e.g. the X-rail is
-// shorter than the Y-rail), the model currently renders both at the shared leaf
-// default; refine once override propagation lands.
+// CAVEAT (override drop): constructor-arg overrides at a `sub` site do NOT yet
+// flow into surfaced child geometry (child renders its DEFINITION DEFAULTS).
+// So all per-instance variation is via the `at` TRANSFORM, and sizes that must
+// agree are TUNED so the shared leaf default lines them up (e.g. rail length
+// 800mm == Y-rail centre-to-centre 2*y_rail_offset, so the gantry exactly spans
+// between the Y rails). Tracked gap (filed).
 //
-// VISIBILITY: construction/reference geometry (build-volume box, travel
-// centreline) is marked `aux` — realised + inspectable but flagged
-// default_visible=false. The GUI honouring that flag is task 3904/T6 (in
-// progress); until it lands, toggle these off in the Outline panel.
+// COREXY GEOMETRY (agreed in design review):
+//  - Round rails => the X gantry is a STACKED PAIR (two rails) to constrain roll
+//    about the rail axis; their midplane coincides with the Y-rail plane.
+//  - The lowest X-rail bearing sits a small clearance above the build volume and
+//    DEFINES the motion-system Z height (gantry fixed high; the Z-bed drops).
+//  - CoreXY drive tendons: A & B belts, each mirrored upper/lower for moment
+//    balance => four tendon planes (A outer, B inner) expressed as a TendonVPair
+//    (the ±Z mirror) placed twice. v0.1 models straight full-Y spans; the
+//    diagonal half-span routing (A: front-of-one-rail + back-of-other) is a
+//    follow-on.
+//
+// VISIBILITY: reference geometry (build-volume box, bed travel centreline) is
+// `aux` — realised + inspectable but default_visible=false (GUI auto-hide is
+// task 3904/T6; the Outline eye-icon tri-state full/semi/hidden works today).
 
 #version(0.1)
 
@@ -37,22 +43,15 @@
 /// Linear acceleration (m/s²).
 type Acceleration = Length / Time / Time
 
-// ── Construction primitives (axis-agnostic, centred on local +Z) ────────────
-//
-// Each leaf is a solid of revolution along its OWN local +Z axis, centred on the
-// origin. Orientation + placement into the parent frame are supplied by the
-// composing structure's `at` clause.
+// ── Construction primitives (centred; rods/tendons along local +Z) ──────────
 
-/// Cylindrical air-bearing housing: an annular sleeve (bore = rod_diameter,
-/// outer = outer_diameter) of the given length, along local +Z, centred on the
-/// origin. Real lip clearance is ~5 µm; OD ≈ housing OD.
+/// Cylindrical air-bearing housing / carriage bearing: an annular sleeve
+/// (bore = rod_diameter, outer = outer_diameter) along local +Z, centred.
 pub structure AirBearing {
     param rod_diameter   : Length = 60mm
     param outer_diameter : Length = 90mm
     param length         : Length = 150mm
 
-    // Outer sleeve minus a through-bore; the bore protrudes ±10% past each end
-    // so the boolean difference has no coincident end caps.
     let body = difference(
         translate(cylinder(outer_diameter / 2, length), 0mm, 0mm, 0mm - length / 2),
         translate(cylinder(rod_diameter / 2, length * 1.2), 0mm, 0mm, 0mm - length * 0.6)
@@ -63,8 +62,9 @@ pub structure AirBearing {
     constraint length > 0mm
 }
 
-/// Precision-ground stainless rod: a solid cylinder along local +Z, centred on
-/// the origin.
+/// Precision-ground stainless rod (linear-rail rod): solid cylinder along local
+/// +Z, centred. Used for both Y rails and the X gantry rails (length tuned so
+/// the gantry spans exactly between the Y rails — see header CAVEAT).
 pub structure BearingRod {
     param diameter : Length = 60mm
     param length   : Length = 800mm
@@ -75,9 +75,9 @@ pub structure BearingRod {
     constraint length > 0mm
 }
 
-/// Single Vectran tendon (6 mm braid, on-rail span only): a slender cylinder
-/// along local +Z, centred on the origin. The closed-loop path through capstans
-/// + motor is out of scope for the v0.1 model.
+/// Single Vectran tendon (6 mm braid, on-rail straight span): slender cylinder
+/// along local +Z, centred. Closed-loop routing through capstans is out of
+/// scope for v0.1.
 pub structure LinearTendon {
     param diameter : Length = 6mm
     param length   : Length = 800mm
@@ -88,82 +88,102 @@ pub structure LinearTendon {
     constraint length > 0mm
 }
 
-// ── Composed assemblies ─────────────────────────────────────────────────────
+/// Carriage block — the bridging body that joins a rail bearing to the gantry
+/// (Y carriages) or carries the toolhead (head carriage). Box, centred.
+pub structure CarriageBlock {
+    param width  : Length = 90mm    // X
+    param depth  : Length = 90mm    // Y
+    param height : Length = 120mm   // Z (spans the stacked X-rail pair + margin)
+
+    let body = box(width, depth, height)
+
+    constraint width > 0mm
+    constraint depth > 0mm
+    constraint height > 0mm
+}
+
+// ── Tendon self-similarity (α: nested mirrored pairs) ───────────────────────
+
+/// One belt, mirrored upper/lower about the rail plane for moment balance.
+/// The pair offset is along local +Y so that, once the VPair is rotated to run
+/// along world +Y, the offset becomes the vertical (+Z) upper/lower split.
+pub structure TendonVPair {
+    /// Vertical half-separation of the pair about the rail plane.
+    param v_half : Length = 12mm
+
+    sub upper = LinearTendon() at transform3(orient_identity(), vec3(0mm, v_half, 0mm))
+    sub lower = LinearTendon() at transform3(orient_identity(), vec3(0mm, 0mm - v_half, 0mm))
+
+    constraint v_half > 0mm
+}
+
+/// The four CoreXY drive tendons: belt A (outer) and belt B (inner), each a
+/// mirrored upper/lower VPair. Tendons run along +Y (rotate leaf +Z → +Y) and
+/// straddle the rail plane in Z. v0.1: straight full-Y spans at A-outer /
+/// B-inner transverse offsets (diagonal routing deferred).
+pub structure DriveTendons {
+    param a_offset : Length = 140mm   // A outermost (transverse, +X)
+    param b_offset : Length = 90mm    // B innermost
+    param v_half   : Length = 12mm
+
+    let rot_to_y = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)
+
+    sub belt_a = TendonVPair() at transform3(rot_to_y, vec3(a_offset, 0mm, 0mm))
+    sub belt_b = TendonVPair() at transform3(rot_to_y, vec3(b_offset, 0mm, 0mm))
+
+    constraint a_offset > b_offset
+}
+
+// ── CoreXY motion system (directly composed) ─────────────────────────────────
 //
-// Rail axis = local +Z throughout the stage stack (matches the leaf cylinders),
-// so the only orientation needed is at the YStage / XStage level, where local +Z
-// is rotated onto world +Y / world +X respectively.
+// Local frame: +X = gantry (left↔right), +Y = Y-rail axis (front↔back), +Z = up.
+// Origin = gantry midplane centre (== the Y-rail plane). The Y rails are fixed
+// and run full-Y; the gantry (stacked X-rail pair) + Y carriages + head carriage
+// sit at the gantry's current Y (y_head) and the head's X (x_head).
 
-/// One rod + one co-axial air-bearing carriage. Rail axis = local +Z; the rod is
-/// centred at the origin and the bearing slides along +Z by `bearing_offset`.
-pub structure GuideAssembly {
-    /// Bearing-carriage centre offset from the rod centre, along the rail (+Z).
-    param bearing_offset : Length = 0mm
-
-    sub rod     = BearingRod()
-    sub bearing = AirBearing() at transform3(orient_identity(), vec3(0mm, 0mm, bearing_offset))
-
-    constraint bearing_offset >= 0mm - 400mm
-    constraint bearing_offset <= 400mm
-}
-
-/// One guide assembly + a symmetric pair of Vectran tendons flanking the rail in
-/// local ±X (in-plane, moment-balanced about the rail axis), running parallel to
-/// the rail (local +Z). A standalone LinearStage models a single rail; an X- or
-/// Y-stage is two of these.
-pub structure LinearStage {
-    /// In-plane transverse half-spacing of the tendon pair from the rail axis.
-    param tendon_offset : Length = 50mm
-
-    sub guide    = GuideAssembly()
-    sub tendon_a = LinearTendon() at transform3(orient_identity(), vec3(tendon_offset, 0mm, 0mm))
-    sub tendon_b = LinearTendon() at transform3(orient_identity(), vec3(0mm - tendon_offset, 0mm, 0mm))
-
-    constraint tendon_offset > 0mm
-}
-
-/// Two Y-aligned LinearStages forming the stationary side rails. Each stage's
-/// local +Z is rotated onto world +Y; the pair is split ±`rail_offset` in X.
-/// Default geometry centres the rail pair on x = 0, running along Y, centred on
-/// the assembly origin.
-pub structure YStage {
-    /// Half the centre-to-centre separation between the two Y rails.
-    param rail_offset : Length = 360mm
-
-    // Rotate local +Z onto world +Y (90° about X).
-    sub stage_left  = LinearStage()
-        at transform3(orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg), vec3(0mm - rail_offset, 0mm, 0mm))
-    sub stage_right = LinearStage()
-        at transform3(orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg), vec3(rail_offset, 0mm, 0mm))
-
-    constraint rail_offset > 0mm
-}
-
-/// Two X-aligned LinearStages forming the gantry's stacked rail pair. Each
-/// stage's local +Z is rotated onto world +X; the pair is stacked ±`rail_offset`
-/// in Z. Default geometry centres the rail pair on z = 0, running along X.
-pub structure XStage {
-    /// Half the Z centre-to-centre separation between the stacked X rails.
-    param rail_offset : Length = 50mm
-
-    // Rotate local +Z onto world +X (90° about Y).
-    sub stage_lower = LinearStage()
-        at transform3(orient_axis_angle(vec3(0mm, 1m, 0mm), 90deg), vec3(0mm, 0mm, 0mm - rail_offset))
-    sub stage_upper = LinearStage()
-        at transform3(orient_axis_angle(vec3(0mm, 1m, 0mm), 90deg), vec3(0mm, 0mm, rail_offset))
-
-    constraint rail_offset > 0mm
-}
-
-/// CoreXY motion system: Y stage = stationary side rails; X stage = the moving
-/// gantry beam carrying the toolhead carriage. The gantry rides high on the Y
-/// rails, so the X stage is lifted in +Z relative to the Y rails.
 pub structure CoreXY {
-    /// Height of the gantry beam above the Y-rail centre plane.
-    param gantry_height : Length = 300mm
+    /// Y-rail centre-to-centre half-separation. 2*this == BearingRod.length so
+    /// the X gantry exactly spans between the Y rails (header CAVEAT).
+    param y_rail_offset : Length = 400mm
+    /// Z half-separation of the stacked X-gantry rails; their midplane is the
+    /// Y-rail plane (z = 0 here).
+    param x_rail_offset : Length = 50mm
+    /// Gantry position along Y (0 = mid travel) and toolhead position along X.
+    param y_head : Length = 0mm
+    param x_head : Length = 0mm
 
-    sub y_stage = YStage()
-    sub x_stage = XStage() at transform3(orient_identity(), vec3(0mm, 0mm, gantry_height))
+    let rot_to_y   = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)   // leaf +Z → +Y
+    let rot_to_x   = orient_axis_angle(vec3(0mm, 1m, 0mm), 90deg)   // leaf +Z → +X
+    let neg_y_rail = 0mm - y_rail_offset
+    let neg_x_rail = 0mm - x_rail_offset
+
+    // Fixed Y side-rails (run full Y).
+    sub y_rail_l = BearingRod() at transform3(rot_to_y, vec3(neg_y_rail, 0mm, 0mm))
+    sub y_rail_r = BearingRod() at transform3(rot_to_y, vec3(y_rail_offset, 0mm, 0mm))
+
+    // Y carriages: a bearing riding each Y rail at the gantry's Y, plus a block
+    // bridging up/down to the stacked gantry-rail ends.
+    sub y_carriage_l_brg = AirBearing()    at transform3(rot_to_y,        vec3(neg_y_rail,    y_head, 0mm))
+    sub y_carriage_r_brg = AirBearing()    at transform3(rot_to_y,        vec3(y_rail_offset, y_head, 0mm))
+    sub y_carriage_l_blk = CarriageBlock() at transform3(orient_identity(), vec3(neg_y_rail,    y_head, 0mm))
+    sub y_carriage_r_blk = CarriageBlock() at transform3(orient_identity(), vec3(y_rail_offset, y_head, 0mm))
+
+    // X gantry: two stacked rails along +X, straddling the Y-rail plane in Z,
+    // ends meeting the two Y carriages.
+    sub x_rail_lower = BearingRod() at transform3(rot_to_x, vec3(0mm, y_head, neg_x_rail))
+    sub x_rail_upper = BearingRod() at transform3(rot_to_x, vec3(0mm, y_head, x_rail_offset))
+
+    // Toolhead carriage riding the gantry at x_head: a bearing on each gantry
+    // rail plus a bridging block.
+    sub head_brg_lower = AirBearing()    at transform3(rot_to_x,        vec3(x_head, y_head, neg_x_rail))
+    sub head_brg_upper = AirBearing()    at transform3(rot_to_x,        vec3(x_head, y_head, x_rail_offset))
+    sub head_block     = CarriageBlock() at transform3(orient_identity(), vec3(x_head, y_head, 0mm))
+
+    // CoreXY drive tendons (four planes), fixed, full Y.
+    sub tendons = DriveTendons() at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+
+    constraint y_rail_offset > 0mm
+    constraint x_rail_offset > 0mm
 }
 
 // ── Envelope (global parameters + kinematic centerlines) ────────────────────
@@ -240,11 +260,6 @@ pub structure Envelope {
 }
 
 // ── Sub-assemblies (A, D–J) ─────────────────────────────────────────────────
-//
-// B (Y-axis) and C (Gantry + X-axis) from the doc's sub-assembly table are
-// realised as CoreXY (= XStage + YStage), above. The remaining placeholders
-// cover the non-motion sub-assemblies; each grows its own owned geometry as the
-// model fleshes out.
 
 /// Assembly A — Frame: polymer-concrete-filled steel sandwich (structural
 /// backbone). Laser-cut steel skeleton + heterogeneous-aggregate epoxy granite.
@@ -252,8 +267,8 @@ pub structure AFrame {
     param wall_thickness : Length = 100mm
 }
 
-/// Assembly D — Toolhead: carriage on the X-rail + 4-tool kinematic dock on the
-/// frame; v0.1 fits 2 tools (4-tool dock designed in).
+/// Assembly D — Toolhead: 4-tool kinematic dock on the frame (the carriage that
+/// rides the gantry is modelled in CoreXY as the head carriage). v0.1 fits 2.
 pub structure DToolhead {
     param tool_dock_pitch : Length = 80mm
 }
@@ -262,8 +277,6 @@ pub structure DToolhead {
 /// electronic-tilt servo Z, parking shutter (no bellows). Owns the Z-travel
 /// centreline visualisation.
 pub structure EZBed {
-    // Envelope-derived parameters. Defaults mirror Envelope so EZBed renders
-    // standalone.
     param build_x : Length = 500mm
     param build_y : Length = 800mm
     param build_z : Length = 600mm
@@ -313,19 +326,17 @@ pub structure JAuxiliary {
 
 // ── Top-level integration ───────────────────────────────────────────────────
 
-/// Top-level printer integration. Wires the non-motion sub-assemblies (A, D–J)
-/// and the unified motion system (CoreXY = XStage + YStage) against the shared
-/// Envelope. The motion system is modelled centred on its own origin, then
-/// placed at the build-volume centre. (Precise world placement of each
-/// sub-assembly is the follow-on step.)
+/// Top-level printer integration. The motion system is modelled about its own
+/// gantry-midplane origin, then placed so the lowest X-rail bearing clears the
+/// build-volume top: motion Z = build_z + clearance + x_rail_offset +
+/// bearing_radius ≈ 715mm; centred over the build in X/Y.
 pub structure Printer {
     sub env = Envelope()
 
     sub a_frame = AFrame()
 
-    // Centre the motion system on the build volume (FLB corner at world origin).
     sub motion = CoreXY()
-        at transform3(orient_identity(), vec3(250mm, 400mm, 300mm))
+        at transform3(orient_identity(), vec3(250mm, 400mm, 715mm))
 
     sub d_toolhead = DToolhead()
 
