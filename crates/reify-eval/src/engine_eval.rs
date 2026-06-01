@@ -385,8 +385,33 @@ fn detect_scope_coupling(templates: &[reify_compiler::TopologyTemplate]) -> Vec<
         for constraint in &template.constraints {
             let reads = extract_dependency_trace(&constraint.expr).reads;
             for r in reads {
-                if let Some(owner) = frozen.get(&r) {
-                    if owner != b_name {
+                if let Some(owner) = frozen.get(&r)
+                    && owner != b_name
+                {
+                    let key = (owner.clone(), b_name.clone(), r.clone());
+                    if seen.insert(key) {
+                        let msg = format!(
+                            "W_SCOPE_COUPLING: scope '{b_name}' reads auto cell '{r}' \
+                             owned by already-resolved scope '{owner}'; \
+                             bottom-up resolution may be approximate"
+                        );
+                        diagnostics.push(
+                            Diagnostic::warning(msg)
+                                .with_code(DiagnosticCode::ScopeCoupling),
+                        );
+                    }
+                }
+            }
+        }
+
+        // Collect B's read-set from objective terms (no span available).
+        if let Some(obj) = &template.objective {
+            for term in &obj.terms {
+                let reads = extract_dependency_trace(&term.expr).reads;
+                for r in reads {
+                    if let Some(owner) = frozen.get(&r)
+                        && owner != b_name
+                    {
                         let key = (owner.clone(), b_name.clone(), r.clone());
                         if seen.insert(key) {
                             let msg = format!(
@@ -398,31 +423,6 @@ fn detect_scope_coupling(templates: &[reify_compiler::TopologyTemplate]) -> Vec<
                                 Diagnostic::warning(msg)
                                     .with_code(DiagnosticCode::ScopeCoupling),
                             );
-                        }
-                    }
-                }
-            }
-        }
-
-        // Collect B's read-set from objective terms (no span available).
-        if let Some(obj) = &template.objective {
-            for term in &obj.terms {
-                let reads = extract_dependency_trace(&term.expr).reads;
-                for r in reads {
-                    if let Some(owner) = frozen.get(&r) {
-                        if owner != b_name {
-                            let key = (owner.clone(), b_name.clone(), r.clone());
-                            if seen.insert(key) {
-                                let msg = format!(
-                                    "W_SCOPE_COUPLING: scope '{b_name}' reads auto cell '{r}' \
-                                     owned by already-resolved scope '{owner}'; \
-                                     bottom-up resolution may be approximate"
-                                );
-                                diagnostics.push(
-                                    Diagnostic::warning(msg)
-                                        .with_code(DiagnosticCode::ScopeCoupling),
-                                );
-                            }
                         }
                     }
                 }
