@@ -246,7 +246,7 @@ mod tests {
     use super::*;
     use reify_ir::Value;
     use crate::assembly::ElementStiffness;
-    use crate::shell_assembly::shell_element_stiffness;
+    use crate::shell_assembly::{ShellFrame, shell_element_stiffness};
 
     /// Compute K · u for an 18-DOF stiffness matrix.
     fn matvec(k: &ElementStiffness, u: &[f64; 18]) -> [f64; 18] {
@@ -683,5 +683,98 @@ mod tests {
         assert_eq!(s.top, [[0.0_f64; 3]; 3], "zero-DOF top layer must be all 0.0");
         assert_eq!(s.mid, [[0.0_f64; 3]; 3], "zero-DOF mid layer must be all 0.0");
         assert_eq!(s.bottom, [[0.0_f64; 3]; 3], "zero-DOF bottom layer must be all 0.0");
+    }
+
+    /// RED (task δ step-3): pin the neutral flatten glue `flatten_shell_channels`.
+    ///
+    /// `flatten_shell_channels(stresses, frames)` packs per-element shell results
+    /// into four flat `Vec<f64>` buffers that reify-eval (which depends on this
+    /// crate) wraps into the DSL `ShellChannels` without a dependency cycle:
+    ///
+    /// - `top` / `mid` / `bottom` — element-major, then row-major flatten of each
+    ///   element's `.top` / `.mid` / `.bottom` 3×3 LOCAL-frame stress tensor.
+    /// - `frame` — element-major, row-major flatten of each
+    ///   [`ShellFrame::local_to_global`] 3×3 rotation matrix.
+    ///
+    /// Every buffer has length `9 · n_elem`. The expected buffers are built here
+    /// directly from the inputs (element-major, row-major) so a future layout
+    /// change — element/row/col transpose, channel swap, or dropping the
+    /// `local_to_global` transpose — surfaces as a mismatch.
+    ///
+    /// The two synthetic frames use non-symmetric `r` matrices so the
+    /// `local_to_global` transpose (`result[i][j] = r[j][i]`) is observable in
+    /// the flattened `frame` buffer.
+    #[test]
+    fn flatten_shell_channels_packs_element_major_row_major_buffers() {
+        let stresses = vec![
+            ShellElementStress {
+                top: [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]],
+                mid: [[10.0, 11.0, 12.0], [13.0, 14.0, 15.0], [16.0, 17.0, 18.0]],
+                bottom: [[19.0, 20.0, 21.0], [22.0, 23.0, 24.0], [25.0, 26.0, 27.0]],
+            },
+            ShellElementStress {
+                top: [[101.0, 102.0, 103.0], [104.0, 105.0, 106.0], [107.0, 108.0, 109.0]],
+                mid: [[110.0, 111.0, 112.0], [113.0, 114.0, 115.0], [116.0, 117.0, 118.0]],
+                bottom: [[119.0, 120.0, 121.0], [122.0, 123.0, 124.0], [125.0, 126.0, 127.0]],
+            },
+        ];
+
+        // Non-symmetric `r` so the local_to_global transpose is observable; the
+        // flatten glue does no validation, so these need not be true rotations.
+        let frames = vec![
+            ShellFrame {
+                origin: [0.0, 0.0, 0.0],
+                r: [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]],
+                area: 0.5,
+            },
+            ShellFrame {
+                origin: [1.0, 1.0, 1.0],
+                r: [[9.0, 8.0, 7.0], [6.0, 5.0, 4.0], [3.0, 2.0, 1.0]],
+                area: 0.25,
+            },
+        ];
+
+        let (top, mid, bottom, frame) = flatten_shell_channels(&stresses, &frames);
+
+        let n = stresses.len();
+        assert_eq!(top.len(), 9 * n, "top buffer length must be 9·n_elem");
+        assert_eq!(mid.len(), 9 * n, "mid buffer length must be 9·n_elem");
+        assert_eq!(bottom.len(), 9 * n, "bottom buffer length must be 9·n_elem");
+        assert_eq!(frame.len(), 9 * n, "frame buffer length must be 9·n_elem");
+
+        // Expected stress buffers: element-major, then row-major within each 3×3.
+        let mut exp_top = Vec::new();
+        let mut exp_mid = Vec::new();
+        let mut exp_bottom = Vec::new();
+        for s in &stresses {
+            for i in 0..3 {
+                for j in 0..3 {
+                    exp_top.push(s.top[i][j]);
+                    exp_mid.push(s.mid[i][j]);
+                    exp_bottom.push(s.bottom[i][j]);
+                }
+            }
+        }
+        assert_eq!(top, exp_top, "top must be element-major, row-major flatten of .top");
+        assert_eq!(mid, exp_mid, "mid must equal the flatten of the .mid layers exactly");
+        assert_eq!(
+            bottom, exp_bottom,
+            "bottom must be element-major, row-major flatten of .bottom"
+        );
+
+        // Expected frame buffer: row-major flatten of each local_to_global() matrix.
+        let mut exp_frame = Vec::new();
+        for fr in &frames {
+            let l2g = fr.local_to_global();
+            for i in 0..3 {
+                for j in 0..3 {
+                    exp_frame.push(l2g[i][j]);
+                }
+            }
+        }
+        assert_eq!(
+            frame, exp_frame,
+            "frame must be row-major flatten of each ShellFrame::local_to_global()"
+        );
     }
 }
