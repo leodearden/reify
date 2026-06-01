@@ -1527,3 +1527,49 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod eval_geometry_gate_tests {
+    use super::module_has_geometry;
+
+    /// RED until `module_has_geometry` is implemented (step-2).
+    ///
+    /// Compiles two sources with the stdlib:
+    /// 1. A geometry-bearing `Bracket : Physical` module (has a `box(...)` realization
+    ///    op and a `geometry : Solid` value cell) — expects `true`.
+    /// 2. A plain numeric module with no realization ops and no `Geometry`-typed
+    ///    cells — expects `false`.
+    ///
+    /// No OCCT required: the predicate is compile-time only.
+    #[test]
+    fn module_has_geometry_detects_geometry_vs_plain() {
+        // Geometry-bearing: Bracket : Physical has `param geometry : Solid = box(...)`
+        // (a realization with operations) and a `geometry : Solid` value cell.
+        let geometry_source = r#"
+structure def Bracket : Physical {
+    param geometry : Solid = box(10mm, 20mm, 30mm)
+    param material : Material = Steel_AISI_1045()
+}
+"#;
+        let compiled_geo =
+            reify_test_support::parse_and_compile_with_stdlib(geometry_source);
+        assert!(
+            module_has_geometry(&compiled_geo),
+            "Bracket : Physical should be detected as a geometry module"
+        );
+
+        // Plain numeric: no realization, no Geometry-typed cells.
+        let plain_source = r#"
+structure def Plain {
+    param x : Real = 1.0
+    let y = x + 2.0
+}
+"#;
+        let compiled_plain =
+            reify_test_support::parse_and_compile_with_stdlib(plain_source);
+        assert!(
+            !module_has_geometry(&compiled_plain),
+            "Plain numeric module should NOT be detected as a geometry module"
+        );
+    }
+}
