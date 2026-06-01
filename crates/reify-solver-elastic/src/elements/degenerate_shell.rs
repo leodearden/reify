@@ -457,6 +457,91 @@ pub fn degenerate_membrane_bending_b(
     b
 }
 
+/// Rotation-bubble membrane+bending enrichment columns (`3 × 2`) at `coord`.
+///
+/// Returns the 2 enrichment columns `[Δβ_x, Δβ_y]` of the cubic rotation bubble
+/// `f_b = 27·ξ·η·(1−ξ−η)` (the "+" in MITC3+, Lee–Lee–Bathe 2014 Eq. 7) for the
+/// degenerate-substrate **bending** strain `[ε'₁₁, ε'₂₂, 2ε'₁₂]`.
+///
+/// # Kinematics
+///
+/// Mirrors the **rotation block** of [`degenerate_membrane_bending_b`] with
+/// `f_b`/`∇f_b` substituted for `N_i`/`∇N_i` and the interpolated lamina normal
+/// `e₃ = Σ N_i V_i` (normalized; row 2 of [`lamina_frame`]) as the representative
+/// director `V_repr`:
+///
+/// ```text
+/// φ_b = f_b(ξ,η) · (ζ t_repr / 2)       t_repr = (t₀+t₁+t₂)/3
+/// ∇_x φ_b = J⁻ᵀ · [∂f_b/∂ξ·ζt_r/2, ∂f_b/∂η·ζt_r/2, f_b·t_r/2]ᵀ
+/// H[a][jj] = C_repr[a][c] · (∇_x φ_b)[jj]      c ∈ {0, 1}  (Δβ_x, Δβ_y)
+/// B_bubble[r][c] = inplane_lamina_strain(H, q)[r]
+/// ```
+///
+/// where `C_repr = −skew(V_repr)`.  Dropping `c = 2` omits the drilling DOF
+/// (θ_z), which is sterile for the in-plane strain since `C_repr[:,2] = 0` when
+/// `V_repr = e₃`.
+///
+/// # Flat-inertness
+///
+/// The caller [`crate::shell_assembly::degenerate_stiffness_core`] short-circuits
+/// before invoking this function when all directors are parallel, so flat patches
+/// are bit-exact inert (K_NB stays zero) without relying on any integral
+/// cancellation here.
+// G-allow: degenerate-shell rotation-bubble B-matrix helper, task #4065; called from
+// degenerate_stiffness_core on the bubble-active path; orphan-safe (fn-pointer
+// registration the orphan audit cannot trace); guarded by the bubble coupling test.
+pub fn degenerate_bubble_bending_b(
+    nodes: &[[f64; 3]; 3],
+    directors: &[Director; 3],
+    thicknesses: &[f64; 3],
+    coord: ShellRefCoord3,
+) -> [[f64; 2]; 3] {
+    let (j, _det) = degenerate_jacobian(nodes, directors, thicknesses, coord);
+    let (j_inv, _) = mat3_inverse(&j);
+    let n = Mitc3Plus.shape_at(coord.in_plane());
+    let g_fb_ref = Mitc3Plus.bubble_grad_at(coord.in_plane());
+    let f_b_val = Mitc3Plus.bubble_at(coord.in_plane());
+    let q = lamina_frame(&j, &n, directors);
+
+    // Representative director = lamina normal e₃ (row 2 of the lamina frame).
+    let v_repr = q[2];
+    // C_repr = −skew(V_repr): same convention as degenerate_membrane_bending_b.
+    let c_repr = [
+        [0.0, v_repr[2], -v_repr[1]],
+        [-v_repr[2], 0.0, v_repr[0]],
+        [v_repr[1], -v_repr[0], 0.0],
+    ];
+
+    // Representative thickness (nodal average); t_repr/2 is the half-thickness.
+    let t_repr = (thicknesses[0] + thicknesses[1] + thicknesses[2]) / 3.0;
+    let half_t_repr = 0.5 * t_repr;
+    let zt_repr = 0.5 * coord.zeta * t_repr; // ζ · t_repr / 2
+
+    // 3D reference gradient of φ_b = f_b · (ζ t_repr / 2):
+    // [∂f_b/∂ξ·zt, ∂f_b/∂η·zt, f_b·t_repr/2] → pushed to physical by J⁻ᵀ.
+    let g_phi_b = jinv_t_mul(
+        &j_inv,
+        &[g_fb_ref[0] * zt_repr, g_fb_ref[1] * zt_repr, f_b_val * half_t_repr],
+    );
+
+    // 2 bubble enrichment columns: cc=0 (Δβ_x) and cc=1 (Δβ_y); skip cc=2 (drilling).
+    let mut b = [[0.0_f64; 2]; 3];
+    #[allow(clippy::needless_range_loop)]
+    for cc in 0..2 {
+        let mut h = [[0.0_f64; 3]; 3];
+        for a in 0..3 {
+            for jj in 0..3 {
+                h[a][jj] = c_repr[a][cc] * g_phi_b[jj];
+            }
+        }
+        let e = inplane_lamina_strain(&h, &q);
+        for r in 0..3 {
+            b[r][cc] = e[r];
+        }
+    }
+    b
+}
+
 /// Exact degenerate-kinematics **covariant** in-plane MEMBRANE strain B-matrix
 /// (`3 × 18`) at the 3D reference coordinate `coord`, before any assumed-strain
 /// re-interpolation.

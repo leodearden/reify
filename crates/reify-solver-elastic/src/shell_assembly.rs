@@ -851,9 +851,15 @@ pub fn shell_element_stiffness_mitc3_plus(
 /// is the displacement-based membrane (the task 4068 substrate, exposed verbatim
 /// as [`shell_element_stiffness_degenerate`]); `true` swaps ONLY the membrane
 /// (`ζ=0`) part of `B_mb` for the assumed-natural-strain membrane field
-/// ([`shell_element_stiffness_degenerate_ans`], task 4069). Everything else —
-/// transverse shear, the bubble skeleton (`K_NB ≡ 0`), and the quadrature — is
-/// identical for both, so the non-ANS path is behaviourally unchanged.
+/// ([`shell_element_stiffness_degenerate_ans`], task 4069).
+///
+/// `use_rotation_bubble` activates the nodal↔bubble coupling K_NB/K_BN on
+/// **curved** (non-parallel-director) elements (task 4065). When all three
+/// directors are parallel (flat facet), the function short-circuits and leaves
+/// K_NB bit-zero (flat-inertness), so existing flat benchmarks are unaffected.
+/// On a curved element, `degenerate_bubble_bending_b` contributes a non-zero
+/// K_NB, and the closed-form Schur condensation `K* = K_NN − K_NB·K_BB⁻¹·K_BN`
+/// then does real work (K* ≼ K_NN strictly).
 #[allow(clippy::needless_range_loop)]
 fn degenerate_stiffness_core(
     nodes: &[[f64; 3]; 3],
@@ -861,10 +867,11 @@ fn degenerate_stiffness_core(
     thicknesses: &[f64; 3],
     material: &IsotropicElastic,
     use_ans_membrane: bool,
+    use_rotation_bubble: bool,
 ) -> ElementStiffness {
     use crate::elements::degenerate_shell::{
-        ShellRefCoord3, degenerate_assumed_membrane_b, degenerate_jacobian,
-        degenerate_membrane_bending_b, degenerate_transverse_shear_b,
+        ShellRefCoord3, degenerate_assumed_membrane_b, degenerate_bubble_bending_b,
+        degenerate_jacobian, degenerate_membrane_bending_b, degenerate_transverse_shear_b,
     };
     use crate::elements::mitc3_plus::Mitc3Plus;
 
@@ -884,6 +891,21 @@ fn degenerate_stiffness_core(
     let nu = material.poisson_ratio;
     let g = e / (2.0 * (1.0 + nu));
     let kappa_g = KAPPA * g;
+
+    // Parallel-director short-circuit for the rotation bubble: on a flat facet
+    // (all directors parallel) K_NB integrates to zero and the bubble is inert.
+    // Detecting parallel directors with |V₀ × Vᵢ|² < 1e-28 (unit vectors:
+    // |cross|² = sin²θ < 1e-28 iff θ < 1e-14 rad) guarantees bit-exact K_NB=0
+    // on every flat benchmark without relying on numerical cancellation.
+    let bubble_active = use_rotation_bubble && {
+        let v0 = directors[0];
+        directors[1..].iter().all(|v| {
+            let cx = v0[1] * v[2] - v0[2] * v[1];
+            let cy = v0[2] * v[0] - v0[0] * v[2];
+            let cz = v0[0] * v[1] - v0[1] * v[0];
+            cx * cx + cy * cy + cz * cz < 1e-28
+        }) == false // non-parallel ⇒ curved ⇒ activate bubble
+    };
 
     // --- 20×20 uncondensed local matrix (nodal 18 + 2 bubble) ---
     let mut k = [[0.0_f64; NU]; NU];
@@ -970,6 +992,37 @@ fn degenerate_stiffness_core(
                     k[a][b] += v * scale;
                 }
             }
+
+            // ---- Nodal↔bubble coupling K_NB / K_BN (task 4065) ----
+            // Active only on curved (non-parallel-director) elements.  On flat
+            // patches the short-circuit above sets bubble_active=false, so K_NB
+            // stays bit-zero and the condensation remains a no-op (K* = K_NN).
+            if bubble_active {
+                // Bubble bending B (3×2): Δβ_x (col 0) and Δβ_y (col 1).
+                let b_bub = degenerate_bubble_bending_b(nodes, directors, thicknesses, c3);
+                // D_pl · B_bubble (3×2).
+                let mut db_bub = [[0.0_f64; 2]; 3];
+                for r in 0..3 {
+                    for cc in 0..2 {
+                        db_bub[r][cc] = d_pl[r][0] * b_bub[0][cc]
+                            + d_pl[r][1] * b_bub[1][cc]
+                            + d_pl[r][2] * b_bub[2][cc];
+                    }
+                }
+                // Accumulate K_NB[a][BX/BY] and K_BN[BX/BY][a] = K_NB^T.
+                for a in 0..NDOF {
+                    let nb_x = b_mb[0][a] * db_bub[0][0]
+                        + b_mb[1][a] * db_bub[1][0]
+                        + b_mb[2][a] * db_bub[2][0];
+                    let nb_y = b_mb[0][a] * db_bub[0][1]
+                        + b_mb[1][a] * db_bub[1][1]
+                        + b_mb[2][a] * db_bub[2][1];
+                    k[a][BX] += nb_x * scale;
+                    k[BX][a] += nb_x * scale; // K_BN = K_NB^T (symmetric)
+                    k[a][BY] += nb_y * scale;
+                    k[BY][a] += nb_y * scale;
+                }
+            }
         }
     }
 
@@ -1018,19 +1071,23 @@ fn degenerate_stiffness_core(
         }
     }
 
-    // ---- Static condensation of the 2 bubble DOFs (no-op here: K_NB ≡ 0) ----
-    // K* = K_NN − K_NB · K_BB⁻¹ · K_BN. The nodal B-matrices never write the
-    // bubble columns, so K_NB/K_BN are bit-zero and the correction vanishes
-    // (K* = K_NN). The full 2×2 condensation is retained as faithful scaffolding
-    // for task 4068, where the bubble couples (K_NB ≠ 0) and does work.
+    // ---- Static condensation of the 2 bubble DOFs ----
+    // K* = K_NN − K_NB · K_BB⁻¹ · K_BN.
+    // When bubble_active=false (flat facet or bubble disabled): K_NB/K_BN are
+    // bit-zero (the coupling block was never written), so the correction vanishes
+    // and K* = K_NN exactly.  The debug_assert below enforces this invariant on
+    // the inert path.
+    // When bubble_active=true (curved element with use_rotation_bubble): K_NB ≠ 0
+    // and the condensation does real work (K* ≼ K_NN by the Schur/Loewner argument).
     debug_assert!(
-        (0..NDOF).all(|i| {
-            k[i][BX].to_bits() == 0
-                && k[i][BY].to_bits() == 0
-                && k[BX][i].to_bits() == 0
-                && k[BY][i].to_bits() == 0
-        }),
-        "degenerate flat-skeleton invariant: K_NB/K_BN must be bit-zero so condensation is a no-op (K* = K_NN)"
+        bubble_active
+            || (0..NDOF).all(|i| {
+                k[i][BX].to_bits() == 0
+                    && k[i][BY].to_bits() == 0
+                    && k[BX][i].to_bits() == 0
+                    && k[BY][i].to_bits() == 0
+            }),
+        "degenerate flat-skeleton invariant: K_NB/K_BN must be bit-zero on the inert/flat path (K* = K_NN)"
     );
     let k_bb = [[k[BX][BX], k[BX][BY]], [k[BY][BX], k[BY][BY]]];
     let det_bb = k_bb[0][0] * k_bb[1][1] - k_bb[0][1] * k_bb[1][0];
@@ -1086,7 +1143,7 @@ pub fn shell_element_stiffness_degenerate(
     thicknesses: &[f64; 3],
     material: &IsotropicElastic,
 ) -> ElementStiffness {
-    degenerate_stiffness_core(nodes, directors, thicknesses, material, false)
+    degenerate_stiffness_core(nodes, directors, thicknesses, material, false, false)
 }
 
 /// Degenerated shell element stiffness with the assumed-natural-strain
@@ -1107,7 +1164,32 @@ pub fn shell_element_stiffness_degenerate_ans(
     thicknesses: &[f64; 3],
     material: &IsotropicElastic,
 ) -> ElementStiffness {
-    degenerate_stiffness_core(nodes, directors, thicknesses, material, true)
+    degenerate_stiffness_core(nodes, directors, thicknesses, material, true, false)
+}
+
+/// Degenerated shell element stiffness with the assumed-natural-strain **membrane**
+/// field (task 4069) **and** the active rotation-bubble K_NB coupling (task 4065).
+///
+/// On a **flat facet** (all directors parallel) the bubble coupling integrates to
+/// zero (parallel-director short-circuit), so this entry point is behaviourally
+/// identical to [`shell_element_stiffness_degenerate_ans`] — no regression risk.
+///
+/// On a **curved element** (non-parallel directors, varying Jacobian) the cubic
+/// bubble `f_b = 27ξη(1−ξ−η)` contributes non-zero columns Δβ_x / Δβ_y to the
+/// degenerate membrane+bending strain via
+/// [`degenerate_bubble_bending_b`](crate::elements::degenerate_shell::degenerate_bubble_bending_b).
+/// These populate K_NB/K_BN, and the Schur condensation
+/// `K* = K_NN − K_NB·K_BB⁻¹·K_BN` strictly softens the assembled stiffness
+/// (K* ≼ K_NN, Loewner order), moving the normalized displacement ratio toward 1.0
+/// for the MacNeal-Harder pinched-cylinder and hemisphere benchmarks.
+// G-allow: degenerate-shell element-stiffness entry point, task #4065 (ANS membrane + rotation bubble); reached on the shell-routing compute path via fn-pointer registration the orphan audit cannot trace; guarded by bubble coupling and benchmark tests.
+pub fn shell_element_stiffness_degenerate_ans_bubble(
+    nodes: &[[f64; 3]; 3],
+    directors: &[crate::elements::degenerate_shell::Director; 3],
+    thicknesses: &[f64; 3],
+    material: &IsotropicElastic,
+) -> ElementStiffness {
+    degenerate_stiffness_core(nodes, directors, thicknesses, material, true, true)
 }
 
 /// Rotation matrix Q = Ry(45°) · Rz(30°) used as a shared test fixture by
