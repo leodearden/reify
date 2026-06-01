@@ -265,8 +265,16 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
             if args.len() != 2 {
                 return Some(Value::Undef);
             }
-            let convention = match &args[0] {
+            // Accept either a lowercase string or a qualified EulerConvention enum value.
+            // The string path is case-sensitive (String "XYZ" → Undef).
+            // Enum variants are uppercased in source; we lowercase them to feed the dispatch table.
+            let convention_owned: String;
+            let convention: &str = match &args[0] {
                 Value::String(s) => s.as_str(),
+                Value::Enum { type_name, variant } if type_name == "EulerConvention" => {
+                    convention_owned = variant.to_lowercase();
+                    &convention_owned
+                }
                 _ => return Some(Value::Undef),
             };
             let (w, x, y, z) = match &args[1] {
