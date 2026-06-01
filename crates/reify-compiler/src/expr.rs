@@ -129,23 +129,32 @@ fn propagate_poison() -> CompiledExpr {
 /// guaranteeing exactly ONE diagnostic (anti-cascade, task-448/1912/1921).
 /// Returns `None` when no `auto` arg is present.
 ///
-/// The `position` descriptor is interpolated into the diagnostic message so
-/// each operand-position site can name itself (e.g. `"a function-call argument
-/// (function 'clamp')"` or `"a trait-static-call argument (Defaultable::make_default)"`).
+/// The `position` closure is called lazily — only when an `auto` arg is
+/// actually found — so callers pay zero allocation cost on the common
+/// (no-auto) path. Each site passes `|| format!(...)` with a descriptor that
+/// names the offending operand position (e.g. `"a function-call argument
+/// (function 'clamp')"` or `"a trait-static-call argument
+/// (Defaultable::make_default)"`).
 /// Only the first offending arg is reported (`.find()`, not `.filter()`) — the
 /// first-arg-only anti-cascade contract is locked in by
 /// `function_call_multi_auto_reports_only_first_arg`.
+///
+/// The label text `"auto not allowed at this operand position"` is intentionally
+/// generic across all three sites: the primary message already embeds the
+/// site-specific `position` descriptor, so the label serves only as a span
+/// anchor and does not need to repeat that detail.
 fn reject_auto_in_arg_list(
     args: &[reify_ast::Expr],
-    position: &str,
+    position: impl FnOnce() -> String,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledExpr> {
     args.iter().find(|a| matches!(a.kind, reify_ast::ExprKind::Auto { .. })).map(|auto_arg| {
         make_poison_literal(
             diagnostics,
             Diagnostic::error(format!(
-                "auto is not allowed in {position}; to expose a free parameter, \
+                "auto is not allowed in {}; to expose a free parameter, \
                  declare `param <name> = auto` at a binding site instead",
+                position(),
             ))
             .with_code(DiagnosticCode::AutoNotAtBindingSite)
             .with_label(DiagnosticLabel::new(
@@ -1302,7 +1311,7 @@ pub(crate) fn compile_expr_guarded(
             if !is_structure_ctor
                 && let Some(poison) = reject_auto_in_arg_list(
                     args,
-                    &format!("a function-call argument (function '{}')", name),
+                    || format!("a function-call argument (function '{}')", name),
                     diagnostics,
                 )
             {
@@ -3038,7 +3047,7 @@ pub(crate) fn compile_expr_guarded(
             // yielding exactly one diagnostic on the poison path (anti-cascade).
             if let Some(poison) = reject_auto_in_arg_list(
                 args,
-                &format!("an ad-hoc selector argument (@{})", selector),
+                || format!("an ad-hoc selector argument (@{})", selector),
                 diagnostics,
             ) {
                 return poison;
@@ -3429,7 +3438,7 @@ pub(crate) fn compile_expr_guarded(
             // Scanning raw AST args before any compilation avoids wasted work on poisoned subtrees.
             if let Some(poison) = reject_auto_in_arg_list(
                 args,
-                &format!("a trait-static-call argument ({}::{})", trait_name, method),
+                || format!("a trait-static-call argument ({}::{})", trait_name, method),
                 diagnostics,
             ) {
                 return poison;
