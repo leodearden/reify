@@ -12,7 +12,8 @@
 
 use reify_compiler::{CompiledGeometryOp, GeomRef, PrimitiveKind, TransformKind};
 use reify_compiler::geometry_traits_inference::{InferredTraits, try_infer_traits_for_function_call};
-use reify_core::Severity;
+use reify_core::{Severity, Type};
+use reify_ir::{BinOp, CompiledExprKind, Value};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -239,6 +240,53 @@ fn cylinder_centered_lowers_to_cylinder_plus_translate() {
                 !arg_keys.contains(&"target"),
                 "Translate args must NOT contain \"target\" (target is the GeomRef field), got: {arg_keys:?}"
             );
+
+            // ── dz expression: must be dimensioned and encode a negative offset ─────
+            //
+            // The critical correctness constraint for cylinder_centered:
+            // dz = -(height / 2) shifts the OCCT base-at-origin cylinder
+            // (z ∈ [0, h]) down so the centroid lands at z = 0.
+            //
+            // Two bugs would silently pass without this check:
+            //   (a) dz typed as bare Real (Type::Real) — eval.as_f64() would
+            //       return the dimensionless 0.5 instead of the SI-metres value,
+            //       shifting by 0.5m rather than height/2.
+            //   (b) A positive factor — the cylinder would shift UP instead of down.
+            let (_, dz_expr) = args
+                .iter()
+                .find(|(k, _)| k == "dz")
+                .expect("already asserted dz key is present");
+
+            assert_ne!(
+                dz_expr.result_type,
+                Type::Real,
+                "dz must be typed as a dimensioned Scalar (Length), not bare Real — \
+                 units would be silently dropped by eval.as_f64(); got {:?}",
+                dz_expr.result_type
+            );
+
+            match &dz_expr.kind {
+                CompiledExprKind::BinOp { op: BinOp::Mul, right, .. } => {
+                    match &right.kind {
+                        CompiledExprKind::Literal(Value::Real(factor)) => {
+                            assert!(
+                                *factor < 0.0,
+                                "dz Mul factor must be negative (shift cylinder down by height/2), \
+                                 got factor={factor}"
+                            );
+                        }
+                        other => panic!(
+                            "dz Mul right operand must be a Real literal, got: {other:?}"
+                        ),
+                    }
+                }
+                other => panic!(
+                    "dz expression must be Mul(height, -0.5) — \
+                     alternative forms (UnOp::Neg / BinOp::Div) are not currently \
+                     emitted but would be accepted if the implementation changes; \
+                     got: {other:?}"
+                ),
+            }
         }
         other => panic!("op[1] must be Transform(Translate), got: {other:?}"),
     }

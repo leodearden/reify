@@ -128,28 +128,30 @@ fn cylinder_centered_centroid_at_z_zero() {
 
 // ─── box_centered ──────────────────────────────────────────────────────────────
 
-/// `box_centered(40mm, 20mm, 30mm)` lowers to the IDENTICAL
-/// `Primitive(Box){ width:40mm, height:20mm, depth:30mm }` as `box(40mm,20mm,30mm)`.
+/// Kernel-level centring check for the `Box` primitive.
 ///
-/// The OCCT `make_box` implementation already centres the box at the origin
-/// (`gp_Pnt corner(-w/2,-h/2,-d/2)`), so:
-///   - centroid x/y/z ≈ 0
-///   - bbox z ∈ [-15mm, +15mm] (= depth/2 = 0.015 m)
+/// `box_centered` is a compiler-level alias: its lowering is proven structurally
+/// by `box_centered_lowering_matches_box` in the compiler tests (which asserts
+/// the emitted `CompiledGeometryOp` is identical to `box`'s). This test
+/// establishes the kernel-level **pre-condition** that makes the alias safe:
+/// OCCT's `make_box` already centres the solid at the geometric origin
+/// (`gp_Pnt corner(-w/2, -h/2, -d/2)` in `occt_wrapper.cpp:303`), so
+/// `box_centered` requires no translation sub-op.
 ///
-/// We execute the same `Box` op twice (once representing `box`, once representing
-/// `box_centered`) and assert both produce identical bounding-box z-extents,
-/// proving the alias invariant numerically.
+/// Asserts:
+///   - centroid z ≈ 0  (box is centred in the z-direction)
+///   - bbox z ∈ [-15mm, +15mm]  (= depth/2 = 0.015 m, symmetric about origin)
 #[test]
-fn box_centered_bbox_centroid_identical_to_box() {
+fn box_kernel_op_centred_at_origin() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping box_centered_bbox_centroid_identical_to_box: OCCT not available");
+        eprintln!("skipping box_kernel_op_centred_at_origin: OCCT not available");
         return;
     }
 
     let mut kernel = OcctKernel::new();
 
-    // "box(40mm,20mm,30mm)" — the reference.
-    let box_handle = kernel
+    // Execute Box(40mm × 20mm × 30mm) — depth=30mm gives z ∈ [-15mm, +15mm].
+    let handle = kernel
         .execute(&GeometryOp::Box {
             width: mm(40.0),
             height: mm(20.0),
@@ -157,64 +159,37 @@ fn box_centered_bbox_centroid_identical_to_box() {
         })
         .expect("Box op should succeed");
 
-    // "box_centered(40mm,20mm,30mm)" — alias, identical op, second execution.
-    let box_centered_handle = kernel
-        .execute(&GeometryOp::Box {
-            width: mm(40.0),
-            height: mm(20.0),
-            depth: mm(30.0),
-        })
-        .expect("Box op (box_centered alias) should succeed");
-
-    // ── bounding box z-extents are identical ──────────────────────────────────
-    let bbox_box = kernel
-        .query(&GeometryQuery::BoundingBox(box_handle.id))
-        .expect("BoundingBox (box) should succeed");
-    let bbox_centered = kernel
-        .query(&GeometryQuery::BoundingBox(box_centered_handle.id))
-        .expect("BoundingBox (box_centered) should succeed");
-
-    let (zmin_box, zmax_box) = match &bbox_box {
-        Value::String(s) => parse_bbox_z(s),
-        other => panic!("expected String bbox JSON for box, got: {other:?}"),
-    };
-    let (zmin_centered, zmax_centered) = match &bbox_centered {
-        Value::String(s) => parse_bbox_z(s),
-        other => panic!("expected String bbox JSON for box_centered, got: {other:?}"),
-    };
-
-    let tol = 1e-12_f64; // identical ops → identical floats; epsilon is cosmetic
-    assert!(
-        (zmin_box - zmin_centered).abs() < tol,
-        "box and box_centered bbox zmin must be identical: box={zmin_box}, centered={zmin_centered}"
-    );
-    assert!(
-        (zmax_box - zmax_centered).abs() < tol,
-        "box and box_centered bbox zmax must be identical: box={zmax_box}, centered={zmax_centered}"
-    );
-
-    // ── z-extent is symmetric about origin (box already centred) ─────────────
-    let expected_half_z = 0.015_f64; // depth/2 = 15mm in SI metres
-    let bbox_tol = 1e-6_f64; // OCCT BRepBndLib padding tolerance
-    assert!(
-        (zmin_centered - (-expected_half_z)).abs() < bbox_tol,
-        "box_centered bbox zmin should be ≈ -{expected_half_z:.4} m, got {zmin_centered}"
-    );
-    assert!(
-        (zmax_centered - expected_half_z).abs() < bbox_tol,
-        "box_centered bbox zmax should be ≈ +{expected_half_z:.4} m, got {zmax_centered}"
-    );
+    // ── z-extent is symmetric about origin ────────────────────────────────────
+    let bbox_val = kernel
+        .query(&GeometryQuery::BoundingBox(handle.id))
+        .expect("BoundingBox should succeed");
+    match &bbox_val {
+        Value::String(s) => {
+            let (zmin, zmax) = parse_bbox_z(s);
+            let expected_half_z = 0.015_f64; // depth/2 = 15mm in SI metres
+            let bbox_tol = 1e-6_f64; // OCCT BRepBndLib padding tolerance
+            assert!(
+                (zmin - (-expected_half_z)).abs() < bbox_tol,
+                "Box bbox zmin should be ≈ -{expected_half_z:.4} m, got {zmin}; JSON: {s}"
+            );
+            assert!(
+                (zmax - expected_half_z).abs() < bbox_tol,
+                "Box bbox zmax should be ≈ +{expected_half_z:.4} m, got {zmax}; JSON: {s}"
+            );
+        }
+        other => panic!("expected String bbox JSON, got: {other:?}"),
+    }
 
     // ── centroid z ≈ 0 ────────────────────────────────────────────────────────
     let centroid_val = kernel
-        .query(&GeometryQuery::Centroid(box_centered_handle.id))
+        .query(&GeometryQuery::Centroid(handle.id))
         .expect("Centroid query should succeed");
     match &centroid_val {
         Value::String(s) => {
             let z = parse_centroid_z(s);
             assert!(
                 z.abs() < 1e-9,
-                "box_centered centroid z should be ≈ 0, got {z}; JSON: {s}"
+                "Box centroid z should be ≈ 0, got {z}; JSON: {s}"
             );
         }
         other => panic!("expected String centroid JSON, got: {other:?}"),

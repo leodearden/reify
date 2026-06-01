@@ -761,25 +761,13 @@ pub(crate) fn compile_geometry_call(
 
     match name {
         // --- Primitives ---
-        "box" => {
-            if !check_arg_count_exact("box", compiled_args.len(), 3, expr.span, diagnostics) {
-                return None;
-            }
-            let mut it = compiled_args.into_iter();
-            Some(vec![CompiledGeometryOp::Primitive {
-                kind: PrimitiveKind::Box,
-                args: vec![
-                    ("width".to_string(), it.next().unwrap()),
-                    ("height".to_string(), it.next().unwrap()),
-                    ("depth".to_string(), it.next().unwrap()),
-                ],
-            }])
-        }
-        // box_centered(width, height, depth) — alias for box: make_box already
-        // centres the origin at the centroid (occt_wrapper.cpp gp_Pnt corner(-w/2,-h/2,-d/2)),
-        // so the lowering is op-identical to `box`.
-        "box_centered" => {
-            if !check_arg_count_exact("box_centered", compiled_args.len(), 3, expr.span, diagnostics) {
+        // box_centered(width, height, depth) is an op-identical alias for box:
+        // make_box already centres the origin at the centroid
+        // (occt_wrapper.cpp gp_Pnt corner(-w/2,-h/2,-d/2)).
+        // `name` is forwarded to check_arg_count_exact so diagnostics report
+        // "box" or "box_centered" as appropriate.
+        "box" | "box_centered" => {
+            if !check_arg_count_exact(name, compiled_args.len(), 3, expr.span, diagnostics) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
