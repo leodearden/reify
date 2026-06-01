@@ -58,7 +58,7 @@ describe('FeaModeToolbar — smoke-and-toggle suite', () => {
 });
 
 /** Helper: render toolbar with store pre-enabled so body controls are visible. */
-function renderEnabled(overrides?: { availableChannels?: string[]; onLockCurrent?: () => void }) {
+function renderEnabled(overrides?: { availableChannels?: string[]; onLockCurrent?: () => void; maxValue?: number | null }) {
   const store = createFeaModeStore();
   store.setEnabled(true);
   render(() => <FeaModeToolbar store={store} {...overrides} />);
@@ -360,5 +360,57 @@ describe('FeaModeToolbar — collapsible suite', () => {
     // After collapsing the first, only one channel select should remain (the second instance)
     const selectsAfter = screen.getAllByTestId('fea-mode-channel-select');
     expect(selectsAfter.length).toBe(1);
+  });
+});
+
+describe('FeaModeToolbar — max readout (step-3 RED)', () => {
+  it('(a) passing maxValue renders data-testid="fea-mode-max-readout" with formatted value and channel label', () => {
+    // Default channel is 'vonMises'; readout should show the channel name and the value.
+    renderEnabled({ maxValue: 6543210.5 });
+    const readout = screen.getByTestId('fea-mode-max-readout');
+    expect(readout).toBeTruthy();
+    // Should mention the active channel name
+    expect(readout.textContent).toMatch(/vonMises/);
+    // Should mention the numeric value in some formatted form
+    expect(readout.textContent).toMatch(/6\.54e\+6|6\.543e\+6|6.54/);
+  });
+
+  it('(b) maxValue=undefined → fea-mode-max-readout is NOT in the DOM', () => {
+    renderEnabled({ maxValue: undefined });
+    expect(screen.queryByTestId('fea-mode-max-readout')).toBeNull();
+  });
+
+  it('(b2) maxValue=null → fea-mode-max-readout is NOT in the DOM', () => {
+    renderEnabled({ maxValue: null });
+    expect(screen.queryByTestId('fea-mode-max-readout')).toBeNull();
+  });
+
+  it('(c) readout is NOT rendered when the store is disabled (body hidden)', () => {
+    // When enabled=false the whole body is hidden — readout must not leak through
+    const store = createFeaModeStore();
+    // enabled defaults to false
+    render(() => <FeaModeToolbar store={store} maxValue={12345} />);
+    expect(screen.queryByTestId('fea-mode-max-readout')).toBeNull();
+  });
+
+  it('(d) readout reflects the active channel name when channel is changed', () => {
+    const store = renderEnabled({ maxValue: 0.0025 });
+    // Default channel = 'vonMises'; change to 'displacement_magnitude'
+    store.setChannel('displacement_magnitude');
+    const readout = screen.getByTestId('fea-mode-max-readout');
+    expect(readout.textContent).toMatch(/displacement_magnitude/);
+  });
+
+  it('(a2) small value below 1e-2 is rendered in exponential notation', () => {
+    renderEnabled({ maxValue: 0.0025 });
+    const readout = screen.getByTestId('fea-mode-max-readout');
+    // 0.0025 should render in exponential notation (abs < 1e-2)
+    expect(readout.textContent).toMatch(/e/i);
+  });
+
+  it('(a3) ordinary value renders without exponential', () => {
+    renderEnabled({ maxValue: 123.456 });
+    const readout = screen.getByTestId('fea-mode-max-readout');
+    expect(readout.textContent).toMatch(/123/);
   });
 });

@@ -1,4 +1,4 @@
-import { onMount, onCleanup, createEffect, createSignal, Show } from 'solid-js';
+import { onMount, onCleanup, createEffect, createMemo, createSignal, untrack, Show } from 'solid-js';
 import type { MeshData, EvaluationStatus, VisibilityState, TensegrityWireData } from '../types';
 import { Box3 } from 'three';
 import { createScene } from './scene';
@@ -8,6 +8,7 @@ import { createWireManager } from './wireManager';
 import { createSelection } from './selection';
 import { FeaModeToolbar } from './FeaModeToolbar';
 import { bakeColours } from './colormap';
+import { computeScalarRange } from './scalarRange';
 import type { ViewportStore, CameraState, FeaModeStore } from '../stores';
 
 export interface ViewportProps {
@@ -66,6 +67,16 @@ export function Viewport(props: ViewportProps) {
   let doFitToView: (() => void) | undefined;
   const [showGrid, setShowGrid] = createSignal(true);
   const [pointerPos, setPointerPos] = createSignal({ x: 8, y: 8 });
+
+  // Compute the active scalar channel's data range across all current meshes.
+  // Placed at component-body scope (outside onMount) so both the auto-range
+  // createEffect and the JSX (FeaModeToolbar maxValue prop) can read it reactively.
+  // Returns null when there are no meshes/channel/valid values (e.g. non-FEA mesh,
+  // all-sentinel data, or feaModeStore absent).
+  const activeScalarRange = createMemo(() => {
+    const s = props.feaModeStore;
+    return s ? computeScalarRange(props.meshes, s.state.channel) : null;
+  });
 
   onMount(() => {
     const rect = containerRef.getBoundingClientRect();
@@ -206,6 +217,32 @@ export function Viewport(props: ViewportProps) {
           meshManager.setDeformation(null);
         }
         requestRender();
+      });
+
+      // Auto-range effect: when mode === 'auto', keep the store range in sync with
+      // the active channel's data range (computed by the activeScalarRange memo).
+      //
+      // Design:
+      // - Tracks `range.mode` and the memo together. When mode is not 'auto' the
+      //   effect returns early, so new mesh arrivals do NOT rescale a locked/fixed
+      //   range (locked-survives-re-solve requirement).
+      // - The untrack() equality guard prevents a SolidJS write-loop: setRange
+      //   updates `feaStore.state.range`, which would re-track this effect. Without
+      //   the guard, each write → re-read → equal-value write → write → … would
+      //   loop until SolidJS detects the cycle. untrack() reads cur WITHOUT adding
+      //   it to the dependency set; the guard skips the write when the value hasn't
+      //   changed.
+      // - Returns early (no write) when activeScalarRange() is null, so empty
+      //   meshes keep the sentinel {auto,0,1} intact (Viewport.test.tsx:735).
+      createEffect(() => {
+        const mode = feaStore.state.range.mode; // reactive dependency on range.mode
+        if (mode !== 'auto') return;
+        const r = activeScalarRange(); // reactive dependency on the memo
+        if (r === null) return;
+        // Read current range WITHOUT adding it as a dependency (breaks the write-loop).
+        const cur = untrack(() => feaStore.state.range);
+        if (cur.min === r.min && cur.max === r.max) return;
+        feaStore.setRange({ mode: 'auto', min: r.min, max: r.max });
       });
     }
 
@@ -431,8 +468,10 @@ export function Viewport(props: ViewportProps) {
         <FeaModeToolbar
           store={props.feaModeStore!}
           onLockCurrent={() => {
-            // TODO: compute min/max from active mesh scalar channels (follow-up task)
+            const r = activeScalarRange();
+            if (r) props.feaModeStore!.lockCurrent(r.min, r.max);
           }}
+          maxValue={activeScalarRange()?.max ?? null}
         />
       </Show>
 
