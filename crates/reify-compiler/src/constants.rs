@@ -13,7 +13,7 @@ use reify_ir::{CompiledExpr, Value};
 /// This is the single source of truth for case-variant hint matching.
 /// When adding a new constant to [`resolve_builtin_constant`], also add its
 /// name here so that case-variant hints fire for the new constant automatically.
-const BUILTIN_NAMES: &[&str] = &["pi", "tau"];
+const BUILTIN_NAMES: &[&str] = &["pi", "tau", "e"];
 
 /// If `name` is a case-variant of a built-in constant (but not the exact
 /// lowercase spelling), return the canonical lowercase name as a hint.
@@ -48,6 +48,11 @@ pub(crate) fn resolve_builtin_constant(name: &str) -> Option<CompiledExpr> {
         )),
         "tau" => Some(CompiledExpr::literal(
             Value::Real(std::f64::consts::TAU),
+            Type::Real,
+        )),
+        // e = Euler's number, dimensionless Real
+        "e" => Some(CompiledExpr::literal(
+            Value::Real(std::f64::consts::E),
             Type::Real,
         )),
         _ => None,
