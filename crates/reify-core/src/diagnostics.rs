@@ -1471,6 +1471,74 @@ pub enum DiagnosticCode {
     /// the `auto` keyword appears as a VALUE argument to a function, not as a
     /// type-bound annotation.
     AutoNotAtBindingSite,
+    /// Origin: `crates/reify-stdlib/src/flexures/diagnostics.rs::flexure_diagnose`
+    /// (task 3871 — PRD `docs/prds/v0_3/compliant-joints.md` §5.3 "max stress
+    /// at declared range endpoint" / §10.1 worked examples).
+    ///
+    /// Canonical message form:
+    /// `"flexure surface stress <max_stress> exceeds material yield <yield> at the declared range endpoint (safety factor <sf>); narrow the operating range to ±<safe_angle>"`.
+    ///
+    /// Emitted as a `Severity::Warning` by the PRB-ctor success-path hook
+    /// (`flexure_diagnose`, dispatched from reify-expr's `FunctionCall` arm)
+    /// when a flexure's cached `FlexureCompliance.at_yield` is `true` — i.e. the
+    /// peak bending stress at the user-declared operating-range endpoint reaches
+    /// or exceeds the material yield stress (PRD §5.3). The constructor still
+    /// returns a valid joint; the warning, not a poisoned `Undef`, is the
+    /// user-facing signal that the declared range over-stresses the flexure.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_FLEXURE_YIELDING`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    FlexureYielding,
+    /// Origin: `crates/reify-stdlib/src/flexures/diagnostics.rs::flexure_diagnose`
+    /// (task 3871 — PRD `docs/prds/v0_3/compliant-joints.md` §5.3 / §1; the ±5°
+    /// PRB small-deflection validity bound, Howell §5).
+    ///
+    /// Canonical message form:
+    /// `"flexure declared operating range ±<declared> exceeds the ±5° PRB small-deflection validity bound; results beyond this angle require nonlinear FEA (see docs/prds/v0_3/compliant-joints.md §5.3)"`.
+    ///
+    /// Emitted as a `Severity::Warning` by the PRB-ctor success-path hook when
+    /// the user-declared operating range is wider than the pseudo-rigid-body
+    /// small-deflection validity bound (±5°). The PRB closed-form stiffness loses
+    /// fidelity past this angle; the warning cites the 5° bound and the
+    /// bookmarked nonlinear-FEA escalation path.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_FLEXURE_PRB_OUT_OF_RANGE`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    FlexurePrbOutOfRange,
+    /// Origin: `crates/reify-stdlib/src/flexures/diagnostics.rs::flexure_diagnose`
+    /// (task 3871 — PRD `docs/prds/v0_3/compliant-joints.md` §1 fatigue-advisory).
+    ///
+    /// Canonical message form:
+    /// `"flexure constructed without a fatigue check; cyclic flexures should be checked against the material endurance limit (informational)"`.
+    ///
+    /// Emitted as a `Severity::Info` once per eval session (deduped per
+    /// diagnostics sink at the reify-expr emission layer) the first time any PRB
+    /// flexure constructor is evaluated. It is a standing advisory that the v0.3
+    /// flexure surface does not perform fatigue / endurance-limit checking, not a
+    /// per-flexure defect — hence once-per-session, Info severity.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_FLEXURE_FATIGUE_CHECK_MISSING`
+    /// (the `W_*` prefix is the PRD spelling; this code is emitted at
+    /// `Severity::Info` per §1's "informational" qualifier — the advisory must
+    /// not fail a build or be filtered out as a hard warning).
+    FlexureFatigueCheckMissing,
+    /// Origin: `crates/reify-stdlib/src/flexures/diagnostics.rs::flexure_diagnose`
+    /// (task 3871 — PRD `docs/prds/v0_3/compliant-joints.md` §1 geometry
+    /// validity: thickness < length, t < 2r for notches, PRB aspect ratio).
+    ///
+    /// Canonical message form:
+    /// `"flexure geometry is degenerate: <reason> (e.g. thickness ≥ length, or notch thickness ≥ 2·radius); no valid pseudo-rigid-body joint can be constructed"`.
+    ///
+    /// Emitted as a `Severity::Error` by the PRB-ctor hook when a constructor
+    /// returns `Value::Undef` AND the argument geometry is degenerate per §1
+    /// (re-classified from args by `common::classify_geometry_invalid`). Other
+    /// `Undef` causes (bad material, bad axis, wrong arity) do NOT emit this code
+    /// — only geometry violations, mirroring how `stackup_diagnose` re-classifies
+    /// on the `Undef` path.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_FLEXURE_GEOMETRY_INVALID`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    FlexureGeometryInvalid,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -2422,6 +2490,73 @@ mod tests {
             (DiagnosticCode::StackupDimMismatch, "\"StackupDimMismatch\""),
             (DiagnosticCode::StackupBadSign,     "\"StackupBadSign\""),
             (DiagnosticCode::StackupBadSamples,  "\"StackupBadSamples\""),
+        ];
+        for (code, expected) in cases {
+            let s = serde_json::to_string(&code).unwrap();
+            assert_eq!(s, expected, "serde mismatch for {code:?}");
+        }
+    }
+
+    // --- Flexure DiagnosticCode tests (task 3871) ---
+
+    /// The four §5.3 / §1 flexure codes round-trip through
+    /// `Diagnostic::<sev>(...).with_code(...)` at their PRD-assigned severities:
+    /// `FlexureYielding` / `FlexurePrbOutOfRange` → Warning, `FlexureGeometryInvalid`
+    /// → Error, `FlexureFatigueCheckMissing` → Info. Pins per-variant severity +
+    /// variant-existence so an enum reorganisation that drops or re-tiers one of
+    /// the flexure codes is caught at the reify-core layer. Mirrors
+    /// `diagnostic_code_multi_kernel_variants_with_code_round_trip`.
+    #[test]
+    fn diagnostic_code_flexure_variants_with_code_round_trip() {
+        use super::Severity;
+        let d = Diagnostic::warning("x").with_code(DiagnosticCode::FlexureYielding);
+        assert_eq!(d.severity, Severity::Warning, "FlexureYielding is a Warning");
+        assert_eq!(d.code, Some(DiagnosticCode::FlexureYielding));
+
+        let d = Diagnostic::warning("x").with_code(DiagnosticCode::FlexurePrbOutOfRange);
+        assert_eq!(
+            d.severity,
+            Severity::Warning,
+            "FlexurePrbOutOfRange is a Warning"
+        );
+        assert_eq!(d.code, Some(DiagnosticCode::FlexurePrbOutOfRange));
+
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::FlexureGeometryInvalid);
+        assert_eq!(
+            d.severity,
+            Severity::Error,
+            "FlexureGeometryInvalid is an Error"
+        );
+        assert_eq!(d.code, Some(DiagnosticCode::FlexureGeometryInvalid));
+
+        let d = Diagnostic::info("x").with_code(DiagnosticCode::FlexureFatigueCheckMissing);
+        assert_eq!(
+            d.severity,
+            Severity::Info,
+            "FlexureFatigueCheckMissing is Info (advisory)"
+        );
+        assert_eq!(d.code, Some(DiagnosticCode::FlexureFatigueCheckMissing));
+    }
+
+    /// Under `feature = "serde"`, each flexure code serializes to its PascalCase
+    /// wire string (from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_flexure_variants_serde_pascal_case() {
+        let cases = [
+            (DiagnosticCode::FlexureYielding, "\"FlexureYielding\""),
+            (
+                DiagnosticCode::FlexurePrbOutOfRange,
+                "\"FlexurePrbOutOfRange\"",
+            ),
+            (
+                DiagnosticCode::FlexureFatigueCheckMissing,
+                "\"FlexureFatigueCheckMissing\"",
+            ),
+            (
+                DiagnosticCode::FlexureGeometryInvalid,
+                "\"FlexureGeometryInvalid\"",
+            ),
         ];
         for (code, expected) in cases {
             let s = serde_json::to_string(&code).unwrap();

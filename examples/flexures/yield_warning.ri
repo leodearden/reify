@@ -1,0 +1,49 @@
+// Yielding-cantilever PRB flexure worked example (W_FlexureYielding fixture)
+//
+// Demonstrates the §5.3 stress-check at PRB construction: a cantilever-beam
+// flexure whose user-declared operating range (±10°) drives the surface
+// bending stress past the material yield stress. The constructor still returns
+// a valid revolute joint, but the eval pipeline emits:
+//   • W_FlexureYielding        — peak stress at the declared endpoint ≥ yield
+//   • W_FlexurePrbOutOfRange    — ±10° exceeds the ±5° PRB validity bound
+//   • W_FlexureFatigueCheckMissing (Info, once per eval session)
+// and the cached FlexureCompliance record has at_yield == true.
+//
+// PRD ref:  docs/prds/v0_3/compliant-joints.md §1, §5.3, §10.1
+//
+// Geometry: a 2 mm × 5 mm × 0.05 mm AISI-1045 steel beam (E = 205 GPa,
+// σ_y = 310 MPa). The SHORT 2 mm length is deliberate — surface stress
+// σ = E·(t/2)·θ/L scales as 1/L, so a 0.05 mm beam only yields at 10° when
+// the length is short:
+//   σ(10°) = E·(t/2)·θ/L
+//          = 205 GPa · (0.05 mm / 2) · (10° = 0.17453 rad) / 2 mm
+//          ≈ 447 MPa  >  310 MPa yield        ⇒ at_yield = true
+//   θ_yield = σ_y·L / (E·t/2) ≈ 6.93°         ⇒ the auto safe range is the
+//                                                ±5° PRB cap; ±10° exceeds it.
+// t = 0.05 mm < L = 2 mm, so the geometry is VALID (not the degenerate
+// E_FlexureGeometryInvalid regime) — the signal is a yield warning, not a
+// geometry error.
+//
+// The flexure is positional-only (native builtin, no .ri signature). The
+// optional trailing args are (neutral, declared_range): neutral = 0° centres
+// the joint, declared_range = 10° forces the symmetric ±10° operating range
+// whose endpoint the §5.3 stress-check evaluates.
+//   prb_cantilever_beam(length, width, thickness, material, pivot, axis,
+//                       neutral, declared_range)
+structure def YieldWarning {
+    // Material: general-purpose medium-carbon steel (E = 205 GPa, σ_y = 310 MPa).
+    let steel = Steel_AISI_1045()
+
+    // The compliant revolute joint with a FORCED ±10° declared operating range.
+    // Pivot at the origin; rotation about +Y; neutral angle 0°.
+    let pivot_flexure = prb_cantilever_beam(
+        2mm, 5mm, 0.05mm, steel, point3(0mm, 0mm, 0mm), vec3(0, 1, 0), 0deg, 10deg)
+
+    // "It is just a Revolute": drive a rigid rotor through the flexure with the
+    // ordinary mechanism / body / snapshot API surface — no flexure-specific
+    // dispatch. A 1° deflection stays well inside the declared ±10° range.
+    let rotor = box(10mm, 10mm, 10mm)
+    let m0 = mechanism()
+    let m1 = body(m0, "rotor", pivot_flexure)
+    let s = snapshot(m1, [bind(pivot_flexure, 1deg)])
+}

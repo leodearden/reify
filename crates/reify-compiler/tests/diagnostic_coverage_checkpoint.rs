@@ -36,6 +36,19 @@
 //!   guards.rs           — sub/minimize in guarded block errors
 //!   annotations.rs      — annotation context, unknown annotation, unknown pragma
 //!   lib.rs              — duplicate entity/unit/type-alias declarations
+//!
+//! Scope boundary — COMPILER-time diagnostics only. Every case here drives a
+//! diagnostic through `compile_source(_with_stdlib)` and asserts on
+//! `errors_only` / `warnings_only`, so this checkpoint can only cover codes
+//! emitted during compilation. EVAL-time codes — those produced by the runtime
+//! after a successful compile — are out of scope and covered by their own
+//! eval/e2e suites. In particular the v0.3 flexure codes (task 3871:
+//! `FlexureYielding`, `FlexurePrbOutOfRange`, `FlexureFatigueCheckMissing`,
+//! `FlexureGeometryInvalid`) are emitted by the reify-expr PRB-ctor
+//! `flexure_diagnose` hook at eval time, never by the compiler, so their
+//! emission coverage lives in `crates/reify-eval/tests/flexure_e2e.rs` and
+//! their reify-core round-trip/severity/serde coverage in
+//! `crates/reify-core/src/diagnostics.rs` — not here.
 
 use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only, warnings_only};
 use reify_core::DiagnosticCode;

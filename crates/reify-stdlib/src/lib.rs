@@ -27,6 +27,17 @@ pub use stackup::diagnose as stackup_diagnose;
 /// (empty/unknown-case weights or incompatible meshes).
 pub use fea::diagnose as fea_diagnose;
 
+/// Public re-export of the PRB-flexure diagnostic classifier (task 3871).
+///
+/// Called by `crates/reify-expr/src/lib.rs` at the builtin fallthrough arm to
+/// push the §5.3 / §1 flexure diagnostics (`W_FlexureYielding`,
+/// `W_FlexurePrbOutOfRange`, `E_FlexureGeometryInvalid`,
+/// `W_FlexureFatigueCheckMissing`) into the `EvalContext` sink. Unlike
+/// `stackup_diagnose` / `fea_diagnose` (which fire only on a `Value::Undef`
+/// result), `flexure_diagnose` runs on BOTH the success and `Undef` paths —
+/// the yielding / out-of-range warnings fire on a successfully constructed joint.
+pub use flexures::flexure_diagnose;
+
 /// Public re-export of the von Mises scalar kernel for cross-crate reuse.
 ///
 /// Called by `crates/reify-expr/src/field_reductions.rs` in the

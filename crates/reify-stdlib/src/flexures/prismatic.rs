@@ -22,7 +22,8 @@ use reify_ir::Value;
 use std::collections::BTreeMap;
 
 use super::common::{
-    length_si, make_flexure_joint, material_field_si, symmetric_angle_range, PRB_ANGLE_LIMIT_RAD,
+    attach_compliance, cantilever_sigma_at, cantilever_theta_lim, length_si, make_compliance_record,
+    make_flexure_joint, material_field_si, parse_declared_range, symmetric_angle_range, RangeKind,
 };
 
 /// Single-cantilever-blade PRB transverse stiffness coefficient (Howell §6.2).
@@ -67,18 +68,24 @@ struct PrismaticInputs<'a> {
     axis: &'a Value,
     /// The raw pivot argument.
     pivot: &'a Value,
-    /// Optional trailing `neutral` argument (present in the 7-arg form).
+    /// Optional trailing `neutral` argument (present in the 7- and 8-arg forms).
     neutral_arg: Option<&'a Value>,
+    /// The optional trailing declared operating-range argument (present only in
+    /// the 8-arg form). When present, its endpoint — not the auto cap — drives
+    /// the joint range and the §5.3 `max_stress` stress-check: a LENGTH
+    /// half-displacement for `prb_prismatic_blade`, an ANGLE half-angle for
+    /// `prb_two_axis_pivot` (each ctor selects the `RangeKind`).
+    declared_range_arg: Option<&'a Value>,
 }
 
 /// Parse and validate the shared positional argument layout:
-/// `(length, width, thickness, material, pivot, axis[, neutral])`.
+/// `(length, width, thickness, material, pivot, axis[, neutral[, declared_range]])`.
 ///
-/// Returns `None` (⇒ `Value::Undef`) on: arity ∉ {6, 7}; non-positive or
+/// Returns `None` (⇒ `Value::Undef`) on: arity ∉ {6, 7, 8}; non-positive or
 /// non-finite geometry; thickness ≥ length; missing or non-positive
 /// `youngs_modulus`; or an invalid axis.
 fn parse_prismatic_inputs(args: &[Value]) -> Option<PrismaticInputs<'_>> {
-    if args.len() != 6 && args.len() != 7 {
+    if args.len() < 6 || args.len() > 8 {
         return None;
     }
     let length = length_si(&args[0])?;
@@ -102,8 +109,22 @@ fn parse_prismatic_inputs(args: &[Value]) -> Option<PrismaticInputs<'_>> {
         yield_si: material_field_si(material, "yield_stress"),
         axis,
         pivot: &args[4],
-        neutral_arg: if args.len() == 7 { Some(&args[6]) } else { None },
+        neutral_arg: if args.len() >= 7 { Some(&args[6]) } else { None },
+        declared_range_arg: if args.len() == 8 { Some(&args[7]) } else { None },
     })
+}
+
+/// Single-cantilever-blade transverse surface bending stress σ = 1.5·E·t·|δ|/L²
+/// (Howell §6.2) — the algebraic inverse of the blade's
+/// `δ_yield = 2·yield·L²/(3·E·t)`.
+///
+/// Intentionally HALF of `common::fixed_guided_sigma_at` (3·E·t·δ/L²): the blade
+/// is a cantilever with one free end, not a guided pair, so its peak surface
+/// stress at a given tip displacement is half the fixed-guided beam's. Using the
+/// fixed-guided coefficient here would report `at_yield = true` at the blade's
+/// own documented safe validity δ.
+fn cantilever_transverse_sigma_at(delta: f64, length: f64, thickness: f64, e: f64) -> f64 {
+    1.5 * e * thickness * delta.abs() / length.powi(2)
 }
 
 /// Extract a neutral transverse offset in metres from a trailing constructor
@@ -144,16 +165,22 @@ fn prb_prismatic_blade(args: &[Value]) -> Value {
     // Cantilever transverse stiffness k_trans = γ_pb · E · I / L³ (γ = 3, Howell §6.2).
     let k_trans = PRISMATIC_BLADE_GAMMA * b.e * b.i / b.length.powi(3);
 
-    // Cantilever transverse-displacement validity range ±δ.
+    // Auto cantilever transverse-displacement validity δ_auto.
     // Surface stress σ = 1.5·E·t·δ / L²  ⇒  δ_yield = 2·yield·L² / (3·E·t).
-    // No yield_stress ⇒ small-deflection fallback ±0.1·L.
-    let delta = match b.yield_si {
+    // No yield_stress ⇒ small-deflection fallback 0.1·L. Retained as the SAFE
+    // prb_validity_range in the compliance record below.
+    let delta_auto = match b.yield_si {
         Some(yield_si) => 2.0 * yield_si * b.length.powi(2) / (3.0 * b.e * b.thickness),
         None => SMALL_DEFLECTION_FRACTION * b.length,
     };
+
+    // An optional user-declared operating range (±half-displacement LENGTH)
+    // OVERRIDES δ_auto for the joint range and the §5.3 stress endpoint.
+    let declared = parse_declared_range(b.declared_range_arg, RangeKind::Length);
+    let range_endpoint = declared.unwrap_or(delta_auto);
     let range = Value::range(
-        Some(Value::length(-delta)),
-        Some(Value::length(delta)),
+        Some(Value::length(-range_endpoint)),
+        Some(Value::length(range_endpoint)),
         true,
         true,
     );
@@ -161,7 +188,7 @@ fn prb_prismatic_blade(args: &[Value]) -> Value {
     // Optional trailing neutral transverse offset (default 0 for the 6-arg form).
     let neutral_si = b.neutral_arg.map(neutral_length_si).unwrap_or(0.0);
 
-    make_flexure_joint(
+    let joint = make_flexure_joint(
         "prismatic",
         b.axis.clone(),
         range,
@@ -171,7 +198,22 @@ fn prb_prismatic_blade(args: &[Value]) -> Value {
         },
         Value::length(neutral_si),
         b.pivot.clone(),
-    )
+    );
+
+    // Cache the FlexureCompliance record (§5.3): cantilever-transverse surface
+    // stress at the range endpoint and the neutral rest offset; prb_validity_range
+    // advertises the auto SAFE δ_auto regardless of any wider declared range.
+    let max_stress = cantilever_transverse_sigma_at(range_endpoint, b.length, b.thickness, b.e);
+    let max_stress_at_neutral = cantilever_transverse_sigma_at(neutral_si, b.length, b.thickness, b.e);
+    let record = make_compliance_record(
+        k_trans,
+        max_stress,
+        max_stress_at_neutral,
+        b.yield_si,
+        None,
+        delta_auto,
+    );
+    attach_compliance(joint, record)
 }
 
 /// `prb_two_axis_pivot(length, width, thickness, material, pivot, axis[, neutral])`
@@ -210,16 +252,17 @@ fn prb_two_axis_pivot(args: &[Value]) -> Value {
     // Symmetric per-axis rotational stiffness k_axis = E·I/L (γ = 1, Henein 2010).
     let k_axis = b.e * b.i / b.length;
 
-    // Angular validity range: θ_yield = yield·L/(E·t/2), capped at 5° PRB limit.
-    // No yield_stress ⇒ 5° PRB limit only.
-    let theta_lim = match b.yield_si {
-        Some(yield_si) => {
-            let theta_yield = yield_si * b.length / (b.e * b.thickness / 2.0);
-            theta_yield.min(PRB_ANGLE_LIMIT_RAD)
-        }
-        None => PRB_ANGLE_LIMIT_RAD,
-    };
-    let range_angle = symmetric_angle_range(theta_lim);
+    // Auto angular validity θ_lim = min(θ_yield, 5°) (the surface-yield rotation
+    // capped at the PRB small-deflection bound; 5° only without a yield_stress) —
+    // reuse common::cantilever_theta_lim, the same model the cantilever beam uses.
+    let theta_lim = cantilever_theta_lim(b.length, b.thickness, b.e, b.yield_si);
+
+    // An optional user-declared angular operating range (±half-angle) OVERRIDES
+    // θ_lim for the joint range and the §5.3 stress endpoint; θ_lim is retained
+    // as the SAFE/suggested range in the compliance record.
+    let declared = parse_declared_range(b.declared_range_arg, RangeKind::Angle);
+    let range_endpoint = declared.unwrap_or(theta_lim);
+    let range_angle = symmetric_angle_range(range_endpoint);
 
     // Build the spherical joint Map directly (NOT make_flexure_joint, which
     // emits `axis`/`range`/`neutral` keys appropriate for 1-DOF joints only).
@@ -247,7 +290,22 @@ fn prb_two_axis_pivot(args: &[Value]) -> Value {
         Value::Option(None),
     );
     m.insert(Value::String("pivot".to_string()), b.pivot.clone());
-    Value::Map(m)
+    let joint = Value::Map(m);
+
+    // Cache the FlexureCompliance record (§5.3): cantilever angular surface stress
+    // σ = E·(t/2)·θ/L at the (declared|auto) endpoint. The spherical pivot has no
+    // neutral offset, so max_stress_at_neutral is the rest stress (0). The record
+    // rides on the spherical Map via the reserved `__flexure_compliance` key.
+    let max_stress = cantilever_sigma_at(range_endpoint, b.length, b.thickness, b.e);
+    let record = make_compliance_record(
+        k_axis,
+        max_stress,
+        0.0,
+        b.yield_si,
+        None,
+        theta_lim,
+    );
+    attach_compliance(joint, record)
 }
 
 #[cfg(test)]
@@ -717,5 +775,227 @@ mod tests {
         let (lower_s, upper_s) = range_lower_upper(range_soft);
         assert_angle_close(lower_s, -theta_yield, "soft θ_lim lower (uncapped = θ_yield)");
         assert_angle_close(upper_s, theta_yield, "soft θ_lim upper (uncapped = θ_yield)");
+    }
+
+    // ── step-13: RED — displacement-family compliance population ─────────────
+
+    /// Read the `__flexure_compliance` FlexureCompliance record's fields from a
+    /// flexure joint Map (panics if absent or the wrong shape). Local to this
+    /// test module — `test_util` carries the shared fixtures, while the
+    /// compliance reader is wired here as the prismatic family gains its cached
+    /// record (step-14), mirroring beam.rs's local `compliance_fields`.
+    fn compliance_fields(joint: &Value) -> &reify_ir::PersistentMap<String, Value> {
+        match map_get(joint, "__flexure_compliance") {
+            Some(Value::StructureInstance(d)) => {
+                assert_eq!(
+                    d.type_name, "FlexureCompliance",
+                    "__flexure_compliance is a FlexureCompliance record"
+                );
+                &d.fields
+            }
+            other => panic!("expected __flexure_compliance StructureInstance, got {other:?}"),
+        }
+    }
+
+    /// Assert `v` is a LENGTH-dimensioned Scalar and return its si_value.
+    fn length_scalar_si(v: &Value, label: &str) -> f64 {
+        match v {
+            Value::Scalar { si_value, dimension } => {
+                assert_eq!(*dimension, DimensionVector::LENGTH, "{label}: LENGTH dimension");
+                *si_value
+            }
+            other => panic!("{label}: expected LENGTH Scalar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prb_prismatic_blade_attaches_populated_compliance() {
+        // Single-cantilever-blade (Howell §6.2): transverse surface stress
+        // σ = 1.5·E·t·δ / L² at the displacement endpoint — consistent with the
+        // blade's documented auto validity δ = 2·yield·L²/(3·E·t) (at which σ ==
+        // yield). NOTE: distinct from the fixed-guided beam's σ = 3·E·t·δ/L²;
+        // the blade is a cantilever (one free end), so its surface-stress
+        // coefficient is half the fixed-guided one — using 3·E·t·δ/L² here would
+        // report at_yield=true at the blade's own documented safe range.
+        let length = 0.02_f64;
+        let width = 0.005_f64;
+        let thickness = 0.0005_f64;
+        let e = 205e9_f64;
+        let yield_si = 310e6_f64;
+        let sigma_at = |delta: f64| 1.5 * e * thickness * delta / length.powi(2);
+        let delta_auto = 2.0 * yield_si * length.powi(2) / (3.0 * e * thickness);
+
+        // ── auto endpoint (6-arg) ────────────────────────────────────────────
+        let auto = crate::eval_builtin("prb_prismatic_blade", &prismatic_args());
+        let fields = compliance_fields(&auto);
+        let f = |k: &str| fields.get(&k.to_string()).unwrap_or_else(|| panic!("missing `{k}`"));
+
+        let spring_si = spring_rate_si(&auto);
+        match f("effective_stiffness") {
+            Value::Real(r) => assert!(
+                (r - spring_si).abs() / spring_si < 1e-12,
+                "effective_stiffness {r} == spring_rate {spring_si}"
+            ),
+            other => panic!("effective_stiffness Real, got {other:?}"),
+        }
+        let expected_auto = sigma_at(delta_auto);
+        match f("max_stress") {
+            Value::Scalar { si_value, dimension } => {
+                assert_eq!(*dimension, DimensionVector::PRESSURE, "max_stress is PRESSURE");
+                assert!(
+                    (si_value - expected_auto).abs() / expected_auto < 1e-9,
+                    "auto max_stress {si_value} vs analytic {expected_auto}"
+                );
+            }
+            other => panic!("max_stress Scalar, got {other:?}"),
+        }
+        let (_, up) = range_lower_upper(map_get(&auto, "range").expect("range present"));
+        let range_half = length_scalar_si(up, "auto range upper");
+        match f("prb_validity_range") {
+            Value::Real(r) => assert!(
+                (r - delta_auto).abs() / delta_auto < 1e-9
+                    && (r - range_half).abs() / range_half < 1e-9,
+                "prb_validity_range {r} == δ_auto {delta_auto} == range half {range_half}"
+            ),
+            other => panic!("prb_validity_range Real, got {other:?}"),
+        }
+
+        // ── declared displacement beyond yield deflection → at_yield ─────────
+        // δ = 2 mm > δ_auto (≈0.81 mm): σ(2mm) ≈ 769 MPa > 310 MPa.
+        let big = 0.002_f64;
+        let yielding = crate::eval_builtin(
+            "prb_prismatic_blade",
+            &[
+                Value::length(length),
+                Value::length(width),
+                Value::length(thickness),
+                steel(),
+                origin(),
+                axis_y(),
+                Value::length(0.0), // neutral
+                Value::length(big), // declared ±2 mm displacement
+            ],
+        );
+        assert!(
+            !yielding.is_undef(),
+            "declared-displacement blade returns a joint, not Undef"
+        );
+        assert_eq!(
+            map_get(&yielding, "kind"),
+            Some(&Value::String("prismatic".to_string())),
+            "yielding blade is still a prismatic joint"
+        );
+        let (ylo, yup) = range_lower_upper(map_get(&yielding, "range").expect("range present"));
+        assert!(
+            (length_scalar_si(yup, "declared upper") - big).abs() / big < 1e-9
+                && (length_scalar_si(ylo, "declared lower") + big).abs() / big < 1e-9,
+            "declared displacement overrides the range to ±{big}"
+        );
+        let yf = compliance_fields(&yielding);
+        let yg = |k: &str| yf.get(&k.to_string()).unwrap_or_else(|| panic!("missing `{k}`"));
+        let expected_big = sigma_at(big);
+        assert!(
+            expected_big > yield_si,
+            "fixture sanity: σ(2mm)={expected_big} > yield {yield_si}"
+        );
+        match yg("max_stress") {
+            Value::Scalar { si_value, .. } => assert!(
+                (si_value - expected_big).abs() / expected_big < 1e-9,
+                "declared max_stress {si_value} vs analytic {expected_big}"
+            ),
+            other => panic!("max_stress Scalar, got {other:?}"),
+        }
+        assert_eq!(
+            yg("at_yield"),
+            &Value::Bool(true),
+            "declared 2mm drives at_yield true"
+        );
+        match yg("yield_margin") {
+            Value::Real(r) => assert!(*r < 0.0, "yielding ⇒ negative margin, got {r}"),
+            other => panic!("yield_margin Real, got {other:?}"),
+        }
+
+        // ── declared displacement below yield deflection → safe ──────────────
+        // δ = 0.3 mm < δ_auto: σ ≈ 115 MPa < 310 MPa ⇒ at_yield false.
+        let small = 0.0003_f64;
+        let safe = crate::eval_builtin(
+            "prb_prismatic_blade",
+            &[
+                Value::length(length),
+                Value::length(width),
+                Value::length(thickness),
+                steel(),
+                origin(),
+                axis_y(),
+                Value::length(0.0),
+                Value::length(small),
+            ],
+        );
+        assert!(!safe.is_undef(), "safe declared-displacement blade returns a joint");
+        let sf = compliance_fields(&safe);
+        assert_eq!(
+            sf.get(&"at_yield".to_string()).expect("at_yield present"),
+            &Value::Bool(false),
+            "declared 0.3mm stays below yield"
+        );
+    }
+
+    #[test]
+    fn prb_two_axis_pivot_attaches_populated_compliance() {
+        // Spherical two-axis pivot (Henein 2010): cantilever angular surface
+        // stress σ = E·(t/2)·θ / L at the auto θ_lim = min(θ_yield, 5°). For
+        // steel / L=20mm / t=0.5mm, θ_yield ≈ 6.93° > 5°, so θ_lim = 5° and σ <
+        // yield ⇒ at_yield false. The record rides on the spherical Map exactly
+        // like the 1-DOF joints (attach_compliance works on any Value::Map).
+        let length = 0.02_f64;
+        let width = 0.005_f64;
+        let thickness = 0.0005_f64;
+        let e = 205e9_f64;
+        let yield_si = 310e6_f64;
+        let prb_limit = 5.0_f64 * std::f64::consts::PI / 180.0;
+
+        let result = crate::eval_builtin("prb_two_axis_pivot", &prismatic_args());
+        let fields = compliance_fields(&result);
+        let f = |k: &str| fields.get(&k.to_string()).unwrap_or_else(|| panic!("missing `{k}`"));
+
+        // effective_stiffness (Real) == per-axis k_axis = E·I/L (γ = 1).
+        let i = width * thickness.powi(3) / 12.0;
+        let k_axis = e * i / length;
+        match f("effective_stiffness") {
+            Value::Real(r) => assert!(
+                (r - k_axis).abs() / k_axis < 1e-9,
+                "effective_stiffness {r} == k_axis {k_axis}"
+            ),
+            other => panic!("effective_stiffness Real, got {other:?}"),
+        }
+
+        // max_stress (PRESSURE) == E·(t/2)·θ_lim/L at θ_lim = 5°, below yield.
+        let expected = e * (thickness / 2.0) * prb_limit / length;
+        assert!(
+            expected < yield_si,
+            "fixture sanity: σ(5°)={expected} < yield {yield_si}"
+        );
+        match f("max_stress") {
+            Value::Scalar { si_value, dimension } => {
+                assert_eq!(*dimension, DimensionVector::PRESSURE, "max_stress is PRESSURE");
+                assert!(
+                    (si_value - expected).abs() / expected < 1e-9,
+                    "pivot max_stress {si_value} vs analytic {expected}"
+                );
+            }
+            other => panic!("max_stress Scalar, got {other:?}"),
+        }
+
+        // at_yield false (the 5° cap keeps σ below yield).
+        assert_eq!(f("at_yield"), &Value::Bool(false), "5°-capped pivot is not at yield");
+
+        // prb_validity_range (Real) == θ_lim (5°), the auto safe angular bound.
+        match f("prb_validity_range") {
+            Value::Real(r) => assert!(
+                (r - prb_limit).abs() / prb_limit < 1e-9,
+                "prb_validity_range {r} == θ_lim {prb_limit}"
+            ),
+            other => panic!("prb_validity_range Real, got {other:?}"),
+        }
     }
 }

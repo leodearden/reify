@@ -2,7 +2,7 @@
 //! circular, elliptical, and right-circular notch hinges — all → revolute.
 //!
 //! All three constructors share the positional argument layout
-//! `(notch_radius, web_thickness, width, material, pivot, axis[, neutral])`
+//! `(notch_radius, web_thickness, width, material, pivot, axis[, neutral[, declared_range]])`
 //! and the [`parse_notch_inputs`] validation path. They differ only in the
 //! dimensionless shape factors `k_factor` and `sigma_factor` passed to the
 //! shared `notch_revolute` core (PRD §5.2 design decision).
@@ -13,8 +13,8 @@ use reify_core::DimensionVector;
 use reify_ir::Value;
 
 use super::common::{
-    make_flexure_joint, length_si, material_field_si, neutral_angle_si, symmetric_angle_range,
-    PRB_ANGLE_LIMIT_RAD,
+    attach_compliance, length_si, make_compliance_record, make_flexure_joint, material_field_si,
+    neutral_angle_si, parse_declared_range, symmetric_angle_range, RangeKind, PRB_ANGLE_LIMIT_RAD,
 };
 
 /// Shape factors for the standard circular notch flexure hinge
@@ -84,15 +84,20 @@ struct NotchInputs<'a> {
     axis: &'a Value,
     /// The raw pivot argument, stored verbatim on the joint Map.
     pivot: &'a Value,
-    /// The optional trailing `neutral` argument (present only in the 7-arg form).
+    /// The optional trailing `neutral` argument (present in the 7- and 8-arg forms).
     neutral_arg: Option<&'a Value>,
+    /// The optional trailing declared operating-range argument (present only in
+    /// the 8-arg form). When present, its endpoint — not the auto cap — drives
+    /// the joint range and the §5.3 `max_stress` stress-check (an ANGLE
+    /// half-angle, since all three notch ctors are revolute).
+    declared_range_arg: Option<&'a Value>,
 }
 
 /// Parse and validate the shared positional argument layout of all three
 /// notch-flexure constructors: `(notch_radius, web_thickness, width,
-/// material, pivot, axis[, neutral])`.
+/// material, pivot, axis[, neutral[, declared_range]])`.
 ///
-/// Returns `None` (⇒ the caller returns `Value::Undef`) on: arity ∉ {6, 7};
+/// Returns `None` (⇒ the caller returns `Value::Undef`) on: arity ∉ {6, 7, 8};
 /// non-positive or non-finite geometry (r, t, or b ≤ 0); degenerate geometry
 /// (t ≥ 2·r — web at least as thick as the notch diameter, the
 /// E_FlexureGeometryInvalid regime whose diagnostic λ owns); a material that
@@ -102,7 +107,7 @@ struct NotchInputs<'a> {
 /// δ emits NO diagnostics and returns Value::Undef on invalid input
 /// (W_Flexure* emission is λ's responsibility).
 fn parse_notch_inputs(args: &[Value]) -> Option<NotchInputs<'_>> {
-    if args.len() != 6 && args.len() != 7 {
+    if args.len() < 6 || args.len() > 8 {
         return None;
     }
     let r = length_si(&args[0])?;
@@ -130,8 +135,23 @@ fn parse_notch_inputs(args: &[Value]) -> Option<NotchInputs<'_>> {
         yield_si: material_field_si(material, "yield_stress"),
         axis,
         pivot: &args[4],
-        neutral_arg: if args.len() == 7 { Some(&args[6]) } else { None },
+        neutral_arg: if args.len() >= 7 { Some(&args[6]) } else { None },
+        declared_range_arg: if args.len() == 8 { Some(&args[7]) } else { None },
     })
+}
+
+/// Notch-hinge surface bending stress σ = sigma_factor·4·E·t·|θ| / (3π·(2r+t))
+/// (Paros-Weisbord 1965, PRD §5.2) — the algebraic inverse of `notch_revolute`'s
+/// `θ_yield = yield·3π·(2r+t) / (sigma_factor·4·E·t)`.
+///
+/// `theta` is the rotation (radians) at which to evaluate the stress; the
+/// magnitude is used so the sign of the deflection does not matter. The
+/// per-variant `sigma_factor` (κ_σ) flows through, so the elliptical (0.85) and
+/// right-circular (0.74) profiles report their attenuated peak surface stress.
+/// Module-local (notch-specific formula), mirroring `prismatic.rs`'s local
+/// `cantilever_transverse_sigma_at`.
+fn notch_sigma_at(theta: f64, radius: f64, thickness: f64, e: f64, sigma_factor: f64) -> f64 {
+    sigma_factor * 4.0 * e * thickness * theta.abs() / (3.0 * PI * (2.0 * radius + thickness))
 }
 
 /// Parametrized core for all notch revolute ctors.
@@ -143,13 +163,19 @@ fn parse_notch_inputs(args: &[Value]) -> Option<NotchInputs<'_>> {
 ///   σ(θ) = sigma_factor · 4·E·t·θ / (3π·(2r+t))  ⇒
 ///   θ_yield = yield · 3π·(2r+t) / (sigma_factor · 4·E·t)
 ///
-/// Validity range = ±min(θ_yield, 5°); no yield_stress ⇒ ±5° fallback.
+/// The auto symmetric prb_validity range is ±min(θ_yield, 5°) (no `yield_stress`
+/// ⇒ ±5° fallback). An optional trailing `declared_range` (a half-angle)
+/// OVERRIDES that cap for the joint range and the cached `max_stress` endpoint
+/// (§5.3 evaluates surface stress at the declared endpoint); the auto cap is
+/// retained as the SAFE/suggested `prb_validity_range` in the compliance record.
 fn notch_revolute(inputs: &NotchInputs<'_>, k_factor: f64, sigma_factor: f64) -> Value {
     // Paros-Weisbord rotational stiffness (PRD §5.2).
     let k_theta = k_factor * 2.0 * inputs.e * inputs.b * inputs.t.powf(2.5)
         / (9.0 * PI * inputs.r.sqrt());
 
-    // Symmetric prb_validity range = ±min(θ_yield, 5°).
+    // Auto symmetric prb_validity range = ±min(θ_yield, 5°) — the SAFE bound,
+    // retained in the compliance record below regardless of any wider declared
+    // range. θ_yield inverts the surface-yield stress σ(θ) (see `notch_sigma_at`).
     let theta_lim = match inputs.yield_si {
         Some(yield_si) => {
             let theta_yield = yield_si * 3.0 * PI * (2.0 * inputs.r + inputs.t)
@@ -158,12 +184,18 @@ fn notch_revolute(inputs: &NotchInputs<'_>, k_factor: f64, sigma_factor: f64) ->
         }
         None => PRB_ANGLE_LIMIT_RAD,
     };
-    let range = symmetric_angle_range(theta_lim);
+
+    // An optional user-declared operating range (±half-angle) OVERRIDES the auto
+    // ±min(θ_yield, 5°) cap for the joint range and the §5.3 stress endpoint; the
+    // auto θ_lim is retained as the SAFE/suggested range in the compliance record.
+    let declared = parse_declared_range(inputs.declared_range_arg, RangeKind::Angle);
+    let range_endpoint = declared.unwrap_or(theta_lim);
+    let range = symmetric_angle_range(range_endpoint);
 
     // Optional trailing neutral angle (default 0 for the 6-arg form).
     let neutral_si = inputs.neutral_arg.map(neutral_angle_si).unwrap_or(0.0);
 
-    make_flexure_joint(
+    let joint = make_flexure_joint(
         "revolute",
         inputs.axis.clone(),
         range,
@@ -173,10 +205,29 @@ fn notch_revolute(inputs: &NotchInputs<'_>, k_factor: f64, sigma_factor: f64) ->
         },
         Value::angle(neutral_si),
         inputs.pivot.clone(),
-    )
+    );
+
+    // Cache the FlexureCompliance record (§5.3): Paros-Weisbord surface bending
+    // stress at the range endpoint (declared when present, else the auto θ_lim —
+    // the worst-case operating stress) and at the neutral rest angle. The
+    // sigma_factor flows into both, so each variant reports its own peak stress.
+    // prb_validity_range stores the auto SAFE θ_lim regardless of any wider
+    // declared range, so it always advertises the PRB-valid bound.
+    let max_stress = notch_sigma_at(range_endpoint, inputs.r, inputs.t, inputs.e, sigma_factor);
+    let max_stress_at_neutral =
+        notch_sigma_at(neutral_si, inputs.r, inputs.t, inputs.e, sigma_factor);
+    let record = make_compliance_record(
+        k_theta,
+        max_stress,
+        max_stress_at_neutral,
+        inputs.yield_si,
+        None,
+        theta_lim,
+    );
+    attach_compliance(joint, record)
 }
 
-/// `prb_notch_circular(notch_radius, web_thickness, width, material, pivot, axis[, neutral])`
+/// `prb_notch_circular(notch_radius, web_thickness, width, material, pivot, axis[, neutral[, declared_range]])`
 /// — Paros-Weisbord (1965) circular-profile notch flexure as a revolute joint.
 ///
 /// Returns a joint `Value::Map` (`kind == "revolute"`) with rotational stiffness
@@ -189,7 +240,7 @@ fn prb_notch_circular(args: &[Value]) -> Value {
     }
 }
 
-/// `prb_notch_elliptical(notch_radius, web_thickness, width, material, pivot, axis[, neutral])`
+/// `prb_notch_elliptical(notch_radius, web_thickness, width, material, pivot, axis[, neutral[, declared_range]])`
 /// — Smith et al. (1997) elliptical-profile notch flexure as a revolute joint.
 ///
 /// Same closed-form structure as `prb_notch_circular` but with a shape factor
@@ -201,7 +252,7 @@ fn prb_notch_elliptical(args: &[Value]) -> Value {
     }
 }
 
-/// `prb_notch_right_circular(notch_radius, web_thickness, width, material, pivot, axis[, neutral])`
+/// `prb_notch_right_circular(notch_radius, web_thickness, width, material, pivot, axis[, neutral[, declared_range]])`
 /// — Paros-Weisbord (1965) right-circular (toroidal) notch flexure as a revolute joint.
 ///
 /// Same closed-form structure as `prb_notch_circular` but with a shape factor
@@ -417,11 +468,14 @@ mod tests {
             a.truncate(3);
             undef(a, "3 args");
         }
+        // Arity 8 (neutral + declared_range) is now VALID (step-16); 9 args
+        // overflows the highest supported arity and is rejected.
         {
             let mut a = base_args();
-            a.push(Value::angle(0.0));
-            a.push(Value::angle(0.0));
-            undef(a, "8 args");
+            a.push(Value::angle(0.0)); // neutral
+            a.push(Value::angle(0.0)); // declared_range
+            a.push(Value::angle(0.0)); // overflow
+            undef(a, "9 args");
         }
 
         // Non-positive / non-finite geometry.
@@ -671,5 +725,258 @@ mod tests {
         // k_factor=0.74 and sigma_factor=0.74 are hard-coded literals that pin
         // RIGHT_CIRCULAR_K and RIGHT_CIRCULAR_SIGMA respectively (see assertion classes 2+3).
         assert_notch_variant_full("prb_notch_right_circular", 0.74, 0.74, notch_right_circular);
+    }
+
+    // ── step-15: RED — notch-family compliance population ────────────────────
+
+    /// Read the `__flexure_compliance` FlexureCompliance record's fields from a
+    /// notch flexure joint Map (panics if absent or the wrong shape). Local to
+    /// this test module, mirroring beam.rs / prismatic.rs `compliance_fields`.
+    fn compliance_fields(joint: &Value) -> &reify_ir::PersistentMap<String, Value> {
+        match map_get(joint, "__flexure_compliance") {
+            Some(Value::StructureInstance(d)) => {
+                assert_eq!(
+                    d.type_name, "FlexureCompliance",
+                    "__flexure_compliance is a FlexureCompliance record"
+                );
+                &d.fields
+            }
+            other => panic!("expected __flexure_compliance StructureInstance, got {other:?}"),
+        }
+    }
+
+    /// Closed-form Paros-Weisbord surface bending stress at rotation `theta`
+    /// (PRD §5.2): σ = sigma_factor·4·E·t·θ / (3π·(2r+t)). The algebraic inverse
+    /// of the θ_yield that caps the auto prb_validity range.
+    fn notch_sigma(theta: f64, r: f64, t: f64, e: f64, sigma_factor: f64) -> f64 {
+        sigma_factor * 4.0 * e * t * theta / (3.0 * PI * (2.0 * r + t))
+    }
+
+    #[test]
+    fn prb_notch_circular_attaches_populated_compliance() {
+        // PRB-capped fixture (r=2mm, t=0.1mm): θ_yield ≈ 8.37° > 5°, so the auto
+        // prb_validity endpoint is the ±5° PRB cap and σ(5°) ≈ 185 MPa < 310 MPa
+        // yield ⇒ at_yield == false. (The standard base fixture r=1mm/t=0.2mm has
+        // θ_yield ≈ 2.25° < 5°, whose auto endpoint sits *exactly* at yield —
+        // unusable for a clean at_yield==false pin.)
+        let r = 2e-3_f64;
+        let t = 1e-4_f64;
+        let b = 5e-3_f64;
+        let e = 205e9_f64;
+        let prb_limit = 5.0_f64 * PI / 180.0;
+
+        let result = crate::eval_builtin(
+            "prb_notch_circular",
+            &[
+                Value::length(r),
+                Value::length(t),
+                Value::length(b),
+                steel(),
+                origin(),
+                axis_y(),
+            ],
+        );
+        let fields = compliance_fields(&result);
+        let f = |k: &str| {
+            fields
+                .get(&k.to_string())
+                .unwrap_or_else(|| panic!("FlexureCompliance missing `{k}`"))
+        };
+
+        // effective_stiffness (Real) == the joint's spring_rate si (k_θ).
+        let spring_si = spring_rate_si(&result);
+        match f("effective_stiffness") {
+            Value::Real(rr) => assert!(
+                (rr - spring_si).abs() / spring_si < 1e-12,
+                "effective_stiffness {rr} == spring_rate {spring_si}"
+            ),
+            other => panic!("effective_stiffness Real, got {other:?}"),
+        }
+
+        // max_stress (PRESSURE) == σ(5°) at the auto PRB-capped endpoint.
+        let expected_sigma = notch_sigma(prb_limit, r, t, e, 1.0);
+        match f("max_stress") {
+            Value::Scalar { si_value, dimension } => {
+                assert_eq!(*dimension, DimensionVector::PRESSURE, "max_stress is PRESSURE");
+                assert!(
+                    (si_value - expected_sigma).abs() / expected_sigma < 1e-9,
+                    "max_stress {si_value} vs analytic σ(5°) {expected_sigma}"
+                );
+                assert!(*si_value < 310e6, "5° endpoint stays below the 310MPa yield ({si_value})");
+            }
+            other => panic!("max_stress Scalar, got {other:?}"),
+        }
+
+        // at_yield == false at the auto (safe) endpoint.
+        assert_eq!(f("at_yield"), &Value::Bool(false), "auto endpoint is not at yield");
+
+        // prb_validity_range (Real) == the joint range half-angle (5°).
+        let (_, up) = range_lower_upper(map_get(&result, "range").expect("range present"));
+        let range_half = match up {
+            Value::Scalar { si_value, .. } => *si_value,
+            other => panic!("range upper Scalar, got {other:?}"),
+        };
+        match f("prb_validity_range") {
+            Value::Real(rr) => assert!(
+                (rr - range_half).abs() / range_half < 1e-9
+                    && (rr - prb_limit).abs() / prb_limit < 1e-9,
+                "prb_validity_range {rr} == range half {range_half} == 5°"
+            ),
+            other => panic!("prb_validity_range Real, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prb_notch_circular_declared_range_override() {
+        // Base fixture r=1mm, t=0.2mm: θ_yield ≈ 2.25° (yield-capped). A declared
+        // ±10° operating range drives σ(10°) ≈ 1.38 GPa ≫ 310 MPa yield. Arg
+        // layout: (r, t, width, material, pivot, axis, neutral, declared_range) —
+        // declared_range is the new highest-arity (8th) slot, mirroring the beam
+        // and prismatic families.
+        let r = 1e-3_f64;
+        let t = 2e-4_f64;
+        let b = 5e-3_f64;
+        let e = 205e9_f64;
+        let yield_si = 310e6_f64;
+        let ten_deg = 10.0_f64 * PI / 180.0;
+        // Auto SAFE bound θ_yield (sigma_factor = 1 for circular), < 5°.
+        let theta_yield = yield_si * 3.0 * PI * (2.0 * r + t) / (4.0 * e * t);
+
+        let yielding = crate::eval_builtin(
+            "prb_notch_circular",
+            &[
+                Value::length(r),
+                Value::length(t),
+                Value::length(b),
+                steel(),
+                origin(),
+                axis_y(),
+                Value::angle(0.0),     // neutral
+                Value::angle(ten_deg), // declared ±10° half-width
+            ],
+        );
+
+        // The ctor STILL returns a valid revolute joint (not Undef) even though
+        // the declared range drives surface stress past yield.
+        assert!(!yielding.is_undef(), "yielding declared-range call returns a joint, not Undef");
+        assert_eq!(
+            map_get(&yielding, "kind"),
+            Some(&Value::String("revolute".to_string())),
+            "yielding notch flexure is still a revolute joint"
+        );
+
+        // (a) The joint `range` is the declared ±10°, OVERRIDING the auto cap.
+        let (lo, up) = range_lower_upper(map_get(&yielding, "range").expect("range present"));
+        assert_angle_close(lo, -ten_deg, "declared-range lower bound");
+        assert_angle_close(up, ten_deg, "declared-range upper bound");
+
+        let fields = compliance_fields(&yielding);
+        let f = |k: &str| {
+            fields
+                .get(&k.to_string())
+                .unwrap_or_else(|| panic!("FlexureCompliance missing `{k}`"))
+        };
+
+        // (b) max_stress is evaluated at the DECLARED 10° endpoint.
+        let expected_sigma = notch_sigma(ten_deg, r, t, e, 1.0);
+        assert!(
+            expected_sigma > yield_si,
+            "fixture sanity: σ(10°)={expected_sigma} must exceed yield {yield_si}"
+        );
+        match f("max_stress") {
+            Value::Scalar { si_value, dimension } => {
+                assert_eq!(*dimension, DimensionVector::PRESSURE, "max_stress is PRESSURE");
+                assert!(
+                    (si_value - expected_sigma).abs() / expected_sigma < 1e-9,
+                    "max_stress {si_value} vs analytic σ(10°) {expected_sigma}"
+                );
+            }
+            other => panic!("max_stress Scalar, got {other:?}"),
+        }
+
+        // (c) at_yield == true and yield_margin < 0 in the yielding regime.
+        assert_eq!(f("at_yield"), &Value::Bool(true), "declared 10° drives at_yield true");
+        match f("yield_margin") {
+            Value::Real(rr) => assert!(*rr < 0.0, "yielding ⇒ negative margin, got {rr}"),
+            other => panic!("yield_margin Real, got {other:?}"),
+        }
+
+        // prb_validity_range still advertises the auto SAFE θ_yield, not the declared 10°.
+        match f("prb_validity_range") {
+            Value::Real(rr) => assert!(
+                (rr - theta_yield).abs() / theta_yield < 1e-9,
+                "prb_validity_range stays the auto safe θ_yield {theta_yield}, got {rr}"
+            ),
+            other => panic!("prb_validity_range Real, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prb_notch_variants_attach_populated_compliance() {
+        // The shared notch_revolute core wires the compliance record for all three
+        // variants; the variant's sigma_factor flows into max_stress. PRB-capped
+        // fixture (r=2mm, t=0.1mm) ⇒ auto endpoint = ±5° (θ_yield > 5° for both,
+        // since sigma_factor < 1 only widens θ_yield), σ(5°) < yield ⇒
+        // at_yield=false for every variant.
+        let r = 2e-3_f64;
+        let t = 1e-4_f64;
+        let b = 5e-3_f64;
+        let e = 205e9_f64;
+        let prb_limit = 5.0_f64 * PI / 180.0;
+
+        for (ctor, sigma_factor) in [
+            ("prb_notch_elliptical", 0.85_f64),
+            ("prb_notch_right_circular", 0.74_f64),
+        ] {
+            let result = crate::eval_builtin(
+                ctor,
+                &[
+                    Value::length(r),
+                    Value::length(t),
+                    Value::length(b),
+                    steel(),
+                    origin(),
+                    axis_y(),
+                ],
+            );
+            let fields = compliance_fields(&result);
+            let f = |k: &str| {
+                fields
+                    .get(&k.to_string())
+                    .unwrap_or_else(|| panic!("{ctor}: FlexureCompliance missing `{k}`"))
+            };
+
+            // max_stress carries the variant's sigma_factor (σ = κ_σ·4·E·t·θ/(3π·(2r+t))).
+            let expected_sigma = notch_sigma(prb_limit, r, t, e, sigma_factor);
+            match f("max_stress") {
+                Value::Scalar { si_value, dimension } => {
+                    assert_eq!(
+                        *dimension,
+                        DimensionVector::PRESSURE,
+                        "{ctor}: max_stress is PRESSURE"
+                    );
+                    assert!(
+                        (si_value - expected_sigma).abs() / expected_sigma < 1e-9,
+                        "{ctor}: max_stress {si_value} vs analytic {expected_sigma} \
+                         (sigma_factor={sigma_factor})"
+                    );
+                    assert!(*si_value < 310e6, "{ctor}: σ(5°) stays below yield ({si_value})");
+                }
+                other => panic!("{ctor}: max_stress Scalar, got {other:?}"),
+            }
+
+            // at_yield false at the safe endpoint.
+            assert_eq!(f("at_yield"), &Value::Bool(false), "{ctor}: safe endpoint not at yield");
+
+            // effective_stiffness matches the joint spring_rate.
+            let spring_si = spring_rate_si(&result);
+            match f("effective_stiffness") {
+                Value::Real(rr) => assert!(
+                    (rr - spring_si).abs() / spring_si < 1e-12,
+                    "{ctor}: effective_stiffness {rr} == spring_rate {spring_si}"
+                ),
+                other => panic!("{ctor}: effective_stiffness Real, got {other:?}"),
+            }
+        }
     }
 }
