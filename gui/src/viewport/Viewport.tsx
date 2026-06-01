@@ -468,8 +468,10 @@ export function Viewport(props: ViewportProps) {
         <FeaModeToolbar
           store={props.feaModeStore!}
           onLockCurrent={() => {
-            // TODO: compute min/max from active mesh scalar channels (follow-up task)
+            const r = activeScalarRange();
+            if (r) props.feaModeStore!.lockCurrent(r.min, r.max);
           }}
+          maxValue={activeScalarRange()?.max ?? null}
         />
       </Show>
 
