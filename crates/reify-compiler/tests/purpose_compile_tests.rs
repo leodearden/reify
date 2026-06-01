@@ -74,12 +74,13 @@ purpose check_params(subject : Widget) {
     // The reflective query subject.params should resolve to the list of
     // param ValueCellIds from the Widget template: ["width", "height"]
     // (not "area" which is a let, not a param).
-    assert_eq!(
-        purpose.resolved_queries.len(),
-        1,
-        "expected 1 resolved reflective query"
-    );
-    let query = &purpose.resolved_queries[0];
+    // task-4137: compile_purpose now ALSO emits geometric_params (width+height
+    // are Length-typed), so resolved_queries.len() >= 1; locate by query_kind.
+    let query = purpose
+        .resolved_queries
+        .iter()
+        .find(|q| q.query_kind == "params" && q.param_name == "subject")
+        .expect("expected a ResolvedSchemaQuery with query_kind='params' and param_name='subject'");
     assert_eq!(query.param_name, "subject");
     assert_eq!(query.query_kind, "params");
     assert_eq!(query.resolved_ids.len(), 2);

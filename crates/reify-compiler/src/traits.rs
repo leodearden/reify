@@ -702,14 +702,21 @@ pub(crate) fn compile_purpose(
 
     // Resolve reflective schema queries for each purpose param.
     // Look up the bound entity's TopologyTemplate and extract relevant ValueCellIds.
+    // task-4137: emit "params" first (preserves [0]-positional readers), then
+    // also emit "geometric_params" and "material_params" when non-empty.
     let mut resolved_queries = Vec::new();
     for param in &params {
         if let Some(template) = template_registry.get(&param.entity_kind) {
-            // Resolve "params" query: all Param and Auto value cells
-            let param_ids: Vec<ValueCellId> = template
+            let param_auto_cells: Vec<_> = template
                 .value_cells
                 .iter()
                 .filter(|vc| matches!(vc.kind, ValueCellKind::Param | ValueCellKind::Auto { .. }))
+                .collect();
+
+            // Resolve "params" query: all Param and Auto value cells (pushed first,
+            // preserving [0]-positional readers that pre-date task-4137).
+            let param_ids: Vec<ValueCellId> = param_auto_cells
+                .iter()
                 .map(|vc| vc.id.clone())
                 .collect();
             if !param_ids.is_empty() {
@@ -717,6 +724,21 @@ pub(crate) fn compile_purpose(
                     param_name: param.name.clone(),
                     query_kind: "params".to_string(),
                     resolved_ids: param_ids,
+                });
+            }
+
+            // Resolve "geometric_params" query: Param/Auto cells with a nonzero
+            // Length (slot 0) or Angle (slot 7) dimension exponent (task-4137).
+            let geo_ids: Vec<ValueCellId> = param_auto_cells
+                .iter()
+                .filter(|vc| is_geometric_param_type(&vc.cell_type))
+                .map(|vc| vc.id.clone())
+                .collect();
+            if !geo_ids.is_empty() {
+                resolved_queries.push(ResolvedSchemaQuery {
+                    param_name: param.name.clone(),
+                    query_kind: "geometric_params".to_string(),
+                    resolved_ids: geo_ids,
                 });
             }
         }

@@ -466,12 +466,15 @@ purpose check_params(subject : Widget) {
     let purpose = &compiled.compiled_purposes[0];
     assert_eq!(purpose.name, "check_params");
     assert_eq!(purpose.params[0].entity_kind, "Widget");
-    assert_eq!(
-        purpose.resolved_queries.len(),
-        1,
-        "expected 1 resolved schema query (the 'params' query for 'subject')"
-    );
-    let query = &purpose.resolved_queries[0];
+    // task-4137: compile_purpose now also emits geometric_params for Length/Angle
+    // params, so resolved_queries.len() > 1; use find-by-kind instead of len==1.
+    let query = purpose
+        .resolved_queries
+        .iter()
+        .find(|q| q.query_kind == "params" && q.param_name == "subject")
+        .expect(
+            "expected a ResolvedSchemaQuery with query_kind='params' and param_name='subject'"
+        );
     assert_eq!(query.param_name, "subject");
     assert_eq!(query.query_kind, "params");
 }

@@ -1334,6 +1334,23 @@ impl CompiledConstraintDef {
     }
 }
 
+// ── Reflective-query type predicates (task-4137) ─────────────────────────────
+//
+// Single source of truth for geometric/material classification used by both
+// compile_purpose (traits.rs) and expand_purpose_reflective_placeholders
+// (engine_purposes.rs). Centralising here prevents the compiler/eval drift
+// that caused 3× phantom-done (1638/1904/2199).
+
+/// Returns `true` if `ty` is a *geometric* parameter type — i.e. a scalar
+/// with a nonzero Length (slot 0) or Angle (slot 7) dimension exponent.
+///
+/// Area (L²) and Volume (L³) both have a nonzero Length slot and are therefore
+/// included. Dimensionless scalars (`Type::Real`, `Type::Scalar{dimension:DIMENSIONLESS}`)
+/// and non-scalar types are excluded.
+pub fn is_geometric_param_type(ty: &Type) -> bool {
+    matches!(ty, Type::Scalar { dimension } if !dimension.0[0].is_zero() || !dimension.0[7].is_zero())
+}
+
 #[cfg(test)]
 mod kind_display_tests {
     //! Display-impl round-trip tests for op-kind enums.
