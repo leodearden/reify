@@ -71,6 +71,43 @@ fn assert_scalar_rel(value: Option<&Value>, dim: DimensionVector, expected: f64,
     }
 }
 
+/// Assert `value` is a `Value::Point` of exactly 3 length-dimensioned scalar
+/// components, each within `tol` ABSOLUTE (in metres) of `expected[i]`. Uses
+/// absolute tolerance because the centered-box centroid components are zero
+/// (relative tolerance is undefined at zero).
+fn assert_point_abs(value: Option<&Value>, expected: [f64; 3], tol: f64, what: &str) {
+    match value {
+        Some(Value::Point(components)) => {
+            assert_eq!(
+                components.len(),
+                3,
+                "{what}: expected 3 Point components, got {}",
+                components.len()
+            );
+            for (i, (comp, exp)) in components.iter().zip(expected.iter()).enumerate() {
+                match comp {
+                    Value::Scalar { si_value, dimension } => {
+                        assert_eq!(
+                            *dimension,
+                            DimensionVector::LENGTH,
+                            "{what}: component {i} dimension should be LENGTH, got {dimension:?}"
+                        );
+                        assert!(
+                            (si_value - exp).abs() < tol,
+                            "{what}: component {i} si_value {si_value:.12} not within {tol:.1e} \
+                             (absolute) of {exp:.12}"
+                        );
+                    }
+                    other => panic!(
+                        "{what}: component {i} should be Scalar<Length>, got {other:?}"
+                    ),
+                }
+            }
+        }
+        other => panic!("{what}: expected Value::Point, got {other:?}"),
+    }
+}
+
 // ── volume() ────────────────────────────────────────────────────────────────
 
 const VOLUME_SOURCE: &str = r#"
@@ -173,5 +210,35 @@ fn area_dispatch_box_sphere_cylinder() {
         DimensionVector::AREA,
         cyl_a,
         "area(cylinder(10mm,20mm))",
+    );
+}
+
+// ── centroid() ────────────────────────────────────────────────────────────────
+
+const CENTROID_SOURCE: &str = r#"
+structure def CentroidBox {
+    let body = box(10mm, 20mm, 30mm)
+    let c = centroid(body)
+}
+"#;
+
+/// `centroid(handle)` dispatches to OCCT and yields a `Point3<Length>`.
+///
+/// Reify's `box(w,h,d)` is CENTERED at the origin (`occt_wrapper.cpp`
+/// `make_box` corner `(-w/2,-h/2,-d/2)`), so the centroid of
+/// `box(10,20,30)mm` is `(0,0,0)` — NOT `(5,10,15)mm`. (The plan's
+/// corner-at-origin premise was an assumption to confirm; the centered
+/// convention is authoritative and matches `distance_box_point.ri`.)
+#[test]
+fn centroid_dispatch_box_is_origin() {
+    let Some(result) = compile_and_build_occt(CENTROID_SOURCE) else {
+        return;
+    };
+
+    assert_point_abs(
+        result.values.get(&ValueCellId::new("CentroidBox", "c")),
+        [0.0, 0.0, 0.0],
+        1e-6,
+        "centroid(box(10,20,30)mm)",
     );
 }
