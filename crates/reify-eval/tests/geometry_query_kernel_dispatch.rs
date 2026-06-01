@@ -25,7 +25,7 @@
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{DimensionVector, ValueCellId};
 use reify_ir::{ExportFormat, Value};
-use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
+use reify_test_support::{errors_only, manufacturing_purpose, parse_and_compile_with_stdlib};
 
 /// Compile `source` (asserting no error-severity diagnostics), then — if OCCT
 /// is available — build it through a real-OCCT `Engine` and return the
@@ -347,5 +347,117 @@ fn spec_shape_physical_mass_and_centroid() {
         DimensionVector::MASS,
         box_v * density,
         "Bracket.mass",
+    );
+}
+
+// ── realization-cache re-run: mass/centroid survive the cache-hit build path ──
+
+/// The geometry-query post-process (`post_process_geometry_queries`) lives
+/// INSIDE `Engine::run_post_processes`, which executes on EVERY build path —
+/// including a `RealizationCache`-hit build where `execute_realization_ops`
+/// short-circuits the per-op kernel dispatch. This test pins that invariant:
+/// building the spec-shape-physical module twice in the SAME `Engine` (with a
+/// demanded tolerance so the cache actually engages) serves the second build
+/// entirely from the cache (`last_dispatch_count() == 0`, no geometry rebuild)
+/// while `mass` and `centroid` retain their correct numeric values — they do
+/// NOT revert to `undef`.
+///
+/// **Why inject a manufacturing purpose.** The `RealizationCache` is keyed by
+/// `(entity, ReprKind::BRep, demanded_tol)` and only engages when
+/// `demanded_tol = Some(..)`. A purpose-free build leaves `demanded_tol = None`,
+/// so the cache never populates and `last_dispatch_count()` would be nonzero on
+/// every build — defeating the test premise (escalation ruling, task 3608,
+/// Option 2A). We inject `manufacturing_purpose("manufacturing", 1µm)` onto the
+/// COMPILED module and activate it against `Bracket`, which is invisible to the
+/// committed `examples/spec-shape-physical.ri` fixture (kept purpose-free for
+/// the golden) yet sets `demanded_tol = Some(1e-6)` so the cache short-circuit
+/// fires on the second build. Mirrors the cache-hit pattern in
+/// `multi_handle_engine_dispatch::last_dispatch_count_zero_on_cache_hit_second_build`.
+#[test]
+fn mass_and_centroid_survive_realization_cache_hit() {
+    let mut compiled = parse_and_compile_with_stdlib(SPEC_SHAPE_PHYSICAL);
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "fixture should compile with no error-severity diagnostics, got:\n{:#?}",
+        errors_only(&compiled)
+    );
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping real-OCCT cache-hit assertions: OCCT not available");
+        return;
+    }
+
+    // Inject (without mutating the committed .ri) a manufacturing purpose
+    // demanding 1µm so `demanded_tol = Some(1e-6)` and the RealizationCache
+    // engages keyed at `(Bracket, BRep, 1e-6)`.
+    compiled
+        .compiled_purposes
+        .push(manufacturing_purpose("manufacturing", 1e-6));
+
+    let checker = SimpleConstraintChecker;
+    let mut planner = reify_geometry::SingleKernelHolder::new();
+    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+
+    // Canonical user flow: eval → activate_purpose → build.
+    let _eval = engine.eval(&compiled);
+    engine.activate_purpose("manufacturing", "Bracket");
+
+    // First build: cold cache → the box realization dispatches at least once.
+    let build1 = engine.build(&compiled, ExportFormat::Step);
+    let dispatches_first = engine.last_dispatch_count();
+    assert!(
+        dispatches_first >= 1,
+        "expected the first build() to dispatch the box realization at least \
+         once (cold cache); got last_dispatch_count()={dispatches_first}"
+    );
+
+    let box_v = 0.010 * 0.020 * 0.030;
+    let density = material_density_si(&build1, "Bracket");
+    assert_scalar_rel(
+        build1.values.get(&ValueCellId::new("Bracket", "mass")),
+        DimensionVector::MASS,
+        box_v * density,
+        "Bracket.mass (first build)",
+    );
+    assert_point_abs(
+        build1.values.get(&ValueCellId::new("Bracket", "centroid")),
+        [0.0, 0.0, 0.0],
+        1e-6,
+        "Bracket.centroid (first build)",
+    );
+
+    // Re-activate the purpose so the second build sees the same
+    // `demanded_tol = Some(1e-6)` that populated the cache — `build()`'s
+    // internal eval() clears `active_purpose_bindings` (mirrors the same
+    // re-activation in multi_handle_engine_dispatch.rs).
+    engine.activate_purpose("manufacturing", "Bracket");
+
+    // Second build: served entirely from the RealizationCache — the cache-hit
+    // short-circuit returns before the per-op loop, so no geometry is rebuilt.
+    let build2 = engine.build(&compiled, ExportFormat::Step);
+    let dispatches_second = engine.last_dispatch_count();
+    assert_eq!(
+        dispatches_second, 0,
+        "expected the second build() to be served entirely from the \
+         RealizationCache (cache-hit short-circuit → zero dispatches); got \
+         last_dispatch_count()={dispatches_second} (first build saw \
+         {dispatches_first})"
+    );
+
+    // The load-bearing assertion: the geometry-query post-process ran on the
+    // cache-hit path too, so mass/centroid are STILL their correct numeric
+    // values — they did not revert to undef despite no realization rebuild.
+    assert_scalar_rel(
+        build2.values.get(&ValueCellId::new("Bracket", "mass")),
+        DimensionVector::MASS,
+        box_v * density,
+        "Bracket.mass (cache-hit second build)",
+    );
+    assert_point_abs(
+        build2.values.get(&ValueCellId::new("Bracket", "centroid")),
+        [0.0, 0.0, 0.0],
+        1e-6,
+        "Bracket.centroid (cache-hit second build)",
     );
 }
