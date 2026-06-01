@@ -33,8 +33,10 @@ pub(crate) enum DefaultKindTag {
 /// instance per structure and read `requirements` / `defaults` after the loop.
 ///
 /// `requirements` and `defaults` are `pub` because `check_trait_conformance`
-/// consumes them after the collection loop. The 5 tracking maps are private —
-/// only `collect_all_requirements` should mutate them.
+/// consumes them after the collection loop. Most tracking maps are private —
+/// only `collect_all_requirements` should mutate them. A few (`seen_fn_sigs`,
+/// `seen_fn_default_traits`, `seen_assoc_type_reqs`, `seen_assoc_type_default_traits`)
+/// are `pub` so downstream phases can read the first-seen trait attribution.
 #[derive(Default)]
 pub(crate) struct MergeContext {
     /// Accumulated requirements collected across all visited traits.
@@ -76,6 +78,16 @@ pub(crate) struct MergeContext {
     /// trait, so this is the only place the trait is captured for defaults.
     /// First-seen wins (mirrors `seen_fn_sigs` for requirements). (task 3939 δ)
     pub seen_fn_default_traits: HashMap<String, String>,
+    /// Assoc-type requirement names already collected: type name → first-seen trait.
+    /// First-seen wins (dedup); identical re-declaration via diamond/refinement is
+    /// silently dropped. `pub` because phase 5 reads it to name the declaring trait
+    /// in the `TraitAssocTypeNotBound` diagnostic. (task 3972)
+    pub seen_assoc_type_reqs: HashMap<String, String>,
+    /// For default-providing assoc types (`DefaultKind::AssocType`): type name →
+    /// originating trait, recorded when the default is merged so the
+    /// assoc-type-resolution phase can key the compiled table by
+    /// `(trait_name, type_name)`. First-seen wins. (task 3972)
+    pub seen_assoc_type_default_traits: HashMap<String, String>,
 }
 
 impl MergeContext {
@@ -166,9 +178,18 @@ pub(crate) fn collect_all_requirements(
                 }
                 ctx.requirements.push(req.clone());
             }
-            // Assoc-type requirements are collected in a dedicated block (step-4).
-            // For now: inert arm keeps the exhaustive match GREEN with zero behavior change.
-            RequirementKind::AssocType(_) => continue,
+            // Assoc-type requirements: first-seen-by-name dedup (mirroring the Fn arm
+            // via `seen_assoc_type_reqs`). Conflict detection (step-6) is not yet wired;
+            // a second trait declaring `type X` with a DIFFERENT bound would simply be
+            // dropped here (only the first-seen entry is pushed). (task 3972)
+            RequirementKind::AssocType(_) => {
+                if ctx.seen_assoc_type_reqs.contains_key(&req.name) {
+                    continue; // already collected this assoc-type requirement (first-seen wins)
+                }
+                ctx.seen_assoc_type_reqs
+                    .insert(req.name.clone(), trait_name.to_string());
+                ctx.requirements.push(req.clone());
+            }
             RequirementKind::Sub(structure_name) => {
                 // Dedup Sub requirements by name, following the `seen_names` pattern for
                 // Param/Let: if the same sub-component name was already collected:
@@ -320,6 +341,24 @@ pub(crate) fn collect_all_requirements(
                     continue; // already collected this assoc-fn default (first-seen wins)
                 }
                 ctx.seen_fn_default_traits
+                    .insert(name.clone(), trait_name.to_string());
+                ctx.defaults.push(default.clone());
+                continue;
+            }
+
+            // Assoc-type default (task 3972): record the originating trait so the
+            // assoc-type-resolution phase can key the table by (trait, type_name), then
+            // push so the default reaches conformance. First-seen-by-name dedup keeps a
+            // single entry across a diamond/refinement chain. Conflict detection (same name,
+            // different resolved Type → ConflictingTraitAssocType) is added in step-6.
+            if let DefaultKind::AssocType(_) = &default.kind {
+                if ctx
+                    .seen_assoc_type_default_traits
+                    .contains_key(name.as_str())
+                {
+                    continue; // already collected this assoc-type default (first-seen wins)
+                }
+                ctx.seen_assoc_type_default_traits
                     .insert(name.clone(), trait_name.to_string());
                 ctx.defaults.push(default.clone());
                 continue;
