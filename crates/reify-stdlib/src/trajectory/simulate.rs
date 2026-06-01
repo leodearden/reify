@@ -64,6 +64,45 @@ pub(crate) fn modal_aware_dt(freqs_hz: &[f64], duration: f64) -> f64 {
     }
 }
 
+use crate::modal::transient::{reconstruct_series, solve_modal_response};
+
+/// Superpose modal responses to produce per-location physical vibration offsets.
+///
+/// For each mode `i`:
+/// 1. Compute ωᵢ = 2π·freq_hz_i.
+/// 2. Call `solve_modal_response(ωᵢ, ζᵢ, times, &forcing_i, 0.0, 0.0)` to get
+///    the modal coordinate series ξᵢ(tⱼ).
+/// 3. For each location, call `reconstruct_series(coeffs, &mode_coords)` where
+///    `coeffs[i] = location_coeffs[loc][i]` to get the physical displacement.
+///
+/// # Arguments
+/// * `times` — uniform time grid `[t₀, t₁, …]`.
+/// * `modes` — per-mode `(omega_rad_s, zeta, modal_forcing_series)`.
+/// * `location_coeffs` — `[n_locations][n_modes]` per-location participation
+///   coefficients (Φᵢ[node] at each effector location).
+///
+/// # Returns
+/// `[n_locations][n_times]` physical vibration displacement time series.
+pub(crate) fn superpose_modes(
+    times: &[f64],
+    modes: &[(f64, f64, Vec<f64>)],  // (omega, zeta, forcing)
+    location_coeffs: &[Vec<f64>],
+) -> Vec<Vec<f64>> {
+    // Solve each mode's modal coordinate series.
+    let mode_coords: Vec<Vec<f64>> = modes
+        .iter()
+        .map(|(omega, zeta, forcing)| {
+            solve_modal_response(*omega, *zeta, times, forcing, 0.0, 0.0).coords
+        })
+        .collect();
+
+    // For each location, reconstruct the physical displacement by superposition.
+    location_coeffs
+        .iter()
+        .map(|coeffs| reconstruct_series(coeffs, &mode_coords))
+        .collect()
+}
+
 /// Project per-sample generalized forces onto modal shapes to produce per-mode
 /// scalar modal forcing series: f_i(t_j) = Φᵢᵀ · F(t_j).
 ///
