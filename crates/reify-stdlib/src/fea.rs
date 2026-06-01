@@ -3632,7 +3632,6 @@ mod tests {
     ///                     d[3]=σ_yx, d[4]=σ_yy, d[5]=σ_yz,
     ///                     d[6]=σ_zx, d[7]=σ_zy, d[8]=σ_zz
     /// (matches the layout `analysis.rs::von_mises` expects.)
-
     /// Shared body for the Map-shape and SI-shape von_Mises envelope round-trip
     /// tests. `make_er(displacement, stress)` builds one per-case ElasticResult.
     ///
