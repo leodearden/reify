@@ -3,9 +3,10 @@
 //!
 //! `solve_flat_plate_shell` synthesizes a structured triangulated mid-surface
 //! mesh of an `length × width` rectangle in the XY plane (thickness `t`),
-//! clamps the `x == 0` root edge, distributes a `-Z` tip load across the
-//! `x == length` free edge, assembles + solves the MITC3 shell system, and
-//! recovers per-element [`ShellElementStress`] + per-element [`ShellFrame`].
+//! clamps the `x == 0` root edge, applies a `-Z` tip load as a consistent
+//! traction over the free-tip element column, assembles + solves the flat-facet
+//! MITC3+ shell system, and recovers per-element [`ShellElementStress`] +
+//! per-element [`ShellFrame`].
 //!
 //! This is the neutral-types kernel driver: it returns only solver-elastic
 //! types (no `ShellChannels` — that glue lives in reify-eval, which depends on
@@ -16,9 +17,7 @@
 use crate::assembly::{AssemblyElement, AssemblyMode, ElementStiffness, assemble_global_stiffness};
 use crate::boundary::{DirichletBc, apply_dirichlet_row_elimination};
 use crate::constitutive::IsotropicElastic;
-use crate::shell_assembly::{
-    ShellFrame, build_shell_frame, shell_element_stiffness, shell_element_stiffness_mitc3_plus,
-};
+use crate::shell_assembly::{ShellFrame, build_shell_frame, shell_element_stiffness_mitc3_plus};
 use crate::shell_boundary::{SupportBodyKind, SupportKind, build_support_bcs};
 use crate::shell_result::{ShellElementStress, shell_element_stress};
 use crate::solver::{CgSolverOptions, SolverMode, solve_cg};
@@ -43,7 +42,7 @@ pub struct FlatPlateShellSolve {
     pub iterations: usize,
 }
 
-/// Solve a flat-plate MITC3 cantilever shell and recover per-element stress +
+/// Solve a flat-plate MITC3+ cantilever shell and recover per-element stress +
 /// frames.
 ///
 /// # Geometry / mesh
@@ -65,16 +64,29 @@ pub struct FlatPlateShellSolve {
 ///   coincides with the global one and MITC3 carries zero stiffness for it —
 ///   without the pin `K` is rank-deficient and the solve produces NaN (see the
 ///   `shell_benchmarks.rs` flat-plate sanity test for the same treatment).
-/// - The transverse `-Z` `tip_force` is distributed equally across the
-///   `x == length` free-edge nodes (all at `x = length`, so the root bending
-///   moment is `tip_force · length`, matching the analytical tip-point load).
+/// - The transverse `-Z` `tip_force` is applied as a consistent traction over
+///   the last element column (a one-cell-wide patch at the free tip), NOT a
+///   pure edge-line load. A pure edge load concentrates the whole force on the
+///   `x == length` node ring, whose two doubly-free corner nodes each belong to
+///   a single triangle and act as near-mechanisms (they "flap" and manufacture
+///   a spurious local stress concentration). The patch shares the load with the
+///   inboard node column, cutting the corner over-load while keeping the root
+///   bending moment at `tip_force · (length − Δx/2)` — within ≈2.5% of the
+///   ideal tip-point moment `tip_force · length`.
 ///
-/// # Accuracy
+/// # Element choice / accuracy
 ///
-/// Bare MITC3 on a flat facet has no curvature → no membrane locking; the
-/// recovered root bending stress lands within one order of magnitude of the
-/// analytical σ = 6PL/(bh²) (esc-3594-10 honest-accuracy contract). NOT gated
-/// on MITC3+ tight accuracy (task 3392).
+/// Assembly uses the flat-facet MITC3+ element
+/// ([`shell_element_stiffness_mitc3_plus`], task 3392): bare MITC3 transverse-
+/// SHEAR-locks on this thin plate (`L/t = 50`), collapsing the bending response
+/// ~100× and pushing the recovered stress below the band; the MITC3+ nodal
+/// assumed-shear field relieves that locking and restores a tip deflection
+/// within ~30% of Euler-Bernoulli. A flat facet has no curvature, so the
+/// membrane-locking that drives the large curved-benchmark errors
+/// (`shell_benchmarks.rs`) is absent. The recovered top-channel von Mises lands
+/// within one order of magnitude of the analytical σ = 6PL/(bh²) (esc-3594-10
+/// honest-accuracy contract; band `[3e7, 3e9]` Pa around `3e8`). This is NOT a
+/// tight-accuracy (5%) contract.
 pub fn solve_flat_plate_shell(
     length: f64,
     width: f64,
@@ -157,14 +169,39 @@ pub fn solve_flat_plate_shell(
         }
     }
 
-    // ── Load: distribute -Z tip_force across the x == length free edge ───────
-    // apply_point_load is a 3-DOF/node helper; shell f is 6-DOF/node, so write
-    // the transverse (DOF 2) component directly, mirroring shell_benchmarks.rs.
+    // ── Load: distribute -Z tip_force as a consistent traction over the LAST
+    // COLUMN of elements (a one-element-wide patch at the free tip), NOT a pure
+    // edge-line load. f is 6-DOF/node, so the transverse (DOF 2) component is
+    // written directly (apply_point_load is a 3-DOF/node helper).
+    //
+    // A pure edge-line load concentrates the whole tip force on the x==length
+    // node ring, whose two doubly-free corner nodes each belong to a single
+    // triangle and behave as near-mechanisms — they "flap" and manufacture a
+    // spurious local bending stress that swamps the physical root stress. The
+    // patch shares the load with the inboard (x==length-Δx) node column, cutting
+    // each corner node's share ~3× and reusing the corner's second triangle.
+    //
+    // For a uniform downward pressure whose resultant is `tip_force`, the
+    // consistent (constant-pressure) nodal force on a linear triangle is
+    // p·area/3 per vertex; on the structured grid this is exactly
+    // `tip_force / (6·ny)` per vertex regardless of the cell aspect ratio.
+    // Summed over the column's 2·ny triangles it recovers `tip_force` exactly.
+    // The patch centroid sits at x = length − Δx/2, so the root bending moment
+    // is `tip_force · (length − Δx/2)` — within Δx/2length (≈2.5%) of the ideal
+    // tip-point moment, well inside the one-OOM accuracy band.
     let mut f = vec![0.0_f64; 6 * n_nodes];
-    let tip_nodes: Vec<usize> = (0..ny1).map(|iy| node(nx, iy)).collect();
-    let force_per_node = -tip_force / tip_nodes.len() as f64;
-    for &tn in &tip_nodes {
-        f[tn * 6 + 2] += force_per_node;
+    let per_vertex = -tip_force / (6.0 * ny as f64);
+    for iy in 0..ny {
+        let a = node(nx - 1, iy);
+        let b = node(nx, iy);
+        let c = node(nx - 1, iy + 1);
+        let d = node(nx, iy + 1);
+        // Same two CCW triangles as this cell's connectivity split.
+        for tri in [[a, b, d], [a, d, c]] {
+            for &n in &tri {
+                f[n * 6 + 2] += per_vertex;
+            }
+        }
     }
 
     apply_dirichlet_row_elimination(&mut k, &mut f, &bcs);
@@ -176,27 +213,6 @@ pub fn solve_flat_plate_shell(
     };
     let cg = solve_cg(&k, &f, opts, SolverMode::Deterministic);
     let u = &cg.u;
-    #[cfg(test)]
-    {
-        use faer::linalg::solvers::Solve;
-        let ndof = 6 * n_nodes;
-        let kd = k.to_dense();
-        let plu = kd.partial_piv_lu();
-        let mut rhs = faer::Mat::<f64>::from_fn(ndof, 1, |i, _| f[i]);
-        plu.solve_in_place(&mut rhs);
-        let ud = rhs.col_as_slice(0usize).to_vec();
-        let tip_w_max = tip_nodes.iter().map(|&n| u[n * 6 + 2].abs()).fold(0.0_f64, f64::max);
-        let center_iy = ny / 2;
-        let tip_center = u[node(nx, center_iy) * 6 + 2].abs();
-        let _ = ud;
-        let i_beam = width * thickness.powi(3) / 12.0;
-        let delta_eb = tip_force * length.powi(3) / (3.0 * material.youngs_modulus * i_beam);
-        let iters = cg.iterations;
-        eprintln!(
-            "DIAG-DRV nx={nx} ny={ny} iters={iters} tip_w_max={tip_w_max:.4e} (r {:.2}) tip_center={tip_center:.4e} (r {:.2}) delta_eb={delta_eb:.4e}",
-            tip_w_max / delta_eb, tip_center / delta_eb
-        );
-    }
 
     // ── Per-element stress + frame recovery ──────────────────────────────────
     let mut stresses: Vec<ShellElementStress> = Vec::with_capacity(connectivity.len());
@@ -250,31 +266,6 @@ mod tests {
             }
         }
         mx
-    }
-
-    #[test]
-    fn diag_locate_max() {
-        let length = 0.05_f64;
-        let width = 0.01_f64;
-        let thickness = 0.001_f64;
-        let material = IsotropicElastic { youngs_modulus: 205e9, poisson_ratio: 0.29 };
-        let solve = solve_flat_plate_shell(length, width, thickness, &material, 10.0);
-        let mut idx = 0usize;
-        let mut mx = 0.0f64;
-        for (i, s) in solve.stresses.iter().enumerate() {
-            let vm = von_mises(&s.top);
-            if vm > mx { mx = vm; idx = i; }
-        }
-        let o = solve.frames[idx].origin;
-        eprintln!("DIAG nx-elems={} max_top_vm={:.4e} at elem {} origin=[{:.4},{:.4},{:.4}]",
-            solve.stresses.len(), mx, idx, o[0], o[1], o[2]);
-        // Print a few high elements with their origins.
-        let mut v: Vec<(f64,[f64;3])> = solve.stresses.iter().zip(solve.frames.iter())
-            .map(|(s,f)| (von_mises(&s.top), f.origin)).collect();
-        v.sort_by(|a,b| b.0.partial_cmp(&a.0).unwrap());
-        for (vm,o) in v.iter().take(6) {
-            eprintln!("  vm={:.4e} origin=[{:.4},{:.4},{:.4}]", vm, o[0],o[1],o[2]);
-        }
     }
 
     /// RED (task δ step-1): pin the flat-plate MITC3 cantilever shell driver.
