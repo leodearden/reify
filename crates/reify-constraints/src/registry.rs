@@ -4,9 +4,14 @@
 //! to domain-specific solvers.
 
 use crate::decompose::decompose_into_components;
-use reify_core::ValueCellId;
-use reify_ir::{AutoParam, ConstraintDomain, ConstraintSolver, ObjectiveCombination, ObjectiveSet, ObjectiveTerm, ResolutionProblem, SolveResult, Value, ValueMap};
+use reify_core::{ConstraintNodeId, Type, ValueCellId};
+use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledFunction, ConstraintDomain, ConstraintSolver, ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm, ResolutionProblem, SolveResult, UnOp, Value, ValueMap};
 use std::collections::HashMap;
+
+// ε-band constants (task ε — PRD §12.1).
+// Half-width δ = max(REL · |obj*|, ABS) so a near-zero obj* yields a non-degenerate band.
+const LEX_EPSILON_BAND_REL: f64 = 1e-3;
+const LEX_EPSILON_BAND_ABS: f64 = 1e-9;
 
 /// A registry that dispatches constraint sub-problems to domain-specific solvers.
 ///
@@ -210,7 +215,7 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
     let obj = base.objective.as_ref().expect("solve_lexicographic: objective must be Some");
 
     // --- Group terms into ranks by distinct priority, sorted DESCENDING ---
-    let mut priority_order: Vec<u32> = {
+    let priority_order: Vec<u32> = {
         let mut priorities: Vec<u32> = obj.terms.iter().map(|t| t.priority).collect();
         priorities.sort_unstable();
         priorities.dedup();
@@ -248,7 +253,7 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
 
         // Build stage objective as WeightedSum of this rank's terms.
         let stage_objective = ObjectiveSet {
-            terms: rank_terms,
+            terms: rank_terms.clone(), // clone kept for band computation below
             combination: ObjectiveCombination::WeightedSum,
         };
 
@@ -285,7 +290,16 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
                 if is_final {
                     break;
                 }
-                // (band constraints will be added here in step-4)
+
+                // Freeze this rank's realized optimum as an ε-band for the next stage.
+                // Skip (no band) if any term evaluates to non-finite — the next stage
+                // still runs unconstrained, which is permissive rather than wrong.
+                if let Some(obj_star) =
+                    eval_rank_cost(&rank_terms, &current_values, &base.functions)
+                {
+                    accumulated_constraints
+                        .extend(build_band_constraints(&rank_terms, obj_star, stage_idx));
+                }
             }
             infeasible_or_no_progress => {
                 return infeasible_or_no_progress;
@@ -294,4 +308,109 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
     }
 
     last_result.expect("solve_lexicographic: priority_order is non-empty so at least one stage ran")
+}
+
+// ============================================================================
+// ε-band private helpers
+// ============================================================================
+
+/// Compute the realized cost obj* for a rank at the current solution.
+///
+/// Mirrors `eval_objective_set` I3 fold (solver.rs:~436):
+///   Minimize → acc += w·v
+///   Maximize → acc -= w·v
+/// Returns `None` if any term evaluates to a non-finite value.
+fn eval_rank_cost(
+    rank_terms: &[ObjectiveTerm],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+) -> Option<f64> {
+    let mut acc = 0.0_f64;
+    for term in rank_terms {
+        let v = reify_expr::eval_expr(&term.expr, &reify_expr::EvalContext::new(values, functions))
+            .as_f64()
+            .filter(|v| v.is_finite())?;
+        match term.sense {
+            ObjectiveSense::Minimize => acc += term.weight * v,
+            ObjectiveSense::Maximize => acc -= term.weight * v,
+        }
+    }
+    Some(acc)
+}
+
+/// Build the signed cost expression for a single objective term.
+///
+/// Sign convention (same as `eval_rank_cost`):
+///   w=1, Minimize → expr (contributes positively to the minimization cost)
+///   w=1, Maximize → UnOp::Neg(expr)
+///   w≠1, Minimize → Real(w) * expr
+///   w≠1, Maximize → Real(-w) * expr
+///
+/// The `result_type` of the returned expression mirrors the term's expr type
+/// for unit-weight paths (B5/primary path); non-unit-weight paths use the
+/// term's type (comparison is done via `as_f64()` so dimension is irrelevant).
+fn signed_term_expr(term: &ObjectiveTerm) -> CompiledExpr {
+    let e = term.expr.clone();
+    let e_type = e.result_type.clone();
+    let is_unit = (term.weight - 1.0).abs() < f64::EPSILON;
+    match term.sense {
+        ObjectiveSense::Minimize if is_unit => e,
+        ObjectiveSense::Maximize if is_unit => CompiledExpr::unop(UnOp::Neg, e, e_type),
+        ObjectiveSense::Minimize => {
+            let w_lit = CompiledExpr::literal(Value::Real(term.weight), Type::Real);
+            CompiledExpr::binop(BinOp::Mul, w_lit, e, e_type)
+        }
+        ObjectiveSense::Maximize => {
+            let w_lit = CompiledExpr::literal(Value::Real(-term.weight), Type::Real);
+            CompiledExpr::binop(BinOp::Mul, w_lit, e, e_type)
+        }
+    }
+}
+
+/// Fold a rank's signed term expressions into one combined cost expression.
+///
+/// Single-term ranks (the primary B5 path) return the term's signed expression
+/// directly.  Multi-term tie ranks fold via `BinOp::Add` — this is valid only
+/// for dimensionally-compatible terms (documented limitation, PRD §scope).
+fn signed_cost_expr(rank_terms: &[ObjectiveTerm]) -> CompiledExpr {
+    debug_assert!(!rank_terms.is_empty(), "rank_terms must be non-empty");
+    rank_terms
+        .iter()
+        .map(signed_term_expr)
+        .reduce(|a, b| {
+            let ty = a.result_type.clone();
+            CompiledExpr::binop(BinOp::Add, a, b, ty)
+        })
+        .expect("rank_terms is non-empty")
+}
+
+/// Build the two ε-band constraints that freeze a rank's realized optimum.
+///
+/// Produces:
+///   `cost_expr ≤ Value::Real(obj* + δ)`  — Le, upper-bound (entity index 2·s)
+///   `cost_expr ≥ Value::Real(obj* − δ)`  — Ge, lower-bound (entity index 2·s+1)
+///
+/// where `δ = max(LEX_EPSILON_BAND_REL · |obj*|, LEX_EPSILON_BAND_ABS)`.
+///
+/// Both constraints carry synthetic `ConstraintNodeId{ entity: "__lex_freeze__", .. }`.
+/// The comparison is dimension-agnostic — the solver evaluates both sides via `as_f64()`.
+fn build_band_constraints(
+    rank_terms: &[ObjectiveTerm],
+    obj_star: f64,
+    stage_idx: usize,
+) -> Vec<(ConstraintNodeId, CompiledExpr)> {
+    let delta = f64::max(LEX_EPSILON_BAND_REL * obj_star.abs(), LEX_EPSILON_BAND_ABS);
+    let cost = signed_cost_expr(rank_terms);
+
+    let upper = CompiledExpr::literal(Value::Real(obj_star + delta), Type::Real);
+    let lower = CompiledExpr::literal(Value::Real(obj_star - delta), Type::Real);
+
+    let le_expr = CompiledExpr::binop(BinOp::Le, cost.clone(), upper, Type::Bool);
+    let ge_expr = CompiledExpr::binop(BinOp::Ge, cost, lower, Type::Bool);
+
+    let base_idx = stage_idx as u32 * 2;
+    vec![
+        (ConstraintNodeId::new("__lex_freeze__", base_idx), le_expr),
+        (ConstraintNodeId::new("__lex_freeze__", base_idx + 1), ge_expr),
+    ]
 }
