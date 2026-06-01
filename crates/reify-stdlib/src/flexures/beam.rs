@@ -523,6 +523,115 @@ mod tests {
         }
     }
 
+    #[test]
+    fn prb_cantilever_beam_declared_range_override() {
+        let e = 205e9_f64;
+        let yield_si = 310e6_f64;
+        let ten_deg = 10.0_f64 * std::f64::consts::PI / 180.0;
+
+        // Build a cantilever with an explicit neutral (0°) plus a trailing
+        // declared operating range (±10°). Arg layout:
+        //   (length, width, thickness, material, pivot, axis, neutral, declared_range)
+        // — the declared_range is the new highest-arity (8th) slot, mirroring
+        // examples/flexures/yield_warning.ri. The arg is the symmetric
+        // half-width as an Angle, so `angle(10°)` ⇒ a ±10° joint range.
+        let call = |length: f64, thickness: f64| {
+            crate::eval_builtin(
+                "prb_cantilever_beam",
+                &[
+                    Value::length(length),
+                    Value::length(0.005),
+                    Value::length(thickness),
+                    steel(),
+                    origin(),
+                    axis_y(),
+                    Value::angle(0.0),     // neutral
+                    Value::angle(ten_deg), // declared ±10° half-width
+                ],
+            )
+        };
+
+        // ── Yielding geometry: t=0.05 mm, L=2 mm (σ(10°) ≈ 447 MPa > 310 MPa). ──
+        let length = 0.002_f64;
+        let thickness = 0.00005_f64;
+        let yielding = call(length, thickness);
+
+        // (5) The ctor STILL returns a valid revolute joint (not Undef) even
+        // though the declared range drives surface stress past yield.
+        assert!(
+            !yielding.is_undef(),
+            "yielding declared-range call returns a joint, not Undef"
+        );
+        assert_eq!(
+            map_get(&yielding, "kind"),
+            Some(&Value::String("revolute".to_string())),
+            "yielding flexure is still a revolute joint"
+        );
+
+        // (a) The joint `range` is the declared ±10°, OVERRIDING the auto cap
+        // (±min(θ_yield, 5°), far narrower for this short/thin geometry).
+        let (lo, up) = range_lower_upper(map_get(&yielding, "range").expect("range present"));
+        assert_angle_close(lo, -ten_deg, "declared-range lower bound");
+        assert_angle_close(up, ten_deg, "declared-range upper bound");
+
+        let fields = compliance_fields(&yielding);
+        let f = |k: &str| {
+            fields
+                .get(&k.to_string())
+                .unwrap_or_else(|| panic!("FlexureCompliance missing `{k}`"))
+        };
+
+        // (b) max_stress is evaluated at the DECLARED 10° endpoint:
+        // σ = E·(t/2)·θ/L ≈ 447 MPa.
+        let expected_sigma = e * (thickness / 2.0) * ten_deg / length;
+        assert!(
+            expected_sigma > yield_si,
+            "fixture sanity: σ(10°)={expected_sigma} must exceed yield {yield_si}"
+        );
+        match f("max_stress") {
+            Value::Scalar { si_value, dimension } => {
+                assert_eq!(*dimension, DimensionVector::PRESSURE, "max_stress is PRESSURE");
+                assert!(
+                    (si_value - expected_sigma).abs() / expected_sigma < 1e-9,
+                    "max_stress {si_value} vs analytic σ(10°) {expected_sigma}"
+                );
+            }
+            other => panic!("max_stress Scalar, got {other:?}"),
+        }
+
+        // (c) at_yield == true and yield_margin < 0 in the yielding regime.
+        assert_eq!(
+            f("at_yield"),
+            &Value::Bool(true),
+            "declared 10° drives at_yield true"
+        );
+        match f("yield_margin") {
+            Value::Real(r) => assert!(*r < 0.0, "yielding ⇒ negative margin, got {r}"),
+            other => panic!("yield_margin Real, got {other:?}"),
+        }
+
+        // ── Safe geometry: t=0.05 mm, L=20 mm (σ(10°) ≈ 44.7 MPa < 310 MPa). ──
+        // Same ±10° declared range, but the 10× longer beam keeps σ below yield
+        // (σ scales as 1/L), so at_yield stays false. NOTE: the plan's step-5
+        // example "t=0.5mm,L=20mm" has t/L=0.025 — identical to the yielding
+        // fixture (t=0.05mm/L=2mm) — and would itself yield at 10°. t=0.05mm/
+        // L=20mm matches the plan design-decision's "σ≈44MPa at L=20mm" safe
+        // reference, so the at_yield==false assertion is physically reachable.
+        let safe = call(0.02, 0.00005);
+        assert!(!safe.is_undef(), "safe declared-range call returns a joint, not Undef");
+        let safe_fields = compliance_fields(&safe);
+        assert_eq!(
+            safe_fields
+                .get(&"at_yield".to_string())
+                .expect("at_yield present"),
+            &Value::Bool(false),
+            "safe geometry at ±10° stays below yield"
+        );
+        // The declared override still applies regardless of yield: range is ±10°.
+        let (_, safe_up) = range_lower_upper(map_get(&safe, "range").expect("range present"));
+        assert_angle_close(safe_up, ten_deg, "safe declared-range upper bound");
+    }
+
     /// Invoke `prb_cantilever_beam` on the step-1 geometry, optionally appending
     /// a 7th `neutral` arg.
     fn cantilever_with_neutral(neutral: Option<Value>) -> Value {
