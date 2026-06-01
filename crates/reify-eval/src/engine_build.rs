@@ -2703,6 +2703,8 @@ impl Engine {
                 module,
                 root_idx,
                 &root_prefix,
+                // Roots have no aux ancestor; inheritance accrues down the walk.
+                false,
                 0,
                 &terminal_handles,
                 geometry_kernels,

@@ -4647,6 +4647,11 @@ pub(crate) fn surface_subtree(
     module: &reify_compiler::CompiledModule,
     t_idx: usize,
     path_prefix: &str,
+    // True when any ancestor sub on the path to this template was declared
+    // `aux` (PRD §3 rule 2: an aux sub means the whole contained subtree has no
+    // external geometric effect). Inherited down the walk; ORed with each
+    // realization's own `aux` to derive `default_visible`. `false` at roots.
+    aux_ancestor: bool,
     depth: usize,
     terminal_handles: &[Vec<Option<KernelHandle>>],
     geometry_kernels: &BTreeMap<String, Box<dyn GeometryKernel>>,
@@ -4674,10 +4679,10 @@ pub(crate) fn surface_subtree(
             .expect("default kernel must remain in the map across the surfacing walk");
         match default_kernel.tessellate(handle.id, budget) {
             Ok(mesh) => {
-                // step-4: per-realization `aux` only; step-6 ORs in `aux`
-                // ancestors. aux bodies are still tessellated and shipped —
+                // step-6: hide iff any `aux` ancestor sub OR this realization's
+                // own `aux` let. aux bodies are still tessellated and shipped —
                 // only hidden by default.
-                let default_visible = !realization_is_aux(realization);
+                let default_visible = !(aux_ancestor || realization_is_aux(realization));
                 let entity_path = format!("{}#realization[{}]", path_prefix, realization.id.index);
                 meshes.push(crate::MeshSurface {
                     entity_path,
@@ -4708,6 +4713,7 @@ pub(crate) fn surface_subtree(
             module,
             child_idx,
             &child_prefix,
+            aux_ancestor || sub.is_aux,
             depth + 1,
             terminal_handles,
             geometry_kernels,
