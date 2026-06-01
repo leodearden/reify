@@ -916,4 +916,81 @@ mod tests {
             "expected {expected} N·m, got {torque}"
         );
     }
+
+    /// Build the single-pendulum mechanism used by the snapshot + trajectory
+    /// dispatch tests: a 1 kg point mass at com = [0,0,−0.1] on a revolute joint
+    /// about +y (range [−π, π], admitting θ = −30°). Returns the Mechanism Map.
+    fn pendulum_mechanism() -> Value {
+        use crate::eval_builtin;
+        use std::f64::consts::PI;
+        let mp = mass_properties_fixture(1.0, [0.0, 0.0, -0.1], [[0.0; 3]; 3]);
+        let axis_y = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let range = Value::Range {
+            lower: Some(Box::new(Value::angle(-PI))),
+            upper: Some(Box::new(Value::angle(PI))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        };
+        let joint = eval_builtin("revolute", &[axis_y, range]);
+        let mech = eval_builtin("mechanism", &[]);
+        eval_builtin("body", &[mech, mp, joint])
+    }
+
+    // ── step-7 RED: trajectory variant inverse_dynamics ───────────────────────
+    //
+    // The same single-pendulum mechanism, driven by a 2-sample MotionTrajectory
+    // with both samples motionless at θ = −30° (vels = accels = [0]). Each sample
+    // must reproduce the static-gravity torque 0.4905 N·m, so the result is a
+    // length-2 outer List (parallel to samples), each inner a length-1
+    // List<JointForce> whose ScalarTorque magnitude ≈ 0.4905 within 1e-6.
+    //
+    // Fails against the pre-1 stub (`inverse_dynamics_lower` returns None).
+    #[test]
+    fn inverse_dynamics_trajectory_static_pendulum_per_sample() {
+        let mech = pendulum_mechanism();
+
+        // Two motionless samples, both at θ = −30° (bare-Real radians, the
+        // JointValue shape `transform_at` consumes for a revolute joint).
+        let theta = -std::f64::consts::PI / 6.0;
+        let traj = mint_instance(
+            "MotionTrajectory",
+            vec![
+                // mechanism placeholder (Real per the structure_def); the
+                // dispatch uses the explicit mechanism arg, not this field.
+                ("mechanism".to_string(), Value::Real(0.0)),
+                (
+                    "samples".to_string(),
+                    Value::List(vec![
+                        trajectory_sample(0.0, theta, 0.0, 0.0),
+                        trajectory_sample(1.0, theta, 0.0, 0.0),
+                    ]),
+                ),
+            ],
+        );
+
+        let result = eval_dynamics("inverse_dynamics_lower", &[mech, traj])
+            .expect("inverse_dynamics_lower must be a recognised dynamics intrinsic");
+
+        // Outer List parallel to samples (length 2).
+        let per_sample = match &result {
+            Value::List(s) => s,
+            other => panic!("expected a List<List<JointForce>>, got {other:?}"),
+        };
+        assert_eq!(per_sample.len(), 2, "one force list per trajectory sample");
+
+        let expected = 0.4905_f64;
+        for (i, sample_forces) in per_sample.iter().enumerate() {
+            let forces = match sample_forces {
+                Value::List(f) => f,
+                other => panic!("sample {i}: expected a List<JointForce>, got {other:?}"),
+            };
+            assert_eq!(forces.len(), 1, "sample {i}: one joint ⇒ one JointForce");
+            let value = field(&forces[0], "JointForce", "value");
+            let torque = num(field(value, "ScalarTorque", "magnitude"));
+            assert!(
+                (torque - expected).abs() < 1e-6,
+                "sample {i}: expected {expected} N·m, got {torque}"
+            );
+        }
+    }
 }
