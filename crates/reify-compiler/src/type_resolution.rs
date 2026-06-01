@@ -2113,6 +2113,66 @@ mod tests {
         );
     }
 
+    // ── Selector type-name resolution (task 4117 / β) ──────────────────────────
+
+    /// `resolve_type_name("FaceSelector")` must return `Type::Selector(Face)`.
+    ///
+    /// RED until step-2 adds the arm.
+    #[test]
+    fn resolve_type_name_recognises_face_selector() {
+        assert_eq!(
+            resolve_type_name("FaceSelector"),
+            Some(Type::Selector(reify_core::ty::SelectorKind::Face)),
+            "\"FaceSelector\" should resolve to Type::Selector(Face)"
+        );
+    }
+
+    /// `resolve_type_name("EdgeSelector")` must return `Type::Selector(Edge)`.
+    ///
+    /// RED until step-2 adds the arm.
+    #[test]
+    fn resolve_type_name_recognises_edge_selector() {
+        assert_eq!(
+            resolve_type_name("EdgeSelector"),
+            Some(Type::Selector(reify_core::ty::SelectorKind::Edge)),
+            "\"EdgeSelector\" should resolve to Type::Selector(Edge)"
+        );
+    }
+
+    /// `resolve_type_name("BodySelector")` must return `Type::Selector(Body)`.
+    ///
+    /// RED until step-2 adds the arm.
+    #[test]
+    fn resolve_type_name_recognises_body_selector() {
+        assert_eq!(
+            resolve_type_name("BodySelector"),
+            Some(Type::Selector(reify_core::ty::SelectorKind::Body)),
+            "\"BodySelector\" should resolve to Type::Selector(Body)"
+        );
+    }
+
+    /// `resolve_type_with_aliases` must inherit the builtin selector arms so that
+    /// param-annotation resolution (which calls this function) resolves selector
+    /// type names without an alias entry.
+    ///
+    /// RED until step-2 adds the arm to `resolve_type_name`.
+    #[test]
+    fn resolve_type_with_aliases_inherits_face_selector() {
+        let reg = TypeAliasRegistry::new();
+        let result = resolve_type_with_aliases(
+            "FaceSelector",
+            &HashSet::new(),
+            &reg,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            result,
+            Some(Type::Selector(reify_core::ty::SelectorKind::Face)),
+            "resolve_type_with_aliases(\"FaceSelector\", …) should return Type::Selector(Face)"
+        );
+    }
+
     #[test]
     fn should_emit_skipped_parametric_prelude_info_dedups_per_span() {
         let mut reg = TypeAliasRegistry::new();
