@@ -518,6 +518,32 @@ pub(crate) fn unit_to_scalar(value: f64, unit: &str) -> Option<(Value, Dimension
             },
             DimensionVector::TEMPERATURE,
         )),
+        // Bare SI base units completing the standard set (factor 1.0).
+        // A/mol/cd are the SI bases for Current/AmountOfSubstance/LuminousIntensity;
+        // they need the same hardcoded fallback as kg/s/K so that stdlib fn bodies
+        // and other unseeded-registry scopes can resolve these unit literals
+        // (PRD §2.2 / decision D5).
+        "A" => Some((
+            Value::Scalar {
+                si_value: value,
+                dimension: DimensionVector::CURRENT,
+            },
+            DimensionVector::CURRENT,
+        )),
+        "mol" => Some((
+            Value::Scalar {
+                si_value: value,
+                dimension: DimensionVector::AMOUNT_OF_SUBSTANCE,
+            },
+            DimensionVector::AMOUNT_OF_SUBSTANCE,
+        )),
+        "cd" => Some((
+            Value::Scalar {
+                si_value: value,
+                dimension: DimensionVector::LUMINOUS_INTENSITY,
+            },
+            DimensionVector::LUMINOUS_INTENSITY,
+        )),
         _ => None,
     }
 }
