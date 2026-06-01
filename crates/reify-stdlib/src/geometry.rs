@@ -32,6 +32,33 @@ fn decompose_vec3(v: &Value) -> Option<([f64; 3], DimensionVector)> {
     Some(([a, b, c], dim))
 }
 
+/// Decompose a `Value::Point` of exactly three components carrying a single
+/// shared dimension into its three finite f64 components and that dimension.
+///
+/// Returns `None` (which callers map to `Value::Undef`) when:
+/// - `v` is not a `Value::Point` of length 3,
+/// - the three components have mixed dimensions, or
+/// - any component is non-numeric or non-finite.
+///
+/// Used by `eval_geometry` for `"project"` to decode both the point argument
+/// and the frame origin.  Mirrors `decompose_vec3` exactly, matching
+/// `Value::Point` instead of `Value::Vector`.
+fn decompose_point3(v: &Value) -> Option<([f64; 3], DimensionVector)> {
+    let items = match v {
+        Value::Point(items) if items.len() == 3 => items,
+        _ => return None,
+    };
+    let dim = items[0].dimension();
+    if items[1].dimension() != dim || items[2].dimension() != dim {
+        return None;
+    }
+    let (a, b, c) = match (items[0].as_f64(), items[1].as_f64(), items[2].as_f64()) {
+        (Some(a), Some(b), Some(c)) if a.is_finite() && b.is_finite() && c.is_finite() => (a, b, c),
+        _ => return None,
+    };
+    Some(([a, b, c], dim))
+}
+
 /// `(w, x, y, z)` quaternion components extracted from a `Value::Orientation`.
 type QuatComponents = (f64, f64, f64, f64);
 
@@ -720,6 +747,57 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
         "gradient" => Value::Undef,
         "divergence" => Value::Undef,
         "curl" => Value::Undef,
+
+        // --- Frame projection ---
+        // project(point: Point3<L>, to: Frame<3>) -> Point3<L>
+        //   = inverse(basis) · (point − origin)
+        // project(vector: Vector3<L>, to: Frame<3>) -> Vector3<L>
+        //   = inverse(basis) · vector   (translation-invariant; no origin subtraction)
+        "project" => {
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            // Decode the second argument as a Frame.
+            let (origin, basis_val) = match &args[1] {
+                Value::Frame { origin, basis } => (origin.as_ref(), basis.as_ref()),
+                _ => return Some(Value::Undef),
+            };
+            // Extract basis quaternion components.
+            let (bw, bx, by, bz) = match basis_val {
+                Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+                _ => return Some(Value::Undef),
+            };
+            // Compute inverse basis: normalize (1e-24 gate) then conjugate.
+            let q_inv = match normalize_quat_input((bw, bx, by, bz)) {
+                Some(qn) => quat_conj(qn),
+                None => return Some(Value::Undef),
+            };
+            // Dispatch on the first argument type.
+            match &args[0] {
+                Value::Point(_) => {
+                    let (p, p_dim) = match decompose_point3(&args[0]) {
+                        Some(v) => v,
+                        None => return Some(Value::Undef),
+                    };
+                    let (o, _o_dim) = match decompose_point3(origin) {
+                        Some(v) => v,
+                        None => return Some(Value::Undef),
+                    };
+                    // Translate then inverse-rotate.
+                    let d = [p[0] - o[0], p[1] - o[1], p[2] - o[2]];
+                    let (rx, ry, rz) = quat_rotate(q_inv, d[0], d[1], d[2]);
+                    if !rx.is_finite() || !ry.is_finite() || !rz.is_finite() {
+                        return Some(Value::Undef);
+                    }
+                    Value::Point(vec![
+                        make_dimensioned_component(p_dim, rx),
+                        make_dimensioned_component(p_dim, ry),
+                        make_dimensioned_component(p_dim, rz),
+                    ])
+                }
+                _ => Value::Undef,
+            }
+        }
 
         _ => return None,
     })
