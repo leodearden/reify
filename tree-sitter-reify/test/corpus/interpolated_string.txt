@@ -1,0 +1,96 @@
+================================================================================
+interpolated string: simple identifier hole
+================================================================================
+
+structure S {
+  let x = "a {name} b"
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (interpolated_string
+        (string_chunk)
+        (interpolation
+          expr: (identifier))
+        (string_chunk)))))
+
+================================================================================
+interpolated string: arithmetic expression hole
+================================================================================
+
+structure S {
+  let x = "sum {1 + 1}"
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (interpolated_string
+        (string_chunk)
+        (interpolation
+          expr: (binary_expression
+            left: (number_literal)
+            right: (number_literal)))))))
+
+================================================================================
+interpolated string: escaped braces (no interpolation node)
+================================================================================
+
+structure S {
+  let x = "{{lit}}"
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (interpolated_string
+        (string_chunk)))))
+
+================================================================================
+plain string regression: brace-free string stays a string_literal token
+================================================================================
+
+structure S {
+  let x = "hello"
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (string_literal))))
+
+================================================================================
+interpolated string: empty hole :error
+================================================================================
+
+structure S {
+  let x = "{}"
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (interpolated_string
+        (interpolation
+          (ERROR))))))
