@@ -2,7 +2,7 @@
 //! circular, elliptical, and right-circular notch hinges — all → revolute.
 //!
 //! All three constructors share the positional argument layout
-//! `(notch_radius, web_thickness, width, material, pivot, axis[, neutral])`
+//! `(notch_radius, web_thickness, width, material, pivot, axis[, neutral[, declared_range]])`
 //! and the [`parse_notch_inputs`] validation path. They differ only in the
 //! dimensionless shape factors `k_factor` and `sigma_factor` passed to the
 //! shared `notch_revolute` core (PRD §5.2 design decision).
@@ -13,8 +13,8 @@ use reify_core::DimensionVector;
 use reify_ir::Value;
 
 use super::common::{
-    make_flexure_joint, length_si, material_field_si, neutral_angle_si, symmetric_angle_range,
-    PRB_ANGLE_LIMIT_RAD,
+    attach_compliance, length_si, make_compliance_record, make_flexure_joint, material_field_si,
+    neutral_angle_si, parse_declared_range, symmetric_angle_range, RangeKind, PRB_ANGLE_LIMIT_RAD,
 };
 
 /// Shape factors for the standard circular notch flexure hinge
@@ -84,15 +84,20 @@ struct NotchInputs<'a> {
     axis: &'a Value,
     /// The raw pivot argument, stored verbatim on the joint Map.
     pivot: &'a Value,
-    /// The optional trailing `neutral` argument (present only in the 7-arg form).
+    /// The optional trailing `neutral` argument (present in the 7- and 8-arg forms).
     neutral_arg: Option<&'a Value>,
+    /// The optional trailing declared operating-range argument (present only in
+    /// the 8-arg form). When present, its endpoint — not the auto cap — drives
+    /// the joint range and the §5.3 `max_stress` stress-check (an ANGLE
+    /// half-angle, since all three notch ctors are revolute).
+    declared_range_arg: Option<&'a Value>,
 }
 
 /// Parse and validate the shared positional argument layout of all three
 /// notch-flexure constructors: `(notch_radius, web_thickness, width,
-/// material, pivot, axis[, neutral])`.
+/// material, pivot, axis[, neutral[, declared_range]])`.
 ///
-/// Returns `None` (⇒ the caller returns `Value::Undef`) on: arity ∉ {6, 7};
+/// Returns `None` (⇒ the caller returns `Value::Undef`) on: arity ∉ {6, 7, 8};
 /// non-positive or non-finite geometry (r, t, or b ≤ 0); degenerate geometry
 /// (t ≥ 2·r — web at least as thick as the notch diameter, the
 /// E_FlexureGeometryInvalid regime whose diagnostic λ owns); a material that
@@ -102,7 +107,7 @@ struct NotchInputs<'a> {
 /// δ emits NO diagnostics and returns Value::Undef on invalid input
 /// (W_Flexure* emission is λ's responsibility).
 fn parse_notch_inputs(args: &[Value]) -> Option<NotchInputs<'_>> {
-    if args.len() != 6 && args.len() != 7 {
+    if args.len() < 6 || args.len() > 8 {
         return None;
     }
     let r = length_si(&args[0])?;
@@ -130,8 +135,23 @@ fn parse_notch_inputs(args: &[Value]) -> Option<NotchInputs<'_>> {
         yield_si: material_field_si(material, "yield_stress"),
         axis,
         pivot: &args[4],
-        neutral_arg: if args.len() == 7 { Some(&args[6]) } else { None },
+        neutral_arg: if args.len() >= 7 { Some(&args[6]) } else { None },
+        declared_range_arg: if args.len() == 8 { Some(&args[7]) } else { None },
     })
+}
+
+/// Notch-hinge surface bending stress σ = sigma_factor·4·E·t·|θ| / (3π·(2r+t))
+/// (Paros-Weisbord 1965, PRD §5.2) — the algebraic inverse of `notch_revolute`'s
+/// `θ_yield = yield·3π·(2r+t) / (sigma_factor·4·E·t)`.
+///
+/// `theta` is the rotation (radians) at which to evaluate the stress; the
+/// magnitude is used so the sign of the deflection does not matter. The
+/// per-variant `sigma_factor` (κ_σ) flows through, so the elliptical (0.85) and
+/// right-circular (0.74) profiles report their attenuated peak surface stress.
+/// Module-local (notch-specific formula), mirroring `prismatic.rs`'s local
+/// `cantilever_transverse_sigma_at`.
+fn notch_sigma_at(theta: f64, radius: f64, thickness: f64, e: f64, sigma_factor: f64) -> f64 {
+    sigma_factor * 4.0 * e * thickness * theta.abs() / (3.0 * PI * (2.0 * radius + thickness))
 }
 
 /// Parametrized core for all notch revolute ctors.
@@ -143,13 +163,19 @@ fn parse_notch_inputs(args: &[Value]) -> Option<NotchInputs<'_>> {
 ///   σ(θ) = sigma_factor · 4·E·t·θ / (3π·(2r+t))  ⇒
 ///   θ_yield = yield · 3π·(2r+t) / (sigma_factor · 4·E·t)
 ///
-/// Validity range = ±min(θ_yield, 5°); no yield_stress ⇒ ±5° fallback.
+/// The auto symmetric prb_validity range is ±min(θ_yield, 5°) (no `yield_stress`
+/// ⇒ ±5° fallback). An optional trailing `declared_range` (a half-angle)
+/// OVERRIDES that cap for the joint range and the cached `max_stress` endpoint
+/// (§5.3 evaluates surface stress at the declared endpoint); the auto cap is
+/// retained as the SAFE/suggested `prb_validity_range` in the compliance record.
 fn notch_revolute(inputs: &NotchInputs<'_>, k_factor: f64, sigma_factor: f64) -> Value {
     // Paros-Weisbord rotational stiffness (PRD §5.2).
     let k_theta = k_factor * 2.0 * inputs.e * inputs.b * inputs.t.powf(2.5)
         / (9.0 * PI * inputs.r.sqrt());
 
-    // Symmetric prb_validity range = ±min(θ_yield, 5°).
+    // Auto symmetric prb_validity range = ±min(θ_yield, 5°) — the SAFE bound,
+    // retained in the compliance record below regardless of any wider declared
+    // range. θ_yield inverts the surface-yield stress σ(θ) (see `notch_sigma_at`).
     let theta_lim = match inputs.yield_si {
         Some(yield_si) => {
             let theta_yield = yield_si * 3.0 * PI * (2.0 * inputs.r + inputs.t)
@@ -158,12 +184,18 @@ fn notch_revolute(inputs: &NotchInputs<'_>, k_factor: f64, sigma_factor: f64) ->
         }
         None => PRB_ANGLE_LIMIT_RAD,
     };
-    let range = symmetric_angle_range(theta_lim);
+
+    // An optional user-declared operating range (±half-angle) OVERRIDES the auto
+    // ±min(θ_yield, 5°) cap for the joint range and the §5.3 stress endpoint; the
+    // auto θ_lim is retained as the SAFE/suggested range in the compliance record.
+    let declared = parse_declared_range(inputs.declared_range_arg, RangeKind::Angle);
+    let range_endpoint = declared.unwrap_or(theta_lim);
+    let range = symmetric_angle_range(range_endpoint);
 
     // Optional trailing neutral angle (default 0 for the 6-arg form).
     let neutral_si = inputs.neutral_arg.map(neutral_angle_si).unwrap_or(0.0);
 
-    make_flexure_joint(
+    let joint = make_flexure_joint(
         "revolute",
         inputs.axis.clone(),
         range,
@@ -173,10 +205,29 @@ fn notch_revolute(inputs: &NotchInputs<'_>, k_factor: f64, sigma_factor: f64) ->
         },
         Value::angle(neutral_si),
         inputs.pivot.clone(),
-    )
+    );
+
+    // Cache the FlexureCompliance record (§5.3): Paros-Weisbord surface bending
+    // stress at the range endpoint (declared when present, else the auto θ_lim —
+    // the worst-case operating stress) and at the neutral rest angle. The
+    // sigma_factor flows into both, so each variant reports its own peak stress.
+    // prb_validity_range stores the auto SAFE θ_lim regardless of any wider
+    // declared range, so it always advertises the PRB-valid bound.
+    let max_stress = notch_sigma_at(range_endpoint, inputs.r, inputs.t, inputs.e, sigma_factor);
+    let max_stress_at_neutral =
+        notch_sigma_at(neutral_si, inputs.r, inputs.t, inputs.e, sigma_factor);
+    let record = make_compliance_record(
+        k_theta,
+        max_stress,
+        max_stress_at_neutral,
+        inputs.yield_si,
+        None,
+        theta_lim,
+    );
+    attach_compliance(joint, record)
 }
 
-/// `prb_notch_circular(notch_radius, web_thickness, width, material, pivot, axis[, neutral])`
+/// `prb_notch_circular(notch_radius, web_thickness, width, material, pivot, axis[, neutral[, declared_range]])`
 /// — Paros-Weisbord (1965) circular-profile notch flexure as a revolute joint.
 ///
 /// Returns a joint `Value::Map` (`kind == "revolute"`) with rotational stiffness
@@ -189,7 +240,7 @@ fn prb_notch_circular(args: &[Value]) -> Value {
     }
 }
 
-/// `prb_notch_elliptical(notch_radius, web_thickness, width, material, pivot, axis[, neutral])`
+/// `prb_notch_elliptical(notch_radius, web_thickness, width, material, pivot, axis[, neutral[, declared_range]])`
 /// — Smith et al. (1997) elliptical-profile notch flexure as a revolute joint.
 ///
 /// Same closed-form structure as `prb_notch_circular` but with a shape factor
@@ -201,7 +252,7 @@ fn prb_notch_elliptical(args: &[Value]) -> Value {
     }
 }
 
-/// `prb_notch_right_circular(notch_radius, web_thickness, width, material, pivot, axis[, neutral])`
+/// `prb_notch_right_circular(notch_radius, web_thickness, width, material, pivot, axis[, neutral[, declared_range]])`
 /// — Paros-Weisbord (1965) right-circular (toroidal) notch flexure as a revolute joint.
 ///
 /// Same closed-form structure as `prb_notch_circular` but with a shape factor
@@ -417,11 +468,14 @@ mod tests {
             a.truncate(3);
             undef(a, "3 args");
         }
+        // Arity 8 (neutral + declared_range) is now VALID (step-16); 9 args
+        // overflows the highest supported arity and is rejected.
         {
             let mut a = base_args();
-            a.push(Value::angle(0.0));
-            a.push(Value::angle(0.0));
-            undef(a, "8 args");
+            a.push(Value::angle(0.0)); // neutral
+            a.push(Value::angle(0.0)); // declared_range
+            a.push(Value::angle(0.0)); // overflow
+            undef(a, "9 args");
         }
 
         // Non-positive / non-finite geometry.
