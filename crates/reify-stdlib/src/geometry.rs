@@ -3737,4 +3737,51 @@ mod tests {
         assert!(eval_builtin("transform_exp", &[]).is_undef());
         assert!(eval_builtin("transform_exp", &[twist.clone(), twist]).is_undef());
     }
+
+    // ── step-1/2: project(point, Frame<3>) tests ─────────────────────────────
+
+    /// project(point3(1,2,3 m), frame(origin=(1,0,0 m), identity)) → Point ≈ [0,2,3 m].
+    /// Subtracts origin before (no) rotation; also pin that output components carry LENGTH.
+    #[test]
+    fn project_point_identity_basis_subtracts_origin() {
+        let point = Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]);
+        let frame = make_frame(1.0, 0.0, 0.0, make_identity_orientation());
+        let result = eval_builtin("project", &[point, frame]);
+        assert_vector3_approx!(Point, result, [0.0, 2.0, 3.0]);
+        // Also verify the first component carries LENGTH dimension (not dimensionless).
+        match eval_builtin("project", &[
+            Value::Point(vec![
+                Value::length(1.0),
+                Value::length(2.0),
+                Value::length(3.0),
+            ]),
+            make_frame(1.0, 0.0, 0.0, make_identity_orientation()),
+        ]) {
+            Value::Point(ref items) => {
+                assert_scalar_approx!(items[0].clone(), 0.0, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Point, got {:?}", other),
+        }
+    }
+
+    /// project(point3(1,1,0 m), frame(origin=(1,0,0 m), rot90z)) → Point ≈ [1,0,0 m].
+    ///
+    /// d = (1,1,0) − (1,0,0) = (0,1,0).
+    /// inverse(rot90z) = rot(−90°Z).  Rotating (0,1,0) by −90°Z → (1,0,0).
+    /// Discriminates that origin subtraction happens BEFORE the inverse rotation.
+    #[test]
+    fn project_point_rotated_frame_subtract_then_inverse_rotate() {
+        let point = Value::Point(vec![
+            Value::length(1.0),
+            Value::length(1.0),
+            Value::length(0.0),
+        ]);
+        let frame = make_frame(1.0, 0.0, 0.0, make_rot90z());
+        let result = eval_builtin("project", &[point, frame]);
+        assert_vector3_approx!(Point, result, [1.0, 0.0, 0.0]);
+    }
 }
