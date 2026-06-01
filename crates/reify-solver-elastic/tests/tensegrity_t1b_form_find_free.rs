@@ -121,13 +121,6 @@ fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
 fn norm(a: [f64; 3]) -> f64 {
     dot(a, a).sqrt()
 }
@@ -204,27 +197,20 @@ fn group_ratios_form_finds_published_triplex_prism_equilibrium() {
         );
     }
 
-    // --- (3) Metric prism shape (gauge-invariant goldens). 5% relative tol: a
-    // correct recovery drifts only ~1e-3 from the symmetric prism (the in-null-
-    // space part of the guess perturbation); a broken recovery spreads O(1). ---
+    // --- (3) Metric prism shape — the plan-named gauge-invariant goldens
+    // (equal member-group lengths + ≈30° twist). 5% relative tol: a correct
+    // recovery drifts only ~1e-3 from the symmetric prism (the in-null-space part
+    // of the guess perturbation); a broken recovery spreads O(1). The finer
+    // recovery goldens (per-triangle equilaterality, parallel planes) are covered
+    // once, by the unit recovery test
+    // `form_find_free::tests::recovers_metric_prism_from_perturbed_guess`; this
+    // golden asserts only the public-surface shape signal to avoid duplicating —
+    // and drifting from — that fixture. ---
     const MTOL: f64 = 5e-2;
     let nodes = &result.nodes;
     assert_equal_lengths(nodes, &members[0..3], MTOL, "strut");
     assert_equal_lengths(nodes, &members[3..9], MTOL, "horizontal cable");
     assert_equal_lengths(nodes, &members[9..12], MTOL, "vertical cable");
-
-    // Top {0,1,2} and bottom {3,4,5} are each equilateral triangles...
-    assert_equal_lengths(nodes, &[(0, 1), (1, 2), (2, 0)], MTOL, "top triangle edge");
-    assert_equal_lengths(nodes, &[(3, 4), (4, 5), (5, 3)], MTOL, "bottom triangle edge");
-
-    // ...lying in parallel planes (the two triangle normals are parallel).
-    let n_top = cross(sub(nodes[1], nodes[0]), sub(nodes[2], nodes[0]));
-    let n_bot = cross(sub(nodes[4], nodes[3]), sub(nodes[5], nodes[3]));
-    let cos_planes = dot(n_top, n_bot).abs() / (norm(n_top) * norm(n_bot));
-    assert!(
-        cos_planes > 1.0 - 1e-3,
-        "top/bottom triangle planes must be parallel; |cos| = {cos_planes:.6}",
-    );
 
     // --- (4) Twist ≈ 30°: the rotation between the triangles about the prism
     // axis (centroid-to-centroid). Project a top node and its paired bottom node
