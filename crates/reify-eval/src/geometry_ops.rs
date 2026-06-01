@@ -4572,6 +4572,35 @@ pub(crate) fn eval_sub_pose(
     }
 }
 
+/// Resolve whether the `let`/`param` cell backing a realization was declared
+/// `aux` (PRD §2.2), i.e. "no external geometric effect" → surfaced hidden.
+///
+/// `RealizationDecl` carries no `is_aux` flag of its own; the modifier lives on
+/// the `ValueCellDecl` (`let`/`param`). The link is the realization's name: the
+/// compiler emits `RealizationDecl.name == Some(<let-binding name>)`, which
+/// matches the `member` component of exactly one `ValueCellId` in the template's
+/// `value_cells`. Returns `false` when the realization is anonymous
+/// (`name == None`, only the `TopologyTemplateBuilder` test helper) or no cell
+/// matches — the surfacing default is "visible".
+///
+/// Used by `tessellate_from_values` to derive `MeshSurface.default_visible`
+/// on the flat (no-composition) path; the Phase-B containment walk additionally
+/// ORs in any `aux` ancestor sub (T5 steps 4/6).
+pub(crate) fn realization_is_aux(
+    template: &reify_compiler::TopologyTemplate,
+    realization: &reify_compiler::RealizationDecl,
+) -> bool {
+    let Some(name) = realization.name.as_deref() else {
+        return false;
+    };
+    template
+        .value_cells
+        .iter()
+        .find(|cell| cell.id.member == name)
+        .map(|cell| cell.is_aux)
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

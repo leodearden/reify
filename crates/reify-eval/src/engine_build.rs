@@ -2625,10 +2625,20 @@ impl Engine {
                     );
                     match default_kernel.tessellate(last_handle.id, budget) {
                         Ok(mesh) => {
+                            // T5 step-2: `default_visible` is derived from the
+                            // realization's backing `let`/`param` `aux` flag
+                            // (PRD §2.2). aux bodies are still realized,
+                            // tessellated, and shipped — only hidden by default.
+                            // The Phase-B containment walk (steps 4/6) will
+                            // additionally OR in any `aux` ancestor sub.
+                            let default_visible = !crate::geometry_ops::realization_is_aux(
+                                template,
+                                realization,
+                            );
                             meshes.push(MeshSurface {
                                 entity_path: realization.id.to_string(),
                                 mesh,
-                                default_visible: true,
+                                default_visible,
                             });
                         }
                         Err(e) => {
