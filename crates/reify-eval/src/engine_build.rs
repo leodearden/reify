@@ -1338,7 +1338,6 @@ impl Engine {
     /// the conservative path (BRep) regardless of whether the base component
     /// coincidentally matches a local realization name — see step-8 for the
     /// debug log.
-    #[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
     pub(crate) fn compute_demanded_reprs(
         &self,
         module: &CompiledModule,
@@ -1352,7 +1351,6 @@ impl Engine {
     }
 }
 
-#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
 fn demanded_reprs_for_template(template: &TopologyTemplate, format: ExportFormat) -> Vec<ReprKind> {
     let n = template.realizations.len();
     if n == 0 {
@@ -1571,6 +1569,14 @@ impl Engine {
         // mutable borrows handed to `execute_realization_ops`. Missing keys
         // are treated as `None`.
         let demanded_tols = self.compute_demanded_tols(module);
+        // Task 4050 step-16 (gap 3 / υ wiring): derive the per-realization
+        // demanded terminal `ReprKind` once per build, positionally aligned
+        // with `demanded_tols` by `[t_idx][r_idx]`. Terminal Stl/Obj
+        // realizations demand Mesh, driving the cross-kernel conversion
+        // executor when a Mesh-capable kernel is registered (and otherwise
+        // falling back to BRep — design_decision 3). Same `&self`-query
+        // hoisting rationale as `compute_demanded_tols` above.
+        let demanded_reprs = self.compute_demanded_reprs(module, format);
         // Task ε (3436): resolve the engine's default kernel through the new
         // multi-handle map. Single-handle surfaces (export, post-process)
         // operate on this kernel; per-op dispatch routing is delegated to
@@ -1699,9 +1705,15 @@ impl Engine {
                         &mut kernel_error,
                         &mut self.realization_cache,
                         demanded_tol,
-                        // Task 4050 step-8: pass BRep until step-16 flips the
-                        // build path to the υ-derived demanded repr.
-                        ReprKind::BRep,
+                        // Task 4050 step-16 (gap 3): pass the υ-derived
+                        // per-realization demanded terminal repr, positionally
+                        // aligned with `demanded_tols` (`[t_idx][r_idx]`);
+                        // out-of-range defaults to BRep (backward-compat).
+                        demanded_reprs
+                            .get(t_idx)
+                            .and_then(|v| v.get(r_idx))
+                            .copied()
+                            .unwrap_or(ReprKind::BRep),
                         &mut self.last_dispatch_count,
                     );
                     // Step-10 (task ε / 3436): persist the executor's terminal
@@ -1921,6 +1933,14 @@ impl Engine {
         // `build_snapshot` does NOT call eval, so its placement (after the
         // constraint check) was already semantically correct.
         let demanded_tols = self.compute_demanded_tols(module);
+        // Task 4050 step-16 (gap 3 / υ wiring): derive the per-realization
+        // demanded terminal `ReprKind` once per build, positionally aligned
+        // with `demanded_tols` by `[t_idx][r_idx]`. Terminal Stl/Obj
+        // realizations demand Mesh, driving the cross-kernel conversion
+        // executor when a Mesh-capable kernel is registered (and otherwise
+        // falling back to BRep — design_decision 3). Same post-`check()`
+        // placement rationale as `compute_demanded_tols` above.
+        let demanded_reprs = self.compute_demanded_reprs(module, format);
         // Task 2320: `values` is moved out of `check_result` here so the
         // per-template post-process can patch conformance-query results
         // (`is_watertight` / `is_manifold` / `is_orientable`) into the map
@@ -2047,9 +2067,15 @@ impl Engine {
                         &mut kernel_error,
                         &mut self.realization_cache,
                         demanded_tol,
-                        // Task 4050 step-8: pass BRep until step-16 flips the
-                        // build path to the υ-derived demanded repr.
-                        ReprKind::BRep,
+                        // Task 4050 step-16 (gap 3): pass the υ-derived
+                        // per-realization demanded terminal repr, positionally
+                        // aligned with `demanded_tols` (`[t_idx][r_idx]`);
+                        // out-of-range defaults to BRep (backward-compat).
+                        demanded_reprs
+                            .get(t_idx)
+                            .and_then(|v| v.get(r_idx))
+                            .copied()
+                            .unwrap_or(ReprKind::BRep),
                         &mut self.last_dispatch_count,
                     );
                     // Step-10 (task ε / 3436): persist the executor's terminal
