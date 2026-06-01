@@ -1128,3 +1128,71 @@ describe('Viewport FEA auto-range', () => {
     expect(store.state.range).toMatchObject({ mode: 'locked', min: 1, max: 3 });
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Viewport FEA Lock Current + readout wiring (step-7 RED — task 2962)
+//
+// Tests fail until step-8 wires onLockCurrent and maxValue into <FeaModeToolbar>.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('Viewport FEA Lock Current + readout wiring', () => {
+  function makeFEAMesh(values: number[]): MeshData {
+    return {
+      entity_path: 'bracket',
+      vertices: new Float32Array(0),
+      indices: new Uint32Array(0),
+      normals: null,
+      scalar_channels: { vonMises: new Float32Array(values) },
+    };
+  }
+
+  it('(a) clicking fea-mode-lock-current sets range to {locked, min:2, max:8}', () => {
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+
+    const [meshes, setMeshes] = createSignal<Record<string, MeshData>>({});
+    render(() => <Viewport meshes={meshes()} viewportId="test-lc-a" feaModeStore={store as any} />);
+
+    setMeshes({ bracket: makeFEAMesh([2, 5, 8]) });
+
+    // After auto-range, range should be {auto,2,8}
+    expect(store.state.range).toEqual({ mode: 'auto', min: 2, max: 8 });
+
+    // Click Lock current button
+    const btn = screen.getByTestId('fea-mode-lock-current');
+    fireEvent.click(btn);
+
+    // Range must now be locked
+    expect(store.state.range).toMatchObject({ mode: 'locked', min: 2, max: 8, source: 'current' });
+  });
+
+  it('(b) clicking Lock current with no FEA data (empty meshes) is a no-op', () => {
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+
+    render(() => <Viewport meshes={{}} viewportId="test-lc-b" feaModeStore={store as any} />);
+
+    // No FEA data — activeScalarRange() is null
+    const btn = screen.getByTestId('fea-mode-lock-current');
+    fireEvent.click(btn);
+
+    // Range must stay at the auto sentinel (no lock happened)
+    expect(store.state.range).toEqual({ mode: 'auto', min: 0, max: 1 });
+    expect(store.state.range.mode).not.toBe('locked');
+  });
+
+  it('(c) readout wiring: meshes vonMises [2,8] + enabled → toolbar shows fea-mode-max-readout with max=8', () => {
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+
+    const [meshes, setMeshes] = createSignal<Record<string, MeshData>>({});
+    render(() => <Viewport meshes={meshes()} viewportId="test-lc-c" feaModeStore={store as any} />);
+
+    setMeshes({ bracket: makeFEAMesh([2, 8]) });
+
+    // Viewport must pass maxValue=8 down to FeaModeToolbar
+    const readout = screen.getByTestId('fea-mode-max-readout');
+    expect(readout).toBeTruthy();
+    // Content must include the max value (8) in some numeric form
+    expect(readout.textContent).toMatch(/8/);
+  });
+});
