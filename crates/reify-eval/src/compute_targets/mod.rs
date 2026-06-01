@@ -19,6 +19,7 @@
 pub mod buckling;
 pub mod elastic_static;
 pub mod form_find;
+pub mod shell_solve;
 
 // ── Shared field-construction helpers ───────────────────────────────────────
 //
