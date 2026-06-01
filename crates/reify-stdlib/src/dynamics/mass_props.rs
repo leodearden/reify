@@ -81,6 +81,7 @@ pub fn resolve_density(explicit: Option<f64>, material: Option<f64>) -> (f64, De
 /// later be cross-checked against once it is wired into `body_mass_props`. It
 /// is `pub` so that future supervisor wiring and its cross-validation test can
 /// reuse the exact same closed form.
+#[allow(dead_code)] // G-allow: analytic ground truth; consumer wiring into body_mass_props deferred to KGQ task 3620 (currently test-only caller)
 pub fn uniform_box_inertia(dims: [f64; 3], density: f64) -> (f64, [f64; 3], [[f64; 3]; 3]) {
     let [a, b, c] = dims;
     let mass = density * a * b * c;
