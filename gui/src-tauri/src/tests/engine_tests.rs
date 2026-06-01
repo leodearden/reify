@@ -4302,7 +4302,7 @@ fn build_template_node_self_reference_does_not_stack_overflow() {
     // BEFORE step-16 fix: this call recurses infinitely → stack overflow.
     // AFTER step-16 fix: the is_recursive check stops recursion and returns
     // a sub node with empty children.
-    let node = build_template_node(a_template, "A", &compiled, None);
+    let node = build_template_node(a_template, "A", &compiled, None, false);
 
     let sub_x = node
         .children
@@ -4346,8 +4346,8 @@ fn build_template_node_mutual_recursion_does_not_stack_overflow() {
     // BEFORE step-16 fix: A → B → A → … stack overflow.
     // AFTER step-16 fix: A.b has empty children (B is_recursive), B.a has
     // empty children (A is_recursive).
-    let node_a = build_template_node(a_template, "A", &compiled, None);
-    let node_b = build_template_node(b_template, "B", &compiled, None);
+    let node_a = build_template_node(a_template, "A", &compiled, None, false);
+    let node_b = build_template_node(b_template, "B", &compiled, None, false);
 
     let sub_b = node_a
         .children
@@ -4402,7 +4402,7 @@ fn build_template_node_non_recursive_parent_stops_at_recursive_child() {
     // BEFORE step-16 fix: Container → A → A → … stack overflow.
     // AFTER step-16 fix: Container expands normally, Container.a (pointing to
     // recursive A) has empty children instead of expanding A.
-    let node = build_template_node(container_template, "Container", &compiled, None);
+    let node = build_template_node(container_template, "Container", &compiled, None, false);
 
     // Container should have exactly one sub child
     let sub_a = node
