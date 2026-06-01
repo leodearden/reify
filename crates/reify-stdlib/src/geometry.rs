@@ -779,10 +779,15 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                         Some(v) => v,
                         None => return Some(Value::Undef),
                     };
-                    let (o, _o_dim) = match decompose_point3(origin) {
+                    let (o, o_dim) = match decompose_point3(origin) {
                         Some(v) => v,
                         None => return Some(Value::Undef),
                     };
+                    // Subtracting across different dimensions is meaningless
+                    // (mirrors frame_to_frame's f_dim != t_dim guard, geometry.rs:279-281).
+                    if p_dim != o_dim {
+                        return Some(Value::Undef);
+                    }
                     // Translate then inverse-rotate.
                     let d = [p[0] - o[0], p[1] - o[1], p[2] - o[2]];
                     let (rx, ry, rz) = quat_rotate(q_inv, d[0], d[1], d[2]);
