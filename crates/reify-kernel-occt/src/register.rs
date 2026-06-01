@@ -68,7 +68,7 @@ use reify_ir::KernelRegistration;
 /// In stub mode (no `cfg(has_occt)`), no `inventory::submit!` fires; check
 /// `reify_eval::registry().contains_key(OCCT_KERNEL_NAME)` before assuming
 /// OCCT is dispatchable — see the [module-level stub-mode note](self).
-pub const OCCT_KERNEL_NAME: &str = "occt";
+pub const OCCT_KERNEL_NAME: &str = reify_core::KernelId::Occt.as_registry_name();
 
 /// Construct the OCCT [`CapabilityDescriptor`].
 ///

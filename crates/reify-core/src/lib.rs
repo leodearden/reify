@@ -20,6 +20,7 @@
 
 pub mod diagnostics;
 pub mod dimension;
+pub mod kernel;
 pub mod hash;
 pub mod identity;
 pub mod persistent_cache;
@@ -55,3 +56,4 @@ pub use source_location::{
 pub use persistent_cache::PersistentlyCacheable;
 pub use spanned_ident::SpannedIdent;
 pub use ty::Type;
+pub use kernel::KernelId;

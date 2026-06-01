@@ -30,96 +30,18 @@ impl GeometryHandleId {
     }
 }
 
-/// Typed kernel discriminator for the v0.2+ multi-kernel runtime.
+/// Typed kernel discriminator — re-exported from `reify_core`, which is the
+/// single authoritative definition.
 ///
-/// Pairs with [`GeometryHandleId`] inside `KernelHandle` so the executor can
-/// record *which* kernel produced a given handle, and stands in for the
-/// dispatcher's registry-name ordering: variants are declared in lexicographic
-/// order of their [`as_registry_name`](KernelId::as_registry_name) strings
-/// (`"fidget" < "gmsh" < "manifold" < "occt" < "openvdb"`), so the derived
-/// [`Ord`] equals the dispatcher's `BTreeMap<String, _>` registry-name
-/// iteration order (the determinism contract in `reify_eval::dispatcher`).
+/// The canonical type lives at `reify_core::kernel::KernelId` and is re-exported
+/// here so that existing paths (`reify_ir::KernelId`,
+/// `reify_ir::geometry::KernelId`) continue to resolve, while reify-eval's
+/// dispatcher and engine_build compile unchanged.
 ///
-/// # Relationship to `reify_config::KernelId`
-///
-/// This is a deliberate *second* `KernelId`, distinct from the one in
-/// `reify-config`. reify-ir's B3 dependency invariant (locked by
-/// `reify-ir/tests/dag_invariant.rs`) permits only `reify-core` and
-/// `reify-ast` as intra-workspace deps, so reify-ir physically cannot import
-/// `reify-config`'s `KernelId`. The two enums MUST be kept in sync — same
-/// variants, same canonical name strings (each kernel crate's registration
-/// const documents `name == KernelId::*.to_string()`). A future consolidation
-/// could host a single shared `KernelId` in `reify-core`.
-///
-/// # Extensibility
-///
-/// Marked `#[non_exhaustive]` so new kernel adapters can be added without a
-/// breaking change to downstream `match` sites. Exhaustive enumeration for
-/// in-crate use is provided by [`KernelId::ALL`]; external crates must use a
-/// wildcard arm — which is why the exhaustive Ord / round-trip tests live
-/// inside reify-ir.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[non_exhaustive]
-pub enum KernelId {
-    /// Fidget — pure-Rust SDF kernel (`"fidget"`).
-    Fidget,
-    /// Gmsh — surface→volume tetrahedral mesher (`"gmsh"`).
-    Gmsh,
-    /// Manifold — triangle-mesh Boolean kernel (`"manifold"`).
-    Manifold,
-    /// OCCT / OpenCASCADE — B-rep kernel (`"occt"`).
-    Occt,
-    /// OpenVDB — voxel-grid kernel (`"openvdb"`).
-    OpenVdb,
-}
-
-impl KernelId {
-    /// All `KernelId` variants in declaration (== registry-name lexical) order.
-    ///
-    /// Provides a stable enumeration handle for exhaustive in-crate tests and
-    /// callers, since `#[non_exhaustive]` forbids external exhaustive `match`.
-    pub const ALL: [KernelId; 5] = [
-        KernelId::Fidget,
-        KernelId::Gmsh,
-        KernelId::Manifold,
-        KernelId::Occt,
-        KernelId::OpenVdb,
-    ];
-
-    /// Canonical lowercase registry name for this kernel.
-    ///
-    /// Equals the `*_KERNEL_NAME` const each kernel crate registers as its
-    /// `KernelRegistration::name` (and the dispatcher's `BTreeMap` key), so
-    /// `from_registry_name` is its exact inverse. Exhaustive in-crate `match`
-    /// — adding a variant forces updating this bridge at the same diff site.
-    pub const fn as_registry_name(self) -> &'static str {
-        match self {
-            KernelId::Fidget => "fidget",
-            KernelId::Gmsh => "gmsh",
-            KernelId::Manifold => "manifold",
-            KernelId::Occt => "occt",
-            KernelId::OpenVdb => "openvdb",
-        }
-    }
-
-    /// Inverse of [`as_registry_name`](KernelId::as_registry_name): resolve a
-    /// canonical registry name back to its `KernelId`, or `None` if the string
-    /// is not a registered kernel name.
-    ///
-    /// Exact inverse over the distinct canonical names, so
-    /// `from_registry_name(k.as_registry_name()) == Some(k)` for every variant.
-    /// Matching is case-sensitive — registry names are canonical lowercase.
-    pub fn from_registry_name(name: &str) -> Option<KernelId> {
-        match name {
-            "fidget" => Some(KernelId::Fidget),
-            "gmsh" => Some(KernelId::Gmsh),
-            "manifold" => Some(KernelId::Manifold),
-            "occt" => Some(KernelId::Occt),
-            "openvdb" => Some(KernelId::OpenVdb),
-            _ => None,
-        }
-    }
-}
+/// See `reify_core::kernel::KernelId` for full documentation, including the
+/// determinism contract (derived `Ord` == dispatcher `BTreeMap` registry-name
+/// iteration order) and the `#[non_exhaustive]` / `ALL` extensibility contract.
+pub use reify_core::KernelId;
 
 /// A geometry handle tagged with the kernel that produced it.
 ///
@@ -141,71 +63,8 @@ pub struct KernelHandle {
 #[cfg(test)]
 mod kernel_id_tests {
     use super::*;
-    use std::collections::BTreeMap;
 
-    /// step-01: derived `Ord` on `KernelId` must equal the dispatcher's
-    /// `BTreeMap<String, _>` registry-name iteration order. Pinned by
-    /// asserting (a) consecutive `as_registry_name()` strings are strictly
-    /// increasing lexically across `KernelId::ALL` in declaration order, and
-    /// (b) a `BTreeMap` keyed by registry name yields its values in the same
-    /// sequence as `KernelId::ALL`, and (c) sorting `ALL` by derived `Ord`
-    /// is a no-op. (Structural invariant — holds because the canonical names
-    /// "fidget" < "gmsh" < "manifold" < "occt" < "openvdb" sort in
-    /// declaration order.)
-    #[test]
-    fn kernel_id_ord_matches_registry_name_lexical_order() {
-        // (a) registry names strictly increasing in declaration order
-        let names: Vec<&'static str> =
-            KernelId::ALL.iter().map(|k| k.as_registry_name()).collect();
-        for w in names.windows(2) {
-            assert!(
-                w[0] < w[1],
-                "registry names must be strictly lexically increasing in \
-                 declaration order: {:?} !< {:?}",
-                w[0],
-                w[1]
-            );
-        }
-
-        // (b) BTreeMap<String, KernelId> keyed by registry name iterates in
-        // the same order as KernelId::ALL (derived Ord == name order)
-        let map: BTreeMap<String, KernelId> = KernelId::ALL
-            .iter()
-            .map(|k| (k.as_registry_name().to_string(), *k))
-            .collect();
-        let by_name_order: Vec<KernelId> = map.values().copied().collect();
-        assert_eq!(by_name_order, KernelId::ALL.to_vec());
-
-        // (c) derived Ord over the variants equals declaration order
-        let mut sorted = KernelId::ALL.to_vec();
-        sorted.sort();
-        assert_eq!(sorted, KernelId::ALL.to_vec());
-    }
-
-    /// step-03: `from_registry_name` is the exact inverse of `as_registry_name`.
-    /// Exhaustive round-trip over `KernelId::ALL` plus negative cases (unknown
-    /// name, empty string, wrong case) all map to `None`. (Identity holds by
-    /// construction — inverse map over distinct canonical strings.)
-    #[test]
-    fn registry_name_round_trips_exhaustively() {
-        for v in KernelId::ALL {
-            assert_eq!(
-                KernelId::from_registry_name(KernelId::as_registry_name(v)),
-                Some(v),
-                "round-trip must recover {v:?} from its registry name {:?}",
-                KernelId::as_registry_name(v),
-            );
-        }
-
-        // Negatives: nothing outside the canonical name set resolves.
-        assert_eq!(KernelId::from_registry_name("bogus"), None);
-        assert_eq!(KernelId::from_registry_name(""), None);
-        // Wrong case must not resolve (registry names are canonical lowercase).
-        assert_eq!(KernelId::from_registry_name("OCCT"), None);
-        assert_eq!(KernelId::from_registry_name("Manifold"), None);
-    }
-
-    /// step-05: `KernelHandle` pairs a `KernelId` with a `GeometryHandleId` and
+    /// `KernelHandle` pairs a `KernelId` with a `GeometryHandleId` and
     /// is a `Copy + Eq + Hash` value (usable as a `HashMap` key).
     #[test]
     fn kernel_handle_pairs_kernel_and_id() {

@@ -10,6 +10,7 @@ build = "build.rs"
 reify-build-utils.workspace = true
 
 [dependencies]
+reify-core.workspace = true
 serde = { workspace = true, features = ["derive"] }
 toml.workspace = true
 

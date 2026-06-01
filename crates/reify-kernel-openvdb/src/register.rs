@@ -85,7 +85,7 @@ use reify_ir::{CapabilityDescriptor, GeometryKernel, KernelRegistration, Operati
 /// disjoint `(op, repr)` pairs on `Voxel` — not shared with BRep, Mesh, or
 /// Sdf. The lex-min tie-break only fires when two kernels claim the _same_
 /// `(op, repr)` pair; that is not the case here.
-pub const OPENVDB_KERNEL_NAME: &str = "openvdb";
+pub const OPENVDB_KERNEL_NAME: &str = reify_core::KernelId::OpenVdb.as_registry_name();
 
 /// Construct the OpenVDB [`CapabilityDescriptor`].
 ///

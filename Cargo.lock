@@ -4273,6 +4273,7 @@ name = "reify-config"
 version = "0.1.0"
 dependencies = [
  "reify-build-utils",
+ "reify-core",
  "reify-ir",
  "reify-kernel-fidget",
  "reify-kernel-gmsh",
@@ -4477,6 +4478,7 @@ version = "0.1.0"
 dependencies = [
  "inventory",
  "manifold3d",
+ "reify-core",
  "reify-eval",
  "reify-ir",
  "reify-kernel-manifold",

@@ -77,7 +77,7 @@ use reify_ir::{CapabilityDescriptor, GeometryKernel, KernelRegistration, Operati
 /// `VolumeMesh` as either input or output — so the lex-min tie-break in
 /// `dispatcher::dispatch` (which fires only on identical `(op, repr)`
 /// pairs) cannot route a non-gmsh kernel to gmsh's territory.
-pub const GMSH_KERNEL_NAME: &str = "gmsh";
+pub const GMSH_KERNEL_NAME: &str = reify_core::KernelId::Gmsh.as_registry_name();
 
 /// Construct the Gmsh [`CapabilityDescriptor`].
 ///
