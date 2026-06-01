@@ -18,6 +18,11 @@ use crate::dynamics::spatial::{cross_f, cross_m, SpatialInertia6, SpatialTransfo
 // ── Private [f64; 6] arithmetic helpers ──────────────────────────────────────
 // spatial.rs exposes no add or scalar-scale methods on SpatialVector6, so we
 // operate on the raw [f64; 6] arrays locally.
+//
+// TODO follow-up: sv_add, sv_axpy, sv_dot, and xt_apply_force duplicate
+// spatial arithmetic that belongs in spatial.rs (as SpatialVector6::add/axpy/
+// dot and SpatialTransform6::apply_transpose_force).  Promote them in a
+// follow-up task so RNEA and any future consumers share one implementation.
 
 /// `a + b` component-wise.
 #[inline]
@@ -134,8 +139,10 @@ pub fn default_gravity() -> [f64; 3] {
 /// gravity-as-base-acceleration trick; Featherstone 2008 §5.2).
 ///
 /// # Panics
-/// Panics in debug builds if any parent index is ≥ the link's own index
-/// (would violate topological ordering).
+/// Panics if any parent index is ≥ the link's own index (topological-order
+/// violation).  In release builds, a misordered chain would otherwise silently
+/// read the still-zero `v[p]`/`a[p]` entries and produce wrong torques with
+/// no diagnostic, hence the check is always-on rather than `debug_assert!`.
 pub fn inverse_dynamics_open_chain(links: &[RneaLink], gravity: [f64; 3]) -> Vec<Vec<f64>> {
     let n = links.len();
 
@@ -156,7 +163,7 @@ pub fn inverse_dynamics_open_chain(links: &[RneaLink], gravity: [f64; 3]) -> Vec
         let (v_p, a_p) = match link.parent {
             None => (v_base, a_base),
             Some(p) => {
-                debug_assert!(p < i, "links must be in topological order");
+                assert!(p < i, "links must be in topological order: parent={p} >= child={i}");
                 (v[p], a[p])
             }
         };
@@ -458,5 +465,75 @@ mod tests {
             assert_close(&format!("sample {si} joint 0"), tau[0][0], expected[0]);
             assert_close(&format!("sample {si} joint 1"), tau[1][0], expected[1]);
         }
+    }
+
+    // ── multi-DOF joint subspace accumulation ─────────────────────────────────
+    //
+    // Exercises the multi-column vJ/aJ accumulation loops and the per-DOF
+    // `tau[i][c]` output path with a 2-DOF joint on a single floating body.
+    //
+    // Joint subspace columns:
+    //   S[0] = [0,1,0,  0,0,0]   — revolute about +y
+    //   S[1] = [0,0,0,  0,0,1]   — prismatic along +z
+    //
+    // Body params: mass m=2 kg, COM at origin, I = diag(0.1, 0.5, 0.3) kg·m².
+    // State: q_dot=[0,0], q_ddot=[α=3.0, a_z=1.0].
+    //
+    // With q_dot=0 and parent=None (identity transform):
+    //   vJ = 0, v = 0, cross_m = 0, cross_f = 0
+    //   aJ = S[0]·α + S[1]·a_z = [0,3,0, 0,0,0] + [0,0,0, 0,0,1]
+    //      = [0, 3.0, 0, 0, 0, 1.0]
+    //   a = a_base + aJ = [0,0,0, 0,0,9.81] + [0,3,0, 0,0,1]
+    //     = [0, 3.0, 0, 0, 0, 10.81]
+    //   I·a  (diagonal spatial inertia, COM=0):
+    //     angular = [Ix·0, Iy·3, Iz·0] = [0, 1.5, 0]
+    //     linear  = [m·0,  m·0,  m·10.81] = [0, 0, 21.62]
+    //   f = [0, 1.5, 0, 0, 0, 21.62]
+    //   tau[0] = S[0]·f = 1.5   (I_y · α)
+    //   tau[1] = S[1]·f = 21.62 (m · (G + a_z))
+    #[test]
+    fn multi_dof_joint_subspace_accumulation() {
+        const G: f64 = 9.81;
+        let m = 2.0_f64;
+        let i_y = 0.5_f64;
+        let alpha = 3.0_f64;
+        let a_z = 1.0_f64;
+
+        let link = RneaLink {
+            parent: None,
+            parent_to_child: SpatialTransform6::from_frame3(&Frame3::identity()),
+            subspace: vec![
+                // S[0]: revolute about +y
+                SpatialVector6::from_angular_linear([0.0, 1.0, 0.0], [0.0, 0.0, 0.0]),
+                // S[1]: prismatic along +z
+                SpatialVector6::from_angular_linear([0.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+            ],
+            mass: m,
+            com: [0.0, 0.0, 0.0],
+            inertia_about_com: [[0.1, 0.0, 0.0], [0.0, i_y, 0.0], [0.0, 0.0, 0.3]],
+            q_dot: vec![0.0, 0.0],
+            q_ddot: vec![alpha, a_z],
+        };
+
+        let tau = inverse_dynamics_open_chain(&[link], default_gravity());
+
+        assert_eq!(tau.len(), 1, "one link");
+        assert_eq!(tau[0].len(), 2, "two DOFs");
+
+        // tau[0][0] = S[0]·f  =  I_y · α
+        let expected_tau0 = i_y * alpha; // 1.5 N·m
+        // tau[0][1] = S[1]·f  =  m · (G + a_z)
+        let expected_tau1 = m * (G + a_z); // 21.62 N
+
+        assert!(
+            (tau[0][0] - expected_tau0).abs() < 1e-12,
+            "tau[0][0]: expected {expected_tau0}, got {}",
+            tau[0][0]
+        );
+        assert!(
+            (tau[0][1] - expected_tau1).abs() < 1e-12,
+            "tau[0][1]: expected {expected_tau1}, got {}",
+            tau[0][1]
+        );
     }
 }
