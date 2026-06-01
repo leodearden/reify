@@ -107,6 +107,14 @@ fn all_queries_walk_compiles_with_stdlib_no_errors() {
 #[test]
 fn all_queries_walk_evals_top_level_helpers_to_non_undef() {
     // ── always-on: fixture exists and compiles cleanly ────────────────────────
+    //
+    // NOTE: This compile check is intentionally duplicated from
+    // `all_queries_walk_compiles_with_stdlib_no_errors`. The duplication keeps
+    // this test self-contained: if the fixture regresses, the compile error
+    // surfaces here alongside the OCCT-gated assertion failure rather than only
+    // in the separate compile test. Do NOT remove this block in the name of DRY —
+    // `all_queries_walk_compiles_with_stdlib_no_errors` is the canonical always-on
+    // gate; this copy is a local self-containment guard.
     let source = std::fs::read_to_string(ALL_QUERIES_WALK_PATH).expect(
         "examples/kernel_queries/all_queries_walk.ri should exist (task 3626 step-2)",
     );
@@ -250,13 +258,59 @@ fn all_queries_walk_evals_top_level_helpers_to_non_undef() {
         "Value::List"
     );
 
-    // 13. center_of_mass → Value::Point
-    assert_non_undef!(
-        "AllQueriesWalk",
-        "com",
-        Value::Point(_),
-        "Value::Point"
-    );
+    // 13. center_of_mass → Value::Point with centroid at origin
+    //
+    // The walk box is 10×20×30 mm centred at origin; its centroid is exactly
+    // (0, 0, 0). Assertion is strengthened beyond variant-only: each component's
+    // SI value must be within 1 µm (1e-6 m) of zero. This catches regressions
+    // where center_of_mass returns a garbage point that happens to be the right
+    // Value variant (wrong frame, swapped axes, unit error, etc.).
+    //
+    // center_of_mass is the ONLY helper whose runtime semantics are covered
+    // exclusively by this test (no sibling smoke test). See §8 coverage table
+    // in the module-doc.
+    {
+        let com_cell = ValueCellId::new("AllQueriesWalk", "com");
+        let com_val = result
+            .values
+            .get(&com_cell)
+            .expect("AllQueriesWalk.com absent from result.values; \
+                     check cell name matches the .ri binding name");
+        match com_val {
+            Value::Undef => panic!(
+                "AllQueriesWalk.com should be non-Undef Value::Point, got Value::Undef"
+            ),
+            Value::Point(components) => {
+                assert_eq!(
+                    components.len(),
+                    3,
+                    "center_of_mass should return a 3-component Point, got {}",
+                    components.len()
+                );
+                for (i, comp) in components.iter().enumerate() {
+                    match comp {
+                        Value::Scalar { si_value, .. } => {
+                            assert!(
+                                si_value.abs() < 1e-6,
+                                "center_of_mass component [{}] = {} m \
+                                 (expected ≈0 for axis-aligned box centred at origin; \
+                                 tolerance 1 µm = 1e-6 m)",
+                                i, si_value
+                            );
+                        }
+                        other => panic!(
+                            "center_of_mass component [{}] should be \
+                             Value::Scalar(LENGTH), got: {other:?}",
+                            i
+                        ),
+                    }
+                }
+            }
+            other => panic!(
+                "AllQueriesWalk.com should be Value::Point but got: {other:?}"
+            ),
+        }
+    }
 
     // 14. moment_of_inertia → Value::Tensor
     assert_non_undef!(
