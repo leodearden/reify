@@ -1096,6 +1096,120 @@ fn scordelis_lo_roof_quadrant_smoke_test_vertical_deflection_is_finite_and_downw
     );
 }
 
+// ─── task-3513: Scordelis-Lo validated benchmark (Bathe & Lee 2014 band) ─────
+
+/// Scordelis-Lo roof 4×4 validated benchmark — Bathe & Lee (2014) published band.
+///
+/// # Purpose
+///
+/// This test verifies that the **full curved-shell accuracy stack** (degenerate
+/// substrate 4068 + ANS-membrane 4069 + K_NB rotation-bubble 4065) delivers a
+/// vertical deflection at the free-edge center within the published ~50%-of-reference
+/// accuracy band from Bathe & Lee 2014 at the 4×4 coarse-mesh resolution.
+///
+/// # Published reference
+///
+/// MacNeal-Harder (1985) / Bathe-Lee (2014) reference free-edge deflection:
+/// **0.3024** (downward vertical displacement at the longitudinal free-edge center
+/// under self-weight gravity 90 per unit area).
+///
+/// The Bathe & Lee (2014) figure for the MITC3+ element at 4×4 is "~50% of reference"
+/// at this mesh resolution.  The full deg+ANS+bubble stack (task 4065) reaches ratio
+/// ~0.765 (measured directly; task 3513 plan), comfortably inside the published band.
+///
+/// # Accepted band
+///
+/// `[0.50·REF, 1.0·REF]` = `[0.1512, 0.3024]`:
+/// - Floor 0.50·REF: encodes the published "~50% of reference at 4×4" deliverable;
+///   the curved stack clears this by 1.53× margin.
+/// - Ceiling 1.0·REF: "no overshoot" — the coarse-mesh degenerate element under-predicts
+///   via residual faceting/lock, so overshoot of the reference is not expected.
+///
+/// # Discriminator
+///
+/// The bare-MITC3 flat-facet path (this test's RED state, ratio ~0.0476) cannot reach
+/// the ≥50% floor — the band discriminates the curved cure from the flat-facet baseline.
+///
+/// # Geometry and material
+///
+/// Same as the smoke test: R=25, L=50, θ∈[0°,40°], t=0.25, E=4.32e8, ν=0.0, g=90.
+#[test]
+fn scordelis_lo_roof_degenerate_stack_4x4_within_bathe_lee_2014_band() {
+    const R: f64 = 25.0;
+    const L: f64 = 50.0;
+    const T: f64 = 0.25;
+    const NX: usize = 4; // angular (θ) divisions
+    const NY: usize = 4; // axial (x) divisions
+    const G: f64 = 90.0; // gravity load per unit area
+
+    /// MacNeal-Harder (1985) / Bathe & Lee (2014) reference free-edge deflection at 4×4.
+    const MACNEAL_HARDER_REF: f64 = 0.3024;
+
+    /// Lower bound: ~50% of reference (Bathe & Lee 2014 figure for MITC3+ at 4×4).
+    const LOWER: f64 = 0.50 * MACNEAL_HARDER_REF;
+
+    /// Upper bound: no overshoot of reference (coarse-mesh degenerate element
+    /// under-predicts via residual faceting/lock).
+    const UPPER: f64 = MACNEAL_HARDER_REF;
+
+    let mat = IsotropicElastic {
+        youngs_modulus: 4.32e8,
+        poisson_ratio: 0.0,
+    };
+
+    let (nodes, connectivity) = roof_quadrant_mesh(NX, NY);
+    let n_nodes = nodes.len();
+
+    // Build per-element stiffness: bare MITC3 (RED step — yields ratio ~0.0476,
+    // which FAILS the >= LOWER (0.1512) floor and proves the band discriminates
+    // the curved cure from the flat-facet baseline).
+    let stiffness = build_shell_stiffnesses(&nodes, &connectivity, T, &mat);
+    let elements = assembly_elements_for(&connectivity, &stiffness);
+
+    let tol = 0.5_f64;
+    let point_loads = roof_quadrant_gravity_loads(&nodes, &connectivity, G);
+    let bcs = roof_quadrant_symmetry_bcs(&nodes, L, tol);
+
+    let u = solve_shell_system(&elements, n_nodes, &bcs, &point_loads);
+
+    // Free-edge longitudinal center: x=L/2, θ=40° → (L/2, R·sin40°, R·cos40°).
+    let theta_40 = 40.0_f64.to_radians();
+    let target_x = L / 2.0;
+    let target_y = R * theta_40.sin();
+    let target_z = R * theta_40.cos();
+    let free_edge_center = nodes
+        .iter()
+        .position(|n| {
+            (n[0] - target_x).abs() < tol
+                && (n[1] - target_y).abs() < 1.0
+                && (n[2] - target_z).abs() < 1.0
+        })
+        .expect("free-edge center node (x=L/2, θ=40°) not found in mesh");
+
+    // Gravity loads −z ⇒ u_z < 0.  Report downward deflection (positive).
+    let vert_defl = -u[free_edge_center * 6 + 2];
+
+    assert!(
+        vert_defl.is_finite(),
+        "Scordelis-Lo Bathe & Lee 2014 band test: vert_defl = {vert_defl} is not finite"
+    );
+    assert!(
+        vert_defl > 0.0,
+        "Scordelis-Lo Bathe & Lee 2014 band test: vert_defl = {vert_defl:.4e} must be \
+         positive (downward) under gravity load; sign reversal indicates a BC / load / \
+         director bug"
+    );
+    assert!(
+        (LOWER..=UPPER).contains(&vert_defl),
+        "Scordelis-Lo Bathe & Lee 2014 band test: vert_defl = {vert_defl:.4e} outside \
+         [{LOWER:.4e}, {UPPER:.4e}].  Published MacNeal-Harder reference = {MACNEAL_HARDER_REF:.4}; \
+         Bathe & Lee (2014) figure: ~50% of reference at 4×4 mesh.  The full \
+         deg+ANS+bubble curved stack (tasks 4068/4069/4065) is required to clear the \
+         >= 0.50·REF floor; the bare-MITC3 flat-facet path yields ratio ~0.0476, which \
+         should NOT pass this test."
+    );
+}
+
 // ─── step-7: hemisphere with point loads (MacNeal-Harder §3.5) ──────────────
 
 /// Hemisphere-with-point-loads smoke test — geometry from MacNeal-Harder
