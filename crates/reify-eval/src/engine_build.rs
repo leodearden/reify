@@ -3057,11 +3057,17 @@ impl Engine {
         // shifts the cache key to a non-`BRep` `ReprKind` (the cache's
         // `(entity, repr, tol, options)` shape already supports it; see
         // `RealizationCache::lookup`), the `produced_repr_out` write follows
-        // without a separate edit. The `debug_assert_eq!` below pins the
-        // current invariant (cache-only-stores-BRep) so a future Mesh cache
-        // entry trips loudly in dev rather than silently corrupting
-        // `produced_repr` on the cache-hit branch.
-        let cache_repr = ReprKind::BRep;
+        // without a separate edit.
+        //
+        // **Task 4050 step-10 (gap 4)**: `cache_repr` is unpinned from `BRep` to
+        // the realization's `demanded_repr` (the υ-derived requested terminal
+        // repr, known before the op loop). The cache-hit LOOKUP keys on it, so a
+        // second identical Mesh build short-circuits at `(entity, Mesh, tol)`.
+        // The post-loop INSERT keys on the RESOLVED repr instead (see below), so
+        // a fallback realization that demanded Mesh but resolved BRep is stored
+        // at BRep and a later Mesh lookup correctly misses rather than returning
+        // a BRep handle as if it were Mesh.
+        let cache_repr = demanded_repr;
         if let (Some(tol), Some(name)) = (demanded_tol, realization_name)
             && let Some(&cached_handle) =
                 realization_cache.lookup(&realization_id.entity, cache_repr, tol, NO_OPTIONS)
@@ -3098,20 +3104,19 @@ impl Engine {
             // Surface `cache_repr` through `produced_repr_out` so the caller
             // writes the same value into the realization graph node it would
             // have written on a cold-path miss for this realization.
-            //
-            // **Amendment (suggestion #3)**: pinned by `debug_assert_eq!` to
-            // `ReprKind::BRep` — every cache populate today is BRep-keyed (the
-            // op loop writes `realization_cache.insert(..., cache_repr, ...)`
-            // below). When ζ/η extend the cache key to other repr kinds the
-            // assertion will need to relax in lockstep with the populate-side
-            // change.
+            *produced_repr_out = Some(cache_repr);
+            // **Task 4050 step-10**: consistency guard, reordered AFTER the
+            // `produced_repr_out` write and relaxed from the old `BRep` pin. Now
+            // that `cache_repr = demanded_repr`, the cached entry's repr IS the
+            // requested repr; the assert is tautological-after-reorder (the line
+            // above just wrote `Some(cache_repr)`) but kept as a documented
+            // invariant: the surfaced produced_repr always equals the lookup
+            // key's repr on the cache-hit branch.
             debug_assert_eq!(
                 cache_repr,
-                ReprKind::BRep,
-                "cache_repr is pinned to BRep until ζ/η extend the cache to other ReprKinds; \
-                 if this asserts, the populate site also needs to migrate",
+                produced_repr_out.unwrap_or(ReprKind::BRep),
+                "cache-hit produced_repr must equal the cache key's repr",
             );
-            *produced_repr_out = Some(cache_repr);
             return;
         }
 
@@ -3871,14 +3876,19 @@ impl Engine {
                     named_steps.insert(name.to_string(), last);
                 }
                 if let (Some(tol), Some(_name)) = (demanded_tol, realization_name) {
-                    // **Amendment (suggestion #3)**: use the same `cache_repr`
-                    // local that the cache-hit short-circuit at the top of
-                    // this helper consulted, so the populate-side and the
-                    // lookup-side stay in sync when ζ/η extend the cache key
-                    // beyond `ReprKind::BRep`.
+                    // **Task 4050 step-10 (gap 4)**: key the INSERT on the
+                    // RESOLVED terminal repr (`last_produced_repr`), falling
+                    // back to `cache_repr` only when no op captured a repr. On
+                    // the non-fallback path resolved == demanded == cache_repr,
+                    // so the lookup and insert coincide and the next identical
+                    // build hits. On a fallback realization (demanded Mesh but
+                    // resolved BRep because no Mesh kernel was linked) this
+                    // stores at BRep, so a later Mesh lookup correctly MISSES
+                    // rather than handing back a BRep handle as if it were Mesh.
+                    let resolved_repr = last_produced_repr.unwrap_or(cache_repr);
                     realization_cache.insert(
                         &realization_id.entity,
-                        cache_repr,
+                        resolved_repr,
                         tol,
                         NO_OPTIONS,
                         last,
