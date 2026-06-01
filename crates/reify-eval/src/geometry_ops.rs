@@ -8554,7 +8554,7 @@ mod tests {
                 },
                 args: vec![snap_arg],
             },
-            result_type: Type::List(Box::new(Type::Map)),
+            result_type: Type::List(Box::new(Type::Map(Box::new(Type::String), Box::new(Type::Int)))),
             content_hash,
         };
 

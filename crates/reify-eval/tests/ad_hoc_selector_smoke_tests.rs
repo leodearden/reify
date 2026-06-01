@@ -1104,3 +1104,82 @@ fn try_eval_ad_hoc_selector_point_returns_none() {
         diagnostics
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Task 4142 Cluster B RED contract test (ad-hoc selector leaf)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Contract test (task 4142, Cluster B RED — ad-hoc selector leaf):
+/// `try_eval_ad_hoc_selector` resolves the base body via `KernelHandle.id`,
+/// ignoring `KernelHandle.kernel`.
+///
+/// Uses `KernelId::Manifold` for the body handle (deliberately non-default)
+/// to prove the leaf at geometry_ops.rs:4221 keys only off `.id` and never
+/// consults `.kernel`.
+///
+/// RED on current main (after step-2): `try_eval_ad_hoc_selector` still takes
+/// `&HashMap<String, GeometryHandleId>` → E0308 type mismatch on `&named_steps`.
+/// GREEN after step-4: signature changed + leaf projection updated.
+#[test]
+fn try_eval_ad_hoc_selector_resolves_base_via_kernel_handle_id() {
+    // Map "body" to a KernelHandle with deliberately non-default kernel.
+    let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
+    named_steps.insert(
+        "body".to_string(),
+        KernelHandle {
+            kernel: KernelId::Manifold, // non-default: must be ignored
+            id: BODY_HANDLE,
+        },
+    );
+
+    // Same @face("top") expression as the happy-path test above.
+    let expr = CompiledExpr::ad_hoc_selector(
+        CompiledExpr::literal(Value::String("body".to_string()), Type::String),
+        SelectorKind::Face,
+        vec![CompiledExpr::literal(
+            Value::String("top".to_string()),
+            Type::String,
+        )],
+    );
+
+    let table = seeded_cylinder_table();
+    let mut kernel = configured_kernel(); // set up for BODY_HANDLE (.id)
+    let mut diagnostics = Vec::new();
+
+    let result = try_eval_ad_hoc_selector(
+        &expr,
+        &named_steps,
+        &mut kernel,
+        &table,
+        SourceSpan::empty(0),
+        &mut diagnostics,
+    );
+
+    // Kernel is set up for BODY_HANDLE; `.kernel` (Manifold) must be ignored.
+    let Some(Value::Frame { ref origin, ref basis }) = result else {
+        panic!(
+            "@face(\"top\") with KernelHandle{{Manifold, BODY_HANDLE}} should resolve to \
+             Some(Value::Frame {{ .. }}), got {:?}",
+            result
+        );
+    };
+    assert_eq!(
+        **origin,
+        Value::Point(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.01),
+        ]),
+        "@face(\"top\") origin should be (0m, 0m, 0.01m)"
+    );
+    assert_eq!(
+        **basis,
+        Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+        "@face(\"top\") basis should be identity (normal +Z → +Z is zero rotation)"
+    );
+    assert!(
+        diagnostics.is_empty(),
+        "no diagnostic expected on a clean resolution; got {:?}",
+        diagnostics
+    );
+}
