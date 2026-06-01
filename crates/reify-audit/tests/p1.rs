@@ -539,18 +539,17 @@ mod tests {
         );
     }
 
-    /// Coverage for the three per-symbol false-positive guards the required
-    /// suite never exercises (the `changed_symbol` helper leaves them at
-    /// their orphan-candidate defaults, so no other test flips them). One
-    /// done task past grace, four symbols, zero workspace refs:
-    ///   - `stdlib_widget` under `crates/reify-stdlib/` → scope-excluded;
+    /// Coverage for the per-symbol false-positive guards the required suite
+    /// never exercises (the `changed_symbol` helper leaves them at their
+    /// orphan-candidate defaults, so no other test flips them). One done task
+    /// past grace, three symbols, zero workspace refs:
     ///   - `dead_widget` with `has_allow_dead_code` → opt-out;
     ///   - `cfg_test_widget` with `has_cfg_test` → test-only;
     ///   - `live_widget` (no guard) → the only surviving finding.
     ///
-    /// Inverting any guard boolean or changing the stdlib prefix makes the
-    /// count != 1 and fails here — catching exactly the regressions that
-    /// cause audit false-positive floods.
+    /// Inverting any guard boolean makes the count != 1 and fails here —
+    /// catching exactly the regressions that cause audit false-positive floods.
+    /// stdlib producers are covered by `stdlib_producers_audited_respecting_markers`.
     #[test]
     fn per_symbol_guards_suppress_individually() {
         let done_at = NOW - 15 * DAY;
@@ -563,7 +562,6 @@ mod tests {
             &format!("{sha}^1"),
             &sha,
             vec![
-                changed_symbol("stdlib_widget", "crates/reify-stdlib/src/prelude.rs"),
                 ChangedSymbol {
                     has_allow_dead_code: true,
                     ..changed_symbol("dead_widget", "crates/reify-x/src/dead.rs")
@@ -575,7 +573,6 @@ mod tests {
                 changed_symbol("live_widget", "crates/reify-x/src/live.rs"),
             ],
         );
-        jc.set_find_references("crates/reify-stdlib/src/prelude.rs", "stdlib_widget", vec![]);
         jc.set_find_references("crates/reify-x/src/dead.rs", "dead_widget", vec![]);
         jc.set_find_references("crates/reify-x/src/cfgt.rs", "cfg_test_widget", vec![]);
         jc.set_find_references("crates/reify-x/src/live.rs", "live_widget", vec![]);
@@ -1211,6 +1208,118 @@ mod tests {
             findings.is_empty(),
             "done task with no done_provenance.commit must yield zero findings (skip is intentional); got {:?}",
             findings
+        );
+    }
+
+    /// Step 1 (RED→GREEN via step 2) — stdlib `.rs` producers are audited like
+    /// any other crate, with per-symbol marker guards as the sole false-positive
+    /// protection. One done producer, four stdlib symbols, zero workspace refs:
+    ///   - `solve_closed_chain` at `crates/reify-stdlib/src/dynamics/closed_chain.rs`
+    ///     with NO marker → must be FLAGGED;
+    ///   - `stdlib_dead` with `has_allow_dead_code: true` → suppressed;
+    ///   - `stdlib_marked` with non-blank `g_allow_marker` → suppressed;
+    ///   - `stdlib_cfgtest` with `has_cfg_test: true` → suppressed.
+    ///
+    /// Expected: exactly one P1ProducerOrphan finding citing `closed_chain.rs`.
+    ///
+    /// RED: current code contains a `crates/reify-stdlib/` scope-exclude at
+    /// p1_producer_orphan.rs:136 that drops the no-marker symbol before any
+    /// marker check, producing 0 findings instead of 1.
+    #[test]
+    fn stdlib_producers_audited_respecting_markers() {
+        let done_at = NOW - 15 * DAY;
+        let sha = task_sha("4150");
+
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let mut jc = MockJCodemunchOps::new();
+        jc.set_changed_symbols(
+            &format!("{sha}^1"),
+            &sha,
+            vec![
+                // (i) no marker — must fire
+                changed_symbol("solve_closed_chain", "crates/reify-stdlib/src/dynamics/closed_chain.rs"),
+                // (ii) has_allow_dead_code — suppressed
+                ChangedSymbol {
+                    has_allow_dead_code: true,
+                    ..changed_symbol("stdlib_dead", "crates/reify-stdlib/src/dynamics/dead.rs")
+                },
+                // (iii) non-blank g_allow_marker — suppressed
+                ChangedSymbol {
+                    g_allow_marker: Some("in-flight; consumer task 4146".to_string()),
+                    ..changed_symbol("stdlib_marked", "crates/reify-stdlib/src/dynamics/marked.rs")
+                },
+                // (iv) has_cfg_test — suppressed
+                ChangedSymbol {
+                    has_cfg_test: true,
+                    ..changed_symbol("stdlib_cfgtest", "crates/reify-stdlib/src/dynamics/cfgtest.rs")
+                },
+            ],
+        );
+        jc.set_find_references(
+            "crates/reify-stdlib/src/dynamics/closed_chain.rs",
+            "solve_closed_chain",
+            vec![],
+        );
+        jc.set_find_references(
+            "crates/reify-stdlib/src/dynamics/dead.rs",
+            "stdlib_dead",
+            vec![],
+        );
+        jc.set_find_references(
+            "crates/reify-stdlib/src/dynamics/marked.rs",
+            "stdlib_marked",
+            vec![],
+        );
+        jc.set_find_references(
+            "crates/reify-stdlib/src/dynamics/cfgtest.rs",
+            "stdlib_cfgtest",
+            vec![],
+        );
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "4150".to_string(),
+            done_meta("4150", done_at, Some("docs/x.md")),
+        );
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: Some(NOW),
+            producer_branch: None,
+        };
+
+        let findings = p1_producer_orphan::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "exactly one finding expected (no-marker stdlib symbol); got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::P1ProducerOrphan);
+        assert!(
+            f.evidence.iter().any(|e| matches!(
+                e,
+                EvidenceRef::File { path }
+                    if path == "crates/reify-stdlib/src/dynamics/closed_chain.rs"
+            )),
+            "surviving finding must cite closed_chain.rs; got {:?}",
+            f.evidence
+        );
+        // Pin the exact symbol so a regression that flags a different stdlib
+        // symbol (and silently drops solve_closed_chain) is caught, not just
+        // the count.
+        assert!(
+            f.summary.contains("solve_closed_chain"),
+            "surviving finding must name solve_closed_chain; got summary: {:?}",
+            f.summary
         );
     }
 }

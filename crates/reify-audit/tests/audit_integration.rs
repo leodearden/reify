@@ -70,8 +70,8 @@ mod tests {
     /// - task 2358 → P1 guard B4: `prd` + paired pending consumer (task 2358_c,
     ///   `consumer_ref` matching 2358's `prd`) → `has_pending_consumer`
     ///   returns true → P1 short-circuits.
-    /// - task 2658 → P1 guard B5: changed-symbol file in `crates/reify-stdlib/`
-    ///   → stdlib scope-exclude fires → P1 skips the symbol.
+    /// - task 2658 → P1 guard B2: `done_provenance=None` (legacy_meta) →
+    ///   P1 skips the task at commit-resolution before per-symbol iteration.
     /// - task 2699 → P1 guard B7: `g_allow_marker=Some("non-blank")` →
     ///   `is_g_allow_suppressed` returns true → P1 skips the symbol.
     /// - task 2954 → P2 guard C2: `files=["crates/x/tests/foo.rs"]` →
@@ -148,10 +148,10 @@ mod tests {
                 g_allow_marker: None,
             }],
         );
-        // Fixture 5 (task 2658, guard B5 stdlib scope-exclude): previously
-        // exercised by the stdlib path guard; now skipped at commit-resolution
-        // (done_provenance=None). Per-symbol coverage lives in
-        // tests/p1.rs::per_symbol_guards_suppress_individually.
+        // Fixture 5 (task 2658, guard B2 commit-resolution): done_provenance=None
+        // (legacy_meta) → P1 skips the task before per-symbol iteration.
+        // Per-symbol stdlib coverage lives in
+        // tests/p1.rs::stdlib_producers_audited_respecting_markers.
         jc.set_changed_symbols(
             "sha_2658^1",
             "sha_2658",
@@ -262,9 +262,9 @@ mod tests {
             },
         );
 
-        // Fixture 5 — task 2658, guard B5 (P1 stdlib scope-exclude):
-        // changed_symbols file starts with crates/reify-stdlib/ → P1 skips
-        // the symbol without calling find_references.
+        // Fixture 5 — task 2658, guard B2 (P1 commit-resolution):
+        // done_provenance=None (legacy_meta) → P1 skips the task before
+        // per-symbol iteration (no stdlib scope-exclude needed here).
         // done_provenance=None → P5 early-returns (guard A1).
         task_metadata.insert(
             "2658".to_string(),
