@@ -253,3 +253,36 @@ fn degenerate_shell_producers_are_g_allow_marked() {
     ];
     assert_pins_are_g_allow_marked(&result, PINS);
 }
+
+/// Bucket 1 — degenerate-shell element-stiffness entry points
+/// (`crates/reify-solver-elastic/src/shell_assembly.rs`).
+///
+/// Both `pub fn` are reached on the shell-routing compute path via fn-pointer
+/// registration the orphan audit cannot trace, so they read as zero-caller
+/// orphans despite being live and tested.  PERMANENT bucket-1 pins.
+///
+/// The two names share the file suffix but are matched by EXACT name
+/// (`name == Some(fn_name)`, not prefix), so `shell_element_stiffness_degenerate`
+/// and `shell_element_stiffness_degenerate_ans` each appear in allowed[] exactly
+/// once even though the former is a prefix of the latter.
+///
+/// NOTE: `local_to_global` (same file) is DELIBERATELY EXCLUDED — it now has
+/// genuine cross-file callers (`fr.local_to_global()` in shell_result.rs) and is
+/// no longer an orphan; pinning it would fail assertion (b).
+#[test]
+fn shell_assembly_producers_are_g_allow_marked() {
+    let Some(result) = run_orphan_audit("crates/reify-*/src") else {
+        return;
+    };
+    const PINS: &[(&str, &str)] = &[
+        (
+            "crates/reify-solver-elastic/src/shell_assembly.rs",
+            "shell_element_stiffness_degenerate",
+        ),
+        (
+            "crates/reify-solver-elastic/src/shell_assembly.rs",
+            "shell_element_stiffness_degenerate_ans",
+        ),
+    ];
+    assert_pins_are_g_allow_marked(&result, PINS);
+}
