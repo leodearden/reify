@@ -31,7 +31,8 @@ use reify_ir::boundary_attachment::{
 // ── constraint (flat form) ───────────────────────────────────────────────────
 use reify_ir::{
     AutoParam, ConstraintChecker, ConstraintDiagnostics, ConstraintDomain, ConstraintInput,
-    ConstraintResult, ConstraintSolver, OptimizationObjective, OptimizedImpl, OptimizedImplInput,
+    ConstraintResult, ConstraintSolver, ObjectiveCombination, ObjectiveSense, ObjectiveSet,
+    ObjectiveTerm, OptimizedImpl, OptimizedImplInput,
     OptimizedImplOutput, ResolutionProblem, SolveResult,
 };
 
@@ -40,7 +41,9 @@ use reify_ir::constraint::{
     AutoParam as AutoParamMod, ConstraintChecker as ConstraintCheckerMod,
     ConstraintDiagnostics as ConstraintDiagnosticsMod, ConstraintDomain as ConstraintDomainMod,
     ConstraintInput as ConstraintInputMod, ConstraintResult as ConstraintResultMod,
-    ConstraintSolver as ConstraintSolverMod, OptimizationObjective as OptimizationObjectiveMod,
+    ConstraintSolver as ConstraintSolverMod,
+    ObjectiveCombination as ObjectiveCombinationMod, ObjectiveSense as ObjectiveSenseMod,
+    ObjectiveSet as ObjectiveSetMod, ObjectiveTerm as ObjectiveTermMod,
     OptimizedImpl as OptimizedImplMod, OptimizedImplInput as OptimizedImplInputMod,
     OptimizedImplOutput as OptimizedImplOutputMod, ResolutionProblem as ResolutionProblemMod,
     SolveResult as SolveResultMod,
@@ -290,7 +293,10 @@ fn constraint_types_in_scope() {
     let _: fn() -> Option<AutoParam> = || None;
     let _: fn() -> Option<SolveResult> = || None;
     let _: fn() -> Option<ResolutionProblem> = || None;
-    let _: fn() -> Option<OptimizationObjective> = || None;
+    let _: fn() -> Option<ObjectiveSense> = || None;
+    let _: fn() -> Option<ObjectiveTerm> = || None;
+    let _: fn() -> Option<ObjectiveCombination> = || None;
+    let _: fn() -> Option<ObjectiveSet> = || None;
     let _: fn() -> Option<OptimizedImplInput<'static>> = || None;
     let _: fn() -> Option<OptimizedImplOutput> = || None;
     // Trait bounds only require the name to resolve.
@@ -305,7 +311,10 @@ fn constraint_types_in_scope() {
     let _: fn() -> Option<AutoParamMod> = || None;
     let _: fn() -> Option<SolveResultMod> = || None;
     let _: fn() -> Option<ResolutionProblemMod> = || None;
-    let _: fn() -> Option<OptimizationObjectiveMod> = || None;
+    let _: fn() -> Option<ObjectiveSenseMod> = || None;
+    let _: fn() -> Option<ObjectiveTermMod> = || None;
+    let _: fn() -> Option<ObjectiveCombinationMod> = || None;
+    let _: fn() -> Option<ObjectiveSetMod> = || None;
     let _: fn() -> Option<OptimizedImplInputMod<'static>> = || None;
     let _: fn() -> Option<OptimizedImplOutputMod> = || None;
     let _: fn() -> Option<Box<dyn ConstraintCheckerMod>> = || None;

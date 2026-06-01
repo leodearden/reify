@@ -20,7 +20,7 @@ use reify_doc::model::{
     PortDoc, PragmaDoc, RealizationDoc, SubComponentDoc,
 };
 use reify_core::{SourceSpan, Type, byte_offset_to_line_col};
-use reify_ir::{AnnotationArg, AnnotationArgValue, OptimizationObjective};
+use reify_ir::{AnnotationArg, AnnotationArgValue, ObjectiveSense};
 use reify_ast::{Pragma, PragmaArg, PragmaValue};
 
 // ---------------------------------------------------------------------------
@@ -394,15 +394,17 @@ fn lower_field(field: &CompiledField) -> ItemDoc {
 
 fn lower_purpose(p: &CompiledPurpose, source: &str) -> ItemDoc {
     let (expr_repr, direction) = match &p.objective {
-        Some(OptimizationObjective::Minimize(_expr)) => {
+        Some(obj) => {
             // `CompiledExpr` carries no source span, so we cannot slice the
             // objective expression text from `source` the way constraints do.
             // We emit a clean directive placeholder rather than the unreadable
-            // Rust Debug output that `format!("{_expr:?}")` would produce.
-            ("<minimize>".to_string(), "minimize".to_string())
-        }
-        Some(OptimizationObjective::Maximize(_expr)) => {
-            ("<maximize>".to_string(), "maximize".to_string())
+            // Rust Debug output that `format!("{:?}", obj)` would produce.
+            // Direction is determined by the first term's sense.
+            if obj.terms.first().map(|t| t.sense) == Some(ObjectiveSense::Maximize) {
+                ("<maximize>".to_string(), "maximize".to_string())
+            } else {
+                ("<minimize>".to_string(), "minimize".to_string())
+            }
         }
         None => {
             // Fall back to first constraint expression if available.

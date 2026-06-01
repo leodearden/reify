@@ -22,7 +22,7 @@ pub struct TopologyTemplateBuilder {
     sub_components: Vec<SubComponentDecl>,
     guarded_groups: Vec<CompiledGuardedGroup>,
     structure_controlling: HashSet<ValueCellId>,
-    objective: Option<reify_ir::OptimizationObjective>,
+    objective: Option<reify_ir::ObjectiveSet>,
     meta: std::collections::HashMap<String, String>,
     is_recursive: bool,
     annotations: Vec<reify_ir::Annotation>,
@@ -270,7 +270,7 @@ impl TopologyTemplateBuilder {
         self
     }
 
-    pub fn objective(mut self, obj: reify_ir::OptimizationObjective) -> Self {
+    pub fn objective(mut self, obj: reify_ir::ObjectiveSet) -> Self {
         self.objective = Some(obj);
         self
     }

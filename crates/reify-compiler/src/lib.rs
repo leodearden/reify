@@ -82,7 +82,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use reify_core::{ConstraintNodeId, ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector, FIELD_ENTITY_PREFIX, RealizationNodeId, Severity, SourceSpan, Type, ValueCellId};
-use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, DeterminacyPredicateKind, OptimizationObjective, ResolvedFunction, SelectorKind, TAG_CONDITIONAL, TAG_FUNCTION_CALL, TAG_MATCH, TAG_USER_FUNCTION_CALL, UnOp, Value};
+use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, DeterminacyPredicateKind, ObjectiveCombination, ObjectiveSet, ObjectiveSense, ObjectiveTerm, ResolvedFunction, SelectorKind, TAG_CONDITIONAL, TAG_FUNCTION_CALL, TAG_MATCH, TAG_USER_FUNCTION_CALL, UnOp, Value};
 
 /// Expose `validate_annotations` to integration tests without plumbing a full
 /// compilation context.

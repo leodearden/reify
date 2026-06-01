@@ -6,7 +6,7 @@ use crate::deps::ReverseDependencyIndex;
 use crate::graph::ValueCellNode;
 use reify_compiler::{ResolvedSchemaQuery, ValueCellKind};
 use reify_core::{ConstraintNodeId, ContentHash, Type, ValueCellId};
-use reify_ir::{CompiledExpr, CompiledExprKind, DeterminacyState, OptimizationObjective, PersistentMap, Value, ValueMap};
+use reify_ir::{CompiledExpr, CompiledExprKind, DeterminacyState, ObjectiveSet, PersistentMap, Value, ValueMap};
 use std::sync::Arc;
 
 impl Engine {
@@ -212,12 +212,10 @@ impl Engine {
         }
 
         let rewritten_objective = purpose.objective.clone().map(|mut obj| {
-            match &mut obj {
-                OptimizationObjective::Minimize(expr) | OptimizationObjective::Maximize(expr) => {
-                    for (param, entity) in bindings {
-                        let from_stamp = format!("{}::{}", purpose_name, param);
-                        expr.remap_entity(&from_stamp, entity);
-                    }
+            for term in &mut obj.terms {
+                for (param, entity) in bindings {
+                    let from_stamp = format!("{}::{}", purpose_name, param);
+                    term.expr.remap_entity(&from_stamp, entity);
                 }
             }
             obj
@@ -240,10 +238,8 @@ impl Engine {
             expand_placeholders(&mut constraint.expr);
         }
         let rewritten_objective = rewritten_objective.map(|mut obj| {
-            match &mut obj {
-                OptimizationObjective::Minimize(expr) | OptimizationObjective::Maximize(expr) => {
-                    expand_placeholders(expr);
-                }
+            for term in &mut obj.terms {
+                expand_placeholders(&mut term.expr);
             }
             obj
         });
@@ -361,11 +357,9 @@ impl Engine {
 
         // Same rewrite for the objective expression.
         let rewritten_objective = rewritten_objective.map(|mut obj| {
-            match &mut obj {
-                OptimizationObjective::Minimize(expr) | OptimizationObjective::Maximize(expr) => {
-                    for (compile_id, injected_id) in &let_remaps {
-                        expr.remap_cell(compile_id, injected_id);
-                    }
+            for term in &mut obj.terms {
+                for (compile_id, injected_id) in &let_remaps {
+                    term.expr.remap_cell(compile_id, injected_id);
                 }
             }
             obj
@@ -621,7 +615,7 @@ impl Engine {
     }
 
     /// Returns the currently active optimization objectives (injected by purposes).
-    pub fn active_objectives(&self) -> Vec<&OptimizationObjective> {
+    pub fn active_objectives(&self) -> Vec<&ObjectiveSet> {
         self.active_objective_map.values().collect()
     }
 

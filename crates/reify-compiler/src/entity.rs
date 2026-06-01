@@ -432,7 +432,7 @@ pub(crate) fn compile_entity(
     let mut guarded_groups: Vec<CompiledGuardedGroup> = Vec::new();
     let mut structure_controlling: HashSet<ValueCellId> = HashSet::new();
     let mut connections: Vec<CompiledConnection> = Vec::new();
-    let mut objective: Option<OptimizationObjective> = None;
+    let mut objective_terms: Vec<ObjectiveTerm> = Vec::new();
     let mut first_meta_span: Option<SourceSpan> = None;
     let mut constraint_index: u32 = 0;
     let mut guard_index: u32 = 0;
@@ -1566,12 +1566,12 @@ pub(crate) fn compile_entity(
             reify_ast::MemberDecl::Minimize(min_decl) => {
                 let compiled_expr =
                     compile_expr(&min_decl.expr, &scope, enum_defs, functions, diagnostics);
-                objective = Some(OptimizationObjective::Minimize(compiled_expr));
+                objective_terms.push(ObjectiveTerm::new(ObjectiveSense::Minimize, compiled_expr));
             }
             reify_ast::MemberDecl::Maximize(max_decl) => {
                 let compiled_expr =
                     compile_expr(&max_decl.expr, &scope, enum_defs, functions, diagnostics);
-                objective = Some(OptimizationObjective::Maximize(compiled_expr));
+                objective_terms.push(ObjectiveTerm::new(ObjectiveSense::Maximize, compiled_expr));
             }
             reify_ast::MemberDecl::GuardedGroup(g) => {
                 compile_block_guard(
@@ -2408,6 +2408,12 @@ pub(crate) fn compile_entity(
             .keys()
             .collect::<Vec<_>>(),
     );
+
+    let objective = if objective_terms.is_empty() {
+        None
+    } else {
+        Some(ObjectiveSet { terms: objective_terms, combination: ObjectiveCombination::WeightedSum })
+    };
 
     TopologyTemplate {
         name: entity_name.to_string(),

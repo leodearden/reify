@@ -1819,7 +1819,7 @@ fn edit_source_refreshes_objectives_against_cold_eval() {
         MultiCallSpyConstraintSolver, TopologyTemplateBuilder, gt, literal, lt, mm, value_ref,
     };
     use reify_core::{ModulePath, Type};
-    use reify_ir::{OptimizationObjective, SolveResult};
+    use reify_ir::{ObjectiveSet, ObjectiveSense, SolveResult};
     use std::collections::HashMap;
 
     let thickness_id = ValueCellId::new("S", "thickness");
@@ -1841,7 +1841,7 @@ fn edit_source_refreshes_objectives_against_cold_eval() {
             None,
             lt(value_ref("S", "thickness"), literal(mm(20.0))),
         )
-        .objective(OptimizationObjective::Minimize(value_ref("S", "thickness")))
+        .objective(ObjectiveSet::single(ObjectiveSense::Minimize, value_ref("S", "thickness")))
         .build();
 
     let module_a = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -1871,7 +1871,7 @@ fn edit_source_refreshes_objectives_against_cold_eval() {
             None,
             gt(value_ref("S", "thickness"), literal(mm(3.0))),
         )
-        .objective(OptimizationObjective::Maximize(value_ref("S", "thickness")))
+        .objective(ObjectiveSet::single(ObjectiveSense::Maximize, value_ref("S", "thickness")))
         .build();
 
     let module_b = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -1921,10 +1921,7 @@ fn edit_source_refreshes_objectives_against_cold_eval() {
 
     // Call 0 (eval(A)): objective must be Minimize.
     assert!(
-        matches!(
-            &problems[0].objective,
-            Some(OptimizationObjective::Minimize(_))
-        ),
+        problems[0].objective.as_ref().and_then(|o| o.terms.first()).map(|t| t.sense) == Some(ObjectiveSense::Minimize),
         "eval(A) should forward Minimize objective, got: {:?}",
         problems[0].objective
     );
@@ -1932,10 +1929,7 @@ fn edit_source_refreshes_objectives_against_cold_eval() {
     // Call 1 (edit_source(B)): objective must be Maximize — proving Step-11 refreshed
     // self.objectives before the solver phase ran.
     assert!(
-        matches!(
-            &problems[1].objective,
-            Some(OptimizationObjective::Maximize(_))
-        ),
+        problems[1].objective.as_ref().and_then(|o| o.terms.first()).map(|t| t.sense) == Some(ObjectiveSense::Maximize),
         "edit_source(B) should forward the refreshed Maximize objective; \
          got {:?} — likely self.objectives was not refreshed in edit_source \
          (stale Minimize carried from eval(A))",

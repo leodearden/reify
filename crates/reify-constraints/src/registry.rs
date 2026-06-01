@@ -5,7 +5,7 @@
 
 use crate::decompose::decompose_into_components;
 use reify_core::ValueCellId;
-use reify_ir::{AutoParam, ConstraintDomain, ConstraintSolver, OptimizationObjective, ResolutionProblem, SolveResult, Value, ValueMap};
+use reify_ir::{AutoParam, ConstraintDomain, ConstraintSolver, ObjectiveSet, ResolutionProblem, SolveResult, Value, ValueMap};
 use std::collections::HashMap;
 
 /// A registry that dispatches constraint sub-problems to domain-specific solvers.
@@ -75,15 +75,21 @@ impl ConstraintSolver for SolverRegistry {
             };
         }
 
-        // Extract the objective expression (if any) for objective-aware decomposition
-        let obj_expr = problem.objective.as_ref().map(|obj| match obj {
-            OptimizationObjective::Minimize(e) | OptimizationObjective::Maximize(e) => e,
-        });
+        // Collect value-refs from ALL objective terms for objective-aware decomposition.
+        // Single-term ObjectiveSet reduces to the prior single-expr ref set bit-identically.
+        let obj_refs: Option<std::collections::HashSet<ValueCellId>> =
+            problem.objective.as_ref().map(|obj: &ObjectiveSet| {
+                let mut refs = std::collections::HashSet::new();
+                for term in &obj.terms {
+                    crate::decompose::collect_value_refs_pub(&term.expr, &mut refs);
+                }
+                refs
+            });
 
         // Decompose into connected components, merging any components
-        // whose auto params are co-referenced by the objective expression
+        // whose auto params are co-referenced by the objective expression(s)
         let components =
-            decompose_into_components(&problem.auto_params, &problem.constraints, obj_expr);
+            decompose_into_components(&problem.auto_params, &problem.constraints, obj_refs.as_ref());
 
         // If no components (all constraints reference non-auto params),
         // the auto params are unconstrained. Return current values or defaults.
@@ -102,12 +108,9 @@ impl ConstraintSolver for SolverRegistry {
         // Because decompose_into_components unions all objective-referenced
         // params, they are guaranteed to be in a single component. The
         // first-match iteration always finds the correct one.
-        let objective_component = obj_expr.map(|oe| {
-            let mut obj_refs = std::collections::HashSet::new();
-            crate::decompose::collect_value_refs_pub(oe, &mut obj_refs);
-
+        let objective_component = obj_refs.as_ref().map(|refs| {
             for (ci, comp) in components.iter().enumerate() {
-                if obj_refs.iter().any(|r| comp.auto_params.contains(r)) {
+                if refs.iter().any(|r| comp.auto_params.contains(r)) {
                     return ci;
                 }
             }

@@ -1,0 +1,36 @@
+// Fixture for task 3997 step-7/8: weighted single-decl combined-expr signal (B1/B4).
+//
+// WeightedObjective has two `Scalar = auto` params `mass` and `stiffness`.
+// The constraint set intentionally places each param on the side where the optimizer
+// moves AWAY from the constraint boundary:
+//
+//   mass    → UPPER bound only (mass < 50mm): the objective minimizes mass, so
+//             the optimizer drives mass toward the default lower bound (~1 µm).
+//             It never approaches the upper constraint, so no boundary overshoot.
+//
+//   stiffness → LOWER bound only (stiffness > 1mm): the objective maximizes
+//               stiffness (coefficient −0.3 in the minimize expression), so the
+//               optimizer drives stiffness toward the default upper bound (~10 m).
+//               It never approaches the lower constraint, so no boundary overshoot.
+//
+// Single `minimize` declaration with a combined expression → 1-term WeightedSum
+// (PRD §5).  The compiler lowers it to:
+//   ObjectiveSet{ terms: [ObjectiveTerm{Minimize, expr=0.7*mass−0.3*stiffness, weight=1.0}],
+//                 combination: WeightedSum }
+//
+// Closed-form optimum (linear objective, unconstrained in the optimizing direction):
+//   mass      → DimensionalSolver default lower bound (~1 µm = 1e-6 m)
+//   stiffness → DimensionalSolver default upper bound (~10 m)
+//
+// Integration test: crates/reify-eval/tests/objective_set_signal.rs
+//   asserts mass < 5 mm and stiffness > 46 mm (wide tolerance to accommodate
+//   Nelder-Mead convergence).
+structure WeightedObjective {
+    param mass: Scalar = auto
+    param stiffness: Scalar = auto
+
+    constraint mass < 50mm
+    constraint stiffness > 1mm
+
+    minimize 0.7 * mass - 0.3 * stiffness
+}

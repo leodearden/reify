@@ -25,7 +25,7 @@ use std::collections::{HashMap, HashSet};
 
 use reify_ast::ParsedModule;
 use reify_core::{Diagnostic, DiagnosticLabel, SourceSpan, Type};
-use reify_ir::{CompiledExpr, CompiledExprKind, CompiledFunction, EnumDef, OptimizationObjective};
+use reify_ir::{CompiledExpr, CompiledExprKind, CompiledFunction, EnumDef};
 
 use crate::CompiledModule;
 use crate::compile_builder::ctx::CompilationCtx;
@@ -739,12 +739,10 @@ fn for_each_template_root_expr(
         f(&constraint.expr, constraint.span);
     }
 
-    // Objective (the objective enum carries no span of its own).
+    // Objective (the objective set carries no span of its own).
     if let Some(objective) = &template.objective {
-        match objective {
-            OptimizationObjective::Minimize(expr) | OptimizationObjective::Maximize(expr) => {
-                f(expr, SourceSpan::empty(0));
-            }
+        for term in &objective.terms {
+            f(&term.expr, SourceSpan::empty(0));
         }
     }
 

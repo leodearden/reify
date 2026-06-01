@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use reify_core::{ConstraintNodeId, ContentHash, DimensionVector, RealizationNodeId, SourceSpan, Type, ValueCellId};
-use reify_ir::{CompiledExpr, ConstraintDomain, OptimizationObjective};
+use reify_ir::{CompiledExpr, ConstraintDomain, ObjectiveSet};
 
 pub use reify_ir::{CompiledFnBody, CompiledFunction};
 
@@ -220,7 +220,7 @@ pub struct CompiledPurpose {
     /// whose value feeds any constraints that reference it (task 4009 δ).
     pub lets: Vec<CompiledPurposeLet>,
     pub constraints: Vec<CompiledConstraint>,
-    pub objective: Option<OptimizationObjective>,
+    pub objective: Option<ObjectiveSet>,
     /// Reflective schema queries resolved at compile time.
     pub resolved_queries: Vec<ResolvedSchemaQuery>,
     pub content_hash: ContentHash,
@@ -605,7 +605,7 @@ pub struct TopologyTemplate {
     pub guarded_groups: Vec<CompiledGuardedGroup>,
     /// ValueCellIds whose boolean value controls topology (guard cells).
     pub structure_controlling: HashSet<ValueCellId>,
-    pub objective: Option<OptimizationObjective>,
+    pub objective: Option<ObjectiveSet>,
     /// Key-value entries from the entity's `meta { ... }` block (if any).
     pub meta: HashMap<String, String>,
     pub content_hash: ContentHash,

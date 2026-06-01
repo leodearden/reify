@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use argmin::core::{CostFunction, Error as ArgminError, Executor, State, TerminationReason};
 use argmin::solver::neldermead::NelderMead;
 use reify_core::{ConstraintNodeId, DiagnosticCode, DimensionVector, Type, ValueCellId};
-use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, ConstraintSolver, OptimizationObjective, ResolutionProblem, SolveResult, Value, ValueMap};
+use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, ConstraintSolver, ObjectiveCombination, ObjectiveSense, ObjectiveSet, ResolutionProblem, SolveResult, Value, ValueMap};
 
 /// Maximum iterations for Nelder-Mead.
 const MAX_ITERS: u64 = 5000;
@@ -394,32 +394,56 @@ struct ConstraintCostFunction<'a> {
     auto_params: &'a [AutoParam],
     constraints: &'a [(ConstraintNodeId, CompiledExpr)],
     base_values: &'a ValueMap,
-    objective: &'a Option<OptimizationObjective>,
+    objective: &'a Option<ObjectiveSet>,
     functions: &'a [CompiledFunction],
 }
 
-/// Evaluate an optimization objective expression, returning its f64 value.
-/// For Minimize, returns the value directly. For Maximize, negates it.
-/// Returns None if the expression evaluates to a non-numeric value (Undef)
-/// or a non-finite float (NaN, Inf).
-fn eval_objective(
-    objective: &OptimizationObjective,
+/// Evaluate an `ObjectiveSet` as a single f64 cost using the I2-preserving
+/// additive fold (PRD §6.2 I3):
+///
+///   acc = 0.0
+///   for each term t:
+///     v = eval(t.expr)           — returns None if Undef or non-finite
+///     Minimize → acc += t.weight * v
+///     Maximize → acc -= t.weight * v
+///
+/// Returns `None` if ANY term evaluates to a non-numeric / non-finite value,
+/// preserving the single-term None → UNDEF_OBJECTIVE_PENALTY / NoProgress paths.
+///
+/// I2 numerical equivalence: for a single term with weight 1.0,
+///   Minimize → 0.0 + 1.0·v == v  (IEEE-754, finite v)
+///   Maximize → 0.0 − 1.0·v == -v (IEEE-754, finite v)
+/// both are numerically equivalent to the former single-variant objective enum eval
+/// (modulo signed-zero, which is solver-irrelevant: −0.0 == 0.0 in all IEEE-754
+/// comparisons and additions used by Nelder-Mead).
+///
+/// Lexicographic folds as WeightedSum here (degenerate, PRD §6.3); full
+/// ε-band staged solve is task ε.
+fn eval_objective_set(
+    objective: &ObjectiveSet,
     values: &ValueMap,
     functions: &[CompiledFunction],
 ) -> Option<f64> {
-    match objective {
-        OptimizationObjective::Minimize(expr) => {
-            reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions))
-                .as_f64()
-                .filter(|v| v.is_finite())
-        }
-        OptimizationObjective::Maximize(expr) => {
-            reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions))
-                .as_f64()
-                .filter(|v| v.is_finite())
-                .map(|v| -v)
+    // Guard: only WeightedSum is implemented here.  A Lexicographic set must
+    // not be silently mis-solved as a weighted sum.  Assert in debug builds;
+    // task ε will implement the full ε-band staged solve.
+    debug_assert!(
+        matches!(objective.combination, ObjectiveCombination::WeightedSum),
+        "eval_objective_set: Lexicographic combination is not yet implemented \
+         (task ε owns the ε-band staged solve); received {:?}",
+        objective.combination,
+    );
+    let mut acc = 0.0_f64;
+    for term in &objective.terms {
+        let v = reify_expr::eval_expr(&term.expr, &reify_expr::EvalContext::new(values, functions))
+            .as_f64()
+            .filter(|v| v.is_finite())?;
+        match term.sense {
+            ObjectiveSense::Minimize => acc += term.weight * v,
+            ObjectiveSense::Maximize => acc -= term.weight * v,
         }
     }
+    Some(acc)
 }
 
 impl CostFunction for ConstraintCostFunction<'_> {
@@ -444,7 +468,7 @@ impl CostFunction for ConstraintCostFunction<'_> {
             Some(obj) => {
                 // Combine objective with penalty for constraint violations and bounds
                 let obj_value =
-                    eval_objective(obj, &values, self.functions).unwrap_or(UNDEF_OBJECTIVE_PENALTY);
+                    eval_objective_set(obj, &values, self.functions).unwrap_or(UNDEF_OBJECTIVE_PENALTY);
                 obj_value + PENALTY_WEIGHT * violation + PENALTY_WEIGHT * bound_penalty
             }
             None => {
@@ -644,7 +668,7 @@ fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
             // before promoting to Solved. The trial_values ValueMap was built
             // from the same initial point and is still in scope.
             if let Some(obj) = &problem.objective
-                && eval_objective(obj, &trial_values, &problem.functions).is_none()
+                && eval_objective_set(obj, &trial_values, &problem.functions).is_none()
             {
                 return SolveResult::NoProgress {
                     reason: "objective expression evaluated to undefined at fallback point"
@@ -680,7 +704,7 @@ fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
     // Post-solve objective validation: if the objective is still non-numeric
     // at the solution point, report NoProgress rather than Solved.
     if let Some(obj) = &problem.objective
-        && eval_objective(obj, &final_values, &problem.functions).is_none()
+        && eval_objective_set(obj, &final_values, &problem.functions).is_none()
     {
         return SolveResult::NoProgress {
             reason: "objective expression evaluated to undefined at solution point".to_string(),
@@ -2074,7 +2098,7 @@ mod tests {
     fn minimize_objective() {
         use crate::DimensionalSolver;
         use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
-        use reify_ir::{AutoParam, BinOp, CompiledExpr, OptimizationObjective, Value};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, ObjectiveSense, ObjectiveSet, Value};
 
         let solver = DimensionalSolver;
         let thickness_id = ValueCellId::new("Bracket", "thickness");
@@ -2102,7 +2126,7 @@ mod tests {
         let lt_expr = CompiledExpr::binop(BinOp::Lt, thickness_ref.clone(), twenty_mm, Type::Bool);
 
         // Minimize thickness
-        let objective = OptimizationObjective::Minimize(thickness_ref);
+        let objective = ObjectiveSet::single(ObjectiveSense::Minimize, thickness_ref);
 
         let problem = ResolutionProblem {
             auto_params: vec![AutoParam {
@@ -2805,7 +2829,7 @@ mod tests {
         use super::ConstraintCostFunction;
         use argmin::core::CostFunction;
         use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
-        use reify_ir::{AutoParam, BinOp, CompiledExpr, OptimizationObjective, Value};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, ObjectiveSense, ObjectiveSet, Value};
 
         let x_id = ValueCellId::new("Part", "x");
         let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
@@ -2823,7 +2847,7 @@ mod tests {
         // Objective: minimize(x / 0) — always Undef
         let zero_int = CompiledExpr::literal(Value::Int(0), Type::Int);
         let div_by_zero = CompiledExpr::binop(BinOp::Div, x_ref, zero_int, Type::Real);
-        let objective = Some(OptimizationObjective::Minimize(div_by_zero));
+        let objective = Some(ObjectiveSet::single(ObjectiveSense::Minimize, div_by_zero));
 
         let auto_params = vec![AutoParam {
             id: x_id.clone(),
@@ -2983,7 +3007,7 @@ mod tests {
         use crate::DimensionalSolver;
         use reify_test_support::{cnid, gt, literal, mm, value_ref, vcid};
         use reify_core::Type;
-        use reify_ir::{AutoParam, OptimizationObjective};
+        use reify_ir::{AutoParam, ObjectiveSense, ObjectiveSet};
 
         let solver = DimensionalSolver;
         let x_id = vcid("Part", "x");
@@ -2995,7 +3019,7 @@ mod tests {
 
         // Minimize x — with auto param bounds [5mm, 100mm], the minimum
         // is at 5mm which is still above the 1mm constraint.
-        let objective = OptimizationObjective::Minimize(x_ref);
+        let objective = ObjectiveSet::single(ObjectiveSense::Minimize, x_ref);
 
         let mut current = ValueMap::new();
         current.insert(x_id.clone(), mm(10.0)); // 10mm — already feasible
@@ -3233,7 +3257,7 @@ mod tests {
     fn undefined_objective_at_feasible_initial_returns_no_progress() {
         use crate::DimensionalSolver;
         use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
-        use reify_ir::{AutoParam, BinOp, CompiledExpr, OptimizationObjective, Value};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, ObjectiveSense, ObjectiveSet, Value};
 
         let solver = DimensionalSolver;
         let x_id = ValueCellId::new("Part", "x");
@@ -3252,7 +3276,7 @@ mod tests {
         // Objective: minimize(x / 0) — always Undef
         let zero_int = CompiledExpr::literal(Value::Int(0), Type::Int);
         let div_by_zero = CompiledExpr::binop(BinOp::Div, x_ref, zero_int, Type::Real);
-        let objective = OptimizationObjective::Minimize(div_by_zero);
+        let objective = ObjectiveSet::single(ObjectiveSense::Minimize, div_by_zero);
 
         // Current value x = 10mm (already satisfies x > 5mm)
         let mut current = ValueMap::new();
@@ -3311,7 +3335,7 @@ mod tests {
     fn undefined_objective_at_fallback_triggers_no_progress() {
         use crate::DimensionalSolver;
         use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId, hash::ContentHash};
-        use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledExprKind, OptimizationObjective, Value};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledExprKind, ObjectiveSense, ObjectiveSet, Value};
 
         let solver = DimensionalSolver;
         let x_id = ValueCellId::new("Part", "x");
@@ -3368,7 +3392,7 @@ mod tests {
             result_type: Type::Real,
             content_hash: cond_hash,
         };
-        let objective = OptimizationObjective::Minimize(objective_expr);
+        let objective = ObjectiveSet::single(ObjectiveSense::Minimize, objective_expr);
 
         // Current value x = 0.015 (15mm, feasible since 0.015 <= 0.020)
         // With bounds (0.001, 0.1), the simplex perturbation is +0.0099,
@@ -3423,7 +3447,7 @@ mod tests {
     fn defined_objective_at_fallback_returns_solved() {
         use crate::DimensionalSolver;
         use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId, hash::ContentHash};
-        use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledExprKind, OptimizationObjective, Value};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledExprKind, ObjectiveSense, ObjectiveSet, Value};
 
         let solver = DimensionalSolver;
         let x_id = ValueCellId::new("Part", "x");
@@ -3480,7 +3504,7 @@ mod tests {
             result_type: Type::Real,
             content_hash: cond_hash,
         };
-        let objective = OptimizationObjective::Minimize(objective_expr);
+        let objective = ObjectiveSet::single(ObjectiveSense::Minimize, objective_expr);
 
         // Current value x = 0.015 (15mm, feasible since 0.015 <= 0.020)
         // With bounds (0.001, 0.1), the simplex perturbation is +0.0099,

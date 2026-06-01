@@ -1328,17 +1328,16 @@ fn compile_minimize_objective() {
         .as_ref()
         .expect("template should have an objective");
 
-    match objective {
-        reify_ir::OptimizationObjective::Minimize(expr) => {
-            // The expression should reference ValueCellId("S", "x")
-            match &expr.kind {
-                reify_ir::CompiledExprKind::ValueRef(id) => {
-                    assert_eq!(id, &reify_core::ValueCellId::new("S", "x"));
-                }
-                other => panic!("expected ValueRef, got {:?}", other),
-            }
+    assert_eq!(objective.combination, reify_ir::ObjectiveCombination::WeightedSum);
+    assert_eq!(objective.terms.len(), 1, "expected 1 term");
+    let term = &objective.terms[0];
+    assert_eq!(term.sense, reify_ir::ObjectiveSense::Minimize, "expected Minimize");
+    // The expression should reference ValueCellId("S", "x")
+    match &term.expr.kind {
+        reify_ir::CompiledExprKind::ValueRef(id) => {
+            assert_eq!(id, &reify_core::ValueCellId::new("S", "x"));
         }
-        other => panic!("expected Minimize, got {:?}", other),
+        other => panic!("expected ValueRef, got {:?}", other),
     }
 }
 
@@ -1372,17 +1371,16 @@ fn compile_maximize_objective() {
         .as_ref()
         .expect("template should have an objective");
 
-    match objective {
-        reify_ir::OptimizationObjective::Maximize(expr) => {
-            // The expression should reference ValueCellId("S", "volume")
-            match &expr.kind {
-                reify_ir::CompiledExprKind::ValueRef(id) => {
-                    assert_eq!(id, &reify_core::ValueCellId::new("S", "volume"));
-                }
-                other => panic!("expected ValueRef, got {:?}", other),
-            }
+    assert_eq!(objective.combination, reify_ir::ObjectiveCombination::WeightedSum);
+    assert_eq!(objective.terms.len(), 1, "expected 1 term");
+    let term = &objective.terms[0];
+    assert_eq!(term.sense, reify_ir::ObjectiveSense::Maximize, "expected Maximize");
+    // The expression should reference ValueCellId("S", "volume")
+    match &term.expr.kind {
+        reify_ir::CompiledExprKind::ValueRef(id) => {
+            assert_eq!(id, &reify_core::ValueCellId::new("S", "volume"));
         }
-        other => panic!("expected Maximize, got {:?}", other),
+        other => panic!("expected ValueRef, got {:?}", other),
     }
 }
 
@@ -1449,17 +1447,16 @@ fn e2e_minimize_round_trip() {
         .objective
         .as_ref()
         .expect("template should have an objective");
-    match objective {
-        reify_ir::OptimizationObjective::Minimize(expr) => {
-            // (e) compiled expression references ValueCellId for thickness
-            match &expr.kind {
-                reify_ir::CompiledExprKind::ValueRef(id) => {
-                    assert_eq!(id, &reify_core::ValueCellId::new("Bracket", "thickness"));
-                }
-                other => panic!("expected ValueRef to thickness, got {:?}", other),
-            }
+    assert_eq!(objective.combination, reify_ir::ObjectiveCombination::WeightedSum);
+    assert_eq!(objective.terms.len(), 1, "expected 1 term");
+    let term = &objective.terms[0];
+    assert_eq!(term.sense, reify_ir::ObjectiveSense::Minimize, "expected Minimize");
+    // (e) compiled expression references ValueCellId for thickness
+    match &term.expr.kind {
+        reify_ir::CompiledExprKind::ValueRef(id) => {
+            assert_eq!(id, &reify_core::ValueCellId::new("Bracket", "thickness"));
         }
-        other => panic!("expected Minimize, got {:?}", other),
+        other => panic!("expected ValueRef to thickness, got {:?}", other),
     }
 
     // (f) existing constraints and value cells are unaffected

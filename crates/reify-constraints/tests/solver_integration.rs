@@ -21,7 +21,7 @@ use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
 use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
 use reify_test_support::*;
 use reify_core::{DiagnosticCode, DimensionVector, Severity, SourceSpan, Type};
-use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledFunction, ConstraintSolver, OptimizationObjective, ResolutionProblem, SolveResult, Value, ValueMap};
+use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledFunction, ConstraintSolver, ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm, ResolutionProblem, SolveResult, Value, ValueMap};
 
 #[test]
 fn single_param_feasibility_via_trait_object() {
@@ -75,7 +75,7 @@ fn maximize_objective() {
     let lt_expr = lt(thickness_ref.clone(), literal(mm(20.0)));
 
     // Maximize thickness
-    let objective = OptimizationObjective::Maximize(thickness_ref);
+    let objective = ObjectiveSet::single(ObjectiveSense::Maximize, thickness_ref);
 
     let problem = ResolutionProblem {
         auto_params: vec![AutoParam {
@@ -376,7 +376,7 @@ fn minimize_undef_objective_returns_no_progress() {
     // Objective: minimize(x / 0) — division by zero → Undef
     let zero = literal(Value::Int(0));
     let div_by_zero = binop(BinOp::Div, x_ref, zero);
-    let objective = OptimizationObjective::Minimize(div_by_zero);
+    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, div_by_zero);
 
     let problem = ResolutionProblem {
         auto_params: vec![AutoParam {
@@ -414,7 +414,7 @@ fn maximize_undef_objective_returns_no_progress() {
     // Objective: maximize(x / 0) — division by zero → Undef
     let zero = literal(Value::Int(0));
     let div_by_zero = binop(BinOp::Div, x_ref, zero);
-    let objective = OptimizationObjective::Maximize(div_by_zero);
+    let objective = ObjectiveSet::single(ObjectiveSense::Maximize, div_by_zero);
 
     let problem = ResolutionProblem {
         auto_params: vec![AutoParam {
@@ -496,7 +496,7 @@ fn optimize_with_feasible_initial_point() {
 
     // Minimize thickness — should push toward the auto param lower bound (5mm),
     // which is still above the constraint floor (2mm)
-    let objective = OptimizationObjective::Minimize(thickness_ref);
+    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, thickness_ref);
 
     // Set current value to 25mm — already feasible (between 2mm and 50mm)
     let mut current = ValueMap::new();
@@ -547,7 +547,7 @@ fn maximize_with_feasible_initial_point() {
     let lt_expr = lt(x_ref.clone(), literal(mm(80.0)));
 
     // Maximize x — should push toward upper bound
-    let objective = OptimizationObjective::Maximize(x_ref);
+    let objective = ObjectiveSet::single(ObjectiveSense::Maximize, x_ref);
 
     // Set current value to 10mm — already feasible
     let mut current = ValueMap::new();
@@ -613,7 +613,7 @@ fn warm_start_falls_back_to_initial_when_optimizer_drifts_infeasible() {
     let lt_expr = lt(x_ref.clone(), literal(mm(6.0)));
 
     // Minimize x — pushes toward 0, trying to leave the feasible window
-    let objective = OptimizationObjective::Minimize(x_ref);
+    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, x_ref);
 
     // Current value = 5.5mm — right in the feasible window
     let mut current = ValueMap::new();
@@ -669,7 +669,7 @@ fn infeasible_with_objective_still_detected() {
     let constraint = gt(x_ref.clone(), literal(mm(15.0)));
 
     // Maximize x — the objective shouldn't mask the infeasibility
-    let objective = OptimizationObjective::Maximize(x_ref);
+    let objective = ObjectiveSet::single(ObjectiveSense::Maximize, x_ref);
 
     let problem = ResolutionProblem {
         auto_params: vec![AutoParam {
@@ -722,7 +722,7 @@ fn warm_start_optimizes_when_possible() {
     let lt_expr = lt(x_ref.clone(), literal(mm(50.0)));
 
     // Minimize x — should optimize, not just return initial
-    let objective = OptimizationObjective::Minimize(x_ref);
+    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, x_ref);
 
     // Start at 25mm — feasible, but far from optimal
     let mut current = ValueMap::new();
@@ -792,7 +792,7 @@ fn warm_start_scales_iterations_with_dimension() {
     }
 
     // Minimize p0 — pushes one param toward lower bound
-    let objective = OptimizationObjective::Minimize(param_refs[0].clone());
+    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, param_refs[0].clone());
 
     // All params start at 15mm (feasible, centered in constraint window)
     let mut current = ValueMap::new();
@@ -892,7 +892,7 @@ fn warm_start_budget_exhaustion_stays_feasible() {
         .iter()
         .skip(1)
         .fold(refs[0].clone(), |acc, r| binop(BinOp::Add, acc, r.clone()));
-    let objective = OptimizationObjective::Minimize(sum_expr);
+    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, sum_expr);
 
     // All params start at 11mm — feasible, centered in constraint window
     let mut current = ValueMap::new();
@@ -1051,7 +1051,7 @@ fn infeasible_initial_not_rescued_by_fallback() {
     let constraint = gt(x_ref.clone(), literal(mm(15.0)));
 
     // Minimize x — objective present, but initial is not feasible
-    let objective = OptimizationObjective::Minimize(x_ref);
+    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, x_ref);
 
     // Current value = 5mm — NOT feasible (violates x > 15mm)
     let mut current = ValueMap::new();
@@ -1121,7 +1121,7 @@ fn multi_param_warm_start_with_objective() {
     // Minimize(p0 + p1 + p2)
     let sum_01 = binop(BinOp::Add, p0_ref, p1_ref);
     let sum_012 = binop(BinOp::Add, sum_01, p2_ref);
-    let objective = OptimizationObjective::Minimize(sum_012);
+    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, sum_012);
 
     // All params start at 30mm — feasible, well within constraint windows
     let mut current = ValueMap::new();
@@ -1218,7 +1218,7 @@ fn partial_feasibility_infeasible_when_unreachable() {
 
     // Minimize(p0 + p1)
     let sum_expr = binop(BinOp::Add, p0_ref, p1_ref);
-    let objective = OptimizationObjective::Minimize(sum_expr);
+    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, sum_expr);
 
     let mut current = ValueMap::new();
     // p0 = 30mm — satisfies both p0 constraints (5mm < 30mm < 50mm)
@@ -1390,7 +1390,7 @@ fn warm_start_budget_requires_objective_invariant() {
         auto_params: auto_params.clone(),
         constraints: constraints.clone(),
         current_values: current.clone(),
-        objective: Some(OptimizationObjective::Minimize(x_ref.clone())),
+        objective: Some(ObjectiveSet::single(ObjectiveSense::Minimize, x_ref.clone())),
         functions: vec![].into(),
     };
 
@@ -1467,7 +1467,7 @@ fn warm_start_fallback_returns_exact_initial_values() {
     // Minimize(p0 + p1 + p2) — pushes all params below constraint floor
     let sum_01 = binop(BinOp::Add, p0_ref, p1_ref);
     let sum_012 = binop(BinOp::Add, sum_01, p2_ref);
-    let objective = OptimizationObjective::Minimize(sum_012);
+    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, sum_012);
 
     // All params start at 10.5mm — centered in the feasible window
     let mut current = ValueMap::new();
@@ -2128,4 +2128,198 @@ structure def AirCooled : Cooled {
         "depth-bound message must contain 'max_depth = 1'; got: {:?}",
         diagnostics[0].message
     );
+}
+
+// ── ObjectiveSet migration tests (step-3 RED → step-4 GREEN) ─────────────────
+
+/// [I3] Two-term WeightedSum objective drives the solver to minimise the first
+/// param while maximising the second.
+///
+/// Setup: two independent length params `a` ∈ [1 mm, 50 mm] and `b` ∈ [1 mm, 50 mm],
+/// no other constraints. Objective:
+///   term 0: Minimize a  (w = 1.0)  → additive cost += 1.0 * a
+///   term 1: Maximize b  (w = 1.0)  → additive cost -= 1.0 * b
+/// Net cost = a − b, minimised when a → lower bound (1 mm) and b → upper bound (50 mm).
+///
+/// The optimal is a vertex of the box (linear objective), so the expected value
+/// is first-principles: a ≈ 0.001 m, b ≈ 0.050 m.
+#[test]
+fn multi_term_weighted_sum_objective() {
+    let solver = DimensionalSolver;
+
+    let a_id = vcid("Part", "a");
+    let b_id = vcid("Part", "b");
+    let a_ref = value_ref("Part", "a");
+    let b_ref = value_ref("Part", "b");
+
+    // Build a 2-term WeightedSum ObjectiveSet: Minimize a, Maximize b
+    let objective = ObjectiveSet {
+        terms: vec![
+            ObjectiveTerm::new(ObjectiveSense::Minimize, a_ref),
+            ObjectiveTerm::new(ObjectiveSense::Maximize, b_ref),
+        ],
+        combination: ObjectiveCombination::WeightedSum,
+    };
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: a_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.050)), // 1 mm – 50 mm
+                free: false,
+            },
+            AutoParam {
+                id: b_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.050)), // 1 mm – 50 mm
+                free: false,
+            },
+        ],
+        constraints: vec![],
+        current_values: ValueMap::new(),
+        objective: Some(objective),
+        functions: vec![].into(),
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values, .. } => {
+            let a_si = values.get(&a_id).unwrap().as_f64().unwrap();
+            let b_si = values.get(&b_id).unwrap().as_f64().unwrap();
+            // Linear objective over a box: optimum is at bounds.
+            // Allow 3 mm tolerance for Nelder-Mead convergence.
+            assert!(
+                a_si < 0.004,
+                "[I3] Minimize-a term should push a toward 1 mm lower bound, got {} m",
+                a_si
+            );
+            assert!(
+                b_si > 0.047,
+                "[I3] Maximize-b term should push b toward 50 mm upper bound, got {} m",
+                b_si
+            );
+        }
+        other => panic!("expected Solved for 2-term WeightedSum objective, got {:?}", other),
+    }
+}
+
+/// [I2] A 1-term `ObjectiveSet::single(Maximize, expr)` must yield the same
+/// resolved value as the pre-widening single-Maximize-objective test
+/// (`maximize_objective` above).
+///
+/// Identical setup: thickness ∈ [1 mm, 100 mm], constraints > 2 mm AND < 20 mm,
+/// Maximize thickness.  The asserted window (17 mm – 21 mm) is preserved verbatim
+/// from the single-objective reference test — this is the I2 regression guard.
+#[test]
+fn maximize_via_objectiveset_i2() {
+    let solver = DimensionalSolver;
+
+    let thickness_id = vcid("Bracket", "thickness");
+    let thickness_ref = value_ref("Bracket", "thickness");
+
+    let gt_expr = gt(thickness_ref.clone(), literal(mm(2.0)));
+    let lt_expr = lt(thickness_ref.clone(), literal(mm(20.0)));
+
+    // 1-term WeightedSum via ObjectiveSet::single — the I2 compat constructor
+    let objective = ObjectiveSet::single(ObjectiveSense::Maximize, thickness_ref);
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: thickness_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.001, 0.1)),
+            free: false,
+        }],
+        constraints: vec![(cnid("Bracket", 0), gt_expr), (cnid("Bracket", 1), lt_expr)],
+        current_values: ValueMap::new(),
+        objective: Some(objective),
+        functions: vec![].into(),
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values, .. } => {
+            let si = values.get(&thickness_id).unwrap().as_f64().unwrap();
+            // Same assertion window as `maximize_objective` — I2 guard.
+            assert!(
+                si > 0.017 && si < 0.021,
+                "[I2] ObjectiveSet::single Maximize should match pre-widening result \
+                 (17–21 mm), got {} m",
+                si
+            );
+        }
+        SolveResult::Infeasible { .. } => {
+            // Acceptable: Nelder-Mead optimizing against the constraint boundary
+            // may produce an L1-infeasible result (see `maximize_objective` comment).
+        }
+        other => panic!(
+            "[I2] expected Solved or Infeasible for ObjectiveSet::single Maximize, got {:?}",
+            other
+        ),
+    }
+}
+
+/// [weight-semantics] Verify that `term.weight` is actually multiplied into the
+/// objective cost — a regression would silently drop the factor, making the two
+/// terms cancel instead of having the heavier-weighted Maximize win.
+///
+/// Setup: one auto-param `x` ∈ [1 mm, 100 mm], no constraints, 2-term objective:
+///   term 0: Minimize x, weight = 1.0  → cost += 1.0 · x
+///   term 1: Maximize x, weight = 3.0  → cost -= 3.0 · x
+/// Net cost = (1.0 − 3.0) · x = −2.0 · x, minimized at x → upper bound (0.1 m).
+///
+/// If the weight factor were dropped (both treated as 1.0):
+///   net cost = 1.0·x − 1.0·x = 0 → solver sees flat landscape, won't push to bound.
+///
+/// Assert x > 0.08 m (80 mm) to confirm the 3.0 weight drives the Maximize term.
+#[test]
+fn weighted_objective_weight_factor_applied() {
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Part", "x");
+    let x_ref = value_ref("Part", "x");
+
+    // Two terms referencing the same variable with differing weights.
+    // Struct-literal construction forces explicit weight — ObjectiveTerm::new
+    // defaults to 1.0, so we use the literal to set weight = 3.0 on term 1.
+    let objective = ObjectiveSet {
+        terms: vec![
+            ObjectiveTerm { sense: ObjectiveSense::Minimize, expr: x_ref.clone(), weight: 1.0, priority: 0 },
+            ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: x_ref,         weight: 3.0, priority: 0 },
+        ],
+        combination: ObjectiveCombination::WeightedSum,
+    };
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.001, 0.1)), // 1 mm – 100 mm
+            free: false,
+        }],
+        constraints: vec![],
+        current_values: ValueMap::new(),
+        objective: Some(objective),
+        functions: vec![].into(),
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values, .. } => {
+            let x_si = values.get(&x_id).unwrap().as_f64().unwrap();
+            // Net cost = -2.0·x; linear over a box → optimum at upper bound (0.1 m).
+            // The 3.0 weight must be applied; without it the cost is identically 0.
+            assert!(
+                x_si > 0.08,
+                "[weight-semantics] heavier-weighted Maximize (w=3.0) should drive x \
+                 toward 100 mm upper bound, got {} m",
+                x_si
+            );
+        }
+        other => panic!(
+            "[weight-semantics] expected Solved for weight-factor test, got {:?}",
+            other
+        ),
+    }
 }

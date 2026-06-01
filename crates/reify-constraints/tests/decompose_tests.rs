@@ -219,11 +219,16 @@ fn objective_merges_independent_params_into_one_component() {
 
     let constraints = vec![(cnid("Part", 0), c1), (cnid("Part", 1), c2)];
 
-    // Objective: a + b (references both params)
-    let objective_expr = binop(BinOp::Add, value_ref("Part", "a"), value_ref("Part", "b"));
+    // Objective references both params — build the ref set directly.
+    // (decompose_into_components now takes Option<&HashSet<ValueCellId>>)
+    use std::collections::HashSet;
+    let _objective_expr = binop(BinOp::Add, value_ref("Part", "a"), value_ref("Part", "b"));
+    let mut obj_refs = HashSet::new();
+    obj_refs.insert(a.clone());
+    obj_refs.insert(b.clone());
 
-    // decompose_into_components with objective should merge both into 1 component
-    let components = decompose_into_components(&auto_params, &constraints, Some(&objective_expr));
+    // decompose_into_components with objective refs should merge both into 1 component
+    let components = decompose_into_components(&auto_params, &constraints, Some(&obj_refs));
     assert_eq!(
         components.len(),
         1,
