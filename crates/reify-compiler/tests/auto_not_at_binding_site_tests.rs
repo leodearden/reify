@@ -28,6 +28,13 @@
 //! Step 4 (GREEN): The shared helper is added, the FunctionCall arm refactored to
 //! call it, and the TraitStaticCall arm gains the gate. Tests (f)/(g)/(h) pass.
 //!
+//! Step 5 (RED): Tests (i)/(j)/(k) add AdHocSelector positions. Until step 6
+//! wires up the gate for the `ExprKind::AdHocSelector` arm, the `auto` arg
+//! silently compiles to Undef via the catch-all arm — zero gate errors.
+//!
+//! Step 6 (GREEN): The AdHocSelector arm gains the gate via the same shared
+//! helper. Tests (i)/(j)/(k) pass.
+//!
 //! ## Source convention
 //!
 //! The stdlib does not define `clamp`; the tests provide their own single-param
@@ -371,6 +378,133 @@ fn non_auto_trait_static_call_produces_no_gate_error() {
         gate_errors.is_empty(),
         "unexpected AutoNotAtBindingSite diagnostic for plain \
          `Defaultable::make_default(x: 1.0)`;\n  gate diagnostics: {:?}",
+        gate_errors
+    );
+}
+
+// ── AdHocSelector gate tests (step 5/6) ──────────────────────────────────────
+
+/// (i) `p @ face(x: auto)` — strict auto in an ad-hoc selector argument.
+///
+/// The `let p = 5mm` binding keeps `is_direct_port=false`, so the geometry-
+/// availability check is skipped and base resolution succeeds.  The fixture is
+/// fully valid except for the `auto` arg.
+///
+/// Must emit **exactly one** `AutoNotAtBindingSite` error with `severity == Error`
+/// and a message that names the position (e.g. contains `"@face"`).
+/// Total error count must also be 1 (anti-cascade contract).
+///
+/// RED until step 6: today the `auto` arg silently compiles to Undef via the
+/// catch-all `ExprKind::Auto` arm — zero gate errors produced.
+#[test]
+fn ad_hoc_selector_strict_auto_emits_auto_not_at_binding_site() {
+    let source =
+        "structure S { let p = 5mm  let y = p @ face(x: auto) }".to_string();
+    let module = compile_source_with_stdlib(&source);
+
+    let errors = errors_only(&module);
+    let gate_errors: Vec<_> = errors
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::AutoNotAtBindingSite))
+        .collect();
+
+    assert_eq!(
+        gate_errors.len(),
+        1,
+        "expected exactly one AutoNotAtBindingSite error for `p @ face(x: auto)`;\
+         \n  gate errors: {:?}",
+        gate_errors
+    );
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one total error (no cascading errors) for `p @ face(x: auto)`;\
+         \n  all errors: {:?}",
+        errors
+    );
+
+    let first = gate_errors[0];
+    assert_eq!(
+        first.severity,
+        Severity::Error,
+        "expected Error severity; got: {:?}",
+        first.severity
+    );
+    assert!(
+        first.message.contains("@face"),
+        "expected error message to name the selector '@face'; got: {:?}",
+        first.message
+    );
+}
+
+/// (j) `p @ face(x: auto(free))` — free auto in an ad-hoc selector argument.
+///
+/// Both strict and free `auto` are invalid at an ad-hoc selector argument site.
+/// Must emit **exactly one** `AutoNotAtBindingSite` error with `severity == Error`
+/// and message containing `"@face"`.  Total error count must also be 1
+/// (anti-cascade contract — same as test (i)).
+///
+/// RED until step 6: same silent-accept defect as (i).
+#[test]
+fn ad_hoc_selector_free_auto_emits_auto_not_at_binding_site() {
+    let source =
+        "structure S { let p = 5mm  let y = p @ face(x: auto(free)) }".to_string();
+    let module = compile_source_with_stdlib(&source);
+
+    let errors = errors_only(&module);
+    let gate_errors: Vec<_> = errors
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::AutoNotAtBindingSite))
+        .collect();
+
+    assert_eq!(
+        gate_errors.len(),
+        1,
+        "expected exactly one AutoNotAtBindingSite error for `p @ face(x: auto(free))`;\
+         \n  gate errors: {:?}",
+        gate_errors
+    );
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one total error (no cascading errors) for \
+         `p @ face(x: auto(free))`;\n  all errors: {:?}",
+        errors
+    );
+
+    let first = gate_errors[0];
+    assert_eq!(
+        first.severity,
+        Severity::Error,
+        "expected Error severity; got: {:?}",
+        first.severity
+    );
+    assert!(
+        first.message.contains("@face"),
+        "expected error message to name the selector '@face'; got: {:?}",
+        first.message
+    );
+}
+
+/// (k) Non-auto control: `p @ face("top")` — ordinary ad-hoc selector without `auto`.
+///
+/// Must not emit any `AutoNotAtBindingSite` diagnostic.
+#[test]
+fn non_auto_ad_hoc_selector_produces_no_gate_error() {
+    let source =
+        "structure S { let p = 5mm  let y = p @ face(\"top\") }".to_string();
+    let module = compile_source_with_stdlib(&source);
+
+    let gate_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::AutoNotAtBindingSite))
+        .collect();
+
+    assert!(
+        gate_errors.is_empty(),
+        "unexpected AutoNotAtBindingSite diagnostic for plain `p @ face(\"top\")`;\
+         \n  gate diagnostics: {:?}",
         gate_errors
     );
 }
