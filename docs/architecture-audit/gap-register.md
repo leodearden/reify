@@ -477,6 +477,10 @@ Contract document authored 2026-05-12: `docs/prds/v0_3/structure-instance-runtim
 | Discovered | 2026-05-12 architecture audit |
 | Notes | This is one of the rare ORPHAN-state cases (mechanism exists but no PRD calls for it as currently shipped) — Rust-side alias is unused for trait slots. |
 
+#### Follow-up PRD
+
+Primary: `docs/prds/v0_3/geometry-handle-runtime.md` (resolves cluster C-28 / GR-030; Phase 6 GHR-ζ wires volume/centroid/area/bounding_box). Companion PRD: `docs/prds/v0_3/kernel-geometry-queries.md` (wires the eval-side dispatch for the 17 registered helpers not in GR-030 Phase 6 scope; supersedes topology-selectors.md eval-side scope; cancels phantom-done task 2691).
+
 ### GR-031 — Composed / derived stress recovery for varying shapes (cluster C-29)
 
 | Field | Value |

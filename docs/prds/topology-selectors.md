@@ -1,5 +1,9 @@
 # Topology-Selector Function Family
 
+## §0 — Supersession
+
+Eval-side scope (task 2691 + the 11 task-2699 deferred names) superseded by `docs/prds/v0_3/kernel-geometry-queries.md` 2026-05-14. FFI work + feature-tag scheme + stdlib bindings from tasks 1–6, 8 remain done; the eval-side dispatch chain is owned by the follow-up PRD.
+
 ## Goal
 
 Ship the eleven topology- and mass-property selector functions called out in
