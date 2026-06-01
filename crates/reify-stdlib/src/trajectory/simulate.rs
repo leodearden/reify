@@ -644,9 +644,9 @@ mod tests {
         if result.nominal_pose[0].len() > 1 {
             let p0 = result.nominal_pose[0][0].position;
             for (i, pose) in result.nominal_pose[0].iter().enumerate() {
-                for k in 0..3 {
+                for (k, &p0_k) in p0.iter().enumerate() {
                     assert!(
-                        (pose.position[k] - p0[k]).abs() <= 1e-12,
+                        (pose.position[k] - p0_k).abs() <= 1e-12,
                         "nominal_pose[0][{i}].position[{k}] not constant"
                     );
                 }

@@ -393,31 +393,3 @@ fn impulse_shaper_producers_are_g_allow_marked() {
     assert_pins_are_g_allow_marked(result, PINS);
 }
 
-/// Bucket 2 — profile→MotionTrajectory sampling bridge
-/// (`crates/reify-stdlib/src/trajectory/sampling.rs`).
-///
-/// Tracked producer-before-consumer: producer task #3855 (γ, DONE; git
-/// `956fcc18c7 "(γ/3855)"`) has landed; the consumer task #3869 (θ —
-/// `simulate_trajectory`) is PENDING, so no in-tree caller exists yet.
-///
-/// **Removal contract**: consumer task #3869 MUST delete this entire `#[test]`
-/// fn as part of its consumer-wiring commit.  Auto-retirement: once #3869 wires
-/// `simulate_trajectory` these fns gain callers and leave `allowed[]`, tripping
-/// assertion (b) at the wide `crates/reify-*/src` scope.
-#[test]
-fn sampling_producers_are_g_allow_marked() {
-    let Some(result) = cached_audit() else {
-        return;
-    };
-    const PINS: &[(&str, &str)] = &[
-        (
-            "crates/reify-stdlib/src/trajectory/sampling.rs",
-            "resample_cubic",
-        ),
-        (
-            "crates/reify-stdlib/src/trajectory/sampling.rs",
-            "to_trajectory_samples",
-        ),
-    ];
-    assert_pins_are_g_allow_marked(result, PINS);
-}
