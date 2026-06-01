@@ -208,8 +208,10 @@ impl ConstraintSolver for SolverRegistry {
 /// delegated to the underlying `solver.solve` with a WeightedSum-rebuilt objective,
 /// preserving the solver's own uniqueness verdict.
 ///
-/// Returns the final stage's `SolveResult`, overriding `unique` to `false` for any
-/// multi-rank solve (the ε-band leaves real slack on earlier ranks).
+/// Returns the final stage's `SolveResult`.  Intermediate stages force `unique = false`
+/// (the ε-band leaves real slack on earlier-rank faces, so those points are not
+/// uniqueness-verified).  The final stage's own `unique` verdict is preserved — given
+/// the accumulated ε-band constraints, the final rank may itself be uniquely determined.
 /// Infeasible / NoProgress from any stage propagates immediately.
 fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) -> SolveResult {
     let obj = base.objective.as_ref().expect("solve_lexicographic: objective must be Some");
@@ -278,27 +280,42 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
         let stage_result = solver.solve(&stage_problem);
 
         match stage_result {
-            SolveResult::Solved { values, .. } => {
+            SolveResult::Solved { values, unique: stage_unique } => {
                 // Warm-start the next stage from this stage's solution.
                 for (k, v) in &values {
                     current_values.insert(k.clone(), v.clone());
                 }
 
                 let is_final = stage_idx == num_ranks - 1;
-                last_result = Some(SolveResult::Solved { values, unique: false });
+
+                // Intermediate stages are always non-unique: the ε-band leaves real
+                // slack on earlier-rank faces, so those points are not
+                // uniqueness-verified.  The final stage's own verdict is preserved —
+                // given the accumulated ε-band constraints it may be fully determined.
+                let result_unique = is_final && stage_unique;
+                last_result = Some(SolveResult::Solved { values, unique: result_unique });
 
                 if is_final {
                     break;
                 }
 
                 // Freeze this rank's realized optimum as an ε-band for the next stage.
-                // Skip (no band) if any term evaluates to non-finite — the next stage
-                // still runs unconstrained, which is permissive rather than wrong.
-                if let Some(obj_star) =
-                    eval_rank_cost(&rank_terms, &current_values, &base.functions)
-                {
-                    accumulated_constraints
-                        .extend(build_band_constraints(&rank_terms, obj_star, stage_idx));
+                // If any term is non-finite, skip the band and warn — the lexicographic
+                // ordering is NOT enforced for this rank, so later ranks may freely
+                // sacrifice it.
+                match eval_rank_cost(&rank_terms, &current_values, &base.functions) {
+                    Some(obj_star) => {
+                        accumulated_constraints
+                            .extend(build_band_constraints(&rank_terms, obj_star, stage_idx));
+                    }
+                    None => {
+                        tracing::warn!(
+                            stage = stage_idx,
+                            "solve_lexicographic: stage {} rank produced non-finite obj*; \
+                             ε-band skipped — lexicographic ordering not enforced for this rank",
+                            stage_idx,
+                        );
+                    }
                 }
             }
             infeasible_or_no_progress => {

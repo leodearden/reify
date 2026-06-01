@@ -872,9 +872,11 @@ fn lexicographic_stages_by_descending_priority() {
     assert!(!refs2.contains(&x_id), "stage 2 must NOT include x");
 
     // The registry result comes from the final stage (vals2: x=3mm, y=10mm).
+    // The registry preserves the final stage's unique verdict; the spy stage-2
+    // result carries unique:false, so the output is also unique:false.
     match result {
         SolveResult::Solved { values, unique } => {
-            assert!(!unique, "staged Lexicographic result must be unique:false");
+            assert!(!unique, "registry must reflect the final stage's unique verdict (spy returns false)");
             let y_val = values
                 .get(&y_id)
                 .expect("result must contain y (from last stage)")
