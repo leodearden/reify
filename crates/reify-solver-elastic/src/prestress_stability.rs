@@ -42,7 +42,86 @@
 //! the T1a ([`crate::form_find`]) and T1b ([`crate::form_find_free`]) kernels
 //! before it. See `plan.json` design_decisions for the scoping rationale.
 
-use faer::Mat;
+// TDD scaffolding (Task 3796): this kernel is built bottom-up — helper fns
+// (`assemble_equilibrium_matrix`, `count_self_stress_states`, …) land several
+// steps before step-14 wires them into the public `analyze_prestress_stability`.
+// Until then they are reachable only from `#[cfg(test)]` unit tests, so the
+// non-test lib build (clippy `--all-targets -D warnings`) would flag every one
+// as dead. This blanket allow keeps each intermediate commit clippy-clean; it is
+// REMOVED in step-16, after the public entry point makes every helper live, so
+// the final state still gets full dead-code coverage.
+#![allow(dead_code)]
+
+use faer::{Mat, Side};
+
+/// Relative tolerance for spectral rank / nullity classification: an eigenvalue
+/// of a symmetric Gram matrix counts as nonzero (a rank direction) only when its
+/// magnitude exceeds this fraction of the largest-magnitude eigenvalue.
+///
+/// Same value and rationale as the layer-2 form-finding classifier
+/// ([`crate::form_find_free`]'s `NULLITY_REL_TOL`): the exact unit-scale prism
+/// has a wide spectral gap (O(1) nonzero singular values vs O(1e-15) numerical
+/// zeros), so `1e-8` cleanly separates the null space from the rest of the
+/// spectrum without a brittle absolute threshold.
+const NULLITY_REL_TOL: f64 = 1e-8;
+
+/// Rank of a symmetric Gram matrix (e.g. `AᵀA` or `AAᵀ`) from its spectrum: the
+/// count of eigenvalues whose magnitude exceeds `rel_tol · max|λ|`.
+///
+/// Reuses the dense self-adjoint eigendecomposition pattern of
+/// [`crate::form_find_free`]'s `classify_spectrum` (faer `self_adjoint_eigen`
+/// with a relative threshold). A Gram matrix is real-symmetric PSD by
+/// construction, so the eigenvalues are the squared singular values of the
+/// underlying matrix and the relative threshold is well-scaled.
+fn spectral_rank(gram: &Mat<f64>, rel_tol: f64) -> usize {
+    let n = gram.nrows();
+    if n == 0 {
+        return 0;
+    }
+    // Dense self-adjoint EVD; the Gram matrix is real symmetric, so a failure
+    // here is a bug, not infeasible input — panic with a descriptive message
+    // (matching the form_find_free / eigensolve `.expect` precedent).
+    let eig = gram
+        .self_adjoint_eigen(Side::Lower)
+        .expect("Gram matrix is real symmetric PSD; self-adjoint EVD must succeed");
+    let s = eig.S();
+    let eigenvalues: Vec<f64> = (0..n).map(|i| s[i]).collect();
+    let max_mag = eigenvalues.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+    let threshold = rel_tol * max_mag;
+    eigenvalues.iter().filter(|v| v.abs() > threshold).count()
+}
+
+/// Form the Gram matrix `AᵀA` (`m × m`) of `a` (`p × m`) by explicit
+/// accumulation. The matrices here are tiny (`m = 12`, `p = 18` for the
+/// triplex), so the direct triple loop is clear and cheap.
+fn gram_transpose_self(a: &Mat<f64>) -> Mat<f64> {
+    let p = a.nrows();
+    let m = a.ncols();
+    let mut gram = Mat::<f64>::zeros(m, m);
+    for i in 0..m {
+        for j in 0..m {
+            let mut acc = 0.0;
+            for r in 0..p {
+                acc += a[(r, i)] * a[(r, j)];
+            }
+            gram[(i, j)] = acc;
+        }
+    }
+    gram
+}
+
+/// Number of self-stress states `s = nullity(A) = m − rank(A)`, where `m` is the
+/// member count (columns of the equilibrium matrix `A`).
+///
+/// `rank(A) = rank(AᵀA)` (the Gram matrix shares `A`'s rank), computed as the
+/// spectral rank of `AᵀA` under [`NULLITY_REL_TOL`]. A valid tensegrity needs
+/// `s ≥ 1` — at least one self-equilibrated prestress (PRD §5).
+pub(crate) fn count_self_stress_states(a: &Mat<f64>) -> usize {
+    let m = a.ncols();
+    let gram = gram_transpose_self(a);
+    let rank = spectral_rank(&gram, NULLITY_REL_TOL);
+    m - rank
+}
 
 /// Assemble the Pellegrino–Calladine equilibrium matrix `A` (`d·N × m`) in the
 /// unit-direction convention `A·s = f`, where `s` is the vector of member axial
@@ -59,11 +138,6 @@ use faer::Mat;
 /// form (they differ by a nonsingular diagonal length scaling), so the
 /// self-stress and mechanism counts are identical while matching the standard
 /// equilibrium-matrix definition.
-// Wired into the public `analyze_prestress_stability` in step-14; until then it
-// is reachable only from unit tests, so the non-test lib build (clippy
-// `--all-targets`) would otherwise flag it dead. The `#[allow]` is removed in
-// step-14 when the public entry point references it.
-#[allow(dead_code)]
 pub(crate) fn assemble_equilibrium_matrix(
     nodes: &[[f64; 3]],
     members: &[(usize, usize)],
