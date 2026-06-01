@@ -122,17 +122,21 @@ fn configured_kernel() -> MockGeometryKernel {
         .with_face_normal_result(TOP_FACE, normal_json)
 }
 
-/// Build a named-steps map mapping the string `"body"` to `BODY_HANDLE`.
+/// Wrap a bare `GeometryHandleId` in a `KernelHandle` (Occt kernel).
 ///
-/// This is what the engine populates for `let body = cylinder(...)` before
-/// calling `post_process_ad_hoc_selectors`.
+/// Used by test fixtures that migrate from `HashMap<String, GeometryHandleId>`
+/// to `HashMap<String, KernelHandle>`.
 fn kh(id: GeometryHandleId) -> KernelHandle {
     KernelHandle { kernel: KernelId::Occt, id }
 }
 
+/// Build a named-steps map mapping the string `"body"` to `BODY_HANDLE`.
+///
+/// This is what the engine populates for `let body = cylinder(...)` before
+/// calling `post_process_ad_hoc_selectors`.
 fn named_steps_with_body() -> HashMap<String, KernelHandle> {
     let mut m = HashMap::new();
-    m.insert("body".to_string(), KernelHandle { kernel: KernelId::Occt, id: BODY_HANDLE });
+    m.insert("body".to_string(), kh(BODY_HANDLE));
     m
 }
 
