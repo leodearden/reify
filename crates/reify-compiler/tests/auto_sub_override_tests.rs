@@ -11,7 +11,7 @@
 //! `sub b : Bearing { bore = auto }`. Until step 4 wires up the entity.rs
 //! producer, no such cell appears in the parent template — so the asserts fail.
 //!
-//! Step 4 (GREEN): `entity.rs` iterates `sub.param_overrides`, detects
+//! Step 4 (GREEN): `entity.rs` iterates `sub.spec_param_overrides`, detects
 //! `ExprKind::Auto { free }`, resolves the member type from the child
 //! template, and pushes a scoped `ValueCellDecl { kind: Auto { free }, … }`
 //! into the parent's `value_cells`.  After that the assertions below pass.
