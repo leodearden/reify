@@ -62,6 +62,7 @@ pub(crate) struct BeamMesh {
 /// (XZ) elements near-cubic so the P1 constant-strain tets do not lock in
 /// bending; `ny = 1` (bending is about Y). This mirrors `solve_cantilever_fea`'s
 /// meshing so the modal mesh matches the validated elastic-static pattern.
+// G-allow: modal::free_vibration ComputeFn pipeline (task #4066) — beam-mesh builder reached only via the fn-pointer registered in compute_targets::register_compute_fns (mod.rs:140), which the orphan audit cannot trace. Wired + tested in this file.
 pub(crate) fn build_beam_mesh(length: f64, width: f64, height: f64) -> BeamMesh {
     let nz: usize = 6;
     // Clamp to ≥ 1 to handle degenerate geometry (height ≈ or ≫ length).
@@ -256,6 +257,7 @@ pub(crate) struct ModalAssembly {
 /// participation metric, eigensolve, scatter-back) is DOF-index based and
 /// element-order agnostic, so it consumes the resulting `(n_nodes, k_full,
 /// m_full)` unchanged regardless of order.
+// G-allow: modal::free_vibration ComputeFn pipeline (task #4066) — K/M assembler reached only via the fn-pointer registered in compute_targets::register_compute_fns (mod.rs:140), which the orphan audit cannot trace. Wired + tested in this file.
 pub(crate) fn assemble_modal_km(
     mesh: ModalMesh<'_>,
     density: f64,
@@ -313,6 +315,7 @@ pub(crate) fn assemble_modal_km(
 /// it is broadcast to every free node's three translational DOFs to form
 /// `d_free` (the caller is responsible for supplying a unit vector — see the
 /// trampoline). It does not affect the eigensolve, only the participation field.
+// G-allow: modal::free_vibration ComputeFn pipeline (task #4066) — generalized eigensolve reached only via the fn-pointer registered in compute_targets::register_compute_fns (mod.rs:140), which the orphan audit cannot trace. Wired + tested in this file.
 pub(crate) fn eigensolve_modal(
     assembly: &ModalAssembly,
     reference_direction: [f64; 3],
@@ -499,6 +502,7 @@ pub(crate) fn eigensolve_modal(
 /// between them), so this convenience wrapper is exercised only by the
 /// `modal_ops` unit tests (which assert the composed path stays bit-identical).
 #[allow(dead_code)]
+// G-allow: modal::free_vibration ComputeFn pipeline (task #4066) — composed assemble+eigensolve wrapper reached only via the fn-pointer registered in compute_targets::register_compute_fns (mod.rs:140), which the orphan audit cannot trace. Exercised by the modal_ops unit tests.
 pub(crate) fn solve_modal_core(
     mesh: ModalMesh<'_>,
     density: f64,
@@ -859,6 +863,7 @@ pub(crate) struct ModalTrampolineRun {
 /// A material with no positive `density` short-circuits to a degenerate
 /// empty-modes result plus an `E_ModalNoMassMatrix` Error (the
 /// [`extract_density_or_degenerate`] guard) — no mesh / eigensolve runs.
+// G-allow: modal::free_vibration ComputeFn entry point (task #4066) — reached only via the fn-pointer registered in compute_targets::register_compute_fns (mod.rs:140), which the orphan audit cannot trace. Wired + tested in this file.
 pub(crate) fn run_modal_analysis(
     value_inputs: &[Value],
     prior_warm_state: Option<&OpaqueState>,
