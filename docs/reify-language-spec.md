@@ -1543,12 +1543,31 @@ A parent scope accesses a child's declarations via dot notation: `motor.shaft_di
 
 **Visibility boundary:** Only **parameters** and **named sub-entities** (ports, sub-structures) are accessible from outside a scope. **`let` bindings** and **constraints** are private (unless marked `pub`).
 
-**Cross-sub geometry composition.** Geometry-typed members on a non-collection
-sub — whether declared as `param body : Solid = box(...)` or as
-`let body = box(...)` on the child — are accessible from the parent via
+**Auto-surfacing (v0.6 — recommended idiom).** Any `sub` that carries an `at`
+pose clause — or any plain containment sub whose child declares a geometry body
+— auto-surfaces at its composed world pose.  The parent need not re-express
+descendant bodies: the surfacing walk composes transforms up the containment
+tree and emits each child's mesh at its computed world position automatically.
+Use `at` for placement and let auto-surfacing do the rest:
+
+```reify
+pub structure Bolt { let body = cylinder(5mm, 20mm) }
+pub structure Gear { let body = cylinder(40mm, 15mm) }
+
+pub structure Assembly {
+    sub bolt : Bolt at transform3(orient_identity(), vec3(30mm, 0mm, 0mm))
+    sub gear : Gear { teeth = 24 } at mount_frame
+    // No manual lift needed — bolt and gear surface at their composed world poses.
+}
+```
+
+**Cross-sub geometry composition (boolean idiom).** Geometry-typed members on
+a non-collection sub — whether declared as `param body : Solid = box(...)` or
+as `let body = box(...)` on the child — are accessible from the parent via
 `self.<sub>.<member>` dot notation. The access lowers to a stable reference to
 the child's realization handle, so transforms and boolean ops in the parent
-compose directly over the child's body:
+compose directly over the child's body.  Use this idiom when a child body must
+be cut into or unioned with a parent solid:
 
 ```reify
 pub structure Inner {
@@ -1568,7 +1587,20 @@ pub structure C {
 }
 ```
 
-Implemented in task 3441.
+**Avoiding double-surfacing.** When a child body is used as a boolean operand
+(cut/union into a parent solid), mark the sub `aux` so the child's geometry
+does not appear both as a standalone surface and inside the composed result
+(PRD §3 rule 3 / §11.5):
+
+```reify
+pub structure Housing {
+    aux let blank = box(50mm, 30mm, 20mm)   // operand — not surfaced standalone
+    aux let bore  = cylinder(8mm, 25mm)     // operand — not surfaced standalone
+    let body = cut(self.blank, self.bore)   // only this surfaces
+}
+```
+
+Implemented in task 3441 (cross-sub access); `at` placement and `aux` suppression in task 3903.
 
 **v0.1 limitations — remaining scope gaps:**
 
