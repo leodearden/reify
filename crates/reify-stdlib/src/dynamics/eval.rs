@@ -23,7 +23,40 @@
 //!   * `inverse_dynamics_lower`              — trajectory variant (step-8)
 //!     (closed-chain routing layered into the snapshot core, step-10)
 
-use reify_ir::Value;
+use reify_core::dimension::DimensionVector;
+use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+
+/// Sentinel `StructureTypeId` for engine-assembled (registry-free) instances.
+/// The `eval_builtin` path has no `StructureRegistry`, so result instances are
+/// minted with the nominal `type_name` as the source of truth for downstream
+/// hooks — mirrors `dynamics_ops::assemble_mass_properties` /
+/// `modal_ops::degenerate_modal_result`.
+const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
+
+/// Extract an `f64` from a numeric value cell (`Int` / `Real` / dimensioned
+/// `Scalar`). Mirrors `dynamics_ops::cell_f64`; non-numeric cells yield `None`.
+fn cell_f64(v: &Value) -> Option<f64> {
+    match v {
+        Value::Int(n) => Some(*n as f64),
+        Value::Real(r) => Some(*r),
+        Value::Scalar { si_value, .. } => Some(*si_value),
+        _ => None,
+    }
+}
+
+/// Mint a registry-free `Value::StructureInstance` with the given nominal
+/// `type_name` and field map. Single assembler for every result type this
+/// module produces (`MotionTrajectory`, `TrajectorySample`, the `JointForce`
+/// family), mirroring `dynamics_ops::assemble_mass_properties`.
+fn mint_instance(type_name: &str, fields: Vec<(String, Value)>) -> Value {
+    let fields: PersistentMap<String, Value> = fields.into_iter().collect();
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: REGISTRY_FREE_TYPE_ID,
+        type_name: type_name.to_string(),
+        version: 1,
+        fields,
+    }))
+}
 
 /// Evaluate an RBD-η dynamics intrinsic by name.
 ///
@@ -32,10 +65,119 @@ use reify_ir::Value;
 /// mechanism/snapshot/body eval_builtin convention), or `None` for any other
 /// name so that `eval_builtin` can fall through to the next module.
 pub(crate) fn eval_dynamics(name: &str, args: &[Value]) -> Option<Value> {
-    // Implemented incrementally by RBD-η steps 1-10. Until the dispatch arms
-    // land, every name returns `None` (eval_builtin falls through → Undef).
-    let _ = (name, args);
-    None
+    match name {
+        "ramp_profile_lower" => Some(eval_ramp_profile(args)),
+        // inverse_dynamics_at_snapshot_lower / inverse_dynamics_lower land in
+        // RBD-η steps 6/8/10.
+        _ => None,
+    }
+}
+
+// ── ramp_profile (PRD §4.3) ───────────────────────────────────────────────────
+
+/// Fixed number of equal time intervals in a `ramp_profile` grid (⇒ `N + 1`
+/// samples). Even so a sample lands exactly on the peak-velocity instant
+/// `t_half`, and both endpoints (`t = 0`, `t = T`) are sampled exactly.
+const RAMP_PROFILE_SEGMENTS: usize = 100;
+
+/// `ramp_profile_lower(joint, from, to, max_accel)` — rest-to-rest triangular
+/// constant-acceleration trajectory (PRD §4.3; no max-velocity arg ⇒ the
+/// degenerate trapezoid). Returns a `MotionTrajectory` of `TrajectorySample`s,
+/// or `Value::Undef` on malformed input (non-numeric / non-finite bounds, or a
+/// non-positive / non-finite `max_accel`).
+fn eval_ramp_profile(args: &[Value]) -> Value {
+    if args.len() != 4 {
+        return Value::Undef;
+    }
+    let joint = args[0].clone();
+    let from = match cell_f64(&args[1]) {
+        Some(x) if x.is_finite() => x,
+        _ => return Value::Undef,
+    };
+    let to = match cell_f64(&args[2]) {
+        Some(x) if x.is_finite() => x,
+        _ => return Value::Undef,
+    };
+    let max_accel = match cell_f64(&args[3]) {
+        Some(a) if a.is_finite() && a > 0.0 => a,
+        _ => return Value::Undef,
+    };
+
+    let samples = ramp_profile_samples(from, to, max_accel);
+    // The single driving joint is stored in the `mechanism` placeholder field
+    // (Real per the structure_def); `inverse_dynamics` takes the mechanism as a
+    // separate arg and does not consume this field.
+    mint_instance(
+        "MotionTrajectory",
+        vec![
+            ("mechanism".to_string(), joint),
+            ("samples".to_string(), Value::List(samples)),
+        ],
+    )
+}
+
+/// Sample the triangular rest-to-rest profile on the fixed time grid.
+///
+/// Phase 1 (`0 ≤ t ≤ t_half`): accelerate at `+s·a` from rest;
+/// Phase 2 (`t_half < t ≤ T`): decelerate at `−s·a` to rest, where
+/// `s = sign(to − from)`, `D = |to − from|`, `T = 2·sqrt(D/a)`,
+/// `t_half = T/2`. A zero-displacement move emits a single rest sample at
+/// `t = 0`.
+fn ramp_profile_samples(from: f64, to: f64, max_accel: f64) -> Vec<Value> {
+    let signed = to - from;
+    let dist = signed.abs();
+    if dist == 0.0 {
+        return vec![trajectory_sample(0.0, from, 0.0, 0.0)];
+    }
+    let s = signed.signum();
+    let total_t = 2.0 * (dist / max_accel).sqrt();
+    let t_half = total_t / 2.0;
+    let v_peak = s * max_accel * t_half;
+    let q_half = from + s * 0.5 * dist;
+
+    let mut samples = Vec::with_capacity(RAMP_PROFILE_SEGMENTS + 1);
+    for k in 0..=RAMP_PROFILE_SEGMENTS {
+        let t = total_t * (k as f64) / (RAMP_PROFILE_SEGMENTS as f64);
+        let (q, v, a) = if t <= t_half {
+            // Phase 1: accelerate at +s·max_accel from rest.
+            (
+                from + s * 0.5 * max_accel * t * t,
+                s * max_accel * t,
+                s * max_accel,
+            )
+        } else {
+            // Phase 2: decelerate at −s·max_accel to rest.
+            let tau = t - t_half;
+            (
+                q_half + v_peak * tau - s * 0.5 * max_accel * tau * tau,
+                v_peak - s * max_accel * tau,
+                -s * max_accel,
+            )
+        };
+        samples.push(trajectory_sample(t, q, v, a));
+    }
+    samples
+}
+
+/// Assemble a single-joint `TrajectorySample`: `t` is a Time-dimensioned
+/// `Scalar`; `values` / `vels` / `accels` are length-1 `List<Real>`
+/// (`JointValue` resolves to `Real`).
+fn trajectory_sample(t: f64, q: f64, v: f64, a: f64) -> Value {
+    mint_instance(
+        "TrajectorySample",
+        vec![
+            (
+                "t".to_string(),
+                Value::Scalar {
+                    si_value: t,
+                    dimension: DimensionVector::TIME,
+                },
+            ),
+            ("values".to_string(), Value::List(vec![Value::Real(q)])),
+            ("vels".to_string(), Value::List(vec![Value::Real(v)])),
+            ("accels".to_string(), Value::List(vec![Value::Real(a)])),
+        ],
+    )
 }
 
 #[cfg(test)]
