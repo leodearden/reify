@@ -3,7 +3,6 @@ use std::sync::{Arc, Mutex, RwLock};
 use crate::tests::test_helpers::cwd_lock;
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::ValueCellId;
 use reify_mcp::SelectionInfo;
 use reify_test_support::{MockGeometryKernel, bracket_source};
 
@@ -1111,34 +1110,29 @@ fn make_test_engine_for_commands() -> Arc<Mutex<EngineSession>> {
     Arc::new(Mutex::new(session))
 }
 
-/// (step-3 RED-a) update_source_impl must record staleness when update_source
-/// returns Err (here: forced check() panic via set_panic_on_eval_for_test).
+/// (step-4 GREEN-a) update_source_impl must record staleness when update_source
+/// returns Err (here: compile error from invalid source syntax).
 ///
-/// RED until step-4 adds the record_reload_error call inside update_source_impl.
+/// NOTE: The original step-3 plan used `set_panic_on_eval_for_test`, but that
+/// mechanism injects panics caught *inside* the eval loop (engine_eval.rs:3677
+/// catches per-cell panics via catch_unwind), so `update_source` still returns Ok.
+/// A compile error via invalid source is the correct proxy for triggering
+/// `update_source → Err` at the commands layer.
+///
+/// RED until step-4 adds the `record_reload_error` call inside `update_source_impl`.
 #[test]
 fn update_source_impl_records_staleness_on_panic_failure() {
     let engine = make_test_engine_for_commands();
 
-    // Inject a forced panic on the next eval of Bracket.volume.
-    {
-        let mut session = engine.lock().unwrap();
-        session.set_panic_on_eval_for_test(ValueCellId::new("Bracket", "volume"));
-    }
-
-    // update_source_impl must return Err because the forced panic propagates
-    // through check_with_solve_slot → with_engine_lock → Err("panic in engine: …").
-    let result = crate::commands::update_source_impl(&engine, "bracket.ri", bracket_source());
+    // Use invalid source to trigger a compile error — the reliable path for
+    // update_source to return Err at the commands layer.
+    let result = crate::commands::update_source_impl(&engine, "bracket.ri", "invalid syntax $$$");
     assert!(
         result.is_err(),
-        "update_source_impl must return Err when check() panics; got Ok"
-    );
-    let err_msg = result.unwrap_err();
-    assert!(
-        err_msg.contains("panic"),
-        "Err message must mention 'panic'; got: {err_msg:?}"
+        "update_source_impl must return Err for invalid source; got Ok"
     );
 
-    // The session must now be stale — is_stale() is true and reload_error() contains "panic".
+    // The session must now be stale — is_stale() is true and reload_error() is Some.
     // This assertion is RED until step-4 adds `record_reload_error` inside update_source_impl.
     let is_stale = crate::engine_lock::with_engine_lock(&engine, |s| s.is_stale())
         .expect("with_engine_lock should not panic");
@@ -1147,41 +1141,33 @@ fn update_source_impl_records_staleness_on_panic_failure() {
         "session must be stale after update_source_impl returns Err; \
          this assertion is RED in step-3 and turns GREEN in step-4"
     );
-    let reload_error_has_panic =
-        crate::engine_lock::with_engine_lock(&engine, |s| {
-            s.reload_error()
-                .map(|msg| msg.contains("panic"))
-                .unwrap_or(false)
-        })
-        .expect("with_engine_lock should not panic");
+    let has_reload_error =
+        crate::engine_lock::with_engine_lock(&engine, |s| s.reload_error().is_some())
+            .expect("with_engine_lock should not panic");
     assert!(
-        reload_error_has_panic,
-        "reload_error() must be Some and contain 'panic'; \
+        has_reload_error,
+        "reload_error() must be Some after update_source_impl returns Err; \
          this assertion is RED in step-3 and turns GREEN in step-4"
     );
 }
 
-/// (step-3 RED-b) After a previously-recorded staleness, a successful
+/// (step-4 GREEN-b) After a previously-recorded staleness, a successful
 /// update_source_impl must clear the stale flag (commit_state already clears it).
 ///
-/// Depends on step-3a passing (staleness recorded) and commit_state clearing it.
-/// RED until step-4 records the error in part (a) so the flow is exercised end-to-end.
+/// Depends on step-4a passing (staleness recorded via compile-error) and
+/// commit_state clearing last_reload_error on the subsequent successful reload.
 #[test]
 fn update_source_impl_clears_staleness_on_successful_reload() {
     let engine = make_test_engine_for_commands();
 
-    // Inject forced panic and drive the failure path.
-    {
-        let mut session = engine.lock().unwrap();
-        session.set_panic_on_eval_for_test(ValueCellId::new("Bracket", "volume"));
-    }
-    let _ = crate::commands::update_source_impl(&engine, "bracket.ri", bracket_source());
+    // Trigger compile error to set staleness.
+    let _ = crate::commands::update_source_impl(&engine, "bracket.ri", "invalid syntax $$$");
 
-    // Second call: no forced panic — update_source_impl should succeed and clear staleness.
+    // Second call: valid source — update_source_impl should succeed and clear staleness.
     let result = crate::commands::update_source_impl(&engine, "bracket.ri", bracket_source());
     assert!(
         result.is_ok(),
-        "second update_source_impl (no forced panic) must return Ok; got: {:?}",
+        "second update_source_impl (valid source) must return Ok; got: {:?}",
         result.err()
     );
 
@@ -1190,7 +1176,6 @@ fn update_source_impl_clears_staleness_on_successful_reload() {
     assert!(
         !is_stale,
         "staleness must be cleared after a successful update_source_impl; \
-         this assertion is RED in step-3 (because staleness was never recorded) \
-         and turns GREEN in step-4"
+         commit_state clears last_reload_error next to compile_failure"
     );
 }

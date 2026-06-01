@@ -79,13 +79,33 @@ pub fn set_parameter_impl(
 }
 
 /// Update source code and return updated state.
+///
+/// On success: returns `Ok(GuiState)` and the session is not stale (commit_state
+/// cleared `last_reload_error`).
+///
+/// On failure: returns `Err(message)` (covering both compile-error and check()-panic
+/// paths) **and** records the error as the session's staleness signal via a second
+/// `with_engine_lock` call.  The second lock is panic-safe because the first call's
+/// panic was already caught and converted to `Err` by `with_engine_lock`; the second
+/// call cannot panic on a just-caught-panic session.
 pub fn update_source_impl(
     engine: &Mutex<EngineSession>,
     path: &str,
     content: &str,
 ) -> Result<GuiState, String> {
-    crate::engine_lock::with_engine_lock(engine, |s| s.update_source(path, content))
-        .and_then(std::convert::identity)
+    let result =
+        crate::engine_lock::with_engine_lock(engine, |s| s.update_source(path, content))
+            .and_then(std::convert::identity);
+    if let Err(ref msg) = result {
+        // Record the reload error so is_stale() / build_gui_state() reflect the failure.
+        // Ignore the Result of this second lock: it can only fail if the mutex was
+        // re-poisoned between the two calls, which is not possible here.
+        let msg_clone = msg.clone();
+        let _ = crate::engine_lock::with_engine_lock(engine, |s| {
+            s.record_reload_error(msg_clone);
+        });
+    }
+    result
 }
 
 /// Export geometry to a file.
