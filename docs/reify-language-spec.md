@@ -2445,8 +2445,8 @@ where_guard     ::= 'where' expr                         (* per-declaration guar
 
 param_decl      ::= 'param' IDENT ':' type_expr ('=' expr)? where_guard?
 port_decl       ::= 'port' IDENT ':' dir? type_expr ('{' member* '}')? where_guard?
-sub_decl        ::= 'sub' IDENT ':' type_expr where_guard? ('{' member* '}')?
-let_decl        ::= 'pub'? 'let' IDENT (':' type_expr)? '=' expr where_guard?
+sub_decl        ::= 'aux'? 'sub' IDENT ':' type_expr where_guard? ('{' member* '}')? ('at' expr)?
+let_decl        ::= 'pub'? 'aux'? 'let' IDENT (':' type_expr)? '=' expr where_guard?
 constraint_line ::= 'constraint' (constraint_ref | expr) where_guard?
 
 constraint_ref  ::= TYPE_IDENT type_args? '(' args? ')'
