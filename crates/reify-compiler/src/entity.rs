@@ -2107,6 +2107,7 @@ pub(crate) fn compile_entity(
                     realizations.push(RealizationDecl {
                         id: RealizationNodeId::new(entity_name, realization_index),
                         name: Some(let_decl.name.clone()),
+                        is_aux: let_decl.is_aux,
                         feature_tags,
                         operations: ops,
                         span: let_decl.span,
@@ -2135,6 +2136,8 @@ pub(crate) fn compile_entity(
                     realizations.push(RealizationDecl {
                         id: RealizationNodeId::new(entity_name, realization_index),
                         name: Some(param.name.clone()),
+                        // Solid-typed params carry no `aux` modifier in the grammar.
+                        is_aux: false,
                         feature_tags,
                         operations: ops,
                         span: param.span,
@@ -3416,6 +3419,8 @@ fn emit_guarded_geometry_realizations(
                     sink.realizations.push(RealizationDecl {
                         id: RealizationNodeId::new(deps.entity_name, *sink.realization_index),
                         name: Some(param.name.clone()),
+                        // Guarded Solid-typed params carry no `aux` modifier.
+                        is_aux: false,
                         feature_tags,
                         operations: ops,
                         span: param.span,

@@ -2631,10 +2631,8 @@ impl Engine {
                             // tessellated, and shipped — only hidden by default.
                             // The Phase-B containment walk (steps 4/6) will
                             // additionally OR in any `aux` ancestor sub.
-                            let default_visible = !crate::geometry_ops::realization_is_aux(
-                                template,
-                                realization,
-                            );
+                            let default_visible =
+                                !crate::geometry_ops::realization_is_aux(realization);
                             meshes.push(MeshSurface {
                                 entity_path: realization.id.to_string(),
                                 mesh,

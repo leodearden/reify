@@ -4572,33 +4572,20 @@ pub(crate) fn eval_sub_pose(
     }
 }
 
-/// Resolve whether the `let`/`param` cell backing a realization was declared
-/// `aux` (PRD §2.2), i.e. "no external geometric effect" → surfaced hidden.
+/// Resolve whether the `let` binding backing a realization was declared `aux`
+/// (PRD §2.2), i.e. "no external geometric effect" → surfaced hidden.
 ///
-/// `RealizationDecl` carries no `is_aux` flag of its own; the modifier lives on
-/// the `ValueCellDecl` (`let`/`param`). The link is the realization's name: the
-/// compiler emits `RealizationDecl.name == Some(<let-binding name>)`, which
-/// matches the `member` component of exactly one `ValueCellId` in the template's
-/// `value_cells`. Returns `false` when the realization is anonymous
-/// (`name == None`, only the `TopologyTemplateBuilder` test helper) or no cell
-/// matches — the surfacing default is "visible".
+/// The compiler threads `LetDecl.is_aux` directly onto `RealizationDecl.is_aux`
+/// at lowering (geometry lets are lowered as realizations only — they create no
+/// `ValueCellDecl`, so the flag cannot be recovered via `value_cells`). Geometry
+/// params and the guarded-group path carry no source `aux` modifier and so are
+/// always `false`.
 ///
 /// Used by `tessellate_from_values` to derive `MeshSurface.default_visible`
 /// on the flat (no-composition) path; the Phase-B containment walk additionally
 /// ORs in any `aux` ancestor sub (T5 steps 4/6).
-pub(crate) fn realization_is_aux(
-    template: &reify_compiler::TopologyTemplate,
-    realization: &reify_compiler::RealizationDecl,
-) -> bool {
-    let Some(name) = realization.name.as_deref() else {
-        return false;
-    };
-    template
-        .value_cells
-        .iter()
-        .find(|cell| cell.id.member == name)
-        .map(|cell| cell.is_aux)
-        .unwrap_or(false)
+pub(crate) fn realization_is_aux(realization: &reify_compiler::RealizationDecl) -> bool {
+    realization.is_aux
 }
 
 #[cfg(test)]
