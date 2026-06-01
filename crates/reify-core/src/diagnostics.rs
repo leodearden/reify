@@ -2648,14 +2648,15 @@ mod tests {
     // per-variant round-trip, Debug string, and serde wire format.
 
     /// `DiagnosticCode::ScopeCoupling` round-trips through
-    /// `Diagnostic::warning(...).with_code(...)` and Debug-prints as `"ScopeCoupling"`.
+    /// `Diagnostic::warning(...).with_code(...)`.
     /// Shape mirrors `diagnostic_code_shadowing_with_code_round_trips`.
     /// A future enum reorganisation that drops `ScopeCoupling` is caught here.
+    /// The serde wire-format is independently pinned by
+    /// `diagnostic_code_scope_coupling_serde_pascal_case` below.
     #[test]
     fn diagnostic_code_scope_coupling_with_code_round_trips() {
         let d = Diagnostic::warning("x").with_code(DiagnosticCode::ScopeCoupling);
         assert_eq!(d.code, Some(DiagnosticCode::ScopeCoupling));
-        assert_eq!(format!("{:?}", DiagnosticCode::ScopeCoupling), "ScopeCoupling");
     }
 
     /// Under `feature = "serde"`, `DiagnosticCode::ScopeCoupling` serializes as

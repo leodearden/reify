@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use reify_compiler::{CompiledModule, ValueCellDecl, ValueCellKind, find_template};
 use reify_ir::sampled::{LinspaceError, linspace_inclusive};
-use reify_core::{ContentHash, Diagnostic, DiagnosticCode, FIELD_ENTITY_PREFIX, SnapshotId, ValueCellId, VersionId};
+use reify_core::{ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, FIELD_ENTITY_PREFIX, SnapshotId, ValueCellId, VersionId};
 use reify_ir::{AutoParam, CompiledFunction, DeterminacyState, ErrorRef, Freshness, InterpolationKind, PersistentMap, ResolutionProblem, SampledField, SampledGridKind, SnapshotProvenance, SolveResult, Value, ValueMap};
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
@@ -381,37 +381,16 @@ fn detect_scope_coupling(templates: &[reify_compiler::TopologyTemplate]) -> Vec<
     for template in templates {
         let b_name = &template.name;
 
-        // Collect B's read-set from constraints (full set, retains spans).
-        for constraint in &template.constraints {
-            let reads = extract_dependency_trace(&constraint.expr).reads;
+        // Shared helper: check `reads` against `frozen`, deduplicate per
+        // (owner, B, crossing) triple, and push a W_SCOPE_COUPLING warning.
+        // `span` is `Some(constraint.span)` for constraint-sourced crossings
+        // (attaches a source label pointing at the crossing read site) and
+        // `None` for objective-sourced crossings (ObjectiveTerm carries no
+        // span).  The message literal lives here once to prevent drift.
+        let mut emit_for_reads = |reads: Vec<ValueCellId>, span| {
             for r in reads {
-                if let Some(owner) = frozen.get(&r)
-                    && owner != b_name
-                {
-                    let key = (owner.clone(), b_name.clone(), r.clone());
-                    if seen.insert(key) {
-                        let msg = format!(
-                            "W_SCOPE_COUPLING: scope '{b_name}' reads auto cell '{r}' \
-                             owned by already-resolved scope '{owner}'; \
-                             bottom-up resolution may be approximate"
-                        );
-                        diagnostics.push(
-                            Diagnostic::warning(msg)
-                                .with_code(DiagnosticCode::ScopeCoupling),
-                        );
-                    }
-                }
-            }
-        }
-
-        // Collect B's read-set from objective terms (no span available).
-        if let Some(obj) = &template.objective {
-            for term in &obj.terms {
-                let reads = extract_dependency_trace(&term.expr).reads;
-                for r in reads {
-                    if let Some(owner) = frozen.get(&r)
-                        && owner != b_name
-                    {
+                if let Some(owner) = frozen.get(&r) {
+                    if owner != b_name {
                         let key = (owner.clone(), b_name.clone(), r.clone());
                         if seen.insert(key) {
                             let msg = format!(
@@ -419,13 +398,33 @@ fn detect_scope_coupling(templates: &[reify_compiler::TopologyTemplate]) -> Vec<
                                  owned by already-resolved scope '{owner}'; \
                                  bottom-up resolution may be approximate"
                             );
-                            diagnostics.push(
-                                Diagnostic::warning(msg)
-                                    .with_code(DiagnosticCode::ScopeCoupling),
-                            );
+                            let diag = Diagnostic::warning(msg)
+                                .with_code(DiagnosticCode::ScopeCoupling);
+                            diagnostics.push(if let Some(s) = span {
+                                diag.with_label(DiagnosticLabel::new(
+                                    s,
+                                    "scope coupling read site",
+                                ))
+                            } else {
+                                diag
+                            });
                         }
                     }
                 }
+            }
+        };
+
+        // Constraint read-sets: attach the constraint span as a source label.
+        for constraint in &template.constraints {
+            let reads = extract_dependency_trace(&constraint.expr).reads;
+            emit_for_reads(reads, Some(constraint.span));
+        }
+
+        // Objective read-sets: ObjectiveTerm carries no span.
+        if let Some(obj) = &template.objective {
+            for term in &obj.terms {
+                let reads = extract_dependency_trace(&term.expr).reads;
+                emit_for_reads(reads, None);
             }
         }
 

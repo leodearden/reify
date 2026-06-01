@@ -82,9 +82,9 @@ fn eval_emits_scope_coupling_for_constraint_crossing() {
         msg.contains("Later"),
         "diagnostic message should name the later scope 'Later'; got: {msg}"
     );
-    // The crossing cell is Leaf.k — check for entity and member in message.
+    // The crossing cell is Leaf.k — check the full cell id appears in the message.
     assert!(
-        msg.contains("Leaf") && (msg.contains(".k") || msg.contains("k")),
+        msg.contains("Leaf.k"),
         "diagnostic message should reference the crossing cell 'Leaf.k'; got: {msg}"
     );
 }
