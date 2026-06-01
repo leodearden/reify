@@ -926,6 +926,7 @@ pub(crate) fn check_velocity_infeasible(params: &TotsParams) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::simulate::ModeDesc;
     use crate::dynamics::spatial::{Frame3, SpatialTransform6, SpatialVector6};
 
     // ── Shared fixture builders ───────────────────────────────────────────────
@@ -1213,8 +1214,8 @@ mod tests {
         let n = params.n_vars();
         let g = objective_gradient(n);
         assert_eq!(g.len(), n);
-        for i in 0..n - 1 {
-            assert_eq!(g[i], 0.0, "g[{i}] should be 0");
+        for (i, &gi) in g.iter().enumerate().take(n - 1) {
+            assert_eq!(gi, 0.0, "g[{i}] should be 0");
         }
         assert_eq!(g[n - 1], 1.0, "g[n-1] should be 1");
     }
@@ -1241,8 +1242,8 @@ mod tests {
         let jac = constraint_jacobian(&params, &model, 1e-5).expect("jacobian");
         let n_vars = params.n_vars();
         // Row 1 = vel constraint for joint 0; last column = dT.
-        let dvel_dT = jac[1][n_vars - 1];
-        assert!(dvel_dT < 0.0, "dvel/dT should be negative, got {dvel_dT}");
+        let dvel_dt = jac[1][n_vars - 1];
+        assert!(dvel_dt < 0.0, "dvel/dT should be negative, got {dvel_dt}");
     }
 
     // ── Step-9 tests: BFGS Hessian update ─────────────────────────────────────
