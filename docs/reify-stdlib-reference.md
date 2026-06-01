@@ -492,6 +492,8 @@ therefore **not comparable across kernels**. `edges_by_length` is **B-rep-only**
 the other selectors and the mass properties (`center_of_mass`,
 `moment_of_inertia`) have parity on both kernels.
 
+**Eval status (2026-06, `docs/prds/v0_3/kernel-geometry-queries.md`):** every query and topology-selector helper in this section now dispatches to the geometry kernel and returns a typed value at eval time; prior to this PRD these helpers were registered/compile-typed but eval-returned `Undef`.
+
 ### 3.10 `std.geometry.traits`
 
 ```
