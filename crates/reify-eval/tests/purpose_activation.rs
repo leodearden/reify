@@ -32,7 +32,7 @@ use reify_test_support::{
     make_engine, make_simple_engine, mm, parse_and_compile, parse_and_compile_with_stdlib,
 };
 use reify_core::{ContentHash, ModulePath, Severity, Type, ValueCellId, VersionId};
-use reify_ir::{CompiledExprKind, OptimizationObjective, Satisfaction};
+use reify_ir::{CompiledExprKind, ObjectiveSet, ObjectiveSense, Satisfaction};
 
 const EXAMPLE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -220,7 +220,7 @@ fn eval_preserves_optimization_objective_across_re_eval() {
         "precondition: one objective must be active after activation"
     );
     assert!(
-        matches!(objectives_before[0], OptimizationObjective::Minimize(_)),
+        objectives_before[0].terms[0].sense == ObjectiveSense::Minimize,
         "precondition: objective must be Minimize"
     );
 
@@ -237,7 +237,7 @@ fn eval_preserves_optimization_objective_across_re_eval() {
          activate_purpose_constraints()"
     );
     assert!(
-        matches!(objectives_after[0], OptimizationObjective::Minimize(_)),
+        objectives_after[0].terms[0].sense == ObjectiveSense::Minimize,
         "re-injected objective must still be Minimize after eval()"
     );
 }
@@ -557,7 +557,7 @@ fn minimize_objective_injected() {
     let objectives = engine.active_objectives();
     assert_eq!(objectives.len(), 1, "should have 1 active objective");
     assert!(
-        matches!(objectives[0], OptimizationObjective::Minimize(_)),
+        objectives[0].terms[0].sense == ObjectiveSense::Minimize,
         "objective should be Minimize, got {:?}",
         objectives[0]
     );
@@ -585,7 +585,7 @@ fn maximize_objective_injected() {
     let objectives = engine.active_objectives();
     assert_eq!(objectives.len(), 1, "should have 1 active objective");
     assert!(
-        matches!(objectives[0], OptimizationObjective::Maximize(_)),
+        objectives[0].terms[0].sense == ObjectiveSense::Maximize,
         "objective should be Maximize, got {:?}",
         objectives[0]
     );
@@ -805,7 +805,7 @@ fn m10_purpose_activation_example_activate_minimize_purpose() {
         engine
             .active_objectives()
             .iter()
-            .any(|o| matches!(o, OptimizationObjective::Minimize(_))),
+            .any(|o| o.terms.first().map(|t| t.sense) == Some(ObjectiveSense::Minimize)),
         "lightweight should inject a Minimize objective"
     );
     engine.deactivate_purpose("lightweight");
@@ -1105,20 +1105,16 @@ purpose weight_target(subject : Structure) {
     assert_eq!(purpose.name, "weight_target");
 
     // Pre-activation: objective's inner ValueRef entity must equal the β per-param stamp.
-    let pre_obj_entity = match purpose
+    let pre_obj = purpose
         .objective
         .as_ref()
-        .expect("weight_target must have a minimize objective")
-    {
-        OptimizationObjective::Minimize(expr) => match &expr.kind {
-            CompiledExprKind::ValueRef(id) => id.entity.clone(),
-            other => panic!(
-                "pre-activation: expected ValueRef inside Minimize objective, got {:?}",
-                other
-            ),
-        },
+        .expect("weight_target must have a minimize objective");
+    assert_eq!(pre_obj.terms.len(), 1, "pre-activation: expected 1 term in minimize objective");
+    assert_eq!(pre_obj.terms[0].sense, ObjectiveSense::Minimize, "pre-activation: expected Minimize sense");
+    let pre_obj_entity = match &pre_obj.terms[0].expr.kind {
+        CompiledExprKind::ValueRef(id) => id.entity.clone(),
         other => panic!(
-            "pre-activation: expected Minimize objective, got {:?}",
+            "pre-activation: expected ValueRef inside Minimize objective term, got {:?}",
             other
         ),
     };
@@ -1138,16 +1134,12 @@ purpose weight_target(subject : Structure) {
     assert_eq!(objectives.len(), 1, "should have 1 active objective after activation");
 
     // Post-activation: the active objective's ValueRef entity must be remapped to "Bracket".
-    let post_obj_entity = match objectives[0] {
-        OptimizationObjective::Minimize(expr) => match &expr.kind {
-            CompiledExprKind::ValueRef(id) => id.entity.clone(),
-            other => panic!(
-                "post-activation: expected ValueRef inside Minimize objective, got {:?}",
-                other
-            ),
-        },
+    assert_eq!(objectives[0].terms.len(), 1, "post-activation: expected 1 term in objective");
+    assert_eq!(objectives[0].terms[0].sense, ObjectiveSense::Minimize, "post-activation: expected Minimize sense");
+    let post_obj_entity = match &objectives[0].terms[0].expr.kind {
+        CompiledExprKind::ValueRef(id) => id.entity.clone(),
         other => panic!(
-            "post-activation: expected Minimize objective, got {:?}",
+            "post-activation: expected ValueRef inside Minimize objective term, got {:?}",
             other
         ),
     };
@@ -2375,7 +2367,7 @@ purpose min_margin(subject : Structure) {
     let objectives = engine.active_objectives();
     assert_eq!(objectives.len(), 1, "must have 1 active objective");
     assert!(
-        matches!(objectives[0], OptimizationObjective::Minimize(_)),
+        objectives[0].terms[0].sense == ObjectiveSense::Minimize,
         "objective must be Minimize after activation"
     );
 
