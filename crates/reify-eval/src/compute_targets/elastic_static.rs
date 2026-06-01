@@ -1434,4 +1434,308 @@ mod tests {
             "nodal_stress.len() should be n_nodes={expected_n_nodes}"
         );
     }
+
+    // ── step-9 RED (task δ/3594): shell-route trampoline contract ─────────────
+    //
+    // Drive `solve_elastic_static_trampoline` directly with hand-built
+    // value_inputs and pin BOTH routing branches:
+    //
+    //   (1) shell case (shell_force=On): the ElasticResult must carry a real
+    //       `ShellStress` `shell_channels` (NOT Undef) with finite top/mid/bottom,
+    //       a populated `stress` field whose SampledField data bit-equals
+    //       `shell_channels.mid` (the I-2 alias — compared as extracted data Vecs,
+    //       NOT whole-Value PartialEq, mirroring solve_elastic_static_e2e.rs), and
+    //       a max-over-elements top-channel von Mises within the one-OOM band
+    //       [3e7, 3e9] Pa around σ=6PL/(bh²)=3e8.
+    //
+    //   (2) tet no-regression case (shell_force=Off): the task 4084/α baseline is
+    //       preserved — `shell_channels` and `frame` stay Undef, but `stress` is a
+    //       POPULATED Regular3D Sampled Field (4084/α populates displacement+stress
+    //       for tets; this is NOT Undef).
+    //
+    // RED: the current trampoline ignores shell_force and always runs the tet
+    // path, so it always emits shell_channels=Undef — branch (1) fails until
+    // step-10 adds the shell route. Branch (2) already holds today.
+    //
+    // (All of Value / FieldSourceKind / PersistentMap / SampledGridKind /
+    // StructureInstanceData / StructureTypeId / DimensionVector are already in
+    // scope via the `use super::*` at the top of this test module, so no extra
+    // `use` here.)
+
+    /// Steel-like isotropic material StructureInstance. `classify_material` falls
+    /// through to `MaterialModel::Isotropic` for any non-Orthotropic /
+    /// non-TransverseIsotropic `type_name` (reads youngs_modulus + poisson_ratio).
+    fn shell9_make_isotropic_material(youngs: f64, poisson: f64) -> Value {
+        let fields: PersistentMap<String, Value> = [
+            (
+                "youngs_modulus".to_string(),
+                Value::Scalar { si_value: youngs, dimension: DimensionVector::PRESSURE },
+            ),
+            ("poisson_ratio".to_string(), Value::Real(poisson)),
+        ]
+        .into_iter()
+        .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "IsotropicElastic".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// `Value::Scalar` geometry length (SI metres).
+    fn shell9_make_len(m: f64) -> Value {
+        Value::Scalar { si_value: m, dimension: DimensionVector::LENGTH }
+    }
+
+    /// `Value::List` with one `PointLoad { force: Real }` (trampoline sums force).
+    fn shell9_make_point_loads(force_n: f64) -> Value {
+        let fields: PersistentMap<String, Value> =
+            [("force".to_string(), Value::Real(force_n))].into_iter().collect();
+        Value::List(vec![Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "PointLoad".to_string(),
+            version: 1,
+            fields,
+        }))])
+    }
+
+    /// `Value::List` with one `FixedSupport` (fields not inspected; presence clamps).
+    fn shell9_make_supports() -> Value {
+        Value::List(vec![Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "FixedSupport".to_string(),
+            version: 1,
+            fields: [].into_iter().collect(),
+        }))])
+    }
+
+    /// `ElasticOptions` with the given `ShellForce` variant + default
+    /// `shell_threshold = 0.2`. `shell_force` is a `Value::Enum`.
+    fn shell9_make_options(shell_force_variant: &str) -> Value {
+        let fields: PersistentMap<String, Value> = [
+            (
+                "shell_force".to_string(),
+                Value::Enum {
+                    type_name: "ShellForce".to_string(),
+                    variant: shell_force_variant.to_string(),
+                },
+            ),
+            ("shell_threshold".to_string(), Value::Real(0.2)),
+        ]
+        .into_iter()
+        .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "ElasticOptions".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// Extract the `SampledField.data` vec from a `Value::Field { Sampled }`.
+    fn shell9_field_data(v: &Value) -> Vec<f64> {
+        match v {
+            Value::Field { lambda, .. } => match lambda.as_ref() {
+                Value::SampledField(sf) => sf.data.clone(),
+                other => panic!("field lambda must be Value::SampledField, got {other:?}"),
+            },
+            other => panic!("expected Value::Field, got {other:?}"),
+        }
+    }
+
+    /// von Mises of a row-major 3×3 stress window
+    /// (`[σxx,σxy,σxz, σyx,σyy,σyz, σzx,σzy,σzz]`).
+    fn shell9_vm9(w: &[f64]) -> f64 {
+        let (sxx, syy, szz) = (w[0], w[4], w[8]);
+        let (sxy, syz, szx) = (w[1], w[5], w[6]);
+        (0.5
+            * ((sxx - syy).powi(2)
+                + (syy - szz).powi(2)
+                + (szz - sxx).powi(2)
+                + 6.0 * (sxy * sxy + syz * syz + szx * szx)))
+        .sqrt()
+    }
+
+    /// Unwrap a `ComputeOutcome::Completed` into the ElasticResult field map.
+    fn shell9_result_fields(outcome: ComputeOutcome) -> PersistentMap<String, Value> {
+        match outcome {
+            ComputeOutcome::Completed { result, .. } => match result {
+                Value::StructureInstance(d) => {
+                    assert_eq!(
+                        d.type_name.as_str(),
+                        "ElasticResult",
+                        "trampoline must return an ElasticResult StructureInstance"
+                    );
+                    d.fields
+                }
+                other => panic!("expected ElasticResult StructureInstance, got {other:?}"),
+            },
+            other => panic!("expected ComputeOutcome::Completed, got {other:?}"),
+        }
+    }
+
+    /// (1) shell route: shell_force=On + thin steel flexure → real ShellStress
+    /// shell_channels, I-2 stress alias, in-band top von Mises.
+    ///
+    /// RED today: the trampoline always emits shell_channels=Undef.
+    #[test]
+    fn shell_route_trampoline_populates_shell_channels() {
+        // Fixture: 50mm × 10mm × 1mm steel flexure, 10 N tip load.
+        let value_inputs = [
+            shell9_make_isotropic_material(205e9, 0.29),
+            shell9_make_len(0.05),
+            shell9_make_len(0.01),
+            shell9_make_len(0.001),
+            shell9_make_point_loads(10.0),
+            shell9_make_supports(),
+            shell9_make_options("On"),
+        ];
+
+        let cancellation = CancellationHandle::new();
+        let outcome = solve_elastic_static_trampoline(
+            &value_inputs,
+            &[],
+            &Value::Undef,
+            None,
+            &cancellation,
+        );
+        let fields = shell9_result_fields(outcome);
+
+        // shell_channels must be a "ShellStress" StructureInstance (NOT Undef).
+        let sc = fields
+            .get(&"shell_channels".to_string())
+            .expect("ElasticResult must carry a shell_channels field");
+        let sc_data = match sc {
+            Value::StructureInstance(d) => {
+                assert_eq!(
+                    d.type_name.as_str(),
+                    "ShellStress",
+                    "shell_channels must be a ShellStress instance on the shell route"
+                );
+                d
+            }
+            other => panic!(
+                "shell_channels must be a ShellStress StructureInstance on the shell route, \
+                 got {other:?} (shell route not wired — RED until step-10)"
+            ),
+        };
+
+        let top = shell9_field_data(
+            sc_data.fields.get(&"top".to_string()).expect("ShellStress.top"),
+        );
+        let mid = shell9_field_data(
+            sc_data.fields.get(&"mid".to_string()).expect("ShellStress.mid"),
+        );
+        let bottom = shell9_field_data(
+            sc_data.fields.get(&"bottom".to_string()).expect("ShellStress.bottom"),
+        );
+        assert!(
+            !top.is_empty() && top.iter().all(|x| x.is_finite()),
+            "top channel must be non-empty and all-finite"
+        );
+        assert!(
+            !mid.is_empty() && mid.iter().all(|x| x.is_finite()),
+            "mid channel must be non-empty and all-finite"
+        );
+        assert!(
+            !bottom.is_empty() && bottom.iter().all(|x| x.is_finite()),
+            "bottom channel must be non-empty and all-finite"
+        );
+
+        // stress must be populated and bit-equal shell_channels.mid (I-2 alias).
+        let stress = fields
+            .get(&"stress".to_string())
+            .expect("ElasticResult must carry a stress field");
+        assert!(
+            !matches!(stress, Value::Undef),
+            "stress must be a populated field on the shell route (I-2 alias source)"
+        );
+        assert_eq!(
+            shell9_field_data(stress),
+            mid,
+            "I-2 alias: result.stress data must equal shell_channels.mid data element-wise"
+        );
+
+        // max-over-elements top-channel von Mises within the one-OOM band.
+        assert_eq!(top.len() % 9, 0, "top must hold a row-major 3×3 per element (len % 9 == 0)");
+        let max_vm = top.chunks_exact(9).map(shell9_vm9).fold(0.0_f64, f64::max);
+        assert!(
+            max_vm.is_finite() && max_vm > 0.0,
+            "max top von Mises must be finite and > 0, got {max_vm}"
+        );
+        assert!(
+            (3e7..=3e9).contains(&max_vm),
+            "max top von Mises {max_vm:.4e} Pa outside one-OOM band [3e7, 3e9] Pa \
+             around σ=6PL/(bh²)=3e8"
+        );
+    }
+
+    /// (2) tet route no-regression vs task 4084/α: shell_force=Off keeps
+    /// shell_channels + frame Undef, but stress is a POPULATED Regular3D Sampled
+    /// Field. Holds today and must keep holding after step-10.
+    #[test]
+    fn tet_route_trampoline_preserves_4084_baseline() {
+        // shell_force=Off forces the tet path regardless of geometry; a 0.1m cube
+        // (ratio 1.0) would classify Tet under Auto anyway. Small mesh (nx=6).
+        let value_inputs = [
+            shell9_make_isotropic_material(205e9, 0.29),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            shell9_make_point_loads(1000.0),
+            shell9_make_supports(),
+            shell9_make_options("Off"),
+        ];
+
+        let cancellation = CancellationHandle::new();
+        let outcome = solve_elastic_static_trampoline(
+            &value_inputs,
+            &[],
+            &Value::Undef,
+            None,
+            &cancellation,
+        );
+        let fields = shell9_result_fields(outcome);
+
+        // 4084/α tet baseline: shell_channels + frame remain Undef.
+        assert!(
+            matches!(fields.get(&"shell_channels".to_string()), Some(Value::Undef)),
+            "tet path must keep shell_channels=Undef (4084/α baseline)"
+        );
+        assert!(
+            matches!(fields.get(&"frame".to_string()), Some(Value::Undef)),
+            "tet path must keep frame=Undef (4084/α baseline)"
+        );
+
+        // BUT stress is a populated Regular3D Sampled Field (4084/α, NOT Undef).
+        let stress = fields
+            .get(&"stress".to_string())
+            .expect("ElasticResult must carry a stress field");
+        match stress {
+            Value::Field { source, lambda, .. } => {
+                assert!(
+                    matches!(source, FieldSourceKind::Sampled),
+                    "tet stress must be a Sampled field source"
+                );
+                match lambda.as_ref() {
+                    Value::SampledField(sf) => {
+                        assert!(
+                            matches!(sf.kind, SampledGridKind::Regular3D),
+                            "tet stress grid must be Regular3D (4084/α), got {:?}",
+                            sf.kind
+                        );
+                        assert!(
+                            !sf.data.is_empty(),
+                            "tet stress data must be populated (4084/α — NOT Undef)"
+                        );
+                    }
+                    other => panic!("tet stress lambda must be Value::SampledField, got {other:?}"),
+                }
+            }
+            other => panic!(
+                "tet stress must be a populated Value::Field (4084/α baseline), got {other:?}"
+            ),
+        }
+    }
 }
