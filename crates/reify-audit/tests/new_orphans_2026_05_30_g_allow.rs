@@ -64,6 +64,7 @@
 //! its rows) as part of the consumer-wiring commit:
 //!   - `impulse_shaper_producers_*` — owned by consumer task #3867 (ζ).
 //!   - `sampling_producers_*`       — owned by consumer task #3869 (θ).
+//!
 //! The failure message lists every failing (file_suffix, fn_name) pair — search
 //! for them in this file when `G-allow pin(s) failed` appears unexpectedly.
 //!
