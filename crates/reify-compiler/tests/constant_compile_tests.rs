@@ -1,4 +1,4 @@
-//! Compiler tests for built-in mathematical constants (pi, tau).
+//! Compiler tests for built-in mathematical constants (pi, tau, e).
 
 use reify_test_support::{compile_source, errors_only, parse_and_compile};
 use reify_core::Type;
@@ -385,6 +385,36 @@ fn lowercase_e_no_hint() {
         "expected no errors for lowercase 'e', got: {:?}",
         errors
     );
+}
+
+#[test]
+fn user_let_e_shadows_builtin() {
+    // Documents that single-letter builtins like `e` are shadowable — a user-defined
+    // `let e` takes precedence over the builtin Euler's number, mirroring user_let_pi_shadows_builtin.
+    let src = "structure S {\n  let e = 42\n  let x = e\n}";
+    let compiled = compile_source(src);
+    let errors = errors_only(&compiled);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+    let expr = get_cell_expr(&compiled, "x");
+    // x should be a ValueRef to the user-defined e cell, NOT a Literal(Real(E)).
+    match &expr.kind {
+        CompiledExprKind::ValueRef(id) => {
+            assert_eq!(id.member, "e", "expected ref to 'e' cell, got {:?}", id);
+        }
+        CompiledExprKind::Literal(Value::Real(_)) => {
+            panic!("x resolved to builtin e literal — user definition should shadow it");
+        }
+        other => panic!("expected ValueRef to user 'e', got {:?}", other),
+    }
+    // The e cell itself should hold the user-provided literal 42, not E ≈ 2.718.
+    let e_expr = get_cell_expr(&compiled, "e");
+    match &e_expr.kind {
+        CompiledExprKind::Literal(Value::Int(42)) => {}
+        other => panic!(
+            "expected Literal(Int(42)) for user 'e' cell, got {:?}",
+            other
+        ),
+    }
 }
 
 // ─── step-7: pi works under #no_prelude ─────────────────────────────────────
