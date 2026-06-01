@@ -1444,4 +1444,125 @@ mod tests {
             ctx.defaults.len()
         );
     }
+
+    /// Two traits providing `DefaultKind::AssocType` for the same name but with DIFFERENT
+    /// resolved types should emit exactly one `ConflictingTraitAssocType` diagnostic.
+    /// When the structure overrides the name (`structure_members` contains it), the
+    /// conflict is suppressed (zero diagnostics), mirroring the let-binding suppression.
+    ///
+    /// Mirrors `collect_all_requirements_let_conflict_diagnostic_and_suppression`.
+    ///
+    /// RED (step-5): fails today because step-4 only deduplicates (first-seen wins) with
+    /// no conflict detection — two different-typed defaults are silently dropped, emitting
+    /// zero diagnostics when one is expected.
+    #[test]
+    fn collect_all_requirements_assoc_type_default_conflict_and_suppression() {
+        let steel_ty = Type::StructureRef("Steel".to_string());
+        let alum_ty = Type::StructureRef("Aluminum".to_string());
+
+        let trait_a = CompiledTrait {
+            name: "TraitA".to_string(),
+            is_pub: false,
+            doc: None,
+            type_params: vec![],
+            refinements: vec![],
+            required_members: vec![],
+            defaults: vec![TraitDefault {
+                name: Some("Material".to_string()),
+                kind: DefaultKind::AssocType(steel_ty.clone()),
+                span: SourceSpan::empty(0),
+            }],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+        let trait_b = CompiledTrait {
+            name: "TraitB".to_string(),
+            is_pub: false,
+            doc: None,
+            type_params: vec![],
+            refinements: vec![],
+            required_members: vec![],
+            defaults: vec![TraitDefault {
+                name: Some("Material".to_string()),
+                kind: DefaultKind::AssocType(alum_ty.clone()), // different type → conflict
+                span: SourceSpan::empty(0),
+            }],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+        let top = CompiledTrait {
+            name: "Top".to_string(),
+            is_pub: false,
+            doc: None,
+            type_params: vec![],
+            refinements: vec!["TraitA".to_string(), "TraitB".to_string()],
+            required_members: vec![],
+            defaults: vec![],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+
+        let mut trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        trait_registry.insert("TraitA".to_string(), &trait_a);
+        trait_registry.insert("TraitB".to_string(), &trait_b);
+        trait_registry.insert("Top".to_string(), &top);
+
+        // Case 1: No structure override — exactly one conflict diagnostic with
+        // the typed `ConflictingTraitAssocType` code naming "Material".
+        {
+            let mut ctx = MergeContext::new();
+            let mut diags: Vec<Diagnostic> = vec![];
+            collect_all_requirements(
+                "Top",
+                &trait_registry,
+                &mut ctx,
+                &HashMap::new(),
+                SourceSpan::empty(0),
+                0,
+                &mut diags,
+            );
+            assert_eq!(
+                diags.len(),
+                1,
+                "Expected exactly one assoc-type conflict diagnostic, got: {:?}",
+                diags
+            );
+            assert_eq!(
+                diags[0].code,
+                Some(DiagnosticCode::ConflictingTraitAssocType),
+                "Expected DiagnosticCode::ConflictingTraitAssocType, got: {:?}",
+                diags[0].code
+            );
+            assert!(
+                diags[0].message.contains("Material"),
+                "Conflict diagnostic should name 'Material'; got: {}",
+                diags[0].message
+            );
+        }
+
+        // Case 2: `structure_members` overrides "Material" — conflict is suppressed.
+        {
+            let mut ctx = MergeContext::new();
+            let mut diags: Vec<Diagnostic> = vec![];
+            let mut structure_members: HashMap<String, Type> = HashMap::new();
+            structure_members.insert("Material".to_string(), steel_ty.clone());
+            collect_all_requirements(
+                "Top",
+                &trait_registry,
+                &mut ctx,
+                &structure_members,
+                SourceSpan::empty(0),
+                0,
+                &mut diags,
+            );
+            assert!(
+                diags.is_empty(),
+                "Expected no diagnostics when 'Material' is overridden by structure_members, got: {:?}",
+                diags
+            );
+        }
+    }
 }
