@@ -877,7 +877,9 @@ fn twisted_beam_mesh(nz: usize, ny: usize) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
 /// **NOT a validated benchmark** — see file-level docs. Asserts only that
 /// the response is finite, signed, and within a wide order-of-magnitude
 /// band; today's bare MITC3 element under-predicts the published reference
-/// by ~21× due to membrane locking on curved geometry.
+/// by ~21× due to faceting over-stiffness and lost intra-element
+/// membrane–bending coupling (flat facets on curved geometry; element-level
+/// membrane locking requires a curved element).
 ///
 /// A cylindrical roof shell (R=25, L=50, t=0.25, semi-angle 80°, E=4.32×10⁸,
 /// ν=0.0) loaded by self-weight (gravity 90 per unit area in the −z direction).
@@ -912,9 +914,10 @@ fn twisted_beam_mesh(nz: usize, ny: usize) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
 /// Today's coarse-mesh MITC3 vertical deflection at the free-edge
 /// longitudinal center is **~1.4×10⁻²** (bare MITC3, 4×4 quadrant,
 /// downward). The published MacNeal-Harder (1985) reference is **0.3024**
-/// (a ~21× gap due to membrane locking on curved geometry; only curved-
-/// element MITC3+ closes the gap — flat-facet bubble enrichment is
-/// mathematically inert, see the file header in `shell_assembly.rs`).
+/// (a ~21× gap due to faceting over-stiffness and lost membrane–bending
+/// coupling on the flat facets; only a curved-element formulation closes
+/// the gap — flat-facet bubble enrichment is mathematically inert, see
+/// the file header in `shell_assembly.rs`).
 ///
 /// This test asserts only sign / finiteness / order-of-magnitude — see the
 /// pinched-cylinder smoke test above for the same rationale.
@@ -1083,8 +1086,9 @@ fn scordelis_lo_roof_quadrant_smoke_test_vertical_deflection_is_finite_and_downw
 /// **NOT a validated benchmark** — see file-level docs. Asserts only that
 /// the response is finite, signed, and within a wide order-of-magnitude
 /// band; today's bare MITC3 element under-predicts the published reference
-/// by ~2200× due to severe membrane locking on this very thin shell
-/// (R/t=250).
+/// by ~2200× due to severe faceting over-stiffness and lost
+/// membrane–bending coupling (flat facets on this very thin shell,
+/// R/t=250; element-level membrane locking requires a curved element).
 ///
 /// A hemispherical shell (R=10, t=0.04, E=6.825×10⁷, ν=0.3) with an 18°
 /// polar cut-out, loaded by alternating ±P=±2 point loads along the x and y
@@ -1114,10 +1118,10 @@ fn scordelis_lo_roof_quadrant_smoke_test_vertical_deflection_is_finite_and_downw
 /// Today's coarse-mesh MITC3 radial displacement at the loaded equator
 /// corner is **~4.3×10⁻⁵** (bare MITC3, 4×4 quadrant, outward).
 /// The published MacNeal-Harder (1985) reference is **0.0940** (a ~2200×
-/// gap due to severe membrane locking on this very thin shell, R/t=250;
-/// only curved-element MITC3+ closes the gap — flat-facet bubble
-/// enrichment is mathematically inert, see the file header in
-/// `shell_assembly.rs`).
+/// gap due to severe faceting over-stiffness and lost membrane–bending
+/// coupling on the flat facets, R/t=250; only a curved-element formulation
+/// closes the gap — flat-facet bubble enrichment is mathematically inert,
+/// see the file header in `shell_assembly.rs`).
 ///
 /// This test asserts only sign / finiteness / order-of-magnitude — see the
 /// pinched-cylinder smoke test for the same rationale.
@@ -1445,9 +1449,10 @@ fn twisted_beam_mitc3_plus_tip_deflection_is_closer_to_reference_than_bare() {
 ///   the factor ~4.7 increase in n from t=1.0 to t=0.01 is physically correct.
 ///
 /// Note: bare flat-facet MITC3 (no curved-element MITC3+) still exhibits
-/// **membrane locking** on curved geometry — the flat-element approximation
-/// generates spurious in-plane strains. This compresses n below the
-/// analytical thin-shell reference, but does NOT collapse it to zero.
+/// **faceting over-stiffness and lost membrane–bending coupling** on curved
+/// geometry — the flat-element approximation generates spurious geometric
+/// over-stiffness. This compresses n below the analytical thin-shell
+/// reference, but does NOT collapse it to zero.
 ///
 /// # Observed n(t) values at this mesh (4×4 octant, verified 2026-05-09)
 ///
