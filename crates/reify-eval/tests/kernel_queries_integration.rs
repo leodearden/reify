@@ -528,7 +528,7 @@ fn profile_topology_selectors_and_sub_handle_memory() {
     // latency for edges() / faces() is << 1ms and well below the 50ms threshold.
     // No follow-up task for ComputeNode wrapping is warranted.
 
-    let mut kernel = reify_kernel_occt::OcctKernelHandle::spawn();
+    let kernel = reify_kernel_occt::OcctKernelHandle::spawn();
 
     let n_iters = 100_usize;
     let box_handle = kernel
