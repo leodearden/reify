@@ -3,10 +3,10 @@
 // Free functions with no Engine coupling — they take values, functions, meta_map
 // as plain arguments.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use reify_core::Diagnostic;
-use reify_ir::{CompiledFunction, GeometryHandleId, KernelHandle, ValueMap};
+use reify_ir::{CompiledFunction, GeometryHandleId, GeometryKernel, KernelHandle, ValueMap};
 
 use crate::eval_ctx_with_meta;
 
@@ -4586,6 +4586,137 @@ pub(crate) fn eval_sub_pose(
 /// ORs in any `aux` ancestor sub (T5 steps 4/6).
 pub(crate) fn realization_is_aux(realization: &reify_compiler::RealizationDecl) -> bool {
     realization.is_aux
+}
+
+/// Indices into `module.templates` of the *root* templates for surfacing: those
+/// whose `name` is NOT the `structure_name` of any NON-collection sub anywhere
+/// in the module (T5 step-4).
+///
+/// `CompiledModule.templates` is a flat `Vec` with no root marker, and the
+/// pre-T5 evaluator surfaced *every* template standalone — so a contained child
+/// appeared at un-placed local coords. The containment walk surfaces each
+/// non-root descendant exactly once at its composed world pose, so only roots
+/// seed the walk; contained templates are suppressed standalone.
+///
+/// Collection subs are deliberately excluded from the "contained" set: their
+/// per-element placement is out of scope (PRD §10), so a template used *only* as
+/// a `List<T>` sub still surfaces standalone as a root (unchanged behavior).
+pub(crate) fn root_template_indices(module: &reify_compiler::CompiledModule) -> Vec<usize> {
+    let contained: std::collections::HashSet<&str> = module
+        .templates
+        .iter()
+        .flat_map(|t| t.sub_components.iter())
+        .filter(|sub| !sub.is_collection)
+        .map(|sub| sub.structure_name.as_str())
+        .collect();
+    module
+        .templates
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| !contained.contains(t.name.as_str()))
+        .map(|(idx, _)| idx)
+        .collect()
+}
+
+/// Phase-B containment-tree surfacing (T5 steps 4/6/10).
+///
+/// Depth-first walk from a root template: surface the current template's
+/// realizations under `path_prefix` (the dotted entity-path prefix that precedes
+/// the `#realization[i]` suffix), then recurse into each NON-collection sub with
+/// `path_prefix` extended by `.<sub-name>`. The realization's terminal handle is
+/// looked up positionally from `terminal_handles[t_idx][r_idx]` (recorded by
+/// Phase A); `None` (no geometry produced) is skipped. The default kernel is
+/// re-borrowed by name to tessellate, mirroring the pre-T5 terminal-handle path.
+///
+/// Entity-path scheme (PRD §11.2 `parent.sub#realization[i]`): for a ROOT,
+/// `path_prefix` is the template name, so the surface path equals
+/// `realization.id.to_string()` (`<entity>#realization[<index>]`) — bit-identical
+/// to pre-T5. For a DESCENDANT, `path_prefix` is `<root>.<sub>…`, giving e.g.
+/// `Assembly.c#realization[0]`.
+///
+/// `depth` bounds the recursion: a simple path in an acyclic sub-graph visits at
+/// most `templates.len()` distinct templates, so a depth past that implies a
+/// non-collection sub cycle (e.g. a recursive structure reached via a root). We
+/// stop there to avoid unbounded recursion — runtime recursion unfolding is a
+/// separate concern (`unfold.rs`) and out of this surfacing path's scope.
+///
+/// IDENTITY pose at step-4 (no transform applied); step-10 composes and applies
+/// the world transform before tessellation. Step-6 threads `aux` inheritance.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn surface_subtree(
+    module: &reify_compiler::CompiledModule,
+    t_idx: usize,
+    path_prefix: &str,
+    depth: usize,
+    terminal_handles: &[Vec<Option<KernelHandle>>],
+    geometry_kernels: &BTreeMap<String, Box<dyn GeometryKernel>>,
+    default_kernel_name: &str,
+    tessellation_budgets: &[Vec<f64>],
+    meshes: &mut Vec<crate::MeshSurface>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // Cycle guard (see docstring): bail once we have descended more levels than
+    // there are templates, which is only reachable via a non-collection sub
+    // cycle.
+    if depth > module.templates.len() {
+        return;
+    }
+    let template = &module.templates[t_idx];
+
+    // Surface this template's own realizations at `path_prefix`.
+    for (r_idx, realization) in template.realizations.iter().enumerate() {
+        let Some(handle) = terminal_handles[t_idx][r_idx] else {
+            continue;
+        };
+        let budget = tessellation_budgets[t_idx][r_idx];
+        let default_kernel = geometry_kernels
+            .get(default_kernel_name)
+            .expect("default kernel must remain in the map across the surfacing walk");
+        match default_kernel.tessellate(handle.id, budget) {
+            Ok(mesh) => {
+                // step-4: per-realization `aux` only; step-6 ORs in `aux`
+                // ancestors. aux bodies are still tessellated and shipped —
+                // only hidden by default.
+                let default_visible = !realization_is_aux(realization);
+                let entity_path = format!("{}#realization[{}]", path_prefix, realization.id.index);
+                meshes.push(crate::MeshSurface {
+                    entity_path,
+                    mesh,
+                    default_visible,
+                });
+            }
+            Err(e) => {
+                diagnostics.push(Diagnostic::error(format!("tessellation error: {}", e)));
+            }
+        }
+    }
+
+    // Recurse into each non-collection sub at the composed dotted path.
+    for sub in &template.sub_components {
+        if sub.is_collection {
+            continue;
+        }
+        let Some(child_idx) = module
+            .templates
+            .iter()
+            .position(|t| t.name == sub.structure_name)
+        else {
+            continue;
+        };
+        let child_prefix = format!("{}.{}", path_prefix, sub.name);
+        surface_subtree(
+            module,
+            child_idx,
+            &child_prefix,
+            depth + 1,
+            terminal_handles,
+            geometry_kernels,
+            default_kernel_name,
+            tessellation_budgets,
+            meshes,
+            diagnostics,
+        );
+    }
 }
 
 #[cfg(test)]

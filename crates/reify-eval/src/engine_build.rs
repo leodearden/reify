@@ -2513,6 +2513,19 @@ impl Engine {
         let mut module_named_steps: HashMap<String, HashMap<String, KernelHandle>> =
             HashMap::new();
 
+        // T5 step-4 (Phase A): record each realization's terminal `KernelHandle`
+        // positionally by `(t_idx, r_idx)` instead of tessellating it here. The
+        // Phase-B containment walk (below) tessellates these handles at the
+        // composed world pose and pushes the `MeshSurface`s. Sized to the full
+        // `templates × realizations` product so anonymous realizations are
+        // addressable; `None` marks a realization that produced no geometry.
+        // `KernelHandle` is `Copy`.
+        let mut terminal_handles: Vec<Vec<Option<KernelHandle>>> = module
+            .templates
+            .iter()
+            .map(|t| vec![None; t.realizations.len()])
+            .collect();
+
         for (t_idx, template) in module.templates.iter().enumerate() {
             // `named_steps` is scoped per-template so that two structures
             // that each declare `let body = …` cannot clobber each other's
@@ -2603,47 +2616,17 @@ impl Engine {
                     &mut *dispatch_count,
                 );
 
-                // Tessellate this realization's final handle (if any new handles were produced)
+                // T5 step-4 (Phase A): record this realization's terminal
+                // handle positionally instead of tessellating here. The mesh
+                // push relocates to the Phase-B containment walk, which
+                // tessellates the recorded handle at the composed world pose so
+                // each contained descendant is surfaced ONCE under its composed
+                // entity_path (no standalone double-surfacing). `KernelHandle`
+                // is `Copy`; `step_handles` outlives this iteration so the
+                // handle stays valid for Phase B (the kernel sessions in
+                // `geometry_kernels` live for the whole call).
                 if step_handles.len() > handle_start {
-                    let last_handle = step_handles[step_handles.len() - 1];
-                    // Task 2874 step-12: forward the per-realization tessellation
-                    // budget (precomputed by the caller via
-                    // `Engine::compute_realization_tolerance_budget`) to the
-                    // kernel instead of the unconditional module-pragma
-                    // default. Task 3227 / 3297: direct positional index —
-                    // no String clones, no hashing. The producer
-                    // (`compute_tessellation_budgets`) and this consumer iterate
-                    // the same `module.templates × realizations` product
-                    // unconditionally, so OOB is unambiguously an internal
-                    // bug; Rust's slice indexing panics with a precise OOB
-                    // message at runtime in both debug and release.
-                    let budget = tessellation_budgets[t_idx][r_idx];
-                    // Re-borrow the default kernel after the per-realization
-                    // executor released its full-map borrow (step-8 #3436).
-                    let default_kernel = geometry_kernels.get(default_kernel_name).expect(
-                        "default kernel must remain in the map across the per-realization loop",
-                    );
-                    match default_kernel.tessellate(last_handle.id, budget) {
-                        Ok(mesh) => {
-                            // T5 step-2: `default_visible` is derived from the
-                            // realization's backing `let`/`param` `aux` flag
-                            // (PRD §2.2). aux bodies are still realized,
-                            // tessellated, and shipped — only hidden by default.
-                            // The Phase-B containment walk (steps 4/6) will
-                            // additionally OR in any `aux` ancestor sub.
-                            let default_visible =
-                                !crate::geometry_ops::realization_is_aux(realization);
-                            meshes.push(MeshSurface {
-                                entity_path: realization.id.to_string(),
-                                mesh,
-                                default_visible,
-                            });
-                        }
-                        Err(e) => {
-                            diagnostics
-                                .push(Diagnostic::error(format!("tessellation error: {}", e)));
-                        }
-                    }
+                    terminal_handles[t_idx][r_idx] = step_handles.last().copied();
                 }
             }
             // Step-8 (task ε / 3436): re-borrow the default kernel from the
@@ -2704,6 +2687,30 @@ impl Engine {
             // scope at the loop body's end anyway, and the post-process
             // helpers above only borrow it.
             snapshot_named_steps(template, named_steps, &mut module_named_steps);
+        }
+
+        // ── Phase B (T5 step-4): containment-tree surfacing ──────────────────
+        // Walk each root template's sub-tree depth-first and surface every
+        // contained descendant ONCE under its composed entity_path, tessellating
+        // the terminal handle recorded in Phase A. Non-root (subbed) templates
+        // are suppressed standalone — they appear only here, at their place in
+        // the tree, at the composed world pose (identity at step-4; step-10
+        // applies the composed transform before tessellation). Independent /
+        // single templates are roots and surface bit-identically to pre-T5.
+        for root_idx in crate::geometry_ops::root_template_indices(module) {
+            let root_prefix = module.templates[root_idx].name.clone();
+            crate::geometry_ops::surface_subtree(
+                module,
+                root_idx,
+                &root_prefix,
+                0,
+                &terminal_handles,
+                geometry_kernels,
+                default_kernel_name,
+                tessellation_budgets,
+                &mut meshes,
+                diagnostics,
+            );
         }
 
         meshes
