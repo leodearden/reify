@@ -1,0 +1,12 @@
+// Fixture for task 4010 (E_OBJECTIVE_CONFLICT boundary B3 — positive case).
+//
+// Structure S has two auto Scalar params and conflicting objectives:
+// minimize mass + maximize stiffness (distinct expressions, opposite sense,
+// default weight 1.0 / priority 0).  `reify check` must exit non-zero and
+// print "E_OBJECTIVE_CONFLICT" to stderr.
+structure S {
+    param mass: Scalar = auto
+    param stiffness: Scalar = auto
+    minimize mass
+    maximize stiffness
+}

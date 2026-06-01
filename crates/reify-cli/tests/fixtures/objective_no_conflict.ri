@@ -1,0 +1,11 @@
+// Fixture for task 4010 (E_OBJECTIVE_CONFLICT boundary B3 — negative case).
+//
+// Structure S has two auto Scalar params and same-sense objectives:
+// minimize mass + minimize cost (equal-weight sum, B2, not a conflict).
+// `reify check` must exit zero and NOT print "E_OBJECTIVE_CONFLICT".
+structure S {
+    param mass: Scalar = auto
+    param cost: Scalar = auto
+    minimize mass
+    minimize cost
+}
