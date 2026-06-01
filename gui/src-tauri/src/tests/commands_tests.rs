@@ -1179,3 +1179,96 @@ fn update_source_impl_clears_staleness_on_successful_reload() {
          commit_state clears last_reload_error next to compile_failure"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Hot-reload watch helper tests (task 4153, step-5 RED)
+// ---------------------------------------------------------------------------
+
+/// (step-5 RED-a) reload_for_watch_impl on success must return Ok(GuiState) with
+/// non-empty meshes and empty compile_diagnostics.
+///
+/// RED until step-6 adds `reload_for_watch_impl` to commands.rs.
+#[test]
+fn reload_for_watch_impl_success_returns_ok_with_fresh_state() {
+    let engine = make_test_engine_for_commands();
+
+    // Successful reload with valid source.
+    let result = crate::commands::reload_for_watch_impl(&engine, "bracket.ri", bracket_source());
+    assert!(
+        result.is_ok(),
+        "reload_for_watch_impl must return Ok on valid source; got: {:?}",
+        result.err()
+    );
+    let gui_state = result.unwrap();
+    assert!(
+        !gui_state.meshes.is_empty(),
+        "GuiState.meshes must be non-empty after a successful reload"
+    );
+    assert!(
+        gui_state.compile_diagnostics.is_empty(),
+        "GuiState.compile_diagnostics must be empty after a successful reload; \
+         got: {:?}",
+        gui_state.compile_diagnostics
+    );
+}
+
+/// (step-5 RED-b) reload_for_watch_impl on failure must return Ok(GuiState) — NOT Err —
+/// whose meshes are the LAST-GOOD non-empty set and whose compile_diagnostics
+/// contains at least one Error-severity entry.  After the call, is_stale() is true.
+///
+/// This validates that the watcher always has a state to emit (never silent).
+///
+/// RED until step-6 adds `reload_for_watch_impl` to commands.rs.
+#[test]
+fn reload_for_watch_impl_failure_returns_ok_with_diagnostic_and_staleness() {
+    let engine = make_test_engine_for_commands();
+
+    // Record the mesh count from the pre-failure good state.
+    let good_mesh_count = crate::engine_lock::with_engine_lock(&engine, |s| {
+        s.build_gui_state()
+            .map(|gs| gs.meshes.len())
+            .unwrap_or(0)
+    })
+    .expect("with_engine_lock should not panic");
+    assert!(good_mesh_count > 0, "test fixture must have non-empty meshes");
+
+    // Force a failure with invalid source (compile error — reliable Err path).
+    let result =
+        crate::commands::reload_for_watch_impl(&engine, "bracket.ri", "invalid syntax $$$");
+
+    // Must return Ok, NOT Err — the watcher must always have a state to emit.
+    assert!(
+        result.is_ok(),
+        "reload_for_watch_impl must return Ok even on failure (watcher needs state to emit); \
+         got Err: {:?}",
+        result.err()
+    );
+    let gui_state = result.unwrap();
+
+    // Meshes must be the last-good (pre-failure) set.
+    assert_eq!(
+        gui_state.meshes.len(),
+        good_mesh_count,
+        "GuiState.meshes count must equal the pre-failure count (last-good retained)"
+    );
+
+    // compile_diagnostics must contain at least one Error-severity entry.
+    let has_error_diag = gui_state
+        .compile_diagnostics
+        .iter()
+        .any(|d| d.severity == "Error");
+    assert!(
+        has_error_diag,
+        "GuiState.compile_diagnostics must contain at least one Error-severity entry \
+         after a failed reload; got: {:?}",
+        gui_state.compile_diagnostics
+    );
+
+    // The session must be stale.
+    let is_stale = crate::engine_lock::with_engine_lock(&engine, |s| s.is_stale())
+        .expect("with_engine_lock should not panic");
+    assert!(
+        is_stale,
+        "session must be stale after reload_for_watch_impl returns a failure state"
+    );
+}
