@@ -70,6 +70,76 @@ pub(crate) fn modal_aware_dt(freqs_hz: &[f64], duration: f64) -> f64 {
 mod tests {
     use super::*;
 
+    // ─── step-3: RED — forces_to_forcing_history ──────────────────────────────
+
+    /// (a) All-zero force input → every modal forcing series is all-zero.
+    #[test]
+    fn forces_to_forcing_history_zero_input() {
+        // 3 time steps, 2 DOFs, 2 modes
+        let forces: Vec<Vec<f64>> = vec![
+            vec![0.0, 0.0],
+            vec![0.0, 0.0],
+            vec![0.0, 0.0],
+        ];
+        let projections: Vec<Vec<f64>> = vec![
+            vec![1.0, 0.5],  // mode 0 shape
+            vec![0.3, 0.7],  // mode 1 shape
+        ];
+        let result = forces_to_forcing_history(&forces, &projections);
+        assert_eq!(result.len(), 2, "n_modes");
+        for (i, series) in result.iter().enumerate() {
+            assert_eq!(series.len(), 3, "mode {i}: n_times");
+            for &v in series {
+                assert_eq!(v, 0.0, "mode {i}: expected zero for zero input");
+            }
+        }
+    }
+
+    /// (b) Known single-DOF force with known projection coefficient.
+    #[test]
+    fn forces_to_forcing_history_known_projection() {
+        // 1 DOF, 2 time steps: forces = [[2.0], [4.0]]
+        // 1 mode, coefficient c=3.0 → modal forcing = [6.0, 12.0]
+        let forces: Vec<Vec<f64>> = vec![vec![2.0], vec![4.0]];
+        let projections: Vec<Vec<f64>> = vec![vec![3.0]];
+        let result = forces_to_forcing_history(&forces, &projections);
+        assert_eq!(result.len(), 1, "n_modes");
+        assert_eq!(result[0].len(), 2, "n_times");
+        assert!((result[0][0] - 6.0).abs() < 1e-14, "t0: expected 6.0, got {}", result[0][0]);
+        assert!((result[0][1] - 12.0).abs() < 1e-14, "t1: expected 12.0, got {}", result[0][1]);
+    }
+
+    /// (c) Output shape = [n_modes][n_times].
+    #[test]
+    fn forces_to_forcing_history_output_shape() {
+        let n_times = 7;
+        let n_dofs = 3;
+        let n_modes = 4;
+        let forces: Vec<Vec<f64>> = (0..n_times).map(|_| vec![1.0; n_dofs]).collect();
+        let projections: Vec<Vec<f64>> = (0..n_modes).map(|i| vec![i as f64 * 0.1; n_dofs]).collect();
+        let result = forces_to_forcing_history(&forces, &projections);
+        assert_eq!(result.len(), n_modes, "outer dim = n_modes");
+        for (i, series) in result.iter().enumerate() {
+            assert_eq!(series.len(), n_times, "mode {i}: inner dim = n_times");
+        }
+    }
+
+    /// (d) DOF/shape length mismatch → truncate to common length, no panic.
+    #[test]
+    fn forces_to_forcing_history_dof_mismatch_no_panic() {
+        // Force has 3 DOFs, mode shape has 2 → common = 2; result is defined, no panic.
+        let forces: Vec<Vec<f64>> = vec![
+            vec![1.0, 2.0, 3.0],
+            vec![4.0, 5.0, 6.0],
+        ];
+        let projections: Vec<Vec<f64>> = vec![vec![1.0, 1.0]]; // only 2 entries
+        let result = forces_to_forcing_history(&forces, &projections);
+        assert_eq!(result.len(), 1, "n_modes");
+        assert_eq!(result[0].len(), 2, "n_times");
+        // mode 0, t=0: dot([1.0, 2.0], [1.0, 1.0]) = 3.0
+        assert!((result[0][0] - 3.0).abs() < 1e-14, "t0 mismatch: {}", result[0][0]);
+    }
+
     // ─── step-1: RED — modal_aware_dt ─────────────────────────────────────────
 
     /// (a) 0.5/f_max governs (high f_max, long duration).
