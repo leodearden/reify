@@ -4696,4 +4696,63 @@ mod tests {
              the later unknown-case entry"
         );
     }
+
+    // step-5 (RED): diagnose mirror must hold for per-case StructureInstance
+    // inputs. Modeled on diagnose_linear_combine_incompatible_meshes above
+    // but with SI per-case ElasticResults. RED today: diagnose phase-1
+    // `if !matches!(case_val, Value::Map(_)) { return None }` rejects
+    // StructureInstance → returns None, breaking the diagnose-mirrors-
+    // linear_combine invariant (linear_combine would proceed to detect the
+    // incompatible-mesh Undef but diagnose returns None instead of emitting
+    // MultiLoadIncompatibleMeshes).
+    #[test]
+    fn diagnose_linear_combine_incompatible_meshes_over_structure_instance_cases() {
+        // Same mesh-size mismatch as the Map-shape test: 'operating' has 5 grid
+        // points, 'overload' has 4 — incompatible mesh, different grid lengths.
+        let op_disp = wrap_sampled_field(
+            make_sampled_1d(
+                "od",
+                vec![0.0, 1.0, 2.0, 3.0, 4.0],
+                vec![1.0, 2.0, 3.0, 4.0, 5.0],
+            ),
+            Type::Real,
+            Type::Real,
+        );
+        let op_stress = wrap_sampled_field(
+            make_sampled_1d(
+                "os",
+                vec![0.0, 1.0, 2.0, 3.0, 4.0],
+                vec![10.0, 20.0, 30.0, 40.0, 50.0],
+            ),
+            Type::Real,
+            Type::Real,
+        );
+        let ov_disp = wrap_sampled_field(
+            make_sampled_1d("vd", vec![0.0, 1.0, 2.0, 3.0], vec![1.0, 2.0, 3.0, 4.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let ov_stress = wrap_sampled_field(
+            make_sampled_1d("vs", vec![0.0, 1.0, 2.0, 3.0], vec![10.0, 20.0, 30.0, 40.0]),
+            Type::Real,
+            Type::Real,
+        );
+        // Build as StructureInstances (real solver shape) instead of Maps.
+        let operating = make_elastic_result_si_with_fields(op_disp, op_stress);
+        let overload = make_elastic_result_si_with_fields(ov_disp, ov_stress);
+        let mcr = multi_case_result_value(&[("operating", operating), ("overload", overload)]);
+        let mut weights = BTreeMap::new();
+        weights.insert(Value::String("operating".to_string()), Value::Real(1.0));
+        weights.insert(Value::String("overload".to_string()), Value::Real(1.0));
+        let diag = diagnose("linear_combine", &[mcr, Value::Map(weights)])
+            .expect("incompatible SI-case meshes must produce a MultiLoadIncompatibleMeshes diagnostic");
+        assert_eq!(
+            diag.code,
+            Some(reify_core::DiagnosticCode::MultiLoadIncompatibleMeshes)
+        );
+        assert_eq!(
+            diag.message,
+            "linear_combine: cases 'operating' and 'overload' use incompatible meshes (different mesh_size or element_order in their ElasticOptions). Superposition requires matching mesh / element-order layouts. Re-solve with consistent options or compute envelopes instead."
+        );
+    }
 }
