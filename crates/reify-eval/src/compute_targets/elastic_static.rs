@@ -1130,7 +1130,12 @@ fn extract_tip_force(val: &Value) -> f64 {
 /// A missing options instance or missing/garbled fields fall back to the stdlib
 /// defaults (`ShellForce::Auto`, `0.2`), so a bare `ElasticOptions()` classifies
 /// exactly as `solver_elastic.ri` declares.
-fn extract_shell_route_params(options: &Value) -> (ShellForce, f64) {
+///
+/// `pub(crate)` so the `@optimized`→ComputeNode lowering in `engine_eval.rs`
+/// (task 3594/δ step-12) reuses the *exact* same options-parse + classification
+/// helpers this trampoline uses — the graph wiring (upstream shell-extract node)
+/// and the trampoline's own Shell/Tet routing must always agree.
+pub(crate) fn extract_shell_route_params(options: &Value) -> (ShellForce, f64) {
     // stdlib defaults (solver_elastic.ri:173,176).
     let mut shell_force = ShellForce::Auto;
     let mut shell_threshold = 0.2_f64;

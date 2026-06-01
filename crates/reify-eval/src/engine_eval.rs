@@ -2875,6 +2875,154 @@ impl Engine {
         }
     }
 
+    /// task 3594/δ step-12: on the shell route, insert + dispatch an upstream
+    /// `shell-extract::extract` ComputeNode feeding the `solver::elastic_static`
+    /// FEA node, returning its synthetic output [`ValueCellId`] so the caller can
+    /// splice it into the FEA node's `value_inputs` (the upstream→downstream
+    /// segmentation edge the e2e asserts on).
+    ///
+    /// Gated by classifying the evaluated options arg (`arg_values[6]`) + dims
+    /// (`arg_values[1..=3]`) via the *same* `extract_shell_route_params` +
+    /// `classify_shell` helpers the FEA trampoline uses, so the graph wiring and
+    /// the trampoline's own Shell/Tet routing always agree. Returns `None` (no
+    /// upstream node, no edge) for the Tet route, malformed args, or a failed
+    /// extraction under the soft-fallback policy.
+    ///
+    /// Per PRD §11 OQ-2 the upstream node is fed a *synthetic* slab SDF
+    /// (`build_slab_sdf` from the body dims): it exists to satisfy the
+    /// graph/segmentation contract and `Complete` cleanly, NOT as the geometry
+    /// source for the v0.4 flat-plate stress solve (that mesh is synthesized
+    /// inside `solve_flat_plate_shell`).
+    ///
+    /// Failure policy (`resolve_extraction_failure`): under `ShellForce::On`
+    /// (`HardError`) a Failed extraction surfaces the trampoline's Error
+    /// diagnostics; under `Auto`/`Off` (`TetFallbackWithWarning`) it is
+    /// downgraded to a single Warning and the edge is dropped (the FEA node
+    /// proceeds — its own classification still drives the actual solve).
+    fn insert_shell_extract_upstream(
+        &mut self,
+        snapshot: &mut Snapshot,
+        entity: &str,
+        arg_values: &[Value],
+        version_id: u64,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Option<reify_core::ValueCellId> {
+        use crate::compute_targets::elastic_static::extract_shell_route_params;
+        use crate::compute_targets::shell_solve::{
+            FailurePolicy, ShellRoute, build_slab_sdf, classify_shell, resolve_extraction_failure,
+        };
+
+        // FEA fn signature: (material, length, width, height, loads, supports,
+        // options). The shell route reads dims [1..=3] + options [6].
+        if arg_values.len() < 7 {
+            return None;
+        }
+
+        // Non-panicking scalar read: a malformed dim (not a `Value::Scalar`)
+        // skips the shell route rather than crashing the lowering.
+        fn scalar_si(v: &Value) -> Option<f64> {
+            match v {
+                Value::Scalar { si_value, .. } => Some(*si_value),
+                _ => None,
+            }
+        }
+        let length = scalar_si(&arg_values[1])?;
+        let width = scalar_si(&arg_values[2])?;
+        let height = scalar_si(&arg_values[3])?;
+
+        let (shell_force, shell_threshold) = extract_shell_route_params(&arg_values[6]);
+        if classify_shell(shell_force, length, width, height, shell_threshold) != ShellRoute::Shell {
+            return None;
+        }
+
+        // Allocate a fresh per-entity ComputeNodeId index (`max(index)+1`,
+        // matching the FEA node's own allocation) + a distinct synthetic output
+        // cell. The angle-bracketed member is not a valid DSL identifier, so it
+        // can never collide with a real value cell.
+        let extract_index: u32 = snapshot
+            .graph
+            .compute_nodes
+            .iter()
+            .filter(|(id, _)| id.entity.as_str() == entity)
+            .map(|(id, _)| id.index)
+            .max()
+            .map(|m| m + 1)
+            .unwrap_or(0);
+        let extract_c_id = reify_core::ComputeNodeId::new(entity, extract_index);
+        let extract_output_cell = reify_core::ValueCellId {
+            entity: entity.to_string(),
+            member: format!("<shell-extract-{extract_index}>"),
+        };
+
+        // Trampoline inputs (γ-only seam): value_inputs[0]=options,
+        // value_inputs[1]=synthetic slab SDF (a `Value::SampledField`).
+        let extract_args = vec![arg_values[6].clone(), build_slab_sdf(length, width, height)];
+
+        let extract_cancel = crate::graph::CancellationHandle::new();
+        snapshot
+            .graph
+            .insert_compute_node(crate::graph::ComputeNodeData {
+                computation_id: extract_c_id.clone(),
+                target: "shell-extract::extract".to_string(),
+                // The upstream node's inputs are the synthetic options + slab SDF
+                // passed directly to dispatch; it has no value-cell inputs.
+                value_inputs: vec![],
+                realization_inputs: vec![],
+                options_hash: reify_core::ContentHash(0),
+                cache_key: reify_core::ContentHash(0),
+                cached_result: None,
+                result_content_hash: None,
+                opaque_state: None,
+                running: Some(extract_cancel.clone()),
+                output_value_cells: vec![extract_output_cell.clone()],
+            });
+
+        let outcome = self.run_compute_dispatch(
+            &extract_c_id,
+            std::slice::from_ref(&extract_output_cell),
+            "shell-extract::extract",
+            &extract_args,
+            &[],
+            &Value::Undef,
+            &extract_cancel,
+            VersionId(version_id),
+        );
+        // Clear the running slot on every terminal outcome (mirrors the FEA path).
+        if let Some(n) = snapshot.graph.get_compute_node_mut(&extract_c_id) {
+            n.running = None;
+        }
+
+        match outcome {
+            Ok((_result, diags)) => {
+                // Completed — surface any (normally empty) diagnostics and wire
+                // the upstream→downstream edge.
+                diagnostics.extend(diags);
+                Some(extract_output_cell)
+            }
+            Err(crate::engine_compute::DispatchError::Failed(diags)) => {
+                match resolve_extraction_failure(shell_force) {
+                    FailurePolicy::HardError => {
+                        // ShellForce::On — surface the extraction Error diagnostics.
+                        diagnostics.extend(diags);
+                    }
+                    FailurePolicy::TetFallbackWithWarning => {
+                        // Auto/Off — downgrade to a single Warning and proceed.
+                        diagnostics.push(Diagnostic::warning(
+                            "shell-extract::extract failed; falling back to tet \
+                             meshing (ShellForce::Auto/Off soft fallback)",
+                        ));
+                    }
+                }
+                // No usable extraction output → drop the edge.
+                None
+            }
+            Err(crate::engine_compute::DispatchError::Cancelled) => {
+                // Cancelled mid-flight — leave the output cell Pending, no edge.
+                None
+            }
+        }
+    }
+
     /// Evaluate let bindings from a template in topological order.
     ///
     /// Collects let cells with expressions, builds dependency traces,
@@ -3093,6 +3241,31 @@ impl Engine {
                                 .collect()
                         };
 
+                        // task 3594/δ step-12: shell-route upstream wiring. When
+                        // this is the `solver::elastic_static` FEA target AND the
+                        // evaluated options arg + dims classify as a SHELL body,
+                        // insert + dispatch an upstream `shell-extract::extract`
+                        // ComputeNode first, then splice its synthetic output
+                        // cell into the FEA node's `value_inputs` below (the
+                        // upstream→downstream segmentation edge). `None` on the
+                        // Tet route / malformed args / soft-fallback failure —
+                        // every non-shell target stays byte-identical to before.
+                        // Inserting the upstream node here (before the index
+                        // computation below) means the FEA node's `max(index)+1`
+                        // allocation naturally accounts for it (no collision).
+                        let shell_extract_feed: Option<reify_core::ValueCellId> =
+                            if target == "solver::elastic_static" {
+                                self.insert_shell_extract_upstream(
+                                    snapshot,
+                                    cell_id.entity.as_str(),
+                                    &arg_values,
+                                    version_id,
+                                    diagnostics,
+                                )
+                            } else {
+                                None
+                            };
+
                         // Derive a unique per-entity ComputeNodeId index by
                         // taking `max(existing.index) + 1` over already-inserted
                         // ComputeNodes in the same entity. `insert_compute_node`
@@ -3132,7 +3305,7 @@ impl Engine {
                         // this list — that would be a graph self-loop.
                         // Contract pinned by:
                         //   tests/compute_dispatch_registry.rs::e2e_optimized_non_valueref_arg_yields_empty_value_inputs
-                        let value_inputs: Vec<reify_core::ValueCellId> = args
+                        let mut value_inputs: Vec<reify_core::ValueCellId> = args
                             .iter()
                             .filter_map(|arg| match &arg.kind {
                                 reify_ir::CompiledExprKind::ValueRef(
@@ -3141,6 +3314,16 @@ impl Engine {
                                 _ => None,
                             })
                             .collect();
+
+                        // task 3594/δ step-12: on the shell route, the upstream
+                        // `shell-extract::extract` node's synthetic output cell
+                        // joins this FEA node's `value_inputs` — the graph edge
+                        // the e2e (`shell_solve_e2e.rs`) asserts on. The FEA
+                        // trampoline reads only value_inputs[0..=6]; this extra
+                        // input is a pure dependency edge it ignores.
+                        if let Some(feed) = shell_extract_feed {
+                            value_inputs.push(feed);
+                        }
 
                         // task δ / 3423 (PRD §3 atomic completion, §8 task δ):
                         // insert the ComputeNode FIRST — BEFORE dispatch — so
