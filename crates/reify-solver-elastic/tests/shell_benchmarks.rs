@@ -1923,10 +1923,14 @@ fn pinched_cylinder_octant_symmetry_bcs_pins_exact_dofs_on_1x1_mesh() {
 /// A bending/faceting-dominated benchmark is where directors-alone measurably
 /// help; on the membrane-dominated hemisphere (R/t=250) the reintroduced lock
 /// would mask the gain — reviewers should NOT expect improvement there. The
-/// Scordelis-Lo roof was evaluated empirically at 4×4 and REJECTED: under the
-/// degenerate substrate its free-edge mode is sign-reversed at this coarse mesh
-/// (no clean directional signal). The pinched cylinder is the more
-/// director-favourable of the two bending-dominated candidates.
+/// Scordelis-Lo roof was evaluated empirically at 4×4 under the degenerate
+/// substrate and initially showed a sign-reversed free-edge mode; task 4065's
+/// K_BB curved-kinematics fix (commit 784465ab57) corrected the sign, and task
+/// 3513 now GREENs the Scordelis-Lo absolute published band (correctly-signed
+/// downward deflection ~0.2312, ratio ~0.765 of the 0.3024 reference, at 4×4).
+/// The pinched cylinder remains the directional (relative) benchmark here
+/// because the relative gain from directors-alone is cleaner on a purely
+/// bending-dominated problem; the Scordelis-Lo result is the absolute band test.
 ///
 /// # Observed (4×4 octant, t=3, R=300, E=3e6, ν=0.3)
 ///
@@ -2082,11 +2086,17 @@ const PRE_REFINEMENT_HEMISPHERE_RATIO: f64 = 0.10;
 /// # Why the pinched cylinder (bending-dominated) and not the roof / hemisphere
 ///
 /// The pinched cylinder already runs the degenerate element end-to-end and is
-/// ~6.4× under — clear, well-signed headroom for a clean directional move. Per
-/// task 4068's findings the Scordelis-Lo free-edge mode is sign-reversed at 4×4
-/// (no clean directional signal; that GREEN is 3513's job) and the
-/// membrane-dominated hemisphere (R/t=250) would let the residual lock mask the
-/// gain (4065's job).
+/// ~6.4× under — clear, well-signed headroom for a clean directional move. The
+/// Scordelis-Lo free-edge mode was sign-reversed under the degenerate substrate
+/// in the task-4068 era; task 4065's K_BB curved-kinematics fix (commit
+/// 784465ab57) corrected the sign, and task 3513 now GREENs the Scordelis-Lo
+/// absolute published band (correctly-signed downward deflection ~0.2312, ratio
+/// ~0.765 of the 0.3024 reference, at 4×4).  This test keeps the pinched
+/// cylinder as the directional (relative) benchmark because the relative gain
+/// from the ANS membrane field is cleanest on that geometry; see
+/// `scordelis_lo_roof_degenerate_stack_4x4_within_bathe_lee_2014_band` for the
+/// absolute band.  The membrane-dominated hemisphere (R/t=250) would let the
+/// residual lock mask the ANS gain (4065's job on that geometry).
 #[test]
 fn degenerate_shell_ans_membrane_pinched_cylinder_moves_toward_reference() {
     const R: f64 = 300.0;
