@@ -70,6 +70,7 @@ pub(super) fn resolve_let_advertised_type(
 /// Unresolved names and dimensional-op annotations emit a root-cause diagnostic and return
 /// `Type::Error` (poison sentinel) to suppress cascade "type mismatch" errors downstream
 /// via the asymmetric producer-side wildcard in `type_compat.rs:3–26`.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn check_phase_resolve_structure_members(
     structure: &EntityDefRef<'_>,
     structure_names: &HashSet<String>,

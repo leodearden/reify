@@ -53,11 +53,11 @@ pub(crate) fn check_trait_conformance(
                 }
             }
             for def in &ct.defaults {
-                if let DefaultKind::AssocType(ty) = &def.kind {
-                    if let Some(n) = &def.name {
-                        declared_assoc_names.insert(n.clone());
-                        assoc_type_scope.entry(n.clone()).or_insert_with(|| ty.clone());
-                    }
+                if let DefaultKind::AssocType(ty) = &def.kind
+                    && let Some(n) = &def.name
+                {
+                    declared_assoc_names.insert(n.clone());
+                    assoc_type_scope.entry(n.clone()).or_insert_with(|| ty.clone());
                 }
             }
         }

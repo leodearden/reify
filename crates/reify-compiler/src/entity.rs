@@ -716,21 +716,21 @@ pub(crate) fn compile_entity(
                         }
                     }
                     for def in &ct.defaults {
-                        if let DefaultKind::AssocType(_) = &def.kind {
-                            if let Some(n) = &def.name {
-                                declared_assoc_names.insert(n.clone());
-                            }
+                        if let DefaultKind::AssocType(_) = &def.kind
+                            && let Some(n) = &def.name
+                        {
+                            declared_assoc_names.insert(n.clone());
                         }
                     }
                     // Insert trait defaults that the structure didn't override
                     // (own-binding wins via `entry().or_insert`).
                     for def in &ct.defaults {
-                        if let DefaultKind::AssocType(ty) = &def.kind {
-                            if let Some(n) = &def.name {
-                                assoc_type_scope
-                                    .entry(n.clone())
-                                    .or_insert_with(|| ty.clone());
-                            }
+                        if let DefaultKind::AssocType(ty) = &def.kind
+                            && let Some(n) = &def.name
+                        {
+                            assoc_type_scope
+                                .entry(n.clone())
+                                .or_insert_with(|| ty.clone());
                         }
                     }
                 }
