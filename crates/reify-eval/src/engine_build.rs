@@ -11,7 +11,7 @@ use reify_solver_elastic::{
     Mesh2d, Mesh2dError, Mesh2dReport, MpcRow, SweepError, SweepParams, SweptMesh3d,
 };
 use reify_core::{Diagnostic, DiagnosticLabel, RealizationNodeId, SourceSpan, VersionId};
-use reify_ir::{AttributeHistory, CapabilityDescriptor, CompiledFunction, ElementOrderTag, ErrorRef, ExportFormat, FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelHandle, KernelId, LoftOpHistoryRecords, Mesh, Operation, ReprKind, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable, ValueMap, VolumeMesh};
+use reify_ir::{AttributeHistory, CapabilityDescriptor, CompiledFunction, ElementOrderTag, ErrorRef, ExportFormat, FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelHandle, KernelId, LoftOpHistoryRecords, Operation, ReprKind, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable, ValueMap, VolumeMesh};
 use reify_shell_extract::{MidSurfaceMesh, ShellTetInterface};
 
 use crate::cache::{CacheStore, CachedResult, FAILED_REALIZATION_STUB_HANDLE, NodeCache, NodeId};
@@ -29,7 +29,7 @@ use crate::topology_attribute_propagation::{
     populate_extrude_attributes, populate_loft_attributes, populate_revolve_attributes,
     populate_sweep_attributes,
 };
-use crate::{BuildResult, Engine, TessellateResult};
+use crate::{BuildResult, Engine, MeshSurface, TessellateResult};
 
 /// Map a kernel registry name to the [`KernelId`] used to tag the handles that
 /// kernel produces (task 4048).
@@ -2480,7 +2480,7 @@ impl Engine {
         // fn's signature mirrors the disjoint-field-borrow shape already in
         // use for the other &mut params.
         dispatch_count: &mut usize,
-    ) -> Vec<(String, Mesh)> {
+    ) -> Vec<MeshSurface> {
         let mut meshes = Vec::new();
 
         // Task ε (3436): the engine's default kernel is fetched by name from
@@ -2625,7 +2625,11 @@ impl Engine {
                     );
                     match default_kernel.tessellate(last_handle.id, budget) {
                         Ok(mesh) => {
-                            meshes.push((realization.id.to_string(), mesh));
+                            meshes.push(MeshSurface {
+                                entity_path: realization.id.to_string(),
+                                mesh,
+                                default_visible: true,
+                            });
                         }
                         Err(e) => {
                             diagnostics

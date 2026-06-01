@@ -254,7 +254,7 @@ fn tube_volume_through_full_pipeline_matches_formula() {
         "expected 1 mesh (single realization), got {}",
         tess_result.meshes.len()
     );
-    let (_entity, mesh) = &tess_result.meshes[0];
+    let mesh = &tess_result.meshes[0].mesh;
     assert!(!mesh.vertices.is_empty(), "tube mesh should have vertices");
     assert!(!mesh.indices.is_empty(), "tube mesh should have triangles");
 
@@ -382,7 +382,7 @@ fn pipe_volume_through_full_pipeline_matches_formula() {
         "expected 1 mesh (single realization), got {}",
         tess_result.meshes.len()
     );
-    let (_entity, mesh) = &tess_result.meshes[0];
+    let mesh = &tess_result.meshes[0].mesh;
     assert!(!mesh.vertices.is_empty(), "pipe mesh should have vertices");
     assert!(!mesh.indices.is_empty(), "pipe mesh should have triangles");
 

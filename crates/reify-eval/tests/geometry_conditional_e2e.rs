@@ -113,7 +113,7 @@ structure Note3IfSolid {
         "Pick.A: expected 1 mesh, got {}",
         result_a.meshes.len()
     );
-    let mesh_a = &result_a.meshes[0].1;
+    let mesh_a = &result_a.meshes[0].mesh;
     assert!(
         !mesh_a.vertices.is_empty(),
         "Pick.A: mesh must have vertices"
@@ -159,7 +159,7 @@ structure Note3IfSolid {
         "Pick.B: expected 1 mesh, got {}",
         result_b.meshes.len()
     );
-    let mesh_b = &result_b.meshes[0].1;
+    let mesh_b = &result_b.meshes[0].mesh;
     assert!(
         !mesh_b.vertices.is_empty(),
         "Pick.B: mesh must have vertices"

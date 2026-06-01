@@ -2077,11 +2077,11 @@ impl EngineSession {
                 let mut meshes: Vec<MeshData> = result
                     .meshes
                     .into_iter()
-                    .map(|(entity_path, mesh)| MeshData {
-                        entity_path,
-                        vertices: mesh.vertices,
-                        indices: mesh.indices,
-                        normals: mesh.normals,
+                    .map(|surface| MeshData {
+                        entity_path: surface.entity_path,
+                        vertices: surface.mesh.vertices,
+                        indices: surface.mesh.indices,
+                        normals: surface.mesh.normals,
                         scalar_channels: std::collections::HashMap::new(),
                         displaced_positions: None,
                         element_kind: None,

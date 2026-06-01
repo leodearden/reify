@@ -847,17 +847,39 @@ pub struct BuildResult {
     pub resolved_params: HashMap<ValueCellId, reify_ir::Value>,
 }
 
+/// A single surfaced mesh produced by tessellation, paired with its entity
+/// path and default visibility.
+///
+/// Sub-placement T5 (task 3903) replaced the former `(String, Mesh)` tuple so
+/// that each surfaced realization can carry a `default_visible` flag: aux
+/// bodies (and every descendant of an aux sub) are still realized,
+/// tessellated, and shipped, but surface hidden (`default_visible == false`).
+/// The mesh payload is always present.
+#[derive(Debug)]
+pub struct MeshSurface {
+    /// The surfaced realization's entity path. For root templates this is the
+    /// `RealizationNodeId` Display form (`"{entity}#realization[{index}]"`);
+    /// for contained descendants it is the composed `parent.sub#realization[i]`
+    /// form (task 3903 Phase B).
+    pub entity_path: String,
+    /// The tessellated mesh, placed at its composed world pose for descendants.
+    pub mesh: Mesh,
+    /// Whether the GUI should show this surface by default. `false` for aux
+    /// bodies and any descendant of an aux sub (the mesh is still shipped).
+    pub default_visible: bool,
+}
+
 /// Result of tessellating all realizations in a module for GUI mesh rendering.
 ///
 /// Similar to [`BuildResult`] but produces per-realization meshes instead of
 /// a single exported geometry file. Each mesh is paired with its entity path
-/// (e.g., `"Bracket#realization[0]"`).
+/// (e.g., `"Bracket#realization[0]"`) via [`MeshSurface`].
 #[derive(Debug)]
 pub struct TessellateResult {
     pub values: ValueMap,
     pub constraint_results: Vec<ConstraintCheckEntry>,
-    /// Per-realization tessellated meshes: `(entity_path, mesh)`.
-    pub meshes: Vec<(String, Mesh)>,
+    /// Per-realization tessellated surfaces (entity path + mesh + visibility).
+    pub meshes: Vec<MeshSurface>,
     pub diagnostics: Vec<Diagnostic>,
     pub resolved_params: HashMap<ValueCellId, reify_ir::Value>,
 }
