@@ -525,17 +525,27 @@ pub(crate) fn line_search(
 ) -> f64 {
     let x0 = params.variable_vector();
     let m0 = merit(params, model, mu);
-    // Directional derivative: ∇φᵀ · dx ≈ gᵀ·dx  (T component only contributes dx[n-1])
-    // Conservative: use -‖dx‖ as descent guarantee approximation.
+    // Directional derivative for Armijo: prefer the true objective slope g^T·dx
+    // (= dx[n-1] since ∇f = [0,…,0,1]) when it is negative (descent); fall back to
+    // −‖dx‖² as a conservative proxy when the QP step has a positive T-component.
+    // Either way dir_deriv < 0, so `m0 + c1*alpha*dir_deriv` is a genuine
+    // sufficient-DECREASE threshold (not an increase allowance).
     let dx_norm: f64 = dx.iter().map(|v| v * v).sum::<f64>().sqrt();
-    let dir_deriv = -dx_norm * dx_norm; // always negative for non-zero step
+    let n = dx.len();
+    let g_dot_dx = if n > 0 { dx[n - 1] } else { 0.0 }; // ∇T · dx = dx[T-index]
+    let dir_deriv = if g_dot_dx < 0.0 {
+        g_dot_dx          // true descent on objective
+    } else {
+        -dx_norm * dx_norm // conservative proxy (always ≤ 0)
+    };
 
     let mut alpha = alpha_init;
     for _ in 0..max_halving {
         let x_new: Vec<f64> = x0.iter().zip(dx.iter()).map(|(xi, di)| xi + alpha * di).collect();
         if let Some(p_new) = params.unpack_variable_vector(&x_new) {
             let m_new = merit(&p_new, model, mu);
-            if m_new <= m0 + c1 * alpha * dir_deriv.abs() {
+            // Armijo sufficient-decrease: RHS is strictly below m0 when dir_deriv < 0.
+            if m_new <= m0 + c1 * alpha * dir_deriv {
                 return alpha;
             }
         }
