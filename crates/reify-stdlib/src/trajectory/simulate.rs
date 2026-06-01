@@ -23,6 +23,24 @@
 //! The public(crate) API here is tested at the pure-function level ahead of
 //! the π consumer that will wire it to the Value layer.  Suppress the lint
 //! rather than adding a premature marshalling layer.
+//! # Robustness contract
+//!
+//! `simulate_trajectory_core` handles all degenerate inputs without panicking:
+//! - **Empty modal modes**: vibration_offset is all-zero; combined == nominal.
+//! - **Degenerate/short trajectory** (spline duration ≤ 0, or
+//!   `to_trajectory_samples` returns `None` or < 2 samples): returns
+//!   well-formed empty output vectors (`t_samples`, inner `Vec`s all empty).
+//! - **Consistent output shaping**: `vibration_offset`, `nominal_pose`, and
+//!   `combined_pose` outer length always equals `effector_locations.len()`;
+//!   inner lengths always equal `t_samples.len()`.
+//!
+//! # Downstream wiring (deferred to π trampoline task)
+//!
+//! Value marshalling, `eval_trajectory` dispatch, FK-snapshot integration,
+//! `EndEffectorTrack` Value construction, and the `.ri` accessor bodies
+//! (`end_effector_track`, `deviation_from_nominal`, `peak_deviation`) are owned
+//! by the downstream Value-wiring task — exactly as ζ owns impulse-shaper
+//! marshalling and the modal ι trampoline owns `transient_response` marshalling.
 #![allow(dead_code)]
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
