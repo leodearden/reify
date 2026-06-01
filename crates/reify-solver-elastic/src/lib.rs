@@ -477,6 +477,8 @@ pub use shell_kinematics::{ShellKinematics, shell_kinematics};
 pub use shell_result::{
     ShellElementStress, ShellStress, shell_element_stress,
 };
+// Task 3594/δ: flat-plate MITC3 cantilever shell driver (neutral types only).
+pub use shell_solve::{FlatPlateShellSolve, solve_flat_plate_shell};
 // Task 2996: Z-Z error indicator — kernel-layer a-posteriori error estimator.
 // PRD: docs/prds/v0_4/a-posteriori-error-estimation.md, Task decomposition #1.
 pub use error_estimator::{ZzIndicator, compute_zz_indicator};
