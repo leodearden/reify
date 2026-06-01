@@ -292,8 +292,40 @@ pub(crate) fn compile_trait(
                     });
                 }
             }
+            reify_ast::MemberDecl::AssociatedType(at) => {
+                // Associated type (task 3972 ιβ). A bodyless `type X` is a required
+                // member the conformer must bind; `type X = Default` is a
+                // default-providing member injected when not overridden.
+                // Mirrors the Fn arm bodyless-vs-body split above.
+                match &at.default_type {
+                    None => {
+                        required_members.push(TraitRequirement {
+                            name: at.name.clone(),
+                            kind: RequirementKind::AssocType(None),
+                            span: at.span,
+                        });
+                    }
+                    Some(te) => {
+                        let ty = resolve_trait_member_type_annotation(
+                            te,
+                            trait_decl,
+                            enum_defs,
+                            &empty_params,
+                            alias_registry,
+                            structure_names,
+                            trait_names,
+                            diagnostics,
+                        );
+                        defaults.push(TraitDefault {
+                            name: Some(at.name.clone()),
+                            kind: DefaultKind::AssocType(ty),
+                            span: at.span,
+                        });
+                    }
+                }
+            }
             _ => {
-                // Minimize, Maximize, GuardedGroup, AssociatedType — skip for now
+                // Minimize, Maximize, GuardedGroup — skip
             }
         }
     }
