@@ -273,6 +273,37 @@ mod tests {
         }
     }
 
+    // S3: analytic 2-DOF + 1-constraint, hand-solved closed-form.
+    // M = diag(2,3), A = [1,1] (m=1, n=2), τ_open=[10,6], accel_rhs=[1].
+    // KKT 3×3: {2q̈₀ + λ = 10 ; 3q̈₁ + λ = 6 ; q̈₀ + q̈₁ = 1}
+    // Solving: from rows 1&2: q̈₀=(10-λ)/2, q̈₁=(6-λ)/3.
+    // Row 3: (10-λ)/2 + (6-λ)/3 = 1 → 15 + 12 - 5λ = 6 → λ = (27-6)/5 = 21/5 = 4.2
+    // Wait, let me redo: 3(10-λ)/6 + 2(6-λ)/6 = 1 → 30-3λ+12-2λ=6 → 42-5λ=6 → λ=36/5=7.2
+    // q̈₀ = (10-7.2)/2 = 1.4, q̈₁ = (6-7.2)/3 = -0.4. Check: 1.4-0.4=1 ✓
+    // τ = [10+7.2, 6+7.2] = [17.2, 13.2]
+    #[test]
+    fn analytic_two_dof_single_constraint() {
+        let m_matrix = [2.0_f64, 0.0, 0.0, 3.0]; // diag(2,3), n=2
+        let tau_open = [10.0_f64, 6.0];
+        let a_matrix = [1.0_f64, 1.0]; // m=1, n=2
+        let accel_rhs = [1.0_f64];
+
+        let sol = solve_closed_chain(
+            &m_matrix,
+            &tau_open,
+            &a_matrix,
+            &accel_rhs,
+            2,
+            1,
+            DEFAULT_PIVOT_EPS,
+        )
+        .expect("analytic case should succeed");
+
+        assert_near("q_ddot", &sol.q_ddot, &[1.4, -0.4], 1e-12);
+        assert_near("lambda", &sol.lambda, &[7.2], 1e-12);
+        assert_near("tau", &sol.tau, &[17.2, 13.2], 1e-12);
+    }
+
     // S1: m=0 (no constraints) must reduce to the open-chain system M·q̈ = τ_open.
     // Inputs: M = diag(2,4), τ_open = [6,8], m=0 ⇒ q̈ = [6/2, 8/4] = [3, 2].
     #[test]
