@@ -103,7 +103,7 @@ fn objective_combination_debug() {
 #[test]
 fn objective_term_new_minimize_defaults() {
     let expr = make_literal_expr();
-    let saved_hash = expr.content_hash.clone();
+    let saved_hash = expr.content_hash;
     let term = ObjectiveTerm::new(ObjectiveSense::Minimize, expr);
     assert_eq!(term.sense, ObjectiveSense::Minimize);
     assert_eq!(term.weight, 1.0);
@@ -114,7 +114,7 @@ fn objective_term_new_minimize_defaults() {
 #[test]
 fn objective_term_new_maximize_defaults() {
     let expr = make_literal_expr();
-    let saved_hash = expr.content_hash.clone();
+    let saved_hash = expr.content_hash;
     let term = ObjectiveTerm::new(ObjectiveSense::Maximize, expr);
     assert_eq!(term.sense, ObjectiveSense::Maximize);
     assert_eq!(term.weight, 1.0);
@@ -127,7 +127,7 @@ fn objective_term_new_maximize_defaults() {
 #[test]
 fn objective_set_single_minimize() {
     let expr = make_literal_expr();
-    let saved_hash = expr.content_hash.clone();
+    let saved_hash = expr.content_hash;
     let set = ObjectiveSet::single(ObjectiveSense::Minimize, expr);
     assert_eq!(set.terms.len(), 1);
     assert_eq!(set.terms[0].sense, ObjectiveSense::Minimize);
@@ -140,7 +140,7 @@ fn objective_set_single_minimize() {
 #[test]
 fn objective_set_single_maximize() {
     let expr = make_literal_expr();
-    let saved_hash = expr.content_hash.clone();
+    let saved_hash = expr.content_hash;
     let set = ObjectiveSet::single(ObjectiveSense::Maximize, expr);
     assert_eq!(set.terms.len(), 1);
     assert_eq!(set.terms[0].sense, ObjectiveSense::Maximize);
@@ -184,7 +184,7 @@ fn objective_set_clone_produces_structurally_equal_set() {
 fn single_term_objective_set_threads_through_resolution_problem_minimize() {
     use reify_ir::{ResolutionProblem, value::ValueMap};
     let expr = make_literal_expr();
-    let saved_hash = expr.content_hash.clone();
+    let saved_hash = expr.content_hash;
     let set = ObjectiveSet::single(ObjectiveSense::Minimize, expr);
 
     let problem = ResolutionProblem {
@@ -209,7 +209,7 @@ fn single_term_objective_set_threads_through_resolution_problem_minimize() {
 fn single_term_objective_set_threads_through_resolution_problem_maximize() {
     use reify_ir::{ResolutionProblem, value::ValueMap};
     let expr = make_literal_expr();
-    let saved_hash = expr.content_hash.clone();
+    let saved_hash = expr.content_hash;
     let set = ObjectiveSet::single(ObjectiveSense::Maximize, expr);
 
     let problem = ResolutionProblem {
