@@ -755,4 +755,42 @@ mod tests {
             "reduced diag(3, −0.5) must have a negative algebraic minimum, got {min_indef}",
         );
     }
+
+    /// A *generic* admissible q in struts-then-cables order: distinct per-member
+    /// magnitudes, struts negative and cables positive. Mirrors
+    /// `form_find_free.rs`'s `generic_admissible_q` (same `1 + 0.37·i` magnitudes,
+    /// signs by member kind) but keyed off the known triplex layout — the first
+    /// three members are the struts. Distinct magnitudes break the prism's `C₃ ×
+    /// top/bottom` symmetry, so `D` keeps only the all-ones translation mode in its
+    /// null space (nullity 1) ⇒ rank 5 ≠ N − d − 1 = 2 — the non-super-stable
+    /// discriminator (contrast the closed-form q's rank-2 super-stable spectrum).
+    fn generic_admissible_q() -> Vec<f64> {
+        (0..triplex_members().len())
+            .map(|i| {
+                let mag = 1.0 + 0.37 * (i as f64);
+                if i < 3 { -mag } else { mag }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn super_stable_true_for_prism_false_for_wrong_rank() {
+        let members = triplex_members();
+
+        // Canonical prism + closed-form q: D's spectrum is {0,0,0,0,6,6} — PSD
+        // (min λ = 0, no negative eigenvalue) and rank 2 == N − d − 1 = 6 − 3 − 1.
+        // Both algebraic Connelly super-stability conditions hold ⇒ super_stable.
+        assert!(
+            is_super_stable(6, &members, &closed_form_q(), 3),
+            "canonical triplex with closed-form q is super-stable (D PSD, rank 2 = N−d−1)",
+        );
+
+        // Generic admissible q: distinct magnitudes leave only the translation
+        // mode in null(D), so rank(D) = 5 ≠ N − d − 1 = 2. The rank condition
+        // fails ⇒ NOT super-stable (verdict is false regardless of the PSD test).
+        assert!(
+            !is_super_stable(6, &members, &generic_admissible_q(), 3),
+            "generic admissible q gives D rank 5 ≠ N−d−1 = 2 ⇒ not super-stable",
+        );
+    }
 }
