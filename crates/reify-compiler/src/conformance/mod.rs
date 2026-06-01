@@ -30,6 +30,39 @@ pub(crate) fn check_trait_conformance(
     // TopologyTemplate.
     assoc_types_out: &mut Vec<CompiledAssocType>,
 ) {
+    // task 3973 ιγ: build the assoc-type scope BEFORE resolving structure
+    // members so that `param x : AssocTypeName` annotations resolve correctly
+    // in check_phase_resolve_structure_members.  We need:
+    //   (a) the structure's own `type X = T` bindings (authoritative diagnostics
+    //       — UnresolvedType for a bad RHS, TraitAssocTypeNotBound for unbound
+    //       required types — are emitted here once, not duplicated downstream);
+    //   (b) trait defaults for names the structure didn't bind;
+    //   (c) declared_assoc_names for the anti-cascade poison sentinel.
+    // This also moves the collect_structure_assoc_type_bindings call early so it
+    // is not called twice (the result is reused below for phase 5).
+    let structure_assoc_type_bindings =
+        collect_structure_assoc_type_bindings(structure, alias_registry, structure_names, trait_names, diagnostics);
+    // Build assoc_type_scope = own bindings + trait defaults (own wins).
+    let mut assoc_type_scope: HashMap<String, Type> = structure_assoc_type_bindings.clone();
+    let mut declared_assoc_names: HashSet<String> = HashSet::new();
+    for bound in structure.trait_bounds {
+        if let Some(ct) = trait_registry.get(&bound.name) {
+            for req in &ct.required_members {
+                if matches!(req.kind, RequirementKind::AssocType(_)) {
+                    declared_assoc_names.insert(req.name.clone());
+                }
+            }
+            for def in &ct.defaults {
+                if let DefaultKind::AssocType(ty) = &def.kind {
+                    if let Some(n) = &def.name {
+                        declared_assoc_names.insert(n.clone());
+                        assoc_type_scope.entry(n.clone()).or_insert_with(|| ty.clone());
+                    }
+                }
+            }
+        }
+    }
+
     let (structure_param_members, structure_let_members, structure_constraint_labels) =
         check_phase_resolve_structure_members(
             structure,
@@ -37,6 +70,8 @@ pub(crate) fn check_trait_conformance(
             trait_names,
             enum_defs,
             alias_registry,
+            &assoc_type_scope,
+            &declared_assoc_names,
             diagnostics,
         );
 
@@ -58,10 +93,8 @@ pub(crate) fn check_trait_conformance(
     let structure_fn_sigs =
         collect_structure_assoc_fn_sigs(structure, alias_registry, structure_names, trait_names);
 
-    // Collect the structure's explicit `type X = T` bindings (task 3972) so
-    // phase 5 can check AssocType requirement satisfaction.
-    let structure_assoc_type_bindings =
-        collect_structure_assoc_type_bindings(structure, alias_registry, structure_names, trait_names, diagnostics);
+    // (structure_assoc_type_bindings was already collected above — before the
+    // check_phase_resolve_structure_members call — so it is in scope for phase 5.)
 
     let ctx = check_phase_collect_trait_bounds(
         structure,
@@ -2589,6 +2622,8 @@ mod tests {
         let alias_registry = TypeAliasRegistry::new();
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
+        let empty_assoc_scope: HashMap<String, Type> = HashMap::new();
+        let empty_declared_assoc: HashSet<String> = HashSet::new();
         let (structure_param_members, structure_let_members, structure_constraint_labels) =
             check_phase_resolve_structure_members(
                 &entity_ref,
@@ -2596,6 +2631,8 @@ mod tests {
                 &trait_names,
                 &[],
                 &alias_registry,
+                &empty_assoc_scope,
+                &empty_declared_assoc,
                 &mut diagnostics,
             );
 

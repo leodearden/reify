@@ -644,6 +644,43 @@ pub(crate) fn resolve_type_with_aliases(
     None
 }
 
+/// Resolve a bare assoc-type name against the in-scope assoc-type map.
+///
+/// Called from entity.rs's first-pass `Param` arm as a fallback when
+/// `resolve_type_expr_with_aliases` returns `None` and the type expression is a
+/// bare `Named` (empty type_args). The `assoc_type_scope` maps each declared
+/// assoc-type name to its resolved concrete `Type` (structure own-binding wins
+/// over trait default; both are collected before the first pass). The
+/// `declared_assoc_names` set contains every assoc-type name declared by
+/// conformed traits, used to suppress the `UnresolvedType` cascade for
+/// declared-but-unbound required types: returning `Some(Type::Error)` poisons
+/// downstream checks with the compiler's standard "error type" sentinel while
+/// leaving the single root-cause `TraitAssocTypeNotBound` diagnostic (emitted
+/// by conformance) as the sole user-visible error. (task 3973 ιγ)
+///
+/// Return value:
+/// - `Some(ty)`: name is in the scope — use this type.
+/// - `Some(Type::Error)`: name is declared in a trait but not bound — poison
+///   (anti-cascade: caller must NOT emit `UnresolvedType`).
+/// - `None`: name is unrelated to assoc types — caller falls through to its
+///   existing unresolved-type handling.
+pub(crate) fn resolve_assoc_type_name(
+    name: &str,
+    assoc_type_scope: &HashMap<String, Type>,
+    declared_assoc_names: &HashSet<String>,
+) -> Option<Type> {
+    if let Some(ty) = assoc_type_scope.get(name) {
+        return Some(ty.clone());
+    }
+    if declared_assoc_names.contains(name) {
+        // Declared-but-unbound required associated type: return the poison
+        // sentinel so the caller skips `UnresolvedType` and the single
+        // `TraitAssocTypeNotBound` from conformance remains the root cause.
+        return Some(Type::Error);
+    }
+    None
+}
+
 /// Resolve a simple name to a `Type::Enum` if it matches a declared enum; `None` otherwise.
 ///
 /// Does NOT perform builtin/alias/trait fallback — use `resolve_type_with_aliases` first

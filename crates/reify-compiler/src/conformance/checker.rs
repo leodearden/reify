@@ -76,6 +76,16 @@ pub(super) fn check_phase_resolve_structure_members(
     trait_names: &HashSet<String>,
     enum_defs: &[reify_ir::EnumDef],
     alias_registry: &TypeAliasRegistry,
+    // task 3973 ιγ: assoc-type scope for resolving `param x : AssocTypeName`.
+    // Contains own bindings (from `type X = T` in the structure body) merged
+    // with trait defaults. When resolution fails via the standard path, this
+    // scope is consulted before emitting "unresolved type in conformance check".
+    assoc_type_scope: &HashMap<String, Type>,
+    // Names of all assoc-types declared by conformed traits (required + defaulted).
+    // Used to return Type::Error (poison) for declared-but-unbound assoc-type
+    // names without emitting a spurious UnresolvedType diagnostic — the single
+    // root-cause TraitAssocTypeNotBound from conformance phase 5 is sufficient.
+    declared_assoc_names: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> (
     HashMap<String, Type>,
@@ -181,12 +191,33 @@ pub(super) fn check_phase_resolve_structure_members(
                     }
                     Type::Enum(name.to_string())
                 } else {
-                    diagnostics.push(
-                        Diagnostic::error(format!("unresolved type in conformance check: {}", te))
+                    // Assoc-type name fallback (task 3973 ιγ): for a bare Named
+                    // type that didn't resolve as a builtin/alias/structure/trait,
+                    // check the pre-built assoc-type scope before emitting the
+                    // "unresolved type in conformance check" diagnostic.
+                    // This mirrors the same fallback added to entity.rs's first-pass
+                    // Param arm. QualifiedAssoc (`Beam::Material`) is handled by
+                    // TypeExprKind::QualifiedAssoc → None early return above.
+                    if let reify_ast::TypeExprKind::Named { name, type_args } = &te.kind
+                        && type_args.is_empty()
+                        && let Some(ty) = resolve_assoc_type_name(
+                            name,
+                            assoc_type_scope,
+                            declared_assoc_names,
+                        )
+                    {
+                        ty
+                    } else {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "unresolved type in conformance check: {}",
+                                te
+                            ))
                             .with_code(DiagnosticCode::UnresolvedType)
                             .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
-                    );
-                    Type::Error
+                        );
+                        Type::Error
+                    }
                 }
             }
         }

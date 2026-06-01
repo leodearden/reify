@@ -655,6 +655,90 @@ pub(crate) fn compile_entity(
     // guarded-group children requires plumbing additional state into
     // `register_guarded_names` and is left for a future task (option a).
     let mut outside_decl_spans: HashMap<String, SourceSpan> = HashMap::new();
+
+    // ── task 3973 ιγ: early assoc-type scope ─────────────────────────────────
+    //
+    // Build the assoc-type scope BEFORE the first pass so that `param mass :
+    // Material` can resolve `Material` to the bound concrete type.  Member TYPE
+    // annotations resolve in the first pass (the `Param` arm calls
+    // `resolve_type_expr_with_aliases` at line 662); the authoritative
+    // conformance table (`TopologyTemplate.assoc_types`) is populated only at
+    // entity.rs:1109 — AFTER the first pass.  Recomputing the scope early from
+    // two sources avoids reordering conformance before the first pass (which
+    // would be a large, risky change).
+    //
+    // Source 1 — structure own `type X = T` bindings (step-2): walk members,
+    //   resolve each RHS via a THROWAWAY diagnostic sink so authoritative
+    //   diagnostics stay single-sourced at the conformance call (precedent:
+    //   `derive_assoc_fn_sig_silent` checker.rs:908).  Own-binding wins.
+    // Source 2 — trait defaults (step-4): iterate `trait_bounds`, read each
+    //   `CompiledTrait.defaults` for `DefaultKind::AssocType(ty)` entries, and
+    //   insert name→ty if not already present (own-binding wins via `or_insert`).
+    // Source 3 — declared_assoc_names (step-6): every assoc-type name from all
+    //   conformed traits (required + default), used to return `Type::Error`
+    //   (poison) for declared-but-unbound names — suppressing the spurious
+    //   `UnresolvedType` cascade so `TraitAssocTypeNotBound` remains the sole
+    //   root-cause diagnostic.
+    let mut assoc_type_scope: HashMap<String, Type> = HashMap::new();
+    // step-6: populated below after the own-binding walk
+    let mut declared_assoc_names: HashSet<String> = HashSet::new();
+    {
+        let empty_params: HashSet<String> = HashSet::new();
+        // Throwaway sink: authoritative diagnostics for bad RHS types are
+        // emitted by the conformance call at entity.rs:1109.
+        let mut sink: Vec<Diagnostic> = Vec::new();
+        // Source 1: structure own bindings.
+        for m in structure.members {
+            if let reify_ast::MemberDecl::AssociatedType(at) = m
+                && let Some(type_expr) = &at.default_type
+            {
+                let ty = resolve_type_expr_with_aliases(
+                    type_expr,
+                    &empty_params,
+                    alias_registry,
+                    &mut sink,
+                    structure_names,
+                    trait_names,
+                )
+                .unwrap_or(Type::Error);
+                assoc_type_scope.insert(at.name.clone(), ty);
+            }
+        }
+        // Source 2 + 3: trait defaults and declared names.
+        if !structure.trait_bounds.is_empty() {
+            for bound in structure.trait_bounds {
+                if let Some(ct) = trait_registry.get(&bound.name) {
+                    // Collect every declared assoc-type name (required + defaulted)
+                    // for the anti-cascade poison set (step-6).
+                    for req in &ct.required_members {
+                        if matches!(req.kind, RequirementKind::AssocType(_)) {
+                            declared_assoc_names.insert(req.name.clone());
+                        }
+                    }
+                    for def in &ct.defaults {
+                        if let DefaultKind::AssocType(_) = &def.kind {
+                            if let Some(n) = &def.name {
+                                declared_assoc_names.insert(n.clone());
+                            }
+                        }
+                    }
+                    // Insert trait defaults that the structure didn't override
+                    // (own-binding wins via `entry().or_insert`).
+                    for def in &ct.defaults {
+                        if let DefaultKind::AssocType(ty) = &def.kind {
+                            if let Some(n) = &def.name {
+                                assoc_type_scope
+                                    .entry(n.clone())
+                                    .or_insert_with(|| ty.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     for member in structure.members {
         match member {
             reify_ast::MemberDecl::Param(param) => {
@@ -692,15 +776,36 @@ pub(crate) fn compile_entity(
                                 }
                                 t
                             } else {
-                                diagnostics.push(
-                                    Diagnostic::error(format!("unresolved type: {}", type_expr))
+                                // Assoc-type name fallback (task 3973 ιγ): for a
+                                // bare Named type that didn't resolve as a builtin /
+                                // alias / structure / trait, check the pre-built
+                                // assoc-type scope before emitting UnresolvedType.
+                                // QualifiedAssoc (`Beam::Material`) stays None here —
+                                // that is task ιₑ, not this gate.
+                                if let reify_ast::TypeExprKind::Named { name, type_args } =
+                                    &type_expr.kind
+                                    && type_args.is_empty()
+                                    && let Some(ty) = resolve_assoc_type_name(
+                                        name,
+                                        &assoc_type_scope,
+                                        &declared_assoc_names,
+                                    )
+                                {
+                                    ty
+                                } else {
+                                    diagnostics.push(
+                                        Diagnostic::error(format!(
+                                            "unresolved type: {}",
+                                            type_expr
+                                        ))
                                         .with_code(DiagnosticCode::UnresolvedType)
                                         .with_label(DiagnosticLabel::new(
                                             type_expr.span,
                                             "unknown type name",
                                         )),
-                                );
-                                Type::Real // fallback
+                                    );
+                                    Type::Real // fallback
+                                }
                             }
                         }
                     }
