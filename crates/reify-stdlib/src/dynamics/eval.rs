@@ -183,6 +183,120 @@ fn trajectory_sample(t: f64, q: f64, v: f64, a: f64) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dynamics::spatial::Frame3;
+
+    /// Build a canonical `MassProperties` `Value::StructureInstance` matching
+    /// `dynamics_ops::assemble_mass_properties`'s shape: `mass` a Mass-scalar,
+    /// `com` a `Value::Point` of Length-scalars, `inertia` a 3×3 `Value::Matrix`
+    /// of `Real`, `origin` a `Real`.
+    fn mass_properties_fixture(
+        mass: f64,
+        com: [f64; 3],
+        inertia: [[f64; 3]; 3],
+    ) -> Value {
+        let com_point = Value::Point(com.iter().map(|&c| Value::length(c)).collect());
+        let inertia_matrix = Value::Matrix(
+            inertia
+                .iter()
+                .map(|row| row.iter().map(|&x| Value::Real(x)).collect())
+                .collect(),
+        );
+        mint_instance(
+            "MassProperties",
+            vec![
+                (
+                    "mass".to_string(),
+                    Value::Scalar {
+                        si_value: mass,
+                        dimension: DimensionVector::MASS,
+                    },
+                ),
+                ("com".to_string(), com_point),
+                ("inertia".to_string(), inertia_matrix),
+                ("origin".to_string(), Value::Real(0.0)),
+            ],
+        )
+    }
+
+    /// Build a `Value::Transform` from a `(w, x, y, z)` quaternion and a metres
+    /// translation (Length-scalar components), mirroring the FK `world_transform`
+    /// shape that `snapshot()` produces.
+    fn transform_fixture(quat: [f64; 4], translation: [f64; 3]) -> Value {
+        Value::Transform {
+            rotation: Box::new(Value::Orientation {
+                w: quat[0],
+                x: quat[1],
+                y: quat[2],
+                z: quat[3],
+            }),
+            translation: Box::new(Value::Vector(
+                translation.iter().map(|&t| Value::length(t)).collect(),
+            )),
+        }
+    }
+
+    // ── step-3 RED: mass_properties_from_value ─────────────────────────────────
+
+    #[test]
+    fn mass_properties_from_value_extracts_mass_com_inertia() {
+        let inertia = [
+            [0.10, 0.01, 0.02],
+            [0.03, 0.20, 0.04],
+            [0.05, 0.06, 0.30],
+        ];
+        let mp = mass_properties_fixture(1.0, [0.0, 0.0, -0.1], inertia);
+
+        let (mass, com, got_inertia) = mass_properties_from_value(&mp)
+            .expect("a well-formed MassProperties must parse");
+        assert!((mass - 1.0).abs() < 1e-12, "mass");
+        assert!((com[0]).abs() < 1e-12 && (com[1]).abs() < 1e-12, "com x/y");
+        assert!((com[2] - (-0.1)).abs() < 1e-12, "com z");
+        for r in 0..3 {
+            for c in 0..3 {
+                assert!(
+                    (got_inertia[r][c] - inertia[r][c]).abs() < 1e-12,
+                    "inertia[{r}][{c}]"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mass_properties_from_value_rejects_non_mass_properties() {
+        // A plain numeric cell is not a MassProperties.
+        assert!(mass_properties_from_value(&Value::Real(1.0)).is_none());
+        // A StructureInstance with a different type_name is rejected.
+        let other = mint_instance("Block", vec![("name".to_string(), Value::Real(0.0))]);
+        assert!(mass_properties_from_value(&other).is_none());
+    }
+
+    // ── step-3 RED: frame3_from_transform_value ────────────────────────────────
+
+    #[test]
+    fn frame3_from_transform_value_identity() {
+        let identity = transform_fixture([1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
+        let f = frame3_from_transform_value(&identity).expect("identity Transform must parse");
+        assert_eq!(f, Frame3::new([1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0]));
+    }
+
+    #[test]
+    fn frame3_from_transform_value_matches_quaternion_and_translation() {
+        let quat = [0.9659258262890683, 0.0, 0.25881904510252074, 0.0]; // 30° about +y
+        let trans = [0.1, -0.2, 0.3];
+        let f = frame3_from_transform_value(&transform_fixture(quat, trans))
+            .expect("a well-formed Transform must parse");
+        for i in 0..4 {
+            assert!((f.rotation()[i] - quat[i]).abs() < 1e-12, "quat[{i}]");
+        }
+        for i in 0..3 {
+            assert!((f.translation()[i] - trans[i]).abs() < 1e-12, "trans[{i}]");
+        }
+    }
+
+    #[test]
+    fn frame3_from_transform_value_rejects_non_transform() {
+        assert!(frame3_from_transform_value(&Value::Real(0.0)).is_none());
+    }
 
     /// Extract an `f64` from a numeric value cell (`Int` / `Real` / dimensioned
     /// `Scalar`). Panics on a non-numeric cell (tests want a hard failure).
