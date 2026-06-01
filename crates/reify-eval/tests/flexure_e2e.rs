@@ -427,3 +427,92 @@ fn yield_warning_surfaces_flexure_diagnostics_end_to_end() {
         other => panic!("expected __flexure_compliance StructureInstance, got {other:?}"),
     }
 }
+
+/// The compliance-accessor probe source: builds the yielding cantilever joint
+/// (same geometry / forced ±10° range as `yield_warning.ri`) and binds
+/// `fc = flexure_compliance(pivot_flexure)` so the test can read the record the
+/// PRD §4.2 accessor surfaces.
+fn compliance_accessor_source() -> &'static str {
+    r#"
+structure def ComplianceAccessorProbe {
+    let steel = Steel_AISI_1045()
+    let pivot_flexure = prb_cantilever_beam(
+        2mm, 5mm, 0.05mm, steel, point3(0mm, 0mm, 0mm), vec3(0, 1, 0), 0deg, 10deg)
+    let fc = flexure_compliance(pivot_flexure)
+}
+"#
+}
+
+/// step-11 (RED→GREEN): the `flexure_compliance(joint)` accessor (PRD §4.2)
+/// returns the POPULATED cached record, not the β sentinel-zero stub.
+///
+/// The yielding cantilever (t=0.05mm, L=2mm, forced ±10°) caches a
+/// `FlexureCompliance` with `at_yield == true` and `max_stress ≈ 447 MPa`. The
+/// accessor must surface those populated values — NOT the stub defaults
+/// (`at_yield == false`, `max_stress == 0 Pa`) that `FlexureCompliance()`
+/// returns today.
+///
+/// RED until step-12 adds the `__flexure_compliance_get` intrinsic and rewires
+/// the accessor body from `FlexureCompliance()` to `__flexure_compliance_get(joint)`.
+#[test]
+fn flexure_compliance_accessor_returns_populated_record() {
+    let compiled = parse_and_compile_with_stdlib(compliance_accessor_source());
+    let mut engine = make_simple_engine();
+    let eval_result = engine.eval(&compiled);
+
+    // No Error diagnostics — the §5.3 yield signal is a Warning, and the
+    // accessor itself emits nothing (`flexure_compliance` /
+    // `__flexure_compliance_get` are not PRB ctors).
+    let errors: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics, got: {:?}",
+        errors
+    );
+
+    // `fc` is the FlexureCompliance record the accessor returned.
+    let id = ValueCellId::new("ComplianceAccessorProbe", "fc");
+    let fc = eval_result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("ComplianceAccessorProbe.fc cell missing from eval result"));
+    let fields = match fc {
+        Value::StructureInstance(d) => {
+            assert_eq!(
+                d.type_name, "FlexureCompliance",
+                "accessor returns a FlexureCompliance record"
+            );
+            &d.fields
+        }
+        other => panic!("expected fc to be a FlexureCompliance StructureInstance, got {other:?}"),
+    };
+
+    // POPULATED at_yield (stub default is false).
+    assert_eq!(
+        fields.get(&"at_yield".to_string()),
+        Some(&Value::Bool(true)),
+        "accessor surfaces the populated at_yield=true, not the stub default false"
+    );
+
+    // POPULATED max_stress ≈ σ(10°) = E·(t/2)·θ/L ≈ 447 MPa (stub default 0 Pa).
+    let theta = 10.0_f64.to_radians();
+    let e = 205e9_f64; // Steel_AISI_1045
+    let t = 0.05e-3_f64;
+    let length = 2e-3_f64;
+    let sigma_expected = e * (t / 2.0) * theta / length;
+    match fields.get(&"max_stress".to_string()) {
+        Some(Value::Scalar { si_value, .. }) => {
+            let rel = (si_value - sigma_expected).abs() / sigma_expected;
+            assert!(
+                rel < 0.01,
+                "max_stress {si_value} within 1% of analytic σ(10°) {sigma_expected} \
+                 (rel {rel}); NOT the stub 0 Pa"
+            );
+        }
+        other => panic!("expected max_stress Scalar, got {other:?}"),
+    }
+}
