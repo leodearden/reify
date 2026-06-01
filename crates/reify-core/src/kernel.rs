@@ -1,4 +1,95 @@
-// Implementation added in step-2.
+/// Canonical typed kernel discriminator for the Reify multi-kernel runtime.
+///
+/// This is the *single* definition of `KernelId` in the workspace.  Both
+/// `reify-ir` and `reify-config` re-export it via `pub use reify_core::KernelId`
+/// so the three public paths always name the same type — drift becomes
+/// impossible by construction.
+///
+/// # Variant order
+///
+/// Variants are declared in **registry-name lexical order**
+/// (`"fidget" < "gmsh" < "manifold" < "occt" < "openvdb"`), so the derived
+/// [`Ord`] equals the dispatcher's `BTreeMap<String, _>` registry-name
+/// iteration order.  This is the determinism contract in `reify_eval::dispatcher`
+/// (pinned by the `kernel_id_ord_matches_registry_name_lexical_order` test).
+///
+/// # Extensibility
+///
+/// Marked `#[non_exhaustive]` so new kernel adapters can be added without
+/// a breaking change to downstream `match` sites.  Exhaustive enumeration
+/// for in-crate use is provided by [`KernelId::ALL`]; external crates must
+/// use a wildcard arm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
+pub enum KernelId {
+    /// Fidget — pure-Rust SDF kernel (`"fidget"`).
+    Fidget,
+    /// Gmsh — surface→volume tetrahedral mesher (`"gmsh"`).
+    Gmsh,
+    /// Manifold — triangle-mesh Boolean kernel (`"manifold"`).
+    Manifold,
+    /// OCCT / OpenCASCADE — B-rep kernel (`"occt"`).
+    Occt,
+    /// OpenVDB — voxel-grid kernel (`"openvdb"`).
+    OpenVdb,
+}
+
+impl KernelId {
+    /// All `KernelId` variants in declaration (== registry-name lexical) order.
+    ///
+    /// Provides a stable enumeration handle for exhaustive in-crate tests and
+    /// callers, since `#[non_exhaustive]` forbids external exhaustive `match`.
+    pub const ALL: [KernelId; 5] = [
+        KernelId::Fidget,
+        KernelId::Gmsh,
+        KernelId::Manifold,
+        KernelId::Occt,
+        KernelId::OpenVdb,
+    ];
+
+    /// Canonical lowercase registry name for this kernel.
+    ///
+    /// Equals the `*_KERNEL_NAME` const each kernel crate registers as its
+    /// `KernelRegistration::name` (and the dispatcher's `BTreeMap` key), so
+    /// `from_registry_name` is its exact inverse.  Exhaustive in-crate
+    /// `match` — adding a variant forces updating this bridge at the same
+    /// diff site.
+    pub const fn as_registry_name(self) -> &'static str {
+        match self {
+            KernelId::Fidget => "fidget",
+            KernelId::Gmsh => "gmsh",
+            KernelId::Manifold => "manifold",
+            KernelId::Occt => "occt",
+            KernelId::OpenVdb => "openvdb",
+        }
+    }
+
+    /// Inverse of [`as_registry_name`](KernelId::as_registry_name): resolve a
+    /// canonical registry name back to its `KernelId`, or `None` if the string
+    /// is not a registered kernel name.
+    ///
+    /// Exact inverse over the distinct canonical names, so
+    /// `from_registry_name(k.as_registry_name()) == Some(k)` for every variant.
+    /// Matching is case-sensitive — registry names are canonical lowercase.
+    pub fn from_registry_name(name: &str) -> Option<KernelId> {
+        match name {
+            "fidget" => Some(KernelId::Fidget),
+            "gmsh" => Some(KernelId::Gmsh),
+            "manifold" => Some(KernelId::Manifold),
+            "occt" => Some(KernelId::Occt),
+            "openvdb" => Some(KernelId::OpenVdb),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for KernelId {
+    /// Delegates to [`as_registry_name`](KernelId::as_registry_name) — single
+    /// source of truth for the canonical string representation.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_registry_name())
+    }
+}
 
 #[cfg(test)]
 mod tests {

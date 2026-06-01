@@ -56,3 +56,4 @@ pub use source_location::{
 pub use persistent_cache::PersistentlyCacheable;
 pub use spanned_ident::SpannedIdent;
 pub use ty::Type;
+pub use kernel::KernelId;
