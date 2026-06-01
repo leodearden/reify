@@ -1769,6 +1769,72 @@ purpose p(subject : Structure) {
 
 // ── task-4137: geometric_params and material_params compile-time resolution ───
 
+/// RED (step-3): `compile_purpose` must emit a `ResolvedSchemaQuery` with
+/// `query_kind == "material_params"` whose `resolved_ids` are exactly {mat}
+/// (the Material-typed param); `span : Length` must be excluded.
+///
+/// Fails today because compile_purpose emits no material_params query;
+/// the material_params path is added in task-4137 step-4.
+#[test]
+fn compile_purpose_resolves_material_params_query() {
+    let source = r#"
+structure Material {
+    param density : Real = 1.0
+}
+
+structure Beam {
+    param mat : Material = Material(density: 7850.0)
+    param span : Length = 1000mm
+    constraint span > 0mm
+}
+
+purpose check(subject : Beam) {
+    constraint 1 > 0
+}
+"#;
+
+    let module = parse_and_compile(source);
+
+    assert_eq!(
+        module.compiled_purposes.len(),
+        1,
+        "expected 1 compiled purpose"
+    );
+    let purpose = &module.compiled_purposes[0];
+    assert_eq!(purpose.name, "check");
+    assert_eq!(purpose.params[0].entity_kind, "Beam");
+
+    // Find the material_params query by query_kind.
+    let mat_query = purpose
+        .resolved_queries
+        .iter()
+        .find(|q| q.query_kind == "material_params" && q.param_name == "subject")
+        .expect(
+            "expected a ResolvedSchemaQuery with query_kind='material_params' \
+             and param_name='subject'; compile_purpose must emit this query \
+             (task-4137 step-4 not yet applied)",
+        );
+
+    assert_eq!(mat_query.param_name, "subject");
+    assert_eq!(mat_query.query_kind, "material_params");
+
+    // resolved_ids must be exactly {mat}; span (Length/geometric) must be excluded.
+    let mut member_names: Vec<&str> = mat_query
+        .resolved_ids
+        .iter()
+        .map(|id: &ValueCellId| id.member.as_str())
+        .collect();
+    member_names.sort();
+
+    assert_eq!(
+        member_names,
+        vec!["mat"],
+        "material_params resolved_ids must be exactly {{mat}}; \
+         span (Length-typed) must be excluded. Got: {:?}",
+        member_names
+    );
+}
+
 /// RED (step-1): `compile_purpose` must emit a `ResolvedSchemaQuery` with
 /// `query_kind == "geometric_params"` whose `resolved_ids` are exactly
 /// {width, twist} (the Length- and Angle-typed params); `ratio : Real`
