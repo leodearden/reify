@@ -41,7 +41,7 @@
 //! wired). See `plan.json` design_decisions for the scoping rationale.
 
 use crate::form_find::MemberKind;
-use faer::Mat;
+use faer::{Mat, Side};
 
 /// How the per-member force densities `q` are specified for a free-standing
 /// form-find.
@@ -171,8 +171,14 @@ struct SpectrumClassification {
 /// full `D` is what the eigenvalue / null-space form-finding operates on.
 #[allow(dead_code)] // wired into form_find_free's pipelines at steps 4/8/10
 fn assemble_force_density_matrix(n: usize, members: &[(usize, usize)], q: &[f64]) -> Mat<f64> {
-    let _ = (n, members, q);
-    unimplemented!("assemble_force_density_matrix: implemented in T1b step-2")
+    let mut d = Mat::<f64>::zeros(n, n);
+    for (&(j, k), &qi) in members.iter().zip(q.iter()) {
+        d[(j, j)] += qi;
+        d[(k, k)] += qi;
+        d[(j, k)] -= qi;
+        d[(k, j)] -= qi;
+    }
+    d
 }
 
 /// Classify the spectrum of the symmetric force-density matrix `D` via a dense
@@ -184,8 +190,48 @@ fn assemble_force_density_matrix(n: usize, members: &[(usize, usize)], q: &[f64]
 /// by magnitude, not algebraic value.
 #[allow(dead_code)] // wired into form_find_free's pipelines at steps 4/8/10
 fn classify_spectrum(d: &Mat<f64>, rel_tol: f64) -> SpectrumClassification {
-    let _ = (d, rel_tol);
-    unimplemented!("classify_spectrum: implemented in T1b step-2")
+    let n = d.nrows();
+
+    // Dense self-adjoint (symmetric standard) eigendecomposition. faer returns
+    // eigenvalues in ascending *algebraic* order with eigenvectors as columns of
+    // U. D is real symmetric by construction, so a failure here is a bug, not an
+    // infeasible-input condition — panic with a descriptive message (matching the
+    // eigensolve.rs `.expect` precedent) rather than threading an error.
+    let eig = d
+        .self_adjoint_eigen(Side::Lower)
+        .expect("force-density matrix D is real symmetric; self-adjoint EVD must succeed");
+    let s = eig.S();
+    let u = eig.U();
+
+    // D is indefinite (struts contribute negative q), so algebraic order is not
+    // magnitude order. Reorder the eigenpairs ascending by |λ| — the null
+    // directions are the smallest-magnitude ones, and recovery (step 6) takes the
+    // leading `nullity` columns.
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&a, &b| s[a].abs().total_cmp(&s[b].abs()));
+
+    let eigenvalues: Vec<f64> = order.iter().map(|&i| s[i]).collect();
+
+    let mut eigenvectors = Mat::<f64>::zeros(n, n);
+    for (new_col, &src_col) in order.iter().enumerate() {
+        for r in 0..n {
+            eigenvectors[(r, new_col)] = u[(r, src_col)];
+        }
+    }
+
+    // Relative tolerance scaled by the largest-magnitude eigenvalue: a null
+    // direction is one whose |λ| sits at or below tol·max|λ|. Scaling by max|λ|
+    // keeps the threshold meaningful regardless of the overall force-density
+    // scale, and the prism's wide spectral gap (≈0 vs 6) makes the count robust.
+    let max_mag = eigenvalues.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+    let threshold = rel_tol * max_mag;
+    let nullity = eigenvalues.iter().filter(|v| v.abs() <= threshold).count();
+
+    SpectrumClassification {
+        eigenvalues,
+        eigenvectors,
+        nullity,
+    }
 }
 
 #[cfg(test)]
@@ -261,19 +307,34 @@ mod tests {
         );
     }
 
+    /// A *generic* admissible q: distinct per-member magnitudes (struts
+    /// negative, cables positive). The uniform all-magnitudes-1 assignment is
+    /// **not** generic — it is highly symmetric (C₃ × top/bottom) and, at the
+    /// strut/cable ratio −1, accidentally admits a second null mode (D nullity
+    /// 2). Distinct magnitudes break that symmetry, leaving only the all-ones
+    /// translation mode, so nullity collapses to exactly 1.
+    fn generic_admissible_q(kinds: &[MemberKind]) -> Vec<f64> {
+        kinds
+            .iter()
+            .enumerate()
+            .map(|(i, k)| {
+                let mag = 1.0 + 0.37 * (i as f64);
+                match k {
+                    MemberKind::Cable => mag,
+                    MemberKind::Strut => -mag,
+                }
+            })
+            .collect()
+    }
+
     #[test]
     fn generic_admissible_q_has_translation_only_nullity_one() {
         let (members, kinds) = triplex_topology();
-        // A generic admissible q: all magnitudes 1, signs honouring each member
-        // kind (cables +1, struts −1). Only the all-ones translation mode is in
-        // the null space, so nullity must be exactly 1.
-        let q: Vec<f64> = kinds
-            .iter()
-            .map(|k| match k {
-                MemberKind::Cable => 1.0,
-                MemberKind::Strut => -1.0,
-            })
-            .collect();
+        // A generic admissible q (distinct magnitudes, signs honouring each
+        // member kind) leaves only the all-ones translation mode in null(D), so
+        // nullity must be exactly 1 — distinguishing it from the special
+        // closed-form prism q (nullity 4).
+        let q = generic_admissible_q(&kinds);
         let d = assemble_force_density_matrix(6, &members, &q);
         let spec = classify_spectrum(&d, NULLITY_REL_TOL);
 
