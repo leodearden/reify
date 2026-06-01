@@ -544,7 +544,7 @@ pub fn try_infer_traits_for_function_call_in_env(
 ) -> Option<InferredTraits> {
     match name {
         // ─── Primitive constructors → all() ─────────────────────────────
-        "box" | "cylinder" | "sphere" | "tube" => Some(InferredTraits::all()),
+        "box" | "box_centered" | "cylinder" | "cylinder_centered" | "sphere" | "tube" => Some(InferredTraits::all()),
 
         // ─── Boolean combinators → recurse + combine_* ──────────────────
         "union" => {
