@@ -42,6 +42,51 @@
 //! the T1a ([`crate::form_find`]) and T1b ([`crate::form_find_free`]) kernels
 //! before it. See `plan.json` design_decisions for the scoping rationale.
 
+use faer::Mat;
+
+/// Assemble the Pellegrino–Calladine equilibrium matrix `A` (`d·N × m`) in the
+/// unit-direction convention `A·s = f`, where `s` is the vector of member axial
+/// forces and `f` the resulting nodal force vector.
+///
+/// Column `i` for member `(j, k)` carries the unit direction
+/// `û = (x_k − x_j) / ‖x_k − x_j‖` in node-`j`'s three rows and `−û` in
+/// node-`k`'s three rows; every other entry is zero. Rows are laid out
+/// node-major / axis-minor (DOF index `3a + α`), so `A`'s rows align with
+/// `K_G = D ⊗ I₃` and the buckling kernel's `u[3·node + axis]` ordering — the
+/// reduced-stiffness projection `Mᵀ K_G M` depends on this shared DOF order.
+///
+/// The unit-vector form has the same rank/nullity as the full force-density
+/// form (they differ by a nonsingular diagonal length scaling), so the
+/// self-stress and mechanism counts are identical while matching the standard
+/// equilibrium-matrix definition.
+// Wired into the public `analyze_prestress_stability` in step-14; until then it
+// is reachable only from unit tests, so the non-test lib build (clippy
+// `--all-targets`) would otherwise flag it dead. The `#[allow]` is removed in
+// step-14 when the public entry point references it.
+#[allow(dead_code)]
+pub(crate) fn assemble_equilibrium_matrix(
+    nodes: &[[f64; 3]],
+    members: &[(usize, usize)],
+) -> Mat<f64> {
+    let n = nodes.len();
+    let m = members.len();
+    let mut a = Mat::<f64>::zeros(3 * n, m);
+    for (i, &(j, k)) in members.iter().enumerate() {
+        let d = [
+            nodes[k][0] - nodes[j][0],
+            nodes[k][1] - nodes[j][1],
+            nodes[k][2] - nodes[j][2],
+        ];
+        let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        let u = [d[0] / len, d[1] / len, d[2] / len];
+        for (axis, &ua) in u.iter().enumerate() {
+            a[(3 * j + axis, i)] = ua;
+            a[(3 * k + axis, i)] = -ua;
+        }
+    }
+    a
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
