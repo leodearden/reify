@@ -512,3 +512,317 @@ mod tests {
         );
     }
 }
+
+// ── Step-5/6: BVH-backed resample tests ──────────────────────────────────────
+//
+// Step-5 RED: imports ResampleStats / instrumented fns which don't exist yet
+//             → compile error → RED.
+// Step-6 GREEN: those items exist → module compiles → tests pass.
+
+#[cfg(test)]
+mod bvh_tests {
+    // These imports drive the RED compile error in step 5; they resolve in step 6.
+    use super::{
+        GridSpec, ResampleStats, resample_multi_nodal_to_grid_instrumented,
+        resample_nodal_to_grid_instrumented,
+    };
+    use crate::interpolation::barycentric_p1;
+
+    // ── Fixtures ─────────────────────────────────────────────────────────────
+
+    /// Build a Freudenthal box-of-tets: M³ hexes → 6·M³ tets tiling [0,1]³.
+    ///
+    /// Node index: `ix*(M+1)²+iy*(M+1)+iz`; physical coords: `(ix/M, iy/M, iz/M)`.
+    /// Per-hex Freudenthal decomposition uses the (1,1,1)-corner diagonal n6,
+    /// matching the existing 6-tet fixture in `tests::resample_data_ordering_…`.
+    fn make_box_of_tets(m: usize) -> (Vec<[f64; 3]>, Vec<[usize; 4]>) {
+        let m1 = m + 1;
+        let mut nodes = Vec::with_capacity(m1 * m1 * m1);
+        for ix in 0..=m {
+            for iy in 0..=m {
+                for iz in 0..=m {
+                    nodes.push([
+                        ix as f64 / m as f64,
+                        iy as f64 / m as f64,
+                        iz as f64 / m as f64,
+                    ]);
+                }
+            }
+        }
+        let node = |ix: usize, iy: usize, iz: usize| ix * m1 * m1 + iy * m1 + iz;
+        let mut elems = Vec::with_capacity(6 * m * m * m);
+        for cx in 0..m {
+            for cy in 0..m {
+                for cz in 0..m {
+                    let n0 = node(cx, cy, cz);
+                    let n1 = node(cx + 1, cy, cz);
+                    let n2 = node(cx + 1, cy + 1, cz);
+                    let n3 = node(cx, cy + 1, cz);
+                    let n4 = node(cx, cy, cz + 1);
+                    let n5 = node(cx + 1, cy, cz + 1);
+                    let n6 = node(cx + 1, cy + 1, cz + 1);
+                    let n7 = node(cx, cy + 1, cz + 1);
+                    elems.push([n0, n1, n2, n6]);
+                    elems.push([n0, n2, n3, n6]);
+                    elems.push([n0, n5, n1, n6]);
+                    elems.push([n0, n3, n7, n6]);
+                    elems.push([n0, n4, n5, n6]);
+                    elems.push([n0, n7, n4, n6]);
+                }
+            }
+        }
+        (nodes, elems)
+    }
+
+    /// Grid spanning slightly beyond [0,1]³ so it includes interior, shared-face
+    /// boundary, AND outside (NaN) grid points.
+    fn test_grid() -> GridSpec {
+        GridSpec {
+            bounds_min: [-0.1, -0.1, -0.1],
+            bounds_max: [1.1, 1.1, 1.1],
+            counts: [5, 5, 5],
+        }
+    }
+
+    /// Linear-scan oracle mirroring the old `resample_nodal_to_grid` loop
+    /// byte-for-byte (same barycentric check + same weight arithmetic +
+    /// same break-on-first-hit = lowest-index hit).
+    ///
+    /// Returns `(data, point_in_tet_test_count)` so callers can assert both
+    /// the bit-identical values AND the O(grid·n_elems) baseline count.
+    fn linear_resample_single(
+        nodes: &[[f64; 3]],
+        elems: &[[usize; 4]],
+        nodal_values: &[f64],
+        stride: usize,
+        grid: &GridSpec,
+        tol: f64,
+    ) -> (Vec<f64>, u64) {
+        let [nx, ny, nz] = grid.counts;
+        let sx = (grid.bounds_max[0] - grid.bounds_min[0]) / nx.max(1) as f64;
+        let sy = (grid.bounds_max[1] - grid.bounds_min[1]) / ny.max(1) as f64;
+        let sz = (grid.bounds_max[2] - grid.bounds_min[2]) / nz.max(1) as f64;
+        let ax = reify_ir::sampled::linspace_inclusive(grid.bounds_min[0], grid.bounds_max[0], sx)
+            .unwrap();
+        let ay = reify_ir::sampled::linspace_inclusive(grid.bounds_min[1], grid.bounds_max[1], sy)
+            .unwrap();
+        let az = reify_ir::sampled::linspace_inclusive(grid.bounds_min[2], grid.bounds_max[2], sz)
+            .unwrap();
+        let n_grid = ax.len() * ay.len() * az.len();
+        let mut data = Vec::with_capacity(n_grid * stride);
+        let mut count = 0u64;
+        for ix in 0..ax.len() {
+            for iy in 0..ay.len() {
+                for iz in 0..az.len() {
+                    let p = [ax[ix], ay[iy], az[iz]];
+                    let mut found = false;
+                    'scan: for conn in elems {
+                        let phys4: [[f64; 3]; 4] = [
+                            nodes[conn[0]],
+                            nodes[conn[1]],
+                            nodes[conn[2]],
+                            nodes[conn[3]],
+                        ];
+                        let bary = barycentric_p1(&phys4, p);
+                        count += 1;
+                        if bary.iter().all(|&b| b >= -tol && b <= 1.0 + tol) {
+                            for c in 0..stride {
+                                let val = bary[0] * nodal_values[conn[0] * stride + c]
+                                    + bary[1] * nodal_values[conn[1] * stride + c]
+                                    + bary[2] * nodal_values[conn[2] * stride + c]
+                                    + bary[3] * nodal_values[conn[3] * stride + c];
+                                data.push(val);
+                            }
+                            found = true;
+                            break 'scan;
+                        }
+                    }
+                    if !found {
+                        for _ in 0..stride {
+                            data.push(f64::NAN);
+                        }
+                    }
+                }
+            }
+        }
+        (data, count)
+    }
+
+    // ── Tests ─────────────────────────────────────────────────────────────────
+
+    /// Step-5 RED / Step-6 GREEN:
+    ///
+    /// (1) BIT-IDENTICAL — every output element equals the linear oracle via
+    ///     `f64::to_bits()` (NaN-aware) for stride 1, 3, and 9, for both
+    ///     `resample_nodal_to_grid_instrumented` and
+    ///     `resample_multi_nodal_to_grid_instrumented`, on a grid spanning
+    ///     slightly beyond [0,1]³ (interior + boundary + outside NaN points).
+    ///
+    /// (2) QUERY-COUNT — on M=4 (384 tets) the BVH
+    ///     `stats.point_in_tet_tests * 4 < linear_count` (≥4× efficiency).
+    ///
+    /// (3) SCALING — from M=4 to M=8 (8× more tets, same grid):
+    ///     - linear count grows >4×  (confirms Θ(grid·n_elems) scaling)
+    ///     - BVH count grows <2×     (confirms sub-linear/log query)
+    ///
+    /// Fails to compile in step 5 (ResampleStats / instrumented fns absent) → RED.
+    #[test]
+    fn bvh_resample_bit_identical_and_query_count() {
+        let (nodes4, elems4) = make_box_of_tets(4);
+        let (nodes8, elems8) = make_box_of_tets(8);
+        assert_eq!(elems4.len(), 384, "M=4: 6*4³=384 tets");
+        assert_eq!(elems8.len(), 3072, "M=8: 6*8³=3072 tets");
+
+        let grid = test_grid(); // 6×6×6 = 216 grid points in [-0.1,1.1]³
+        let tol = 1e-9_f64;
+
+        // Non-trivial nodal fields — varied to catch any bary-weight/index bugs.
+        let nv_s3_4: Vec<f64> = nodes4
+            .iter()
+            .flat_map(|n| {
+                [
+                    2.0 * n[0] + n[1] + 0.5,
+                    n[0] + 3.0 * n[1] + n[2],
+                    0.5 * n[1] + n[2] + 1.0,
+                ]
+            })
+            .collect();
+        let nv_s3_8: Vec<f64> = nodes8
+            .iter()
+            .flat_map(|n| {
+                [
+                    2.0 * n[0] + n[1] + 0.5,
+                    n[0] + 3.0 * n[1] + n[2],
+                    0.5 * n[1] + n[2] + 1.0,
+                ]
+            })
+            .collect();
+        let nv_s9_4: Vec<f64> = nodes4
+            .iter()
+            .flat_map(|n| {
+                let (x, y, z) = (n[0], n[1], n[2]);
+                [
+                    x + y,
+                    y + z,
+                    x + z,
+                    x * 2.0,
+                    y * 2.0,
+                    z * 2.0,
+                    x + y + z,
+                    x - y,
+                    y - z,
+                ]
+            })
+            .collect();
+        let nv_s1_4: Vec<f64> =
+            nodes4.iter().map(|n| n[0] + 2.0 * n[1] + 3.0 * n[2]).collect();
+
+        // ── (1a) BIT-IDENTICAL: single fn, stride 3 ──────────────────────────
+        let (sf_s3, stats_s3) = resample_nodal_to_grid_instrumented(
+            &nodes4, &elems4, &nv_s3_4, 3, &grid, "u_s3", tol,
+        );
+        let (lin_s3, lin_count_s3) = linear_resample_single(
+            &nodes4, &elems4, &nv_s3_4, 3, &grid, tol,
+        );
+        assert_eq!(sf_s3.data.len(), lin_s3.len(), "stride-3: data lengths must match");
+        for (i, (&bvh, &lin)) in sf_s3.data.iter().zip(lin_s3.iter()).enumerate() {
+            assert_eq!(
+                bvh.to_bits(),
+                lin.to_bits(),
+                "stride-3 BIT-IDENTICAL failed at index {i}: bvh={bvh} lin={lin}",
+            );
+        }
+
+        // ── (1b) BIT-IDENTICAL: single fn, stride 9 ──────────────────────────
+        let (sf_s9, _) = resample_nodal_to_grid_instrumented(
+            &nodes4, &elems4, &nv_s9_4, 9, &grid, "sigma_s9", tol,
+        );
+        let (lin_s9, _) = linear_resample_single(&nodes4, &elems4, &nv_s9_4, 9, &grid, tol);
+        assert_eq!(sf_s9.data.len(), lin_s9.len(), "stride-9: data lengths must match");
+        for (i, (&bvh, &lin)) in sf_s9.data.iter().zip(lin_s9.iter()).enumerate() {
+            assert_eq!(
+                bvh.to_bits(),
+                lin.to_bits(),
+                "stride-9 BIT-IDENTICAL failed at index {i}: bvh={bvh} lin={lin}",
+            );
+        }
+
+        // ── (1c) BIT-IDENTICAL: single fn, stride 1 ──────────────────────────
+        let (sf_s1, _) = resample_nodal_to_grid_instrumented(
+            &nodes4, &elems4, &nv_s1_4, 1, &grid, "f_s1", tol,
+        );
+        let (lin_s1, _) = linear_resample_single(&nodes4, &elems4, &nv_s1_4, 1, &grid, tol);
+        assert_eq!(sf_s1.data.len(), lin_s1.len(), "stride-1: data lengths must match");
+        for (i, (&bvh, &lin)) in sf_s1.data.iter().zip(lin_s1.iter()).enumerate() {
+            assert_eq!(
+                bvh.to_bits(),
+                lin.to_bits(),
+                "stride-1 BIT-IDENTICAL failed at index {i}: bvh={bvh} lin={lin}",
+            );
+        }
+
+        // ── (1d) BIT-IDENTICAL: multi fn, stride 3 + stride 9 ───────────────
+        let fields_multi: &[(&[f64], usize, &str)] = &[
+            (nv_s3_4.as_slice(), 3, "u_multi"),
+            (nv_s9_4.as_slice(), 9, "sigma_multi"),
+        ];
+        let (sf_multi, stats_multi) = resample_multi_nodal_to_grid_instrumented(
+            &nodes4, &elems4, fields_multi, &grid, tol,
+        );
+        assert_eq!(sf_multi.len(), 2, "multi must return 2 fields");
+        for (i, (&bvh, &lin)) in sf_multi[0].data.iter().zip(lin_s3.iter()).enumerate() {
+            assert_eq!(
+                bvh.to_bits(),
+                lin.to_bits(),
+                "multi stride-3 BIT-IDENTICAL failed at index {i}: bvh={bvh} lin={lin}",
+            );
+        }
+        for (i, (&bvh, &lin)) in sf_multi[1].data.iter().zip(lin_s9.iter()).enumerate() {
+            assert_eq!(
+                bvh.to_bits(),
+                lin.to_bits(),
+                "multi stride-9 BIT-IDENTICAL failed at index {i}: bvh={bvh} lin={lin}",
+            );
+        }
+
+        // ── (2) QUERY-COUNT: BVH ≥4× fewer tests than linear on M=4 ─────────
+        assert!(
+            stats_s3.point_in_tet_tests * 4 < lin_count_s3,
+            "QUERY-COUNT: BVH ({bvh_n}) * 4 = {quad} should be < linear ({lin_n}); \
+             BVH must be ≥4× more efficient on M=4 (384 tets)",
+            bvh_n = stats_s3.point_in_tet_tests,
+            quad = stats_s3.point_in_tet_tests * 4,
+            lin_n = lin_count_s3,
+        );
+        // Also check the multi stats — same locate cost, same assertion.
+        assert!(
+            stats_multi.point_in_tet_tests * 4 < lin_count_s3,
+            "QUERY-COUNT (multi): BVH ({bvh_n}) * 4 = {quad} should be < linear ({lin_n})",
+            bvh_n = stats_multi.point_in_tet_tests,
+            quad = stats_multi.point_in_tet_tests * 4,
+            lin_n = lin_count_s3,
+        );
+
+        // ── (3) SCALING: M=4 → M=8 (8× more tets, same grid) ────────────────
+        let (_, stats_s3_m8) = resample_nodal_to_grid_instrumented(
+            &nodes8, &elems8, &nv_s3_8, 3, &grid, "u_m8", tol,
+        );
+        let (_, lin_count_s3_m8) =
+            linear_resample_single(&nodes8, &elems8, &nv_s3_8, 3, &grid, tol);
+
+        assert!(
+            lin_count_s3_m8 > lin_count_s3 * 4,
+            "SCALING linear: M=8 count {c8} must be >4× M=4 count {c4} \
+             (confirms Θ(grid·n_elems) growth with 8× more tets)",
+            c8 = lin_count_s3_m8,
+            c4 = lin_count_s3,
+        );
+        assert!(
+            stats_s3_m8.point_in_tet_tests < stats_s3.point_in_tet_tests * 2,
+            "SCALING BVH: M=8 count {c8} must be <2× M=4 count {c4} \
+             (confirms sub-linear/log growth)",
+            c8 = stats_s3_m8.point_in_tet_tests,
+            c4 = stats_s3.point_in_tet_tests,
+        );
+    }
+}
