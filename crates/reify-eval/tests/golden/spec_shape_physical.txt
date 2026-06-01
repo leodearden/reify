@@ -1,0 +1,4 @@
+Bracket.geometry = <geometry handle>
+Bracket.material = Material(density = 7.850000e3 [kg·m^-3])
+Bracket.mass     = 4.710000e-2 [kg]
+Bracket.centroid = point(0, 0, 0)
