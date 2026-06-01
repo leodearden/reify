@@ -361,6 +361,7 @@ impl TetSpatialIndex {
         // Choose split axis: longest centroid extent.
         let mut axis = 0;
         let mut max_extent = -1.0_f64;
+        #[allow(clippy::needless_range_loop)] // k is an axis index, not a `centroids` index
         for k in 0..3 {
             let lo = perm[start..end]
                 .iter()
@@ -440,6 +441,7 @@ impl TetSpatialIndex {
         (best, count)
     }
 
+    #[allow(clippy::too_many_arguments)] // private recursive helper; args cannot be reduced without overhead
     fn traverse(
         bvh_nodes: &[BvhNode],
         node_idx: usize,
@@ -518,8 +520,8 @@ mod bvh_tests {
                 c[k] += nodes[i][k];
             }
         }
-        for k in 0..3 {
-            c[k] /= 4.0;
+        for v in &mut c {
+            *v /= 4.0;
         }
         c
     }

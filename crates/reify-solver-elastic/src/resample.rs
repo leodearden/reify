@@ -585,7 +585,7 @@ mod tests {
 mod bvh_tests {
     // These imports drive the RED compile error in step 5; they resolve in step 6.
     use super::{
-        GridSpec, ResampleStats, resample_multi_nodal_to_grid_instrumented,
+        GridSpec, resample_multi_nodal_to_grid_instrumented,
         resample_nodal_to_grid_instrumented,
     };
     use crate::interpolation::barycentric_p1;
@@ -673,10 +673,10 @@ mod bvh_tests {
         let n_grid = ax.len() * ay.len() * az.len();
         let mut data = Vec::with_capacity(n_grid * stride);
         let mut count = 0u64;
-        for ix in 0..ax.len() {
-            for iy in 0..ay.len() {
-                for iz in 0..az.len() {
-                    let p = [ax[ix], ay[iy], az[iz]];
+        for &x in &ax {
+            for &y in &ay {
+                for &z in &az {
+                    let p = [x, y, z];
                     let mut found = false;
                     'scan: for conn in elems {
                         let phys4: [[f64; 3]; 4] = [
