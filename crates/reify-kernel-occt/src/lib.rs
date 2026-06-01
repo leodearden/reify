@@ -8561,4 +8561,59 @@ mod tests {
             "make_compound with empty input must return Err"
         );
     }
+
+    /// step-7 (RED) — `make_compound` with the SAME handle twice yields 2 solids.
+    ///
+    /// Pins `make_compound` as the owner of the distinct-TShape requirement,
+    /// independent of the `apply_transform_to_shape` path.
+    ///
+    /// When the same box handle is added to a compound twice via bare
+    /// `builder.Add`, the two members share one underlying `TShape`.  The STEP
+    /// writer deduplicates by `TShape` and emits only **1** `MANIFOLD_SOLID_BREP`
+    /// for the entire compound.  After step-8's per-input `BRepBuilderAPI_Copy`
+    /// the two copies are distinct `TShape`s → **2** `MANIFOLD_SOLID_BREP`.
+    ///
+    /// RED on base: `builder.Add(compound, shape)` twice with the same shape →
+    /// STEP deduplication → 1 `MANIFOLD_SOLID_BREP`, not 2.
+    #[cfg(has_occt)]
+    #[test]
+    fn make_compound_same_handle_twice_yields_two_solids() {
+        if !OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+
+        let mut kernel = OcctKernel::new();
+
+        // Build ONE box handle — used as BOTH inputs to make_compound.
+        let h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::length(0.02),
+                height: Value::length(0.02),
+                depth: Value::length(0.02),
+            })
+            .expect("Box must succeed");
+
+        // Pass the same handle id twice — both compound members share one TShape.
+        let compound = kernel
+            .make_compound(&[h.id, h.id])
+            .expect("make_compound of same handle twice must succeed");
+
+        // Export to STEP and assert exactly 2 distinct solid entities.
+        let mut step_bytes: Vec<u8> = Vec::new();
+        kernel
+            .export(compound.id, ExportFormat::Step, &mut step_bytes)
+            .expect("STEP export of same-handle compound must succeed");
+        let step_text = String::from_utf8_lossy(&step_bytes);
+        let solid_count = step_text.matches("MANIFOLD_SOLID_BREP").count();
+        assert_eq!(
+            solid_count,
+            2,
+            "STEP compound of the same handle twice must contain exactly 2 \
+             MANIFOLD_SOLID_BREP entities (per-input deep-copy prevents TShape \
+             deduplication); got {};\nSTEP snippet: {:.400}",
+            solid_count,
+            &step_text
+        );
+    }
 }
