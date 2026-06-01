@@ -446,3 +446,75 @@ fn shell_extract_double_registration_panics_naming_target() {
     // Second registration — must panic with a message containing the target name.
     register_shell_extract_compute_fns(&mut engine);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Step-9 test (empty-axis-grid → E_SHELL_NO_VOXEL_GRID)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Build a `SampledField` whose first axis grid is empty, which triggers
+/// `GridValidationError::EmptyAxisGrid { axis: 0 }` in Phase 1 (medial-mask).
+///
+/// All other fields are structurally valid for `Regular3D` (3-element
+/// `bounds_min`/`bounds_max`/`spacing`/`axis_grids`), but the empty x-grid
+/// fails the "no axis grid is empty" invariant in `validate_regular3d` before
+/// any computation begins.
+fn empty_axis_grid_field() -> SampledField {
+    SampledField {
+        name: "empty_axis_grid".to_string(),
+        kind: SampledGridKind::Regular3D,
+        bounds_min: vec![0.0, 0.0, 0.0],
+        bounds_max: vec![1.0, 1.0, 1.0],
+        spacing: vec![1.0, 1.0, 1.0],
+        // axis_grids[0] is intentionally empty → EmptyAxisGrid { axis: 0 }
+        axis_grids: vec![vec![], vec![0.0, 1.0], vec![0.0, 1.0]],
+        interpolation: InterpolationKind::Linear,
+        data: vec![],
+        oob_emitted: std::sync::atomic::AtomicBool::new(false),
+    }
+}
+
+/// Dispatch `shell_extract_compute_fn` with an empty-axis-grid `SampledField`
+/// and verify that the failure is mapped to `DiagnosticCode::ShellNoVoxelGrid`
+/// per PRD §7 row 1 (E_SHELL_NO_VOXEL_GRID).
+///
+/// Asserts:
+/// 1. The outcome is `ComputeOutcome::Failed { diagnostics }`.
+/// 2. At least one diagnostic has `code == Some(DiagnosticCode::ShellNoVoxelGrid)`.
+///
+/// RED in step-9: the Phase 1 (medial-mask) error arm currently emits an
+/// un-coded `Diagnostic::error(format!(...))`, so no diagnostic carries
+/// `ShellNoVoxelGrid` → assertion (2) fails. GREEN after step-10 wires the
+/// `MedialError::GridValidation(GridValidationError::EmptyAxisGrid { .. })`
+/// arm with `.with_code(DiagnosticCode::ShellNoVoxelGrid)`.
+#[test]
+fn shell_extract_empty_axis_grid_returns_failed_with_shell_no_voxel_grid_code() {
+    let field = empty_axis_grid_field();
+    let options_value = Value::Undef;
+    let sdf_value = Value::SampledField(field);
+
+    let outcome = shell_extract_compute_fn(
+        &[options_value, sdf_value],
+        &[],
+        &Value::Undef,
+        None,
+        &CancellationHandle::new(),
+    );
+
+    // (1) Must return Failed on empty axis grid
+    let diagnostics = match outcome {
+        ComputeOutcome::Failed { diagnostics } => diagnostics,
+        other => panic!(
+            "expected ComputeOutcome::Failed for empty-axis-grid input, got: {other:?}"
+        ),
+    };
+
+    // (2) At least one diagnostic must carry ShellNoVoxelGrid code
+    let coded = diagnostics.iter().find(|d| {
+        d.code == Some(DiagnosticCode::ShellNoVoxelGrid)
+    });
+    assert!(
+        coded.is_some(),
+        "expected at least one diagnostic with code=DiagnosticCode::ShellNoVoxelGrid; \
+         got: {diagnostics:?}"
+    );
+}
