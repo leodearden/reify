@@ -970,6 +970,9 @@ impl EngineSession {
         // Install FEA / buckling / modal compute trampolines once at session
         // construction.  This is the single registration site — see doc above.
         reify_eval::compute_targets::register_compute_fns(&mut engine);
+        // Register the shell-extract trampoline so shell-classified bodies
+        // can produce a ShellExtractionResult (task θ / #3598 pre-1).
+        reify_eval::register_shell_extract_compute_fns(&mut engine);
 
         Self {
             core: CoreState::new(engine),
