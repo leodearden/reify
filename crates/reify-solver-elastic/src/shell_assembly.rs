@@ -899,12 +899,12 @@ fn degenerate_stiffness_core(
     // on every flat benchmark without relying on numerical cancellation.
     let bubble_active = use_rotation_bubble && {
         let v0 = directors[0];
-        directors[1..].iter().all(|v| {
+        !directors[1..].iter().all(|v| {
             let cx = v0[1] * v[2] - v0[2] * v[1];
             let cy = v0[2] * v[0] - v0[0] * v[2];
             let cz = v0[0] * v[1] - v0[1] * v[0];
             cx * cx + cy * cy + cz * cz < 1e-28
-        }) == false // non-parallel ⇒ curved ⇒ activate bubble
+        }) // non-parallel ⇒ curved ⇒ activate bubble
     };
 
     // --- 20×20 uncondensed local matrix (nodal 18 + 2 bubble) ---
