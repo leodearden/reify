@@ -672,4 +672,257 @@ mod tests {
         // RIGHT_CIRCULAR_K and RIGHT_CIRCULAR_SIGMA respectively (see assertion classes 2+3).
         assert_notch_variant_full("prb_notch_right_circular", 0.74, 0.74, notch_right_circular);
     }
+
+    // ── step-15: RED — notch-family compliance population ────────────────────
+
+    /// Read the `__flexure_compliance` FlexureCompliance record's fields from a
+    /// notch flexure joint Map (panics if absent or the wrong shape). Local to
+    /// this test module, mirroring beam.rs / prismatic.rs `compliance_fields`.
+    fn compliance_fields(joint: &Value) -> &reify_ir::PersistentMap<String, Value> {
+        match map_get(joint, "__flexure_compliance") {
+            Some(Value::StructureInstance(d)) => {
+                assert_eq!(
+                    d.type_name, "FlexureCompliance",
+                    "__flexure_compliance is a FlexureCompliance record"
+                );
+                &d.fields
+            }
+            other => panic!("expected __flexure_compliance StructureInstance, got {other:?}"),
+        }
+    }
+
+    /// Closed-form Paros-Weisbord surface bending stress at rotation `theta`
+    /// (PRD §5.2): σ = sigma_factor·4·E·t·θ / (3π·(2r+t)). The algebraic inverse
+    /// of the θ_yield that caps the auto prb_validity range.
+    fn notch_sigma(theta: f64, r: f64, t: f64, e: f64, sigma_factor: f64) -> f64 {
+        sigma_factor * 4.0 * e * t * theta / (3.0 * PI * (2.0 * r + t))
+    }
+
+    #[test]
+    fn prb_notch_circular_attaches_populated_compliance() {
+        // PRB-capped fixture (r=2mm, t=0.1mm): θ_yield ≈ 8.37° > 5°, so the auto
+        // prb_validity endpoint is the ±5° PRB cap and σ(5°) ≈ 185 MPa < 310 MPa
+        // yield ⇒ at_yield == false. (The standard base fixture r=1mm/t=0.2mm has
+        // θ_yield ≈ 2.25° < 5°, whose auto endpoint sits *exactly* at yield —
+        // unusable for a clean at_yield==false pin.)
+        let r = 2e-3_f64;
+        let t = 1e-4_f64;
+        let b = 5e-3_f64;
+        let e = 205e9_f64;
+        let prb_limit = 5.0_f64 * PI / 180.0;
+
+        let result = crate::eval_builtin(
+            "prb_notch_circular",
+            &[
+                Value::length(r),
+                Value::length(t),
+                Value::length(b),
+                steel(),
+                origin(),
+                axis_y(),
+            ],
+        );
+        let fields = compliance_fields(&result);
+        let f = |k: &str| {
+            fields
+                .get(&k.to_string())
+                .unwrap_or_else(|| panic!("FlexureCompliance missing `{k}`"))
+        };
+
+        // effective_stiffness (Real) == the joint's spring_rate si (k_θ).
+        let spring_si = spring_rate_si(&result);
+        match f("effective_stiffness") {
+            Value::Real(rr) => assert!(
+                (rr - spring_si).abs() / spring_si < 1e-12,
+                "effective_stiffness {rr} == spring_rate {spring_si}"
+            ),
+            other => panic!("effective_stiffness Real, got {other:?}"),
+        }
+
+        // max_stress (PRESSURE) == σ(5°) at the auto PRB-capped endpoint.
+        let expected_sigma = notch_sigma(prb_limit, r, t, e, 1.0);
+        match f("max_stress") {
+            Value::Scalar { si_value, dimension } => {
+                assert_eq!(*dimension, DimensionVector::PRESSURE, "max_stress is PRESSURE");
+                assert!(
+                    (si_value - expected_sigma).abs() / expected_sigma < 1e-9,
+                    "max_stress {si_value} vs analytic σ(5°) {expected_sigma}"
+                );
+                assert!(*si_value < 310e6, "5° endpoint stays below the 310MPa yield ({si_value})");
+            }
+            other => panic!("max_stress Scalar, got {other:?}"),
+        }
+
+        // at_yield == false at the auto (safe) endpoint.
+        assert_eq!(f("at_yield"), &Value::Bool(false), "auto endpoint is not at yield");
+
+        // prb_validity_range (Real) == the joint range half-angle (5°).
+        let (_, up) = range_lower_upper(map_get(&result, "range").expect("range present"));
+        let range_half = match up {
+            Value::Scalar { si_value, .. } => *si_value,
+            other => panic!("range upper Scalar, got {other:?}"),
+        };
+        match f("prb_validity_range") {
+            Value::Real(rr) => assert!(
+                (rr - range_half).abs() / range_half < 1e-9
+                    && (rr - prb_limit).abs() / prb_limit < 1e-9,
+                "prb_validity_range {rr} == range half {range_half} == 5°"
+            ),
+            other => panic!("prb_validity_range Real, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prb_notch_circular_declared_range_override() {
+        // Base fixture r=1mm, t=0.2mm: θ_yield ≈ 2.25° (yield-capped). A declared
+        // ±10° operating range drives σ(10°) ≈ 1.38 GPa ≫ 310 MPa yield. Arg
+        // layout: (r, t, width, material, pivot, axis, neutral, declared_range) —
+        // declared_range is the new highest-arity (8th) slot, mirroring the beam
+        // and prismatic families.
+        let r = 1e-3_f64;
+        let t = 2e-4_f64;
+        let b = 5e-3_f64;
+        let e = 205e9_f64;
+        let yield_si = 310e6_f64;
+        let ten_deg = 10.0_f64 * PI / 180.0;
+        // Auto SAFE bound θ_yield (sigma_factor = 1 for circular), < 5°.
+        let theta_yield = yield_si * 3.0 * PI * (2.0 * r + t) / (4.0 * e * t);
+
+        let yielding = crate::eval_builtin(
+            "prb_notch_circular",
+            &[
+                Value::length(r),
+                Value::length(t),
+                Value::length(b),
+                steel(),
+                origin(),
+                axis_y(),
+                Value::angle(0.0),     // neutral
+                Value::angle(ten_deg), // declared ±10° half-width
+            ],
+        );
+
+        // The ctor STILL returns a valid revolute joint (not Undef) even though
+        // the declared range drives surface stress past yield.
+        assert!(!yielding.is_undef(), "yielding declared-range call returns a joint, not Undef");
+        assert_eq!(
+            map_get(&yielding, "kind"),
+            Some(&Value::String("revolute".to_string())),
+            "yielding notch flexure is still a revolute joint"
+        );
+
+        // (a) The joint `range` is the declared ±10°, OVERRIDING the auto cap.
+        let (lo, up) = range_lower_upper(map_get(&yielding, "range").expect("range present"));
+        assert_angle_close(lo, -ten_deg, "declared-range lower bound");
+        assert_angle_close(up, ten_deg, "declared-range upper bound");
+
+        let fields = compliance_fields(&yielding);
+        let f = |k: &str| {
+            fields
+                .get(&k.to_string())
+                .unwrap_or_else(|| panic!("FlexureCompliance missing `{k}`"))
+        };
+
+        // (b) max_stress is evaluated at the DECLARED 10° endpoint.
+        let expected_sigma = notch_sigma(ten_deg, r, t, e, 1.0);
+        assert!(
+            expected_sigma > yield_si,
+            "fixture sanity: σ(10°)={expected_sigma} must exceed yield {yield_si}"
+        );
+        match f("max_stress") {
+            Value::Scalar { si_value, dimension } => {
+                assert_eq!(*dimension, DimensionVector::PRESSURE, "max_stress is PRESSURE");
+                assert!(
+                    (si_value - expected_sigma).abs() / expected_sigma < 1e-9,
+                    "max_stress {si_value} vs analytic σ(10°) {expected_sigma}"
+                );
+            }
+            other => panic!("max_stress Scalar, got {other:?}"),
+        }
+
+        // (c) at_yield == true and yield_margin < 0 in the yielding regime.
+        assert_eq!(f("at_yield"), &Value::Bool(true), "declared 10° drives at_yield true");
+        match f("yield_margin") {
+            Value::Real(rr) => assert!(*rr < 0.0, "yielding ⇒ negative margin, got {rr}"),
+            other => panic!("yield_margin Real, got {other:?}"),
+        }
+
+        // prb_validity_range still advertises the auto SAFE θ_yield, not the declared 10°.
+        match f("prb_validity_range") {
+            Value::Real(rr) => assert!(
+                (rr - theta_yield).abs() / theta_yield < 1e-9,
+                "prb_validity_range stays the auto safe θ_yield {theta_yield}, got {rr}"
+            ),
+            other => panic!("prb_validity_range Real, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prb_notch_variants_attach_populated_compliance() {
+        // The shared notch_revolute core wires the compliance record for all three
+        // variants; the variant's sigma_factor flows into max_stress. PRB-capped
+        // fixture (r=2mm, t=0.1mm) ⇒ auto endpoint = ±5° (θ_yield > 5° for both,
+        // since sigma_factor < 1 only widens θ_yield), σ(5°) < yield ⇒
+        // at_yield=false for every variant.
+        let r = 2e-3_f64;
+        let t = 1e-4_f64;
+        let b = 5e-3_f64;
+        let e = 205e9_f64;
+        let prb_limit = 5.0_f64 * PI / 180.0;
+
+        for (ctor, sigma_factor) in [
+            ("prb_notch_elliptical", 0.85_f64),
+            ("prb_notch_right_circular", 0.74_f64),
+        ] {
+            let result = crate::eval_builtin(
+                ctor,
+                &[
+                    Value::length(r),
+                    Value::length(t),
+                    Value::length(b),
+                    steel(),
+                    origin(),
+                    axis_y(),
+                ],
+            );
+            let fields = compliance_fields(&result);
+            let f = |k: &str| {
+                fields
+                    .get(&k.to_string())
+                    .unwrap_or_else(|| panic!("{ctor}: FlexureCompliance missing `{k}`"))
+            };
+
+            // max_stress carries the variant's sigma_factor (σ = κ_σ·4·E·t·θ/(3π·(2r+t))).
+            let expected_sigma = notch_sigma(prb_limit, r, t, e, sigma_factor);
+            match f("max_stress") {
+                Value::Scalar { si_value, dimension } => {
+                    assert_eq!(
+                        *dimension,
+                        DimensionVector::PRESSURE,
+                        "{ctor}: max_stress is PRESSURE"
+                    );
+                    assert!(
+                        (si_value - expected_sigma).abs() / expected_sigma < 1e-9,
+                        "{ctor}: max_stress {si_value} vs analytic {expected_sigma} \
+                         (sigma_factor={sigma_factor})"
+                    );
+                    assert!(*si_value < 310e6, "{ctor}: σ(5°) stays below yield ({si_value})");
+                }
+                other => panic!("{ctor}: max_stress Scalar, got {other:?}"),
+            }
+
+            // at_yield false at the safe endpoint.
+            assert_eq!(f("at_yield"), &Value::Bool(false), "{ctor}: safe endpoint not at yield");
+
+            // effective_stiffness matches the joint spring_rate.
+            let spring_si = spring_rate_si(&result);
+            match f("effective_stiffness") {
+                Value::Real(rr) => assert!(
+                    (rr - spring_si).abs() / spring_si < 1e-12,
+                    "{ctor}: effective_stiffness {rr} == spring_rate {spring_si}"
+                ),
+                other => panic!("{ctor}: effective_stiffness Real, got {other:?}"),
+            }
+        }
+    }
 }

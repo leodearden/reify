@@ -500,4 +500,47 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn flexure_diagnose_notch_geometry_invalid() {
+        // The notch family rejects degenerate geometry t ≥ 2r (web ≥ notch
+        // diameter) with Undef; flexure_diagnose re-classifies that Undef as
+        // E_FlexureGeometryInvalid (Error) for all three notch variants —
+        // confirming classify_geometry_invalid covers the notch arg layout
+        // (radius at index 0, web thickness at index 1), distinct from the
+        // slender-beam (thickness at index 2) layout.
+        let degenerate = vec![
+            Value::length(0.001), // r = 1 mm (2r = 2 mm)
+            Value::length(0.002), // t = 2 mm ≥ 2r (degenerate web)
+            Value::length(0.005),
+            steel(),
+            origin(),
+            axis_y(),
+        ];
+        for name in [
+            "prb_notch_circular",
+            "prb_notch_elliptical",
+            "prb_notch_right_circular",
+        ] {
+            let result = crate::eval_builtin(name, &degenerate);
+            assert!(result.is_undef(), "{name}: degenerate t≥2r returns Undef");
+            let diags = flexure_diagnose(name, &degenerate, &result);
+            let geo = find(&diags, DiagnosticCode::FlexureGeometryInvalid);
+            assert_eq!(
+                geo.severity,
+                Severity::Error,
+                "{name}: FlexureGeometryInvalid is an Error"
+            );
+            assert!(
+                geo.message.to_lowercase().contains("geometry"),
+                "{name}: geometry-invalid message describes the degeneracy: {}",
+                geo.message
+            );
+            assert!(
+                geo.message.to_lowercase().contains("notch"),
+                "{name}: notch geometry message cites the notch degeneracy: {}",
+                geo.message
+            );
+        }
+    }
 }
