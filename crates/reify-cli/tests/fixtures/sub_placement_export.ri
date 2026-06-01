@@ -1,0 +1,28 @@
+// Fixture for T7 STEP-export + distance tests.
+//
+// A 2-level CONTAINMENT assembly with two PRODUCT subs placed via `at` at
+// distinct X offsets, plus one AUX sub placed at a Y offset.  When exported
+// to STEP the output must contain exactly TWO manifold solids (the product
+// children at their composed world coordinates); the aux body must be absent.
+//
+// Golden geometry (box(20mm,20mm,20mm) centered at origin, half-extent 0.01 m):
+//   Assembly.a  centre at (10mm, 0, 0)  → X-range [0.00, 0.02]
+//   Assembly.b  centre at (50mm, 0, 0)  → X-range [0.04, 0.06]
+//   Assembly.marker (aux)  centre at (0, 100mm, 0) — excluded from export
+//
+// Distance between Assembly.a and Assembly.b: centres 40mm apart, two
+// half-extents of 10mm each → face gap = 20mm = 0.02 m exactly.
+
+structure Child {
+    let body = box(20mm, 20mm, 20mm)
+}
+
+structure AuxPart {
+    let body = box(5mm, 5mm, 5mm)
+}
+
+structure Assembly {
+    sub a : Child at transform3(orient_identity(), vec3(10mm, 0mm, 0mm))
+    sub b : Child at transform3(orient_identity(), vec3(50mm, 0mm, 0mm))
+    aux sub marker : AuxPart at transform3(orient_identity(), vec3(0mm, 100mm, 0mm))
+}
