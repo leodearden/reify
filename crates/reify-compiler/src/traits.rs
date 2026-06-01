@@ -1038,4 +1038,103 @@ mod tests {
             "a default-providing fn must not produce a RequirementKind::Fn"
         );
     }
+
+    /// Run `compile_trait` with a custom `structure_names` set so that named
+    /// type expressions resolve to `Type::StructureRef`.
+    fn run_with_structures(
+        decl: &reify_ast::TraitDecl,
+        structure_names: HashSet<String>,
+    ) -> (CompiledTrait, Vec<Diagnostic>) {
+        let enums: Vec<reify_ir::EnumDef> = vec![];
+        let alias_registry = TypeAliasRegistry::new();
+        let trait_names = HashSet::new();
+        let mut diagnostics = Vec::new();
+        let compiled = compile_trait(
+            decl,
+            &enums,
+            &alias_registry,
+            &structure_names,
+            &trait_names,
+            &mut diagnostics,
+        );
+        (compiled, diagnostics)
+    }
+
+    /// Build an `AssociatedTypeDecl` member.
+    fn assoc_type_decl(
+        name: &str,
+        default_type: Option<reify_ast::TypeExpr>,
+    ) -> reify_ast::AssociatedTypeDecl {
+        reify_ast::AssociatedTypeDecl {
+            name: name.to_string(),
+            default_type,
+            span: span(),
+            content_hash: reify_core::ContentHash::of_str(name),
+        }
+    }
+
+    // (c) Bodyless `type Material` → RequirementKind::AssocType(None).
+    //     `type Color = Red` → DefaultKind::AssocType(Type::StructureRef("Red")).
+    //
+    // RED until step-2 wires the AssociatedType arm in compile_trait.
+    // Currently the `_ =>` wildcard at traits.rs:295-297 silently skips
+    // AssociatedType members, so neither is produced.
+    #[test]
+    fn assoc_type_without_default_becomes_requirement() {
+        let decl = trait_decl(vec![
+            // `type Material` — no default → required
+            reify_ast::MemberDecl::AssociatedType(assoc_type_decl("Material", None)),
+            // `type Color = Red` — default → DefaultKind::AssocType
+            reify_ast::MemberDecl::AssociatedType(assoc_type_decl(
+                "Color",
+                Some(named_type("Red")),
+            )),
+        ]);
+
+        let structure_names: HashSet<String> = std::iter::once("Red".to_string()).collect();
+        let (compiled, diags) = run_with_structures(&decl, structure_names);
+
+        // Zero diagnostics — both members should compile cleanly.
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics, got: {:?}",
+            diags
+        );
+
+        // `type Material` → exactly one AssocType requirement named "Material".
+        let material_req = compiled
+            .required_members
+            .iter()
+            .find(|r| r.name == "Material")
+            .expect("expected a required_member named 'Material'");
+        assert!(
+            matches!(material_req.kind, RequirementKind::AssocType(None)),
+            "expected RequirementKind::AssocType(None), got {:?}",
+            material_req.kind
+        );
+
+        // `type Color = Red` → exactly one AssocType default named "Color" resolving to StructureRef("Red").
+        let color_default = compiled
+            .defaults
+            .iter()
+            .find(|d| d.name.as_deref() == Some("Color"))
+            .expect("expected a default named 'Color'");
+        assert!(
+            matches!(&color_default.kind, DefaultKind::AssocType(ty) if *ty == Type::StructureRef("Red".to_string())),
+            "expected DefaultKind::AssocType(Type::StructureRef(\"Red\")), got {:?}",
+            color_default.kind
+        );
+
+        // `type Material` must NOT appear as a default.
+        assert!(
+            !compiled.defaults.iter().any(|d| d.name.as_deref() == Some("Material")),
+            "a bodyless AssociatedType must not produce a default"
+        );
+
+        // `type Color = Red` must NOT appear as a required_member.
+        assert!(
+            !compiled.required_members.iter().any(|r| r.name == "Color"),
+            "a default-providing AssociatedType must not produce a requirement"
+        );
+    }
 }
