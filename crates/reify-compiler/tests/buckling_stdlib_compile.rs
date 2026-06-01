@@ -134,19 +134,24 @@ fn std_solver_buckling_module_loads_with_no_errors() {
 
 // ─── step-3: BucklingOptions param shape ─────────────────────────────────────
 
-/// `BucklingOptions` must declare exactly the six params from PRD §4 with the
-/// canonical types:
+/// `BucklingOptions` must declare exactly the seven params from PRD §4 (plus
+/// the task-4129 `element_order` extension) with the canonical types:
 ///
-///   - `n_modes    : Int`     (eigenpair count to compute)
-///   - `mode       : String`  (algorithm selector; allowlist validated at
+///   - `n_modes       : Int`          (eigenpair count to compute)
+///   - `mode          : String`       (algorithm selector; allowlist validated at
 ///     trampoline per PRD §4)
-///   - `sigma      : Real`    (eigenvalue shift origin)
-///   - `tol        : Real`    (Lanczos convergence tolerance)
-///   - `max_iters  : Int`     (hard cap on Lanczos iterations)
-///   - `auto_dense : Bool`    (fall back to dense GEVD when DOF ≤ ~200)
+///   - `sigma         : Real`         (eigenvalue shift origin)
+///   - `tol           : Real`         (Lanczos convergence tolerance)
+///   - `max_iters     : Int`          (hard cap on Lanczos iterations)
+///   - `auto_dense    : Bool`         (fall back to dense GEVD when DOF ≤ ~200)
+///   - `element_order : ElementOrder` (P1/P2 finite-element order; task 4129)
 ///
 /// PRD's `Integer` maps to Reify's `Int` builtin (same encoding as
-/// `ElasticOptions.max_iter`).
+/// `ElasticOptions.max_iter`). `Type::Enum("ElementOrder")` is the EXACT
+/// representation the resolver produces for the shared stdlib enum — confirmed
+/// by the existing `ElasticOptions.element_order` assertion at
+/// `solver_elastic_tests.rs:204` and `ModalOptions.element_order` at
+/// `modal_options_validation_tests.rs:627`.
 #[test]
 fn buckling_options_struct_has_correct_param_shape() {
     let template = find_structure("BucklingOptions");
@@ -155,9 +160,9 @@ fn buckling_options_struct_has_correct_param_shape() {
 
     assert_eq!(
         params.len(),
-        6,
-        "BucklingOptions should have exactly 6 param cells \
-         (n_modes, mode, sigma, tol, max_iters, auto_dense), got: {:?}",
+        7,
+        "BucklingOptions should have exactly 7 param cells \
+         (n_modes, mode, sigma, tol, max_iters, auto_dense, element_order), got: {:?}",
         names
     );
 
@@ -168,6 +173,7 @@ fn buckling_options_struct_has_correct_param_shape() {
         ("tol", Type::Real),
         ("max_iters", Type::Int),
         ("auto_dense", Type::Bool),
+        ("element_order", Type::Enum("ElementOrder".to_string())),
     ];
 
     for (member, expected_ty) in expected {
@@ -283,6 +289,30 @@ fn buckling_options_param_defaults_match_spec() {
         }
         other => panic!(
             "auto_dense default should be Literal(Value::Bool(true)), got: {:?}",
+            other
+        ),
+    }
+
+    // element_order = ElementOrder.P1 (enum default; task 4129).
+    // Mirrors the assertion shape at modal_options_validation_tests.rs:1692-1707
+    // and solver_elastic_tests.rs:281-296.
+    let element_order_default = require_default(template, "element_order");
+    match &element_order_default.kind {
+        CompiledExprKind::Literal(Value::Enum { type_name, variant }) => {
+            assert_eq!(
+                type_name, "ElementOrder",
+                "element_order default type_name should be \"ElementOrder\", got: {:?}",
+                type_name
+            );
+            assert_eq!(
+                variant, "P1",
+                "element_order default variant should be \"P1\", got: {:?}",
+                variant
+            );
+        }
+        other => panic!(
+            "BucklingOptions.element_order default should be \
+             Literal(Value::Enum {{ type_name: \"ElementOrder\", variant: \"P1\" }}), got: {:?}",
             other
         ),
     }
