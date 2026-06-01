@@ -1000,6 +1000,13 @@ pub struct RealizationDecl {
     /// `crates/reify-test-support/src/builders/topology.rs`.  Tests that need
     /// a user-visible name use `realization_named(...)` instead.
     pub name: Option<String>,
+    /// Whether the backing `let` binding was declared `aux` (PRD §2.2:
+    /// auxiliary geometry with "no external geometric effect"). Threaded from
+    /// `LetDecl.is_aux` at lowering. Geometry params and the guarded-group path
+    /// have no source `aux` modifier, so they construct with `false`; the
+    /// `TopologyTemplateBuilder` test helpers likewise default to `false`.
+    /// Downstream (reify-eval) reads this to set `MeshSurface.default_visible`.
+    pub is_aux: bool,
     pub operations: Vec<CompiledGeometryOp>,
     /// Feature tags parallel to `operations` — same length, same indexing.
     ///

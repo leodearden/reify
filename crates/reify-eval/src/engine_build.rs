@@ -11,7 +11,7 @@ use reify_solver_elastic::{
     Mesh2d, Mesh2dError, Mesh2dReport, MpcRow, SweepError, SweepParams, SweptMesh3d,
 };
 use reify_core::{Diagnostic, DiagnosticLabel, RealizationNodeId, SourceSpan, VersionId};
-use reify_ir::{AttributeHistory, CapabilityDescriptor, CompiledFunction, ElementOrderTag, ErrorRef, ExportFormat, FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelHandle, KernelId, LoftOpHistoryRecords, Mesh, Operation, ReprKind, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable, ValueMap, VolumeMesh};
+use reify_ir::{AttributeHistory, CapabilityDescriptor, CompiledFunction, ElementOrderTag, ErrorRef, ExportFormat, FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelHandle, KernelId, LoftOpHistoryRecords, Operation, ReprKind, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable, ValueMap, VolumeMesh};
 use reify_shell_extract::{MidSurfaceMesh, ShellTetInterface};
 
 use crate::cache::{CacheStore, CachedResult, FAILED_REALIZATION_STUB_HANDLE, NodeCache, NodeId};
@@ -29,7 +29,7 @@ use crate::topology_attribute_propagation::{
     populate_extrude_attributes, populate_loft_attributes, populate_revolve_attributes,
     populate_sweep_attributes,
 };
-use crate::{BuildResult, Engine, TessellateResult};
+use crate::{BuildResult, Engine, MeshSurface, TessellateResult};
 
 /// Map a kernel registry name to the [`KernelId`] used to tag the handles that
 /// kernel produces (task 4048).
@@ -2480,7 +2480,7 @@ impl Engine {
         // fn's signature mirrors the disjoint-field-borrow shape already in
         // use for the other &mut params.
         dispatch_count: &mut usize,
-    ) -> Vec<(String, Mesh)> {
+    ) -> Vec<MeshSurface> {
         let mut meshes = Vec::new();
 
         // Task ε (3436): the engine's default kernel is fetched by name from
@@ -2512,6 +2512,19 @@ impl Engine {
         // logic out so the three eval loop sites stay in sync.
         let mut module_named_steps: HashMap<String, HashMap<String, KernelHandle>> =
             HashMap::new();
+
+        // T5 step-4 (Phase A): record each realization's terminal `KernelHandle`
+        // positionally by `(t_idx, r_idx)` instead of tessellating it here. The
+        // Phase-B containment walk (below) tessellates these handles at the
+        // composed world pose and pushes the `MeshSurface`s. Sized to the full
+        // `templates × realizations` product so anonymous realizations are
+        // addressable; `None` marks a realization that produced no geometry.
+        // `KernelHandle` is `Copy`.
+        let mut terminal_handles: Vec<Vec<Option<KernelHandle>>> = module
+            .templates
+            .iter()
+            .map(|t| vec![None; t.realizations.len()])
+            .collect();
 
         for (t_idx, template) in module.templates.iter().enumerate() {
             // `named_steps` is scoped per-template so that two structures
@@ -2603,35 +2616,17 @@ impl Engine {
                     &mut *dispatch_count,
                 );
 
-                // Tessellate this realization's final handle (if any new handles were produced)
+                // T5 step-4 (Phase A): record this realization's terminal
+                // handle positionally instead of tessellating here. The mesh
+                // push relocates to the Phase-B containment walk, which
+                // tessellates the recorded handle at the composed world pose so
+                // each contained descendant is surfaced ONCE under its composed
+                // entity_path (no standalone double-surfacing). `KernelHandle`
+                // is `Copy`; `step_handles` outlives this iteration so the
+                // handle stays valid for Phase B (the kernel sessions in
+                // `geometry_kernels` live for the whole call).
                 if step_handles.len() > handle_start {
-                    let last_handle = step_handles[step_handles.len() - 1];
-                    // Task 2874 step-12: forward the per-realization tessellation
-                    // budget (precomputed by the caller via
-                    // `Engine::compute_realization_tolerance_budget`) to the
-                    // kernel instead of the unconditional module-pragma
-                    // default. Task 3227 / 3297: direct positional index —
-                    // no String clones, no hashing. The producer
-                    // (`compute_tessellation_budgets`) and this consumer iterate
-                    // the same `module.templates × realizations` product
-                    // unconditionally, so OOB is unambiguously an internal
-                    // bug; Rust's slice indexing panics with a precise OOB
-                    // message at runtime in both debug and release.
-                    let budget = tessellation_budgets[t_idx][r_idx];
-                    // Re-borrow the default kernel after the per-realization
-                    // executor released its full-map borrow (step-8 #3436).
-                    let default_kernel = geometry_kernels.get(default_kernel_name).expect(
-                        "default kernel must remain in the map across the per-realization loop",
-                    );
-                    match default_kernel.tessellate(last_handle.id, budget) {
-                        Ok(mesh) => {
-                            meshes.push((realization.id.to_string(), mesh));
-                        }
-                        Err(e) => {
-                            diagnostics
-                                .push(Diagnostic::error(format!("tessellation error: {}", e)));
-                        }
-                    }
+                    terminal_handles[t_idx][r_idx] = step_handles.last().copied();
                 }
             }
             // Step-8 (task ε / 3436): re-borrow the default kernel from the
@@ -2692,6 +2687,79 @@ impl Engine {
             // scope at the loop body's end anyway, and the post-process
             // helpers above only borrow it.
             snapshot_named_steps(template, named_steps, &mut module_named_steps);
+        }
+
+        // ── Phase B (T5 step-4): containment-tree surfacing ──────────────────
+        // Walk each root template's sub-tree depth-first and surface every
+        // contained descendant ONCE under its composed entity_path, tessellating
+        // the terminal handle recorded in Phase A. Non-root (subbed) templates
+        // are suppressed standalone — they appear only here, at their place in
+        // the tree, at the composed world pose (identity at step-4; step-10
+        // applies the composed transform before tessellation). Independent /
+        // single templates are roots and surface bit-identically to pre-T5.
+        // Roots start at the identity world transform (`compose_pose_chain(&[])`);
+        // step-10 accrues each sub's `at` pose onto it down the walk.
+        let identity_world = crate::geometry_ops::compose_pose_chain(&[]);
+        let roots = crate::geometry_ops::root_template_indices(module);
+        for &root_idx in &roots {
+            let root_prefix = module.templates[root_idx].name.clone();
+            crate::geometry_ops::surface_subtree(
+                module,
+                root_idx,
+                &root_prefix,
+                // Roots have no aux ancestor; inheritance accrues down the walk.
+                false,
+                &identity_world,
+                0,
+                &terminal_handles,
+                geometry_kernels,
+                default_kernel_name,
+                tessellation_budgets,
+                values,
+                functions,
+                meta_map,
+                &mut meshes,
+                diagnostics,
+            );
+        }
+
+        // T5 amendment (reviewer robustness_edge_case): surface any template that
+        // is reachable from NO root. Such a template is excluded from the root
+        // set (some sub names it) yet no root reaches it, which is only possible
+        // inside a non-collection containment cycle with no acyclic entry point
+        // (self-recursive `sub child : Self`, or a mutual `A -> B -> A`). Without
+        // this it would be SILENTLY DROPPED — pre-T5 it surfaced standalone. We
+        // seed each uncovered template once as a fallback root; its own
+        // (cycle-guard-bounded) walk covers its cycle peers, so we extend
+        // `covered` to avoid re-seeding them. In an acyclic module every template
+        // is already covered by `roots`, so this loop is a no-op.
+        let mut covered = crate::geometry_ops::reachable_template_indices(module, &roots);
+        for t_idx in 0..module.templates.len() {
+            if covered.contains(&t_idx) {
+                continue;
+            }
+            let fallback_prefix = module.templates[t_idx].name.clone();
+            crate::geometry_ops::surface_subtree(
+                module,
+                t_idx,
+                &fallback_prefix,
+                false,
+                &identity_world,
+                0,
+                &terminal_handles,
+                geometry_kernels,
+                default_kernel_name,
+                tessellation_budgets,
+                values,
+                functions,
+                meta_map,
+                &mut meshes,
+                diagnostics,
+            );
+            covered.extend(crate::geometry_ops::reachable_template_indices(
+                module,
+                &[t_idx],
+            ));
         }
 
         meshes

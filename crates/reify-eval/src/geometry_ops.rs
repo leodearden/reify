@@ -3,10 +3,10 @@
 // Free functions with no Engine coupling — they take values, functions, meta_map
 // as plain arguments.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use reify_core::Diagnostic;
-use reify_ir::{CompiledFunction, GeometryHandleId, KernelHandle, ValueMap};
+use reify_ir::{CompiledFunction, GeometryHandleId, GeometryKernel, KernelHandle, ValueMap};
 
 use crate::eval_ctx_with_meta;
 
@@ -4569,6 +4569,360 @@ pub(crate) fn eval_sub_pose(
             ));
             reify_ir::Value::Undef
         }
+    }
+}
+
+/// Resolve whether the `let` binding backing a realization was declared `aux`
+/// (PRD §2.2), i.e. "no external geometric effect" → surfaced hidden.
+///
+/// The compiler threads `LetDecl.is_aux` directly onto `RealizationDecl.is_aux`
+/// at lowering (geometry lets are lowered as realizations only — they create no
+/// `ValueCellDecl`, so the flag cannot be recovered via `value_cells`). Geometry
+/// params and the guarded-group path carry no source `aux` modifier and so are
+/// always `false`.
+///
+/// Used by `tessellate_from_values` to derive `MeshSurface.default_visible`
+/// on the flat (no-composition) path; the Phase-B containment walk additionally
+/// ORs in any `aux` ancestor sub (T5 steps 4/6).
+///
+/// This is intentionally a thin wrapper over the public `RealizationDecl.is_aux`
+/// field: its value is *documentary*, not behavioral. It gives the surfacing
+/// call site (`surface_subtree`) a self-describing name for the visibility
+/// intent and a single anchor for the non-obvious compiler-threading rationale
+/// above (the field exists only because escalation esc-3903-220 added it — the
+/// `aux` modifier on a geometry `let` would otherwise be dropped at lowering).
+/// Keeping it avoids re-deriving that context at the use site; inlining would
+/// either lose the doc or scatter it into a call-site comment.
+pub(crate) fn realization_is_aux(realization: &reify_compiler::RealizationDecl) -> bool {
+    realization.is_aux
+}
+
+/// Decompose a `Value::Transform` into raw quaternion + SI-metre translation
+/// arrays for building a kernel-agnostic `reify_ir::GeometryOp::ApplyTransform`
+/// (T5 step-8/10).
+///
+/// Accepts `Transform { rotation: Orientation { w, x, y, z }, translation:
+/// Vector([s0, s1, s2]) }` where each translation component is a finite LENGTH
+/// or dimensionless `Scalar`; returns `Some(([w,x,y,z], [tx,ty,tz]))` with the
+/// translation read straight off `Scalar.si_value` (SI metres). Returns `None`
+/// for any other shape — non-`Transform`, non-`Orientation` rotation, a
+/// translation that is not a 3-component `Vector`, or a component that is not a
+/// LENGTH/dimensionless finite `Scalar`. Each component is checked independently,
+/// so a mixed-dimension translation (e.g. one ANGLE among LENGTHs) is rejected.
+///
+/// `reify_stdlib`'s own `decompose_transform` is private, so this local
+/// pattern-match keeps the change inside reify-eval while feeding the IR op's
+/// raw float arrays (the IR is kernel-agnostic by design).
+pub(crate) fn decompose_transform_to_arrays(v: &reify_ir::Value) -> Option<([f64; 4], [f64; 3])> {
+    let reify_ir::Value::Transform {
+        rotation,
+        translation,
+    } = v
+    else {
+        return None;
+    };
+    let reify_ir::Value::Orientation { w, x, y, z } = rotation.as_ref() else {
+        return None;
+    };
+    let reify_ir::Value::Vector(components) = translation.as_ref() else {
+        return None;
+    };
+    if components.len() != 3 {
+        return None;
+    }
+    let mut t = [0.0_f64; 3];
+    for (i, c) in components.iter().enumerate() {
+        let reify_ir::Value::Scalar {
+            si_value,
+            dimension,
+        } = c
+        else {
+            return None;
+        };
+        let dim_ok = *dimension == reify_core::DimensionVector::LENGTH
+            || *dimension == reify_core::DimensionVector::DIMENSIONLESS;
+        if !dim_ok || !si_value.is_finite() {
+            return None;
+        }
+        t[i] = *si_value;
+    }
+    Some(([*w, *x, *y, *z], t))
+}
+
+/// Left-fold a chain of pose `Value::Transform`s into a single world transform
+/// via the quaternion-correct `transform_compose` builtin (T5 step-8/10).
+///
+/// Seeds with the identity Transform and folds `transform_compose(acc, next)`
+/// left-to-right, so the result is `pose_0 ∘ pose_1 ∘ … ∘ pose_n` (mirrors the
+/// proven left-fold in `reify_stdlib::loop_closure::chain_transform`). An empty
+/// chain returns the identity Transform unchanged. Reuses the already-tested
+/// stdlib builtin rather than hand-rolling quaternion math; `reify-eval` already
+/// depends on `reify-stdlib`.
+pub(crate) fn compose_pose_chain(poses: &[reify_ir::Value]) -> reify_ir::Value {
+    let identity = reify_ir::Value::Transform {
+        rotation: Box::new(reify_ir::Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }),
+        translation: Box::new(reify_ir::Value::Vector(vec![
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+        ])),
+    };
+    poses.iter().fold(identity, |acc, next| {
+        reify_stdlib::eval_builtin("transform_compose", &[acc, next.clone()])
+    })
+}
+
+/// Indices into `module.templates` of the *root* templates for surfacing: those
+/// whose `name` is NOT the `structure_name` of any NON-collection sub anywhere
+/// in the module (T5 step-4).
+///
+/// `CompiledModule.templates` is a flat `Vec` with no root marker, and the
+/// pre-T5 evaluator surfaced *every* template standalone — so a contained child
+/// appeared at un-placed local coords. The containment walk surfaces each
+/// non-root descendant exactly once at its composed world pose, so only roots
+/// seed the walk; contained templates are suppressed standalone.
+///
+/// Collection subs are deliberately excluded from the "contained" set: their
+/// per-element placement is out of scope (PRD §10), so a template used *only* as
+/// a `List<T>` sub still surfaces standalone as a root (unchanged behavior).
+pub(crate) fn root_template_indices(module: &reify_compiler::CompiledModule) -> Vec<usize> {
+    let contained: std::collections::HashSet<&str> = module
+        .templates
+        .iter()
+        .flat_map(|t| t.sub_components.iter())
+        .filter(|sub| !sub.is_collection)
+        .map(|sub| sub.structure_name.as_str())
+        .collect();
+    module
+        .templates
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| !contained.contains(t.name.as_str()))
+        .map(|(idx, _)| idx)
+        .collect()
+}
+
+/// Indices of every template reachable from `seeds` by following NON-collection
+/// subs, inclusive of the seeds themselves (T5 amendment — cycle-loss guard).
+///
+/// The Phase-B driver surfaces from each root, but a template that is excluded
+/// from the root set (because some sub names it) yet is reachable from NO root
+/// can only sit inside a non-collection containment cycle with no acyclic entry
+/// point — a self-recursive `sub child : Self`, or a mutual `A -> B -> A`. Pre-T5
+/// every template surfaced standalone, so dropping such a template is a silent
+/// geometry-loss regression. The driver computes `reachable_template_indices(…,
+/// roots)` and surfaces any *unreached* template as a fallback root, so its
+/// geometry is preserved (the per-template `surface_subtree` walk stays bounded
+/// by the `depth > templates.len()` cycle guard).
+///
+/// `structure_name -> template index` is resolved by `position` (mirroring
+/// `surface_subtree` / `root_template_indices`); collection subs are skipped to
+/// match the root-set's containment definition. In an *acyclic* module every
+/// non-root is reachable from some root, so this returns the full index set and
+/// the fallback loop is a no-op — zero behavior change off the cyclic path.
+pub(crate) fn reachable_template_indices(
+    module: &reify_compiler::CompiledModule,
+    seeds: &[usize],
+) -> std::collections::HashSet<usize> {
+    let mut reached: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut stack: Vec<usize> = seeds.to_vec();
+    while let Some(idx) = stack.pop() {
+        if !reached.insert(idx) {
+            continue;
+        }
+        for sub in &module.templates[idx].sub_components {
+            if sub.is_collection {
+                continue;
+            }
+            // Push every non-collection child; the `reached.insert` guard above
+            // dedups on pop, so re-pushing an already-reached index is harmless.
+            if let Some(child) = module
+                .templates
+                .iter()
+                .position(|t| t.name == sub.structure_name)
+            {
+                stack.push(child);
+            }
+        }
+    }
+    reached
+}
+
+/// Phase-B containment-tree surfacing (T5 steps 4/6/10).
+///
+/// Depth-first walk from a root template: surface the current template's
+/// realizations under `path_prefix` (the dotted entity-path prefix that precedes
+/// the `#realization[i]` suffix), then recurse into each NON-collection sub with
+/// `path_prefix` extended by `.<sub-name>`. The realization's terminal handle is
+/// looked up positionally from `terminal_handles[t_idx][r_idx]` (recorded by
+/// Phase A); `None` (no geometry produced) is skipped. The default kernel is
+/// re-borrowed by name to tessellate, mirroring the pre-T5 terminal-handle path.
+///
+/// Entity-path scheme (PRD §11.2 `parent.sub#realization[i]`): for a ROOT,
+/// `path_prefix` is the template name, so the surface path equals
+/// `realization.id.to_string()` (`<entity>#realization[<index>]`) — bit-identical
+/// to pre-T5. For a DESCENDANT, `path_prefix` is `<root>.<sub>…`, giving e.g.
+/// `Assembly.c#realization[0]`.
+///
+/// `depth` bounds the recursion: a simple path in an acyclic sub-graph visits at
+/// most `templates.len()` distinct templates, so a depth past that implies a
+/// non-collection sub cycle (e.g. a recursive structure reached via a root). We
+/// stop there to avoid unbounded recursion — runtime recursion unfolding is a
+/// separate concern (`unfold.rs`) and out of this surfacing path's scope.
+///
+/// step-10 composes each sub's `at` pose down the walk (`eval_sub_pose` +
+/// `compose_pose_chain`) and applies the resulting world transform via
+/// `GeometryOp::ApplyTransform` on the default kernel before tessellation;
+/// identity / un-placed poses short-circuit and tessellate the handle directly.
+/// Step-6 threads `aux` inheritance.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn surface_subtree(
+    module: &reify_compiler::CompiledModule,
+    t_idx: usize,
+    path_prefix: &str,
+    // True when any ancestor sub on the path to this template was declared
+    // `aux` (PRD §3 rule 2: an aux sub means the whole contained subtree has no
+    // external geometric effect). Inherited down the walk; ORed with each
+    // realization's own `aux` to derive `default_visible`. `false` at roots.
+    aux_ancestor: bool,
+    // T5 step-10: the composed world transform inherited from the root down to
+    // this template (`pose_root ∘ … ∘ pose_parent`). Identity at roots. When
+    // non-identity, applied to each realization's terminal geometry (via
+    // `GeometryOp::ApplyTransform` on the default kernel) before tessellation so
+    // the descendant surfaces at its composed world pose.
+    composed_world: &reify_ir::Value,
+    depth: usize,
+    terminal_handles: &[Vec<Option<KernelHandle>>],
+    // `&mut` so a non-identity `composed_world` can `execute` an ApplyTransform
+    // on the default kernel before tessellating; the pre-step-10 walk only read
+    // the kernel to tessellate.
+    geometry_kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
+    default_kernel_name: &str,
+    tessellation_budgets: &[Vec<f64>],
+    // T5 step-10: parent value / function / meta context for evaluating each
+    // sub's `at` pose via `eval_sub_pose`.
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    meshes: &mut Vec<crate::MeshSurface>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // Cycle guard (see docstring): bail once we have descended more levels than
+    // there are templates, which is only reachable via a non-collection sub
+    // cycle.
+    if depth > module.templates.len() {
+        return;
+    }
+    let template = &module.templates[t_idx];
+
+    // step-10: decompose the inherited world transform once for this template.
+    // `Some(non-identity)` → apply via `ApplyTransform` before tessellating;
+    // identity, or a non-decomposable pose (e.g. an `eval_sub_pose` Undef already
+    // diagnosed upstream), short-circuits to tessellating the recorded handle
+    // directly — surfacing at the parent frame, bit-identical to the pre-step-10
+    // (root / identity-containment) path so no extra kernel op or handle is made.
+    let placement: Option<([f64; 4], [f64; 3])> =
+        match decompose_transform_to_arrays(composed_world) {
+            Some((rotation, translation))
+                if rotation != [1.0, 0.0, 0.0, 0.0] || translation != [0.0, 0.0, 0.0] =>
+            {
+                Some((rotation, translation))
+            }
+            _ => None,
+        };
+
+    // Surface this template's own realizations at `path_prefix`.
+    for (r_idx, realization) in template.realizations.iter().enumerate() {
+        let Some(handle) = terminal_handles[t_idx][r_idx] else {
+            continue;
+        };
+        let budget = tessellation_budgets[t_idx][r_idx];
+        // ApplyTransform + tessellate both route through the DEFAULT kernel,
+        // consistent with the pre-step-10 tessellate path. A single `&mut` borrow
+        // covers the `execute` (`&mut self`) then `tessellate` (`&self`) sequence.
+        let default_kernel = geometry_kernels
+            .get_mut(default_kernel_name)
+            .expect("default kernel must remain in the map across the surfacing walk");
+        let tess_id = match placement {
+            Some((rotation, translation)) => {
+                match default_kernel.execute(&reify_ir::GeometryOp::ApplyTransform {
+                    target: handle.id,
+                    rotation,
+                    translation,
+                }) {
+                    Ok(transformed) => transformed.id,
+                    Err(e) => {
+                        diagnostics.push(Diagnostic::error(format!(
+                            "transform application error: {}",
+                            e
+                        )));
+                        continue;
+                    }
+                }
+            }
+            None => handle.id,
+        };
+        match default_kernel.tessellate(tess_id, budget) {
+            Ok(mesh) => {
+                // step-6: hide iff any `aux` ancestor sub OR this realization's
+                // own `aux` let. aux bodies are still tessellated and shipped —
+                // only hidden by default.
+                let default_visible = !(aux_ancestor || realization_is_aux(realization));
+                let entity_path = format!("{}#realization[{}]", path_prefix, realization.id.index);
+                meshes.push(crate::MeshSurface {
+                    entity_path,
+                    mesh,
+                    default_visible,
+                });
+            }
+            Err(e) => {
+                diagnostics.push(Diagnostic::error(format!("tessellation error: {}", e)));
+            }
+        }
+    }
+
+    // Recurse into each non-collection sub at the composed dotted path,
+    // accumulating its `at` pose onto the inherited world transform.
+    for sub in &template.sub_components {
+        if sub.is_collection {
+            continue;
+        }
+        let Some(child_idx) = module
+            .templates
+            .iter()
+            .position(|t| t.name == sub.structure_name)
+        else {
+            continue;
+        };
+        let child_prefix = format!("{}.{}", path_prefix, sub.name);
+        // step-10: evaluate this sub's `at` pose in the parent context and
+        // compose it onto the inherited world transform. A poseless sub
+        // (`pose == None`) yields the identity Transform, so an un-placed
+        // containment chain stays identity and short-circuits in the child.
+        let sub_pose = eval_sub_pose(sub.pose.as_ref(), values, functions, meta_map, diagnostics);
+        let child_world = compose_pose_chain(&[composed_world.clone(), sub_pose]);
+        surface_subtree(
+            module,
+            child_idx,
+            &child_prefix,
+            aux_ancestor || sub.is_aux,
+            &child_world,
+            depth + 1,
+            terminal_handles,
+            geometry_kernels,
+            default_kernel_name,
+            tessellation_budgets,
+            values,
+            functions,
+            meta_map,
+            meshes,
+            diagnostics,
+        );
     }
 }
 
@@ -14739,6 +15093,136 @@ mod tests {
             reify_core::Severity::Error,
             "call-site diagnostic must be Error; got {:?}",
             diagnostics[0].severity
+        );
+    }
+
+    // ── T5 step-7: pose decompose / compose helpers ──────────────────────────
+
+    /// Build a `Value::Transform` from a raw quaternion `[w,x,y,z]` and a
+    /// LENGTH-dimensioned translation `[tx,ty,tz]` (metres).
+    fn transform_of(q: [f64; 4], t: [f64; 3]) -> reify_ir::Value {
+        reify_ir::Value::Transform {
+            rotation: Box::new(reify_ir::Value::Orientation {
+                w: q[0],
+                x: q[1],
+                y: q[2],
+                z: q[3],
+            }),
+            translation: Box::new(reify_ir::Value::Vector(vec![
+                reify_ir::Value::length(t[0]),
+                reify_ir::Value::length(t[1]),
+                reify_ir::Value::length(t[2]),
+            ])),
+        }
+    }
+
+    /// The canonical identity `Value::Transform` (mirrors `eval_sub_pose`'s
+    /// `None` arm and step-8's `compose_pose_chain` seed).
+    fn identity_transform() -> reify_ir::Value {
+        transform_of([1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
+    }
+
+    #[test]
+    fn decompose_transform_to_arrays_extracts_quat_and_si_translation() {
+        let v = transform_of([0.5, 0.5, 0.5, 0.5], [0.03, -0.01, 0.2]);
+        let (q, t) = decompose_transform_to_arrays(&v).expect("valid Transform must decompose");
+        assert_eq!(q, [0.5, 0.5, 0.5, 0.5], "quaternion [w,x,y,z]");
+        assert_eq!(t, [0.03, -0.01, 0.2], "translation in SI metres");
+    }
+
+    #[test]
+    fn decompose_transform_to_arrays_rejects_non_transform() {
+        assert!(decompose_transform_to_arrays(&reify_ir::Value::Real(1.0)).is_none());
+        assert!(decompose_transform_to_arrays(&reify_ir::Value::Undef).is_none());
+    }
+
+    #[test]
+    fn decompose_transform_to_arrays_rejects_non_orientation_rotation() {
+        // rotation is a Vector, not an Orientation → reject.
+        let v = reify_ir::Value::Transform {
+            rotation: Box::new(reify_ir::Value::Vector(vec![
+                reify_ir::Value::Real(1.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+            ])),
+            translation: Box::new(reify_ir::Value::Vector(vec![
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+            ])),
+        };
+        assert!(decompose_transform_to_arrays(&v).is_none());
+    }
+
+    #[test]
+    fn decompose_transform_to_arrays_rejects_wrong_length_translation() {
+        let v = reify_ir::Value::Transform {
+            rotation: Box::new(reify_ir::Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            translation: Box::new(reify_ir::Value::Vector(vec![
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+            ])),
+        };
+        assert!(decompose_transform_to_arrays(&v).is_none());
+    }
+
+    #[test]
+    fn decompose_transform_to_arrays_rejects_mixed_dimension_translation() {
+        // one ANGLE component among LENGTHs → reject (mixed dimensions).
+        let v = reify_ir::Value::Transform {
+            rotation: Box::new(reify_ir::Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            translation: Box::new(reify_ir::Value::Vector(vec![
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::angle(0.0),
+                reify_ir::Value::length(0.0),
+            ])),
+        };
+        assert!(decompose_transform_to_arrays(&v).is_none());
+    }
+
+    #[test]
+    fn compose_pose_chain_two_equals_eval_builtin() {
+        // Identity-quaternion (translation-only) transforms compose exactly
+        // (quat_mul / quat_rotate by identity are bit-exact), so the left-fold
+        // from identity collapses to a plain transform_compose of the pair.
+        let t1 = transform_of([1.0, 0.0, 0.0, 0.0], [0.01, 0.0, 0.0]);
+        let t2 = transform_of([1.0, 0.0, 0.0, 0.0], [0.0, 0.02, 0.0]);
+        let got = compose_pose_chain(&[t1.clone(), t2.clone()]);
+        let expected = reify_stdlib::eval_builtin("transform_compose", &[t1, t2]);
+        assert_eq!(
+            got, expected,
+            "compose_pose_chain([t1,t2]) must equal transform_compose(t1,t2)"
+        );
+    }
+
+    #[test]
+    fn compose_pose_chain_empty_is_identity() {
+        assert_eq!(
+            compose_pose_chain(&[]),
+            identity_transform(),
+            "empty chain must be the identity Transform"
+        );
+    }
+
+    #[test]
+    fn compose_pose_chain_single_equals_compose_onto_identity() {
+        let t = transform_of([1.0, 0.0, 0.0, 0.0], [0.05, 0.0, 0.0]);
+        let got = compose_pose_chain(std::slice::from_ref(&t));
+        let expected = reify_stdlib::eval_builtin("transform_compose", &[identity_transform(), t]);
+        assert_eq!(
+            got, expected,
+            "single-element chain == transform_compose(identity, t)"
         );
     }
 }

@@ -1028,7 +1028,7 @@ fn partial_failure_does_not_contaminate_subsequent_realization() {
         );
 
         // (b) the mesh's entity ID matches realization 1's ID (not realization 0's)
-        let mesh_id = &result.meshes[0].0;
+        let mesh_id = &result.meshes[0].entity_path;
         assert!(
             mesh_id.contains("1"),
             "expected mesh entity ID to be from realization 1, got '{}'",

@@ -184,11 +184,11 @@ fn boolean_multi_realization_nested_e2e() {
         result.meshes.len()
     );
     assert!(
-        !result.meshes[0].1.vertices.is_empty(),
+        !result.meshes[0].mesh.vertices.is_empty(),
         "r1 (difference) mesh should have vertices"
     );
     assert!(
-        !result.meshes[1].1.vertices.is_empty(),
+        !result.meshes[1].mesh.vertices.is_empty(),
         "r2 (union) mesh should have vertices"
     );
 }
@@ -263,11 +263,11 @@ fn boolean_multi_realization_step_index_e2e() {
         result.meshes.len()
     );
     assert!(
-        !result.meshes[0].1.vertices.is_empty(),
+        !result.meshes[0].mesh.vertices.is_empty(),
         "r1 (box) mesh should have vertices"
     );
     assert!(
-        !result.meshes[1].1.vertices.is_empty(),
+        !result.meshes[1].mesh.vertices.is_empty(),
         "r2 (union) mesh should have vertices"
     );
 }

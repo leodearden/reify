@@ -84,7 +84,8 @@ fn tessellate_single_box_realization() {
         "expected exactly one mesh for one realization"
     );
 
-    let (entity_path, mesh) = &result.meshes[0];
+    let entity_path = &result.meshes[0].entity_path;
+    let mesh = &result.meshes[0].mesh;
     assert_eq!(entity_path, "TestShape#realization[0]");
     assert!(
         !mesh.vertices.is_empty(),
@@ -140,7 +141,11 @@ fn tessellate_multiple_realizations() {
         "expected two meshes for two realizations"
     );
 
-    let paths: Vec<&str> = result.meshes.iter().map(|(p, _)| p.as_str()).collect();
+    let paths: Vec<&str> = result
+        .meshes
+        .iter()
+        .map(|s| s.entity_path.as_str())
+        .collect();
     assert_eq!(paths[0], "TestShape#realization[0]");
     assert_eq!(paths[1], "TestShape#realization[1]");
 }
@@ -245,7 +250,8 @@ fn tessellate_snapshot_returns_meshes_after_eval() {
         1,
         "expected one mesh from one realization"
     );
-    let (entity_path, mesh) = &result.meshes[0];
+    let entity_path = &result.meshes[0].entity_path;
+    let mesh = &result.meshes[0].mesh;
     assert_eq!(entity_path, "TestShape#realization[0]");
     assert!(
         !mesh.vertices.is_empty(),

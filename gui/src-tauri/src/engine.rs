@@ -2074,14 +2074,25 @@ impl EngineSession {
                     }
                     diags
                 };
+                // T5 (task 3903): `MeshSurface.default_visible` (computed by the
+                // reify-eval surfacing walk — `false` for aux bodies / aux
+                // subtrees) is intentionally NOT propagated here. `MeshData`
+                // (types.rs) carries no visibility field, and wiring the flag
+                // through the IPC boundary + frontend visibility toggles is the
+                // scope of the GUI surfacing step (T6 — "GUI default_visible UI
+                // behavior", out of T5's scope per the 3903 plan §10). Until then
+                // the flag is deliberately dropped at this map, NOT a bug: aux
+                // bodies still ship their mesh payload and simply render visible
+                // in the GUI for now. Do not "fix" this by defaulting visibility
+                // elsewhere — T6 owns the per-surface visibility contract.
                 let mut meshes: Vec<MeshData> = result
                     .meshes
                     .into_iter()
-                    .map(|(entity_path, mesh)| MeshData {
-                        entity_path,
-                        vertices: mesh.vertices,
-                        indices: mesh.indices,
-                        normals: mesh.normals,
+                    .map(|surface| MeshData {
+                        entity_path: surface.entity_path,
+                        vertices: surface.mesh.vertices,
+                        indices: surface.mesh.indices,
+                        normals: surface.mesh.normals,
                         scalar_channels: std::collections::HashMap::new(),
                         displaced_positions: None,
                         element_kind: None,
