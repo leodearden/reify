@@ -9,6 +9,97 @@
 //! reify-solver-elastic`, so naming it in the solver crate would close a
 //! dependency cycle — see the task δ design decisions).
 
+/// Tri-state shell-formulation control — the Rust mirror of the stdlib
+/// `ShellForce` enum (`crates/reify-compiler/stdlib/solver_elastic.ri:70`,
+/// `param shell_force : ShellForce = ShellForce.Auto`).
+///
+/// `On` is the proxy for an `@shell` annotation: it forces the shell route and
+/// hard-errors on extraction failure (no tet fallback). `Auto` auto-classifies
+/// by the thickness/extent ratio and falls back softly. `Off` forces the tet
+/// route. See the task δ design decisions (PRD §3 failure-semantics table).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellForce {
+    /// Force the tet/solid route; never run shell extraction.
+    Off,
+    /// Auto-classify by `shell_threshold`; soft tet fallback on failure.
+    Auto,
+    /// Force the shell route (proxy for `@shell`); hard-error on failure.
+    On,
+}
+
+/// Resolved FEA route for a body: shell-kernel assembly vs. tet/solid assembly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellRoute {
+    /// Route through the MITC3 shell kernel (`solve_flat_plate_shell`).
+    Shell,
+    /// Route through the tet/solid path (`solve_cantilever_fea`, task 4084/α).
+    Tet,
+}
+
+/// What to do when the upstream `shell-extract::extract` step fails.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailurePolicy {
+    /// Surface the extraction error and abort (no fallback). `ShellForce::On`.
+    HardError,
+    /// Fall back to tet meshing and emit a warning diagnostic. `Auto`/`Off`.
+    TetFallbackWithWarning,
+}
+
+/// Classify a body's FEA route from its shell-force setting and geometry.
+///
+/// - `ShellForce::On`  → always [`ShellRoute::Shell`] (proxy for `@shell`).
+/// - `ShellForce::Off` → always [`ShellRoute::Tet`].
+/// - `ShellForce::Auto` → [`ShellRoute::Shell`] iff `thickness / extent <
+///   shell_threshold`, else [`ShellRoute::Tet`], where `thickness = min(L,W,H)`
+///   and `extent = max(L,W,H)`. The comparison is strict `<`, so a ratio exactly
+///   equal to the threshold classifies `Tet`.
+///
+/// A non-positive `extent` (degenerate geometry) classifies `Tet` rather than
+/// dividing by zero.
+///
+/// The fixture body (50 mm × 10 mm × 1 mm, ratio 0.02 < the default threshold
+/// 0.2) auto-classifies `Shell` under a bare `ElasticOptions()`.
+pub fn classify_shell(
+    shell_force: ShellForce,
+    length: f64,
+    width: f64,
+    height: f64,
+    shell_threshold: f64,
+) -> ShellRoute {
+    match shell_force {
+        ShellForce::On => ShellRoute::Shell,
+        ShellForce::Off => ShellRoute::Tet,
+        ShellForce::Auto => {
+            let thickness = length.min(width).min(height);
+            let extent = length.max(width).max(height);
+            if extent > 0.0 && thickness / extent < shell_threshold {
+                ShellRoute::Shell
+            } else {
+                ShellRoute::Tet
+            }
+        }
+    }
+}
+
+/// Resolve the extraction-failure policy from the shell-force setting.
+///
+/// - `ShellForce::On`  → [`FailurePolicy::HardError`] (proxy for `@shell`:
+///   the user explicitly demanded a shell solve, so a failed extraction is a
+///   hard error with no silent fallback).
+/// - `ShellForce::Auto`/`Off` → [`FailurePolicy::TetFallbackWithWarning`]: a
+///   failed (or never-attempted) extraction degrades gracefully to the tet path
+///   with a warning diagnostic.
+///
+/// The user-facing extraction-failure CLI fixtures are owned by task ε; this
+/// helper is the policy site (unit-tested here, wired by the engine lowering in
+/// step-12).
+pub fn resolve_extraction_failure(shell_force: ShellForce) -> FailurePolicy {
+    match shell_force {
+        ShellForce::On => FailurePolicy::HardError,
+        ShellForce::Auto | ShellForce::Off => FailurePolicy::TetFallbackWithWarning,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
