@@ -177,15 +177,11 @@ pub struct LocatableTet<'a> {
 ///
 /// # Complexity
 ///
-/// O(n_elements) per query. The PRD §13 contract does not pin a
-/// complexity bound; the engine integration layer (PRD §16) is the
-/// natural home for caching a BVH/octree across multiple
-/// field-evaluation queries on the same mesh — putting a spatial index
-/// in this primitive would couple solver internals to acceleration data
-/// structures with no clear ownership story. If GUI probe-point queries
-/// surface this as a bottleneck, a `LocatedTets` wrapper can be added at
-/// the engine layer (or as a separate helper here) without changing
-/// this primitive's signature.
+/// O(n_elements) per query.  For repeated queries over the same mesh,
+/// use [`TetSpatialIndex`] — a binary BVH that reduces per-query cost to
+/// O(log n_elements) while returning bit-identical results.  This
+/// primitive's signature is left unchanged so existing call sites (doc
+/// tests, unit tests) continue to compile without modification.
 pub fn locate_element_p1(elements: &[LocatableTet<'_>], p: [f64; 3], tol: f64) -> Option<usize> {
     for (i, el) in elements.iter().enumerate() {
         if point_in_tet_p1(el.phys_nodes, p, tol) {

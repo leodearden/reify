@@ -485,7 +485,8 @@ pub use elements::{
     wedge_p1::WedgeP1,
 };
 pub use interpolation::{
-    LocatableTet, barycentric_p1, interpolate_p1_at_point, locate_element_p1, point_in_tet_p1,
+    LocatableTet, TetSpatialIndex, barycentric_p1, interpolate_p1_at_point, locate_element_p1,
+    point_in_tet_p1,
 };
 pub use mpc::{MpcRow, apply_mpc_row_elimination};
 pub use progressive::{
