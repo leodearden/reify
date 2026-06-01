@@ -589,10 +589,13 @@ mod tests {
             a.truncate(6); // 6 args instead of 7
             undef(a, "6 args");
         }
+        // Arity 8 (optional trailing declared_range) is now VALID (step-20);
+        // 9 args overflows the highest supported arity and is rejected.
         {
             let mut a = compound_args();
-            a.push(Value::length(0.0)); // 8 args
-            undef(a, "8 args");
+            a.push(Value::length(0.0)); // declared_range
+            a.push(Value::length(0.0)); // 9 args overflow
+            undef(a, "9 args");
         }
 
         // Non-positive geometry (these FAIL before step-8 guards are added):
@@ -852,11 +855,14 @@ mod tests {
             a.truncate(6); // 6 args
             undef(a, "6 args");
         }
+        // Arity 9 (neutral + declared_range) is now VALID (step-20); 10 args
+        // overflows the highest supported arity and is rejected.
         {
             let mut a = cartwheel_args(4);
-            a.push(Value::angle(0.0));
-            a.push(Value::angle(0.0)); // 9 args
-            undef(a, "9 args");
+            a.push(Value::angle(0.0)); // neutral
+            a.push(Value::angle(0.0)); // declared_range
+            a.push(Value::angle(0.0)); // 10 args overflow
+            undef(a, "10 args");
         }
 
         // Invalid blade_count.
@@ -1116,5 +1122,331 @@ mod tests {
                 panic!("no-yield: expected double parasitic Option(Some(_)), got {other:?}")
             }
         }
+    }
+
+    // ── step-19: RED — compound-family compliance population ──────────────────
+
+    /// Read the `__flexure_compliance` FlexureCompliance record's fields from a
+    /// compound flexure joint Map (panics if absent or the wrong shape). Local to
+    /// this test module, mirroring beam.rs / prismatic.rs / notch.rs / hinge.rs.
+    fn compliance_fields(joint: &Value) -> &reify_ir::PersistentMap<String, Value> {
+        match map_get(joint, "__flexure_compliance") {
+            Some(Value::StructureInstance(d)) => {
+                assert_eq!(
+                    d.type_name, "FlexureCompliance",
+                    "__flexure_compliance is a FlexureCompliance record"
+                );
+                &d.fields
+            }
+            other => panic!("expected __flexure_compliance StructureInstance, got {other:?}"),
+        }
+    }
+
+    /// Assert `v` is a LENGTH-dimensioned Scalar and return its si_value.
+    fn length_scalar_si(v: &Value, label: &str) -> f64 {
+        match v {
+            Value::Scalar { si_value, dimension } => {
+                assert_eq!(*dimension, DimensionVector::LENGTH, "{label}: LENGTH dimension");
+                *si_value
+            }
+            other => panic!("{label}: expected LENGTH Scalar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prb_parallelogram_flexure_attaches_populated_compliance() {
+        // Parallelogram stage: four fixed-guided blades (PRD §6.1). The cached
+        // FlexureCompliance carries the fixed-guided surface stress σ=3·E·t·δ/L²
+        // at the (declared|auto) displacement endpoint, the stage stiffness
+        // k_stage as effective_stiffness, and the Roberts-approximation parasitic
+        // arc δ_rot = L·(1−cos(δ/L)) as parasitic_error (matching the joint Map).
+        let length = 0.02_f64;
+        let thick = 0.0005_f64;
+        let e = 205e9_f64;
+        let yield_si = 310e6_f64;
+        let sigma_at = |delta: f64| 3.0 * e * thick * delta / length.powi(2);
+        let delta_auto = yield_si * length.powi(2) / (3.0 * e * thick);
+        let parasitic_at = |delta: f64| length * (1.0 - (delta / length).cos());
+
+        // ── Part 1: auto endpoint (7-arg, no declared range) ─────────────────
+        let auto = crate::eval_builtin("prb_parallelogram_flexure", &compound_args());
+        let fields = compliance_fields(&auto);
+        let f = |k: &str| fields.get(&k.to_string()).unwrap_or_else(|| panic!("missing `{k}`"));
+
+        // effective_stiffness (Real) == the joint's spring_rate si (k_stage).
+        let spring_si = spring_rate_si(&auto);
+        match f("effective_stiffness") {
+            Value::Real(r) => assert!(
+                (r - spring_si).abs() / spring_si < 1e-12,
+                "effective_stiffness {r} == spring_rate {spring_si}"
+            ),
+            other => panic!("effective_stiffness Real, got {other:?}"),
+        }
+
+        // max_stress (PRESSURE) == 3·E·t·δ_auto/L² (== yield at the auto
+        // endpoint, since δ_auto IS the surface-yield deflection). at_yield is NOT
+        // asserted here: the auto endpoint sits exactly at yield, so the `>=`
+        // comparison is FP-boundary-sensitive (cf. beam.rs fixed-fixed).
+        let expected_auto = sigma_at(delta_auto);
+        match f("max_stress") {
+            Value::Scalar { si_value, dimension } => {
+                assert_eq!(*dimension, DimensionVector::PRESSURE, "max_stress is PRESSURE");
+                assert!(
+                    (si_value - expected_auto).abs() / expected_auto < 1e-9,
+                    "auto max_stress {si_value} vs analytic {expected_auto}"
+                );
+            }
+            other => panic!("max_stress Scalar, got {other:?}"),
+        }
+
+        // max_stress_at_neutral (PRESSURE) == 0 (the stage rests at zero offset).
+        match f("max_stress_at_neutral") {
+            Value::Scalar { si_value, dimension } => {
+                assert_eq!(*dimension, DimensionVector::PRESSURE, "neutral stress is PRESSURE");
+                assert!(si_value.abs() < 1e-6, "max_stress_at_neutral {si_value} ≈ 0");
+            }
+            other => panic!("max_stress_at_neutral Scalar, got {other:?}"),
+        }
+
+        // parasitic_error (Option<Length>) == the Roberts arc at the auto endpoint
+        // (the same value the joint Map carries under `parasitic_error`).
+        let expected_parasitic = parasitic_at(delta_auto);
+        match f("parasitic_error") {
+            Value::Option(Some(inner)) => {
+                let p = length_scalar_si(inner, "compliance parasitic_error");
+                assert!(
+                    (p - expected_parasitic).abs() / expected_parasitic < 1e-9,
+                    "compliance parasitic {p} vs Roberts arc {expected_parasitic}"
+                );
+            }
+            other => panic!("parasitic_error Option(Some(Length)), got {other:?}"),
+        }
+
+        // prb_validity_range (Real) == the auto δ == the joint range half-width.
+        let (_, up) = range_lower_upper(map_get(&auto, "range").expect("range present"));
+        let range_half = length_scalar_si(up, "auto range upper");
+        match f("prb_validity_range") {
+            Value::Real(r) => assert!(
+                (r - delta_auto).abs() / delta_auto < 1e-9
+                    && (r - range_half).abs() / range_half < 1e-9,
+                "prb_validity_range {r} == δ_auto {delta_auto} == range half {range_half}"
+            ),
+            other => panic!("prb_validity_range Real, got {other:?}"),
+        }
+
+        // ── Part 2: declared displacement BEYOND yield deflection → at_yield ──
+        // δ = 1 mm > δ_auto (≈0.40 mm): σ(1mm) ≈ 769 MPa > 310 MPa yield. Arg
+        // layout (length, width, thickness, blade_spacing, material, motion_axis,
+        // pivot, declared_range) — declared_range is the new 8th slot.
+        let big = 0.001_f64;
+        let mut yielding_args = compound_args();
+        yielding_args.push(Value::length(big));
+        let yielding = crate::eval_builtin("prb_parallelogram_flexure", &yielding_args);
+        assert!(!yielding.is_undef(), "declared-displacement parallelogram returns a joint");
+        assert_eq!(
+            map_get(&yielding, "kind"),
+            Some(&Value::String("prismatic".to_string())),
+            "yielding parallelogram is still a prismatic joint"
+        );
+        // range overridden to the declared ±1 mm.
+        let (ylo, yup) = range_lower_upper(map_get(&yielding, "range").expect("range present"));
+        assert!(
+            (length_scalar_si(yup, "declared upper") - big).abs() / big < 1e-9
+                && (length_scalar_si(ylo, "declared lower") + big).abs() / big < 1e-9,
+            "declared displacement overrides the range to ±{big}"
+        );
+        let yf = compliance_fields(&yielding);
+        let yg = |k: &str| yf.get(&k.to_string()).unwrap_or_else(|| panic!("missing `{k}`"));
+        let expected_big = sigma_at(big);
+        assert!(expected_big > yield_si, "fixture sanity: σ(1mm)={expected_big} > yield {yield_si}");
+        match yg("max_stress") {
+            Value::Scalar { si_value, .. } => assert!(
+                (si_value - expected_big).abs() / expected_big < 1e-9,
+                "declared max_stress {si_value} vs analytic {expected_big}"
+            ),
+            other => panic!("max_stress Scalar, got {other:?}"),
+        }
+        assert_eq!(yg("at_yield"), &Value::Bool(true), "declared 1mm drives at_yield true");
+        match yg("yield_margin") {
+            Value::Real(r) => assert!(*r < 0.0, "yielding ⇒ negative margin, got {r}"),
+            other => panic!("yield_margin Real, got {other:?}"),
+        }
+        // prb_validity_range still advertises the auto SAFE δ, not the declared one.
+        match yg("prb_validity_range") {
+            Value::Real(r) => assert!(
+                (r - delta_auto).abs() / delta_auto < 1e-9,
+                "prb_validity_range stays the auto safe δ {delta_auto}, got {r}"
+            ),
+            other => panic!("prb_validity_range Real, got {other:?}"),
+        }
+
+        // ── Part 3: declared displacement BELOW yield deflection → safe ──────
+        // δ = 0.2 mm < δ_auto: σ ≈ 154 MPa < 310 MPa ⇒ at_yield false.
+        let small = 0.0002_f64;
+        let mut safe_args = compound_args();
+        safe_args.push(Value::length(small));
+        let safe = crate::eval_builtin("prb_parallelogram_flexure", &safe_args);
+        assert!(!safe.is_undef(), "safe declared-displacement parallelogram returns a joint");
+        let sf = compliance_fields(&safe);
+        assert_eq!(
+            sf.get(&"at_yield".to_string()).expect("at_yield present"),
+            &Value::Bool(false),
+            "declared 0.2mm stays below yield"
+        );
+    }
+
+    #[test]
+    fn prb_double_parallelogram_flexure_attaches_populated_compliance() {
+        // Double-parallelogram: two mirror-symmetric single stages. The cached
+        // FlexureCompliance carries the SAME fixed-guided surface stress
+        // σ=3·E·t·δ/L² (the per-blade boundary condition is unchanged by series
+        // composition) and the double-stage residual parasitic
+        // δ_rot_double = δ_rot_single·(δ/L)² (PRD §6.2 mirror-cancellation).
+        let length = 0.02_f64;
+        let thick = 0.0005_f64;
+        let e = 205e9_f64;
+        let yield_si = 310e6_f64;
+        let sigma_at = |delta: f64| 3.0 * e * thick * delta / length.powi(2);
+        let delta_auto = yield_si * length.powi(2) / (3.0 * e * thick);
+
+        // ── auto endpoint (7-arg) ────────────────────────────────────────────
+        let auto = crate::eval_builtin("prb_double_parallelogram_flexure", &compound_args());
+        let fields = compliance_fields(&auto);
+        let f = |k: &str| fields.get(&k.to_string()).unwrap_or_else(|| panic!("missing `{k}`"));
+
+        // effective_stiffness == the (halved) series spring_rate.
+        let spring_si = spring_rate_si(&auto);
+        match f("effective_stiffness") {
+            Value::Real(r) => assert!(
+                (r - spring_si).abs() / spring_si < 1e-12,
+                "effective_stiffness {r} == spring_rate {spring_si}"
+            ),
+            other => panic!("effective_stiffness Real, got {other:?}"),
+        }
+
+        // max_stress == fixed-guided σ at δ_auto (same per-blade stress as single).
+        let expected_auto = sigma_at(delta_auto);
+        match f("max_stress") {
+            Value::Scalar { si_value, dimension } => {
+                assert_eq!(*dimension, DimensionVector::PRESSURE, "max_stress is PRESSURE");
+                assert!(
+                    (si_value - expected_auto).abs() / expected_auto < 1e-9,
+                    "double max_stress {si_value} vs analytic {expected_auto}"
+                );
+            }
+            other => panic!("max_stress Scalar, got {other:?}"),
+        }
+
+        // parasitic_error == the double-stage residual (matches the joint Map).
+        let delta_rot_single = length * (1.0 - (delta_auto / length).cos());
+        let expected_double = delta_rot_single * (delta_auto / length).powi(2);
+        match f("parasitic_error") {
+            Value::Option(Some(inner)) => {
+                let p = length_scalar_si(inner, "double compliance parasitic_error");
+                assert!(
+                    (p - expected_double).abs() / expected_double < 1e-9,
+                    "double compliance parasitic {p} vs residual {expected_double}"
+                );
+            }
+            other => panic!("parasitic_error Option(Some(Length)), got {other:?}"),
+        }
+
+        // ── declared displacement BEYOND yield deflection → at_yield ─────────
+        let big = 0.001_f64;
+        let mut yielding_args = compound_args();
+        yielding_args.push(Value::length(big));
+        let yielding = crate::eval_builtin("prb_double_parallelogram_flexure", &yielding_args);
+        assert!(!yielding.is_undef(), "declared-displacement double returns a joint");
+        let yf = compliance_fields(&yielding);
+        let yg = |k: &str| yf.get(&k.to_string()).unwrap_or_else(|| panic!("missing `{k}`"));
+        let expected_big = sigma_at(big);
+        assert!(expected_big > yield_si, "fixture sanity: σ(1mm)={expected_big} > yield {yield_si}");
+        assert_eq!(yg("at_yield"), &Value::Bool(true), "declared 1mm drives at_yield true");
+    }
+
+    #[test]
+    fn prb_cartwheel_flexure_attaches_populated_compliance() {
+        // Cartwheel: N radial cantilever blades. The cached FlexureCompliance
+        // carries the per-blade cantilever angular surface stress σ=E·(t/2)·θ/L
+        // (independent of N — each blade sees the joint rotation θ) at the
+        // (declared|auto) endpoint, and the N-blade pivot stiffness as
+        // effective_stiffness.
+        let length = 0.02_f64;
+        let thick = 0.0005_f64;
+        let e = 205e9_f64;
+        let yield_si = 310e6_f64;
+        let prb_limit = 5.0_f64 * std::f64::consts::PI / 180.0;
+        let ten_deg = 10.0_f64 * std::f64::consts::PI / 180.0;
+        let sigma_at = |theta: f64| e * (thick / 2.0) * theta / length;
+
+        // ── auto endpoint (7-arg, N=4): θ_yield ≈ 6.93° > 5° → endpoint = ±5° ─
+        let auto = crate::eval_builtin("prb_cartwheel_flexure", &cartwheel_args(4));
+        let fields = compliance_fields(&auto);
+        let f = |k: &str| fields.get(&k.to_string()).unwrap_or_else(|| panic!("missing `{k}`"));
+
+        // effective_stiffness == the joint's N-blade pivot spring_rate.
+        let spring_si = spring_rate_si(&auto);
+        match f("effective_stiffness") {
+            Value::Real(r) => assert!(
+                (r - spring_si).abs() / spring_si < 1e-12,
+                "effective_stiffness {r} == spring_rate {spring_si}"
+            ),
+            other => panic!("effective_stiffness Real, got {other:?}"),
+        }
+
+        // max_stress == E·(t/2)·5°/L (per-blade cantilever), below yield.
+        let expected_auto = sigma_at(prb_limit);
+        assert!(expected_auto < yield_si, "fixture sanity: σ(5°)={expected_auto} < yield {yield_si}");
+        match f("max_stress") {
+            Value::Scalar { si_value, dimension } => {
+                assert_eq!(*dimension, DimensionVector::PRESSURE, "max_stress is PRESSURE");
+                assert!(
+                    (si_value - expected_auto).abs() / expected_auto < 1e-9,
+                    "cartwheel max_stress {si_value} vs analytic {expected_auto}"
+                );
+            }
+            other => panic!("max_stress Scalar, got {other:?}"),
+        }
+
+        // at_yield false at the 5°-capped auto endpoint.
+        assert_eq!(f("at_yield"), &Value::Bool(false), "5°-capped cartwheel is not at yield");
+
+        // prb_validity_range (Real) == θ_lim (5°), the auto safe angular bound.
+        match f("prb_validity_range") {
+            Value::Real(r) => assert!(
+                (r - prb_limit).abs() / prb_limit < 1e-9,
+                "prb_validity_range {r} == θ_lim {prb_limit}"
+            ),
+            other => panic!("prb_validity_range Real, got {other:?}"),
+        }
+
+        // ── declared ±10° → at_yield (9-arg: …, neutral, declared_range) ─────
+        // σ(10°) ≈ 447 MPa > 310 MPa yield.
+        let mut yielding_args = cartwheel_args(4);
+        yielding_args.push(Value::angle(0.0)); // neutral
+        yielding_args.push(Value::angle(ten_deg)); // declared ±10°
+        let yielding = crate::eval_builtin("prb_cartwheel_flexure", &yielding_args);
+        assert!(!yielding.is_undef(), "declared-range cartwheel returns a joint");
+        assert_eq!(
+            map_get(&yielding, "kind"),
+            Some(&Value::String("revolute".to_string())),
+            "yielding cartwheel is still a revolute joint"
+        );
+        // range overridden to ±10°.
+        let (ylo, yup) = range_lower_upper(map_get(&yielding, "range").expect("range present"));
+        assert_angle_close(yup, ten_deg, "declared cartwheel upper");
+        assert_angle_close(ylo, -ten_deg, "declared cartwheel lower");
+        let yf = compliance_fields(&yielding);
+        let yg = |k: &str| yf.get(&k.to_string()).unwrap_or_else(|| panic!("missing `{k}`"));
+        let expected_big = sigma_at(ten_deg);
+        assert!(expected_big > yield_si, "fixture sanity: σ(10°)={expected_big} > yield {yield_si}");
+        match yg("max_stress") {
+            Value::Scalar { si_value, .. } => assert!(
+                (si_value - expected_big).abs() / expected_big < 1e-9,
+                "declared max_stress {si_value} vs analytic {expected_big}"
+            ),
+            other => panic!("max_stress Scalar, got {other:?}"),
+        }
+        assert_eq!(yg("at_yield"), &Value::Bool(true), "declared 10° drives at_yield true");
     }
 }
