@@ -516,3 +516,136 @@ fn flexure_compliance_accessor_returns_populated_record() {
         other => panic!("expected max_stress Scalar, got {other:?}"),
     }
 }
+
+/// step-21 (RED→GREEN): the integration consistency gate — "every PRB primitive
+/// emits consistent diagnostics + populates the cache".
+///
+/// Every existing SAFE worked example (no forced range) must, now that λ wires
+/// compliance population into all 13 PRB ctors:
+///  (a) eval with NO Error-severity diagnostics, and
+///  (b) expose a populated `__flexure_compliance` on its joint cell whose
+///      `at_yield == false` — the auto validity range IS the safe envelope, so
+///      operating at it is not "yielding".
+///
+/// RED until step-22 aligns `at_yield` with the strict `max_stress > yield`
+/// semantics (margin < 0). The yield-capped families (notch) and the fixed-guided
+/// compound stages (parallelogram / double) sit EXACTLY at yield at their auto
+/// endpoint — max_stress == yield by construction — so the inclusive `>=` form
+/// reports at_yield=true for these safe examples, tripping (b).
+fn assert_example_safe_populated(source: &str, struct_name: &str, cell_name: &str) {
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let eval_result = engine.eval(&compiled);
+
+    // (a) No Error-severity diagnostics.
+    let errors: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "{struct_name}.{cell_name}: expected no Error diagnostics, got: {:?}",
+        errors
+    );
+
+    // (b) The joint cell carries a populated FlexureCompliance with at_yield=false.
+    let id = ValueCellId::new(struct_name, cell_name);
+    let flexure = eval_result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("{struct_name}.{cell_name} cell missing from eval result"));
+    match map_get(flexure, "__flexure_compliance") {
+        Some(Value::StructureInstance(d)) => {
+            assert_eq!(
+                d.type_name, "FlexureCompliance",
+                "{struct_name}.{cell_name}: __flexure_compliance is a FlexureCompliance record"
+            );
+            assert_eq!(
+                d.fields.get(&"at_yield".to_string()),
+                Some(&Value::Bool(false)),
+                "{struct_name}.{cell_name}: safe geometry (no forced range) ⇒ at_yield false"
+            );
+        }
+        other => panic!(
+            "{struct_name}.{cell_name}: expected populated __flexure_compliance, got {other:?}"
+        ),
+    }
+}
+
+#[test]
+fn existing_flexure_examples_populate_compliance_and_stay_safe() {
+    assert_example_safe_populated(cantilever_source(), "CantileverBeamPrb", "pivot_flexure");
+    assert_example_safe_populated(notch_source(), "NotchHingeCircularPrb", "pivot_flexure");
+    assert_example_safe_populated(
+        parallelogram_source(),
+        "ParallelogramStagePrb",
+        "stage_flexure",
+    );
+    assert_example_safe_populated(
+        double_parallelogram_source(),
+        "DoubleParallelogramPrb",
+        "stage_flexure",
+    );
+}
+
+/// A single eval session constructing several distinct, ALL-SAFE PRB flexures
+/// (cantilever revolute, parallelogram prismatic, living-hinge revolute) — to
+/// prove the once-per-session diagnostics dedup holds ACROSS different ctors.
+fn multi_ctor_session_source() -> &'static str {
+    r#"
+structure def MultiFlexureSession {
+    let steel = Steel_AISI_1045()
+    let a = prb_cantilever_beam(20mm, 5mm, 0.5mm, steel, point3(0mm, 0mm, 0mm), vec3(0, 1, 0))
+    let b = prb_parallelogram_flexure(20mm, 5mm, 0.5mm, 10mm, steel, vec3(1, 0, 0), point3(0mm, 0mm, 0mm))
+    let c = prb_living_hinge(20mm, 5mm, 0.5mm, steel, point3(0mm, 0mm, 0mm), vec3(0, 1, 0))
+}
+"#
+}
+
+/// step-21 (RED→GREEN): the once-per-session dedup holds across MULTIPLE PRB
+/// ctors, and all-safe-geometry flexures emit no §5.3 yielding warning.
+///
+/// RED until step-22: the parallelogram stage sits exactly at yield at its auto
+/// endpoint, so under the inclusive `>=` at_yield form it spuriously emits a
+/// `W_FlexureYielding` — tripping the "no yielding for safe geometry" assertion.
+#[test]
+fn multi_ctor_session_surfaces_exactly_one_fatigue_info() {
+    let compiled = parse_and_compile_with_stdlib(multi_ctor_session_source());
+    let mut engine = make_simple_engine();
+    let eval_result = engine.eval(&compiled);
+
+    // Exactly ONE Info W_FlexureFatigueCheckMissing across THREE PRB ctor calls
+    // (the standing advisory is deduped once per eval session, step-10).
+    let fatigue: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::FlexureFatigueCheckMissing))
+        .collect();
+    assert_eq!(
+        fatigue.len(),
+        1,
+        "exactly one fatigue Info across 3 ctors (dedup holds across ctors); got {:?}",
+        eval_result.diagnostics
+    );
+
+    // All three are safe geometry at their auto range ⇒ NO W_FlexureYielding.
+    let yielding: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::FlexureYielding))
+        .collect();
+    assert!(
+        yielding.is_empty(),
+        "safe auto-range flexures emit no W_FlexureYielding; got {:?}",
+        yielding
+    );
+
+    // And no Error-severity diagnostics at all.
+    let errors: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "no Error diagnostics; got {:?}", errors);
+}
