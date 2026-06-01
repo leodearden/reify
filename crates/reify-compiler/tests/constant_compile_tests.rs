@@ -350,6 +350,43 @@ fn user_defined_pi_caps_in_scope_no_hint() {
     );
 }
 
+// ─── task-4174: e (Euler's number) compiler builtin ─────────────────────────
+
+#[test]
+fn e_compiles_to_literal_real() {
+    let compiled = compile_source("structure S { let x = e }");
+    let errors = errors_only(&compiled);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+    let expr = get_cell_expr(&compiled, "x");
+    match &expr.kind {
+        CompiledExprKind::Literal(Value::Real(v)) => {
+            assert!(
+                (*v - std::f64::consts::E).abs() < 1e-15,
+                "expected E, got {}",
+                v
+            );
+        }
+        other => panic!("expected Literal(Real(E)), got {:?}", other),
+    }
+}
+
+#[test]
+fn e_uppercase_suggests_e() {
+    assert_suggests_hint("E", "e");
+}
+
+#[test]
+fn lowercase_e_no_hint() {
+    // Verifies that the exact spelling resolves successfully — no hint emitted.
+    let compiled = compile_source("structure S { let x = e }");
+    let errors = errors_only(&compiled);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for lowercase 'e', got: {:?}",
+        errors
+    );
+}
+
 // ─── step-7: pi works under #no_prelude ─────────────────────────────────────
 
 #[test]
