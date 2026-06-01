@@ -228,6 +228,18 @@ const SEARCH_BRACKET_FACTOR: f64 = 20.0;
 /// [`FreeFormError::NullityMismatch`] is converted to
 /// [`FreeFormError::SearchDidNotConverge`]. Sign / dimension / singular-recovery
 /// errors propagate unchanged.
+///
+/// # Scaling
+///
+/// Every objective evaluation recomputes a *full* dense self-adjoint EVD of `D`
+/// (`O(n³)` in the node count `n`), and the coordinate-descent budget
+/// (`MAX_ROUNDS` rounds × the per-coordinate `SCAN` + golden-section line search)
+/// can reach `~10⁴` EVDs in the worst case. That is negligible for the `n = 6`
+/// triplex this kernel targets, but the per-evaluation cost grows as `O(n³)` and
+/// the iteration count is bounded only by the search tolerances, not by problem
+/// difficulty. Scaling to larger free-standing structures would want a partial
+/// (smallest-`k`) eigensolve and/or a reduced `SCAN` / iteration budget; that is
+/// a deliberate follow-up, out of scope for the 6-node target here.
 fn form_find_group_ratios(
     nodes_guess: &[[f64; 3]],
     members: &[(usize, usize)],
@@ -254,6 +266,14 @@ fn form_find_group_ratios(
     }
 
     let n = nodes_guess.len();
+
+    // Member node indices must be in range before the search assembles `D`: a
+    // member referencing a node `≥ n` would panic in the objective's
+    // `assemble_force_density_matrix`, so reject it up front (mirrors
+    // `validate_explicit`'s index guard) rather than panic mid-search.
+    if members.iter().any(|&(j, k)| j >= n || k >= n) {
+        return Err(FreeFormError::DimensionMismatch);
+    }
 
     // Per-group sign (fixed throughout) and current magnitude. The reference
     // group's magnitude stays at its seed; free groups start there and are
@@ -438,11 +458,11 @@ const NULLITY_REL_TOL: f64 = 1e-8;
 /// Spectral classification of the force-density matrix `D`.
 #[derive(Debug)]
 struct SpectrumClassification {
-    /// Eigenvalues of `D`, sorted ascending by magnitude. Consumed by the
-    /// step-10 adaptive search (which drives the `d+1`-th toward zero) and the
-    /// spectral-gap unit tests; the explicit path reads only `nullity` /
-    /// `eigenvectors`, so this field is otherwise unused for now.
-    #[allow(dead_code)]
+    /// Eigenvalues of `D`, sorted ascending by magnitude. Read directly by the
+    /// [`ForceDensitySpec::GroupRatios`] objective in [`form_find_group_ratios`]
+    /// (which drives the `SEARCH_TARGET_NULLITY` smallest toward zero) and
+    /// asserted on by the spectral-gap unit tests. (The explicit path itself
+    /// reads only `nullity` / `eigenvectors`.)
     eigenvalues: Vec<f64>,
     /// Eigenvectors as columns, in the same order as `eigenvalues` (column `j`
     /// is the eigenvector for `eigenvalues[j]`). The first `nullity` columns span
@@ -558,6 +578,14 @@ fn validate_explicit(
     //    kernel's first guard): disagreeing lengths mean the caller mis-built the
     //    problem, so reject before indexing them together below.
     if members.len() != kinds.len() || members.len() != q.len() {
+        return Err(FreeFormError::DimensionMismatch);
+    }
+
+    // 1b. Member node indices must be in range. `D` is `n×n`, so a member
+    //     referencing a node `≥ n` would panic on the `d[(j, j)]` index in
+    //     `assemble_force_density_matrix`. The module contract promises infeasible
+    //     input becomes a clean typed error, never a panic — so reject it here.
+    if members.iter().any(|&(j, k)| j >= n || k >= n) {
         return Err(FreeFormError::DimensionMismatch);
     }
 
@@ -848,6 +876,27 @@ mod tests {
         let q = vec![1.0; members.len() - 1];
         assert_eq!(
             validate_explicit(6, &members, &kinds, &q).unwrap_err(),
+            FreeFormError::DimensionMismatch,
+        );
+    }
+
+    #[test]
+    fn explicit_out_of_range_member_index_is_dimension_mismatch() {
+        let (mut members, kinds) = triplex_topology();
+        let q = closed_form_q();
+        // Point a member at node 6 — out of range for the 6-node (0..=5) problem.
+        // `D` is 6×6, so without the bounds guard this panics on the `d[(j, j)]`
+        // index in `assemble_force_density_matrix`; the guard turns it into a
+        // clean DimensionMismatch through the public entry point (no panic).
+        members[0] = (0, 6);
+        assert_eq!(
+            form_find_free(
+                &perturbed_prism_guess(),
+                &members,
+                &kinds,
+                &ForceDensitySpec::Explicit(q),
+            )
+            .unwrap_err(),
             FreeFormError::DimensionMismatch,
         );
     }
@@ -1170,6 +1219,24 @@ mod tests {
         assert_eq!(
             form_find_free(&guess, &members, &kinds, &spec).unwrap_err(),
             FreeFormError::SearchDidNotConverge,
+        );
+    }
+
+    #[test]
+    fn group_ratios_out_of_range_member_index_is_dimension_mismatch() {
+        let (mut members, kinds) = triplex_topology();
+        let guess = perturbed_prism_guess();
+        // An out-of-range node index (6 ≥ the 6-node problem) must be rejected
+        // before the search assembles `D`, not panic mid-search.
+        members[0] = (0, 6);
+        let spec = ForceDensitySpec::GroupRatios {
+            group_ids: triplex_group_ids(),
+            seed_ratios: vec![-1.0, 1.0, 1.0],
+            reference_group: 1,
+        };
+        assert_eq!(
+            form_find_free(&guess, &members, &kinds, &spec).unwrap_err(),
+            FreeFormError::DimensionMismatch,
         );
     }
 }
