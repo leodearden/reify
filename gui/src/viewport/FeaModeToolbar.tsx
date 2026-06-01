@@ -7,6 +7,9 @@
  *                       defaults to ['vonMises', 'displacement_magnitude']
  *   onLockCurrent    — callback fired when the "Lock current" button is clicked;
  *                       the parent computes the actual min/max from the active mesh set.
+ *   maxValue         — maximum value of the active scalar channel across all meshes;
+ *                       computed by the parent from the active mesh set (ε, task 2962).
+ *                       When null/undefined the readout row is hidden.
  */
 import { Show, createSignal, For, type Component } from 'solid-js';
 import type { FeaModeStore } from '../stores';
@@ -23,6 +26,25 @@ export interface FeaModeToolbarProps {
   store: FeaModeStore;
   availableChannels?: string[];
   onLockCurrent?: () => void;
+  /**
+   * Maximum value of the active scalar channel across all meshes; passed from
+   * the parent (Viewport) which computes it via computeScalarRange. When
+   * null/undefined the max-readout row is hidden entirely.
+   */
+  maxValue?: number | null;
+}
+
+/**
+ * Format a scalar channel value for display in the max readout.
+ * - Values with |v| >= 1e4 or (0 < |v| < 1e-2) use exponential notation (2 sig figs).
+ * - Other finite values use toPrecision(4) with trailing-zero stripping.
+ */
+function formatScalar(v: number): string {
+  const abs = Math.abs(v);
+  if (abs >= 1e4 || (abs > 0 && abs < 1e-2)) {
+    return v.toExponential(2);
+  }
+  return String(Number(v.toPrecision(4)));
 }
 
 export const FeaModeToolbar: Component<FeaModeToolbarProps> = (props) => {
@@ -133,6 +155,16 @@ export const FeaModeToolbar: Component<FeaModeToolbarProps> = (props) => {
               </For>
             </select>
           </label>
+
+          {/* Max readout — hidden when maxValue is null/undefined (no FEA data yet) */}
+          <Show when={props.maxValue != null}>
+            <div
+              data-testid="fea-mode-max-readout"
+              style={{ 'font-size': '11px', color: '#b0c4de' }}
+            >
+              max {props.store.state.channel}: {formatScalar(props.maxValue!)}
+            </div>
+          </Show>
 
           {/* Palette dropdown */}
           <label style={{ display: 'flex', 'flex-direction': 'column', gap: '2px' }}>
