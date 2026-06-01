@@ -842,4 +842,45 @@ mod tests {
             "generic admissible q gives D rank 5 ≠ N−d−1 = 2 ⇒ not super-stable",
         );
     }
+
+    #[test]
+    fn analyze_prestress_stability_reports_prism_fields_and_guards_dims() {
+        let nodes = canonical_prism();
+        let members = triplex_members();
+
+        // Canonical triplex + closed-form q is the PRD §5 golden: one self-stress
+        // state, one internal mechanism, Maxwell number m − d·N = 12 − 18 = −6,
+        // prestress-stable, and super-stable (D PSD with rank N−d−1 = 2).
+        let result = analyze_prestress_stability(&nodes, &members, &closed_form_q())
+            .expect("canonical prism + closed-form q is a well-formed analysis input");
+        assert_eq!(
+            result,
+            StabilityResult {
+                self_stress_states: 1,
+                mechanisms: 1,
+                maxwell: -6,
+                stable: true,
+                super_stable: true,
+            },
+        );
+
+        // Guard: a members / q length disagreement is a clean DimensionMismatch
+        // (a typed error through the public entry point, never a panic).
+        let short_q = vec![1.0_f64; members.len() - 1];
+        assert_eq!(
+            analyze_prestress_stability(&nodes, &members, &short_q),
+            Err(StabilityError::DimensionMismatch),
+            "members.len() != q.len() must be DimensionMismatch",
+        );
+
+        // Guard: a member referencing a node index ≥ nodes.len() is out of range
+        // ⇒ DimensionMismatch (which would otherwise panic on the coord lookup).
+        let bad_members = vec![(0_usize, nodes.len())];
+        let bad_q = vec![1.0_f64];
+        assert_eq!(
+            analyze_prestress_stability(&nodes, &bad_members, &bad_q),
+            Err(StabilityError::DimensionMismatch),
+            "a member node index ≥ nodes.len() must be DimensionMismatch",
+        );
+    }
 }
