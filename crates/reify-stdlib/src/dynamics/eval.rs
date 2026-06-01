@@ -23,9 +23,13 @@
 //!   * `inverse_dynamics_lower`              — trajectory variant (step-8)
 //!     (closed-chain routing layered into the snapshot core, step-10)
 
-use crate::dynamics::spatial::Frame3;
+use crate::dynamics::rnea::{default_gravity, inverse_dynamics_open_chain, RneaLink};
+use crate::dynamics::spatial::{Frame3, SpatialTransform6, SpatialVector6};
+use crate::joints::motion_subspace_columns;
+use crate::mechanism::is_world;
 use reify_core::dimension::DimensionVector;
 use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use std::collections::BTreeMap;
 
 /// Sentinel `StructureTypeId` for engine-assembled (registry-free) instances.
 /// The `eval_builtin` path has no `StructureRegistry`, so result instances are
@@ -68,8 +72,11 @@ fn mint_instance(type_name: &str, fields: Vec<(String, Value)>) -> Value {
 pub(crate) fn eval_dynamics(name: &str, args: &[Value]) -> Option<Value> {
     match name {
         "ramp_profile_lower" => Some(eval_ramp_profile(args)),
-        // inverse_dynamics_at_snapshot_lower / inverse_dynamics_lower land in
-        // RBD-η steps 6/8/10.
+        "inverse_dynamics_at_snapshot_lower" => {
+            Some(eval_inverse_dynamics_at_snapshot(args))
+        }
+        // inverse_dynamics_lower (trajectory variant) + closed-chain routing
+        // land in RBD-η steps 8/10.
         _ => None,
     }
 }
@@ -183,14 +190,12 @@ fn trajectory_sample(t: f64, q: f64, v: f64, a: f64) -> Value {
 
 // ── Value↔core marshalling extractors (RBD-η steps 4/6) ───────────────────────
 //
-// These are consumed by the open-chain dispatch (`inverse_dynamics_at_snapshot`,
-// step-6) and exercised directly by the step-4 unit tests. `#[allow(dead_code)]`
-// covers the window before step-6 wires them into the (non-test) dispatch path.
+// These are consumed by the open-chain dispatch (`snapshot_inverse_dynamics`,
+// step-6) and exercised directly by the step-4 unit tests.
 
 /// Extract three SI-unit components from a `Value::Point` / `Value::Vector` /
 /// `Value::List` of exactly three numeric cells (dimensions stripped via
 /// `si_value`). Returns `None` for any other shape or arity.
-#[allow(dead_code)]
 fn vec3_from_value(v: &Value) -> Option<[f64; 3]> {
     let comps = match v {
         Value::Point(c) | Value::Vector(c) | Value::List(c) => c,
@@ -206,7 +211,6 @@ fn vec3_from_value(v: &Value) -> Option<[f64; 3]> {
 /// `Value::Vector`) of numeric cells. Re-spelled locally from
 /// `reify_eval::dynamics_psd::inertia_3x3_from_value` (that one lives in another
 /// crate). Returns `None` unless the value is exactly 3×3 and all-numeric.
-#[allow(dead_code)]
 fn inertia_3x3_from_value(v: &Value) -> Option<[[f64; 3]; 3]> {
     fn row3(vals: &[Value]) -> Option<[f64; 3]> {
         if vals.len() != 3 {
@@ -249,7 +253,6 @@ fn inertia_3x3_from_value(v: &Value) -> Option<[[f64; 3]; 3]> {
 /// user-authored MassProperties may produce. The `com` Length dimension is
 /// stripped to SI metres. Returns `None` for any non-MassProperties value or a
 /// malformed/absent field.
-#[allow(dead_code)]
 fn mass_properties_from_value(v: &Value) -> Option<(f64, [f64; 3], [[f64; 3]; 3])> {
     let data = match v {
         Value::StructureInstance(d) if d.type_name == "MassProperties" => d,
@@ -266,7 +269,6 @@ fn mass_properties_from_value(v: &Value) -> Option<(f64, [f64; 3], [[f64; 3]; 3]
 /// in SI metres (Length dimension stripped). Returns `None` for a non-Transform,
 /// a non-Orientation rotation, or a translation that is not a 3-component
 /// numeric vector.
-#[allow(dead_code)]
 fn frame3_from_transform_value(v: &Value) -> Option<Frame3> {
     let (rotation, translation) = match v {
         Value::Transform {
@@ -281,6 +283,311 @@ fn frame3_from_transform_value(v: &Value) -> Option<Frame3> {
     };
     let trans = vec3_from_value(translation)?;
     Some(Frame3::new(quat, trans))
+}
+
+// ── inverse_dynamics_at_snapshot — open-chain RNEA dispatch (RBD-η step-6) ─────
+
+/// `inverse_dynamics_at_snapshot_lower(mechanism, snapshot, q_dot, q_ddot)` —
+/// RNEA inverse dynamics at a single FK snapshot (PRD §5.2). Returns a
+/// `List<JointForce>` (one per body, in mechanism `bodies` / id order), or
+/// `Value::Undef` on any malformed input (matching the mechanism/snapshot/body
+/// eval_builtin convention).
+fn eval_inverse_dynamics_at_snapshot(args: &[Value]) -> Value {
+    if args.len() != 4 {
+        return Value::Undef;
+    }
+    match snapshot_inverse_dynamics(&args[0], &args[1], &args[2], &args[3]) {
+        Some(forces) => Value::List(forces),
+        None => Value::Undef,
+    }
+}
+
+/// Shared open-chain snapshot RNEA core (factored so the trajectory variant,
+/// step-8, can drive it per sample). Returns the per-body `JointForce` list, or
+/// `None` on any structural failure (the caller maps `None` → `Value::Undef`).
+///
+/// `q_dot` / `q_ddot` are flat `List`s of per-DOF numeric cells in mechanism
+/// `bodies` (id) order: each joint consumes `dof_count` consecutive cells (per
+/// the joint's motion-subspace column count), so the total length must equal
+/// Σ dof. A 1-DOF revolute pendulum takes a length-1 list (`[q̇]`).
+fn snapshot_inverse_dynamics(
+    mechanism: &Value,
+    snapshot: &Value,
+    q_dot_arg: &Value,
+    q_ddot_arg: &Value,
+) -> Option<Vec<Value>> {
+    // ── mechanism validation (kind="mechanism", no error) ──
+    let mech = match mechanism {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    if map_str(mech, "kind") != Some("mechanism") {
+        return None;
+    }
+    if map_get(mech, "error").is_some() {
+        return None;
+    }
+    let bodies = match map_get(mech, "bodies") {
+        Some(Value::List(b)) => b,
+        _ => return None,
+    };
+    if bodies.is_empty() {
+        // No bodies ⇒ no joints ⇒ empty force list (parallels the empty-snapshot
+        // convention; never reached by the pendulum/trajectory fixtures).
+        return Some(Vec::new());
+    }
+    let joint_parents = match map_get(mech, "joint_parents") {
+        Some(Value::Map(jp)) => jp,
+        _ => return None,
+    };
+
+    // ── snapshot validation + id → world_transform index ──
+    let snap = match snapshot {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    if map_str(snap, "kind") != Some("snapshot") {
+        return None;
+    }
+    let snap_bodies = match map_get(snap, "bodies") {
+        Some(Value::List(b)) => b,
+        _ => return None,
+    };
+    let mut world_tf: BTreeMap<i64, &Value> = BTreeMap::new();
+    for sb in snap_bodies {
+        let sbm = match sb {
+            Value::Map(m) => m,
+            _ => return None,
+        };
+        let id = match map_get(sbm, "id") {
+            Some(Value::Int(n)) => *n,
+            _ => return None,
+        };
+        world_tf.insert(id, map_get(sbm, "world_transform")?);
+    }
+
+    // ── per-body fields: `at` joint, id, solid ──
+    let n = bodies.len();
+    let mut at_joints: Vec<&Value> = Vec::with_capacity(n);
+    let mut ids: Vec<i64> = Vec::with_capacity(n);
+    let mut solids: Vec<&Value> = Vec::with_capacity(n);
+    for b in bodies {
+        let bm = match b {
+            Value::Map(m) => m,
+            _ => return None,
+        };
+        at_joints.push(map_get(bm, "at")?);
+        ids.push(match map_get(bm, "id") {
+            Some(Value::Int(k)) => *k,
+            _ => return None,
+        });
+        solids.push(map_get(bm, "solid")?);
+    }
+
+    // ── parent body index per body (None = world-parented base) ──
+    // The spanning tree is read from `joint_parents` (not `body.parent`), per
+    // mechanism.rs: for closing edges they disagree, and FK / RNEA must follow
+    // the spanning tree. A non-world parent joint that names no known body is a
+    // structural error → None.
+    let mut parent_idx: Vec<Option<usize>> = Vec::with_capacity(n);
+    for &at in &at_joints {
+        let p = match joint_parents.get(at) {
+            None => None,
+            Some(j) if is_world(j) => None,
+            Some(j) => Some(at_joints.iter().position(|aj| *aj == j)?),
+        };
+        parent_idx.push(p);
+    }
+
+    // ── topological order (parent before child) + inverse permutation ──
+    let ordered = topo_order(&parent_idx)?;
+    let mut pos = vec![0usize; n];
+    for (k, &bi) in ordered.iter().enumerate() {
+        pos[bi] = k;
+    }
+
+    // ── per-body motion subspaces (drive DOF counts + the τ reshape) ──
+    let mut subspaces: Vec<Vec<SpatialVector6>> = Vec::with_capacity(n);
+    for &at in &at_joints {
+        subspaces.push(motion_subspace_columns(at)?);
+    }
+    let dof_counts: Vec<usize> = subspaces.iter().map(|s| s.len()).collect();
+
+    // ── slice q̇ / q̈ (flat per-DOF, bodies order) ──
+    let q_dot = slice_generalized(q_dot_arg, &dof_counts)?;
+    let q_ddot = slice_generalized(q_ddot_arg, &dof_counts)?;
+
+    // ── build RneaLinks in topological order ──
+    let mut links: Vec<RneaLink> = Vec::with_capacity(n);
+    for &bi in &ordered {
+        let (mass, com, inertia_about_com) = mass_properties_from_value(solids[bi])?;
+        let child_frame = frame3_from_transform_value(world_tf.get(&ids[bi])?)?;
+        let xc = SpatialTransform6::from_frame3(&child_frame);
+        // X_{p→i}: base link is ᶜXᵂ = from_frame3(world_transform) (pins the
+        // single_pendulum convention); a non-base link is the relative
+        // parent→child coordinate transform ᶜXᴾ = ᶜXᵂ · ᵂXᴾ =
+        // Xc · Xp⁻¹ (composing full poses sidesteps the rot·xlt offset footgun
+        // documented on `RneaLink::parent_to_child`).
+        let parent_to_child = match parent_idx[bi] {
+            None => xc,
+            Some(pb) => {
+                let parent_frame = frame3_from_transform_value(world_tf.get(&ids[pb])?)?;
+                xc.compose(&SpatialTransform6::from_frame3(&parent_frame).inverse())
+            }
+        };
+        links.push(RneaLink {
+            parent: parent_idx[bi].map(|pb| pos[pb]),
+            parent_to_child,
+            subspace: subspaces[bi].clone(),
+            mass,
+            com,
+            inertia_about_com,
+            q_dot: q_dot[bi].clone(),
+            q_ddot: q_ddot[bi].clone(),
+        });
+    }
+
+    // ── RNEA + reshape τ → List<JointForce> (bodies/id order) ──
+    let tau = inverse_dynamics_open_chain(&links, default_gravity());
+    let mut forces: Vec<Value> = Vec::with_capacity(n);
+    for i in 0..n {
+        let kind = joint_kind(at_joints[i])?;
+        let value = joint_force_value(kind, &tau[pos[i]])?;
+        forces.push(make_joint_force(ids[i], value));
+    }
+    Some(forces)
+}
+
+/// Read a string-keyed field from a `Value::Map`'s inner `BTreeMap`.
+fn map_get<'a>(map: &'a BTreeMap<Value, Value>, key: &str) -> Option<&'a Value> {
+    map.get(&Value::String(key.to_string()))
+}
+
+/// Read a string-valued field (e.g. the `kind` discriminant) from a `Value::Map`.
+fn map_str<'a>(map: &'a BTreeMap<Value, Value>, key: &str) -> Option<&'a str> {
+    match map_get(map, key) {
+        Some(Value::String(s)) => Some(s.as_str()),
+        _ => None,
+    }
+}
+
+/// The `kind` discriminant of a joint `Value::Map` (e.g. `"revolute"`).
+fn joint_kind(joint: &Value) -> Option<&str> {
+    match joint {
+        Value::Map(m) => map_str(m, "kind"),
+        _ => None,
+    }
+}
+
+/// Kahn-style topological sort of body indices given each body's parent index
+/// (`None` = world-parented base). Returns indices in parent-before-child order,
+/// or `None` if the parent graph is cyclic (defence-in-depth — `mechanism::body`
+/// rejects every spanning-tree cycle, recording closing edges as loop closures).
+fn topo_order(parent: &[Option<usize>]) -> Option<Vec<usize>> {
+    let n = parent.len();
+    let mut emitted = vec![false; n];
+    let mut ordered = Vec::with_capacity(n);
+    while ordered.len() < n {
+        let mut progressed = false;
+        for i in 0..n {
+            if emitted[i] {
+                continue;
+            }
+            let ready = match parent[i] {
+                None => true,
+                Some(p) => emitted[p],
+            };
+            if ready {
+                emitted[i] = true;
+                ordered.push(i);
+                progressed = true;
+            }
+        }
+        if !progressed {
+            return None; // cycle — unreachable for a builder-produced mechanism
+        }
+    }
+    Some(ordered)
+}
+
+/// Slice a flat `List` of per-DOF numeric cells into one `Vec<f64>` per body,
+/// consuming `dof_counts[i]` consecutive cells for body `i` (in `bodies` order).
+/// Returns `None` for a non-`List` arg, a non-numeric cell, or a length mismatch
+/// against `Σ dof_counts`.
+fn slice_generalized(arg: &Value, dof_counts: &[usize]) -> Option<Vec<Vec<f64>>> {
+    let flat = match arg {
+        Value::List(items) => items,
+        _ => return None,
+    };
+    let total: usize = dof_counts.iter().sum();
+    if flat.len() != total {
+        return None;
+    }
+    let mut out = Vec::with_capacity(dof_counts.len());
+    let mut cursor = 0;
+    for &dof in dof_counts {
+        let mut row = Vec::with_capacity(dof);
+        for _ in 0..dof {
+            row.push(cell_f64(&flat[cursor])?);
+            cursor += 1;
+        }
+        out.push(row);
+    }
+    Some(out)
+}
+
+/// Reshape a joint's generalized-force vector τ into the kind-specific
+/// `JointForceValue` variant (PRD §4.2): revolute → `ScalarTorque`, prismatic →
+/// `ScalarForce`, cylindrical → `CylForce`, planar → `PlanarForce`, spherical →
+/// `SphereForce`, fixed → `ZeroForce`. Returns `None` on an unknown kind or a
+/// τ-arity mismatch against the kind's DOF count.
+fn joint_force_value(kind: &str, tau: &[f64]) -> Option<Value> {
+    let components = |t: &[f64]| Value::List(t.iter().map(|&x| Value::Real(x)).collect());
+    let scalar = |type_name: &str, t: &[f64]| -> Option<Value> {
+        if t.len() != 1 {
+            return None;
+        }
+        Some(mint_instance(
+            type_name,
+            vec![("magnitude".to_string(), Value::Real(t[0]))],
+        ))
+    };
+    let multi = |type_name: &str, t: &[f64], dof: usize| -> Option<Value> {
+        if t.len() != dof {
+            return None;
+        }
+        Some(mint_instance(
+            type_name,
+            vec![("components".to_string(), components(t))],
+        ))
+    };
+    match kind {
+        "revolute" => scalar("ScalarTorque", tau),
+        "prismatic" => scalar("ScalarForce", tau),
+        "cylindrical" => multi("CylForce", tau, 2),
+        "planar" => multi("PlanarForce", tau, 3),
+        "spherical" => multi("SphereForce", tau, 3),
+        "fixed" => {
+            if tau.is_empty() {
+                Some(mint_instance("ZeroForce", vec![]))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Mint a `JointForce` instance: `joint_id` is the body id (a `Real` per the
+/// structure_def placeholder), `value` the kind-specific `JointForceValue`.
+fn make_joint_force(joint_id: i64, value: Value) -> Value {
+    mint_instance(
+        "JointForce",
+        vec![
+            ("joint_id".to_string(), Value::Real(joint_id as f64)),
+            ("value".to_string(), value),
+        ],
+    )
 }
 
 #[cfg(test)]
@@ -388,11 +695,11 @@ mod tests {
         let trans = [0.1, -0.2, 0.3];
         let f = frame3_from_transform_value(&transform_fixture(quat, trans))
             .expect("a well-formed Transform must parse");
-        for i in 0..4 {
-            assert!((f.rotation()[i] - quat[i]).abs() < 1e-12, "quat[{i}]");
+        for (i, (got, want)) in f.rotation().iter().zip(quat.iter()).enumerate() {
+            assert!((got - want).abs() < 1e-12, "quat[{i}]");
         }
-        for i in 0..3 {
-            assert!((f.translation()[i] - trans[i]).abs() < 1e-12, "trans[{i}]");
+        for (i, (got, want)) in f.translation().iter().zip(trans.iter()).enumerate() {
+            assert!((got - want).abs() < 1e-12, "trans[{i}]");
         }
     }
 
