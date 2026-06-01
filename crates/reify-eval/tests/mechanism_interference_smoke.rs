@@ -15,14 +15,16 @@
 //! Gated on `OCCT_AVAILABLE` (same convention as the topology / conformance
 //! e2e tests); skipped on builds without OCCT.
 //!
-//! ## Source-let positioning, not FK placement
+//! ## FK placement applied via ApplyTransform (task 3906 T8)
 //!
-//! v0.1 ignores the Snapshot's per-body `world_transform` in the distance
-//! probe — geometry must be pre-positioned at the source-let level via
-//! `translate(box(...), …)`. All three test fixtures use `fixed()` joints
-//! and rely on `translate`-positioned source lets to drive disjoint /
-//! overlapping cube layouts; see the `try_eval_kinematic_query` rustdoc for
-//! the rationale.
+//! The Snapshot's per-body `world_transform` IS applied to the OCCT shape
+//! before the distance probe, via the shared `GeometryOp::ApplyTransform`
+//! primitive (same path as T5 static `at` placement). The first three fixtures
+//! use `fixed()` joints and `translate`-positioned source lets so their
+//! `world_transform` is identity — the identity short-circuit means no extra
+//! kernel op and distances are unchanged. The `fk_posed_cubes_*` test (added
+//! by T8) proves the full FK-posed path: two unit cubes at the source-let
+//! origin, with cube_b's prismatic joint bound to +40mm, are probed as disjoint.
 
 // Value::Map uses BTreeMap<Value, Value>; Value's interior-mutable SampledField
 // (AtomicBool) trips clippy::mutable_key_type, but Ord/Hash on Value are by-design.

@@ -635,6 +635,13 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
         // length-dimensioned `Value::Scalar` respectively). When the
         // dispatch falls through (no kernel, unsupported arg shape), the
         // cell stays at `Value::Undef`.
+        //
+        // FK world_transform (task 3906 T8): the post-process applies each
+        // body's `world_transform` to its OCCT shape via
+        // `GeometryOp::ApplyTransform` before issuing the `Distance` probe,
+        // so distance/interference queries operate on FK-posed geometry.
+        // Identity transforms short-circuit to the raw source handle (no
+        // kernel op).
         "interferes" => {
             // Validation surface (each guard short-circuits to Undef):
             //   args.len() == 1                       → arity guard

@@ -1795,14 +1795,15 @@ fn dispatch_bounding_box(
 // All three helpers share OCCT's `BRepExtrema_DistShapeShape` primitive
 // (`GeometryQuery::Distance`) — `interferes_with` is just `Distance ≤ 0`.
 //
-// v0.1 simplification: the Snapshot's per-body `world_transform` is **not**
-// applied to the OCCT shape before the distance probe; geometry must be
-// pre-positioned at the source-let level (e.g. `let a = translate(box(...),
-// 30mm, 0mm, 0mm)`). FK-driven OCCT placement requires either a new
-// `GeometryOp::ApplyTransform` op + handle bookkeeping or per-pair on-the-
-// fly OCCT transforms — both expand scope beyond the PRD task-8 acceptance.
-// This matches the existing `bounding_box`/`center_of_mass` v0.1 approach
-// (also operates on world-frame body origins only, point-mass approximation).
+// FK placement via ApplyTransform (task 3906 T8): the Snapshot's per-body
+// `world_transform` IS applied to the OCCT shape before the distance probe via
+// the shared `GeometryOp::ApplyTransform` primitive — the same path T5 static
+// `at` placement uses (`decompose_transform_to_arrays` + `surface_subtree`
+// identity short-circuit). Each non-identity body transform is applied ONCE
+// (O(N) `ApplyTransform` ops) before the O(N²) pairwise `Distance` probes,
+// so posed handle ids are reused across all pairs. Identity / missing /
+// undecomposable `world_transform` falls back to the raw source handle with
+// no kernel op — preserving `fixed()`-joint fixtures unchanged.
 //
 // Self-pair exclusion: `interferes` iterates pairs as `i < j` upper-triangular
 // — excluding both `(a, a)` self-pairs and the duplicate `(b, a)` ordering.
