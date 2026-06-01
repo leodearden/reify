@@ -4824,6 +4824,143 @@ pub(crate) fn reachable_template_indices(
     reached
 }
 
+/// Placed-product body collected by the T7 export walk (`surface_export_bodies`).
+///
+/// The `entity_path` is the composed PRD §11.2 path; `handle_id` is the
+/// `GeometryHandleId` of the placed BRep (world transform already baked in via
+/// `ApplyTransform`); `default_visible` follows the same OR-of-aux rule as
+/// `surface_subtree` (`false` iff aux or under-aux-sub).
+#[derive(Debug)]
+pub(crate) struct ExportBody {
+    pub entity_path: String,
+    pub handle_id: GeometryHandleId,
+    pub default_visible: bool,
+}
+
+/// T7 export walk (task 3905): collect placed-product BRep handles for STEP export.
+///
+/// Mirrors `surface_subtree`'s composition/aux logic (reusing `eval_sub_pose`,
+/// `compose_pose_chain`, `decompose_transform_to_arrays`, `realization_is_aux`,
+/// and the cycle/fallback guards) but COLLECTS each realization's placed
+/// `GeometryHandleId` + entity_path + default_visible instead of tessellating.
+///
+/// The `default_visible` flag uses the same OR-of-aux derivation as
+/// `surface_subtree` — `default_visible == false` ⟺ aux or under-aux-sub ⟺
+/// excluded from export by the caller.  Source handles remain valid after
+/// `ApplyTransform` (T3 non-destructive).  Identity/undecomposable world
+/// transforms short-circuit to the source handle (no extra kernel op).
+///
+/// Cycle guard: same `depth > module.templates.len()` bound as `surface_subtree`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn surface_export_bodies(
+    module: &reify_compiler::CompiledModule,
+    t_idx: usize,
+    path_prefix: &str,
+    // True when any ancestor sub was declared `aux` (inherited down the walk).
+    aux_ancestor: bool,
+    // Composed world transform inherited from root, accrued down the walk.
+    composed_world: &reify_ir::Value,
+    depth: usize,
+    terminal_handles: &[Vec<Option<KernelHandle>>],
+    geometry_kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
+    default_kernel_name: &str,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    export_bodies: &mut Vec<ExportBody>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if depth > module.templates.len() {
+        return;
+    }
+    let template = &module.templates[t_idx];
+
+    // Decompose the inherited world transform once for this template.
+    // `Some(non-identity)` → apply via ApplyTransform before collecting;
+    // identity / non-decomposable short-circuits to the source handle directly.
+    let placement: Option<([f64; 4], [f64; 3])> =
+        match decompose_transform_to_arrays(composed_world) {
+            Some((rotation, translation))
+                if rotation != [1.0, 0.0, 0.0, 0.0] || translation != [0.0, 0.0, 0.0] =>
+            {
+                Some((rotation, translation))
+            }
+            _ => None,
+        };
+
+    for (r_idx, realization) in template.realizations.iter().enumerate() {
+        let Some(handle) = terminal_handles[t_idx][r_idx] else {
+            eprintln!("[DEBUG surface_export_bodies] t_idx={t_idx} r_idx={r_idx} path_prefix={path_prefix:?} -> no terminal handle, skipping");
+            continue;
+        };
+        eprintln!("[DEBUG surface_export_bodies] t_idx={t_idx} r_idx={r_idx} path_prefix={path_prefix:?} handle.id={:?} placement={:?}", handle.id, placement);
+        let default_kernel = geometry_kernels
+            .get_mut(default_kernel_name)
+            .expect("default kernel must remain in the map across the export walk");
+        let placed_id = match placement {
+            Some((rotation, translation)) => {
+                match default_kernel.execute(&reify_ir::GeometryOp::ApplyTransform {
+                    target: handle.id,
+                    rotation,
+                    translation,
+                }) {
+                    Ok(transformed) => { eprintln!("[DEBUG] ApplyTransform ok -> placed_id={:?}", transformed.id); transformed.id }
+                    Err(e) => {
+                        eprintln!("[DEBUG] ApplyTransform error: {e}");
+                        diagnostics.push(Diagnostic::error(format!(
+                            "transform application error: {}",
+                            e
+                        )));
+                        continue;
+                    }
+                }
+            }
+            None => { eprintln!("[DEBUG] no placement, using source handle.id={:?}", handle.id); handle.id }
+        };
+        let default_visible = !(aux_ancestor || realization_is_aux(realization));
+        let entity_path = format!("{}#realization[{}]", path_prefix, realization.id.index);
+        eprintln!("[DEBUG] pushing ExportBody: {entity_path:?} visible={default_visible}");
+        export_bodies.push(ExportBody {
+            entity_path,
+            handle_id: placed_id,
+            default_visible,
+        });
+    }
+
+    // Recurse into each non-collection sub, composing the sub's `at` pose.
+    for sub in &template.sub_components {
+        if sub.is_collection {
+            continue;
+        }
+        let Some(child_idx) = module
+            .templates
+            .iter()
+            .position(|t| t.name == sub.structure_name)
+        else {
+            continue;
+        };
+        let child_prefix = format!("{}.{}", path_prefix, sub.name);
+        let sub_pose = eval_sub_pose(sub.pose.as_ref(), values, functions, meta_map, diagnostics);
+        let child_world = compose_pose_chain(&[composed_world.clone(), sub_pose]);
+        surface_export_bodies(
+            module,
+            child_idx,
+            &child_prefix,
+            aux_ancestor || sub.is_aux,
+            &child_world,
+            depth + 1,
+            terminal_handles,
+            geometry_kernels,
+            default_kernel_name,
+            values,
+            functions,
+            meta_map,
+            export_bodies,
+            diagnostics,
+        );
+    }
+}
+
 /// Phase-B containment-tree surfacing (T5 steps 4/6/10).
 ///
 /// Depth-first walk from a root template: surface the current template's
