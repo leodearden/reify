@@ -863,11 +863,22 @@ Ports are typed scopes with members, uniform across structure ports and occurren
 sub motor : ElectricMotor { shaft_diameter = 8mm }
 sub vents : List<Vent>
 sub rib : Rib { height = thickness * 0.8 }
+
+// Placement: `at` pose clause (v0.6)
+sub bolt : Bolt at transform3(orient_identity(), vec3(30mm, 0mm, 0mm))
+sub gear : Gear { teeth = 24 } at mount_frame
+
+// Construction placement: `aux` modifier (v0.6)
+aux sub jig : Jig at tool_frame
 ```
 
 `sub` is the keyword for instantiating a contained sub-entity within a parent body. Sub-entities are named children in the containment tree.
 
 **Instantiation syntax:** `sub name : Type { param = value, ... }`. Curly-brace block optional if no parameters overridden.
+
+**`at` placement clause (v0.6).** An optional trailing `at <pose>` expression specifies the child's placement relative to the parent frame. The pose expression must evaluate to a `Transform` (child-frame → parent-frame) or a `Frame` (lowered to the equivalent `Transform`). The pose is an ordinary expression: `transform3(…)`, `frame3(…)`, a `let`-bound or port-supplied frame, or a bare identifier. When `at` is absent the child is authored directly in the parent frame (identity placement).
+
+**`aux` modifier (v0.6).** Prefixing `aux` marks the sub-entity as structure-local (construction) geometry. An `aux sub` is still realized, tessellated, and shipped to the GUI (hidden-by-default, toggleable) but is excluded from product surfacing, STEP export, FEA mesh generation, and mass-property accumulation. Use `aux` to mark boolean-input operands so they do not appear both standalone and inside a composed result (see §8.3 for the boolean-composition idiom and §15 for the grammar production).
 
 #### `let` -- Computed Bindings
 
@@ -878,6 +889,8 @@ pub let torque_constant : Torque/Current = back_emf / rated_speed
 ```
 
 Named, typed, computed value with mandatory initialiser expression. Cannot be set from outside -- not a configurable parameter. Private by default; `pub let` to expose. Type annotation optional (type always inferrable from expression via dimensional analysis).
+
+`aux let` marks construction geometry (intermediate solids, reference sketches) that is realized and shipped to the GUI but excluded from product surfacing, export, and analysis; see §8.3 (boolean-composition idiom) and §15 (grammar).
 
 #### `type` -- Type Aliases
 
