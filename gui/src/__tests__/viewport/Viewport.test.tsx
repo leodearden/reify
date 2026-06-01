@@ -1027,3 +1027,104 @@ describe('Viewport wireManager integration (T0b)', () => {
     expect(mockWireDispose).toHaveBeenCalled();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Viewport FEA auto-range (step-5 RED — task 2962)
+// Verifies that Viewport computes the active channel's data range and writes it
+// into feaModeStore.range when mode === 'auto'.
+//
+// Tests fail until step-6 adds the auto-range createEffect and activeScalarRange
+// memo to Viewport.tsx.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('Viewport FEA auto-range', () => {
+  function makeFEAMesh(values: number[]): MeshData {
+    return {
+      entity_path: 'bracket',
+      vertices: new Float32Array(0),
+      indices: new Uint32Array(0),
+      normals: null,
+      scalar_channels: { vonMises: new Float32Array(values) },
+    };
+  }
+
+  it('(a) enabled + auto mode + meshes with vonMises [1,2,3] → range becomes {mode:auto,min:1,max:3}', () => {
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+    // Initial range is {mode:'auto', min:0, max:1} (sentinel)
+    expect(store.state.range).toEqual({ mode: 'auto', min: 0, max: 1 });
+
+    const [meshes, setMeshes] = createSignal<Record<string, MeshData>>({});
+    render(() => <Viewport meshes={meshes()} viewportId="test-ar-vp" feaModeStore={store as any} />);
+
+    setMeshes({ bracket: makeFEAMesh([1, 2, 3]) });
+
+    // After delivering meshes, the auto-range effect must have updated the store.
+    expect(store.state.range).toEqual({ mode: 'auto', min: 1, max: 3 });
+  });
+
+  it('(a2) bake closure receives the updated auto range {min:1,max:3} not the sentinel {0,1}', () => {
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+
+    const [meshes, setMeshes] = createSignal<Record<string, MeshData>>({});
+    render(() => <Viewport meshes={meshes()} viewportId="test-ar-bake" feaModeStore={store as any} />);
+
+    setMeshes({ bracket: makeFEAMesh([1, 2, 3]) });
+    mockBakeColours.mockClear();
+
+    // Trigger a bake by toggling colorize (force re-set via channel change)
+    const colorize = mockMeshSetColorize.mock.calls[mockMeshSetColorize.mock.calls.length - 1]?.[0];
+    if (colorize) {
+      colorize.bake(new Float32Array([1, 2, 3]));
+      expect(mockBakeColours.mock.calls[0][1]).toEqual({ mode: 'auto', min: 1, max: 3 });
+    }
+  });
+
+  it('(b) empty meshes {} → range stays {auto,0,1} (no spurious setRange write)', () => {
+    // Preserves existing Viewport.test.tsx:735 assertion.
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+    expect(store.state.range).toEqual({ mode: 'auto', min: 0, max: 1 });
+
+    render(() => <Viewport meshes={{}} viewportId="test-ar-empty" feaModeStore={store as any} />);
+
+    // Range must stay at sentinel — computeScalarRange({}) returns null, so no write.
+    expect(store.state.range).toEqual({ mode: 'auto', min: 0, max: 1 });
+  });
+
+  it('(c) auto rescale: meshes A [1,3] then meshes B [10,20] → range updates to {auto,10,20}', () => {
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+
+    const [meshes, setMeshes] = createSignal<Record<string, MeshData>>({});
+    render(() => <Viewport meshes={meshes()} viewportId="test-ar-rescale" feaModeStore={store as any} />);
+
+    // First delivery
+    setMeshes({ bracket: makeFEAMesh([1, 3]) });
+    expect(store.state.range).toEqual({ mode: 'auto', min: 1, max: 3 });
+
+    // Second delivery with different data
+    setMeshes({ bracket: makeFEAMesh([10, 20]) });
+    expect(store.state.range).toEqual({ mode: 'auto', min: 10, max: 20 });
+  });
+
+  it('(d) locked survives re-solve: lock {1,3} then deliver [10,20] → range stays {locked,1,3}', () => {
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+
+    const [meshes, setMeshes] = createSignal<Record<string, MeshData>>({});
+    render(() => <Viewport meshes={meshes()} viewportId="test-ar-lock" feaModeStore={store as any} />);
+
+    // Auto-range first
+    setMeshes({ bracket: makeFEAMesh([1, 3]) });
+    expect(store.state.range).toEqual({ mode: 'auto', min: 1, max: 3 });
+
+    // User locks
+    store.lockCurrent(1, 3);
+    expect(store.state.range.mode).toBe('locked');
+
+    // New solve result — locked range must NOT be overwritten
+    setMeshes({ bracket: makeFEAMesh([10, 20]) });
+    expect(store.state.range).toMatchObject({ mode: 'locked', min: 1, max: 3 });
+  });
+});
