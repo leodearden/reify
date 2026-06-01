@@ -700,18 +700,18 @@ pub(crate) fn solve_tots(
 
         // Check convergence at start of each iteration.
         // If feasible and previous step was very small, we've converged.
-        if is_feasible(&current_eval, &current) {
-            if let Some(ref px) = prev_x {
-                let step_norm: f64 = x0.iter().zip(px.iter())
-                    .map(|(a, b)| (a - b).powi(2)).sum::<f64>().sqrt();
-                if step_norm < config.tol {
-                    return TotsResult {
-                        outcome: TotsOutcome::Converged,
-                        params: current.clone(),
-                        evaluation: current_eval.clone(),
-                        iterations: iter + 1,
-                    };
-                }
+        if is_feasible(&current_eval, &current)
+            && let Some(ref px) = prev_x
+        {
+            let step_norm: f64 = x0.iter().zip(px.iter())
+                .map(|(a, b)| (a - b).powi(2)).sum::<f64>().sqrt();
+            if step_norm < config.tol {
+                return TotsResult {
+                    outcome: TotsOutcome::Converged,
+                    params: current.clone(),
+                    evaluation: current_eval.clone(),
+                    iterations: iter + 1,
+                };
             }
         }
 
