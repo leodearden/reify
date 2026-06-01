@@ -9187,6 +9187,7 @@ mod tests {
     /// RED states:
     ///   - on main (before step-2): ZERO ApplyTransform ops (≠ 1)
     ///   - after step-2's apply-unconditionally impl: TWO ops (identity applied too, ≠ 1)
+    ///
     /// Either way "exactly one" fails until the short-circuit lands in step-4.
     #[test]
     fn try_eval_kinematic_query_skips_identity_world_transform() {
