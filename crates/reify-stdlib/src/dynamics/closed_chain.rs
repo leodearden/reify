@@ -381,9 +381,9 @@ mod tests {
         let mut m_matrix = [0.0_f64; 16];
         for i in 0..n {
             m_matrix[i * n + i] = 1.0; // +I
-            for k in 0..n {
+            for (k, &l_ik) in l[i].iter().enumerate() {
                 for j in 0..n {
-                    m_matrix[i * n + j] += l[i][k] * l[j][k];
+                    m_matrix[i * n + j] += l_ik * l[j][k];
                 }
             }
         }
