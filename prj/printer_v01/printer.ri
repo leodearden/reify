@@ -242,8 +242,18 @@ pub structure DriveTendons {
     sub rail_l = TendonQuad() at transform3(orient_identity(), vec3(neg_rail_x, 0mm, 0mm))  // left Y rail
     sub cross  = TendonQuad() at transform3(rot_to_cross,      vec3(0mm,        0mm, 0mm))  // gantry crosses
 
-    sub idlers_r = CarriageIdlers() at transform3(orient_identity(), vec3(rail_x,     0mm, 0mm))  // right corner
-    sub idlers_l = CarriageIdlers() at transform3(orient_identity(), vec3(neg_rail_x, 0mm, 0mm))  // left corner
+    // Idler placement: TANGENT to the tendons it routes, not centred on the
+    // rail×cross intersection. The rope rides the sheave at pitch radius r_pitch,
+    // so the idler centre sits r_pitch inboard of the rail axis AND r_pitch off the
+    // cross line — both tendon centrelines are then tangent to the rope's pitch
+    // circle (a 90° wrap from rail run to gantry cross). r_pitch == IdlerPulley
+    // sheave_od/2 (the rope rides at the rim; override drop — task 4147).
+    let r_pitch    = 18mm
+    let idler_in_r = rail_x - r_pitch         // right stack: inboard of the right rail
+    let idler_in_l = neg_rail_x + r_pitch     // left stack: inboard of the left rail
+
+    sub idlers_r = CarriageIdlers() at transform3(orient_identity(), vec3(idler_in_r, r_pitch, 0mm))  // right, tangent
+    sub idlers_l = CarriageIdlers() at transform3(orient_identity(), vec3(idler_in_l, r_pitch, 0mm))  // left, tangent
 
     constraint rail_x > 0mm
 }
