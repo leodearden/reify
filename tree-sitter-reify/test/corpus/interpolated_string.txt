@@ -93,4 +93,4 @@ structure S {
       name: (identifier)
       value: (interpolated_string
         (interpolation
-          (ERROR))))))
+          expr: (MISSING number_literal))))))
