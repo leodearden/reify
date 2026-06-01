@@ -1030,6 +1030,19 @@ fn substitute_op_parents(
 /// its own terminal cache on rebuild and hands back the same id). The `#`
 /// separator cannot occur in a DSL entity identifier, so the synthesised key
 /// can never collide with a real entity's terminal-cache key.
+///
+/// **Cross-realization keying invariant.** The synthesised key embeds
+/// `realization_entity` but NOT the realization's index within its template, so
+/// two realizations that share an entity name (differing only by index) would
+/// generate identical intermediate keys for their first conversion input. This
+/// is deliberately consistent with the TERMINAL cache keying — the post-loop
+/// `realization_cache.insert(&realization_id.entity, …)` likewise keys on
+/// `entity` alone — and BOTH rely on the same invariant: within a single build a
+/// realization's `entity` uniquely identifies it in the cache (distinct cached
+/// realizations carry distinct entity names). If that invariant is ever weakened
+/// (e.g. multiple indexed realizations of one entity become independently
+/// cacheable), this key AND the terminal key must additionally incorporate
+/// `realization_id.index`; they must change together to stay consistent.
 fn conversion_intermediate_entity_id(
     realization_entity: &str,
     input_handle: GeometryHandleId,
@@ -3126,59 +3139,99 @@ impl Engine {
         // second identical Mesh build short-circuits at `(entity, Mesh, tol)`.
         // The post-loop INSERT keys on the RESOLVED repr instead (see below), so
         // a fallback realization that demanded Mesh but resolved BRep is stored
-        // at BRep and a later Mesh lookup correctly misses rather than returning
-        // a BRep handle as if it were Mesh.
+        // at BRep: a later Mesh lookup correctly MISSES at the Mesh key (never
+        // returning a BRep handle as if it were Mesh), and the BRep fallback
+        // probe added below then recovers the hit at the resolved BRep key.
         let cache_repr = demanded_repr;
-        if let (Some(tol), Some(name)) = (demanded_tol, realization_name)
-            && let Some(&cached_handle) =
-                realization_cache.lookup(&realization_id.entity, cache_repr, tol, NO_OPTIONS)
-        {
-            // Internal-consistency invariant (amendment): the per-build
-            // reset of `feature_tag_table` / `topology_attribute_table` at
-            // the top of build() / build_snapshot() / tessellate_*()
-            // guarantees neither table can already carry an entry for the
-            // cached handle on a clean cache-hit path. If a future refactor
-            // weakens the reset or routes the cached handle through a path
-            // that ALSO populates the tables, this debug_assert fires loudly
-            // during development rather than silently regressing attribute-
-            // query results for cached handles.
-            debug_assert!(
-                feature_tag_table.lookup(cached_handle.id).is_none(),
-                "feature_tag_table already has an entry for cached handle \
-                 {:?} on cache-hit short-circuit — per-build reset invariant \
-                 violated",
-                cached_handle,
-            );
-            debug_assert!(
-                topology_attribute_table.lookup(cached_handle.id).is_none(),
-                "topology_attribute_table already has an entry for cached \
-                 handle {:?} on cache-hit short-circuit — per-build reset \
-                 invariant violated",
-                cached_handle,
-            );
-            step_handles.push(cached_handle);
-            named_steps.insert(name.to_string(), cached_handle);
-            // Step-10 (task ε / 3436): the [`RealizationCache`] key includes
-            // `cache_repr` (see the post-success `realization_cache.insert`
-            // call at the bottom of this function), so every cached entry's
-            // terminal handle was produced by a kernel capable of that repr.
-            // Surface `cache_repr` through `produced_repr_out` so the caller
-            // writes the same value into the realization graph node it would
-            // have written on a cold-path miss for this realization.
-            *produced_repr_out = Some(cache_repr);
-            // **Task 4050 step-10**: consistency guard, reordered AFTER the
-            // `produced_repr_out` write and relaxed from the old `BRep` pin. Now
-            // that `cache_repr = demanded_repr`, the cached entry's repr IS the
-            // requested repr; the assert is tautological-after-reorder (the line
-            // above just wrote `Some(cache_repr)`) but kept as a documented
-            // invariant: the surfaced produced_repr always equals the lookup
-            // key's repr on the cache-hit branch.
-            debug_assert_eq!(
-                cache_repr,
-                produced_repr_out.unwrap_or(ReprKind::BRep),
-                "cache-hit produced_repr must equal the cache key's repr",
-            );
-            return;
+        // **Amendment (reviewer_comprehensive #1, perf regression)**: probe the
+        // terminal cache at the demanded repr first, then — for a non-BRep
+        // demand that missed — RETRY at `BRep`. This mirrors the per-op dispatch
+        // BRep fallback (design_decision 3) at the cache layer, and is the fix
+        // for the realization-cache regression flagged in review.
+        //
+        // WHY THE FALLBACK PROBE IS LOAD-BEARING. With υ wired, an Stl/Obj export
+        // marks its terminal realization `Mesh`, so the primary probe keys on
+        // `(entity, Mesh, tol)`. But reify-eval links no Mesh-capable boolean
+        // kernel (Cargo.toml: openvdb dep, occt dev-dep, no manifold), so every
+        // op falls back to a BRep dispatch, the terminal RESOLVES to BRep, and
+        // the post-loop INSERT keys on `(entity, BRep, tol)` (the resolved repr;
+        // design_decision 2). Without this fallback probe a Mesh demand would
+        // miss the BRep entry on EVERY rebuild and recompute the (typically most
+        // expensive) terminal body in full — defeating the task-2874 cache for
+        // the dominant production export path. Retrying at BRep lets the
+        // fell-back realization hit its true resolved repr and report
+        // `produced_repr = BRep` (exactly the cold-path value).
+        //
+        // SAFETY (no stale Mesh↦BRep substitution). A `BRep` cache entry is
+        // written ONLY when a realization RESOLVED to BRep (the INSERT keys on
+        // the resolved repr). On a Mesh-CAPABLE engine a Mesh demand resolves
+        // Mesh and inserts at `(entity, Mesh, tol)`, so the PRIMARY probe hits
+        // and the BRep fallback is never consulted for that entity. The only
+        // residual edge — a Mesh-capable engine doing both a `Step` (BRep) build
+        // and an `Stl` (Mesh) build of the SAME entity at the SAME tol, where the
+        // fallback could serve the Step entry to the Stl demand — cannot arise in
+        // reify-eval (no Mesh boolean kernel is linked, so a Mesh demand can never
+        // resolve Mesh here) and is task ζ's (#3437) surface, not this task's.
+        if let (Some(tol), Some(name)) = (demanded_tol, realization_name) {
+            let cache_probe = realization_cache
+                .lookup(&realization_id.entity, cache_repr, tol, NO_OPTIONS)
+                .map(|&handle| (handle, cache_repr))
+                .or_else(|| {
+                    if cache_repr != ReprKind::BRep {
+                        realization_cache
+                            .lookup(&realization_id.entity, ReprKind::BRep, tol, NO_OPTIONS)
+                            .map(|&handle| (handle, ReprKind::BRep))
+                    } else {
+                        None
+                    }
+                });
+            if let Some((cached_handle, resolved_repr)) = cache_probe {
+                // Internal-consistency invariant (amendment): the per-build
+                // reset of `feature_tag_table` / `topology_attribute_table` at
+                // the top of build() / build_snapshot() / tessellate_*()
+                // guarantees neither table can already carry an entry for the
+                // cached handle on a clean cache-hit path. If a future refactor
+                // weakens the reset or routes the cached handle through a path
+                // that ALSO populates the tables, this debug_assert fires loudly
+                // during development rather than silently regressing attribute-
+                // query results for cached handles.
+                debug_assert!(
+                    feature_tag_table.lookup(cached_handle.id).is_none(),
+                    "feature_tag_table already has an entry for cached handle \
+                     {:?} on cache-hit short-circuit — per-build reset invariant \
+                     violated",
+                    cached_handle,
+                );
+                debug_assert!(
+                    topology_attribute_table.lookup(cached_handle.id).is_none(),
+                    "topology_attribute_table already has an entry for cached \
+                     handle {:?} on cache-hit short-circuit — per-build reset \
+                     invariant violated",
+                    cached_handle,
+                );
+                step_handles.push(cached_handle);
+                named_steps.insert(name.to_string(), cached_handle);
+                // Step-10 (task ε / 3436): the [`RealizationCache`] key includes
+                // the repr (see the post-success `realization_cache.insert` call
+                // at the bottom of this function), so the cached terminal handle
+                // was produced by a kernel capable of `resolved_repr` —
+                // `cache_repr` on a primary hit, or `BRep` on the fallback hit.
+                // Surface that SAME repr through `produced_repr_out` so the
+                // caller writes into the realization graph node exactly what a
+                // cold-path build of this realization would have written.
+                *produced_repr_out = Some(resolved_repr);
+                // **Task 4050 step-10**: consistency guard, reordered AFTER the
+                // `produced_repr_out` write. The surfaced produced_repr always
+                // equals the cache key's repr on the cache-hit branch (the line
+                // above just wrote `Some(resolved_repr)`); kept as a documented
+                // invariant guarding future edits to the probe/surface pair.
+                debug_assert_eq!(
+                    resolved_repr,
+                    produced_repr_out.unwrap_or(ReprKind::BRep),
+                    "cache-hit produced_repr must equal the cache key's repr",
+                );
+                return;
+            }
         }
 
         let mut had_failure = false;
@@ -7423,6 +7476,125 @@ mod tests {
             *state.step_handles.last().expect("a terminal handle"),
             terminal_1,
             "second BRep build must return the cached terminal handle"
+        );
+    }
+
+    /// Amendment (reviewer_comprehensive #1, perf regression): a NAMED
+    /// Mesh-demanding realization whose registry has NO Mesh-capable terminal
+    /// kernel falls back to a BRep dispatch (design_decision 3), RESOLVES to
+    /// BRep, and caches its terminal at `(entity, BRep, tol)`. A second
+    /// identical Mesh-demanding build must STILL hit that cache — via the BRep
+    /// fallback probe — so `dispatch_count == 0`, the cached BRep terminal
+    /// handle is returned, `produced_repr == BRep`, and `tessellate` stays at 0.
+    ///
+    /// This pins the fix for the regression where the cache_repr unpin keyed the
+    /// lookup at Mesh while the fell-back terminal was stored at BRep: without
+    /// the BRep fallback probe the second build's Mesh lookup would miss the
+    /// BRep entry and recompute the whole realization on every rebuild — the
+    /// dominant occt-only Stl/Obj production export path.
+    #[test]
+    fn execute_realization_ops_mesh_demand_resolved_brep_hits_cache_via_brep_fallback() {
+        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+        use reify_core::Type;
+        use reify_ir::{
+            CapabilityDescriptor, CompiledExpr, GeometryKernel, Operation, ReprKind,
+        };
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        let tess_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "occt".to_string(),
+            Box::new(CountingTessellateKernel {
+                inner: MockGeometryKernel::new(),
+                tessellate_count: std::sync::Arc::clone(&tess_count),
+            }),
+        );
+
+        // No Mesh-capable kernel for the op: a Mesh demand resolves only via the
+        // BRep fallback (design_decision 3) — the occt-only production config.
+        let desc_occt = CapabilityDescriptor {
+            supports: vec![(Operation::PrimitiveBox, ReprKind::BRep)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("occt".to_string(), &desc_occt);
+
+        let ops = vec![CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![
+                ("width".into(), mm_lit(10.0)),
+                ("height".into(), mm_lit(20.0)),
+                ("depth".into(), mm_lit(5.0)),
+            ],
+        }];
+
+        let realization_id = RealizationNodeId::new("FellBack", 0);
+        let tol = 0.001;
+        let mut state = DispatchTestState::default();
+
+        // ── First (cold) build: Mesh demand falls back to BRep, caches at BRep. ─
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &realization_id,
+            Some("FellBack"),
+            SourceSpan::new(0, 0),
+            ReprKind::Mesh,
+            Some(tol),
+        );
+        assert!(state.dispatch_count > 0, "first build must dispatch");
+        assert_eq!(
+            state.produced_repr_out,
+            Some(ReprKind::BRep),
+            "a Mesh demand with no Mesh kernel must resolve BRep (fallback)"
+        );
+        let terminal_1 = *state.step_handles.last().expect("a terminal handle");
+        assert_eq!(
+            *tess_count.lock().unwrap(),
+            0,
+            "the fallback path must not tessellate"
+        );
+
+        // ── Reset the per-build instrumentation the way production does. ────────
+        state.dispatch_count = 0;
+        state.produced_repr_out = None;
+        state.reset_attribute_tables();
+
+        // ── Second build: SAME Mesh demand → BRep fallback probe must HIT. ──────
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &realization_id,
+            Some("FellBack"),
+            SourceSpan::new(0, 0),
+            ReprKind::Mesh,
+            Some(tol),
+        );
+        assert_eq!(
+            state.dispatch_count, 0,
+            "second Mesh build must hit the cache via the BRep fallback probe, got {}",
+            state.dispatch_count
+        );
+        assert_eq!(
+            state.produced_repr_out,
+            Some(ReprKind::BRep),
+            "the fallback cache-hit must report the resolved BRep repr, not Mesh"
+        );
+        assert_eq!(
+            *state.step_handles.last().expect("a terminal handle"),
+            terminal_1,
+            "the fallback cache-hit must return the cached BRep terminal handle"
+        );
+        assert_eq!(
+            *tess_count.lock().unwrap(),
+            0,
+            "the cache hit must not tessellate"
         );
     }
 
