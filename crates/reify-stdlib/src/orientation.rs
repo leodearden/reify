@@ -2750,4 +2750,148 @@ mod tests {
             "expected panic message to contain 'elementary_rotation_quat called with axis > 2', got: {msg:?}"
         );
     }
+
+    // ── orient_look_at tests (step-1 RED) ────────────────────────────────────
+
+    /// Helper: build a 3-component Tensor value.
+    fn t3(x: f64, y: f64, z: f64) -> Value {
+        Value::Tensor(vec![Value::Real(x), Value::Real(y), Value::Real(z)])
+    }
+
+    #[test]
+    fn orient_look_at_forward_z_up_y_is_identity() {
+        // forward=(0,0,1), up=(0,1,0):
+        // z=(0,0,1), x=cross((0,1,0),(0,0,1))=(1,0,0), y=(0,1,0) → identity → (1,0,0,0)
+        let fwd = t3(0.0, 0.0, 1.0);
+        let up = t3(0.0, 1.0, 0.0);
+        assert_orientation_approx!(
+            eval_builtin("orient_look_at", &[fwd, up]),
+            1.0, 0.0, 0.0, 0.0
+        );
+    }
+
+    #[test]
+    fn orient_look_at_forward_x_up_z() {
+        // forward=(1,0,0), up=(0,0,1):
+        // z=(1,0,0), x=cross((0,0,1),(1,0,0))=(0,1,0), y=cross((1,0,0),(0,1,0))=(0,0,1)
+        // basis cols [(0,1,0),(0,0,1),(1,0,0)] → Shepperd r22-branch → (0.5,0.5,0.5,0.5)
+        let fwd = t3(1.0, 0.0, 0.0);
+        let up = t3(0.0, 0.0, 1.0);
+        assert_orientation_approx!(
+            eval_builtin("orient_look_at", &[fwd, up]),
+            0.5, 0.5, 0.5, 0.5
+        );
+    }
+
+    #[test]
+    fn orient_look_at_non_unit_up_gives_same_result() {
+        // Non-unit up=(0,5,0) should give same result as unit up=(0,1,0)
+        let fwd = t3(0.0, 0.0, 1.0);
+        let up = t3(0.0, 5.0, 0.0);
+        assert_orientation_approx!(
+            eval_builtin("orient_look_at", &[fwd, up]),
+            1.0, 0.0, 0.0, 0.0
+        );
+    }
+
+    #[test]
+    fn orient_look_at_parallel_forward_up_returns_undef() {
+        // forward=(0,0,1), up=(0,0,1): parallel → cross product = 0 → Undef
+        let fwd = t3(0.0, 0.0, 1.0);
+        let up = t3(0.0, 0.0, 1.0);
+        assert!(
+            eval_builtin("orient_look_at", &[fwd, up]).is_undef(),
+            "parallel forward and up should return Undef"
+        );
+    }
+
+    #[test]
+    fn orient_look_at_parallel_scaled_forward_up_returns_undef() {
+        // forward=(0,0,2), up=(0,0,5): same direction, scaled → Undef
+        let fwd = t3(0.0, 0.0, 2.0);
+        let up = t3(0.0, 0.0, 5.0);
+        assert!(
+            eval_builtin("orient_look_at", &[fwd, up]).is_undef(),
+            "parallel scaled forward and up should return Undef"
+        );
+    }
+
+    #[test]
+    fn orient_look_at_zero_forward_returns_undef() {
+        let fwd = t3(0.0, 0.0, 0.0);
+        let up = t3(0.0, 1.0, 0.0);
+        assert!(
+            eval_builtin("orient_look_at", &[fwd, up]).is_undef(),
+            "zero forward should return Undef"
+        );
+    }
+
+    #[test]
+    fn orient_look_at_zero_up_returns_undef() {
+        let fwd = t3(0.0, 0.0, 1.0);
+        let up = t3(0.0, 0.0, 0.0);
+        assert!(
+            eval_builtin("orient_look_at", &[fwd, up]).is_undef(),
+            "zero up should return Undef"
+        );
+    }
+
+    #[test]
+    fn orient_look_at_non_3d_forward_returns_undef() {
+        // 2-component vector for forward → Undef
+        let fwd = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0)]);
+        let up = t3(0.0, 1.0, 0.0);
+        assert!(
+            eval_builtin("orient_look_at", &[fwd, up]).is_undef(),
+            "non-3D forward should return Undef"
+        );
+    }
+
+    #[test]
+    fn orient_look_at_non_3d_up_returns_undef() {
+        // 2-component vector for up → Undef
+        let fwd = t3(0.0, 0.0, 1.0);
+        let up = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0)]);
+        assert!(
+            eval_builtin("orient_look_at", &[fwd, up]).is_undef(),
+            "non-3D up should return Undef"
+        );
+    }
+
+    #[test]
+    fn orient_look_at_nan_component_returns_undef() {
+        let fwd = t3(0.0, 0.0, f64::NAN);
+        let up = t3(0.0, 1.0, 0.0);
+        assert!(
+            eval_builtin("orient_look_at", &[fwd, up]).is_undef(),
+            "NaN in forward should return Undef"
+        );
+    }
+
+    #[test]
+    fn orient_look_at_inf_component_returns_undef() {
+        let fwd = t3(0.0, 0.0, f64::INFINITY);
+        let up = t3(0.0, 1.0, 0.0);
+        assert!(
+            eval_builtin("orient_look_at", &[fwd, up]).is_undef(),
+            "Inf in forward should return Undef"
+        );
+    }
+
+    #[test]
+    fn orient_look_at_wrong_arg_count_returns_undef() {
+        assert!(
+            eval_builtin("orient_look_at", &[]).is_undef(),
+            "0 args should return Undef"
+        );
+        let v = t3(0.0, 0.0, 1.0);
+        assert!(
+            eval_builtin("orient_look_at", &[v.clone()]).is_undef(),
+            "1 arg should return Undef"
+        );
+        assert!(
+            eval_builtin("orient_look_at", &[v.clone(), v.clone(), v.clone()]).is_undef(),
+            "3 args should return Undef"
+        );
+    }
 }
