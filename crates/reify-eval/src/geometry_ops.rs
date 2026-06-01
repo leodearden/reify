@@ -1449,6 +1449,7 @@ pub(crate) fn try_eval_conformance_query(
 // Returns:
 //   `Some(Value::Scalar { dimension: VOLUME/AREA, .. })` for volume / area,
 //   `Some(Value::Point([length, length, length]))` for centroid,
+//   `Some(Value::BoundingBox { min, max })` (two `Point3<Length>`) for bounding_box,
 //   `Some(Value::Undef)` (with a Warning) when the single handle arg resolves
 //        but the kernel errors or replies with an unexpected type (PRD §4
 //        defensive-downgrade contract),
@@ -1475,7 +1476,10 @@ pub(crate) fn try_eval_geometry_query(
     // (2) Recognised whole-handle geometry-query name (cheap string compare
     //     before any arg resolution). length/perimeter are intentionally absent
     //     (topology-selector path — see module note above).
-    if !matches!(function.name.as_str(), "volume" | "area" | "centroid") {
+    if !matches!(
+        function.name.as_str(),
+        "volume" | "area" | "centroid" | "bounding_box"
+    ) {
         return None;
     }
 
@@ -1516,6 +1520,10 @@ pub(crate) fn try_eval_geometry_query(
             "centroid",
             diagnostics,
         ),
+        // BoundingBox returns the 6-field JSON (`{"xmin":_,..,"zmax":_}`);
+        // `dispatch_bounding_box` decodes it (reusing `parse_bbox_axis_extents`
+        // per axis) into `Value::BoundingBox` of two `Point3<Length>` corners.
+        "bounding_box" => dispatch_bounding_box(kernel, handle, diagnostics),
         // Unreachable — the earlier `matches!` already filtered the name.
         _ => None,
     }
@@ -1552,6 +1560,54 @@ fn dispatch_scalar_query(
         Err(err) => {
             diagnostics.push(Diagnostic::warning(format!(
                 "{helper_name}(...) kernel query failed: {err}",
+            )));
+            Some(reify_ir::Value::Undef)
+        }
+    }
+}
+
+/// Issue a `BoundingBox` query and decode the canonical 6-field JSON reply
+/// (`{"xmin":_,"ymin":_,"zmin":_,"xmax":_,"ymax":_,"zmax":_}`) into
+/// `Value::BoundingBox { min, max }` — two `Point3<Length>` corners. Reuses
+/// `topology_selectors::parse_bbox_axis_extents` once per axis (the same parser
+/// the extremal selectors use) rather than introducing a new 6-field decoder.
+///
+/// Returns `Some(Value::Undef)` + one Warning on a kernel error or malformed
+/// reply (PRD §4 defensive downgrade), mirroring the volume/area/centroid arms.
+/// The `?`-chain unifies the kernel `query` error and the per-axis parse error
+/// (both `reify_ir::QueryError`) into the single `Err` arm.
+fn dispatch_bounding_box(
+    kernel: &dyn reify_ir::GeometryKernel,
+    handle: GeometryHandleId,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    fn decode(
+        kernel: &dyn reify_ir::GeometryKernel,
+        handle: GeometryHandleId,
+    ) -> Result<reify_ir::Value, reify_ir::QueryError> {
+        let reply = kernel.query(&reify_ir::GeometryQuery::BoundingBox(handle))?;
+        let (xmin, xmax) = crate::topology_selectors::parse_bbox_axis_extents(&reply, b'x')?;
+        let (ymin, ymax) = crate::topology_selectors::parse_bbox_axis_extents(&reply, b'y')?;
+        let (zmin, zmax) = crate::topology_selectors::parse_bbox_axis_extents(&reply, b'z')?;
+        Ok(reify_ir::Value::BoundingBox {
+            min: Box::new(reify_ir::Value::Point(vec![
+                reify_ir::Value::length(xmin),
+                reify_ir::Value::length(ymin),
+                reify_ir::Value::length(zmin),
+            ])),
+            max: Box::new(reify_ir::Value::Point(vec![
+                reify_ir::Value::length(xmax),
+                reify_ir::Value::length(ymax),
+                reify_ir::Value::length(zmax),
+            ])),
+        })
+    }
+
+    match decode(kernel, handle) {
+        Ok(value) => Some(value),
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "bounding_box(...) kernel query/parse failed: {err}; cell left at Undef",
             )));
             Some(reify_ir::Value::Undef)
         }
