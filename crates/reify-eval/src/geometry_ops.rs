@@ -4604,7 +4604,6 @@ pub(crate) fn realization_is_aux(realization: &reify_compiler::RealizationDecl) 
 /// `reify_stdlib`'s own `decompose_transform` is private, so this local
 /// pattern-match keeps the change inside reify-eval while feeding the IR op's
 /// raw float arrays (the IR is kernel-agnostic by design).
-#[allow(dead_code)] // used in #[cfg(test)]; wired into surface_subtree by step-10
 pub(crate) fn decompose_transform_to_arrays(v: &reify_ir::Value) -> Option<([f64; 4], [f64; 3])> {
     let reify_ir::Value::Transform {
         rotation,
@@ -4650,7 +4649,6 @@ pub(crate) fn decompose_transform_to_arrays(v: &reify_ir::Value) -> Option<([f64
 /// chain returns the identity Transform unchanged. Reuses the already-tested
 /// stdlib builtin rather than hand-rolling quaternion math; `reify-eval` already
 /// depends on `reify-stdlib`.
-#[allow(dead_code)] // used in #[cfg(test)]; wired into surface_subtree by step-10
 pub(crate) fn compose_pose_chain(poses: &[reify_ir::Value]) -> reify_ir::Value {
     let identity = reify_ir::Value::Transform {
         rotation: Box::new(reify_ir::Value::Orientation {
@@ -4722,8 +4720,11 @@ pub(crate) fn root_template_indices(module: &reify_compiler::CompiledModule) -> 
 /// stop there to avoid unbounded recursion — runtime recursion unfolding is a
 /// separate concern (`unfold.rs`) and out of this surfacing path's scope.
 ///
-/// IDENTITY pose at step-4 (no transform applied); step-10 composes and applies
-/// the world transform before tessellation. Step-6 threads `aux` inheritance.
+/// step-10 composes each sub's `at` pose down the walk (`eval_sub_pose` +
+/// `compose_pose_chain`) and applies the resulting world transform via
+/// `GeometryOp::ApplyTransform` on the default kernel before tessellation;
+/// identity / un-placed poses short-circuit and tessellate the handle directly.
+/// Step-6 threads `aux` inheritance.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn surface_subtree(
     module: &reify_compiler::CompiledModule,
@@ -4734,11 +4735,25 @@ pub(crate) fn surface_subtree(
     // external geometric effect). Inherited down the walk; ORed with each
     // realization's own `aux` to derive `default_visible`. `false` at roots.
     aux_ancestor: bool,
+    // T5 step-10: the composed world transform inherited from the root down to
+    // this template (`pose_root ∘ … ∘ pose_parent`). Identity at roots. When
+    // non-identity, applied to each realization's terminal geometry (via
+    // `GeometryOp::ApplyTransform` on the default kernel) before tessellation so
+    // the descendant surfaces at its composed world pose.
+    composed_world: &reify_ir::Value,
     depth: usize,
     terminal_handles: &[Vec<Option<KernelHandle>>],
-    geometry_kernels: &BTreeMap<String, Box<dyn GeometryKernel>>,
+    // `&mut` so a non-identity `composed_world` can `execute` an ApplyTransform
+    // on the default kernel before tessellating; the pre-step-10 walk only read
+    // the kernel to tessellate.
+    geometry_kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
     default_kernel_name: &str,
     tessellation_budgets: &[Vec<f64>],
+    // T5 step-10: parent value / function / meta context for evaluating each
+    // sub's `at` pose via `eval_sub_pose`.
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
     meshes: &mut Vec<crate::MeshSurface>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -4750,16 +4765,54 @@ pub(crate) fn surface_subtree(
     }
     let template = &module.templates[t_idx];
 
+    // step-10: decompose the inherited world transform once for this template.
+    // `Some(non-identity)` → apply via `ApplyTransform` before tessellating;
+    // identity, or a non-decomposable pose (e.g. an `eval_sub_pose` Undef already
+    // diagnosed upstream), short-circuits to tessellating the recorded handle
+    // directly — surfacing at the parent frame, bit-identical to the pre-step-10
+    // (root / identity-containment) path so no extra kernel op or handle is made.
+    let placement: Option<([f64; 4], [f64; 3])> =
+        match decompose_transform_to_arrays(composed_world) {
+            Some((rotation, translation))
+                if rotation != [1.0, 0.0, 0.0, 0.0] || translation != [0.0, 0.0, 0.0] =>
+            {
+                Some((rotation, translation))
+            }
+            _ => None,
+        };
+
     // Surface this template's own realizations at `path_prefix`.
     for (r_idx, realization) in template.realizations.iter().enumerate() {
         let Some(handle) = terminal_handles[t_idx][r_idx] else {
             continue;
         };
         let budget = tessellation_budgets[t_idx][r_idx];
+        // ApplyTransform + tessellate both route through the DEFAULT kernel,
+        // consistent with the pre-step-10 tessellate path. A single `&mut` borrow
+        // covers the `execute` (`&mut self`) then `tessellate` (`&self`) sequence.
         let default_kernel = geometry_kernels
-            .get(default_kernel_name)
+            .get_mut(default_kernel_name)
             .expect("default kernel must remain in the map across the surfacing walk");
-        match default_kernel.tessellate(handle.id, budget) {
+        let tess_id = match placement {
+            Some((rotation, translation)) => {
+                match default_kernel.execute(&reify_ir::GeometryOp::ApplyTransform {
+                    target: handle.id,
+                    rotation,
+                    translation,
+                }) {
+                    Ok(transformed) => transformed.id,
+                    Err(e) => {
+                        diagnostics.push(Diagnostic::error(format!(
+                            "transform application error: {}",
+                            e
+                        )));
+                        continue;
+                    }
+                }
+            }
+            None => handle.id,
+        };
+        match default_kernel.tessellate(tess_id, budget) {
             Ok(mesh) => {
                 // step-6: hide iff any `aux` ancestor sub OR this realization's
                 // own `aux` let. aux bodies are still tessellated and shipped —
@@ -4778,7 +4831,8 @@ pub(crate) fn surface_subtree(
         }
     }
 
-    // Recurse into each non-collection sub at the composed dotted path.
+    // Recurse into each non-collection sub at the composed dotted path,
+    // accumulating its `at` pose onto the inherited world transform.
     for sub in &template.sub_components {
         if sub.is_collection {
             continue;
@@ -4791,16 +4845,26 @@ pub(crate) fn surface_subtree(
             continue;
         };
         let child_prefix = format!("{}.{}", path_prefix, sub.name);
+        // step-10: evaluate this sub's `at` pose in the parent context and
+        // compose it onto the inherited world transform. A poseless sub
+        // (`pose == None`) yields the identity Transform, so an un-placed
+        // containment chain stays identity and short-circuits in the child.
+        let sub_pose = eval_sub_pose(sub.pose.as_ref(), values, functions, meta_map, diagnostics);
+        let child_world = compose_pose_chain(&[composed_world.clone(), sub_pose]);
         surface_subtree(
             module,
             child_idx,
             &child_prefix,
             aux_ancestor || sub.is_aux,
+            &child_world,
             depth + 1,
             terminal_handles,
             geometry_kernels,
             default_kernel_name,
             tessellation_budgets,
+            values,
+            functions,
+            meta_map,
             meshes,
             diagnostics,
         );

@@ -2697,6 +2697,9 @@ impl Engine {
         // the tree, at the composed world pose (identity at step-4; step-10
         // applies the composed transform before tessellation). Independent /
         // single templates are roots and surface bit-identically to pre-T5.
+        // Roots start at the identity world transform (`compose_pose_chain(&[])`);
+        // step-10 accrues each sub's `at` pose onto it down the walk.
+        let identity_world = crate::geometry_ops::compose_pose_chain(&[]);
         for root_idx in crate::geometry_ops::root_template_indices(module) {
             let root_prefix = module.templates[root_idx].name.clone();
             crate::geometry_ops::surface_subtree(
@@ -2705,11 +2708,15 @@ impl Engine {
                 &root_prefix,
                 // Roots have no aux ancestor; inheritance accrues down the walk.
                 false,
+                &identity_world,
                 0,
                 &terminal_handles,
                 geometry_kernels,
                 default_kernel_name,
                 tessellation_budgets,
+                values,
+                functions,
+                meta_map,
                 &mut meshes,
                 diagnostics,
             );
