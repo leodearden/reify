@@ -20,6 +20,7 @@
 
 pub mod diagnostics;
 pub mod dimension;
+pub mod kernel;
 pub mod hash;
 pub mod identity;
 pub mod persistent_cache;
