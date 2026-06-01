@@ -357,3 +357,105 @@ fn engine_state_json_after_record_reload_error_exposes_staleness() {
         "meshes must be non-empty (last-good retained) after record_reload_error"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Capstone: end-to-end debug API regression test (task 4153, step-11)
+// ---------------------------------------------------------------------------
+
+/// Capstone regression test for the hot-reload staleness bug (task 4153).
+///
+/// This is the direct analog of the live repro: `mcp__reify-debug__engine_state`
+/// after a failing edit returned last-good meshes with NO diagnostics and NO stale
+/// flag, making the failure completely silent.  This test guards the whole chain:
+///
+///   1. Load bracket source → non-empty meshes (clean state).
+///   2. Snapshot mesh count via `engine_state_json` — clean, stale=false.
+///   3. Force a failing reload via `reload_for_watch_impl` with invalid source
+///      (the reliable Err path through `update_source`).
+///   4. Call `engine_state_json` again and assert:
+///      - `stale == true`
+///      - `reload_error` is a non-null string
+///      - `compile_diagnostics` is non-empty with at least one Error-severity entry
+///      - mesh count equals the pre-failure count (last-good retained, detectably stale)
+///
+/// If any link in the chain regresses (staleness recording, build_gui_state synth,
+/// engine_state_json exposure, reload_for_watch_impl fallback), this test fails.
+#[test]
+fn capstone_engine_state_json_after_failing_reload_shows_stale_with_last_good_meshes() {
+    let engine = make_engine();
+
+    // (2) Snapshot the clean engine state: must be non-stale with non-empty meshes.
+    let pre_failure_mesh_count = {
+        let mut session = engine.lock().unwrap();
+        let result =
+            engine_state_json(&mut session).expect("pre-failure engine_state_json must succeed");
+        assert_eq!(
+            result["stale"],
+            serde_json::Value::Bool(false),
+            "clean engine must have stale=false"
+        );
+        assert!(
+            result["reload_error"].is_null(),
+            "clean engine must have null reload_error"
+        );
+        let meshes = result["meshes"].as_array().expect("meshes must be an array");
+        assert!(!meshes.is_empty(), "clean engine must have non-empty meshes");
+        meshes.len()
+    };
+
+    // (3) Force a failing reload — invalid source triggers compile error → update_source
+    //     returns Err → update_source_impl records the error → reload_for_watch_impl
+    //     falls back to last-good state carrying the diagnostic.
+    let _fallback_state =
+        crate::commands::reload_for_watch_impl(&engine, "bracket.ri", "invalid syntax $$$")
+            .expect("reload_for_watch_impl must return Ok even on failure");
+
+    // (4) engine_state_json must now reflect the failure.
+    let post_failure = {
+        let mut session = engine.lock().unwrap();
+        engine_state_json(&mut session).expect("post-failure engine_state_json must succeed")
+    };
+
+    // stale flag must be set.
+    assert_eq!(
+        post_failure["stale"],
+        serde_json::Value::Bool(true),
+        "stale must be true after a failing reload"
+    );
+
+    // reload_error must be a non-null string.
+    assert!(
+        post_failure["reload_error"].is_string(),
+        "reload_error must be a non-null string after a failing reload; got: {:?}",
+        post_failure["reload_error"]
+    );
+
+    // compile_diagnostics must be non-empty with at least one Error-severity entry.
+    let compile_diagnostics = post_failure["compile_diagnostics"]
+        .as_array()
+        .expect("compile_diagnostics must be an array");
+    assert!(
+        !compile_diagnostics.is_empty(),
+        "compile_diagnostics must be non-empty after a failing reload"
+    );
+    let has_error = compile_diagnostics
+        .iter()
+        .any(|d| d["severity"].as_str() == Some("Error"));
+    assert!(
+        has_error,
+        "compile_diagnostics must contain an Error-severity entry after a failing reload; \
+         got: {:?}",
+        compile_diagnostics
+    );
+
+    // Meshes must be the last-good set — same count as before the failure, proving
+    // the displayed state is detectably stale rather than silently-correct.
+    let post_mesh_count = post_failure["meshes"]
+        .as_array()
+        .expect("meshes must be an array")
+        .len();
+    assert_eq!(
+        post_mesh_count, pre_failure_mesh_count,
+        "mesh count after failing reload must equal pre-failure count (last-good retained)"
+    );
+}
