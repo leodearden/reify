@@ -2878,6 +2878,116 @@ mod tests {
         );
     }
 
+    // --- Rotation-bubble activation signal (task 4065 step-1 RED) ---
+
+    /// Step-1 RED: K_NB rotation-bubble coupling signal.
+    ///
+    /// Verifies that `shell_element_stiffness_degenerate_ans_bubble` (the ANS
+    /// membrane + active rotation bubble entry point, task 4065):
+    ///
+    /// - (a) **FLAT fixture** (all directors ∥ +z): parallel-director short-circuit
+    ///   forces K_NB = 0 → condensation is a no-op → K*_bubble = K_ans entry-wise
+    ///   to ≤1e-12 (flat-inertness preserved bit-exactly).
+    /// - (b) **CURVED fixture** (tilted directors, curved_directors()): K_NB ≠ 0 so
+    ///   the Schur complement K* = K_NN − K_NB·K_BB⁻¹·K_BN strictly softens:
+    ///   (i) K*_bubble is finite + symmetric (≤1e-9·k_max);
+    ///   (ii) trace(K*_bubble) < trace(K_ans) by > 1e-9·trace(K_ans);
+    ///   (iii) probe bending displacement u gives u^T K*_bubble u < u^T K_ans u.
+    ///
+    /// Achievability: K_BB SPD (degenerate_stiffness_core accumulates it) + K_NB ≠ 0
+    /// (the ζ-independent coupling term in g_phi_b mixes through the curved J) →
+    /// K* ≼ K_NN (Loewner) strictly.
+    #[test]
+    fn degenerate_ans_bubble_couples_on_curved_patch_and_is_inert_when_flat() {
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let thicknesses = [t; 3];
+
+        // ── (a) Flat fixture: all directors ∥ +z ────────────────────────────────
+        let dirs_flat = flat_patch_directors();
+        let k_ans_flat =
+            shell_element_stiffness_degenerate_ans(&UNIT_TRI, &dirs_flat, &thicknesses, &mat);
+        let k_bubble_flat = shell_element_stiffness_degenerate_ans_bubble(
+            &UNIT_TRI,
+            &dirs_flat,
+            &thicknesses,
+            &mat,
+        );
+        let k_max_flat = element_k_max(&k_ans_flat).max(1.0);
+        for i in 0..Mitc3Plus::N_DOFS {
+            for j in 0..Mitc3Plus::N_DOFS {
+                let diff = (k_bubble_flat.get(i, j) - k_ans_flat.get(i, j)).abs();
+                assert!(
+                    diff <= 1e-12 * k_max_flat,
+                    "flat inertness: K_bubble[{i}][{j}] differs from K_ans by {diff} \
+                     (k_max_flat={k_max_flat:.3e}, tol={:.3e})",
+                    1e-12 * k_max_flat,
+                );
+            }
+        }
+
+        // ── (b) Curved fixture: non-parallel directors ──────────────────────────
+        let dirs_curved = curved_directors();
+        let k_ans_c =
+            shell_element_stiffness_degenerate_ans(&UNIT_TRI, &dirs_curved, &thicknesses, &mat);
+        let k_bubble_c = shell_element_stiffness_degenerate_ans_bubble(
+            &UNIT_TRI,
+            &dirs_curved,
+            &thicknesses,
+            &mat,
+        );
+
+        // (i) Finite and symmetric (≤1e-9·k_max).
+        let k_max_c = element_k_max(&k_bubble_c).max(1.0);
+        for i in 0..Mitc3Plus::N_DOFS {
+            for j in 0..Mitc3Plus::N_DOFS {
+                assert!(
+                    k_bubble_c.get(i, j).is_finite(),
+                    "curved bubble: K[{i}][{j}] not finite",
+                );
+                let asym = (k_bubble_c.get(i, j) - k_bubble_c.get(j, i)).abs();
+                assert!(
+                    asym < 1e-9 * k_max_c,
+                    "curved bubble: asymmetry at ({i},{j}) = {asym:.3e} (tol {:.3e})",
+                    1e-9 * k_max_c,
+                );
+            }
+        }
+
+        // (ii) Trace softening: trace(K*_bubble) < trace(K_ans) strictly by > 1e-9·trace.
+        // Schur complement of SPD K_BB ⇒ K* ≼ K_NN when K_NB ≠ 0 (Loewner order).
+        let trace_ans: f64 = (0..Mitc3Plus::N_DOFS)
+            .map(|i| k_ans_c.get(i, i))
+            .sum();
+        let trace_bubble: f64 = (0..Mitc3Plus::N_DOFS)
+            .map(|i| k_bubble_c.get(i, i))
+            .sum();
+        let margin = 1e-9 * trace_ans.abs();
+        assert!(
+            trace_bubble < trace_ans - margin,
+            "bubble must soften: trace_bubble={trace_bubble:.6e}, trace_ans={trace_ans:.6e}, \
+             margin={margin:.2e} — K_NB≠0 on curved patch ⇒ K* ≼ K_NN strictly",
+        );
+
+        // (iii) Probe bending displacement: u^T K*_bubble u < u^T K_ans u.
+        // Pure θ_y at node 1 (x=1) — inextensional bending along x on the curved patch.
+        const NDP: usize = Mitc3Plus::N_DOFS_PER_NODE;
+        let mut u_probe = [0.0_f64; Mitc3Plus::N_DOFS];
+        u_probe[NDP * 1 + 4] = 1.0; // θ_y = 1 at node 1
+
+        let ku_ans = matvec(&k_ans_c, &u_probe);
+        let ku_bubble = matvec(&k_bubble_c, &u_probe);
+        let e_ans: f64 =
+            0.5 * ku_ans.iter().zip(u_probe.iter()).map(|(a, b)| a * b).sum::<f64>();
+        let e_bubble: f64 =
+            0.5 * ku_bubble.iter().zip(u_probe.iter()).map(|(a, b)| a * b).sum::<f64>();
+        assert!(
+            e_bubble < e_ans,
+            "probe bending: e_bubble={e_bubble:.6e} must be < e_ans={e_ans:.6e} \
+             (bubble softens bending energy on the curved patch)",
+        );
+    }
+
     #[test]
     fn degenerate_transverse_shear_constant_state_patch_test_nonunit_triangle() {
         // POSITIVE proof of the metric improvement (esc-4068-134 directive 2): on a
