@@ -26,11 +26,14 @@
 //    about the rail axis; their midplane coincides with the Y-rail plane.
 //  - The lowest X-rail bearing sits a small clearance above the build volume and
 //    DEFINES the motion-system Z height (gantry fixed high; the Z-bed drops).
-//  - CoreXY drive tendons: A & B belts, each mirrored upper/lower for moment
-//    balance => four tendon planes (A outer, B inner) expressed as a TendonVPair
-//    (the ±Z mirror) placed twice. v0.1 models straight full-Y spans; the
-//    diagonal half-span routing (A: front-of-one-rail + back-of-other) is a
-//    follow-on.
+//  - CoreXY drive tendons: two belts, A & B. In real CoreXY a single rope drives
+//    X and Y jointly, so EACH belt runs along BOTH Y rails AND crosses the
+//    gantry. Modelled (β) as two belts stacked in Z (A upper, B lower — the
+//    offset that lets the ropes cross without colliding), each belt = three
+//    straight spans (both rail runs + a gantry cross) => six spans, via a Belt
+//    sub-assembly placed twice. Deferred: the spec's in-plane moment-doubling of
+//    each run, the head-position fore/aft split, and live x_head/y_head tracking
+//    (all blocked by the override drop below).
 //
 // VISIBILITY: reference geometry (build-volume box, bed travel centreline) is
 // `aux` — realised + inspectable but default_visible=false (GUI auto-hide is
@@ -102,41 +105,53 @@ pub structure CarriageBlock {
     constraint height > 0mm
 }
 
-// ── Tendon self-similarity (α: nested mirrored pairs) ───────────────────────
+// ── Tendon routing (β: each belt spans both rails + the gantry cross) ───────
 
-/// One belt, mirrored upper/lower about the rail plane for moment balance.
-/// The pair offset is along local +Y so that, once the VPair is rotated to run
-/// along world +Y, the offset becomes the vertical (+Z) upper/lower split.
-pub structure TendonVPair {
-    /// Vertical half-separation of the pair about the rail plane.
-    param v_half : Length = 12mm
-
-    sub upper = LinearTendon() at transform3(orient_identity(), vec3(0mm, v_half, 0mm))
-    sub lower = LinearTendon() at transform3(orient_identity(), vec3(0mm, 0mm - v_half, 0mm))
-
-    constraint v_half > 0mm
-}
-
-/// The four CoreXY drive tendons: two belt runs, each a mirrored upper/lower
-/// VPair (moment balance). Tendons run along +Y (rotate leaf +Z → +Y) and
-/// straddle the rail plane in Z. v0.1 straight-span stand-in: the two belts run
-/// alongside the two Y rails (just inboard, ±rail_x), so the four tendons share
-/// two Z levels and flank the rails symmetrically. The true CoreXY routing —
-/// each belt (A/B) crossing BOTH rails diagonally, with the concentric
-/// A-outer/B-inner offsets — is the deferred follow-on.
-pub structure DriveTendons {
-    /// Transverse position of each belt run, just inboard of its Y rail
+/// One CoreXY belt, modelled in the rail plane (local z = 0) as three straight
+/// spans: a run along EACH Y rail (just inboard at ±rail_x) plus a gantry
+/// X-cross through the toolhead. So a single belt touches BOTH rails and the
+/// gantry — the CoreXY signature (one rope drives X and Y jointly). The
+/// composing DriveTendons lifts the whole belt to its A/B stack level in Z.
+///
+/// All three spans reuse the shared LinearTendon (800mm default): the Y rails
+/// are 800mm and the gantry is 800mm carriage-to-carriage (== 2 * y_rail_offset),
+/// so one default length spans both — no per-span override (which would be
+/// dropped anyway; see header CAVEAT). Modelled at mid-travel (head at the local
+/// origin); the head-position fore/aft split per rail is a follow-on.
+pub structure Belt {
+    /// Transverse position of each Y-rail run, just inboard of its rail
     /// (≈ y_rail_offset − inset; kept in step with CoreXY.y_rail_offset).
     param rail_x : Length = 360mm
-    param v_half : Length = 12mm
 
-    let rot_to_y   = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)
+    let rot_to_y   = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)   // leaf +Z → +Y rail run
+    let rot_to_x   = orient_axis_angle(vec3(0mm, 1m, 0mm), 90deg)   // leaf +Z → +X gantry cross
     let neg_rail_x = 0mm - rail_x
 
-    sub belt_r = TendonVPair() at transform3(rot_to_y, vec3(rail_x, 0mm, 0mm))      // alongside +X (right) rail
-    sub belt_l = TendonVPair() at transform3(rot_to_y, vec3(neg_rail_x, 0mm, 0mm))  // alongside −X (left) rail
+    sub rail_r = LinearTendon() at transform3(rot_to_y, vec3(rail_x,     0mm, 0mm))  // along +X (right) rail
+    sub rail_l = LinearTendon() at transform3(rot_to_y, vec3(neg_rail_x, 0mm, 0mm))  // along −X (left) rail
+    sub cross  = LinearTendon() at transform3(rot_to_x, vec3(0mm,        0mm, 0mm))  // gantry cross through head
 
     constraint rail_x > 0mm
+}
+
+/// The CoreXY drive tendons: two belts A and B, stacked in Z (the offset that
+/// lets the two ropes cross the gantry without colliding). Belt A rides the
+/// upper plane (+v_half), belt B the lower (−v_half); each belt independently
+/// runs along both Y rails and crosses the gantry (see Belt). Six tendon spans
+/// total. v0.1 simplifications, all deferred: the spec's in-plane moment-doubling
+/// of every run, the head-position fore/aft split, and live x_head/y_head
+/// tracking (DriveTendons cannot receive them while sub-site overrides are
+/// dropped — header CAVEAT).
+pub structure DriveTendons {
+    /// Z half-separation of belt A (upper) and belt B (lower) about the rail plane.
+    param v_half : Length = 12mm
+
+    let neg_v_half = 0mm - v_half
+
+    sub belt_a = Belt() at transform3(orient_identity(), vec3(0mm, 0mm, v_half))      // upper belt
+    sub belt_b = Belt() at transform3(orient_identity(), vec3(0mm, 0mm, neg_v_half))  // lower belt
+
+    constraint v_half > 0mm
 }
 
 // ── CoreXY motion system (directly composed) ─────────────────────────────────
