@@ -539,9 +539,9 @@ pub fn solve_buckling_trampoline(
 /// The three declared-but-not-yet-honored params are:
 ///   - `mode`       — default `"shift_invert"`; any other string triggers a warning.
 ///   - `sigma`      — default `0.0`; any non-zero value triggers a warning.
-///                    Handles both `Value::Real` and `Value::Int` (integer literals
-///                    such as `sigma: 2` may arrive as `Value::Int` even though the
-///                    DSL declares `sigma` as `Real`).
+///     Handles both `Value::Real` and `Value::Int` (integer literals
+///     such as `sigma: 2` may arrive as `Value::Int` even though the
+///     DSL declares `sigma` as `Real`).
 ///   - `auto_dense` — default `true`; `false` triggers a warning.
 ///
 /// Absent fields AND default values produce no diagnostic — robust to whether the
