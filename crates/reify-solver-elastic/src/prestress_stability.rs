@@ -629,4 +629,39 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn reduced_subspace_min_eigenvalue_positive_for_prism_negative_for_indefinite() {
+        // (a) Canonical prism: its single internal mechanism is non-affine, so it
+        // is NOT in null(K_G) and the reduced stiffness Mᵀ K_G M (1×1 here) is
+        // strictly positive ⇒ prestress-stable.
+        let nodes = canonical_prism();
+        let members = triplex_members();
+        let a = assemble_equilibrium_matrix(&nodes, &members);
+        let basis = extract_internal_mechanisms(&a, &nodes);
+        let k_g = assemble_geometric_stiffness(6, &members, &closed_form_q());
+        let min_prism: f64 = min_eigenvalue_on_subspace(&k_g, &basis);
+        assert!(
+            min_prism > 1e-6,
+            "prism's non-affine mechanism gives strictly positive reduced stiffness (stable), got {min_prism}",
+        );
+
+        // (b) Deterministic indefinite case: a 2-column orthonormal basis selects
+        // coordinates 0 and 2 of a diagonal K_G whose entries there are +3 and
+        // −0.5 (the +99 on coordinate 1 is outside the subspace). The reduced
+        // matrix is diag(3, −0.5), so its algebraic minimum is −0.5 < 0. Pins the
+        // negative branch without a physically-realised unstable tensegrity.
+        let mut k_indef = Mat::<f64>::zeros(3, 3);
+        k_indef[(0, 0)] = 3.0;
+        k_indef[(1, 1)] = 99.0;
+        k_indef[(2, 2)] = -0.5;
+        let mut sel = Mat::<f64>::zeros(3, 2);
+        sel[(0, 0)] = 1.0; // column 0 selects coordinate 0 (K_G = +3)
+        sel[(2, 1)] = 1.0; // column 1 selects coordinate 2 (K_G = −0.5)
+        let min_indef: f64 = min_eigenvalue_on_subspace(&k_indef, &sel);
+        assert!(
+            min_indef < 0.0,
+            "reduced diag(3, −0.5) must have a negative algebraic minimum, got {min_indef}",
+        );
+    }
 }
