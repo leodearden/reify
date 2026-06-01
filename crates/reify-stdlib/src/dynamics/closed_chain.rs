@@ -184,4 +184,45 @@ fn ldlt_solve_symmetric(a: &mut [f64], b: &mut [f64], k: usize, pivot_eps: f64) 
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    /// Helper: assert two f64 slices are element-wise within `tol`.
+    fn assert_near(label: &str, got: &[f64], want: &[f64], tol: f64) {
+        assert_eq!(got.len(), want.len(), "{label}: length mismatch");
+        for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
+            assert!(
+                (g - w).abs() <= tol,
+                "{label}[{i}]: got {g:.6e}, want {w:.6e}, diff {:.2e} > tol {tol:.2e}",
+                (g - w).abs()
+            );
+        }
+    }
+
+    // S1: m=0 (no constraints) must reduce to the open-chain system M·q̈ = τ_open.
+    // Inputs: M = diag(2,4), τ_open = [6,8], m=0 ⇒ q̈ = [6/2, 8/4] = [3, 2].
+    #[test]
+    fn no_constraints_reduces_to_open_chain() {
+        let m_matrix = [2.0_f64, 0.0, 0.0, 4.0]; // 2×2 diagonal, row-major
+        let tau_open = [6.0_f64, 8.0];
+        let a_matrix: &[f64] = &[];
+        let accel_rhs: &[f64] = &[];
+        let n = 2;
+        let m = 0;
+
+        let sol = solve_closed_chain(
+            &m_matrix,
+            &tau_open,
+            a_matrix,
+            accel_rhs,
+            n,
+            m,
+            DEFAULT_PIVOT_EPS,
+        )
+        .expect("m=0 solve should succeed");
+
+        assert_near("q_ddot", &sol.q_ddot, &[3.0, 2.0], 1e-12);
+        assert!(sol.lambda.is_empty(), "lambda must be empty for m=0");
+        assert_near("tau", &sol.tau, &[6.0, 8.0], 1e-12);
+    }
+}
