@@ -10660,3 +10660,64 @@ fn build_gui_state_fea_cantilever_smoke_has_von_mises_and_displaced_positions() 
         json_result.err()
     );
 }
+
+// ── Task 4087 amend: degenerate-stride guard coverage ────────────────────────
+//
+// Locks in the `_ =>` fallback arms in von_mises_sample (w.len() >= 9 guard)
+// and displaced_sample (w.len() >= 3 guard) when the sampled field has a
+// stride that is smaller than expected.  These branches are reachable in
+// production if the solver emits a field with an unexpected codomain size.
+
+/// Build a 2×1×1 Regular3D SampledField with stride 2 (< 3) to exercise the
+/// degenerate-displacement guard in displaced_sample.
+///
+/// Grid: 2 nodes in x ([0.0, 1.0]), 1 node each in y and z ([0.0]).
+/// bounds [0,1] × [0,0] × [0,0]; spacing 1.0 per axis.
+/// 2 nodes × stride 2 = 4 data entries; no NaN (in-solid).
+fn make_stride2_field_for_degenerate_test() -> reify_ir::SampledField {
+    reify_ir::SampledField {
+        name: "disp_degenerate_stride2".to_string(),
+        kind: reify_ir::SampledGridKind::Regular3D,
+        bounds_min: vec![0.0, 0.0, 0.0],
+        bounds_max: vec![1.0, 0.0, 0.0],
+        spacing: vec![1.0, 1.0, 1.0],
+        axis_grids: vec![vec![0.0, 1.0], vec![0.0], vec![0.0]],
+        interpolation: reify_ir::InterpolationKind::NearestNeighbor,
+        data: vec![10.0_f64, 20.0, 30.0, 40.0],
+        oob_emitted: std::sync::atomic::AtomicBool::new(false),
+    }
+}
+
+/// von_mises_sample returns SCALAR_CHANNEL_OOB_SENTINEL when the stress field
+/// has stride < 9, even for an in-bounds in-solid node.
+///
+/// Uses make_3d_stride3_field (stride 3) to simulate a degenerate stress field.
+#[test]
+fn von_mises_sample_degenerate_stride_returns_sentinel() {
+    // make_3d_stride3_field has stride 3, which is < 9.
+    let sf = make_3d_stride3_field();
+    // Point [0.05, 0.05, 0.05] is in-bounds and nearest to node (0,0,0) = [1.0,2.0,3.0] (no NaN).
+    // sample_stride_field_nearest returns Some(window) with len==3, which fails the >= 9 guard.
+    let result = crate::engine::von_mises_sample(&sf, [0.05, 0.05, 0.05], 1e-6);
+    assert_eq!(
+        result,
+        crate::types::SCALAR_CHANNEL_OOB_SENTINEL,
+        "stress field with stride < 9 must yield SCALAR_CHANNEL_OOB_SENTINEL (guard: w.len() >= 9)"
+    );
+}
+
+/// displaced_sample returns the original vertex position when the displacement
+/// field has stride < 3, even for an in-bounds in-solid node.
+#[test]
+fn displaced_sample_degenerate_stride_returns_original_position() {
+    // make_stride2_field_for_degenerate_test has stride 2, which is < 3.
+    let sf = make_stride2_field_for_degenerate_test();
+    let point = [0.0_f64, 0.0, 0.0]; // in-bounds; snaps to ix=0,iy=0,iz=0, data [10.0,20.0].
+    // sample_stride_field_nearest returns Some(window) with len==2, which fails the >= 3 guard.
+    let result = crate::engine::displaced_sample(&sf, point, 1e-6);
+    assert_eq!(
+        result,
+        [point[0] as f32, point[1] as f32, point[2] as f32],
+        "displacement field with stride < 3 must return original vertex position (guard: w.len() >= 3)"
+    );
+}
