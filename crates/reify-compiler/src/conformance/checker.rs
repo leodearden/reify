@@ -848,19 +848,19 @@ pub(super) fn collect_structure_assoc_type_bindings(
     let empty_params: HashSet<String> = HashSet::new();
     let mut sink: Vec<Diagnostic> = Vec::new();
     for m in structure.members.iter() {
-        if let reify_ast::MemberDecl::AssociatedType(at) = m {
-            if let Some(type_expr) = &at.default_type {
-                let ty = resolve_type_expr_with_aliases(
-                    type_expr,
-                    &empty_params,
-                    alias_registry,
-                    &mut sink,
-                    structure_names,
-                    trait_names,
-                )
-                .unwrap_or(Type::Error);
-                bindings.insert(at.name.clone(), ty);
-            }
+        if let reify_ast::MemberDecl::AssociatedType(at) = m
+            && let Some(type_expr) = &at.default_type
+        {
+            let ty = resolve_type_expr_with_aliases(
+                type_expr,
+                &empty_params,
+                alias_registry,
+                &mut sink,
+                structure_names,
+                trait_names,
+            )
+            .unwrap_or(Type::Error);
+            bindings.insert(at.name.clone(), ty);
         }
     }
     bindings
@@ -1244,6 +1244,7 @@ pub(super) fn check_phase_resolve_assoc_types(
 /// `.get(&(req.name.clone(), kind))` allocates a `String` per lookup because
 /// `HashMap<(String, K), V>` has no `Borrow` impl for `(&str, K)`. Requirement counts are
 /// small in practice; the escape hatch is a two-level `HashMap<String, HashMap<K, V>>`.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn check_phase_check_members_against_requirements(
     ctx: &MergeContext,
     structure: &EntityDefRef<'_>,
@@ -1309,7 +1310,7 @@ pub(super) fn check_phase_check_members_against_requirements(
                     let declaring_trait = ctx
                         .seen_assoc_type_reqs
                         .get(&req.name)
-                        .map(|t| t.clone())
+                        .cloned()
                         .unwrap_or_else(|| "<trait>".to_string());
                     diagnostics.push(
                         Diagnostic::error(format!(
