@@ -21,7 +21,7 @@ use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
 use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
 use reify_test_support::*;
 use reify_core::{DiagnosticCode, DimensionVector, Severity, SourceSpan, Type};
-use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledFunction, ConstraintSolver, ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm, OptimizationObjective, ResolutionProblem, SolveResult, Value, ValueMap};
+use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledFunction, ConstraintSolver, ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm, ResolutionProblem, SolveResult, Value, ValueMap};
 
 #[test]
 fn single_param_feasibility_via_trait_object() {
@@ -75,7 +75,7 @@ fn maximize_objective() {
     let lt_expr = lt(thickness_ref.clone(), literal(mm(20.0)));
 
     // Maximize thickness
-    let objective = OptimizationObjective::Maximize(thickness_ref);
+    let objective = ObjectiveSet::single(ObjectiveSense::Maximize, thickness_ref);
 
     let problem = ResolutionProblem {
         auto_params: vec![AutoParam {
@@ -376,7 +376,7 @@ fn minimize_undef_objective_returns_no_progress() {
     // Objective: minimize(x / 0) — division by zero → Undef
     let zero = literal(Value::Int(0));
     let div_by_zero = binop(BinOp::Div, x_ref, zero);
-    let objective = OptimizationObjective::Minimize(div_by_zero);
+    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, div_by_zero);
 
     let problem = ResolutionProblem {
         auto_params: vec![AutoParam {
@@ -414,7 +414,7 @@ fn maximize_undef_objective_returns_no_progress() {
     // Objective: maximize(x / 0) — division by zero → Undef
     let zero = literal(Value::Int(0));
     let div_by_zero = binop(BinOp::Div, x_ref, zero);
-    let objective = OptimizationObjective::Maximize(div_by_zero);
+    let objective = ObjectiveSet::single(ObjectiveSense::Maximize, div_by_zero);
 
     let problem = ResolutionProblem {
         auto_params: vec![AutoParam {
@@ -496,7 +496,7 @@ fn optimize_with_feasible_initial_point() {
 
     // Minimize thickness — should push toward the auto param lower bound (5mm),
     // which is still above the constraint floor (2mm)
-    let objective = OptimizationObjective::Minimize(thickness_ref);
+    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, thickness_ref);
 
     // Set current value to 25mm — already feasible (between 2mm and 50mm)
     let mut current = ValueMap::new();
@@ -547,7 +547,7 @@ fn maximize_with_feasible_initial_point() {
     let lt_expr = lt(x_ref.clone(), literal(mm(80.0)));
 
     // Maximize x — should push toward upper bound
-    let objective = OptimizationObjective::Maximize(x_ref);
+    let objective = ObjectiveSet::single(ObjectiveSense::Maximize, x_ref);
 
     // Set current value to 10mm — already feasible
     let mut current = ValueMap::new();
@@ -613,7 +613,7 @@ fn warm_start_falls_back_to_initial_when_optimizer_drifts_infeasible() {
     let lt_expr = lt(x_ref.clone(), literal(mm(6.0)));
 
     // Minimize x — pushes toward 0, trying to leave the feasible window
-    let objective = OptimizationObjective::Minimize(x_ref);
+    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, x_ref);
 
     // Current value = 5.5mm — right in the feasible window
     let mut current = ValueMap::new();
@@ -669,7 +669,7 @@ fn infeasible_with_objective_still_detected() {
     let constraint = gt(x_ref.clone(), literal(mm(15.0)));
 
     // Maximize x — the objective shouldn't mask the infeasibility
-    let objective = OptimizationObjective::Maximize(x_ref);
+    let objective = ObjectiveSet::single(ObjectiveSense::Maximize, x_ref);
 
     let problem = ResolutionProblem {
         auto_params: vec![AutoParam {
@@ -722,7 +722,7 @@ fn warm_start_optimizes_when_possible() {
     let lt_expr = lt(x_ref.clone(), literal(mm(50.0)));
 
     // Minimize x — should optimize, not just return initial
-    let objective = OptimizationObjective::Minimize(x_ref);
+    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, x_ref);
 
     // Start at 25mm — feasible, but far from optimal
     let mut current = ValueMap::new();
@@ -792,7 +792,7 @@ fn warm_start_scales_iterations_with_dimension() {
     }
 
     // Minimize p0 — pushes one param toward lower bound
-    let objective = OptimizationObjective::Minimize(param_refs[0].clone());
+    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, param_refs[0].clone());
 
     // All params start at 15mm (feasible, centered in constraint window)
     let mut current = ValueMap::new();
@@ -892,7 +892,7 @@ fn warm_start_budget_exhaustion_stays_feasible() {
         .iter()
         .skip(1)
         .fold(refs[0].clone(), |acc, r| binop(BinOp::Add, acc, r.clone()));
-    let objective = OptimizationObjective::Minimize(sum_expr);
+    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, sum_expr);
 
     // All params start at 11mm — feasible, centered in constraint window
     let mut current = ValueMap::new();
@@ -1051,7 +1051,7 @@ fn infeasible_initial_not_rescued_by_fallback() {
     let constraint = gt(x_ref.clone(), literal(mm(15.0)));
 
     // Minimize x — objective present, but initial is not feasible
-    let objective = OptimizationObjective::Minimize(x_ref);
+    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, x_ref);
 
     // Current value = 5mm — NOT feasible (violates x > 15mm)
     let mut current = ValueMap::new();
@@ -1121,7 +1121,7 @@ fn multi_param_warm_start_with_objective() {
     // Minimize(p0 + p1 + p2)
     let sum_01 = binop(BinOp::Add, p0_ref, p1_ref);
     let sum_012 = binop(BinOp::Add, sum_01, p2_ref);
-    let objective = OptimizationObjective::Minimize(sum_012);
+    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, sum_012);
 
     // All params start at 30mm — feasible, well within constraint windows
     let mut current = ValueMap::new();
@@ -1218,7 +1218,7 @@ fn partial_feasibility_infeasible_when_unreachable() {
 
     // Minimize(p0 + p1)
     let sum_expr = binop(BinOp::Add, p0_ref, p1_ref);
-    let objective = OptimizationObjective::Minimize(sum_expr);
+    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, sum_expr);
 
     let mut current = ValueMap::new();
     // p0 = 30mm — satisfies both p0 constraints (5mm < 30mm < 50mm)
@@ -1390,7 +1390,7 @@ fn warm_start_budget_requires_objective_invariant() {
         auto_params: auto_params.clone(),
         constraints: constraints.clone(),
         current_values: current.clone(),
-        objective: Some(OptimizationObjective::Minimize(x_ref.clone())),
+        objective: Some(ObjectiveSet::single(ObjectiveSense::Minimize, x_ref.clone())),
         functions: vec![].into(),
     };
 
@@ -1467,7 +1467,7 @@ fn warm_start_fallback_returns_exact_initial_values() {
     // Minimize(p0 + p1 + p2) — pushes all params below constraint floor
     let sum_01 = binop(BinOp::Add, p0_ref, p1_ref);
     let sum_012 = binop(BinOp::Add, sum_01, p2_ref);
-    let objective = OptimizationObjective::Minimize(sum_012);
+    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, sum_012);
 
     // All params start at 10.5mm — centered in the feasible window
     let mut current = ValueMap::new();

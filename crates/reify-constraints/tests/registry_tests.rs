@@ -3,7 +3,7 @@
 use reify_constraints::{DimensionalSolver, SolveSpaceSolver, SolverRegistry};
 use reify_test_support::*;
 use reify_core::{ContentHash, DimensionVector, Type};
-use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, OptimizationObjective, ResolutionProblem, ResolvedFunction, SolveResult, Value, ValueMap};
+use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, ObjectiveSense, ObjectiveSet, ResolutionProblem, ResolvedFunction, SolveResult, Value, ValueMap};
 
 /// Basic dispatch: SolverRegistry with DimensionalSolver as fallback
 /// produces same results as DimensionalSolver alone for a simple problem.
@@ -326,7 +326,7 @@ fn registry_compat_maximize_objective() {
 
     let gt_expr = gt(thickness_ref.clone(), literal(mm(2.0)));
     let lt_expr = lt(thickness_ref.clone(), literal(mm(20.0)));
-    let objective = OptimizationObjective::Maximize(thickness_ref);
+    let objective = ObjectiveSet::single(ObjectiveSense::Maximize, thickness_ref);
 
     let problem = ResolutionProblem {
         auto_params: vec![AutoParam {
@@ -419,7 +419,7 @@ fn objective_spanning_independent_components_merges_them() {
 
     // Objective: Maximize(a + b) — references BOTH params
     let obj_expr = binop(BinOp::Add, value_ref("Part", "a"), value_ref("Part", "b"));
-    let objective = OptimizationObjective::Maximize(obj_expr);
+    let objective = ObjectiveSet::single(ObjectiveSense::Maximize, obj_expr);
 
     let problem = ResolutionProblem {
         auto_params: vec![

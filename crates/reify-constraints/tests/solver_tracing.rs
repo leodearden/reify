@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use reify_constraints::DimensionalSolver;
 use reify_test_support::*;
 use reify_core::{DimensionVector, Type};
-use reify_ir::{AutoParam, BinOp, ConstraintSolver, OptimizationObjective, ResolutionProblem, SolveResult, Value, ValueMap};
+use reify_ir::{AutoParam, BinOp, ConstraintSolver, ObjectiveSense, ObjectiveSet, ResolutionProblem, SolveResult, Value, ValueMap};
 
 /// Build a tracing subscriber that counts DEBUG and WARN level events from
 /// `reify_constraints` targets.
@@ -85,7 +85,7 @@ fn consolidated_debug_event_on_max_iters_reached() {
         .iter()
         .skip(1)
         .fold(refs[0].clone(), |acc, r| binop(BinOp::Add, acc, r.clone()));
-    let objective = OptimizationObjective::Maximize(sum_expr);
+    let objective = ObjectiveSet::single(ObjectiveSense::Maximize, sum_expr);
 
     // All params start at 5mm — infeasible (below 10mm constraint).
     // This ensures initially_feasible=false, so the fallback debug cannot fire.

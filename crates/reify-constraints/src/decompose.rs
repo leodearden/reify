@@ -90,7 +90,7 @@ fn collect_value_refs(expr: &CompiledExpr, out: &mut HashSet<ValueCellId>) {
 pub fn decompose_into_components(
     auto_params: &[AutoParam],
     constraints: &[(ConstraintNodeId, CompiledExpr)],
-    objective: Option<&CompiledExpr>,
+    objective_refs: Option<&HashSet<ValueCellId>>,
 ) -> Vec<SubProblem> {
     if constraints.is_empty() {
         return vec![];
@@ -146,20 +146,20 @@ pub fn decompose_into_components(
         });
     }
 
-    // If an objective expression is provided, union all auto params it
-    // references. This ensures all objective-referenced params land in the
-    // same component, even if the constraints alone don't connect them.
-    if let Some(obj_expr) = objective {
-        let mut obj_refs = HashSet::new();
-        collect_value_refs(obj_expr, &mut obj_refs);
-
-        let obj_param_indices: Vec<usize> = obj_refs
+    // If objective value-refs are provided (pre-collected from all terms),
+    // union all auto params they reference. This ensures all objective-referenced
+    // params land in the same component, even if the constraints alone don't
+    // connect them. Single-term reduces to prior single-expr behavior identically.
+    if let Some(refs) = objective_refs {
+        let obj_param_indices: Vec<usize> = refs
             .iter()
             .filter_map(|id| param_index.get(id).copied())
             .collect();
 
-        for i in 1..obj_param_indices.len() {
-            uf.union(obj_param_indices[0], obj_param_indices[i]);
+        if !obj_param_indices.is_empty() {
+            for i in 1..obj_param_indices.len() {
+                uf.union(obj_param_indices[0], obj_param_indices[i]);
+            }
         }
     }
 
