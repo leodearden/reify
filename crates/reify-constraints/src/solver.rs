@@ -458,6 +458,16 @@ fn build_centrality_objective(
     auto_params: &[AutoParam],
     constraints: &[(ConstraintNodeId, CompiledExpr)],
 ) -> Option<ObjectiveSet> {
+    // Continuous-only guard (PRD η, B7): return None unless every auto param has
+    // a Scalar type.  Discrete (Int, Bool, Enum, …) scopes stay first-feasible;
+    // the CP-SAT and SolveSpace solvers are separate impls and never reach this
+    // function, so they are naturally unaffected.
+    for param in auto_params {
+        if !matches!(param.param_type, Type::Scalar { .. }) {
+            return None;
+        }
+    }
+
     // Degenerate bounds guard: skip synthesis for any problem with non-finite
     // (NaN, ±Inf) effective bounds.  Such problems are already degenerate; synthesis
     // would proceed to the optimiser, whose `val.clamp(lo, hi)` panics on NaN bounds.
