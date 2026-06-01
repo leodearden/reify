@@ -1341,26 +1341,62 @@ impl CompiledConstraintDef {
 // (engine_purposes.rs). Centralising here prevents the compiler/eval drift
 // that caused 3× phantom-done (1638/1904/2199).
 
-/// Returns `true` if `ty` is a *geometric* parameter type — i.e. a scalar
-/// with a nonzero Length (slot 0) or Angle (slot 7) dimension exponent.
+/// Returns `true` if `ty` is a *geometric* parameter type — a scalar whose
+/// dimension vector is a **pure** power of Length (slot 0) and/or Angle
+/// (slot 7).
 ///
-/// Area (L²) and Volume (L³) both have a nonzero Length slot and are therefore
-/// included. Dimensionless scalars (`Type::Real`, `Type::Scalar{dimension:DIMENSIONLESS}`)
-/// and non-scalar types are excluded.
+/// "Pure" means *only* those two slots may be nonzero; compound physical
+/// quantities that also carry a Mass or Time exponent are therefore excluded,
+/// even though they have a nonzero Length or Angle factor:
+///
+/// | Type             | Slots           | Result  |
+/// |------------------|-----------------|---------|
+/// | Length (L¹)      | 0=1             | `true`  |
+/// | Angle (A¹)       | 7=1             | `true`  |
+/// | Area (L²)        | 0=2             | `true`  |
+/// | Volume (L³)      | 0=3             | `true`  |
+/// | Force (L·M·T⁻²)  | 0=1, 1=1, 2=-2 | `false` |
+/// | Pressure         | 0=-1, 1=1, 2=-2 | `false` |
+/// | Velocity (L·T⁻¹) | 0=1, 2=-1       | `false` |
+/// | Angle·T⁻¹        | 2=-1, 7=1       | `false` |
+/// | Dimensionless    | all zero         | `false` |
+/// | `Type::Real`     | not a Scalar     | `false` |
 pub fn is_geometric_param_type(ty: &Type) -> bool {
-    matches!(ty, Type::Scalar { dimension } if !dimension.0[0].is_zero() || !dimension.0[7].is_zero())
+    if let Type::Scalar { dimension } = ty {
+        // At least one of Length (slot 0) or Angle (slot 7) must be nonzero.
+        let has_length_or_angle = !dimension.0[0].is_zero() || !dimension.0[7].is_zero();
+        // All other slots must be zero: Mass=1, Time=2, Current=3,
+        // Temperature=4, AmountOfSubstance=5, LuminousIntensity=6,
+        // SolidAngle=8, Money=9. This exclusion rule rejects compound
+        // quantities like Force, Pressure, Velocity, and Angular Velocity.
+        let only_length_or_angle = [1usize, 2, 3, 4, 5, 6, 8, 9]
+            .iter()
+            .all(|&i| dimension.0[i].is_zero());
+        has_length_or_angle && only_length_or_angle
+    } else {
+        false
+    }
 }
 
+/// Canonical type name matched by [`is_material_param_type`].
+///
+/// **Limitation:** the predicate matches by exact name — module-qualified names,
+/// renamed imports, and type aliases for Material are silently missed (no
+/// diagnostic; `forall p in subject.material_params` vacuously yields an empty
+/// collection). Centralised as a named constant so a future rename requires a
+/// single-line update. See task-4137 design-decision for rationale.
+pub const MATERIAL_TYPE_NAME: &str = "Material";
+
 /// Returns `true` if `ty` is a *material* parameter type — i.e. a
-/// `StructureRef("Material")` (when the Material struct is in scope) or
-/// `TraitObject("Material")` (when Material is only a trait name).
+/// `StructureRef(MATERIAL_TYPE_NAME)` (when the Material struct is in scope) or
+/// `TraitObject(MATERIAL_TYPE_NAME)` (when Material is only a trait name).
 ///
 /// Both forms are matched because `param m : Material` resolves to
 /// `StructureRef("Material")` when a first-class Material struct is in scope
 /// (type_resolution.rs:629) and to `TraitObject("Material")` when Material
 /// exists only as a trait name.
 pub fn is_material_param_type(ty: &Type) -> bool {
-    matches!(ty, Type::StructureRef(n) | Type::TraitObject(n) if n == "Material")
+    matches!(ty, Type::StructureRef(n) | Type::TraitObject(n) if n == MATERIAL_TYPE_NAME)
 }
 
 #[cfg(test)]
@@ -1457,6 +1493,114 @@ mod kind_display_tests {
             (CurveKind::BezierCurve, "bezier_curve"),
             (CurveKind::NurbsCurve, "nurbs_curve"),
         ]);
+    }
+}
+
+#[cfg(test)]
+mod reflective_param_type_predicate_tests {
+    //! Unit tests for `is_geometric_param_type` and `is_material_param_type`
+    //! (task-4137 amendment).
+    //!
+    //! These tests pin the classification contract directly at the predicate
+    //! boundary, independent of the parse/compile pipeline. They are the
+    //! ground-truth complement to the integration tests in
+    //! `purpose_compile_tests.rs` and `purpose_activation.rs`.
+    use super::{is_geometric_param_type, is_material_param_type, MATERIAL_TYPE_NAME};
+    use reify_core::{DimensionVector, Type};
+
+    // ── is_geometric_param_type ───────────────────────────────────────────────
+
+    /// Length (L¹), Angle (A¹), Area (L²), and Volume (L³) are all pure
+    /// powers of Length and/or Angle — they must be included.
+    #[test]
+    fn geometric_includes_pure_length_angle_area_volume() {
+        assert!(is_geometric_param_type(&Type::length()), "Length must be included");
+        assert!(is_geometric_param_type(&Type::angle()), "Angle must be included");
+        assert!(
+            is_geometric_param_type(&Type::Scalar { dimension: DimensionVector::AREA }),
+            "Area (L²) must be included"
+        );
+        assert!(
+            is_geometric_param_type(&Type::Scalar { dimension: DimensionVector::VOLUME }),
+            "Volume (L³) must be included"
+        );
+    }
+
+    /// Force (L·M·T⁻²), Pressure (L⁻¹·M·T⁻²), and Angular Velocity (A·T⁻¹)
+    /// all carry a Length or Angle factor but also have nonzero Mass or Time
+    /// slots — they must be excluded.
+    #[test]
+    fn geometric_excludes_compound_dimensional_types() {
+        assert!(
+            !is_geometric_param_type(&Type::Scalar { dimension: DimensionVector::FORCE }),
+            "Force (L·M·T⁻²) must be excluded (nonzero Mass and Time slots)"
+        );
+        assert!(
+            !is_geometric_param_type(&Type::Scalar { dimension: DimensionVector::PRESSURE }),
+            "Pressure (L⁻¹·M·T⁻²) must be excluded (nonzero Mass and Time slots)"
+        );
+        assert!(
+            !is_geometric_param_type(&Type::Scalar { dimension: DimensionVector::ANGULAR_VELOCITY }),
+            "Angular Velocity (A·T⁻¹) must be excluded (nonzero Time slot)"
+        );
+    }
+
+    /// `Type::Real` and a dimensionless `Type::Scalar` must be excluded.
+    #[test]
+    fn geometric_excludes_dimensionless_and_real() {
+        assert!(!is_geometric_param_type(&Type::Real), "Type::Real must be excluded");
+        assert!(
+            !is_geometric_param_type(&Type::Scalar { dimension: DimensionVector::DIMENSIONLESS }),
+            "Dimensionless Scalar must be excluded"
+        );
+    }
+
+    /// Non-scalar types must be excluded.
+    #[test]
+    fn geometric_excludes_non_scalar_types() {
+        assert!(
+            !is_geometric_param_type(&Type::StructureRef("Widget".to_string())),
+            "StructureRef must be excluded"
+        );
+        assert!(
+            !is_geometric_param_type(&Type::Bool),
+            "Type::Bool must be excluded"
+        );
+    }
+
+    // ── is_material_param_type ────────────────────────────────────────────────
+
+    /// Both `StructureRef("Material")` and `TraitObject("Material")` must match.
+    /// The TraitObject arm fires when Material exists only as a trait name; this
+    /// test is the primary regression lock for that arm.
+    #[test]
+    fn material_matches_struct_ref_and_trait_object() {
+        assert!(
+            is_material_param_type(&Type::StructureRef(MATERIAL_TYPE_NAME.to_string())),
+            "StructureRef(\"Material\") must be included"
+        );
+        assert!(
+            is_material_param_type(&Type::TraitObject(MATERIAL_TYPE_NAME.to_string())),
+            "TraitObject(\"Material\") must be included — protects the second match arm"
+        );
+    }
+
+    /// Non-Material types must be excluded.
+    #[test]
+    fn material_excludes_other_types() {
+        assert!(
+            !is_material_param_type(&Type::StructureRef("Steel".to_string())),
+            "StructureRef(\"Steel\") must be excluded"
+        );
+        assert!(
+            !is_material_param_type(&Type::TraitObject("Rigid".to_string())),
+            "TraitObject(\"Rigid\") must be excluded"
+        );
+        assert!(!is_material_param_type(&Type::Real), "Type::Real must be excluded");
+        assert!(
+            !is_material_param_type(&Type::length()),
+            "Length must be excluded"
+        );
     }
 }
 

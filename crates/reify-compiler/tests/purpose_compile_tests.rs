@@ -1899,3 +1899,70 @@ purpose check(subject : Widget) {
         member_names
     );
 }
+
+/// Protects the `TraitObject("Material")` arm of `is_material_param_type`
+/// against silent regression.
+///
+/// When Material is declared only as a `trait` (no `structure Material`),
+/// `param mat : Material` resolves to `Type::TraitObject("Material")` rather
+/// than `Type::StructureRef("Material")` (type_resolution.rs precedence rule).
+/// `compile_purpose` must still emit a `material_params` `ResolvedSchemaQuery`
+/// covering that param.
+///
+/// Complements the unit tests for `is_material_param_type` in `types.rs`.
+#[test]
+fn compile_purpose_resolves_material_params_query_via_trait_object() {
+    let source = r#"
+trait Material {
+    param density : Real
+}
+
+structure Beam {
+    param mat : Material = auto
+    param span : Length = 1000mm
+}
+
+purpose check(subject : Beam) {
+    constraint 1 > 0
+}
+"#;
+    // Use compile_module_with_diagnostics so that any solver-level auto-param
+    // diagnostics don't abort the test — we care only about the resolved query.
+    let module = compile_module_with_diagnostics(source);
+
+    let purpose = module
+        .compiled_purposes
+        .iter()
+        .find(|p| p.name == "check")
+        .expect("expected compiled purpose 'check'");
+
+    // compile_purpose must emit the material_params query even when mat's type
+    // is Type::TraitObject("Material") (second arm of is_material_param_type).
+    let mat_query = purpose
+        .resolved_queries
+        .iter()
+        .find(|q| q.query_kind == "material_params" && q.param_name == "subject")
+        .expect(
+            "expected a ResolvedSchemaQuery with query_kind='material_params' \
+             and param_name='subject'; TraitObject arm of is_material_param_type \
+             must fire when Material is declared only as a trait",
+        );
+
+    // resolved_ids must include mat (TraitObject-typed); span (geometric) excluded.
+    let member_names: Vec<&str> = mat_query
+        .resolved_ids
+        .iter()
+        .map(|id: &ValueCellId| id.member.as_str())
+        .collect();
+
+    assert!(
+        member_names.contains(&"mat"),
+        "material_params must include the TraitObject-typed 'mat' param. Got: {:?}",
+        member_names
+    );
+    assert!(
+        !member_names.contains(&"span"),
+        "span (Length-typed, geometric) must NOT appear in material_params. Got: {:?}",
+        member_names
+    );
+}
