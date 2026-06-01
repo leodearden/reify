@@ -2753,6 +2753,56 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::BucklingOptionUnsupported).unwrap();
         assert_eq!(s, "\"BucklingOptionUnsupported\"");
     }
+
+    // --- §7 shell-extract DiagnosticCode tests (task ε, #3837) ---
+    // Six new PRD §7 extraction-failure codes.  Mirrors the
+    // `diagnostic_code_stackup_variants_constructible` + `_serde_pascal_case`
+    // pattern: construct via `Diagnostic::error("x").with_code(code)` (code and
+    // severity round-trip) and assert PascalCase serde wire strings.
+
+    /// All six new §7 shell-extract codes round-trip through
+    /// `Diagnostic::error(...).with_code(...)` with `Severity::Error`.
+    /// Mirrors the `diagnostic_code_stackup_variants_constructible` style.
+    ///
+    /// RED: the six variants do not exist → compile fail.
+    /// GREEN after step-2 adds them to `DiagnosticCode`.
+    #[test]
+    fn diagnostic_code_shell_extract_variants_constructible() {
+        use super::Severity;
+        let codes = [
+            DiagnosticCode::ShellNoVoxelGrid,
+            DiagnosticCode::ShellMedialMaskOob,
+            DiagnosticCode::ShellPruneFailed,
+            DiagnosticCode::ShellMeshQuality,
+            DiagnosticCode::ShellTooThick,
+            DiagnosticCode::ShellNoMedial,
+        ];
+        for code in codes {
+            let d = Diagnostic::error("x").with_code(code);
+            assert_eq!(d.severity, Severity::Error, "severity mismatch for {code:?}");
+            assert_eq!(d.code, Some(code), "code mismatch for {code:?}");
+        }
+    }
+
+    /// Under `feature = "serde"`, each §7 shell-extract code serializes to its
+    /// PascalCase wire string (from `rename_all = "PascalCase"`).
+    /// Mirrors the `diagnostic_code_stackup_variants_serde_pascal_case` style.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_shell_extract_variants_serde_pascal_case() {
+        let cases = [
+            (DiagnosticCode::ShellNoVoxelGrid,   "\"ShellNoVoxelGrid\""),
+            (DiagnosticCode::ShellMedialMaskOob, "\"ShellMedialMaskOob\""),
+            (DiagnosticCode::ShellPruneFailed,   "\"ShellPruneFailed\""),
+            (DiagnosticCode::ShellMeshQuality,   "\"ShellMeshQuality\""),
+            (DiagnosticCode::ShellTooThick,      "\"ShellTooThick\""),
+            (DiagnosticCode::ShellNoMedial,      "\"ShellNoMedial\""),
+        ];
+        for (code, expected) in cases {
+            let s = serde_json::to_string(&code).unwrap();
+            assert_eq!(s, expected, "serde mismatch for {code:?}");
+        }
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
