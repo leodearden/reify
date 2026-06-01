@@ -1539,6 +1539,35 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_FLEXURE_GEOMETRY_INVALID`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     FlexureGeometryInvalid,
+    /// Origin: `crates/reify-compiler/src/entity.rs::compile_entity`
+    /// (objective-build site, task 4010 — PRD
+    /// `docs/prds/v0_6/constraint-solver-completion.md` task ζ §3.3/§6.3
+    /// boundary-sketch B3).
+    ///
+    /// Canonical message prefix: `"E_OBJECTIVE_CONFLICT: ..."`.
+    ///
+    /// Emitted as a `Severity::Error` when an entity's `ObjectiveSet` has
+    /// `combination == WeightedSum`, more than one term, every term at default
+    /// weight (1.0) and priority (0), and at least one pair of terms with
+    /// **opposite sense** (`Minimize` vs `Maximize`) over **distinct
+    /// expressions** (compared by `CompiledExpr.content_hash`). This is the
+    /// PRD §6.3 "conflict without weighting = error" predicate.
+    ///
+    /// Correctly excluded cases:
+    /// - Two same-sense default-weight terms (`minimize mass` + `minimize cost`)
+    ///   — equal-weight sum (B2); see β's `objective_set_lowering` test.
+    /// - A single objective.
+    /// - Mixed-sense over the **same** expression (`minimize mass` + `maximize mass`)
+    ///   — the "distinct expressions" qualifier.
+    /// - Any `Lexicographic` combination (not yet source-reachable per §5).
+    ///
+    /// The three escapes named in the diagnostic message are:
+    /// (1) assign non-default weights, (2) assign non-default priorities,
+    /// (3) combine objectives into one expression before `minimize`/`maximize`.
+    ///
+    /// The PRD-prose mnemonic is `E_OBJECTIVE_CONFLICT`
+    /// (severity convention: `E_*` → Error).
+    ObjectiveConflict,
 }
 
 /// A diagnostic message with location and optional labels.
