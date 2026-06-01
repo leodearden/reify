@@ -65,6 +65,128 @@ use faer::{Mat, Side};
 /// spectrum without a brittle absolute threshold.
 const NULLITY_REL_TOL: f64 = 1e-8;
 
+/// The self-stress / mechanism / stability verdict of a prestressed framework,
+/// as reported by [`analyze_prestress_stability`] — the five PRD §5 output fields.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StabilityResult {
+    /// Number of independent self-stress states `s = nullity(A)`: the dimension of
+    /// the space of self-equilibrated prestresses. A valid tensegrity needs
+    /// `s ≥ 1` (PRD §5); `s == 0` forces [`stable`](StabilityResult::stable) false.
+    pub self_stress_states: usize,
+    /// Number of internal infinitesimal mechanisms `nullity(Aᵀ) − n_rigid` (the
+    /// rigid-body-excluded count — 1 for the canonical triplex's prism twist).
+    pub mechanisms: usize,
+    /// Maxwell number `m − d·N` (the raw integer; `−6` for the triplex). Related to
+    /// `s` and the total kinematic indeterminacy by Calladine's identity
+    /// `m − d·N = s − m_kin`, with `m_kin = nullity(Aᵀ)` (rigid-inclusive).
+    pub maxwell: i64,
+    /// Whether the framework is prestress-stable: it has self-stress (`s ≥ 1`) and
+    /// the reduced geometric stiffness `Mᵀ K_G M` is positive definite on the
+    /// internal-mechanism subspace (the prestress stiffens every mechanism).
+    pub stable: bool,
+    /// Whether the framework satisfies the algebraic conditions of Connelly
+    /// super-stability (`D` PSD ∧ `rank(D) == N − d − 1`). See [`is_super_stable`]
+    /// for the intentionally-deferred conic-at-infinity condition.
+    pub super_stable: bool,
+}
+
+/// Reason a prestress-stability analysis cannot run. Mirrors the
+/// [`crate::form_find_free::FreeFormError`] diagnostic-enum precedent: malformed
+/// input becomes a clean typed error, never a panic or a silently-wrong result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StabilityError {
+    /// The input arrays disagree in length (`members.len() != q.len()`), or a
+    /// member references a node index `≥ nodes.len()`.
+    DimensionMismatch,
+}
+
+/// Analyse the self-stress / mechanism / prestress-stability of a prestressed
+/// framework (PRD `docs/prds/v0_6/tensegrity-structures.md` §5, task T2).
+///
+/// Given a realised geometry `nodes`, a member topology `members` (node-index
+/// pairs), and per-member force densities `q` (cables `> 0`, struts `< 0`),
+/// returns the [`StabilityResult`] with the five PRD §5 fields. The method is the
+/// classical Pellegrino–Calladine equilibrium-matrix analysis combined with the
+/// force-density geometric stiffness `K_G = D ⊗ I₃`; see the module-level docs for
+/// the full derivation and the reuse of layer-2's `D = CᵀQC`.
+///
+/// # Errors
+///
+/// Returns [`StabilityError::DimensionMismatch`] if `members.len() != q.len()` or
+/// any member references a node index `≥ nodes.len()`.
+pub fn analyze_prestress_stability(
+    nodes: &[[f64; 3]],
+    members: &[(usize, usize)],
+    q: &[f64],
+) -> Result<StabilityResult, StabilityError> {
+    // Guard 1: exactly one force density per member.
+    if members.len() != q.len() {
+        return Err(StabilityError::DimensionMismatch);
+    }
+    // Guard 2: every member references an in-range node — otherwise the
+    // equilibrium / force-density assembly would index out of bounds and panic.
+    let n = nodes.len();
+    if members.iter().any(|&(j, k)| j >= n || k >= n) {
+        return Err(StabilityError::DimensionMismatch);
+    }
+
+    // Equilibrium matrix A; self-stress count s = nullity(A) = m − rank(A).
+    let a = assemble_equilibrium_matrix(nodes, members);
+    let self_stress_states = count_self_stress_states(&a);
+
+    // Internal (rigid-body-excluded) infinitesimal mechanism subspace.
+    let mech_basis = extract_internal_mechanisms(&a, nodes);
+    let m_count = mech_basis.ncols();
+
+    // Maxwell number m − d·N (raw integer; −6 for the triplex). d = 3 (3-D).
+    let maxwell = members.len() as i64 - 3 * (n as i64);
+
+    // Super-stability: the algebraic Connelly conditions on D (d = 3).
+    let super_stable = is_super_stable(n, members, q, 3);
+
+    // Prestress stability, with the PRD §5 short-circuits:
+    //   s == 0       ⇒ no prestress to stabilise ⇒ not stable.
+    //   m_count == 0 ⇒ already rigid, nothing to destabilise ⇒ stable (s ≥ 1).
+    // Otherwise the reduced geometric stiffness Mᵀ K_G M must be positive
+    // definite: its algebraic minimum eigenvalue must clear a relative threshold
+    // scaled by K_G's magnitude — the same wide-gap rationale as NULLITY_REL_TOL
+    // (a genuine positive eigenvalue is O(scale); a numerical zero is O(eps·scale)).
+    // The s ≥ 1 ∧ m_count ≥ 1 guard also keeps min_eigenvalue_on_subspace away
+    // from an ill-posed 0-mode eigensolve.
+    let stable = if self_stress_states == 0 {
+        false
+    } else if m_count == 0 {
+        true
+    } else {
+        let k_g = assemble_geometric_stiffness(n, members, q);
+        let scale = max_abs_entry(&k_g);
+        min_eigenvalue_on_subspace(&k_g, &mech_basis) > NULLITY_REL_TOL * scale
+    };
+
+    Ok(StabilityResult {
+        self_stress_states,
+        mechanisms: m_count,
+        maxwell,
+        stable,
+        super_stable,
+    })
+}
+
+/// Largest-magnitude entry of a matrix — a cheap, eigendecomposition-free proxy
+/// for its spectral scale. Used to set the *relative* prestress-stability
+/// threshold in [`analyze_prestress_stability`]: `max|entry|` is within an
+/// `O(N)` factor of `‖K_G‖₂`, which is ample for separating a genuine `O(scale)`
+/// positive eigenvalue from an `O(eps·scale)` numerical zero.
+fn max_abs_entry(m: &Mat<f64>) -> f64 {
+    let mut s = 0.0_f64;
+    for i in 0..m.nrows() {
+        for j in 0..m.ncols() {
+            s = s.max(m[(i, j)].abs());
+        }
+    }
+    s
+}
+
 /// Rank of a symmetric Gram matrix (e.g. `AᵀA` or `AAᵀ`) from its spectrum: the
 /// count of eigenvalues whose magnitude exceeds `rel_tol · max|λ|`.
 ///
