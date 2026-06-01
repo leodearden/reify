@@ -1845,6 +1845,41 @@ fn degenerate_shell_pinched_cylinder_is_closer_to_reference_than_flat_mitc3_plus
     );
 }
 
+// ─── task 4065 pre-refinement baselines (prereq-1) ───────────────────────────
+//
+// The following ratios were measured against the DELIBERATELY-MINIMAL
+// centroid-only ANS-membrane of task 4069 (commit 0e41f75554) composing the
+// full integrated stack:
+//
+//   build_shell_stiffnesses_degenerate_ans
+//     → shell_element_stiffness_degenerate_ans         (shell_assembly.rs:1104)
+//       → degenerate_stiffness_core(assumed_membrane=true)     (shell_assembly.rs:858)
+//           ├─ 4068 substrate: degenerate_membrane_bending_b (varying J, per-node V_i)
+//           ├─ 4069 ANS-membrane: degenerate_assumed_membrane_b (centroid covariant)
+//           └─ carried 3392 MITC3+ shear: degenerate_transverse_shear_b (interior tying)
+//
+// Pre-refinement absolute ratios (computed / MacNeal-Harder reference):
+//   Pinched cylinder 4×4: ~3.359e-6 / 1.8248e-5 → ratio ≈ 0.184 (5.43× under)
+//   Hemisphere 4×4:       ~9.4e-3   / 0.0940    → ratio ≈ 0.10  (~10× under)
+//
+// The pinched-cylinder absolute band test (step-3/4) asserts the refined stack
+// reaches ratio ∈ [0.5, 2.0] (Bathe–Lee 2014, ~50%/4×4).  The hemisphere
+// honest-report test (step-5/6) records the honest post-refinement ratio for
+// FE review per design doc §6.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Pre-refinement pinched-cylinder ratio (computed/ref) with the centroid-only
+/// ANS membrane (task 4069 baseline, commit 0e41f75554).  Used as the "before"
+/// anchor in the step-4 absolute-band test to confirm the refinement closes the
+/// gap.
+const PRE_REFINEMENT_PINCHED_RATIO: f64 = 0.184;
+
+/// Pre-refinement hemisphere ratio (computed/ref) with the centroid-only ANS
+/// membrane (task 4069 baseline).  The post-refinement honest ratio is compared
+/// against this in the step-6 honest-report to confirm the refinement strictly
+/// improves double-curvature accuracy.
+const PRE_REFINEMENT_HEMISPHERE_RATIO: f64 = 0.10;
+
 /// **Observable signal (task 4069 step-13/14).** Activating the
 /// assumed-natural-strain **membrane** field on the curved degenerate substrate
 /// — [`shell_element_stiffness_degenerate_ans`] — moves the pinched-cylinder
