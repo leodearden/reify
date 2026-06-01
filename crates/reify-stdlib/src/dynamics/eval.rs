@@ -1195,7 +1195,7 @@ mod tests {
     /// at t=0 with q=from, v=0, a=0, rather than an empty grid.
     #[test]
     fn ramp_profile_zero_displacement_emits_single_rest_sample() {
-        let q_val = 3.14_f64;
+        let q_val = std::f64::consts::PI;
         let result = eval_dynamics(
             "ramp_profile_lower",
             &[
