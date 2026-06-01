@@ -133,10 +133,19 @@ pub fn form_find_free(
         ForceDensitySpec::Explicit(q) => form_find_explicit(nodes_guess, members, kinds, q),
         // Adaptive eigenvalue-minimisation search over relative group densities;
         // on success it produces an admissible q and delegates to the explicit
-        // path. Implemented in T1b step-10.
-        ForceDensitySpec::GroupRatios { .. } => {
-            unimplemented!("GroupRatios adaptive force-density search: implemented in T1b step-10")
-        }
+        // path.
+        ForceDensitySpec::GroupRatios {
+            group_ids,
+            seed_ratios,
+            reference_group,
+        } => form_find_group_ratios(
+            nodes_guess,
+            members,
+            kinds,
+            group_ids,
+            seed_ratios,
+            *reference_group,
+        ),
     }
 }
 
@@ -182,6 +191,237 @@ fn form_find_explicit(
         nullity,
         converged: true,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Adaptive GroupRatios force-density search
+// ---------------------------------------------------------------------------
+
+/// Number of smallest-`|λ|` eigenvalues the adaptive search drives toward zero:
+/// the target nullity `d + 1 = 4` for a 3-D free-standing form.
+const SEARCH_TARGET_NULLITY: usize = 4;
+
+/// Bounded magnitude bracket for each free group: search within `×/÷ 20` of the
+/// seed magnitude. This is the "bounded local search" the plan names — it
+/// preserves each group's seed sign and keeps the force-density graph connected,
+/// so the search stays in the well-posed region around the seed.
+const SEARCH_BRACKET_FACTOR: f64 = 20.0;
+
+/// Adaptive [`ForceDensitySpec::GroupRatios`] form-find: search the free relative
+/// group densities for a configuration that makes `D` rank-deficient by `d + 1`,
+/// then delegate to the explicit pipeline.
+///
+/// Each group's *sign* is fixed by its seed sign; the search varies only the
+/// *magnitude* of the non-reference groups within a bounded bracket. The
+/// reference group is held at its seed value as the scale gauge (overall scaling
+/// of `q` is nullity-invariant, so only relative ratios matter).
+///
+/// The objective is the sum of squares of the `SEARCH_TARGET_NULLITY` smallest
+/// eigenvalues of `D` (a smooth surrogate for "nullity ≥ 4"); since `λ_(1) = 0`
+/// always (the all-ones translation mode), driving it to zero pushes
+/// `λ_(2..4) → 0` ⇒ nullity 4. Minimised by coordinate descent with a
+/// log-spaced coarse scan + golden-section line search per free group.
+///
+/// On a successful search the found `q` is handed to [`form_find_explicit`],
+/// which is the single nullity authority: if its classifier still sees the wrong
+/// nullity (the search did not reach an admissible `q`), its
+/// [`FreeFormError::NullityMismatch`] is converted to
+/// [`FreeFormError::SearchDidNotConverge`]. Sign / dimension / singular-recovery
+/// errors propagate unchanged.
+fn form_find_group_ratios(
+    nodes_guess: &[[f64; 3]],
+    members: &[(usize, usize)],
+    kinds: &[MemberKind],
+    group_ids: &[usize],
+    seed_ratios: &[f64],
+    reference_group: usize,
+) -> Result<FreeFormResult, FreeFormError> {
+    // ---- Dimension guards (mirror validate_explicit's first guard) ----
+    // `members` / `kinds` / `group_ids` describe the same member set in order.
+    if members.len() != kinds.len() || members.len() != group_ids.len() {
+        return Err(FreeFormError::DimensionMismatch);
+    }
+    let n_groups = seed_ratios.len();
+    // `seed_ratios` is indexed by group id, so every group id (and the reference)
+    // must be in range; an empty group set has nothing to search.
+    if n_groups == 0 || reference_group >= n_groups || group_ids.iter().any(|&g| g >= n_groups) {
+        return Err(FreeFormError::DimensionMismatch);
+    }
+    // Each group's sign must be well-defined: a zero seed has no sign to hold
+    // fixed while the search varies magnitude.
+    if seed_ratios.contains(&0.0) {
+        return Err(FreeFormError::DimensionMismatch);
+    }
+
+    let n = nodes_guess.len();
+
+    // Per-group sign (fixed throughout) and current magnitude. The reference
+    // group's magnitude stays at its seed; free groups start there and are
+    // refined by the search.
+    let group_sign: Vec<f64> = seed_ratios.iter().map(|r| r.signum()).collect();
+    let mut group_mag: Vec<f64> = seed_ratios.iter().map(|r| r.abs()).collect();
+
+    // Free groups = every group that actually appears in `group_ids`, except the
+    // fixed reference. (Groups absent from `group_ids` do not enter `D`, so
+    // searching them would be wasted work.)
+    let mut appears = vec![false; n_groups];
+    for &g in group_ids {
+        appears[g] = true;
+    }
+    let free_groups: Vec<usize> = (0..n_groups)
+        .filter(|&g| g != reference_group && appears[g])
+        .collect();
+
+    // Objective: Σ λ² over the SEARCH_TARGET_NULLITY smallest-|λ| eigenvalues of
+    // `D(group_mag)`. `classify_spectrum` returns eigenvalues ascending by |λ|,
+    // so `take(4)` is exactly those. The smooth sum-of-squares (rather than the
+    // bare 4th eigenvalue, which is V-shaped/kinked) keeps coordinate descent
+    // from stalling at the tolerance crossing.
+    let objective = |group_mag: &[f64]| -> f64 {
+        let q = assemble_group_q(members.len(), group_ids, &group_sign, group_mag);
+        let d = assemble_force_density_matrix(n, members, &q);
+        let spec = classify_spectrum(&d, NULLITY_REL_TOL);
+        spec.eigenvalues
+            .iter()
+            .take(SEARCH_TARGET_NULLITY)
+            .map(|v| v * v)
+            .sum()
+    };
+
+    // Coordinate descent. Eigen-evals are cheap (n×n dense EVD, n = node count),
+    // so we afford a generous round budget and run tight — well below
+    // `NULLITY_REL_TOL`'s effective threshold so the found `q` survives
+    // re-classification in `form_find_explicit`.
+    const MAX_ROUNDS: usize = 64;
+    // Drive the objective *well* below the nullity-classifier's threshold trap.
+    // `form_find_explicit` re-classifies the found `q` with `NULLITY_REL_TOL ·
+    // max|λ|` (≈ 6e-8 for the prism); since the objective is Σλ² over the 4
+    // smallest, that threshold squared (≈ 3.6e-15) is the floor below which the
+    // found eigenvalues clear the trap. `1e-20` leaves several orders of margin
+    // (and `obj` bottoms out near 1e-30 at the exact closed form), so the
+    // recovered ratios land within the `1e-6` goldens.
+    const OBJ_TOL: f64 = 1e-20;
+
+    let mut obj = objective(&group_mag);
+    for _ in 0..MAX_ROUNDS {
+        if obj < OBJ_TOL {
+            break;
+        }
+        let before = obj;
+        for &g in &free_groups {
+            let lo = seed_ratios[g].abs() / SEARCH_BRACKET_FACTOR;
+            let hi = seed_ratios[g].abs() * SEARCH_BRACKET_FACTOR;
+            let best = minimize_on_coordinate(
+                |m| {
+                    let mut trial = group_mag.clone();
+                    trial[g] = m;
+                    objective(&trial)
+                },
+                lo,
+                hi,
+            );
+            group_mag[g] = best;
+        }
+        obj = objective(&group_mag);
+        // Stall guard: the objective is bounded below by 0, so once a full round
+        // yields no meaningful improvement coordinate descent has reached a
+        // (local) minimum. The threshold is tiny (≈ machine-precision-scaled) so
+        // it fires only at the genuine plateau — the infeasible (e.g.
+        // all-positive) case settles to an exact fixed point (improvement → 0),
+        // which `form_find_explicit` below turns into SearchDidNotConverge, while
+        // a feasible search keeps refining deep past the threshold trap.
+        if before - obj <= 1e-18 * before.max(1.0) {
+            break;
+        }
+    }
+
+    // Delegate to the explicit pipeline with the found `q`; let it be the single
+    // nullity authority. A genuine convergence (admissible nullity-4 `q`)
+    // form-finds; a nullity miss becomes SearchDidNotConverge.
+    let q = assemble_group_q(members.len(), group_ids, &group_sign, &group_mag);
+    match form_find_explicit(nodes_guess, members, kinds, &q) {
+        Ok(result) => Ok(result),
+        Err(FreeFormError::NullityMismatch { .. }) => Err(FreeFormError::SearchDidNotConverge),
+        Err(other) => Err(other),
+    }
+}
+
+/// Build the full per-member force-density vector from per-group magnitudes:
+/// member `i`'s `q` is its group's signed ratio `group_sign[g] · group_mag[g]`
+/// (sign fixed by the seed, magnitude searched). Struts-then-cables member order
+/// follows `group_ids` / `members`.
+fn assemble_group_q(
+    n_members: usize,
+    group_ids: &[usize],
+    group_sign: &[f64],
+    group_mag: &[f64],
+) -> Vec<f64> {
+    (0..n_members)
+        .map(|i| {
+            let g = group_ids[i];
+            group_sign[g] * group_mag[g]
+        })
+        .collect()
+}
+
+/// Minimise a single-coordinate objective over the positive interval `[lo, hi]`.
+///
+/// A log-spaced coarse scan first brackets the global minimum (robust against
+/// the objective not being perfectly unimodal across the wide `×/÷ 20` range),
+/// then [`golden_section_min`] refines within the bracketing sub-interval. Log
+/// spacing matches the multiplicative bracket, giving even relative resolution.
+fn minimize_on_coordinate<F: Fn(f64) -> f64>(f: F, lo: f64, hi: f64) -> f64 {
+    const SCAN: usize = 48;
+    let log_lo = lo.ln();
+    let log_hi = hi.ln();
+    let grid = |i: usize| (log_lo + (log_hi - log_lo) * (i as f64) / (SCAN as f64)).exp();
+
+    let mut best_i = 0usize;
+    let mut best_f = f(grid(0));
+    for i in 1..=SCAN {
+        let fx = f(grid(i));
+        if fx < best_f {
+            best_f = fx;
+            best_i = i;
+        }
+    }
+
+    // Bracket the minimum by its log-grid neighbours (clamped to the endpoints).
+    let a = grid(best_i.saturating_sub(1));
+    let b = grid((best_i + 1).min(SCAN));
+    golden_section_min(f, a, b)
+}
+
+/// Golden-section minimisation of a unimodal `f` on `[a, b]`. The fixed
+/// iteration count drives the bracket to ~machine precision (each step shrinks
+/// it by the golden ratio ≈ 0.618; 80 steps ⇒ width × ~1e-17), which is far
+/// tighter than the `1e-6` ratio tolerance the goldens assert.
+fn golden_section_min<F: Fn(f64) -> f64>(f: F, mut a: f64, mut b: f64) -> f64 {
+    const ITERS: usize = 80;
+    // 1/φ and 1/φ².
+    let inv_phi = (5.0_f64.sqrt() - 1.0) / 2.0;
+    let inv_phi2 = (3.0 - 5.0_f64.sqrt()) / 2.0;
+
+    let mut c = a + inv_phi2 * (b - a);
+    let mut d = a + inv_phi * (b - a);
+    let mut fc = f(c);
+    let mut fd = f(d);
+    for _ in 0..ITERS {
+        if fc < fd {
+            b = d;
+            d = c;
+            fd = fc;
+            c = a + inv_phi2 * (b - a);
+            fc = f(c);
+        } else {
+            a = c;
+            c = d;
+            fc = fd;
+            d = a + inv_phi * (b - a);
+            fd = f(d);
+        }
+    }
+    (a + b) / 2.0
 }
 
 // ---------------------------------------------------------------------------
