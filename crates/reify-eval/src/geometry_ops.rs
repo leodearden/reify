@@ -1448,6 +1448,7 @@ pub(crate) fn try_eval_conformance_query(
 //
 // Returns:
 //   `Some(Value::Scalar { dimension: VOLUME/AREA, .. })` for volume / area,
+//   `Some(Value::Point([length, length, length]))` for centroid,
 //   `Some(Value::Undef)` (with a Warning) when the single handle arg resolves
 //        but the kernel errors or replies with an unexpected type (PRD §4
 //        defensive-downgrade contract),
@@ -1474,7 +1475,7 @@ pub(crate) fn try_eval_geometry_query(
     // (2) Recognised whole-handle geometry-query name (cheap string compare
     //     before any arg resolution). length/perimeter are intentionally absent
     //     (topology-selector path — see module note above).
-    if !matches!(function.name.as_str(), "volume" | "area") {
+    if !matches!(function.name.as_str(), "volume" | "area" | "centroid") {
         return None;
     }
 
@@ -1503,6 +1504,16 @@ pub(crate) fn try_eval_geometry_query(
             reify_ir::GeometryQuery::SurfaceArea(handle),
             reify_core::DimensionVector::AREA,
             "area",
+            diagnostics,
+        ),
+        // Centroid returns the canonical JSON-Point3 (`{"x":_,"y":_,"z":_}`)
+        // wire format; `dispatch_point3_length_reply` decodes it to a
+        // `Point3<Length>` (shared with closest_point / center_of_mass), with the
+        // same Warning + Undef defensive downgrade on kernel error / malformed reply.
+        "centroid" => dispatch_point3_length_reply(
+            kernel,
+            &reify_ir::GeometryQuery::Centroid(handle),
+            "centroid",
             diagnostics,
         ),
         // Unreachable — the earlier `matches!` already filtered the name.
@@ -3417,12 +3428,16 @@ fn resolve_parent_geometry_handle_arg(
 /// (`{"x":_,"y":_,"z":_}`) wire format and unwrap to a
 /// `Value::Point(vec![length, length, length])`. Returns
 /// `Some(Value::Undef)` (with a Warning diagnostic) on a kernel error or a
-/// malformed reply. Shared by `closest_point` (`ClosestPointOnShape`) and
-/// `center_of_mass` (`CenterOfMass`) — both return the identical JSON-Point3
-/// encoding per the `GeometryQuery` doc, so a single decode path serves
-/// both.
+/// malformed reply. Shared by `closest_point` (`ClosestPointOnShape`),
+/// `center_of_mass` (`CenterOfMass`), and the whole-handle `centroid`
+/// (`Centroid`, task 3608) — all return the identical JSON-Point3 encoding per
+/// the `GeometryQuery` doc, so a single decode path serves them.
+///
+/// Takes `&dyn` (not `&mut dyn`): `GeometryKernel::query` is `&self`, so an
+/// immutable borrow suffices, and `&mut dyn` call sites reborrow to `&dyn`
+/// automatically.
 fn dispatch_point3_length_reply(
-    kernel: &mut dyn reify_ir::GeometryKernel,
+    kernel: &dyn reify_ir::GeometryKernel,
     query: &reify_ir::GeometryQuery,
     helper_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
