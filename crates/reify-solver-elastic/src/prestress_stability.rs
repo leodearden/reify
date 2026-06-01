@@ -44,6 +44,102 @@
 
 #[cfg(test)]
 mod tests {
-    // Step-1 introduces `use super::*;` alongside the first RED unit test; an
-    // empty glob import here would warn under the test cfg.
+    use super::*;
+
+    /// The complete 9-cable triplex member list (3 struts + 9 cables) in
+    /// struts-then-cables order, mirroring `form_find_free.rs`'s
+    /// `triplex_topology`. Self-stress / mechanism / stability counts depend
+    /// only on the topology + geometry (and `q`), so the per-member kind tags
+    /// are not needed by this kernel.
+    fn triplex_members() -> Vec<(usize, usize)> {
+        vec![
+            // struts
+            (0, 4),
+            (1, 5),
+            (2, 3),
+            // top horizontals
+            (0, 1),
+            (1, 2),
+            (2, 0),
+            // bottom horizontals
+            (3, 4),
+            (4, 5),
+            (5, 3),
+            // verticals
+            (0, 3),
+            (1, 4),
+            (2, 5),
+        ]
+    }
+
+    /// The canonical symmetric triplex prism (R = 1, height = 1, twist 30°),
+    /// identical to `form_find_free.rs`'s fixture: nodes 0,1,2 top (z = 1) at
+    /// azimuth 120°·i; 3,4,5 bottom (z = 0) at azimuth 120°·i + 30°. The exact
+    /// equilibrium geometry whose self-stress / mechanism goldens this kernel
+    /// must reproduce.
+    fn canonical_prism() -> Vec<[f64; 3]> {
+        let deg = std::f64::consts::PI / 180.0;
+        let top = |i: usize| {
+            let a = 120.0 * (i as f64) * deg;
+            [a.cos(), a.sin(), 1.0]
+        };
+        let bot = |i: usize| {
+            let a = (120.0 * (i as f64) + 30.0) * deg;
+            [a.cos(), a.sin(), 0.0]
+        };
+        vec![top(0), top(1), top(2), bot(0), bot(1), bot(2)]
+    }
+
+    /// Re-derive the unit member direction `û = (x_k − x_j)/‖x_k − x_j‖` from the
+    /// fixture coordinates — the column-`i` convention the equilibrium matrix
+    /// must encode (`û` into node-`j`'s rows, `−û` into node-`k`'s rows).
+    fn unit_dir(nodes: &[[f64; 3]], j: usize, k: usize) -> [f64; 3] {
+        let d = [
+            nodes[k][0] - nodes[j][0],
+            nodes[k][1] - nodes[j][1],
+            nodes[k][2] - nodes[j][2],
+        ];
+        let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        [d[0] / l, d[1] / l, d[2] / l]
+    }
+
+    #[test]
+    fn equilibrium_matrix_has_correct_shape_and_member_columns() {
+        let nodes = canonical_prism();
+        let members = triplex_members();
+        let a = assemble_equilibrium_matrix(&nodes, &members);
+
+        // (1) Shape: d·N rows × m columns = 18 × 12 (A·s = f, s = member forces).
+        assert_eq!(a.nrows(), 3 * nodes.len(), "A must have d·N = 18 rows");
+        assert_eq!(
+            a.ncols(),
+            members.len(),
+            "A must have one column per member",
+        );
+
+        // (2) Column structure for one strut (member 0 = (0,4)) and one cable
+        // (member 3 = (0,1)): û in node-j's three rows, −û in node-k's three
+        // rows, 0 everywhere else, in node-major / axis-minor row order (3a+α).
+        const TOL: f64 = 1e-12;
+        for &col in &[0_usize, 3] {
+            let (j, k) = members[col];
+            let u = unit_dir(&nodes, j, k);
+            for row in 0..a.nrows() {
+                let node = row / 3;
+                let axis = row % 3;
+                let expected = if node == j {
+                    u[axis]
+                } else if node == k {
+                    -u[axis]
+                } else {
+                    0.0
+                };
+                assert!(
+                    (a[(row, col)] - expected).abs() < TOL,
+                    "A[{row},{col}] (member {col} = ({j},{k}), node {node} axis {axis}) = {}, expected {expected}",
+                    a[(row, col)],
+                );
+            }
+        }
+    }
 }
