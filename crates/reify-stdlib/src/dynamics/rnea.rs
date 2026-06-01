@@ -85,6 +85,19 @@ pub struct RneaLink {
     /// The composed spatial motion transform `X_{p→i}` (parent frame to this
     /// link's frame): `X_J(q_i) · X_T(i)`.  Computed by the caller from the
     /// joint value and snapshot coordinates (Value-level work owned by RBD-η).
+    ///
+    /// **Construction note (convention-critical).** When the fixed tree offset
+    /// `r` (joint origin in the *parent* frame) is nonzero, do **not** pass it
+    /// together with the joint rotation in a single `Frame3`:
+    /// `SpatialTransform6::from_frame3(Frame3{E, r})` yields `xlt(r)·rot(E)`
+    /// (translation applied in the *child* frame; see spatial.rs's pinned
+    /// `−r̃·E` block convention). The RNEA tree transform requires
+    /// `rot(E)·xlt(r)` (offset in the parent frame), so compose a pure rotation
+    /// with a pure translation:
+    /// `from_frame3(Frame3{E, 0}).compose(&from_frame3(Frame3{I, r}))`.
+    /// A wrong operand order silently drops the joint-offset lever arm and the
+    /// computed parent torques are off (it is invisible in static gravity tests
+    /// because the bottom-left block only multiplies the angular part).
     pub parent_to_child: SpatialTransform6,
     /// Motion-subspace columns `S_i` expressed in the child (link) frame.
     /// Length equals the DOF count of this link's joint.
@@ -219,6 +232,26 @@ mod tests {
         [c, 0.0, s, 0.0]
     }
 
+    /// Build the parent→child joint transform `X_{p→i} = X_J(q) · X_T` where the
+    /// joint rotation is `quat` and the fixed tree offset `r` is expressed in the
+    /// **parent** frame.
+    ///
+    /// `SpatialTransform6::from_frame3` follows the spatial.rs convention
+    /// `X(r, E) = [[E, 0]; [−r̃·E, E]] = xlt(r)·rot(E)`, i.e. it applies the
+    /// translation in the *child* frame (verified by spatial.rs's
+    /// `rotation_and_translation_bottom_left_is_neg_skew_r_times_e`). The RNEA
+    /// tree transform needs `rot(E)·xlt(r)` (offset in the parent frame), so we
+    /// compose a pure rotation with a pure translation rather than passing both
+    /// in a single `Frame3`. (The `compose` contract is "apply other first, then
+    /// self", so `rot.compose(xlt) = rot·xlt`.)
+    fn joint_xform(quat: [f64; 4], r: [f64; 3]) -> SpatialTransform6 {
+        SpatialTransform6::from_frame3(&Frame3::new(quat, [0.0, 0.0, 0.0]))
+            .compose(&SpatialTransform6::from_frame3(&Frame3::new(
+                [1.0, 0.0, 0.0, 0.0],
+                r,
+            )))
+    }
+
     // ── single-pendulum static gravity-torque ─────────────────────────────────
     //
     // A 1 kg point mass hanging at L = 100 mm along the link's −z axis when
@@ -302,37 +335,43 @@ mod tests {
     // the Coriolis/centrifugal contribution is missing, so any sample with
     // nonzero q̇ will mismatch (relative error ~0.1–5 % >> 1e-6).
     #[test]
-    fn debug_first_sample_values() {
-        // Sample 1: q1=0.1, q2=0.2, qd1=1.0, qd2=-0.5, qdd1=0.5, qdd2=0.3
-        let (q1, q2, qd1, qd2, qdd1, qdd2) = (0.1_f64, 0.2_f64, 1.0_f64, -0.5_f64, 0.5_f64, 0.3_f64);
-        let link0 = RneaLink {
-            parent: None,
-            parent_to_child: SpatialTransform6::from_frame3(&Frame3::new(ry_quat(q1), [0.0, 0.0, 0.0])),
-            subspace: vec![SpatialVector6::from_angular_linear([0.0, 1.0, 0.0], [0.0, 0.0, 0.0])],
-            mass: 1.0, com: [0.5, 0.0, 0.0],
-            inertia_about_com: [[0.0, 0.0, 0.0], [0.0, 1.0 / 12.0, 0.0], [0.0, 0.0, 0.0]],
-            q_dot: vec![qd1], q_ddot: vec![qdd1],
+    fn scratch_decomp() {
+        let (q1, q2) = (0.1_f64, 0.2_f64);
+        let run = |qd1: f64, qd2: f64, qdd1: f64, qdd2: f64| -> [f64; 2] {
+            let l0 = RneaLink {
+                parent: None, parent_to_child: joint_xform(ry_quat(q1), [0.0, 0.0, 0.0]),
+                subspace: vec![SpatialVector6::from_angular_linear([0.0, 1.0, 0.0], [0.0, 0.0, 0.0])],
+                mass: 1.0, com: [0.5, 0.0, 0.0],
+                inertia_about_com: [[0.0, 0.0, 0.0], [0.0, 1.0 / 12.0, 0.0], [0.0, 0.0, 0.0]],
+                q_dot: vec![qd1], q_ddot: vec![qdd1],
+            };
+            let l1 = RneaLink {
+                parent: Some(0), parent_to_child: joint_xform(ry_quat(q2), [1.0, 0.0, 0.0]),
+                subspace: vec![SpatialVector6::from_angular_linear([0.0, 1.0, 0.0], [0.0, 0.0, 0.0])],
+                mass: 1.0, com: [0.5, 0.0, 0.0],
+                inertia_about_com: [[0.0, 0.0, 0.0], [0.0, 1.0 / 12.0, 0.0], [0.0, 0.0, 0.0]],
+                q_dot: vec![qd2], q_ddot: vec![qdd2],
+            };
+            let t = inverse_dynamics_open_chain(&[l0, l1], default_gravity());
+            [t[0][0], t[1][0]]
         };
-        let link1 = RneaLink {
-            parent: Some(0),
-            parent_to_child: SpatialTransform6::from_frame3(&Frame3::new(ry_quat(q2), [1.0, 0.0, 0.0])),
-            subspace: vec![SpatialVector6::from_angular_linear([0.0, 1.0, 0.0], [0.0, 0.0, 0.0])],
-            mass: 1.0, com: [0.5, 0.0, 0.0],
-            inertia_about_com: [[0.0, 0.0, 0.0], [0.0, 1.0 / 12.0, 0.0], [0.0, 0.0, 0.0]],
-            q_dot: vec![qd2], q_ddot: vec![qdd2],
-        };
-        let tau = inverse_dynamics_open_chain(&[link0, link1], default_gravity());
-        // reference Lagrangian
-        let c1 = q1.cos(); let c2 = q2.cos(); let s2 = q2.sin(); let c12 = (q1+q2).cos();
+        let c2 = q2.cos(); let s2 = q2.sin();
         let m11 = 5.0/3.0+c2; let m12 = 1.0/3.0+0.5*c2; let m22 = 1.0/3.0_f64;
+        // Pure inertia: qd=0, qdd=(1,0) then (0,1). Subtract gravity baseline.
+        let g = run(0.0, 0.0, 0.0, 0.0);
+        let i10 = run(0.0, 0.0, 1.0, 0.0);
+        let i01 = run(0.0, 0.0, 0.0, 1.0);
+        eprintln!("M col0: RNEA=[{:.6},{:.6}] REF=[{:.6},{:.6}]", i10[0]-g[0], i10[1]-g[1], m11, m12);
+        eprintln!("M col1: RNEA=[{:.6},{:.6}] REF=[{:.6},{:.6}]", i01[0]-g[0], i01[1]-g[1], m12, m22);
+        // Pure Coriolis: qdd=0, qd=(1,0) then (0,1) then (1,1). Subtract gravity.
         let h = 0.5*s2;
-        let cc1 = -h*qd2*(2.0*qd1+qd2); let cc2 = h*qd1*qd1;
-        let g1 = -9.81*(1.5*c1+0.5*c12); let g2 = -9.81*0.5*c12;
-        let ref1 = m11*qdd1 + m12*qdd2 + cc1 + g1;
-        let ref2 = m12*qdd1 + m22*qdd2 + cc2 + g2;
-        panic!("RNEA: tau0={:.8}, tau1={:.8} | REF: tau0={:.8}, tau1={:.8} | err0={:.2e}, err1={:.2e}",
-               tau[0][0], tau[1][0], ref1, ref2,
-               (tau[0][0]-ref1).abs(), (tau[1][0]-ref2).abs());
+        let cd = |qd1: f64, qd2: f64| -> [f64;2] { [-h*qd2*(2.0*qd1+qd2), h*qd1*qd1] };
+        for (qd1, qd2) in [(1.0,0.0),(0.0,1.0),(1.0,-0.5)] {
+            let r = run(qd1, qd2, 0.0, 0.0);
+            let cref = cd(qd1, qd2);
+            eprintln!("Cor qd=({},{}) RNEA=[{:.6},{:.6}] REF=[{:.6},{:.6}]",
+                qd1, qd2, r[0]-g[0], r[1]-g[1], cref[0], cref[1]);
+        }
     }
 
     #[test]
@@ -399,10 +438,9 @@ mod tests {
             // Iy = 1/12 kg·m² (uniform rod about its COM, axis along x).
             let link0 = RneaLink {
                 parent: None,
-                parent_to_child: SpatialTransform6::from_frame3(&Frame3::new(
-                    ry_quat(q1),
-                    [0.0, 0.0, 0.0],
-                )),
+                // Tree offset is zero, so rotation-only — joint_xform reduces to
+                // a pure rotation here.
+                parent_to_child: joint_xform(ry_quat(q1), [0.0, 0.0, 0.0]),
                 subspace: vec![SpatialVector6::from_angular_linear(
                     [0.0, 1.0, 0.0],
                     [0.0, 0.0, 0.0],
@@ -415,13 +453,12 @@ mod tests {
             };
 
             // Link 1: revolute about +y at the tip of link 0 ([l1, 0, 0] = [1, 0, 0]
-            // in link-0 coordinates), joint angle q2.
+            // in link-0/parent coordinates), joint angle q2. The tree offset is in
+            // the PARENT frame, so the transform must be rot(E)·xlt(r); joint_xform
+            // composes it correctly under the spatial.rs −r̃·E convention.
             let link1 = RneaLink {
                 parent: Some(0),
-                parent_to_child: SpatialTransform6::from_frame3(&Frame3::new(
-                    ry_quat(q2),
-                    [1.0, 0.0, 0.0],
-                )),
+                parent_to_child: joint_xform(ry_quat(q2), [1.0, 0.0, 0.0]),
                 subspace: vec![SpatialVector6::from_angular_linear(
                     [0.0, 1.0, 0.0],
                     [0.0, 0.0, 0.0],
