@@ -29,7 +29,8 @@ use crate::persistent_cache::ShellChannels;
 pub enum ShellForce {
     /// Force the tet/solid route; never run shell extraction.
     Off,
-    /// Auto-classify by `shell_threshold`; soft tet fallback on failure.
+    /// Auto-classify by `thickness/median` vs `shell_threshold`; soft tet
+    /// fallback on failure.
     Auto,
     /// Force the shell route (proxy for `@shell`); hard-error on failure.
     On,
@@ -57,16 +58,25 @@ pub enum FailurePolicy {
 ///
 /// - `ShellForce::On`  → always [`ShellRoute::Shell`] (proxy for `@shell`).
 /// - `ShellForce::Off` → always [`ShellRoute::Tet`].
-/// - `ShellForce::Auto` → [`ShellRoute::Shell`] iff `thickness / extent <
+/// - `ShellForce::Auto` → [`ShellRoute::Shell`] iff `thickness / median <
 ///   shell_threshold`, else [`ShellRoute::Tet`], where `thickness = min(L,W,H)`
-///   and `extent = max(L,W,H)`. The comparison is strict `<`, so a ratio exactly
-///   equal to the threshold classifies `Tet`.
+///   and `median` is the middle of the three sorted dimensions. The comparison
+///   is strict `<`, so a ratio exactly equal to the threshold classifies `Tet`.
 ///
-/// A non-positive `extent` (degenerate geometry) classifies `Tet` rather than
+/// The metric divides by the **median** dimension, not the max extent (`max`),
+/// so a slender square-cross-section *beam* is not misclassified as a shell.
+/// A shell is thin relative to its *two* in-plane dimensions, so `thickness`
+/// must be small relative to the median (second-largest) dimension; a beam
+/// (e.g. 100×100×1000 mm) has `thickness == median`, giving ratio 1.0 → `Tet`.
+/// The earlier `thickness / extent` (min/max) metric only required thinness vs.
+/// a *single* dimension, which a slender beam also satisfies (esc-3594-216).
+///
+/// A non-positive `median` (degenerate geometry) classifies `Tet` rather than
 /// dividing by zero.
 ///
-/// The fixture body (50 mm × 10 mm × 1 mm, ratio 0.02 < the default threshold
-/// 0.2) auto-classifies `Shell` under a bare `ElasticOptions()`.
+/// The fixture body (50 mm × 10 mm × 1 mm: thickness 1 mm, median 10 mm,
+/// ratio 0.1 < the default threshold 0.2) auto-classifies `Shell` under a bare
+/// `ElasticOptions()`; the 100×100×1000 mm cantilever (ratio 1.0) stays `Tet`.
 pub fn classify_shell(
     shell_force: ShellForce,
     length: f64,
@@ -78,9 +88,14 @@ pub fn classify_shell(
         ShellForce::On => ShellRoute::Shell,
         ShellForce::Off => ShellRoute::Tet,
         ShellForce::Auto => {
-            let thickness = length.min(width).min(height);
-            let extent = length.max(width).max(height);
-            if extent > 0.0 && thickness / extent < shell_threshold {
+            // Median = middle of the three sorted dimensions. A shell is thin
+            // relative to BOTH in-plane dims, so compare thickness (the min)
+            // against the median rather than the max extent.
+            let mut dims = [length, width, height];
+            dims.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let thickness = dims[0];
+            let median = dims[1];
+            if median > 0.0 && thickness / median < shell_threshold {
                 ShellRoute::Shell
             } else {
                 ShellRoute::Tet
@@ -293,14 +308,16 @@ mod tests {
     /// resolves the FEA route for a body:
     /// - `ShellForce::On`  → always `Shell` (proxy for an `@shell` annotation).
     /// - `ShellForce::Off` → always `Tet`.
-    /// - `ShellForce::Auto` → `Shell` iff `thickness/extent < shell_threshold`
-    ///   (`thickness = min(L,W,H)`, `extent = max(L,W,H)`), else `Tet`.
+    /// - `ShellForce::Auto` → `Shell` iff `thickness/median < shell_threshold`
+    ///   (`thickness = min(L,W,H)`, `median` = middle sorted dim), else `Tet`.
     ///   The comparison is strict `<`, so a ratio exactly equal to the
-    ///   threshold classifies `Tet`.
+    ///   threshold classifies `Tet`. (The metric divides by the median rather
+    ///   than the max extent so a slender beam is not misread as a shell —
+    ///   esc-3594-216.)
     #[test]
     fn classify_shell_routes_by_force_and_threshold() {
-        // Fixture body 50mm × 10mm × 1mm: thickness=1mm, extent=50mm,
-        // ratio = 1/50 = 0.02 < 0.2 → shell under Auto.
+        // Fixture body 50mm × 10mm × 1mm: thickness=1mm, median=10mm,
+        // ratio = 1/10 = 0.1 < 0.2 → shell under Auto.
         let (l, w, h) = (0.050_f64, 0.010_f64, 0.001_f64);
         let threshold = 0.2_f64;
 
@@ -323,26 +340,36 @@ mod tests {
             "ShellForce::Off must force the tet route even for a thin plate"
         );
 
-        // Auto + thin plate (ratio 0.02 < 0.2) → Shell.
+        // Auto + thin plate (thickness/median = 1/10 = 0.1 < 0.2) → Shell.
         assert_eq!(
             classify_shell(ShellForce::Auto, l, w, h, threshold),
             ShellRoute::Shell,
-            "Auto with thickness/extent ratio 0.02 < 0.2 must classify Shell"
+            "Auto with thickness/median ratio 0.1 < 0.2 must classify Shell"
         );
 
-        // Auto + thick body 10×10×8 (ratio 8/10 = 0.8 >= 0.2) → Tet.
+        // Auto + thick body 10×10×8 (thickness/median = 8/10 = 0.8 >= 0.2) → Tet.
         assert_eq!(
             classify_shell(ShellForce::Auto, 0.010, 0.010, 0.008, threshold),
             ShellRoute::Tet,
-            "Auto with thickness/extent ratio 0.8 >= 0.2 must classify Tet"
+            "Auto with thickness/median ratio 0.8 >= 0.2 must classify Tet"
         );
 
         // Boundary: ratio exactly == threshold is NOT < threshold → Tet.
-        // 10×10×2 → ratio 2/10 = 0.2 == threshold.
+        // 10×10×2 → thickness/median = 2/10 = 0.2 == threshold.
         assert_eq!(
             classify_shell(ShellForce::Auto, 0.010, 0.010, 0.002, threshold),
             ShellRoute::Tet,
             "Auto at ratio exactly == threshold must classify Tet (strict <)"
+        );
+
+        // Regression (esc-3594-216): a slender SQUARE-CROSS-SECTION beam
+        // (100×100×1000 mm cantilever) has thickness=100mm, median=100mm,
+        // ratio = 1.0 >= 0.2 → Tet. The old min/max metric (100/1000 = 0.1)
+        // wrongly classified it Shell, breaking the 4084/α tet pins.
+        assert_eq!(
+            classify_shell(ShellForce::Auto, 1.000, 0.100, 0.100, threshold),
+            ShellRoute::Tet,
+            "Auto must classify a slender square-section beam as Tet, not Shell"
         );
     }
 
