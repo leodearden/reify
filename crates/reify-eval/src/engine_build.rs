@@ -1009,6 +1009,41 @@ fn substitute_op_parents(
     }
 }
 
+/// Cache-key `entity` id for a cross-kernel conversion intermediate (task 4050
+/// step-12).
+///
+/// The conversion executor tessellates each BRep input handle of an op and
+/// ingests the result into the target kernel, producing a Mesh intermediate
+/// that is cached (keyed `(entity, Mesh, per_stage_tol, NO_OPTIONS)`) so a later
+/// realization can reuse it instead of re-tessellating. The `entity` component
+/// must be both DISTINCT per input (so an op's N inputs cache as N separate
+/// intermediates — no within-realization clobber) AND STABLE across identical
+/// rebuilds of the same realization (so the reuse hit fires).
+///
+/// For a same-realization `Step` input — the only shape the v0.3-ε fixtures
+/// exercise — the input's *local step index* (its position in
+/// `realization_step_ids`) satisfies both: it is the input's slot in the op
+/// stream, identical on every rebuild, and unique among the realization's
+/// steps. A cross-realization (`Sub`) input is absent from
+/// `realization_step_ids` and falls back to the input handle id, which is
+/// itself a stable cached-terminal handle (the producing realization re-hits
+/// its own terminal cache on rebuild and hands back the same id). The `#`
+/// separator cannot occur in a DSL entity identifier, so the synthesised key
+/// can never collide with a real entity's terminal-cache key.
+fn conversion_intermediate_entity_id(
+    realization_entity: &str,
+    input_handle: GeometryHandleId,
+    realization_step_ids: &[GeometryHandleId],
+) -> String {
+    match realization_step_ids
+        .iter()
+        .position(|id| *id == input_handle)
+    {
+        Some(idx) => format!("{realization_entity}#conv-step{idx}"),
+        None => format!("{realization_entity}#conv-ext{}", input_handle.0),
+    }
+}
+
 /// Total `GeometryOp` → `Operation` classifier used by the per-op dispatch
 /// path (task ε / 3436, PRD §8 step-4).
 ///
@@ -3185,6 +3220,13 @@ impl Engine {
         // handles (via this Vec); every push site below pushes here too so the
         // two Vecs stay index-aligned.
         let mut realization_step_reprs: Vec<ReprKind> = Vec::with_capacity(operations.len());
+        // Task 4050 step-12: per-realization log of intermediate-cache keys the
+        // conversion executor inserted, so step-14's rollback branch can drop
+        // exactly those keys (atomic with `step_handles.truncate(handle_start)`).
+        // Each entry is `(entity, repr, per_stage_tol)`; the options_hash is
+        // always `NO_OPTIONS` for conversion intermediates. On the success path
+        // the inserts stay committed so later same-build realizations reuse them.
+        let mut intermediate_cache_inserts: Vec<(String, ReprKind, f64)> = Vec::new();
         for (op_idx, op) in operations.iter().enumerate() {
             let geom_op = compile_geometry_op(
                 op,
@@ -3391,9 +3433,31 @@ impl Engine {
                                 }
                                 let source_name = (*stage_kernel).as_registry_name();
                                 for &pid in &parents {
-                                    // Tessellate on the source kernel (`&self`);
-                                    // the borrow is released before the `&mut`
-                                    // ingest borrow below.
+                                    // Task 4050 step-12: the intermediate cache
+                                    // key for THIS input — distinct per input
+                                    // (local step index) and stable across
+                                    // rebuilds (see `conversion_intermediate_entity_id`).
+                                    let intermediate_entity = conversion_intermediate_entity_id(
+                                        &realization_id.entity,
+                                        pid,
+                                        &realization_step_ids,
+                                    );
+                                    // Consult the cache BEFORE any kernel work. A
+                                    // hit returns the previously-ingested
+                                    // target-kernel handle (Copy); reuse its id
+                                    // and skip the redundant tessellate+ingest.
+                                    if let Some(&cached) = realization_cache.lookup(
+                                        &intermediate_entity,
+                                        *to,
+                                        per_stage_tol,
+                                        NO_OPTIONS,
+                                    ) {
+                                        substitution.insert(pid, cached.id);
+                                        continue;
+                                    }
+                                    // Cache miss: tessellate on the source kernel
+                                    // (`&self`); the borrow is released before the
+                                    // `&mut` ingest borrow below.
                                     let mesh = match kernels.get(source_name) {
                                         Some(src) => match src.tessellate(pid, per_stage_tol) {
                                             Ok(mesh) => mesh,
@@ -3419,6 +3483,29 @@ impl Engine {
                                         .ingest_mesh(&mesh);
                                     match ingested {
                                         Ok(handle) => {
+                                            // Wrap the fresh target-kernel handle
+                                            // with its KernelId provenance, cache
+                                            // it for cross-realization reuse, and
+                                            // log the key for step-14's atomic
+                                            // rollback.
+                                            let intermediate_handle = KernelHandle {
+                                                kernel: kernel_id_for_registry_name(
+                                                    plan.kernel.as_str(),
+                                                ),
+                                                id: handle.id,
+                                            };
+                                            realization_cache.insert(
+                                                &intermediate_entity,
+                                                *to,
+                                                per_stage_tol,
+                                                NO_OPTIONS,
+                                                intermediate_handle,
+                                            );
+                                            intermediate_cache_inserts.push((
+                                                intermediate_entity,
+                                                *to,
+                                                per_stage_tol,
+                                            ));
                                             substitution.insert(pid, handle.id);
                                         }
                                         Err(e) => {
