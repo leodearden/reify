@@ -349,6 +349,72 @@ fn detect_let_cycle<'a>(
     (let_cells, let_traces, sorted_lets)
 }
 
+/// Static coupling detection pass: walk `templates` in iteration order (which
+/// mirrors the per-scope resolution order) and emit
+/// [`DiagnosticCode::ScopeCoupling`] when a later scope's constraint or
+/// objective reads an auto cell that was already frozen by an earlier scope.
+///
+/// Called in `Engine::eval` AFTER the resolution loop and OUTSIDE the
+/// `has_active_solver` gate so the warning surfaces on `reify check` even
+/// when no constraint solver is attached.
+///
+/// Algorithm:
+/// - `frozen: HashMap<ValueCellId, String>` accumulates the auto-cell ids of
+///   ALREADY-processed scopes, mapped to their owning scope name.
+/// - For each scope B (in walk order): collect B's full read-set from
+///   `template.constraints` (via `extract_dependency_trace`) — full, not
+///   the auto-filtered ResolutionProblem set, because coupling edges are by
+///   definition constraints that read a *different* scope's auto cell (which
+///   `build_solver_problem`'s own-scope filter drops).
+/// - For each read `r` where `frozen[r] == Some(A)` and `A != B.name`,
+///   emit a warning (deduped per (A, B, r) triple via `seen`).
+/// - THEN insert B's own auto cells into `frozen` (populate-after-process
+///   ensures the earlier→later direction; a scope cannot couple to itself
+///   or to a not-yet-frozen scope).
+fn detect_scope_coupling(templates: &[reify_compiler::TopologyTemplate]) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    // auto-cell id → owning scope name for ALREADY-processed scopes.
+    let mut frozen: HashMap<ValueCellId, String> = HashMap::new();
+    // Dedup set: (frozen_scope_name, later_scope_name, crossing_cell_id).
+    let mut seen: HashSet<(String, String, ValueCellId)> = HashSet::new();
+
+    for template in templates {
+        let b_name = &template.name;
+
+        // Collect B's read-set from constraints (full set, retains spans).
+        for constraint in &template.constraints {
+            let reads = extract_dependency_trace(&constraint.expr).reads;
+            for r in reads {
+                if let Some(owner) = frozen.get(&r) {
+                    if owner != b_name {
+                        let key = (owner.clone(), b_name.clone(), r.clone());
+                        if seen.insert(key) {
+                            let msg = format!(
+                                "W_SCOPE_COUPLING: scope '{b_name}' reads auto cell '{r}' \
+                                 owned by already-resolved scope '{owner}'; \
+                                 bottom-up resolution may be approximate"
+                            );
+                            diagnostics.push(
+                                Diagnostic::warning(msg)
+                                    .with_code(DiagnosticCode::ScopeCoupling),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // After processing B, freeze B's own auto cells.
+        for cell in &template.value_cells {
+            if cell.kind.is_auto() {
+                frozen.insert(cell.id.clone(), b_name.clone());
+            }
+        }
+    }
+
+    diagnostics
+}
+
 /// Builds the `ResolutionProblem` for the constraint solver from `template`'s
 /// auto-param cells and constraints, returning `None` when there are no auto
 /// cells (signalling "skip solver invocation").
@@ -2307,6 +2373,12 @@ impl Engine {
         // above whenever sampled-field OOB queries or RBF/Kriging
         // fallbacks emitted warnings via `EvalContext::diagnostics`.
         diagnostics.append(&mut runtime_sink.borrow_mut());
+
+        // Static coupling detection (task 4020 — W_SCOPE_COUPLING, PRD λ §3.7).
+        // Placed OUTSIDE the `has_active_solver` gate so the warning surfaces on
+        // `reify check` (which attaches no solver). Detection is purely structural
+        // and needs no solved values.
+        diagnostics.extend(detect_scope_coupling(&module.templates));
 
         EvalResult {
             values,
