@@ -64,6 +64,45 @@ pub(crate) fn modal_aware_dt(freqs_hz: &[f64], duration: f64) -> f64 {
     }
 }
 
+/// Project per-sample generalized forces onto modal shapes to produce per-mode
+/// scalar modal forcing series: f_i(t_j) = Φᵢᵀ · F(t_j).
+///
+/// # Arguments
+/// * `forces` — `[n_times][n_dofs]` — per-sample generalized force vectors.
+/// * `projections` — `[n_modes][n_dofs]` — per-mode projection (modal shape)
+///   coefficients.  Each entry is the projection of this mode onto the
+///   generalized-force DOF space.
+///
+/// # Returns
+/// `[n_modes][n_times]` — per-mode scalar modal forcing series.
+///
+/// # Graceful handling of mismatched DOF counts
+/// The dot product at each time step uses the common DOF length
+/// `min(forces[j].len(), projections[i].len())` — surplus entries are silently
+/// ignored rather than indexing out of bounds.
+pub(crate) fn forces_to_forcing_history(
+    forces: &[Vec<f64>],
+    projections: &[Vec<f64>],
+) -> Vec<Vec<f64>> {
+    let n_modes = projections.len();
+    let n_times = forces.len();
+    let mut result: Vec<Vec<f64>> = Vec::with_capacity(n_modes);
+    for shape in projections {
+        let mut series = Vec::with_capacity(n_times);
+        for f_at_t in forces {
+            let common_len = f_at_t.len().min(shape.len());
+            let dot: f64 = f_at_t[..common_len]
+                .iter()
+                .zip(shape[..common_len].iter())
+                .map(|(a, b)| a * b)
+                .sum();
+            series.push(dot);
+        }
+        result.push(series);
+    }
+    result
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
