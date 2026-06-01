@@ -1418,6 +1418,37 @@ pub enum DiagnosticCode {
     ///
     /// The PRD-prose mnemonic for this code is `E_TRAIT_FN_SIGNATURE_MISMATCH`.
     TraitFnSignatureMismatch,
+    /// Origin: `crates/reify-compiler/src/conformance` and
+    ///          `crates/reify-compiler/src/conformance/checker.rs`
+    ///          (assoc-type satisfaction phase, check_phase_check_members_against_requirements).
+    ///
+    /// Canonical message form:
+    /// `"trait '<Trait>' requires associated type '<Type>', but '<Structure>' does not bind it"`.
+    ///
+    /// Emitted as a `Severity::Error` when a structure declares conformance to a
+    /// trait that has a required associated type (`RequirementKind::AssocType`),
+    /// the structure does not declare a `type X = …` member binding it, and the
+    /// trait provides no default (`DefaultKind::AssocType`) for it. A single label
+    /// is attached at the structure span naming the missing associated type.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_TRAIT_ASSOC_TYPE_NOT_BOUND`
+    /// (see task 3972; trait-assoc-type iota-β).
+    TraitAssocTypeNotBound,
+    /// Origin: `crates/reify-compiler/src/trait_requirements.rs`
+    ///          (assoc-type default conflict path in `collect_all_requirements`).
+    ///
+    /// Canonical message form:
+    /// `"conflicting trait associated type for '<name>': trait '<A>' provides '<T1>', trait '<B>' provides '<T2>'"`.
+    ///
+    /// Emitted as a `Severity::Error` when two traits each provide a
+    /// `DefaultKind::AssocType` default for the same associated-type name with
+    /// different resolved types, and the conforming structure does not bind the
+    /// name itself (which would suppress the conflict). Mirrors
+    /// [`ConflictingTraitRequirements`] for param/let conflicts.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_CONFLICTING_TRAIT_ASSOC_TYPE`
+    /// (see task 3972; trait-assoc-type iota-β).
+    ConflictingTraitAssocType,
     /// Origin: `crates/reify-compiler/src/expr.rs` (BinOp::Pow + Scalar branch).
     ///
     /// Emitted as a `Severity::Error` when a dimensioned (`Scalar<Q>`) value is
