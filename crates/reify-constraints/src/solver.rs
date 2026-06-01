@@ -3548,4 +3548,76 @@ mod tests {
             ),
         }
     }
+
+    // ── centrality default objective tests (task 4013, PRD η) ──────────────
+
+    /// [B6 RED] x >= 2mm, x <= 8mm, objective: None → solver must return
+    /// x ≈ 5mm (the Chebyshev centre of [2mm, 8mm]), NOT an arbitrary
+    /// boundary point (which is what pure-feasibility returns today).
+    ///
+    /// Fails until step-2 (build_centrality_objective + solve_core changes).
+    #[test]
+    fn centrality_default_centers_two_sided_bound() {
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, ConstraintSolver, ResolutionProblem, SolveResult, Value, ValueMap};
+
+        let solver = crate::DimensionalSolver;
+
+        let x_id = ValueCellId::new("CentredBar", "x");
+        let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
+
+        // x >= 2mm
+        let two_mm = CompiledExpr::literal(
+            Value::Scalar { si_value: 0.002, dimension: DimensionVector::LENGTH },
+            Type::length(),
+        );
+        let ge_expr = CompiledExpr::binop(BinOp::Ge, x_ref.clone(), two_mm, Type::Bool);
+
+        // x <= 8mm
+        let eight_mm = CompiledExpr::literal(
+            Value::Scalar { si_value: 0.008, dimension: DimensionVector::LENGTH },
+            Type::length(),
+        );
+        let le_expr = CompiledExpr::binop(BinOp::Le, x_ref, eight_mm, Type::Bool);
+
+        let problem = ResolutionProblem {
+            auto_params: vec![AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: None, // use default bounds (1µm–10m)
+                free: false,
+            }],
+            constraints: vec![
+                (ConstraintNodeId::new("CentredBar", 0), ge_expr),
+                (ConstraintNodeId::new("CentredBar", 1), le_expr),
+            ],
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![].into(),
+        };
+
+        let result = solver.solve(&problem);
+        match result {
+            SolveResult::Solved { values, .. } => {
+                let si = values.get(&x_id).unwrap().as_f64().unwrap();
+                // Chebyshev centre of [2mm, 8mm] is the midpoint 5mm (0.005 m).
+                // Tolerance: |x − 5mm| < 1e-4 m (0.1mm) per PRD §11.
+                assert!(
+                    (si - 0.005).abs() < 1e-4,
+                    "centrality should place x ≈ 5mm (0.005 m), got {:.6} m",
+                    si
+                );
+                // Must be strictly interior — NOT on the boundary.
+                assert!(
+                    si > 0.002 && si < 0.008,
+                    "x must be strictly interior to [2mm, 8mm], got {:.6} m",
+                    si
+                );
+            }
+            other => panic!(
+                "expected Solved (centrality), got {:?}",
+                other
+            ),
+        }
+    }
 }
