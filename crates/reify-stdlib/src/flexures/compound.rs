@@ -25,14 +25,15 @@ use reify_core::DimensionVector;
 use reify_ir::Value;
 
 use super::common::{
-    cantilever_theta_lim, fixed_guided_delta_max, length_si, make_flexure_joint,
-    material_field_si, neutral_angle_si, symmetric_angle_range, CANTILEVER_GAMMA,
-    FIXED_GUIDED_GAMMA,
+    attach_compliance, cantilever_sigma_at, cantilever_theta_lim, fixed_guided_delta_max,
+    fixed_guided_sigma_at, length_si, make_compliance_record, make_flexure_joint,
+    material_field_si, neutral_angle_si, parse_declared_range, symmetric_angle_range, RangeKind,
+    CANTILEVER_GAMMA, FIXED_GUIDED_GAMMA,
 };
 
 /// Shared validated inputs for compound-flexure constructors.
 ///
-/// Argument layout: `(length, width, thickness, blade_spacing, material, motion_axis, pivot)`
+/// Argument layout: `(length, width, thickness, blade_spacing, material, motion_axis, pivot[, declared_range])`
 /// — note that `blade_spacing` is arg[3] (differs from beam ctors where material is arg[3]).
 struct CompoundInputs<'a> {
     /// Blade length L (metres).
@@ -51,18 +52,24 @@ struct CompoundInputs<'a> {
     axis: &'a Value,
     /// The raw pivot argument (stored verbatim on the joint Map).
     pivot: &'a Value,
+    /// The optional trailing declared operating-range argument (present only in
+    /// the 8-arg form). When present, its endpoint — a LENGTH half-displacement —
+    /// not the auto δ cap, drives the joint range and the §5.3 `max_stress`
+    /// stress-check.
+    declared_range_arg: Option<&'a Value>,
 }
 
 /// Parse and validate the shared positional argument layout of both
 /// compound-flexure constructors:
-/// `(length, width, thickness, blade_spacing, material, motion_axis, pivot)`.
+/// `(length, width, thickness, blade_spacing, material, motion_axis, pivot[, declared_range])`.
 ///
-/// Returns `None` (⇒ `Value::Undef`) on: arity ≠ 7; non-positive or non-finite
-/// geometry (including `blade_spacing`); thickness ≥ length; a material that is
-/// not a `Value::StructureInstance` with a finite positive `youngs_modulus`; or a
-/// motion_axis that is not a finite, non-zero, dimensionless 3-vector.
+/// Returns `None` (⇒ `Value::Undef`) on: arity ∉ {7, 8}; non-positive or
+/// non-finite geometry (including `blade_spacing`); thickness ≥ length; a
+/// material that is not a `Value::StructureInstance` with a finite positive
+/// `youngs_modulus`; or a motion_axis that is not a finite, non-zero,
+/// dimensionless 3-vector. The optional 8th slot is the declared operating range.
 fn parse_compound_inputs(args: &[Value]) -> Option<CompoundInputs<'_>> {
-    if args.len() != 7 {
+    if args.len() != 7 && args.len() != 8 {
         return None;
     }
     let length = length_si(&args[0])?;
@@ -94,6 +101,7 @@ fn parse_compound_inputs(args: &[Value]) -> Option<CompoundInputs<'_>> {
         yield_si: material_field_si(material, "yield_stress"),
         axis,
         pivot: &args[6],
+        declared_range_arg: if args.len() == 8 { Some(&args[7]) } else { None },
     })
 }
 
@@ -115,16 +123,28 @@ where
     let k_stage = 4.0 * k_blade / series_divisor;
     let k_transverse = 4.0 * c.e * (c.width * c.thickness) / c.length / series_divisor;
 
-    let delta = fixed_guided_delta_max(c.length, c.thickness, c.e, c.yield_si);
+    // Auto SAFE displacement δ_auto = yield·L²/(3·E·t) (the fixed-guided
+    // surface-yield deflection; no yield_stress ⇒ 0.1·L). Retained as the SAFE
+    // prb_validity_range in the compliance record regardless of any declared range.
+    let delta_auto = fixed_guided_delta_max(c.length, c.thickness, c.e, c.yield_si);
+
+    // An optional user-declared operating range (±half-displacement LENGTH)
+    // OVERRIDES δ_auto for the joint range, the parasitic arc, and the §5.3 stress
+    // endpoint; δ_auto stays the SAFE/suggested range in the compliance record.
+    let declared = parse_declared_range(c.declared_range_arg, RangeKind::Length);
+    let range_endpoint = declared.unwrap_or(delta_auto);
     let range = Value::range(
-        Some(Value::length(-delta)),
-        Some(Value::length(delta)),
+        Some(Value::length(-range_endpoint)),
+        Some(Value::length(range_endpoint)),
         true,
         true,
     );
 
-    let delta_rot_single = c.length * (1.0 - (delta / c.length).cos());
-    let delta_rot = parasitic_of(delta_rot_single, delta, c.length);
+    // Roberts-approximation parasitic arc at the operating displacement
+    // (range_endpoint): single-stage δ_rot = L·(1−cos(δ/L)); the closure maps it to
+    // the final value (identity for single, ·(δ/L)² residual for double, §6.2).
+    let delta_rot_single = c.length * (1.0 - (range_endpoint / c.length).cos());
+    let delta_rot = parasitic_of(delta_rot_single, range_endpoint, c.length);
 
     let base = make_flexure_joint(
         "prismatic",
@@ -152,7 +172,23 @@ where
         Value::String("parasitic_error".to_string()),
         Value::Option(Some(Box::new(Value::length(delta_rot)))),
     );
-    Value::Map(m)
+
+    // Cache the FlexureCompliance record (§5.3): fixed-guided surface stress
+    // σ = 3·E·t·δ/L² at the (declared|auto) displacement endpoint and at the
+    // neutral rest offset (0). parasitic_error carries the Roberts/double-residual
+    // arc (same value as the joint Map field); prb_validity_range advertises the
+    // auto SAFE δ_auto; effective_stiffness is the stage spring rate k_stage.
+    let max_stress = fixed_guided_sigma_at(range_endpoint, c.length, c.thickness, c.e);
+    let max_stress_at_neutral = fixed_guided_sigma_at(0.0, c.length, c.thickness, c.e);
+    let record = make_compliance_record(
+        k_stage,
+        max_stress,
+        max_stress_at_neutral,
+        c.yield_si,
+        Some(delta_rot),
+        delta_auto,
+    );
+    attach_compliance(Value::Map(m), record)
 }
 
 /// Evaluate a compound-flexure constructor by name.
@@ -172,7 +208,7 @@ pub(crate) fn eval_compound(name: &str, args: &[Value]) -> Option<Value> {
 /// Validated inputs for the cartwheel flexure constructor.
 ///
 /// Argument layout (§6.3): `(blade_count:Int, blade_length, blade_width,
-/// blade_thickness, material, pivot, axis[, neutral])` — note that blade_count
+/// blade_thickness, material, pivot, axis[, neutral[, declared_range]])` — note that blade_count
 /// is arg[0], pivot is arg[5] BEFORE axis at arg[6] (matches the beam/hinge
 /// family, not the compound parallelogram layout). A new dedicated parser is
 /// required because the layouts differ structurally.
@@ -194,22 +230,26 @@ struct CartwheelInputs<'a> {
     axis: &'a Value,
     /// The raw pivot argument (stored verbatim on the joint Map).
     pivot: &'a Value,
-    /// Optional trailing `neutral` argument (present only in the 8-arg form).
+    /// Optional trailing `neutral` argument (present in the 8- and 9-arg forms).
     neutral_arg: Option<&'a Value>,
+    /// The optional trailing declared operating-range argument (present only in
+    /// the 9-arg form). When present, its endpoint — an ANGLE half-angle — not
+    /// the auto θ_lim cap, drives the joint range and the §5.3 `max_stress` endpoint.
+    declared_range_arg: Option<&'a Value>,
 }
 
 /// Parse and validate the cartwheel flexure argument layout:
 /// `(blade_count:Int, blade_length, blade_width, blade_thickness,
-/// material, pivot, axis[, neutral])`.
+/// material, pivot, axis[, neutral[, declared_range]])`.
 ///
-/// Returns `None` (⇒ `Value::Undef`) on: arity ∉ {7, 8}; blade_count not an
+/// Returns `None` (⇒ `Value::Undef`) on: arity ∉ {7, 8, 9}; blade_count not an
 /// integer-valued finite number ≥ 1 (i.e. `Int` ≥ 1, or a whole finite `Real`
 /// ≥ 1.0 — non-integers and values < 1 are rejected); non-positive or
 /// non-finite geometry; thickness ≥ length; a material without a finite
 /// positive `youngs_modulus`; or an axis that is not a finite, non-zero,
-/// dimensionless 3-vector.
+/// dimensionless 3-vector. The optional 9th slot is the declared operating range.
 fn parse_cartwheel_inputs(args: &[Value]) -> Option<CartwheelInputs<'_>> {
-    if args.len() != 7 && args.len() != 8 {
+    if args.len() < 7 || args.len() > 9 {
         return None;
     }
     // Strict blade_count: Int ≥ 1, or a whole finite Real ≥ 1.
@@ -240,13 +280,14 @@ fn parse_cartwheel_inputs(args: &[Value]) -> Option<CartwheelInputs<'_>> {
         yield_si: material_field_si(material, "yield_stress"),
         axis: &args[6],
         pivot: &args[5],
-        neutral_arg: if args.len() == 8 { Some(&args[7]) } else { None },
+        neutral_arg: if args.len() >= 8 { Some(&args[7]) } else { None },
+        declared_range_arg: if args.len() == 9 { Some(&args[8]) } else { None },
     })
 }
 
 /// `prb_cartwheel_flexure(blade_count, blade_length, blade_width,
-/// blade_thickness, material, pivot, axis[, neutral])` — PRB cartwheel flexure
-/// presented as a revolute joint (Compliant-Joints PRD §6.3).
+/// blade_thickness, material, pivot, axis[, neutral[, declared_range]])` — PRB
+/// cartwheel flexure presented as a revolute joint (Compliant-Joints PRD §6.3).
 ///
 /// Returns a joint `Value::Map` (`kind == "revolute"`) whose rotational
 /// stiffness is `k_θ = N · γ · E · I / L` (§6.3, γ = 2.65 Howell §5.1
@@ -274,13 +315,18 @@ fn prb_cartwheel_flexure(args: &[Value]) -> Value {
     // cantilever surface-yield rotation IS the pivot's yield-limited range
     // (shared formula with beam::prb_cantilever_beam via common::cantilever_theta_lim).
     let theta_lim = cantilever_theta_lim(c.length, c.thickness, c.e, c.yield_si);
-    let range = symmetric_angle_range(theta_lim);
 
-    // Optional trailing neutral angle (default 0 for the 7-arg form; step-8
-    // wires the 8-arg form — neutral_arg is already populated by the parser).
+    // An optional user-declared operating range (±half-angle) OVERRIDES the auto
+    // θ_lim cap for the joint range and the §5.3 stress endpoint; θ_lim is retained
+    // as the SAFE/suggested range in the compliance record.
+    let declared = parse_declared_range(c.declared_range_arg, RangeKind::Angle);
+    let range_endpoint = declared.unwrap_or(theta_lim);
+    let range = symmetric_angle_range(range_endpoint);
+
+    // Optional trailing neutral angle (default 0 for the 7-arg form).
     let neutral_si = c.neutral_arg.map(neutral_angle_si).unwrap_or(0.0);
 
-    make_flexure_joint(
+    let joint = make_flexure_joint(
         "revolute",
         c.axis.clone(),
         range,
@@ -290,10 +336,27 @@ fn prb_cartwheel_flexure(args: &[Value]) -> Value {
         },
         Value::angle(neutral_si),
         c.pivot.clone(),
-    )
+    );
+
+    // Cache the FlexureCompliance record (§5.3): per-blade cantilever angular
+    // surface stress σ = E·(t/2)·θ/L at the (declared|auto) endpoint and the
+    // neutral rest angle — the surface stress is independent of N (each blade sees
+    // the joint rotation). prb_validity_range advertises the auto SAFE θ_lim;
+    // effective_stiffness is the N-blade pivot stiffness k_pivot.
+    let max_stress = cantilever_sigma_at(range_endpoint, c.length, c.thickness, c.e);
+    let max_stress_at_neutral = cantilever_sigma_at(neutral_si, c.length, c.thickness, c.e);
+    let record = make_compliance_record(
+        k_pivot,
+        max_stress,
+        max_stress_at_neutral,
+        c.yield_si,
+        None,
+        theta_lim,
+    );
+    attach_compliance(joint, record)
 }
 
-/// `prb_parallelogram_flexure(length, width, thickness, blade_spacing, material, motion_axis, pivot)`
+/// `prb_parallelogram_flexure(length, width, thickness, blade_spacing, material, motion_axis, pivot[, declared_range])`
 /// — PRB parallelogram flexure stage presented as a prismatic joint.
 ///
 /// Returns a joint `Value::Map` (`kind == "prismatic"`) with:
@@ -310,7 +373,7 @@ fn prb_parallelogram_flexure(args: &[Value]) -> Value {
     build_compound_joint(&c, 1.0, |delta_rot_single, _delta, _length| delta_rot_single)
 }
 
-/// `prb_double_parallelogram_flexure(length, width, thickness, blade_spacing, material, motion_axis, pivot)`
+/// `prb_double_parallelogram_flexure(length, width, thickness, blade_spacing, material, motion_axis, pivot[, declared_range])`
 /// — PRB double-parallelogram flexure stage: two single stages in mirror-symmetric series.
 ///
 /// Mirror symmetry cancels the first-order Roberts-approximation parasitic error,
