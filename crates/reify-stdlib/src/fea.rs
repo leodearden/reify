@@ -3998,6 +3998,214 @@ mod tests {
         }
     }
 
+    // ── step-3 (RED): envelope_* accept per-case StructureInstance ─────────────
+    //
+    // Three tests mirroring the Map-shape round-trips above, but with per-case
+    // ElasticResults built via make_elastic_result_si_with_fields.  All three
+    // are RED today because extract_per_case_sampled_field rejects
+    // StructureInstance per-case values → None → Undef.  After step-4 they
+    // become GREEN while the Map-shape round-trips above stay GREEN.
+
+    // (a) envelope_von_mises: same tensors + expected values as the Map-shape
+    // round-trip at ~3564 (data[0]=100, data[1]=200, data[2]=100·√3).
+    #[test]
+    fn envelope_von_mises_structure_instance_per_case_returns_per_grid_max_not_undef() {
+        let axis = vec![0.0, 1.0, 2.0];
+        let pressure = Type::Scalar {
+            dimension: DimensionVector::PRESSURE,
+        };
+        let tensor_codomain = Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity: Box::new(pressure.clone()),
+        };
+        let domain = Type::Real;
+
+        let a_tensors: Vec<[f64; 9]> = vec![
+            [100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 50.0, 0.0, 50.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [200.0, 0.0, 0.0, 0.0, 200.0, 0.0, 0.0, 0.0, 200.0],
+        ];
+        let b_tensors: Vec<[f64; 9]> = vec![
+            [50.0, 0.0, 0.0, 0.0, 50.0, 0.0, 0.0, 0.0, 50.0],
+            [200.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 100.0, 0.0, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        ];
+
+        let a_stress = wrap_sampled_field(
+            make_sampled_tensor_3x3_1d("a_stress", axis.clone(), a_tensors),
+            domain.clone(),
+            tensor_codomain.clone(),
+        );
+        let b_stress = wrap_sampled_field(
+            make_sampled_tensor_3x3_1d("b_stress", axis.clone(), b_tensors),
+            domain.clone(),
+            tensor_codomain.clone(),
+        );
+        let disp_placeholder = wrap_sampled_field(
+            make_sampled_1d("disp", axis.clone(), vec![0.0, 0.0, 0.0]),
+            domain.clone(),
+            Type::Real,
+        );
+        // Use SI per-case ElasticResults (solve_load_cases shape).
+        let case_a = make_elastic_result_si_with_fields(disp_placeholder.clone(), a_stress);
+        let case_b = make_elastic_result_si_with_fields(disp_placeholder, b_stress);
+        let mcr = multi_case_result_value(&[("A", case_a), ("B", case_b)]);
+
+        let result = eval_fea("envelope_von_mises", &[mcr]).unwrap();
+        assert!(
+            !result.is_undef(),
+            "envelope_von_mises with SI per-cases must not return Undef"
+        );
+        let result_sf = extract_sampled(&result);
+
+        let expected: [f64; 3] = [
+            100.0,
+            200.0,
+            100.0 * 3.0_f64.sqrt(),
+        ];
+        assert_eq!(result_sf.data.len(), axis.len());
+        for (i, (got, want)) in result_sf.data.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (got - want).abs() < 1e-6,
+                "grid point {i}: got {got}, want {want}"
+            );
+        }
+        match &result {
+            Value::Field { codomain_type, .. } => assert_eq!(*codomain_type, pressure),
+            other => panic!("expected Value::Field, got {:?}", other),
+        }
+    }
+
+    // (b) envelope_max_principal: same diagonal tensors + expected values as
+    // the Map-shape round-trip at ~3687 (data=[200,80,150]).
+    #[test]
+    fn envelope_max_principal_structure_instance_per_case_not_undef() {
+        let axis = vec![0.0, 1.0, 2.0];
+        let pressure = Type::Scalar {
+            dimension: DimensionVector::PRESSURE,
+        };
+        let tensor_codomain = Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity: Box::new(pressure.clone()),
+        };
+        let domain = Type::Real;
+
+        let a_tensors: Vec<[f64; 9]> = vec![
+            [100.0, 0.0, 0.0, 0.0, 50.0, 0.0, 0.0, 0.0, 20.0],
+            [-30.0, 0.0, 0.0, 0.0, 80.0, 0.0, 0.0, 0.0, 60.0],
+            [10.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 10.0],
+        ];
+        let b_tensors: Vec<[f64; 9]> = vec![
+            [40.0, 0.0, 0.0, 0.0, 200.0, 0.0, 0.0, 0.0, 60.0],
+            [50.0, 0.0, 0.0, 0.0, 50.0, 0.0, 0.0, 0.0, 50.0],
+            [0.0, 0.0, 0.0, 0.0, -10.0, 0.0, 0.0, 0.0, 150.0],
+        ];
+
+        let a_stress = wrap_sampled_field(
+            make_sampled_tensor_3x3_1d("a_stress", axis.clone(), a_tensors.clone()),
+            domain.clone(),
+            tensor_codomain.clone(),
+        );
+        let b_stress = wrap_sampled_field(
+            make_sampled_tensor_3x3_1d("b_stress", axis.clone(), b_tensors.clone()),
+            domain.clone(),
+            tensor_codomain.clone(),
+        );
+        let disp_placeholder = wrap_sampled_field(
+            make_sampled_1d("disp", axis.clone(), vec![0.0, 0.0, 0.0]),
+            domain.clone(),
+            Type::Real,
+        );
+        let case_a = make_elastic_result_si_with_fields(disp_placeholder.clone(), a_stress);
+        let case_b = make_elastic_result_si_with_fields(disp_placeholder, b_stress);
+        let mcr = multi_case_result_value(&[("A", case_a), ("B", case_b)]);
+
+        let result = eval_fea("envelope_max_principal", &[mcr]).unwrap();
+        assert!(
+            !result.is_undef(),
+            "envelope_max_principal with SI per-cases must not return Undef"
+        );
+        let result_sf = extract_sampled(&result);
+
+        let expected: Vec<f64> = (0..axis.len())
+            .map(|i| {
+                max_principal_diagonal(&a_tensors[i]).max(max_principal_diagonal(&b_tensors[i]))
+            })
+            .collect();
+        assert_eq!(result_sf.data.len(), axis.len());
+        for (i, (got, want)) in result_sf.data.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (got - want).abs() < 1e-6,
+                "grid point {i}: got {got}, want {want}"
+            );
+        }
+        match &result {
+            Value::Field { codomain_type, .. } => assert_eq!(*codomain_type, pressure),
+            other => panic!("expected Value::Field, got {:?}", other),
+        }
+    }
+
+    // (c) envelope_displacement_magnitude: same vectors + expected values as
+    // the Map-shape round-trip at ~3789 (data=[5,10,2]).
+    #[test]
+    fn envelope_displacement_magnitude_structure_instance_per_case_not_undef() {
+        let axis = vec![0.0, 1.0, 2.0];
+        let length = Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        };
+        let vector_codomain = Type::Vector {
+            n: 3,
+            quantity: Box::new(length.clone()),
+        };
+        let domain = Type::Real;
+
+        let a_vectors: Vec<[f64; 3]> = vec![[3.0, 4.0, 0.0], [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]];
+        let b_vectors: Vec<[f64; 3]> = vec![[0.0, 0.0, 0.0], [6.0, 8.0, 0.0], [2.0, 0.0, 0.0]];
+
+        let a_disp = wrap_sampled_field(
+            make_sampled_vector3_1d("a_disp", axis.clone(), a_vectors.clone()),
+            domain.clone(),
+            vector_codomain.clone(),
+        );
+        let b_disp = wrap_sampled_field(
+            make_sampled_vector3_1d("b_disp", axis.clone(), b_vectors.clone()),
+            domain.clone(),
+            vector_codomain.clone(),
+        );
+        let stress_placeholder = wrap_sampled_field(
+            make_sampled_1d("stress", axis.clone(), vec![0.0, 0.0, 0.0]),
+            domain.clone(),
+            Type::Real,
+        );
+        let case_a = make_elastic_result_si_with_fields(a_disp, stress_placeholder.clone());
+        let case_b = make_elastic_result_si_with_fields(b_disp, stress_placeholder);
+        let mcr = multi_case_result_value(&[("A", case_a), ("B", case_b)]);
+
+        let result = eval_fea("envelope_displacement_magnitude", &[mcr]).unwrap();
+        assert!(
+            !result.is_undef(),
+            "envelope_displacement_magnitude with SI per-cases must not return Undef"
+        );
+        let result_sf = extract_sampled(&result);
+
+        let expected: Vec<f64> = (0..axis.len())
+            .map(|i| vector3_magnitude(&a_vectors[i]).max(vector3_magnitude(&b_vectors[i])))
+            .collect();
+        assert_eq!(result_sf.data.len(), axis.len());
+        for (i, (got, want)) in result_sf.data.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (got - want).abs() < 1e-6,
+                "grid point {i}: got {got}, want {want}"
+            );
+        }
+        match &result {
+            Value::Field { codomain_type, .. } => assert_eq!(*codomain_type, length),
+            other => panic!("expected Value::Field, got {:?}", other),
+        }
+    }
+
     // ── envelope_{von_mises,max_principal,displacement_magnitude} negatives ─
     //
     // Argument-shape negatives for the three Tensor/Vector → scalar envelope
