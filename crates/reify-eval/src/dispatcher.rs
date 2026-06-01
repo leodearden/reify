@@ -1671,6 +1671,52 @@ mod tests {
         );
     }
 
+    /// Task 4050 (steps 5/6): [`v03_conversion_projection`] classifies a single
+    /// conversion stage `(from, to)` into the v0.3-ε-executable projection.
+    ///
+    /// ε supports exactly ONE conversion shape — `(BRep, Mesh)` ⇒ `Tessellate`
+    /// (the source kernel tessellates its BRep handle into a mesh, which the
+    /// target kernel then ingests via `ingest_mesh`). EVERY other ordered
+    /// `(from, to)` pair over the four [`ReprKind`] variants is NOT runnable in
+    /// ε and must classify as `None`, so the conversion executor surfaces it as
+    /// a realization-failed diagnostic rather than attempting (or panicking on)
+    /// an unsupported stage.
+    ///
+    /// Exhaustively pins all 16 ordered pairs: the one supported cell returns
+    /// `Some(Tessellate)`; the other 15 return `None`. A future ε that learns a
+    /// new conversion (e.g. `(Mesh, Voxel)`) must update this table explicitly.
+    #[test]
+    fn v03_conversion_projection_supports_only_brep_to_mesh_tessellate() {
+        use super::{ConversionProjection, v03_conversion_projection};
+
+        let all = [
+            ReprKind::BRep,
+            ReprKind::Mesh,
+            ReprKind::Sdf,
+            ReprKind::Voxel,
+        ];
+
+        for &from in &all {
+            for &to in &all {
+                let got = v03_conversion_projection(from, to);
+                if from == ReprKind::BRep && to == ReprKind::Mesh {
+                    assert_eq!(
+                        got,
+                        Some(ConversionProjection::Tessellate),
+                        "(BRep, Mesh) is the sole ε-executable stage and must \
+                         classify as the Tessellate projection",
+                    );
+                } else {
+                    assert_eq!(
+                        got, None,
+                        "({from:?}, {to:?}) is not ε-executable and must classify \
+                         as None (only BRep→Mesh is supported in v0.3 ε)",
+                    );
+                }
+            }
+        }
+    }
+
     /// Pins the wire-contract of [`no_kernel_chain_diagnostic`]: the emitted
     /// [`reify_types::Diagnostic`] carries `Severity::Error` and
     /// `Some(DiagnosticCode::NoKernelChain)`. This is the load-bearing
