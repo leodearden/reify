@@ -1184,6 +1184,67 @@ mod tests {
         );
     }
 
+    // ── value_type_kind_matches: Value::Selector regression-lock (task 4117 / β) ─────
+
+    /// Regression-lock for the `Value::Selector` arm added by dep 4116.
+    ///
+    /// Production arm at lib.rs:303:
+    ///   `Value::Selector(sv) => matches!(ty, Type::Selector(k) if *k == sv.kind)`
+    ///
+    /// Contract:
+    /// (a) Face-kind Selector against Type::Selector(Face) → true
+    /// (b) Face-kind Selector against Type::Selector(Edge) → false (wrong kind)
+    /// (c) Value::Undef against Type::Selector(Face) → true (universal wildcard)
+    /// (d) Face-kind Selector against Type::Geometry → false (wrong outer variant)
+    ///
+    /// GREEN on arrival — no production code changed; this is a characterization
+    /// test only (documented per plan design decision #3).
+    #[test]
+    fn value_type_kind_matches_selector_value_regression_lock() {
+        use reify_core::ty::SelectorKind;
+        use reify_core::{RealizationNodeId, Type};
+        use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorValue};
+        use reify_ir::{GeometryHandleId, Value};
+
+        // Build a face-kind selector backed by a synthetic geometry handle.
+        let target = GeometryHandleRef {
+            realization_ref: RealizationNodeId::new("TestPart", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: GeometryHandleId(1),
+        };
+        let query = LeafQuery::ByNormal {
+            dir: [0., 0., 1.],
+            tol_rad: 0.01,
+        };
+        let sv = SelectorValue::leaf(SelectorKind::Face, target, query)
+            .expect("SelectorValue::leaf must succeed for matching kind/query");
+        let face_selector = Value::Selector(sv);
+
+        // (a) Same-kind: Face selector against Selector(Face) → true.
+        assert!(
+            value_type_kind_matches(&face_selector, &Type::Selector(SelectorKind::Face), None),
+            "Value::Selector(Face) against Type::Selector(Face) must be true (same kind)"
+        );
+
+        // (b) Cross-kind: Face selector against Selector(Edge) → false.
+        assert!(
+            !value_type_kind_matches(&face_selector, &Type::Selector(SelectorKind::Edge), None),
+            "Value::Selector(Face) against Type::Selector(Edge) must be false (wrong kind)"
+        );
+
+        // (c) Value::Undef is the universal wildcard — always accepted regardless of type.
+        assert!(
+            value_type_kind_matches(&Value::Undef, &Type::Selector(SelectorKind::Face), None),
+            "Value::Undef against Type::Selector(Face) must be true (universal wildcard)"
+        );
+
+        // (d) Face selector against Type::Geometry → false (wrong outer variant).
+        assert!(
+            !value_type_kind_matches(&face_selector, &Type::Geometry, None),
+            "Value::Selector against Type::Geometry must be false (different outer variant)"
+        );
+    }
+
     // ── value_type_kind_matches: Type::Error anti-cascade guard (task-1922 / task-448) ──
 
     /// `Value::Real` paired with `Type::Error` must return `true`.
