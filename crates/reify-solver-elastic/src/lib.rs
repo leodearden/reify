@@ -404,6 +404,10 @@ pub mod shell_assembly;
 pub mod shell_boundary;
 pub mod shell_kinematics;
 pub mod shell_result;
+// Task 3594/δ: flat-plate MITC3 cantilever shell driver (PRD
+// shell-extract-engine-bridge.md §3/§5/§7). Neutral-types kernel driver behind
+// the reify-eval shell-solve glue.
+pub mod shell_solve;
 pub mod solver;
 pub(crate) mod sparse_util;
 pub mod sweep;
