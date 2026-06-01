@@ -3096,4 +3096,87 @@ mod tests {
             "Uppercase String 'XYZ' must still return Undef (enum path only case-folds)"
         );
     }
+
+    // ── orient_to_euler EulerConvention enum-value tests (step-5 RED) ────────
+
+    #[test]
+    fn orient_to_euler_enum_zyx_matches_string_zyx() {
+        // Build a known quaternion with ZYX convention, then decode with enum and string paths.
+        let q = eval_builtin(
+            "orient_euler",
+            &[
+                Value::String("zyx".to_string()),
+                Value::Real(0.3), Value::Real(0.5), Value::Real(-0.7),
+            ],
+        );
+        let by_enum = eval_builtin(
+            "orient_to_euler",
+            &[
+                Value::Enum { type_name: "EulerConvention".to_string(), variant: "ZYX".to_string() },
+                q.clone(),
+            ],
+        );
+        let by_str = eval_builtin(
+            "orient_to_euler",
+            &[Value::String("zyx".to_string()), q.clone()],
+        );
+        assert!(
+            euler_extract(&by_enum).is_some(),
+            "EulerConvention.ZYX orient_to_euler should return a 3-element Angle list, got {:?}",
+            by_enum
+        );
+        assert_eq!(by_enum, by_str, "EulerConvention.ZYX should equal string 'zyx'");
+    }
+
+    #[test]
+    fn orient_to_euler_enum_xyz_matches_string_xyz() {
+        let q = eval_builtin(
+            "orient_euler",
+            &[
+                Value::String("xyz".to_string()),
+                Value::Real(0.1), Value::Real(0.2), Value::Real(0.3),
+            ],
+        );
+        let by_enum = eval_builtin(
+            "orient_to_euler",
+            &[
+                Value::Enum { type_name: "EulerConvention".to_string(), variant: "XYZ".to_string() },
+                q.clone(),
+            ],
+        );
+        let by_str = eval_builtin(
+            "orient_to_euler",
+            &[Value::String("xyz".to_string()), q.clone()],
+        );
+        assert!(
+            euler_extract(&by_enum).is_some(),
+            "EulerConvention.XYZ orient_to_euler should return a 3-element Angle list, got {:?}",
+            by_enum
+        );
+        assert_eq!(by_enum, by_str, "EulerConvention.XYZ should equal string 'xyz'");
+    }
+
+    #[test]
+    fn orient_to_euler_enum_wrong_type_name_returns_undef() {
+        let q = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        assert!(
+            eval_builtin("orient_to_euler", &[
+                Value::Enum { type_name: "OutputFormat".to_string(), variant: "STEP".to_string() },
+                q,
+            ]).is_undef(),
+            "Enum with wrong type_name should return Undef"
+        );
+    }
+
+    #[test]
+    fn orient_to_euler_enum_unknown_variant_returns_undef() {
+        let q = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        assert!(
+            eval_builtin("orient_to_euler", &[
+                Value::Enum { type_name: "EulerConvention".to_string(), variant: "ABC".to_string() },
+                q,
+            ]).is_undef(),
+            "Unknown EulerConvention variant should return Undef"
+        );
+    }
 }
