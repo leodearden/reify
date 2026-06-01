@@ -4588,6 +4588,86 @@ pub(crate) fn realization_is_aux(realization: &reify_compiler::RealizationDecl) 
     realization.is_aux
 }
 
+/// Decompose a `Value::Transform` into raw quaternion + SI-metre translation
+/// arrays for building a kernel-agnostic `reify_ir::GeometryOp::ApplyTransform`
+/// (T5 step-8/10).
+///
+/// Accepts `Transform { rotation: Orientation { w, x, y, z }, translation:
+/// Vector([s0, s1, s2]) }` where each translation component is a finite LENGTH
+/// or dimensionless `Scalar`; returns `Some(([w,x,y,z], [tx,ty,tz]))` with the
+/// translation read straight off `Scalar.si_value` (SI metres). Returns `None`
+/// for any other shape — non-`Transform`, non-`Orientation` rotation, a
+/// translation that is not a 3-component `Vector`, or a component that is not a
+/// LENGTH/dimensionless finite `Scalar`. Each component is checked independently,
+/// so a mixed-dimension translation (e.g. one ANGLE among LENGTHs) is rejected.
+///
+/// `reify_stdlib`'s own `decompose_transform` is private, so this local
+/// pattern-match keeps the change inside reify-eval while feeding the IR op's
+/// raw float arrays (the IR is kernel-agnostic by design).
+pub(crate) fn decompose_transform_to_arrays(v: &reify_ir::Value) -> Option<([f64; 4], [f64; 3])> {
+    let reify_ir::Value::Transform {
+        rotation,
+        translation,
+    } = v
+    else {
+        return None;
+    };
+    let reify_ir::Value::Orientation { w, x, y, z } = rotation.as_ref() else {
+        return None;
+    };
+    let reify_ir::Value::Vector(components) = translation.as_ref() else {
+        return None;
+    };
+    if components.len() != 3 {
+        return None;
+    }
+    let mut t = [0.0_f64; 3];
+    for (i, c) in components.iter().enumerate() {
+        let reify_ir::Value::Scalar {
+            si_value,
+            dimension,
+        } = c
+        else {
+            return None;
+        };
+        let dim_ok = *dimension == reify_core::DimensionVector::LENGTH
+            || *dimension == reify_core::DimensionVector::DIMENSIONLESS;
+        if !dim_ok || !si_value.is_finite() {
+            return None;
+        }
+        t[i] = *si_value;
+    }
+    Some(([*w, *x, *y, *z], t))
+}
+
+/// Left-fold a chain of pose `Value::Transform`s into a single world transform
+/// via the quaternion-correct `transform_compose` builtin (T5 step-8/10).
+///
+/// Seeds with the identity Transform and folds `transform_compose(acc, next)`
+/// left-to-right, so the result is `pose_0 ∘ pose_1 ∘ … ∘ pose_n` (mirrors the
+/// proven left-fold in `reify_stdlib::loop_closure::chain_transform`). An empty
+/// chain returns the identity Transform unchanged. Reuses the already-tested
+/// stdlib builtin rather than hand-rolling quaternion math; `reify-eval` already
+/// depends on `reify-stdlib`.
+pub(crate) fn compose_pose_chain(poses: &[reify_ir::Value]) -> reify_ir::Value {
+    let identity = reify_ir::Value::Transform {
+        rotation: Box::new(reify_ir::Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }),
+        translation: Box::new(reify_ir::Value::Vector(vec![
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+        ])),
+    };
+    poses.iter().fold(identity, |acc, next| {
+        reify_stdlib::eval_builtin("transform_compose", &[acc, next.clone()])
+    })
+}
+
 /// Indices into `module.templates` of the *root* templates for surfacing: those
 /// whose `name` is NOT the `structure_name` of any NON-collection sub anywhere
 /// in the module (T5 step-4).
