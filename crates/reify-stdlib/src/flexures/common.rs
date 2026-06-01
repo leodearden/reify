@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::f64::consts::PI;
 
 use reify_core::DimensionVector;
-use reify_ir::Value;
+use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 
 /// PRB validity limit on flexure rotation: ±5°, expressed in radians. Beyond
 /// this the pseudo-rigid-body small-deflection model loses fidelity (Howell §5).
@@ -196,6 +196,84 @@ pub(super) fn neutral_angle_si(v: &Value) -> f64 {
         Value::Option(None) => 0.0,
         other => crate::helpers::trig_input(other).unwrap_or(0.0),
     }
+}
+
+/// Build the cached `FlexureCompliance` record as a `Value::StructureInstance`.
+///
+/// Mirrors the SIR-α `StructureInstanceData` construction (beam.rs test
+/// `material()` helper / reify-ir value.rs): a placeholder `type_id`
+/// (`StructureTypeId(0)` — the record is built Rust-side, bypassing the
+/// `flexures.ri` ctor and its registered type id), `type_name =
+/// "FlexureCompliance"`, `version = 1`, and the 7-field map matching the
+/// `flexures.ri` `structure def FlexureCompliance`.
+///
+/// Field representations:
+/// - `effective_stiffness` → bare [`Value::Real`] (family-agnostic: revolute
+///   flexures carry rotational stiffness, prismatic carry translational; storing
+///   the bare SI magnitude sidesteps committing the cache to one dimension).
+/// - `max_stress` / `max_stress_at_neutral` → PRESSURE-dimensioned [`Value::Scalar`].
+/// - `yield_margin` → [`Value::Real`]: `(yield − max_stress) / yield` when a yield
+///   stress is known (negative in the at-yield regime; ≤ 1 by construction so the
+///   `flexures.ri` `yield_margin <= 1` constraint holds), or the sentinel `1.0`
+///   (maximally safe — no yield datum places no stress limit) when `yield_si` is
+///   `None`.
+/// - `parasitic_error` → [`Value::Option`] of a LENGTH Scalar (`None` ⇒ `Option(None)`).
+/// - `prb_validity_range` → [`Value::Real`]: the SI half-angle (revolute) or
+///   half-displacement (prismatic) of the auto-computed SAFE range (the bare
+///   `Real` placeholder matches the `flexures.ri` `TODO(range-angle-type)`).
+/// - `at_yield` → [`Value::Bool`]: `max_stress ≥ yield` (always `false` when no
+///   yield stress is known).
+// `allow(dead_code)`: consumed by the PRB ctors starting at step-4 (task 3871);
+// until then it is exercised only by this module's `#[cfg(test)]` tests, so the
+// non-test lib build would otherwise flag it as unused under `-D warnings`.
+#[allow(dead_code)]
+pub(super) fn make_compliance_record(
+    effective_stiffness: f64,
+    max_stress_si: f64,
+    max_stress_at_neutral_si: f64,
+    yield_si: Option<f64>,
+    parasitic: Option<f64>,
+    prb_validity_half_si: f64,
+) -> Value {
+    let pressure = |si: f64| Value::Scalar {
+        si_value: si,
+        dimension: DimensionVector::PRESSURE,
+    };
+    let (yield_margin, at_yield) = match yield_si {
+        Some(y) => ((y - max_stress_si) / y, max_stress_si >= y),
+        // No yield datum: maximally-safe sentinel margin, never "at yield".
+        None => (1.0, false),
+    };
+    let parasitic_error = match parasitic {
+        Some(p) => Value::Option(Some(Box::new(Value::length(p)))),
+        None => Value::Option(None),
+    };
+    let fields: PersistentMap<String, Value> = [
+        (
+            "effective_stiffness".to_string(),
+            Value::Real(effective_stiffness),
+        ),
+        ("max_stress".to_string(), pressure(max_stress_si)),
+        (
+            "max_stress_at_neutral".to_string(),
+            pressure(max_stress_at_neutral_si),
+        ),
+        ("yield_margin".to_string(), Value::Real(yield_margin)),
+        ("parasitic_error".to_string(), parasitic_error),
+        (
+            "prb_validity_range".to_string(),
+            Value::Real(prb_validity_half_si),
+        ),
+        ("at_yield".to_string(), Value::Bool(at_yield)),
+    ]
+    .into_iter()
+    .collect();
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(0),
+        type_name: "FlexureCompliance".to_string(),
+        version: 1,
+        fields,
+    }))
 }
 
 #[cfg(test)]
