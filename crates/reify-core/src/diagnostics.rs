@@ -2497,6 +2497,33 @@ mod tests {
         }
     }
 
+    // --- ObjectiveConflict tests (task 4010 — E_OBJECTIVE_CONFLICT) ---
+    // Pairs with the conflict detector in
+    // `crates/reify-compiler/src/entity.rs::compile_entity` (objective-build site).
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::ObjectiveConflict` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` and reports
+    /// `Some(DiagnosticCode::ObjectiveConflict)`.
+    /// Shape mirrors `diagnostic_code_unresolved_type_with_code_round_trips`;
+    /// a future enum reorganisation that drops `ObjectiveConflict` is caught here.
+    #[test]
+    fn diagnostic_code_objective_conflict_with_code_round_trips() {
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::ObjectiveConflict);
+        assert_eq!(d.code, Some(DiagnosticCode::ObjectiveConflict));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::ObjectiveConflict` serializes as
+    /// `"ObjectiveConflict"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_objective_conflict_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::ObjectiveConflict).unwrap();
+        assert_eq!(s, "\"ObjectiveConflict\"");
+    }
+
     // --- Flexure DiagnosticCode tests (task 3871) ---
 
     /// The four §5.3 / §1 flexure codes round-trip through
