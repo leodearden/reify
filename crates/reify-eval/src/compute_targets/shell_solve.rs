@@ -47,8 +47,9 @@ use crate::persistent_cache::ShellChannels;
 pub enum ShellForce {
     /// Force the tet/solid route; never run shell extraction.
     Off,
-    /// Auto-classify by `thickness/median` vs `shell_threshold`; soft tet
-    /// fallback on failure.
+    /// Auto-classify by `height/min(length,width)` vs `shell_threshold`
+    /// (height is the thickness axis by DSL contract); soft tet fallback on
+    /// failure.
     Auto,
     /// Force the shell route (proxy for `@shell`); hard-error on failure.
     On,
@@ -76,25 +77,31 @@ pub enum FailurePolicy {
 ///
 /// - `ShellForce::On`  → always [`ShellRoute::Shell`] (proxy for `@shell`).
 /// - `ShellForce::Off` → always [`ShellRoute::Tet`].
-/// - `ShellForce::Auto` → [`ShellRoute::Shell`] iff `thickness / median <
-///   shell_threshold`, else [`ShellRoute::Tet`], where `thickness = min(L,W,H)`
-///   and `median` is the middle of the three sorted dimensions. The comparison
-///   is strict `<`, so a ratio exactly equal to the threshold classifies `Tet`.
+/// - `ShellForce::Auto` → [`ShellRoute::Shell`] iff `height / min(length, width)
+///   < shell_threshold`, else [`ShellRoute::Tet`]. The comparison is strict `<`,
+///   so a ratio exactly equal to the threshold classifies `Tet`.
 ///
-/// The metric divides by the **median** dimension, not the max extent (`max`),
-/// so a slender square-cross-section *beam* is not misclassified as a shell.
-/// A shell is thin relative to its *two* in-plane dimensions, so `thickness`
-/// must be small relative to the median (second-largest) dimension; a beam
-/// (e.g. 100×100×1000 mm) has `thickness == median`, giving ratio 1.0 → `Tet`.
-/// The earlier `thickness / extent` (min/max) metric only required thinness vs.
-/// a *single* dimension, which a slender beam also satisfies (esc-3594-216).
+/// # Thickness-axis invariant (esc-3594 suggestion 1)
 ///
-/// A non-positive `median` (degenerate geometry) classifies `Tet` rather than
-/// dividing by zero.
+/// `height` is the thickness axis **by DSL contract** — the FEA fn signature is
+/// `solve_elastic_static(law, length, width, height, …)` and the shell driver
+/// [`reify_solver_elastic::solve_flat_plate_shell`] binds its `thickness`
+/// parameter to `height`. Classification therefore divides by `height` on the
+/// same axis the solve treats as the thickness, so the route and the solve can
+/// never disagree on which axis is through-thickness. The earlier axis-agnostic
+/// `min(L,W,H) / median(L,W,H)` metric could classify a body whose thinnest dim
+/// was length or width as `Shell`, after which the driver would mesh a
+/// wrong-geometry plate (height as thickness) and silently emit bogus stress.
 ///
-/// The fixture body (50 mm × 10 mm × 1 mm: thickness 1 mm, median 10 mm,
+/// Dividing by the **smaller** in-plane dimension `min(length, width)` (a shell
+/// is thin relative to BOTH in-plane dims) keeps a slender square-section *beam*
+/// out of the shell route: a 1000×100×100 mm beam has `height == width`, giving
+/// ratio 1.0 → `Tet` (esc-3594-216). A non-positive in-plane dimension
+/// (degenerate geometry) classifies `Tet` rather than dividing by zero.
+///
+/// The fixture body (50 mm × 10 mm × 1 mm: height 1 mm, `min(L,W)` 10 mm,
 /// ratio 0.1 < the default threshold 0.2) auto-classifies `Shell` under a bare
-/// `ElasticOptions()`; the 100×100×1000 mm cantilever (ratio 1.0) stays `Tet`.
+/// `ElasticOptions()`; the 1000×100×100 mm cantilever (ratio 1.0) stays `Tet`.
 pub fn classify_shell(
     shell_force: ShellForce,
     length: f64,
@@ -106,14 +113,26 @@ pub fn classify_shell(
         ShellForce::On => ShellRoute::Shell,
         ShellForce::Off => ShellRoute::Tet,
         ShellForce::Auto => {
-            // Median = middle of the three sorted dimensions. A shell is thin
-            // relative to BOTH in-plane dims, so compare thickness (the min)
-            // against the median rather than the max extent.
-            let mut dims = [length, width, height];
-            dims.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            let thickness = dims[0];
-            let median = dims[1];
-            if median > 0.0 && thickness / median < shell_threshold {
+            // `height` IS the thickness axis BY DSL CONTRACT: the FEA fn
+            // signature is `solve_elastic_static(law, length, width, height, …)`
+            // and the shell driver `solve_flat_plate_shell(length, width,
+            // height=thickness, …)` maps height→thickness. Classification MUST
+            // use the SAME axis as the solve, or a body whose thinnest dim is
+            // length/width would auto-classify Shell and then be solved with the
+            // wrong axis as the thickness — physically wrong geometry, silent
+            // bogus stress (esc-3594 reviewer suggestion 1).
+            //
+            // A shell is thin relative to BOTH in-plane dims, so compare the
+            // thickness (height) against the SMALLER in-plane dimension
+            // `min(length, width)`. This keeps the esc-3594-216 beam-vs-shell
+            // split — a slender square-section beam (e.g. 1000×100×100 mm,
+            // height==width) has ratio 1.0 → Tet — and classifies a body whose
+            // true thin axis is length/width (large height/in-plane ratio) as
+            // Tet, since it is not a height-thickness shell. A non-positive
+            // in-plane dim (degenerate geometry) classifies Tet rather than
+            // dividing by zero.
+            let in_plane = length.min(width);
+            if in_plane > 0.0 && height / in_plane < shell_threshold {
                 ShellRoute::Shell
             } else {
                 ShellRoute::Tet
@@ -278,8 +297,15 @@ fn von_mises_3x3(t: &[[f64; 3]; 3]) -> f64 {
 /// - `channels` — per-element top/bottom/frame ([`ShellChannels`]).
 /// - `mid_field` — the mid-surface stress `Value::Field` (becomes both
 ///   `result.stress` and `result.shell_channels.mid`, the I-2 alias).
-/// - `max_von_mises` — max over elements of the **top**-channel von Mises (peak
-///   bending at the clamped root); the `result.max_von_mises` scalar summary.
+/// - `max_von_mises` — max over elements of the von Mises across **all three**
+///   through-thickness channels (top/mid/bottom): the body's TRUE peak stress,
+///   regardless of channel. This is the `result.max_von_mises` scalar summary
+///   and is semantically aligned with the tet path's `fea.max_von_mises` (peak
+///   over the solid stress field), so the field means "peak von Mises in the
+///   body" on both routes (esc-3594 suggestion 4). For a bending-dominated flat
+///   plate the peak rides on the top/bottom fibres; the mid layer is near the
+///   neutral plane, but folding it in costs nothing and avoids a route-dependent
+///   summary.
 /// - `converged` / `iterations` — CG solve status.
 //
 // `#[allow(dead_code)]`: wired into the FEA trampoline's shell branch by step-10
@@ -296,10 +322,20 @@ pub(crate) fn solve_shell_static(
 ) -> (ShellChannels, Value, f64, bool, u32) {
     let solve = reify_solver_elastic::solve_flat_plate_shell(length, width, height, material, tip_force);
 
+    // True peak von Mises over ALL THREE through-thickness channels
+    // (top/mid/bottom), so `result.max_von_mises` is the body's actual peak
+    // stress regardless of channel — semantically aligned with the tet path's
+    // `fea.max_von_mises` (peak over the solid field), per esc-3594 suggestion 4.
     let max_von_mises = solve
         .stresses
         .iter()
-        .map(|s| von_mises_3x3(&s.top))
+        .flat_map(|s| {
+            [
+                von_mises_3x3(&s.top),
+                von_mises_3x3(&s.mid),
+                von_mises_3x3(&s.bottom),
+            ]
+        })
         .fold(0.0_f64, f64::max);
 
     let (top, mid, bottom, frame) =
@@ -324,15 +360,16 @@ mod tests {
     /// resolves the FEA route for a body:
     /// - `ShellForce::On`  → always `Shell` (proxy for an `@shell` annotation).
     /// - `ShellForce::Off` → always `Tet`.
-    /// - `ShellForce::Auto` → `Shell` iff `thickness/median < shell_threshold`
-    ///   (`thickness = min(L,W,H)`, `median` = middle sorted dim), else `Tet`.
-    ///   The comparison is strict `<`, so a ratio exactly equal to the
-    ///   threshold classifies `Tet`. (The metric divides by the median rather
-    ///   than the max extent so a slender beam is not misread as a shell —
-    ///   esc-3594-216.)
+    /// - `ShellForce::Auto` → `Shell` iff `height / min(length, width) <
+    ///   shell_threshold`, else `Tet`. The comparison is strict `<`, so a ratio
+    ///   exactly equal to the threshold classifies `Tet`. `height` is the
+    ///   thickness axis by DSL contract, so classification divides on the same
+    ///   axis the solve treats as the thickness (esc-3594 suggestion 1);
+    ///   dividing by the smaller in-plane dim keeps a slender square-section
+    ///   beam out of the shell route (esc-3594-216).
     #[test]
     fn classify_shell_routes_by_force_and_threshold() {
-        // Fixture body 50mm × 10mm × 1mm: thickness=1mm, median=10mm,
+        // Fixture body 50mm × 10mm × 1mm: height=1mm, min(L,W)=10mm,
         // ratio = 1/10 = 0.1 < 0.2 → shell under Auto.
         let (l, w, h) = (0.050_f64, 0.010_f64, 0.001_f64);
         let threshold = 0.2_f64;
@@ -356,22 +393,22 @@ mod tests {
             "ShellForce::Off must force the tet route even for a thin plate"
         );
 
-        // Auto + thin plate (thickness/median = 1/10 = 0.1 < 0.2) → Shell.
+        // Auto + thin plate (height/min(L,W) = 1/10 = 0.1 < 0.2) → Shell.
         assert_eq!(
             classify_shell(ShellForce::Auto, l, w, h, threshold),
             ShellRoute::Shell,
-            "Auto with thickness/median ratio 0.1 < 0.2 must classify Shell"
+            "Auto with height/min(L,W) ratio 0.1 < 0.2 must classify Shell"
         );
 
-        // Auto + thick body 10×10×8 (thickness/median = 8/10 = 0.8 >= 0.2) → Tet.
+        // Auto + thick body 10×10×8 (height/min(L,W) = 8/10 = 0.8 >= 0.2) → Tet.
         assert_eq!(
             classify_shell(ShellForce::Auto, 0.010, 0.010, 0.008, threshold),
             ShellRoute::Tet,
-            "Auto with thickness/median ratio 0.8 >= 0.2 must classify Tet"
+            "Auto with height/min(L,W) ratio 0.8 >= 0.2 must classify Tet"
         );
 
         // Boundary: ratio exactly == threshold is NOT < threshold → Tet.
-        // 10×10×2 → thickness/median = 2/10 = 0.2 == threshold.
+        // 10×10×2 → height/min(L,W) = 2/10 = 0.2 == threshold.
         assert_eq!(
             classify_shell(ShellForce::Auto, 0.010, 0.010, 0.002, threshold),
             ShellRoute::Tet,
@@ -379,13 +416,29 @@ mod tests {
         );
 
         // Regression (esc-3594-216): a slender SQUARE-CROSS-SECTION beam
-        // (100×100×1000 mm cantilever) has thickness=100mm, median=100mm,
-        // ratio = 1.0 >= 0.2 → Tet. The old min/max metric (100/1000 = 0.1)
-        // wrongly classified it Shell, breaking the 4084/α tet pins.
+        // (1000×100×100 mm cantilever: length=1.0, width=height=0.1) has
+        // height=100mm, min(L,W)=100mm, ratio = 1.0 >= 0.2 → Tet. The old
+        // min/max metric (100/1000 = 0.1) wrongly classified it Shell, breaking
+        // the 4084/α tet pins.
         assert_eq!(
             classify_shell(ShellForce::Auto, 1.000, 0.100, 0.100, threshold),
             ShellRoute::Tet,
             "Auto must classify a slender square-section beam as Tet, not Shell"
+        );
+
+        // Regression (esc-3594 suggestion 1): `height` is the thickness axis by
+        // DSL contract, so a body whose ACTUAL thinnest dim is length or width
+        // (NOT height) must NOT auto-classify Shell — otherwise the solve would
+        // mesh a wrong-geometry plate treating height as the thickness. A
+        // 1mm×50mm×10mm body (length=0.001, width=0.05, height=0.01) has
+        // height/min(L,W) = 0.01/0.001 = 10 >= 0.2 → Tet. The old axis-agnostic
+        // min/median metric (min=0.001, median=0.01 → 0.1 < 0.2) wrongly
+        // classified it Shell.
+        assert_eq!(
+            classify_shell(ShellForce::Auto, 0.001, 0.05, 0.01, threshold),
+            ShellRoute::Tet,
+            "Auto must classify a body whose thin axis is NOT height as Tet \
+             (height is the thickness axis by DSL contract)"
         );
     }
 
