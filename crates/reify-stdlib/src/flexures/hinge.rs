@@ -13,8 +13,9 @@ use reify_core::DimensionVector;
 use reify_ir::Value;
 
 use super::common::{
-    length_si, make_flexure_joint, material_field_si, material_numeric_field, neutral_angle_si,
-    symmetric_angle_range, PRB_ANGLE_LIMIT_RAD,
+    attach_compliance, cantilever_sigma_at, length_si, make_compliance_record, make_flexure_joint,
+    material_field_si, material_numeric_field, neutral_angle_si, parse_declared_range,
+    symmetric_angle_range, RangeKind, PRB_ANGLE_LIMIT_RAD,
 };
 
 /// Howell §5.7 small-length flexural pivot (SLFP) stiffness coefficient.
@@ -48,7 +49,7 @@ pub(crate) fn eval_hinge(name: &str, args: &[Value]) -> Option<Value> {
 
 /// Shared, validated inputs for the bending-hinge constructors (living hinge
 /// and cross-spring pivot). Both share the same positional argument layout
-/// `(length, width, thickness, material, pivot, axis[, neutral])` and the same
+/// `(length, width, thickness, material, pivot, axis[, neutral[, declared_range]])` and the same
 /// surface-bending stress/yield formula — they differ only in the k_γ constant.
 struct BendingHingeInputs<'a> {
     length: f64,
@@ -60,16 +61,20 @@ struct BendingHingeInputs<'a> {
     axis: &'a Value,
     pivot: &'a Value,
     neutral_arg: Option<&'a Value>,
+    /// The optional trailing declared operating-range argument (present only in
+    /// the 8-arg form). When present, its endpoint — an ANGLE half-angle — not
+    /// the auto cap, drives the joint range and the §5.3 `max_stress` endpoint.
+    declared_range_arg: Option<&'a Value>,
 }
 
 /// Parse and validate the shared bending-hinge argument layout:
-/// `(length, width, thickness, material, pivot, axis[, neutral])`.
+/// `(length, width, thickness, material, pivot, axis[, neutral[, declared_range]])`.
 ///
-/// Returns `None` (⇒ `Value::Undef`) on: arity ∉ {6, 7}; non-positive or
+/// Returns `None` (⇒ `Value::Undef`) on: arity ∉ {6, 7, 8}; non-positive or
 /// non-finite geometry; thickness ≥ length; missing or non-positive
 /// `youngs_modulus`; or an invalid axis.
 fn parse_bending_hinge_inputs(args: &[Value]) -> Option<BendingHingeInputs<'_>> {
-    if args.len() != 6 && args.len() != 7 {
+    if args.len() < 6 || args.len() > 8 {
         return None;
     }
     let length = length_si(&args[0])?;
@@ -93,7 +98,8 @@ fn parse_bending_hinge_inputs(args: &[Value]) -> Option<BendingHingeInputs<'_>> 
         yield_si: material_field_si(material, "yield_stress"),
         axis,
         pivot: &args[4],
-        neutral_arg: if args.len() == 7 { Some(&args[6]) } else { None },
+        neutral_arg: if args.len() >= 7 { Some(&args[6]) } else { None },
+        declared_range_arg: if args.len() == 8 { Some(&args[7]) } else { None },
     })
 }
 
@@ -105,10 +111,15 @@ fn parse_bending_hinge_inputs(args: &[Value]) -> Option<BendingHingeInputs<'_>> 
 /// Surface-bending yield rotation:
 ///   σ(θ) = E · (t/2) · θ / L  ⇒  θ_yield = yield · L / (E · t/2)
 ///
-/// Validity range = ±min(θ_yield, 5°); no yield_stress ⇒ ±5°.
+/// The auto validity range is ±min(θ_yield, 5°) (no yield_stress ⇒ ±5°). An
+/// optional trailing `declared_range` (a half-angle) OVERRIDES that cap for the
+/// joint range and the cached §5.3 `max_stress` endpoint; the auto cap is
+/// retained as the SAFE/suggested `prb_validity_range` in the compliance record.
 fn bending_hinge_revolute(b: &BendingHingeInputs<'_>, k_gamma: f64) -> Value {
     let k_theta = k_gamma * b.e * b.i / b.length;
 
+    // Auto SAFE bound θ_lim = ±min(θ_yield, 5°) — retained in the compliance
+    // record regardless of any wider declared range.
     let theta_lim = match b.yield_si {
         Some(yield_si) => {
             let theta_yield = yield_si * b.length / (b.e * b.thickness / 2.0);
@@ -116,11 +127,16 @@ fn bending_hinge_revolute(b: &BendingHingeInputs<'_>, k_gamma: f64) -> Value {
         }
         None => PRB_ANGLE_LIMIT_RAD,
     };
-    let range = symmetric_angle_range(theta_lim);
+
+    // An optional user-declared operating range (±half-angle) OVERRIDES the auto
+    // cap for the joint range and the §5.3 stress endpoint.
+    let declared = parse_declared_range(b.declared_range_arg, RangeKind::Angle);
+    let range_endpoint = declared.unwrap_or(theta_lim);
+    let range = symmetric_angle_range(range_endpoint);
 
     let neutral_si = b.neutral_arg.map(neutral_angle_si).unwrap_or(0.0);
 
-    make_flexure_joint(
+    let joint = make_flexure_joint(
         "revolute",
         b.axis.clone(),
         range,
@@ -130,10 +146,26 @@ fn bending_hinge_revolute(b: &BendingHingeInputs<'_>, k_gamma: f64) -> Value {
         },
         Value::angle(neutral_si),
         b.pivot.clone(),
-    )
+    );
+
+    // Cache the FlexureCompliance record (§5.3): cantilever angular surface
+    // stress σ = E·(t/2)·θ/L at the range endpoint (declared when present, else
+    // the auto θ_lim) and at the neutral rest angle. prb_validity_range stores
+    // the auto SAFE θ_lim regardless of any wider declared range.
+    let max_stress = cantilever_sigma_at(range_endpoint, b.length, b.thickness, b.e);
+    let max_stress_at_neutral = cantilever_sigma_at(neutral_si, b.length, b.thickness, b.e);
+    let record = make_compliance_record(
+        k_theta,
+        max_stress,
+        max_stress_at_neutral,
+        b.yield_si,
+        None,
+        theta_lim,
+    );
+    attach_compliance(joint, record)
 }
 
-/// `prb_living_hinge(length, width, thickness, material, pivot, axis[, neutral])`
+/// `prb_living_hinge(length, width, thickness, material, pivot, axis[, neutral[, declared_range]])`
 /// — Howell §5.7 small-length flexural pivot (SLFP) as a revolute joint.
 ///
 /// Returns a joint `Value::Map` (`kind == "revolute"`) with rotational
@@ -147,7 +179,7 @@ fn prb_living_hinge(args: &[Value]) -> Value {
     }
 }
 
-/// `prb_cross_spring_pivot(length, width, thickness, material, pivot, axis[, neutral])`
+/// `prb_cross_spring_pivot(length, width, thickness, material, pivot, axis[, neutral[, declared_range]])`
 /// — Haringx 1949 crossed-leaf pivot as a revolute joint.
 ///
 /// Same closed-form structure as `prb_living_hinge` but with `γ_cs = 2.0`
@@ -171,16 +203,20 @@ struct LetInputs<'a> {
     axis: &'a Value,
     pivot: &'a Value,
     neutral_arg: Option<&'a Value>,
+    /// The optional trailing declared operating-range argument (present only in
+    /// the 9-arg form). When present, its endpoint — an ANGLE half-angle — not
+    /// the auto cap, drives the joint range and the §5.3 `max_stress` endpoint.
+    declared_range_arg: Option<&'a Value>,
 }
 
 /// Parse and validate LET joint arguments:
-/// `(length, width, thickness, n_blades, material, pivot, axis[, neutral])`.
+/// `(length, width, thickness, n_blades, material, pivot, axis[, neutral[, declared_range]])`.
 ///
-/// Returns `None` on: arity ∉ {7, 8}; non-positive or non-finite geometry;
+/// Returns `None` on: arity ∉ {7, 8, 9}; non-positive or non-finite geometry;
 /// thickness ≥ length; n_blades < 1 or non-integer; missing/non-positive
 /// `youngs_modulus`; missing `poisson_ratio` or ν ∉ [0, 0.5); invalid axis.
 fn parse_let_inputs(args: &[Value]) -> Option<LetInputs<'_>> {
-    if args.len() != 7 && args.len() != 8 {
+    if args.len() < 7 || args.len() > 9 {
         return None;
     }
     let length = length_si(&args[0])?;
@@ -216,11 +252,27 @@ fn parse_let_inputs(args: &[Value]) -> Option<LetInputs<'_>> {
         yield_si: material_field_si(material, "yield_stress"),
         axis,
         pivot: &args[5],
-        neutral_arg: if args.len() == 8 { Some(&args[7]) } else { None },
+        neutral_arg: if args.len() >= 8 { Some(&args[7]) } else { None },
+        declared_range_arg: if args.len() == 9 { Some(&args[8]) } else { None },
     })
 }
 
-/// `prb_let_joint(length, width, thickness, n_blades, material, pivot, axis[, neutral])`
+/// LET-joint torsional surface stress as a von Mises tensile-equivalent
+/// σ_eq = √3·G·t·|θ| / L (Jacobsen et al. 2009) — the algebraic inverse of the
+/// LET joint's `θ_yield = σy·L/(√3·G·t)`.
+///
+/// The LET joint is governed by SHEAR (τ = G·t·θ/L), not bending, so it cannot
+/// reuse the cantilever `E·(t/2)·θ/L` formula. To let the FlexureCompliance
+/// `at_yield` check compare against the material *tensile* yield σy directly
+/// (as the bending families do), the cached stress is the von Mises equivalent
+/// √3·τ; this makes `at_yield` trip exactly at the joint's own torsional yield
+/// rotation, consistent with the auto range cap (mirroring how `prismatic.rs`'s
+/// blade carries a stress formula matched to its own validity δ).
+fn let_vm_sigma_at(theta: f64, length: f64, thickness: f64, g: f64) -> f64 {
+    3.0_f64.sqrt() * g * thickness * theta.abs() / length
+}
+
+/// `prb_let_joint(length, width, thickness, n_blades, material, pivot, axis[, neutral[, declared_range]])`
 /// — Jacobsen et al. 2009 lamina-emergent torsion (multi-blade torsion) as a
 /// revolute joint.
 ///
@@ -232,7 +284,11 @@ fn parse_let_inputs(args: &[Value]) -> Option<LetInputs<'_>> {
 /// Torsional yield rotation:
 ///   τ(θ) = G·t·θ/L  ⇒  τ_y = σy/√3  ⇒  θ_yield = σy·L/(√3·G·t)
 ///
-/// Validity range = ±min(θ_yield, 5°); no yield_stress ⇒ ±5°.
+/// The auto validity range is ±min(θ_yield, 5°) (no yield_stress ⇒ ±5°). An
+/// optional trailing `declared_range` (a half-angle) OVERRIDES that cap for the
+/// joint range and the cached §5.3 `max_stress` endpoint (stored as the von
+/// Mises tensile-equivalent σ_eq = √3·G·t·θ/L, see [`let_vm_sigma_at`]); the
+/// auto cap is retained as the SAFE `prb_validity_range` in the compliance record.
 fn prb_let_joint(args: &[Value]) -> Value {
     let Some(l) = parse_let_inputs(args) else {
         return Value::Undef;
@@ -241,6 +297,8 @@ fn prb_let_joint(args: &[Value]) -> Value {
     let j = l.width * l.thickness.powi(3) / 3.0;
     let k_theta = l.n_blades * l.g * j / l.length;
 
+    // Auto SAFE bound θ_lim = ±min(θ_yield, 5°) — retained in the compliance
+    // record regardless of any wider declared range.
     let theta_lim = match l.yield_si {
         Some(yield_si) => {
             let theta_yield = yield_si * l.length / (3.0_f64.sqrt() * l.g * l.thickness);
@@ -248,11 +306,16 @@ fn prb_let_joint(args: &[Value]) -> Value {
         }
         None => PRB_ANGLE_LIMIT_RAD,
     };
-    let range = symmetric_angle_range(theta_lim);
+
+    // An optional user-declared operating range (±half-angle) OVERRIDES the auto
+    // cap for the joint range and the §5.3 stress endpoint.
+    let declared = parse_declared_range(l.declared_range_arg, RangeKind::Angle);
+    let range_endpoint = declared.unwrap_or(theta_lim);
+    let range = symmetric_angle_range(range_endpoint);
 
     let neutral_si = l.neutral_arg.map(neutral_angle_si).unwrap_or(0.0);
 
-    make_flexure_joint(
+    let joint = make_flexure_joint(
         "revolute",
         l.axis.clone(),
         range,
@@ -262,7 +325,23 @@ fn prb_let_joint(args: &[Value]) -> Value {
         },
         Value::angle(neutral_si),
         l.pivot.clone(),
-    )
+    );
+
+    // Cache the FlexureCompliance record (§5.3): the von Mises tensile-equivalent
+    // of the torsional surface stress at the range endpoint (declared when
+    // present, else the auto θ_lim) and the neutral rest angle. prb_validity_range
+    // stores the auto SAFE θ_lim regardless of any wider declared range.
+    let max_stress = let_vm_sigma_at(range_endpoint, l.length, l.thickness, l.g);
+    let max_stress_at_neutral = let_vm_sigma_at(neutral_si, l.length, l.thickness, l.g);
+    let record = make_compliance_record(
+        k_theta,
+        max_stress,
+        max_stress_at_neutral,
+        l.yield_si,
+        None,
+        theta_lim,
+    );
+    attach_compliance(joint, record)
 }
 
 #[cfg(test)]
@@ -544,11 +623,14 @@ mod tests {
         // Wrong arity.
         undef(vec![], "0 args");
         undef(base[..3].to_vec(), "3 args");
+        // Arity 8 (neutral + declared_range) is now VALID (step-18); 9 args
+        // overflows the highest supported arity and is rejected.
         {
             let mut a = base.clone();
-            a.push(Value::angle(0.0));
-            a.push(Value::angle(0.0));
-            undef(a, "8 args");
+            a.push(Value::angle(0.0)); // neutral
+            a.push(Value::angle(0.0)); // declared_range
+            a.push(Value::angle(0.0)); // overflow
+            undef(a, "9 args");
         }
 
         // Non-positive / non-finite geometry.
@@ -1004,14 +1086,17 @@ mod tests {
             a
         };
 
-        // Wrong arity: <7 or >8.
+        // Wrong arity: <7 or >9.
         undef(vec![], "let 0 args");
         undef(base[..4].to_vec(), "let 4 args");
+        // Arity 9 (neutral + declared_range) is now VALID (step-18); 10 args
+        // overflows the highest supported arity and is rejected.
         {
             let mut a = base.clone();
-            a.push(Value::angle(0.0));
-            a.push(Value::angle(0.0));
-            undef(a, "let 9 args");
+            a.push(Value::angle(0.0)); // neutral
+            a.push(Value::angle(0.0)); // declared_range
+            a.push(Value::angle(0.0)); // overflow
+            undef(a, "let 10 args");
         }
 
         // Non-positive geometry.
@@ -1237,13 +1322,15 @@ mod tests {
             other => panic!("{ctor_name}: yield_margin Real, got {other:?}"),
         }
 
-        // prb_validity_range still advertises the auto SAFE bound for this short
-        // geometry (θ_yield = yield·L/(E·t/2) at L=2mm/t=0.05mm), not the declared 10°.
-        let theta_yield_short = yield_si * yl / (e * yt / 2.0);
+        // prb_validity_range still advertises the auto SAFE bound, NOT the
+        // declared 10°. For this short geometry θ_yield = yield·L/(E·t/2) ≈ 6.93°
+        // > 5°, so the SAFE bound is the ±5° PRB cap (the declared 10° must not
+        // leak into prb_validity_range).
+        let theta_lim_short = (yield_si * yl / (e * yt / 2.0)).min(prb_limit);
         match yg("prb_validity_range") {
             Value::Real(rr) => assert!(
-                (rr - theta_yield_short).abs() / theta_yield_short < 1e-9,
-                "{ctor_name}: prb_validity_range stays auto θ_yield {theta_yield_short}, got {rr}"
+                (rr - theta_lim_short).abs() / theta_lim_short < 1e-9,
+                "{ctor_name}: prb_validity_range stays auto SAFE bound {theta_lim_short}, got {rr}"
             ),
             other => panic!("{ctor_name}: prb_validity_range Real, got {other:?}"),
         }
