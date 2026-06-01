@@ -4604,6 +4604,7 @@ pub(crate) fn realization_is_aux(realization: &reify_compiler::RealizationDecl) 
 /// `reify_stdlib`'s own `decompose_transform` is private, so this local
 /// pattern-match keeps the change inside reify-eval while feeding the IR op's
 /// raw float arrays (the IR is kernel-agnostic by design).
+#[allow(dead_code)] // used in #[cfg(test)]; wired into surface_subtree by step-10
 pub(crate) fn decompose_transform_to_arrays(v: &reify_ir::Value) -> Option<([f64; 4], [f64; 3])> {
     let reify_ir::Value::Transform {
         rotation,
@@ -4649,6 +4650,7 @@ pub(crate) fn decompose_transform_to_arrays(v: &reify_ir::Value) -> Option<([f64
 /// chain returns the identity Transform unchanged. Reuses the already-tested
 /// stdlib builtin rather than hand-rolling quaternion math; `reify-eval` already
 /// depends on `reify-stdlib`.
+#[allow(dead_code)] // used in #[cfg(test)]; wired into surface_subtree by step-10
 pub(crate) fn compose_pose_chain(poses: &[reify_ir::Value]) -> reify_ir::Value {
     let identity = reify_ir::Value::Transform {
         rotation: Box::new(reify_ir::Value::Orientation {
