@@ -9,7 +9,7 @@
 //! Reference: `docs/architecture-audit/f-infra-design.md` §10 (T-1) and §11
 //! (D-1 dependency row).
 
-use crate::{AuditContext, EvidenceRef, Finding, GitCommit, Pattern, Severity, TaskMetadata};
+use crate::{AuditContext, ChangedSymbol, EvidenceRef, Finding, GitCommit, Pattern, Severity, TaskMetadata};
 
 // Empty/vacuous assertion patterns scanned for by H1 (gate b).
 // Each is matched as a substring of added lines within a fn body.
@@ -753,6 +753,9 @@ fn build_high_finding(meta: &TaskMetadata, missing: &[String], summary: &str) ->
 /// `docs/prds/p5-h1-h2-live-corpus-fp-validation.md` §6 (H2 promotion
 /// criteria): real jcodemunch substrate wired, non-vacuous live sweep,
 /// measured FP rate ≤ 5%. Per task 4141 live-corpus FP validation.
+///
+/// When `get_changed_symbols` returns an empty slice a stderr vacuous
+/// breadcrumb is emitted via [`h2_vacuous_breadcrumb`] (task 4144).
 fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Finding> {
     // Cross-crate gate: requires >=2 distinct crates/<name>/ roots.
     if crate_root_count(&meta.files) < 2 {
@@ -766,6 +769,9 @@ fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
     let until_sha = commit;
 
     let symbols = ctx.jcodemunch.get_changed_symbols(&since_sha, until_sha);
+    if let Some(msg) = h2_vacuous_breadcrumb(&symbols, &meta.task_id, &since_sha, until_sha) {
+        eprintln!("{msg}");
+    }
     let mut findings = Vec::new();
     for symbol in symbols {
         // Per-symbol guards: stdlib scope-exclude, intentional-orphan opt-outs
@@ -798,6 +804,30 @@ fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
     findings
 }
 
+/// Returns a `reify-audit:` prefixed stderr breadcrumb message when the H2
+/// `get_changed_symbols` call returned an empty slice, so operators can
+/// distinguish a vacuous sweep from a legitimately clean corpus.
+///
+/// Returns `None` when `symbols` is non-empty (normal sweep; no annotation
+/// needed). Mirrors the `Option<String>`-diagnostic pattern from
+/// `jcodemunch_client.rs::read_source_lines_for_enrichment`.
+fn h2_vacuous_breadcrumb(
+    symbols: &[ChangedSymbol],
+    task_id: &str,
+    since_sha: &str,
+    until_sha: &str,
+) -> Option<String> {
+    if symbols.is_empty() {
+        Some(format!(
+            "reify-audit: H2 (live-path-stranded) vacuous for task {task_id}: \
+             get_changed_symbols returned empty for {since_sha}..{until_sha} \
+             — H2 produced no findings (corpus clean OR jcodemunch not wired / NoopJCodemunchOps)"
+        ))
+    } else {
+        None
+    }
+}
+
 /// Count the number of distinct `crates/<name>/` roots referenced by `files`.
 ///
 /// A path contributes a root if it starts with `crates/` and has at least one
@@ -826,6 +856,97 @@ mod tests {
     use rusqlite::Connection;
     use std::collections::HashMap;
     use std::path::PathBuf;
+
+    /// Asserts `h2_vacuous_breadcrumb` returns `Some` (with task-id and the word
+    /// "vacuous") for an empty symbols slice and `None` for a non-empty slice.
+    #[test]
+    fn h2_vacuous_breadcrumb_fires_only_when_empty() {
+        // Empty slice → Some(msg) containing the task id and "vacuous".
+        let result = h2_vacuous_breadcrumb(&[], "4144", "abc123^1", "abc123");
+        let msg = result.expect("expected Some for empty symbols slice");
+        assert!(
+            msg.contains("4144"),
+            "breadcrumb message must contain task_id '4144'; got: {msg}"
+        );
+        assert!(
+            msg.contains("vacuous"),
+            "breadcrumb message must contain 'vacuous'; got: {msg}"
+        );
+
+        // Non-empty slice → None.
+        let sym = ChangedSymbol {
+            name: "my_fn".to_string(),
+            file: "crates/foo/src/lib.rs".to_string(),
+            line: 42,
+            has_allow_dead_code: false,
+            has_cfg_test: false,
+            g_allow_marker: None,
+        };
+        let result = h2_vacuous_breadcrumb(&[sym], "4144", "abc123^1", "abc123");
+        assert!(
+            result.is_none(),
+            "expected None for non-empty symbols slice; got: {result:?}"
+        );
+    }
+
+    /// Integration: `check_live_path_stranded` with `MockJCodemunchOps`
+    /// (which returns `vec![]` by default for all `get_changed_symbols` calls)
+    /// and >=2 distinct crate roots returns no findings.
+    ///
+    /// This pins the empty-symbols branch: once both the cross-crate gate
+    /// (>=2 roots) and the commit gate pass, the vacuous path is reached and
+    /// the function exits cleanly without producing spurious
+    /// `Pattern::P5LivePathStranded` findings.  Capturing the stderr
+    /// breadcrumb itself is not necessary — the absence of findings is the
+    /// observable contract.
+    #[test]
+    fn h2_vacuous_path_returns_no_findings() {
+        let conn = Connection::open_in_memory().expect("open in-memory runs.db");
+        let git = MockGitOps::new();
+        // Default MockJCodemunchOps: get_changed_symbols returns vec![] for
+        // any (since_sha, until_sha) pair not explicitly seeded — mirrors
+        // NoopJCodemunchOps behaviour.
+        let jc = MockJCodemunchOps::new();
+
+        let meta = TaskMetadata {
+            task_id: "4144".to_string(),
+            status: "done".to_string(),
+            // Two distinct crates/<name>/ roots → cross-crate gate passes.
+            files: vec![
+                "crates/reify-eval/src/lib.rs".to_string(),
+                "crates/reify-compiler/src/compile.rs".to_string(),
+            ],
+            done_provenance: Some(DoneProvenance {
+                kind: Some("merged".to_string()),
+                commit: Some("deadbeef".to_string()),
+                note: None,
+            }),
+            title: "multi-crate vacuous H2 test task".to_string(),
+            prd: None,
+            consumer_ref: None,
+            audit_foundation: None,
+            done_at: None,
+        };
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata: HashMap::new(),
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = check_live_path_stranded(&ctx, &meta);
+        assert!(
+            findings.is_empty(),
+            "vacuous H2 sweep (empty get_changed_symbols, >=2 crate roots) \
+             must yield no findings; got {findings:?}"
+        );
+    }
 
     /// Pins the empty-files short-circuit at `p5_phantom_done.rs:215`.
     ///
