@@ -1613,6 +1613,23 @@ impl GeometryKernel for MockGeometryKernel {
             .map_err(|e| ExportError::IoError(e.to_string()))
     }
 
+    fn make_compound(
+        &mut self,
+        handles: &[GeometryHandleId],
+    ) -> Result<GeometryHandle, GeometryError> {
+        if handles.is_empty() {
+            return Err(GeometryError::OperationFailed(
+                "make_compound: input handle list must not be empty".into(),
+            ));
+        }
+        let id = GeometryHandleId(self.next_id);
+        self.next_id += 1;
+        Ok(GeometryHandle {
+            id,
+            repr: Some(BRepKind::Compound),
+        })
+    }
+
     fn tessellate(&self, _handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError> {
         // Task 2874 step-11: record the tolerance forwarded to each
         // `tessellate` call so integration tests can verify the engine's

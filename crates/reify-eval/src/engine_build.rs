@@ -2381,9 +2381,7 @@ impl Engine {
         path_a: &str,
         path_b: &str,
     ) -> Option<f64> {
-        let Some(name) = self.default_kernel_name.as_deref() else {
-            return None;
-        };
+        let name = self.default_kernel_name.as_deref()?;
         if !self.geometry_kernels.contains_key(name) {
             return None;
         }
