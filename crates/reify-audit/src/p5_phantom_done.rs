@@ -46,6 +46,50 @@ const PLACEHOLDER_MARKERS: &[&str] = &[
     "unimplemented",
 ];
 
+// Empty-intent tokens for H1 fn-name gate (gate c, the third signal added in
+// task 4141 to harden against domain-noun false positives).
+//
+// A test fn name must contain at least one of these tokens in addition to a
+// PLACEHOLDER_MARKERS match before the body-empty-assertion gate (gate b) is
+// armed. This three-signal gate suppresses domain-noun FPs observed in the
+// live corpus during task 4141's validation sweep:
+//
+//   - `tessellate_sentinel_placeholder_continues_independent_ops`: carries
+//     "placeholder" as a geometry-sentinel noun; no empty-intent token → NOT
+//     flagged.
+//   - `stub_kernel_export_returns_error`: carries "stub" as a kernel-module
+//     noun; no empty-intent token → NOT flagged.
+//
+// The genuine incident pattern still fires:
+//   - `activate_expands_geometric_params_placeholder_to_empty_list`: carries
+//     both "placeholder" (marker, gate a) AND "empty" (empty-intent, gate c)
+//     in its name → still flagged.
+//
+// Token design rationale:
+// - "empty", "none", "nil", "zero", "vacuous", "nothing" are chosen as
+//   unambiguous empty-result-intent indicators that do not collide as
+//   substrings with common identifiers (e.g. "nil" is not in "until";
+//   "none" is not in "independent" or "continues").
+// - "no_" (with trailing underscore) is included to match `no_results`,
+//   `no_items`, `no_warnings` etc. while excluding common fragments like
+//   "independent", "canonical", "not_yet" that don't contain the "no_" bigram.
+//
+// Precision/recall tradeoff: a masking test whose name carries a marker but
+// lacks any empty-intent noun would be missed by this gate. This is the
+// correct bias for a visibility-only Medium signal — low-confidence signals
+// stay suppressable. Broader tuning (word-boundary marker matching, etc.) is
+// filed as a follow-up. Per task 4141 live-corpus FP validation; see
+// docs/prds/p5-h1-h2-live-corpus-fp-validation.md.
+const EMPTY_INTENT_NAME_TOKENS: &[&str] = &[
+    "empty",
+    "none",
+    "nil",
+    "zero",
+    "vacuous",
+    "nothing",
+    "no_",
+];
+
 /// Returns `true` when `line` contains a vacuous empty-assertion pattern
 /// (gate b of the H1 double-gate), with one exception: a `.is_empty()` that is
 /// part of a negated expression (e.g. `assert!(!result.is_empty())`) does NOT
@@ -210,22 +254,39 @@ fn check_task(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Finding> {
     findings
 }
 
-/// H1 — tests-assert-empty pass (double-gate FP control, step-6).
+/// H1 — tests-assert-empty pass (three-signal gate, task 4141 precision hardening).
 ///
 /// For each test-path entry in `metadata.files`, reads the added lines via
 /// `GitOps::diff_added_lines_in_commit(commit, path)` and emits a
-/// `P5TestsAssertEmpty` `Medium` finding ONLY when an added test fn BOTH:
+/// `P5TestsAssertEmpty` `Medium` finding ONLY when an added test fn satisfies
+/// ALL THREE signals:
 ///
 /// (a) carries a placeholder/not_yet/notyet/stub/todo/unimplemented marker in
 ///     its fn name (case-insensitive substring match; see `PLACEHOLDER_MARKERS`);
+/// (c) carries an empty-intent token (e.g. "empty", "none", "nil", "zero",
+///     "no_") in its fn name (see `EMPTY_INTENT_NAME_TOKENS`);
 /// (b) has an empty/vacuous assertion within that fn's added lines
 ///     (see `EMPTY_ASSERTION_PATTERNS` and [`line_has_empty_assertion`]).
 ///
-/// The double-gate suppresses legitimately-empty capabilities (e.g.
-/// `fn returns_no_warnings_for_valid_input()` asserts `is_empty()`) while
-/// flagging the concrete 1638/1904/2199 incident pattern: a test named
-/// `activate_expands_geometric_params_placeholder_to_empty_list` that
-/// asserts `is_empty()`. Design caveat: task 4140 §FP-control.
+/// The three-signal gate suppresses the live-corpus domain-noun false positives
+/// identified in task 4141's validation sweep (e.g. `tessellate_sentinel_
+/// placeholder_continues_independent_ops`, `stub_kernel_export_returns_error`)
+/// while preserving recall for the genuine incident pattern
+/// `activate_expands_geometric_params_placeholder_to_empty_list` (carries BOTH
+/// "placeholder" and "empty" in its name). Design caveat: task 4140 §FP-control;
+/// task 4141 live-corpus validation; see
+/// docs/prds/p5-h1-h2-live-corpus-fp-validation.md.
+///
+/// ## 4141 live-corpus validation note
+///
+/// Task 4141 ran a live H1 sweep and found a non-zero, partly-irreducible FP
+/// rate from domain-noun marker usages in the corpus (53 test fns containing
+/// "stub" and 25 containing "placeholder" as domain nouns). The third signal
+/// (gate c: name-empty-intent) reduces this FP class substantially while
+/// preserving the genuine incident pattern. H1 remains at `Severity::Medium`
+/// (non-blocking for the D-1 hook) pending a fresh post-refinement NON-vacuous
+/// validation sweep; see docs/prds/p5-h1-h2-live-corpus-fp-validation.md §6
+/// for the promotion criteria a future task must meet.
 ///
 /// Fn-declaration detection is anchored to the start of the non-whitespace
 /// content of the line (via [`extract_fn_name`]) to avoid spurious matches on
@@ -264,28 +325,35 @@ fn check_tests_assert_empty(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
         // only, and line_has_empty_assertion to exclude negated .is_empty() calls.
         let mut current_fn_name: Option<String> = None;
         let mut fn_has_placeholder = false;
+        let mut fn_has_empty_intent = false;
         let mut fn_has_empty_assertion = false;
         let mut found_in_file = false;
 
         for (_, line) in &added {
             // Detect a new fn declaration (anchored to declaration start).
             if let Some(fn_name) = extract_fn_name(line) {
-                // Flush the previous fn if it triggered both gates.
-                if fn_has_placeholder && fn_has_empty_assertion {
+                // Flush the previous fn if it triggered all three gates.
+                if fn_has_placeholder && fn_has_empty_intent && fn_has_empty_assertion {
                     found_in_file = true;
                 }
                 fn_has_placeholder = PLACEHOLDER_MARKERS.iter().any(|m| fn_name.contains(m));
+                fn_has_empty_intent = EMPTY_INTENT_NAME_TOKENS.iter().any(|t| fn_name.contains(t));
                 fn_has_empty_assertion = false;
                 current_fn_name = Some(fn_name);
             }
 
             // Within a fn, check for vacuous assertions (excluding negated !is_empty()).
-            if current_fn_name.is_some() && fn_has_placeholder && line_has_empty_assertion(line) {
+            // Gate c (empty-intent name check) must also pass before we arm gate b.
+            if current_fn_name.is_some()
+                && fn_has_placeholder
+                && fn_has_empty_intent
+                && line_has_empty_assertion(line)
+            {
                 fn_has_empty_assertion = true;
             }
         }
         // Flush the last fn.
-        if fn_has_placeholder && fn_has_empty_assertion {
+        if fn_has_placeholder && fn_has_empty_intent && fn_has_empty_assertion {
             found_in_file = true;
         }
 
@@ -295,9 +363,9 @@ fn check_tests_assert_empty(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
                 severity: Severity::Medium,
                 task_id: meta.task_id.clone(),
                 summary: format!(
-                    "added test in {} carries a placeholder fn name AND asserts an \
-                     empty/vacuous result — possible placeholder test masking a \
-                     not-yet-implemented capability (task 4140 H1 double-gate)",
+                    "added test in {} carries a placeholder fn name AND empty-intent token \
+                     AND asserts an empty/vacuous result — possible placeholder test masking \
+                     a not-yet-implemented capability (task 4141 H1 three-signal gate)",
                     path
                 ),
                 evidence: vec![EvidenceRef::File { path: path.clone() }],
@@ -666,6 +734,25 @@ fn build_high_finding(meta: &TaskMetadata, missing: &[String], summary: &str) ->
 ///
 /// Design rationale: cross-crate gate keeps H2 off of P1's single-crate turf;
 /// suppression guards keep H2 and P1 semantically consistent. Task 4140 §H2.
+///
+/// ## 4141 live-corpus validation note
+///
+/// Task 4141 confirmed that H2 **cannot be live-validated** against the current
+/// corpus. `needs_jcodemunch()` in `bin/reify-audit.rs:433–443` returns `false`
+/// for `--pattern P5` (and for `--pre-done`) → the binary always wires
+/// `NoopJCodemunchOps` for P5 runs. A default sweep attempts
+/// `RealJCodemunchOps` but fail-softs to `NoopJCodemunchOps` because
+/// `jcodemunch-serve` is not yet deployed in reify
+/// (`bin/reify-audit.rs:547–567`). With `NoopJCodemunchOps`,
+/// `get_changed_symbols` returns `vec![]` → this function iterates nothing →
+/// zero H2 findings regardless of real cross-crate stranding. A zero-finding
+/// H2 sweep is therefore **vacuous** and cannot justify a `Medium → High`
+/// promotion. H2 remains at `Severity::Medium` (non-blocking for the D-1
+/// hook) pending the real jcodemunch JCodemunchOps implementation. Future
+/// promotion task must meet the criteria in
+/// `docs/prds/p5-h1-h2-live-corpus-fp-validation.md` §6 (H2 promotion
+/// criteria): real jcodemunch substrate wired, non-vacuous live sweep,
+/// measured FP rate ≤ 5%. Per task 4141 live-corpus FP validation.
 fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Finding> {
     // Cross-crate gate: requires >=2 distinct crates/<name>/ roots.
     if crate_root_count(&meta.files) < 2 {
