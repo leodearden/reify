@@ -301,4 +301,67 @@ mod tests {
             "planar open square has no self-stress state",
         );
     }
+
+    #[test]
+    fn internal_mechanism_subspace_is_rigid_free_and_counts_one_for_prism() {
+        let nodes = canonical_prism();
+        let a = assemble_equilibrium_matrix(&nodes, &triplex_members());
+
+        // Internal (rigid-body-excluded) mechanism basis of the canonical
+        // triplex: nullity(Aᵀ) = 7, minus n_rigid = 6 rigid-body modes ⇒ exactly
+        // one internal infinitesimal mechanism (the textbook prism twist).
+        let basis = extract_internal_mechanisms(&a, &nodes);
+        assert_eq!(
+            basis.ncols(),
+            1,
+            "canonical triplex has exactly one internal mechanism",
+        );
+        assert_eq!(
+            basis.nrows(),
+            3 * nodes.len(),
+            "mechanism vectors live in the d·N DOF space",
+        );
+
+        const TOL: f64 = 1e-9;
+
+        // (1) Columns are orthonormal: BᵀB ≈ I (1×1 ⇒ ≈ 1 for the prism, but
+        // checked generally so the property holds for any returned basis width).
+        let k = basis.ncols();
+        for i in 0..k {
+            for j in 0..k {
+                let mut dot = 0.0_f64;
+                for r in 0..basis.nrows() {
+                    dot += basis[(r, i)] * basis[(r, j)];
+                }
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!(
+                    (dot - expected).abs() < TOL,
+                    "BᵀB[{i},{j}] = {dot}, expected {expected} (mechanism basis must be orthonormal)",
+                );
+            }
+        }
+
+        // (2) Each mechanism column is orthogonal to the full rigid-body span
+        // (3 translations + 3 infinitesimal rotations): the reported mechanism is
+        // purely internal, carrying no net translation or rotation.
+        let rigid = rigid_body_modes(&nodes);
+        assert_eq!(
+            rigid.ncols(),
+            6,
+            "6 rigid-body generators (3 translations + 3 rotations)",
+        );
+        assert_eq!(rigid.nrows(), 3 * nodes.len());
+        for c in 0..basis.ncols() {
+            for rb in 0..rigid.ncols() {
+                let mut dot = 0.0_f64;
+                for r in 0..basis.nrows() {
+                    dot += basis[(r, c)] * rigid[(r, rb)];
+                }
+                assert!(
+                    dot.abs() < TOL,
+                    "mechanism column {c} · rigid mode {rb} = {dot}, must be ~0 (rigid-free)",
+                );
+            }
+        }
+    }
 }
