@@ -41,7 +41,7 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "engine_state",
-            description: "Full engine state: meshes (entity paths + vertex/face counts, no raw arrays), values, constraints, eval status",
+            description: "Full engine state: meshes (entity paths + vertex/face counts), values, constraints, files, compile_diagnostics, tessellation_diagnostics, stale (bool), reload_error (string or null). stale=true means the last hot-reload failed; reload_error contains the failure message.",
             input_schema: json!({"type": "object", "properties": {}}),
         },
         ToolDef {
@@ -431,29 +431,7 @@ where
 
 async fn handle_engine_state(state: &DebugServerState) -> Result<Value, String> {
     run_on_engine(&state.engine, |session| {
-        let gui_state = session
-            .build_gui_state()
-            .map_err(|e| format!("build_gui_state failed: {e}"))?;
-
-        let meshes: Vec<Value> = gui_state
-            .meshes
-            .iter()
-            .map(|m| {
-                json!({
-                    "entity_path": m.entity_path,
-                    "vertex_count": m.vertices.len() / 3,
-                    "face_count": m.indices.len() / 3,
-                    "has_normals": m.normals.is_some(),
-                })
-            })
-            .collect();
-
-        Ok(json!({
-            "meshes": meshes,
-            "values": gui_state.values,
-            "constraints": gui_state.constraints,
-            "files": gui_state.files,
-        }))
+        crate::commands::engine_state_json(session)
     })
     .await
 }

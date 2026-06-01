@@ -108,6 +108,46 @@ pub fn update_source_impl(
     result
 }
 
+/// Build a debug-API JSON snapshot of the engine state.
+///
+/// Extracted from `debug_server::handle_engine_state` so tests can call it
+/// directly without requiring the `gui` feature gate or a Tauri runtime.
+///
+/// Returns a `serde_json::Value` containing:
+/// * Existing keys: `meshes` (entity path + vertex/face counts), `values`,
+///   `constraints`, `files`.
+/// * New staleness keys: `compile_diagnostics`, `tessellation_diagnostics`,
+///   `stale` (bool), `reload_error` (string or null).
+pub fn engine_state_json(session: &mut EngineSession) -> Result<serde_json::Value, String> {
+    let gui_state = session
+        .build_gui_state()
+        .map_err(|e| format!("build_gui_state failed: {e}"))?;
+
+    let meshes: Vec<serde_json::Value> = gui_state
+        .meshes
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "entity_path": m.entity_path,
+                "vertex_count": m.vertices.len() / 3,
+                "face_count": m.indices.len() / 3,
+                "has_normals": m.normals.is_some(),
+            })
+        })
+        .collect();
+
+    Ok(serde_json::json!({
+        "meshes": meshes,
+        "values": gui_state.values,
+        "constraints": gui_state.constraints,
+        "files": gui_state.files,
+        "compile_diagnostics": gui_state.compile_diagnostics,
+        "tessellation_diagnostics": gui_state.tessellation_diagnostics,
+        "stale": session.is_stale(),
+        "reload_error": session.reload_error(),
+    }))
+}
+
 /// Reload source for the file watcher, always returning a `GuiState` to emit.
 ///
 /// This is the watcher's entry point for hot-reload.  Unlike `update_source_impl`,
