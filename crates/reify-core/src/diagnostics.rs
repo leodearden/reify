@@ -1568,6 +1568,27 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic is `E_OBJECTIVE_CONFLICT`
     /// (severity convention: `E_*` → Error).
     ObjectiveConflict,
+    /// Origin: `crates/reify-eval/src/engine_eval.rs::detect_scope_coupling`.
+    ///
+    /// Severity: Warning — detection-only; no automatic fixup is attempted.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_SCOPE_COUPLING`
+    /// (severity convention: `W_*` → Warning).
+    ///
+    /// Emitted when a bottom-up (leaf-first) per-scope auto-resolution walk is
+    /// an approximation: an ALREADY-RESOLVED (frozen) scope's auto cell is read
+    /// by a constraint or objective in a *different* scope that resolves LATER
+    /// in the walk.  The diagnostic names the frozen scope (leaf), the later
+    /// scope (reader), and the crossing `ValueCellId`.
+    ///
+    /// References: PRD `docs/prds/v0_6/constraint-solver-completion.md` task λ,
+    /// §3.7 ("scope coupling"), §10.6 (detection-only boundary), and boundary
+    /// sketch B11 (`reify check` prints `W_SCOPE_COUPLING`).
+    ///
+    /// **Detection-only**: coupling RESOLUTION (fixed-point iteration or
+    /// re-ordering) is explicitly out of scope per PRD §10.  A future task may
+    /// add resolution on top of this detection signal.
+    ScopeCoupling,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -2618,6 +2639,33 @@ mod tests {
             let s = serde_json::to_string(&code).unwrap();
             assert_eq!(s, expected, "serde mismatch for {code:?}");
         }
+    }
+
+    // --- ScopeCoupling tests (task 4020 — W_SCOPE_COUPLING, PRD §3.7/§10.6, B11) ---
+    // Pairs with `detect_scope_coupling` in `crates/reify-eval/src/engine_eval.rs`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; the tests below pin the
+    // per-variant round-trip, Debug string, and serde wire format.
+
+    /// `DiagnosticCode::ScopeCoupling` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)`.
+    /// Shape mirrors `diagnostic_code_shadowing_with_code_round_trips`.
+    /// A future enum reorganisation that drops `ScopeCoupling` is caught here.
+    /// The serde wire-format is independently pinned by
+    /// `diagnostic_code_scope_coupling_serde_pascal_case` below.
+    #[test]
+    fn diagnostic_code_scope_coupling_with_code_round_trips() {
+        let d = Diagnostic::warning("x").with_code(DiagnosticCode::ScopeCoupling);
+        assert_eq!(d.code, Some(DiagnosticCode::ScopeCoupling));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::ScopeCoupling` serializes as
+    /// `"ScopeCoupling"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_scope_coupling_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::ScopeCoupling).unwrap();
+        assert_eq!(s, "\"ScopeCoupling\"");
     }
 }
 

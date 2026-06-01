@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use reify_compiler::{CompiledModule, ValueCellDecl, ValueCellKind, find_template};
 use reify_ir::sampled::{LinspaceError, linspace_inclusive};
-use reify_core::{ContentHash, Diagnostic, DiagnosticCode, FIELD_ENTITY_PREFIX, SnapshotId, ValueCellId, VersionId};
+use reify_core::{ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, FIELD_ENTITY_PREFIX, SnapshotId, ValueCellId, VersionId};
 use reify_ir::{AutoParam, CompiledFunction, DeterminacyState, ErrorRef, Freshness, InterpolationKind, PersistentMap, ResolutionProblem, SampledField, SampledGridKind, SnapshotProvenance, SolveResult, Value, ValueMap};
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
@@ -347,6 +347,95 @@ fn detect_let_cycle<'a>(
     }
 
     (let_cells, let_traces, sorted_lets)
+}
+
+/// Static coupling detection pass: walk `templates` in iteration order (which
+/// mirrors the per-scope resolution order) and emit
+/// [`DiagnosticCode::ScopeCoupling`] when a later scope's constraint or
+/// objective reads an auto cell that was already frozen by an earlier scope.
+///
+/// Called in `Engine::eval` AFTER the resolution loop and OUTSIDE the
+/// `has_active_solver` gate so the warning surfaces on `reify check` even
+/// when no constraint solver is attached.
+///
+/// Algorithm:
+/// - `frozen: HashMap<ValueCellId, String>` accumulates the auto-cell ids of
+///   ALREADY-processed scopes, mapped to their owning scope name.
+/// - For each scope B (in walk order): collect B's full read-set from
+///   `template.constraints` (via `extract_dependency_trace`) — full, not
+///   the auto-filtered ResolutionProblem set, because coupling edges are by
+///   definition constraints that read a *different* scope's auto cell (which
+///   `build_solver_problem`'s own-scope filter drops).
+/// - For each read `r` where `frozen[r] == Some(A)` and `A != B.name`,
+///   emit a warning (deduped per (A, B, r) triple via `seen`).
+/// - THEN insert B's own auto cells into `frozen` (populate-after-process
+///   ensures the earlier→later direction; a scope cannot couple to itself
+///   or to a not-yet-frozen scope).
+fn detect_scope_coupling(templates: &[reify_compiler::TopologyTemplate]) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    // auto-cell id → owning scope name for ALREADY-processed scopes.
+    let mut frozen: HashMap<ValueCellId, String> = HashMap::new();
+    // Dedup set: (frozen_scope_name, later_scope_name, crossing_cell_id).
+    let mut seen: HashSet<(String, String, ValueCellId)> = HashSet::new();
+
+    for template in templates {
+        let b_name = &template.name;
+
+        // Shared helper: check `reads` against `frozen`, deduplicate per
+        // (owner, B, crossing) triple, and push a W_SCOPE_COUPLING warning.
+        // `span` is `Some(constraint.span)` for constraint-sourced crossings
+        // (attaches a source label pointing at the crossing read site) and
+        // `None` for objective-sourced crossings (ObjectiveTerm carries no
+        // span).  The message literal lives here once to prevent drift.
+        let mut emit_for_reads = |reads: Vec<ValueCellId>, span| {
+            for r in reads {
+                if let Some(owner) = frozen.get(&r)
+                    && owner != b_name {
+                        let key = (owner.clone(), b_name.clone(), r.clone());
+                        if seen.insert(key) {
+                            let msg = format!(
+                                "W_SCOPE_COUPLING: scope '{b_name}' reads auto cell '{r}' \
+                                 owned by already-resolved scope '{owner}'; \
+                                 bottom-up resolution may be approximate"
+                            );
+                            let diag = Diagnostic::warning(msg)
+                                .with_code(DiagnosticCode::ScopeCoupling);
+                            diagnostics.push(if let Some(s) = span {
+                                diag.with_label(DiagnosticLabel::new(
+                                    s,
+                                    "scope coupling read site",
+                                ))
+                            } else {
+                                diag
+                            });
+                        }
+                    }
+            }
+        };
+
+        // Constraint read-sets: attach the constraint span as a source label.
+        for constraint in &template.constraints {
+            let reads = extract_dependency_trace(&constraint.expr).reads;
+            emit_for_reads(reads, Some(constraint.span));
+        }
+
+        // Objective read-sets: ObjectiveTerm carries no span.
+        if let Some(obj) = &template.objective {
+            for term in &obj.terms {
+                let reads = extract_dependency_trace(&term.expr).reads;
+                emit_for_reads(reads, None);
+            }
+        }
+
+        // After processing B, freeze B's own auto cells.
+        for cell in &template.value_cells {
+            if cell.kind.is_auto() {
+                frozen.insert(cell.id.clone(), b_name.clone());
+            }
+        }
+    }
+
+    diagnostics
 }
 
 /// Builds the `ResolutionProblem` for the constraint solver from `template`'s
@@ -2307,6 +2396,12 @@ impl Engine {
         // above whenever sampled-field OOB queries or RBF/Kriging
         // fallbacks emitted warnings via `EvalContext::diagnostics`.
         diagnostics.append(&mut runtime_sink.borrow_mut());
+
+        // Static coupling detection (task 4020 — W_SCOPE_COUPLING, PRD λ §3.7).
+        // Placed OUTSIDE the `has_active_solver` gate so the warning surfaces on
+        // `reify check` (which attaches no solver). Detection is purely structural
+        // and needs no solved values.
+        diagnostics.extend(detect_scope_coupling(&module.templates));
 
         EvalResult {
             values,
