@@ -123,7 +123,7 @@ fn conflict_minimize_mass_maximize_stiffness_emits_error() {
         "ObjectiveConflict diagnostic must carry at least one label"
     );
     assert!(
-        conflict_diag.labels.iter().any(|l| l.span.len() > 0),
+        conflict_diag.labels.iter().any(|l| !l.span.is_empty()),
         "at least one label must have a non-empty span, labels: {:#?}",
         conflict_diag.labels
     );
