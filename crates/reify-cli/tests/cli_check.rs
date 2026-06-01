@@ -273,3 +273,40 @@ fn check_absent_module_decl_exits_success_with_warning() {
         "stderr should contain 'W_MODULE_DECL_MISSING', got: {stderr}"
     );
 }
+
+// --- E_OBJECTIVE_CONFLICT CLI tests (task 4010, boundary B3) ---
+
+/// B3 positive: a structure with conflicting objectives (`minimize mass` +
+/// `maximize stiffness`) must exit non-zero and print `"E_OBJECTIVE_CONFLICT"`
+/// to stderr.  This is the user-observable leaf signal for task 4010.
+#[test]
+fn check_objective_conflict_exits_failure_with_mnemonic() {
+    let (status, _stdout, stderr) =
+        common::run_subcommand("check", &common::fixture_path("objective_conflict.ri"));
+
+    assert!(
+        !status.success(),
+        "reify check should exit non-zero for conflicting objectives.\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("E_OBJECTIVE_CONFLICT"),
+        "stderr should contain 'E_OBJECTIVE_CONFLICT', got: {stderr}"
+    );
+}
+
+/// B3 negative: a structure with same-sense objectives (`minimize mass` +
+/// `minimize cost`) is NOT a conflict and must exit zero without the mnemonic.
+#[test]
+fn check_objective_no_conflict_exits_success_without_mnemonic() {
+    let (status, _stdout, stderr) =
+        common::run_subcommand("check", &common::fixture_path("objective_no_conflict.ri"));
+
+    assert!(
+        status.success(),
+        "reify check should exit 0 for non-conflicting same-sense objectives.\nstderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("E_OBJECTIVE_CONFLICT"),
+        "stderr should not contain 'E_OBJECTIVE_CONFLICT', got: {stderr}"
+    );
+}
