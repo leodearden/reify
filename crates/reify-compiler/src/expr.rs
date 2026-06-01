@@ -3035,6 +3035,19 @@ pub(crate) fn compile_expr_guarded(
             selector,
             args,
         } => {
+            // ── task 4143: semantic gate — reject `auto` in ad-hoc selector args ──
+            // Mirrors the FunctionCall and TraitStaticCall gates. Neither is a binding site;
+            // no structure-construction exemption. Gate fires before selector resolution,
+            // arg-count checks, geometry-availability checks, and base resolution —
+            // yielding exactly one diagnostic on the poison path (anti-cascade).
+            if let Some(poison) = reject_auto_in_arg_list(
+                args,
+                &format!("an ad-hoc selector argument (@{})", selector),
+                diagnostics,
+            ) {
+                return poison;
+            }
+
             // Resolve selector kind.
             // `n` is captured immediately before the push inside the `unknown` arm so it
             // cannot be falsely whitelisted by any future diagnostic added to the other arms.
