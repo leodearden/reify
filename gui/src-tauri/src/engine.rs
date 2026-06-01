@@ -2074,7 +2074,7 @@ impl EngineSession {
                     }
                     diags
                 };
-                let meshes = result
+                let mut meshes: Vec<MeshData> = result
                     .meshes
                     .into_iter()
                     .map(|(entity_path, mesh)| MeshData {
@@ -2089,6 +2089,13 @@ impl EngineSession {
                         vector_channels: std::collections::HashMap::new(),
                     })
                     .collect();
+                // Populate per-vertex FEA scalar/displacement channels when an
+                // ElasticResult is present in the evaluated values.  The helper
+                // is a no-op for non-FEA scenes (extracts None → returns early),
+                // so the hot path for geometry-only scenes has zero overhead.
+                if let Some(check) = self.core.last_check() {
+                    apply_fea_channels(&mut meshes, &check.values);
+                }
                 (meshes, tess_diags)
             }
             None => (Vec::new(), Vec::new()),
