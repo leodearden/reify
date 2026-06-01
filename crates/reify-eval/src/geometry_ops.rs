@@ -1630,6 +1630,17 @@ fn dispatch_geometry_query_call(
 /// so `eval_expr` yields `Undef` — the same outcome as the cell's compiled
 /// default (a conservative downgrade, never a wrong value). Extend this match
 /// if a future trait nests a geometry query inside a richer wrapper.
+///
+/// PERFORMANCE: every geometry-query leaf is dispatched independently, so an
+/// expression repeating an identical call (e.g. `volume(g) + volume(g)`) issues
+/// one kernel round-trip per occurrence, and the enclosing
+/// `post_process_geometry_queries` re-runs this rewrite on every build path
+/// (including cache-hit builds). For the frozen Physical spec shape each query
+/// cell holds a single call, so this is one cheap round-trip and negligible. If
+/// these expressions grow, memoize dispatch results per
+/// `(function_name, GeometryHandleId)` within a single rewrite so repeated
+/// leaves reuse one round-trip — deliberately NOT done here as it is
+/// unobservable at the current single-query scope.
 fn rewrite_geometry_queries(
     expr: &reify_ir::CompiledExpr,
     named_steps: &HashMap<String, GeometryHandleId>,

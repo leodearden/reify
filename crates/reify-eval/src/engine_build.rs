@@ -4087,7 +4087,8 @@ impl Engine {
         kernel: &dyn GeometryKernel,
         diagnostics: &mut Vec<Diagnostic>,
     ) {
-        // Iterate `values` directly without snapshotting (parallels the
+        // Iterate `template.value_cells` and insert into `values` in place,
+        // without snapshotting `values` (parallels the
         // `post_process_body_mass_props` sibling). The DIRECT case is safe: a
         // geometry-query cell's arg resolves to a `named_steps` handle
         // (populated by `execute_realization_ops`), never to another value cell.
