@@ -35,8 +35,10 @@
 //    four gantry crosses at the SAME four Z levels => TWELVE spans, from one
 //    TendonQuad placed three times (each rail as-is; the cross turned 90° about
 //    Z). The stacked X-gantry rails are spread (x_rail_offset) to leave room for
-//    the crosses to thread between them. Deferred: the head-position fore/aft
-//    split + live x_head/y_head tracking (blocked by the override drop below).
+//    the crosses to thread between them. Idler routing pulleys (608ZZ bearing +
+//    grooved sheave) stack at each Y-carriage corner, turning each belt from its
+//    rail run onto the gantry cross. Deferred: the head-position fore/aft split +
+//    live x_head/y_head tracking (blocked by the override drop below).
 //
 // VISIBILITY: reference geometry (build-volume box, bed travel centreline) is
 // `aux` — realised + inspectable but default_visible=false (GUI auto-hide is
@@ -108,6 +110,64 @@ pub structure CarriageBlock {
     constraint height > 0mm
 }
 
+/// Idler routing pulley: a 608ZZ ball bearing (8mm bore, 22mm OD, 7mm wide) with
+/// a sheave pressed onto its OD — a flanged wheel whose rim carries a groove the
+/// 6mm tendon seats in. Modelled along local +Z (the spin axis), centred; the
+/// composing site stands it on the axis it should turn about. Axle bolt + bearing
+/// shields are not modelled.
+///
+/// GROOVE SHAPE: the groove is RECTANGULAR (flat-bottomed: two retaining flanges
+/// either side of a recessed core). A true semicircular seat MATCHING the round
+/// tendon profile wants `torus` (fn torus(major,minor)->Solid is spec'd) — but
+/// torus is NOT a runtime geometry builtin yet (the dispatch has cylinder/sphere/
+/// revolve/union/… but no torus/cone), so the round seat is deferred to that fix
+/// (or a revolve-of-profile). Filed as a dogfood gap.
+///
+/// Body is ONE inlined union/difference tree so the boolean operands do NOT
+/// auto-surface as stray meshes — only `body` surfaces (scalar `let`s are
+/// non-geometry, so they don't surface either).
+pub structure IdlerPulley {
+    // 608ZZ bearing core.
+    param brg_od    : Length = 22mm
+    param brg_bore  : Length = 8mm
+    param brg_width : Length = 7mm
+    // Sheave (flanged grooved wheel pressed on the bearing OD).
+    param sheave_od    : Length = 36mm   // flange (outer) diameter
+    param groove_depth : Length = 3mm    // radial depth, rim → groove bottom
+    param groove_width : Length = 6mm    // == tendon diameter (the seat width)
+    param flange_width : Length = 2mm    // each retaining flange
+
+    let brg_r       = brg_od / 2
+    let sheave_r    = sheave_od / 2
+    let groove_r    = sheave_r - groove_depth          // recessed groove-bottom radius
+    let groove_half = groove_width / 2
+    let bore_len    = groove_width + flange_width * 3   // through-bore length (> sheave width)
+
+    let body = union(
+        // 608ZZ bearing — annular sleeve along local +Z, centred.
+        difference(
+            translate(cylinder(brg_r, brg_width), 0mm, 0mm, 0mm - brg_width / 2),
+            translate(cylinder(brg_bore / 2, brg_width * 1.2), 0mm, 0mm, 0mm - brg_width * 0.6)
+        ),
+        // Sheave: two retaining flanges (full radius) + a recessed grooved core,
+        // bored to the bearing OD (press fit).
+        difference(
+            union(
+                union(
+                    translate(cylinder(sheave_r, flange_width), 0mm, 0mm, groove_half),
+                    translate(cylinder(sheave_r, flange_width), 0mm, 0mm, 0mm - groove_half - flange_width)
+                ),
+                translate(cylinder(groove_r, groove_width), 0mm, 0mm, 0mm - groove_half)
+            ),
+            translate(cylinder(brg_r, bore_len), 0mm, 0mm, 0mm - bore_len / 2)
+        )
+    )
+
+    constraint sheave_od > brg_od
+    constraint groove_r > brg_r
+    constraint brg_od > brg_bore
+}
+
 // ── Tendon routing (γ: doubled belts A/B on both rails + gantry crosses) ─────
 
 /// Four tendon spans sharing one axis, in the vertical plane through that axis:
@@ -140,13 +200,36 @@ pub structure TendonQuad {
     constraint z_b > 0mm
 }
 
-/// CoreXY drive tendons — TWELVE spans. Belts A (outer) and B (inner), each
-/// doubled above/below for moment balance: a TendonQuad on EACH Y rail (eight Y
-/// runs, sitting ON the rail axis at x = ±rail_x) plus a TendonQuad turned 90°
-/// about Z for the four gantry crosses — all sharing the four Z levels ±z_a / ±z_b.
-/// v0.1 simplifications, deferred: the head-position fore/aft split and live
-/// x_head/y_head tracking (DriveTendons cannot receive them while sub-site
-/// overrides are dropped — header CAVEAT).
+/// The idler stack at ONE Y-carriage corner: one pulley per tendon Z level (belt
+/// A outer ±z_a, belt B inner ±z_b), each turning that belt from its Y-rail run
+/// onto the gantry cross. Vertical (local +Z) spin axes — the tendons wrap them
+/// in the horizontal plane. Stacked 25mm apart in Z (z_a−z_b) while each pulley
+/// is only ~10mm thick along its axis, so the four clear each other. z_a/z_b kept
+/// in step with TendonQuad (override drop — task 4147).
+pub structure CarriageIdlers {
+    param z_a : Length = 80mm
+    param z_b : Length = 55mm
+
+    let neg_z_a = 0mm - z_a
+    let neg_z_b = 0mm - z_b
+
+    sub a_upper = IdlerPulley() at transform3(orient_identity(), vec3(0mm, 0mm, z_a))      // belt A run
+    sub a_lower = IdlerPulley() at transform3(orient_identity(), vec3(0mm, 0mm, neg_z_a))
+    sub b_upper = IdlerPulley() at transform3(orient_identity(), vec3(0mm, 0mm, z_b))      // belt B run
+    sub b_lower = IdlerPulley() at transform3(orient_identity(), vec3(0mm, 0mm, neg_z_b))
+
+    constraint z_a > z_b
+    constraint z_b > 0mm
+}
+
+/// CoreXY drive tendons — TWELVE spans + the corner idler stacks. Belts A (outer)
+/// and B (inner), each doubled above/below for moment balance: a TendonQuad on
+/// EACH Y rail (eight Y runs, ON the rail axis at x = ±rail_x) plus a TendonQuad
+/// turned 90° about Z for the four gantry crosses — all sharing the four Z levels
+/// ±z_a / ±z_b. A CarriageIdlers stack at each Y-carriage (x = ±rail_x, y = 0)
+/// turns each belt from its rail run onto the cross. v0.1 simplifications,
+/// deferred: the head-position fore/aft split and live x_head/y_head tracking
+/// (DriveTendons cannot receive them while sub-site overrides are dropped — CAVEAT).
 pub structure DriveTendons {
     /// Transverse position of each rail quad == the Y-rail axis (kept in step
     /// with CoreXY.y_rail_offset so the tendons sit in the rail's vertical plane).
@@ -158,6 +241,9 @@ pub structure DriveTendons {
     sub rail_r = TendonQuad() at transform3(orient_identity(), vec3(rail_x,     0mm, 0mm))  // right Y rail
     sub rail_l = TendonQuad() at transform3(orient_identity(), vec3(neg_rail_x, 0mm, 0mm))  // left Y rail
     sub cross  = TendonQuad() at transform3(rot_to_cross,      vec3(0mm,        0mm, 0mm))  // gantry crosses
+
+    sub idlers_r = CarriageIdlers() at transform3(orient_identity(), vec3(rail_x,     0mm, 0mm))  // right corner
+    sub idlers_l = CarriageIdlers() at transform3(orient_identity(), vec3(neg_rail_x, 0mm, 0mm))  // left corner
 
     constraint rail_x > 0mm
 }
