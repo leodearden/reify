@@ -1487,4 +1487,205 @@ mod tests {
             "unknown joint kind must be None"
         );
     }
+
+    // ── step-7 RED: closed-chain inverse_dynamics routing smoke test ───────────
+    //
+    // Verifies that `inverse_dynamics_lower` routes a closed-chain mechanism to a
+    // finite `List<List<JointForce>>` (not `Value::Undef`).  Uses the proven
+    // 2-prismatic closed-chain mechanism (same topology as
+    // kinematic_sweep_closed_chain.rs: body(m2, mp_c, j_b, j_a) re-parents
+    // j_b → j_a, creating one loop_closure record), with MassProperties-valued
+    // solids so no geometry kernel is needed.
+    //
+    // The test also re-asserts that `inverse_dynamics_at_snapshot_lower` still
+    // returns `Value::Undef` for a closed mechanism (design decision
+    // esc-3836-226: snapshot discards the spanning-tree q).
+    //
+    // Fails RED today because `snapshot_inverse_dynamics` has the closed-chain
+    // guard (None → Undef).  Step-8 wires `closed_chain_inverse_dynamics` and
+    // makes this GREEN.
+    //
+    // Trajectory layout for the 2-prismatic closed chain:
+    //   bodies = [m1@j_a, m2@j_b, m3@j_b-closing]  (bodies.len() = 3)
+    //   loop_closures = 1 record
+    //   n_tree = bodies.len() − loop_closures.len() = 2 spanning-tree bodies
+    //   values.len() = 3  (snapshot_for_sample requires values.len() == bodies.len())
+    //   vels.len()   = 2  (tree-DOF count: j_a(1) + j_b(1) = 2)
+    //   accels.len() = 2  (same)
+    #[test]
+    fn closed_chain_inverse_dynamics_routing_finite_on_prismatic_loop() {
+        use crate::eval_builtin;
+
+        // ── 2-prismatic closed-chain mechanism ────────────────────────────────
+        // Spanning tree (joint_parents): m1@j_a (parent=world), m2@j_b (parent=world).
+        // Closing edge: body(m2, mp_c, j_b, j_a) adds m3 to bodies and appends a
+        // loop_closure record {path_a=[world,j_b], path_b=[world,j_a,j_b],
+        // closing_joint=j_b}.
+        //
+        // j_a on +x (range 0–1m), j_b on +x (range 0–2m): different ranges make
+        // them structurally distinct Maps so Value::Eq in loop_residual_jacobian_by_joint
+        // can distinguish them.  Mirrors the kinematic_sweep_closed_chain source.
+        let mp_a = mass_properties_fixture(
+            1.0,
+            [0.0, 0.0, 0.0],
+            [[0.1, 0.0, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 0.1]],
+        );
+        let mp_b = mass_properties_fixture(
+            2.0,
+            [0.0, 0.0, 0.0],
+            [[0.2, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.2]],
+        );
+        // Distinct solid required: append_body rejects duplicate solids.
+        let mp_c = mass_properties_fixture(
+            0.5,
+            [0.0, 0.0, 0.0],
+            [[0.05, 0.0, 0.0], [0.0, 0.05, 0.0], [0.0, 0.0, 0.05]],
+        );
+
+        let axis_x = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let range_1m = Value::Range {
+            lower: Some(Box::new(Value::length(0.0))),
+            upper: Some(Box::new(Value::length(1.0))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        };
+        let range_2m = Value::Range {
+            lower: Some(Box::new(Value::length(0.0))),
+            upper: Some(Box::new(Value::length(2.0))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        };
+        let j_a = eval_builtin("prismatic", &[axis_x.clone(), range_1m]);
+        let j_b = eval_builtin("prismatic", &[axis_x, range_2m]);
+
+        let mech0 = eval_builtin("mechanism", &[]);
+        let mech1 = eval_builtin("body", &[mech0, mp_a, j_a.clone()]);
+        let mech2 = eval_builtin("body", &[mech1, mp_b, j_b.clone()]);
+        // 4-arg body(): closing edge — re-parents j_b from world → j_a.
+        // Appends a loop_closure record; does NOT modify joint_parents
+        // (spanning-tree parent for j_b stays world, "first-recorded wins").
+        let mech = eval_builtin("body", &[mech2, mp_c, j_b.clone(), j_a.clone()]);
+
+        // Confirm closed-chain discriminant is non-empty.
+        let mech_map = match &mech {
+            Value::Map(m) => m,
+            other => panic!("body() must yield a Mechanism Map, got {other:?}"),
+        };
+        let lc = match mech_map.get(&Value::String("loop_closures".to_string())) {
+            Some(Value::List(l)) => l,
+            other => panic!("mechanism must carry loop_closures List, got {other:?}"),
+        };
+        assert!(
+            !lc.is_empty(),
+            "2-prismatic closed-chain mechanism must have non-empty loop_closures"
+        );
+
+        // ── 1-sample MotionTrajectory ─────────────────────────────────────────
+        // values[0] = j_a driver (0.5m); values[1] = spanning-tree j_b (1.0m);
+        // values[2] = closing j_b initial guess (0.5m).
+        // Closure identity: spanning(j_b) = j_a + free(j_b) → 1.0 = 0.5 + 0.5. ✓
+        let sample = mint_instance(
+            "TrajectorySample",
+            vec![
+                (
+                    "t".to_string(),
+                    Value::Scalar {
+                        si_value: 0.0,
+                        dimension: DimensionVector::TIME,
+                    },
+                ),
+                (
+                    "values".to_string(),
+                    Value::List(vec![
+                        Value::length(0.5), // m1@j_a: driver = 0.5 m
+                        Value::length(1.0), // m2@j_b: spanning-tree position = 1.0 m
+                        Value::length(0.5), // m3@j_b: closing-edge initial guess = 0.5 m
+                    ]),
+                ),
+                (
+                    "vels".to_string(),
+                    Value::List(vec![
+                        Value::Real(0.0), // q̇_ja = 0
+                        Value::Real(0.0), // q̇_jb = 0
+                    ]),
+                ),
+                (
+                    "accels".to_string(),
+                    Value::List(vec![
+                        Value::Real(0.0), // q̈_ja = 0
+                        Value::Real(0.0), // q̈_jb = 0
+                    ]),
+                ),
+            ],
+        );
+        let traj = mint_instance(
+            "MotionTrajectory",
+            vec![
+                ("mechanism".to_string(), Value::Real(0.0)),
+                ("samples".to_string(), Value::List(vec![sample])),
+            ],
+        );
+
+        // ── Routing assertion: closed-chain ⇒ finite List (step-7 RED) ───────
+        // Today: snapshot_inverse_dynamics fires the closed-chain guard ⇒ None
+        // ⇒ eval_inverse_dynamics returns Value::Undef ⇒ this assertion fails.
+        // After step-8: closed_chain_inverse_dynamics returns Ok ⇒ GREEN.
+        let result = eval_dynamics("inverse_dynamics_lower", &[mech.clone(), traj])
+            .expect("inverse_dynamics_lower must be a recognised dynamics intrinsic");
+
+        let per_sample = match &result {
+            Value::List(s) => s,
+            _ => panic!(
+                "inverse_dynamics_lower on a closed mechanism must return a finite \
+                 List<List<JointForce>>, got {:?}\n\
+                 (step-7 RED: closed-chain guard returns Undef; step-8 wires the path)",
+                result
+            ),
+        };
+        assert_eq!(per_sample.len(), 1, "one force list per trajectory sample");
+
+        // Inner List<JointForce>: length = tree-joint count = 2 (j_a and j_b).
+        // n_tree = bodies.len() − loop_closures.len() = 3 − 1 = 2.
+        let forces = match &per_sample[0] {
+            Value::List(f) => f,
+            other => panic!("sample 0: expected a List<JointForce>, got {other:?}"),
+        };
+        assert_eq!(
+            forces.len(),
+            2,
+            "two spanning-tree joints (j_a, j_b) ⇒ two JointForce entries"
+        );
+
+        // Every force magnitude must be finite/non-NaN
+        // (KKT solved ⇒ rank reduction correct).
+        for (i, jf) in forces.iter().enumerate() {
+            let jf_value = field(jf, "JointForce", "value");
+            // Both joints are prismatic ⇒ ScalarForce { magnitude }.
+            let mag = num(field(jf_value, "ScalarForce", "magnitude"));
+            assert!(
+                mag.is_finite(),
+                "force[{i}].ScalarForce.magnitude must be finite, got {mag}"
+            );
+        }
+
+        // ── Re-assert: snapshot entry still returns Undef for closed mechanisms ─
+        // Design decision esc-3836-226: inverse_dynamics_at_snapshot_lower must
+        // return Undef for closed mechanisms because a snapshot discards the
+        // spanning-tree q needed by extract_loop_closure_chains.
+        // (Existing test snapshot_inverse_dynamics_rejects_closed_mechanism also
+        // covers this; re-asserted here so step-8 cannot accidentally remove the guard.)
+        let dummy_snap = Value::Map(std::collections::BTreeMap::new());
+        let q_zero = Value::List(vec![Value::Real(0.0), Value::Real(0.0)]);
+        let snap_result = eval_dynamics(
+            "inverse_dynamics_at_snapshot_lower",
+            &[mech, dummy_snap, q_zero.clone(), q_zero],
+        )
+        .expect("inverse_dynamics_at_snapshot_lower must be a recognised intrinsic");
+        assert_eq!(
+            snap_result,
+            Value::Undef,
+            "closed mechanism must return Undef from inverse_dynamics_at_snapshot_lower \
+             (snapshot discards spanning-tree q, no closed-chain routing at snapshot entry)"
+        );
+    }
 }
