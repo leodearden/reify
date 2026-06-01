@@ -184,6 +184,7 @@ impl ImpulseTrain {
     ///
     /// Algebraically equivalent to `cascade([zv(ω,ζ), zv(ω,ζ)])` — used as a
     /// cross-check in the unit tests.
+    // G-allow: impulse-shaping producer (ZVD shaper), task #3866 (ε, DONE); consumer is task #3867 (ζ — input_shape dispatcher + reify-eval/src/trajectory_ops.rs eval wiring), PENDING, so no in-tree caller yet.
     pub(crate) fn zvd(omega_n: f64, zeta: f64) -> ImpulseTrain {
         let (omega_d, k) = damped_freq_and_k(omega_n, zeta);
         let norm = (1.0 + k) * (1.0 + k);
@@ -261,6 +262,7 @@ impl ImpulseTrain {
     /// - **Multiple trains** → pairwise convolution fold; coincident-time
     ///   impulses (within a tolerance of 1e-10 s) are merged by summing their
     ///   amplitudes.
+    // G-allow: impulse-shaping producer (train cascade/convolution), task #3866 (ε, DONE); consumer is task #3867 (ζ — input_shape dispatcher), PENDING, so no in-tree caller yet.
     pub(crate) fn cascade(trains: &[ImpulseTrain]) -> ImpulseTrain {
         // Empty → identity unit impulse at t=0.
         if trains.is_empty() {
@@ -275,6 +277,7 @@ impl ImpulseTrain {
     }
 
     /// Sum of all impulse amplitudes (should equal 1.0 for any well-formed shaper).
+    // G-allow: impulse-shaping producer (amplitude-sum check), task #3866 (ε, DONE); consumer is task #3867 (ζ — input_shape dispatcher), PENDING, so no in-tree caller yet.
     pub(crate) fn amplitude_sum(&self) -> f64 {
         self.impulses.iter().map(|imp| imp.amplitude).sum()
     }
@@ -282,6 +285,7 @@ impl ImpulseTrain {
     /// Time offset of the last (trailing) impulse (= the shaper delay Δ).
     ///
     /// Returns 0.0 for a single-impulse identity train.
+    // G-allow: impulse-shaping producer (shaper-delay query), task #3866 (ε, DONE); consumer is task #3867 (ζ — input_shape dispatcher), PENDING, so no in-tree caller yet.
     pub(crate) fn trailing_time(&self) -> f64 {
         self.impulses.last().map(|imp| imp.time).unwrap_or(0.0)
     }
@@ -298,6 +302,7 @@ impl ImpulseTrain {
     ///
     /// A single unit impulse `{(0, 1)}` produces `V = 1` (the baseline used for
     /// the ≥ 40 dB suppression check).
+    // G-allow: impulse-shaping producer (residual-vibration metric), task #3866 (ε, DONE); consumer is task #3867 (ζ — input_shape dispatcher), PENDING, so no in-tree caller yet.
     pub(crate) fn residual_vibration(&self, omega_n: f64, zeta: f64) -> f64 {
         if self.impulses.is_empty() {
             return 0.0;
@@ -333,6 +338,7 @@ impl ImpulseTrain {
 /// The output remains valid for `t ∈ [0, t_domain + train.trailing_time()]`.
 /// After that the final value is frozen (all samples beyond `t_domain` clamp to
 /// `f(t_domain)` and `Σ A_i = 1`).
+// G-allow: impulse-shaping producer (shaped-command convolution), task #3866 (ε, DONE); consumer is task #3867 (ζ — input_shape dispatcher), PENDING, so no in-tree caller yet.
 pub(crate) fn convolve_at<F: Fn(f64) -> f64>(
     train: &ImpulseTrain,
     f: &F,
