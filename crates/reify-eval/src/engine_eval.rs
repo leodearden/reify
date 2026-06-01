@@ -495,9 +495,11 @@ fn build_solver_problem(
 /// Recursively check whether a compiled expression contains any inequality
 /// sub-expression (Ge/Gt/Le/Lt) at the top level or nested under BinOp::And.
 ///
-/// Mirrors `solver.rs::collect_slack_terms`'s decomposition rule.  Used by
-/// `scope_qualifies_for_centrality` to determine whether a scope has at least
-/// one constraint that yields a signed-slack term.
+/// **Intentional duplication**: `solver.rs::collect_slack_terms` applies the same
+/// rule (same ops, same And-recursion, same skips).  The two cannot share a helper
+/// because reify-eval src does not depend on reify-constraints (only a dev-dep).
+/// If you change which ops decompose (e.g. add Or handling, treat Eq as two
+/// inequalities), apply the matching change to `collect_slack_terms` as well.
 fn has_inequality_slack(expr: &reify_ir::CompiledExpr) -> bool {
     match &expr.kind {
         reify_ir::CompiledExprKind::BinOp { op, left, right } => match op {
@@ -516,11 +518,27 @@ fn has_inequality_slack(expr: &reify_ir::CompiledExpr) -> bool {
 /// The predicate mirrors `solver.rs::build_centrality_objective`'s gate:
 ///   1. At least one auto cell (otherwise `build_solver_problem` returns `None`).
 ///   2. **Continuous-only guard (B7)**: every auto cell has `Type::Scalar { .. }`.
-///   3. At least one constraint reachable from an auto cell decomposes into an
-///      inequality slack (Ge/Gt/Le/Lt, possibly nested under BinOp::And).
+///   3. At least one constraint contains an inequality slack (Ge/Gt/Le/Lt,
+///      possibly nested under BinOp::And) — checked across ALL constraints,
+///      NOT filtered by whether the constraint reads an auto cell.
 ///
-/// Cross-reference: `solver.rs::build_centrality_objective` implements the same
-/// three conditions.  If either site is updated, update the other too.
+/// **Why no auto-read filter (alignment with solver)**: `build_centrality_objective`
+/// collects slacks from ALL constraints regardless of auto-cell involvement.
+/// An earlier engine version filtered by `trace.reads ∩ auto_ids`, but this diverged
+/// from the solver: a scope whose only inequality constraint involves no auto cell
+/// would get a synthetic objective from the solver but be absent from
+/// `centrality_synthesized_scopes` (under-reporting).  Removing the filter aligns
+/// the two predicates.
+///
+/// **Known limitation (finite-bounds)**: `build_centrality_objective` also returns
+/// `None` when any auto param has non-finite (NaN/Inf) effective bounds.  This check
+/// cannot be replicated here because `ValueCellDecl` does not carry numeric bounds
+/// (they are derived from runtime values in `build_solver_problem`).  In the rare
+/// case where bounds are degenerate the engine over-reports (records the scope as
+/// centrality-synthesized even though the solver returns `None`), but this is a
+/// benign inaccuracy and the scope is otherwise a degenerate problem.
+///
+/// Cross-reference: `solver.rs::build_centrality_objective`.
 fn scope_qualifies_for_centrality(template: &reify_compiler::TopologyTemplate) -> bool {
     let auto_cells: Vec<_> = template
         .value_cells
@@ -540,14 +558,9 @@ fn scope_qualifies_for_centrality(template: &reify_compiler::TopologyTemplate) -
         return false;
     }
 
-    let auto_ids: std::collections::HashSet<&ValueCellId> =
-        auto_cells.iter().map(|cell| &cell.id).collect();
-
-    // At least one constraint reachable from auto cells must contain an inequality.
-    template.constraints.iter().any(|c| {
-        let trace = extract_dependency_trace(&c.expr);
-        trace.reads.iter().any(|r| auto_ids.contains(r)) && has_inequality_slack(&c.expr)
-    })
+    // At least one constraint (anywhere in the scope) must contain an inequality.
+    // We do NOT filter by auto-cell reads — see the doc comment above.
+    template.constraints.iter().any(|c| has_inequality_slack(&c.expr))
 }
 
 /// Pushes the appropriate `Diagnostic::warning` for `rejection` and bumps the
