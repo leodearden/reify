@@ -805,6 +805,62 @@ pub(crate) fn compile_geometry_call(
                 ],
             }])
         }
+        // cylinder_centered(radius, height) — centred on the z-axis at z=0.
+        //
+        // The OCCT cylinder is base-at-origin (z ∈ [0, h]), so we compose a
+        // Translate(dz = -height/2) to shift the centroid to z = 0.
+        //
+        // Two sub-ops are returned:
+        //   [0] Primitive(Cylinder){radius, height}  — at step_offset
+        //   [1] Transform(Translate){target=Step(step_offset), dx=0, dy=0, dz=-(height/2)}
+        //
+        // ops.last() (the Translate) is the realization root, matching the
+        // "result_step = current_offset + ops.len() - 1" convention in the caller.
+        "cylinder_centered" => {
+            if !check_arg_count_exact(
+                "cylinder_centered",
+                compiled_args.len(),
+                2,
+                expr.span,
+                diagnostics,
+            ) {
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            let radius = it.next().unwrap();
+            let height = it.next().unwrap();
+
+            // dz = -(height / 2)  — same Length type so eval.as_f64() yields SI metres.
+            let dz = CompiledExpr::binop(
+                BinOp::Mul,
+                height.clone(),
+                CompiledExpr::literal(Value::Real(-0.5), reify_core::Type::Real),
+                height.result_type.clone(),
+            );
+            let zero = CompiledExpr::literal(Value::Real(0.0), reify_core::Type::Real);
+
+            // Cylinder lands at step_offset (sub_ops was empty entering this arm).
+            let cylinder_step = step_offset;
+
+            Some(vec![
+                CompiledGeometryOp::Primitive {
+                    kind: PrimitiveKind::Cylinder,
+                    args: vec![
+                        ("radius".to_string(), radius),
+                        ("height".to_string(), height),
+                    ],
+                },
+                CompiledGeometryOp::Transform {
+                    kind: TransformKind::Translate,
+                    target: GeomRef::Step(cylinder_step),
+                    args: vec![
+                        ("dx".to_string(), zero.clone()),
+                        ("dy".to_string(), zero),
+                        ("dz".to_string(), dz),
+                    ],
+                },
+            ])
+        }
         "sphere" => {
             if !check_arg_count_exact("sphere", compiled_args.len(), 1, expr.span, diagnostics) {
                 return None;
@@ -1430,6 +1486,7 @@ mod tests {
         "box",
         "box_centered",
         "cylinder",
+        "cylinder_centered",
         "sphere",
         "tube",
         "linear_pattern_2d",
@@ -1464,10 +1521,10 @@ mod tests {
     /// Breakdown at time of writing:
     /// ```text
     /// GEOM_ARG_FUNCTIONS    19
-    /// NO_GEOM_ARG_FUNCTIONS 13  (added box_centered)
+    /// NO_GEOM_ARG_FUNCTIONS 14  (added box_centered, cylinder_centered)
     /// boolean ops            5
     /// loft-variadic          2  (loft, loft_guided)
-    /// Total                 39
+    /// Total                 40
     /// ```
     ///
     /// **Maintenance rule:** whenever a new arm is added to `compile_geometry_call`,
@@ -1479,7 +1536,7 @@ mod tests {
     /// The constant is declared separately from the lists so any mutation of the lists
     /// that omits the corresponding increment will trip the assertion, prompting a
     /// conscious audit.
-    const EXPECTED_DISPATCH_COUNT: usize = 39;
+    const EXPECTED_DISPATCH_COUNT: usize = 40;
 
     #[test]
     fn geometry_arg_indices_covers_all_geom_arg_functions() {
