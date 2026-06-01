@@ -304,22 +304,25 @@ fn sub_override_auto_free_non_unique_emits_warning() {
     );
 
     // The cell should have a resolved (Scalar) value — any feasible value.
+    // Use .expect() (mirroring tests a/e) so an absent cell fails loudly
+    // rather than silently skipping the determinacy and scalar assertions.
+    // With DimensionalSolver the cell is always present; the expect() fires
+    // only if a future change breaks the solver wiring.
     let snap = engine.snapshot().expect("snapshot should exist");
     let id = ValueCellId::new("A.b", "bore");
-    if let Some((val, det)) = snap.values.get(&id) {
-        assert_eq!(
-            *det,
-            DeterminacyState::Determined,
-            "A.b.bore should be Determined even with auto(free)"
-        );
-        assert!(
-            matches!(val, Value::Scalar { .. }),
-            "A.b.bore should be a Scalar value; got {:?}",
-            val
-        );
-    }
-    // If the key is absent the solver may not have run (no solver wired),
-    // but with DimensionalSolver it should always be present.
+    let (val, det) = snap.values.get(&id).expect(
+        "A.b.bore should be present after auto(free) resolution with DimensionalSolver",
+    );
+    assert_eq!(
+        *det,
+        DeterminacyState::Determined,
+        "A.b.bore should be Determined even with auto(free)"
+    );
+    assert!(
+        matches!(val, Value::Scalar { .. }),
+        "A.b.bore should be a Scalar value; got {:?}",
+        val
+    );
 }
 
 // ── Test (step-7 / step-8): example smoke test ────────────────────────────────
