@@ -2078,7 +2078,7 @@ impl EngineSession {
                 // GUI via the entity-tree realization nodes — NOT through MeshData.
                 // `get_entity_tree` → `build_template_node` computes
                 // `default_visible = !(aux_ancestor || real.is_aux)` per the
-                // shared contract anchor at geometry_ops.rs:4875. The frontend
+                // shared contract anchor `geometry_ops::surface_subtree`. The frontend
                 // `defaultVisibilityFor` reads the realization node's flag and
                 // returns 'hidden' for aux bodies, driving `meshManager.setVisibility`
                 // and thus `getSceneMeshes()` / `viewport_state.meshCount`.
@@ -3582,8 +3582,9 @@ fn build_preview_gui_state(
 ///
 /// `aux_ancestor` is `true` when any containing sub-component on the path from
 /// the root to this template was declared `aux`. This mirrors the aux-inheritance
-/// rule in the surfacing walk — shared contract anchor: `geometry_ops.rs:4875`
-/// (`!(aux_ancestor || realization_is_aux(realization))`). Pass `false` for
+/// rule in the surfacing walk — shared contract anchor:
+/// `geometry_ops::surface_subtree` / `geometry_ops::realization_is_aux`
+/// (rule: `!(aux_ancestor || realization_is_aux(realization))`). Pass `false` for
 /// top-level templates (`get_entity_tree`); pass `aux_ancestor || sub.is_aux`
 /// when recursing into sub-components.
 ///
@@ -3686,7 +3687,8 @@ pub(crate) fn build_template_node(
             children: vec![],
             freshness,
             // Mirrors the surfacing-walk rule — shared contract anchor:
-            // geometry_ops.rs:4875: `!(aux_ancestor || realization_is_aux(realization))`.
+            // `geometry_ops::surface_subtree` / `geometry_ops::realization_is_aux`
+            // (rule: `!(aux_ancestor || realization_is_aux(realization))`).
             // aux_ancestor is inherited from any containing `aux sub` up the tree.
             default_visible: !(aux_ancestor || real.is_aux),
         });

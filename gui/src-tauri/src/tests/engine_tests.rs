@@ -10846,3 +10846,79 @@ structure Asm {
         "Asm.jig#realization[0] must be default_visible == false (inherited from aux sub)"
     );
 }
+
+/// Two-level aux inheritance: `aux sub jig : Jig` → `sub inner : Inner` → `let body`.
+///
+/// Neither the intermediate sub (`inner`) nor the leaf realization (`Inner.body`) is
+/// directly aux.  The deepest realization node (`Top.jig.inner#realization[0]`) must
+/// still have `default_visible == false` because `aux_ancestor` propagates transitively
+/// through a non-aux intermediate sub.
+///
+/// This tests that the `aux_ancestor || sub.is_aux` threading in
+/// `build_template_node` propagates through more than one level of nesting,
+/// not just a direct parent–child aux relationship.
+#[test]
+fn get_entity_tree_aux_sub_inherits_two_levels_deep() {
+    let source = r#"structure Inner {
+    let body = box(5mm, 5mm, 5mm)
+}
+structure Jig {
+    sub inner : Inner at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+}
+structure Top {
+    sub part : Inner at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+    aux sub jig : Jig at transform3(orient_identity(), vec3(20mm, 0mm, 0mm))
+}"#;
+    let mut session = make_session();
+    session.load_from_source(source, "two_level").expect("load");
+
+    let tree = session.get_entity_tree();
+
+    let top_root = tree
+        .iter()
+        .find(|n| n.entity_path == "Top")
+        .expect("Top root must exist");
+
+    // Product branch: Top.part#realization[0] should be visible.
+    let part_sub = top_root
+        .children
+        .iter()
+        .find(|n| n.entity_path == "Top.part")
+        .expect("Top.part sub node must exist");
+    let part_realization = part_sub
+        .children
+        .iter()
+        .find(|n| n.kind == "realization")
+        .expect("Top.part#realization[0] must exist");
+    assert!(
+        part_realization.default_visible,
+        "Top.part#realization[0] must be default_visible == true (non-aux)"
+    );
+
+    // Aux branch: Top.jig → Top.jig.inner → Top.jig.inner#realization[0].
+    // Neither `inner` nor `Inner.body` is directly aux; only the top-level `jig` sub is.
+    let jig_sub = top_root
+        .children
+        .iter()
+        .find(|n| n.entity_path == "Top.jig")
+        .expect("Top.jig sub node must exist");
+    let inner_sub = jig_sub
+        .children
+        .iter()
+        .find(|n| n.entity_path == "Top.jig.inner")
+        .expect("Top.jig.inner intermediate sub node must exist");
+    let inner_realization = inner_sub
+        .children
+        .iter()
+        .find(|n| n.kind == "realization")
+        .expect("Top.jig.inner#realization[0] must exist");
+    assert_eq!(
+        inner_realization.entity_path, "Top.jig.inner#realization[0]",
+        "two-level aux child must have composed entity_path"
+    );
+    assert!(
+        !inner_realization.default_visible,
+        "Top.jig.inner#realization[0] must be default_visible == false \
+         (aux_ancestor propagates through non-aux intermediate sub)"
+    );
+}
