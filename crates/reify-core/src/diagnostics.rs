@@ -2698,6 +2698,36 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::ScopeCoupling).unwrap();
         assert_eq!(s, "\"ScopeCoupling\"");
     }
+
+    // --- BucklingOptionUnsupported tests (task 4149 — W_BucklingOptionUnsupported) ---
+    // Pairs with `buckling_unsupported_option_diagnostics` in
+    // `crates/reify-eval/src/compute_targets/buckling.rs`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::BucklingOptionUnsupported` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)` (mirrors the variant-agnostic
+    /// `diagnostic_code_derives` shape but targeted at the new variant so a
+    /// future enum reorganisation that drops it is caught here).
+    #[test]
+    fn diagnostic_code_buckling_option_unsupported_with_code_round_trips() {
+        let d = Diagnostic::warning("x").with_code(DiagnosticCode::BucklingOptionUnsupported);
+        assert_eq!(d.code, Some(DiagnosticCode::BucklingOptionUnsupported));
+        assert_eq!(
+            format!("{:?}", DiagnosticCode::BucklingOptionUnsupported),
+            "BucklingOptionUnsupported"
+        );
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::BucklingOptionUnsupported` serializes as
+    /// `"BucklingOptionUnsupported"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_buckling_option_unsupported_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::BucklingOptionUnsupported).unwrap();
+        assert_eq!(s, "\"BucklingOptionUnsupported\"");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
