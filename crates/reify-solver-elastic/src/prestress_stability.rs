@@ -555,4 +555,51 @@ mod tests {
             }
         }
     }
+
+    /// Closed-form force densities for the symmetric prism, struts-then-cables
+    /// order: struts −√3, the six horizontals +1, verticals +√3 (identical to
+    /// `form_find_free.rs`). These make `D` rank-deficient by exactly 4
+    /// (D eigenvalues 0,0,0,0,6,6) — the super-stable golden spectrum.
+    fn closed_form_q() -> Vec<f64> {
+        let s = 3.0_f64.sqrt();
+        vec![
+            -s, -s, -s, // struts
+            1.0, 1.0, 1.0, // top horizontals
+            1.0, 1.0, 1.0, // bottom horizontals
+            s, s, s, // verticals
+        ]
+    }
+
+    #[test]
+    fn geometric_stiffness_is_force_density_kron_identity() {
+        let members = triplex_members();
+        let q = closed_form_q();
+        let n = 6;
+
+        let k_g = assemble_geometric_stiffness(n, &members, &q);
+        assert_eq!(k_g.nrows(), 3 * n, "K_G is 3N×3N");
+        assert_eq!(k_g.ncols(), 3 * n);
+
+        // K_G = D ⊗ I₃: the on-axis block (α=β) replicates D[a,b]; every
+        // off-axis entry (α≠β) is zero. Compare against the layer-2 D assembly
+        // the kernel reuses verbatim.
+        let d = crate::form_find_free::assemble_force_density_matrix(n, &members, &q);
+        const TOL: f64 = 1e-12;
+        for a in 0..n {
+            for b in 0..n {
+                for alpha in 0..3 {
+                    for beta in 0..3 {
+                        let got: f64 = k_g[(3 * a + alpha, 3 * b + beta)];
+                        let expected: f64 = if alpha == beta { d[(a, b)] } else { 0.0 };
+                        assert!(
+                            (got - expected).abs() < TOL,
+                            "K_G[{},{}] (a={a}, b={b}, α={alpha}, β={beta}) = {got}, expected {expected}",
+                            3 * a + alpha,
+                            3 * b + beta,
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
