@@ -10,6 +10,7 @@ mod impulse_shaper;
 mod sampling;
 mod simulate;
 mod spline;
+mod tots;
 
 /// Evaluate a trajectory stdlib function by name.
 ///

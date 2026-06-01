@@ -10,6 +10,7 @@ reify-core.workspace = true
 reify-gcode.workspace = true
 reify-ir.workspace = true
 tracing.workspace = true
+faer = { workspace = true }
 
 [dev-dependencies]
 reify-core.workspace = true

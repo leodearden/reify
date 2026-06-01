@@ -4613,6 +4613,7 @@ dependencies = [
 name = "reify-stdlib"
 version = "0.1.0"
 dependencies = [
+ "faer",
  "reify-core",
  "reify-gcode",
  "reify-ir",
