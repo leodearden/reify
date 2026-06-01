@@ -500,7 +500,14 @@ pub use progressive::{
 // reify_ir::SampledField for displacement (stride 3) and stress (stride 9).
 // resample_multi_nodal_to_grid amortises point-location across multiple
 // fields on the same geometry (displacement + stress in one pass).
-pub use resample::{GridSpec, resample_multi_nodal_to_grid, resample_nodal_to_grid};
+// Task 4135: BVH spatial index — O(grid·log elems) per call.  The public
+// resample_* fns are now thin wrappers over the instrumented cores (which
+// return ResampleStats for deterministic complexity assertions in tests).
+pub use resample::{
+    GridSpec, ResampleStats, resample_multi_nodal_to_grid,
+    resample_multi_nodal_to_grid_instrumented, resample_nodal_to_grid,
+    resample_nodal_to_grid_instrumented,
+};
 pub use result::{
     StressElement, element_stress_p1, element_stress_p2, recover_nodal_stress_p1, tet_volume_p1,
 };

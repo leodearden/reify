@@ -8,9 +8,11 @@
 //!
 //! - Grid resolution mirrors the solve mesh: `GridSpec.counts = (nx,ny,nz)`
 //!   element counts → grid nodes = counts+1, spanning body bounds.
-//! - Containment uses a linear scan over elements with `barycentric_p1` — O(grid·elems).
-//!   Accepted for the v0.4 prismatic slice; a BVH/spatial-index follow-up is
-//!   recorded as a non-blocking escalate_info (interpolation.rs:180-188).
+//! - Containment uses a [`TetSpatialIndex`] BVH — O(grid·log elems) per call.
+//!   The index is built once per `resample_*` call (O(n·log n)) then queried
+//!   O(log n) per grid point.  The instrumented entry points return
+//!   [`ResampleStats`] with the exact `point_in_tet_p1` evaluation count for
+//!   deterministic complexity assertions in tests.
 //! - Out-of-solid grid points carry `f64::NAN` for all stride components.
 //! - Data ordering: row-major axis-0(x) outermost → axis-2(z) innermost,
 //!   with stride components contiguous per grid point.
@@ -19,7 +21,20 @@ use std::sync::atomic::AtomicBool;
 
 use reify_ir::{InterpolationKind, SampledField, SampledGridKind};
 
-use crate::interpolation::barycentric_p1;
+use crate::interpolation::{TetSpatialIndex, barycentric_p1};
+
+/// Per-call resample statistics returned by the instrumented entry points.
+///
+/// The `point_in_tet_tests` count is fully deterministic — independent of CPU
+/// speed or optimization level — and is suitable for exact complexity assertions
+/// in tests (e.g. asserting BVH ≥4× fewer evaluations than the linear scan on
+/// the same mesh).
+#[derive(Debug, Clone, Default)]
+pub struct ResampleStats {
+    /// Total number of `point_in_tet_p1` evaluations across all grid points
+    /// during the BVH traversal.
+    pub point_in_tet_tests: u64,
+}
 
 /// Element-count grid specification for a regular 3D axis-aligned grid.
 ///
@@ -72,6 +87,24 @@ pub fn resample_nodal_to_grid(
     name: &str,
     tol: f64,
 ) -> SampledField {
+    resample_nodal_to_grid_instrumented(nodes, elems, nodal_values, stride, grid, name, tol).0
+}
+
+/// Like [`resample_nodal_to_grid`] but also returns [`ResampleStats`] with
+/// the `point_in_tet_p1` evaluation count.
+///
+/// Used in tests to assert O(grid·log elems) complexity via deterministic
+/// count comparisons.  The public [`resample_nodal_to_grid`] is a thin
+/// wrapper that calls this and discards the stats.
+pub fn resample_nodal_to_grid_instrumented(
+    nodes: &[[f64; 3]],
+    elems: &[[usize; 4]],
+    nodal_values: &[f64],
+    stride: usize,
+    grid: &GridSpec,
+    name: &str,
+    tol: f64,
+) -> (SampledField, ResampleStats) {
     let [nx, ny, nz] = grid.counts;
     // Spacing per axis: (max-min)/count
     let sx = (grid.bounds_max[0] - grid.bounds_min[0]) / nx.max(1) as f64;
@@ -80,12 +113,11 @@ pub fn resample_nodal_to_grid(
     let spacing = vec![sx, sy, sz];
 
     // Build per-axis grid coordinates via linspace_inclusive.
-    // Preconditions: finite bounds + spacing > 0 ⇒ always Ok.
     let axis_grids: Vec<Vec<f64>> = (0..3)
         .map(|i| {
             let sp = spacing[i];
             reify_ir::sampled::linspace_inclusive(grid.bounds_min[i], grid.bounds_max[i], sp)
-                .expect("resample_nodal_to_grid: linspace_inclusive failed — check that bounds_min < bounds_max and counts > 0")
+                .expect("resample_nodal_to_grid_instrumented: linspace_inclusive failed — check that bounds_min < bounds_max and counts > 0")
         })
         .collect();
 
@@ -94,7 +126,11 @@ pub fn resample_nodal_to_grid(
     let nz1 = axis_grids[2].len();
     let n_grid = nx1 * ny1 * nz1;
 
+    // Build the BVH once for all grid points — O(n·log n).
+    let idx = TetSpatialIndex::build(nodes, elems, tol);
+
     let mut data = Vec::with_capacity(n_grid * stride);
+    let mut total_tests: u64 = 0;
 
     // Row-major iteration: axis-0(x) outermost → axis-2(z) innermost.
     for ix in 0..nx1 {
@@ -102,19 +138,22 @@ pub fn resample_nodal_to_grid(
             for iz in 0..nz1 {
                 let p = [axis_grids[0][ix], axis_grids[1][iy], axis_grids[2][iz]];
 
-                // Linear scan: find first element containing p.
-                let mut found = false;
-                'elem_scan: for conn in elems {
-                    let phys4: [[f64; 3]; 4] = [
-                        nodes[conn[0]],
-                        nodes[conn[1]],
-                        nodes[conn[2]],
-                        nodes[conn[3]],
-                    ];
-                    let bary = barycentric_p1(&phys4, p);
-                    // Accept if all four barycentric coords in [-tol, 1+tol].
-                    if bary.iter().all(|&b| b >= -tol && b <= 1.0 + tol) {
-                        // Weighted sum over stride components.
+                // BVH locate: returns (min-index containing element, point_in_tet_p1 count).
+                let (elem_opt, tests) = idx.locate_counted(nodes, elems, p, tol);
+                total_tests += tests as u64;
+
+                match elem_opt {
+                    Some(e) => {
+                        let conn = &elems[e];
+                        let phys4: [[f64; 3]; 4] = [
+                            nodes[conn[0]],
+                            nodes[conn[1]],
+                            nodes[conn[2]],
+                            nodes[conn[3]],
+                        ];
+                        // Recompute barycentric weights for the located element;
+                        // same arithmetic as the original linear-scan path (bit-identical).
+                        let bary = barycentric_p1(&phys4, p);
                         for c in 0..stride {
                             let val = bary[0] * nodal_values[conn[0] * stride + c]
                                 + bary[1] * nodal_values[conn[1] * stride + c]
@@ -122,22 +161,19 @@ pub fn resample_nodal_to_grid(
                                 + bary[3] * nodal_values[conn[3] * stride + c];
                             data.push(val);
                         }
-                        found = true;
-                        break 'elem_scan;
                     }
-                }
-
-                if !found {
-                    // Out-of-solid sentinel: NaN per stride component.
-                    for _ in 0..stride {
-                        data.push(f64::NAN);
+                    None => {
+                        // Out-of-solid sentinel: NaN per stride component.
+                        for _ in 0..stride {
+                            data.push(f64::NAN);
+                        }
                     }
                 }
             }
         }
     }
 
-    SampledField {
+    let sf = SampledField {
         name: name.to_string(),
         kind: SampledGridKind::Regular3D,
         bounds_min: grid.bounds_min.to_vec(),
@@ -147,7 +183,9 @@ pub fn resample_nodal_to_grid(
         interpolation: InterpolationKind::Linear,
         data,
         oob_emitted: AtomicBool::new(false),
-    }
+    };
+    let stats = ResampleStats { point_in_tet_tests: total_tests };
+    (sf, stats)
 }
 
 /// Resample **multiple** nodal fields onto the same Regular3D grid in a single
@@ -156,7 +194,7 @@ pub fn resample_nodal_to_grid(
 /// Semantically equivalent to calling [`resample_nodal_to_grid`] once per entry
 /// in `fields`, but the containing-tet + barycentric-weight computation is done
 /// **once per grid point** instead of once per *(grid point × field)*.  For the
-/// buckling trampoline (~13 k grid points × 61 k tets × 2 fields) this halves
+/// buckling trampoline (~13 k grid points × 61 k tets × 2 fields) this reduces
 /// the O(grid·elems) point-location cost — the dominant non-CG step.
 ///
 /// # Arguments
@@ -174,6 +212,22 @@ pub fn resample_multi_nodal_to_grid(
     grid: &GridSpec,
     tol: f64,
 ) -> Vec<SampledField> {
+    resample_multi_nodal_to_grid_instrumented(nodes, elems, fields, grid, tol).0
+}
+
+/// Like [`resample_multi_nodal_to_grid`] but also returns [`ResampleStats`].
+///
+/// The BVH index is built once and shared across all fields; `point_in_tet_tests`
+/// counts locate evaluations per grid point (independent of field count).
+/// The public [`resample_multi_nodal_to_grid`] is a thin wrapper that calls
+/// this and discards the stats.
+pub fn resample_multi_nodal_to_grid_instrumented(
+    nodes: &[[f64; 3]],
+    elems: &[[usize; 4]],
+    fields: &[(&[f64], usize, &str)],
+    grid: &GridSpec,
+    tol: f64,
+) -> (Vec<SampledField>, ResampleStats) {
     let [nx, ny, nz] = grid.counts;
     let sx = (grid.bounds_max[0] - grid.bounds_min[0]) / nx.max(1) as f64;
     let sy = (grid.bounds_max[1] - grid.bounds_min[1]) / ny.max(1) as f64;
@@ -184,7 +238,7 @@ pub fn resample_multi_nodal_to_grid(
         .map(|i| {
             let sp = spacing[i];
             reify_ir::sampled::linspace_inclusive(grid.bounds_min[i], grid.bounds_max[i], sp)
-                .expect("resample_multi_nodal_to_grid: linspace_inclusive failed — \
+                .expect("resample_multi_nodal_to_grid_instrumented: linspace_inclusive failed — \
                          check that bounds_min < bounds_max and counts > 0")
         })
         .collect();
@@ -194,29 +248,37 @@ pub fn resample_multi_nodal_to_grid(
     let nz1 = axis_grids[2].len();
     let n_grid = nx1 * ny1 * nz1;
 
+    // Build the BVH once — shared across all fields and all grid points.
+    let idx = TetSpatialIndex::build(nodes, elems, tol);
+
     // Pre-allocate one output buffer per field.
     let mut data_bufs: Vec<Vec<f64>> = fields
         .iter()
         .map(|(_, stride, _)| Vec::with_capacity(n_grid * stride))
         .collect();
 
-    // Single geometry pass: locate the containing tet once per grid point,
-    // then apply the barycentric weights to every field simultaneously.
+    let mut total_tests: u64 = 0;
+
+    // Single geometry pass: locate once per grid point, apply to all fields.
     for ix in 0..nx1 {
         for iy in 0..ny1 {
             for iz in 0..nz1 {
                 let p = [axis_grids[0][ix], axis_grids[1][iy], axis_grids[2][iz]];
 
-                let mut hit = false;
-                'elem_scan: for conn in elems {
-                    let phys4: [[f64; 3]; 4] = [
-                        nodes[conn[0]],
-                        nodes[conn[1]],
-                        nodes[conn[2]],
-                        nodes[conn[3]],
-                    ];
-                    let bary = barycentric_p1(&phys4, p);
-                    if bary.iter().all(|&b| b >= -tol && b <= 1.0 + tol) {
+                let (elem_opt, tests) = idx.locate_counted(nodes, elems, p, tol);
+                total_tests += tests as u64;
+
+                match elem_opt {
+                    Some(e) => {
+                        let conn = &elems[e];
+                        let phys4: [[f64; 3]; 4] = [
+                            nodes[conn[0]],
+                            nodes[conn[1]],
+                            nodes[conn[2]],
+                            nodes[conn[3]],
+                        ];
+                        // Recompute barycentric weights; same arithmetic → bit-identical.
+                        let bary = barycentric_p1(&phys4, p);
                         // Grid point is inside this tet — interpolate every field.
                         for (fi, (nodal_vals, stride, _)) in fields.iter().enumerate() {
                             for c in 0..*stride {
@@ -227,16 +289,13 @@ pub fn resample_multi_nodal_to_grid(
                                 data_bufs[fi].push(val);
                             }
                         }
-                        hit = true;
-                        break 'elem_scan;
                     }
-                }
-
-                if !hit {
-                    // Out-of-solid sentinel: NaN for every stride component of every field.
-                    for (fi, (_, stride, _)) in fields.iter().enumerate() {
-                        for _ in 0..*stride {
-                            data_bufs[fi].push(f64::NAN);
+                    None => {
+                        // Out-of-solid sentinel: NaN for every stride component of every field.
+                        for (fi, (_, stride, _)) in fields.iter().enumerate() {
+                            for _ in 0..*stride {
+                                data_bufs[fi].push(f64::NAN);
+                            }
                         }
                     }
                 }
@@ -245,7 +304,7 @@ pub fn resample_multi_nodal_to_grid(
     }
 
     // Assemble one SampledField per input field, sharing the same grid metadata.
-    fields
+    let sampled_fields: Vec<SampledField> = fields
         .iter()
         .zip(data_bufs)
         .map(|((_, _, name), data)| SampledField {
@@ -259,7 +318,10 @@ pub fn resample_multi_nodal_to_grid(
             data,
             oob_emitted: AtomicBool::new(false),
         })
-        .collect()
+        .collect();
+
+    let stats = ResampleStats { point_in_tet_tests: total_tests };
+    (sampled_fields, stats)
 }
 
 #[cfg(test)]
