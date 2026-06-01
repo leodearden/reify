@@ -25,10 +25,12 @@
 //   1. Number-literal grammar is `\d+(\.\d+)?` (no scientific notation).
 //      The PRD's `1e-8` default for `tol` therefore appears here as `0.00000001`,
 //      same convention as `solver_elastic.ri`'s `cg_tolerance = 0.000001`.
-//   2. `mode` is String-typed; allowlist validation ("shift_invert" | "dense" |
-//      "lanczos_no_shift") is deferred to the `solver::buckling` trampoline
-//      (PRD §4 + §13 task ε). Reify constraint clauses cannot express
-//      string-set membership.
+//   2. `mode`, `sigma`, and `auto_dense` are declared but not yet honored by the
+//      `solver::buckling` trampoline (the buckling kernel has no mode-select,
+//      shift-origin, or dense-fallback inputs yet). The trampoline emits a
+//      `W_BucklingOptionUnsupported` Warning when any of them is set to a non-default
+//      value; the solve proceeds with kernel defaults. Reify `constraint` clauses
+//      cannot express string-set membership, so no allowlist check is declared here.
 //   3. `Mode.mode_shape` uses the precise `Field<Point3<Length>, Vector3<Length>>`
 //      type rather than a `Real` placeholder. Task 3117 landed; the
 //      `type_resolution.rs:1313` resolver arm accepts `Field<D, C>` in `param`
@@ -39,31 +41,29 @@
 // ── BucklingOptions ──────────────────────────────────────────────────────────
 
 // `BucklingOptions` is the configuration object passed to the v0.5 buckling
-// eigensolver (`solve_buckling`, PRD §13 task ε). All six params have sensible
+// eigensolver (`solve_buckling`, PRD §13 task ε). All seven params have sensible
 // defaults so a bare `BucklingOptions()` instantiation compiles and yields the
 // standard solver setup; callers override individual fields at construction
-// (e.g., `BucklingOptions(n_modes: 20, mode: "dense")`).
+// (e.g., `BucklingOptions(n_modes: 20)`).
 //
 // Param semantics (PRD §4):
 //   n_modes    — eigenpair count to compute. Default 10 covers the typical
 //                "first few critical loads" inspection workflow. The hard cap
 //                is bounded only by available memory; users requesting > ~50
 //                modes are usually doing something pathological.
-//   mode       — algorithm selector. `"shift_invert"` (default) is the
-//                standard Lanczos-with-Cholesky-shift-invert path (PRD §5);
-//                `"dense"` calls `faer::linalg/gevd` for tiny problems;
-//                `"lanczos_no_shift"` is the diagnostic-only bare-Lanczos path
-//                used to debug shift-invert convergence. Allowlist validation
-//                is deferred to the `solver::buckling` trampoline (PRD §4 +
-//                §13 task ε) — Reify `constraint` clauses cannot express
-//                string-set membership.
-//   sigma      — eigenvalue shift origin (in eigenvalue units; dimensionless
-//                load multiplier). Default `0.0` targets the smallest |λ|
-//                cluster (critical-load side of the spectrum). Negative values
-//                target the negative side of the spectrum (e.g., unstable
-//                eigenvalues for non-symmetric K_g). Explicitly NOT
-//                constrained: a shift can physically be anywhere on the real
-//                line.
+//   mode       — DECLARED BUT NOT YET HONORED. Intended as an algorithm selector
+//                (`"shift_invert"` / `"dense"` / `"lanczos_no_shift"`), but the
+//                buckling kernel has no mode-select input yet. The trampoline
+//                emits a `W_BucklingOptionUnsupported` Warning when any non-default
+//                value is supplied and ignores it, falling back to the default
+//                `"shift_invert"` path. Reify `constraint` clauses cannot express
+//                string-set membership, so no allowlist check is declared here.
+//   sigma      — DECLARED BUT NOT YET HONORED. Intended as the eigenvalue shift
+//                origin (dimensionless load multiplier). Default `0.0` would target
+//                the smallest |λ| cluster; the kernel has no shift-origin input yet.
+//                The trampoline emits `W_BucklingOptionUnsupported` for any non-zero
+//                value and ignores it. Explicitly NOT constrained: a shift can
+//                physically be anywhere on the real line.
 //   tol        — Lanczos convergence tolerance. Default `0.00000001`
 //                (= 1e-8) matches the PRD §4 spec; encoded as a decimal
 //                literal because Reify's number grammar has no scientific
@@ -74,11 +74,11 @@
 //                Exists so a pathologically conditioned problem fails loudly
 //                rather than running forever (same rationale as
 //                `ElasticOptions.max_iter`).
-//   auto_dense — if true, fall back to dense `faer::linalg/gevd` when the
-//                problem's post-BC DOF count ≤ ~200. Useful for tiny test
-//                geometries where dense GEVD beats the
-//                Cholesky-factor-plus-Lanczos overhead. Default `true`
-//                matches the PRD §4 spec.
+//   auto_dense — DECLARED BUT NOT YET HONORED. Intended to fall back to dense
+//                `faer::linalg/gevd` when post-BC DOF count ≤ ~200; the kernel
+//                has no dense-fallback toggle input yet. The trampoline emits
+//                `W_BucklingOptionUnsupported` when `false` is supplied and
+//                ignores it. Default `true` matches the PRD §4 spec.
 structure def BucklingOptions {
     param n_modes : Int = 10
     param mode : String = "shift_invert"
@@ -117,13 +117,19 @@ structure def BucklingOptions {
     // NOTE — explicitly NOT constrained:
     //   sigma      : Real     — eigenvalue shift origin; any real is physically
     //                           valid (negative shifts target the negative side
-    //                           of the spectrum).
-    //   auto_dense : Bool     — Bool, trivially constrained.
-    //   mode       : String   — allowlist validation ("shift_invert" | "dense"
-    //                           | "lanczos_no_shift") deferred to the
-    //                           `solver::buckling` trampoline per PRD §4;
-    //                           Reify `constraint` clauses can only express
-    //                           scalar predicates, not string-set membership.
+    //                           of the spectrum). Currently declared-but-not-
+    //                           yet-honored: the trampoline emits
+    //                           W_BucklingOptionUnsupported for non-zero values.
+    //   auto_dense : Bool     — Bool, trivially constrained. Currently declared-
+    //                           but-not-yet-honored: the trampoline emits
+    //                           W_BucklingOptionUnsupported for false.
+    //   mode       : String   — Reify `constraint` clauses can only express
+    //                           scalar predicates, not string-set membership, so
+    //                           no allowlist check is declared here. Currently
+    //                           declared-but-not-yet-honored: the trampoline
+    //                           emits W_BucklingOptionUnsupported for any
+    //                           non-default value rather than performing
+    //                           allowlist/shift validation.
 }
 
 // ── Mode ─────────────────────────────────────────────────────────────────────
