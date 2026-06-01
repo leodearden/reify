@@ -56,6 +56,7 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
     "nurbs",
     "tube",
     "pipe",
+    "box_centered",
 ];
 
 pub(crate) fn is_geometry_function(name: &str) -> bool {
@@ -821,6 +822,13 @@ mod tests {
     #[test]
     fn is_geometry_function_pipe_recognized() {
         assert!(is_geometry_function("pipe"));
+    }
+
+    // --- Centred primitives (task-4159) ---
+
+    #[test]
+    fn is_geometry_function_box_centered_recognized() {
+        assert!(is_geometry_function("box_centered"));
     }
 
     // --- Geometry query helpers (task 2320 step-1) ---

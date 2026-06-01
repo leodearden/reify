@@ -775,6 +775,23 @@ pub(crate) fn compile_geometry_call(
                 ],
             }])
         }
+        // box_centered(width, height, depth) — alias for box: make_box already
+        // centres the origin at the centroid (occt_wrapper.cpp gp_Pnt corner(-w/2,-h/2,-d/2)),
+        // so the lowering is op-identical to `box`.
+        "box_centered" => {
+            if !check_arg_count_exact("box_centered", compiled_args.len(), 3, expr.span, diagnostics) {
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".to_string(), it.next().unwrap()),
+                    ("height".to_string(), it.next().unwrap()),
+                    ("depth".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
         "cylinder" => {
             if !check_arg_count_exact("cylinder", compiled_args.len(), 2, expr.span, diagnostics) {
                 return None;
@@ -1411,6 +1428,7 @@ mod tests {
     /// These MUST return empty from `geometry_arg_indices`.
     const NO_GEOM_ARG_FUNCTIONS: &[&str] = &[
         "box",
+        "box_centered",
         "cylinder",
         "sphere",
         "tube",
@@ -1446,10 +1464,10 @@ mod tests {
     /// Breakdown at time of writing:
     /// ```text
     /// GEOM_ARG_FUNCTIONS    19
-    /// NO_GEOM_ARG_FUNCTIONS 12
+    /// NO_GEOM_ARG_FUNCTIONS 13  (added box_centered)
     /// boolean ops            5
     /// loft-variadic          2  (loft, loft_guided)
-    /// Total                 38
+    /// Total                 39
     /// ```
     ///
     /// **Maintenance rule:** whenever a new arm is added to `compile_geometry_call`,
@@ -1461,7 +1479,7 @@ mod tests {
     /// The constant is declared separately from the lists so any mutation of the lists
     /// that omits the corresponding increment will trip the assertion, prompting a
     /// conscious audit.
-    const EXPECTED_DISPATCH_COUNT: usize = 38;
+    const EXPECTED_DISPATCH_COUNT: usize = 39;
 
     #[test]
     fn geometry_arg_indices_covers_all_geom_arg_functions() {
