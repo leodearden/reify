@@ -402,6 +402,21 @@ pub(crate) fn forces_to_forcing_history(
 ///   well-formed empty output vectors — no panic, no index-out-of-bounds.
 /// - Empty modal modes: vibration_offset is all-zero, combined == nominal.
 /// - Location count is respected in all output inner-vector lengths.
+/// Return an empty [`EndEffectorTrackData`] shaped for `n_loc` effector locations.
+///
+/// All inner `Vec`s are empty and `t_samples` is empty.  This is the canonical
+/// degenerate-input output (duration ≤ 0, or `to_trajectory_samples` returning
+/// `None` / < 2 samples): callers can safely index `[loc]` without panicking,
+/// and `t_samples.is_empty()` signals "no data available".
+fn empty_track_data(n_loc: usize) -> EndEffectorTrackData {
+    EndEffectorTrackData {
+        t_samples: Vec::new(),
+        nominal_pose: vec![Vec::new(); n_loc],
+        vibration_offset: vec![Vec::new(); n_loc],
+        combined_pose: vec![Vec::new(); n_loc],
+    }
+}
+
 pub(crate) fn simulate_trajectory_core(
     spline: &MultiJointSpline,
     mechanism: &MechanismModel,
@@ -418,15 +433,7 @@ pub(crate) fn simulate_trajectory_core(
     let traj_opt = to_trajectory_samples(spline, dt);
     let traj = match traj_opt {
         Some(t) if t.samples.len() >= 2 => t,
-        _ => {
-            // Degenerate: return empty output.
-            return EndEffectorTrackData {
-                t_samples: Vec::new(),
-                nominal_pose: vec![Vec::new(); n_loc],
-                vibration_offset: vec![Vec::new(); n_loc],
-                combined_pose: vec![Vec::new(); n_loc],
-            };
-        }
+        _ => return empty_track_data(n_loc),
     };
     let times = traj.times();
     let n_times = times.len();
@@ -439,6 +446,18 @@ pub(crate) fn simulate_trajectory_core(
         .map(|l| l.parent_to_child)
         .collect();
 
+    // Precompute per-link DOF-start offsets once (O(n_links)) rather than
+    // re-summing a prefix on every link on every sample (O(n_links²·n_samples)).
+    let dof_starts: Vec<usize> = {
+        let mut starts = Vec::with_capacity(mechanism.links.len());
+        let mut offset = 0usize;
+        for l in &mechanism.links {
+            starts.push(offset);
+            offset += l.subspace.len();
+        }
+        starts
+    };
+
     let mut tau_history: Vec<Vec<f64>> = Vec::with_capacity(n_times);
     for sample in &traj.samples {
         let rnea_links: Vec<RneaLink> = mechanism
@@ -449,10 +468,7 @@ pub(crate) fn simulate_trajectory_core(
                 let n_dof = l.subspace.len();
                 // For fixed transforms the parent_to_child doesn't vary with q.
                 // q̇ and q̈ come from the trajectory sample (sliced per-link DOF).
-                let dof_start = mechanism.links[..i]
-                    .iter()
-                    .map(|lk| lk.subspace.len())
-                    .sum::<usize>();
+                let dof_start = dof_starts[i];
                 let q_dot = sample.vels.get(dof_start..dof_start + n_dof)
                     .map(|s| s.to_vec())
                     .unwrap_or_else(|| vec![0.0; n_dof]);
@@ -672,14 +688,6 @@ mod tests {
         MultiJointSpline::new_cubic(vec![s]).expect("multi-joint accel")
     }
 
-    /// Analytic SDOF step response from rest (duplicate of transient.rs oracle).
-    fn analytic_step_response_local(p0: f64, omega: f64, zeta: f64, t: f64) -> f64 {
-        let omega_d = omega * (1.0 - zeta * zeta).sqrt();
-        let decay = (-zeta * omega * t).exp();
-        (p0 / (omega * omega))
-            * (1.0 - decay * ((omega_d * t).cos() + (zeta * omega / omega_d) * (omega_d * t).sin()))
-    }
-
     /// End-to-end step on single-mode oscillator.
     /// 1-DOF prismatic mechanism, mass m, constant acceleration a → τ = m·a (step).
     /// Modal forcing = τ (unit projection). Vibration (Z-axis) matches analytic step response.
@@ -727,7 +735,7 @@ mod tests {
             .zip(result.vibration_offset[0].iter())
             .enumerate()
         {
-            let want = analytic_step_response_local(p0, omega, zeta, t);
+            let want = analytic_step_response(p0, omega, zeta, t);
             let diff = (dz - want).abs();
             assert!(
                 diff < 1e-9,
@@ -774,16 +782,14 @@ mod tests {
         }
     }
 
-    /// Edge case (b): degenerate/short profile → no panic, well-formed empty output.
+    /// Edge case (b): output shape is consistent across all locations.
+    ///
+    /// Renamed from the misleading `simulate_degenerate_spline_no_panic` — this
+    /// test exercises multi-location output-shape consistency on a normal spline,
+    /// not the degenerate early-return path (see `simulate_degenerate_spline_no_panic`
+    /// below for the dedicated degenerate-path test).
     #[test]
-    fn simulate_degenerate_spline_no_panic() {
-        // Build a very short spline (duration ~ 1e-15, way below any reasonable dt)
-        // so to_trajectory_samples returns None or <2 samples.
-        // We achieve this by building a valid spline then checking robustness
-        // via an extremely small duration path — use a duration that gives 0 samples.
-        // Actually, to_trajectory_samples always returns ≥2 samples for d>0,
-        // but we can test the empty-modal path with a normal spline to verify shape.
-        // Instead, test location count = 3 with a normal spline:
+    fn multi_location_output_shape() {
         let spline = constant_pose_spline(0.2, 0.0);
         let link = LinkDesc {
             parent_to_child: SpatialTransform6::from_frame3(&Frame3::identity()),
@@ -811,6 +817,55 @@ mod tests {
             assert_eq!(result.nominal_pose[loc].len(), n_t, "loc {loc} nominal length");
             assert_eq!(result.vibration_offset[loc].len(), n_t, "loc {loc} vib length");
             assert_eq!(result.combined_pose[loc].len(), n_t, "loc {loc} combined length");
+        }
+    }
+
+    /// Degenerate path: `empty_track_data` produces well-formed empty output.
+    ///
+    /// `simulate_trajectory_core` calls `empty_track_data(n_loc)` when
+    /// `to_trajectory_samples` returns `None` or fewer than 2 samples.
+    /// The `MultiJointSpline` public API always produces `duration > 0`, so the
+    /// branch cannot be exercised end-to-end without a mock; instead the
+    /// `empty_track_data` helper is extracted and tested directly to pin the
+    /// robustness contract:
+    ///
+    /// - `t_samples` is empty
+    /// - outer length == `n_loc` for nominal/vibration/combined
+    /// - every inner Vec is empty
+    ///
+    /// This test replaces the incorrectly-named predecessor that only tested
+    /// multi-location output shape on a normal spline.
+    #[test]
+    fn simulate_degenerate_spline_no_panic() {
+        for n_loc in [0usize, 1, 3] {
+            let out = empty_track_data(n_loc);
+            assert!(out.t_samples.is_empty(), "n_loc={n_loc}: t_samples must be empty");
+            assert_eq!(
+                out.nominal_pose.len(), n_loc,
+                "n_loc={n_loc}: nominal_pose outer len"
+            );
+            assert_eq!(
+                out.vibration_offset.len(), n_loc,
+                "n_loc={n_loc}: vibration_offset outer len"
+            );
+            assert_eq!(
+                out.combined_pose.len(), n_loc,
+                "n_loc={n_loc}: combined_pose outer len"
+            );
+            for loc in 0..n_loc {
+                assert!(
+                    out.nominal_pose[loc].is_empty(),
+                    "n_loc={n_loc} loc={loc}: nominal inner empty"
+                );
+                assert!(
+                    out.vibration_offset[loc].is_empty(),
+                    "n_loc={n_loc} loc={loc}: vib inner empty"
+                );
+                assert!(
+                    out.combined_pose[loc].is_empty(),
+                    "n_loc={n_loc} loc={loc}: combined inner empty"
+                );
+            }
         }
     }
 
