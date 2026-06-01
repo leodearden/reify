@@ -61,7 +61,7 @@ pub(crate) fn check_trait_conformance(
     // Collect the structure's explicit `type X = T` bindings (task 3972) so
     // phase 5 can check AssocType requirement satisfaction.
     let structure_assoc_type_bindings =
-        collect_structure_assoc_type_bindings(structure, alias_registry, structure_names, trait_names);
+        collect_structure_assoc_type_bindings(structure, alias_registry, structure_names, trait_names, diagnostics);
 
     let ctx = check_phase_collect_trait_bounds(
         structure,

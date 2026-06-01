@@ -204,3 +204,51 @@ structure def Bar : HasMaterial {
         entry
     );
 }
+
+/// A structure binding `type X = Typo` where `Typo` is not declared must
+/// surface an `UnresolvedType` diagnostic rather than silently compiling.
+///
+/// Previously `collect_structure_assoc_type_bindings` discarded resolution
+/// diagnostics via a throwaway sink, so the unresolvable binding quietly
+/// became `Type::Error` (treated as "bound"), suppressed
+/// `TraitAssocTypeNotBound`, and produced NO diagnostic at all — the typo
+/// went undetected. (task 3972 amendment)
+#[test]
+fn structure_binding_to_nonexistent_type_emits_diagnostic() {
+    let source = r#"
+trait HasMaterial {
+    type Material
+}
+structure def Beam : HasMaterial {
+    type Material = Typo
+    param w : Scalar = 1
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    // The binding to the undeclared type "Typo" must produce at least one error.
+    // Acceptable codes: UnresolvedType for the bad annotation, or
+    // TraitAssocTypeNotBound if the binding was discarded entirely — either
+    // signals the user that something is wrong.  Silently compiling is the bug.
+    assert!(
+        !errors.is_empty(),
+        "binding to undeclared type 'Typo' must produce at least one diagnostic; \
+         got none — silent compilation is a UX regression; \
+         all diagnostics: {:?}",
+        module.diagnostics
+    );
+
+    // Specifically we expect an UnresolvedType diagnostic for the bad annotation.
+    let unresolved: Vec<_> = errors
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::UnresolvedType))
+        .collect();
+    assert_eq!(
+        unresolved.len(),
+        1,
+        "expected exactly one UnresolvedType diagnostic for the undeclared \
+         binding target 'Typo'; all diagnostics: {:?}",
+        module.diagnostics
+    );
+}

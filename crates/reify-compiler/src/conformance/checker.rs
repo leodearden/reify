@@ -832,34 +832,57 @@ pub(super) fn collect_structure_assoc_fn_sigs(
 /// Parallel to `collect_structure_assoc_fn_sigs`: walks `structure.members` for
 /// `MemberDecl::AssociatedType` entries. For a structure binding the
 /// `default_type` is always `Some` (a trait-body `type X` without an `=` is a
-/// *requirement*, not a binding). Resolution uses a throwaway diagnostic sink so
-/// a genuinely unresolvable annotation does not duplicate diagnostics (the real
-/// error was already reported when the structure body was compiled). An
-/// unresolvable annotation maps to `Type::Error`, which the satisfaction check
-/// treats as "bound" (suppresses `TraitAssocTypeNotBound`) so a single root-cause
-/// error yields a single diagnostic. (task 3972)
+/// *requirement*, not a binding).
+///
+/// Diagnostics from resolution are forwarded to the caller's `diagnostics` vector.
+/// An unresolvable annotation (e.g. `type Material = Typo` where `Typo` is not
+/// declared) emits `DiagnosticCode::UnresolvedType` and maps to `Type::Error`.
+/// `Type::Error` is then treated as "bound" by the satisfaction check, which
+/// suppresses `TraitAssocTypeNotBound` so a single root-cause diagnostic is
+/// produced rather than a cascade. (task 3972)
+///
+/// Note: unlike `derive_assoc_fn_sig_silent` (which silently discards diagnostics
+/// because the fn body is compiled — and diagnosed — separately by
+/// `compile_assoc_function`), there is no other compilation path that resolves a
+/// structure-body `type X = T` annotation; this function is the sole resolution
+/// site, so it MUST propagate diagnostics.
 pub(super) fn collect_structure_assoc_type_bindings(
     structure: &EntityDefRef<'_>,
     alias_registry: &TypeAliasRegistry,
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> HashMap<String, Type> {
     let mut bindings: HashMap<String, Type> = HashMap::new();
     let empty_params: HashSet<String> = HashSet::new();
-    let mut sink: Vec<Diagnostic> = Vec::new();
     for m in structure.members.iter() {
         if let reify_ast::MemberDecl::AssociatedType(at) = m
             && let Some(type_expr) = &at.default_type
         {
-            let ty = resolve_type_expr_with_aliases(
+            let ty = match resolve_type_expr_with_aliases(
                 type_expr,
                 &empty_params,
                 alias_registry,
-                &mut sink,
+                diagnostics,
                 structure_names,
                 trait_names,
-            )
-            .unwrap_or(Type::Error);
+            ) {
+                Some(t) => t,
+                None => {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "unresolved type in associated type binding: {}",
+                            type_expr
+                        ))
+                        .with_code(DiagnosticCode::UnresolvedType)
+                        .with_label(DiagnosticLabel::new(
+                            type_expr.span,
+                            "unknown type name",
+                        )),
+                    );
+                    Type::Error
+                }
+            };
             bindings.insert(at.name.clone(), ty);
         }
     }
@@ -1137,6 +1160,15 @@ pub(super) fn check_phase_resolve_assoc_fns(
     }
 }
 
+/// Look up the declaring trait name for an associated type from one of the
+/// `seen_assoc_type_reqs` / `seen_assoc_type_default_traits` maps, falling back
+/// to the sentinel `"<trait>"` when the name is absent (should not happen in
+/// correct state, but avoids a panic in error paths). Extracted to remove the
+/// repeated five-line lookup pattern at each of the three call sites. (task 3972)
+fn declaring_trait(map: &HashMap<String, String>, name: &str) -> String {
+    map.get(name).cloned().unwrap_or_else(|| "<trait>".to_string())
+}
+
 /// Phase (task 3972): resolve the conformer's associated-type table.
 ///
 /// Mirrors `check_phase_resolve_assoc_fns` for types instead of functions.
@@ -1172,11 +1204,7 @@ pub(super) fn check_phase_resolve_assoc_types(
         if !handled.insert(type_name.to_string()) {
             continue;
         }
-        let trait_name = ctx
-            .seen_assoc_type_default_traits
-            .get(type_name)
-            .cloned()
-            .unwrap_or_else(|| "<trait>".to_string());
+        let trait_name = declaring_trait(&ctx.seen_assoc_type_default_traits, type_name);
         let (resolved, is_override) =
             match structure_assoc_type_bindings.get(type_name) {
                 Some(binding_ty) => (binding_ty.clone(), true),
@@ -1203,11 +1231,7 @@ pub(super) fn check_phase_resolve_assoc_types(
         let Some(binding_ty) = structure_assoc_type_bindings.get(&req.name) else {
             continue; // unsatisfied — phase 5 emitted TraitAssocTypeNotBound
         };
-        let trait_name = ctx
-            .seen_assoc_type_reqs
-            .get(&req.name)
-            .cloned()
-            .unwrap_or_else(|| "<trait>".to_string());
+        let trait_name = declaring_trait(&ctx.seen_assoc_type_reqs, &req.name);
         assoc_types_out.push(CompiledAssocType {
             trait_name,
             type_name: req.name.clone(),
@@ -1307,16 +1331,12 @@ pub(super) fn check_phase_check_members_against_requirements(
                         && matches!(d.kind, DefaultKind::AssocType(_))
                 });
                 if !bound_by_structure && !provided_by_default {
-                    let declaring_trait = ctx
-                        .seen_assoc_type_reqs
-                        .get(&req.name)
-                        .cloned()
-                        .unwrap_or_else(|| "<trait>".to_string());
+                    let trait_name = declaring_trait(&ctx.seen_assoc_type_reqs, &req.name);
                     diagnostics.push(
                         Diagnostic::error(format!(
                             "associated type '{}' required by trait '{}' is not \
                              bound by structure '{}'",
-                            req.name, declaring_trait, structure.name
+                            req.name, trait_name, structure.name
                         ))
                         .with_code(DiagnosticCode::TraitAssocTypeNotBound)
                         .with_label(DiagnosticLabel::new(
