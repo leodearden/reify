@@ -202,13 +202,27 @@ structure def FlexureCompliance {
 // as `pub fn STANDARD_GRAVITY()` in `units.ri:82` and `pub fn
 // standard_bolt_lengths()` in `standard_stock.ri:10`.
 //
-// TODO(joint-type): retarget the `joint` parameter type to `DrivingJoint`
-// (or the `Joint` marker trait) when KCC-ζ (task 3845) lands the per-kind
-// joint structures. Same placeholder posture as
-// `trajectory.ri::PiecewisePolynomialProfile.mechanism : Real` with
-// TODO(mechanism-type). The `Real` placeholder makes the signature
-// resolve today without depending on un-shipped types — α-task (Joint
-// surface extension) is REPORT-ONLY for β per the task description.
+// TODO(joint-type): the `joint` parameter is typed `Length` purely so the
+// accessor overload-matches a PRB-ctor result — a constructed joint is a
+// runtime `Value::Map`, but the compiler infers a bare-builtin call's return
+// type from its first `Length` argument, so `Length` is the only static type
+// that resolves `flexure_compliance(prb_*(...))` today. This is a KNOWN
+// type-system placeholder lie: ANY `Length` value (e.g. a bare `5mm`) also
+// silently overload-matches and yields the sentinel-default record instead of
+// a type error — a non-joint argument is statically indistinguishable from a
+// real joint. Same placeholder posture as
+// `trajectory.ri::PiecewisePolynomialProfile.mechanism : Real`
+// (TODO(mechanism-type)).
+//
+// Retarget to a real joint type (the `DrivingJoint` marker trait, or a
+// per-kind `Joint` structure) once joints carry a static type. NOTE: KCC-ζ
+// (task 3845, LANDED) declared the `DrivingJoint` trait + per-kind structures
+// but deliberately KEPT joints as runtime `Value::Map` (PRD §7.1, "Value::Map
+// representations remain"), so a joint carries no `type_name` for the type
+// layer to match on and 3845 does NOT remove this `Length` placeholder. The
+// retarget is contingent on a future joints→typed-StructureInstance migration
+// that PRD §7.1 currently rejects and that no task yet owns; until it lands the
+// `Length` placeholder is the accepted v0.3 debt.
 pub fn flexure_compliance(joint: Length) -> FlexureCompliance {
     __flexure_compliance_get(joint)
 }
