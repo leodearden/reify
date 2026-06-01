@@ -2721,6 +2721,7 @@ impl<'a> Lowering<'a> {
             "imaginary_literal" => self.lower_imaginary_literal(node),
             "number_literal" => self.lower_number_literal(node),
             "string_literal" => self.lower_string_literal(node),
+            "interpolated_string" => self.lower_interpolated_string(node),
             "bool_literal" => self.lower_bool_literal(node),
             "identifier" => self.lower_identifier(node),
             "function_call" => self.lower_function_call(node),
@@ -3399,6 +3400,40 @@ impl<'a> Lowering<'a> {
             .to_string();
         Some(Expr {
             kind: ExprKind::StringLiteral(s),
+            span: self.span(node),
+        })
+    }
+
+    /// Lower an `interpolated_string` CST node to `ExprKind::InterpolatedString`.
+    ///
+    /// Walks the node's named children in source order:
+    /// - `string_chunk` → `StringPart::Literal` with RAW chunk text
+    ///   (escape decoding is added in step-6 via `decode_string_escapes`).
+    /// - `interpolation` → `StringPart::Hole(lower_expr(expr_child))`.
+    ///
+    /// The opening and closing `"` delimiters are anonymous nodes and are skipped.
+    fn lower_interpolated_string(&self, node: tree_sitter::Node) -> Option<Expr> {
+        let mut parts = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            match child.kind() {
+                "string_chunk" => {
+                    let raw = self.node_text(child).to_string();
+                    parts.push(StringPart::Literal(raw));
+                }
+                "interpolation" => {
+                    // The interpolation node wraps `{ expr }`.  The named child is
+                    // the expression (field "expr" in the grammar).
+                    let expr_child = child.child_by_field_name("expr")?;
+                    let expr = self.lower_expr(expr_child)?;
+                    parts.push(StringPart::Hole(Box::new(expr)));
+                }
+                // Any other named child (e.g. error-recovery nodes) — skip.
+                _ => {}
+            }
+        }
+        Some(Expr {
+            kind: ExprKind::InterpolatedString(parts),
             span: self.span(node),
         })
     }
