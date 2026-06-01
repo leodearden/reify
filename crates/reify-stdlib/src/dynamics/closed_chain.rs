@@ -273,6 +273,83 @@ mod tests {
         }
     }
 
+    // S5: 4×4 SPD non-diagonal M + full-row-rank 2×4 A — verify KKT residuals.
+    // Build M = L·Lᵀ + I for L lower-triangular, ensuring SPD.
+    // A has two independent rows (full row rank).
+    #[test]
+    fn augmented_kkt_residual_four_bar_like() {
+        // Lower-triangular L (4×4).
+        // M = L·Lᵀ + I to guarantee SPD.
+        let l = [
+            [1.0_f64, 0.0, 0.0, 0.0],
+            [0.5, 1.0, 0.0, 0.0],
+            [0.2, 0.3, 1.0, 0.0],
+            [0.1, 0.4, 0.6, 1.0],
+        ];
+        let n = 4;
+        let m = 2;
+        // Compute L·Lᵀ + I row-major.
+        let mut m_matrix = [0.0_f64; 16];
+        for i in 0..n {
+            m_matrix[i * n + i] = 1.0; // +I
+            for k in 0..n {
+                for j in 0..n {
+                    m_matrix[i * n + j] += l[i][k] * l[j][k];
+                }
+            }
+        }
+
+        // A: 2×4, two independent rows mimicking a planar 4-bar loop residual.
+        let a_matrix = [1.0_f64, -1.0, 0.0, 0.0, 0.0, 1.0, -1.0, 0.0];
+
+        let tau_open = [3.0_f64, -1.0, 2.5, 0.7];
+        let accel_rhs = [0.1_f64, -0.3];
+
+        let sol = solve_closed_chain(
+            &m_matrix,
+            &tau_open,
+            &a_matrix,
+            &accel_rhs,
+            n,
+            m,
+            DEFAULT_PIVOT_EPS,
+        )
+        .expect("4×4 SPD M + 2×4 A should succeed");
+
+        // Verify block-row 1: M·q̈ + Aᵀλ = τ_open
+        let tol = 1e-9;
+        for i in 0..n {
+            let mut lhs = 0.0;
+            for j in 0..n {
+                lhs += m_matrix[i * n + j] * sol.q_ddot[j];
+            }
+            for j in 0..m {
+                lhs += a_matrix[j * n + i] * sol.lambda[j]; // Aᵀλ
+            }
+            assert!(
+                (lhs - tau_open[i]).abs() < tol,
+                "M·q̈ + Aᵀλ residual[{i}] = {:.2e} (tol {tol:.1e})",
+                (lhs - tau_open[i]).abs()
+            );
+        }
+        // Verify block-row 2: A·q̈ = accel_rhs
+        for i in 0..m {
+            let mut lhs = 0.0;
+            for j in 0..n {
+                lhs += a_matrix[i * n + j] * sol.q_ddot[j];
+            }
+            assert!(
+                (lhs - accel_rhs[i]).abs() < tol,
+                "A·q̈ residual[{i}] = {:.2e} (tol {tol:.1e})",
+                (lhs - accel_rhs[i]).abs()
+            );
+        }
+        // All λ must be finite.
+        for (i, &l) in sol.lambda.iter().enumerate() {
+            assert!(l.is_finite(), "lambda[{i}] is not finite");
+        }
+    }
+
     // S3: analytic 2-DOF + 1-constraint, hand-solved closed-form.
     // M = diag(2,3), A = [1,1] (m=1, n=2), τ_open=[10,6], accel_rhs=[1].
     // KKT 3×3: {2q̈₀ + λ = 10 ; 3q̈₁ + λ = 6 ; q̈₀ + q̈₁ = 1}
