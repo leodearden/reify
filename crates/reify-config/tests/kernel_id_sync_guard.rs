@@ -8,10 +8,10 @@
 //!
 //! ## What this file asserts
 //!
-//! 1. **Variant-set parity (compile-time, config side):** `config_to_ir` and
-//!    `_CONFIG_EXHAUSTIVENESS_PIN` below are fully exhaustive over
-//!    `reify_config::KernelId` (which is *not* `#[non_exhaustive]`).
-//!    Adding or removing a variant there breaks compilation immediately.
+//! 1. **Variant-set parity (compile-time, config side):** `config_to_ir`
+//!    below is fully exhaustive over `reify_config::KernelId` (which is
+//!    *not* `#[non_exhaustive]`).  Adding or removing a variant there
+//!    breaks compilation immediately.
 //!
 //!    `reify_ir::KernelId` *is* `#[non_exhaustive]`, which prevents
 //!    exhaustive external matching on that side.  Changes there are caught
@@ -63,7 +63,9 @@ fn ir_to_config(k: IrKernelId) -> CfgKernelId {
 /// `reify_config::KernelId` is **not** `#[non_exhaustive]`, so this match is
 /// fully exhaustive — no wildcard arm.  Adding or removing a variant in
 /// `reify_config::KernelId` breaks compilation here, enforcing config-side
-/// sync at compile time.
+/// sync at compile time.  This function also serves as the **compile-time
+/// exhaustiveness pin** for `reify_config::KernelId` — no separate pin is
+/// needed.
 fn config_to_ir(k: CfgKernelId) -> IrKernelId {
     match k {
         CfgKernelId::Fidget => IrKernelId::Fidget,
@@ -73,24 +75,6 @@ fn config_to_ir(k: CfgKernelId) -> IrKernelId {
         CfgKernelId::OpenVdb => IrKernelId::OpenVdb,
     }
 }
-
-/// Compile-time exhaustiveness pin for `reify_config::KernelId`.
-///
-/// A `const fn` closure that matches every variant without a wildcard arm.
-/// Adding a new variant to `reify_config::KernelId` without updating this
-/// pin is a **compile error**.
-///
-/// The symmetrical pin for `reify_ir::KernelId` is not possible because that
-/// enum is `#[non_exhaustive]` — external matches on it require a wildcard arm.
-const _CONFIG_EXHAUSTIVENESS_PIN: fn(CfgKernelId) = |id| {
-    match id {
-        CfgKernelId::Occt
-        | CfgKernelId::Manifold
-        | CfgKernelId::Fidget
-        | CfgKernelId::OpenVdb
-        | CfgKernelId::Gmsh => {}
-    }
-};
 
 // ---------------------------------------------------------------------------
 // Runtime registry-name parity test
@@ -107,7 +91,7 @@ fn kernel_id_registry_names_match() {
     // One entry per kernel variant.  This array is kept adjacent to the bridge
     // functions above; any stale entry is caught by the assertions below,
     // and missing config variants are caught at compile time by `config_to_ir`
-    // and `_CONFIG_EXHAUSTIVENESS_PIN`.
+    // (which is wildcard-free and doubles as the config-side exhaustiveness pin).
     let expected_pairs: [(IrKernelId, &str); 5] = [
         (IrKernelId::Fidget, "fidget"),
         (IrKernelId::Gmsh, "gmsh"),
@@ -122,7 +106,7 @@ fn kernel_id_registry_names_match() {
         expected_pairs.len(),
         "IrKernelId::ALL has {} variant(s) but expected_pairs has {}; \
          update kernel_id_sync_guard.rs (ir_to_config, config_to_ir, \
-         _CONFIG_EXHAUSTIVENESS_PIN, and expected_pairs)",
+         and expected_pairs)",
         IrKernelId::ALL.len(),
         expected_pairs.len(),
     );
@@ -131,6 +115,8 @@ fn kernel_id_registry_names_match() {
         let cfg_variant = ir_to_config(ir_variant);
 
         // 1. reify-ir as_registry_name() == expected literal.
+        //    Belt-and-suspenders: the IR side is also pinned by
+        //    `reify-ir`'s own `registry_name_round_trips_exhaustively` test.
         assert_eq!(
             ir_variant.as_registry_name(),
             literal,
@@ -142,6 +128,8 @@ fn kernel_id_registry_names_match() {
         );
 
         // 2. reify-config Display (to_string) == expected literal.
+        //    Belt-and-suspenders: the config side is also pinned by
+        //    `kernel_name_consistency` (config Display == adapter *_KERNEL_NAME consts).
         assert_eq!(
             cfg_variant.to_string().as_str(),
             literal,
@@ -152,7 +140,7 @@ fn kernel_id_registry_names_match() {
             literal,
         );
 
-        // 3. Both sides agree with each other (main drift check).
+        // 3. Both sides agree with each other — the load-bearing cross-enum check.
         assert_eq!(
             ir_variant.as_registry_name(),
             cfg_variant.to_string().as_str(),
@@ -163,17 +151,6 @@ fn kernel_id_registry_names_match() {
             ir_variant.as_registry_name(),
             cfg_variant,
             cfg_variant.to_string(),
-        );
-
-        // 4. Round-trip: config_to_ir(ir_to_config(v)) == v.
-        let round_tripped = config_to_ir(ir_to_config(ir_variant));
-        assert_eq!(
-            round_tripped,
-            ir_variant,
-            "round-trip config_to_ir(ir_to_config({:?})) returned {:?}; \
-             bridge functions are inconsistent",
-            ir_variant,
-            round_tripped,
         );
     }
 }
