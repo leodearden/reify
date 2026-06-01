@@ -1,0 +1,21 @@
+// Fixture for task 4013 (PRD η): two-sided-bound centrality signal (B6 LEAF).
+//
+// CentredBar has a single `Scalar = auto` param `x` with:
+//   constraint x >= 2mm   (lower bound)
+//   constraint x <= 8mm   (upper bound)
+//
+// No `minimize` or `maximize` declaration — the solver must synthesise
+// a default centrality objective (Chebyshev centre, max-min slack).
+//
+// Analytic optimum: maximise min((x−2)/s, (8−x)/s) with uniform scale s.
+//   argmax ⟺ x−2 = 8−x ⟹ x = 5mm (the midpoint of [2mm, 8mm]).
+//
+// Integration test: crates/reify-eval/tests/centrality_default.rs
+//   asserts x ≈ 5mm (strictly interior: 2mm < x < 8mm)
+//   and engine.centrality_synthesized_scopes() contains "CentredBar".
+structure CentredBar {
+    param x: Scalar = auto
+
+    constraint x >= 2mm
+    constraint x <= 8mm
+}
