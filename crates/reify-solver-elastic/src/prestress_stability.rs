@@ -187,4 +187,44 @@ mod tests {
             }
         }
     }
+
+    /// A planar open square: 4 coplanar nodes of the unit square (z = 0). The
+    /// floppy reference — with edge-only cables it carries no self-stress (two
+    /// perpendicular tensions cannot self-balance), the s = 0 signal that makes
+    /// a framework prestress-unstable.
+    fn open_square() -> Vec<[f64; 3]> {
+        vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ]
+    }
+
+    /// The four edge members of the open square, in ring order.
+    fn square_members() -> Vec<(usize, usize)> {
+        vec![(0, 1), (1, 2), (2, 3), (3, 0)]
+    }
+
+    #[test]
+    fn self_stress_count_is_one_for_prism_and_zero_for_open_square() {
+        // Canonical triplex: rank(A) = 11 over m = 12 members ⇒ exactly one
+        // self-stress state (the published prestress) — the s ≥ 1 that a valid
+        // tensegrity needs (PRD §5).
+        let a_prism = assemble_equilibrium_matrix(&canonical_prism(), &triplex_members());
+        assert_eq!(
+            count_self_stress_states(&a_prism),
+            1,
+            "canonical triplex must have exactly one self-stress state",
+        );
+
+        // Planar open square: 4 independent edge directions ⇒ rank(A) = 4 = m ⇒
+        // nullity(A) = 0, no self-stress.
+        let a_square = assemble_equilibrium_matrix(&open_square(), &square_members());
+        assert_eq!(
+            count_self_stress_states(&a_square),
+            0,
+            "planar open square has no self-stress state",
+        );
+    }
 }
