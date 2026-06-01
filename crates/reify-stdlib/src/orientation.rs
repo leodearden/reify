@@ -159,6 +159,39 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
             };
             normalize_quaternion(w, x, y, z).unwrap_or(Value::Undef)
         }
+        "orient_look_at" => {
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            let (fc, _) = match tensor_components_f64(&args[0]) {
+                Some(c) if c.0.len() == 3 => c,
+                _ => return Some(Value::Undef),
+            };
+            let (uc, _) = match tensor_components_f64(&args[1]) {
+                Some(c) if c.0.len() == 3 => c,
+                _ => return Some(Value::Undef),
+            };
+            // Gram-Schmidt: z = normalize(forward), x = normalize(cross(up, z)), y = cross(z, x)
+            let z = match normalize_vec3(fc[0], fc[1], fc[2]) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
+            };
+            let x = match normalize_vec3_arr(cross3([uc[0], uc[1], uc[2]], z)) {
+                Some(v) => v,
+                None => return Some(Value::Undef), // forward ∥ up or zero up
+            };
+            let y = cross3(z, x);
+            // Delegate to the orient_basis arm (reuses Shepperd's method + all guards).
+            eval_orientation(
+                "orient_basis",
+                &[
+                    Value::Vector(vec![Value::Real(x[0]), Value::Real(x[1]), Value::Real(x[2])]),
+                    Value::Vector(vec![Value::Real(y[0]), Value::Real(y[1]), Value::Real(y[2])]),
+                    Value::Vector(vec![Value::Real(z[0]), Value::Real(z[1]), Value::Real(z[2])]),
+                ],
+            )
+            .unwrap_or(Value::Undef)
+        }
         "orient_log" => {
             if args.len() != 1 {
                 return Some(Value::Undef);
@@ -603,6 +636,37 @@ pub(crate) fn quat_rotate(q: (f64, f64, f64, f64), vx: f64, vy: f64, vz: f64) ->
 #[inline]
 fn vec3_norm(x: f64, y: f64, z: f64) -> f64 {
     (x * x + y * y + z * z).sqrt()
+}
+
+/// Cross product of two 3D vectors.
+#[inline]
+fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// Normalize a 3D vector given as scalars. Returns None if norm is 0 or non-finite.
+#[inline]
+fn normalize_vec3(x: f64, y: f64, z: f64) -> Option<[f64; 3]> {
+    let n = vec3_norm(x, y, z);
+    if n == 0.0 || !n.is_finite() {
+        return None;
+    }
+    let inv = 1.0 / n;
+    let r = [x * inv, y * inv, z * inv];
+    if r.iter().any(|v| !v.is_finite()) {
+        return None;
+    }
+    Some(r)
+}
+
+/// Normalize a 3D vector given as an array. Returns None if norm is 0 or non-finite.
+#[inline]
+fn normalize_vec3_arr(v: [f64; 3]) -> Option<[f64; 3]> {
+    normalize_vec3(v[0], v[1], v[2])
 }
 
 #[cfg(test)]
