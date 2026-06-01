@@ -1765,3 +1765,70 @@ purpose p(subject : Structure) {
         );
     }
 }
+
+// ── task-4137: geometric_params and material_params compile-time resolution ───
+
+/// RED (step-1): `compile_purpose` must emit a `ResolvedSchemaQuery` with
+/// `query_kind == "geometric_params"` whose `resolved_ids` are exactly
+/// {width, twist} (the Length- and Angle-typed params); `ratio : Real`
+/// (dimensionless) must be excluded.
+///
+/// Fails today because `compile_purpose` (traits.rs) only emits a "params"
+/// query; the geometric_params path is added in task-4137 step-2.
+#[test]
+fn compile_purpose_resolves_geometric_params_query() {
+    let source = r#"
+structure Widget {
+    param width : Length = 80mm
+    param twist : Angle = 30deg
+    param ratio : Real = 1.0
+    constraint width > 0mm
+}
+
+purpose check(subject : Widget) {
+    constraint 1 > 0
+}
+"#;
+
+    let module = parse_and_compile(source);
+
+    assert_eq!(
+        module.compiled_purposes.len(),
+        1,
+        "expected 1 compiled purpose"
+    );
+    let purpose = &module.compiled_purposes[0];
+    assert_eq!(purpose.name, "check");
+    assert_eq!(purpose.params[0].entity_kind, "Widget");
+
+    // Find the geometric_params query by query_kind (not positional index,
+    // since params is also emitted and order may vary).
+    let geo_query = purpose
+        .resolved_queries
+        .iter()
+        .find(|q| q.query_kind == "geometric_params" && q.param_name == "subject")
+        .expect(
+            "expected a ResolvedSchemaQuery with query_kind='geometric_params' \
+             and param_name='subject'; compile_purpose must emit this query \
+             (task-4137 step-2 not yet applied)",
+        );
+
+    assert_eq!(geo_query.param_name, "subject");
+    assert_eq!(geo_query.query_kind, "geometric_params");
+
+    // resolved_ids must be exactly {width, twist}; ratio (Real/dimensionless) excluded.
+    let mut member_names: Vec<&str> = geo_query
+        .resolved_ids
+        .iter()
+        .map(|id: &ValueCellId| id.member.as_str())
+        .collect();
+    member_names.sort();
+
+    assert_eq!(
+        member_names,
+        vec!["twist", "width"],
+        "geometric_params resolved_ids must be exactly {{width, twist}}; \
+         ratio (dimensionless Real) must be excluded. Got: {:?}",
+        member_names
+    );
+}
