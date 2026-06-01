@@ -233,6 +233,21 @@ pub fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
     if matches!((param_ty, arg_ty), (Type::Real, Type::Int)) {
         return true;
     }
+    // PRD §4.4 (task 4117 β): Selector(_) arg coerces ONE-DIRECTIONALLY to a
+    // List<Geometry> param. The rule is directional: a selector may be passed
+    // where a List<Geometry> is declared, but a List<Geometry> must NOT satisfy
+    // a Selector-typed param.
+    //
+    // This guard lives here (not in `implicitly_converts_to`) because
+    // `type_compatible` calls `implicitly_converts_to` BIDIRECTIONALLY below;
+    // adding it there would wrongly accept `List<Geometry>` at a Selector param
+    // (mirrors the same design decision made for Tensor→Matrix, Rule 3 — also
+    // one-directional and placed here rather than in `implicitly_converts_to`).
+    if let (Type::List(inner), Type::Selector(_)) = (param_ty, arg_ty) {
+        if matches!(inner.as_ref(), Type::Geometry) {
+            return true;
+        }
+    }
     // Bidirectional implicit tensor/vector/matrix conversions
     if implicitly_converts_to(param_ty, arg_ty) || implicitly_converts_to(arg_ty, param_ty) {
         return true;
