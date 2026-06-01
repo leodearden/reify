@@ -2966,7 +2966,7 @@ mod tests {
         );
         let v = t3(0.0, 0.0, 1.0);
         assert!(
-            eval_builtin("orient_look_at", &[v.clone()]).is_undef(),
+            eval_builtin("orient_look_at", std::slice::from_ref(&v)).is_undef(),
             "1 arg should return Undef"
         );
         assert!(
