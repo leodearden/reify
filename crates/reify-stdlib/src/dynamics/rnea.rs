@@ -232,20 +232,38 @@ mod tests {
         [c, 0.0, s, 0.0]
     }
 
-    /// Build the parent→child joint transform `X_{p→i} = X_J(q) · X_T` where the
-    /// joint rotation is `quat` and the fixed tree offset `r` is expressed in the
-    /// **parent** frame.
+    /// Build the parent→child joint transform `X_{p→i} = X_J(q) · X_T` where
+    /// `quat` is the joint's **active** rotation (the child frame equals the
+    /// parent frame rotated by `quat`) and the fixed tree offset `r` is the
+    /// child-frame origin expressed in the **parent** frame.
+    ///
+    /// **Convention (handedness-critical).** A Featherstone Plücker *coordinate*
+    /// transform `ᶜXₚ` maps parent-frame coordinates into child-frame
+    /// coordinates, so its rotation block is the matrix that takes parent
+    /// coords → child coords — the **transpose** of the active frame rotation
+    /// (equivalently the conjugate quaternion). Passing the active rotation
+    /// directly is a footgun: the inertia matrix `M` only depends on `cos q`
+    /// (an even function), so a wrong rotation *sense* stays invisible in static
+    /// gravity / pure-inertia checks, but it flips the sign of the
+    /// handedness-sensitive velocity cross-products (`cross_m`/`cross_f`) and
+    /// hence the entire Coriolis/centrifugal contribution. We therefore
+    /// conjugate `quat` here before assembling the coordinate transform. (The
+    /// single-pendulum static test constructs its transform from the already-
+    /// conjugated quaternion directly, matching this same convention.)
     ///
     /// `SpatialTransform6::from_frame3` follows the spatial.rs convention
     /// `X(r, E) = [[E, 0]; [−r̃·E, E]] = xlt(r)·rot(E)`, i.e. it applies the
-    /// translation in the *child* frame (verified by spatial.rs's
-    /// `rotation_and_translation_bottom_left_is_neg_skew_r_times_e`). The RNEA
-    /// tree transform needs `rot(E)·xlt(r)` (offset in the parent frame), so we
-    /// compose a pure rotation with a pure translation rather than passing both
-    /// in a single `Frame3`. (The `compose` contract is "apply other first, then
-    /// self", so `rot.compose(xlt) = rot·xlt`.)
+    /// translation in the *child* frame. The RNEA tree transform needs
+    /// `rot(E)·xlt(r)` (offset in the parent frame), so we compose a pure
+    /// rotation with a pure translation rather than passing both in a single
+    /// `Frame3`. (The `compose` contract is "apply other first, then self", so
+    /// `rot.compose(xlt) = rot·xlt`.)
     fn joint_xform(quat: [f64; 4], r: [f64; 3]) -> SpatialTransform6 {
-        SpatialTransform6::from_frame3(&Frame3::new(quat, [0.0, 0.0, 0.0]))
+        // Conjugate (w, x, y, z) → (w, −x, −y, −z): active rotation → the
+        // parent→child coordinate-transform rotation `Eᵀ`.
+        let [w, x, y, z] = quat;
+        let coord_rot = [w, -x, -y, -z];
+        SpatialTransform6::from_frame3(&Frame3::new(coord_rot, [0.0, 0.0, 0.0]))
             .compose(&SpatialTransform6::from_frame3(&Frame3::new(
                 [1.0, 0.0, 0.0, 0.0],
                 r,
@@ -331,49 +349,10 @@ mod tests {
     // formulations → they agree to ~1e-13 relative (pure float roundoff),
     // so 1e-6 has ~7 orders of margin.
     //
-    // This test is RED against the step-2 skeleton: with crossM/crossF omitted,
-    // the Coriolis/centrifugal contribution is missing, so any sample with
-    // nonzero q̇ will mismatch (relative error ~0.1–5 % >> 1e-6).
-    #[test]
-    fn scratch_decomp() {
-        let (q1, q2) = (0.1_f64, 0.2_f64);
-        let run = |qd1: f64, qd2: f64, qdd1: f64, qdd2: f64| -> [f64; 2] {
-            let l0 = RneaLink {
-                parent: None, parent_to_child: joint_xform(ry_quat(q1), [0.0, 0.0, 0.0]),
-                subspace: vec![SpatialVector6::from_angular_linear([0.0, 1.0, 0.0], [0.0, 0.0, 0.0])],
-                mass: 1.0, com: [0.5, 0.0, 0.0],
-                inertia_about_com: [[0.0, 0.0, 0.0], [0.0, 1.0 / 12.0, 0.0], [0.0, 0.0, 0.0]],
-                q_dot: vec![qd1], q_ddot: vec![qdd1],
-            };
-            let l1 = RneaLink {
-                parent: Some(0), parent_to_child: joint_xform(ry_quat(q2), [1.0, 0.0, 0.0]),
-                subspace: vec![SpatialVector6::from_angular_linear([0.0, 1.0, 0.0], [0.0, 0.0, 0.0])],
-                mass: 1.0, com: [0.5, 0.0, 0.0],
-                inertia_about_com: [[0.0, 0.0, 0.0], [0.0, 1.0 / 12.0, 0.0], [0.0, 0.0, 0.0]],
-                q_dot: vec![qd2], q_ddot: vec![qdd2],
-            };
-            let t = inverse_dynamics_open_chain(&[l0, l1], default_gravity());
-            [t[0][0], t[1][0]]
-        };
-        let c2 = q2.cos(); let s2 = q2.sin();
-        let m11 = 5.0/3.0+c2; let m12 = 1.0/3.0+0.5*c2; let m22 = 1.0/3.0_f64;
-        // Pure inertia: qd=0, qdd=(1,0) then (0,1). Subtract gravity baseline.
-        let g = run(0.0, 0.0, 0.0, 0.0);
-        let i10 = run(0.0, 0.0, 1.0, 0.0);
-        let i01 = run(0.0, 0.0, 0.0, 1.0);
-        eprintln!("M col0: RNEA=[{:.6},{:.6}] REF=[{:.6},{:.6}]", i10[0]-g[0], i10[1]-g[1], m11, m12);
-        eprintln!("M col1: RNEA=[{:.6},{:.6}] REF=[{:.6},{:.6}]", i01[0]-g[0], i01[1]-g[1], m12, m22);
-        // Pure Coriolis: qdd=0, qd=(1,0) then (0,1) then (1,1). Subtract gravity.
-        let h = 0.5*s2;
-        let cd = |qd1: f64, qd2: f64| -> [f64;2] { [-h*qd2*(2.0*qd1+qd2), h*qd1*qd1] };
-        for (qd1, qd2) in [(1.0,0.0),(0.0,1.0),(1.0,-0.5)] {
-            let r = run(qd1, qd2, 0.0, 0.0);
-            let cref = cd(qd1, qd2);
-            eprintln!("Cor qd=({},{}) RNEA=[{:.6},{:.6}] REF=[{:.6},{:.6}]",
-                qd1, qd2, r[0]-g[0], r[1]-g[1], cref[0], cref[1]);
-        }
-    }
-
+    // With crossM/crossF active, the Coriolis/centrifugal contribution is
+    // present; any sample with nonzero q̇ would mismatch (relative error
+    // ~0.1–5 % >> 1e-6) if the velocity-product terms were dropped or
+    // sign-flipped.
     #[test]
     fn double_pendulum_dynamic_cross_validation() {
         const G: f64 = 9.81;
