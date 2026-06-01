@@ -8960,6 +8960,189 @@ mod tests {
         );
     }
 
+    /// Contract test (task 3906 T8, step-1 RED): `try_eval_kinematic_query` applies each
+    /// body's `world_transform` via `kernel.execute(ApplyTransform{…})` before the pairwise
+    /// `Distance` probe, so FK-posed geometry is what actually determines interference.
+    ///
+    /// Fixture: two bodies whose SOURCE handles are disjoint (distance 5.0 > 0) but whose
+    /// FK-POSED handles interfere (distance -1.0 ≤ 0). Each body carries a NON-identity
+    /// `world_transform` (pure translation: body_a +10mm, body_b +15mm along X).
+    ///
+    /// After step-2's impl:
+    ///   (a) result is `Some(List([{a:1, b:2}]))` — posed geometry interferes.
+    ///   (b) `kernel.operations()` has exactly 2 `ApplyTransform` records whose
+    ///       `(target, rotation, translation)` match each body's source handle and
+    ///       `decompose_transform_to_arrays` output.
+    ///
+    /// RED on main: no ApplyTransform ops emitted → probe uses source handles (10, 20)
+    /// → distance 5.0 > 0 → empty list; both (a) and (b) fail.
+    #[test]
+    fn try_eval_kinematic_query_applies_world_transform_before_distance() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_ir::GeometryOp;
+        use reify_core::{Type, ValueCellId};
+
+        let src_a = reify_ir::GeometryHandleId(10);
+        let src_b = reify_ir::GeometryHandleId(20);
+        // MockGeometryKernel.execute() allocates handles from next_id=1.
+        // Body A's ApplyTransform → posed handle 1; body B's → posed handle 2.
+        let posed_a = reify_ir::GeometryHandleId(1);
+        let posed_b = reify_ir::GeometryHandleId(2);
+
+        // Source handles disjoint; posed handles interfere.
+        let mut kernel = MockGeometryKernel::new()
+            .with_distance_result(src_a, src_b, reify_ir::Value::Real(5.0))
+            .with_distance_result(posed_a, posed_b, reify_ir::Value::Real(-1.0));
+
+        // Non-identity world_transforms: pure translations along X.
+        // Both are non-identity (translation != [0,0,0]).
+        let tx_a = 0.010_f64; // 10 mm
+        let tx_b = 0.015_f64; // 15 mm
+
+        let make_transform = |tx: f64| -> reify_ir::Value {
+            reify_ir::Value::Transform {
+                rotation: Box::new(reify_ir::Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }),
+                translation: Box::new(reify_ir::Value::Vector(vec![
+                    reify_ir::Value::length(tx),
+                    reify_ir::Value::length(0.0),
+                    reify_ir::Value::length(0.0),
+                ])),
+            }
+        };
+
+        // Map solid names to KernelHandle.
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert(
+            "body_a".to_string(),
+            reify_ir::KernelHandle { kernel: reify_ir::KernelId::Occt, id: src_a },
+        );
+        named_steps.insert(
+            "body_b".to_string(),
+            reify_ir::KernelHandle { kernel: reify_ir::KernelId::Occt, id: src_b },
+        );
+
+        // Snapshot with body records that carry a `world_transform` key.
+        let make_body = |id: i64, solid: &str, wt: reify_ir::Value| -> reify_ir::Value {
+            let mut m = std::collections::BTreeMap::new();
+            m.insert(reify_ir::Value::String("id".to_string()), reify_ir::Value::Int(id));
+            m.insert(
+                reify_ir::Value::String("solid".to_string()),
+                reify_ir::Value::String(solid.to_string()),
+            );
+            m.insert(reify_ir::Value::String("world_transform".to_string()), wt);
+            reify_ir::Value::Map(m)
+        };
+        let mut snap_map = std::collections::BTreeMap::new();
+        snap_map.insert(
+            reify_ir::Value::String("kind".to_string()),
+            reify_ir::Value::String("snapshot".to_string()),
+        );
+        snap_map.insert(
+            reify_ir::Value::String("bodies".to_string()),
+            reify_ir::Value::List(vec![
+                make_body(1, "body_a", make_transform(tx_a)),
+                make_body(2, "body_b", make_transform(tx_b)),
+            ]),
+        );
+        let snapshot = reify_ir::Value::Map(snap_map);
+
+        // Build interferes(s) call expr.
+        let snap_cell = ValueCellId::new("Mech", "snap");
+        let snap_arg = reify_ir::CompiledExpr::value_ref(snap_cell.clone(), Type::Geometry);
+        let content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str("interferes"))
+            .combine(snap_arg.content_hash);
+        let expr = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "interferes".to_string(),
+                    qualified_name: "interferes".to_string(),
+                },
+                args: vec![snap_arg],
+            },
+            result_type: Type::List(Box::new(Type::Map(Box::new(Type::String), Box::new(Type::Int)))),
+            content_hash,
+        };
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(snap_cell, snapshot);
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_kinematic_query(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        // (a) Posed geometry interferes — exactly one pair {a:1, b:2} (body ids, not handle ids).
+        let list = match result {
+            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+            other => panic!(
+                "FK-posed interfering bodies must return Some(List([..])), \
+                 got {:?}; diagnostics: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(
+            list.len(),
+            1,
+            "exactly one interfering pair expected from FK-posed geometry, got {} entries: {:?}",
+            list.len(),
+            list
+        );
+        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+
+        // (b) Exactly two ApplyTransform ops (one per non-identity body).
+        let ops = kernel.operations();
+        let apply_ops: Vec<_> = ops
+            .iter()
+            .filter(|rec| matches!(&rec.op, GeometryOp::ApplyTransform { .. }))
+            .collect();
+        assert_eq!(
+            apply_ops.len(),
+            2,
+            "expected exactly 2 ApplyTransform ops (one per body), got {}: {:?}",
+            apply_ops.len(),
+            apply_ops
+        );
+        // body_a: first op targets src_a with its decomposed transform.
+        match &apply_ops[0].op {
+            GeometryOp::ApplyTransform { target, rotation, translation } => {
+                assert_eq!(*target, src_a, "first ApplyTransform must target body_a source handle");
+                assert_eq!(
+                    *rotation, [1.0_f64, 0.0, 0.0, 0.0],
+                    "body_a rotation must be identity quaternion"
+                );
+                assert!(
+                    (translation[0] - tx_a).abs() < 1e-12,
+                    "body_a tx[0]: expected {tx_a}, got {}", translation[0]
+                );
+                assert_eq!(translation[1], 0.0, "body_a tx[1] must be zero");
+                assert_eq!(translation[2], 0.0, "body_a tx[2] must be zero");
+            }
+            other => panic!("expected ApplyTransform, got {:?}", other),
+        }
+        // body_b: second op targets src_b with its decomposed transform.
+        match &apply_ops[1].op {
+            GeometryOp::ApplyTransform { target, rotation, translation } => {
+                assert_eq!(*target, src_b, "second ApplyTransform must target body_b source handle");
+                assert_eq!(
+                    *rotation, [1.0_f64, 0.0, 0.0, 0.0],
+                    "body_b rotation must be identity quaternion"
+                );
+                assert!(
+                    (translation[0] - tx_b).abs() < 1e-12,
+                    "body_b tx[0]: expected {tx_b}, got {}", translation[0]
+                );
+                assert_eq!(translation[1], 0.0, "body_b tx[1] must be zero");
+                assert_eq!(translation[2], 0.0, "body_b tx[2] must be zero");
+            }
+            other => panic!("expected ApplyTransform, got {:?}", other),
+        }
+    }
+
     /// Contract test (task 4142, Cluster B RED — topology/resolve_geometry_handle_arg leaf):
     /// `try_eval_topology_selector` resolves the geometry handle via
     /// `KernelHandle.id`, ignoring `KernelHandle.kernel`.
