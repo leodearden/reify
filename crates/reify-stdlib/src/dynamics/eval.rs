@@ -125,9 +125,14 @@ fn eval_ramp_profile(args: &[Value]) -> Value {
     };
 
     let samples = ramp_profile_samples(from, to, max_accel);
-    // The single driving joint is stored in the `mechanism` placeholder field
-    // (Real per the structure_def); `inverse_dynamics` takes the mechanism as a
-    // separate arg and does not consume this field.
+    // NOTE — naming/semantics mismatch: the `MotionTrajectory` structure_def
+    // declares `mechanism` as the containing mechanism handle. Here the *driving
+    // joint* (not a mechanism) is stored in that field — an accepted v1
+    // placeholder because the structure_def does not yet have a dedicated
+    // `driving_joint` field.  Future readers: this field holds the `joint` arg
+    // passed to `ramp_profile`, NOT a `mechanism()` handle. The
+    // `inverse_dynamics` dispatch receives the real mechanism as its own
+    // separate first argument and never reads this field.
     mint_instance(
         "MotionTrajectory",
         vec![
@@ -340,6 +345,22 @@ fn snapshot_inverse_dynamics(
     if map_get(mech, "error").is_some() {
         return None;
     }
+
+    // ── closed-chain guard: deferred to task 4146 ──────────────────────────────
+    // A mechanism with a non-empty `loop_closures` list is a closed chain.
+    // Silently routing it through the open-chain RNEA would produce finite but
+    // physically-incorrect torques (the spanning-tree RNEA ignores the loop
+    // constraints) — a plausible-but-wrong number rather than the `Undef` the
+    // caller would expect for unsupported input. Return `None` (→ `Value::Undef`)
+    // so closed mechanisms fail loudly until task 4146 wires the closed-chain path.
+    // This guard is placed before the bodies.is_empty() early-return so it fires
+    // regardless of body count.
+    if let Some(Value::List(lc)) = map_get(mech, "loop_closures") {
+        if !lc.is_empty() {
+            return None;
+        }
+    }
+
     let bodies = match map_get(mech, "bodies") {
         Some(Value::List(b)) => b,
         _ => return None,
@@ -678,6 +699,17 @@ fn instance_field<'a>(v: &'a Value, type_name: &str, member: &str) -> Option<&'a
 /// `at` joint to the corresponding `values` entry (one joint position per body,
 /// in `bodies` order), then call the `snapshot` builder. Returns `None` on a
 /// values/bodies length mismatch or an FK failure (e.g. an unbindable value).
+///
+/// **Single-DOF-per-body position assumption.** `trajectory.samples[k].values`
+/// must have exactly one entry per mechanism body (in `bodies` / id order). This
+/// matches the `values.len() == bodies.len()` check below. For multi-DOF joints
+/// (cylindrical DOF=2, planar/spherical DOF=3) the single-position encoding is
+/// inconsistent with the flat-per-DOF `vels`/`accels` slicing used by
+/// [`slice_generalized`]: a trajectory with such joints that supplies one
+/// velocity/acceleration value per body would fail the DOF-count check and
+/// silently return `Value::Undef`. Multi-DOF mechanisms in trajectories are
+/// unsupported by this function; the open-chain-only caveat in
+/// [`eval_inverse_dynamics`] applies here too.
 fn snapshot_for_sample(mechanism: &Value, values: &[Value]) -> Option<Value> {
     let mech = match mechanism {
         Value::Map(m) => m,
@@ -1108,5 +1140,267 @@ mod tests {
                 "sample {i}: expected {expected} N·m, got {torque}"
             );
         }
+    }
+
+    // ── Suggestion 1: closed-chain guard ─────────────────────────────────────
+
+    /// `snapshot_inverse_dynamics` must return `Value::Undef` for a mechanism
+    /// with a non-empty `loop_closures` list instead of silently computing
+    /// physically-incorrect open-chain torques (task 4146 deferred).
+    #[test]
+    fn snapshot_inverse_dynamics_rejects_closed_mechanism() {
+        // Build a minimal mechanism Map that passes kind/error validation but has
+        // a non-empty `loop_closures` list (the closed-chain discriminant).
+        let mech_map: BTreeMap<Value, Value> = [
+            (
+                Value::String("kind".to_string()),
+                Value::String("mechanism".to_string()),
+            ),
+            (
+                Value::String("bodies".to_string()),
+                Value::List(vec![]),
+            ),
+            (
+                Value::String("joint_parents".to_string()),
+                Value::Map(BTreeMap::new()),
+            ),
+            (
+                Value::String("loop_closures".to_string()),
+                Value::List(vec![Value::Real(1.0)]), // non-empty ⇒ closed chain
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let closed_mech = Value::Map(mech_map);
+        // Snapshot and generalized-velocity/acceleration args won't be reached;
+        // the guard fires before snapshot validation.
+        let dummy: Value = Value::Map(BTreeMap::new());
+        let q = Value::List(vec![]);
+
+        let result = eval_dynamics(
+            "inverse_dynamics_at_snapshot_lower",
+            &[closed_mech, dummy, q.clone(), q],
+        )
+        .expect("inverse_dynamics_at_snapshot_lower is a recognised intrinsic");
+        assert_eq!(
+            result,
+            Value::Undef,
+            "closed mechanism (non-empty loop_closures) must return Value::Undef until task 4146"
+        );
+    }
+
+    // ── Suggestion 3: ramp_profile edge branches ──────────────────────────────
+
+    /// Zero-displacement move (`from == to`) must emit exactly one rest sample
+    /// at t=0 with q=from, v=0, a=0, rather than an empty grid.
+    #[test]
+    fn ramp_profile_zero_displacement_emits_single_rest_sample() {
+        let q_val = 3.14_f64;
+        let result = eval_dynamics(
+            "ramp_profile_lower",
+            &[
+                Value::Real(0.0), // joint handle — stored verbatim
+                Value::Real(q_val),
+                Value::Real(q_val), // from == to → zero displacement
+                Value::Real(1.0),
+            ],
+        )
+        .expect("ramp_profile_lower must be a recognised intrinsic");
+        let samples = match field(&result, "MotionTrajectory", "samples") {
+            Value::List(s) => s.clone(),
+            other => panic!("samples must be a List, got {other:?}"),
+        };
+        assert_eq!(
+            samples.len(),
+            1,
+            "zero-displacement must emit exactly one rest sample"
+        );
+        let s = &samples[0];
+        assert!(
+            num(field(s, "TrajectorySample", "t")).abs() < 1e-12,
+            "t must be 0"
+        );
+        assert!(
+            (single(field(s, "TrajectorySample", "values")) - q_val).abs() < 1e-12,
+            "q must equal `from`"
+        );
+        assert!(
+            single(field(s, "TrajectorySample", "vels")).abs() < 1e-12,
+            "v must be 0"
+        );
+        assert!(
+            single(field(s, "TrajectorySample", "accels")).abs() < 1e-12,
+            "a must be 0"
+        );
+    }
+
+    /// Malformed inputs — non-positive / non-finite `max_accel` and non-finite
+    /// bounds — must return `Value::Undef` rather than producing garbage output.
+    #[test]
+    fn ramp_profile_invalid_inputs_return_undef() {
+        // max_accel = 0 → non-positive ⇒ Undef
+        let r = eval_dynamics(
+            "ramp_profile_lower",
+            &[
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(1.0),
+                Value::Real(0.0), // zero
+            ],
+        )
+        .expect("recognised intrinsic");
+        assert_eq!(r, Value::Undef, "max_accel=0 must return Undef");
+
+        // max_accel negative ⇒ Undef
+        let r = eval_dynamics(
+            "ramp_profile_lower",
+            &[
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(1.0),
+                Value::Real(-2.0),
+            ],
+        )
+        .expect("recognised intrinsic");
+        assert_eq!(r, Value::Undef, "negative max_accel must return Undef");
+
+        // max_accel NaN ⇒ Undef
+        let r = eval_dynamics(
+            "ramp_profile_lower",
+            &[
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(1.0),
+                Value::Real(f64::NAN),
+            ],
+        )
+        .expect("recognised intrinsic");
+        assert_eq!(r, Value::Undef, "NaN max_accel must return Undef");
+
+        // `from` is NaN ⇒ Undef
+        let r = eval_dynamics(
+            "ramp_profile_lower",
+            &[
+                Value::Real(0.0),
+                Value::Real(f64::NAN),
+                Value::Real(1.0),
+                Value::Real(1.0),
+            ],
+        )
+        .expect("recognised intrinsic");
+        assert_eq!(r, Value::Undef, "NaN `from` bound must return Undef");
+
+        // `to` is +∞ ⇒ Undef
+        let r = eval_dynamics(
+            "ramp_profile_lower",
+            &[
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(f64::INFINITY),
+                Value::Real(1.0),
+            ],
+        )
+        .expect("recognised intrinsic");
+        assert_eq!(r, Value::Undef, "non-finite `to` bound must return Undef");
+    }
+
+    // ── Suggestion 4: joint_force_value reshape table ─────────────────────────
+
+    /// All six joint kinds produce the correct `JointForceValue` variant with the
+    /// expected type_name and component count. Wrong-arity and unknown kind each
+    /// return `None`.
+    #[test]
+    fn joint_force_value_all_kinds_and_wrong_arity() {
+        // revolute → ScalarTorque { magnitude: τ[0] }
+        let r = joint_force_value("revolute", &[0.4905]).expect("revolute/1");
+        if let Value::StructureInstance(d) = &r {
+            assert_eq!(d.type_name, "ScalarTorque", "revolute type_name");
+            let mag = cell_f64(d.fields.get("magnitude").unwrap()).unwrap();
+            assert!((mag - 0.4905).abs() < 1e-12, "revolute magnitude");
+        } else {
+            panic!("revolute: expected StructureInstance, got {r:?}");
+        }
+
+        // prismatic → ScalarForce { magnitude: τ[0] }
+        let r = joint_force_value("prismatic", &[12.5]).expect("prismatic/1");
+        if let Value::StructureInstance(d) = &r {
+            assert_eq!(d.type_name, "ScalarForce", "prismatic type_name");
+            let mag = cell_f64(d.fields.get("magnitude").unwrap()).unwrap();
+            assert!((mag - 12.5).abs() < 1e-12, "prismatic magnitude");
+        } else {
+            panic!("prismatic: expected StructureInstance, got {r:?}");
+        }
+
+        // cylindrical → CylForce { components: [τ[0], τ[1]] }  (DOF=2)
+        let r = joint_force_value("cylindrical", &[1.0, 2.0]).expect("cylindrical/2");
+        if let Value::StructureInstance(d) = &r {
+            assert_eq!(d.type_name, "CylForce", "cylindrical type_name");
+            match d.fields.get("components") {
+                Some(Value::List(comps)) => assert_eq!(comps.len(), 2, "CylForce component count"),
+                other => panic!("CylForce: expected components List, got {other:?}"),
+            }
+        } else {
+            panic!("cylindrical: expected StructureInstance, got {r:?}");
+        }
+
+        // planar → PlanarForce { components: [τ[0..3]] }  (DOF=3)
+        let r = joint_force_value("planar", &[1.0, 2.0, 3.0]).expect("planar/3");
+        if let Value::StructureInstance(d) = &r {
+            assert_eq!(d.type_name, "PlanarForce", "planar type_name");
+            match d.fields.get("components") {
+                Some(Value::List(comps)) => {
+                    assert_eq!(comps.len(), 3, "PlanarForce component count")
+                }
+                other => panic!("PlanarForce: expected components List, got {other:?}"),
+            }
+        } else {
+            panic!("planar: expected StructureInstance, got {r:?}");
+        }
+
+        // spherical → SphereForce { components: [τ[0..3]] }  (DOF=3)
+        let r = joint_force_value("spherical", &[4.0, 5.0, 6.0]).expect("spherical/3");
+        if let Value::StructureInstance(d) = &r {
+            assert_eq!(d.type_name, "SphereForce", "spherical type_name");
+            match d.fields.get("components") {
+                Some(Value::List(comps)) => {
+                    assert_eq!(comps.len(), 3, "SphereForce component count")
+                }
+                other => panic!("SphereForce: expected components List, got {other:?}"),
+            }
+        } else {
+            panic!("spherical: expected StructureInstance, got {r:?}");
+        }
+
+        // fixed → ZeroForce (empty τ, no fields beyond type_name)
+        let r = joint_force_value("fixed", &[]).expect("fixed/0");
+        if let Value::StructureInstance(d) = &r {
+            assert_eq!(d.type_name, "ZeroForce", "fixed type_name");
+        } else {
+            panic!("fixed: expected StructureInstance, got {r:?}");
+        }
+
+        // Wrong arity → None
+        assert!(
+            joint_force_value("revolute", &[1.0, 2.0]).is_none(),
+            "revolute/2 must be None"
+        );
+        assert!(
+            joint_force_value("prismatic", &[]).is_none(),
+            "prismatic/0 must be None"
+        );
+        assert!(
+            joint_force_value("cylindrical", &[1.0]).is_none(),
+            "cylindrical/1 must be None"
+        );
+        assert!(
+            joint_force_value("fixed", &[1.0]).is_none(),
+            "fixed/1 (non-empty τ) must be None"
+        );
+
+        // Unknown kind → None
+        assert!(
+            joint_force_value("flapper", &[1.0]).is_none(),
+            "unknown joint kind must be None"
+        );
     }
 }
