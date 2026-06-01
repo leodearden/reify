@@ -1137,6 +1137,86 @@ pub(super) fn check_phase_resolve_assoc_fns(
     }
 }
 
+/// Phase (task 3972): resolve the conformer's associated-type table.
+///
+/// Mirrors `check_phase_resolve_assoc_fns` for types instead of functions.
+/// Defaults are processed first (they carry a resolved `Type` to inject); a
+/// `handled` set then suppresses a duplicate entry for a bodyless
+/// `RequirementKind::AssocType` of the same name that a same-name default
+/// satisfies.
+///
+/// For each default-providing `DefaultKind::AssocType(default_ty)`:
+///   - If the structure explicitly binds the name: push `CompiledAssocType` with
+///     the structure's resolved type and `is_override = true`.
+///   - Otherwise: push with `default_ty` and `is_override = false`.
+///
+/// For each bodyless `RequirementKind::AssocType` not yet handled by a default:
+///   - If the structure binds the name: push with `is_override = true`.
+///   - Otherwise: contribute nothing (phase 5 already emitted
+///     `TraitAssocTypeNotBound`).
+pub(super) fn check_phase_resolve_assoc_types(
+    ctx: &MergeContext,
+    structure_assoc_type_bindings: &HashMap<String, Type>,
+    assoc_types_out: &mut Vec<CompiledAssocType>,
+) {
+    let mut handled: HashSet<String> = HashSet::new();
+
+    // Default-providing assoc types: structure override beats the trait default.
+    for default in &ctx.defaults {
+        let DefaultKind::AssocType(default_ty) = &default.kind else {
+            continue;
+        };
+        let Some(type_name) = default.name.as_deref() else {
+            continue;
+        };
+        if !handled.insert(type_name.to_string()) {
+            continue;
+        }
+        let trait_name = ctx
+            .seen_assoc_type_default_traits
+            .get(type_name)
+            .cloned()
+            .unwrap_or_else(|| "<trait>".to_string());
+        let (resolved, is_override) =
+            match structure_assoc_type_bindings.get(type_name) {
+                Some(binding_ty) => (binding_ty.clone(), true),
+                None => (default_ty.clone(), false),
+            };
+        assoc_types_out.push(CompiledAssocType {
+            trait_name,
+            type_name: type_name.to_string(),
+            resolved,
+            is_override,
+        });
+    }
+
+    // Bodyless required assoc types satisfied by a structure binding only.
+    // If there is no binding and no same-name default, phase 5 already errored
+    // and no entry is contributed here.
+    for req in &ctx.requirements {
+        if !matches!(req.kind, RequirementKind::AssocType(_)) {
+            continue;
+        }
+        if !handled.insert(req.name.clone()) {
+            continue; // a same-name default already produced the entry
+        }
+        let Some(binding_ty) = structure_assoc_type_bindings.get(&req.name) else {
+            continue; // unsatisfied — phase 5 emitted TraitAssocTypeNotBound
+        };
+        let trait_name = ctx
+            .seen_assoc_type_reqs
+            .get(&req.name)
+            .cloned()
+            .unwrap_or_else(|| "<trait>".to_string());
+        assoc_types_out.push(CompiledAssocType {
+            trait_name,
+            type_name: req.name.clone(),
+            resolved: binding_ty.clone(),
+            is_override: true,
+        });
+    }
+}
+
 /// Phase 5 of trait conformance checking: verify structure members against trait requirements.
 ///
 /// For each requirement in `ctx.requirements`, checks that either:

@@ -25,6 +25,10 @@ pub(crate) fn check_trait_conformance(
     // `check_phase_resolve_assoc_fns` (step-8). entity.rs stores it on the
     // conformer's TopologyTemplate (step-12).
     assoc_fns_out: &mut Vec<CompiledAssocFn>,
+    // task 3972: out-param receiving the resolved assoc-type table, populated by
+    // `check_phase_resolve_assoc_types`. entity.rs stores it on the conformer's
+    // TopologyTemplate.
+    assoc_types_out: &mut Vec<CompiledAssocType>,
 ) {
     let (structure_param_members, structure_let_members, structure_constraint_labels) =
         check_phase_resolve_structure_members(
@@ -112,6 +116,12 @@ pub(crate) fn check_trait_conformance(
         diagnostics,
         assoc_fns_out,
     );
+
+    // task 3972: resolve the override-or-injected-default assoc-type table.
+    // Runs after phase 5 (same ordering as assoc-fn resolve). Reuses the
+    // structure_assoc_type_bindings map built by collect_structure_assoc_type_bindings
+    // (which phase 5 already needed for its satisfaction check).
+    check_phase_resolve_assoc_types(&ctx, &structure_assoc_type_bindings, assoc_types_out);
 
     check_phase_inject_defaults(
         &ctx,
@@ -1295,6 +1305,7 @@ mod tests {
         let alias_registry = TypeAliasRegistry::new();
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let mut assoc_fns: Vec<CompiledAssocFn> = vec![];
+        let mut assoc_types: Vec<CompiledAssocType> = vec![];
 
         check_trait_conformance(
             &entity_ref,
@@ -1310,6 +1321,7 @@ mod tests {
             &alias_registry,
             &mut diagnostics,
             &mut assoc_fns,
+            &mut assoc_types,
         );
 
         (diagnostics, assoc_fns)

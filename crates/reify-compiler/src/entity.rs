@@ -1102,6 +1102,9 @@ pub(crate) fn compile_entity(
     // TopologyTemplate below. Declared before the trait-bounds guard so it is
     // in scope at the struct literal (and stays empty for bound-less entities).
     let mut structure_assoc_fns: Vec<CompiledAssocFn> = Vec::new();
+    // task 3972: accumulates the resolved assoc-type table (task 3972), stored
+    // onto this conformer's TopologyTemplate. Stays empty for bound-less entities.
+    let mut structure_assoc_types: Vec<CompiledAssocType> = Vec::new();
     // Trait conformance checking: verify structure satisfies all trait bounds.
     if !structure.trait_bounds.is_empty() {
         check_trait_conformance(
@@ -1118,6 +1121,7 @@ pub(crate) fn compile_entity(
             alias_registry,
             diagnostics,
             &mut structure_assoc_fns,
+            &mut structure_assoc_types,
         );
 
         // Trait-bound checks: deprecation warning and parameterized type-argument deferral.
@@ -1712,7 +1716,11 @@ pub(crate) fn compile_entity(
                 );
             }
             reify_ast::MemberDecl::AssociatedType(_) => {
-                // Associated type compilation deferred to a later milestone.
+                // task 3972: structure-body assoc-type bindings (`type X = T`) are
+                // collected/resolved by `check_trait_conformance` (which scans
+                // `structure.members` via `collect_structure_assoc_type_bindings`)
+                // and compiled into the conformer's `assoc_types` table. They lower
+                // to no value cell here — mirrors the Fn member arm below.
             }
             reify_ast::MemberDecl::Fn(_) => {
                 // task 3939 δ: structure-body assoc fns are recognized as
@@ -2577,12 +2585,11 @@ pub(crate) fn compile_entity(
         // `content_hash` (see plan design decision); ζ (3941) looks this up by
         // (trait_name, fn_name) for `TraitMethodCall` dispatch.
         assoc_fns: structure_assoc_fns,
-        // task 3972 ιβ (pre-2): the override-or-injected-default assoc-type table.
-        // Placeholder until step-10 wires check_phase_resolve_assoc_types.
-        // Structure-body `type X = T` bindings are collected/resolved by
-        // check_trait_conformance and lower to no value cell here
-        // (mirrors the Fn member arm at entity.rs:1717-1724).
-        assoc_types: Vec::new(),
+        // task 3972: the resolved assoc-type table from `check_trait_conformance`.
+        // Deliberately excluded from `content_hash` (mirrors assoc_fns). Each entry
+        // is keyed by (trait_name, type_name) with the structure-provided or
+        // trait-default resolved Type.
+        assoc_types: structure_assoc_types,
     }
 }
 
