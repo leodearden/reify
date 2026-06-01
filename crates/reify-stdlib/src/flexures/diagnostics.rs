@@ -15,14 +15,6 @@
 //! The once-per-session dedup of the Info fatigue advisory is the emission
 //! layer's responsibility (reify-expr, step-10), not this classifier's.
 
-// `#![allow(dead_code)]` is transient: until step-10 wires `flexure_diagnose`
-// into reify-expr's `FunctionCall` arm and re-exports it from `lib.rs`
-// (`pub use flexures::flexure_diagnose`), this whole module is reachable only
-// from its own `#[cfg(test)]` tests, so a non-test lib build would flag every
-// helper here as dead. Removed in step-10 when the `pub use` makes the module's
-// entry point live.
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
 
 use reify_core::{Diagnostic, DiagnosticCode, DimensionVector};
@@ -49,7 +41,7 @@ const PRB_ANGLE_LIMIT_DEG: f64 = 5.0;
 /// `W_FlexureFatigueCheckMissing` Info advisory; its once-per-eval-session
 /// dedup is the reify-expr emission layer's responsibility (step-10), not this
 /// classifier's.
-pub(crate) fn flexure_diagnose(name: &str, args: &[Value], result: &Value) -> Vec<Diagnostic> {
+pub fn flexure_diagnose(name: &str, args: &[Value], result: &Value) -> Vec<Diagnostic> {
     if !is_flexure_ctor(name) {
         return Vec::new();
     }

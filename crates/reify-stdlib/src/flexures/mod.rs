@@ -25,6 +25,12 @@ mod diagnostics;
 #[cfg(test)]
 mod test_util;
 
+/// Re-export the PRB-constructor diagnostic classifier so the crate root can
+/// surface it as `reify_stdlib::flexure_diagnose` (mirroring `stackup::diagnose`
+/// → `stackup_diagnose`). reify-expr's `FunctionCall` arm calls it on the
+/// builtin result to emit the §5.3 / §1 flexure diagnostics into the eval sink.
+pub use diagnostics::flexure_diagnose;
+
 /// Evaluate a flexure stdlib function by name.
 ///
 /// Returns `Some(Value)` for known flexure constructors (including

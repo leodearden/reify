@@ -357,11 +357,6 @@ pub(super) fn attach_compliance(joint: Value, record: Value) -> Value {
 /// `E_FlexureGeometryInvalid` for *only* the geometry class — mirroring how
 /// `stackup::diagnose` re-classifies on the `Undef` path — `flexure_diagnose`
 /// re-derives the geometry from the raw args via [`classify_geometry_invalid`].
-//
-// `#[allow(dead_code)]` is transient: this type is reachable only through the
-// (also transiently-dead) `diagnostics::flexure_diagnose` until step-10 wires
-// that helper into reify-expr and re-exports it from `lib.rs`.
-#[allow(dead_code)]
 pub(super) enum GeometryViolation {
     /// Slender-beam families `(length, width, thickness, …)`: bending thickness
     /// `t` ≥ beam length `L`.
@@ -374,7 +369,6 @@ pub(super) enum GeometryViolation {
 impl GeometryViolation {
     /// A human-readable description of the degeneracy (always mentions
     /// "geometry"), suffixed onto the `E_FLEXURE_GEOMETRY_INVALID` message.
-    #[allow(dead_code)] // transient — see [`GeometryViolation`].
     pub(super) fn describe(&self) -> String {
         match self {
             GeometryViolation::ThicknessExceedsLength { thickness, length } => format!(
@@ -404,7 +398,6 @@ impl GeometryViolation {
 /// - `prb_cartwheel_flexure` `(blade_count, length, width, thickness, …)` →
 ///   `t ≥ L` (length at index 1, thickness at index 3);
 /// - notch family `(notch_radius, web_thickness, width, …)` → `t ≥ 2r`.
-#[allow(dead_code)] // transient — see [`GeometryViolation`].
 pub(super) fn classify_geometry_invalid(name: &str, args: &[Value]) -> Option<GeometryViolation> {
     match name {
         "prb_cantilever_beam"
@@ -437,7 +430,6 @@ pub(super) fn classify_geometry_invalid(name: &str, args: &[Value]) -> Option<Ge
 
 /// Shared degeneracy test for the slender-beam families: a positive, finite
 /// `t ≥ L` is the `thickness ≥ length` violation those ctors reject on.
-#[allow(dead_code)] // transient — see [`GeometryViolation`].
 fn thickness_vs_length(thickness: f64, length: f64) -> Option<GeometryViolation> {
     (length > 0.0 && thickness > 0.0 && thickness >= length)
         .then_some(GeometryViolation::ThicknessExceedsLength { thickness, length })

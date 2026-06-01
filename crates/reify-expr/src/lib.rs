@@ -522,6 +522,16 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     {
                         sink.borrow_mut().push(diag);
                     }
+                    // Flexure PRB constructors (task 3871) surface their §5.3 / §1
+                    // diagnostics on BOTH the success and Undef paths — unlike the
+                    // post-Undef-only stackup/fea hooks above, W_FlexureYielding /
+                    // W_FlexurePrbOutOfRange fire on a SUCCESSFULLY constructed joint.
+                    // Extracted into `emit_flexure_diagnostics` so the per-`diag`
+                    // owned-`Diagnostic` loop local does not inflate every recursive
+                    // `eval_expr` frame (the same stack-shrinking rationale as
+                    // `eval_worst_case_dispatch`; pinned by
+                    // `eval_user_fn_recursion_depth_exceeded`).
+                    emit_flexure_diagnostics(&function.name, &evaluated_args, &result, ctx);
                     result
                 }
             }
@@ -1239,6 +1249,43 @@ fn eval_quantifier(
                 Value::Bool(false)
             }
         }
+    }
+}
+
+/// Emit the task-3871 PRB-flexure diagnostics for a builtin call `result`.
+///
+/// Extracted from `eval_expr`'s `FunctionCall` arm — and marked
+/// `#[inline(never)]` — to keep that recursive function's stack frame small:
+/// the `for diag in …` loop binds an owned `Diagnostic` per iteration, and in
+/// unoptimized builds that by-value local would sit on every `eval_expr` frame
+/// (regardless of which match arm runs) and blow the 2 MiB test-thread stack at
+/// `MAX_RECURSION_DEPTH` levels of recursive user-fn evaluation. Same rationale
+/// and pinning test (`eval_user_fn_recursion_depth_exceeded`) as the
+/// `eval_worst_case_dispatch` / `eval_quantifier` extractions.
+///
+/// Unlike the post-`Undef`-only `stackup_diagnose` / `fea_diagnose` hooks, this
+/// runs on BOTH the success and `Undef` paths — `W_FlexureYielding` /
+/// `W_FlexurePrbOutOfRange` fire on a SUCCESSFULLY constructed joint.
+/// `flexure_diagnose` returns an empty `Vec` for any non-flexure name, so this
+/// is a cheap no-op for every other builtin. The standing
+/// `W_FlexureFatigueCheckMissing` Info advisory is deduped to once per eval
+/// session (per sink): pushed only if the sink does not already carry that code.
+#[inline(never)]
+fn emit_flexure_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &EvalContext) {
+    let Some(sink) = ctx.diagnostics else {
+        return;
+    };
+    for diag in reify_stdlib::flexure_diagnose(name, args, result) {
+        if diag.code == Some(DiagnosticCode::FlexureFatigueCheckMissing) {
+            let already = sink
+                .borrow()
+                .iter()
+                .any(|d| d.code == Some(DiagnosticCode::FlexureFatigueCheckMissing));
+            if already {
+                continue;
+            }
+        }
+        sink.borrow_mut().push(diag);
     }
 }
 
