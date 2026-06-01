@@ -80,6 +80,7 @@
 // OCCT transforms
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepBuilderAPI_GTransform.hxx>
+#include <BRepBuilderAPI_Copy.hxx>
 #include <gp_Trsf.hxx>
 #include <gp_GTrsf.hxx>
 #include <gp_Vec.hxx>
@@ -349,7 +350,20 @@ std::unique_ptr<OcctShape> make_compound(const OcctShapeVec& shapes) {
         BRep_Builder builder;
         builder.MakeCompound(compound);
         for (const auto& shape : shapes.shapes) {
-            builder.Add(compound, shape);
+            // Deep-copy each input via BRepBuilderAPI_Copy to produce an
+            // independent TShape for every compound member.  This is required
+            // when multiple inputs share the same source TShape (e.g. two
+            // placed instances of the same sub-structure): without the copy,
+            // BRep_Builder::Add would add two references to one TShape and the
+            // STEP writer would deduplicate, emitting only 1 MANIFOLD_SOLID_BREP
+            // instead of the expected 2.  The copy preserves the shape's
+            // TopLoc_Location so the world placement encoded in any prior
+            // ApplyTransform (Standard_False) is retained.
+            BRepBuilderAPI_Copy copier(shape);
+            if (!copier.IsDone()) {
+                throw std::runtime_error("make_compound: BRepBuilderAPI_Copy failed");
+            }
+            builder.Add(compound, copier.Shape());
         }
         auto result = std::make_unique<OcctShape>();
         result->shape = compound;

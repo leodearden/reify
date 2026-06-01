@@ -769,11 +769,12 @@ impl OcctKernel {
     ///
     /// Resolves each `GeometryHandleId` to its `OcctShape`, builds an
     /// `OcctShapeVec`, and calls `ffi::ffi::make_compound` which uses
-    /// `BRep_Builder::MakeCompound` + `Add` (mirrors the test helper
-    /// `make_nonmanifold_compound_for_test` at occt_wrapper.cpp:3511).
-    /// The result is stored with `BRepKind::Compound`; source handles remain
-    /// valid (TopoDS_Shape copy inside shape_vec_push is a lightweight handle
-    /// increment — non-destructive).
+    /// `BRep_Builder::MakeCompound` + `Add`.  Each input shape is
+    /// **deep-copied** (via `BRepBuilderAPI_Copy`) inside `make_compound`
+    /// before it is added to the compound, so every compound member gets an
+    /// independent `TShape` — preventing the STEP writer from deduplicating
+    /// multiple instances of the same source solid into a single
+    /// `MANIFOLD_SOLID_BREP`.  Source handles remain valid after the call.
     ///
     /// Returns `Err(GeometryError::OperationFailed)` when:
     /// - `handles` is empty, or

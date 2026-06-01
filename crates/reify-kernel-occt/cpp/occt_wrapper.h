@@ -114,13 +114,19 @@ std::unique_ptr<OcctShape> make_sphere(double radius);
 /// Assemble N solid shapes into a single TopoDS_Compound for multi-body STEP
 /// export (T7 `make_compound`).
 ///
-/// Each shape in `shapes` is added to a fresh compound via
-/// `BRep_Builder::MakeCompound` + `Add` (mirrors the test helper
-/// `make_nonmanifold_compound_for_test`). The source shapes are copied by
-/// reference (TopoDS_Shape copy is a lightweight handle increment), so the
-/// originals remain valid after the call.
+/// Each shape in `shapes` is **deep-copied** via `BRepBuilderAPI_Copy` before
+/// being added to the compound.  This ensures that every compound member is
+/// an independent `TShape`, even when multiple inputs reference the same
+/// source `TShape` (e.g. two placed instances of the same sub-structure).
+/// Without the copy, `BRep_Builder::Add` with a shared `TShape` would cause
+/// the STEP writer to deduplicate and emit only one `MANIFOLD_SOLID_BREP`
+/// instead of one per member.  The copy preserves `TopLoc_Location` so any
+/// world placement already encoded in the shape is retained.
 ///
-/// Throws `std::runtime_error` if the input vector is empty.
+/// Source handles in the `OcctShapeVec` remain valid after the call.
+///
+/// Throws `std::runtime_error` if the input vector is empty or if any
+/// `BRepBuilderAPI_Copy` fails.
 std::unique_ptr<OcctShape> make_compound(const OcctShapeVec& shapes);
 
 // --- Boolean operations ---
