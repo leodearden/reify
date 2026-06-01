@@ -22,7 +22,8 @@ use reify_ir::Value;
 use std::collections::BTreeMap;
 
 use super::common::{
-    length_si, make_flexure_joint, material_field_si, symmetric_angle_range, PRB_ANGLE_LIMIT_RAD,
+    attach_compliance, cantilever_sigma_at, cantilever_theta_lim, length_si, make_compliance_record,
+    make_flexure_joint, material_field_si, parse_declared_range, symmetric_angle_range, RangeKind,
 };
 
 /// Single-cantilever-blade PRB transverse stiffness coefficient (Howell §6.2).
@@ -67,18 +68,24 @@ struct PrismaticInputs<'a> {
     axis: &'a Value,
     /// The raw pivot argument.
     pivot: &'a Value,
-    /// Optional trailing `neutral` argument (present in the 7-arg form).
+    /// Optional trailing `neutral` argument (present in the 7- and 8-arg forms).
     neutral_arg: Option<&'a Value>,
+    /// The optional trailing declared operating-range argument (present only in
+    /// the 8-arg form). When present, its endpoint — not the auto cap — drives
+    /// the joint range and the §5.3 `max_stress` stress-check: a LENGTH
+    /// half-displacement for `prb_prismatic_blade`, an ANGLE half-angle for
+    /// `prb_two_axis_pivot` (each ctor selects the `RangeKind`).
+    declared_range_arg: Option<&'a Value>,
 }
 
 /// Parse and validate the shared positional argument layout:
-/// `(length, width, thickness, material, pivot, axis[, neutral])`.
+/// `(length, width, thickness, material, pivot, axis[, neutral[, declared_range]])`.
 ///
-/// Returns `None` (⇒ `Value::Undef`) on: arity ∉ {6, 7}; non-positive or
+/// Returns `None` (⇒ `Value::Undef`) on: arity ∉ {6, 7, 8}; non-positive or
 /// non-finite geometry; thickness ≥ length; missing or non-positive
 /// `youngs_modulus`; or an invalid axis.
 fn parse_prismatic_inputs(args: &[Value]) -> Option<PrismaticInputs<'_>> {
-    if args.len() != 6 && args.len() != 7 {
+    if args.len() < 6 || args.len() > 8 {
         return None;
     }
     let length = length_si(&args[0])?;
@@ -102,8 +109,22 @@ fn parse_prismatic_inputs(args: &[Value]) -> Option<PrismaticInputs<'_>> {
         yield_si: material_field_si(material, "yield_stress"),
         axis,
         pivot: &args[4],
-        neutral_arg: if args.len() == 7 { Some(&args[6]) } else { None },
+        neutral_arg: if args.len() >= 7 { Some(&args[6]) } else { None },
+        declared_range_arg: if args.len() == 8 { Some(&args[7]) } else { None },
     })
+}
+
+/// Single-cantilever-blade transverse surface bending stress σ = 1.5·E·t·|δ|/L²
+/// (Howell §6.2) — the algebraic inverse of the blade's
+/// `δ_yield = 2·yield·L²/(3·E·t)`.
+///
+/// Intentionally HALF of `common::fixed_guided_sigma_at` (3·E·t·δ/L²): the blade
+/// is a cantilever with one free end, not a guided pair, so its peak surface
+/// stress at a given tip displacement is half the fixed-guided beam's. Using the
+/// fixed-guided coefficient here would report `at_yield = true` at the blade's
+/// own documented safe validity δ.
+fn cantilever_transverse_sigma_at(delta: f64, length: f64, thickness: f64, e: f64) -> f64 {
+    1.5 * e * thickness * delta.abs() / length.powi(2)
 }
 
 /// Extract a neutral transverse offset in metres from a trailing constructor
@@ -144,16 +165,22 @@ fn prb_prismatic_blade(args: &[Value]) -> Value {
     // Cantilever transverse stiffness k_trans = γ_pb · E · I / L³ (γ = 3, Howell §6.2).
     let k_trans = PRISMATIC_BLADE_GAMMA * b.e * b.i / b.length.powi(3);
 
-    // Cantilever transverse-displacement validity range ±δ.
+    // Auto cantilever transverse-displacement validity δ_auto.
     // Surface stress σ = 1.5·E·t·δ / L²  ⇒  δ_yield = 2·yield·L² / (3·E·t).
-    // No yield_stress ⇒ small-deflection fallback ±0.1·L.
-    let delta = match b.yield_si {
+    // No yield_stress ⇒ small-deflection fallback 0.1·L. Retained as the SAFE
+    // prb_validity_range in the compliance record below.
+    let delta_auto = match b.yield_si {
         Some(yield_si) => 2.0 * yield_si * b.length.powi(2) / (3.0 * b.e * b.thickness),
         None => SMALL_DEFLECTION_FRACTION * b.length,
     };
+
+    // An optional user-declared operating range (±half-displacement LENGTH)
+    // OVERRIDES δ_auto for the joint range and the §5.3 stress endpoint.
+    let declared = parse_declared_range(b.declared_range_arg, RangeKind::Length);
+    let range_endpoint = declared.unwrap_or(delta_auto);
     let range = Value::range(
-        Some(Value::length(-delta)),
-        Some(Value::length(delta)),
+        Some(Value::length(-range_endpoint)),
+        Some(Value::length(range_endpoint)),
         true,
         true,
     );
@@ -161,7 +188,7 @@ fn prb_prismatic_blade(args: &[Value]) -> Value {
     // Optional trailing neutral transverse offset (default 0 for the 6-arg form).
     let neutral_si = b.neutral_arg.map(neutral_length_si).unwrap_or(0.0);
 
-    make_flexure_joint(
+    let joint = make_flexure_joint(
         "prismatic",
         b.axis.clone(),
         range,
@@ -171,7 +198,22 @@ fn prb_prismatic_blade(args: &[Value]) -> Value {
         },
         Value::length(neutral_si),
         b.pivot.clone(),
-    )
+    );
+
+    // Cache the FlexureCompliance record (§5.3): cantilever-transverse surface
+    // stress at the range endpoint and the neutral rest offset; prb_validity_range
+    // advertises the auto SAFE δ_auto regardless of any wider declared range.
+    let max_stress = cantilever_transverse_sigma_at(range_endpoint, b.length, b.thickness, b.e);
+    let max_stress_at_neutral = cantilever_transverse_sigma_at(neutral_si, b.length, b.thickness, b.e);
+    let record = make_compliance_record(
+        k_trans,
+        max_stress,
+        max_stress_at_neutral,
+        b.yield_si,
+        None,
+        delta_auto,
+    );
+    attach_compliance(joint, record)
 }
 
 /// `prb_two_axis_pivot(length, width, thickness, material, pivot, axis[, neutral])`
@@ -210,16 +252,17 @@ fn prb_two_axis_pivot(args: &[Value]) -> Value {
     // Symmetric per-axis rotational stiffness k_axis = E·I/L (γ = 1, Henein 2010).
     let k_axis = b.e * b.i / b.length;
 
-    // Angular validity range: θ_yield = yield·L/(E·t/2), capped at 5° PRB limit.
-    // No yield_stress ⇒ 5° PRB limit only.
-    let theta_lim = match b.yield_si {
-        Some(yield_si) => {
-            let theta_yield = yield_si * b.length / (b.e * b.thickness / 2.0);
-            theta_yield.min(PRB_ANGLE_LIMIT_RAD)
-        }
-        None => PRB_ANGLE_LIMIT_RAD,
-    };
-    let range_angle = symmetric_angle_range(theta_lim);
+    // Auto angular validity θ_lim = min(θ_yield, 5°) (the surface-yield rotation
+    // capped at the PRB small-deflection bound; 5° only without a yield_stress) —
+    // reuse common::cantilever_theta_lim, the same model the cantilever beam uses.
+    let theta_lim = cantilever_theta_lim(b.length, b.thickness, b.e, b.yield_si);
+
+    // An optional user-declared angular operating range (±half-angle) OVERRIDES
+    // θ_lim for the joint range and the §5.3 stress endpoint; θ_lim is retained
+    // as the SAFE/suggested range in the compliance record.
+    let declared = parse_declared_range(b.declared_range_arg, RangeKind::Angle);
+    let range_endpoint = declared.unwrap_or(theta_lim);
+    let range_angle = symmetric_angle_range(range_endpoint);
 
     // Build the spherical joint Map directly (NOT make_flexure_joint, which
     // emits `axis`/`range`/`neutral` keys appropriate for 1-DOF joints only).
@@ -247,7 +290,22 @@ fn prb_two_axis_pivot(args: &[Value]) -> Value {
         Value::Option(None),
     );
     m.insert(Value::String("pivot".to_string()), b.pivot.clone());
-    Value::Map(m)
+    let joint = Value::Map(m);
+
+    // Cache the FlexureCompliance record (§5.3): cantilever angular surface stress
+    // σ = E·(t/2)·θ/L at the (declared|auto) endpoint. The spherical pivot has no
+    // neutral offset, so max_stress_at_neutral is the rest stress (0). The record
+    // rides on the spherical Map via the reserved `__flexure_compliance` key.
+    let max_stress = cantilever_sigma_at(range_endpoint, b.length, b.thickness, b.e);
+    let record = make_compliance_record(
+        k_axis,
+        max_stress,
+        0.0,
+        b.yield_si,
+        None,
+        theta_lim,
+    );
+    attach_compliance(joint, record)
 }
 
 #[cfg(test)]

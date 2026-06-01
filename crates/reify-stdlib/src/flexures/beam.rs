@@ -11,8 +11,9 @@ use reify_ir::Value;
 
 use super::common::{
     attach_compliance, cantilever_sigma_at, cantilever_theta_lim, fixed_guided_delta_max,
-    length_si, make_compliance_record, make_flexure_joint, material_field_si, neutral_angle_si,
-    parse_declared_range, symmetric_angle_range, RangeKind, CANTILEVER_GAMMA, FIXED_GUIDED_GAMMA,
+    fixed_guided_sigma_at, length_si, make_compliance_record, make_flexure_joint,
+    material_field_si, neutral_angle_si, parse_declared_range, symmetric_angle_range, RangeKind,
+    CANTILEVER_GAMMA, FIXED_GUIDED_GAMMA,
 };
 
 /// Evaluate a beam-flexure constructor by name.
@@ -190,14 +191,20 @@ fn prb_fixed_fixed_beam(args: &[Value]) -> Value {
     // Fixed-guided transverse stiffness k_trans = γ_ff·E·I / L³ (γ_ff = 12).
     let k_trans = FIXED_GUIDED_GAMMA * b.e * b.i / b.length.powi(3);
 
-    // Symmetric transverse-displacement validity range = ±δ. Fixed-guided
+    // Auto symmetric transverse-displacement validity δ_auto. Fixed-guided
     // bending stress σ = 3·E·t·δ / L² ⇒ δ_yield = yield·L² / (3·E·t). With no
     // material yield_stress, fall back to a documented small-deflection fraction
-    // of the beam length.
-    let delta = fixed_guided_delta_max(b.length, b.thickness, b.e, b.yield_si);
+    // of the beam length. Retained as the SAFE prb_validity_range below.
+    let delta_auto = fixed_guided_delta_max(b.length, b.thickness, b.e, b.yield_si);
+
+    // An optional user-declared operating range (±half-displacement LENGTH)
+    // OVERRIDES the auto δ_auto for the joint range and the §5.3 stress endpoint;
+    // δ_auto is retained as the SAFE/suggested range in the compliance record.
+    let declared = parse_declared_range(b.declared_range_arg, RangeKind::Length);
+    let range_endpoint = declared.unwrap_or(delta_auto);
     let range = Value::range(
-        Some(Value::length(-delta)),
-        Some(Value::length(delta)),
+        Some(Value::length(-range_endpoint)),
+        Some(Value::length(range_endpoint)),
         true,
         true,
     );
@@ -205,7 +212,7 @@ fn prb_fixed_fixed_beam(args: &[Value]) -> Value {
     // Optional trailing neutral transverse offset (default 0 for the 6-arg form).
     let neutral_si = b.neutral_arg.map(neutral_length_si).unwrap_or(0.0);
 
-    make_flexure_joint(
+    let joint = make_flexure_joint(
         "prismatic",
         b.axis.clone(),
         range,
@@ -215,7 +222,24 @@ fn prb_fixed_fixed_beam(args: &[Value]) -> Value {
         },
         Value::length(neutral_si),
         b.pivot.clone(),
-    )
+    );
+
+    // Cache the FlexureCompliance record (§5.3): fixed-guided surface stress at
+    // the range endpoint (declared when present, else the auto δ_auto — the
+    // worst-case operating stress) and at the neutral rest offset.
+    // prb_validity_range stores the auto SAFE δ_auto regardless of any wider
+    // declared range, so it always advertises the PRB-valid bound.
+    let max_stress = fixed_guided_sigma_at(range_endpoint, b.length, b.thickness, b.e);
+    let max_stress_at_neutral = fixed_guided_sigma_at(neutral_si, b.length, b.thickness, b.e);
+    let record = make_compliance_record(
+        k_trans,
+        max_stress,
+        max_stress_at_neutral,
+        b.yield_si,
+        None,
+        delta_auto,
+    );
+    attach_compliance(joint, record)
 }
 
 /// Extract a neutral transverse offset in metres from a trailing constructor

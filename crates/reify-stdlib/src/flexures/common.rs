@@ -207,10 +207,9 @@ pub(super) enum RangeKind {
     /// Prismatic / displacement joints: a half-displacement in metres (a LENGTH
     /// `Value::Scalar`, or a bare `Value::Real` / `Value::Int` read as metres).
     ///
-    /// Constructed by the displacement-family ctors wired in step-14
-    /// (`prb_fixed_fixed_beam`, `prb_prismatic_blade`); declared here so the
-    /// shared helper covers both joint families from the outset (plan step-6).
-    #[allow(dead_code)]
+    /// Used by the displacement-family ctors `beam::prb_fixed_fixed_beam` and
+    /// `prismatic::prb_prismatic_blade` to parse their optional trailing declared
+    /// operating range.
     Length,
 }
 
@@ -325,6 +324,21 @@ pub(super) fn make_compliance_record(
 /// and `compound::prb_cartwheel_flexure`) that wire the compliance record.
 pub(super) fn cantilever_sigma_at(theta: f64, length: f64, thickness: f64, e: f64) -> f64 {
     e * (thickness / 2.0) * theta.abs() / length
+}
+
+/// Fixed-guided transverse surface bending stress σ = 3·E·t·|δ| / L² (Howell §5
+/// / PRD §6.1) — the algebraic inverse of [`fixed_guided_delta_max`]'s
+/// `δ_yield = yield·L²/(3·E·t)`.
+///
+/// `delta` is the transverse displacement (metres) at which to evaluate the
+/// stress; the magnitude is used so the sign of the deflection does not matter.
+/// Shared by the fixed-guided family (`beam::prb_fixed_fixed_beam`) and the
+/// compound parallelogram stages (`compound::*`, wired at step-20), all of which
+/// share the fixed-guided boundary condition. Note the single-cantilever
+/// prismatic blade (`prismatic::prb_prismatic_blade`) uses HALF this coefficient
+/// (1.5) — its one free end is not guided — so it carries its own local helper.
+pub(super) fn fixed_guided_sigma_at(delta: f64, length: f64, thickness: f64, e: f64) -> f64 {
+    3.0 * e * thickness * delta.abs() / length.powi(2)
 }
 
 /// Insert the cached `FlexureCompliance` record under the reserved hidden joint
