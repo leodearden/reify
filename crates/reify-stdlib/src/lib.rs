@@ -133,6 +133,9 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
     if let Some(v) = snapshot::eval_snapshot(name, args) {
         return v;
     }
+    if let Some(v) = dynamics::eval::eval_dynamics(name, args) {
+        return v;
+    }
     if let Some(v) = stackup::eval_stackup(name, args) {
         return v;
     }

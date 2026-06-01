@@ -6,6 +6,7 @@
 //! dispatch and no heavyweight linalg dependency.
 
 pub mod closed_chain;
+pub mod eval;
 pub mod mass_props;
 pub mod rnea;
 pub mod spatial;

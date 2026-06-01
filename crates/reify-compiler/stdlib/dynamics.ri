@@ -209,3 +209,41 @@ structure def MotionTrajectory {
     param mechanism : Real // TODO(mechanism-type): Mechanism placeholder, cf. trajectory.ri
     param samples : List<TrajectorySample>
 }
+
+// ── Inverse-dynamics + trajectory entry points (RBD-η, task 3836) ─────────────
+//
+// PRD §5 (inverse dynamics), §4.3 (ramp_profile). Three surface fns whose eval-
+// side dispatch lives in `reify-stdlib/src/dynamics/eval.rs` (registered through
+// `lib.rs::eval_builtin`). Each delegates to a `*_lower` intrinsic that has NO
+// `.ri` declaration, exactly mirroring the `gcode_import` → `gcode_import_lower`
+// pattern (trajectory.ri): a `pub fn` with a `.ri` body routes the call site to
+// `UserFunctionCall` (so the declared return type — `List<JointForce>` /
+// `List<List<JointForce>>` / `MotionTrajectory` — is the call-site result type),
+// while the inner `*_lower` call resolves `NoUserFunctions → FunctionCall →
+// eval_builtin → dynamics::eval::eval_dynamics`. `compile_function` applies no
+// body-vs-declared-return-type check, so the (Real-inferred, then discarded)
+// inner-call type produces zero Error diagnostics — same load-bearing discard
+// documented on `gcode_import`.
+//
+// The mechanism / snapshot / joint params use `Real` placeholders (consistent
+// with the structure_def fields above and trajectory.ri `mechanism : Real`).
+// `q_dot` / `q_ddot` are per-joint generalized velocity / acceleration vectors.
+
+// inverse_dynamics_at_snapshot — RNEA inverse dynamics at a single FK snapshot
+// (PRD §5.2). Returns one `JointForce` per joint (revolute → ScalarTorque,
+// prismatic → ScalarForce, etc.). The snapshot's per-body `world_transform`s
+// pin the configuration; `q_dot` / `q_ddot` supply the velocity / acceleration.
+pub fn inverse_dynamics_at_snapshot(mechanism: Real, snapshot: Real, q_dot: List<JointValue>, q_ddot: List<JointValue>) -> List<JointForce> { inverse_dynamics_at_snapshot_lower(mechanism, snapshot, q_dot, q_ddot) }
+
+// inverse_dynamics — RNEA inverse dynamics over a whole trajectory (PRD §5.2).
+// Returns `List<List<JointForce>>` parallel to `trajectory.samples` (one inner
+// per-joint force list per sample). Closed-chain mechanisms route through the
+// Lagrange KKT solver (PRD §5.3); open chains use the bare RNEA.
+pub fn inverse_dynamics(mechanism: Real, trajectory: MotionTrajectory) -> List<List<JointForce>> { inverse_dynamics_lower(mechanism, trajectory) }
+
+// ramp_profile — rest-to-rest constant-acceleration trajectory (PRD §4.3).
+// With no max-velocity argument the profile is triangular: accelerate at
+// `+max_accel` to the midpoint, decelerate at `−max_accel`; total duration
+// T = 2·sqrt(|to − from|/max_accel). Emits a `MotionTrajectory` of
+// `TrajectorySample`s.
+pub fn ramp_profile(joint: Real, from: Real, to: Real, max_accel: Real) -> MotionTrajectory { ramp_profile_lower(joint, from, to, max_accel) }
