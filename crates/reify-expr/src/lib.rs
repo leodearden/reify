@@ -1277,6 +1277,17 @@ fn emit_flexure_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &Ev
     };
     for diag in reify_stdlib::flexure_diagnose(name, args, result) {
         if diag.code == Some(DiagnosticCode::FlexureFatigueCheckMissing) {
+            // NOTE(perf, deferred): the once-per-session fatigue dedup re-scans
+            // the whole sink for the code on every emitting flexure-ctor call —
+            // O(M·N) for M ctors and an N-entry sink. Impact is negligible in
+            // practice (M and N are both tiny) and `any` short-circuits on the
+            // first hit. The clean O(1) fix — a session-scoped `Cell<bool>` /
+            // `HashSet<DiagnosticCode>` of already-emitted once-per-session codes
+            // — must outlive the per-cell `EvalContext` (a fresh one is built per
+            // cell; only this `&RefCell` sink is shared across the eval session),
+            // so that companion state has to be allocated and threaded by the
+            // sink's owner in `crates/reify-eval/src` (outside task 3871's lock
+            // scope). Left as a tracked follow-up rather than reached around.
             let already = sink
                 .borrow()
                 .iter()
