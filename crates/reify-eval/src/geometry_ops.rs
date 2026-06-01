@@ -14894,4 +14894,134 @@ mod tests {
             diagnostics[0].severity
         );
     }
+
+    // ── T5 step-7: pose decompose / compose helpers ──────────────────────────
+
+    /// Build a `Value::Transform` from a raw quaternion `[w,x,y,z]` and a
+    /// LENGTH-dimensioned translation `[tx,ty,tz]` (metres).
+    fn transform_of(q: [f64; 4], t: [f64; 3]) -> reify_ir::Value {
+        reify_ir::Value::Transform {
+            rotation: Box::new(reify_ir::Value::Orientation {
+                w: q[0],
+                x: q[1],
+                y: q[2],
+                z: q[3],
+            }),
+            translation: Box::new(reify_ir::Value::Vector(vec![
+                reify_ir::Value::length(t[0]),
+                reify_ir::Value::length(t[1]),
+                reify_ir::Value::length(t[2]),
+            ])),
+        }
+    }
+
+    /// The canonical identity `Value::Transform` (mirrors `eval_sub_pose`'s
+    /// `None` arm and step-8's `compose_pose_chain` seed).
+    fn identity_transform() -> reify_ir::Value {
+        transform_of([1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
+    }
+
+    #[test]
+    fn decompose_transform_to_arrays_extracts_quat_and_si_translation() {
+        let v = transform_of([0.5, 0.5, 0.5, 0.5], [0.03, -0.01, 0.2]);
+        let (q, t) = decompose_transform_to_arrays(&v).expect("valid Transform must decompose");
+        assert_eq!(q, [0.5, 0.5, 0.5, 0.5], "quaternion [w,x,y,z]");
+        assert_eq!(t, [0.03, -0.01, 0.2], "translation in SI metres");
+    }
+
+    #[test]
+    fn decompose_transform_to_arrays_rejects_non_transform() {
+        assert!(decompose_transform_to_arrays(&reify_ir::Value::Real(1.0)).is_none());
+        assert!(decompose_transform_to_arrays(&reify_ir::Value::Undef).is_none());
+    }
+
+    #[test]
+    fn decompose_transform_to_arrays_rejects_non_orientation_rotation() {
+        // rotation is a Vector, not an Orientation → reject.
+        let v = reify_ir::Value::Transform {
+            rotation: Box::new(reify_ir::Value::Vector(vec![
+                reify_ir::Value::Real(1.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+            ])),
+            translation: Box::new(reify_ir::Value::Vector(vec![
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+            ])),
+        };
+        assert!(decompose_transform_to_arrays(&v).is_none());
+    }
+
+    #[test]
+    fn decompose_transform_to_arrays_rejects_wrong_length_translation() {
+        let v = reify_ir::Value::Transform {
+            rotation: Box::new(reify_ir::Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            translation: Box::new(reify_ir::Value::Vector(vec![
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+            ])),
+        };
+        assert!(decompose_transform_to_arrays(&v).is_none());
+    }
+
+    #[test]
+    fn decompose_transform_to_arrays_rejects_mixed_dimension_translation() {
+        // one ANGLE component among LENGTHs → reject (mixed dimensions).
+        let v = reify_ir::Value::Transform {
+            rotation: Box::new(reify_ir::Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            translation: Box::new(reify_ir::Value::Vector(vec![
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::angle(0.0),
+                reify_ir::Value::length(0.0),
+            ])),
+        };
+        assert!(decompose_transform_to_arrays(&v).is_none());
+    }
+
+    #[test]
+    fn compose_pose_chain_two_equals_eval_builtin() {
+        // Identity-quaternion (translation-only) transforms compose exactly
+        // (quat_mul / quat_rotate by identity are bit-exact), so the left-fold
+        // from identity collapses to a plain transform_compose of the pair.
+        let t1 = transform_of([1.0, 0.0, 0.0, 0.0], [0.01, 0.0, 0.0]);
+        let t2 = transform_of([1.0, 0.0, 0.0, 0.0], [0.0, 0.02, 0.0]);
+        let got = compose_pose_chain(&[t1.clone(), t2.clone()]);
+        let expected = reify_stdlib::eval_builtin("transform_compose", &[t1, t2]);
+        assert_eq!(
+            got, expected,
+            "compose_pose_chain([t1,t2]) must equal transform_compose(t1,t2)"
+        );
+    }
+
+    #[test]
+    fn compose_pose_chain_empty_is_identity() {
+        assert_eq!(
+            compose_pose_chain(&[]),
+            identity_transform(),
+            "empty chain must be the identity Transform"
+        );
+    }
+
+    #[test]
+    fn compose_pose_chain_single_equals_compose_onto_identity() {
+        let t = transform_of([1.0, 0.0, 0.0, 0.0], [0.05, 0.0, 0.0]);
+        let got = compose_pose_chain(&[t.clone()]);
+        let expected = reify_stdlib::eval_builtin("transform_compose", &[identity_transform(), t]);
+        assert_eq!(
+            got, expected,
+            "single-element chain == transform_compose(identity, t)"
+        );
+    }
 }
