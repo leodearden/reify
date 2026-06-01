@@ -148,6 +148,68 @@ pub(crate) fn forces_to_forcing_history(
 mod tests {
     use super::*;
 
+    // ─── step-7: RED — nominal_fk_pose ───────────────────────────────────────
+
+    use crate::dynamics::spatial::{Frame3, SpatialTransform6};
+
+    /// (a) Single revolute link at angle θ with fixed link offset r.
+    ///     Effector position == closed-form rotated offset.
+    #[test]
+    fn nominal_fk_pose_single_revolute_link() {
+        // Z-axis revolute joint at angle θ = π/4.
+        // Link offset: 1.0 m along world X (in parent frame), zero rotation.
+        // After joint rotation R_z(θ):
+        //   effector position = R_z(θ) · [1, 0, 0] = [cos θ, sin θ, 0]
+        let theta = std::f64::consts::FRAC_PI_4; // 45°
+        let c = theta.cos();
+        let s = theta.sin();
+
+        // parent_to_child: pure Z-rotation R_z(θ) first, then offset [1,0,0] in parent.
+        // Convention from rnea.rs: rot(E) · xlt(r) = from_frame3({E_id,0}).compose(from_frame3({I,r}))
+        // But for FK we want: X = rot_z(θ) · xlt([1,0,0])
+        // Build it as: pure rotation (θ around Z) composed with pure translation [1,0,0]
+        // (The plan says "compose the per-link SpatialTransform6 chain root→effector")
+        // We need the child's origin in world frame after applying this transform.
+        // Let's construct the link chain as one link: its transform maps origin to
+        // the effector's world position after rotation by θ.
+
+        // Quaternion for R_z(θ): w=cos(θ/2), z=sin(θ/2), x=y=0
+        let qw = (theta / 2.0).cos();
+        let qz = (theta / 2.0).sin();
+        let rot_frame = Frame3::new([qw, 0.0, 0.0, qz], [0.0; 3]);
+        let trans_frame = Frame3::new([1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0]);
+
+        // X_{p→child} = rot · trans (rnea convention: rot(E)·xlt(r))
+        let x_link = SpatialTransform6::from_frame3(&rot_frame)
+            .compose(&SpatialTransform6::from_frame3(&trans_frame));
+        let link_chain = vec![x_link];
+
+        let pose = nominal_fk_chain(&link_chain);
+
+        // Expected effector position: R_z(θ) · [1, 0, 0] = [c, s, 0]
+        let tol = 1e-12;
+        assert!((pose.position[0] - c).abs() < tol, "x: {} vs {}", pose.position[0], c);
+        assert!((pose.position[1] - s).abs() < tol, "y: {} vs {}", pose.position[1], s);
+        assert!((pose.position[2]).abs() < tol, "z: {}", pose.position[2]);
+    }
+
+    /// (b) Constant joint config over multiple calls → identical nominal pose.
+    #[test]
+    fn nominal_fk_pose_constant_config_identical() {
+        let theta = 0.3_f64;
+        let qw = (theta / 2.0).cos();
+        let qz = (theta / 2.0).sin();
+        let rot_frame = Frame3::new([qw, 0.0, 0.0, qz], [0.0; 3]);
+        let trans_frame = Frame3::new([1.0, 0.0, 0.0, 0.0], [0.5, 0.0, 0.0]);
+        let x_link = SpatialTransform6::from_frame3(&rot_frame)
+            .compose(&SpatialTransform6::from_frame3(&trans_frame));
+        let link_chain = vec![x_link];
+
+        let pose_a = nominal_fk_chain(&link_chain);
+        let pose_b = nominal_fk_chain(&link_chain);
+        assert_eq!(pose_a.position, pose_b.position, "constant config → identical pose");
+    }
+
     // ─── step-5: RED — superpose_modes ───────────────────────────────────────
 
     /// Local analytic SDOF step-response oracle (matches transient.rs tests).
