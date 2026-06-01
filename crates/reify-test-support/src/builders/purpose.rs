@@ -12,7 +12,7 @@ pub struct CompiledPurposeBuilder {
     is_pub: bool,
     params: Vec<CompiledPurposeParam>,
     constraints: Vec<CompiledConstraint>,
-    objective: Option<reify_ir::OptimizationObjective>,
+    objective: Option<reify_ir::ObjectiveSet>,
     resolved_queries: Vec<ResolvedSchemaQuery>,
     annotations: Vec<reify_ir::Annotation>,
 }
@@ -73,7 +73,7 @@ impl CompiledPurposeBuilder {
         self
     }
 
-    pub fn objective(mut self, obj: reify_ir::OptimizationObjective) -> Self {
+    pub fn objective(mut self, obj: reify_ir::ObjectiveSet) -> Self {
         self.objective = Some(obj);
         self
     }
@@ -168,7 +168,7 @@ mod annotation_tests {
 mod tests {
     use super::*;
     use crate::builders::literal;
-    use reify_ir::{OptimizationObjective, Value};
+    use reify_ir::{ObjectiveSet, ObjectiveSense, Value};
 
     #[test]
     fn purpose_builder_basic_param_and_constraint() {
@@ -201,7 +201,7 @@ mod tests {
         let obj_expr = literal(Value::Real(1.0));
         let purpose: CompiledPurpose = CompiledPurposeBuilder::new("minimize_mass")
             .param("subject", "Structure")
-            .objective(OptimizationObjective::Minimize(obj_expr))
+            .objective(ObjectiveSet::single(ObjectiveSense::Minimize, obj_expr))
             .build();
         assert!(purpose.objective.is_some());
         assert_eq!(purpose.resolved_queries.len(), 0);

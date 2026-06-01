@@ -502,8 +502,8 @@ structure Test {
 /// (a) A non-conforming call in an OBJECTIVE expr — `minimize couple(FixedThing())`
 /// — emits TypeNotConformingToTrait.
 ///
-/// The objective lives in `template.objective` = `OptimizationObjective::Minimize(expr)`
-/// (`minimize <expr>` is a valid structure member; boundary2_producer.rs:1303).
+/// The objective lives in `template.objective` = `Some(ObjectiveSet)` with a single
+/// `Minimize` term (`minimize <expr>` is a valid structure member; boundary2_producer.rs:1303).
 ///
 /// RED until step-12: `template.objective` is not walked by step-10.
 #[test]

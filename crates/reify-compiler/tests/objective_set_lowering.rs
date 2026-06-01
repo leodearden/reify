@@ -157,23 +157,9 @@ fn two_minimize_decls_lower_to_two_term_weighted_sum_no_conflict() {
         assert_eq!(term.priority, 0, "term[{i}].priority must default to 0");
     }
 
-    // Verify no E_OBJECTIVE_CONFLICT diagnostic was emitted
-    // (collecting ALL diagnostics to fail with a helpful message if any appear)
-    let conflict_diags: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| {
-            d.code
-                .as_deref()
-                .map(|c| c.contains("OBJECTIVE_CONFLICT") || c.contains("E_OBJ"))
-                .unwrap_or(false)
-        })
-        .collect();
-    assert!(
-        conflict_diags.is_empty(),
-        "E_OBJECTIVE_CONFLICT must NOT be emitted (task ζ/4010 owns that); got: {:?}",
-        conflict_diags
-    );
+    // compile_ok() already asserts compiled.diagnostics.is_empty(), which
+    // guarantees NO E_OBJECTIVE_CONFLICT diagnostic was emitted (task ζ/4010
+    // is the future owner of that diagnostic).
 }
 
 // ── no objective ──────────────────────────────────────────────────────────────

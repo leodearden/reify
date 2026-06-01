@@ -367,7 +367,7 @@ pub(crate) fn compile_purpose(
 
     let mut constraints = Vec::new();
     let mut constraint_index = 0u32;
-    let mut objective = None;
+    let mut objective_terms: Vec<ObjectiveTerm> = Vec::new();
     let mut lets = Vec::new();
 
     for member in &purpose_def.members {
@@ -389,12 +389,12 @@ pub(crate) fn compile_purpose(
             reify_ast::MemberDecl::Minimize(min_decl) => {
                 let compiled_expr =
                     compile_expr(&min_decl.expr, &scope, enum_defs, functions, diagnostics);
-                objective = Some(OptimizationObjective::Minimize(compiled_expr));
+                objective_terms.push(ObjectiveTerm::new(ObjectiveSense::Minimize, compiled_expr));
             }
             reify_ast::MemberDecl::Maximize(max_decl) => {
                 let compiled_expr =
                     compile_expr(&max_decl.expr, &scope, enum_defs, functions, diagnostics);
-                objective = Some(OptimizationObjective::Maximize(compiled_expr));
+                objective_terms.push(ObjectiveTerm::new(ObjectiveSense::Maximize, compiled_expr));
             }
             reify_ast::MemberDecl::Let(let_decl) => {
                 // Compile the let expression in the current scope (purpose params
@@ -725,6 +725,12 @@ pub(crate) fn compile_purpose(
     let annotations = lower_annotations(&purpose_def.annotations, diagnostics);
     validate_annotations(&annotations, "purpose", diagnostics);
     validate_pragmas(&purpose_def.pragmas, "purpose", diagnostics);
+
+    let objective = if objective_terms.is_empty() {
+        None
+    } else {
+        Some(ObjectiveSet { terms: objective_terms, combination: ObjectiveCombination::WeightedSum })
+    };
 
     CompiledPurpose {
         name: purpose_def.name.clone(),

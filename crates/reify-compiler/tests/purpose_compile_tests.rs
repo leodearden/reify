@@ -742,27 +742,32 @@ purpose lightweight(subject : Structure) {
         other => panic!("expected BinOp constraint expression, got {:?}", other),
     }
 
-    // (c) objective is Some(Minimize(ValueRef(lightweight::subject.mass)))
-    match &purpose.objective {
-        Some(OptimizationObjective::Minimize(expr)) => match &expr.kind {
-            CompiledExprKind::ValueRef(id) => {
-                assert_eq!(
-                    id.entity, "lightweight::subject",
-                    "objective ValueRef entity must equal `purpose::param` per task-2181 β stamp scheme, got {:?}",
-                    id.entity
-                );
-                assert_eq!(
-                    id.member, "mass",
-                    "objective ValueRef member must be 'mass', got {:?}",
-                    id.member
-                );
-            }
-            other => panic!(
-                "expected ValueRef for minimize objective expr, got {:?}",
-                other
-            ),
-        },
-        other => panic!("expected Some(Minimize(_)) for objective, got {:?}", other),
+    // (c) objective is Some(1-term WeightedSum Minimize(ValueRef(lightweight::subject.mass)))
+    let obj = purpose
+        .objective
+        .as_ref()
+        .expect("expected Some(ObjectiveSet) for objective");
+    assert_eq!(obj.combination, ObjectiveCombination::WeightedSum);
+    assert_eq!(obj.terms.len(), 1, "expected 1 term");
+    let term = &obj.terms[0];
+    assert_eq!(term.sense, ObjectiveSense::Minimize, "expected Minimize");
+    match &term.expr.kind {
+        CompiledExprKind::ValueRef(id) => {
+            assert_eq!(
+                id.entity, "lightweight::subject",
+                "objective ValueRef entity must equal `purpose::param` per task-2181 β stamp scheme, got {:?}",
+                id.entity
+            );
+            assert_eq!(
+                id.member, "mass",
+                "objective ValueRef member must be 'mass', got {:?}",
+                id.member
+            );
+        }
+        other => panic!(
+            "expected ValueRef for minimize objective expr, got {:?}",
+            other
+        ),
     }
 }
 
