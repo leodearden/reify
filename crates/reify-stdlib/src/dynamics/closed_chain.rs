@@ -116,8 +116,82 @@ pub fn solve_closed_chain(
         return Err(ClosedChainError::DimensionMismatch);
     }
 
-    // Placeholder — implementation follows in subsequent steps.
-    Err(ClosedChainError::DimensionMismatch)
+    let k = n + m; // size of the augmented KKT system
+
+    if m == 0 {
+        // ── m=0 fast path: K = M (SPD), no constraint rows/columns ──────────
+        let mut a_work: Vec<f64> = m_matrix.to_vec();
+        let mut b_work: Vec<f64> = tau_open.to_vec();
+        if !ldlt_solve_symmetric(&mut a_work, &mut b_work, n, pivot_eps) {
+            return Err(ClosedChainError::Singular);
+        }
+        return Ok(ClosedChainSolution {
+            q_ddot: b_work,
+            lambda: vec![],
+            tau: tau_open.to_vec(),
+        });
+    }
+
+    // ── General m>0 path: assemble the (n+m)×(n+m) symmetric KKT matrix ────
+    //
+    // Layout (M-block FIRST — correctness-critical; see module doc):
+    //   K = [ M   Aᵀ ]   rows 0..n,   cols 0..n  → M
+    //       [ A    0 ]   rows n..n+m, cols 0..n  → A
+    //                    rows 0..n,   cols n..k  → Aᵀ
+    //                    rows n..k,   cols n..k  → 0
+    let mut kkt: Vec<f64> = vec![0.0; k * k];
+
+    // Top-left n×n block: M
+    for i in 0..n {
+        for j in 0..n {
+            kkt[i * k + j] = m_matrix[i * n + j];
+        }
+    }
+    // Top-right n×m block: Aᵀ  (kkt[i, n+j] = a_matrix[j*n+i])
+    // Bottom-left m×n block: A  (kkt[n+i, j] = a_matrix[i*n+j])
+    for i in 0..m {
+        for j in 0..n {
+            let a_val = a_matrix[i * n + j];
+            kkt[(n + i) * k + j] = a_val; // A block
+            kkt[j * k + (n + i)] = a_val; // Aᵀ block
+        }
+    }
+    // Bottom-right m×m block remains 0 (already zeroed).
+
+    // Debug-mode symmetry self-check.
+    #[cfg(debug_assertions)]
+    for i in 0..k {
+        for j in 0..k {
+            debug_assert_eq!(
+                kkt[i * k + j],
+                kkt[j * k + i],
+                "KKT symmetry violated at [{i},{j}]"
+            );
+        }
+    }
+
+    // RHS: [τ_open; accel_rhs]
+    let mut rhs: Vec<f64> = Vec::with_capacity(k);
+    rhs.extend_from_slice(tau_open);
+    rhs.extend_from_slice(accel_rhs);
+
+    // Solve K · z = rhs in-place.
+    if !ldlt_solve_symmetric(&mut kkt, &mut rhs, k, pivot_eps) {
+        return Err(ClosedChainError::Singular);
+    }
+
+    let q_ddot = rhs[..n].to_vec();
+    let lambda = rhs[n..k].to_vec();
+
+    // τ = τ_open + Aᵀλ
+    let mut tau: Vec<f64> = tau_open.to_vec();
+    for i in 0..n {
+        for j in 0..m {
+            tau[i] += a_matrix[j * n + i] * lambda[j];
+        }
+    }
+
+    Ok(ClosedChainSolution { q_ddot, lambda, tau })
 }
 
 // ── Private LDLᵀ solver ───────────────────────────────────────────────────────
