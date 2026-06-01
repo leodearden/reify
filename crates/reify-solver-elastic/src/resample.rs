@@ -151,8 +151,12 @@ pub fn resample_nodal_to_grid_instrumented(
                             nodes[conn[2]],
                             nodes[conn[3]],
                         ];
-                        // Recompute barycentric weights for the located element;
-                        // same arithmetic as the original linear-scan path (bit-identical).
+                        // Recompute barycentric weights for the located element.
+                        // Intentional: `point_in_tet_p1` (called inside `locate_counted`)
+                        // already computed identical barycentric coords and discarded them.
+                        // The recompute preserves the unchanged `point_in_tet_p1` signature
+                        // and guarantees bit-identical output via the same arithmetic as the
+                        // original linear-scan path.
                         let bary = barycentric_p1(&phys4, p);
                         for c in 0..stride {
                             let val = bary[0] * nodal_values[conn[0] * stride + c]
@@ -277,7 +281,8 @@ pub fn resample_multi_nodal_to_grid_instrumented(
                             nodes[conn[2]],
                             nodes[conn[3]],
                         ];
-                        // Recompute barycentric weights; same arithmetic → bit-identical.
+                        // Recompute barycentric weights (intentional recompute — see
+                        // `resample_nodal_to_grid_instrumented` for the full rationale).
                         let bary = barycentric_p1(&phys4, p);
                         // Grid point is inside this tet — interpolate every field.
                         for (fi, (nodal_vals, stride, _)) in fields.iter().enumerate() {

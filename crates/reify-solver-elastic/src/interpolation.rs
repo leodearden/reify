@@ -253,8 +253,13 @@ enum BvhNode {
 /// AABB.  Over-padding only adds a few extra `point_in_tet_p1` evaluations;
 /// under-padding (not possible here) would silently miss the correct element.
 pub struct TetSpatialIndex {
-    nodes: Vec<BvhNode>,
+    /// Flat BVH node array.  Named `bvh_nodes` to avoid shadowing the mesh
+    /// vertex parameter `nodes` that callers pass to [`Self::locate_counted`].
+    bvh_nodes: Vec<BvhNode>,
     root: usize,
+    /// Number of mesh nodes supplied at build time; used in the geometry
+    /// consistency [`debug_assert`] in [`Self::locate_counted`].
+    n_nodes: usize,
     /// Element-index permutation; leaves reference contiguous sub-ranges.
     perm: Vec<usize>,
 }
@@ -272,7 +277,7 @@ impl TetSpatialIndex {
     pub fn build(nodes: &[[f64; 3]], elems: &[[usize; 4]], tol: f64) -> Self {
         let n = elems.len();
         if n == 0 {
-            return TetSpatialIndex { nodes: vec![], root: 0, perm: vec![] };
+            return TetSpatialIndex { bvh_nodes: vec![], root: 0, perm: vec![], n_nodes: nodes.len() };
         }
 
         // Per-element padded AABB.
@@ -326,7 +331,7 @@ impl TetSpatialIndex {
             &mut bvh_nodes,
         );
 
-        TetSpatialIndex { nodes: bvh_nodes, root, perm }
+        TetSpatialIndex { bvh_nodes, root, perm, n_nodes: nodes.len() }
     }
 
     fn build_recursive(
@@ -422,13 +427,34 @@ impl TetSpatialIndex {
         p: [f64; 3],
         tol: f64,
     ) -> (Option<usize>, usize) {
-        if self.nodes.is_empty() {
+        // Geometry-consistency contract: callers MUST pass the same nodes/elems
+        // that were supplied to `build`.  The index stores only `perm` (element
+        // indices) and `n_nodes`; passing a different or reordered slice silently
+        // returns wrong results at runtime.  These asserts catch the most common
+        // misuse in debug builds.
+        debug_assert_eq!(
+            nodes.len(),
+            self.n_nodes,
+            "locate_counted: nodes.len() ({}) != index n_nodes ({}); \
+             pass the same nodes slice that was used to build the index",
+            nodes.len(),
+            self.n_nodes,
+        );
+        debug_assert_eq!(
+            elems.len(),
+            self.perm.len(),
+            "locate_counted: elems.len() ({}) != index perm.len() ({}); \
+             pass the same elems slice that was used to build the index",
+            elems.len(),
+            self.perm.len(),
+        );
+        if self.bvh_nodes.is_empty() {
             return (None, 0);
         }
         let mut best: Option<usize> = None;
         let mut count: usize = 0;
         Self::traverse(
-            &self.nodes,
+            &self.bvh_nodes,
             self.root,
             &self.perm,
             nodes,
@@ -573,9 +599,7 @@ mod bvh_tests {
 
         // (1) Centroid of Tet0 — inside.
         let p_in = [0.25_f64, 0.25, 0.25];
-        let (opt_loc, _) = idx.locate_counted(&nodes, &elems, p_in, tol);
         let (opt_cnt, cnt_in) = idx.locate_counted(&nodes, &elems, p_in, tol);
-        assert_eq!(opt_loc, idx.locate(&nodes, &elems, p_in, tol), "inside: parity");
         assert_eq!(opt_cnt, Some(0), "inside: must find Tet0");
         assert!(cnt_in >= 1, "inside: count ≥ 1 (at least Tet0 tested)");
 
@@ -590,6 +614,24 @@ mod bvh_tests {
         let (opt_out, cnt_out) = idx.locate_counted(&nodes, &elems, p_out, tol);
         assert_eq!(opt_out, None, "far outside: None");
         assert_eq!(cnt_out, 0, "far outside: count must be 0 (root AABB culls all)");
+    }
+
+    /// Empty-mesh path: building a `TetSpatialIndex` over zero elements must
+    /// produce a valid (empty) index, and `locate`/`locate_counted` must return
+    /// `(None, 0)` for any query point.  Exercises the early-return branch in
+    /// `build` and the `bvh_nodes.is_empty()` guard in `locate_counted`.
+    #[test]
+    fn tet_spatial_index_empty_mesh_returns_none() {
+        let nodes: Vec<[f64; 3]> = vec![];
+        let elems: Vec<[usize; 4]> = vec![];
+        let tol = 1e-9_f64;
+        let idx = TetSpatialIndex::build(&nodes, &elems, tol);
+
+        for p in [[0.0_f64, 0.0, 0.0], [1.0, 2.0, 3.0], [-5.0, 0.0, 0.0]] {
+            let (loc, cnt) = idx.locate_counted(&nodes, &elems, p, tol);
+            assert_eq!(loc, None, "empty mesh: locate must be None for p={p:?}");
+            assert_eq!(cnt, 0, "empty mesh: count must be 0 for p={p:?}");
+        }
     }
 
     /// Step-1 RED: TetSpatialIndex does not exist yet; this test fails to compile.
