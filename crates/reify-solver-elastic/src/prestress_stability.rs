@@ -470,6 +470,55 @@ fn min_eigenvalue_on_subspace(k_g: &Mat<f64>, basis: &Mat<f64>) -> f64 {
         .fold(f64::INFINITY, f64::min)
 }
 
+/// Connelly super-stability verdict (algebraic conditions only): the force-density
+/// matrix `D = CᵀQC` is positive-semidefinite **and** has rank exactly `N − d − 1`.
+///
+/// `D` ([`crate::form_find_free::assemble_force_density_matrix`]) is the same
+/// layer-2 stress matrix reused by [`assemble_geometric_stiffness`]; its spectrum
+/// is classified with the dense self-adjoint pattern shared across this kernel
+/// (faer `self_adjoint_eigen`, [`NULLITY_REL_TOL`] relative threshold):
+///
+/// * **PSD**: the algebraic minimum eigenvalue exceeds `−rel_tol · max|λ|` — no
+///   eigenvalue is meaningfully negative. For the canonical triplex `D`'s spectrum
+///   is `{0,0,0,0,6,6}`, so the minimum sits at the numerical-zero floor ⇒ PSD.
+/// * **Rank**: the count of eigenvalues with `|λ| > rel_tol · max|λ|` equals
+///   `N − d − 1` (= 2 for the prism). Written addition-side (`rank + d + 1 == n`)
+///   to avoid `usize` underflow when `d + 1 > n` (a degenerate/under-specified
+///   form, which is then trivially not super-stable).
+///
+/// # Deferred condition
+///
+/// Connelly's full super-stability theorem adds a third requirement — the member
+/// directions must not lie on a conic at infinity. That projective check is a
+/// degenerate-geometry guard that does NOT change the verdict for generic
+/// non-degenerate forms (including the canonical triplex, which is genuinely
+/// super-stable), so it is intentionally NOT implemented here and is recorded as a
+/// documented scope boundary / follow-up. `is_super_stable` therefore means
+/// precisely "satisfies the algebraic PSD + rank conditions of Connelly
+/// super-stability".
+fn is_super_stable(n: usize, members: &[(usize, usize)], q: &[f64], d: usize) -> bool {
+    if n == 0 {
+        return false;
+    }
+    let d_mat = crate::form_find_free::assemble_force_density_matrix(n, members, q);
+    let eig = d_mat
+        .self_adjoint_eigen(Side::Lower)
+        .expect("force-density matrix D is real symmetric; self-adjoint EVD must succeed");
+    let s = eig.S();
+    let eigenvalues: Vec<f64> = (0..n).map(|i| s[i]).collect();
+    let max_mag = eigenvalues.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+    let threshold = NULLITY_REL_TOL * max_mag;
+
+    // PSD: no eigenvalue is meaningfully negative (algebraic min above −threshold).
+    let min_lambda = eigenvalues.iter().copied().fold(f64::INFINITY, f64::min);
+    let psd = min_lambda > -threshold;
+
+    // rank(D) = count of eigenvalues clear of the relative null threshold.
+    let rank = eigenvalues.iter().filter(|v| v.abs() > threshold).count();
+
+    psd && rank + d + 1 == n
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
