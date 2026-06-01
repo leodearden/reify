@@ -1120,13 +1120,105 @@ pub enum DiagnosticCode {
     /// `"shell_threshold = <value> must be in (0.0, 1.0)."`
     ///
     /// Introduced in task γ (#3834, `shell-extract-engine-bridge.md` §7 row 3).
-    /// The remaining six PRD §7 codes (`ShellNoVoxelGrid`, `ShellMedialMaskOob`,
-    /// `ShellPruneFailed`, `ShellMeshQuality`, `ShellTooThick`, `ShellNoMedial`)
-    /// are deferred to task ε; only this code is wired in γ because it is the
-    /// only user-facing variant the γ test exercises.
+    /// The remaining six PRD §7 codes were added in task ε (#3837).
     ///
     /// The PRD-prose mnemonic for this code is `E_SHELL_BAD_THRESHOLD`.
     ShellBadThreshold,
+    /// Origin: `crates/reify-eval/src/shell_extract_compute.rs` (ε trampoline,
+    /// medial-mask / mid-surface phase, `GridValidationError::EmptyAxisGrid`
+    /// arm).
+    ///
+    /// Emitted as `Severity::Error` when the `SampledField` supplied to the
+    /// `"shell-extract::extract"` trampoline has an empty axis grid along one
+    /// or more dimensions (i.e. no voxel grid exists). The producer cannot
+    /// compute a medial mask or extract a mid-surface from a zero-extent grid.
+    ///
+    /// Canonical message form:
+    /// `"shell-extract::extract: grid validation: empty axis grid — no voxel grid to process"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_SHELL_NO_VOXEL_GRID`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    ShellNoVoxelGrid,
+    /// Origin: `crates/reify-eval/src/shell_extract_compute.rs` (ε trampoline,
+    /// mid-surface phase, `MidSurfaceError::MaskVoxelOutOfBounds` arm).
+    ///
+    /// Emitted as `Severity::Error` when the medial-axis mask contains a voxel
+    /// index that falls outside the SDF grid bounds during mid-surface
+    /// extraction. This indicates an internal grid/mask size mismatch.
+    ///
+    /// Canonical message form:
+    /// `"shell-extract::extract: mid-surface: medial-mask voxel index out of bounds"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_SHELL_MEDIAL_MASK_OOB`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    ShellMedialMaskOob,
+    /// Origin: `crates/reify-eval/src/shell_extract_compute.rs` (ε trampoline,
+    /// branch-pruning phase, any `PruneError` arm).
+    ///
+    /// Emitted as `Severity::Error` when the branch-pruning step on the raw
+    /// mid-surface mesh fails. Pruning removes dangling branches from the
+    /// medial-surface skeleton; a failure here indicates an ill-conditioned
+    /// mesh or degenerate geometry.
+    ///
+    /// Canonical message form:
+    /// `"shell-extract::extract: prune phase: branch pruning failed"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_SHELL_PRUNE_FAILED`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    ShellPruneFailed,
+    /// Origin: `crates/reify-eval/src/shell_extract_compute.rs` (ε trampoline,
+    /// meshing phase, `MesherError::QualityBelowThreshold` arm).
+    ///
+    /// Emitted as `Severity::Error` when the mid-surface mesher produces a mesh
+    /// whose worst-element quality (minimum angle) falls below the configured
+    /// `min_angle_degrees` threshold, making the mesh unusable for FEA.
+    ///
+    /// Canonical message form:
+    /// `"shell-extract::extract: mesh phase: mesh quality below threshold — minimum angle too small"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_SHELL_MESH_QUALITY`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    ShellMeshQuality,
+    /// Origin: `crates/reify-eval/src/compute_targets/elastic_static.rs`
+    /// (`solve_elastic_static_trampoline` — too-thick dispatch-site policy,
+    /// added in task ε #3837).
+    ///
+    /// Emitted when a body's thickness/extent ratio (`height / min(length,
+    /// width)`) is ≥ `shell_threshold` (default 0.2), indicating the body is
+    /// too thick to be meaningfully solved as a thin shell.
+    ///
+    /// - `ShellForce::On` (`@shell`): emitted as `Severity::Error`; the solve
+    ///   aborts immediately with no tet fallback (`FailurePolicy::HardError`).
+    ///   PRD-prose mnemonic `E_SHELL_TOO_THICK`.
+    /// - `ShellForce::Auto`: emitted as `Severity::Warning`; the solve falls
+    ///   back to the tet/solid path (`FailurePolicy::TetFallbackWithWarning`).
+    ///
+    /// Canonical message form:
+    /// `"body thickness/extent ratio <ratio:.2> ≥ shell_threshold <threshold:.2>: body is too thick for shell solve (ratio must be < <threshold:.2>). Use ElasticOptions(shell_force: ShellForce.Off) / @solid to suppress this <error/warning>."`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_SHELL_TOO_THICK` /
+    /// `W_SHELL_TOO_THICK` depending on severity.
+    ShellTooThick,
+    /// Origin: reserved for a future emission site in
+    /// `crates/reify-eval/src/shell_extract_compute.rs` (ε trampoline).
+    ///
+    /// **Not yet emitted** — no clean synthetic trigger exists for the
+    /// "empty medial mask" state in the current pipeline.  This variant is
+    /// added for PRD §7 vocabulary completeness and to reserve the wire string
+    /// `"ShellNoMedial"` in the serde encoding, consistent with the
+    /// codebase's reserved-code convention (see also `MissingRequiredMember`,
+    /// `KinematicClosedChain`).
+    ///
+    /// When emitted in a future task: `Severity::Error` when the medial-axis
+    /// computation produces an empty mask (no interior voxels), preventing any
+    /// mid-surface extraction.
+    ///
+    /// Canonical message form (reserved):
+    /// `"shell-extract::extract: medial-mask phase: no medial axis found — body may be too degenerate for shell extraction"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_SHELL_NO_MEDIAL`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    ShellNoMedial,
     /// Origin: `crates/reify-stdlib/src/stackup.rs` (classifier) +
     ///          `crates/reify-expr/src/lib.rs` (emission site).
     ///
