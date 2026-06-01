@@ -345,6 +345,15 @@ fn try_resolve_cross_sub_geometry_value_ref(
         // solver without panicking.  Type::Geometry is a placeholder — the
         // compiler does not cascade-error on this type in comparison contexts,
         // and eval looks up values from the snapshot by ID, not by type.
+        //
+        // The placeholder type is provably harmless: the DimensionalSolver
+        // evaluates constraint operands numerically via
+        // `reify_expr::eval_expr(...).as_f64()` and never inspects an
+        // operand's static `Type`, so it produces identical residuals
+        // regardless of declaration order.  Regression guard:
+        // `reify_eval/tests/auto_sub_override_resolution.rs`
+        //   `sub_override_auto_forward_declared_dimensional_constraint_type_agnostic`
+        // (task 4123, step-1).
         Some(CompiledExpr::value_ref(scoped_id, Type::Geometry))
     }
 }
