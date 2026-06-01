@@ -10567,3 +10567,96 @@ fn apply_fea_channels_without_elastic_result_leaves_meshes_untouched() {
         "displaced_positions must stay None when no ElasticResult present"
     );
 }
+
+// ── Task 4087 step-11: RED (integration / B5+B6 signal) ──────────────────────
+//
+// Load `examples/fea_cantilever_smoke.ri` under MockGeometryKernel (whose
+// tessellate returns vertices [0,0,0], [1,0,0], [0,1,0]).
+//
+// The first two vertices are in the FEA field bounds (the beam occupies
+// [0,1.0]×[0,0.1]×[0,0.1] m); the third (y=1.0) is outside the y-range.
+//
+// After build_gui_state (which calls apply_fea_channels when step-12 wires it):
+//   - scalar_channels["vonMises"] must have len == vertex_count (3).
+//   - At least one value != SCALAR_CHANNEL_OOB_SENTINEL (i.e., >= 0) must exist
+//     (in-bounds vertex has real von Mises stress from the FEA result).
+//   - displaced_positions must be Some with len == vertices.len() (9).
+//   - At least one displaced vertex must differ from the original vertex
+//     (warp=1 displacement applied to an in-bounds vertex).
+//   - serde_json::to_string(&mesh) must succeed (wire contract: finite values,
+//     correct lengths).
+//
+// This test fails until step-12 wires apply_fea_channels into build_gui_state.
+
+#[test]
+fn build_gui_state_fea_cantilever_smoke_has_von_mises_and_displaced_positions() {
+    let source = include_str!("../../../../examples/fea_cantilever_smoke.ri");
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let kernel = reify_test_support::MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(source, "FeaCantileverSmoke")
+        .expect("load_from_source must succeed for fea_cantilever_smoke.ri");
+
+    // Find the first non-empty mesh (the body mesh produced by tessellation).
+    let mesh = state
+        .meshes
+        .iter()
+        .find(|m| !m.vertices.is_empty())
+        .expect("build_gui_state must produce at least one non-empty mesh");
+
+    let vertex_count = mesh.vertices.len() / 3; // 3 vertices from MockGeometryKernel
+
+    // ── scalar_channels["vonMises"] ──────────────────────────────────────────
+    let vm = mesh
+        .scalar_channels
+        .get("vonMises")
+        .expect("scalar_channels must contain 'vonMises' after FEA solve");
+
+    assert_eq!(
+        vm.len(),
+        vertex_count,
+        "vonMises channel len must equal vertex_count; got {} expected {}",
+        vm.len(),
+        vertex_count
+    );
+
+    let has_real_stress = vm.iter().any(|&v| v != crate::types::SCALAR_CHANNEL_OOB_SENTINEL && v >= 0.0);
+    assert!(
+        has_real_stress,
+        "at least one vonMises value must be non-sentinel (in-bounds vertex has real FEA stress); got: {:?}",
+        vm
+    );
+
+    // ── displaced_positions ──────────────────────────────────────────────────
+    let dp = mesh
+        .displaced_positions
+        .as_ref()
+        .expect("displaced_positions must be Some after FEA solve");
+
+    assert_eq!(
+        dp.len(),
+        mesh.vertices.len(),
+        "displaced_positions len must equal vertices.len(); got {} expected {}",
+        dp.len(),
+        mesh.vertices.len()
+    );
+
+    let has_moved = dp
+        .iter()
+        .zip(mesh.vertices.iter())
+        .any(|(d, v)| (d - v).abs() > 1e-10);
+    assert!(
+        has_moved,
+        "at least one displaced vertex must differ from its original (warp=1 displacement applied)"
+    );
+
+    // ── wire-contract: serde_json serialize must succeed ─────────────────────
+    let json_result = serde_json::to_string(mesh);
+    assert!(
+        json_result.is_ok(),
+        "serde_json::to_string(&mesh) must succeed (wire contract: finite values, correct lengths); err: {:?}",
+        json_result.err()
+    );
+}
