@@ -197,3 +197,158 @@ pub(super) fn neutral_angle_si(v: &Value) -> f64 {
         other => crate::helpers::trig_input(other).unwrap_or(0.0),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reify_core::DimensionVector;
+    use reify_ir::Value;
+
+    /// Read a field `Value` by name from a `FlexureCompliance` StructureInstance.
+    fn field<'a>(rec: &'a Value, key: &str) -> &'a Value {
+        match rec {
+            Value::StructureInstance(data) => data
+                .fields
+                .get(&key.to_string())
+                .unwrap_or_else(|| panic!("FlexureCompliance missing field `{key}`")),
+            other => panic!("expected FlexureCompliance StructureInstance, got {other:?}"),
+        }
+    }
+
+    /// Assert `v` is a PRESSURE-dimensioned Scalar and return its si_value.
+    fn pressure_si(v: &Value, label: &str) -> f64 {
+        match v {
+            Value::Scalar { si_value, dimension } => {
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::PRESSURE,
+                    "{label}: carries PRESSURE dimension"
+                );
+                *si_value
+            }
+            other => panic!("{label}: expected PRESSURE Scalar, got {other:?}"),
+        }
+    }
+
+    /// Assert `v` is a bare `Value::Real` and return it.
+    fn real_of(v: &Value, label: &str) -> f64 {
+        match v {
+            Value::Real(r) => *r,
+            other => panic!("{label}: expected Real, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn make_compliance_record_is_flexure_compliance_with_seven_fields() {
+        let rec = make_compliance_record(1.42, 100e6, 0.0, Some(310e6), None, 0.0872664626);
+        match &rec {
+            Value::StructureInstance(data) => {
+                assert_eq!(data.type_name, "FlexureCompliance", "type_name");
+            }
+            other => panic!("expected StructureInstance, got {other:?}"),
+        }
+        // All 7 FlexureCompliance fields present.
+        for key in [
+            "effective_stiffness",
+            "max_stress",
+            "max_stress_at_neutral",
+            "yield_margin",
+            "parasitic_error",
+            "prb_validity_range",
+            "at_yield",
+        ] {
+            let _ = field(&rec, key);
+        }
+    }
+
+    #[test]
+    fn make_compliance_record_safe_input_positive_margin_not_yielding() {
+        // max_stress (100 MPa) < yield (310 MPa) ⇒ at_yield false, positive margin.
+        let yield_si = 310e6_f64;
+        let max_stress = 100e6_f64;
+        let rec = make_compliance_record(1.42, max_stress, 0.0, Some(yield_si), None, 0.0872664626);
+
+        // effective_stiffness stored as a bare Real (family-agnostic: revolute
+        // rotational vs prismatic translational stiffness share this slot).
+        assert_eq!(
+            real_of(field(&rec, "effective_stiffness"), "effective_stiffness"),
+            1.42
+        );
+
+        // Stresses are PRESSURE-dimensioned Scalars.
+        assert_eq!(pressure_si(field(&rec, "max_stress"), "max_stress"), max_stress);
+        assert_eq!(
+            pressure_si(field(&rec, "max_stress_at_neutral"), "max_stress_at_neutral"),
+            0.0
+        );
+
+        // yield_margin == (yield - max_stress) / yield, and positive for safe input.
+        let expected_margin = (yield_si - max_stress) / yield_si;
+        let m = real_of(field(&rec, "yield_margin"), "yield_margin");
+        assert!(
+            (m - expected_margin).abs() < 1e-12,
+            "margin {m} vs expected {expected_margin}"
+        );
+        assert!(m > 0.0, "safe input ⇒ positive margin, got {m}");
+
+        // at_yield == false.
+        assert_eq!(field(&rec, "at_yield"), &Value::Bool(false), "not at yield");
+
+        // parasitic_error None ⇒ Option(None).
+        assert_eq!(
+            field(&rec, "parasitic_error"),
+            &Value::Option(None),
+            "absent parasitic ⇒ Option(None)"
+        );
+
+        // prb_validity_range stored as a Real (the SI half-angle/half-displacement).
+        assert!(
+            (real_of(field(&rec, "prb_validity_range"), "prb_validity_range") - 0.0872664626).abs()
+                < 1e-9
+        );
+    }
+
+    #[test]
+    fn make_compliance_record_yielding_input_negative_margin_at_yield() {
+        // max_stress (447 MPa) > yield (310 MPa) ⇒ at_yield true, negative margin.
+        let yield_si = 310e6_f64;
+        let max_stress = 447e6_f64;
+        let rec =
+            make_compliance_record(0.01, max_stress, 50e6, Some(yield_si), Some(1e-6), 0.17453293);
+
+        assert_eq!(field(&rec, "at_yield"), &Value::Bool(true), "at yield");
+
+        let m = real_of(field(&rec, "yield_margin"), "yield_margin");
+        let expected = (yield_si - max_stress) / yield_si;
+        assert!((m - expected).abs() < 1e-9, "margin {m} vs {expected}");
+        assert!(m < 0.0, "yielding input ⇒ negative margin, got {m}");
+
+        // parasitic Some(1µm) ⇒ Option(Some(Length)).
+        match field(&rec, "parasitic_error") {
+            Value::Option(Some(inner)) => match inner.as_ref() {
+                Value::Scalar { si_value, dimension } => {
+                    assert_eq!(*dimension, DimensionVector::LENGTH, "parasitic is a LENGTH");
+                    assert!((si_value - 1e-6).abs() < 1e-15, "parasitic si {si_value}");
+                }
+                other => panic!("parasitic inner: expected Length Scalar, got {other:?}"),
+            },
+            other => panic!("expected Option(Some(Length)), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn make_compliance_record_no_yield_input_uses_safe_sentinel() {
+        // None yield ⇒ at_yield false, margin sentinel = 1.0 (maximally safe:
+        // no yield datum places no stress limit, clamped to the margin upper
+        // bound). Pairs naturally with at_yield=false (0.0 would falsely read as
+        // "exactly at the yield boundary").
+        let rec = make_compliance_record(1.0, 100e6, 0.0, None, None, 0.0872664626);
+        assert_eq!(
+            field(&rec, "at_yield"),
+            &Value::Bool(false),
+            "no-yield material ⇒ not at yield"
+        );
+        let m = real_of(field(&rec, "yield_margin"), "yield_margin");
+        assert_eq!(m, 1.0, "no-yield margin sentinel is 1.0 (maximally safe)");
+    }
+}
