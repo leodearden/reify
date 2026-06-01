@@ -45,58 +45,48 @@ pub(crate) struct ImpulseTrain {
 
 // ── EI helpers ────────────────────────────────────────────────────────────────
 
-/// Residual vibration of a 2-impulse ZV shaper designed for frequency
-/// ω_n/ρ (with the same ζ/K), evaluated at the target frequency (ω_n, ζ).
+/// Solve for the outer-impulse amplitude weight `a₁` of the optimal Singhose
+/// 2-hump EI shaper such that both insensitivity humps peak at exactly `v_tol`.
 ///
-/// Formula (derived from Singer-Seering §3):
+/// # Derivation (undamped baseline)
+///
+/// The optimal 2-hump EI is the symmetric four-impulse shaper with equal
+/// half-period spacing (times `0, π/ω_d, 2π/ω_d, 3π/ω_d`) and amplitude weights
+/// `[a₁, a₂, a₂, a₁]` with `a₂ = ½ − a₁` (so `Σ = 1`).  Centring the residual
+/// phasor at the midpoint, the undamped residual is
 ///
 /// ```text
-/// m = K^(1-ρ)
-/// V = K^ρ/(1+K) · √(1 + 2m·cos(πρ) + m²)
+/// V(ω) = 2·|cos φ| · |4·a₁·cos²φ + (½ − 4·a₁)|,   φ = ω·π / (2·ω_n)
 /// ```
 ///
-/// Special values: V(ρ=0) = 1, V(ρ=1) = 0, V(ρ=2) = K.
-fn zv_residual_at_rho(rho: f64, k: f64) -> f64 {
-    let m = k.powf(1.0 - rho);
-    let cos_term = (std::f64::consts::PI * rho).cos();
-    k.powf(rho) / (1.0 + k) * (1.0 + 2.0 * m * cos_term + m * m).sqrt()
-}
-
-/// Bisect for ρ in `(lo, hi)` such that `zv_residual_at_rho(ρ, k) = v_target`.
+/// which is **zero at the design frequency** (`φ = π/2`) and rises to two
+/// symmetric humps on either side.  Setting `∂V/∂cos φ = 0` locates each hump at
+/// `cos²φ = (8a₁ − 1)/(24a₁)`; substituting back, the hump height is
 ///
-/// `ascending`: true when V is increasing over the interval (use for ρ ∈ (1,2));
-/// false when V is decreasing (ρ ∈ (0,1)).
-fn bisect_rho(v_target: f64, k: f64, lo: f64, hi: f64, ascending: bool) -> f64 {
-    // Precondition: v_target must be bracketed by zv_residual_at_rho over (lo, hi).
-    // If ascending (ρ ∈ (1,2)): V(lo+ε) ≤ v_target ≤ V(hi-ε).
-    // If not ascending (ρ ∈ (0,1)): V(lo+ε) ≥ v_target ≥ V(hi-ε).
-    // Violation causes silent convergence to an endpoint, yielding a non-monotone
-    // or zero-spacing EI train.  The debug_assert fires loudly in tests.
-    debug_assert!(
-        if ascending {
-            zv_residual_at_rho(lo + f64::EPSILON, k) <= v_target
-                && v_target <= zv_residual_at_rho(hi - f64::EPSILON, k)
-        } else {
-            zv_residual_at_rho(lo + f64::EPSILON, k) >= v_target
-                && v_target >= zv_residual_at_rho(hi - f64::EPSILON, k)
-        },
-        "bisect_rho precondition: v_target={v_target} not bracketed in ({lo}, {hi}) \
-         with k={k}; V(lo)={:.6e}, V(hi)={:.6e}, ascending={ascending}",
-        zv_residual_at_rho(lo + f64::EPSILON, k),
-        zv_residual_at_rho(hi - f64::EPSILON, k),
-    );
-    let mut a = lo + f64::EPSILON;
-    let mut b = hi - f64::EPSILON;
-    for _ in 0..64 {
-        let mid = (a + b) * 0.5;
-        let v_mid = zv_residual_at_rho(mid, k);
-        if ascending {
-            if v_mid < v_target { a = mid; } else { b = mid; }
-        } else {
-            if v_mid > v_target { a = mid; } else { b = mid; }
-        }
+/// ```text
+/// v_tol = (2/3)·(8a₁ − 1)·√((8a₁ − 1)/(24a₁)).
+/// ```
+///
+/// With `u = 8a₁ − 1` this rearranges to the cubic `4u³ − 27·v_tol²·u −
+/// 27·v_tol² = 0`, which has exactly one positive real root (Descartes).  Both
+/// humps share the same height by construction, so they equal `v_tol`
+/// *exactly* — unlike the legacy cascade-of-two-ZV approximation (esc-3867-105),
+/// whose flanking humps drifted to ≈1.016·v_tol.
+///
+/// Returns `a₁ ∈ [⅛, ½)` for `v_tol ∈ (0, 1)`.
+fn two_hump_ei_a1(v_tol: f64) -> f64 {
+    let v = v_tol.clamp(1e-12, 1.0 - 1e-9);
+    let c = 27.0 * v * v; // cubic: 4u³ − c·u − c = 0
+    // f(u) = 4u³ − c·u − c is < 0 at u=0 and strictly increasing past its single
+    // positive root; bracket in (0, 4] (u=3 corresponds to v_tol=1).
+    let f = |u: f64| 4.0 * u * u * u - c * u - c;
+    let (mut lo, mut hi) = (0.0_f64, 4.0_f64);
+    for _ in 0..100 {
+        let mid = 0.5 * (lo + hi);
+        if f(mid) < 0.0 { lo = mid; } else { hi = mid; }
     }
-    (a + b) * 0.5
+    let u = 0.5 * (lo + hi);
+    (u + 1.0) / 8.0
 }
 
 // ── Internal helpers / convolution ───────────────────────────────────────────
@@ -215,41 +205,52 @@ impl ImpulseTrain {
     /// - `v_tol`: allowable residual-vibration fraction at the edges of the
     ///   insensitivity band (must be in (0, 1]).
     ///
-    /// # Algorithm (Singhose 1996 / PRD §5.1 2-hump EI)
+    /// # Algorithm (optimal Singhose-1996 2-hump EI / PRD §5.1)
     ///
-    /// Standard four-impulse EI design: the four impulse times and amplitudes
-    /// are parameterised by `v_tol`; `Σ amplitudes = 1`, all amplitudes > 0,
-    /// and the residual vibration at the design frequency is ≤ `v_tol`.
+    /// The optimal 2-hump EI is the symmetric four-impulse shaper with **equal
+    /// half-period spacing** `t = [0, π/ω_d, 2π/ω_d, 3π/ω_d]` and amplitude
+    /// weights `w = [a₁, a₂, a₂, a₁]` (`a₂ = ½ − a₁`).  `a₁` is solved from
+    /// `v_tol` via [`two_hump_ei_a1`] so that **both insensitivity humps peak at
+    /// exactly `v_tol`** (the flanking-hump constraint that the legacy
+    /// cascade-of-two-ZV approximation — esc-3867-105 — could not hold; its humps
+    /// drifted to ≈1.016·v_tol, forcing the relaxed ≤vtol·1.02 bound that this
+    /// construction lets task ζ restore to the strict ≤vtol).
+    ///
+    /// # Damping
+    ///
+    /// For ζ > 0 the weights are decay-compensated, `Aₖ = wₖ·Kᵏ` with
+    /// `K = exp(−ζπ/√(1−ζ²))` the per-half-period decay, then renormalised to
+    /// `Σ = 1`.  Because `wₖ·Kᵏ·exp(ζ·ω_n·tₖ) = wₖ` at the design frequency
+    /// (`exp(ζ·ω_n·tₖ) = K⁻ᵏ`) and the half-period phases are `kπ`, the residual
+    /// `C-`component telescopes to `w₀ − w₁ + w₂ − w₃ = 0`: the shaper **nulls
+    /// exactly at the design frequency for any ζ**, and damping only pulls the
+    /// humps further below `v_tol` (band stays within tolerance).
+    ///
+    /// Guarantees: exactly 4 impulses, `Σ amplitudes = 1`, all amplitudes > 0
+    /// (for `v_tol ∈ (0, 1)`), strictly increasing times from `t₀ = 0`, and
+    /// residual ≤ `v_tol` across the ±band (not merely at the design point).
     pub(crate) fn ei(omega_n: f64, zeta: f64, v_tol: f64) -> ImpulseTrain {
-        // 2-hump EI: cascade ZV(ω_n/ρ₁, ζ) ⊗ ZV(ω_n/ρ₂, ζ) where
-        //   ρ₁ ∈ (0,1): V(ρ₁) = √v_tol  →  high-frequency atom (short spacing)
-        //   ρ₂ ∈ (1,2): V(ρ₂) = √v_tol  →  low-frequency  atom (long spacing)
-        // Product property: V_cascade = V_A · V_B → √v_tol · √v_tol = v_tol.
         let (omega_d, k) = damped_freq_and_k(omega_n, zeta);
 
-        // Target each atom's residual at √v_tol so cascade = v_tol.
-        let sqrt_vtol = v_tol.sqrt().min(k); // clamp to k so ρ₂ search has a root in (1,2)
-        let sqrt_vtol = sqrt_vtol.max(1e-12);
+        // Outer/inner amplitude weights with both humps pinned to v_tol exactly.
+        let a1 = two_hump_ei_a1(v_tol);
+        let a2 = 0.5 - a1;
+        let w = [a1, a2, a2, a1];
 
-        let rho_1 = bisect_rho(sqrt_vtol, k, 0.0, 1.0, false); // V decreasing on (0,1)
-        let rho_2 = bisect_rho(sqrt_vtol, k, 1.0, 2.0, true);  // V increasing on (1,2)
+        // Decay-compensated amplitudes Aₖ = wₖ·Kᵏ (K=1 ⇒ undamped symmetric),
+        // renormalised so Σ = 1.  Uniform scaling preserves the design-frequency
+        // null (C ∝ w₀−w₁+w₂−w₃ = 0).
+        let half_period = std::f64::consts::PI / omega_d;
+        let raw: [f64; 4] = std::array::from_fn(|kk| w[kk] * k.powi(kk as i32));
+        let norm: f64 = raw.iter().sum();
 
-        // Impulse spacings for each ZV atom (same K, different ω').
-        let tau_1 = std::f64::consts::PI * rho_1 / omega_d; // shorter (ρ₁ < 1)
-        let tau_2 = std::f64::consts::PI * rho_2 / omega_d; // longer  (ρ₂ > 1)
-
-        // ZV amplitudes: same K → same a=1/(1+K), b=K/(1+K) for both atoms.
-        let a = 1.0 / (1.0 + k);
-        let b = k  / (1.0 + k);
-
-        // Cartesian cascade (tau_1 < tau_2 → times are strictly ordered).
         ImpulseTrain {
-            impulses: vec![
-                Impulse { time: 0.0,           amplitude: a * a },
-                Impulse { time: tau_1,         amplitude: a * b },
-                Impulse { time: tau_2,         amplitude: b * a },
-                Impulse { time: tau_1 + tau_2, amplitude: b * b },
-            ],
+            impulses: (0..4)
+                .map(|kk| Impulse {
+                    time: kk as f64 * half_period,
+                    amplitude: raw[kk] / norm,
+                })
+                .collect(),
         }
     }
 
@@ -502,14 +503,14 @@ mod tests {
         );
     }
 
-    /// EI large v_tol (ζ=0.1, v_tol=0.8): √v_tol ≈ 0.894 > K ≈ 0.73, so the
-    /// `sqrt_vtol.min(k)` clamp branch IS active.  Asserts the same structural
-    /// invariants (4 impulses, positive amplitudes, monotone times, Σ A=1, V ≤
-    /// v_tol at design).
+    /// EI large v_tol (ζ=0.1, v_tol=0.8): exercises the high-tolerance regime where
+    /// the outer weight a₁→½ and the inner weight a₂→0⁺ (here a₁≈0.433, a₂≈0.067).
+    /// Asserts the structural invariants hold (4 impulses, positive amplitudes,
+    /// monotone times, Σ A=1, V ≤ v_tol at design).
     #[test]
     fn ei_train_construction_large_vtol_clamp_branch() {
         let omega_n = 2.0 * PI * 5.0;
-        let zeta = 0.1_f64;  // K ≈ 0.73; K² ≈ 0.53; v_tol=0.8 > K² → clamp fires
+        let zeta = 0.1_f64;
         let v_tol = 0.8_f64;
         let train = ImpulseTrain::ei(omega_n, zeta, v_tol);
 
@@ -751,13 +752,16 @@ mod tests {
 
     // ── step-1 (task 4111): EI band-sweep residual ───────────────────────────
 
-    /// RED (task 4111 step-1): EI residual ≤ v_tol across the full ±15% band.
+    /// EI residual ≤ v_tol across the full ±15% band (task 4111 gate).
     ///
     /// Sweeps 31 frequencies over [8.5, 11.5] Hz (= [0.85, 1.15]·ω_n for 10 Hz)
     /// for ζ ∈ {0.0, 0.05, 0.1} and asserts residual ≤ 0.05 + 1e-9 at every point.
     ///
-    /// RED on the cascade EI: ζ=0.05 peaks at ≈0.050811 (1.016·v_tol) at 8.5 Hz.
-    /// ζ=0.0 already passes (no damping-induced asymmetry) — it is a regression guard.
+    /// This is the across-band guard the design-point check (`ei_train_construction
+    /// _invariants`, design frequency only) cannot provide.  The legacy cascade-of-
+    /// two-ZV EI left the flanking humps unconstrained and peaked at ≈0.050811
+    /// (1.016·v_tol); the optimal Singhose 2-hump construction pins both humps to
+    /// exactly v_tol, so the band stays within tolerance for every ζ.
     #[test]
     fn ei_residual_within_tolerance_across_band() {
         let omega_n = 2.0 * PI * 10.0; // 10 Hz design frequency
