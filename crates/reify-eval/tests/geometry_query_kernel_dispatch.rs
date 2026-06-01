@@ -293,3 +293,59 @@ fn bounding_box_dispatch_box() {
         "bounding_box(box(10,20,30)mm)",
     );
 }
+
+// ── nested fold: mass = volume(geometry) * material.density ────────────────────
+
+/// Read the runtime `density` (SI kg·m⁻³) from a structure's evaluated
+/// `material` StructureInstance cell. Lets the expected mass track the actual
+/// material constant (`Steel_AISI_1045` → 7850) rather than a hardcoded literal,
+/// per the plan's "derive from runtime density" robustness requirement.
+fn material_density_si(result: &reify_eval::BuildResult, structure: &str) -> f64 {
+    match result.values.get(&ValueCellId::new(structure, "material")) {
+        Some(Value::StructureInstance(data)) => match data.fields.get("density") {
+            Some(Value::Scalar { si_value, .. }) => *si_value,
+            other => panic!("{structure}.material.density should be Scalar, got {other:?}"),
+        },
+        other => panic!("{structure}.material should be StructureInstance, got {other:?}"),
+    }
+}
+
+/// The committed terminal-observable fixture (pre-1). `Bracket : Physical`
+/// inherits `mass = volume(geometry) * material.density` (a BinOp whose nested
+/// `volume()` leaf must fold) and `centroid = centroid(geometry)` (a direct
+/// call, GREEN since step-6).
+const SPEC_SHAPE_PHYSICAL: &str = include_str!("../../../examples/spec-shape-physical.ri");
+
+/// End-to-end over `examples/spec-shape-physical.ri`: the `centroid` cell folds
+/// (direct call) and the `mass` cell folds its NESTED `volume(geometry)` leaf so
+/// `Scalar<Volume> * Scalar<Density>` recomputes to `Scalar<Mass>`.
+///
+/// RED until the nested-fold extension lands: `centroid` is already real, but
+/// `mass` stays `Undef` because `try_eval_geometry_query` only matches a
+/// default_expr that is *directly* a geometry-query call, not a BinOp
+/// containing one.
+#[test]
+fn spec_shape_physical_mass_and_centroid() {
+    let Some(result) = compile_and_build_occt(SPEC_SHAPE_PHYSICAL) else {
+        return;
+    };
+
+    // (a) centroid = centroid(geometry) — centered box(10,20,30)mm → (0,0,0).
+    assert_point_abs(
+        result.values.get(&ValueCellId::new("Bracket", "centroid")),
+        [0.0, 0.0, 0.0],
+        1e-6,
+        "Bracket.centroid",
+    );
+
+    // (b) mass = volume(geometry) * material.density — nested fold. Expected =
+    // analytic box volume (6.0e-6 m³) × runtime density (Steel 7850 → ≈0.0471 kg).
+    let box_v = 0.010 * 0.020 * 0.030;
+    let density = material_density_si(&result, "Bracket");
+    assert_scalar_rel(
+        result.values.get(&ValueCellId::new("Bracket", "mass")),
+        DimensionVector::MASS,
+        box_v * density,
+        "Bracket.mass",
+    );
+}
