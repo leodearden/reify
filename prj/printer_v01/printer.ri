@@ -99,7 +99,7 @@ pub structure LinearTendon {
 pub structure CarriageBlock {
     param width  : Length = 90mm    // X
     param depth  : Length = 90mm    // Y
-    param height : Length = 260mm   // Z (bridges the stacked X-rail pair at ±x_rail_offset=120mm + margin)
+    param height : Length = 300mm   // Z (bridges the stacked X-rail pair at ±x_rail_offset=140mm + margin)
 
     let body = box(width, depth, height)
 
@@ -173,13 +173,31 @@ pub structure CoreXY {
     /// Y-rail centre-to-centre half-separation. 2*this == BearingRod.length so
     /// the X gantry exactly spans between the Y rails (header CAVEAT).
     param y_rail_offset : Length = 400mm
-    /// Z half-separation of the stacked X-gantry rails; their midplane is the
-    /// Y-rail plane (z = 0 here). Spread wide enough that the four gantry-cross
-    /// tendons (at ±z_a/±z_b ≤ 80mm) thread between the rails (inner edge ±90mm).
-    param x_rail_offset : Length = 120mm
     /// Gantry position along Y (0 = mid travel) and toolhead position along X.
     param y_head : Length = 0mm
     param x_head : Length = 0mm
+
+    // ── X-rail spread DERIVED to clear the gantry-cross tendons ───────────
+    // The head bearings RIDE the stacked X rails, so each bearing's inner face
+    // (x_rail_offset − x_brg_radius) must clear the OUTERMOST gantry-cross tendon
+    // (its surface at tendon_outer_z + tendon radius). The rail half-separation
+    // is therefore a FORMULA of the tendon + bearing geometry, not a free dim:
+    // widen a tendon level or a bearing and the rails spread to suit. (Override
+    // drop forces these inputs to mirror the leaf defaults; task 4147 will let
+    // CoreXY read TendonQuad.z_a / AirBearing.outer_diameter directly instead.)
+    /// Outer (belt A) tendon Z level — MUST equal TendonQuad.z_a.
+    param tendon_outer_z  : Length = 80mm
+    /// X-rail bearing radius — MUST equal AirBearing.outer_diameter / 2.
+    param x_brg_radius    : Length = 45mm
+    /// Radial clearance from the bearing inner face to the outer tendon surface
+    /// (folds in the 3mm tendon radius).
+    param x_brg_clearance : Length = 15mm
+
+    /// Z half-separation of the stacked X-gantry rails, DERIVED:
+    ///   x_rail_offset − x_brg_radius  =  tendon_outer_z + x_brg_clearance
+    /// → 80 + 45 + 15 = 140mm (was a hand-tuned 120mm that buried the bearings
+    /// in the outer tendon). Their midplane stays the Y-rail plane (z = 0).
+    let x_rail_offset = tendon_outer_z + x_brg_radius + x_brg_clearance
 
     let rot_to_y   = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)   // leaf +Z → +Y
     let rot_to_x   = orient_axis_angle(vec3(0mm, 1m, 0mm), 90deg)   // leaf +Z → +X
@@ -212,7 +230,10 @@ pub structure CoreXY {
     sub tendons = DriveTendons() at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
 
     constraint y_rail_offset > 0mm
-    constraint x_rail_offset > 0mm
+    constraint tendon_outer_z > 0mm
+    constraint x_brg_clearance > 0mm
+    // Verify the head bearings clear the outer X tendon (drives x_rail_offset):
+    constraint x_rail_offset - x_brg_radius > tendon_outer_z + 3mm
 }
 
 // ── Envelope (global parameters + kinematic centerlines) ────────────────────
@@ -358,14 +379,14 @@ pub structure JAuxiliary {
 /// Top-level printer integration. The motion system is modelled about its own
 /// gantry-midplane origin, then placed so the lowest X-rail bearing clears the
 /// build-volume top: motion Z = build_z + clearance + x_rail_offset +
-/// bearing_radius = 600 + 20 + 120 + 45 = 785mm; centred over the build in X/Y.
+/// bearing_radius = 600 + 20 + 140 + 45 = 805mm; centred over the build in X/Y.
 pub structure Printer {
     sub env = Envelope()
 
     sub a_frame = AFrame()
 
     sub motion = CoreXY()
-        at transform3(orient_identity(), vec3(250mm, 400mm, 785mm))
+        at transform3(orient_identity(), vec3(250mm, 400mm, 805mm))
 
     sub d_toolhead = DToolhead()
 
