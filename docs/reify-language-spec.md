@@ -371,6 +371,8 @@ Key semantics:
 - No implicit global frame. All coordinates relative to parent.
 - Ports expose Frames (when geometrically located). Connections constrain Transforms between Frames.
 
+**Realized (v0.6).** Declarative `at` placement and compose-up-the-tree auto-surfacing are implemented at the geometry level. Sub-placement syntax (`at` pose clause, `aux` modifier) is documented in §4.7; the auto-surfacing idiom and when to retain a manual lift are in §8.3. See also [docs/prds/v0_6/sub-placement-and-surfacing.md](docs/prds/v0_6/sub-placement-and-surfacing.md).
+
 **Geometric values carry their frame:** Geometric values (`Point3`, `Vector3`, etc.) carry their coordinate frame as part of their runtime representation. Frame is not part of the type but tracked by the runtime. When defined within a structure, the frame is the structure's local coordinate frame.
 
 **Geometric collections share frames efficiently:** Geometric collections (point clouds, meshes) store coordinates relative to a single frame -- the containing structure's local coordinate frame. One frame per collection, not per element. When an individual point is extracted, it acquires the collection's frame.
@@ -861,11 +863,22 @@ Ports are typed scopes with members, uniform across structure ports and occurren
 sub motor : ElectricMotor { shaft_diameter = 8mm }
 sub vents : List<Vent>
 sub rib : Rib { height = thickness * 0.8 }
+
+// Placement: `at` pose clause (v0.6)
+sub bolt : Bolt at transform3(orient_identity(), vec3(30mm, 0mm, 0mm))
+sub gear : Gear { teeth = 24 } at mount_frame
+
+// Construction placement: `aux` modifier (v0.6)
+aux sub jig : Jig at tool_frame
 ```
 
 `sub` is the keyword for instantiating a contained sub-entity within a parent body. Sub-entities are named children in the containment tree.
 
 **Instantiation syntax:** `sub name : Type { param = value, ... }`. Curly-brace block optional if no parameters overridden.
+
+**`at` placement clause (v0.6).** An optional trailing `at <pose>` expression specifies the child's placement relative to the parent frame. The pose expression must evaluate to a `Transform` (child-frame → parent-frame) or a `Frame` (lowered to the equivalent `Transform`). The pose is an ordinary expression: `transform3(…)`, `frame3(…)`, a `let`-bound or port-supplied frame, or a bare identifier. When `at` is absent the child is authored directly in the parent frame (identity placement).
+
+**`aux` modifier (v0.6).** Prefixing `aux` marks the sub-entity as structure-local (construction) geometry. An `aux sub` is still realized, tessellated, and shipped to the GUI (hidden-by-default, toggleable) but is excluded from product surfacing, STEP export, FEA mesh generation, and mass-property accumulation. Use `aux` to mark boolean-input operands so they do not appear both standalone and inside a composed result (see §8.3 for the boolean-composition idiom and §15 for the grammar production).
 
 #### `let` -- Computed Bindings
 
@@ -876,6 +889,8 @@ pub let torque_constant : Torque/Current = back_emf / rated_speed
 ```
 
 Named, typed, computed value with mandatory initialiser expression. Cannot be set from outside -- not a configurable parameter. Private by default; `pub let` to expose. Type annotation optional (type always inferrable from expression via dimensional analysis).
+
+`aux let` marks construction geometry (intermediate solids, reference sketches) that is realized and shipped to the GUI but excluded from product surfacing, export, and analysis; see §8.3 (boolean-composition idiom) and §15 (grammar).
 
 #### `type` -- Type Aliases
 
@@ -1528,12 +1543,31 @@ A parent scope accesses a child's declarations via dot notation: `motor.shaft_di
 
 **Visibility boundary:** Only **parameters** and **named sub-entities** (ports, sub-structures) are accessible from outside a scope. **`let` bindings** and **constraints** are private (unless marked `pub`).
 
-**Cross-sub geometry composition.** Geometry-typed members on a non-collection
-sub — whether declared as `param body : Solid = box(...)` or as
-`let body = box(...)` on the child — are accessible from the parent via
+**Auto-surfacing (v0.6 — recommended idiom).** Any `sub` that carries an `at`
+pose clause — or any plain containment sub whose child declares a geometry body
+— auto-surfaces at its composed world pose.  The parent need not re-express
+descendant bodies: the surfacing walk composes transforms up the containment
+tree and emits each child's mesh at its computed world position automatically.
+Use `at` for placement and let auto-surfacing do the rest:
+
+```reify
+pub structure Bolt { let body = cylinder(5mm, 20mm) }
+pub structure Gear { let body = cylinder(40mm, 15mm) }
+
+pub structure Assembly {
+    sub bolt : Bolt at transform3(orient_identity(), vec3(30mm, 0mm, 0mm))
+    sub gear : Gear { teeth = 24 } at mount_frame
+    // No manual lift needed — bolt and gear surface at their composed world poses.
+}
+```
+
+**Cross-sub geometry composition (boolean idiom).** Geometry-typed members on
+a non-collection sub — whether declared as `param body : Solid = box(...)` or
+as `let body = box(...)` on the child — are accessible from the parent via
 `self.<sub>.<member>` dot notation. The access lowers to a stable reference to
 the child's realization handle, so transforms and boolean ops in the parent
-compose directly over the child's body:
+compose directly over the child's body.  Use this idiom when a child body must
+be cut into or unioned with a parent solid:
 
 ```reify
 pub structure Inner {
@@ -1553,7 +1587,20 @@ pub structure C {
 }
 ```
 
-Implemented in task 3441.
+**Avoiding double-surfacing.** When a child body is used as a boolean operand
+(cut/union into a parent solid), mark the sub `aux` so the child's geometry
+does not appear both as a standalone surface and inside the composed result
+(PRD §3 rule 3 / §11.5):
+
+```reify
+pub structure Housing {
+    aux let blank = box(50mm, 30mm, 20mm)   // operand — not surfaced standalone
+    aux let bore  = cylinder(8mm, 25mm)     // operand — not surfaced standalone
+    let body = cut(self.blank, self.bore)   // only this surfaces
+}
+```
+
+Implemented in task 3441 (cross-sub access); `at` placement and `aux` suppression in task 3903.
 
 **v0.1 limitations — remaining scope gaps:**
 
@@ -2398,8 +2445,8 @@ where_guard     ::= 'where' expr                         (* per-declaration guar
 
 param_decl      ::= 'param' IDENT ':' type_expr ('=' expr)? where_guard?
 port_decl       ::= 'port' IDENT ':' dir? type_expr ('{' member* '}')? where_guard?
-sub_decl        ::= 'sub' IDENT ':' type_expr where_guard? ('{' member* '}')?
-let_decl        ::= 'pub'? 'let' IDENT (':' type_expr)? '=' expr where_guard?
+sub_decl        ::= 'aux'? 'sub' IDENT ':' type_expr where_guard? ('{' member* '}')? ('at' expr)?
+let_decl        ::= 'pub'? 'aux'? 'let' IDENT (':' type_expr)? '=' expr where_guard?
 constraint_line ::= 'constraint' (constraint_ref | expr) where_guard?
 
 constraint_ref  ::= TYPE_IDENT type_args? '(' args? ')'

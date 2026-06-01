@@ -1,0 +1,57 @@
+// Canonical sub-placement fixture — mirrored into spec §4.7 / §8.3.
+// Parsed by crates/reify-syntax/tests/sub_placement_spec_example_parses.rs.
+// Every form in this file must produce zero CST ERROR nodes.
+//
+// Note: param assignments inside a specialization body use `name = value` (not
+// `name: value`).  The grammar's specialization-body accepts only `param_assignment`
+// (`IDENT = expr`); the colon-form is not part of the grammar and will produce an
+// ERROR node.  This file exercises the correct `=` form so the parse-gate catches
+// any future regression.
+
+// ── Helper structures ────────────────────────────────────────────────────────
+
+pub structure Bolt {
+    let body = cylinder(5mm, 20mm)
+}
+
+pub structure Gear {
+    param teeth : Count = 24
+    let body = cylinder(40mm, 15mm)
+}
+
+pub structure Jig {
+    let body = box(100mm, 100mm, 50mm)
+}
+
+// ── Main assembly exercising all new placement / aux forms ───────────────────
+
+pub structure Assembly {
+    // (a) Plain sub — absent `at` clause means identity placement (child
+    // is authored in the parent frame).
+    sub bearing : Bearing
+
+    // (b) `sub name : T at <Transform expr>` — pose evaluates to a Transform;
+    // the child's local frame is placed at that transform relative to the parent.
+    sub bolt : Bolt at transform3(orient_identity(), vec3(30mm, 0mm, 0mm))
+
+    // (c) `sub name : T { param = value } at <Frame ident>` — specialization
+    // body with `=` assignments, followed by a named-Frame pose.
+    sub gear : Gear { teeth = 24 } at mount_frame
+
+    // (d) `aux sub name : T at <pose>` — excluded from product surfacing,
+    // STEP export, FEA, and mass properties; still realized and shipped to
+    // the GUI (hidden-by-default, toggleable).
+    aux sub jig : Jig at tool_frame
+
+    // (e) `aux let` — construction geometry for boolean composition.
+    // Marking operands `aux` prevents double-surfacing (PRD §3 rule 3 / §11.5).
+    aux let raw = box(50mm, 30mm, 20mm)
+    aux let tool = cylinder(8mm, 25mm)
+
+    // (f) Boolean composition idiom using aux operands.
+    let part = cut(self.raw, self.tool)
+
+    // (g) Manual lift: translate a child body into parent coordinates.
+    // Retained pattern for explicit boolean-composition workflows (see §8.3).
+    let placed = translate(self.bolt.body, 5mm, 0mm, 0mm)
+}
