@@ -408,6 +408,30 @@
 //!     &ForceDensitySpec::Explicit(vec![1.0, 2.0]), // 2 densities for 1 member
 //! );
 //! assert_eq!(dim_err.unwrap_err(), FreeFormError::DimensionMismatch);
+//!
+//! // Task 3796: Tensegrity T2 self-stress & prestress-stability — crate-root
+//! // surface pin. Behaviour is covered by `prestress_stability::tests` and the
+//! // integration golden `tests/tensegrity_t2_stability.rs`; this block only pins
+//! // that the public surface (StabilityResult / StabilityError /
+//! // analyze_prestress_stability) is reachable and callable from the crate root.
+//! use reify_solver_elastic::{
+//!     StabilityError, StabilityResult, analyze_prestress_stability,
+//! };
+//! // Function-item signature pin: a renamed / removed re-export (or a changed
+//! // signature) trips this at doctest-compile time.
+//! let _: fn(
+//!     &[[f64; 3]],
+//!     &[(usize, usize)],
+//!     &[f64],
+//! ) -> Result<StabilityResult, StabilityError> = analyze_prestress_stability;
+//! // Tiny behavioural smoke on the up-front guard: a members / q length
+//! // disagreement is a clean DimensionMismatch (a typed error, never a panic).
+//! let dim_err = analyze_prestress_stability(
+//!     &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+//!     &[(0, 1)],
+//!     &[1.0, 2.0], // 2 densities for 1 member
+//! );
+//! assert_eq!(dim_err.unwrap_err(), StabilityError::DimensionMismatch);
 //! ```
 
 pub mod assembly;
