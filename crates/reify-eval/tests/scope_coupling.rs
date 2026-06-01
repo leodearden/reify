@@ -9,7 +9,7 @@
 // template-level cross-scope auto read.  The builder controls ValueCellIds
 // exactly and `engine.check()` is the literal `reify check` entry point.
 
-use reify_core::{DiagnosticCode, ModulePath, Type, ValueCellId};
+use reify_core::{DiagnosticCode, ModulePath, Type};
 use reify_eval::Engine;
 use reify_ir::{ObjectiveSet, ObjectiveSense};
 use reify_test_support::{
@@ -192,5 +192,155 @@ fn eval_emits_scope_coupling_for_objective_crossing() {
     assert!(
         msg.contains("Later"),
         "diagnostic message should name later scope 'Later'; got: {msg}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Guard tests (step-7 RED) — pin direction, auto-only, owner!=reader, dedup
+// ---------------------------------------------------------------------------
+
+/// (1) Same-scope self-read: a single template reading its OWN auto cell must
+/// never emit W_SCOPE_COUPLING.
+#[test]
+fn no_coupling_for_same_scope_self_read() {
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "thickness", Type::length())
+        .constraint(
+            "S",
+            0,
+            None,
+            gt(value_ref("S", "thickness"), literal(mm(1.0))),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = no_solver_engine();
+    let result = engine.eval(&module);
+
+    let count = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ScopeCoupling))
+        .count();
+    assert_eq!(count, 0, "self-read must not trigger W_SCOPE_COUPLING; got: {:?}", result.diagnostics);
+}
+
+/// (2) Reversed walk order: [Later, Leaf] where Later (resolves FIRST) reads
+/// Leaf.k.  Since Leaf is not yet frozen when Later is processed, no coupling
+/// must be emitted.
+#[test]
+fn no_coupling_when_reader_resolves_before_owner() {
+    // Note: order is [Later, Leaf] — Later comes first in module.templates.
+    let later = TopologyTemplateBuilder::new("Later")
+        .auto_param("Later", "y", Type::length())
+        .constraint(
+            "Later",
+            0,
+            None,
+            gt(value_ref("Later", "y"), value_ref("Leaf", "k")),
+        )
+        .build();
+
+    let leaf = TopologyTemplateBuilder::new("Leaf")
+        .auto_param("Leaf", "k", Type::length())
+        .constraint("Leaf", 1, None, gt(value_ref("Leaf", "k"), literal(mm(1.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(later) // Later resolves first
+        .template(leaf)
+        .build();
+
+    let mut engine = no_solver_engine();
+    let result = engine.eval(&module);
+
+    let count = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ScopeCoupling))
+        .count();
+    assert_eq!(count, 0, "reader resolves before owner — must not trigger W_SCOPE_COUPLING; got: {:?}", result.diagnostics);
+}
+
+/// (3) Non-auto crossing: "Leaf" exposes a non-auto Param `Leaf.p`, "Later"
+/// reads `Leaf.p`.  Only auto cells are frozen; non-auto reads must not emit
+/// W_SCOPE_COUPLING.
+#[test]
+fn no_coupling_for_non_auto_crossing() {
+    let leaf = TopologyTemplateBuilder::new("Leaf")
+        .param("Leaf", "p", Type::length(), None)   // non-auto Param
+        .build();
+
+    let later = TopologyTemplateBuilder::new("Later")
+        .auto_param("Later", "y", Type::length())
+        .constraint(
+            "Later",
+            0,
+            None,
+            gt(value_ref("Later", "y"), value_ref("Leaf", "p")),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(leaf)
+        .template(later)
+        .build();
+
+    let mut engine = no_solver_engine();
+    let result = engine.eval(&module);
+
+    let count = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ScopeCoupling))
+        .count();
+    assert_eq!(count, 0, "non-auto crossing must not trigger W_SCOPE_COUPLING; got: {:?}", result.diagnostics);
+}
+
+/// (4) Dedup: "Later" has TWO constraints both reading `Leaf.k`.  Must emit
+/// exactly ONE W_SCOPE_COUPLING for the (Leaf, Later, Leaf.k) crossing.
+#[test]
+fn coupling_dedup_two_constraints_same_crossing_cell() {
+    let leaf = TopologyTemplateBuilder::new("Leaf")
+        .auto_param("Leaf", "k", Type::length())
+        .build();
+
+    let later = TopologyTemplateBuilder::new("Later")
+        .auto_param("Later", "y", Type::length())
+        // Two distinct constraints, both reading the same Leaf.k.
+        .constraint(
+            "Later",
+            0,
+            None,
+            gt(value_ref("Later", "y"), value_ref("Leaf", "k")),
+        )
+        .constraint(
+            "Later",
+            1,
+            None,
+            gt(literal(mm(10.0)), value_ref("Leaf", "k")),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(leaf)
+        .template(later)
+        .build();
+
+    let mut engine = no_solver_engine();
+    let result = engine.eval(&module);
+
+    let count = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ScopeCoupling))
+        .count();
+    assert_eq!(
+        count, 1,
+        "two constraints on the same crossing cell must produce exactly 1 W_SCOPE_COUPLING; got: {:?}",
+        result.diagnostics,
     );
 }
