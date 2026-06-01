@@ -1313,6 +1313,14 @@ mod tests {
             "surviving finding must cite closed_chain.rs; got {:?}",
             f.evidence
         );
+        // Pin the exact symbol so a regression that flags a different stdlib
+        // symbol (and silently drops solve_closed_chain) is caught, not just
+        // the count.
+        assert!(
+            f.summary.contains("solve_closed_chain"),
+            "surviving finding must name solve_closed_chain; got summary: {:?}",
+            f.summary
+        );
     }
 }
 
