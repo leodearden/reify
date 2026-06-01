@@ -734,6 +734,25 @@ fn build_high_finding(meta: &TaskMetadata, missing: &[String], summary: &str) ->
 ///
 /// Design rationale: cross-crate gate keeps H2 off of P1's single-crate turf;
 /// suppression guards keep H2 and P1 semantically consistent. Task 4140 §H2.
+///
+/// ## 4141 live-corpus validation note
+///
+/// Task 4141 confirmed that H2 **cannot be live-validated** against the current
+/// corpus. `needs_jcodemunch()` in `bin/reify-audit.rs:433–443` returns `false`
+/// for `--pattern P5` (and for `--pre-done`) → the binary always wires
+/// `NoopJCodemunchOps` for P5 runs. A default sweep attempts
+/// `RealJCodemunchOps` but fail-softs to `NoopJCodemunchOps` because
+/// `jcodemunch-serve` is not yet deployed in reify
+/// (`bin/reify-audit.rs:547–567`). With `NoopJCodemunchOps`,
+/// `get_changed_symbols` returns `vec![]` → this function iterates nothing →
+/// zero H2 findings regardless of real cross-crate stranding. A zero-finding
+/// H2 sweep is therefore **vacuous** and cannot justify a `Medium → High`
+/// promotion. H2 remains at `Severity::Medium` (non-blocking for the D-1
+/// hook) pending the real jcodemunch JCodemunchOps implementation. Future
+/// promotion task must meet the criteria in
+/// `docs/prds/p5-h1-h2-live-corpus-fp-validation.md` §6 (H2 promotion
+/// criteria): real jcodemunch substrate wired, non-vacuous live sweep,
+/// measured FP rate ≤ 5%. Per task 4141 live-corpus FP validation.
 fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Finding> {
     // Cross-crate gate: requires >=2 distinct crates/<name>/ roots.
     if crate_root_count(&meta.files) < 2 {
