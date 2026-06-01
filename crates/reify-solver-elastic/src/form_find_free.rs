@@ -328,8 +328,74 @@ fn recover_coordinates(
     nodes_guess: &[[f64; 3]],
     spectrum: &SpectrumClassification,
 ) -> Result<Vec<[f64; 3]>, FreeFormError> {
-    let _ = (nodes_guess, spectrum);
-    unimplemented!("recover_coordinates: implemented in T1b step-6")
+    let n = nodes_guess.len();
+    let nullity = spectrum.nullity;
+    // Leading `nullity` columns of the (ascending-|λ|) eigenvectors span null(D).
+    let u0 = &spectrum.eigenvectors;
+
+    // Orthogonal projection of each guess coordinate axis onto null(D):
+    //   coeff[k][axis] = Σ_r U₀[r,k] · G[r,axis]   (project onto basis column k)
+    //   X[r][axis]     = Σ_k U₀[r,k] · coeff[k][axis]   (reconstruct)
+    // U₀'s columns are orthonormal (self-adjoint EVD), so this is the
+    // least-squares affine alignment of null(D) to the guess; the all-ones
+    // direction inside U₀ absorbs the translation gauge.
+    let mut coeff = vec![[0.0_f64; 3]; nullity];
+    for (k, ck) in coeff.iter_mut().enumerate() {
+        for axis in 0..3 {
+            let mut acc = 0.0;
+            for (r, gr) in nodes_guess.iter().enumerate() {
+                acc += u0[(r, k)] * gr[axis];
+            }
+            ck[axis] = acc;
+        }
+    }
+    let mut x = vec![[0.0_f64; 3]; n];
+    for (r, xr) in x.iter_mut().enumerate() {
+        for axis in 0..3 {
+            let mut acc = 0.0;
+            for (k, ck) in coeff.iter().enumerate() {
+                acc += u0[(r, k)] * ck[axis];
+            }
+            xr[axis] = acc;
+        }
+    }
+
+    // SingularRecovery guard: a valid realisation must span 3-D. Form the
+    // centred coordinate covariance `M = Σ (xᵣ − c)(xᵣ − c)ᵀ` (3×3, SPD) and
+    // require it well-conditioned — `det(M)` collapses toward zero when the
+    // recovered points are coplanar/collinear/coincident. The test is
+    // scale-invariant (compare `det` against the isotropic `(tr/3)³`), so it
+    // fires only on genuine rank deficiency, not on overall scale.
+    let mut c = [0.0_f64; 3];
+    for xr in &x {
+        for a in 0..3 {
+            c[a] += xr[a] / n as f64;
+        }
+    }
+    let mut m = [[0.0_f64; 3]; 3];
+    for xr in &x {
+        let dr = [xr[0] - c[0], xr[1] - c[1], xr[2] - c[2]];
+        for a in 0..3 {
+            for b in 0..3 {
+                m[a][b] += dr[a] * dr[b];
+            }
+        }
+    }
+    let trace = m[0][0] + m[1][1] + m[2][2];
+    let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+        + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    // `(tr/3)³` is `det(M)` for an isotropic spread; a healthy 3-D form sits
+    // within a small constant of it (≈0.86 for the unit prism), so 1e-9 cleanly
+    // separates full rank from a degenerate recovery without a brittle absolute
+    // threshold.
+    const SINGULAR_REL_TOL: f64 = 1e-9;
+    let isotropic = (trace / 3.0).powi(3);
+    if trace <= 0.0 || det <= SINGULAR_REL_TOL * isotropic {
+        return Err(FreeFormError::SingularRecovery);
+    }
+
+    Ok(x)
 }
 
 #[cfg(test)]
@@ -360,7 +426,7 @@ mod tests {
             (2, 5),
         ];
         let mut kinds = vec![MemberKind::Strut; 3];
-        kinds.extend(std::iter::repeat(MemberKind::Cable).take(9));
+        kinds.resize(members.len(), MemberKind::Cable);
         (members, kinds)
     }
 
@@ -583,14 +649,16 @@ mod tests {
         // must vanish to machine precision — the rock-solid correctness signal.
         let d = assemble_force_density_matrix(6, &members, &q);
         let mut resid = 0.0_f64;
-        for axis in 0..3 {
-            for i in 0..6 {
-                let mut row = 0.0;
-                for j in 0..6 {
-                    row += d[(i, j)] * x[j][axis];
+        for i in 0..6 {
+            // (D·X) row i, a 3-vector across the coordinate axes.
+            let mut row = [0.0_f64; 3];
+            for (j, xj) in x.iter().enumerate() {
+                let dij = d[(i, j)];
+                for (row_a, &xja) in row.iter_mut().zip(xj.iter()) {
+                    *row_a += dij * xja;
                 }
-                resid = resid.max(row.abs());
             }
+            resid = row.iter().fold(resid, |m, &v| m.max(v.abs()));
         }
         assert!(
             resid < 1e-9,
