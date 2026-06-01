@@ -539,18 +539,17 @@ mod tests {
         );
     }
 
-    /// Coverage for the three per-symbol false-positive guards the required
-    /// suite never exercises (the `changed_symbol` helper leaves them at
-    /// their orphan-candidate defaults, so no other test flips them). One
-    /// done task past grace, four symbols, zero workspace refs:
-    ///   - `stdlib_widget` under `crates/reify-stdlib/` → scope-excluded;
+    /// Coverage for the per-symbol false-positive guards the required suite
+    /// never exercises (the `changed_symbol` helper leaves them at their
+    /// orphan-candidate defaults, so no other test flips them). One done task
+    /// past grace, three symbols, zero workspace refs:
     ///   - `dead_widget` with `has_allow_dead_code` → opt-out;
     ///   - `cfg_test_widget` with `has_cfg_test` → test-only;
     ///   - `live_widget` (no guard) → the only surviving finding.
     ///
-    /// Inverting any guard boolean or changing the stdlib prefix makes the
-    /// count != 1 and fails here — catching exactly the regressions that
-    /// cause audit false-positive floods.
+    /// Inverting any guard boolean makes the count != 1 and fails here —
+    /// catching exactly the regressions that cause audit false-positive floods.
+    /// stdlib producers are covered by `stdlib_producers_audited_respecting_markers`.
     #[test]
     fn per_symbol_guards_suppress_individually() {
         let done_at = NOW - 15 * DAY;
@@ -563,7 +562,6 @@ mod tests {
             &format!("{sha}^1"),
             &sha,
             vec![
-                changed_symbol("stdlib_widget", "crates/reify-stdlib/src/prelude.rs"),
                 ChangedSymbol {
                     has_allow_dead_code: true,
                     ..changed_symbol("dead_widget", "crates/reify-x/src/dead.rs")
@@ -575,7 +573,6 @@ mod tests {
                 changed_symbol("live_widget", "crates/reify-x/src/live.rs"),
             ],
         );
-        jc.set_find_references("crates/reify-stdlib/src/prelude.rs", "stdlib_widget", vec![]);
         jc.set_find_references("crates/reify-x/src/dead.rs", "dead_widget", vec![]);
         jc.set_find_references("crates/reify-x/src/cfgt.rs", "cfg_test_widget", vec![]);
         jc.set_find_references("crates/reify-x/src/live.rs", "live_widget", vec![]);

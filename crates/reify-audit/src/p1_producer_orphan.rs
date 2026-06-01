@@ -21,9 +21,8 @@
 //! - Per task: not `done`; no `done_at`; `audit_foundation`
 //!   (foundation/scaffold task); a pending/in-progress/review consumer task
 //!   whose `consumer_ref` matches this producer's `prd`; no `done_provenance.commit`.
-//! - Per symbol: `crates/reify-stdlib/` scope-exclude; `#[allow(dead_code)]`
-//!   / `#[cfg(test)]` attribute opt-out; a non-blank `// G-allow:` marker;
-//!   a non-test workspace caller.
+//! - Per symbol: `#[allow(dead_code)]` / `#[cfg(test)]` attribute opt-out;
+//!   a non-blank `// G-allow:` marker; a non-test workspace caller.
 //! - Surviving symbols: severity is Medium only once *strictly more than*
 //!   14 days have elapsed since the done-flip (design §5 P1, line 83:
 //!   ">14 days"); at exactly the boundary and anywhere inside the window it
@@ -130,12 +129,6 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         let until_sha = commit;
 
         for symbol in ctx.jcodemunch.get_changed_symbols(&since_sha, until_sha) {
-            // Per-symbol guard: stdlib `.ri` defs are scope-excluded — every
-            // `structure_def` is technically "orphan" until something calls
-            // it (design §5 P1 invariant).
-            if symbol.file.starts_with("crates/reify-stdlib/") {
-                continue;
-            }
             // Per-symbol guard: intentional-orphan opt-outs —
             // `#[allow(dead_code)]` / `#[cfg(test)]` (design §5 P1).
             if symbol.has_allow_dead_code || symbol.has_cfg_test {
