@@ -2091,8 +2091,9 @@ impl EngineSession {
                     .collect();
                 // Populate per-vertex FEA scalar/displacement channels when an
                 // ElasticResult is present in the evaluated values.  The helper
-                // is a no-op for non-FEA scenes (extracts None → returns early),
-                // so the hot path for geometry-only scenes has zero overhead.
+                // returns early when no ElasticResult is found (negligible
+                // overhead: one ValueMap scan), so non-FEA scenes pay no
+                // tessellation-path cost.
                 if let Some(check) = self.core.last_check() {
                     apply_fea_channels(&mut meshes, &check.values);
                 }
@@ -4399,9 +4400,13 @@ pub(crate) fn offset_to_line_col_fast(
 
 /// Sample a 3D regular-grid sampled field at the nearest grid node.
 ///
-/// Returns the stride-element window at that node as `Some(Vec<f64>)`, or `None`
-/// if the point is outside the field bounds (±`tol`) or if the nearest node's
-/// window contains any NaN (the reify-solver-elastic out-of-solid sentinel).
+/// Returns a borrowed slice into `sf.data` for the stride-element window at
+/// that node as `Some(&[f64])`, or `None` if the point is outside the field
+/// bounds (±`tol`) or if the nearest node's window contains any non-finite
+/// value (NaN or ±inf — the reify-solver-elastic out-of-solid sentinel).
+///
+/// Returning a slice (rather than `Vec<f64>`) avoids a heap allocation per
+/// vertex lookup; callers consume the window immediately and need no ownership.
 ///
 /// # Layout
 ///
@@ -4419,7 +4424,7 @@ pub(crate) fn sample_stride_field_nearest(
     sf: &reify_ir::SampledField,
     point: [f64; 3],
     tol: f64,
-) -> Option<Vec<f64>> {
+) -> Option<&[f64]> {
     // Axis counts (number of nodes per axis).
     let nx = sf.axis_grids[0].len();
     let ny = sf.axis_grids[1].len();
@@ -4457,12 +4462,15 @@ pub(crate) fn sample_stride_field_nearest(
     let flat = ((ix * ny + iy) * nz + iz) * stride;
     let window = &sf.data[flat..flat + stride];
 
-    // Return None if any value in the window is NaN (out-of-solid sentinel).
-    if window.iter().any(|v| v.is_nan()) {
+    // Return None if any value in the window is non-finite (NaN or ±inf).
+    // NaN is the reify-solver-elastic out-of-solid sentinel; ±inf would also
+    // overflow compute_von_mises_3x3 cast-to-f32 and break the FiniteF32MapRef
+    // wire guard, so we treat all non-finite values as out-of-solid here.
+    if window.iter().any(|v| !v.is_finite()) {
         return None;
     }
 
-    Some(window.to_vec())
+    Some(window)
 }
 
 /// Sample von Mises stress at the nearest grid node.
@@ -4476,7 +4484,7 @@ pub(crate) fn von_mises_sample(
     tol: f64,
 ) -> f32 {
     match sample_stride_field_nearest(stress_sf, point, tol) {
-        Some(w) if w.len() >= 9 => reify_stdlib::compute_von_mises_3x3(&w) as f32,
+        Some(w) if w.len() >= 9 => reify_stdlib::compute_von_mises_3x3(w) as f32,
         _ => crate::types::SCALAR_CHANNEL_OOB_SENTINEL,
     }
 }
