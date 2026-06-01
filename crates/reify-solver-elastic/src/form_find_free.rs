@@ -260,8 +260,49 @@ fn validate_explicit(
     kinds: &[MemberKind],
     q: &[f64],
 ) -> Result<SpectrumClassification, FreeFormError> {
-    let _ = (n, members, kinds, q);
-    unimplemented!("validate_explicit: implemented in T1b step-4")
+    // A valid 3-D free-standing form needs `D` rank-deficient by exactly
+    // `d + 1 = 4`: three coordinate null directions plus the always-present
+    // all-ones translation mode (`D · 𝟙 = 0` for any `q`, since `C · 𝟙 = 0`).
+    const SPATIAL_DIM: usize = 3;
+    const EXPECTED_NULLITY: usize = SPATIAL_DIM + 1;
+
+    // 1. Length agreement across `members` / `kinds` / `q` (mirrors the anchored
+    //    kernel's first guard): disagreeing lengths mean the caller mis-built the
+    //    problem, so reject before indexing them together below.
+    if members.len() != kinds.len() || members.len() != q.len() {
+        return Err(FreeFormError::DimensionMismatch);
+    }
+
+    // 2. Per-member sign contract, reusing the shared `MemberKind` vocabulary:
+    //    cables carry tension (`q > 0`), struts carry compression (`q < 0`). A
+    //    violation is infeasible input — `D` would still assemble, but the
+    //    self-stress it encodes would be sign-inconsistent — so surface a clean
+    //    diagnostic rather than a silently-wrong form.
+    for (&kind, &qi) in kinds.iter().zip(q.iter()) {
+        let sign_ok = match kind {
+            MemberKind::Cable => qi > 0.0,
+            MemberKind::Strut => qi < 0.0,
+        };
+        if !sign_ok {
+            return Err(FreeFormError::SignViolation);
+        }
+    }
+
+    // 3. Nullity check: assemble `D` and classify its spectrum once. A nullity
+    //    other than `d + 1` means this `q` does not admit a 3-D self-stressed
+    //    free-standing form (too few null directions ⇒ over-constrained; too many
+    //    ⇒ an under-determined / degenerate configuration). The classification is
+    //    returned so coordinate recovery (step 6) reuses the single dense EVD.
+    let d = assemble_force_density_matrix(n, members, q);
+    let spectrum = classify_spectrum(&d, NULLITY_REL_TOL);
+    if spectrum.nullity != EXPECTED_NULLITY {
+        return Err(FreeFormError::NullityMismatch {
+            observed: spectrum.nullity,
+            expected: EXPECTED_NULLITY,
+        });
+    }
+
+    Ok(spectrum)
 }
 
 #[cfg(test)]
