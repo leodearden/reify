@@ -20,18 +20,26 @@ use reify_ir::Value;
 use reify_test_support::{MockConstraintChecker, collect_errors, compile_source_with_stdlib};
 
 /// Combined source: CentredBar (no objective → centrality fires) +
-/// ExplicitMinimize (explicit `minimize` → centrality does NOT fire).
+/// ExplicitMinimize (explicit `maximize` → centrality does NOT fire).
 fn combined_source() -> String {
     let centred = include_str!("fixtures/centrality_two_sided_bound.ri");
-    // Control structure: has an explicit `minimize` declaration → no centrality synthesis.
+    // Control structure: has an explicit objective declaration → no centrality synthesis.
+    //
+    // Design follows the objective_set_weighted.ri pattern (task 3997): the constraint is
+    // placed on the side OPPOSITE to the optimizer's direction so the optimizer drives
+    // AWAY from the constraint boundary:
+    //   constraint y >= 1mm  (lower bound)
+    //   maximize y           → drives y toward the default upper bound (~10 m)
+    //
+    // This keeps initially_feasible=true (initial y ≈ 10 mm satisfies y >= 1 mm) and
+    // avoids boundary-overshoot at the constraint, so the solver returns Solved cleanly.
     let explicit = r#"
 structure ExplicitMinimize {
     param y: Scalar = auto
 
     constraint y >= 1mm
-    constraint y <= 9mm
 
-    minimize y
+    maximize y
 }
 "#;
     format!("{centred}\n{explicit}")
@@ -39,7 +47,7 @@ structure ExplicitMinimize {
 
 /// [B6] x ∈ [2mm, 8mm], no objective → solver places x ≈ 5mm (Chebyshev centre).
 /// [I5] engine.centrality_synthesized_scopes() contains "CentredBar" but not
-///      "ExplicitMinimize" (which has a user objective).
+///      "ExplicitMinimize" (which has an explicit user objective — `maximize y`).
 #[test]
 fn centrality_resolves_to_midpoint_and_records_scope() {
     let source = combined_source();
@@ -71,7 +79,7 @@ fn centrality_resolves_to_midpoint_and_records_scope() {
         .expect("ExplicitMinimize template must be in compiled module");
     assert!(
         explicit_template.objective.is_some(),
-        "ExplicitMinimize must have an objective (the `minimize y` declaration)"
+        "ExplicitMinimize must have an objective (the `maximize y` declaration)"
     );
 
     let x_id = ValueCellId::new("CentredBar", "x");

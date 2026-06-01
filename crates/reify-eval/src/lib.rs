@@ -587,6 +587,19 @@ pub struct Engine {
     /// Populated during eval() so that edit_param() can look up the objective
     /// by scope_name without needing access to the original templates.
     objectives: HashMap<String, ObjectiveSet>,
+    /// Names of scopes that received a synthetic Chebyshev-centre (max-min slack)
+    /// objective on the most recent `eval()` call (PRD η, I5 provenance hook).
+    ///
+    /// Cleared and repopulated on each `eval()` call alongside `self.objectives`.
+    /// A scope name is inserted when:
+    ///   - `template.objective.is_none()` (no explicit user objective), AND
+    ///   - all auto cells have `Type::Scalar { .. }` (continuous-only, B7), AND
+    ///   - at least one constraint decomposes into an inequality slack (Ge/Gt/Le/Lt).
+    ///
+    /// This mirrors the gate predicate in `solver.rs::build_centrality_objective`
+    /// (cross-referenced there).  Read by the η integration test now; task θ's
+    /// `ObjectiveProvenance` will consume it for explain output.
+    centrality_synthesized_scopes: std::collections::HashSet<String>,
     /// Compiled field declarations from the last eval() / edit_source() call.
     ///
     /// Stored so that incremental paths — primarily `Engine::edit_param`

@@ -263,6 +263,7 @@ impl Engine {
             active_objective_map: HashMap::new(),
             active_purpose_let_cells: HashMap::new(),
             objectives: HashMap::new(),
+            centrality_synthesized_scopes: std::collections::HashSet::new(),
             compiled_fields: Arc::new(Vec::new()),
             meta_map: Arc::new(HashMap::new()),
             max_unfold_depth: 64,
@@ -942,6 +943,21 @@ impl Engine {
     pub fn with_solver(mut self, solver: Box<dyn ConstraintSolver>) -> Self {
         self.solver = Some(solver);
         self
+    }
+
+    /// Return the set of scope names that received a synthetic Chebyshev-centre
+    /// (max-min slack) centrality objective on the most recent `eval()` call.
+    ///
+    /// A scope appears here when `template.objective.is_none()` AND all its auto
+    /// cells are `Type::Scalar` AND at least one constraint decomposes into an
+    /// inequality slack (Ge/Gt/Le/Lt).  The set is cleared and repopulated on
+    /// every `eval()` call.
+    ///
+    /// Used by the η integration test (task 4013) and by task θ's
+    /// `ObjectiveProvenance` to record the `synthetic_centrality = true` flag
+    /// in explain output (I5 provenance hook).
+    pub fn centrality_synthesized_scopes(&self) -> &std::collections::HashSet<String> {
+        &self.centrality_synthesized_scopes
     }
 
     /// Register a named constraint solver selectable via the `#solver(<name>)`
