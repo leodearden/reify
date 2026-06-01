@@ -143,6 +143,42 @@ impl<V> ToleranceBucket<V> {
             .rev()
             .find_map(|(t, v)| if *t <= requested_tol { Some(v) } else { None })
     }
+
+    /// Removes and returns the value stored at *exactly* `tol`, or `None` if no
+    /// entry has that precise tolerance key.
+    ///
+    /// Unlike [`lookup`](Self::lookup) this is an **exact** match — NOT
+    /// partial-order satisfaction — because the caller (intermediate-cache
+    /// rollback, task 4050 step-14) must drop the specific entry it inserted at
+    /// a known tolerance, not the loosest satisfying one. The match mirrors how
+    /// [`insert`](Self::insert) positions by tolerance value: exact f64
+    /// equality on the key the rollback log recorded, which is recomputed by the
+    /// identical `per_stage_tolerance_for_plan` call (no derivation drift).
+    ///
+    /// Removing from a sorted-ascending `Vec` preserves the ordering invariant
+    /// assumed by [`lookup`](Self::lookup), so no re-sort is needed.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics when `tol` is `NaN`, infinite, or negative —
+    /// mirroring [`insert`](Self::insert) / [`lookup`](Self::lookup) so an
+    /// invalid key never reaches the equality scan.
+    pub fn remove(&mut self, tol: f64) -> Option<V> {
+        debug_assert!(
+            crate::tolerance_gate::is_valid_tolerance_si(tol),
+            "ToleranceBucket: tolerance must be finite and non-negative, got {tol}"
+        );
+        // Exact f64-key match is intentional here (see the doc above): the
+        // rollback removes the precise tolerance it inserted, recomputed
+        // identically, so value equality — not an epsilon/partial-order check —
+        // is correct. `clippy::float_cmp` would otherwise flag the `==`.
+        #[allow(clippy::float_cmp)]
+        let idx = self
+            .entries
+            .iter()
+            .position(|(cached_tol, _)| *cached_tol == tol)?;
+        Some(self.entries.remove(idx).1)
+    }
 }
 
 #[cfg(test)]
