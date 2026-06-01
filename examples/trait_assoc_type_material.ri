@@ -1,0 +1,17 @@
+// task 3973 ιγ — trait associated type resolves in param annotation
+// PRD: docs/prds/v0_6/trait-associated-functions.md §4.5 §5.3a §7.3
+//
+// Integration gate: `param mass : Material` inside a structure that provides
+// `type Material = Steel` must resolve `Material` to `StructureRef("Steel")`
+// at compile time. Zero errors expected (auto-gate: examples_smoke.rs).
+
+structure Steel {}
+
+trait HasMaterial {
+    type Material
+}
+
+structure def Beam : HasMaterial {
+    type Material = Steel
+    param mass : Material
+}
