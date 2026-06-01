@@ -66,6 +66,11 @@ fn ir_to_config(k: IrKernelId) -> CfgKernelId {
 /// sync at compile time.  This function also serves as the **compile-time
 /// exhaustiveness pin** for `reify_config::KernelId` — no separate pin is
 /// needed.
+///
+/// This function is intentionally never called at runtime; its sole purpose
+/// is to force a compile error when `reify_config::KernelId` gains or loses a
+/// variant without a matching update here.
+#[allow(dead_code)]
 fn config_to_ir(k: CfgKernelId) -> IrKernelId {
     match k {
         CfgKernelId::Fidget => IrKernelId::Fidget,
