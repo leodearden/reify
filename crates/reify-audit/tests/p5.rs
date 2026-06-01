@@ -2466,6 +2466,184 @@ mod tests {
             regr2_new
         );
     }
+
+    /// H1 FP guard — domain-noun "placeholder" in a test fn name that is a
+    /// LEGITIMATE product-module sentinel test, NOT a placeholder test.
+    ///
+    /// Real corpus name: `tessellate_sentinel_placeholder_continues_independent_ops`
+    /// (crates/reify-eval/tests/geometry_error_handling.rs). The word
+    /// "placeholder" here describes a sentinel value / code-path placeholder in
+    /// the *geometry kernel*, not a not-yet-implemented test. The fn body
+    /// legitimately asserts `is_empty()` because the sentinel path produces an
+    /// empty geometry list.
+    ///
+    /// RED against the current two-gate (name-marker AND body-empty-assertion):
+    /// fn_name.contains("placeholder") is true, and the body has is_empty() —
+    /// so the two-gate fires, producing a false positive. After the three-signal
+    /// gate (name-marker AND name-empty-intent AND body-empty-assertion) the
+    /// name lacks any empty-intent token ("empty", "none", "nil", "zero",
+    /// "vacuous", "nothing", "no_") and is correctly suppressed.
+    #[test]
+    fn h1_domain_noun_placeholder_in_sentinel_not_flagged() {
+        let conn = seed_db();
+        insert_task_completed_event(&conn, "H1DN1");
+
+        let mut git = MockGitOps::new();
+        git.set_diff_changed_paths(
+            "main",
+            "h1dn1_commit",
+            vec!["crates/reify-eval/tests/geometry_error_handling.rs".to_string()],
+        );
+        git.set_log_grep("main", "H1DN1", vec![]);
+
+        // Real corpus fn name: contains "placeholder" as a domain noun (sentinel
+        // geometry value), NOT as a marker for "not yet implemented". The body
+        // legitimately asserts that the sentinel path produces an empty geometry list.
+        git.set_diff_added_lines_in_commit(
+            "h1dn1_commit",
+            "crates/reify-eval/tests/geometry_error_handling.rs",
+            vec![
+                (1, "    #[test]".to_string()),
+                (2, "    fn tessellate_sentinel_placeholder_continues_independent_ops() {".to_string()),
+                (3, "        let result = tessellate_with_sentinel_placeholder();".to_string()),
+                (4, "        assert!(result.is_empty(), \"sentinel placeholder path yields no geometry\");".to_string()),
+                (5, "    }".to_string()),
+            ],
+        );
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "H1DN1".to_string(),
+            TaskMetadata {
+                task_id: "H1DN1".to_string(),
+                status: "done".to_string(),
+                files: vec!["crates/reify-eval/tests/geometry_error_handling.rs".to_string()],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("h1dn1_commit".to_string()),
+                    note: None,
+                }),
+                title: "Sentinel placeholder geometry handling".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        let h1_findings: Vec<_> = findings
+            .iter()
+            .filter(|f| f.pattern == Pattern::P5TestsAssertEmpty)
+            .collect();
+        assert!(
+            h1_findings.is_empty(),
+            "domain-noun 'placeholder' (sentinel geometry fn) must NOT be flagged as \
+             phantom-done; got {:?}",
+            h1_findings
+        );
+    }
+
+    /// H1 FP guard — domain-noun "stub" in a test fn name that tests a
+    /// LEGITIMATE stub-kernel module, NOT a placeholder test.
+    ///
+    /// Real corpus pattern: `stub_kernel_export_returns_error`
+    /// (crates/reify-kernel-occt/src/stubs.rs). The word "stub" names the
+    /// product module (a kernel stub / shim layer), not a not-yet-implemented
+    /// test body. The fn body asserts an error code via assert_eq!(result, 0)
+    /// (a zero error code meaning success — legitimate empty/zero assertion).
+    ///
+    /// RED against the current two-gate: fn_name.contains("stub") is true, and
+    /// "assert_eq!(result, 0)" is in EMPTY_ASSERTION_PATTERNS — so the two-gate
+    /// fires, a false positive. After the three-signal gate the name lacks any
+    /// empty-intent token and is correctly suppressed.
+    #[test]
+    fn h1_domain_noun_stub_kernel_not_flagged() {
+        let conn = seed_db();
+        insert_task_completed_event(&conn, "H1DN2");
+
+        let mut git = MockGitOps::new();
+        git.set_diff_changed_paths(
+            "main",
+            "h1dn2_commit",
+            vec!["crates/reify-kernel-occt/tests/stub_tests.rs".to_string()],
+        );
+        git.set_log_grep("main", "H1DN2", vec![]);
+
+        // Real corpus pattern: "stub" is the product module name (kernel stub/shim),
+        // not a marker for an unimplemented test. assert_eq!(result, 0) is a
+        // legitimate zero-error-code assertion. Use the bare form (no message arg)
+        // so the EMPTY_ASSERTION_PATTERNS substring "assert_eq!(result, 0)" matches.
+        git.set_diff_added_lines_in_commit(
+            "h1dn2_commit",
+            "crates/reify-kernel-occt/tests/stub_tests.rs",
+            vec![
+                (1, "    #[test]".to_string()),
+                (2, "    fn stub_kernel_export_returns_error() {".to_string()),
+                (3, "        let result = stub_kernel_export();".to_string()),
+                (4, "        assert_eq!(result, 0);".to_string()),
+                (5, "    }".to_string()),
+            ],
+        );
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "H1DN2".to_string(),
+            TaskMetadata {
+                task_id: "H1DN2".to_string(),
+                status: "done".to_string(),
+                files: vec!["crates/reify-kernel-occt/tests/stub_tests.rs".to_string()],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("h1dn2_commit".to_string()),
+                    note: None,
+                }),
+                title: "Stub kernel export correctness".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        let h1_findings: Vec<_> = findings
+            .iter()
+            .filter(|f| f.pattern == Pattern::P5TestsAssertEmpty)
+            .collect();
+        assert!(
+            h1_findings.is_empty(),
+            "domain-noun 'stub' (stub-kernel module fn) must NOT be flagged as \
+             phantom-done; got {:?}",
+            h1_findings
+        );
+    }
 }
 
 
