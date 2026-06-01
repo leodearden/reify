@@ -4501,6 +4501,17 @@ impl Engine {
         // the regular `eval_expr` pass, never to another kinematic-query
         // cell, so an earlier patch in this loop cannot influence a later
         // dispatch's input.
+        // Pose cache shared across all kinematic-query cells in this template:
+        // a typical structure calls interferes/interferes_with/min_clearance on
+        // the same snapshot, so without a cache each non-identity body's
+        // world_transform is re-applied once per query. The cache is keyed on
+        // (source handle id, rotation bits, translation bits) and lives only
+        // for the duration of this post-process call — handle ids are
+        // build-local and must not cross build passes.
+        let mut pose_cache: HashMap<
+            (reify_ir::GeometryHandleId, [u64; 4], [u64; 3]),
+            reify_ir::GeometryHandleId,
+        > = HashMap::new();
         for cell in &template.value_cells {
             let default_expr = match &cell.default_expr {
                 Some(e) => e,
@@ -4512,6 +4523,7 @@ impl Engine {
                 values,
                 kernel,
                 diagnostics,
+                &mut pose_cache,
             ) {
                 values.insert(cell.id.clone(), value);
             }

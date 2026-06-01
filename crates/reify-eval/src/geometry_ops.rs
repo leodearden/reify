@@ -1831,6 +1831,7 @@ pub(crate) fn try_eval_kinematic_query(
     values: &reify_ir::ValueMap,
     kernel: &mut dyn reify_ir::GeometryKernel,
     diagnostics: &mut Vec<Diagnostic>,
+    pose_cache: &mut HashMap<(GeometryHandleId, [u64; 4], [u64; 3]), GeometryHandleId>,
 ) -> Option<reify_ir::Value> {
     // (1) Must be a FunctionCall — anything else is unsupported.
     let (function, args) = match &expr.kind {
@@ -1899,6 +1900,15 @@ pub(crate) fn try_eval_kinematic_query(
             Some(reify_ir::Value::Int(n)) => *n,
             _ => return Some(reify_ir::Value::Undef),
         };
+        // Binary helpers only probe two specific body ids — skip all others to
+        // avoid O(N-2) wasted ApplyTransform ops per query (e.g. a 50-body
+        // snapshot calling min_clearance(s, a, b) would otherwise pose 48
+        // irrelevant bodies). The unary `interferes` helper needs all bodies.
+        if let Some((qid_a, qid_b)) = body_id_args
+            && id != qid_a && id != qid_b
+        {
+            continue;
+        }
         let solid_name = match body_map.get(&reify_ir::Value::String("solid".to_string())) {
             Some(reify_ir::Value::String(s)) => s,
             // Non-string `solid` (e.g. a stale `Value::Undef` from a body whose
@@ -1920,18 +1930,45 @@ pub(crate) fn try_eval_kinematic_query(
                         if rotation != [1.0, 0.0, 0.0, 0.0]
                             || translation != [0.0, 0.0, 0.0] =>
                     {
-                        match kernel.execute(&reify_ir::GeometryOp::ApplyTransform {
-                            target: raw_id,
-                            rotation,
-                            translation,
-                        }) {
-                            Ok(posed) => posed.id,
-                            Err(e) => {
-                                diagnostics.push(Diagnostic::warning(format!(
-                                    "{}: ApplyTransform failed for body '{}': {e}",
-                                    function.name, solid_name
-                                )));
-                                raw_id
+                        // Cache posed handles for the duration of the build
+                        // pass: a typical structure calls interferes(s),
+                        // interferes_with(s,…) and min_clearance(s,…) on the
+                        // same snapshot, so without a cache each non-identity
+                        // body is re-posed once per query (3× the kernel ops
+                        // for the same geometry). The key is (source handle,
+                        // rotation bits, translation bits) — bit-exact to avoid
+                        // float equality pitfalls across calls.
+                        let cache_key = (
+                            raw_id,
+                            rotation.map(f64::to_bits),
+                            translation.map(f64::to_bits),
+                        );
+                        if let Some(&cached_id) = pose_cache.get(&cache_key) {
+                            cached_id
+                        } else {
+                            match kernel.execute(&reify_ir::GeometryOp::ApplyTransform {
+                                target: raw_id,
+                                rotation,
+                                translation,
+                            }) {
+                                Ok(posed) => {
+                                    pose_cache.insert(cache_key, posed.id);
+                                    posed.id
+                                }
+                                Err(e) => {
+                                    // A partial pose would mix FK-posed and
+                                    // unposed handles in the same pairwise
+                                    // probe, yielding a geometrically
+                                    // meaningless result. Collapse the whole
+                                    // query to Undef (consistent with the
+                                    // kernel_distance error arm) so the failure
+                                    // is visible rather than silently wrong.
+                                    diagnostics.push(Diagnostic::warning(format!(
+                                        "{}: ApplyTransform failed for body '{}': {e}",
+                                        function.name, solid_name
+                                    )));
+                                    return Some(reify_ir::Value::Undef);
+                                }
                             }
                         }
                     }
@@ -8968,6 +9005,7 @@ mod tests {
             &values,
             &mut kernel,
             &mut diagnostics,
+            &mut HashMap::new(),
         );
 
         // Distance(base_id=10, hole_id=20) = -1.0 ≤ 0.0 → the pair (1,2) interferes.
@@ -9018,8 +9056,13 @@ mod tests {
 
         let src_a = reify_ir::GeometryHandleId(10);
         let src_b = reify_ir::GeometryHandleId(20);
-        // MockGeometryKernel.execute() allocates handles from next_id=1.
-        // Body A's ApplyTransform → posed handle 1; body B's → posed handle 2.
+        // MockGeometryKernel::new() initialises next_id = 1 with no prior
+        // operations (see mocks.rs: `next_id: 1`). Each execute() call
+        // auto-increments: first call → GeometryHandleId(1), second → (2).
+        // This test issues no other execute() calls before try_eval_kinematic_query,
+        // so body A's ApplyTransform → id 1, body B's → id 2. If the mock ever
+        // pre-allocates a handle or changes its seed, update these constants and
+        // the with_distance_result fixture below to match.
         let posed_a = reify_ir::GeometryHandleId(1);
         let posed_b = reify_ir::GeometryHandleId(2);
 
@@ -9108,6 +9151,7 @@ mod tests {
             &values,
             &mut kernel,
             &mut diagnostics,
+            &mut HashMap::new(),
         );
 
         // (a) Posed geometry interferes — exactly one pair {a:1, b:2} (body ids, not handle ids).
@@ -9197,8 +9241,11 @@ mod tests {
 
         let src_a = reify_ir::GeometryHandleId(100);
         let src_b = reify_ir::GeometryHandleId(200);
-        // After step-4: only body B gets ApplyTransform → posed handle 1.
-        // Body A (identity) stays at raw handle 100.
+        // Only body B (non-identity) gets an ApplyTransform; body A (identity)
+        // stays at its raw handle. MockGeometryKernel::new() initialises
+        // next_id = 1, and no execute() calls precede try_eval_kinematic_query
+        // in this test, so body B's single ApplyTransform → GeometryHandleId(1).
+        // If the mock ever changes its seeding, update posed_b accordingly.
         let posed_b = reify_ir::GeometryHandleId(1);
 
         // Probe (src_a=100, posed_b=1) interferes; body A stays at raw handle.
@@ -9279,6 +9326,7 @@ mod tests {
             &values,
             &mut kernel,
             &mut diagnostics,
+            &mut HashMap::new(),
         );
 
         // Exactly ONE ApplyTransform op: only body B's non-identity transform.
