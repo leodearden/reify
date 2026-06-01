@@ -15,23 +15,252 @@
 //! The once-per-session dedup of the Info fatigue advisory is the emission
 //! layer's responsibility (reify-expr, step-10), not this classifier's.
 
-use reify_core::Diagnostic;
-use reify_ir::Value;
+// `#![allow(dead_code)]` is transient: until step-10 wires `flexure_diagnose`
+// into reify-expr's `FunctionCall` arm and re-exports it from `lib.rs`
+// (`pub use flexures::flexure_diagnose`), this whole module is reachable only
+// from its own `#[cfg(test)]` tests, so a non-test lib build would flag every
+// helper here as dead. Removed in step-10 when the `pub use` makes the module's
+// entry point live.
+#![allow(dead_code)]
 
-/// Classify the diagnostics a PRB flexure constructor call should surface.
+use std::collections::BTreeMap;
+
+use reify_core::{Diagnostic, DiagnosticCode, DimensionVector};
+use reify_ir::{PersistentMap, Value};
+
+use super::common::{classify_geometry_invalid, PRB_ANGLE_LIMIT_RAD};
+
+/// PRB rotational small-deflection bound in degrees — the human-facing spelling
+/// of [`PRB_ANGLE_LIMIT_RAD`] cited by the `W_FlexurePrbOutOfRange` advisory.
+const PRB_ANGLE_LIMIT_DEG: f64 = 5.0;
+
+/// Classify the diagnostics a PRB flexure constructor call should surface
+/// (PRD `docs/prds/v0_3/compliant-joints.md` §1 / §5.3).
 ///
-/// step-7 RED scaffolding: returns an empty `Vec` so the step-7 unit tests
-/// compile and fail on their assertions; the real classification logic lands in
-/// step-8 (GREEN).
-// `#[allow(dead_code)]` is transient: until step-10 wires the call into
-// reify-expr's `FunctionCall` arm and re-exports it from `lib.rs`
-// (`pub use flexures::flexure_diagnose`), this fn is reachable only from the
-// `#[cfg(test)]` unit tests, so the non-test lib build would flag it dead.
-// Removed in step-10 when the `pub use` makes it live.
-#[allow(dead_code)]
+/// Dispatches on the builtin `name`: a non-flexure name short-circuits to an
+/// empty `Vec` (so unrelated calls never carry a flexure advisory). For a
+/// recognised PRB ctor it then reads `result`:
+/// - a constructed joint `Value::Map` surfaces `W_FlexureYielding` (cached
+///   `at_yield`) and `W_FlexurePrbOutOfRange` (declared angular range past ±5°);
+/// - a `Value::Undef` is re-classified via [`classify_geometry_invalid`] and
+///   surfaces `E_FlexureGeometryInvalid` ONLY for degenerate geometry.
+///
+/// Every recognised PRB ctor call also appends the standing
+/// `W_FlexureFatigueCheckMissing` Info advisory; its once-per-eval-session
+/// dedup is the reify-expr emission layer's responsibility (step-10), not this
+/// classifier's.
 pub(crate) fn flexure_diagnose(name: &str, args: &[Value], result: &Value) -> Vec<Diagnostic> {
-    let _ = (name, args, result);
-    Vec::new()
+    if !is_flexure_ctor(name) {
+        return Vec::new();
+    }
+
+    let mut diags = Vec::new();
+
+    match result {
+        // Success path: a constructed joint Map. Read the cached compliance
+        // record + the joint range to surface the §5.3 operating-stress warnings.
+        Value::Map(joint) => {
+            if let Some(fields) = compliance_fields(joint) {
+                // W_FlexureYielding — the cached stress-check tripped: peak
+                // surface stress at the (declared|auto) range endpoint ≥ yield.
+                if rec_bool(fields, "at_yield") == Some(true) {
+                    if let Some(d) = yielding_diagnostic(fields, joint) {
+                        diags.push(d);
+                    }
+                }
+            }
+            // W_FlexurePrbOutOfRange — the user declared an angular operating
+            // range beyond the ±5° pseudo-rigid-body small-deflection bound. The
+            // auto cap is always ≤ 5°, so an endpoint past 5° can only come from a
+            // declared range. Angular joints only — the displacement families have
+            // no ±5° rotational bound (their range is LENGTH-dimensioned, which
+            // `angular_range_endpoint` returns `None` for).
+            if let Some(endpoint) = angular_range_endpoint(joint) {
+                if endpoint > PRB_ANGLE_LIMIT_RAD + 1e-9 {
+                    diags.push(prb_out_of_range_diagnostic(endpoint));
+                }
+            }
+        }
+        // Undef path: re-classify the rejection. Emit E_FlexureGeometryInvalid
+        // ONLY for degenerate geometry; non-geometry rejections (bad material /
+        // axis / arity) stay silent.
+        Value::Undef => {
+            if let Some(violation) = classify_geometry_invalid(name, args) {
+                diags.push(
+                    Diagnostic::error(format!(
+                        "E_FLEXURE_GEOMETRY_INVALID: {}",
+                        violation.describe()
+                    ))
+                    .with_code(DiagnosticCode::FlexureGeometryInvalid),
+                );
+            }
+        }
+        _ => {}
+    }
+
+    // W_FlexureFatigueCheckMissing — a standing Info advisory accompanying every
+    // PRB flexure construction (PRD §1): the PRB model carries no fatigue-life
+    // check. Deduplicated to once-per-eval-session at the reify-expr emission
+    // layer (step-10), not here.
+    diags.push(
+        Diagnostic::info(
+            "W_FLEXURE_FATIGUE_CHECK_MISSING: this pseudo-rigid-body flexure has no \
+             fatigue-life check; validate cyclic flexures against the material endurance \
+             limit (S–N) for the intended duty cycle",
+        )
+        .with_code(DiagnosticCode::FlexureFatigueCheckMissing),
+    );
+
+    diags
+}
+
+/// The 13 PRB flexure constructor names (beam / notch / hinge / prismatic /
+/// compound). Only these surface flexure diagnostics; everything else — plain
+/// builtins, the `__flexure_compliance_get` accessor intrinsic (step-12) — is
+/// short-circuited to an empty `Vec`.
+fn is_flexure_ctor(name: &str) -> bool {
+    matches!(
+        name,
+        "prb_cantilever_beam"
+            | "prb_fixed_fixed_beam"
+            | "prb_notch_circular"
+            | "prb_notch_elliptical"
+            | "prb_notch_right_circular"
+            | "prb_living_hinge"
+            | "prb_cross_spring_pivot"
+            | "prb_let_joint"
+            | "prb_prismatic_blade"
+            | "prb_two_axis_pivot"
+            | "prb_parallelogram_flexure"
+            | "prb_double_parallelogram_flexure"
+            | "prb_cartwheel_flexure"
+    )
+}
+
+/// Build the `W_FlexureYielding` warning from the cached compliance record.
+///
+/// The material yield and safety factor are recovered from the record alone —
+/// no per-family material-arg extraction needed:
+///   `yield_margin = (yield − max_stress) / yield`
+///   ⇒ `yield = max_stress / (1 − yield_margin)`, `safety_factor = 1 / (1 − yield_margin)`.
+/// In the at-yield regime `yield_margin ≤ 0`, so `(1 − yield_margin) ≥ 1 > 0`
+/// (no divide-by-zero; the no-yield sentinel margin `1.0` never reaches here
+/// because `at_yield` is always `false` without a yield datum).
+fn yielding_diagnostic(
+    fields: &PersistentMap<String, Value>,
+    joint: &BTreeMap<Value, Value>,
+) -> Option<Diagnostic> {
+    let max_stress = rec_pressure(fields, "max_stress")?;
+    let yield_margin = rec_real(fields, "yield_margin")?;
+    let denom = 1.0 - yield_margin;
+    if denom <= 0.0 || !denom.is_finite() {
+        return None;
+    }
+    let yield_si = max_stress / denom;
+    let safety_factor = 1.0 / denom;
+
+    // Suggested narrower range = the auto SAFE PRB-valid bound stored in the
+    // record, formatted per the joint's dimensional family.
+    let suggestion = match (rec_real(fields, "prb_validity_range"), joint_kind(joint)) {
+        (Some(half), Some("prismatic")) => format!("±{:.3} mm", half * 1e3),
+        (Some(half), _) => format!("±{:.2}°", half.to_degrees()),
+        (None, _) => "the PRB-valid operating range".to_string(),
+    };
+
+    Some(
+        Diagnostic::warning(format!(
+            "W_FLEXURE_YIELDING: peak surface stress {:.1} MPa exceeds the material yield \
+             strength {:.1} MPa (safety factor {:.2}); narrow the declared operating range \
+             to {} to keep the flexure below yield",
+            max_stress / 1e6,
+            yield_si / 1e6,
+            safety_factor,
+            suggestion,
+        ))
+        .with_code(DiagnosticCode::FlexureYielding),
+    )
+}
+
+/// Build the `W_FlexurePrbOutOfRange` warning citing the ±5° bound and the
+/// bookmarked nonlinear-FEA escalation path (PRD §5).
+fn prb_out_of_range_diagnostic(endpoint_rad: f64) -> Diagnostic {
+    Diagnostic::warning(format!(
+        "W_FLEXURE_PRB_OUT_OF_RANGE: declared operating range ±{:.2}° exceeds the ±{:.0}° \
+         pseudo-rigid-body small-deflection bound; beyond this the linear PRB model loses \
+         fidelity — validate the joint with a nonlinear FEA sweep \
+         (see docs/prds/v0_3/compliant-joints.md §5)",
+        endpoint_rad.to_degrees(),
+        PRB_ANGLE_LIMIT_DEG,
+    ))
+    .with_code(DiagnosticCode::FlexurePrbOutOfRange)
+}
+
+/// The half-width SI magnitude of an angular (ANGLE-dimensioned) joint range's
+/// upper bound, or `None` for an absent / non-angular / unbounded range (the
+/// displacement families carry a LENGTH-dimensioned range, which returns `None`).
+fn angular_range_endpoint(joint: &BTreeMap<Value, Value>) -> Option<f64> {
+    match joint_field(joint, "range")? {
+        Value::Range { upper: Some(up), .. } => match up.as_ref() {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } if *dimension == DimensionVector::ANGLE && si_value.is_finite() => {
+                Some(si_value.abs())
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Look up a string-keyed entry in a joint `Value::Map`.
+fn joint_field<'a>(joint: &'a BTreeMap<Value, Value>, key: &str) -> Option<&'a Value> {
+    joint.get(&Value::String(key.to_string()))
+}
+
+/// Read the joint's `kind` discriminant ("revolute" / "prismatic" / …).
+fn joint_kind(joint: &BTreeMap<Value, Value>) -> Option<&str> {
+    match joint_field(joint, "kind")? {
+        Value::String(s) => Some(s.as_str()),
+        _ => None,
+    }
+}
+
+/// The cached `FlexureCompliance` record's fields, if the joint carries one
+/// under the reserved hidden `__flexure_compliance` key.
+fn compliance_fields(joint: &BTreeMap<Value, Value>) -> Option<&PersistentMap<String, Value>> {
+    match joint_field(joint, "__flexure_compliance")? {
+        Value::StructureInstance(d) => Some(&d.fields),
+        _ => None,
+    }
+}
+
+/// Read a `Value::Bool` field from a compliance record.
+fn rec_bool(fields: &PersistentMap<String, Value>, key: &str) -> Option<bool> {
+    match fields.get(&key.to_string())? {
+        Value::Bool(b) => Some(*b),
+        _ => None,
+    }
+}
+
+/// Read a finite bare `Value::Real` field from a compliance record.
+fn rec_real(fields: &PersistentMap<String, Value>, key: &str) -> Option<f64> {
+    match fields.get(&key.to_string())? {
+        Value::Real(r) if r.is_finite() => Some(*r),
+        _ => None,
+    }
+}
+
+/// Read a finite PRESSURE-dimensioned `Value::Scalar` field's `si_value` from a
+/// compliance record.
+fn rec_pressure(fields: &PersistentMap<String, Value>, key: &str) -> Option<f64> {
+    match fields.get(&key.to_string())? {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } if *dimension == DimensionVector::PRESSURE && si_value.is_finite() => Some(*si_value),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

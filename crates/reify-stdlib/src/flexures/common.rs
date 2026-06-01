@@ -348,6 +348,101 @@ pub(super) fn attach_compliance(joint: Value, record: Value) -> Value {
     }
 }
 
+/// A degenerate-geometry violation re-derived from a rejected PRB constructor's
+/// arguments — the input class the `E_FlexureGeometryInvalid` diagnostic
+/// (PRD §1) is scoped to.
+///
+/// The PRB ctors return `Value::Undef` for BOTH degenerate geometry AND
+/// non-geometry input errors (bad material / axis / arity). To emit
+/// `E_FlexureGeometryInvalid` for *only* the geometry class — mirroring how
+/// `stackup::diagnose` re-classifies on the `Undef` path — `flexure_diagnose`
+/// re-derives the geometry from the raw args via [`classify_geometry_invalid`].
+//
+// `#[allow(dead_code)]` is transient: this type is reachable only through the
+// (also transiently-dead) `diagnostics::flexure_diagnose` until step-10 wires
+// that helper into reify-expr and re-exports it from `lib.rs`.
+#[allow(dead_code)]
+pub(super) enum GeometryViolation {
+    /// Slender-beam families `(length, width, thickness, …)`: bending thickness
+    /// `t` ≥ beam length `L`.
+    ThicknessExceedsLength { thickness: f64, length: f64 },
+    /// Notch-hinge family `(notch_radius, web_thickness, …)`: web thickness `t`
+    /// ≥ notch diameter `2r`.
+    WebExceedsNotchDiameter { thickness: f64, radius: f64 },
+}
+
+impl GeometryViolation {
+    /// A human-readable description of the degeneracy (always mentions
+    /// "geometry"), suffixed onto the `E_FLEXURE_GEOMETRY_INVALID` message.
+    #[allow(dead_code)] // transient — see [`GeometryViolation`].
+    pub(super) fn describe(&self) -> String {
+        match self {
+            GeometryViolation::ThicknessExceedsLength { thickness, length } => format!(
+                "degenerate flexure geometry: bending thickness {:.4} mm ≥ beam length \
+                 {:.4} mm — the pseudo-rigid-body model requires a slender beam \
+                 (thickness < length)",
+                thickness * 1e3,
+                length * 1e3,
+            ),
+            GeometryViolation::WebExceedsNotchDiameter { thickness, radius } => format!(
+                "degenerate flexure geometry: web thickness {:.4} mm ≥ notch diameter \
+                 {:.4} mm — the notch-hinge model requires web thickness < 2·radius",
+                thickness * 1e3,
+                2.0 * radius * 1e3,
+            ),
+        }
+    }
+}
+
+/// Re-classify a degenerate-geometry violation from a rejected PRB constructor's
+/// positional arguments, or `None` when the geometry is valid (so a
+/// non-geometry Undef — bad material / axis / arity — stays silent) or the
+/// relevant geometry slots cannot be read.
+///
+/// Dispatches by ctor name into the three positional layouts:
+/// - slender-beam families `(length, width, thickness, …)` → `t ≥ L`;
+/// - `prb_cartwheel_flexure` `(blade_count, length, width, thickness, …)` →
+///   `t ≥ L` (length at index 1, thickness at index 3);
+/// - notch family `(notch_radius, web_thickness, width, …)` → `t ≥ 2r`.
+#[allow(dead_code)] // transient — see [`GeometryViolation`].
+pub(super) fn classify_geometry_invalid(name: &str, args: &[Value]) -> Option<GeometryViolation> {
+    match name {
+        "prb_cantilever_beam"
+        | "prb_fixed_fixed_beam"
+        | "prb_living_hinge"
+        | "prb_cross_spring_pivot"
+        | "prb_let_joint"
+        | "prb_prismatic_blade"
+        | "prb_two_axis_pivot"
+        | "prb_parallelogram_flexure"
+        | "prb_double_parallelogram_flexure" => {
+            let length = length_si(args.first()?)?;
+            let thickness = length_si(args.get(2)?)?;
+            thickness_vs_length(thickness, length)
+        }
+        "prb_cartwheel_flexure" => {
+            let length = length_si(args.get(1)?)?;
+            let thickness = length_si(args.get(3)?)?;
+            thickness_vs_length(thickness, length)
+        }
+        "prb_notch_circular" | "prb_notch_elliptical" | "prb_notch_right_circular" => {
+            let radius = length_si(args.first()?)?;
+            let thickness = length_si(args.get(1)?)?;
+            (radius > 0.0 && thickness > 0.0 && thickness >= 2.0 * radius)
+                .then_some(GeometryViolation::WebExceedsNotchDiameter { thickness, radius })
+        }
+        _ => None,
+    }
+}
+
+/// Shared degeneracy test for the slender-beam families: a positive, finite
+/// `t ≥ L` is the `thickness ≥ length` violation those ctors reject on.
+#[allow(dead_code)] // transient — see [`GeometryViolation`].
+fn thickness_vs_length(thickness: f64, length: f64) -> Option<GeometryViolation> {
+    (length > 0.0 && thickness > 0.0 && thickness >= length)
+        .then_some(GeometryViolation::ThicknessExceedsLength { thickness, length })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
