@@ -25,6 +25,45 @@
 //! rather than adding a premature marshalling layer.
 #![allow(dead_code)]
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Compute the modal-aware integration timestep (§6.1).
+///
+/// dt = min(0.5 / f_max, duration / 1000)
+///
+/// where `f_max` is the largest finite positive frequency in `freqs_hz`.
+/// If no finite positive frequency exists (empty slice, all non-positive, or all
+/// non-finite) the formula falls back to `duration / 1000`.
+///
+/// # Degenerate inputs
+///
+/// * `duration ≤ 0` or non-finite → returns a safe positive floor of `1e-6` s
+///   so callers always receive a finite positive dt.
+/// * Non-positive or non-finite entries in `freqs_hz` are ignored.
+pub(crate) fn modal_aware_dt(freqs_hz: &[f64], duration: f64) -> f64 {
+    // Guard duration.
+    let safe_duration = if duration.is_finite() && duration > 0.0 {
+        duration
+    } else {
+        // Degenerate: return a safe floor.
+        return 1e-6;
+    };
+
+    // Find the max finite positive frequency.
+    let f_max = freqs_hz
+        .iter()
+        .copied()
+        .filter(|&f| f.is_finite() && f > 0.0)
+        .fold(f64::NEG_INFINITY, f64::max);
+
+    let dt_duration = safe_duration / 1000.0;
+    if f_max > 0.0 {
+        (0.5 / f_max).min(dt_duration)
+    } else {
+        dt_duration
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
