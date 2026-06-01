@@ -1385,25 +1385,28 @@ purpose check(subject : Structure) {
     );
 }
 
-/// Companion test for `activate_expands_subject_params_placeholder_to_populated_list`:
-/// `subject.geometric_params` has no compile-time `ResolvedSchemaQuery` entry
-/// (only `params` is populated by `compile_purpose` in `traits.rs`) and no
-/// activation-time fallback heuristic (task-1904 territory). The expansion
-/// helper's no-resolved-query branch must therefore replace the placeholder
-/// with an empty `ReflectiveCellList` (task-2458), preserving today's
-/// vacuous-true semantics for `forall p in subject.geometric_params: ...`.
+/// task-4137 step-5 (RED): pins that `expand_purpose_reflective_placeholders`
+/// resolves `subject.geometric_params` to a *populated* `ReflectiveCellList`
+/// containing exactly the Length- and Angle-typed params, excluding dimensionless
+/// ones (`ratio : Real`).
 ///
-/// Acceptance criteria (task-2289 step-12, updated in task-2458):
-///   (a) collection.kind is `CompiledExprKind::ReflectiveCellList` (no longer the
-///       `PurposeReflectiveAggregation` placeholder, and not a `ListLiteral`).
-///   (b) the ReflectiveCellList is empty.
+/// The fixture uses a wildcard `subject : Structure` purpose (no compile-time
+/// `ResolvedSchemaQuery`), so the activation-time value_cells-scan fallback is
+/// what runs. This test fails until task-4137 step-6 generalises the fallback
+/// to also handle `geometric_params`.
 ///
-/// Should PASS immediately given step-11's no-matching-query branch.
+/// Acceptance criteria (task-4137):
+///   (a) collection.kind is `CompiledExprKind::ReflectiveCellList` (not the placeholder).
+///   (b) the ReflectiveCellList is non-empty (2 elements).
+///   (c) element cell IDs (sorted) == {Bracket.twist, Bracket.width} (ratio excluded).
+///   (d) element result_types match declared cell types (Length for both).
 #[test]
-fn activate_expands_geometric_params_placeholder_to_empty_list() {
+fn activate_expands_geometric_params_placeholder_to_populated_list() {
     let source = r#"
 structure Bracket {
-    param x : Real
+    param width : Length = 80mm
+    param twist : Angle = 30deg
+    param ratio : Real = 1.0
 }
 
 purpose check(subject : Structure) {
@@ -1457,7 +1460,7 @@ purpose check(subject : Structure) {
         CompiledExprKind::PurposeReflectiveAggregation { .. } => panic!(
             "post-activation: collection is still the `PurposeReflectiveAggregation` \
              placeholder; activate_purpose must expand the geometric_params \
-             placeholder into an empty `ReflectiveCellList` (task-2458)"
+             placeholder into a populated `ReflectiveCellList` (task-4137 step-6)"
         ),
         other => panic!(
             "post-activation: expected `ReflectiveCellList` in Quantifier collection \
@@ -1466,13 +1469,37 @@ purpose check(subject : Structure) {
         ),
     };
 
-    // (b) the ReflectiveCellList is empty.
-    assert!(
-        elements.is_empty(),
-        "expected expanded geometric_params ReflectiveCellList to be empty (no resolved \
-         query and no fallback heuristic for geometric_params yet — task-1904), \
-         got {} elements",
+    // (b) the ReflectiveCellList is non-empty (width + twist; ratio excluded).
+    assert_eq!(
+        elements.len(),
+        2,
+        "expected 2 elements (Bracket.width, Bracket.twist) in geometric_params list; \
+         ratio (dimensionless Real) must be excluded. Got {} elements (task-4137 step-6 not yet applied)",
         elements.len()
+    );
+
+    // (c) element cell IDs are exactly {Bracket.twist, Bracket.width} (any order).
+    let mut element_cells: Vec<ValueCellId> = Vec::with_capacity(elements.len());
+    for (i, element) in elements.iter().enumerate() {
+        match &element.kind {
+            CompiledExprKind::ValueRef(id) => element_cells.push(id.clone()),
+            other => panic!(
+                "expected ValueRef element at index {} of expanded geometric_params \
+                 ReflectiveCellList, got {:?}",
+                i, other
+            ),
+        }
+    }
+    element_cells.sort();
+    let expected = vec![
+        ValueCellId::new("Bracket", "twist"),
+        ValueCellId::new("Bracket", "width"),
+    ];
+    assert_eq!(
+        element_cells, expected,
+        "expected expanded element cell IDs to be {{Bracket.twist, Bracket.width}}, \
+         got {:?}",
+        element_cells
     );
 }
 

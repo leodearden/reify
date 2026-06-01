@@ -2005,21 +2005,25 @@ mod tests {
         );
     }
 
-    /// task-2458 step-5 (RED): pins that `expand_purpose_reflective_placeholders`
-    /// produces an *empty* `ReflectiveCellList` (not a `ListLiteral`) for a
-    /// `geometric_params` query where no resolved-query path and no fallback scan
-    /// exists. The empty list falls through to value-iteration's vacuous-true
-    /// path in `eval_quantifier`. RED until step-6 switches the emission.
+    /// task-4137 step-5 (RED): pins that `expand_purpose_reflective_placeholders`
+    /// resolves `geometric_params` to a non-empty `ReflectiveCellList` containing
+    /// exactly the Length-typed `width` cell, while excluding the dimensionless `x`
+    /// (Type::Real). Renamed from `expand_emits_empty_reflective_cell_list_for_geometric_params`
+    /// (task-2458); converted from an empty-list pin to a positive resolution test.
+    ///
+    /// RED until task-4137 step-6 generalises the wildcard value_cells-scan fallback
+    /// to handle `geometric_params` (currently falls through to `Vec::new()`).
     #[test]
-    fn expand_emits_empty_reflective_cell_list_for_geometric_params() {
+    fn expand_resolves_geometric_params_excluding_dimensionless() {
         let entity = "Foo";
         let cell_x = ValueCellId::new(entity, "x");
+        let cell_width = ValueCellId::new(entity, "width");
 
-        // No query for "geometric_params" — geometric_params has no resolution
-        // path yet (task-1904). The function emits an empty list.
+        // No compile-time query — wildcard subject, fallback scan will be used.
         let queries: Vec<ResolvedSchemaQuery> = Vec::new();
 
         let mut value_cells: PersistentMap<ValueCellId, ValueCellNode> = PersistentMap::default();
+        // Dimensionless param — must be EXCLUDED from geometric_params.
         value_cells.insert(
             cell_x.clone(),
             ValueCellNode {
@@ -2030,30 +2034,60 @@ mod tests {
                 content_hash: ContentHash::of_str("x"),
             },
         );
+        // Length-typed param — must be INCLUDED in geometric_params.
+        value_cells.insert(
+            cell_width.clone(),
+            ValueCellNode {
+                id: cell_width.clone(),
+                kind: ValueCellKind::Param,
+                cell_type: Type::length(),
+                default_expr: None,
+                content_hash: ContentHash::of_str("width"),
+            },
+        );
 
         let mut expr = CompiledExpr::purpose_reflective_aggregation(
             "subject".to_string(),
             "geometric_params".to_string(),
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::length())),
         );
 
         expand_purpose_reflective_placeholders(&mut expr, &queries, &[("subject".to_string(), entity.to_string())], &value_cells);
 
-        // task-2458: must be ReflectiveCellList (empty), NOT ListLiteral.
+        // task-2458: must be ReflectiveCellList (not ListLiteral).
         let elements = match &expr.kind {
             CompiledExprKind::ReflectiveCellList(elements) => elements,
             other => panic!(
                 "task-2458: post-expansion shape must be `ReflectiveCellList` \
-                 (not `ListLiteral`) even for the empty geometric_params case; \
-                 got {:?}",
+                 (not `ListLiteral`); got {:?}",
                 other
             ),
         };
 
-        assert!(
-            elements.is_empty(),
-            "geometric_params expansion must produce an empty ReflectiveCellList \
-             (no resolution path exists yet, task-1904)"
+        // Must be non-empty: exactly width (Length), x (Real/dimensionless) excluded.
+        assert_eq!(
+            elements.len(),
+            1,
+            "geometric_params expansion must produce exactly 1 element (width); \
+             x (dimensionless Real) must be excluded. Got {} elements \
+             (task-4137 step-6 not yet applied)",
+            elements.len()
         );
+
+        // The single element must be a ValueRef pointing at Foo.width.
+        match &elements[0].kind {
+            CompiledExprKind::ValueRef(id) => {
+                assert_eq!(
+                    *id, cell_width,
+                    "expected ValueRef(Foo.width), got {:?}",
+                    id
+                );
+            }
+            other => panic!(
+                "expected ValueRef element in geometric_params ReflectiveCellList, \
+                 got {:?}",
+                other
+            ),
+        }
     }
 }
