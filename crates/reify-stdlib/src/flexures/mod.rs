@@ -20,6 +20,7 @@ mod notch;
 mod hinge;
 mod prismatic;
 mod compound;
+mod diagnostics;
 
 #[cfg(test)]
 mod test_util;
