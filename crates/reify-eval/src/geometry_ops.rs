@@ -1914,23 +1914,27 @@ pub(crate) fn try_eval_kinematic_query(
             let posed_id = if let Some(wt) = body_map
                 .get(&reify_ir::Value::String("world_transform".to_string()))
             {
-                if let Some((rotation, translation)) = decompose_transform_to_arrays(wt) {
-                    match kernel.execute(&reify_ir::GeometryOp::ApplyTransform {
-                        target: raw_id,
-                        rotation,
-                        translation,
-                    }) {
-                        Ok(posed) => posed.id,
-                        Err(e) => {
-                            diagnostics.push(Diagnostic::warning(format!(
-                                "{}: ApplyTransform failed for body '{}': {e}",
-                                function.name, solid_name
-                            )));
-                            raw_id
+                match decompose_transform_to_arrays(wt) {
+                    Some((rotation, translation))
+                        if rotation != [1.0, 0.0, 0.0, 0.0]
+                            || translation != [0.0, 0.0, 0.0] =>
+                    {
+                        match kernel.execute(&reify_ir::GeometryOp::ApplyTransform {
+                            target: raw_id,
+                            rotation,
+                            translation,
+                        }) {
+                            Ok(posed) => posed.id,
+                            Err(e) => {
+                                diagnostics.push(Diagnostic::warning(format!(
+                                    "{}: ApplyTransform failed for body '{}': {e}",
+                                    function.name, solid_name
+                                )));
+                                raw_id
+                            }
                         }
                     }
-                } else {
-                    raw_id
+                    _ => raw_id,
                 }
             } else {
                 raw_id
