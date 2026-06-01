@@ -539,6 +539,9 @@ pub fn solve_buckling_trampoline(
 /// The three declared-but-not-yet-honored params are:
 ///   - `mode`       — default `"shift_invert"`; any other string triggers a warning.
 ///   - `sigma`      — default `0.0`; any non-zero value triggers a warning.
+///                    Handles both `Value::Real` and `Value::Int` (integer literals
+///                    such as `sigma: 2` may arrive as `Value::Int` even though the
+///                    DSL declares `sigma` as `Real`).
 ///   - `auto_dense` — default `true`; `false` triggers a warning.
 ///
 /// Absent fields AND default values produce no diagnostic — robust to whether the
@@ -548,6 +551,21 @@ pub fn solve_buckling_trampoline(
 /// than allowlist validation because even a valid value like `mode:"dense"` is silently
 /// dropped today.  The solve continues with kernel defaults (advisory Warning only).
 fn buckling_unsupported_option_diagnostics(val: &Value) -> Vec<Diagnostic> {
+    /// Central template so the three call sites cannot drift apart.
+    fn unsupported_diag(
+        param: &str,
+        value_str: &str,
+        kernel_note: &str,
+        default_str: &str,
+    ) -> Diagnostic {
+        Diagnostic::warning(format!(
+            "BucklingOptions.{param} = {value_str} is declared but not yet honored by \
+             the solver::buckling trampoline ({kernel_note}); solve falls back to the \
+             default {default_str}",
+        ))
+        .with_code(DiagnosticCode::BucklingOptionUnsupported)
+    }
+
     let data = match val {
         Value::StructureInstance(d) => d,
         _ => return Vec::new(),
@@ -559,43 +577,50 @@ fn buckling_unsupported_option_diagnostics(val: &Value) -> Vec<Diagnostic> {
     if let Some(Value::String(m)) = data.fields.get("mode")
         && m != "shift_invert"
     {
-        diags.push(
-            Diagnostic::warning(format!(
-                "BucklingOptions.mode = {:?} is declared but not yet honored by the \
-                 solver::buckling trampoline (the buckling kernel has no mode-select \
-                 input yet); solve falls back to the default \"shift_invert\"",
-                m
-            ))
-            .with_code(DiagnosticCode::BucklingOptionUnsupported),
-        );
+        diags.push(unsupported_diag(
+            "mode",
+            &format!("{m:?}"),
+            "the buckling kernel has no mode-select input yet",
+            "\"shift_invert\"",
+        ));
     }
 
     // sigma: default 0.0 — warn for any non-zero value.
-    if let Some(Value::Real(s)) = data.fields.get("sigma")
-        && *s != 0.0
-    {
-        diags.push(
-            Diagnostic::warning(format!(
-                "BucklingOptions.sigma = {s} is declared but not yet honored by the \
-                 solver::buckling trampoline (the buckling kernel has no shift-origin \
-                 input yet); solve falls back to the default 0.0",
-            ))
-            .with_code(DiagnosticCode::BucklingOptionUnsupported),
-        );
+    // NOTE: sigma is declared `Real` in the DSL so `Value::Real` is the normal
+    // representation, but integer literals (`sigma: 2`) may arrive as `Value::Int`.
+    // Both non-zero cases are caught here so an integer-valued sigma cannot bypass
+    // the warning — mirroring how `extract_buckling_options` accepts `Value::Int`
+    // for the other numeric fields.
+    match data.fields.get("sigma") {
+        Some(Value::Real(s)) if *s != 0.0 => {
+            diags.push(unsupported_diag(
+                "sigma",
+                &s.to_string(),
+                "the buckling kernel has no shift-origin input yet",
+                "0.0",
+            ));
+        }
+        Some(Value::Int(n)) if *n != 0 => {
+            diags.push(unsupported_diag(
+                "sigma",
+                &n.to_string(),
+                "the buckling kernel has no shift-origin input yet",
+                "0.0",
+            ));
+        }
+        _ => {}
     }
 
     // auto_dense: default true — warn for false.
     if let Some(Value::Bool(b)) = data.fields.get("auto_dense")
         && !*b
     {
-        diags.push(
-            Diagnostic::warning(
-                "BucklingOptions.auto_dense = false is declared but not yet honored by the \
-                 solver::buckling trampoline (the buckling kernel has no dense-fallback \
-                 toggle yet); solve falls back to the default true",
-            )
-            .with_code(DiagnosticCode::BucklingOptionUnsupported),
-        );
+        diags.push(unsupported_diag(
+            "auto_dense",
+            "false",
+            "the buckling kernel has no dense-fallback toggle yet",
+            "true",
+        ));
     }
 
     diags

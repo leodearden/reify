@@ -2733,14 +2733,16 @@ mod tests {
     /// `Diagnostic::warning(...).with_code(...)` (mirrors the variant-agnostic
     /// `diagnostic_code_derives` shape but targeted at the new variant so a
     /// future enum reorganisation that drops it is caught here).
+    ///
+    /// The `Debug` repr is intentionally not asserted here: it is auto-derived
+    /// cosmetic output with no consumer contract — a dropped variant would already
+    /// be a compile error since the variant is referenced throughout.  The
+    /// `d.code` round-trip and the serde wire-format test below are the
+    /// behavioural contracts worth pinning.
     #[test]
     fn diagnostic_code_buckling_option_unsupported_with_code_round_trips() {
         let d = Diagnostic::warning("x").with_code(DiagnosticCode::BucklingOptionUnsupported);
         assert_eq!(d.code, Some(DiagnosticCode::BucklingOptionUnsupported));
-        assert_eq!(
-            format!("{:?}", DiagnosticCode::BucklingOptionUnsupported),
-            "BucklingOptionUnsupported"
-        );
     }
 
     /// Under `feature = "serde"`, `DiagnosticCode::BucklingOptionUnsupported` serializes as

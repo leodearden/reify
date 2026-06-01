@@ -178,7 +178,7 @@ fn buckling_option_unsupported_mode_dense_emits_one_warning() {
     );
 }
 
-/// (c) `sigma: 1.5` (non-zero, non-default) → exactly one Warning whose message
+/// (c) `sigma: 1.5` (non-zero `Value::Real`) → exactly one Warning whose message
 /// contains "sigma".
 #[test]
 fn buckling_option_unsupported_sigma_nonzero_emits_one_warning() {
@@ -188,6 +188,30 @@ fn buckling_option_unsupported_sigma_nonzero_emits_one_warning() {
         diags.len(),
         1,
         "expected exactly 1 W_BucklingOptionUnsupported for sigma:1.5, got: {:?}",
+        diags
+    );
+    assert_eq!(diags[0].severity, Severity::Warning);
+    assert!(
+        diags[0].message.contains("sigma"),
+        "expected message to contain 'sigma', got: {:?}",
+        diags[0].message
+    );
+}
+
+/// (c2) `sigma: Value::Int(2)` — integer literal for a `Real` field — → exactly one
+/// Warning whose message contains "sigma".
+///
+/// The DSL declares `sigma` as `Real`, but the eval pipeline may materialise an
+/// integer literal like `sigma: 2` as `Value::Int`.  The helper must catch this so
+/// a non-default integer sigma cannot silently bypass the warning.
+#[test]
+fn buckling_option_unsupported_sigma_int_nonzero_emits_one_warning() {
+    let opts = make_buckling_options(&[("sigma", Value::Int(2))]);
+    let diags = extract_unsupported_diags(run_trampoline_with_opts(opts));
+    assert_eq!(
+        diags.len(),
+        1,
+        "expected exactly 1 W_BucklingOptionUnsupported for sigma:Int(2), got: {:?}",
         diags
     );
     assert_eq!(diags[0].severity, Severity::Warning);
