@@ -617,17 +617,12 @@ mod tests {
         vec![top(0), top(1), top(2), bot(0), bot(1), bot(2)]
     }
 
-    #[test]
-    fn recovers_metric_prism_from_perturbed_guess() {
-        let (members, kinds) = triplex_topology();
-        let q = closed_form_q();
-        // One dense EVD, shared between the nullity check and recovery.
-        let spectrum = validate_explicit(6, &members, &kinds, &q)
-            .expect("closed-form prism q is feasible (nullity 4)");
-
-        // A mildly perturbed symmetric-prism guess (≈1e-3 per coordinate). The
-        // form-finding convention refines a guess, and recovery should gauge-fix
-        // to it; deterministic offsets (no RNG) keep the test bit-stable.
+    /// A mildly perturbed (≈1e-3 per coordinate, deterministic) symmetric-prism
+    /// guess: the canonical prism plus fixed small offsets. The form-finding
+    /// convention refines a guess, so recovery should gauge-fix to it; fixed
+    /// offsets (no RNG) keep the dependent tests bit-stable. Shared by the
+    /// recovery and explicit-entry-point tests.
+    fn perturbed_prism_guess() -> Vec<[f64; 3]> {
         const PERTURB: [[f64; 3]; 6] = [
             [0.0009, -0.0011, 0.0007],
             [-0.0013, 0.0006, 0.0010],
@@ -636,11 +631,24 @@ mod tests {
             [0.0010, -0.0008, -0.0013],
             [-0.0011, 0.0013, 0.0006],
         ];
-        let guess: Vec<[f64; 3]> = canonical_prism()
+        canonical_prism()
             .iter()
             .zip(PERTURB.iter())
             .map(|(p, d)| [p[0] + d[0], p[1] + d[1], p[2] + d[2]])
-            .collect();
+            .collect()
+    }
+
+    #[test]
+    fn recovers_metric_prism_from_perturbed_guess() {
+        let (members, kinds) = triplex_topology();
+        let q = closed_form_q();
+        // One dense EVD, shared between the nullity check and recovery.
+        let spectrum = validate_explicit(6, &members, &kinds, &q)
+            .expect("closed-form prism q is feasible (nullity 4)");
+
+        // A mildly perturbed symmetric-prism guess (recovery should gauge-fix
+        // to it).
+        let guess = perturbed_prism_guess();
 
         let x = recover_coordinates(&guess, &spectrum)
             .expect("perturbed symmetric-prism guess must recover a 3-D realisation");
@@ -724,5 +732,57 @@ mod tests {
             (twist_deg - 30.0).abs() < 2.0,
             "vertical-pair twist must be ≈30°, got {twist_deg:.3}°",
         );
+    }
+
+    // ---- Explicit-mode member forces + form_find_free entry point ----
+
+    #[test]
+    fn form_find_free_explicit_populates_result_with_correct_force_signs() {
+        let (members, kinds) = triplex_topology();
+        let q = closed_form_q();
+        let guess = perturbed_prism_guess();
+
+        let result = form_find_free(
+            &guess,
+            &members,
+            &kinds,
+            &ForceDensitySpec::Explicit(q.clone()),
+        )
+        .expect("explicit closed-form prism q must form-find");
+
+        // Spectrum / convergence metadata.
+        assert_eq!(result.nullity, 4, "a valid 3-D form has nullity d+1 = 4");
+        assert!(result.converged, "explicit closed-form solve must converge");
+        assert_eq!(result.nodes.len(), 6, "one recovered coordinate per node");
+
+        // force_densities echo the input q exactly.
+        assert_eq!(result.force_densities, q, "force_densities must echo input q");
+
+        // member_forces: N_i = q_i · L_i in struts-then-cables (input) order.
+        assert_eq!(result.member_forces.len(), members.len());
+        // Struts carry compression (N < 0), cables tension (N > 0) — the sign of
+        // N_i follows q_i since every recovered length L_i > 0.
+        for (idx, (&kind, &n_i)) in kinds.iter().zip(result.member_forces.iter()).enumerate() {
+            match kind {
+                MemberKind::Strut => assert!(
+                    n_i < 0.0,
+                    "strut {idx} must be compressive (N < 0), got {n_i}",
+                ),
+                MemberKind::Cable => assert!(
+                    n_i > 0.0,
+                    "cable {idx} must be tensile (N > 0), got {n_i}",
+                ),
+            }
+        }
+
+        // Every recovered member length is positive and finite: L_i = N_i / q_i
+        // (q_i is non-zero for every member).
+        for (&n_i, &qi) in result.member_forces.iter().zip(q.iter()) {
+            let len = n_i / qi;
+            assert!(
+                len > 0.0 && len.is_finite(),
+                "member length L = N/q must be positive & finite, got {len}",
+            );
+        }
     }
 }
