@@ -872,7 +872,12 @@ pub(crate) fn solve_tots(
             prev_lagr_grad = Some(g_new);
         }
 
-        prev_x = Some(x_new);
+        // Track the PRE-step iterate so the start-of-iteration convergence
+        // check compares the new `current` (== x_new) against the point before
+        // this step. Using x_new here would make step_norm == 0 next iteration
+        // (variable_vector()/unpack round-trip exactly), causing premature
+        // Converged termination on the second iteration regardless of progress.
+        prev_x = Some(x0);
 
         // Track best feasible solution.
         let new_is_feasible = is_feasible(&new_eval, &new_params);
