@@ -110,3 +110,76 @@ fn aux_let_body_surfaces_hidden_plain_let_visible() {
         "aux `let blank` must surface with default_visible == false (hidden)"
     );
 }
+
+/// step-3 (Mock): a 2-level CONTAINMENT-ONLY assembly (identity pose, no `at`)
+/// surfaces the contained child body exactly ONCE, under the COMPOSED
+/// `entity_path` `<root>.<sub>#realization[i]` (PRD §11.2
+/// `parent.sub#realization[i]`, e.g. `Assembly.c#realization[0]`), and
+/// SUPPRESSES the standalone `Child#realization[0]` surface (no
+/// double-surfacing).
+///
+/// Pins the exact descendant path scheme. Fails until step-4 adds the root-set
+/// + containment tree-walk + standalone-suppression (today every template is
+/// surfaced flatly, so `Child#realization[0]` appears standalone and the
+/// composed path is absent).
+#[test]
+fn containment_child_surfaces_once_at_composed_path() {
+    let source = r#"structure Child {
+    let body = box(20mm, 20mm, 20mm)
+}
+structure Assembly {
+    sub c : Child
+}"#;
+    let compiled = compile_source_with_stdlib(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "unexpected compile errors: {:?}",
+        compile_errors
+    );
+
+    let mut engine = mock_engine();
+    let result = engine.tessellate_realizations(&compiled);
+    let tess_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        tess_errors.is_empty(),
+        "unexpected tessellation errors: {:?}",
+        tess_errors
+    );
+
+    let paths: Vec<&str> = result
+        .meshes
+        .iter()
+        .map(|s| s.entity_path.as_str())
+        .collect();
+
+    // (b) no standalone duplicate of the contained child.
+    assert!(
+        !paths.contains(&"Child#realization[0]"),
+        "standalone `Child#realization[0]` must be suppressed (no double-surfacing); got {:?}",
+        paths
+    );
+
+    // (a) the child body surfaces under the composed `Assembly.c#realization[0]`.
+    assert!(
+        paths.contains(&"Assembly.c#realization[0]"),
+        "child body must surface under composed path `Assembly.c#realization[0]`; got {:?}",
+        paths
+    );
+
+    // (c) total surface count == number of surfaced descendants (exactly 1).
+    assert_eq!(
+        result.meshes.len(),
+        1,
+        "exactly one surfaced descendant expected; got {:?}",
+        paths
+    );
+}
