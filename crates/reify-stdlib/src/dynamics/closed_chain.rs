@@ -273,6 +273,46 @@ mod tests {
         }
     }
 
+    // S7: workless-constraint / virtual-work identity.
+    // A=[1,-1] (m=1,n=2), θ̇=[1,1] satisfies A·θ̇=0 exactly.
+    // Constraint torque Aᵀλ does zero net power on θ̇ ⇒ τ·θ̇ = τ_open·θ̇.
+    #[test]
+    fn constraint_forces_are_workless_virtual_work() {
+        let m_matrix = [2.0_f64, 0.0, 0.0, 3.0]; // diag(2,3)
+        let tau_open = [5.0_f64, -2.0];
+        let a_matrix = [1.0_f64, -1.0]; // m=1, n=2
+        let accel_rhs = [0.3_f64]; // arbitrary nonzero
+        let theta_dot = [1.0_f64, 1.0]; // lies in ker(A): A·θ̇ = 1-1 = 0
+
+        let sol = solve_closed_chain(
+            &m_matrix,
+            &tau_open,
+            &a_matrix,
+            &accel_rhs,
+            2,
+            1,
+            DEFAULT_PIVOT_EPS,
+        )
+        .expect("workless constraint fixture should succeed");
+
+        // (a) All outputs finite/non-NaN.
+        for (i, &l) in sol.lambda.iter().enumerate() {
+            assert!(l.is_finite(), "lambda[{i}] is not finite");
+        }
+        for (i, &t) in sol.tau.iter().enumerate() {
+            assert!(t.is_finite(), "tau[{i}] is not finite");
+        }
+
+        // (b) Virtual-work identity: τ·θ̇ = τ_open·θ̇ (to 1e-10).
+        let power_tau: f64 = sol.tau.iter().zip(&theta_dot).map(|(t, v)| t * v).sum();
+        let power_open: f64 = tau_open.iter().zip(&theta_dot).map(|(t, v)| t * v).sum();
+        let diff = (power_tau - power_open).abs();
+        assert!(
+            diff < 1e-10,
+            "virtual-work identity violated: |τ·θ̇ - τ_open·θ̇| = {diff:.2e} > 1e-10"
+        );
+    }
+
     // S5: 4×4 SPD non-diagonal M + full-row-rank 2×4 A — verify KKT residuals.
     // Build M = L·Lᵀ + I for L lower-triangular, ensuring SPD.
     // A has two independent rows (full row rank).
