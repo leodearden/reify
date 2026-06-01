@@ -121,6 +121,50 @@ fn propagate_poison() -> CompiledExpr {
     CompiledExpr::literal(Value::Undef, Type::Error)
 }
 
+/// Scan raw AST `args` for the first `ExprKind::Auto` and emit an
+/// `E_AUTO_NOT_AT_BINDING_SITE` gate diagnostic if one is found.
+///
+/// Returns `Some(poison)` so the caller can `return` immediately on a match,
+/// short-circuiting all downstream compilation of the poisoned subtree and
+/// guaranteeing exactly ONE diagnostic (anti-cascade, task-448/1912/1921).
+/// Returns `None` when no `auto` arg is present.
+///
+/// The `position` closure is called lazily — only when an `auto` arg is
+/// actually found — so callers pay zero allocation cost on the common
+/// (no-auto) path. Each site passes `|| format!(...)` with a descriptor that
+/// names the offending operand position (e.g. `"a function-call argument
+/// (function 'clamp')"` or `"a trait-static-call argument
+/// (Defaultable::make_default)"`).
+/// Only the first offending arg is reported (`.find()`, not `.filter()`) — the
+/// first-arg-only anti-cascade contract is locked in by
+/// `function_call_multi_auto_reports_only_first_arg`.
+///
+/// The label text `"auto not allowed at this operand position"` is intentionally
+/// generic across all three sites: the primary message already embeds the
+/// site-specific `position` descriptor, so the label serves only as a span
+/// anchor and does not need to repeat that detail.
+fn reject_auto_in_arg_list(
+    args: &[reify_ast::Expr],
+    position: impl FnOnce() -> String,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<CompiledExpr> {
+    args.iter().find(|a| matches!(a.kind, reify_ast::ExprKind::Auto { .. })).map(|auto_arg| {
+        make_poison_literal(
+            diagnostics,
+            Diagnostic::error(format!(
+                "auto is not allowed in {}; to expose a free parameter, \
+                 declare `param <name> = auto` at a binding site instead",
+                position(),
+            ))
+            .with_code(DiagnosticCode::AutoNotAtBindingSite)
+            .with_label(DiagnosticLabel::new(
+                auto_arg.span,
+                "auto not allowed at this operand position",
+            )),
+        )
+    })
+}
+
 /// Emit the cross-sub geometry-access diagnostic via `make_poison_literal` (task-3397).
 ///
 /// Used at all three sub-member-access sites (non-collection sub, bare collection
@@ -1265,23 +1309,13 @@ pub(crate) fn compile_expr_guarded(
                 .map(|t| t.entity_kind == EntityKind::Structure)
                 .unwrap_or(false);
             if !is_structure_ctor
-                && let Some(auto_arg) =
-                    args.iter().find(|a| matches!(a.kind, reify_ast::ExprKind::Auto { .. }))
-            {
-                return make_poison_literal(
+                && let Some(poison) = reject_auto_in_arg_list(
+                    args,
+                    || format!("a function-call argument (function '{}')", name),
                     diagnostics,
-                    Diagnostic::error(format!(
-                        "auto is not allowed in a function-call argument \
-                         (function '{}'); to expose a free parameter, declare \
-                         `param <name> = auto` at a binding site instead",
-                        name,
-                    ))
-                    .with_code(DiagnosticCode::AutoNotAtBindingSite)
-                    .with_label(DiagnosticLabel::new(
-                        auto_arg.span,
-                        "auto not allowed in a function-call argument",
-                    )),
-                );
+                )
+            {
+                return poison;
             }
 
             // Intercept `some(expr)` before general function resolution.
@@ -3006,6 +3040,19 @@ pub(crate) fn compile_expr_guarded(
             selector,
             args,
         } => {
+            // ── task 4143: semantic gate — reject `auto` in ad-hoc selector args ──
+            // Mirrors the FunctionCall and TraitStaticCall gates. Neither is a binding site;
+            // no structure-construction exemption. Gate fires before selector resolution,
+            // arg-count checks, geometry-availability checks, and base resolution —
+            // yielding exactly one diagnostic on the poison path (anti-cascade).
+            if let Some(poison) = reject_auto_in_arg_list(
+                args,
+                || format!("an ad-hoc selector argument (@{})", selector),
+                diagnostics,
+            ) {
+                return poison;
+            }
+
             // Resolve selector kind.
             // `n` is captured immediately before the push inside the `unknown` arm so it
             // cannot be falsely whitelisted by any future diagnostic added to the other arms.
@@ -3385,6 +3432,18 @@ pub(crate) fn compile_expr_guarded(
         // Name-drift guard: both sites call `trait_static_fn_symbol(trait, method)`
         // so the symbol is byte-for-byte identical.
         reify_ast::ExprKind::TraitStaticCall { trait_name, method, args } => {
+            // ── task 4143: semantic gate — reject `auto` in trait-static-call args ──
+            // Mirrors the FunctionCall gate (task 3808). Neither TraitStaticCall nor
+            // AdHocSelector is a binding site (no structure-construction exemption applies).
+            // Scanning raw AST args before any compilation avoids wasted work on poisoned subtrees.
+            if let Some(poison) = reject_auto_in_arg_list(
+                args,
+                || format!("a trait-static-call argument ({}::{})", trait_name, method),
+                diagnostics,
+            ) {
+                return poison;
+            }
+
             // Compile each argument.
             let compiled_args: Vec<CompiledExpr> = args
                 .iter()
