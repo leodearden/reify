@@ -872,6 +872,107 @@ fn twisted_beam_mesh(nz: usize, ny: usize) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
 
 // ─── step-3: Scordelis-Lo roof (MacNeal-Harder §3.4) ─────────────────────────
 
+/// Compute Dirichlet BCs for the Scordelis-Lo roof 1/4-quadrant model.
+///
+/// Mirrors [`pinched_cylinder_octant_symmetry_bcs`]; the roof's 1/4 model
+/// exploits two symmetry planes and one support condition:
+///
+/// | Plane | Physical role | Constrained DOFs |
+/// |-------|---------------|-----------------|
+/// | x=0 | Rigid end diaphragm | u_y=0, u_z=0 |
+/// | y=0 (θ=0) | Crown / longitudinal mid-plane symmetry | u_y=0, θ_x=0, θ_z=0 |
+/// | x=L/2 | Longitudinal midspan (x-symmetry) | u_x=0, θ_y=0 |
+///
+/// # Arguments
+///
+/// * `nodes` — node coordinates (`nodes[k]` is the 3-D position of node `k`)
+/// * `l` — full cylinder length (the quadrant spans `x ∈ [0, l/2]`);
+///   `l/2` is the midspan symmetry plane
+/// * `tol` — node-on-boundary detection tolerance; must be strictly less than
+///   half the smallest inter-node spacing to avoid pinning interior nodes
+fn roof_quadrant_symmetry_bcs(nodes: &[[f64; 3]], l: f64, tol: f64) -> Vec<DirichletBc> {
+    let mut bcs = Vec::new();
+    for (node, n) in nodes.iter().enumerate() {
+        let dof = |d: usize| node * 6 + d;
+        let is_crown = n[1].abs() < tol; // y ≈ 0: θ=0 crown symmetry
+        let is_diaphragm = n[0].abs() < tol; // x=0: rigid end diaphragm
+        let is_midspan = (n[0] - l / 2.0).abs() < tol; // x=L/2: longitudinal midspan symmetry
+
+        // Rigid end diaphragm at x=0.
+        //
+        // MacNeal-Harder "rigid end diaphragm": the end cross-section is a rigid
+        // plate in the yz-plane supported on axial rollers.  The plate constrains
+        // in-plane (yz) displacement but allows axial (x) sliding:
+        //   u_y = 0  (circumferential: cross-section cannot spread sideways)
+        //   u_z = 0  (vertical: cross-section cannot sink)
+        //   u_x = FREE (axial: the plate slides freely along the cylinder axis)
+        //
+        // Note: the axial rigid-body mode is eliminated by the midspan symmetry
+        // condition u_x=0 at x=L/2, not by this diaphragm constraint.
+        if is_diaphragm {
+            bcs.push(DirichletBc { dof: dof(1), value: 0.0 }); // u_y = 0 (circumferential)
+            bcs.push(DirichletBc { dof: dof(2), value: 0.0 }); // u_z = 0 (vertical)
+        }
+        // Crown / longitudinal mid-plane symmetry (θ=0, y=0).
+        if is_crown {
+            bcs.push(DirichletBc { dof: dof(1), value: 0.0 }); // u_y = 0
+            bcs.push(DirichletBc { dof: dof(3), value: 0.0 }); // θ_x = 0
+            bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z = 0
+        }
+        // Longitudinal midspan symmetry at x=L/2.
+        //
+        // x=L/2 is the center of the full roof.  For symmetric gravity loading:
+        //   u_x(x=L/2) = 0  (axial displacement antisymmetric about midspan)
+        //   θ_y(x=L/2) = 0  (rotation symmetric about midspan)
+        //
+        // Crucially, u_z is NOT constrained here — the midspan vertical
+        // displacement is the quantity we measure (it equals the max deflection).
+        if is_midspan {
+            bcs.push(DirichletBc { dof: dof(0), value: 0.0 }); // u_x = 0 (antisymmetry)
+            bcs.push(DirichletBc { dof: dof(4), value: 0.0 }); // θ_y = 0 (symmetry)
+        }
+    }
+    bcs
+}
+
+/// Compute lumped gravity loads for the Scordelis-Lo roof 1/4-quadrant model.
+///
+/// Each triangular element contributes `area × g / 3` per node as a downward
+/// (−z, DOF 2) point load.  Returns `(dof_index, force_value)` pairs ready
+/// for [`solve_shell_system`].
+///
+/// # Arguments
+///
+/// * `nodes` — node coordinates
+/// * `connectivity` — element node indices (`[n0, n1, n2]` per element)
+/// * `g` — gravity load per unit area (positive value; loads are applied in −z)
+fn roof_quadrant_gravity_loads(
+    nodes: &[[f64; 3]],
+    connectivity: &[[usize; 3]],
+    g: f64,
+) -> Vec<(usize, f64)> {
+    let mut loads = Vec::new();
+    for conn in connectivity {
+        let a = nodes[conn[0]];
+        let b = nodes[conn[1]];
+        let c = nodes[conn[2]];
+        // Triangle area = |AB × AC| / 2.
+        let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        let cross = [
+            ab[1] * ac[2] - ab[2] * ac[1],
+            ab[2] * ac[0] - ab[0] * ac[2],
+            ab[0] * ac[1] - ab[1] * ac[0],
+        ];
+        let area = (cross[0].powi(2) + cross[1].powi(2) + cross[2].powi(2)).sqrt() / 2.0;
+        let f_node = -area * g / 3.0; // downward (−z)
+        for &n in conn.iter() {
+            loads.push((n * 6 + 2, f_node));
+        }
+    }
+    loads
+}
+
 /// Scordelis-Lo roof smoke test — geometry from MacNeal-Harder (1985) §3.4.
 ///
 /// **NOT a validated benchmark** — see file-level docs. Asserts only that
@@ -943,94 +1044,11 @@ fn scordelis_lo_roof_quadrant_smoke_test_vertical_deflection_is_finite_and_downw
     let stiffness = build_shell_stiffnesses(&nodes, &connectivity, T, &mat);
     let elements = assembly_elements_for(&connectivity, &stiffness);
 
-    // Lumped gravity load: per-element area × G / 3 per node, in −z (DOF 2).
-    let mut point_loads: Vec<(usize, f64)> = Vec::new();
-    for conn in &connectivity {
-        let a = nodes[conn[0]];
-        let b = nodes[conn[1]];
-        let c = nodes[conn[2]];
-        // Triangle area = |AB × AC| / 2.
-        let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-        let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-        let cross = [
-            ab[1] * ac[2] - ab[2] * ac[1],
-            ab[2] * ac[0] - ab[0] * ac[2],
-            ab[0] * ac[1] - ab[1] * ac[0],
-        ];
-        let area = (cross[0].powi(2) + cross[1].powi(2) + cross[2].powi(2)).sqrt() / 2.0;
-        let f_node = -area * G / 3.0; // downward (−z)
-        for &n in conn.iter() {
-            point_loads.push((n * 6 + 2, f_node));
-        }
-    }
-
-    // BCs: detect nodes by position.
     // tol is chosen well within each mesh spacing (spacing ≈ L/2/NY ≈ 6.25 in x;
     // arc-length ≈ R·40°·π/180/NX ≈ 4.36 in θ-direction).
     let tol = 0.5_f64;
-    let mut bcs: Vec<DirichletBc> = Vec::new();
-
-    for (node, n) in nodes.iter().enumerate() {
-        let dof = |d: usize| node * 6 + d;
-        let is_crown = n[1].abs() < tol; // y ≈ 0: θ=0 crown symmetry
-        let is_diaphragm = n[0].abs() < tol; // x=0: rigid end diaphragm
-        let is_midspan = (n[0] - L / 2.0).abs() < tol; // x=L/2: longitudinal midspan symmetry
-
-        // Rigid end diaphragm at x=0 (one end of the full doubly-supported roof).
-        //
-        // MacNeal-Harder "rigid end diaphragm": the end cross-section is a rigid
-        // plate in the yz-plane supported on axial rollers. The plate constrains
-        // in-plane (yz) displacement but allows axial (x) sliding:
-        //   u_y = 0  (circumferential: cross-section cannot spread sideways)
-        //   u_z = 0  (vertical: cross-section cannot sink)
-        //   u_x = FREE (axial: the plate slides freely along the cylinder axis)
-        //
-        // Note: the axial rigid-body mode is eliminated by the midspan symmetry
-        // condition u_x=0 at x=L/2, not by this diaphragm constraint.
-        if is_diaphragm {
-            bcs.push(DirichletBc {
-                dof: dof(1),
-                value: 0.0,
-            }); // u_y = 0 (circumferential)
-            bcs.push(DirichletBc {
-                dof: dof(2),
-                value: 0.0,
-            }); // u_z = 0 (vertical)
-        }
-        // Crown / longitudinal mid-plane symmetry (θ=0).
-        if is_crown {
-            bcs.push(DirichletBc {
-                dof: dof(1),
-                value: 0.0,
-            }); // u_y = 0
-            bcs.push(DirichletBc {
-                dof: dof(3),
-                value: 0.0,
-            }); // θ_x = 0
-            bcs.push(DirichletBc {
-                dof: dof(5),
-                value: 0.0,
-            }); // θ_z = 0
-        }
-        // Longitudinal midspan symmetry at x=L/2.
-        //
-        // x=L/2 is the center of the full roof. For symmetric gravity loading:
-        //   u_x(x=L/2) = 0  (axial displacement antisymmetric about midspan)
-        //   θ_y(x=L/2) = 0  (rotation symmetric about midspan)
-        //
-        // Crucially, u_z is NOT constrained here — the midspan vertical
-        // displacement is the quantity we measure (it equals the max deflection).
-        if is_midspan {
-            bcs.push(DirichletBc {
-                dof: dof(0),
-                value: 0.0,
-            }); // u_x = 0 (antisymmetry)
-            bcs.push(DirichletBc {
-                dof: dof(4),
-                value: 0.0,
-            }); // θ_y = 0 (symmetry)
-        }
-    }
+    let point_loads = roof_quadrant_gravity_loads(&nodes, &connectivity, G);
+    let bcs = roof_quadrant_symmetry_bcs(&nodes, L, tol);
 
     let u = solve_shell_system(&elements, n_nodes, &bcs, &point_loads);
 
