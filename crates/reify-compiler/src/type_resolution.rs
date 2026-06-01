@@ -646,13 +646,18 @@ pub(crate) fn resolve_type_with_aliases(
 
 /// Resolve a bare assoc-type name against the in-scope assoc-type map.
 ///
-/// Called from entity.rs's first-pass `Param` arm as a fallback when
-/// `resolve_type_expr_with_aliases` returns `None` and the type expression is a
-/// bare `Named` (empty type_args). The `assoc_type_scope` maps each declared
-/// assoc-type name to its resolved concrete `Type` (structure own-binding wins
-/// over trait default; both are collected before the first pass). The
-/// `declared_assoc_names` set contains every assoc-type name declared by
-/// conformed traits, used to suppress the `UnresolvedType` cascade for
+/// Called from two sites:
+/// - `entity.rs`'s first-pass `Param` arm — as a fallback when
+///   `resolve_type_expr_with_aliases` returns `None` and the type expression is a
+///   bare `Named` (empty `type_args`).
+/// - `conformance/checker.rs`'s `check_phase_resolve_structure_members` — the
+///   identical fallback in the conformance member-type resolution closure.
+///
+/// The `assoc_type_scope` maps each declared assoc-type name to its resolved
+/// concrete `Type` (structure own-binding wins over trait default; both are
+/// collected before the first pass / before `check_phase_resolve_structure_members`
+/// is called). The `declared_assoc_names` set contains every assoc-type name
+/// declared by conformed traits, used to suppress the `UnresolvedType` cascade for
 /// declared-but-unbound required types: returning `Some(Type::Error)` poisons
 /// downstream checks with the compiler's standard "error type" sentinel while
 /// leaving the single root-cause `TraitAssocTypeNotBound` diagnostic (emitted

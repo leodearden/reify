@@ -141,3 +141,84 @@ structure def Beam : HasMaterial {
         unresolved
     );
 }
+
+// ─── Amendment: own-binding-wins-over-trait-default precedence ────────────────
+
+/// When the structure provides its own `type Material = Steel` while the trait
+/// defaults `type Material = Iron`, the structure's own binding must win.
+///
+/// This verifies the `entry().or_insert_with` ownership rule: the own-binding
+/// scope is inserted first; the trait-default insertion only fills *absent*
+/// names, so `Material → Steel` is never overwritten by `Material → Iron`.
+#[test]
+fn own_binding_wins_over_trait_default() {
+    let source = r#"
+structure Steel {}
+structure Iron {}
+trait HasMaterial { type Material = Iron }
+structure def Beam : HasMaterial {
+    type Material = Steel
+    param mass : Material
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors when own binding overrides trait default; got: {:?}",
+        errors
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Beam")
+        .expect("Beam template should be compiled");
+
+    let mass_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "mass")
+        .expect("value cell 'mass' should exist");
+
+    assert_eq!(
+        mass_cell.cell_type,
+        Type::StructureRef("Steel".to_string()),
+        "own binding (Steel) must win over trait default (Iron); got: {:?}",
+        mass_cell.cell_type
+    );
+}
+
+// ─── Amendment: bad-RHS single-diagnostic, no param cascade ──────────────────
+
+/// When the structure binds `type Material = NoSuchType` (bad RHS), exactly one
+/// `UnresolvedType` diagnostic must be emitted — the authoritative one from the
+/// conformance checker's `collect_structure_assoc_type_bindings` call.  The
+/// `param mass : Material` annotation must NOT emit a second `UnresolvedType`:
+/// entity.rs's throwaway-sink walk resolves the bad RHS to `Type::Error` and
+/// inserts `Material → Type::Error` into the assoc-type scope, so the param arm
+/// gets `Some(Type::Error)` back from `resolve_assoc_type_name` and stays silent.
+#[test]
+fn bad_rhs_single_unresolved_type_no_param_cascade() {
+    let source = r#"
+trait HasMaterial { type Material }
+structure def Beam : HasMaterial {
+    type Material = NoSuchType
+    param mass : Material
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let unresolved: Vec<_> = errors
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::UnresolvedType))
+        .collect();
+    assert_eq!(
+        unresolved.len(),
+        1,
+        "expected exactly one UnresolvedType (for the bad RHS 'NoSuchType'); \
+         param arm must stay silent; all errors: {:?}",
+        errors
+    );
+}
