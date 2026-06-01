@@ -26,7 +26,7 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_eval::try_eval_ad_hoc_selector;
 use reify_test_support::{MockGeometryKernel, compile_source, errors_only, parse_and_compile_with_stdlib};
 use reify_core::{DiagnosticCode, Severity, SourceSpan, Type, ValueCellId};
-use reify_ir::{CapKind, CompiledExpr, ExportFormat, FeatureId, GeometryHandleId, QueryError, Role, SelectorKind, TopologyAttribute, TopologyAttributeTable, Value};
+use reify_ir::{CapKind, CompiledExpr, ExportFormat, FeatureId, GeometryHandleId, KernelHandle, KernelId, QueryError, Role, SelectorKind, TopologyAttribute, TopologyAttributeTable, Value};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Deterministic handle constants

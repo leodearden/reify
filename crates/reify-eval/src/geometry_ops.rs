@@ -8425,6 +8425,254 @@ mod tests {
         );
     }
 
+    // ── task 4142 Cluster B RED contract tests ───────────────────────────────
+    //
+    // These three tests pin the "resolve via KernelHandle.id, ignore
+    // KernelHandle.kernel" contract on the three remaining leaf families.
+    // They fail to compile on current main (Cluster B helpers still take
+    // `&HashMap<String, GeometryHandleId>`), and go GREEN when step-4 lands.
+
+    /// Contract test (task 4142, Cluster B RED — conformance leaf):
+    /// `try_eval_conformance_query` resolves the geometry handle via
+    /// `KernelHandle.id`, ignoring `KernelHandle.kernel`.
+    ///
+    /// Uses `KernelId::Manifold` (non-default) to prove the leaf at
+    /// geometry_ops.rs:1399 keys only off `.id`.
+    ///
+    /// RED on current main: `try_eval_conformance_query` still takes
+    /// `&HashMap<String, GeometryHandleId>` → E0308 type mismatch.
+    #[test]
+    fn try_eval_conformance_query_resolves_via_kernel_handle_id() {
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let handle_id = reify_ir::GeometryHandleId(7);
+        let kernel =
+            MockGeometryKernel::new().with_query_result(handle_id, reify_ir::Value::Bool(true));
+
+        // Map "body" to a KernelHandle with deliberately non-default kernel.
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert(
+            "body".to_string(),
+            reify_ir::KernelHandle {
+                kernel: reify_ir::KernelId::Manifold, // non-default: must be ignored
+                id: handle_id,
+            },
+        );
+
+        let expr = conformance_call("is_watertight", "Bracket", "body");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result =
+            super::try_eval_conformance_query(&expr, &[], &named_steps, &kernel, &mut diagnostics);
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Bool(true)),
+            "is_watertight with KernelHandle{{Manifold, 7}} must produce Some(Bool(true)); \
+             kernel was keyed on .id (7), not .kernel",
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics expected for successful conformance resolution, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// Contract test (task 4142, Cluster B RED — kinematic leaf):
+    /// `try_eval_kinematic_query` resolves solid names via `KernelHandle.id`,
+    /// ignoring `KernelHandle.kernel`.
+    ///
+    /// Uses `KernelId::Manifold`/"base" and `KernelId::Fidget`/"hole" (both
+    /// non-default) to prove the leaf at geometry_ops.rs:1909 keys only off
+    /// `.id`.
+    ///
+    /// RED on current main: `try_eval_kinematic_query` still takes
+    /// `&HashMap<String, GeometryHandleId>` → E0308 type mismatch.
+    #[test]
+    fn try_eval_kinematic_query_resolves_via_kernel_handle_id() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::{Type, ValueCellId};
+
+        let base_id = reify_ir::GeometryHandleId(10);
+        let hole_id = reify_ir::GeometryHandleId(20);
+
+        // Distance <= 0.0 → interference.
+        let kernel = MockGeometryKernel::new()
+            .with_distance_result(base_id, hole_id, reify_ir::Value::Real(-1.0));
+
+        // Map solid names to KernelHandle with deliberately non-default kernels.
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert(
+            "base".to_string(),
+            reify_ir::KernelHandle {
+                kernel: reify_ir::KernelId::Manifold, // non-default
+                id: base_id,
+            },
+        );
+        named_steps.insert(
+            "hole".to_string(),
+            reify_ir::KernelHandle {
+                kernel: reify_ir::KernelId::Fidget, // non-default
+                id: hole_id,
+            },
+        );
+
+        // Build a Snapshot value: { kind: "snapshot", bodies: [{id:1, solid:"base"}, {id:2, solid:"hole"}] }
+        let make_body = |id: i64, solid: &str| -> reify_ir::Value {
+            let mut m = std::collections::BTreeMap::new();
+            m.insert(
+                reify_ir::Value::String("id".to_string()),
+                reify_ir::Value::Int(id),
+            );
+            m.insert(
+                reify_ir::Value::String("solid".to_string()),
+                reify_ir::Value::String(solid.to_string()),
+            );
+            reify_ir::Value::Map(m)
+        };
+        let mut snap_map = std::collections::BTreeMap::new();
+        snap_map.insert(
+            reify_ir::Value::String("kind".to_string()),
+            reify_ir::Value::String("snapshot".to_string()),
+        );
+        snap_map.insert(
+            reify_ir::Value::String("bodies".to_string()),
+            reify_ir::Value::List(vec![make_body(1, "base"), make_body(2, "hole")]),
+        );
+        let snapshot = reify_ir::Value::Map(snap_map);
+
+        let snap_cell = ValueCellId::new("Mech", "snap");
+        let snap_arg = reify_ir::CompiledExpr::value_ref(snap_cell.clone(), Type::Geometry);
+        let content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str("interferes"))
+            .combine(snap_arg.content_hash);
+        let expr = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "interferes".to_string(),
+                    qualified_name: "interferes".to_string(),
+                },
+                args: vec![snap_arg],
+            },
+            result_type: Type::List(Box::new(Type::Map)),
+            content_hash,
+        };
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(snap_cell, snapshot);
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_kinematic_query(
+            &expr,
+            &named_steps,
+            &values,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        // Distance(base_id=10, hole_id=20) = -1.0 ≤ 0.0 → the pair (1,2) interferes.
+        // Result must be Some(List([{a:1, b:2}])).
+        let list = match result {
+            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+            other => panic!(
+                "interferes with overlapping bodies must return Some(List([..])), \
+                 got {:?}; diagnostics: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(
+            list.len(),
+            1,
+            "exactly one interfering pair expected, got {} entries: {:?}",
+            list.len(),
+            list
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics expected for successful kinematic resolution, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// Contract test (task 4142, Cluster B RED — topology/resolve_geometry_handle_arg leaf):
+    /// `try_eval_topology_selector` resolves the geometry handle via
+    /// `KernelHandle.id`, ignoring `KernelHandle.kernel`.
+    ///
+    /// The `edges` path exercises the shared `resolve_geometry_handle_arg` leaf
+    /// (geometry_ops.rs:3620), which is the single leaf covering ALL topology
+    /// selectors AND the new ghr-zeta geometry-query path.  Proves `.kernel`
+    /// is never consulted.
+    ///
+    /// RED on current main: `try_eval_topology_selector` still takes
+    /// `&HashMap<String, GeometryHandleId>` → E0308 type mismatch.
+    #[test]
+    fn try_eval_topology_selector_resolves_via_kernel_handle_id() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+
+        let parent_id = reify_ir::GeometryHandleId(1);
+        let edge_a = reify_ir::GeometryHandleId(2);
+        let edge_b = reify_ir::GeometryHandleId(3);
+        let parent_rr = RealizationNodeId::new("EdgeBody", 0);
+        let parent_hash: [u8; 32] = [0x42; 32];
+
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_edges(parent_id, vec![edge_a, edge_b]);
+
+        // Map "s" to a KernelHandle with deliberately non-default kernel.
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert(
+            "s".to_string(),
+            reify_ir::KernelHandle {
+                kernel: reify_ir::KernelId::Manifold, // non-default: must be ignored
+                id: parent_id,
+            },
+        );
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("EdgeBody", "s"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: parent_id,
+            },
+        );
+
+        let expr = topology_selector_call_one_value_ref(
+            "edges",
+            "EdgeBody",
+            "s",
+            Type::Geometry,
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let mut diagnostics = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let list = match result {
+            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+            other => panic!(
+                "edges with KernelHandle{{Manifold, 1}} must return Some(List([..])), \
+                 got {:?}; diagnostics: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(list.len(), 2, "expected 2 edge sub-handles, got {}", list.len());
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics expected for successful edge resolution, got: {:?}",
+            diagnostics
+        );
+    }
+
     // ── try_eval_topology_selector unit tests (task 2324) ────────────────────
     //
     // These tests pin the contract of `try_eval_topology_selector`, the
