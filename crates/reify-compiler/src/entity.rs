@@ -390,28 +390,35 @@ fn check_objective_conflict(
     if !obj.terms.iter().all(|t| t.weight == 1.0 && t.priority == 0) {
         return None;
     }
-    // Detect: a pair of terms with opposite sense and distinct content_hash.
+    // Fast-path early-out: if there is no Minimize or no Maximize term at all,
+    // there can be no conflicting pair.  The subsequent pair search also catches
+    // this, but skipping the O(n²) scan when one sense is absent is cheap.
     let has_minimize = obj.terms.iter().any(|t| t.sense == ObjectiveSense::Minimize);
     let has_maximize = obj.terms.iter().any(|t| t.sense == ObjectiveSense::Maximize);
     if !has_minimize || !has_maximize {
         return None;
     }
-    // Check that some minimize and maximize pair are over distinct expressions.
-    let distinct_pair = obj.terms.iter().any(|a| {
-        obj.terms.iter().any(|b| {
-            a.sense == ObjectiveSense::Minimize
-                && b.sense == ObjectiveSense::Maximize
-                && a.expr.content_hash != b.expr.content_hash
-        })
+    // Find the first conflicting (Minimize, Maximize) index pair over distinct
+    // expressions.  `spans` is parallel to `obj.terms`; storing the indices lets
+    // us label exactly the conflicting pair rather than every term in the set
+    // (labelling unrelated terms would mislead the user about which objectives clash).
+    let n = obj.terms.len();
+    let conflict_min_idx = (0..n).find(|&i| {
+        obj.terms[i].sense == ObjectiveSense::Minimize
+            && (0..n).any(|j| {
+                obj.terms[j].sense == ObjectiveSense::Maximize
+                    && obj.terms[i].expr.content_hash != obj.terms[j].expr.content_hash
+            })
     });
-    if !distinct_pair {
-        return None;
-    }
+    let min_idx = conflict_min_idx?;
+    let max_idx = (0..n)
+        .find(|&j| {
+            obj.terms[j].sense == ObjectiveSense::Maximize
+                && obj.terms[min_idx].expr.content_hash != obj.terms[j].expr.content_hash
+        })
+        .unwrap_or(min_idx); // defensive fallback; always found because min_idx guarantees a pair
 
-    // Build the diagnostic.  Pick the first two spans (Minimize and Maximize)
-    // for the labels; spans is parallel to terms, so index 0 is the first term.
-    // The convention (diagnostic_coverage_checkpoint.rs) requires ≥1 label with
-    // a non-empty span.
+    // Build the diagnostic.
     let mut diag = Diagnostic::error(format!(
         "E_OBJECTIVE_CONFLICT: entity '{}' has conflicting unweighted objectives \
          (minimize and maximize over distinct expressions with default weight/priority). \
@@ -423,21 +430,22 @@ fn check_objective_conflict(
     ))
     .with_code(DiagnosticCode::ObjectiveConflict);
 
-    // Attach spans for all terms (parallel to `spans`), labelling each.
-    for (i, &span) in spans.iter().enumerate() {
-        if !span.is_empty() {
-            let label_msg = if i < obj.terms.len() {
-                match obj.terms[i].sense {
-                    ObjectiveSense::Minimize => "minimize objective declared here",
-                    ObjectiveSense::Maximize => "maximize objective declared here",
-                }
-            } else {
-                "conflicting objective declared here"
-            };
-            diag = diag.with_label(DiagnosticLabel::new(span, label_msg));
-        }
+    // Attach labels only for the specific conflicting pair so that unrelated
+    // objectives are not misleadingly tagged as contributors to the conflict.
+    // `spans` is parallel to `obj.terms`; the convention
+    // (diagnostic_coverage_checkpoint.rs) requires ≥1 label with a non-empty span.
+    if min_idx < spans.len() && !spans[min_idx].is_empty() {
+        diag = diag.with_label(DiagnosticLabel::new(
+            spans[min_idx],
+            "minimize objective declared here",
+        ));
     }
-
+    if max_idx < spans.len() && !spans[max_idx].is_empty() && max_idx != min_idx {
+        diag = diag.with_label(DiagnosticLabel::new(
+            spans[max_idx],
+            "maximize objective declared here",
+        ));
+    }
     // Ensure at least one label even if all spans are empty (defensive; should
     // not happen for well-formed AST).
     if diag.labels.is_empty()
