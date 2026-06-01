@@ -1450,12 +1450,31 @@ pub(crate) fn try_eval_conformance_query(
 //   `Some(Value::Scalar { dimension: VOLUME/AREA, .. })` for volume / area,
 //   `Some(Value::Point([length, length, length]))` for centroid,
 //   `Some(Value::BoundingBox { min, max })` (two `Point3<Length>`) for bounding_box,
-//   `Some(Value::Undef)` (with a Warning) when the single handle arg resolves
-//        but the kernel errors or replies with an unexpected type (PRD §4
+//   `Some(Value::Undef)` (with a Warning) when a handle arg resolves but the
+//        kernel errors or replies with an unexpected type (PRD §4
 //        defensive-downgrade contract),
-//   `None` when the expr is not a recognised whole-handle geometry-query call
-//        or its single arg is unresolvable — the caller leaves the cell at its
-//        compiled default (`Value::Undef`).
+//   `Some(_)` for the NESTED case — the folded value of the enclosing
+//        expression (e.g. `Scalar<Mass>` for `mass = volume(g) * density`),
+//   `None` when the expr neither IS, nor CONTAINS, a recognised whole-handle
+//        geometry-query call (or, for the direct case, its single arg is
+//        unresolvable) — the caller leaves the cell at its compiled default
+//        (`Value::Undef`).
+//
+// Two shapes are handled (task 3608: step-2 = direct, step-10 = nested):
+//   (a) DIRECT — the cell's `default_expr` IS a geometry-query call, e.g.
+//       `centroid = centroid(geometry)`. Dispatched straight to the kernel.
+//   (b) NESTED — the `default_expr` CONTAINS a geometry-query call inside a
+//       larger expression, e.g. `mass = volume(geometry) * material.density`
+//       (a `BinOp` whose left leaf is `volume(...)`). Every geometry-query
+//       leaf is rewritten to a `Literal` of its dispatched Value, then the
+//       enclosing expression is recomputed with the standard pure evaluator
+//       (`reify_expr::eval_expr`): `Scalar<Volume> * Scalar<Density>`
+//       recombines to `Scalar<Mass>` via the existing units arithmetic, and
+//       `material.density` resolves against the already-evaluated `material`
+//       StructureInstance cell in `values` (the eval pass that produced
+//       `values` runs before this post-process — engine_build.rs:1802). The
+//       frozen Physical spec shape (GHR-α) computes `mass` this way, so the
+//       nested fold is what produces the terminal user-observable.
 //
 // GHR-ζ does NOT route through `gate_query_capability` (task 3623): consistent
 // with the existing selector-dispatch siblings, and all GHR-ζ fixtures realize
@@ -1464,38 +1483,102 @@ pub(crate) fn try_eval_conformance_query(
 pub(crate) fn try_eval_geometry_query(
     expr: &reify_ir::CompiledExpr,
     named_steps: &HashMap<String, GeometryHandleId>,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
     kernel: &dyn reify_ir::GeometryKernel,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_ir::Value> {
-    // (1) Must be a FunctionCall — anything else is unsupported (top-level case).
-    let (function, args) = match &expr.kind {
-        reify_ir::CompiledExprKind::FunctionCall { function, args } => (function, args),
-        _ => return None,
-    };
-
-    // (2) Recognised whole-handle geometry-query name (cheap string compare
-    //     before any arg resolution). length/perimeter are intentionally absent
-    //     (topology-selector path — see module note above).
-    if !matches!(
-        function.name.as_str(),
-        "volume" | "area" | "centroid" | "bounding_box"
-    ) {
-        return None;
+    // ── Case (a): DIRECT — the expr itself is a whole-handle geometry-query
+    //    call. Dispatch and return the typed Value. Returns `None` when the
+    //    single arg is unresolvable, so the cell keeps its compiled default —
+    //    preserving the pre-step-10 (direct-only) contract exactly.
+    if is_geometry_query_call(expr) {
+        let (function, args) = match &expr.kind {
+            reify_ir::CompiledExprKind::FunctionCall { function, args } => (function, args),
+            _ => unreachable!("is_geometry_query_call guarantees a FunctionCall node"),
+        };
+        return dispatch_geometry_query_call(
+            function.name.as_str(),
+            args,
+            named_steps,
+            kernel,
+            diagnostics,
+        );
     }
 
-    // (3) Exactly one handle arg.
+    // ── Case (b): NESTED — fold a geometry-query call buried inside a larger
+    //    expression. Skip cells with no geometry-query call anywhere (they keep
+    //    their compiled default / belong to another pass).
+    if !expr_contains_geometry_query(expr) {
+        return None;
+    }
+    // Rewrite each geometry-query leaf to a Literal of its dispatched Value, then
+    // recompute the enclosing expression with the standard pure evaluator.
+    let rewritten = rewrite_geometry_queries(expr, named_steps, kernel, diagnostics);
+    Some(reify_expr::eval_expr(
+        &rewritten,
+        &eval_ctx_with_meta(values, functions, meta_map),
+    ))
+}
+
+/// `true` iff `expr` is a recognised whole-handle geometry-query call —
+/// `volume` / `area` / `centroid` / `bounding_box` with exactly one arg. The
+/// single source of truth for the recognised-name set, used to gate the
+/// direct-dispatch path and to locate fold leaves in the nested path.
+/// `length` / `perimeter` are intentionally excluded (topology-selector path —
+/// see the module note above `try_eval_geometry_query`).
+fn is_geometry_query_call(expr: &reify_ir::CompiledExpr) -> bool {
+    matches!(
+        &expr.kind,
+        reify_ir::CompiledExprKind::FunctionCall { function, args }
+            if args.len() == 1
+                && matches!(
+                    function.name.as_str(),
+                    "volume" | "area" | "centroid" | "bounding_box"
+                )
+    )
+}
+
+/// `true` iff any node in `expr`'s tree is a geometry-query call (per
+/// [`is_geometry_query_call`]). Drives the nested-fold gate: only expressions
+/// that actually contain a query are rewritten + re-evaluated. Uses the
+/// canonical `CompiledExpr::walk` traversal so new expr variants are covered
+/// automatically.
+fn expr_contains_geometry_query(expr: &reify_ir::CompiledExpr) -> bool {
+    let mut found = false;
+    expr.walk(&mut |node| {
+        if is_geometry_query_call(node) {
+            found = true;
+        }
+    });
+    found
+}
+
+/// Dispatch a single recognised geometry-query call (its `function_name` + one
+/// handle `args`) to the kernel and convert the reply to a typed Value. Shared
+/// by the direct path (returned straight to the caller) and the nested-fold
+/// rewrite (wrapped in a `Literal`).
+///
+/// Returns `None` when the single arg is unresolvable (literal, non-`ValueRef`,
+/// missing `named_steps` entry) or the name is unrecognised; `Some(Value::Undef)`
+/// (with a Warning) on a kernel error or unexpected reply type (PRD §4
+/// defensive downgrade — see `dispatch_scalar_query` / `dispatch_bounding_box`).
+fn dispatch_geometry_query_call(
+    function_name: &str,
+    args: &[reify_ir::CompiledExpr],
+    named_steps: &HashMap<String, GeometryHandleId>,
+    kernel: &dyn reify_ir::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    // Exactly one handle arg, resolved via `named_steps` (hydrated + revalidated
+    // by `post_process_geometry_handle_cells` before this pass). Unresolvable
+    // (literal, non-`ValueRef`, missing entry) → `None`.
     if args.len() != 1 {
         return None;
     }
-
-    // (4) Resolve the arg to a kernel handle via `named_steps` (hydrated +
-    //     revalidated by `post_process_geometry_handle_cells` before this pass).
-    //     Unresolvable (literal, non-`ValueRef`, missing entry) → `None`, so the
-    //     cell keeps its compiled default.
     let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
-
-    // (5) Build the matching kernel query and convert the reply to a typed Value.
-    match function.name.as_str() {
+    match function_name {
         "volume" => dispatch_scalar_query(
             kernel,
             reify_ir::GeometryQuery::Volume(handle),
@@ -1524,8 +1607,64 @@ pub(crate) fn try_eval_geometry_query(
         // `dispatch_bounding_box` decodes it (reusing `parse_bbox_axis_extents`
         // per axis) into `Value::BoundingBox` of two `Point3<Length>` corners.
         "bounding_box" => dispatch_bounding_box(kernel, handle, diagnostics),
-        // Unreachable — the earlier `matches!` already filtered the name.
+        // Unrecognised name — `is_geometry_query_call` gates the callers, so this
+        // is unreachable in practice; return `None` defensively.
         _ => None,
+    }
+}
+
+/// Rewrite every geometry-query leaf in `expr` to a `Literal` of its
+/// kernel-dispatched Value, returning a fresh expression the standard pure
+/// evaluator can fold. Used only by the nested case of
+/// [`try_eval_geometry_query`].
+///
+/// A geometry-query leaf whose handle arg is unresolvable folds to
+/// `Literal(Value::Undef)`, so the enclosing arithmetic propagates `Undef`
+/// (strict Undef propagation in `eval_expr`).
+///
+/// Recursion descends through `BinOp` / `UnOp` — the arithmetic wrappers the
+/// frozen Physical spec shape uses (`mass = volume(geometry) *
+/// material.density`). Every other node kind is cloned unchanged: an off-path
+/// subtree (no nested query, e.g. the `material.density` operand) is reproduced
+/// exactly, and a query nested inside an un-handled wrapper kind stays unfolded
+/// so `eval_expr` yields `Undef` — the same outcome as the cell's compiled
+/// default (a conservative downgrade, never a wrong value). Extend this match
+/// if a future trait nests a geometry query inside a richer wrapper.
+fn rewrite_geometry_queries(
+    expr: &reify_ir::CompiledExpr,
+    named_steps: &HashMap<String, GeometryHandleId>,
+    kernel: &dyn reify_ir::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> reify_ir::CompiledExpr {
+    match &expr.kind {
+        // Geometry-query leaf → Literal of its dispatched Value.
+        reify_ir::CompiledExprKind::FunctionCall { function, args }
+            if is_geometry_query_call(expr) =>
+        {
+            let value = dispatch_geometry_query_call(
+                function.name.as_str(),
+                args,
+                named_steps,
+                kernel,
+                diagnostics,
+            )
+            .unwrap_or(reify_ir::Value::Undef);
+            reify_ir::CompiledExpr::literal(value, expr.result_type.clone())
+        }
+        reify_ir::CompiledExprKind::BinOp { op, left, right } => reify_ir::CompiledExpr::binop(
+            *op,
+            rewrite_geometry_queries(left, named_steps, kernel, diagnostics),
+            rewrite_geometry_queries(right, named_steps, kernel, diagnostics),
+            expr.result_type.clone(),
+        ),
+        reify_ir::CompiledExprKind::UnOp { op, operand } => reify_ir::CompiledExpr::unop(
+            *op,
+            rewrite_geometry_queries(operand, named_steps, kernel, diagnostics),
+            expr.result_type.clone(),
+        ),
+        // Off-path subtree or un-handled wrapper kind — clone unchanged (see the
+        // function doc for why this is conservative, never wrong).
+        _ => expr.clone(),
     }
 }
 

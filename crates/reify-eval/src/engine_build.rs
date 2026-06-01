@@ -1660,6 +1660,8 @@ impl Engine {
                     template,
                     &named_steps_ids,
                     &mut values,
+                    &self.functions,
+                    &self.meta_map,
                     default_kernel.as_mut(),
                     &self.topology_attribute_table,
                     &mut diagnostics,
@@ -1993,6 +1995,8 @@ impl Engine {
                     template,
                     &named_steps_ids,
                     &mut values,
+                    &self.functions,
+                    &self.meta_map,
                     default_kernel.as_mut(),
                     &self.topology_attribute_table,
                     &mut diagnostics,
@@ -2693,6 +2697,8 @@ impl Engine {
                 template,
                 &named_steps_ids,
                 values,
+                functions,
+                meta_map,
                 default_kernel.as_mut(),
                 topology_attribute_table,
                 diagnostics,
@@ -4076,14 +4082,22 @@ impl Engine {
         template: &reify_compiler::TopologyTemplate,
         named_steps: &HashMap<String, GeometryHandleId>,
         values: &mut ValueMap,
+        functions: &[CompiledFunction],
+        meta_map: &HashMap<String, HashMap<String, String>>,
         kernel: &dyn GeometryKernel,
         diagnostics: &mut Vec<Diagnostic>,
     ) {
         // Iterate `values` directly without snapshotting (parallels the
-        // `post_process_body_mass_props` sibling). Safe for the top-level case:
-        // a geometry-query cell's arg resolves to a `named_steps` handle
-        // (populated by `execute_realization_ops`), never to another
-        // geometry-query cell.
+        // `post_process_body_mass_props` sibling). The DIRECT case is safe: a
+        // geometry-query cell's arg resolves to a `named_steps` handle
+        // (populated by `execute_realization_ops`), never to another value cell.
+        // The NESTED case (`try_eval_geometry_query` step-10) reads operand
+        // cells from `values` (e.g. `material.density`) — those are non-query
+        // cells populated by the eval pass that produced `values`
+        // (engine_build.rs:1802), which this loop never overwrites (it inserts
+        // only into geometry-query cells), so their values are independent of
+        // iteration order. `functions` / `meta_map` build the `EvalContext` for
+        // that nested recompute.
         for cell in &template.value_cells {
             let default_expr = match &cell.default_expr {
                 Some(e) => e,
@@ -4092,6 +4106,9 @@ impl Engine {
             if let Some(value) = crate::geometry_ops::try_eval_geometry_query(
                 default_expr,
                 named_steps,
+                values,
+                functions,
+                meta_map,
                 kernel,
                 diagnostics,
             ) {
@@ -4109,10 +4126,16 @@ impl Engine {
     /// `build_snapshot`, and `tessellate_from_values` (task 3745).  Any future
     /// sibling passes should be added here so all three call sites pick them up
     /// automatically.
+    ///
+    /// `functions` / `meta_map` build the `EvalContext` that
+    /// `post_process_geometry_queries` uses to recompute nested geometry-query
+    /// expressions (GHR-ζ step-10, e.g. `mass = volume(g) * material.density`).
     fn run_post_processes(
         template: &reify_compiler::TopologyTemplate,
         named_steps: &HashMap<String, GeometryHandleId>,
         values: &mut ValueMap,
+        functions: &[CompiledFunction],
+        meta_map: &HashMap<String, HashMap<String, String>>,
         kernel: &mut dyn GeometryKernel,
         table: &TopologyAttributeTable,
         diagnostics: &mut Vec<Diagnostic>,
@@ -4145,7 +4168,15 @@ impl Engine {
         // Order-independent w.r.t. the sibling passes — geometry-query cells are
         // not consumed by body_mass_props or the selector passes, and this pass
         // reads only `named_steps` handles + eval_expr-populated cells.
-        Engine::post_process_geometry_queries(template, named_steps, values, &*kernel, diagnostics);
+        Engine::post_process_geometry_queries(
+            template,
+            named_steps,
+            values,
+            functions,
+            meta_map,
+            &*kernel,
+            diagnostics,
+        );
         Engine::post_process_body_mass_props(template, values, &*kernel, diagnostics);
         Engine::post_process_topology_selectors(template, named_steps, values, kernel, diagnostics);
         Engine::post_process_ad_hoc_selectors(
