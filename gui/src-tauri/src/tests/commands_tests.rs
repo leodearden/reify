@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use crate::tests::test_helpers::cwd_lock;
 
 use reify_constraints::SimpleConstraintChecker;
+use reify_core::ValueCellId;
 use reify_mcp::SelectionInfo;
 use reify_test_support::{MockGeometryKernel, bracket_source};
 
@@ -1092,5 +1093,104 @@ fn pending_solve_cancel_cancelled_by_consumer_during_solve() {
     assert!(
         slot_after_cancel.is_none(),
         "slot must be cleared after cancel_solve_impl"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Hot-reload staleness recording at the update_source_impl chokepoint (task 4153)
+// ---------------------------------------------------------------------------
+
+/// Make a fresh engine with bracket source pre-loaded.
+fn make_test_engine_for_commands() -> Arc<Mutex<EngineSession>> {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load should succeed");
+    Arc::new(Mutex::new(session))
+}
+
+/// (step-3 RED-a) update_source_impl must record staleness when update_source
+/// returns Err (here: forced check() panic via set_panic_on_eval_for_test).
+///
+/// RED until step-4 adds the record_reload_error call inside update_source_impl.
+#[test]
+fn update_source_impl_records_staleness_on_panic_failure() {
+    let engine = make_test_engine_for_commands();
+
+    // Inject a forced panic on the next eval of Bracket.volume.
+    {
+        let mut session = engine.lock().unwrap();
+        session.set_panic_on_eval_for_test(ValueCellId::new("Bracket", "volume"));
+    }
+
+    // update_source_impl must return Err because the forced panic propagates
+    // through check_with_solve_slot → with_engine_lock → Err("panic in engine: …").
+    let result = crate::commands::update_source_impl(&engine, "bracket.ri", bracket_source());
+    assert!(
+        result.is_err(),
+        "update_source_impl must return Err when check() panics; got Ok"
+    );
+    let err_msg = result.unwrap_err();
+    assert!(
+        err_msg.contains("panic"),
+        "Err message must mention 'panic'; got: {err_msg:?}"
+    );
+
+    // The session must now be stale — is_stale() is true and reload_error() contains "panic".
+    // This assertion is RED until step-4 adds `record_reload_error` inside update_source_impl.
+    let is_stale = crate::engine_lock::with_engine_lock(&engine, |s| s.is_stale())
+        .expect("with_engine_lock should not panic");
+    assert!(
+        is_stale,
+        "session must be stale after update_source_impl returns Err; \
+         this assertion is RED in step-3 and turns GREEN in step-4"
+    );
+    let reload_error_has_panic =
+        crate::engine_lock::with_engine_lock(&engine, |s| {
+            s.reload_error()
+                .map(|msg| msg.contains("panic"))
+                .unwrap_or(false)
+        })
+        .expect("with_engine_lock should not panic");
+    assert!(
+        reload_error_has_panic,
+        "reload_error() must be Some and contain 'panic'; \
+         this assertion is RED in step-3 and turns GREEN in step-4"
+    );
+}
+
+/// (step-3 RED-b) After a previously-recorded staleness, a successful
+/// update_source_impl must clear the stale flag (commit_state already clears it).
+///
+/// Depends on step-3a passing (staleness recorded) and commit_state clearing it.
+/// RED until step-4 records the error in part (a) so the flow is exercised end-to-end.
+#[test]
+fn update_source_impl_clears_staleness_on_successful_reload() {
+    let engine = make_test_engine_for_commands();
+
+    // Inject forced panic and drive the failure path.
+    {
+        let mut session = engine.lock().unwrap();
+        session.set_panic_on_eval_for_test(ValueCellId::new("Bracket", "volume"));
+    }
+    let _ = crate::commands::update_source_impl(&engine, "bracket.ri", bracket_source());
+
+    // Second call: no forced panic — update_source_impl should succeed and clear staleness.
+    let result = crate::commands::update_source_impl(&engine, "bracket.ri", bracket_source());
+    assert!(
+        result.is_ok(),
+        "second update_source_impl (no forced panic) must return Ok; got: {:?}",
+        result.err()
+    );
+
+    let is_stale = crate::engine_lock::with_engine_lock(&engine, |s| s.is_stale())
+        .expect("with_engine_lock should not panic");
+    assert!(
+        !is_stale,
+        "staleness must be cleared after a successful update_source_impl; \
+         this assertion is RED in step-3 (because staleness was never recorded) \
+         and turns GREEN in step-4"
     );
 }
