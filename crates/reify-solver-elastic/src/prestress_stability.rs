@@ -88,6 +88,12 @@ pub enum StabilityError {
     /// The input arrays disagree in length (`members.len() != q.len()`), or a
     /// member references a node index `≥ nodes.len()`.
     DimensionMismatch,
+    /// A member is geometrically degenerate: a self-loop (`j == k`) or two
+    /// (near-)coincident endpoints. Such a member has zero length, so its unit
+    /// direction `û = d/L` is `NaN`/`inf` — left unchecked it would silently
+    /// poison the equilibrium matrix, the self-stress count, and the final
+    /// verdict, contradicting this enum's clean-typed-error contract.
+    DegenerateMember,
 }
 
 /// Analyse the self-stress / mechanism / prestress-stability of a prestressed
@@ -103,7 +109,9 @@ pub enum StabilityError {
 /// # Errors
 ///
 /// Returns [`StabilityError::DimensionMismatch`] if `members.len() != q.len()` or
-/// any member references a node index `≥ nodes.len()`.
+/// any member references a node index `≥ nodes.len()`; returns
+/// [`StabilityError::DegenerateMember`] if any member is a self-loop or joins two
+/// (near-)coincident nodes (a zero-length member has no well-defined direction).
 pub fn analyze_prestress_stability(
     nodes: &[[f64; 3]],
     members: &[(usize, usize)],
@@ -118,6 +126,18 @@ pub fn analyze_prestress_stability(
     let n = nodes.len();
     if members.iter().any(|&(j, k)| j >= n || k >= n) {
         return Err(StabilityError::DimensionMismatch);
+    }
+    // Guard 3: every member has a well-defined direction. A self-loop or two
+    // (near-)coincident endpoints give a zero-length member, whose unit direction
+    // û = d/L is NaN/inf; that would propagate silently through the equilibrium
+    // matrix, the spectral counts, and the verdict (a silently-wrong result rather
+    // than the clean typed error this module promises). Indices are already
+    // in-range (Guard 2), so the coordinate lookups here cannot panic.
+    if members
+        .iter()
+        .any(|&(j, k)| is_degenerate_member(nodes, j, k))
+    {
+        return Err(StabilityError::DegenerateMember);
     }
 
     // Equilibrium matrix A; self-stress count s = nullity(A) = m − rank(A).
@@ -233,6 +253,33 @@ pub(crate) fn count_self_stress_states(a: &Mat<f64>) -> usize {
     let gram = gram_transpose_self(a);
     let rank = spectral_rank(&gram, NULLITY_REL_TOL);
     m - rank
+}
+
+/// Whether member `(j, k)` is geometrically degenerate — a self-loop (`j == k`)
+/// or two (near-)coincident endpoints whose separation collapses to zero.
+///
+/// A degenerate member has no well-defined direction: `û = (x_k − x_j)/L` becomes
+/// `NaN`/`inf` once `L → 0`, which would silently corrupt every downstream
+/// quantity. The separation is judged *relative* to the endpoints' own coordinate
+/// magnitudes (the same scale-free philosophy as [`NULLITY_REL_TOL`]), so the test
+/// is invariant to the overall size of the structure: with both endpoints at the
+/// origin the scale is zero and the exact-coincidence `0 ≤ 0` still trips, while
+/// distant-but-coincident nodes trip via the relative bound. Callers must ensure
+/// `j` and `k` are in range (this indexes `nodes`).
+fn is_degenerate_member(nodes: &[[f64; 3]], j: usize, k: usize) -> bool {
+    if j == k {
+        return true;
+    }
+    let d = [
+        nodes[k][0] - nodes[j][0],
+        nodes[k][1] - nodes[j][1],
+        nodes[k][2] - nodes[j][2],
+    ];
+    let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    let mag = |p: &[f64; 3]| (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+    let scale = mag(&nodes[j]) + mag(&nodes[k]);
+    // Non-finite length (overflow / NaN coordinates) is also rejected as degenerate.
+    !len.is_finite() || len <= NULLITY_REL_TOL * scale
 }
 
 /// Assemble the Pellegrino–Calladine equilibrium matrix `A` (`d·N × m`) in the
@@ -993,6 +1040,37 @@ mod tests {
             analyze_prestress_stability(&nodes, &bad_members, &bad_q),
             Err(StabilityError::DimensionMismatch),
             "a member node index ≥ nodes.len() must be DimensionMismatch",
+        );
+    }
+
+    #[test]
+    fn analyze_prestress_stability_rejects_degenerate_members() {
+        // A self-loop (j == k) has no direction. It must surface as a clean
+        // DegenerateMember error rather than a silently-NaN equilibrium matrix.
+        let nodes = canonical_prism();
+        let self_loop = vec![(0_usize, 0)];
+        assert_eq!(
+            analyze_prestress_stability(&nodes, &self_loop, &[1.0]),
+            Err(StabilityError::DegenerateMember),
+            "a self-loop member (j == k) must be DegenerateMember",
+        );
+
+        // Two coincident node coordinates ⇒ zero-length member ⇒ DegenerateMember
+        // (û = d/L would be NaN/inf and poison every downstream quantity).
+        let coincident = vec![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
+        assert_eq!(
+            analyze_prestress_stability(&coincident, &[(0_usize, 1)], &[1.0]),
+            Err(StabilityError::DegenerateMember),
+            "a member between coincident nodes must be DegenerateMember",
+        );
+
+        // The same coincidence away from the origin trips the *relative* bound,
+        // confirming the guard is scale-free rather than keyed to an absolute floor.
+        let coincident_offset = vec![[5.0, -2.0, 7.0], [5.0, -2.0, 7.0]];
+        assert_eq!(
+            analyze_prestress_stability(&coincident_offset, &[(0_usize, 1)], &[1.0]),
+            Err(StabilityError::DegenerateMember),
+            "coincident nodes far from the origin must still be DegenerateMember",
         );
     }
 }
