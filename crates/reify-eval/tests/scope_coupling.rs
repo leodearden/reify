@@ -133,3 +133,64 @@ fn check_propagates_scope_coupling_diagnostic() {
         check_result.diagnostics,
     );
 }
+
+// ---------------------------------------------------------------------------
+// Test C — positive: objective-sourced coupling (step-5 RED)
+// ---------------------------------------------------------------------------
+
+/// Two-template module where "Later" has an *objective* that reads the frozen
+/// auto cell `Leaf.k` (not a constraint).  The PRD says coupling is detected
+/// from "a constraint OR objective".  Must emit exactly one W_SCOPE_COUPLING.
+///
+/// RED until step-6 extends detect_scope_coupling to scan objective terms.
+#[test]
+fn eval_emits_scope_coupling_for_objective_crossing() {
+    let leaf = TopologyTemplateBuilder::new("Leaf")
+        .auto_param("Leaf", "k", Type::length())
+        // self-constraint keeps the template non-trivial
+        .constraint("Leaf", 0, None, gt(value_ref("Leaf", "k"), literal(mm(1.0))))
+        .build();
+
+    let later = TopologyTemplateBuilder::new("Later")
+        .auto_param("Later", "y", Type::length())
+        // self-constraint on Later.y (no crossing here)
+        .constraint("Later", 1, None, gt(value_ref("Later", "y"), literal(mm(0.5))))
+        // objective reads frozen Leaf.k — the coupling source
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            value_ref("Leaf", "k"),
+        ))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(leaf)
+        .template(later)
+        .build();
+
+    let mut engine = no_solver_engine();
+    let result = engine.eval(&module);
+
+    let coupling_diags: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ScopeCoupling))
+        .collect();
+
+    assert_eq!(
+        coupling_diags.len(),
+        1,
+        "expected exactly 1 W_SCOPE_COUPLING from objective crossing, got {}: {:?}",
+        coupling_diags.len(),
+        result.diagnostics,
+    );
+
+    let msg = &coupling_diags[0].message;
+    assert!(
+        msg.contains("Leaf"),
+        "diagnostic message should name frozen scope 'Leaf'; got: {msg}"
+    );
+    assert!(
+        msg.contains("Later"),
+        "diagnostic message should name later scope 'Later'; got: {msg}"
+    );
+}
