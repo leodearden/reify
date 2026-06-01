@@ -84,7 +84,7 @@ inventory::submit! {
 /// ops, Manifold claims Mesh ops — so no tie-break conflict arises in the
 /// current v0.2 descriptor tables. The lex-min tie-break only fires when two
 /// kernels claim the _same_ `(op, repr)` pair; that is not the case here.
-pub const MANIFOLD_KERNEL_NAME: &str = "manifold";
+pub const MANIFOLD_KERNEL_NAME: &str = reify_core::KernelId::Manifold.as_registry_name();
 
 /// Construct the Manifold [`CapabilityDescriptor`].
 ///

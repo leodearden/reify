@@ -84,7 +84,7 @@ inventory::submit! {
 /// OCCT claim entirely disjoint `(op, repr)` pairs (Sdf vs Mesh vs BRep). The
 /// lex-min tie-break only fires when two kernels claim the _same_ `(op, repr)`
 /// pair; that is not the case here.
-pub const FIDGET_KERNEL_NAME: &str = "fidget";
+pub const FIDGET_KERNEL_NAME: &str = reify_core::KernelId::Fidget.as_registry_name();
 
 /// Construct the Fidget [`CapabilityDescriptor`].
 ///
