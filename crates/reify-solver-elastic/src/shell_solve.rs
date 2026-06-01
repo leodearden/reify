@@ -171,7 +171,7 @@ pub fn solve_flat_plate_shell(
     // Pin θ_z (drilling) at every non-root node. Root nodes already have all 6
     // DOFs (incl. θ_z) clamped, so adding θ_z there would be a duplicate DOF
     // (apply_dirichlet_row_elimination panics on duplicates in debug builds).
-    let is_root = |n: usize| n % nx1 == 0; // ix == 0
+    let is_root = |n: usize| n.is_multiple_of(nx1); // ix == 0
     for n in 0..n_nodes {
         if !is_root(n) {
             bcs.push(DirichletBc {
