@@ -118,7 +118,7 @@ use std::sync::Arc;
 
 use reify_compiler::{CompiledModule, CompiledPurpose};
 use reify_core::{ConstraintNodeId, ContentHash, Diagnostic, ValueCellId};
-use reify_ir::{CompiledFunction, ConstraintChecker, ConstraintSolver, FeatureTagTable, GeometryKernel, KernelHandle, Mesh, OptimizationObjective, OptimizedImpl, Satisfaction, TopologyAttributeTable, ValueMap};
+use reify_ir::{CompiledFunction, ConstraintChecker, ConstraintSolver, FeatureTagTable, GeometryKernel, KernelHandle, Mesh, ObjectiveSet, OptimizedImpl, Satisfaction, TopologyAttributeTable, ValueMap};
 
 use crate::cache::{CacheStore, NodeId};
 use crate::demand::DemandRegistry;
@@ -548,7 +548,7 @@ pub struct Engine {
     active_tolerance_scope: HashMap<String, f64>,
     /// Active optimization objectives injected by purposes.
     /// Maps purpose name → optimization objective.
-    active_objective_map: HashMap<String, OptimizationObjective>,
+    active_objective_map: HashMap<String, ObjectiveSet>,
     /// Injected let-cell ids for each active purpose.
     /// Maps purpose name → ordered list of injected `ValueCellId`s (one per let
     /// in declaration order). Populated by `activate_purpose*` alongside
@@ -567,7 +567,7 @@ pub struct Engine {
     /// Maps template name → optimization objective declared in the template.
     /// Populated during eval() so that edit_param() can look up the objective
     /// by scope_name without needing access to the original templates.
-    objectives: HashMap<String, OptimizationObjective>,
+    objectives: HashMap<String, ObjectiveSet>,
     /// Compiled field declarations from the last eval() / edit_source() call.
     ///
     /// Stored so that incremental paths — primarily `Engine::edit_param`

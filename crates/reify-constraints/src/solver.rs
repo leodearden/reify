@@ -413,7 +413,7 @@ struct ConstraintCostFunction<'a> {
 /// I2 bit-identity: for a single term with weight 1.0,
 ///   Minimize → 0.0 + 1.0·v == v  (IEEE-754, finite v)
 ///   Maximize → 0.0 − 1.0·v == -v (IEEE-754, finite v)
-/// both are bit-identical to the former `OptimizationObjective` eval.
+/// both are bit-identical to the former single-variant objective enum eval.
 ///
 /// Lexicographic folds as WeightedSum here (degenerate, PRD §6.3); full
 /// ε-band staged solve is task ε.

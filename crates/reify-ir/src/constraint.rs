@@ -118,8 +118,7 @@ impl ObjectiveSet {
     ///
     /// This is the single-objective compat constructor (PRD §6.2 invariant I2):
     /// `ObjectiveSet::single(sense, expr)` is the multi-objective replacement
-    /// for the old `OptimizationObjective::Minimize(expr)` /
-    /// `OptimizationObjective::Maximize(expr)` enum construction, and produces a
+    /// for the old single-variant objective enum construction, and produces a
     /// bit-identical solver input.
     pub fn single(sense: ObjectiveSense, expr: CompiledExpr) -> Self {
         Self {

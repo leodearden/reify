@@ -178,9 +178,8 @@ fn objective_set_clone_produces_structurally_equal_set() {
 /// PRD §6.2 invariant I2: a 1-term WeightedSum with weight=1.0 is structurally
 /// equivalent (bit-identical solver input) to the old single Minimize/Maximize.
 ///
-/// This test fails to compile until `ResolutionProblem.objective` is widened to
-/// `Option<ObjectiveSet>` in step 4 (currently `Option<OptimizationObjective>`).
-/// RED until then.
+/// This test verifies that `ResolutionProblem.objective` is `Option<ObjectiveSet>`
+/// (widened by α) and that a 1-term ObjectiveSet threads through correctly.
 #[test]
 fn single_term_objective_set_threads_through_resolution_problem_minimize() {
     use reify_ir::{ResolutionProblem, value::ValueMap};

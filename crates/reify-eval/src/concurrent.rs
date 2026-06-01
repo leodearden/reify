@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use reify_core::{ContentHash, Diagnostic, SnapshotId, ValueCellId, VersionId};
-use reify_ir::{AutoParam, CompiledFunction, DeterminacyState, OptimizationObjective, PersistentMap, ResolutionProblem, SnapshotProvenance, SolveResult, Value, ValueMap};
+use reify_ir::{AutoParam, CompiledFunction, DeterminacyState, ObjectiveSet, PersistentMap, ResolutionProblem, SnapshotProvenance, SolveResult, Value, ValueMap};
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
 use crate::deps::{DependencyTrace, ReverseDependencyIndex, extract_dependency_trace};
@@ -53,7 +53,7 @@ pub struct ConcurrentEditSetup {
     pub meta_map: Arc<HashMap<String, HashMap<String, String>>>,
     /// Template-native optimization objective for this edit's scope, if any.
     /// Populated from Engine::objectives during prepare_concurrent_edit().
-    pub objective: Option<OptimizationObjective>,
+    pub objective: Option<ObjectiveSet>,
 }
 
 /// Result of evaluating a single node during concurrent evaluation.

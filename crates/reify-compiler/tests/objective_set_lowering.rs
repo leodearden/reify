@@ -3,9 +3,7 @@
 //! Asserts that the compiler lowers `minimize`/`maximize` declarations into a
 //! `WeightedSum` `ObjectiveSet` with correct per-term metadata.
 //!
-//! RED phase: compiler src still references `OptimizationObjective` and does
-//! not compile against `ObjectiveSet` — the entire crate fails to build until
-//! Step-2 migrates the implementation.
+//! GREEN phase: compiler src migrated to `ObjectiveSet` in Step-2.
 
 use reify_core::ModulePath;
 use reify_ir::{ObjectiveCombination, ObjectiveSense};

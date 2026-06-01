@@ -2205,7 +2205,7 @@ fn multi_term_weighted_sum_objective() {
 }
 
 /// [I2] A 1-term `ObjectiveSet::single(Maximize, expr)` must yield the same
-/// resolved value as the pre-widening `OptimizationObjective::Maximize(expr)` test
+/// resolved value as the pre-widening single-Maximize-objective test
 /// (`maximize_objective` above).
 ///
 /// Identical setup: thickness ∈ [1 mm, 100 mm], constraints > 2 mm AND < 20 mm,
