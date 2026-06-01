@@ -83,11 +83,12 @@ use std::collections::BTreeMap;
 use reify_core::DimensionVector;
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_solver_elastic::{
-    DirichletBc, IsotropicElastic,
+    DirichletBc, ElementOrder, IsotropicElastic,
     apply_point_load,
-    BucklingKernelOptions, solve_buckling_kernel,
+    BucklingKernelOptions, solve_buckling_kernel, solve_buckling_kernel_p2,
     recover_nodal_stress_p1, StressElement, tet_volume_p1,
     GridSpec, resample_multi_nodal_to_grid,
+    assembly::test_support::promote_tets_to_p2,
 };
 
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
@@ -136,6 +137,7 @@ pub fn solve_buckling_trampoline(
 
     // ── (4) Extract BucklingOptions ───────────────────────────────────────────
     let (n_modes, eigen_tol, eigen_max_iters) = extract_buckling_options(&value_inputs[6]);
+    let element_order = extract_buckling_element_order(&value_inputs[6]);
 
     // ── (4b) supports input — intentionally unused in task-ε slice ────────────
     //
@@ -152,32 +154,35 @@ pub fn solve_buckling_trampoline(
     // Geometry: column along Z axis, cross-section in XY plane.
     // lx = width (X), ly = height (Y), lz = length (Z = compression axis).
     //
-    // Mesh density mirrors euler_column_pin_pin.rs (nx=ny=8, nz=160) for the
-    // 20×20×800 mm smoke column, giving the validated 9.2%-error result.
-    // Density is geometry-driven:
-    //   nx = ny = 8 elements across the shorter cross-section side (~2.5 mm each)
-    //   nz = round(lz / axial_elem_size) where axial_elem_size ≈ 5 mm
+    // Mesh density:
+    //   P1: nx=ny=8 — mirrors euler_column_pin_pin.rs (nx=ny=8, nz=160 for the
+    //       20×20×800 mm smoke column), giving the validated 9.2%-error result.
+    //   P2: nx=ny=2 — coarsen cross-section to nx=2 per DD-3; P2 quadratic
+    //       elements resolve bending curvature without fine discretization.
+    //       The validated fixed_guided P2 fixture reaches 0.06% at nx=ny=2,nz=32
+    //       (~2.2s release); the trampoline's nz≈40 is slightly finer.
     //
-    // Why axial_elem_size = min(lx,ly)/(nx/2)?
-    //   Using min(lx,ly)/nx (i.e. the cross-section element size ≈ 2.5 mm) would
-    //   give nz=320 for the 800 mm column — doubling wall-time and invalidating
-    //   the cited '9.2% error at nz=160' rationale.  Halving the divisor (nx/2=4)
-    //   yields ~5 mm axial elements → nz=160, matching the reference fixture and
-    //   its measured error.  Clamp to at least 1 in each direction.
-    let nx: usize = 8;
-    let ny: usize = 8;
+    // nz: derived from the same formula for both orders.
+    //   cross_elem_size = min(lx,ly)/(nx/2): ~5 mm for P1 (nx=8), ~10 mm for P2 (nx=2).
+    //   nz = round(lz / cross_elem_size).max(1).
+    let (nx, ny): (usize, usize) = match element_order {
+        ElementOrder::P1 => (8, 8),
+        ElementOrder::P2 => (2, 2),
+    };
     let lx = width;
     let ly = height;
     let lz = length;
-    // nz: scale so axial element size ≈ 5 mm (half the cross-section element size)
-    let cross_elem_size = lx.min(ly) / (nx / 2) as f64; // ~5 mm for 20 mm section at nx=8
+    // nz: axial element size = min(lx,ly) / (nx/2).
+    // For P1 (nx=8): divisor=4 → ~5 mm; for P2 (nx=2): divisor=1 → ~10 mm.
+    // nx/2 is always ≥ 1 for both nx=8 and nx=2.
+    let cross_elem_size = lx.min(ly) / (nx / 2) as f64;
     let nz: usize = ((lz / cross_elem_size).round() as usize).max(1);
-    // Sanity: for the 20×20×800 mm smoke column: cross_elem_size=0.005, nz=160 ✓
+    // Sanity: 20×20×800 mm: P1 → cross=0.005, nz=160 ✓; P2 → cross=0.01, nz=80.
 
     let nx1 = nx + 1;
     let ny1 = ny + 1;
     let nz1 = nz + 1;
-    let n_nodes = nx1 * ny1 * nz1;
+    let n_nodes_p1 = nx1 * ny1 * nz1;
 
     // Node linearisation: (k, j, i) — matches euler_column_pin_pin.rs
     let node_id = |i: usize, j: usize, k: usize| -> usize {
@@ -191,7 +196,7 @@ pub fn solve_buckling_trampoline(
         ]
     };
 
-    let mut nodes = Vec::with_capacity(n_nodes);
+    let mut nodes = Vec::with_capacity(n_nodes_p1);
     for k in 0..nz1 {
         for j in 0..ny1 {
             for i in 0..nx1 {
@@ -231,33 +236,6 @@ pub fn solve_buckling_trampoline(
         }
     }
 
-    // ── (6) Pin-pin BCs: lateral clamp (u_x=u_y=0) at both Z-end faces ───────
-    //   + one axial anchor at the bottom corner to prevent rigid-body Z-translation.
-    let mut bcs: Vec<DirichletBc> = Vec::new();
-    for k_face in [0usize, nz] {
-        for j in 0..=ny {
-            for i in 0..=nx {
-                let n = node_id(i, j, k_face);
-                bcs.push(DirichletBc { dof: 3 * n,     value: 0.0 }); // u_x
-                bcs.push(DirichletBc { dof: 3 * n + 1, value: 0.0 }); // u_y
-            }
-        }
-    }
-    // Axial anchor at bottom corner.
-    let anchor = node_id(0, 0, 0);
-    bcs.push(DirichletBc { dof: 3 * anchor + 2, value: 0.0 }); // u_z
-
-    // ── (7) Load vector: distribute total_load across top-face nodes in -Z ────
-    let n_top = (nx + 1) * (ny + 1);
-    let mut f = vec![0.0f64; 3 * n_nodes];
-    for j in 0..=ny {
-        for i in 0..=nx {
-            let n = node_id(i, j, nz);
-            apply_point_load(&mut f, n, [0.0, 0.0, -total_load / n_top as f64]);
-        }
-    }
-
-    // ── (8) Call the buckling kernel ──────────────────────────────────────────
     let opts = BucklingKernelOptions {
         n_modes,
         eigen_tol,
@@ -265,7 +243,86 @@ pub fn solve_buckling_trampoline(
         cg_tolerance: 1e-10,
         cg_max_iter: 10_000,
     };
-    let kernel_result = solve_buckling_kernel(&nodes, &tets, &mat, &bcs, &f, &[], opts);
+
+    // ── (6/7/8) BCs + load + kernel — branched on element_order ──────────────
+    //
+    // P1 branch: node_id-based BCs + load + solve_buckling_kernel (bit-identical
+    //   to the pre-dispatch code path — zero regression on P1 results).
+    //
+    // P2 branch: promote P1 mesh to P2 via promote_tets_to_p2, then build
+    //   coordinate-based BCs over nodes_p2 (catches corner + edge-midpoint nodes
+    //   on end faces — DD-4), load on top-face corner nodes, call
+    //   solve_buckling_kernel_p2. pre_stress resampling reuses the P1 corner
+    //   mesh (DD-5): corners are the first n_p1 entries of nodes_p2.
+    let kernel_result;
+    let active_nodes: Vec<[f64; 3]>; // full node set for modes + base_node_positions
+
+    match element_order {
+        ElementOrder::P1 => {
+            // ── P1: BCs via node_id (unchanged) ──────────────────────────────
+            let mut bcs: Vec<DirichletBc> = Vec::new();
+            for k_face in [0usize, nz] {
+                for j in 0..=ny {
+                    for i in 0..=nx {
+                        let n = node_id(i, j, k_face);
+                        bcs.push(DirichletBc { dof: 3 * n,     value: 0.0 }); // u_x
+                        bcs.push(DirichletBc { dof: 3 * n + 1, value: 0.0 }); // u_y
+                    }
+                }
+            }
+            let anchor = node_id(0, 0, 0);
+            bcs.push(DirichletBc { dof: 3 * anchor + 2, value: 0.0 }); // u_z
+
+            // ── P1: load — distribute across top-face nodes ───────────────────
+            let n_top = (nx + 1) * (ny + 1);
+            let mut f = vec![0.0f64; 3 * n_nodes_p1];
+            for j in 0..=ny {
+                for i in 0..=nx {
+                    let n = node_id(i, j, nz);
+                    apply_point_load(&mut f, n, [0.0, 0.0, -total_load / n_top as f64]);
+                }
+            }
+
+            kernel_result = solve_buckling_kernel(&nodes, &tets, &mat, &bcs, &f, &[], opts);
+            active_nodes = nodes.clone();
+        }
+
+        ElementOrder::P2 => {
+            // ── P2: promote P1 mesh to 10-node quadratic tets ────────────────
+            let (nodes_p2, tets_p2) = promote_tets_to_p2(&nodes, &tets);
+            let n_nodes_p2 = nodes_p2.len();
+
+            // ── P2: BCs by COORDINATE over nodes_p2 (catches corner + midpoints
+            //   on both end faces — DD-4).
+            let mut bcs: Vec<DirichletBc> = Vec::new();
+            for (n, xyz) in nodes_p2.iter().enumerate() {
+                let z = xyz[2];
+                if (z).abs() < 1e-10 || (z - lz).abs() < 1e-10 {
+                    // Node is on z=0 or z=lz face: lateral clamp (pin-pin).
+                    bcs.push(DirichletBc { dof: 3 * n,     value: 0.0 }); // u_x
+                    bcs.push(DirichletBc { dof: 3 * n + 1, value: 0.0 }); // u_y
+                }
+            }
+            // Axial anchor at node 0 (= P1 corner (0,0,0), preserved in P2 mesh).
+            bcs.push(DirichletBc { dof: 3 * 0 + 2, value: 0.0 }); // u_z at node 0
+
+            // ── P2: load on top-face CORNER nodes (via node_id over nx=2 grid) ─
+            // These are P1 indices (first n_p1 entries of nodes_p2), still valid
+            // in the promoted mesh.  Loading corners only matches the validated
+            // fixed_guided P2 fixture; the eigenvalue normalises by total load.
+            let n_top = (nx + 1) * (ny + 1);
+            let mut f = vec![0.0f64; 3 * n_nodes_p2];
+            for j in 0..=ny {
+                for i in 0..=nx {
+                    let n = node_id(i, j, nz);
+                    apply_point_load(&mut f, n, [0.0, 0.0, -total_load / n_top as f64]);
+                }
+            }
+
+            kernel_result = solve_buckling_kernel_p2(&nodes_p2, &tets_p2, &mat, &bcs, &f, &[], opts);
+            active_nodes = nodes_p2;
+        }
+    }
 
     // ── (9) Compute max_von_mises from pre_stress_per_element ─────────────────
     //
@@ -292,17 +349,26 @@ pub fn solve_buckling_trampoline(
 
     // ── (10a) Resample pre_stress displacement + stress onto Regular3D grid ─────
     //
+    // For P1: resampling uses (nodes, tets) — unchanged.
+    // For P2 (DD-5): reuse the P1 corner mesh (nodes, tets) with corner-subset
+    //   displacement pre_stress_displacement[..3*n_p1]. Corners are the first
+    //   n_p1 entries of nodes_p2 (promote_tets_to_p2 preserves corner indices).
+    //   Per-element stress count == n_tets (promotion keeps tet count).
+    //
     // Grid counts = solve-mesh element counts (nx × ny × nz), bounds = body bounds.
-    // Displacement is already nodal (pre_stress_displacement: Vec<f64>, stride 3).
-    // Stress: build StressElement per tet from pre_stress_per_element → recover
-    // volume-weighted nodal stress → flatten stride-9 row-major → resample.
     let pre_stress_grid = GridSpec {
         bounds_min: [0.0, 0.0, 0.0],
         bounds_max: [lx, ly, lz],
         counts: [nx, ny, nz],
     };
 
+    // Corner-subset displacement: for P1 this is the full array; for P2 we take
+    // the first 3*n_p1 entries (the corner-node displacements).
+    let n_corner_nodes = n_nodes_p1;
+    let ps_disp_corner = &kernel_result.pre_stress_displacement[..3 * n_corner_nodes];
+
     // Recover nodal stress from per-element tensors (volume-weighted average).
+    // Uses the P1 corner (nodes, tets) for both P1 and P2 (DD-5).
     let ps_stress_elements: Vec<StressElement> = tets
         .iter()
         .enumerate()
@@ -315,7 +381,7 @@ pub fn solve_buckling_trampoline(
             }
         })
         .collect();
-    let ps_nodal_stress = recover_nodal_stress_p1(n_nodes, &ps_stress_elements);
+    let ps_nodal_stress = recover_nodal_stress_p1(n_corner_nodes, &ps_stress_elements);
 
     // Flatten nodal stress [[f64;3];3] → stride-9 row-major.
     // Layout: σ_xx,σ_xy,σ_xz, σ_yx,σ_yy,σ_yz, σ_zx,σ_zy,σ_zz per node.
@@ -329,7 +395,7 @@ pub fn solve_buckling_trampoline(
         &nodes,
         &tets,
         &[
-            (&kernel_result.pre_stress_displacement, 3, "displacement"),
+            (ps_disp_corner, 3, "displacement"),
             (&ps_nodal_stress_flat, 9, "stress"),
         ],
         &pre_stress_grid,
@@ -368,26 +434,29 @@ pub fn solve_buckling_trampoline(
     //
     // Modes are already sorted ascending |λ| by the kernel.
     // mode_shape: Value::Map { "displaced_positions": flat xyz list } (task ι/3458).
-    // Displaced positions = undeformed base node positions + mode-shape eigenvector
-    // (kernel.Mode.mode_shape has length 3·n_nodes, same DOF ordering as `nodes`).
+    // Displaced positions = undeformed base node positions + mode-shape eigenvector.
+    //
+    // For P1: kernel.Mode.mode_shape has length 3·n_p1; active_nodes == nodes (P1 corners).
+    // For P2: kernel.Mode.mode_shape has length 3·n_p2; active_nodes == nodes_p2 (all P2 nodes).
+    // In both cases the debug_assert checks mode_shape.len() == 3·active_nodes.len().
     let modes_list: Vec<Value> = kernel_result
         .modes
         .iter()
         .map(|m| {
             // Flat displaced-position list: [x0+dx0, y0+dy0, z0+dz0, x1+dx1, ...].
-            // nodes[i] = [xi, yi, zi]; m.mode_shape[3i..3i+3] = [dxi, dyi, dzi].
+            // active_nodes[i] = [xi, yi, zi]; m.mode_shape[3i..3i+3] = [dxi, dyi, dzi].
             //
-            // Guard: the kernel contract requires mode_shape.len() == 3·n_nodes.
+            // Guard: the kernel contract requires mode_shape.len() == 3·n_active_nodes.
             // chunks_exact+zip silently truncates when lengths diverge, so we assert
             // loudly in tests/debug rather than producing a silent too-short list.
             debug_assert_eq!(
                 m.mode_shape.len(),
-                3 * nodes.len(),
-                "mode_shape length {} != 3·n_nodes {} — kernel contract violated",
+                3 * active_nodes.len(),
+                "mode_shape length {} != 3·n_active_nodes {} — kernel contract violated",
                 m.mode_shape.len(),
-                3 * nodes.len(),
+                3 * active_nodes.len(),
             );
-            let displaced: Vec<Value> = nodes
+            let displaced: Vec<Value> = active_nodes
                 .iter()
                 .zip(m.mode_shape.chunks_exact(3))
                 .flat_map(|(base, disp)| {
@@ -422,10 +491,10 @@ pub fn solve_buckling_trampoline(
     // ── (12) Build BucklingResult StructureInstance ───────────────────────────
     //
     // base_node_positions: flat xyz list of the undeformed node positions used
-    // to build the mesh.  The GUI animator uses this as the phase=0 reference
-    // frame and reconstructs displaced positions via
-    //   pos(phase, scale) = base + phase·scale·(peak − base).
-    let base_node_positions: Vec<Value> = nodes
+    // in the active mesh (P1: n_p1 nodes; P2: n_p2 nodes including midpoints).
+    // The GUI animator uses this as the phase=0 reference frame and reconstructs
+    // displaced positions via pos(phase, scale) = base + phase·scale·(peak − base).
+    let base_node_positions: Vec<Value> = active_nodes
         .iter()
         .flat_map(|xyz| {
             [Value::Real(xyz[0]), Value::Real(xyz[1]), Value::Real(xyz[2])]
@@ -541,6 +610,24 @@ fn extract_total_load(val: &Value) -> f64 {
     // will produce a plausible-but-wrong critical load rather than a crash.
     // Diagnostic emission for this case is deferred to task θ/3457.
     if total == 0.0 { 1.0 } else { total }
+}
+
+/// Extract the `element_order` field from a `BucklingOptions` StructureInstance.
+///
+/// Returns [`ElementOrder::P2`] iff the field carries
+/// `Value::Enum { variant: "P2", .. }` — otherwise returns [`ElementOrder::P1`]
+/// (the default, covering absent fields, non-StructureInstance inputs, and the
+/// explicit `ElementOrder.P1` variant).
+///
+/// Mirrors `modal_ops::extract_element_order` (modal_ops.rs:1838-1846).
+fn extract_buckling_element_order(val: &Value) -> ElementOrder {
+    if let Value::StructureInstance(data) = val
+        && let Some(Value::Enum { variant, .. }) = data.fields.get("element_order")
+        && variant == "P2"
+    {
+        return ElementOrder::P2;
+    }
+    ElementOrder::P1
 }
 
 /// Extract BucklingOptions fields: (n_modes, eigen_tol, eigen_max_iters).
