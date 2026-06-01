@@ -198,6 +198,50 @@ pub(super) fn neutral_angle_si(v: &Value) -> f64 {
     }
 }
 
+/// The dimensional kind of a declared operating-range argument, selecting how
+/// [`parse_declared_range`] extracts the SI half-width magnitude.
+pub(super) enum RangeKind {
+    /// Revolute / rotational joints: a half-angle in radians (an ANGLE
+    /// `Value::Scalar`, or a bare `Value::Real` / `Value::Int` read as radians).
+    Angle,
+    /// Prismatic / displacement joints: a half-displacement in metres (a LENGTH
+    /// `Value::Scalar`, or a bare `Value::Real` / `Value::Int` read as metres).
+    ///
+    /// Constructed by the displacement-family ctors wired in step-14
+    /// (`prb_fixed_fixed_beam`, `prb_prismatic_blade`); declared here so the
+    /// shared helper covers both joint families from the outset (plan step-6).
+    #[allow(dead_code)]
+    Length,
+}
+
+/// Parse an optional trailing declared operating-range argument into its SI
+/// half-width magnitude (always non-negative — the operating range is the
+/// symmetric `±h` interval the §5.3 stress-check evaluates at its endpoint).
+///
+/// `arg` is the raw trailing slot, or `None` when the ctor was called below the
+/// declared-range arity. Accepts an ANGLE-/LENGTH-dimensioned `Value::Scalar`
+/// (per `kind`), a bare `Value::Real` / `Value::Int`, or a `Value::Option`
+/// wrapping any of those. A missing arg, `Value::Option(None)`, or an
+/// unreadable / non-finite value all yield `None` — meaning "no user-declared
+/// range, fall back to the auto-computed safe cap".
+pub(super) fn parse_declared_range(arg: Option<&Value>, kind: RangeKind) -> Option<f64> {
+    parse_declared_range_value(arg?, &kind)
+}
+
+fn parse_declared_range_value(v: &Value, kind: &RangeKind) -> Option<f64> {
+    match v {
+        Value::Option(Some(inner)) => parse_declared_range_value(inner, kind),
+        Value::Option(None) => None,
+        other => {
+            let si = match kind {
+                RangeKind::Angle => crate::helpers::trig_input(other),
+                RangeKind::Length => length_si(other),
+            }?;
+            si.is_finite().then_some(si.abs())
+        }
+    }
+}
+
 /// Build the cached `FlexureCompliance` record as a `Value::StructureInstance`.
 ///
 /// Mirrors the SIR-α `StructureInstanceData` construction (beam.rs test

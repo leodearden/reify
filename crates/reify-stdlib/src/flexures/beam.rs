@@ -12,7 +12,7 @@ use reify_ir::Value;
 use super::common::{
     attach_compliance, cantilever_sigma_at, cantilever_theta_lim, fixed_guided_delta_max,
     length_si, make_compliance_record, make_flexure_joint, material_field_si, neutral_angle_si,
-    symmetric_angle_range, CANTILEVER_GAMMA, FIXED_GUIDED_GAMMA,
+    parse_declared_range, symmetric_angle_range, RangeKind, CANTILEVER_GAMMA, FIXED_GUIDED_GAMMA,
 };
 
 /// Evaluate a beam-flexure constructor by name.
@@ -44,22 +44,26 @@ struct BeamInputs<'a> {
     axis: &'a Value,
     /// The raw pivot argument, stored verbatim on the joint Map.
     pivot: &'a Value,
-    /// The optional trailing `neutral` argument (present only in the 7-arg form).
+    /// The optional trailing `neutral` argument (present in the 7- and 8-arg forms).
     neutral_arg: Option<&'a Value>,
+    /// The optional trailing declared operating-range argument (present only in
+    /// the 8-arg form). When present, its endpoint — not the auto cap — drives
+    /// the joint range and the §5.3 `max_stress` stress-check.
+    declared_range_arg: Option<&'a Value>,
 }
 
 /// Parse and validate the shared positional argument layout of both
 /// beam-flexure constructors: `(length, width, thickness, material, pivot,
-/// axis[, neutral])`.
+/// axis[, neutral[, declared_range]])`.
 ///
-/// Returns `None` (⇒ the caller returns `Value::Undef`) on: arity ∉ {6, 7};
+/// Returns `None` (⇒ the caller returns `Value::Undef`) on: arity ∉ {6, 7, 8};
 /// non-positive or non-finite geometry; a degenerate beam (thickness ≥ length —
 /// the `E_FlexureGeometryInvalid` regime, whose diagnostic task λ (3821) owns);
 /// a material that is not a `Value::StructureInstance` with a finite
 /// `youngs_modulus` > 0; or an axis that is not a finite, non-zero,
 /// dimensionless 3-vector.
 fn parse_beam_inputs(args: &[Value]) -> Option<BeamInputs<'_>> {
-    if args.len() != 6 && args.len() != 7 {
+    if args.len() < 6 || args.len() > 8 {
         return None;
     }
     let length = length_si(&args[0])?;
@@ -83,21 +87,27 @@ fn parse_beam_inputs(args: &[Value]) -> Option<BeamInputs<'_>> {
         yield_si: material_field_si(material, "yield_stress"),
         axis,
         pivot: &args[4],
-        neutral_arg: if args.len() == 7 { Some(&args[6]) } else { None },
+        neutral_arg: if args.len() >= 7 { Some(&args[6]) } else { None },
+        declared_range_arg: if args.len() == 8 { Some(&args[7]) } else { None },
     })
 }
 
-/// `prb_cantilever_beam(length, width, thickness, material, pivot, axis[, neutral])`
+/// `prb_cantilever_beam(length, width, thickness, material, pivot, axis[, neutral[, declared_range]])`
 /// — a Howell pseudo-rigid-body cantilever flexure presented as a revolute joint.
 ///
 /// Returns a joint `Value::Map` (`kind == "revolute"`) whose rotational
 /// stiffness is the closed-form `k_θ = γ·E·I / L` (Howell §5.1, γ = 2.65), with
 /// `I = width·thickness³/12` the rectangular-section second moment of area.
 ///
-/// The symmetric `prb_validity` rotation range is `±min(θ_yield, 5°)`, where
-/// `θ_yield = yield·L/(E·t/2)` is the surface-yield rotation and 5° is the PRB
-/// small-deflection limit. When the material carries no `yield_stress`, only
-/// the 5° PRB limit applies.
+/// The auto-computed symmetric `prb_validity` rotation cap is `±min(θ_yield,
+/// 5°)`, where `θ_yield = yield·L/(E·t/2)` is the surface-yield rotation and 5°
+/// is the PRB small-deflection limit. When the material carries no
+/// `yield_stress`, only the 5° PRB limit applies.
+///
+/// An optional trailing `declared_range` (a half-angle) OVERRIDES that cap for
+/// the joint range and the cached `max_stress` endpoint (§5.3 evaluates surface
+/// stress at the declared endpoint); the auto cap is retained as
+/// `prb_validity_range` in the compliance record as the SAFE/suggested bound.
 ///
 /// Returns `Value::Undef` on the invalid-input classes enumerated in
 /// [`parse_beam_inputs`].
@@ -114,7 +124,13 @@ fn prb_cantilever_beam(args: &[Value]) -> Value {
     // θ_yield = yield·L/(E·t/2)); the 5° PRB limit bounds small-deflection
     // fidelity. A material without a yield_stress contributes only the 5° cap.
     let theta_lim = cantilever_theta_lim(b.length, b.thickness, b.e, b.yield_si);
-    let range = symmetric_angle_range(theta_lim);
+
+    // An optional user-declared operating range (±half-angle) OVERRIDES the auto
+    // ±min(θ_yield, 5°) cap for the joint range and the §5.3 stress endpoint; the
+    // auto θ_lim is retained as the SAFE/suggested range in the compliance record.
+    let declared = parse_declared_range(b.declared_range_arg, RangeKind::Angle);
+    let range_endpoint = declared.unwrap_or(theta_lim);
+    let range = symmetric_angle_range(range_endpoint);
 
     // Optional trailing neutral angle (default 0 for the 6-arg form).
     let neutral_si = b.neutral_arg.map(neutral_angle_si).unwrap_or(0.0);
@@ -132,9 +148,11 @@ fn prb_cantilever_beam(args: &[Value]) -> Value {
     );
 
     // Cache the FlexureCompliance record (§5.3): surface bending stress at the
-    // auto prb_validity endpoint θ_lim (the worst-case operating stress) and at
-    // the neutral rest angle. prb_validity_range stores the auto SAFE half-angle.
-    let max_stress = cantilever_sigma_at(theta_lim, b.length, b.thickness, b.e);
+    // range endpoint (the declared endpoint when present, else the auto θ_lim —
+    // the worst-case operating stress) and at the neutral rest angle.
+    // prb_validity_range stores the auto SAFE half-angle θ_lim regardless of any
+    // wider declared range, so it always advertises the PRB-valid bound.
+    let max_stress = cantilever_sigma_at(range_endpoint, b.length, b.thickness, b.e);
     let max_stress_at_neutral = cantilever_sigma_at(neutral_si, b.length, b.thickness, b.e);
     let record = make_compliance_record(
         k_theta,
@@ -711,11 +729,14 @@ mod tests {
             a.truncate(3);
             undef(a, "3 args");
         }
+        // Arity 8 (neutral + declared_range) is now VALID (step-6); 9 args
+        // overflows the highest supported arity and is rejected.
         {
             let mut a = valid_cantilever_args();
-            a.push(Value::angle(0.0));
-            a.push(Value::angle(0.0));
-            undef(a, "8 args");
+            a.push(Value::angle(0.0)); // neutral
+            a.push(Value::angle(0.0)); // declared_range
+            a.push(Value::angle(0.0)); // overflow
+            undef(a, "9 args");
         }
 
         // Non-positive / non-finite geometry.
