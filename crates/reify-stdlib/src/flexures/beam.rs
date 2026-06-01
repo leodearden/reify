@@ -10,9 +10,9 @@ use reify_core::DimensionVector;
 use reify_ir::Value;
 
 use super::common::{
-    cantilever_theta_lim, fixed_guided_delta_max, length_si, make_flexure_joint,
-    material_field_si, neutral_angle_si, symmetric_angle_range, CANTILEVER_GAMMA,
-    FIXED_GUIDED_GAMMA,
+    attach_compliance, cantilever_sigma_at, cantilever_theta_lim, fixed_guided_delta_max,
+    length_si, make_compliance_record, make_flexure_joint, material_field_si, neutral_angle_si,
+    symmetric_angle_range, CANTILEVER_GAMMA, FIXED_GUIDED_GAMMA,
 };
 
 /// Evaluate a beam-flexure constructor by name.
@@ -119,7 +119,7 @@ fn prb_cantilever_beam(args: &[Value]) -> Value {
     // Optional trailing neutral angle (default 0 for the 6-arg form).
     let neutral_si = b.neutral_arg.map(neutral_angle_si).unwrap_or(0.0);
 
-    make_flexure_joint(
+    let joint = make_flexure_joint(
         "revolute",
         b.axis.clone(),
         range,
@@ -129,7 +129,22 @@ fn prb_cantilever_beam(args: &[Value]) -> Value {
         },
         Value::angle(neutral_si),
         b.pivot.clone(),
-    )
+    );
+
+    // Cache the FlexureCompliance record (§5.3): surface bending stress at the
+    // auto prb_validity endpoint θ_lim (the worst-case operating stress) and at
+    // the neutral rest angle. prb_validity_range stores the auto SAFE half-angle.
+    let max_stress = cantilever_sigma_at(theta_lim, b.length, b.thickness, b.e);
+    let max_stress_at_neutral = cantilever_sigma_at(neutral_si, b.length, b.thickness, b.e);
+    let record = make_compliance_record(
+        k_theta,
+        max_stress,
+        max_stress_at_neutral,
+        b.yield_si,
+        None,
+        theta_lim,
+    );
+    attach_compliance(joint, record)
 }
 
 /// `prb_fixed_fixed_beam(length, width, thickness, material, pivot, axis[, neutral])`

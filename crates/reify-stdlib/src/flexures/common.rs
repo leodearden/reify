@@ -223,10 +223,6 @@ pub(super) fn neutral_angle_si(v: &Value) -> f64 {
 ///   `Real` placeholder matches the `flexures.ri` `TODO(range-angle-type)`).
 /// - `at_yield` → [`Value::Bool`]: `max_stress ≥ yield` (always `false` when no
 ///   yield stress is known).
-// `allow(dead_code)`: consumed by the PRB ctors starting at step-4 (task 3871);
-// until then it is exercised only by this module's `#[cfg(test)]` tests, so the
-// non-test lib build would otherwise flag it as unused under `-D warnings`.
-#[allow(dead_code)]
 pub(super) fn make_compliance_record(
     effective_stiffness: f64,
     max_stress_si: f64,
@@ -274,6 +270,38 @@ pub(super) fn make_compliance_record(
         version: 1,
         fields,
     }))
+}
+
+/// Cantilever surface bending stress σ = E·(t/2)·|θ|/L (Howell §5.1) — the
+/// algebraic inverse of [`cantilever_theta_lim`]'s `θ_yield = yield·L/(E·t/2)`.
+///
+/// `theta` is the rotation (radians) at which to evaluate the stress; the
+/// magnitude is used so the sign of the deflection does not matter. Shared by
+/// the cantilever/blade families (`beam::prb_cantilever_beam`, the hinge ctors,
+/// and `compound::prb_cartwheel_flexure`) that wire the compliance record.
+pub(super) fn cantilever_sigma_at(theta: f64, length: f64, thickness: f64, e: f64) -> f64 {
+    e * (thickness / 2.0) * theta.abs() / length
+}
+
+/// Insert the cached `FlexureCompliance` record under the reserved hidden joint
+/// key `__flexure_compliance` and return the augmented joint.
+///
+/// The β-established `__flexure_compliance` reserved-name convention: the
+/// mechanism / sweep / snapshot engines dispatch on the `kind` string and
+/// ignore unknown keys (PRD §8.2), so the cache rides along invisibly. A
+/// non-`Map` input (e.g. `Value::Undef` from a rejected ctor) passes through
+/// unchanged — there is no joint to annotate.
+pub(super) fn attach_compliance(joint: Value, record: Value) -> Value {
+    match joint {
+        Value::Map(mut m) => {
+            m.insert(
+                Value::String("__flexure_compliance".to_string()),
+                record,
+            );
+            Value::Map(m)
+        }
+        other => other,
+    }
 }
 
 #[cfg(test)]
