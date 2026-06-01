@@ -64,10 +64,87 @@ pub(crate) fn modal_aware_dt(freqs_hz: &[f64], duration: f64) -> f64 {
     }
 }
 
-use crate::dynamics::spatial::SpatialTransform6;
+use crate::dynamics::rnea::{inverse_dynamics_open_chain, RneaLink};
+use crate::dynamics::spatial::{SpatialTransform6, SpatialVector6};
+use crate::trajectory::sampling::to_trajectory_samples;
+use super::spline::MultiJointSpline;
 use crate::modal::transient::{reconstruct_series, solve_modal_response};
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+// ── Public types ─────────────────────────────────────────────────────────────
+
+/// Per-link descriptor for the pure-Rust mechanism model.
+///
+/// Carries the fixed spatial transform and inertial/subspace parameters needed
+/// by RNEA + the FK chain.  For the test scenarios here the transforms are
+/// pre-computed at the reference pose; for general q-varying configurations the
+/// downstream Value-wiring task recomputes them from snapshot coordinates.
+#[derive(Clone)]
+pub(crate) struct LinkDesc {
+    /// Fixed parent-to-child spatial transform `X_{p→i}`.
+    pub(crate) parent_to_child: SpatialTransform6,
+    /// Motion-subspace columns `S_i` (one per joint DOF).
+    pub(crate) subspace: Vec<SpatialVector6>,
+    /// Body mass (kg).
+    pub(crate) mass: f64,
+    /// Center of mass in body frame (m).
+    pub(crate) com: [f64; 3],
+    /// Rotational inertia about COM in body axes (kg·m²).
+    pub(crate) inertia_about_com: [[f64; 3]; 3],
+}
+
+/// Pure-Rust mechanism model: an ordered list of link descriptors.
+#[derive(Clone)]
+pub(crate) struct MechanismModel {
+    /// Links in spanning-tree topological order (parent before child).
+    pub(crate) links: Vec<LinkDesc>,
+}
+
+/// Per-mode descriptor for the modal model.
+#[derive(Clone)]
+pub(crate) struct ModeDesc {
+    /// Natural frequency (Hz).
+    pub(crate) freq_hz: f64,
+    /// Modal damping ratio ζ (dimensionless, ≥ 0).
+    pub(crate) zeta: f64,
+    /// Projection of this mode onto the generalized-force DOF space: Φᵢ vector.
+    ///
+    /// Length should equal the total DOF count (Σ link.subspace.len()).  A
+    /// shorter vector is silently zero-padded (via `forces_to_forcing_history`'s
+    /// min-length rule).
+    pub(crate) force_projection: Vec<f64>,
+}
+
+/// Effector location: modal participation coefficients at this location.
+#[derive(Clone)]
+pub(crate) struct EffectorLocation {
+    /// Per-mode participation coefficient `Φᵢ[node]` at this physical location.
+    /// Length == number of modes in the `ModalModel`.
+    pub(crate) mode_coeffs: Vec<f64>,
+}
+
+/// Modal model: a collection of SDOF modal oscillators.
+#[derive(Clone)]
+pub(crate) struct ModalModel {
+    /// Ordered list of modes (ascending frequency recommended).
+    pub(crate) modes: Vec<ModeDesc>,
+}
+
+/// Pure-Rust output of `simulate_trajectory_core`.
+///
+/// All inner `Vec`s are indexed `[location_idx][time_idx]`.
+#[derive(Debug, Clone)]
+pub(crate) struct EndEffectorTrackData {
+    /// Uniform time grid from the modal-aware sampler (seconds).
+    pub(crate) t_samples: Vec<f64>,
+    /// Nominal (zero-vibration) end-effector pose per location and time.
+    pub(crate) nominal_pose: Vec<Vec<Pose3>>,
+    /// Vibration displacement offset `[dx, dy, dz]` per location and time.
+    pub(crate) vibration_offset: Vec<Vec<[f64; 3]>>,
+    /// Combined pose (`nominal + vibration`) per location and time.
+    pub(crate) combined_pose: Vec<Vec<Pose3>>,
+}
+
+// ── Minimal pure-Rust end-effector pose ──────────────────────────────────────
 
 /// Minimal pure-Rust end-effector pose: position + orientation quaternion.
 ///
@@ -280,6 +357,180 @@ pub(crate) fn forces_to_forcing_history(
         result.push(series);
     }
     result
+}
+
+// ── Main entry point ─────────────────────────────────────────────────────────
+
+/// Pure-Rust forward-pass simulator core (PRD §6.1, Phase 3 θ).
+///
+/// Pipeline:
+/// 1. `dt = modal_aware_dt(modal freqs, spline.duration())`
+/// 2. `traj = to_trajectory_samples(spline, dt)` (or empty if spline is degenerate)
+/// 3. Per sample: build `RneaLink` chain from `(q, q̇, q̈)`, call
+///    `inverse_dynamics_open_chain(links, [0,0,0])` → `τ(t_j)`.
+///    (gravity = 0 so the static-pose mandate holds by construction.)
+/// 4. `forcing = forces_to_forcing_history(τ-history, mode projections)`
+/// 5. `vibration = superpose_modes(times, modes, location_coeffs)`
+///    — maps each location's scalar superposition to `[dx, dy, dz]` by treating
+///    the scalar as a displacement along the first effector axis (Z by default).
+///    The downstream Value-wiring task applies proper physical-space mapping.
+/// 6. `nominal = nominal_fk_chain(link_chain)` per sample per location
+/// 7. `combined = nominal + vibration`
+///
+/// Returns `EndEffectorTrackData` with consistent `[location][time]` indexing.
+///
+/// # Degenerate inputs
+/// - Empty/degenerate spline (duration ≤ 0 or < 2 valid samples): returns
+///   well-formed empty output vectors — no panic, no index-out-of-bounds.
+/// - Empty modal modes: vibration_offset is all-zero, combined == nominal.
+/// - Location count is respected in all output inner-vector lengths.
+pub(crate) fn simulate_trajectory_core(
+    spline: &MultiJointSpline,
+    mechanism: &MechanismModel,
+    modal: &ModalModel,
+    effector_locations: &[EffectorLocation],
+) -> EndEffectorTrackData {
+    let n_loc = effector_locations.len();
+    let freqs_hz: Vec<f64> = modal.modes.iter().map(|m| m.freq_hz).collect();
+
+    // ── (1) Modal-aware timestep ────────────────────────────────────────────
+    let dt = modal_aware_dt(&freqs_hz, spline.duration());
+
+    // ── (2) Sample the profile ──────────────────────────────────────────────
+    let traj_opt = to_trajectory_samples(spline, dt);
+    let traj = match traj_opt {
+        Some(t) if t.samples.len() >= 2 => t,
+        _ => {
+            // Degenerate: return empty output.
+            return EndEffectorTrackData {
+                t_samples: Vec::new(),
+                nominal_pose: vec![Vec::new(); n_loc],
+                vibration_offset: vec![Vec::new(); n_loc],
+                combined_pose: vec![Vec::new(); n_loc],
+            };
+        }
+    };
+    let times = traj.times();
+    let n_times = times.len();
+
+    // ── (3) Per-sample generalized forces (RNEA, gravity = 0) ──────────────
+    // Build the fixed FK link chain once (same for all samples — fixed transforms).
+    let fk_chain: Vec<SpatialTransform6> = mechanism
+        .links
+        .iter()
+        .map(|l| l.parent_to_child)
+        .collect();
+
+    let mut tau_history: Vec<Vec<f64>> = Vec::with_capacity(n_times);
+    for sample in &traj.samples {
+        let rnea_links: Vec<RneaLink> = mechanism
+            .links
+            .iter()
+            .enumerate()
+            .map(|(i, l)| {
+                let n_dof = l.subspace.len();
+                // For fixed transforms the parent_to_child doesn't vary with q.
+                // q̇ and q̈ come from the trajectory sample (sliced per-link DOF).
+                let dof_start = mechanism.links[..i]
+                    .iter()
+                    .map(|lk| lk.subspace.len())
+                    .sum::<usize>();
+                let q_dot = sample.vels.get(dof_start..dof_start + n_dof)
+                    .map(|s| s.to_vec())
+                    .unwrap_or_else(|| vec![0.0; n_dof]);
+                let q_ddot = sample.accels.get(dof_start..dof_start + n_dof)
+                    .map(|s| s.to_vec())
+                    .unwrap_or_else(|| vec![0.0; n_dof]);
+                RneaLink {
+                    parent: if i == 0 { None } else { Some(i - 1) },
+                    parent_to_child: l.parent_to_child,
+                    subspace: l.subspace.clone(),
+                    mass: l.mass,
+                    com: l.com,
+                    inertia_about_com: l.inertia_about_com,
+                    q_dot,
+                    q_ddot,
+                }
+            })
+            .collect();
+
+        let tau = inverse_dynamics_open_chain(&rnea_links, [0.0, 0.0, 0.0]);
+        // Flatten per-link tau into a single per-DOF vector.
+        let flat_tau: Vec<f64> = tau.into_iter().flatten().collect();
+        tau_history.push(flat_tau);
+    }
+
+    // ── (4) Modal forcing history ────────────────────────────────────────────
+    let projections: Vec<Vec<f64>> = modal.modes
+        .iter()
+        .map(|m| m.force_projection.clone())
+        .collect();
+    let modal_forcing: Vec<Vec<f64>> = forces_to_forcing_history(&tau_history, &projections);
+
+    // ── (5) Modal superposition → vibration offsets ──────────────────────────
+    // Prepare per-mode (omega, zeta, forcing) tuples.
+    let mode_tuples: Vec<(f64, f64, Vec<f64>)> = modal.modes
+        .iter()
+        .zip(modal_forcing.iter())
+        .map(|(m, forcing)| {
+            let omega = 2.0 * std::f64::consts::PI * m.freq_hz;
+            (omega, m.zeta, forcing.clone())
+        })
+        .collect();
+
+    let location_coeffs: Vec<Vec<f64>> = effector_locations
+        .iter()
+        .map(|loc| loc.mode_coeffs.clone())
+        .collect();
+
+    // scalar_vib[loc][t]: scalar vibration displacement per location per time.
+    let scalar_vib = if mode_tuples.is_empty() {
+        vec![vec![0.0_f64; n_times]; n_loc]
+    } else {
+        superpose_modes(&times, &mode_tuples, &location_coeffs)
+    };
+
+    // Convert scalar → [dx, dy, dz] treating scalar as Z-axis displacement.
+    // (Physical-space mapping is finalised in the downstream Value-wiring task.)
+    let vibration_offset: Vec<Vec<[f64; 3]>> = scalar_vib
+        .iter()
+        .map(|series| series.iter().map(|&s| [0.0, 0.0, s]).collect())
+        .collect();
+
+    // ── (6) Nominal FK per location (same chain for all samples) ────────────
+    // For fixed transforms the nominal pose is time-invariant; we compute it
+    // once and replicate — keeping the per-sample indexing for generality.
+    let nominal_pose_single = nominal_fk_chain(&fk_chain);
+    let nominal_pose: Vec<Vec<Pose3>> = (0..n_loc)
+        .map(|_| vec![nominal_pose_single.clone(); n_times])
+        .collect();
+
+    // ── (7) Combined = nominal + vibration ───────────────────────────────────
+    let combined_pose: Vec<Vec<Pose3>> = (0..n_loc)
+        .map(|loc| {
+            (0..n_times)
+                .map(|t| {
+                    let nom = &nominal_pose[loc][t];
+                    let [dx, dy, dz] = vibration_offset[loc][t];
+                    Pose3 {
+                        position: [
+                            nom.position[0] + dx,
+                            nom.position[1] + dy,
+                            nom.position[2] + dz,
+                        ],
+                        quaternion: nom.quaternion,
+                    }
+                })
+                .collect()
+        })
+        .collect();
+
+    EndEffectorTrackData {
+        t_samples: times,
+        nominal_pose,
+        vibration_offset,
+        combined_pose,
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
