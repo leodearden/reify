@@ -86,6 +86,19 @@ structure def BucklingOptions {
     param tol : Real = 0.00000001             // = 1e-8 (no scientific notation in Reify grammar)
     param max_iters : Int = 1000
     param auto_dense : Bool = true
+    // Finite-element order for the (K, K_g) assembly and buckling kernel.
+    // `ElementOrder.P1` (default, constant-strain 4-node tet) — back-compatible
+    // with all existing BucklingOptions() callers; the trampoline follows the
+    // same P1 code path bit-for-bit.
+    // `ElementOrder.P2` (10-node quadratic tet) — removes the ~9–10% P1
+    // bending-lock floor by resolving cross-section bending curvature; achieves
+    // 0.06% on the 20×20×800 mm pin-pin Euler column (task 4052/4129).
+    // `ElementOrder` is the shared stdlib enum declared in `solver_elastic.ri`
+    // and available in the compilation prelude; declared exactly like
+    // `ElasticOptions.element_order` (solver_elastic.ri) and
+    // `ModalOptions.element_order` (modal_analysis.ri).
+    // No constraint clause: enum-valued params carry no scalar invariant.
+    param element_order : ElementOrder = ElementOrder.P1
 
     // A non-positive `n_modes` requests zero eigenmodes — a degenerate solve.
     // Declaring the lower bound at the structure-def level makes the contract

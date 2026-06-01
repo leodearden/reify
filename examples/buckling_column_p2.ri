@@ -1,0 +1,89 @@
+// Buckling column P2-accuracy smoke test for `fn solve_buckling`.
+//
+// PRD reference: docs/prds/v0_5/buckling-eigensolver.md §13 task δ (task 4129)
+//
+// Analytical reference (pin-pin Euler column):
+//
+//   P_cr = π² · E · I / L²
+//
+// Where:
+//   E = 205 GPa   (Steel AISI 1045)
+//   I = 0.02 · 0.02³ / 12  (20×20 mm square section, I_min)
+//   L = 0.8 m
+//
+//   P_cr ≈ 42.15 kN
+//
+// The integration test at `crates/reify-eval/tests/buckling_p2_smoke.rs`
+// asserts `crit = critical_load(result, 1000.0 * 1N)` is within 5% of this
+// analytical value. The P2-tet mesh at nx=ny=2 coarsened cross-section gives
+// <1% error (vs ~9.2% for P1 at nx=ny=8,nz=160), documented in task 4052
+// (euler_column_pin_pin.rs: fixed_guided_euler_column_p2_within_five_percent).
+//
+// Type-coercion notes (same pattern as fea_cantilever_smoke.ri):
+//   - FEAMaterialInput wrapper for material (ElasticMaterial type coercion)
+//   - LoadCase bundle for loads/supports (List<Real> placeholder type coercion)
+//
+// IMPORTANT — argument binding is POSITIONAL (the `name:` labels are
+// cosmetic; the parser strips them and binds each value to the param in
+// BucklingOptions' DECLARATION order — see ts_parser.rs lower_call_argument).
+// `element_order` is the LAST declared param (7th), so every preceding param
+// must be supplied here in order to reach it: a partial keyword-style call
+// would silently bind `element_order`'s value to an earlier param and leave
+// the real `element_order` at its `ElementOrder.P1` default (the P1
+// bending-lock floor would never lift). The 6 preceding params are therefore
+// spelled out at their BucklingOptions defaults so the trailing `element_order`
+// lands in the right slot. Mirrors the cantilever_beam_modes.ri pattern
+// (examples/modal/cantilever_beam_modes.ri:80-99).
+
+structure BucklingColumnP2 {
+    // Geometry: 800 mm tall column, 20×20 mm cross-section.
+    param length : Length = 800mm
+    param width  : Length = 20mm
+    param height : Length = 20mm
+
+    // Material: AISI 1045 hot-rolled medium-carbon steel (E = 205 GPa, ν = 0.3).
+    let material = Steel_AISI_1045()
+
+    // Load: 1000 N axial compressive load at the column top.
+    let tip_load = PointLoad(point: "top", force: 1000.0)
+
+    // Support: pin-pin — fixed supports at both ends (lateral restraint).
+    let base_support = FixedSupport(target: "base")
+
+    // Bundle loads + supports via LoadCase (List<Real> type coercion).
+    let lc = LoadCase(
+        name: "buckling_p2",
+        loads: [tip_load],
+        supports: [base_support]
+    )
+
+    // Wrap material in FEAMaterialInput (ElasticMaterial type coercion).
+    let mi = FEAMaterialInput(material: material)
+
+    // Buckling solve: @optimized dispatcher routes to solver::buckling trampoline.
+    // All 6 preceding BucklingOptions params are spelled out positionally at
+    // their defaults so that `element_order: ElementOrder.P2` (the 7th param)
+    // binds to the correct slot (positional binding — see header comment).
+    let result = solve_buckling(
+        mi.material, length, width, height, lc.loads, lc.supports,
+        BucklingOptions(
+            n_modes: 10,
+            mode: "shift_invert",
+            sigma: 0.0,
+            tol: 0.00000001,
+            max_iters: 1000,
+            auto_dense: true,
+            element_order: ElementOrder.P2
+        )
+    )
+
+    // Critical load: first-mode eigenvalue × reference load magnitude.
+    // P_cr = λ₀ × F_ref where F_ref = 1000 N (1 kN applied above).
+    let crit = critical_load(result, 1000.0 * 1N)
+
+    // Safety factor: dimensionless eigenvalue λ₀ (ratio P_cr / F_applied).
+    let sf = safety_factor_buckling(result, 1000.0 * 1N)
+
+    // Mode shape: first mode displacement field.
+    let ms = mode_shape(result, 0)
+}
