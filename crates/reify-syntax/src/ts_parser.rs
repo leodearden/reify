@@ -3407,8 +3407,7 @@ impl<'a> Lowering<'a> {
     /// Lower an `interpolated_string` CST node to `ExprKind::InterpolatedString`.
     ///
     /// Walks the node's named children in source order:
-    /// - `string_chunk` → `StringPart::Literal` with RAW chunk text
-    ///   (escape decoding is added in step-6 via `decode_string_escapes`).
+    /// - `string_chunk` → `StringPart::Literal(decode_string_escapes(raw))`.
     /// - `interpolation` → `StringPart::Hole(lower_expr(expr_child))`.
     ///
     /// The opening and closing `"` delimiters are anonymous nodes and are skipped.
@@ -3418,8 +3417,8 @@ impl<'a> Lowering<'a> {
         for child in node.named_children(&mut cursor) {
             match child.kind() {
                 "string_chunk" => {
-                    let raw = self.node_text(child).to_string();
-                    parts.push(StringPart::Literal(raw));
+                    let raw = self.node_text(child);
+                    parts.push(StringPart::Literal(decode_string_escapes(raw)));
                 }
                 "interpolation" => {
                     // The interpolation node wraps `{ expr }`.  The named child is
@@ -3815,6 +3814,55 @@ impl<'a> Lowering<'a> {
             span: self.span(node),
         })
     }
+}
+
+/// Decode escape sequences in a raw `string_chunk` token from an interpolated string.
+///
+/// Translations applied:
+/// - `\n` → newline
+/// - `\t` → tab
+/// - `\\` → backslash
+/// - `\"` → double-quote
+/// - `{{` → `{`  (doubled brace is content, not an interpolation start)
+/// - `}}` → `}`
+/// - `\X` for any other X → `X`  (lenient: drop the backslash, keep the char)
+///
+/// This is the shared unescape helper anticipated by the comment at ts_parser.rs:2174.
+/// Only brace-bearing strings reach this function; plain `string_literal` nodes
+/// are left raw by `lower_string_literal` (fast path, no braces, no decoding).
+fn decode_string_escapes(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('\\') => out.push('\\'),
+                Some('"') => out.push('"'),
+                Some(other) => out.push(other),
+                None => {}
+            },
+            '{' => {
+                if chars.peek() == Some(&'{') {
+                    chars.next();
+                    out.push('{');
+                } else {
+                    out.push('{');
+                }
+            }
+            '}' => {
+                if chars.peek() == Some(&'}') {
+                    chars.next();
+                    out.push('}');
+                } else {
+                    out.push('}');
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
