@@ -1136,6 +1136,189 @@ mod tests {
         );
     }
 
+    /// Verify that `collect_all_requirements` collects a single
+    /// `RequirementKind::AssocType` requirement from a trait with no refinements.
+    ///
+    /// RED (step-3): fails today because the inert `RequirementKind::AssocType(_) => continue`
+    /// arm drops the requirement instead of pushing it.
+    #[test]
+    fn collect_all_requirements_collects_assoc_type_requirement() {
+        let trait_a = make_compiled_trait(
+            "TraitA",
+            vec![],
+            vec![TraitRequirement {
+                name: "Material".to_string(),
+                kind: RequirementKind::AssocType(None),
+                span: SourceSpan::empty(0),
+            }],
+        );
+
+        let mut trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        trait_registry.insert("TraitA".to_string(), &trait_a);
+
+        let mut ctx = MergeContext::new();
+        let mut diags: Vec<Diagnostic> = vec![];
+        collect_all_requirements(
+            "TraitA",
+            &trait_registry,
+            &mut ctx,
+            &HashMap::new(),
+            SourceSpan::empty(0),
+            0,
+            &mut diags,
+        );
+
+        assert!(
+            diags.is_empty(),
+            "Expected no diagnostics, got: {:?}",
+            diags
+        );
+        let mat_count = ctx
+            .requirements
+            .iter()
+            .filter(|r| r.name == "Material" && matches!(r.kind, RequirementKind::AssocType(None)))
+            .count();
+        assert_eq!(
+            mat_count, 1,
+            "Expected exactly one AssocType 'Material' requirement, got {}",
+            mat_count
+        );
+    }
+
+    /// Diamond dedup for `RequirementKind::AssocType`: Base declares `type Material`,
+    /// Mid1 and Mid2 both refine Base, Top refines Mid1+Mid2. The `visited` set
+    /// ensures Base is visited exactly once → one requirement, zero diagnostics.
+    ///
+    /// RED (step-3): fails today because the inert arm drops AssocType requirements.
+    #[test]
+    fn collect_all_requirements_dedups_diamond_assoc_type_requirement() {
+        let base = make_compiled_trait(
+            "Base",
+            vec![],
+            vec![TraitRequirement {
+                name: "Material".to_string(),
+                kind: RequirementKind::AssocType(None),
+                span: SourceSpan::empty(0),
+            }],
+        );
+        let mid1 = make_compiled_trait("Mid1", vec!["Base".to_string()], vec![]);
+        let mid2 = make_compiled_trait("Mid2", vec!["Base".to_string()], vec![]);
+        let top = make_compiled_trait(
+            "Top",
+            vec!["Mid1".to_string(), "Mid2".to_string()],
+            vec![],
+        );
+
+        let mut trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        trait_registry.insert("Base".to_string(), &base);
+        trait_registry.insert("Mid1".to_string(), &mid1);
+        trait_registry.insert("Mid2".to_string(), &mid2);
+        trait_registry.insert("Top".to_string(), &top);
+
+        let mut ctx = MergeContext::new();
+        let mut diags: Vec<Diagnostic> = vec![];
+        collect_all_requirements(
+            "Top",
+            &trait_registry,
+            &mut ctx,
+            &HashMap::new(),
+            SourceSpan::empty(0),
+            0,
+            &mut diags,
+        );
+
+        assert!(
+            diags.is_empty(),
+            "Expected no diagnostics, got: {:?}",
+            diags
+        );
+        let mat_count = ctx
+            .requirements
+            .iter()
+            .filter(|r| r.name == "Material")
+            .count();
+        assert_eq!(
+            mat_count, 1,
+            "Diamond dedup should yield exactly one 'Material' requirement, got {}",
+            mat_count
+        );
+    }
+
+    /// Verify that `collect_all_requirements` captures a `DefaultKind::AssocType` default
+    /// into `ctx.defaults`. First-seen-by-name dedup: a second same-name default
+    /// (via diamond or sibling) should be dropped.
+    ///
+    /// RED (step-3): fails today because the `unreachable!()` in the composite-key match
+    /// panics when an AssocType default is encountered (no early if-let block exists yet).
+    #[test]
+    fn collect_all_requirements_collects_assoc_type_default() {
+        let steel_ty = Type::StructureRef("Steel".to_string());
+        let trait_with_default = CompiledTrait {
+            name: "HasMaterial".to_string(),
+            is_pub: false,
+            doc: None,
+            type_params: vec![],
+            refinements: vec![],
+            required_members: vec![],
+            defaults: vec![TraitDefault {
+                name: Some("Material".to_string()),
+                kind: DefaultKind::AssocType(steel_ty.clone()),
+                span: SourceSpan::empty(0),
+            }],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+        let top = CompiledTrait {
+            name: "Top".to_string(),
+            is_pub: false,
+            doc: None,
+            type_params: vec![],
+            refinements: vec!["HasMaterial".to_string()],
+            required_members: vec![],
+            defaults: vec![],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+
+        let mut trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        trait_registry.insert("HasMaterial".to_string(), &trait_with_default);
+        trait_registry.insert("Top".to_string(), &top);
+
+        let mut ctx = MergeContext::new();
+        let mut diags: Vec<Diagnostic> = vec![];
+        collect_all_requirements(
+            "Top",
+            &trait_registry,
+            &mut ctx,
+            &HashMap::new(),
+            SourceSpan::empty(0),
+            0,
+            &mut diags,
+        );
+
+        assert!(
+            diags.is_empty(),
+            "Expected no diagnostics, got: {:?}",
+            diags
+        );
+        let assoc_defaults: Vec<_> = ctx
+            .defaults
+            .iter()
+            .filter(|d| {
+                d.name.as_deref() == Some("Material")
+                    && matches!(&d.kind, DefaultKind::AssocType(ty) if ty == &steel_ty)
+            })
+            .collect();
+        assert_eq!(
+            assoc_defaults.len(),
+            1,
+            "Expected exactly one AssocType 'Material' default with Steel type, got {}",
+            assoc_defaults.len()
+        );
+    }
+
     /// Param/Constraint cross-interference: two traits each providing a named default
     /// for the same member name — one `Param`, one `Constraint` — produce no conflict
     /// diagnostic and both defaults are collected.
