@@ -348,7 +348,7 @@ fn seed_cross_sub_named_steps(
                 // override propagation is out of scope for this task (see
                 // rustdoc above and the pinning test
                 // `cross_sub_nested_sub_in_override_path_produces_compile_error`).
-                let child_named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
+                let child_named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
 
                 for op in &realization.operations {
                     let geom_op = match compile_geometry_op(
@@ -2997,17 +2997,9 @@ impl Engine {
         // the build hot path. Each successful op contributes exactly one entry,
         // so this is the upper bound on capacity needed.
         let mut realization_ops: Vec<GeometryOp> = Vec::with_capacity(operations.len());
-        // Task 4048: bare-id projections for the per-op compile boundary.
-        // `step_handles` / `named_steps` now hold `KernelHandle`, but
-        // `compile_geometry_op` (GeomRef::Step / GeomRef::Sub resolution) and
-        // `classify_swept_body` consume bare `GeometryHandleId`. `named_steps`
-        // is not mutated during this realization's op loop (the post-loop block
-        // performs the only insert), so it is projected once here. The
-        // `realization_step_ids` mirror tracks `step_handles[handle_start..]`:
+        // `realization_step_ids` mirrors `step_handles[handle_start..]`:
         // every `step_handles.push(...)` below pushes the same `.id` here, so
         // the slice stays in lockstep without re-projecting per op.
-        let named_steps_ids: HashMap<String, GeometryHandleId> =
-            named_steps.iter().map(|(k, h)| (k.clone(), h.id)).collect();
         let mut realization_step_ids: Vec<GeometryHandleId> =
             Vec::with_capacity(operations.len());
         for (op_idx, op) in operations.iter().enumerate() {
@@ -3017,7 +3009,7 @@ impl Engine {
                 &realization_step_ids,
                 functions,
                 meta_map,
-                &named_steps_ids,
+                named_steps,
                 diagnostics,
             );
             match geom_op {

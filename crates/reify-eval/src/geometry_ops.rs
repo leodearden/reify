@@ -327,7 +327,7 @@ pub(crate) fn compile_geometry_op(
     step_handles: &[GeometryHandleId],
     functions: &[CompiledFunction],
     meta_map: &HashMap<String, HashMap<String, String>>,
-    named_steps: &HashMap<String, GeometryHandleId>,
+    named_steps: &HashMap<String, reify_ir::KernelHandle>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
     use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
@@ -367,7 +367,7 @@ pub(crate) fn compile_geometry_op(
             // Pinned by compile_geometry_op_sub_ref_unknown_name_returns_err_no_warning.
             GeomRef::Sub(name) => named_steps
                 .get(name)
-                .copied()
+                .map(|kh| kh.id)
                 .filter(|h| *h != GeometryHandleId::INVALID)
                 .ok_or_else(|| {
                     format!(
@@ -4605,6 +4605,19 @@ mod tests {
         )
     }
 
+    /// Helper: wrap a bare `GeometryHandleId` in a `KernelHandle` with the
+    /// default test kernel (`KernelId::Occt`).
+    ///
+    /// Bulk test fixtures use `kh(id)` to keep the named_steps map concise;
+    /// contract tests that verify `.kernel` is ignored construct inline
+    /// `KernelHandle { kernel: KernelId::Manifold/Fidget, id }` instead.
+    fn kh(id: GeometryHandleId) -> reify_ir::KernelHandle {
+        reify_ir::KernelHandle {
+            kernel: reify_ir::KernelId::Occt,
+            id,
+        }
+    }
+
     /// Bare `Value::Real` components in a `Value::Point` are NOT a valid
     /// production shape for a `Type::Point<Length>` cell.  The function MUST
     /// return `None` so the caller falls through to "unsupported arg shape".
@@ -7849,9 +7862,9 @@ mod tests {
         let handle_a = GeometryHandleId(10);
         let handle_b = GeometryHandleId(20);
 
-        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
-        named_steps.insert("body".into(), handle_a);
-        named_steps.insert("hole".into(), handle_b);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("body".into(), kh(handle_a));
+        named_steps.insert("hole".into(), kh(handle_b));
 
         let op = CompiledGeometryOp::Boolean {
             op: BooleanOp::Difference,
@@ -7907,7 +7920,7 @@ mod tests {
         };
 
         let step_handles = vec![GeometryHandleId(5)];
-        let named_steps: HashMap<String, GeometryHandleId> = HashMap::new(); // empty — "unknown" not present
+        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new(); // empty — "unknown" not present
 
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let result = compile_geometry_op(
