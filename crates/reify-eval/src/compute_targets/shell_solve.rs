@@ -8,6 +8,24 @@
 //! reify-eval and the crate dependency direction is `reify-eval →
 //! reify-solver-elastic`, so naming it in the solver crate would close a
 //! dependency cycle — see the task δ design decisions).
+//!
+//! ## Wiring
+//!
+//! - [`classify_shell`] / [`resolve_extraction_failure`] are the routing +
+//!   failure-policy site, consumed by BOTH the FEA trampoline's shell branch
+//!   (`elastic_static::solve_elastic_static_trampoline`) and the `@optimized`→
+//!   ComputeNode lowering (`engine_eval::insert_shell_extract_upstream`, step-12)
+//!   so the graph wiring and the actual solve route always agree.
+//! - [`build_slab_sdf`] feeds the upstream `shell-extract::extract` ComputeNode a
+//!   *synthetic* slab SDF so it `Completes` and satisfies the graph/segmentation
+//!   contract; per PRD §11 OQ-2 it is NOT the geometry source for the v0.4 stress
+//!   solve (that mesh is synthesized inside `solve_flat_plate_shell`). Consuming
+//!   the live extracted mid-surface (OQ-1 per-element persistence; OQ-2 live
+//!   producer) is gated on GR-003 and is a follow-up.
+//! - [`solve_shell_static`] drives the neutral solver-elastic flat-plate kernel
+//!   and wraps its buffers into the DSL `ShellStress`. Its accuracy is the
+//!   bare-MITC3 honest band (esc-3594-10 re-spec): max top-channel von Mises
+//!   within one order of magnitude of `σ = 6PL/(bh²)`, NOT a tight tolerance.
 
 use std::sync::atomic::AtomicBool;
 
@@ -190,11 +208,9 @@ pub(crate) fn build_mid_stress_field(mid: Vec<f64>) -> Value {
 /// flat-plate stress solve (that mesh is trampoline-synthesized by
 /// [`reify_solver_elastic::solve_flat_plate_shell`]).
 //
-// `#[allow(dead_code)]`: wired into the `@optimized`→ComputeNode lowering by
-// step-12 (`engine_eval.rs`) to feed the upstream `shell-extract::extract`
-// node. Until then it is reachable only from the `#[cfg(test)]` module, which
-// the non-test lib build does not see.
-#[allow(dead_code)]
+// Wired into the `@optimized`→ComputeNode lowering (step-12,
+// `engine_eval::insert_shell_extract_upstream`) to feed the upstream
+// `shell-extract::extract` node's `value_inputs[1]`.
 pub(crate) fn build_slab_sdf(length: f64, width: f64, height: f64) -> Value {
     let half_t = 0.5 * height;
     // A modest fixed grid: the field only has to satisfy the shell-extract

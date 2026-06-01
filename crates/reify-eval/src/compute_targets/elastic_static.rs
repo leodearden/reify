@@ -210,12 +210,18 @@ pub(crate) struct CantileverFeaSolve {
 /// [6] options   : ElasticOptions     (Value::StructureInstance — solver defaults used)
 /// ```
 ///
-/// Returns an `ElasticResult`-shaped `Value::StructureInstance` with fields:
-/// `displacement`, `stress`, `frame`, `shell_channels` (all Undef — tet/solid
-/// convention; see `solver_elastic.ri` field-semantics doc for rationale),
-/// `max_von_mises` (Scalar[PRESSURE]), `converged` (Bool), `iterations` (Int).
-/// Task 3594/δ replaces `shell_channels = Undef` with a real `ShellStress`
-/// value on the shell-routing path by calling `shell_channels_to_value`.
+/// Returns an `ElasticResult`-shaped `Value::StructureInstance`. The populated
+/// field set depends on the route (both carry `max_von_mises` (Scalar[PRESSURE]),
+/// `converged` (Bool), `iterations` (Int)):
+///   - **Tet/solid path** (task 4084/α): `displacement` + `stress` are populated
+///     Regular3D Sampled `Value::Field`s; `frame` + `shell_channels` are `Undef`
+///     (no per-element local frame / through-thickness data for solid elements —
+///     `solver_elastic.ri` field-semantics doc, PRD DR-3 / #4067 I-3).
+///   - **Shell path** (task 3594/δ, the §3b early return below): `shell_channels`
+///     is a real `ShellStress` value (`shell_channels_to_value(Some(_), mid)`),
+///     `stress` aliases `shell_channels.mid` (I-2), and `displacement` + `frame`
+///     are `Undef` (per-element shell displacement + global-frame surfacing is
+///     task θ; the local→global frames ride in `ShellChannels.frame`).
 ///
 /// The warm-state donate→checkout round-trip is exercised via
 /// `CgWarmState::from_opaque_state` / `CgWarmState::into_opaque_state`.
@@ -327,8 +333,9 @@ pub fn solve_elastic_static_trampoline(
     //   - frame:         Undef — tet stress is in the global Cartesian frame;
     //                    no per-element local frame exists for solid elements.
     //   - shell_channels: Undef — through-thickness top/mid/bottom is undefined
-    //                    for solid elements (PRD DR-3, task #4067 I-3). Task
-    //                    3594/δ replaces this on the shell path.
+    //                    for solid elements (PRD DR-3, task #4067 I-3). The shell
+    //                    path emits a real ShellStress here instead, via the §3b
+    //                    early return above (task 3594/δ).
     // `cost_per_byte` is derived as 1/(warm-state size in bytes).
     let n_iters    = fea.iterations as i64;
     let converged  = fea.converged;
@@ -385,7 +392,8 @@ pub fn solve_elastic_static_trampoline(
         ("frame".to_string(),          Value::Undef),
         // task #4067 (PRD S1 / DR-3 / I-3): tet/solid results always emit
         // shell_channels=Undef (through-thickness data is undefined for solid
-        // elements). Task 3594/δ replaces this with shell_channels_to_value(Some(_), mid).
+        // elements). The shell path emits a real ShellStress via
+        // shell_channels_to_value(Some(_), mid) in the §3b early return (task 3594/δ).
         ("shell_channels".to_string(), Value::Undef),
         ("max_von_mises".to_string(),  Value::Scalar {
             si_value:  fea.max_von_mises,

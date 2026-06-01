@@ -13,6 +13,18 @@
 //! this crate; see PRD §11 OQ-2 and the task δ design decisions). The recipe
 //! is lifted from the proven end-to-end shell solve in
 //! `tests/shell_benchmarks.rs` (the flat-plate cantilever sanity test).
+//!
+//! # Accuracy contract (esc-3594-10 re-spec)
+//!
+//! The recovered stress is held to the **bare-MITC3 honest band**, NOT a tight
+//! tolerance: the user-observable signal (e2e in
+//! `reify-eval/tests/shell_solve_e2e.rs`) asserts the max top-channel von Mises
+//! is finite, non-zero, and within ONE ORDER OF MAGNITUDE of the analytical
+//! `σ = 6PL/(bh²)`. A flat-facet cantilever is the benign MITC3 case (no
+//! curvature → no membrane locking), so the 1-OOM band is met deterministically;
+//! this driver is intentionally NOT gated on MITC3+ tight accuracy (task 3392),
+//! matching the `shell_benchmarks.rs` "smoke tests, NOT validated benchmarks"
+//! convention.
 
 use crate::assembly::{AssemblyElement, AssemblyMode, ElementStiffness, assemble_global_stiffness};
 use crate::boundary::{DirichletBc, apply_dirichlet_row_elimination};
