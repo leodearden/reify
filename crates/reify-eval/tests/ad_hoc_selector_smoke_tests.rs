@@ -1128,6 +1128,10 @@ fn try_eval_ad_hoc_selector_point_returns_none() {
 /// RED on current main (after step-2): `try_eval_ad_hoc_selector` still takes
 /// `&HashMap<String, GeometryHandleId>` → E0308 type mismatch on `&named_steps`.
 /// GREEN after step-4: signature changed + leaf projection updated.
+///
+/// NOTE: Pins the leaf-projection contract only (`.kernel` unused in the current
+/// single-kernel-per-build design). When cross-kernel handle resolution lands,
+/// update to assert per-kernel dispatch rather than treating `.kernel` as ignored.
 #[test]
 fn try_eval_ad_hoc_selector_resolves_base_via_kernel_handle_id() {
     // Map "body" to a KernelHandle with deliberately non-default kernel.

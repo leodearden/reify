@@ -7966,6 +7966,10 @@ mod tests {
     /// `&HashMap<String, GeometryHandleId>`, so passing a
     /// `HashMap<String, KernelHandle>` causes a compile-time type mismatch.
     /// GREEN after step-2: signature changed + leaf projection updated.
+    ///
+    /// NOTE: Pins the leaf-projection contract only (`.kernel` unused in the current
+    /// single-kernel-per-build design). When cross-kernel handle resolution lands,
+    /// update to assert per-kernel dispatch rather than treating `.kernel` as ignored.
     #[test]
     fn compile_geometry_op_sub_ref_resolves_via_kernel_handle_id_ignoring_kernel_field() {
         use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef};
@@ -8441,6 +8445,10 @@ mod tests {
     ///
     /// RED on current main: `try_eval_conformance_query` still takes
     /// `&HashMap<String, GeometryHandleId>` → E0308 type mismatch.
+    ///
+    /// NOTE: Pins the leaf-projection contract only (`.kernel` unused in the current
+    /// single-kernel-per-build design). When cross-kernel handle resolution lands,
+    /// update to assert per-kernel dispatch rather than treating `.kernel` as ignored.
     #[test]
     fn try_eval_conformance_query_resolves_via_kernel_handle_id() {
         use reify_test_support::mocks::MockGeometryKernel;
@@ -8488,6 +8496,10 @@ mod tests {
     ///
     /// RED on current main: `try_eval_kinematic_query` still takes
     /// `&HashMap<String, GeometryHandleId>` → E0308 type mismatch.
+    ///
+    /// NOTE: Pins the leaf-projection contract only (`.kernel` unused in the current
+    /// single-kernel-per-build design). When cross-kernel handle resolution lands,
+    /// update to assert per-kernel dispatch rather than treating `.kernel` as ignored.
     #[test]
     fn try_eval_kinematic_query_resolves_via_kernel_handle_id() {
         use reify_test_support::mocks::MockGeometryKernel;
@@ -8605,6 +8617,10 @@ mod tests {
     ///
     /// RED on current main: `try_eval_topology_selector` still takes
     /// `&HashMap<String, GeometryHandleId>` → E0308 type mismatch.
+    ///
+    /// NOTE: Pins the leaf-projection contract only (`.kernel` unused in the current
+    /// single-kernel-per-build design). When cross-kernel handle resolution lands,
+    /// update to assert per-kernel dispatch rather than treating `.kernel` as ignored.
     #[test]
     fn try_eval_topology_selector_resolves_via_kernel_handle_id() {
         use reify_test_support::mocks::MockGeometryKernel;
