@@ -42,16 +42,6 @@
 //! the T1a ([`crate::form_find`]) and T1b ([`crate::form_find_free`]) kernels
 //! before it. See `plan.json` design_decisions for the scoping rationale.
 
-// TDD scaffolding (Task 3796): this kernel is built bottom-up — helper fns
-// (`assemble_equilibrium_matrix`, `count_self_stress_states`, …) land several
-// steps before step-14 wires them into the public `analyze_prestress_stability`.
-// Until then they are reachable only from `#[cfg(test)]` unit tests, so the
-// non-test lib build (clippy `--all-targets -D warnings`) would flag every one
-// as dead. This blanket allow keeps each intermediate commit clippy-clean; it is
-// REMOVED in step-16, after the public entry point makes every helper live, so
-// the final state still gets full dead-code coverage.
-#![allow(dead_code)]
-
 use faer::{Mat, Side};
 
 /// Relative tolerance for spectral rank / nullity classification: an eigenvalue
