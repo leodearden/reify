@@ -98,7 +98,6 @@ pub struct ClosedChainSolution {
 /// # Errors
 /// - [`ClosedChainError::DimensionMismatch`] if any slice length is inconsistent.
 /// - [`ClosedChainError::Singular`] if the KKT matrix is numerically singular.
-#[allow(dead_code)] // G-allow: consumer (closed-chain inverse-dynamics routing) descoped from RBD-η to task 4146 (Value→closed_chain bridge + closed_4bar_idyn.ri e2e); orphan resolves when 4146 lands
 pub fn solve_closed_chain(
     m_matrix: &[f64],
     tau_open: &[f64],

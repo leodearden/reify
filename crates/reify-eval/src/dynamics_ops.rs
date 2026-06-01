@@ -1214,11 +1214,14 @@ fn value_size_estimate(v: &Value) -> usize {
     }
 }
 
-/// The malformed / closed-chain short-circuit outcome: η's `Value::Undef`
-/// convention surfaced as a `Completed` with no donated warm state — keeping the
+/// The malformed-input short-circuit outcome: η's `Value::Undef` convention
+/// surfaced as a `Completed` with no donated warm state — keeping the
 /// trampoline result bit-identical to the unregistered `inverse_dynamics_lower`
 /// body-inline fallback, and donating no warm state for an input that produced no
-/// real computation (design_decision #6).
+/// real computation (design_decision #6). (Closed-chain mechanisms no longer
+/// short-circuit here: since task 4146 the shared per-sample seam routes them
+/// through the closed-chain KKT bridge; `None` from the seam now means a
+/// malformed input or a failed loop solve / singular KKT.)
 fn undef_outcome() -> ComputeOutcome {
     ComputeOutcome::Completed {
         result: Value::Undef,
@@ -1272,11 +1275,13 @@ fn completed_donating(cache: InverseDynamicsCache) -> ComputeOutcome {
 ///
 /// Drives the per-sample loop through the reify-stdlib seam
 /// ([`motion_trajectory_samples`] + [`inverse_dynamics_sample`]) so the result is
-/// bit-identical to the body-inline `inverse_dynamics_lower` fallback. A malformed
-/// trajectory, or a sample the seam rejects (a closed-chain mechanism, an
-/// arity/shape mismatch), yields [`undef_outcome`] — η's exact Undef convention —
-/// donating no warm state. Gravity is the constant [`default_gravity`] (PRD §12
-/// q1), folded into the cache key.
+/// bit-identical to the body-inline `inverse_dynamics_lower` fallback — including
+/// closed-chain mechanisms, which the seam routes through the closed-chain KKT
+/// bridge (task 4146). A malformed trajectory, or a sample the seam rejects (an
+/// arity/shape mismatch, a failed loop solve / singular KKT), yields
+/// [`undef_outcome`] — η's exact Undef convention — donating no warm state.
+/// Gravity is the constant [`default_gravity`] (PRD §12 q1), folded into the
+/// cache key.
 ///
 /// Honours cooperative cancellation (PRD §6/§9.1): polls `cancellation` on entry
 /// and at every per-sample boundary, returning [`ComputeOutcome::Cancelled`] (no
@@ -1338,8 +1343,9 @@ pub(crate) fn run_inverse_dynamics(
     // ── cache MISS ───────────────────────────────────────────────────────────────
     // Record the body-granular solid-hash invalidation record, then drive the
     // per-sample RNEA loop through the shared stdlib seam so the result is
-    // single-sourced with the body-inline fallback. Any `None` (malformed
-    // trajectory, closed-chain mechanism, or shape mismatch) collapses to η's Undef.
+    // single-sourced with the body-inline fallback (closed-chain mechanisms route
+    // through the seam's KKT bridge, task 4146). Any `None` (malformed trajectory,
+    // shape mismatch, or failed loop solve) collapses to η's Undef.
     //
     // NOTE (speculative-generality, kept per design_decision #4): `body_solid_hashes`
     // is RECORDED but not yet CONSUMED by any HIT/MISS decision — that verdict is

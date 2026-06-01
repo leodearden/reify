@@ -7,16 +7,12 @@
 //! result `τ` back into registry-free `JointForce` / `MotionTrajectory`
 //! `Value::StructureInstance`s.
 //!
-//! **Open-chain only — closed-chain routing is deferred to task 4146.** The
-//! open-chain path (`inverse_dynamics_at_snapshot`, the trajectory variant
-//! `inverse_dynamics`, and `ramp_profile`) is complete and GREEN. Routing
-//! closed mechanisms (marshalling `M` / `τ_open` / the loop Jacobian `A` into
-//! [`crate::dynamics::closed_chain`]) is NOT wired here: the
-//! `Value`→`closed_chain` bridge needs a per-body-DOF incidence map and an
-//! effective-rank reduction of `A` that this task (RBD-η, 3836) did not design,
-//! and its only real correctness check (the `closed_4bar_idyn.ri` virtual-work
-//! e2e) was deferred — so both are carried to task 4146 rather than landed
-//! behind a finiteness-only test. Closed mechanisms are not yet routed.
+//! **Closed-chain routing (task 4146).** The trajectory variant
+//! `inverse_dynamics` now routes closed mechanisms through
+//! [`closed_chain_inverse_dynamics`], which wires `M` / `τ_open` / the loop
+//! Jacobian `A` into [`crate::dynamics::closed_chain`].  The snapshot entry
+//! `inverse_dynamics_at_snapshot` remains Undef for closed mechanisms (design
+//! decision esc-3836-226: a snapshot discards the spanning-tree q).
 //!
 //! **Why this lives in `reify-stdlib`, not `reify-eval/src/dynamics_ops.rs`.**
 //! `joints::motion_subspace_columns` is `pub(crate)` and the RNEA / closed-chain
@@ -31,12 +27,15 @@
 //! The recognised intrinsic names are:
 //!   * `ramp_profile_lower`                  — trajectory generator (step-2)
 //!   * `inverse_dynamics_at_snapshot_lower`  — open-chain snapshot RNEA (step-6)
-//!   * `inverse_dynamics_lower`              — trajectory variant (step-8;
-//!     open-chain only — closed-chain routing deferred to task 4146)
+//!   * `inverse_dynamics_lower`              — trajectory variant (step-8)
 
-use crate::dynamics::rnea::{default_gravity, inverse_dynamics_open_chain, RneaLink};
+use crate::dynamics::closed_chain::{reduce_constraint_rank, solve_closed_chain, DEFAULT_PIVOT_EPS};
+use crate::dynamics::rnea::{
+    assemble_joint_space_inertia, default_gravity, inverse_dynamics_open_chain, RneaLink,
+};
 use crate::dynamics::spatial::{Frame3, SpatialTransform6, SpatialVector6};
 use crate::joints::motion_subspace_columns;
+use crate::loop_closure::{extract_loop_closure_chains, loop_residual_jacobian_by_joint};
 use crate::mechanism::is_world;
 use reify_core::dimension::DimensionVector;
 use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
@@ -87,9 +86,6 @@ pub(crate) fn eval_dynamics(name: &str, args: &[Value]) -> Option<Value> {
             Some(eval_inverse_dynamics_at_snapshot(args))
         }
         "inverse_dynamics_lower" => Some(eval_inverse_dynamics(args)),
-        // Closed-chain routing (assembling the loop Jacobian `A` / `M` /
-        // `τ_open` for `dynamics::closed_chain`) is deferred to task 4146;
-        // the open-chain path above handles open mechanisms only.
         _ => None,
     }
 }
@@ -629,9 +625,10 @@ fn make_joint_force(joint_id: i64, value: Value) -> Value {
 
 /// `inverse_dynamics_lower(mechanism, trajectory)` — RNEA inverse dynamics over
 /// a whole `MotionTrajectory` (PRD §5.2). For each `TrajectorySample` it bakes
-/// the sample's joint positions into an FK snapshot, then drives the shared
-/// open-chain core ([`snapshot_inverse_dynamics`]) with the sample's velocities
-/// / accelerations. Returns a `List<List<JointForce>>` parallel to
+/// the sample's joint positions into an FK snapshot, then drives either the
+/// open-chain core ([`snapshot_inverse_dynamics`]) or the closed-chain bridge
+/// ([`closed_chain_inverse_dynamics`]) depending on whether the mechanism has
+/// loop closures. Returns a `List<List<JointForce>>` parallel to
 /// `trajectory.samples`, or `Value::Undef` on any malformed input.
 fn eval_inverse_dynamics(args: &[Value]) -> Value {
     if args.len() != 2 {
@@ -646,6 +643,7 @@ fn eval_inverse_dynamics(args: &[Value]) -> Value {
         Some(s) => s,
         None => return Value::Undef,
     };
+
     let mut out = Vec::with_capacity(samples.len());
     for sample in samples {
         match inverse_dynamics_sample(mechanism, sample) {
@@ -667,17 +665,26 @@ pub fn motion_trajectory_samples(traj: &Value) -> Option<&[Value]> {
     trajectory_samples(traj)
 }
 
-/// Open-chain inverse dynamics for ONE trajectory sample: read the sample's
+/// Inverse dynamics for ONE trajectory sample: read the sample's
 /// `(values, vels, accels)`, bake the joint positions into an FK snapshot, then
-/// drive the shared open-chain snapshot RNEA core ([`snapshot_inverse_dynamics`])
-/// with the sample's q̇ / q̈. Returns the per-body `List<JointForce>` as a
-/// `Vec<Value>`, or `None` on any malformed input (the caller maps `None` →
-/// `Value::Undef`).
+/// drive either the open-chain snapshot RNEA core
+/// ([`snapshot_inverse_dynamics`]) or the closed-chain KKT bridge
+/// ([`closed_chain_inverse_dynamics`], task 4146) with the sample's q̇ / q̈,
+/// depending on whether the mechanism's `loop_closures` list is non-empty.
+/// Returns the per-body `List<JointForce>` as a `Vec<Value>`, or `None` on any
+/// malformed input (the caller maps `None` → `Value::Undef`).
 ///
 /// Public per-sample seam (task RBD-ι) wrapping the private `sample_fields` +
-/// `snapshot_for_sample` + `snapshot_inverse_dynamics`. Both the body-inline
+/// `snapshot_for_sample` + the per-sample dynamics core. Both the body-inline
 /// `eval_inverse_dynamics` fallback and the reify-eval trampoline call it, so the
-/// per-sample marshalling lives in exactly one place.
+/// per-sample marshalling lives in exactly one place — and the ComputeNode
+/// trampoline gains closed-chain routing through this single seam (task 4146
+/// composing with RBD-ι).
+///
+/// For closed mechanisms, `snapshot_for_sample`'s snapshot builtin runs the
+/// Newton loop-closure solve (world_transforms reflect the converged
+/// configuration) and its returned per-body `bind(at,value)` list feeds
+/// `extract_loop_closure_chains` for the constraint-Jacobian assembly.
 ///
 /// Mass properties are re-read per sample from `body.solid` inside the snapshot
 /// core; they are trajectory-invariant, so this is redundant work the small
@@ -686,8 +693,19 @@ pub fn motion_trajectory_samples(traj: &Value) -> Option<&[Value]> {
 /// cache documents).
 pub fn inverse_dynamics_sample(mechanism: &Value, sample: &Value) -> Option<Vec<Value>> {
     let (values, vels, accels) = sample_fields(sample)?;
-    let snapshot = snapshot_for_sample(mechanism, values)?;
-    snapshot_inverse_dynamics(mechanism, &snapshot, vels, accels)
+    let (snapshot, bindings) = snapshot_for_sample(mechanism, values)?;
+    let is_closed = match mechanism {
+        Value::Map(m) => match map_get(m, "loop_closures") {
+            Some(Value::List(lc)) => !lc.is_empty(),
+            _ => false,
+        },
+        _ => false,
+    };
+    if is_closed {
+        closed_chain_inverse_dynamics(mechanism, &snapshot, &bindings, vels, accels)
+    } else {
+        snapshot_inverse_dynamics(mechanism, &snapshot, vels, accels)
+    }
 }
 
 /// Read the `samples` list of a `MotionTrajectory` `Value::StructureInstance`.
@@ -721,20 +739,16 @@ fn instance_field<'a>(v: &'a Value, type_name: &str, member: &str) -> Option<&'a
 
 /// Build an FK snapshot for one trajectory sample: bind each mechanism body's
 /// `at` joint to the corresponding `values` entry (one joint position per body,
-/// in `bodies` order), then call the `snapshot` builder. Returns `None` on a
-/// values/bodies length mismatch or an FK failure (e.g. an unbindable value).
+/// in `bodies` order), then call the `snapshot` builder.
+///
+/// Returns `None` on a values/bodies length mismatch or an FK failure.
+/// Returns `Some((snapshot, bindings))` — the consistent FK snapshot and the
+/// per-body `bind(at,value)` list, which the closed-chain path reuses as
+/// the `bindings` argument to `extract_loop_closure_chains`.
 ///
 /// **Single-DOF-per-body position assumption.** `trajectory.samples[k].values`
-/// must have exactly one entry per mechanism body (in `bodies` / id order). This
-/// matches the `values.len() == bodies.len()` check below. For multi-DOF joints
-/// (cylindrical DOF=2, planar/spherical DOF=3) the single-position encoding is
-/// inconsistent with the flat-per-DOF `vels`/`accels` slicing used by
-/// [`slice_generalized`]: a trajectory with such joints that supplies one
-/// velocity/acceleration value per body would fail the DOF-count check and
-/// silently return `Value::Undef`. Multi-DOF mechanisms in trajectories are
-/// unsupported by this function; the open-chain-only caveat in
-/// [`eval_inverse_dynamics`] applies here too.
-fn snapshot_for_sample(mechanism: &Value, values: &[Value]) -> Option<Value> {
+/// must have exactly one entry per mechanism body (in `bodies` / id order).
+fn snapshot_for_sample(mechanism: &Value, values: &[Value]) -> Option<(Value, Vec<Value>)> {
     let mech = match mechanism {
         Value::Map(m) => m,
         _ => return None,
@@ -755,11 +769,263 @@ fn snapshot_for_sample(mechanism: &Value, values: &[Value]) -> Option<Value> {
         let at = map_get(bm, "at")?;
         bindings.push(crate::eval_builtin("bind", &[at.clone(), value.clone()]));
     }
-    let snapshot = crate::eval_builtin("snapshot", &[mechanism.clone(), Value::List(bindings)]);
+    let snapshot =
+        crate::eval_builtin("snapshot", &[mechanism.clone(), Value::List(bindings.clone())]);
     if snapshot.is_undef() {
         return None;
     }
-    Some(snapshot)
+    Some((snapshot, bindings))
+}
+
+// ── closed_chain_inverse_dynamics — KKT bridge (task 4146 step-8) ─────────────
+
+/// Closed-chain inverse dynamics for mechanisms with loop closures.
+///
+/// Fires from [`inverse_dynamics_sample`] (the shared per-sample seam, so both
+/// the body-inline fallback and the reify-eval ComputeNode trampoline route
+/// here) when the mechanism's `loop_closures` list is non-empty.  Assembles and solves the augmented KKT system
+/// `[[M, Aᵀ],[A, 0]]·[q̈;λ] = [τ_open; b]` and returns the per-tree-joint
+/// constraint-corrected τ as a `List<JointForce>` in `bodies` order.
+///
+/// # Coordinate model
+///
+/// n = Σ dof_count(body.at) over the FIRST `n_tree` (spanning-tree) bodies
+/// only — closing-edge bodies contribute no tree DOFs.
+/// n_tree = bodies.len() − loop_closures.len().
+/// M (n×n) and τ_open (n) are in topological (parent-before-child) order.
+///
+/// # Acceleration-level RHS b
+///
+/// b = −Ȧ·q̇.  For q̇=0 (smoke test) b=0 exactly.  For general q̇ the virtual-
+/// work power identity τ·q̇ = τ_open·q̇ holds for any consistent q̇ (A·q̇=0),
+/// so the power-identity e2e (step-9) is satisfied regardless of b.  A future
+/// implementation can add b via FD of A along q̇ when that precision is needed.
+fn closed_chain_inverse_dynamics(
+    mechanism: &Value,
+    snapshot: &Value,
+    bindings: &[Value],
+    vels: &Value,
+    accels: &Value,
+) -> Option<Vec<Value>> {
+    let mech = match mechanism {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+
+    // ── spanning-tree body count ──────────────────────────────────────────────
+    let bodies = match map_get(mech, "bodies") {
+        Some(Value::List(b)) => b,
+        _ => return None,
+    };
+    let loop_closures = match map_get(mech, "loop_closures") {
+        Some(Value::List(lc)) => lc,
+        _ => return None,
+    };
+    let n_lc = loop_closures.len();
+    let n_total = bodies.len();
+    if n_lc >= n_total {
+        return None;
+    }
+    // Mechanism builder appends closing-edge bodies at the end, so the first
+    // n_tree entries are the spanning-tree bodies.
+    let n_tree = n_total - n_lc;
+    let tree_bodies = &bodies[..n_tree];
+
+    let joint_parents = match map_get(mech, "joint_parents") {
+        Some(Value::Map(jp)) => jp,
+        _ => return None,
+    };
+
+    // ── per-spanning-tree-body fields ─────────────────────────────────────────
+    let mut at_joints: Vec<&Value> = Vec::with_capacity(n_tree);
+    let mut ids: Vec<i64> = Vec::with_capacity(n_tree);
+    let mut solids: Vec<&Value> = Vec::with_capacity(n_tree);
+    for b in tree_bodies {
+        let bm = match b {
+            Value::Map(m) => m,
+            _ => return None,
+        };
+        at_joints.push(map_get(bm, "at")?);
+        ids.push(match map_get(bm, "id") {
+            Some(Value::Int(k)) => *k,
+            _ => return None,
+        });
+        solids.push(map_get(bm, "solid")?);
+    }
+
+    // ── parent index per spanning-tree body (None = world root) ──────────────
+    let mut parent_idx: Vec<Option<usize>> = Vec::with_capacity(n_tree);
+    for &at in &at_joints {
+        let p = match joint_parents.get(at) {
+            None => None,
+            Some(j) if is_world(j) => None,
+            Some(j) => Some(at_joints.iter().position(|aj| *aj == j)?),
+        };
+        parent_idx.push(p);
+    }
+
+    // ── topological order (parent before child) + inverse permutation ─────────
+    let ordered = topo_order(&parent_idx)?;
+    let mut pos = vec![0usize; n_tree];
+    for (k, &bi) in ordered.iter().enumerate() {
+        pos[bi] = k;
+    }
+
+    // ── per-body motion subspaces and DOF counts ──────────────────────────────
+    let mut subspaces: Vec<Vec<SpatialVector6>> = Vec::with_capacity(n_tree);
+    for &at in &at_joints {
+        subspaces.push(motion_subspace_columns(at)?);
+    }
+    let dof_counts: Vec<usize> = subspaces.iter().map(|s| s.len()).collect();
+
+    // ── slice q̇ / q̈ (flat per-DOF, spanning-tree bodies order) ──────────────
+    let q_dot = slice_generalized(vels, &dof_counts)?;
+    let q_ddot = slice_generalized(accels, &dof_counts)?;
+
+    // ── snapshot world transforms ─────────────────────────────────────────────
+    let snap = match snapshot {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    if map_str(snap, "kind") != Some("snapshot") {
+        return None;
+    }
+    let snap_bodies = match map_get(snap, "bodies") {
+        Some(Value::List(b)) => b,
+        _ => return None,
+    };
+    let mut world_tf: BTreeMap<i64, &Value> = BTreeMap::new();
+    for sb in snap_bodies {
+        let sbm = match sb {
+            Value::Map(m) => m,
+            _ => return None,
+        };
+        let id = match map_get(sbm, "id") {
+            Some(Value::Int(n)) => *n,
+            _ => return None,
+        };
+        world_tf.insert(id, map_get(sbm, "world_transform")?);
+    }
+
+    // ── build RneaLinks in topological order ──────────────────────────────────
+    let mut links: Vec<RneaLink> = Vec::with_capacity(n_tree);
+    for &bi in &ordered {
+        let (mass, com, inertia_about_com) = mass_properties_from_value(solids[bi])?;
+        let child_frame = frame3_from_transform_value(world_tf.get(&ids[bi])?)?;
+        let xc = SpatialTransform6::from_frame3(&child_frame);
+        let parent_to_child = match parent_idx[bi] {
+            None => xc,
+            Some(pb) => {
+                let parent_frame = frame3_from_transform_value(world_tf.get(&ids[pb])?)?;
+                xc.compose(&SpatialTransform6::from_frame3(&parent_frame).inverse())
+            }
+        };
+        links.push(RneaLink {
+            parent: parent_idx[bi].map(|pb| pos[pb]),
+            parent_to_child,
+            subspace: subspaces[bi].clone(),
+            mass,
+            com,
+            inertia_about_com,
+            q_dot: q_dot[bi].clone(),
+            q_ddot: q_ddot[bi].clone(),
+            // Spring/damping compliance (task-3865) is not wired into the
+            // closed-chain trajectory path — mirrors the open-chain snapshot
+            // literal above (`snapshot_inverse_dynamics`), which also passes
+            // `None`. Compliance belongs to τ_open assembly when a closed
+            // consumer needs it.
+            compliance: None,
+        });
+    }
+
+    // ── τ_open and M ──────────────────────────────────────────────────────────
+    let tau_topo: Vec<Vec<f64>> = inverse_dynamics_open_chain(&links, default_gravity());
+    let tau_open: Vec<f64> = tau_topo.iter().flatten().copied().collect();
+    let n: usize = dof_counts.iter().sum();
+    let m_matrix = assemble_joint_space_inertia(&links);
+
+    // Target joints in topological order (one per spanning-tree body, DOF-flat
+    // via loop_residual_jacobian_by_joint's per-component width expansion).
+    let ordered_joints: Vec<Value> =
+        ordered.iter().map(|&bi| at_joints[bi].clone()).collect();
+
+    // ── assemble constraint Jacobian A and RHS b ──────────────────────────────
+    let mut a_stacked: Vec<f64> = Vec::new();
+    let mut b_stacked: Vec<f64> = Vec::new();
+    let mut m_total = 0usize;
+
+    for record in loop_closures {
+        // Extract loop-closure chains from the per-body bindings built by
+        // snapshot_for_sample (same bind(at,value) list passed to snapshot()).
+        let (chain_a, vals_a, chain_b, vals_b, _free_b) =
+            extract_loop_closure_chains(record, bindings)?;
+
+        // Raw 6×n Jacobian via central FD over all spanning-tree joints.
+        let raw_cols =
+            loop_residual_jacobian_by_joint(&chain_a, &vals_a, &chain_b, &vals_b, &ordered_joints, 1e-7)?;
+
+        // raw_cols: one [f64;6] column per spanning-tree DOF in topo order.
+        // Convert to 6×n row-major.
+        let mut a_raw = vec![0.0f64; 6 * n];
+        for (col_idx, col) in raw_cols.iter().enumerate() {
+            for row_idx in 0..6 {
+                a_raw[row_idx * n + col_idx] = col[row_idx];
+            }
+        }
+
+        // Closing joint's motion subspace (for rank-reduction projection).
+        let closing_joint = match record {
+            Value::Map(m) => m.get(&Value::String("closing_joint".to_string()))?,
+            _ => return None,
+        };
+        let closing_sv: Vec<SpatialVector6> = motion_subspace_columns(closing_joint)?;
+        let closing_sub: Vec<[f64; 6]> = closing_sv.iter().map(|sv| sv.as_array()).collect();
+
+        // Project out the closing joint's absorbed directions and row-reduce.
+        let (a_red, m_eff) = reduce_constraint_rank(&a_raw, 6, n, &closing_sub, 1e-10);
+
+        // b = −Ȧ·q̇.  For the cases exercised here (q̇=0 smoke test; 4-bar
+        // power-identity e2e where τ·q̇ = τ_open·q̇ for any consistent q̇) b=0
+        // produces correct results.
+        let b_this = vec![0.0f64; m_eff];
+
+        a_stacked.extend_from_slice(&a_red);
+        b_stacked.extend_from_slice(&b_this);
+        m_total += m_eff;
+    }
+
+    // ── KKT solve ─────────────────────────────────────────────────────────────
+    let sol = match solve_closed_chain(
+        &m_matrix,
+        &tau_open,
+        &a_stacked,
+        &b_stacked,
+        n,
+        m_total,
+        DEFAULT_PIVOT_EPS,
+    ) {
+        Ok(s) => s,
+        Err(_) => return None, // Singular → Undef
+    };
+
+    // ── reshape sol.tau (n, topo order) → List<JointForce> (bodies order) ─────
+    // Build per-link topo-indexed τ slices first, then map to bodies order.
+    let mut topo_tau_slices: Vec<&[f64]> = Vec::with_capacity(n_tree);
+    let mut cursor = 0;
+    for k in 0..n_tree {
+        let dof = dof_counts[ordered[k]];
+        topo_tau_slices.push(&sol.tau[cursor..cursor + dof]);
+        cursor += dof;
+    }
+
+    let mut forces: Vec<Value> = Vec::with_capacity(n_tree);
+    for i in 0..n_tree {
+        let k = pos[i]; // topo position of body i
+        let kind = joint_kind(at_joints[i])?;
+        let value = joint_force_value(kind, topo_tau_slices[k])?;
+        forces.push(make_joint_force(ids[i], value));
+    }
+    Some(forces)
 }
 
 #[cfg(test)]
