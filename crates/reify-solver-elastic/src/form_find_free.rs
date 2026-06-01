@@ -481,7 +481,17 @@ struct SpectrumClassification {
 /// density `qᵢ`, add `qᵢ` to `D[j,j]` and `D[k,k]` and `−qᵢ` to `D[j,k]` and
 /// `D[k,j]`. Unlike the anchored case there is no free/anchor partition — the
 /// full `D` is what the eigenvalue / null-space form-finding operates on.
-fn assemble_force_density_matrix(n: usize, members: &[(usize, usize)], q: &[f64]) -> Mat<f64> {
+///
+/// `pub(crate)` so the layer-3 prestress-stability kernel
+/// ([`crate::prestress_stability`], Task 3796) can reuse this exact assembly:
+/// the geometric/stress stiffness `K_G = D ⊗ I₃` and the super-stability
+/// `D`-spectrum test both build on the same `D = CᵀQC` (PRD
+/// `docs/prds/v0_6/tensegrity-structures.md` §5 "shares layer 2's core").
+pub(crate) fn assemble_force_density_matrix(
+    n: usize,
+    members: &[(usize, usize)],
+    q: &[f64],
+) -> Mat<f64> {
     let mut d = Mat::<f64>::zeros(n, n);
     for (&(j, k), &qi) in members.iter().zip(q.iter()) {
         d[(j, j)] += qi;
