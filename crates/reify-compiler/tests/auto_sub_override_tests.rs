@@ -254,6 +254,95 @@ fn sub_override_auto_free_forward_declared_child_emits_scoped_cell() {
     );
 }
 
+// ── Duplicate-override dedup tests (task 4123 S6, step 7 RED → step 8 GREEN) ──
+//
+// A specialization body may (erroneously) contain two param_assignment nodes
+// for the same member, e.g. `{ bore = auto\n    bore = auto }` — the grammar
+// uses `repeat(choice(param_assignment, _member))` with no separator so nothing
+// prevents it syntactically.  The parser lowers both into spec_param_overrides,
+// producing two entries with the same name.  Without a dedup guard, both push
+// sites (entity.rs inline Case 3 AND entities_phase.rs phase_sub_override_autos)
+// emit two duplicate scoped ValueCellDecls.  The guard added in step 8 makes
+// first-assignment-wins and ensures exactly one cell is emitted.
+
+/// (S6-child-before-parent) Duplicate `bore = auto` entries — child declared
+/// BEFORE parent, so the inline Case 3 path in `entity.rs` runs.
+///
+/// RED (step 7): `entity.rs` pushes two ValueCellDecls for `A.b.bore` (count == 2).
+/// GREEN (step 8): id-uniqueness guard in inline Case 3 skips the second push.
+#[test]
+fn sub_override_auto_duplicate_inline_path_emits_exactly_one_cell() {
+    // Child (Bearing) before parent (A) → compiler sees Bearing first, so
+    // when A is compiled the child template is already present → inline Case 3.
+    let source =
+        "structure Bearing { param bore : Length = 10mm }  \
+         structure A { sub b : Bearing {\n    bore = auto\n    bore = auto\n} }";
+    let module = compile_source_with_stdlib(source);
+
+    assert!(
+        errors_only(&module).is_empty(),
+        "duplicate override (inline path): unexpected errors: {:?}",
+        errors_only(&module)
+    );
+
+    let template = find_template(&module.templates, "A")
+        .expect("expected a compiled template for structure A");
+
+    let target_id = ValueCellId::new("A.b", "bore");
+    let count = template
+        .value_cells
+        .iter()
+        .filter(|c| c.id == target_id)
+        .count();
+
+    assert_eq!(
+        count, 1,
+        "duplicate override (inline path): expected exactly 1 cell for {:?}, got {count}; \
+         cells: {:?}",
+        target_id,
+        template.value_cells.iter().map(|c| &c.id).collect::<Vec<_>>()
+    );
+}
+
+/// (S6-parent-before-child) Duplicate `bore = auto` entries — parent declared
+/// BEFORE child, so the deferred post-pass `phase_sub_override_autos` runs.
+///
+/// RED (step 7): `entities_phase.rs` pushes two ValueCellDecls for `A.b.bore`.
+/// GREEN (step 8): id-uniqueness guard in the post-pass skips the second push.
+#[test]
+fn sub_override_auto_duplicate_deferred_path_emits_exactly_one_cell() {
+    // Parent (A) before child (Bearing) → compiler processes A first, child is
+    // forward-declared → post-pass `phase_sub_override_autos` path.
+    let source =
+        "structure A { sub b : Bearing {\n    bore = auto\n    bore = auto\n} }  \
+         structure Bearing { param bore : Length = 10mm }";
+    let module = compile_source_with_stdlib(source);
+
+    assert!(
+        errors_only(&module).is_empty(),
+        "duplicate override (deferred path): unexpected errors: {:?}",
+        errors_only(&module)
+    );
+
+    let template = find_template(&module.templates, "A")
+        .expect("expected a compiled template for structure A");
+
+    let target_id = ValueCellId::new("A.b", "bore");
+    let count = template
+        .value_cells
+        .iter()
+        .filter(|c| c.id == target_id)
+        .count();
+
+    assert_eq!(
+        count, 1,
+        "duplicate override (deferred path): expected exactly 1 cell for {:?}, got {count}; \
+         cells: {:?}",
+        target_id,
+        template.value_cells.iter().map(|c| &c.id).collect::<Vec<_>>()
+    );
+}
+
 /// (B) Regression guard: parent before child, GENUINELY absent member `nope`.
 ///
 /// When the post-pass resolves the deferred entry and the member is truly
