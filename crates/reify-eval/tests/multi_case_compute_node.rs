@@ -1,3 +1,4 @@
+#![allow(clippy::mutable_key_type)]
 //! Integration tests for task 4088: `solve_load_cases` @optimized →
 //! `"solver::multi_case"` ComputeNode lowering + compute-result-reuse
 //! verification.
