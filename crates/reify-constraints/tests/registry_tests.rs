@@ -889,3 +889,129 @@ fn lexicographic_stages_by_descending_priority() {
         other => panic!("expected Solved, got {:?}", other),
     }
 }
+
+/// After the first stage's Solved, two ε-band constraints (Le + Ge) are threaded into
+/// the next stage's constraint list; the first stage's constraint list is unchanged.
+///
+/// Asserts:
+///   - Stage 1 has exactly the base constraint count (no bands yet).
+///   - Stage 2 has base_count + 2 constraints (the ε-band Le and Ge inequalities).
+///   - Both extra constraints are BinOp::Le / BinOp::Ge and carry entity "__lex_freeze__".
+///
+/// RED after step-2 (no band constraints are added yet).
+#[test]
+fn lexicographic_freezes_earlier_rank_as_epsilon_band() {
+    let x_id = vcid("LexBand", "x");
+    let y_id = vcid("LexBand", "y");
+
+    let c1 = le(value_ref("LexBand", "x"), literal(mm(5.0)));
+    let c2 = le(value_ref("LexBand", "y"), literal(mm(8.0)));
+
+    let objective = ObjectiveSet {
+        combination: ObjectiveCombination::Lexicographic,
+        terms: vec![
+            ObjectiveTerm {
+                sense: ObjectiveSense::Maximize,
+                expr: value_ref("LexBand", "x"),
+                weight: 1.0,
+                priority: 1,
+            },
+            ObjectiveTerm {
+                sense: ObjectiveSense::Maximize,
+                expr: value_ref("LexBand", "y"),
+                weight: 1.0,
+                priority: 0,
+            },
+        ],
+    };
+
+    // Stage 1 returns x at a concrete value so obj* for rank-1 is computable.
+    let mut vals1 = std::collections::HashMap::new();
+    vals1.insert(x_id.clone(), mm(5.0));
+    let mut vals2 = std::collections::HashMap::new();
+    vals2.insert(x_id.clone(), mm(5.0));
+    vals2.insert(y_id.clone(), mm(8.0));
+
+    let spy = MultiCallSpyConstraintSolver::new(vec![
+        SolveResult::Solved { values: vals1, unique: false },
+        SolveResult::Solved { values: vals2, unique: false },
+    ]);
+    let captured = spy.captured_problems();
+    let registry = SolverRegistry::new(Box::new(spy));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+                free: true,
+            },
+            AutoParam {
+                id: y_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+                free: true,
+            },
+        ],
+        constraints: vec![(cnid("LexBand", 0), c1), (cnid("LexBand", 1), c2)],
+        current_values: ValueMap::new(),
+        objective: Some(objective),
+        functions: vec![].into(),
+    };
+
+    let _result = registry.solve(&problem);
+
+    let captured_guard = captured.lock().unwrap();
+    assert_eq!(captured_guard.len(), 2, "solver must be called twice");
+
+    let base_count = 2usize; // c1 and c2
+
+    // Stage 1: no band constraints yet — only the original constraints.
+    assert_eq!(
+        captured_guard[0].constraints.len(),
+        base_count,
+        "stage 1 must receive exactly the original constraints (no band), got {}",
+        captured_guard[0].constraints.len()
+    );
+
+    // Stage 2: two ε-band constraints appended by the prior rank's freeze.
+    assert_eq!(
+        captured_guard[1].constraints.len(),
+        base_count + 2,
+        "stage 2 must receive original constraints + 2 band inequalities, got {}",
+        captured_guard[1].constraints.len()
+    );
+
+    // Inspect the two extra band constraints.
+    let band = &captured_guard[1].constraints[base_count..];
+
+    // All must be BinOp Le or Ge and carry the synthetic entity "__lex_freeze__".
+    for (cid, expr) in band {
+        assert_eq!(
+            cid.entity, "__lex_freeze__",
+            "band ConstraintNodeId must have entity \"__lex_freeze__\", got {:?}",
+            cid
+        );
+        match &expr.kind {
+            CompiledExprKind::BinOp { op, .. } => {
+                assert!(
+                    *op == BinOp::Le || *op == BinOp::Ge,
+                    "band constraint must be Le or Ge comparison, got {:?}",
+                    op
+                );
+            }
+            other => panic!("band constraint expression must be a BinOp, got {:?}", other),
+        }
+    }
+
+    // Must include one Le (upper bound) and one Ge (lower bound).
+    let has_le = band.iter().any(|(_, e)| {
+        if let CompiledExprKind::BinOp { op, .. } = &e.kind { *op == BinOp::Le } else { false }
+    });
+    let has_ge = band.iter().any(|(_, e)| {
+        if let CompiledExprKind::BinOp { op, .. } = &e.kind { *op == BinOp::Ge } else { false }
+    });
+    assert!(has_le, "band must include a Le upper-bound constraint");
+    assert!(has_ge, "band must include a Ge lower-bound constraint");
+}
