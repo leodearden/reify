@@ -109,6 +109,109 @@ pub(crate) fn forces_to_forcing_history(
 mod tests {
     use super::*;
 
+    // ─── step-5: RED — superpose_modes ───────────────────────────────────────
+
+    /// Local analytic SDOF step-response oracle (matches transient.rs tests).
+    ///
+    /// ξ(t) = (p₀/ω²)·[1 − e^{−ζωt}·(cos(ωD·t) + (ζω/ωD)·sin(ωD·t))]
+    fn analytic_step_response(p0: f64, omega: f64, zeta: f64, t: f64) -> f64 {
+        let omega_d = omega * (1.0 - zeta * zeta).sqrt();
+        let decay = (-zeta * omega * t).exp();
+        (p0 / (omega * omega))
+            * (1.0 - decay * ((omega_d * t).cos() + (zeta * omega / omega_d) * (omega_d * t).sin()))
+    }
+
+    /// (a) SINGLE-MODE STEP: constant modal forcing p0, unit location coefficient
+    ///     → reconstructed displacement matches analytic SDOF step response within 1e-9.
+    #[test]
+    fn superpose_modes_single_mode_step_matches_analytic() {
+        let omega = 2.0 * std::f64::consts::PI * 5.0; // 5 Hz
+        let zeta = 0.05_f64;
+        let p0 = 1.0_f64;
+        let n = 200;
+        let t_end = 0.5_f64;
+        let dt = t_end / (n - 1) as f64;
+        let times: Vec<f64> = (0..n).map(|i| i as f64 * dt).collect();
+        // Constant step forcing.
+        let forcing_series: Vec<f64> = vec![p0; n];
+
+        // One mode, one location with unit coefficient.
+        let modes = vec![(omega, zeta, forcing_series.clone())];
+        let location_coeffs: Vec<Vec<f64>> = vec![vec![1.0]]; // 1 location × 1 mode
+
+        let result = superpose_modes(&times, &modes, &location_coeffs);
+
+        assert_eq!(result.len(), 1, "1 location");
+        assert_eq!(result[0].len(), n, "n time samples");
+        for (j, (&got, &t)) in result[0].iter().zip(times.iter()).enumerate() {
+            let want = analytic_step_response(p0, omega, zeta, t);
+            let diff = (got - want).abs();
+            assert!(
+                diff < 1e-9,
+                "t={t:.4} step {j}: got {got:.6e}, want {want:.6e}, diff {diff:.2e}"
+            );
+        }
+    }
+
+    /// (b) ZERO forcing from rest → all-zero displacement.
+    #[test]
+    fn superpose_modes_zero_forcing_zero_displacement() {
+        let omega = 2.0 * std::f64::consts::PI * 10.0;
+        let zeta = 0.02_f64;
+        let n = 50;
+        let times: Vec<f64> = (0..n).map(|i| i as f64 * 0.01).collect();
+        let forcing_series: Vec<f64> = vec![0.0; n];
+        let modes = vec![(omega, zeta, forcing_series)];
+        let location_coeffs: Vec<Vec<f64>> = vec![vec![1.0]];
+
+        let result = superpose_modes(&times, &modes, &location_coeffs);
+        assert_eq!(result.len(), 1);
+        for &v in &result[0] {
+            assert!(v.abs() < 1e-15, "expected zero, got {v:.2e}");
+        }
+    }
+
+    /// (c) Two modes superpose additively (sum of single-mode responses).
+    #[test]
+    fn superpose_modes_two_modes_additive() {
+        let omega1 = 2.0 * std::f64::consts::PI * 5.0;
+        let omega2 = 2.0 * std::f64::consts::PI * 15.0;
+        let zeta = 0.05_f64;
+        let p0 = 1.0_f64;
+        let n = 100;
+        let dt = 0.005_f64;
+        let times: Vec<f64> = (0..n).map(|i| i as f64 * dt).collect();
+        let f1: Vec<f64> = vec![p0; n];
+        let f2: Vec<f64> = vec![p0 * 2.0; n];
+
+        // Superpose both modes at unit location coefficient.
+        let modes = vec![
+            (omega1, zeta, f1.clone()),
+            (omega2, zeta, f2.clone()),
+        ];
+        let location_coeffs: Vec<Vec<f64>> = vec![vec![1.0, 1.0]]; // 1 location × 2 modes
+
+        let result = superpose_modes(&times, &modes, &location_coeffs);
+
+        // Compare against sum of individual single-mode results.
+        let modes_a = vec![(omega1, zeta, f1.clone())];
+        let lc_a: Vec<Vec<f64>> = vec![vec![1.0]];
+        let r1 = superpose_modes(&times, &modes_a, &lc_a);
+
+        let modes_b = vec![(omega2, zeta, f2.clone())];
+        let lc_b: Vec<Vec<f64>> = vec![vec![1.0]];
+        let r2 = superpose_modes(&times, &modes_b, &lc_b);
+
+        for j in 0..n {
+            let want = r1[0][j] + r2[0][j];
+            let got = result[0][j];
+            assert!(
+                (got - want).abs() < 1e-13,
+                "step {j}: got {got:.6e}, want {want:.6e}"
+            );
+        }
+    }
+
     // ─── step-3: RED — forces_to_forcing_history ──────────────────────────────
 
     /// (a) All-zero force input → every modal forcing series is all-zero.
