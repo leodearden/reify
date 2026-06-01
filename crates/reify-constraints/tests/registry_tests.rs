@@ -1195,15 +1195,16 @@ fn lexicographic_single_rank_degenerates_to_weighted_sum() {
 ///   - x ≤ 3mm
 ///   - y ≤ 10mm
 ///   - (x + x) + y ≤ 10mm  (encodes 2x+y≤10 using only BinOp::Add — no Real*Scalar)
+///
 /// Objective A: Lexicographic[ Maximize x @priority 1, Maximize y @priority 0 ]
 /// Objective B: WeightedSum (same terms) — as control comparison
 ///
 /// Analytic optima:
 ///   - Rank-1 (Maximize x): x* = 3mm (x≤3 binds; budget gives 2·3+y≤10 → y≤4)
 ///   - Rank-2 (Maximize y on rank-1 face, x frozen near 3mm via ε-band):
-///       budget becomes 2·3+y≤10 → y* = 4mm
+///     budget becomes 2·3+y≤10 → y* = 4mm
 ///   - WeightedSum max(x+y) under 2x+y≤10: y cheaper in the budget constraint
-///       so x_ws ≈ 0, y_ws ≈ 10mm
+///     so x_ws ≈ 0, y_ws ≈ 10mm
 ///
 /// Assertions:
 ///   Lexicographic: x_lex ≈ 3mm (rank-1 preserved) AND y_lex ≈ 4mm (rank-2 improved)
