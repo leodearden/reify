@@ -597,6 +597,21 @@ fn cmd_build(args: &[String]) -> ExitCode {
     }
 }
 
+/// Configure a freshly-constructed [`reify_eval::Engine`] for use in `cmd_eval`:
+/// wire the [`reify_constraints::DimensionalSolver`] and register all compute
+/// trampolines so `@optimized` targets dispatch correctly.
+///
+/// Both the geometry branch (`with_registered_kernel + build()`) and the plain
+/// branch (`Engine::new(None) + eval()`) share this setup; only the constructor
+/// and the terminal `build()`/`eval()` call differ.  Factoring the shared setup
+/// here eliminates the duplicated `.with_solver` + `register_compute_fns` block
+/// that would otherwise appear verbatim in each branch.
+fn configured_eval_engine(engine: reify_eval::Engine) -> reify_eval::Engine {
+    let mut engine = engine.with_solver(Box::new(reify_constraints::DimensionalSolver));
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    engine
+}
+
 /// `reify eval <file>` — parse, compile, evaluate, and print every
 /// top-level value cell as `entity.member = value`.
 ///
@@ -626,6 +641,12 @@ fn cmd_build(args: &[String]) -> ExitCode {
 /// `build()` skips the geometry pipeline — geometry-query cells stay `undef` and
 /// exit code remains 0, matching `cmd_build`'s existing degradation in stub mode.
 ///
+/// When OCCT is present but geometry realization fails at runtime (e.g. all ops
+/// fail in the kernel), `build()` emits an `Error`-severity diagnostic and those
+/// errors **do** propagate to `cmd_eval`'s exit code.  This widening is
+/// intentional: a file whose geometry is fundamentally broken should not silently
+/// exit 0 with all geometry-query cells reported as `undef`.
+///
 /// Non-geometry modules use the existing
 /// `Engine::new(None) + eval()` path unchanged.
 fn cmd_eval(args: &[String]) -> ExitCode {
@@ -648,34 +669,28 @@ fn cmd_eval(args: &[String]) -> ExitCode {
     }
 
     // Normalise both branches to (values, diagnostics) for the shared print loop.
+    // `configured_eval_engine` handles the shared `.with_solver` +
+    // `register_compute_fns` setup; only the constructor and terminal call differ.
     let (values, diagnostics) = if module_has_geometry(&compiled) {
         // Geometry-bearing module: route through the kernel-backed build() path so
         // that run_post_processes/post_process_geometry_queries fires and resolves
         // geometry-query value cells (mass, centroid, volume, …).
         // geometry_output is discarded — reify eval is a value inspector only.
-        let checker = SimpleConstraintChecker;
-        let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker))
-            .with_solver(Box::new(reify_constraints::DimensionalSolver));
-        // Register compute trampolines so @optimized targets dispatch correctly
-        // even when the module also carries geometry (task 3794).
-        reify_eval::compute_targets::register_compute_fns(&mut engine);
-        let result = engine.build(&compiled, reify_ir::ExportFormat::Step);
+        let result = configured_eval_engine(
+            reify_eval::Engine::with_registered_kernel(Box::new(SimpleConstraintChecker)),
+        )
+        .build(&compiled, reify_ir::ExportFormat::Step);
         (result.values, result.diagnostics)
     } else {
         // Plain numeric module: keep the existing lightweight eval() path so
         // non-geometry eval tests (cli_eval_auto_resolve, cli_stackup_eval,
         // cli_integration_smoke) remain on the exact unchanged code path.
-        let checker = SimpleConstraintChecker;
-        let mut engine = reify_eval::Engine::new(Box::new(checker), None)
-            .with_solver(Box::new(reify_constraints::DimensionalSolver));
-        // Register the compute trampolines so `@optimized` targets dispatch to their
-        // solver kernels instead of body-inlining their never-run fallback ctor (which
-        // emits an error-severity "no registered compute trampoline" diagnostic and
-        // exits non-zero). Without this, `reify eval` of ANY @optimized example
-        // (solver::form_find, solver::buckling, solver::elastic_static,
-        // modal::free_vibration) fails. See task 3794 / esc-3794-183.
-        reify_eval::compute_targets::register_compute_fns(&mut engine);
-        let result = engine.eval(&compiled);
+        // Note: register_compute_fns is still required so `@optimized` targets
+        // dispatch to their solver kernels (task 3794 / esc-3794-183).
+        let result = configured_eval_engine(
+            reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None),
+        )
+        .eval(&compiled);
         (result.values, result.diagnostics)
     };
 
