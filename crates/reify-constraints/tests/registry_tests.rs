@@ -1015,3 +1015,174 @@ fn lexicographic_freezes_earlier_rank_as_epsilon_band() {
     assert!(has_le, "band must include a Le upper-bound constraint");
     assert!(has_ge, "band must include a Ge lower-bound constraint");
 }
+
+/// Equal-priority terms must be solved in a SINGLE stage (not one call per term).
+///
+/// An objective [Maximize x @p=2, Maximize y @p=2, Maximize z @p=1] has two DISTINCT
+/// priorities, so the solver should be called exactly twice (not three times).
+/// The first stage's objective must have TWO terms (the p=2 tie) and the second
+/// stage's objective must have ONE term (z at p=1).
+///
+/// RED after step-2/4: equal-priority terms are currently split into separate stages
+/// because the grouping iterates terms rather than grouping by distinct priority.
+///
+/// (Note: current step-2 impl collects terms per priority correctly via `.filter(|t|
+///  t.priority == *priority)`, so this test actually exercises that the grouping was
+///  correct from the start. If it passes today, the test is a regression guard.)
+#[test]
+fn lexicographic_ties_fold_as_weighted_sum_within_rank() {
+    let x_id = vcid("LexTie", "x");
+    let y_id = vcid("LexTie", "y");
+    let z_id = vcid("LexTie", "z");
+
+    // Three constraints anchoring each param in a single component via the objective.
+    let c1 = le(value_ref("LexTie", "x"), literal(mm(10.0)));
+    let c2 = le(value_ref("LexTie", "y"), literal(mm(10.0)));
+    let c3 = le(value_ref("LexTie", "z"), literal(mm(10.0)));
+
+    // Two terms share priority 2 (tie), one is at priority 1.
+    let objective = ObjectiveSet {
+        combination: ObjectiveCombination::Lexicographic,
+        terms: vec![
+            ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("LexTie", "x"), weight: 1.0, priority: 2 },
+            ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("LexTie", "y"), weight: 1.0, priority: 2 },
+            ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("LexTie", "z"), weight: 1.0, priority: 1 },
+        ],
+    };
+
+    // Two spy stages: tie-rank (x+y) first, then z.
+    let mut vals1 = std::collections::HashMap::new();
+    vals1.insert(x_id.clone(), mm(8.0));
+    vals1.insert(y_id.clone(), mm(9.0));
+    let mut vals2 = std::collections::HashMap::new();
+    vals2.insert(x_id.clone(), mm(8.0));
+    vals2.insert(y_id.clone(), mm(9.0));
+    vals2.insert(z_id.clone(), mm(7.0));
+
+    let spy = MultiCallSpyConstraintSolver::new(vec![
+        SolveResult::Solved { values: vals1, unique: false },
+        SolveResult::Solved { values: vals2, unique: false },
+    ]);
+    let captured = spy.captured_problems();
+    let registry = SolverRegistry::new(Box::new(spy));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam { id: x_id.clone(), param_type: Type::length(), bounds: Some((0.001, 0.1)), free: true },
+            AutoParam { id: y_id.clone(), param_type: Type::length(), bounds: Some((0.001, 0.1)), free: true },
+            AutoParam { id: z_id.clone(), param_type: Type::length(), bounds: Some((0.001, 0.1)), free: true },
+        ],
+        constraints: vec![(cnid("LexTie", 0), c1), (cnid("LexTie", 1), c2), (cnid("LexTie", 2), c3)],
+        current_values: ValueMap::new(),
+        objective: Some(objective),
+        functions: vec![].into(),
+    };
+
+    registry.solve(&problem);
+
+    let captured_guard = captured.lock().unwrap();
+    // Exactly 2 calls: one for the p=2 tie rank, one for p=1.
+    assert_eq!(
+        captured_guard.len(), 2,
+        "Lexicographic with 2 distinct priorities (one being a tie) must call solver exactly twice, got {}",
+        captured_guard.len()
+    );
+
+    // Stage 1 (tie rank p=2): WeightedSum with both x and y terms.
+    let obj1 = captured_guard[0].objective.as_ref().unwrap();
+    assert_eq!(obj1.combination, ObjectiveCombination::WeightedSum);
+    assert_eq!(
+        obj1.terms.len(), 2,
+        "tie rank must produce a single WeightedSum stage with 2 terms, got {}",
+        obj1.terms.len()
+    );
+    let refs1: Vec<_> = obj1.terms.iter().flat_map(|t| t.expr.collect_value_refs()).collect();
+    assert!(refs1.contains(&x_id), "stage 1 must include x (tie)");
+    assert!(refs1.contains(&y_id), "stage 1 must include y (tie)");
+    assert!(!refs1.contains(&z_id), "stage 1 must NOT include z");
+
+    // Stage 2 (p=1): WeightedSum with z only.
+    let obj2 = captured_guard[1].objective.as_ref().unwrap();
+    assert_eq!(obj2.combination, ObjectiveCombination::WeightedSum);
+    assert_eq!(obj2.terms.len(), 1, "stage 2 has exactly one term (z)");
+    let refs2 = obj2.terms[0].expr.collect_value_refs();
+    assert!(refs2.contains(&z_id), "stage 2 must optimize z (p=1)");
+}
+
+/// A Lexicographic objective where ALL terms share one priority degenerates to a
+/// WeightedSum solve.  The solver's uniqueness verdict must be preserved (not forced
+/// to false) and no debug_assert panic must occur.
+///
+/// Uses DimensionalSolver so uniqueness is genuinely determined (strict params).
+///
+/// RED before step-6: currently returns unique:false instead of delegating.
+/// (After step-2, a single-rank Lexicographic already delegates via the early-exit
+///  path, so this test should PASS from step-2 onward — it is a regression guard.)
+#[test]
+fn lexicographic_single_rank_degenerates_to_weighted_sum() {
+    let registry = SolverRegistry::new(Box::new(DimensionalSolver));
+
+    let x_id = vcid("LexDegen", "x");
+    let y_id = vcid("LexDegen", "y");
+
+    // Over-constrained system: x == 5mm (two inequalities), y == 8mm.
+    // These are strict (not free), so DimensionalSolver should report unique:true.
+    let c1 = ge(value_ref("LexDegen", "x"), literal(mm(4.9)));
+    let c2 = le(value_ref("LexDegen", "x"), literal(mm(5.1)));
+    let c3 = ge(value_ref("LexDegen", "y"), literal(mm(7.9)));
+    let c4 = le(value_ref("LexDegen", "y"), literal(mm(8.1)));
+
+    // Single-priority Lexicographic: all terms at priority=0.
+    let objective_lex = ObjectiveSet {
+        combination: ObjectiveCombination::Lexicographic,
+        terms: vec![
+            ObjectiveTerm { sense: ObjectiveSense::Minimize, expr: value_ref("LexDegen", "x"), weight: 1.0, priority: 0 },
+            ObjectiveTerm { sense: ObjectiveSense::Minimize, expr: value_ref("LexDegen", "y"), weight: 1.0, priority: 0 },
+        ],
+    };
+
+    // Equivalent WeightedSum for comparison.
+    let objective_ws = ObjectiveSet {
+        combination: ObjectiveCombination::WeightedSum,
+        terms: vec![
+            ObjectiveTerm { sense: ObjectiveSense::Minimize, expr: value_ref("LexDegen", "x"), weight: 1.0, priority: 0 },
+            ObjectiveTerm { sense: ObjectiveSense::Minimize, expr: value_ref("LexDegen", "y"), weight: 1.0, priority: 0 },
+        ],
+    };
+
+    let make_problem = |obj: ObjectiveSet| ResolutionProblem {
+        auto_params: vec![
+            AutoParam { id: x_id.clone(), param_type: Type::length(), bounds: Some((0.001, 0.1)), free: false },
+            AutoParam { id: y_id.clone(), param_type: Type::length(), bounds: Some((0.001, 0.1)), free: false },
+        ],
+        constraints: vec![
+            (cnid("LexDegen", 0), c1.clone()),
+            (cnid("LexDegen", 1), c2.clone()),
+            (cnid("LexDegen", 2), c3.clone()),
+            (cnid("LexDegen", 3), c4.clone()),
+        ],
+        current_values: ValueMap::new(),
+        objective: Some(obj),
+        functions: vec![].into(),
+    };
+
+    // Both should return Solved without panicking. The Lexicographic variant must
+    // NOT return unique:false — it must delegate and preserve the solver's verdict.
+    let lex_result = registry.solve(&make_problem(objective_lex));
+    let ws_result = registry.solve(&make_problem(objective_ws));
+
+    let lex_unique = match &lex_result {
+        SolveResult::Solved { unique, .. } => *unique,
+        other => panic!("Lexicographic single-rank must not panic or return non-Solved, got {:?}", other),
+    };
+    let ws_unique = match &ws_result {
+        SolveResult::Solved { unique, .. } => *unique,
+        other => panic!("WeightedSum must return Solved, got {:?}", other),
+    };
+
+    assert_eq!(
+        lex_unique, ws_unique,
+        "single-rank Lexicographic must preserve the solver's uniqueness verdict ({}), got {}",
+        ws_unique, lex_unique
+    );
+}
