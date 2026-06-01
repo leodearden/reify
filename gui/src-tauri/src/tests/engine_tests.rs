@@ -10721,3 +10721,48 @@ fn displaced_sample_degenerate_stride_returns_original_position() {
         "displacement field with stride < 3 must return original vertex position (guard: w.len() >= 3)"
     );
 }
+
+// ---- T6 Steps 1-4: default_visible on EntityTreeNode realization nodes ----
+
+/// step-1 RED: a root template with a plain `let body` and an `aux let blank`
+/// realization. After get_entity_tree(), the plain body node must have
+/// `default_visible == true` and the aux blank node must have
+/// `default_visible == false`.
+///
+/// Fails to compile until EntityTreeNode gains the `default_visible` field
+/// and build_template_node sets it on realization nodes.
+#[test]
+fn get_entity_tree_aux_realization_default_visible_false() {
+    let source = r#"structure Single {
+    let body = box(20mm, 20mm, 20mm)
+    aux let blank = cylinder(8mm, 40mm)
+}"#;
+    let mut session = make_session();
+    session.load_from_source(source, "single").expect("load");
+
+    let tree = session.get_entity_tree();
+    let root = tree
+        .iter()
+        .find(|n| n.entity_path == "Single")
+        .expect("Single root must exist");
+
+    let body_node = root
+        .children
+        .iter()
+        .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some("body"))
+        .expect("realization node for 'body' must be present");
+    let blank_node = root
+        .children
+        .iter()
+        .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some("blank"))
+        .expect("realization node for 'blank' must be present");
+
+    assert!(
+        body_node.default_visible,
+        "plain `let body` realization must have default_visible == true"
+    );
+    assert!(
+        !blank_node.default_visible,
+        "aux `let blank` realization must have default_visible == false"
+    );
+}
