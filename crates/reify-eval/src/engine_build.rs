@@ -7598,6 +7598,228 @@ mod tests {
         );
     }
 
+    /// manifold-like mock whose `ingest_mesh` SUCCEEDS (counting + fresh ids, so
+    /// the conversion executor produces and caches intermediates) but whose
+    /// `execute` (the final `BooleanUnion`) FAILS — driving the realization into
+    /// the rollback branch AFTER at least one intermediate was inserted. Used by
+    /// step-13 to pin atomic intermediate-cache rollback.
+    struct FailingUnionManifoldKernel {
+        ingest_count: std::sync::Arc<std::sync::Mutex<usize>>,
+        next_ingest_id: u64,
+    }
+
+    impl reify_ir::GeometryKernel for FailingUnionManifoldKernel {
+        fn execute(
+            &mut self,
+            _op: &reify_ir::GeometryOp,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            Err(reify_ir::GeometryError::OperationFailed(
+                "simulated union failure".into(),
+            ))
+        }
+
+        fn query(
+            &self,
+            _q: &reify_ir::GeometryQuery,
+        ) -> Result<reify_ir::Value, reify_ir::QueryError> {
+            Err(reify_ir::QueryError::QueryFailed(
+                "should not reach: execute always fails".into(),
+            ))
+        }
+
+        fn export(
+            &self,
+            _handle: reify_ir::GeometryHandleId,
+            _format: reify_ir::ExportFormat,
+            _writer: &mut dyn std::io::Write,
+        ) -> Result<(), reify_ir::ExportError> {
+            Err(reify_ir::ExportError::FormatError(
+                "should not reach: execute always fails".into(),
+            ))
+        }
+
+        fn tessellate(
+            &self,
+            _handle: reify_ir::GeometryHandleId,
+            _tolerance: f64,
+        ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
+            Err(reify_ir::TessError::TessellationFailed(
+                "should not reach: execute always fails".into(),
+            ))
+        }
+
+        fn ingest_mesh(
+            &mut self,
+            _mesh: &reify_ir::Mesh,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            *self.ingest_count.lock().unwrap() += 1;
+            let id = reify_ir::GeometryHandleId(self.next_ingest_id);
+            self.next_ingest_id += 1;
+            Ok(reify_ir::GeometryHandle { id, repr: None })
+        }
+    }
+
+    /// step-13 (RED): atomic intermediate-cache rollback. A Mesh-demanding
+    /// conversion realization whose final `BooleanUnion` execute FAILS (after
+    /// both BRep→Mesh intermediates were tessellated, ingested, and cached) must
+    /// roll back ATOMICALLY: (i) `step_handles` truncated back to `handle_start`
+    /// (no terminal handle leaked), and (ii) every intermediate cache entry the
+    /// realization inserted is REMOVED, so a later lookup misses rather than
+    /// returning a handle from a realization that never completed.
+    ///
+    /// RED before step-14: step-12 inserts the intermediates but the
+    /// `rolled_back` branch does not yet remove them, so the post-failure
+    /// lookups still HIT.
+    #[test]
+    fn execute_realization_ops_failed_conversion_rolls_back_intermediate_cache() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+        use reify_core::Type;
+        use reify_ir::{
+            CapabilityDescriptor, CompiledExpr, GeometryHandleId, GeometryKernel, KernelId,
+            Operation, ReprKind,
+        };
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        let tess_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let ingest_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+
+        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "occt".to_string(),
+            Box::new(CountingTessellateKernel {
+                inner: MockGeometryKernel::new(),
+                tessellate_count: std::sync::Arc::clone(&tess_count),
+            }),
+        );
+        kernels.insert(
+            "manifold".to_string(),
+            Box::new(FailingUnionManifoldKernel {
+                ingest_count: std::sync::Arc::clone(&ingest_count),
+                next_ingest_id: 1000,
+            }),
+        );
+
+        let desc_occt = CapabilityDescriptor {
+            supports: vec![
+                (Operation::PrimitiveBox, ReprKind::BRep),
+                (
+                    Operation::Convert {
+                        from: ReprKind::BRep,
+                    },
+                    ReprKind::Mesh,
+                ),
+            ],
+        };
+        let desc_manifold = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("occt".to_string(), &desc_occt);
+        registry.insert("manifold".to_string(), &desc_manifold);
+
+        let ops = vec![
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Union,
+                left: GeomRef::Step(0),
+                right: GeomRef::Step(1),
+            },
+        ];
+
+        let realization_id = RealizationNodeId::new("Cross", 0);
+        let tol = 0.001;
+        let mut state = DispatchTestState::default();
+        // Pre-seed a sentinel so we can assert truncation went back to exactly
+        // the pre-call length (handle_start = 1), not merely "emptied".
+        let sentinel = KernelHandle {
+            kernel: KernelId::Occt,
+            id: GeometryHandleId(0xCAFE),
+        };
+        state.step_handles.push(sentinel);
+
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &realization_id,
+            Some("Cross"),
+            SourceSpan::new(0, 0),
+            ReprKind::Mesh,
+            Some(tol),
+        );
+
+        // The realization must have FAILED at the union execute, AFTER both
+        // intermediates were produced (proving the rollback is non-vacuous).
+        assert!(
+            state.kernel_error_out.is_some(),
+            "the failing union must surface a kernel error"
+        );
+        assert_eq!(
+            *tess_count.lock().unwrap(),
+            2,
+            "both inputs must have been tessellated before the union failed"
+        );
+        assert_eq!(
+            *ingest_count.lock().unwrap(),
+            2,
+            "both intermediates must have been ingested (and cached) before the union failed"
+        );
+
+        // (i) step_handles truncated back to handle_start — only the sentinel
+        //     survives; no occt primitive handles and no terminal handle leaked.
+        assert_eq!(
+            state.step_handles.len(),
+            1,
+            "step_handles must truncate back to the pre-call length of 1"
+        );
+        assert_eq!(
+            state.step_handles[0], sentinel,
+            "the pre-existing sentinel must be preserved unchanged"
+        );
+
+        // (ii) the intermediate cache entries inserted during the failed
+        //      realization must be GONE.
+        let per_stage_tol = per_stage_tolerance_for_plan(
+            &DispatchPlan {
+                kernel: "manifold".to_string(),
+                conversions: vec![(KernelId::Occt, ReprKind::BRep, ReprKind::Mesh)],
+            },
+            tol,
+        );
+        assert!(
+            state
+                .realization_cache
+                .lookup("Cross#conv-step0", ReprKind::Mesh, per_stage_tol, NO_OPTIONS)
+                .is_none(),
+            "intermediate step-0 must be rolled out of the cache on realization failure"
+        );
+        assert!(
+            state
+                .realization_cache
+                .lookup("Cross#conv-step1", ReprKind::Mesh, per_stage_tol, NO_OPTIONS)
+                .is_none(),
+            "intermediate step-1 must be rolled out of the cache on realization failure"
+        );
+    }
+
     /// When the registry claims no kernel for the op (dispatch returns
     /// `None`), `execute_realization_ops` must emit a
     /// `DiagnosticCode::NoKernelChain` error diagnostic, set
