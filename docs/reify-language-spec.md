@@ -371,6 +371,8 @@ Key semantics:
 - No implicit global frame. All coordinates relative to parent.
 - Ports expose Frames (when geometrically located). Connections constrain Transforms between Frames.
 
+**Realized (v0.6).** Declarative `at` placement and compose-up-the-tree auto-surfacing are implemented at the geometry level. Sub-placement syntax (`at` pose clause, `aux` modifier) is documented in §4.7; the auto-surfacing idiom and when to retain a manual lift are in §8.3. See also [docs/prds/v0_6/sub-placement-and-surfacing.md](docs/prds/v0_6/sub-placement-and-surfacing.md).
+
 **Geometric values carry their frame:** Geometric values (`Point3`, `Vector3`, etc.) carry their coordinate frame as part of their runtime representation. Frame is not part of the type but tracked by the runtime. When defined within a structure, the frame is the structure's local coordinate frame.
 
 **Geometric collections share frames efficiently:** Geometric collections (point clouds, meshes) store coordinates relative to a single frame -- the containing structure's local coordinate frame. One frame per collection, not per element. When an individual point is extracted, it acquires the collection's frame.
