@@ -379,6 +379,97 @@ pub(crate) fn assemble_geometric_stiffness(
     k_g
 }
 
+/// Algebraic minimum eigenvalue of the reduced stiffness `Mᵀ K_G M` on the
+/// mechanism subspace spanned by the orthonormal columns of `basis`.
+///
+/// Forms the dense reduced matrix `K_red = basisᵀ · K_G · basis`
+/// (`m_count × m_count`), wraps it and an identity of the same size as faer
+/// [`SparseRowMat`]s, and reuses the buckling **dense** generalized eigensolver
+/// path [`crate::eigensolve::solve_eigen_dense`] on the `(K_red, I)` pair (PRD
+/// §5/§7 GR-024 reuse seam). With `B = I` the generalized problem collapses to
+/// the standard symmetric spectrum and no degenerate-β filtering occurs, so all
+/// `m_count` eigenvalues are returned. `solve_eigen_dense` sorts them by `|λ|`,
+/// but prestress stability needs the algebraic sign, so we return the algebraic
+/// minimum (`K_red ≻ 0 ⟺ min > 0`).
+///
+/// The `m_count == 1` case (e.g. the canonical triplex's single mechanism) is
+/// returned in closed form: a 1×1 symmetric matrix's only eigenvalue *is* its
+/// scalar entry. This is also a hard requirement, not just an optimisation —
+/// faer's dense QZ (the engine inside `solve_eigen_dense`) requires `n ≥ 2` for
+/// its scratch-buffer allocation and panics on a 1×1 input (documented in
+/// `tests/joint_stiffness_modal_frequency.rs`). The general `m_count ≥ 2`
+/// reduced problem reuses the dense eigensolver path as prescribed.
+///
+/// Callers only invoke this with `m_count ≥ 1` (the short-circuits in
+/// [`analyze_prestress_stability`] handle the `m_count == 0` case).
+fn min_eigenvalue_on_subspace(k_g: &Mat<f64>, basis: &Mat<f64>) -> f64 {
+    use crate::eigensolve::{EigenSolverOptions, solve_eigen_dense};
+    use faer::sparse::{SparseRowMat, Triplet};
+
+    let dim = basis.nrows();
+    let m_count = basis.ncols();
+
+    // W = K_G · basis (dim × m_count), then K_red = basisᵀ · W
+    // (m_count × m_count). m_count is tiny (1 for the prism), so the explicit
+    // triple loops are clear and cheap.
+    let mut w = Mat::<f64>::zeros(dim, m_count);
+    for c in 0..m_count {
+        for i in 0..dim {
+            let mut acc = 0.0;
+            for j in 0..dim {
+                acc += k_g[(i, j)] * basis[(j, c)];
+            }
+            w[(i, c)] = acc;
+        }
+    }
+    let mut k_red = Mat::<f64>::zeros(m_count, m_count);
+    for a in 0..m_count {
+        for b in 0..m_count {
+            let mut acc = 0.0;
+            for i in 0..dim {
+                acc += basis[(i, a)] * w[(i, b)];
+            }
+            k_red[(a, b)] = acc;
+        }
+    }
+
+    // A 1×1 reduced matrix has its scalar entry as its sole eigenvalue. Take it
+    // directly: faer's dense QZ requires n ≥ 2 and panics on a 1×1 input.
+    if m_count == 1 {
+        return k_red[(0, 0)];
+    }
+
+    // Wrap (K_red, I) as SparseRowMat (skip structural zeros) and reuse the
+    // buckling dense eigensolver path.
+    let mut k_trips: Vec<Triplet<usize, usize, f64>> = Vec::with_capacity(m_count * m_count);
+    for a in 0..m_count {
+        for b in 0..m_count {
+            let v = k_red[(a, b)];
+            if v != 0.0 {
+                k_trips.push(Triplet::new(a, b, v));
+            }
+        }
+    }
+    let k_sp = SparseRowMat::try_new_from_triplets(m_count, m_count, &k_trips)
+        .expect("reduced-stiffness triplets are square and in range");
+    let id_trips: Vec<Triplet<usize, usize, f64>> =
+        (0..m_count).map(|i| Triplet::new(i, i, 1.0)).collect();
+    let id_sp = SparseRowMat::try_new_from_triplets(m_count, m_count, &id_trips)
+        .expect("identity triplets are square and in range");
+
+    let opts = EigenSolverOptions {
+        n_modes: m_count,
+        ..Default::default()
+    };
+    let res = solve_eigen_dense(&k_sp, &id_sp, opts);
+
+    // Algebraic minimum (NOT |λ|-minimum) — the sign is the stability verdict.
+    res.eigenvalues
+        .iter()
+        .copied()
+        .fold(f64::INFINITY, f64::min)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
