@@ -1568,6 +1568,27 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic is `E_OBJECTIVE_CONFLICT`
     /// (severity convention: `E_*` → Error).
     ObjectiveConflict,
+    /// Origin: `crates/reify-eval/src/engine_eval.rs::detect_scope_coupling`.
+    ///
+    /// Severity: Warning — detection-only; no automatic fixup is attempted.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_SCOPE_COUPLING`
+    /// (severity convention: `W_*` → Warning).
+    ///
+    /// Emitted when a bottom-up (leaf-first) per-scope auto-resolution walk is
+    /// an approximation: an ALREADY-RESOLVED (frozen) scope's auto cell is read
+    /// by a constraint or objective in a *different* scope that resolves LATER
+    /// in the walk.  The diagnostic names the frozen scope (leaf), the later
+    /// scope (reader), and the crossing `ValueCellId`.
+    ///
+    /// References: PRD `docs/prds/v0_6/constraint-solver-completion.md` task λ,
+    /// §3.7 ("scope coupling"), §10.6 (detection-only boundary), and boundary
+    /// sketch B11 (`reify check` prints `W_SCOPE_COUPLING`).
+    ///
+    /// **Detection-only**: coupling RESOLUTION (fixed-point iteration or
+    /// re-ordering) is explicitly out of scope per PRD §10.  A future task may
+    /// add resolution on top of this detection signal.
+    ScopeCoupling,
 }
 
 /// A diagnostic message with location and optional labels.
