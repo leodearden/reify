@@ -3424,6 +3424,7 @@ fn entity_tree_node_serialization_roundtrip() {
         trait_geometry: false,
         children: vec![],
         freshness: "final".to_string(),
+        default_visible: true,
     };
     let json = serde_json::to_string(&node).expect("serialize should succeed");
     let back: EntityTreeNode = serde_json::from_str(&json).expect("deserialize should succeed");
@@ -3441,6 +3442,7 @@ fn entity_tree_node_nested_children_serialize_correctly() {
         trait_geometry: false,
         children: vec![],
         freshness: "final".to_string(),
+        default_visible: true,
     };
     let root = EntityTreeNode {
         entity_path: "Bracket".to_string(),
@@ -3451,6 +3453,7 @@ fn entity_tree_node_nested_children_serialize_correctly() {
         trait_geometry: false,
         children: vec![child],
         freshness: "final".to_string(),
+        default_visible: true,
     };
     let json = serde_json::to_string(&root).expect("serialize should succeed");
     assert!(json.contains("\"entity_path\":\"Bracket.width\""));
@@ -3474,6 +3477,7 @@ fn entity_tree_node_default_type_name_is_none() {
         trait_geometry: false,
         children: vec![],
         freshness: "final".to_string(),
+        default_visible: true,
     };
     let json = serde_json::to_string(&node).expect("serialize should succeed");
     let back: EntityTreeNode = serde_json::from_str(&json).expect("deserialize should succeed");

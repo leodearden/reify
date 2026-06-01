@@ -2074,17 +2074,16 @@ impl EngineSession {
                     }
                     diags
                 };
-                // T5 (task 3903): `MeshSurface.default_visible` (computed by the
-                // reify-eval surfacing walk — `false` for aux bodies / aux
-                // subtrees) is intentionally NOT propagated here. `MeshData`
-                // (types.rs) carries no visibility field, and wiring the flag
-                // through the IPC boundary + frontend visibility toggles is the
-                // scope of the GUI surfacing step (T6 — "GUI default_visible UI
-                // behavior", out of T5's scope per the 3903 plan §10). Until then
-                // the flag is deliberately dropped at this map, NOT a bug: aux
-                // bodies still ship their mesh payload and simply render visible
-                // in the GUI for now. Do not "fix" this by defaulting visibility
-                // elsewhere — T6 owns the per-surface visibility contract.
+                // T6 (task 3904) complete: `default_visible` is surfaced to the
+                // GUI via the entity-tree realization nodes — NOT through MeshData.
+                // `get_entity_tree` → `build_template_node` computes
+                // `default_visible = !(aux_ancestor || real.is_aux)` per the
+                // shared contract anchor at geometry_ops.rs:4875. The frontend
+                // `defaultVisibilityFor` reads the realization node's flag and
+                // returns 'hidden' for aux bodies, driving `meshManager.setVisibility`
+                // and thus `getSceneMeshes()` / `viewport_state.meshCount`.
+                // `MeshData` intentionally stays visibility-free: the frontend
+                // never consults mesh visibility directly.
                 let mut meshes: Vec<MeshData> = result
                     .meshes
                     .into_iter()
@@ -3643,6 +3642,7 @@ pub(crate) fn build_template_node(
             trait_geometry: is_geometry_member && parent_has_physical,
             children: vec![],
             freshness,
+            default_visible: true,
         });
     }
 
@@ -3677,6 +3677,11 @@ pub(crate) fn build_template_node(
             trait_geometry: false,
             children: vec![],
             freshness,
+            // Mirrors the surfacing-walk rule: geometry_ops.rs:4875
+            // `!(aux_ancestor || realization_is_aux(realization))`.
+            // aux_ancestor threading is added in step-4; this covers the
+            // direct-aux case (real.is_aux) for step-2.
+            default_visible: !real.is_aux,
         });
     }
 
@@ -3724,6 +3729,7 @@ pub(crate) fn build_template_node(
             trait_geometry: false,
             children: sub_children,
             freshness: "aggregate".to_string(),
+            default_visible: true,
         });
     }
 
@@ -3739,6 +3745,7 @@ pub(crate) fn build_template_node(
             trait_geometry: false,
             children: vec![],
             freshness: "final".to_string(),
+            default_visible: true,
         });
     }
 
@@ -3751,6 +3758,7 @@ pub(crate) fn build_template_node(
         trait_geometry: false,
         children,
         freshness: "final".to_string(),
+        default_visible: true,
     }
 }
 

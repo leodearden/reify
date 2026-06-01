@@ -647,6 +647,27 @@ pub struct EntityTreeNode {
     /// `Freshness::default() = Final`). See arch §7.1 lines 716-728 and
     /// the task #2337 design decision on tag-only wire format.
     pub freshness: String,
+    /// Whether the GUI should show this node by default.
+    ///
+    /// `false` means this is an aux body or a descendant of an `aux sub` —
+    /// hidden by default in the outline and excluded from `viewport_state.meshCount`.
+    /// The mesh payload is still shipped; the outline toggle (setVisibility) reveals it.
+    ///
+    /// Mirrors `reify_eval::MeshSurface.default_visible`. The authoritative rule
+    /// (shared with the surfacing walk in `geometry_ops.rs:4875`) is:
+    /// `!(aux_ancestor || real.is_aux)`.
+    ///
+    /// Uses `#[serde(default)]` → true so older/partial wire payloads
+    /// (every non-realization node, backward-compat) deserialise as visible.
+    #[serde(default = "default_visible_default")]
+    pub default_visible: bool,
+}
+
+/// Serde default helper: returns `true` so that `EntityTreeNode.default_visible`
+/// deserialises as visible when the field is absent (backward compat with older
+/// wire payloads and every non-realization node type).
+fn default_visible_default() -> bool {
+    true
 }
 
 /// Source span (byte offsets) for an entity in the source file.
