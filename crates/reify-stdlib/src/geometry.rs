@@ -5,22 +5,20 @@ use reify_ir::{Value, quaternion_is_finite};
 
 use crate::helpers::tensor_components_f64;
 
-/// Decompose a `Value::Vector` of exactly three components carrying a single
-/// shared dimension into its three finite f64 components and that dimension.
+/// Inner validator shared by [`decompose_vec3`] and [`decompose_point3`].
 ///
-/// Returns `None` (which callers map to `Value::Undef`) when:
-/// - `v` is not a `Value::Vector` of length 3,
-/// - the three components have mixed dimensions, or
+/// Validates that `items` contains exactly three components with a single
+/// shared dimension, all numeric and finite, and returns the three `f64`
+/// values together with their common [`DimensionVector`].
+///
+/// Returns `None` when:
+/// - `items.len() != 3`,
+/// - the three components carry mixed dimensions, or
 /// - any component is non-numeric or non-finite.
-///
-/// Used by `decompose_transform` for the translation field and by
-/// `transform_exp` to validate the `angular` / `linear` fields of the input
-/// twist `Map`.
-fn decompose_vec3(v: &Value) -> Option<([f64; 3], DimensionVector)> {
-    let items = match v {
-        Value::Vector(items) if items.len() == 3 => items,
-        _ => return None,
-    };
+fn decompose_xyz3(items: &[Value]) -> Option<([f64; 3], DimensionVector)> {
+    if items.len() != 3 {
+        return None;
+    }
     let dim = items[0].dimension();
     if items[1].dimension() != dim || items[2].dimension() != dim {
         return None;
@@ -32,6 +30,26 @@ fn decompose_vec3(v: &Value) -> Option<([f64; 3], DimensionVector)> {
     Some(([a, b, c], dim))
 }
 
+/// Decompose a `Value::Vector` of exactly three components carrying a single
+/// shared dimension into its three finite f64 components and that dimension.
+///
+/// Returns `None` (which callers map to `Value::Undef`) when:
+/// - `v` is not a `Value::Vector` of length 3,
+/// - the three components have mixed dimensions, or
+/// - any component is non-numeric or non-finite.
+///
+/// Used by `decompose_transform` for the translation field and by
+/// `transform_exp` to validate the `angular` / `linear` fields of the input
+/// twist `Map`.  Delegates the length/dimension/finite checks to
+/// [`decompose_xyz3`].
+fn decompose_vec3(v: &Value) -> Option<([f64; 3], DimensionVector)> {
+    let items = match v {
+        Value::Vector(items) => items,
+        _ => return None,
+    };
+    decompose_xyz3(items)
+}
+
 /// Decompose a `Value::Point` of exactly three components carrying a single
 /// shared dimension into its three finite f64 components and that dimension.
 ///
@@ -40,23 +58,16 @@ fn decompose_vec3(v: &Value) -> Option<([f64; 3], DimensionVector)> {
 /// - the three components have mixed dimensions, or
 /// - any component is non-numeric or non-finite.
 ///
-/// Used by `eval_geometry` for `"project"` to decode both the point argument
-/// and the frame origin.  Mirrors `decompose_vec3` exactly, matching
-/// `Value::Point` instead of `Value::Vector`.
+/// Used by `eval_geometry` for `"project"` (to decode both the point argument
+/// and the frame origin) and by `frame_to_frame` (to decode each frame's
+/// origin).  Delegates the length/dimension/finite checks to
+/// [`decompose_xyz3`].
 fn decompose_point3(v: &Value) -> Option<([f64; 3], DimensionVector)> {
     let items = match v {
-        Value::Point(items) if items.len() == 3 => items,
+        Value::Point(items) => items,
         _ => return None,
     };
-    let dim = items[0].dimension();
-    if items[1].dimension() != dim || items[2].dimension() != dim {
-        return None;
-    }
-    let (a, b, c) = match (items[0].as_f64(), items[1].as_f64(), items[2].as_f64()) {
-        (Some(a), Some(b), Some(c)) if a.is_finite() && b.is_finite() && c.is_finite() => (a, b, c),
-        _ => return None,
-    };
-    Some(([a, b, c], dim))
+    decompose_xyz3(items)
 }
 
 /// `(w, x, y, z)` quaternion components extracted from a `Value::Orientation`.
@@ -262,41 +273,13 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                 Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
                 _ => return Some(Value::Undef),
             };
-            let (fx, fy, fz, f_dim) = match origin_from {
-                Value::Point(comps) if comps.len() == 3 => {
-                    match (comps[0].as_f64(), comps[1].as_f64(), comps[2].as_f64()) {
-                        (Some(x), Some(y), Some(z)) => {
-                            if !x.is_finite() || !y.is_finite() || !z.is_finite() {
-                                return Some(Value::Undef);
-                            }
-                            let dim = comps[0].dimension();
-                            if comps[1].dimension() != dim || comps[2].dimension() != dim {
-                                return Some(Value::Undef);
-                            }
-                            (x, y, z, dim)
-                        }
-                        _ => return Some(Value::Undef),
-                    }
-                }
-                _ => return Some(Value::Undef),
+            let ([fx, fy, fz], f_dim) = match decompose_point3(origin_from) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
             };
-            let (tx, ty, tz, t_dim) = match origin_to {
-                Value::Point(comps) if comps.len() == 3 => {
-                    match (comps[0].as_f64(), comps[1].as_f64(), comps[2].as_f64()) {
-                        (Some(x), Some(y), Some(z)) => {
-                            if !x.is_finite() || !y.is_finite() || !z.is_finite() {
-                                return Some(Value::Undef);
-                            }
-                            let dim = comps[0].dimension();
-                            if comps[1].dimension() != dim || comps[2].dimension() != dim {
-                                return Some(Value::Undef);
-                            }
-                            (x, y, z, dim)
-                        }
-                        _ => return Some(Value::Undef),
-                    }
-                }
-                _ => return Some(Value::Undef),
+            let ([tx, ty, tz], t_dim) = match decompose_point3(origin_to) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
             };
             // R = R_to * conj(R_from)
             let r = quat_mul(q_to, quat_conj(q_from));
