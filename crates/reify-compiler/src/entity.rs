@@ -2577,6 +2577,12 @@ pub(crate) fn compile_entity(
         // `content_hash` (see plan design decision); ζ (3941) looks this up by
         // (trait_name, fn_name) for `TraitMethodCall` dispatch.
         assoc_fns: structure_assoc_fns,
+        // task 3972 ιβ (pre-2): the override-or-injected-default assoc-type table.
+        // Placeholder until step-10 wires check_phase_resolve_assoc_types.
+        // Structure-body `type X = T` bindings are collected/resolved by
+        // check_trait_conformance and lower to no value cell here
+        // (mirrors the Fn member arm at entity.rs:1717-1724).
+        assoc_types: Vec::new(),
     }
 }
 
@@ -3963,6 +3969,7 @@ pub(crate) fn build_structure_def_skeleton(
         match_arm_groups: vec![],
         forall_templates: vec![],
         assoc_fns: vec![],
+        assoc_types: vec![],
     }
 }
 

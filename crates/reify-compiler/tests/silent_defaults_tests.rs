@@ -168,6 +168,11 @@ trait Configurable {
                     "DefaultKind::Fn should always have Some(name), got None"
                 );
             }
+            reify_compiler::DefaultKind::AssocType(_) => {
+                // task 3972 ιβ: assoc-type defaults carry the type name (Some).
+                // Not currently produced by the Configurable trait in this test,
+                // so this arm is a compile-only coverage guard.
+            }
         }
     }
 }

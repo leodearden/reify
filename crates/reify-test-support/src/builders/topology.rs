@@ -464,6 +464,8 @@ impl TopologyTemplateBuilder {
             // task 3939 δ: builder defaults the assoc-fn table to empty; δ unit
             // tests exercise the table via in-crate access, not the builder.
             assoc_fns: Vec::new(),
+            // task 3972 ιβ: builder defaults the assoc-type table to empty.
+            assoc_types: Vec::new(),
         }
     }
 }

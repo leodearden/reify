@@ -166,6 +166,9 @@ pub(crate) fn collect_all_requirements(
                 }
                 ctx.requirements.push(req.clone());
             }
+            // Assoc-type requirements are collected in a dedicated block (step-4).
+            // For now: inert arm keeps the exhaustive match GREEN with zero behavior change.
+            RequirementKind::AssocType(_) => continue,
             RequirementKind::Sub(structure_name) => {
                 // Dedup Sub requirements by name, following the `seen_names` pattern for
                 // Param/Let: if the same sub-component name was already collected:
@@ -340,6 +343,12 @@ pub(crate) fn collect_all_requirements(
                 // `continue` (task 3939 δ).
                 DefaultKind::Fn(_) => {
                     unreachable!("Fn defaults must be handled by the seen_fn_default_traits block above")
+                }
+                // Unreachable: all AssocType defaults are handled by the early
+                // `if let DefaultKind::AssocType(_)` block (step-4), which always
+                // exits via `continue`.
+                DefaultKind::AssocType(_) => {
+                    unreachable!("AssocType defaults must be handled by the seen_assoc_type_default_traits block")
                 }
             };
 

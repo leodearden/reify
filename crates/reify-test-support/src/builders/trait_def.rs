@@ -91,6 +91,7 @@ impl TraitDefBuilder {
                     RequirementKind::Let(ty) => format!("Let:{}", ty),
                     RequirementKind::Sub(s) => format!("Sub:{}", s),
                     RequirementKind::Fn(sig) => format!("Fn:{}", sig.name),
+                    RequirementKind::AssocType(b) => format!("AssocType:{:?}", b),
                 };
                 ContentHash::of_str(&format!("{}:{}", r.name, kind_str))
             });
@@ -105,6 +106,7 @@ impl TraitDefBuilder {
                     DefaultKind::Let { .. } => "Let",
                     DefaultKind::Constraint(_) => "Constraint",
                     DefaultKind::Fn(_) => "Fn",
+                    DefaultKind::AssocType(_) => "AssocType",
                 };
                 ContentHash::of_str(&format!("{}:{}", d.name.as_deref().unwrap_or(""), kind_tag))
             });
@@ -229,6 +231,7 @@ impl CompiledTraitBuilder {
                     RequirementKind::Let(ty) => format!("Let:{}", ty),
                     RequirementKind::Sub(s) => format!("Sub:{}", s),
                     RequirementKind::Fn(sig) => format!("Fn:{}", sig.name),
+                    RequirementKind::AssocType(b) => format!("AssocType:{:?}", b),
                 };
                 ContentHash::of_str(&format!("{}:{}", r.name, kind_str))
             });
@@ -243,6 +246,7 @@ impl CompiledTraitBuilder {
                     DefaultKind::Let { .. } => "Let",
                     DefaultKind::Constraint(_) => "Constraint",
                     DefaultKind::Fn(_) => "Fn",
+                    DefaultKind::AssocType(_) => "AssocType",
                 };
                 ContentHash::of_str(&format!("{}:{}", d.name.as_deref().unwrap_or(""), kind_tag))
             });

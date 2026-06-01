@@ -60,6 +60,47 @@ pub enum RequirementKind {
     /// type — no subtyping). Added by task 3939 δ (PRD
     /// `docs/prds/v0_6/trait-associated-functions.md` §4.3 / §5.4).
     Fn(CompiledAssocFnSig),
+    /// A required associated type: `type Material` in a trait body.
+    ///
+    /// The conforming structure must bind the name with `type Material = Concrete`
+    /// unless the trait provides a `DefaultKind::AssocType` default. Added by
+    /// task 3972 ιβ (trait-assoc-type iota-β).
+    ///
+    /// The payload is an FORK-E forward-compat slot: always `None` under the
+    /// shipped `=default` grammar (no `: Bound` production exists yet). When a
+    /// future task adds `: Bound` syntax, `Some(AssocTypeBound)` will carry it.
+    AssocType(Option<AssocTypeBound>),
+}
+
+/// Forward-compat slot for an associated-type bound (`type X : Trait`).
+///
+/// Always `None` under the shipped grammar (task 3971 has no `: Bound`
+/// production). Present so the FORK-E bound form is additive: constructing
+/// `Some(AssocTypeBound { trait_name })` will not require changes elsewhere.
+/// `pub` so it triggers no `dead_code` lint despite never being constructed yet.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AssocTypeBound {
+    /// The name of the required trait bound (e.g. `"Rigid"`).
+    pub trait_name: String,
+}
+
+/// A resolved associated type on a compiled conformer, keyed by
+/// `(trait_name, type_name)`.
+///
+/// Populated during conformance checking by `check_phase_resolve_assoc_types`
+/// and stored on [`TopologyTemplate::assoc_types`]. Added by task 3972 ιβ.
+#[derive(Debug, Clone)]
+pub struct CompiledAssocType {
+    /// The trait that declares (or defaults) this associated type.
+    pub trait_name: String,
+    /// The associated type's name (e.g. `"Material"`).
+    pub type_name: String,
+    /// The resolved type — the structure's binding if `is_override`, else the
+    /// trait's injected default.
+    pub resolved: Type,
+    /// `true` when the conforming structure provided its own `type X = …` binding
+    /// (override); `false` when the trait's `DefaultKind::AssocType` was injected.
+    pub is_override: bool,
 }
 
 /// The exact-match signature of a trait associated function.
@@ -141,6 +182,12 @@ pub enum DefaultKind {
     /// conforming structure does not override it. Added by task 3939 δ (PRD
     /// `docs/prds/v0_6/trait-associated-functions.md` §4.3 / §5.4).
     Fn(reify_ast::FnDef),
+    /// A default-providing associated type: `type Material = Steel` in a trait body.
+    ///
+    /// Injected into the resolved assoc-type table when the conforming structure
+    /// does not override it with its own `type Material = …` binding. Added by
+    /// task 3972 ιβ (trait-assoc-type iota-β).
+    AssocType(Type),
 }
 
 /// The compiled source of a field.
@@ -675,6 +722,17 @@ pub struct TopologyTemplate {
     /// addition of this producer-only metadata; revisit when ζ wires dispatch /
     /// caching.
     pub assoc_fns: Vec<CompiledAssocFn>,
+    /// Resolved associated types for the traits this structure conforms to,
+    /// keyed by `(trait_name, type_name)` (task 3972 ιβ).
+    ///
+    /// Each entry is the override-or-injected-default resolved [`Type`] with an
+    /// `is_override` flag. Empty for structures that conform to no trait with
+    /// associated types.
+    ///
+    /// **Hash stability:** intentionally NOT mixed into `content_hash` (mirrors
+    /// `assoc_fns` and `forall_templates`) so cache keys stay stable across the
+    /// addition of this producer-only metadata.
+    pub assoc_types: Vec<CompiledAssocType>,
 }
 
 impl TopologyTemplate {

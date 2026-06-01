@@ -492,6 +492,9 @@ pub(super) fn check_phase_pre_register_default_types(
                 // Assoc-fn defaults are resolved in the dedicated assoc-fn
                 // phase (task 3939 δ), not registered as value-cell defaults.
                 DefaultKind::Fn(_) => continue,
+                // Assoc-type defaults are resolved in the dedicated assoc-type
+                // phase (step-10), not registered as value-cell defaults.
+                DefaultKind::AssocType(_) => continue,
             };
             // First-seen type wins. `ty` is moved into `register_if_absent`; on
             // the cold Occupied (conflict) path the method hands it back via
@@ -779,6 +782,9 @@ pub(super) fn check_phase_build_available_defaults_map(
                 // Assoc-fn defaults are not value-cell defaults; resolved in
                 // the dedicated assoc-fn phase (task 3939 δ).
                 DefaultKind::Fn(_) => return None,
+                // Assoc-type defaults are not value-cell defaults; resolved in
+                // the dedicated assoc-type phase (step-10).
+                DefaultKind::AssocType(_) => return None,
             };
             Some(((name.to_string(), kind), ty))
         })
@@ -1169,6 +1175,10 @@ pub(super) fn check_phase_check_members_against_requirements(
             //   * structure does not provide it, but a trait `DefaultKind::Fn`
             //     of the same name was merged in → satisfied by the default.
             //   * neither → emit `TraitFnNotSatisfied` naming the trait + fn.
+            // Assoc-type satisfaction is handled by check_phase_check_members_against_requirements
+            // once the full assoc-type pipeline (step-8) is wired. For now: inert arm so the
+            // exhaustive match stays GREEN with zero behavior change.
+            RequirementKind::AssocType(_) => continue,
             RequirementKind::Fn(expected_sig) => {
                 // Resolve the declaring trait lazily — only needed on a failure path.
                 let declaring_trait = || {
@@ -1655,6 +1665,10 @@ pub(super) fn check_phase_inject_defaults(
             // they are resolved into the assoc-fn table by the dedicated
             // assoc-fn phase (task 3939 δ, step-8).
             DefaultKind::Fn(_) => {}
+            // Assoc-type defaults are not injected as value-cells or constraints;
+            // they are resolved into the assoc-type table by the dedicated
+            // assoc-type phase (step-10).
+            DefaultKind::AssocType(_) => {}
         }
     }
 }

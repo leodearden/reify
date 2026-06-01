@@ -317,6 +317,8 @@ fn lower_trait(t: &CompiledTrait) -> ItemDoc {
                         .join(", ");
                     format!("fn {}({}) -> {}", req.name, params, type_to_string(&sig.return_type))
                 }
+                // task 3972 ιβ: render an associated-type requirement.
+                RequirementKind::AssocType(_) => format!("type {}", req.name),
             }
         })
         .collect();

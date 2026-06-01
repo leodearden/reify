@@ -4697,6 +4697,7 @@ mod tests {
             match_arm_groups: vec![],
             forall_templates: vec![],
             assoc_fns: vec![],
+            assoc_types: vec![],
         }
     }
 
@@ -5053,6 +5054,7 @@ mod tests {
             match_arm_groups: vec![],
             forall_templates: vec![],
             assoc_fns: vec![],
+            assoc_types: vec![],
         }
     }
 
