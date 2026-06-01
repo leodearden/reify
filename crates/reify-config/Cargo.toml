@@ -15,6 +15,7 @@ toml.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+reify-ir.workspace = true
 
 # Dev-only fan-in for cross-crate consistency tests. These crates are NOT
 # runtime dependencies of reify-config — adding them here keeps the
