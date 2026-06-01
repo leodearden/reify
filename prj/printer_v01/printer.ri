@@ -27,17 +27,22 @@
 //  - The lowest X-rail bearing sits a small clearance above the build volume and
 //    DEFINES the motion-system Z height (gantry fixed high; the Z-bed drops).
 //  - CoreXY drive tendons (γ): two belts, A & B. In real CoreXY a single rope
-//    drives X and Y jointly, so EACH belt runs along BOTH Y rails AND crosses
-//    the gantry; and (spec "paired in-plane tendons") each run is DOUBLED above
-//    and below its rail axis to null moments about the bearing. So per Y rail
-//    FOUR tendons — belt A an outer ±z_a pair, belt B an inner ±z_b pair — all
-//    in the rail's vertical plane (ON the rail axis, x = ±y_rail_offset). Plus
-//    four gantry crosses at the SAME four Z levels => TWELVE spans, from one
-//    TendonQuad placed three times (each rail as-is; the cross turned 90° about
-//    Z). The stacked X-gantry rails are spread (x_rail_offset) to leave room for
-//    the crosses to thread between them. Idler routing pulleys (608ZZ bearing +
-//    grooved sheave) stack at each Y-carriage corner, turning each belt from its
-//    rail run onto the gantry cross. Deferred: the head-position fore/aft split +
+//    drives X and Y jointly: each belt runs along ONE Y rail, crosses the gantry,
+//    and returns along the OTHER Y rail — a diagonal. Belt A takes the FRONT half
+//    of the right rail and the BACK half of the left rail; belt B the converse. A
+//    belt turns 90° onto the gantry at the carriage idler, so each rail run is a
+//    HALF span (carriage → rail end), NOT the full rail — the far half (no belt)
+//    is trimmed, leaving a SHARP corner where rail meets cross (the idler wrap
+//    profile is not modelled yet). Each run is DOUBLED above and below its rail
+//    axis (±z_a / ±z_b) to null moments (spec "paired in-plane tendons"). So per
+//    rail FOUR half-spans (belt A ±z_a, belt B ±z_b) + four FULL gantry crosses at
+//    the same Z levels => TWELVE spans: a RailTendons (half-spans, A-front/B-back)
+//    on each rail + one TendonQuad (full spans) turned 90° for the crosses. The
+//    A/B fore-aft split AND the per-rail converse both come from a 180°-about-Z
+//    placement of the left rail + left idler stack. The stacked X-gantry rails are
+//    spread (x_rail_offset) to leave room for the crosses to thread between them.
+//    Idler routing pulleys (608ZZ + grooved sheave) stack at each Y-carriage
+//    corner. Deferred: the gantry-cross fore/aft split (crosses still run on y=0),
 //    live x_head/y_head tracking (blocked by the override drop below).
 //
 // VISIBILITY: reference geometry (build-volume box, bed travel centreline) is
@@ -89,6 +94,21 @@ pub structure BearingRod {
 pub structure LinearTendon {
     param diameter : Length = 6mm
     param length   : Length = 800mm
+
+    let body = translate(cylinder(diameter / 2, length), 0mm, 0mm, 0mm - length / 2)
+
+    constraint diameter > 0mm
+    constraint length > 0mm
+}
+
+/// Half-length on-rail tendon span (carriage → rail end): a 6 mm cylinder along
+/// local +Z, centred. == half the 800 mm Y rail. CoreXY routes each belt along a
+/// rail on ONLY ONE side of the carriage (it turns onto the gantry cross at the
+/// carriage idler), so a rail belt run is a HALF span — not the full rail. The
+/// gantry crosses still use the full-length LinearTendon (via TendonQuad).
+pub structure HalfTendon {
+    param diameter : Length = 6mm
+    param length   : Length = 400mm
 
     let body = translate(cylinder(diameter / 2, length), 0mm, 0mm, 0mm - length / 2)
 
@@ -170,17 +190,18 @@ pub structure IdlerPulley {
 
 // ── Tendon routing (γ: doubled belts A/B on both rails + gantry crosses) ─────
 
-/// Four tendon spans sharing one axis, in the vertical plane through that axis:
-/// belt A as an OUTER pair (±z_a) and belt B as an INNER pair (±z_b), each pair
-/// straddling the axis above and below to null moments about the bearing (spec
-/// "paired in-plane tendons"). The four spans run along local +Y; the composing
-/// site keeps the quad as-is for a Y rail or turns it 90° about Z for the gantry
-/// X-cross, then translates it into place. One structure reused for all three
-/// tendon groups, so the rail runs and the crosses share the SAME four Z levels
-/// by construction — no per-site override (which would be dropped; header CAVEAT).
+/// Four FULL-LENGTH tendon spans sharing one axis, in the vertical plane through
+/// that axis: belt A as an OUTER pair (±z_a) and belt B as an INNER pair (±z_b),
+/// each pair straddling the axis above and below to null moments about the bearing
+/// (spec "paired in-plane tendons"). The four spans run along local +Y; the
+/// composing site turns the quad 90° about Z for the gantry X-cross and translates
+/// it into place.
 ///
-/// Spans reuse LinearTendon's 800mm default: Y rails are 800mm and the gantry is
-/// 800mm carriage-to-carriage (== 2 * y_rail_offset), so one length serves both.
+/// Used now for the GANTRY CROSSES only — the full 800mm == 2 * y_rail_offset
+/// carriage-to-carriage gantry span (spans reuse LinearTendon's 800mm default).
+/// The Y-rail runs are HALF spans (CoreXY turns each belt onto the gantry at the
+/// carriage), so they use RailTendons, not this. z_a/z_b kept in step with
+/// RailTendons / CarriageIdlers (override drop — task 4147).
 pub structure TendonQuad {
     /// Outer (belt A) half-separation above/below the axis.
     param z_a : Length = 80mm
@@ -195,6 +216,40 @@ pub structure TendonQuad {
     sub a_lower = LinearTendon() at transform3(rot_to_y, vec3(0mm, 0mm, neg_z_a))  // belt A, below axis
     sub b_upper = LinearTendon() at transform3(rot_to_y, vec3(0mm, 0mm, z_b))      // belt B, above axis
     sub b_lower = LinearTendon() at transform3(rot_to_y, vec3(0mm, 0mm, neg_z_b))  // belt B, below axis
+
+    constraint z_a > z_b
+    constraint z_b > 0mm
+}
+
+/// The drive tendons running along ONE Y rail, trimmed to true CoreXY topology.
+/// Each belt runs the rail on ONLY ONE side of the carriage (it turns onto the
+/// gantry cross at the carriage idler), so belt A is a HALF span toward the FRONT
+/// (+Y, y∈[0,+400mm]) and belt B a half span toward the BACK (−Y, y∈[−400,0mm]) —
+/// the diagonal CoreXY routing (belt A: front-this-rail ↔ back-other-rail; belt B
+/// the converse). Each belt is doubled above/below the rail axis (±z_a / ±z_b) for
+/// moment nulling, as on the cross. The half meets the gantry cross at y = 0 with
+/// a SHARP corner (the idler wrap profile is not modelled). This is the A-FRONT /
+/// B-BACK rail; the opposite rail gets the converse via a 180°-about-Z placement
+/// (DriveTendons), matching the idler fore/aft flip. z_a/z_b kept in step with
+/// TendonQuad / CarriageIdlers (override drop — task 4147).
+pub structure RailTendons {
+    param z_a : Length = 80mm
+    param z_b : Length = 55mm
+
+    let rot_to_y = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)  // span runs along local +Y
+    // Centre offset = HalfTendon.length / 2, so a +half span is y∈[0,+400] (front)
+    // and a −half span is y∈[−400,0] (back) — both anchored on the cross line y=0.
+    let half     = 200mm
+    let neg_half = 0mm - half
+    let neg_z_a  = 0mm - z_a
+    let neg_z_b  = 0mm - z_b
+
+    // Belt A → FRONT half, doubled ±z_a.
+    sub a_upper = HalfTendon() at transform3(rot_to_y, vec3(0mm, half, z_a))
+    sub a_lower = HalfTendon() at transform3(rot_to_y, vec3(0mm, half, neg_z_a))
+    // Belt B → BACK half, doubled ±z_b.
+    sub b_upper = HalfTendon() at transform3(rot_to_y, vec3(0mm, neg_half, z_b))
+    sub b_lower = HalfTendon() at transform3(rot_to_y, vec3(0mm, neg_half, neg_z_b))
 
     constraint z_a > z_b
     constraint z_b > 0mm
@@ -237,25 +292,32 @@ pub structure CarriageIdlers {
     constraint ab_split > 0mm
 }
 
-/// CoreXY drive tendons — TWELVE spans + the corner idler stacks. Belts A (outer)
-/// and B (inner), each doubled above/below for moment balance: a TendonQuad on
-/// EACH Y rail (eight Y runs, ON the rail axis at x = ±rail_x) plus a TendonQuad
-/// turned 90° about Z for the four gantry crosses — all sharing the four Z levels
-/// ±z_a / ±z_b. A CarriageIdlers stack at each Y-carriage (x = ±rail_x, y = 0)
-/// turns each belt from its rail run onto the cross. v0.1 simplifications,
-/// deferred: the head-position fore/aft split and live x_head/y_head tracking
-/// (DriveTendons cannot receive them while sub-site overrides are dropped — CAVEAT).
+/// CoreXY drive tendons — TWELVE spans + the corner idler stacks, routed to true
+/// CoreXY topology. Belts A (outer ±z_a) and B (inner ±z_b), each doubled above/
+/// below for moment balance. Each belt runs ONE side of each rail only (it turns
+/// onto the gantry at the carriage), so the rails use RailTendons (HALF spans):
+/// the right rail A-front/B-back, the left rail the CONVERSE via a 180°-about-Z
+/// placement (matching the idler flip). The gantry crosses stay FULL-length — a
+/// TendonQuad turned 90° about Z. A CarriageIdlers stack at each Y-carriage turns
+/// each belt from its rail run onto the cross. Deferred: the gantry-cross fore/aft
+/// split (crosses still run on y = 0) and live x_head/y_head tracking (DriveTendons
+/// cannot receive them while sub-site overrides are dropped — CAVEAT).
 pub structure DriveTendons {
-    /// Transverse position of each rail quad == the Y-rail axis (kept in step
-    /// with CoreXY.y_rail_offset so the tendons sit in the rail's vertical plane).
+    /// Transverse position of each rail == the Y-rail axis (kept in step with
+    /// CoreXY.y_rail_offset so the tendons sit in the rail's vertical plane).
     param rail_x : Length = 400mm
 
     let rot_to_cross = orient_axis_angle(vec3(0mm, 0mm, 1m), 90deg)  // Y runs → gantry X-cross
+    let flip_ab      = orient_axis_angle(vec3(0mm, 0mm, 1m), 180deg) // swap A↔B fore/aft (rails + idlers)
     let neg_rail_x   = 0mm - rail_x
 
-    sub rail_r = TendonQuad() at transform3(orient_identity(), vec3(rail_x,     0mm, 0mm))  // right Y rail
-    sub rail_l = TendonQuad() at transform3(orient_identity(), vec3(neg_rail_x, 0mm, 0mm))  // left Y rail
-    sub cross  = TendonQuad() at transform3(rot_to_cross,      vec3(0mm,        0mm, 0mm))  // gantry crosses
+    // Y rails: HALF spans (RailTendons), A-front/B-back on the right; the left
+    // rail is the CONVERSE via 180°-about-Z (the rail tendons lie on x = 0 in the
+    // child frame, so the rotation only swaps the A/B fore/aft, not the rail X).
+    sub rail_r = RailTendons() at transform3(orient_identity(), vec3(rail_x,     0mm, 0mm))  // right Y rail
+    sub rail_l = RailTendons() at transform3(flip_ab,           vec3(neg_rail_x, 0mm, 0mm))  // left Y rail (converse)
+    // Gantry crosses: FULL-length quad turned 90° about Z.
+    sub cross  = TendonQuad() at transform3(rot_to_cross,      vec3(0mm,        0mm, 0mm))
 
     // Idler placement: TANGENT to the tendons it routes, not centred on the
     // rail×cross intersection. The rope rides the sheave at pitch radius r_pitch,
@@ -269,7 +331,6 @@ pub structure DriveTendons {
     let r_pitch    = 18mm
     let idler_in_r = rail_x - r_pitch         // right stack: inboard of the right rail
     let idler_in_l = neg_rail_x + r_pitch     // left stack: inboard of the left rail
-    let flip_ab    = orient_axis_angle(vec3(0mm, 0mm, 1m), 180deg)  // swap A↔B fore/aft
 
     // Right carriage: belt A turns in FRONT (+Y), belt B BEHIND (−Y).
     sub idlers_r = CarriageIdlers() at transform3(orient_identity(), vec3(idler_in_r, 0mm, 0mm))
