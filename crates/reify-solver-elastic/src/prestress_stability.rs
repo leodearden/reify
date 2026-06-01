@@ -161,6 +161,197 @@ pub(crate) fn assemble_equilibrium_matrix(
     a
 }
 
+/// Dot product of two equal-length DOF vectors stored as slices.
+fn dot(a: &[f64], b: &[f64]) -> f64 {
+    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+}
+
+/// Modified Gram–Schmidt orthonormalisation of a set of column vectors.
+///
+/// Returns an orthonormal basis of `span(vectors)`; any vector whose residual
+/// norm (after subtracting its projection onto the already-accepted basis) falls
+/// to `drop_tol` is linearly dependent on the accepted set and is dropped — so
+/// the returned count is the numerical rank of the input. The inputs here are
+/// unit-norm eigenvectors / rigid-body generators, so a residual at `drop_tol`
+/// (≈ 1e-8) is numerically zero against the O(1) surviving directions (the same
+/// wide-gap rationale as [`NULLITY_REL_TOL`]).
+fn orthonormalize_columns(vectors: &[Vec<f64>], drop_tol: f64) -> Vec<Vec<f64>> {
+    let mut basis: Vec<Vec<f64>> = Vec::new();
+    for v in vectors {
+        let mut w = v.clone();
+        for b in &basis {
+            let proj = dot(&w, b);
+            for (wi, bi) in w.iter_mut().zip(b.iter()) {
+                *wi -= proj * bi;
+            }
+        }
+        let norm = dot(&w, &w).sqrt();
+        if norm > drop_tol {
+            for wi in w.iter_mut() {
+                *wi /= norm;
+            }
+            basis.push(w);
+        }
+    }
+    basis
+}
+
+/// Form the Gram matrix `AAᵀ` (`p × p`) of `a` (`p × m`) by explicit
+/// accumulation. `AAᵀ` is symmetric PSD and shares `A`'s left null space
+/// (`AAᵀ v = 0 ⟺ Aᵀ v = 0`, since `vᵀAAᵀv = ‖Aᵀv‖²`), so its zero-eigenvalue
+/// eigenvectors span `null(Aᵀ)` — the infinitesimal mechanisms before
+/// rigid-body removal.
+fn gram_self_transpose(a: &Mat<f64>) -> Mat<f64> {
+    let p = a.nrows();
+    let m = a.ncols();
+    let mut gram = Mat::<f64>::zeros(p, p);
+    for i in 0..p {
+        for j in 0..p {
+            let mut acc = 0.0;
+            for c in 0..m {
+                acc += a[(i, c)] * a[(j, c)];
+            }
+            gram[(i, j)] = acc;
+        }
+    }
+    gram
+}
+
+/// Orthonormal basis of the null space of a symmetric Gram matrix: its
+/// eigenvectors whose eigenvalue magnitude is `≤ rel_tol · max|λ|`.
+///
+/// Mirrors [`crate::form_find_free`]'s `classify_spectrum` (dense
+/// `self_adjoint_eigen`, relative threshold), returning the null eigenvectors as
+/// owned columns. The eigenvectors of a real symmetric matrix are orthonormal,
+/// so the returned set is already an orthonormal null-space basis.
+fn null_space_basis(gram: &Mat<f64>, rel_tol: f64) -> Vec<Vec<f64>> {
+    let n = gram.nrows();
+    if n == 0 {
+        return Vec::new();
+    }
+    let eig = gram
+        .self_adjoint_eigen(Side::Lower)
+        .expect("Gram matrix is real symmetric PSD; self-adjoint EVD must succeed");
+    let s = eig.S();
+    let u = eig.U();
+    let eigenvalues: Vec<f64> = (0..n).map(|i| s[i]).collect();
+    let max_mag = eigenvalues.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+    let threshold = rel_tol * max_mag;
+    let mut basis = Vec::new();
+    for (i, &lambda) in eigenvalues.iter().enumerate() {
+        if lambda.abs() <= threshold {
+            basis.push((0..n).map(|r| u[(r, i)]).collect());
+        }
+    }
+    basis
+}
+
+/// Assemble the six rigid-body generators of `nodes` as columns of a `3N × 6`
+/// matrix, in node-major / axis-minor DOF order (`3r + α`).
+///
+/// Columns 0–2 are the unit translations along `x`, `y`, `z` (every node moves
+/// by `eₐ`); columns 3–5 are the infinitesimal rotations about the `x`, `y`, `z`
+/// axes through the centroid — node `r`'s velocity is `ω × (xᵣ − centroid)`.
+/// Together they span the motions that carry no internal strain;
+/// [`extract_internal_mechanisms`] projects this span out of `null(Aᵀ)` to
+/// isolate the *internal* mechanisms. The columns are intentionally NOT
+/// pre-orthonormalised — the caller orthonormalises them, which robustly recovers
+/// the true rigid rank for degenerate/planar geometry (where it may be < 6).
+fn rigid_body_modes(nodes: &[[f64; 3]]) -> Mat<f64> {
+    let n = nodes.len();
+    let mut centroid = [0.0_f64; 3];
+    for node in nodes {
+        for (axis, c) in centroid.iter_mut().enumerate() {
+            *c += node[axis];
+        }
+    }
+    if n > 0 {
+        for c in centroid.iter_mut() {
+            *c /= n as f64;
+        }
+    }
+
+    let mut modes = Mat::<f64>::zeros(3 * n, 6);
+    for (r, node) in nodes.iter().enumerate() {
+        // Translations: unit displacement of node r along each axis.
+        for axis in 0..3 {
+            modes[(3 * r + axis, axis)] = 1.0;
+        }
+        // Infinitesimal rotations: velocity = ω × d, d = node − centroid.
+        let d = [
+            node[0] - centroid[0],
+            node[1] - centroid[1],
+            node[2] - centroid[2],
+        ];
+        // ω = x-axis ⇒ (0, −d_z, d_y)
+        modes[(3 * r + 1, 3)] = -d[2];
+        modes[(3 * r + 2, 3)] = d[1];
+        // ω = y-axis ⇒ (d_z, 0, −d_x)
+        modes[(3 * r, 4)] = d[2];
+        modes[(3 * r + 2, 4)] = -d[0];
+        // ω = z-axis ⇒ (−d_y, d_x, 0)
+        modes[(3 * r, 5)] = -d[1];
+        modes[(3 * r + 1, 5)] = d[0];
+    }
+    modes
+}
+
+/// Extract an orthonormal basis of the *internal* infinitesimal mechanisms of
+/// the framework: `null(Aᵀ)` with the rigid-body span projected out.
+///
+/// 1. `null(Aᵀ)` = the zero-eigenvalue eigenvectors of `AAᵀ`
+///    ([`null_space_basis`] on [`gram_self_transpose`]).
+/// 2. Orthonormalise the six rigid-body generators ([`rigid_body_modes`]); the
+///    surviving count is the true rigid rank `n_rigid` (6 for a non-degenerate
+///    3-D form, fewer for planar/collinear node sets).
+/// 3. Subtract the rigid-span projection from each `null(Aᵀ)` vector and
+///    re-orthonormalise; vectors that were entirely rigid collapse below the drop
+///    tolerance and are removed.
+///
+/// The returned matrix is `3N × m_count` with orthonormal columns, where
+/// `m_count = nullity(Aᵀ) − n_rigid` is the internal mechanism count (1 for the
+/// canonical triplex: its single non-affine prism twist).
+pub(crate) fn extract_internal_mechanisms(a: &Mat<f64>, nodes: &[[f64; 3]]) -> Mat<f64> {
+    let dim = a.nrows();
+
+    // 1. null(Aᵀ): left null space of A via the zero eigenvectors of AAᵀ.
+    let gram = gram_self_transpose(a);
+    let null_vectors = null_space_basis(&gram, NULLITY_REL_TOL);
+
+    // 2. Orthonormal rigid-body basis (rank = n_rigid).
+    let rigid = rigid_body_modes(nodes);
+    let rigid_cols: Vec<Vec<f64>> = (0..rigid.ncols())
+        .map(|c| (0..dim).map(|r| rigid[(r, c)]).collect())
+        .collect();
+    let rigid_basis = orthonormalize_columns(&rigid_cols, NULLITY_REL_TOL);
+
+    // 3. Project the rigid span out of each null(Aᵀ) vector.
+    let mut projected: Vec<Vec<f64>> = Vec::with_capacity(null_vectors.len());
+    for v in &null_vectors {
+        let mut w = v.clone();
+        for rb in &rigid_basis {
+            let proj = dot(&w, rb);
+            for (wi, ri) in w.iter_mut().zip(rb.iter()) {
+                *wi -= proj * ri;
+            }
+        }
+        projected.push(w);
+    }
+
+    // 4. Re-orthonormalise; purely-rigid residuals drop out, leaving the
+    //    internal mechanism basis.
+    let mechanisms = orthonormalize_columns(&projected, NULLITY_REL_TOL);
+
+    let m_count = mechanisms.len();
+    let mut out = Mat::<f64>::zeros(dim, m_count);
+    for (c, col) in mechanisms.iter().enumerate() {
+        for (r, &val) in col.iter().enumerate() {
+            out[(r, c)] = val;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
