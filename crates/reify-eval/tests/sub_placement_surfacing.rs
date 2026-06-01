@@ -16,6 +16,7 @@
 //! not model `at` / `aux`).
 
 use reify_core::Severity;
+use reify_ir::ExportFormat;
 use reify_test_support::{MockConstraintChecker, MockGeometryKernel, compile_source_with_stdlib};
 
 /// Build a Mock-kernel engine for structural surfacing assertions.
@@ -863,5 +864,139 @@ structure B {
         "cycle guard must bound the mutual-recursion walk; got {} surfaces: {:?}",
         result.meshes.len(),
         paths
+    );
+}
+
+/// step-3 (T7, real OCCT, `OCCT_AVAILABLE`-gated) — RED: `engine.build()` on
+/// a 2-product + 1-aux assembly must export exactly **2** solids in the STEP
+/// output (one per product sub, with composed world transforms baked in); the
+/// `aux` body must be ABSENT (excluded → not 3), and the un-wired single-last-
+/// handle export must NOT produce only 1 un-placed solid.
+///
+/// Golden geometry (box(20mm) centered at origin, half-extent 0.01 m):
+///   Assembly.a  placed at +10 mm X  → world centre (0.01, 0, 0)
+///   Assembly.b  placed at +50 mm X  → world centre (0.05, 0, 0)
+///   Assembly.marker (aux)  placed at +100 mm Y  — excluded from export
+///
+/// Fails on base because `Engine::build` exports only `*step_handles.last()`
+/// — a single un-placed solid — not the two placed product bodies.
+#[test]
+fn multi_body_export_has_two_product_solids_not_three_not_one() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let source = r#"structure Child {
+    let body = box(20mm, 20mm, 20mm)
+}
+structure AuxPart {
+    let body = box(5mm, 5mm, 5mm)
+}
+structure Assembly {
+    sub a : Child at transform3(orient_identity(), vec3(10mm, 0mm, 0mm))
+    sub b : Child at transform3(orient_identity(), vec3(50mm, 0mm, 0mm))
+    aux sub marker : AuxPart at transform3(orient_identity(), vec3(0mm, 100mm, 0mm))
+}"#;
+    let compiled = compile_source_with_stdlib(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "unexpected compile errors: {:?}",
+        compile_errors
+    );
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut planner = reify_geometry::SingleKernelHolder::new();
+    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+    let geom_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        geom_errors.is_empty(),
+        "unexpected geometry errors: {:?}",
+        geom_errors
+    );
+
+    let step_bytes = result
+        .geometry_output
+        .expect("build must produce geometry output for an assembly with product subs");
+    let step_str = String::from_utf8(step_bytes).expect("STEP output must be valid UTF-8");
+
+    // Count manifold solid B-Reps: each solid body appears as one
+    // MANIFOLD_SOLID_BREP entity in the STEP data section.
+    let solid_count = step_str.matches("MANIFOLD_SOLID_BREP(").count();
+    assert_eq!(
+        solid_count, 2,
+        "exported STEP must contain exactly 2 product solids (aux excluded); \
+         got {solid_count} MANIFOLD_SOLID_BREP entities.\n\
+         (1 → old last-handle bug; 3 → aux not excluded)"
+    );
+}
+
+/// Regression lock (T7): a single-body structure still exports exactly 1
+/// solid after the placed-product export path is wired in — the single-body
+/// path (0 sub children) must not be wrapped in a compound or otherwise
+/// regressed.
+///
+/// This test is GREEN on base (the old `*step_handles.last()` export produces
+/// 1 solid for single-body structures) and must remain GREEN after step-4.
+#[test]
+fn single_body_export_regression_one_solid() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let source = r#"structure Bracket {
+    let body = box(30mm, 20mm, 10mm)
+}"#;
+    let compiled = compile_source_with_stdlib(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "unexpected compile errors: {:?}",
+        compile_errors
+    );
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut planner = reify_geometry::SingleKernelHolder::new();
+    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+    let geom_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        geom_errors.is_empty(),
+        "unexpected geometry errors: {:?}",
+        geom_errors
+    );
+
+    let step_bytes = result
+        .geometry_output
+        .expect("single-body build must produce geometry output");
+    let step_str = String::from_utf8(step_bytes).expect("STEP output must be valid UTF-8");
+
+    let solid_count = step_str.matches("MANIFOLD_SOLID_BREP(").count();
+    assert_eq!(
+        solid_count, 1,
+        "single-body structure must export exactly 1 solid; got {solid_count}"
     );
 }
