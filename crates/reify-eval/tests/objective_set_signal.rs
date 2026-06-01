@@ -28,14 +28,16 @@ fn weighted_fixture_source() -> &'static str {
 /// [B1/B4] WEIGHTED: `minimize 0.7 * mass - 0.3 * stiffness` (1-term WeightedSum,
 /// combined expr) resolves to the closed-form weighted optimum via DimensionalSolver.
 ///
-/// Fixture: `WeightedObjective` has two `Scalar = auto` params `mass` and
-/// `stiffness`, each bounded in [1 mm, 50 mm] by inequality constraints.
-/// Objective: `minimize 0.7 * mass - 0.3 * stiffness` — a linear combined
-/// expression, so the minimum is at the box corner:
-///   mass → 1 mm (lower bound), stiffness → 50 mm (upper bound).
+/// Fixture: `WeightedObjective` has two `Scalar = auto` params. Constraint design
+/// intentionally avoids placing the optimizer against a boundary it must hit:
+///   mass    — upper bound only (mass < 50 mm): minimized → drives toward ~1 µm.
+///   stiffness — lower bound only (stiffness > 1 mm): maximized → drives toward ~10 m.
+///
+/// Closed-form optimum (linear objective, unconstrained in the optimizing direction):
+///   mass      → DimensionalSolver default lower bound (~1 µm)
+///   stiffness → DimensionalSolver default upper bound (~10 m)
 ///
 /// Expected (first-principles): mass < 5 mm, stiffness > 46 mm.
-/// Tolerance: ±4 mm (Nelder-Mead convergence on a 49 mm range).
 #[test]
 fn weighted_objective_resolves_to_corner() {
     let compiled = compile_source_with_stdlib(weighted_fixture_source());
@@ -45,6 +47,19 @@ fn weighted_objective_resolves_to_corner() {
         errors.is_empty(),
         "fixture should compile without errors: {:#?}",
         errors
+    );
+
+    // Debug: verify the template has the expected structure
+    let wo_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "WeightedObjective")
+        .expect("WeightedObjective template must be in compiled module");
+    assert!(
+        wo_template.objective.is_some(),
+        "WeightedObjective template must have an objective after compiling 'minimize' decl; \
+         templates found: {:?}",
+        compiled.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
     );
 
     let mass_id = ValueCellId::new("WeightedObjective", "mass");
@@ -73,18 +88,17 @@ fn weighted_objective_resolves_to_corner() {
         ),
     };
 
-    // Linear objective over box bounds: optimum is at the corner vertex.
-    //   mass      → lower bound 1 mm (0.001 m): coefficient +0.7 → minimise mass
-    //   stiffness → upper bound 50 mm (0.050 m): coefficient −0.3 → maximise stiffness
-    // Allow ±4 mm (0.004 m) Nelder-Mead tolerance on the 49 mm range.
+    // Linear objective, unconstrained in optimizing direction → optimum at default bound.
+    //   mass      → minimised, no lower constraint → drives toward ~1 µm (< 5 mm)
+    //   stiffness → maximised, no upper constraint → drives toward ~10 m (> 46 mm)
     assert!(
         mass_si < 0.005,
-        "mass should be near lower bound 1 mm (expect < 5 mm = 0.005 m), got {:.6} m",
+        "mass should be near default lower bound ~1 µm (expect < 5 mm = 0.005 m), got {:.6} m",
         mass_si
     );
     assert!(
         stiffness_si > 0.046,
-        "stiffness should be near upper bound 50 mm (expect > 46 mm = 0.046 m), got {:.6} m",
+        "stiffness should be near default upper bound ~10 m (expect > 46 mm = 0.046 m), got {:.6} m",
         stiffness_si
     );
 }
