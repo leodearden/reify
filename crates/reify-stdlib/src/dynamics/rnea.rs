@@ -300,7 +300,10 @@ pub fn inverse_dynamics_open_chain(links: &[RneaLink], gravity: [f64; 3]) -> Vec
 
 #[cfg(test)]
 mod tests {
-    use super::{default_gravity, inverse_dynamics_open_chain, JointCompliance, RneaLink};
+    use super::{
+        assemble_joint_space_inertia, default_gravity, inverse_dynamics_open_chain,
+        JointCompliance, RneaLink,
+    };
     use crate::dynamics::spatial::{Frame3, SpatialTransform6, SpatialVector6};
 
     /// Build the `(w, x, y, z)` unit quaternion for a rotation of `theta`
