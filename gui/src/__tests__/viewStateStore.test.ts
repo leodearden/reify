@@ -2582,3 +2582,51 @@ describe('viewStateStore — applyPersistedState / serializePersistedState (step
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// T6 acceptance: default-hidden aux + outline toggle (step-7)
+// ---------------------------------------------------------------------------
+
+describe('viewStateStore — T6 default-hidden aux realization + toggle', () => {
+  it('getAllEffective: product realization visible, aux realization hidden by default; toggle reveals it', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+
+      // Tree: Asm { part sub (product realization) + jig sub (aux realization) }
+      const productPath = 'Asm.part#realization[0]';
+      const auxPath = 'Asm.jig#realization[0]';
+      const tree = [
+        makeNode({
+          entity_path: 'Asm',
+          kind: 'structure',
+          children: [
+            makeNode({ entity_path: 'Asm.part', kind: 'sub',
+              children: [
+                makeNode({ entity_path: productPath, kind: 'realization', default_visible: true }),
+              ],
+            }),
+            makeNode({ entity_path: 'Asm.jig', kind: 'sub',
+              children: [
+                makeNode({ entity_path: auxPath, kind: 'realization', default_visible: false }),
+              ],
+            }),
+          ],
+        }),
+      ];
+
+      store.regenerateAutoViews(tree);
+
+      // Product child is visible; aux child is hidden by default.
+      const allEffective = store.getAllEffective();
+      expect(allEffective[productPath]).toBe('show');
+      expect(allEffective[auxPath]).toBe('hidden');
+
+      // Simulate outline toggle: user explicitly shows the aux entity.
+      store.setVisibility(auxPath, 'show');
+      // No rebuild — explicit override reveals it immediately.
+      expect(store.getEffectiveVisibility(auxPath)).toBe('show');
+
+      dispose();
+    });
+  });
+});

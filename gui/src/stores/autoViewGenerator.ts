@@ -83,11 +83,17 @@ function isLetGeometryType(node: EntityTreeNode): boolean {
  * produces an explicit per-node entry rather than a fallback.
  *
  * Rule (in precedence order):
+ * 0. `default_visible === false` → 'hidden' (aux body / aux-subtree hidden-by-default;
+ *    takes precedence over trait_geometry so an aux realization that happens to be
+ *    trait_geometry is still hidden until the user toggles it on).
  * 1. `trait_geometry` → 'show'
  * 2. `kind === 'let'` AND `type_name` matches `\b(Solid|Surface|Curve)\b` (anchored) → 'hidden'
  * 3. Everything else (structure, sub, param, occurrence, auto, port, …) → 'show'
  */
 export function defaultVisibilityFor(node: EntityTreeNode): VisibilityState {
+  // Rule 0: aux hidden-by-default (T6). Strict === false so absent/true nodes
+  // fall through to the existing rules unchanged (backward-compatible).
+  if (node.default_visible === false) return 'hidden';
   if (node.trait_geometry) return 'show';
   if (isLetGeometryType(node)) return 'hidden';
   return 'show';

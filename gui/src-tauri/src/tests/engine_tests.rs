@@ -3424,6 +3424,7 @@ fn entity_tree_node_serialization_roundtrip() {
         trait_geometry: false,
         children: vec![],
         freshness: "final".to_string(),
+        default_visible: true,
     };
     let json = serde_json::to_string(&node).expect("serialize should succeed");
     let back: EntityTreeNode = serde_json::from_str(&json).expect("deserialize should succeed");
@@ -3441,6 +3442,7 @@ fn entity_tree_node_nested_children_serialize_correctly() {
         trait_geometry: false,
         children: vec![],
         freshness: "final".to_string(),
+        default_visible: true,
     };
     let root = EntityTreeNode {
         entity_path: "Bracket".to_string(),
@@ -3451,6 +3453,7 @@ fn entity_tree_node_nested_children_serialize_correctly() {
         trait_geometry: false,
         children: vec![child],
         freshness: "final".to_string(),
+        default_visible: true,
     };
     let json = serde_json::to_string(&root).expect("serialize should succeed");
     assert!(json.contains("\"entity_path\":\"Bracket.width\""));
@@ -3474,6 +3477,7 @@ fn entity_tree_node_default_type_name_is_none() {
         trait_geometry: false,
         children: vec![],
         freshness: "final".to_string(),
+        default_visible: true,
     };
     let json = serde_json::to_string(&node).expect("serialize should succeed");
     let back: EntityTreeNode = serde_json::from_str(&json).expect("deserialize should succeed");
@@ -4298,7 +4302,7 @@ fn build_template_node_self_reference_does_not_stack_overflow() {
     // BEFORE step-16 fix: this call recurses infinitely → stack overflow.
     // AFTER step-16 fix: the is_recursive check stops recursion and returns
     // a sub node with empty children.
-    let node = build_template_node(a_template, "A", &compiled, None);
+    let node = build_template_node(a_template, "A", &compiled, None, false);
 
     let sub_x = node
         .children
@@ -4342,8 +4346,8 @@ fn build_template_node_mutual_recursion_does_not_stack_overflow() {
     // BEFORE step-16 fix: A → B → A → … stack overflow.
     // AFTER step-16 fix: A.b has empty children (B is_recursive), B.a has
     // empty children (A is_recursive).
-    let node_a = build_template_node(a_template, "A", &compiled, None);
-    let node_b = build_template_node(b_template, "B", &compiled, None);
+    let node_a = build_template_node(a_template, "A", &compiled, None, false);
+    let node_b = build_template_node(b_template, "B", &compiled, None, false);
 
     let sub_b = node_a
         .children
@@ -4398,7 +4402,7 @@ fn build_template_node_non_recursive_parent_stops_at_recursive_child() {
     // BEFORE step-16 fix: Container → A → A → … stack overflow.
     // AFTER step-16 fix: Container expands normally, Container.a (pointing to
     // recursive A) has empty children instead of expanding A.
-    let node = build_template_node(container_template, "Container", &compiled, None);
+    let node = build_template_node(container_template, "Container", &compiled, None, false);
 
     // Container should have exactly one sub child
     let sub_a = node
@@ -10719,5 +10723,202 @@ fn displaced_sample_degenerate_stride_returns_original_position() {
         result,
         [point[0] as f32, point[1] as f32, point[2] as f32],
         "displacement field with stride < 3 must return original vertex position (guard: w.len() >= 3)"
+    );
+}
+
+// ---- T6 Steps 1-4: default_visible on EntityTreeNode realization nodes ----
+
+/// step-1 RED: a root template with a plain `let body` and an `aux let blank`
+/// realization. After get_entity_tree(), the plain body node must have
+/// `default_visible == true` and the aux blank node must have
+/// `default_visible == false`.
+///
+/// Fails to compile until EntityTreeNode gains the `default_visible` field
+/// and build_template_node sets it on realization nodes.
+#[test]
+fn get_entity_tree_aux_realization_default_visible_false() {
+    let source = r#"structure Single {
+    let body = box(20mm, 20mm, 20mm)
+    aux let blank = cylinder(8mm, 40mm)
+}"#;
+    let mut session = make_session();
+    session.load_from_source(source, "single").expect("load");
+
+    let tree = session.get_entity_tree();
+    let root = tree
+        .iter()
+        .find(|n| n.entity_path == "Single")
+        .expect("Single root must exist");
+
+    let body_node = root
+        .children
+        .iter()
+        .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some("body"))
+        .expect("realization node for 'body' must be present");
+    let blank_node = root
+        .children
+        .iter()
+        .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some("blank"))
+        .expect("realization node for 'blank' must be present");
+
+    assert!(
+        body_node.default_visible,
+        "plain `let body` realization must have default_visible == true"
+    );
+    assert!(
+        !blank_node.default_visible,
+        "aux `let blank` realization must have default_visible == false"
+    );
+}
+
+/// step-3 RED: a root assembly with a plain `sub part : Part at <pose>` and an
+/// `aux sub jig : Jig at <pose>`, where Part and Jig each declare a plain
+/// `let body = box(...)` (NOT directly aux).
+///
+/// After get_entity_tree():
+/// - `Asm.part#realization[0]`.default_visible == true  (product child, visible)
+/// - `Asm.jig#realization[0]`.default_visible == false  (inherited from aux sub)
+///
+/// Also verifies that placed children appear in the tree under composed paths
+/// (world-pose surfacing parity with T5).
+///
+/// Fails because step-2 only reads `real.is_aux` — the jig body is incorrectly
+/// true. Passes after step-4 threads `aux_ancestor` through build_template_node.
+#[test]
+fn get_entity_tree_aux_sub_inherits_default_visible_false() {
+    let source = r#"structure Part {
+    let body = box(10mm, 10mm, 10mm)
+}
+structure Jig {
+    let body = box(5mm, 5mm, 5mm)
+}
+structure Asm {
+    sub part : Part at transform3(orient_identity(), vec3(30mm, 0mm, 0mm))
+    aux sub jig : Jig at transform3(orient_identity(), vec3(50mm, 0mm, 0mm))
+}"#;
+    let mut session = make_session();
+    session.load_from_source(source, "asm").expect("load");
+
+    let tree = session.get_entity_tree();
+
+    let asm_root = tree
+        .iter()
+        .find(|n| n.entity_path == "Asm")
+        .expect("Asm root must exist");
+
+    // Part sub-node: find the realization child under Asm.part
+    let part_sub = asm_root
+        .children
+        .iter()
+        .find(|n| n.entity_path == "Asm.part")
+        .expect("Asm.part sub node must exist");
+    let part_realization = part_sub
+        .children
+        .iter()
+        .find(|n| n.kind == "realization")
+        .expect("Asm.part#realization[0] must exist under Asm.part");
+    assert_eq!(
+        part_realization.entity_path, "Asm.part#realization[0]",
+        "placed product child must have composed entity_path"
+    );
+    assert!(
+        part_realization.default_visible,
+        "Asm.part#realization[0] must be default_visible == true (product child, non-aux)"
+    );
+
+    // Jig sub-node: find the realization child under Asm.jig
+    let jig_sub = asm_root
+        .children
+        .iter()
+        .find(|n| n.entity_path == "Asm.jig")
+        .expect("Asm.jig sub node must exist");
+    let jig_realization = jig_sub
+        .children
+        .iter()
+        .find(|n| n.kind == "realization")
+        .expect("Asm.jig#realization[0] must exist under Asm.jig");
+    assert_eq!(
+        jig_realization.entity_path, "Asm.jig#realization[0]",
+        "placed aux child must have composed entity_path"
+    );
+    assert!(
+        !jig_realization.default_visible,
+        "Asm.jig#realization[0] must be default_visible == false (inherited from aux sub)"
+    );
+}
+
+/// Two-level aux inheritance: `aux sub jig : Jig` → `sub inner : Inner` → `let body`.
+///
+/// Neither the intermediate sub (`inner`) nor the leaf realization (`Inner.body`) is
+/// directly aux.  The deepest realization node (`Top.jig.inner#realization[0]`) must
+/// still have `default_visible == false` because `aux_ancestor` propagates transitively
+/// through a non-aux intermediate sub.
+///
+/// This tests that the `aux_ancestor || sub.is_aux` threading in
+/// `build_template_node` propagates through more than one level of nesting,
+/// not just a direct parent–child aux relationship.
+#[test]
+fn get_entity_tree_aux_sub_inherits_two_levels_deep() {
+    let source = r#"structure Inner {
+    let body = box(5mm, 5mm, 5mm)
+}
+structure Jig {
+    sub inner : Inner at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+}
+structure Top {
+    sub part : Inner at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+    aux sub jig : Jig at transform3(orient_identity(), vec3(20mm, 0mm, 0mm))
+}"#;
+    let mut session = make_session();
+    session.load_from_source(source, "two_level").expect("load");
+
+    let tree = session.get_entity_tree();
+
+    let top_root = tree
+        .iter()
+        .find(|n| n.entity_path == "Top")
+        .expect("Top root must exist");
+
+    // Product branch: Top.part#realization[0] should be visible.
+    let part_sub = top_root
+        .children
+        .iter()
+        .find(|n| n.entity_path == "Top.part")
+        .expect("Top.part sub node must exist");
+    let part_realization = part_sub
+        .children
+        .iter()
+        .find(|n| n.kind == "realization")
+        .expect("Top.part#realization[0] must exist");
+    assert!(
+        part_realization.default_visible,
+        "Top.part#realization[0] must be default_visible == true (non-aux)"
+    );
+
+    // Aux branch: Top.jig → Top.jig.inner → Top.jig.inner#realization[0].
+    // Neither `inner` nor `Inner.body` is directly aux; only the top-level `jig` sub is.
+    let jig_sub = top_root
+        .children
+        .iter()
+        .find(|n| n.entity_path == "Top.jig")
+        .expect("Top.jig sub node must exist");
+    let inner_sub = jig_sub
+        .children
+        .iter()
+        .find(|n| n.entity_path == "Top.jig.inner")
+        .expect("Top.jig.inner intermediate sub node must exist");
+    let inner_realization = inner_sub
+        .children
+        .iter()
+        .find(|n| n.kind == "realization")
+        .expect("Top.jig.inner#realization[0] must exist");
+    assert_eq!(
+        inner_realization.entity_path, "Top.jig.inner#realization[0]",
+        "two-level aux child must have composed entity_path"
+    );
+    assert!(
+        !inner_realization.default_visible,
+        "Top.jig.inner#realization[0] must be default_visible == false \
+         (aux_ancestor propagates through non-aux intermediate sub)"
     );
 }

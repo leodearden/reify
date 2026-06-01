@@ -825,6 +825,7 @@ fn entity_tree_node_serializes_with_freshness_field() {
         trait_geometry: false,
         children: vec![],
         freshness: "final".to_string(),
+        default_visible: true,
     };
     let v = serde_json::to_value(&node).unwrap();
     assert_eq!(

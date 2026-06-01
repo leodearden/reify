@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { createRoot } from 'solid-js';
 import type { MeshStandardMaterial } from 'three';
 import type { MeshData, RawMeshData } from '../../types';
 
@@ -2659,6 +2660,118 @@ describe('meshManager', () => {
       const posArr = mesh.geometry.attributes.position.array as Float32Array;
       expect(Array.from(posArr)).not.toEqual(snapshot);
       expect(posArr[0]).toBeCloseTo(0.2);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T6 end-to-end acceptance: meshCount signal (step-8)
+// ---------------------------------------------------------------------------
+// Wire viewStateStore → meshManager and verify that:
+//   (a) aux child is excluded from getSceneMeshes() (meshCount === 1) when
+//       default_visible:false and the default auto:default view is active.
+//   (b) toggling setVisibility on the aux path → meshCount === 2.
+// This locks the full pipeline: defaultVisibilityFor → getAllEffective →
+// meshManager.setVisibility → getSceneMeshes() (the bridge's meshCount source).
+
+describe('T6 meshCount acceptance: aux excluded by default, revealed on toggle', () => {
+  // Lazy import so the mock is in place when the module loads.
+  let createViewStateStore: typeof import('../../stores/viewStateStore')['createViewStateStore'];
+  let makeNodeHelper: typeof import('../test-utils')['makeNode'];
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockGeometries.length = 0;
+    mockMaterials.length = 0;
+    mockMeshes.length = 0;
+    mockBasicMaterials.length = 0;
+    mockPhongMaterials.length = 0;
+    mockGroups.length = 0;
+    const vssMod = await import('../../stores/viewStateStore');
+    createViewStateStore = vssMod.createViewStateStore;
+    const utilsMod = await import('../test-utils');
+    makeNodeHelper = utilsMod.makeNode;
+  });
+
+  it('product realization in meshCount, aux realization excluded; toggle includes it', () => {
+    createRoot((dispose) => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+
+      const productPath = 'Asm.part#realization[0]';
+      const auxPath = 'Asm.jig#realization[0]';
+
+      // Distinct world-offset vertices to represent composed world pose.
+      // product child placed at +30 mm X, aux child at +50 mm Y (represent T5 baked transforms).
+      const productVerts = new Float32Array([30, 0, 0,  31, 0, 0,  30, 1, 0]);
+      const auxVerts     = new Float32Array([ 0,50, 0,   1,50, 0,   0,51, 0]);
+
+      // Sync both meshes into the manager (both arrive as 'show' initially).
+      manager.sync({
+        [productPath]: {
+          entity_path: productPath,
+          vertices: productVerts,
+          indices: new Uint32Array([0, 1, 2]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        },
+        [auxPath]: {
+          entity_path: auxPath,
+          vertices: auxVerts,
+          indices: new Uint32Array([0, 1, 2]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        },
+      });
+
+      // Build the entity tree with aux flag wired through to the realization nodes.
+      const tree = [
+        makeNodeHelper({
+          entity_path: 'Asm',
+          kind: 'structure',
+          children: [
+            makeNodeHelper({ entity_path: 'Asm.part', kind: 'sub',
+              children: [
+                makeNodeHelper({ entity_path: productPath, kind: 'realization', default_visible: true }),
+              ],
+            }),
+            makeNodeHelper({ entity_path: 'Asm.jig', kind: 'sub',
+              children: [
+                makeNodeHelper({ entity_path: auxPath, kind: 'realization', default_visible: false }),
+              ],
+            }),
+          ],
+        }),
+      ];
+
+      const store = createViewStateStore();
+      store.regenerateAutoViews(tree);
+
+      // Apply getAllEffective() to the manager (this is the Viewport.tsx createEffect pattern).
+      const effective = store.getAllEffective();
+      for (const [path, state] of Object.entries(effective)) {
+        manager.setVisibility(path, state);
+      }
+
+      // ── (a) Before toggle: product visible, aux excluded from meshCount ──
+      const before = manager.getSceneMeshes();
+      expect(before.size).toBe(1);
+      expect(before.has(productPath)).toBe(true);
+      expect(before.has(auxPath)).toBe(false);
+
+      // ── (b) Toggle: user reveals aux entity via the outline ──
+      store.setVisibility(auxPath, 'show');
+      // Re-apply effective map (Viewport.tsx createEffect re-runs on explicit change).
+      const effectiveAfter = store.getAllEffective();
+      for (const [path, state] of Object.entries(effectiveAfter)) {
+        manager.setVisibility(path, state);
+      }
+
+      const after = manager.getSceneMeshes();
+      expect(after.size).toBe(2);
+      expect(after.has(productPath)).toBe(true);
+      expect(after.has(auxPath)).toBe(true);
+
+      dispose();
     });
   });
 });

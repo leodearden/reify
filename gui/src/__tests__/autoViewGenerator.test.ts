@@ -370,3 +370,50 @@ describe('anchored type-name matching (regression for substring-match bug)', () 
     expect(view.visibility['Root.surf']).toBe('ghost');
   });
 });
+
+// ---------------------------------------------------------------------------
+// default_visible: aux hidden-by-default (step-5 T6)
+// ---------------------------------------------------------------------------
+
+describe('defaultVisibilityFor — default_visible field (T6 aux hidden-by-default)', () => {
+  it('realization node with default_visible:false → "hidden" (aux body hidden by default)', () => {
+    const node = makeNode({ entity_path: 'Struct#realization[0]', kind: 'realization', default_visible: false });
+    expect(defaultVisibilityFor(node)).toBe('hidden');
+  });
+
+  it('realization node with default_visible:true → "show" (product body visible)', () => {
+    const node = makeNode({ entity_path: 'Struct#realization[0]', kind: 'realization', default_visible: true });
+    expect(defaultVisibilityFor(node)).toBe('show');
+  });
+
+  it('realization node with default_visible omitted → "show" (backward-compat: absent treated as visible)', () => {
+    const node = makeNode({ entity_path: 'Struct#realization[0]', kind: 'realization' });
+    expect(defaultVisibilityFor(node)).toBe('show');
+  });
+
+  it('let node with type_name "Solid" and default_visible omitted → still "hidden" (existing rule unaffected)', () => {
+    const node = makeNode({ entity_path: 'Root.geo', kind: 'let', type_name: 'Solid' });
+    expect(defaultVisibilityFor(node)).toBe('hidden');
+  });
+
+  it('trait_geometry node with default_visible:false → "hidden" (aux overrides trait_geometry — aux rule is first)', () => {
+    const node = makeNode({ entity_path: 'Struct#realization[0]', kind: 'realization', trait_geometry: true, default_visible: false });
+    expect(defaultVisibilityFor(node)).toBe('hidden');
+  });
+
+  it('generateDefaultView honors default_visible:false on realization node — aux body listed hidden', () => {
+    const tree = [
+      makeNode({
+        entity_path: 'Asm',
+        kind: 'structure',
+        children: [
+          makeNode({ entity_path: 'Asm#realization[0]', kind: 'realization', default_visible: true }),
+          makeNode({ entity_path: 'Asm#realization[1]', kind: 'realization', default_visible: false }),
+        ],
+      }),
+    ];
+    const view = generateDefaultView(tree);
+    expect(view.visibility['Asm#realization[0]']).toBe('show');
+    expect(view.visibility['Asm#realization[1]']).toBe('hidden');
+  });
+});

@@ -2074,17 +2074,16 @@ impl EngineSession {
                     }
                     diags
                 };
-                // T5 (task 3903): `MeshSurface.default_visible` (computed by the
-                // reify-eval surfacing walk — `false` for aux bodies / aux
-                // subtrees) is intentionally NOT propagated here. `MeshData`
-                // (types.rs) carries no visibility field, and wiring the flag
-                // through the IPC boundary + frontend visibility toggles is the
-                // scope of the GUI surfacing step (T6 — "GUI default_visible UI
-                // behavior", out of T5's scope per the 3903 plan §10). Until then
-                // the flag is deliberately dropped at this map, NOT a bug: aux
-                // bodies still ship their mesh payload and simply render visible
-                // in the GUI for now. Do not "fix" this by defaulting visibility
-                // elsewhere — T6 owns the per-surface visibility contract.
+                // T6 (task 3904) complete: `default_visible` is surfaced to the
+                // GUI via the entity-tree realization nodes — NOT through MeshData.
+                // `get_entity_tree` → `build_template_node` computes
+                // `default_visible = !(aux_ancestor || real.is_aux)` per the
+                // shared contract anchor `geometry_ops::surface_subtree`. The frontend
+                // `defaultVisibilityFor` reads the realization node's flag and
+                // returns 'hidden' for aux bodies, driving `meshManager.setVisibility`
+                // and thus `getSceneMeshes()` / `viewport_state.meshCount`.
+                // `MeshData` intentionally stays visibility-free: the frontend
+                // never consults mesh visibility directly.
                 let mut meshes: Vec<MeshData> = result
                     .meshes
                     .into_iter()
@@ -2400,7 +2399,7 @@ impl EngineSession {
         compiled
             .templates
             .iter()
-            .map(|t| build_template_node(t, &t.name, compiled, Some(self.core.engine())))
+            .map(|t| build_template_node(t, &t.name, compiled, Some(self.core.engine()), false))
             .collect()
     }
 
@@ -3581,6 +3580,14 @@ fn build_preview_gui_state(
 /// `entity_path` is the dot-separated path used as the root of this node's
 /// children (e.g. `"Bracket"` → children are `"Bracket.width"`, etc.).
 ///
+/// `aux_ancestor` is `true` when any containing sub-component on the path from
+/// the root to this template was declared `aux`. This mirrors the aux-inheritance
+/// rule in the surfacing walk — shared contract anchor:
+/// `geometry_ops::surface_subtree` / `geometry_ops::realization_is_aux`
+/// (rule: `!(aux_ancestor || realization_is_aux(realization))`). Pass `false` for
+/// top-level templates (`get_entity_tree`); pass `aux_ancestor || sub.is_aux`
+/// when recursing into sub-components.
+///
 /// When a sub-component's child template has `is_recursive = true` (set by the
 /// compiler's Tarjan SCC pass), this function emits an empty `children` vec for
 /// that sub node rather than recursing — preventing infinite recursion for
@@ -3608,6 +3615,7 @@ pub(crate) fn build_template_node(
     entity_path: &str,
     compiled: &reify_compiler::CompiledModule,
     engine: Option<&Engine>,
+    aux_ancestor: bool,
 ) -> EntityTreeNode {
     let kind = template.entity_kind.as_label();
 
@@ -3643,6 +3651,7 @@ pub(crate) fn build_template_node(
             trait_geometry: is_geometry_member && parent_has_physical,
             children: vec![],
             freshness,
+            default_visible: true,
         });
     }
 
@@ -3677,6 +3686,11 @@ pub(crate) fn build_template_node(
             trait_geometry: false,
             children: vec![],
             freshness,
+            // Mirrors the surfacing-walk rule — shared contract anchor:
+            // `geometry_ops::surface_subtree` / `geometry_ops::realization_is_aux`
+            // (rule: `!(aux_ancestor || realization_is_aux(realization))`).
+            // aux_ancestor is inherited from any containing `aux sub` up the tree.
+            default_visible: !(aux_ancestor || real.is_aux),
         });
     }
 
@@ -3703,7 +3717,9 @@ pub(crate) fn build_template_node(
             if child_template.is_recursive {
                 vec![]
             } else {
-                build_template_node(child_template, &sub_path, compiled, engine).children
+                // Thread aux_ancestor: if this sub is aux OR an ancestor was aux,
+                // all descendants inherit default_visible = false.
+                build_template_node(child_template, &sub_path, compiled, engine, aux_ancestor || sub.is_aux).children
             }
         } else {
             vec![]
@@ -3724,6 +3740,7 @@ pub(crate) fn build_template_node(
             trait_geometry: false,
             children: sub_children,
             freshness: "aggregate".to_string(),
+            default_visible: true,
         });
     }
 
@@ -3739,6 +3756,7 @@ pub(crate) fn build_template_node(
             trait_geometry: false,
             children: vec![],
             freshness: "final".to_string(),
+            default_visible: true,
         });
     }
 
@@ -3751,6 +3769,7 @@ pub(crate) fn build_template_node(
         trait_geometry: false,
         children,
         freshness: "final".to_string(),
+        default_visible: true,
     }
 }
 
