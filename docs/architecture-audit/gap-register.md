@@ -307,7 +307,7 @@ Contract document authored 2026-05-12: `docs/prds/v0_3/structure-instance-runtim
 | Blocks tasks | Per cluster C-15 |
 | Disposition | **fix-now — ship producers (vindicate the diagnostic infra).** 2026-05-12 investigate-further triage resolved: Leo chose "ship producers." Diagnostic infrastructure stays; `half_space` and `extrude_infinite` filed as sibling fix-now tasks. |
 | Discovered | 2026-05-12 architecture audit |
-| Notes | Phase-3 synthesis classified this under "Clusters fitting NO Phase-2 pattern" — the "loaded gun, no target" shape. Tickets filed 2026-05-12; **curated to tasks 2026-05-13** then lost in the 2026-05-13 SIGABRT and **replayed 2026-05-14** to live IDs: `tkt_0RNVQ2E62WDXJ76QX594YKQHKT` → **task 3465** (half_space, was 3579) and `tkt_0RNVQ2KTNNR3EAN7N2A7KDB0W3` → **task 3466** (extrude_infinite, was 3580). Both name the `E_GEOMETRY_UNBOUNDED` diagnostic consumer + integration-test signal. Filing log: `docs/architecture-audit/phase-3-investigate-further-triage-log.md`. |
+| Notes | Phase-3 synthesis classified this under "Clusters fitting NO Phase-2 pattern" — the "loaded gun, no target" shape. Tickets filed 2026-05-12; **curated to tasks 2026-05-13** then lost in the 2026-05-13 SIGABRT and **replayed 2026-05-14** to live IDs: `tkt_0RNVQ2E62WDXJ76QX594YKQHKT` → **task 3465** (half_space, was 3579) and `tkt_0RNVQ2KTNNR3EAN7N2A7KDB0W3` → **task 3466** (extrude_infinite, was 3580). Both name the `E_GEOMETRY_UNBOUNDED` diagnostic consumer + integration-test signal. Filing log: `docs/architecture-audit/phase-3-investigate-further-triage-log.md`. **Consumer surface for unbounded geometry now lives at `docs/prds/v0_3/geometry-handle-runtime.md` — Bounded-required trait slots can be exercised with the negative path once half_space() / extrude_infinite() land per GR-018. No new PRD work in geometry-handle-runtime.md.** |
 
 ### GR-019 — Material starter library (stdlib structures unevaluable) (cluster C-16)
 
@@ -468,16 +468,16 @@ Contract document authored 2026-05-12: `docs/prds/v0_3/structure-instance-runtim
 | Field | Value |
 |---|---|
 | Mechanism | `Solid` resolves to `Type::Geometry` as builtin alias but stdlib traits cannot use it as a slot type; PRD-spec `Physical` shape (`geometry: Solid`) blocked |
-| State | **ORPHAN** (Rust-side alias works; stdlib-trait-slot use blocked) |
+| State | **RESOLVED** (resolved-via-PRD; GHR-α registrations + GHR-ζ kernel dispatch; spec-shape Physical lands end-to-end) |
 | Failure mode | F1 |
 | Evidence | `findings/stdlib-trait-breadth.md` M-013; transitively `findings/geometry-traits.md`, FEA Material chain |
 | Cited by PRDs | stdlib-trait-breadth, geometry-traits (transitive), structural-analysis-fea (transitive Material chain) |
 | Blocks tasks | Per cluster C-28 |
-| Disposition | **investigate-further** — language-design question. May want a small PRD: "should builtin-alias types (`Solid`, `Real`, future `Length`) be usable in stdlib-trait slot positions, and if so, what's the cell-name + conformance semantics?" Touches GR-018 (unbounded primitives — same trait-bound concern). |
+| Disposition | **accept-and-resolve-via PRD** — resolved by `docs/prds/v0_3/geometry-handle-runtime.md`. Resolution mode B+H. Phase 1-6 decomposition lands the spec-shape `Physical` end-to-end with real volume/centroid via OCCT kernel queries. Closes M-007 + M-013 ORPHAN in `findings/stdlib-trait-breadth.md`. Phase 1 hard-depends on SIR-α; cross-PRD edge wired. |
 | Discovered | 2026-05-12 architecture audit |
-| Notes | This is one of the rare ORPHAN-state cases (mechanism exists but no PRD calls for it as currently shipped) — Rust-side alias is unused for trait slots. |
+| Notes | This is one of the rare ORPHAN-state cases (mechanism exists but no PRD calls for it as currently shipped) — Rust-side alias is unused for trait slots. Resolved: GHR-α (task 3603) wires `Value::GeometryHandle`; GHR-ζ (task 3607+) ships `structural_physical.ri` spec shape (`param geometry : Solid`) with real volume(geometry)*density mass. |
 
-#### Follow-up PRD
+#### Follow-up PRD: docs/prds/v0_3/geometry-handle-runtime.md
 
 Primary: `docs/prds/v0_3/geometry-handle-runtime.md` (resolves cluster C-28 / GR-030; Phase 6 GHR-ζ wires volume/centroid/area/bounding_box). Companion PRD: `docs/prds/v0_3/kernel-geometry-queries.md` (wires the eval-side dispatch for the 17 registered helpers not in GR-030 Phase 6 scope; supersedes topology-selectors.md eval-side scope; cancels phantom-done task 2691).
 
@@ -493,7 +493,7 @@ Primary: `docs/prds/v0_3/geometry-handle-runtime.md` (resolves cluster C-28 / GR
 | Blocks tasks | Per cluster C-29; **task #3468 filed** |
 | Disposition | **fix-now → task #3468 filed**, BUT functional completion depends on **GR-001** (structure-instance-runtime PRD) because the typed-envelope helpers need `Value::StructureInstance` for ShellStress/LaminateStress frames. The helpers themselves are mechanical; the type-system surface they consume is GR-001 work. |
 | Discovered | 2026-05-12 architecture audit |
-| Notes | Captured in synthesis §1 as "depends on C-01" — the leaf is small and fix-now, the dependency chain is structural. **Functional unblock mechanism: `docs/prds/v0_3/structure-instance-runtime.md`** (authored 2026-05-12, decomposed). Task 3468 executes against this PRD's SIR-α foundation slice — once Value::StructureInstance is live, the typed-envelope helpers consume it for ShellStress/LaminateStress frames per the existing task scope. **Real dep edge wired**: 3468 depends_on **3540** (SIR-α). |
+| Notes | Captured in synthesis §1 as "depends on C-01" — the leaf is small and fix-now, the dependency chain is structural. **Functional unblock mechanism: `docs/prds/v0_3/structure-instance-runtime.md`** (authored 2026-05-12, decomposed). Task 3468 executes against this PRD's SIR-α foundation slice — once Value::StructureInstance is live, the typed-envelope helpers consume it for ShellStress/LaminateStress frames per the existing task scope. **Real dep edge wired**: 3468 depends_on **3540** (SIR-α). **Functional unblock mechanism revised: `docs/prds/v0_3/structure-instance-runtime.md` SIR-α + `docs/prds/v0_3/geometry-handle-runtime.md` GHR-ζ. Task 3553 (SIR-γ envelope helpers, already filed; re-filed 2026-05-14 post-SIGABRT after the original #3468 was repurposed by curator recovery) executes against the joint foundation; 3553 → GHR-ζ cross-PRD edge wired at decompose time.** |
 
 ### GR-032 — Local-disk NFS detection + cache GC + cache CLI surface (cluster C-30)
 
