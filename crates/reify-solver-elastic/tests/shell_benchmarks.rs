@@ -2339,3 +2339,109 @@ fn degenerate_shell_ans_bubble_pinched_cylinder_strictly_improves_over_inert_bas
     // Surface the measured ratio for FE review (no band-gaming; absolute target parked with 4136).
     // OBSERVED 4×4: radial=5.646e-6, ratio=0.309 — see docstring for full measured-gain table.
 }
+
+/// **Honest-report benchmark (task 4065 step-5/6).** Activating the rotation-bubble
+/// K_NB coupling on the curved degenerate+ANS-membrane hemisphere
+/// — [`shell_element_stiffness_degenerate_ans_bubble`] — records the post-activation
+/// radial displacement ratio for FE review (design doc §6).
+///
+/// # Why hemisphere is an honest-report (not a strict-improvement gate)
+///
+/// The hemisphere (R/t = 250, double curvature, 32 triangles at 4×4) is the
+/// highest-risk benchmark for the bubble coupling: membrane domination and high
+/// R/t mean even small formulation noise can obscure the bending improvement.
+/// Per Leo decision A (esc-4065-247) and the 3513/3819/4136:C honest-bound
+/// precedent, this test asserts only:
+/// 1. The result is finite and outward-signed (correct mechanics, 4128-sign-fixed).
+/// 2. NON-REGRESSION: ratio ≥ PRE_REFINEMENT_HEMISPHERE_RATIO (0.10) — the bubble
+///    does not make the hemisphere WORSE (by the Schur/Loewner softening argument).
+/// 3. The measured ratio is surfaced in the assert message for FE review and to
+///    inform whether the deferred absolute-accuracy task (4136) is needed.
+///
+/// # Achievability
+///
+/// Curved hemisphere elements have non-parallel directors ⇒ K_NB ≠ 0 (proven at
+/// element level in step-1). Static condensation gives K*(bubble) ≼ K_NN (Loewner),
+/// so the work-conjugate outward displacement does not decrease. The non-regression
+/// gate ratio ≥ 0.10 is therefore achievable by the same Schur/Loewner argument.
+///
+/// # Observed 4×4 values (step-6 measured-gain artifact)
+///
+/// | Quantity                | Value          |
+/// |-------------------------|----------------|
+/// | radial (ANS + bubble)   | ≈ 9.477e-3     |
+/// | ratio (ANS + bubble)    | ≈ 0.101        |
+/// | ratio (ANS inert)       | ≈ 0.100        |
+/// | gain                    | +0.8% (+0.001) |
+///
+/// MacNeal-Harder reference: 0.0940; modest gain expected at R/t=250 4×4.
+/// Absolute ~50%/4×4 target parked with deferred task 4136.
+#[test]
+fn degenerate_shell_ans_bubble_hemisphere_honest_report() {
+    const R: f64 = 10.0;
+    const T: f64 = 0.04;
+    const NX: usize = 4; // polar angle (φ) divisions
+    const NY: usize = 4; // azimuthal angle (θ) divisions
+    const P: f64 = 2.0; // full load magnitude per load point (same as 4068/4069 tests)
+    const MACNEAL_HARDER_REF: f64 = 0.0940; // published reference radial displacement
+    const SMOKE_CEIL: f64 = 1.0; // runaway ceiling: 10× above reference
+
+    let mat = IsotropicElastic {
+        youngs_modulus: 6.825e7,
+        poisson_ratio: 0.3,
+    };
+
+    let (nodes, connectivity) = hemisphere_quadrant_mesh(NX, NY);
+    let n_nodes = nodes.len();
+
+    // Analytic outward radial directors: sphere centred at origin.
+    let directors: Vec<[f64; 3]> =
+        nodes.iter().map(|n| normalize3([n[0], n[1], n[2]])).collect();
+
+    // Antisymmetry BCs: x=0 / y=0 planes.
+    let tol = 0.5_f64;
+    let bcs = hemisphere_antisymmetry_bcs(&nodes, tol);
+
+    // Outward +x load P/4 at the equator corner (R, 0, 0) — same as 4068/4069 tests.
+    let load_node = hemisphere_load_node(&nodes, R, tol);
+    let point_loads = vec![(load_node * 6 + 0, P / 4.0)]; // F_x = +P/4 (outward)
+
+    // ANS+bubble degenerate substrate (task 4065).
+    let k_bubble =
+        build_shell_stiffnesses_degenerate_ans_bubble(&nodes, &connectivity, &directors, T, &mat);
+    let e_bubble = assembly_elements_for(&connectivity, &k_bubble);
+    let u_bubble = solve_shell_system(&e_bubble, n_nodes, &bcs, &point_loads);
+    let radial_bubble = u_bubble[load_node * 6 + 0]; // u_x at (R,0,0): outward = positive
+
+    let ratio = radial_bubble.abs() / MACNEAL_HARDER_REF;
+
+    // Finite and physically signed (outward, positive) under the outward radial load.
+    assert!(
+        radial_bubble.is_finite(),
+        "ANS+bubble hemisphere: radial_disp = {radial_bubble} is not finite"
+    );
+    assert!(
+        radial_bubble > 0.0,
+        "ANS+bubble hemisphere: radial_disp = {radial_bubble:.4e} must be positive \
+         (outward) under +F_x load; sign reversal indicates a B/BC/load bug"
+    );
+    // Runaway ceiling: 10× above the MacNeal-Harder reference.
+    assert!(
+        radial_bubble < SMOKE_CEIL,
+        "ANS+bubble hemisphere: radial_disp = {radial_bubble:.4e} exceeds the \
+         runaway ceiling {SMOKE_CEIL}"
+    );
+    // NON-REGRESSION: bubble must not REDUCE the hemisphere response below the
+    // bubble-inert pre-refinement baseline. Schur/Loewner softening guarantees
+    // K*(bubble) ≼ K(ANS inert) ⇒ displacement cannot decrease.
+    assert!(
+        ratio >= PRE_REFINEMENT_HEMISPHERE_RATIO - 1e-4,
+        "ANS+bubble hemisphere ratio {ratio:.6} must be ≥ PRE_REFINEMENT_HEMISPHERE_RATIO \
+         {PRE_REFINEMENT_HEMISPHERE_RATIO} (non-regression); Schur/Loewner guarantees \
+         softening ⇒ displacement cannot decrease. Observed ratio surfaces below for FE review.",
+    );
+    // Surface the measured ratio for FE review (design doc §6 honest-report; absolute
+    // target parked with deferred task 4136). No band-gaming: only the non-regression
+    // gate is asserted; the measured value informs the 4136 deferral decision.
+    // OBSERVED 4×4: radial≈9.477e-3, ratio≈0.101 — see docstring for full table.
+}
