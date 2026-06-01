@@ -1351,6 +1351,18 @@ pub fn is_geometric_param_type(ty: &Type) -> bool {
     matches!(ty, Type::Scalar { dimension } if !dimension.0[0].is_zero() || !dimension.0[7].is_zero())
 }
 
+/// Returns `true` if `ty` is a *material* parameter type — i.e. a
+/// `StructureRef("Material")` (when the Material struct is in scope) or
+/// `TraitObject("Material")` (when Material is only a trait name).
+///
+/// Both forms are matched because `param m : Material` resolves to
+/// `StructureRef("Material")` when a first-class Material struct is in scope
+/// (type_resolution.rs:629) and to `TraitObject("Material")` when Material
+/// exists only as a trait name.
+pub fn is_material_param_type(ty: &Type) -> bool {
+    matches!(ty, Type::StructureRef(n) | Type::TraitObject(n) if n == "Material")
+}
+
 #[cfg(test)]
 mod kind_display_tests {
     //! Display-impl round-trip tests for op-kind enums.

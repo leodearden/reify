@@ -741,6 +741,21 @@ pub(crate) fn compile_purpose(
                     resolved_ids: geo_ids,
                 });
             }
+
+            // Resolve "material_params" query: Param/Auto cells typed as
+            // StructureRef("Material") or TraitObject("Material") (task-4137).
+            let mat_ids: Vec<ValueCellId> = param_auto_cells
+                .iter()
+                .filter(|vc| is_material_param_type(&vc.cell_type))
+                .map(|vc| vc.id.clone())
+                .collect();
+            if !mat_ids.is_empty() {
+                resolved_queries.push(ResolvedSchemaQuery {
+                    param_name: param.name.clone(),
+                    query_kind: "material_params".to_string(),
+                    resolved_ids: mat_ids,
+                });
+            }
         }
     }
 
