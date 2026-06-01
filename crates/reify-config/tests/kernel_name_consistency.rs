@@ -69,17 +69,15 @@ fn gmsh_kernel_name_const_matches_kernel_id_display() {
     );
 }
 
-/// Exhaustiveness guard: adding a `KernelId` variant without updating this
-/// const is a **compile error** (missing match arm). Fix the compile error by
-/// listing the new variant in the match below AND adding a corresponding
-/// per-kernel consistency test function above (named
-/// `<kernel>_kernel_name_const_matches_kernel_id_display`).
+/// Exhaustiveness reminder: all five known variants are listed explicitly so a
+/// reviewer can see at a glance that every adapter is covered.  The wildcard
+/// arm is required because `KernelId` is `#[non_exhaustive]` in `reify-core`
+/// (external crates cannot write an exhaustive match on it); exhaustiveness at
+/// the type level is guaranteed by `reify-core`'s own `ALL`-based tests.
 ///
-/// The compile-time non-wildcard match is the primary enforcement mechanism.
-/// A separate runtime length check was removed as redundant — if the match arm
-/// compiles, every live variant is already enumerated here and in the per-kernel
-/// tests.
+/// To add a new kernel: add a new per-kernel consistency test function above
+/// (named `<kernel>_kernel_name_const_matches_kernel_id_display`).
 const _EXHAUSTIVENESS_PIN: fn(KernelId) = |id| match id {
-    KernelId::Occt | KernelId::Manifold | KernelId::Fidget | KernelId::OpenVdb | KernelId::Gmsh => {
-    }
+    KernelId::Occt | KernelId::Manifold | KernelId::Fidget | KernelId::OpenVdb | KernelId::Gmsh => {}
+    _ => {}
 };

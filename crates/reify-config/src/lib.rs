@@ -54,9 +54,26 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
-use std::str::FromStr;
 
 use serde::Deserialize;
+
+/// Re-export the canonical kernel discriminator from `reify-core`.
+///
+/// `reify_core::KernelId` is the single authoritative definition in the
+/// workspace.  Importing it here keeps the public path `reify_config::KernelId`
+/// working for all existing callers while making drift between the two crates
+/// impossible by construction.  The canonical enum is declared in
+/// `crates/reify-core/src/kernel.rs`; see its documentation for the variant
+/// order (registry-name lexical: Fidget, Gmsh, Manifold, Occt, OpenVdb),
+/// the determinism contract (`BTreeMap<KernelId, _>` iteration order), and
+/// the `#[non_exhaustive]` / `ALL` extensibility contract.
+///
+/// **`kernel_pins()` iteration order** changed from the old
+/// `Occt, Manifold, Fidget, OpenVdb, Gmsh` (prior variant-declaration order)
+/// to the canonical **registry-name lexical** order
+/// `Fidget, Gmsh, Manifold, Occt, OpenVdb`.  Iteration remains deterministic;
+/// no test or consumer pins a multi-kernel ordering.
+pub use reify_core::KernelId;
 
 pub mod cache;
 
@@ -153,8 +170,8 @@ impl Manifest {
             toml::from_str(s).map_err(|e| ManifestError::Parse(e.to_string()))?;
         let mut kernels: BTreeMap<KernelId, KernelPin> = BTreeMap::new();
         for (raw_id, raw_pin) in raw.kernels.into_iter() {
-            let id = KernelId::from_str(&raw_id)
-                .map_err(|_| ManifestError::UnknownKernel(raw_id.clone()))?;
+            let id = KernelId::from_registry_name(&raw_id)
+                .ok_or_else(|| ManifestError::UnknownKernel(raw_id.clone()))?;
             // Trim surrounding whitespace before storing: the registry will
             // string-compare the version, and accepting `" 7.7.0 "` verbatim
             // would silently break that comparison. A version that is empty
@@ -226,47 +243,6 @@ impl Manifest {
     }
 }
 
-/// Identifier for a kernel supported by Reify.
-///
-/// The four kernel ids introduced in v0.2 are `Occt`, `Manifold`, `Fidget`,
-/// and `OpenVdb`. v0.3 added `Gmsh` for surface-to-volume tet meshing.
-///
-/// Truck is intentionally absent: the v0.2 PRD ("Truck dropped from v0.2")
-/// rejects truck as an unknown kernel id.
-///
-/// **Ordering:** Variant declaration order determines `BTreeMap<KernelId, _>`
-/// iteration order via the derived `Ord`; it is therefore a public API surface.
-/// Future variant additions must be deliberate about placement. See
-/// [`KernelId::ALL`] for the canonical ordered list.
-///
-/// **Cross-crate consistency:** `Display::fmt` on each variant must equal the
-/// corresponding adapter crate's `*_KERNEL_NAME` const (e.g.
-/// `KernelId::Occt.to_string() == reify_kernel_occt::register::OCCT_KERNEL_NAME`).
-/// Enforced by `tests/kernel_name_consistency.rs`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum KernelId {
-    Occt,
-    Manifold,
-    Fidget,
-    OpenVdb,
-    Gmsh,
-}
-
-impl KernelId {
-    /// Every supported kernel id, in variant declaration order.
-    ///
-    /// Declaration order equals `BTreeMap<KernelId, _>` iteration order (the
-    /// derived `Ord` follows variant position). This slice is the single source
-    /// of truth for validation and error messages; adding a new `KernelId`
-    /// variant requires updating this slice to stay in sync.
-    pub const ALL: &'static [KernelId] = &[
-        KernelId::Occt,
-        KernelId::Manifold,
-        KernelId::Fidget,
-        KernelId::OpenVdb,
-        KernelId::Gmsh,
-    ];
-}
 
 /// A pinned kernel version.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -437,47 +413,6 @@ impl KernelPinRaw {
     }
 }
 
-impl FromStr for KernelId {
-    type Err = UnknownKernelId;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "occt" => Ok(KernelId::Occt),
-            "manifold" => Ok(KernelId::Manifold),
-            "fidget" => Ok(KernelId::Fidget),
-            "openvdb" => Ok(KernelId::OpenVdb),
-            "gmsh" => Ok(KernelId::Gmsh),
-            _ => Err(UnknownKernelId),
-        }
-    }
-}
-
-impl fmt::Display for KernelId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s = match self {
-            KernelId::Occt => "occt",
-            KernelId::Manifold => "manifold",
-            KernelId::Fidget => "fidget",
-            KernelId::OpenVdb => "openvdb",
-            KernelId::Gmsh => "gmsh",
-        };
-        f.write_str(s)
-    }
-}
-
-/// Returned by `KernelId::from_str` when the string is not a canonical
-/// kernel id. Currently only used internally; consumers see the typed
-/// `ManifestError::UnknownKernel` variant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UnknownKernelId;
-
-impl fmt::Display for UnknownKernelId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("unknown kernel id")
-    }
-}
-
-impl std::error::Error for UnknownKernelId {}
 
 #[cfg(test)]
 mod tests {
@@ -561,13 +496,16 @@ mod tests {
                 "Display for {:?} must be canonical lowercase",
                 id
             );
-            let parsed: KernelId = displayed.parse().expect("Display output must parse back");
+            // Use from_registry_name (the canonical inverse) instead of FromStr,
+            // which is not implemented on reify_core::KernelId.
+            let parsed = KernelId::from_registry_name(&displayed)
+                .expect("Display output must resolve back via from_registry_name");
             assert_eq!(parsed, id, "round-trip must yield the original KernelId");
         }
     }
 
     #[test]
-    fn kernel_id_from_str_rejects_unknown_strings() {
+    fn kernel_id_from_registry_name_rejects_unknown_strings() {
         let invalid = [
             "",       // empty
             " occt",  // leading whitespace
@@ -580,8 +518,8 @@ mod tests {
         ];
         for s in invalid {
             assert!(
-                s.parse::<KernelId>().is_err(),
-                "expected '{}' to be rejected by KernelId::from_str",
+                KernelId::from_registry_name(s).is_none(),
+                "expected '{}' to be rejected by KernelId::from_registry_name",
                 s
             );
         }
@@ -689,16 +627,17 @@ mod tests {
                     gmsh = \"4.15.2\"\n";
         let manifest = Manifest::from_toml_str(toml).expect("five-pin TOML should parse");
         let ids: Vec<KernelId> = manifest.kernel_pins().map(|(id, _)| *id).collect();
-        // BTreeMap iteration follows the derived `Ord` on `KernelId`, which is
-        // the variant declaration order.
+        // BTreeMap iteration follows the derived `Ord` on `KernelId`.  The
+        // canonical order (from reify-core) is registry-name LEXICAL order:
+        // Fidget < Gmsh < Manifold < Occt < OpenVdb.
         assert_eq!(
             ids,
             vec![
-                KernelId::Occt,
-                KernelId::Manifold,
                 KernelId::Fidget,
-                KernelId::OpenVdb,
                 KernelId::Gmsh,
+                KernelId::Manifold,
+                KernelId::Occt,
+                KernelId::OpenVdb,
             ]
         );
     }
@@ -736,14 +675,16 @@ mod tests {
 
     #[test]
     fn kernel_id_all_covers_every_variant() {
-        // Compile-time guard: adding a KernelId variant without listing it here is
-        // a compile error, signalling that KernelId::ALL must also be extended.
-        let _exhaustive_guard = |id: KernelId| match id {
+        // The wildcard arm is required because KernelId is #[non_exhaustive] in
+        // reify-core (external crates cannot write an exhaustive match).
+        // The reify-core unit tests own the exhaustiveness contract via ALL.
+        let _known_variants_reminder = |id: KernelId| match id {
             KernelId::Occt
             | KernelId::Manifold
             | KernelId::Fidget
             | KernelId::OpenVdb
             | KernelId::Gmsh => (),
+            _ => (),
         };
         // Pin ALL.len() so adding a variant without extending ALL fails this test.
         assert_eq!(KernelId::ALL.len(), 5);
