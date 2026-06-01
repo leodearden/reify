@@ -340,10 +340,29 @@ pub fn solve_elastic_static_trampoline(
                 };
             }
             FailurePolicy::TetFallbackWithWarning => {
-                // ShellForce::Auto or Off: step-8 adds the Auto warning here.
-                // classify_shell already routed Tet for Auto+too-thick (ratio ≥
-                // threshold), so execution falls through to the tet path below
-                // without touching the shell branch.  Off is silent per §7.
+                // `ShellForce::Auto`: warn and fall through to the tet path.
+                // `classify_shell` already routed Tet for Auto+too-thick (ratio ≥
+                // threshold), so the shell branch below is skipped and
+                // shell_channels stays Undef→None.  The warning surfaces via the
+                // existing `route_diagnostics` vehicle.
+                //
+                // `ShellForce::Off` (@solid): SILENT — the §7 message names
+                // `ShellForce.Off` / @solid as the explicit opt-out, so a body
+                // solved with @solid never receives a ShellTooThick warning
+                // regardless of its thickness.
+                if shell_force == ShellForce::Auto {
+                    route_diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "body thickness/extent ratio {ratio:.2} ≥ shell_threshold \
+                             {shell_threshold:.2}: body is too thick for shell solve \
+                             (ratio must be < {shell_threshold:.2}); falling back to the \
+                             tet/solid path. Use ElasticOptions(shell_force: ShellForce.Off) \
+                             / @solid to suppress this warning."
+                        ))
+                        .with_code(DiagnosticCode::ShellTooThick),
+                    );
+                }
+                // ShellForce::Off: no diagnostic (silent opt-out).
             }
         }
     }
