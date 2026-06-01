@@ -1,31 +1,34 @@
 // printer_v01 — single-file integration.
 //
 // Multi-material CoreXY toolchanger build. See docs/projects/printer_v01.md
-// for the full design spec. This file declares the global Envelope (global
-// parameters + kinematic centerlines), a small library of construction
-// primitives + composed motion-system assemblies (CoreXY = X stage + Y
-// stage, each = one LinearStage instantiated + mirrored), then the
-// non-motion sub-assembly placeholders (A, D–J), and finally a top-level
-// Printer that wires them together.
+// for the full design spec. This file declares a small library of construction
+// primitives, composed motion-system assemblies (CoreXY = X stage + Y stage,
+// each = mirrored LinearStages), the non-motion sub-assembly placeholders
+// (A, D–J), the global Envelope, and a top-level Printer that wires them.
 //
-// NOTE 1: positioning of the motion-system pieces in world frame is
-// deliberately not pinned down here yet. The current focus is the
-// containment hierarchy + de-duplication; world placement is a follow-up.
+// PLACEMENT MODEL (v0_6 sub-placement-and-surfacing, task 3903/T5 — landed):
+// Hierarchical placement is DECLARATIVE. Each leaf primitive is modelled in its
+// own local frame (a solid of revolution along its local +Z, centred on the
+// origin). A composing structure positions a child once, at the `sub` site, via
+// a trailing `at transform3(orient, translation)` clause; the placed child
+// geometry auto-surfaces, composed into the parent's frame, all the way up the
+// tree. No manual `let placed = translate(self.sub.body, …)` lifts, no parallel
+// *View structs — those were the pre-3903 workaround and are gone.
 //
-// NOTE 2: cross-sub geometry access (`self.<sub>.body`) does not currently
-// work for Solid-typed members in v0.1 — even `param body : Solid = …`
-// does not expose Solid across a sub boundary (returns "unknown member
-// 'body' on sub …" at compile-geometry). Workaround: each primitive
-// PLACES ITS OWN GEOMETRY in the parent's local frame via its own
-// (pos_x, pos_y, pos_z) params, and parent assemblies just CONTAIN subs
-// (no body re-construction, no mirror() calls on sub bodies). Mirror
-// semantics are realised by instantiating a second sub with sign-flipped
-// position + offset params. See bug filed in fused-memory.
+// CAVEAT (per-instance param overrides): on current main, constructor-arg
+// overrides at a `sub` site (`Foo(x: 1mm)`) do NOT yet flow into the surfaced
+// child geometry — the child realises with its DEFINITION DEFAULTS (PRD §11.4,
+// the seed_cross_sub_named_steps hook is still being wired). So all per-instance
+// variation here is expressed through the `at` TRANSFORM (position + orientation,
+// built from each structure's own default params + literals), NOT through size
+// overrides. Where two instances would need different SIZES (e.g. the X-rail is
+// shorter than the Y-rail), the model currently renders both at the shared leaf
+// default; refine once override propagation lands.
 //
-// NOTE 3: `if cond then box(...) else box(...)` returning Solid also
-// crashes the geometry compiler ("unresolvable GeomRef::Step(0)") — all
-// if-then-else here returns Length only; box() and translate() calls are
-// unconditional.
+// VISIBILITY: construction/reference geometry (build-volume box, travel
+// centreline) is marked `aux` — realised + inspectable but flagged
+// default_visible=false. The GUI honouring that flag is task 3904/T6 (in
+// progress); until it lands, toggle these off in the Outline panel.
 
 #version(0.1)
 
@@ -34,323 +37,138 @@
 /// Linear acceleration (m/s²).
 type Acceleration = Length / Time / Time
 
-// ── Axis enum (used by orientation-aware composed assemblies) ───────────────
-
-/// Long-axis selector for the orientation-aware composed assemblies
-/// (GuideAssembly, LinearStage). The construction primitives take per-axis
-/// dimensions directly; the composed wrappers translate `long_axis` into
-/// (size_x, size_y, size_z) via Length-typed if-then-else.
-enum Axis { X, Y, Z }
-
-// ── Construction primitives (axis-agnostic, self-positioning boxes) ─────────
+// ── Construction primitives (axis-agnostic, centred on local +Z) ────────────
 //
-// Each primitive takes (size_x, size_y, size_z) for its envelope plus
-// (pos_x, pos_y, pos_z) for its placement in the parent's local frame.
-// `let body = translate(box(...), pos_x, pos_y, pos_z)` — the body is
-// realised in the engine when the primitive is instantiated as a sub.
+// Each leaf is a solid of revolution along its OWN local +Z axis, centred on the
+// origin. Orientation + placement into the parent frame are supplied by the
+// composing structure's `at` clause.
 
-/// Cylindrical air-bearing housing (box stand-in pending the `rotate`
-/// arg-name fix). Real lip clearance is ~5 µm; OD ≈ housing OD.
+/// Cylindrical air-bearing housing: an annular sleeve (bore = rod_diameter,
+/// outer = outer_diameter) of the given length, along local +Z, centred on the
+/// origin. Real lip clearance is ~5 µm; OD ≈ housing OD.
 pub structure AirBearing {
-    param size_x : Length = 90mm
-    param size_y : Length = 150mm
-    param size_z : Length = 90mm
-    param pos_x  : Length = 0mm
-    param pos_y  : Length = 0mm
-    param pos_z  : Length = 0mm
+    param rod_diameter   : Length = 60mm
+    param outer_diameter : Length = 90mm
+    param length         : Length = 150mm
 
-    let body = translate(box(size_x, size_y, size_z), pos_x, pos_y, pos_z)
+    // Outer sleeve minus a through-bore; the bore protrudes ±10% past each end
+    // so the boolean difference has no coincident end caps.
+    let body = difference(
+        translate(cylinder(outer_diameter / 2, length), 0mm, 0mm, 0mm - length / 2),
+        translate(cylinder(rod_diameter / 2, length * 1.2), 0mm, 0mm, 0mm - length * 0.6)
+    )
 
-    constraint size_x > 0mm
-    constraint size_y > 0mm
-    constraint size_z > 0mm
+    constraint outer_diameter > rod_diameter
+    constraint rod_diameter > 0mm
+    constraint length > 0mm
 }
 
-/// Precision-ground stainless rod (box stand-in pending the `rotate`
-/// arg-name fix; see project_rotate_arg_name_mismatch_may08).
+/// Precision-ground stainless rod: a solid cylinder along local +Z, centred on
+/// the origin.
 pub structure BearingRod {
-    param size_x : Length = 60mm
-    param size_y : Length = 800mm
-    param size_z : Length = 60mm
-    param pos_x  : Length = 0mm
-    param pos_y  : Length = 0mm
-    param pos_z  : Length = 0mm
+    param diameter : Length = 60mm
+    param length   : Length = 800mm
 
-    let body = translate(box(size_x, size_y, size_z), pos_x, pos_y, pos_z)
+    let body = translate(cylinder(diameter / 2, length), 0mm, 0mm, 0mm - length / 2)
 
-    constraint size_x > 0mm
-    constraint size_y > 0mm
-    constraint size_z > 0mm
+    constraint diameter > 0mm
+    constraint length > 0mm
 }
 
-/// Single Vectran tendon (6 mm braid, on-rail span only). The closed-loop
-/// path through capstans + motor is out of scope for v0.1 model.
+/// Single Vectran tendon (6 mm braid, on-rail span only): a slender cylinder
+/// along local +Z, centred on the origin. The closed-loop path through capstans
+/// + motor is out of scope for the v0.1 model.
 pub structure LinearTendon {
-    param size_x : Length = 6mm
-    param size_y : Length = 800mm
-    param size_z : Length = 6mm
-    param pos_x  : Length = 0mm
-    param pos_y  : Length = 0mm
-    param pos_z  : Length = 0mm
+    param diameter : Length = 6mm
+    param length   : Length = 800mm
 
-    let body = translate(box(size_x, size_y, size_z), pos_x, pos_y, pos_z)
+    let body = translate(cylinder(diameter / 2, length), 0mm, 0mm, 0mm - length / 2)
 
-    constraint size_x > 0mm
-    constraint size_y > 0mm
-    constraint size_z > 0mm
+    constraint diameter > 0mm
+    constraint length > 0mm
 }
 
 // ── Composed assemblies ─────────────────────────────────────────────────────
 //
-// Composed assemblies have NO geometry of their own — they only instantiate
-// sub-primitives at appropriate positions. The contained subs realise their
-// bodies independently; the assembly just provides the parameter mapping.
+// Rail axis = local +Z throughout the stage stack (matches the leaf cylinders),
+// so the only orientation needed is at the YStage / XStage level, where local +Z
+// is rotated onto world +Y / world +X respectively.
 
-/// One rod + one air-bearing carriage, co-axial. Geometry is rod-centred
-/// (rod centre at local origin, long axis = `long_axis`); the bearing
-/// centre is offset along that axis by `bearing_offset` (signed). The
-/// whole assembly is then translated by (pos_x, pos_y, pos_z) in the
-/// parent's frame.
+/// One rod + one co-axial air-bearing carriage. Rail axis = local +Z; the rod is
+/// centred at the origin and the bearing slides along +Z by `bearing_offset`.
 pub structure GuideAssembly {
-    param rod_dia        : Length = 60mm
-    param rod_length     : Length = 800mm
-    param bearing_od     : Length = 90mm
-    param bearing_length : Length = 150mm
-    /// Bearing centre offset from rod centre, along `long_axis` (signed).
+    /// Bearing-carriage centre offset from the rod centre, along the rail (+Z).
     param bearing_offset : Length = 0mm
-    param long_axis      : Axis   = Axis.Y
-    /// Origin of this guide assembly in the parent's local frame.
-    param pos_x          : Length = 0mm
-    param pos_y          : Length = 0mm
-    param pos_z          : Length = 0mm
 
-    // Per-axis dimensions: long axis gets `length`, others get `dia`/`od`.
-    let rod_size_x     = if long_axis == Axis.X then rod_length else rod_dia
-    let rod_size_y     = if long_axis == Axis.Y then rod_length else rod_dia
-    let rod_size_z     = if long_axis == Axis.Z then rod_length else rod_dia
-    let bearing_size_x = if long_axis == Axis.X then bearing_length else bearing_od
-    let bearing_size_y = if long_axis == Axis.Y then bearing_length else bearing_od
-    let bearing_size_z = if long_axis == Axis.Z then bearing_length else bearing_od
+    sub rod     = BearingRod()
+    sub bearing = AirBearing() at transform3(orient_identity(), vec3(0mm, 0mm, bearing_offset))
 
-    // Bearing offset: only the long-axis component is non-zero.
-    let bearing_off_x = if long_axis == Axis.X then bearing_offset else 0mm
-    let bearing_off_y = if long_axis == Axis.Y then bearing_offset else 0mm
-    let bearing_off_z = if long_axis == Axis.Z then bearing_offset else 0mm
-
-    sub rod = BearingRod(
-        size_x: rod_size_x, size_y: rod_size_y, size_z: rod_size_z,
-        pos_x:  pos_x,      pos_y:  pos_y,      pos_z:  pos_z
-    )
-    sub bearing = AirBearing(
-        size_x: bearing_size_x, size_y: bearing_size_y, size_z: bearing_size_z,
-        pos_x:  pos_x + bearing_off_x,
-        pos_y:  pos_y + bearing_off_y,
-        pos_z:  pos_z + bearing_off_z
-    )
-
-    constraint bearing_od >= rod_dia
-    constraint bearing_length > 0mm
-    constraint bearing_offset + bearing_length / 2 <=  rod_length / 2
-    constraint bearing_offset - bearing_length / 2 >= -rod_length / 2
+    constraint bearing_offset >= 0mm - 400mm
+    constraint bearing_offset <= 400mm
 }
 
-/// One guide assembly + one paired set of tendons. The pair is offset
-/// transverse to the rod axis: `tendon_offset` is the in-plane horizontal
-/// offset (perpendicular to both `long_axis` and gravity-Z), and the pair
-/// is split ±`tendon_pair_offset` in Z about the rod plane (moment
-/// cancellation about the rod axis). A standalone LinearStage models a
-/// single rail; an X- or Y-stage is two of these, mirrored.
+/// One guide assembly + a symmetric pair of Vectran tendons flanking the rail in
+/// local ±X (in-plane, moment-balanced about the rail axis), running parallel to
+/// the rail (local +Z). A standalone LinearStage models a single rail; an X- or
+/// Y-stage is two of these.
 pub structure LinearStage {
-    param rod_dia            : Length = 60mm
-    param rod_length         : Length = 800mm
-    param bearing_od         : Length = 90mm
-    param bearing_length     : Length = 150mm
-    param bearing_offset     : Length = 0mm
-    param tendon_dia         : Length = 6mm
-    /// In-plane transverse offset of the tendon pair from the rod axis,
-    /// in the horizontal direction perpendicular to `long_axis`. Sign sets
-    /// "outboard" direction; YStage / XStage flip it for the pair.
-    param tendon_offset      : Length = 50mm
-    /// Vertical (Z) half-separation of the paired tendons about the rod
-    /// plane. Pair sits at ±tendon_pair_offset in Z.
-    param tendon_pair_offset : Length = 12mm
-    param long_axis          : Axis   = Axis.Y
-    /// Origin of this stage in the parent's local frame.
-    param pos_x              : Length = 0mm
-    param pos_y              : Length = 0mm
-    param pos_z              : Length = 0mm
+    /// In-plane transverse half-spacing of the tendon pair from the rail axis.
+    param tendon_offset : Length = 50mm
 
-    sub guide = GuideAssembly(
-        rod_dia:        rod_dia,
-        rod_length:     rod_length,
-        bearing_od:     bearing_od,
-        bearing_length: bearing_length,
-        bearing_offset: bearing_offset,
-        long_axis:      long_axis,
-        pos_x:          pos_x,
-        pos_y:          pos_y,
-        pos_z:          pos_z
-    )
+    sub guide    = GuideAssembly()
+    sub tendon_a = LinearTendon() at transform3(orient_identity(), vec3(tendon_offset, 0mm, 0mm))
+    sub tendon_b = LinearTendon() at transform3(orient_identity(), vec3(0mm - tendon_offset, 0mm, 0mm))
 
-    // Tendon per-axis dimensions: same shape rule as rod (long axis =
-    // rod_length, others = tendon_dia).
-    let tendon_size_x = if long_axis == Axis.X then rod_length else tendon_dia
-    let tendon_size_y = if long_axis == Axis.Y then rod_length else tendon_dia
-    let tendon_size_z = if long_axis == Axis.Z then rod_length else tendon_dia
-
-    // Tendon-offset decomposition. For a horizontal long axis (X or Y),
-    // `tendon_offset` lies along the OTHER horizontal axis, and the pair
-    // offset is in Z. For Z long-axis (vertical rod) we degrade gracefully
-    // and place both tendons at the same Z, separated only in X.
-    let tpos_off_x = if long_axis == Axis.X then 0mm
-                     else if long_axis == Axis.Y then tendon_offset
-                     else tendon_pair_offset
-    let tpos_off_y = if long_axis == Axis.X then tendon_offset
-                     else if long_axis == Axis.Y then 0mm
-                     else tendon_offset
-    let tpos_off_z = if long_axis == Axis.X then tendon_pair_offset
-                     else if long_axis == Axis.Y then tendon_pair_offset
-                     else 0mm
-    let tneg_off_x = if long_axis == Axis.X then 0mm
-                     else if long_axis == Axis.Y then tendon_offset
-                     else 0mm - tendon_pair_offset
-    let tneg_off_y = if long_axis == Axis.X then tendon_offset
-                     else if long_axis == Axis.Y then 0mm
-                     else tendon_offset
-    let tneg_off_z = if long_axis == Axis.X then 0mm - tendon_pair_offset
-                     else if long_axis == Axis.Y then 0mm - tendon_pair_offset
-                     else 0mm
-
-    sub tendon_pos = LinearTendon(
-        size_x: tendon_size_x, size_y: tendon_size_y, size_z: tendon_size_z,
-        pos_x:  pos_x + tpos_off_x,
-        pos_y:  pos_y + tpos_off_y,
-        pos_z:  pos_z + tpos_off_z
-    )
-    sub tendon_neg = LinearTendon(
-        size_x: tendon_size_x, size_y: tendon_size_y, size_z: tendon_size_z,
-        pos_x:  pos_x + tneg_off_x,
-        pos_y:  pos_y + tneg_off_y,
-        pos_z:  pos_z + tneg_off_z
-    )
-
-    constraint tendon_pair_offset > tendon_dia
+    constraint tendon_offset > 0mm
 }
 
-/// Two Y-aligned LinearStages: one at -rail_offset on X, then a logical
-/// MIRROR across the YZ plane to give the second rail at +rail_offset.
-/// Mirror is implemented by sign-flipping the second stage's tendon_offset
-/// (tendons stay outboard of each respective rail). Default geometry
-/// centres the rail pair on x = 0.
+/// Two Y-aligned LinearStages forming the stationary side rails. Each stage's
+/// local +Z is rotated onto world +Y; the pair is split ±`rail_offset` in X.
+/// Default geometry centres the rail pair on x = 0, running along Y, centred on
+/// the assembly origin.
 pub structure YStage {
-    param rod_dia            : Length = 60mm
-    param rod_length         : Length = 800mm
-    param bearing_od         : Length = 90mm
-    param bearing_length     : Length = 150mm
-    param bearing_offset     : Length = 0mm
-    param tendon_dia         : Length = 6mm
-    param tendon_offset      : Length = 60mm
-    param tendon_pair_offset : Length = 12mm
-    /// Half the centre-to-centre separation between the two Y rails. The
-    /// "left" rail sits at x = -rail_offset, the mirrored "right" rail at
-    /// x = +rail_offset.
-    param rail_offset        : Length = 360mm
+    /// Half the centre-to-centre separation between the two Y rails.
+    param rail_offset : Length = 360mm
 
-    let neg_rail_offset    = 0mm - rail_offset
-    let neg_tendon_offset  = 0mm - tendon_offset
-
-    sub stage_left = LinearStage(
-        rod_dia:            rod_dia,
-        rod_length:         rod_length,
-        bearing_od:         bearing_od,
-        bearing_length:     bearing_length,
-        bearing_offset:     bearing_offset,
-        tendon_dia:         tendon_dia,
-        tendon_offset:      tendon_offset,
-        tendon_pair_offset: tendon_pair_offset,
-        long_axis:          Axis.Y,
-        pos_x:              neg_rail_offset
-    )
-    sub stage_right = LinearStage(
-        rod_dia:            rod_dia,
-        rod_length:         rod_length,
-        bearing_od:         bearing_od,
-        bearing_length:     bearing_length,
-        bearing_offset:     bearing_offset,
-        tendon_dia:         tendon_dia,
-        tendon_offset:      neg_tendon_offset,
-        tendon_pair_offset: tendon_pair_offset,
-        long_axis:          Axis.Y,
-        pos_x:              rail_offset
-    )
+    // Rotate local +Z onto world +Y (90° about X).
+    sub stage_left  = LinearStage()
+        at transform3(orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg), vec3(0mm - rail_offset, 0mm, 0mm))
+    sub stage_right = LinearStage()
+        at transform3(orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg), vec3(rail_offset, 0mm, 0mm))
 
     constraint rail_offset > 0mm
 }
 
-/// Two X-aligned LinearStages: one at -rail_offset on Z (lower), then a
-/// logical MIRROR across the XY plane to give the second rail at
-/// +rail_offset (upper). For the gantry's stacked rail pair. Mirror across
-/// Z does not need to flip `tendon_offset` (it's a Y offset, perpendicular
-/// to the mirror normal). Default geometry centres the rail pair on z = 0.
+/// Two X-aligned LinearStages forming the gantry's stacked rail pair. Each
+/// stage's local +Z is rotated onto world +X; the pair is stacked ±`rail_offset`
+/// in Z. Default geometry centres the rail pair on z = 0, running along X.
 pub structure XStage {
-    param rod_dia            : Length = 60mm
-    param rod_length         : Length = 720mm
-    param bearing_od         : Length = 90mm
-    param bearing_length     : Length = 120mm
-    param bearing_offset     : Length = 0mm
-    param tendon_dia         : Length = 6mm
-    /// In-plane transverse offset of each rail's tendon pair (along Y for
-    /// an X-long-axis stage). 0 = tendons in the same Y plane as the rod.
-    param tendon_offset      : Length = 0mm
-    param tendon_pair_offset : Length = 12mm
     /// Half the Z centre-to-centre separation between the stacked X rails.
-    /// Lower rail at z = -rail_offset; mirrored upper rail at z = +rail_offset.
-    param rail_offset        : Length = 50mm
+    param rail_offset : Length = 50mm
 
-    let neg_rail_offset = 0mm - rail_offset
-
-    sub stage_lower = LinearStage(
-        rod_dia:            rod_dia,
-        rod_length:         rod_length,
-        bearing_od:         bearing_od,
-        bearing_length:     bearing_length,
-        bearing_offset:     bearing_offset,
-        tendon_dia:         tendon_dia,
-        tendon_offset:      tendon_offset,
-        tendon_pair_offset: tendon_pair_offset,
-        long_axis:          Axis.X,
-        pos_z:              neg_rail_offset
-    )
-    sub stage_upper = LinearStage(
-        rod_dia:            rod_dia,
-        rod_length:         rod_length,
-        bearing_od:         bearing_od,
-        bearing_length:     bearing_length,
-        bearing_offset:     bearing_offset,
-        tendon_dia:         tendon_dia,
-        tendon_offset:      tendon_offset,
-        tendon_pair_offset: tendon_pair_offset,
-        long_axis:          Axis.X,
-        pos_z:              rail_offset
-    )
+    // Rotate local +Z onto world +X (90° about Y).
+    sub stage_lower = LinearStage()
+        at transform3(orient_axis_angle(vec3(0mm, 1m, 0mm), 90deg), vec3(0mm, 0mm, 0mm - rail_offset))
+    sub stage_upper = LinearStage()
+        at transform3(orient_axis_angle(vec3(0mm, 1m, 0mm), 90deg), vec3(0mm, 0mm, rail_offset))
 
     constraint rail_offset > 0mm
 }
 
-/// CoreXY motion system: X stage on the moving gantry beam, Y stage as the
-/// stationary side rails. The Y stage carries the gantry; the X stage
-/// carries the toolhead carriage. Carriage envelope is a thin placeholder
-/// here — toolhead detail belongs to DToolhead.
+/// CoreXY motion system: Y stage = stationary side rails; X stage = the moving
+/// gantry beam carrying the toolhead carriage. The gantry rides high on the Y
+/// rails, so the X stage is lifted in +Z relative to the Y rails.
 pub structure CoreXY {
+    /// Height of the gantry beam above the Y-rail centre plane.
+    param gantry_height : Length = 300mm
+
     sub y_stage = YStage()
-    sub x_stage = XStage()
+    sub x_stage = XStage() at transform3(orient_identity(), vec3(0mm, 0mm, gantry_height))
 }
 
 // ── Envelope (global parameters + kinematic centerlines) ────────────────────
 
-/// Global build envelope and shared cross-cutting parameters. Geometry that
-/// belongs to a single sub-assembly (rails/bearings/tendons → CoreXY; bed
-/// travel centreline → E) lives in that sub-assembly, not here.
+/// Global build envelope and shared cross-cutting parameters.
 pub structure Envelope {
     meta {
         project = "printer_v01",
@@ -401,8 +219,9 @@ pub structure Envelope {
     let y_axis = vec3(0mm, 1m, 0mm)
     let z_axis = vec3(0mm, 0mm, 1m)
 
-    // Visualisation: build-volume cuboid (FLB corner at world origin).
-    let build_volume_solid = translate(
+    // Visualisation: build-volume cuboid (FLB corner at world origin). Reference
+    // geometry, not a part — hidden by default (toggle in the Outline).
+    aux let build_volume_solid = translate(
         box(build_x, build_y, build_z),
         build_x / 2, build_y / 2, build_z / 2
     )
@@ -423,37 +242,36 @@ pub structure Envelope {
 // ── Sub-assemblies (A, D–J) ─────────────────────────────────────────────────
 //
 // B (Y-axis) and C (Gantry + X-axis) from the doc's sub-assembly table are
-// now realised as CoreXY (= XStage + YStage), defined above. The remaining
-// placeholders cover the non-motion sub-assemblies; each will grow into its
-// own owned geometry as the model fleshes out.
+// realised as CoreXY (= XStage + YStage), above. The remaining placeholders
+// cover the non-motion sub-assemblies; each grows its own owned geometry as the
+// model fleshes out.
 
 /// Assembly A — Frame: polymer-concrete-filled steel sandwich (structural
-/// backbone). Laser-cut steel skeleton + heterogeneous-aggregate epoxy
-/// granite fill.
+/// backbone). Laser-cut steel skeleton + heterogeneous-aggregate epoxy granite.
 pub structure AFrame {
     param wall_thickness : Length = 100mm
 }
 
-/// Assembly D — Toolhead: carriage on the X-rail + 4-tool kinematic dock on
-/// the frame; v0.1 fits 2 tools (4-tool dock designed in).
+/// Assembly D — Toolhead: carriage on the X-rail + 4-tool kinematic dock on the
+/// frame; v0.1 fits 2 tools (4-tool dock designed in).
 pub structure DToolhead {
     param tool_dock_pitch : Length = 80mm
 }
 
-/// Assembly E — Z-bed: 12 mm Mic-6 plate, magnetic flexible PEI sheet,
-/// 4-corner electronic-tilt servo Z, parking shutter (no bellows). Owns
-/// the Z-travel centreline visualisation.
+/// Assembly E — Z-bed: 12 mm Mic-6 plate, magnetic flexible PEI sheet, 4-corner
+/// electronic-tilt servo Z, parking shutter (no bellows). Owns the Z-travel
+/// centreline visualisation.
 pub structure EZBed {
-    // Envelope-derived parameters. Defaults mirror Envelope so EZBed
-    // renders standalone; Printer overrides from `env.<...>`.
+    // Envelope-derived parameters. Defaults mirror Envelope so EZBed renders
+    // standalone.
     param build_x : Length = 500mm
     param build_y : Length = 800mm
     param build_z : Length = 600mm
 
     param bed_plate_thickness : Length = 12mm
 
-    // Z-bed travel centreline (kept thin; the plate itself is modelled later).
-    let z_bed_travel_centerline = translate(
+    // Z-bed travel centreline (reference viz, not a part — hidden by default).
+    aux let z_bed_travel_centerline = translate(
         box(6mm, 6mm, build_z),
         build_x / 2, build_y / 2, build_z / 2
     )
@@ -461,22 +279,22 @@ pub structure EZBed {
     constraint bed_plate_thickness > 0mm
 }
 
-/// Assembly F — Chamber: insulated panels (steel skin + mineral-wool /
-/// aerogel), thermal break to frame, 2–3 kW heater + circulation, lighting.
-/// 80 °C commissioned; 130 °C-capable design.
+/// Assembly F — Chamber: insulated panels (steel skin + mineral-wool / aerogel),
+/// thermal break to frame, 2–3 kW heater + circulation, lighting. 80 °C
+/// commissioned; 130 °C-capable design.
 pub structure FChamber {
     param panel_insulation_thickness : Length = 50mm
 }
 
-/// Assembly G — Electronics: drive enclosure (7× Granite Argon + 5× Ioni-HC)
-/// + Klipper host (Pi 5 / x86 SBC) + wiring loom; mounted OUTSIDE chamber.
+/// Assembly G — Electronics: drive enclosure (7× Granite Argon + 5× Ioni-HC) +
+/// Klipper host (Pi 5 / x86 SBC) + wiring loom; mounted OUTSIDE chamber.
 pub structure GElectronics {
     param enclosure_depth : Length = 400mm
 }
 
 /// Assembly H — Air system: existing P4 / 3 °C dew-point shop air, augmented
-/// 0.01 μm coalescing + activated carbon + point-of-use desiccant to ISO
-/// 8573-1 class 1–2. Distributes to (track-2) air bearings + chamber pneums.
+/// 0.01 μm coalescing + activated carbon + point-of-use desiccant to ISO 8573-1
+/// class 1–2. Distributes to (track-2) air bearings + chamber pneumatics.
 pub structure HAir {
     param dew_point_target : Temperature = 3degC
 }
@@ -495,15 +313,19 @@ pub structure JAuxiliary {
 
 // ── Top-level integration ───────────────────────────────────────────────────
 
-/// Top-level printer integration. Wires the non-motion sub-assemblies (A,
-/// D–J) and the unified motion system (CoreXY = XStage + YStage) against
-/// the shared Envelope.
+/// Top-level printer integration. Wires the non-motion sub-assemblies (A, D–J)
+/// and the unified motion system (CoreXY = XStage + YStage) against the shared
+/// Envelope. The motion system is modelled centred on its own origin, then
+/// placed at the build-volume centre. (Precise world placement of each
+/// sub-assembly is the follow-on step.)
 pub structure Printer {
     sub env = Envelope()
 
     sub a_frame = AFrame()
 
+    // Centre the motion system on the build volume (FLB corner at world origin).
     sub motion = CoreXY()
+        at transform3(orient_identity(), vec3(250mm, 400mm, 300mm))
 
     sub d_toolhead = DToolhead()
 
