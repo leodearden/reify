@@ -5,6 +5,7 @@
 //! RNEA). All math is pure-Rust `f64` numerics — no Reify-level `Value`
 //! dispatch and no heavyweight linalg dependency.
 
+pub mod closed_chain;
 pub mod mass_props;
 pub mod rnea;
 pub mod spatial;
