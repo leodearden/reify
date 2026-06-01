@@ -136,8 +136,7 @@ pub fn solve_buckling_trampoline(
     let total_load = extract_total_load(&value_inputs[4]);
 
     // ── (4) Extract BucklingOptions ───────────────────────────────────────────
-    let (n_modes, eigen_tol, eigen_max_iters) = extract_buckling_options(&value_inputs[6]);
-    let element_order = extract_buckling_element_order(&value_inputs[6]);
+    let (n_modes, eigen_tol, eigen_max_iters, element_order) = extract_buckling_options(&value_inputs[6]);
 
     // ── (4b) supports input — intentionally unused in task-ε slice ────────────
     //
@@ -255,7 +254,8 @@ pub fn solve_buckling_trampoline(
     //   solve_buckling_kernel_p2. pre_stress resampling reuses the P1 corner
     //   mesh (DD-5): corners are the first n_p1 entries of nodes_p2.
     let kernel_result;
-    let active_nodes: Vec<[f64; 3]>; // full node set for modes + base_node_positions
+    let nodes_p2_storage: Vec<[f64; 3]>; // populated only in P2 branch; uninit in P1 path
+    let active_nodes: &[[f64; 3]];       // borrows nodes (P1) or nodes_p2_storage (P2)
 
     match element_order {
         ElementOrder::P1 => {
@@ -284,18 +284,19 @@ pub fn solve_buckling_trampoline(
             }
 
             kernel_result = solve_buckling_kernel(&nodes, &tets, &mat, &bcs, &f, &[], opts);
-            active_nodes = nodes.clone();
+            active_nodes = &nodes; // borrow directly — no clone needed (P1 active mesh == nodes)
         }
 
         ElementOrder::P2 => {
             // ── P2: promote P1 mesh to 10-node quadratic tets ────────────────
-            let (nodes_p2, tets_p2) = promote_tets_to_p2(&nodes, &tets);
-            let n_nodes_p2 = nodes_p2.len();
+            let (promoted, tets_p2) = promote_tets_to_p2(&nodes, &tets);
+            nodes_p2_storage = promoted; // move into outer-scope slot; active_nodes borrows it below
+            let n_nodes_p2 = nodes_p2_storage.len();
 
-            // ── P2: BCs by COORDINATE over nodes_p2 (catches corner + midpoints
-            //   on both end faces — DD-4).
+            // ── P2: BCs by COORDINATE over nodes_p2_storage (catches corner +
+            //   midpoints on both end faces — DD-4).
             let mut bcs: Vec<DirichletBc> = Vec::new();
-            for (n, xyz) in nodes_p2.iter().enumerate() {
+            for (n, xyz) in nodes_p2_storage.iter().enumerate() {
                 let z = xyz[2];
                 if (z).abs() < 1e-10 || (z - lz).abs() < 1e-10 {
                     // Node is on z=0 or z=lz face: lateral clamp (pin-pin).
@@ -307,8 +308,8 @@ pub fn solve_buckling_trampoline(
             bcs.push(DirichletBc { dof: 2, value: 0.0 }); // u_z at node 0
 
             // ── P2: load on top-face CORNER nodes (via node_id over nx=2 grid) ─
-            // These are P1 indices (first n_p1 entries of nodes_p2), still valid
-            // in the promoted mesh.  Loading corners only matches the validated
+            // These are P1 indices (first n_p1 entries of nodes_p2_storage), still
+            // valid in the promoted mesh.  Loading corners only matches the validated
             // fixed_guided P2 fixture; the eigenvalue normalises by total load.
             let n_top = (nx + 1) * (ny + 1);
             let mut f = vec![0.0f64; 3 * n_nodes_p2];
@@ -319,8 +320,8 @@ pub fn solve_buckling_trampoline(
                 }
             }
 
-            kernel_result = solve_buckling_kernel_p2(&nodes_p2, &tets_p2, &mat, &bcs, &f, &[], opts);
-            active_nodes = nodes_p2;
+            kernel_result = solve_buckling_kernel_p2(&nodes_p2_storage, &tets_p2, &mat, &bcs, &f, &[], opts);
+            active_nodes = &nodes_p2_storage;
         }
     }
 
@@ -612,36 +613,23 @@ fn extract_total_load(val: &Value) -> f64 {
     if total == 0.0 { 1.0 } else { total }
 }
 
-/// Extract the `element_order` field from a `BucklingOptions` StructureInstance.
+/// Extract BucklingOptions fields: `(n_modes, eigen_tol, eigen_max_iters, element_order)`.
 ///
-/// Returns [`ElementOrder::P2`] iff the field carries
-/// `Value::Enum { variant: "P2", .. }` — otherwise returns [`ElementOrder::P1`]
-/// (the default, covering absent fields, non-StructureInstance inputs, and the
-/// explicit `ElementOrder.P1` variant).
-///
+/// `element_order` returns [`ElementOrder::P2`] iff the field carries
+/// `Value::Enum { variant: "P2", .. }` — otherwise [`ElementOrder::P1`]
+/// (the default, covering absent fields and the explicit `ElementOrder.P1` variant).
 /// Mirrors `modal_ops::extract_element_order` (modal_ops.rs:1838-1846).
-fn extract_buckling_element_order(val: &Value) -> ElementOrder {
-    if let Value::StructureInstance(data) = val
-        && let Some(Value::Enum { variant, .. }) = data.fields.get("element_order")
-        && variant == "P2"
-    {
-        return ElementOrder::P2;
-    }
-    ElementOrder::P1
-}
-
-/// Extract BucklingOptions fields: (n_modes, eigen_tol, eigen_max_iters).
 ///
-/// Falls back to kernel defaults if the value is not a StructureInstance or
-/// the fields are missing.
-fn extract_buckling_options(val: &Value) -> (usize, f64, usize) {
+/// Falls back to kernel defaults for numeric fields if the value is not a
+/// StructureInstance or the fields are missing.
+fn extract_buckling_options(val: &Value) -> (usize, f64, usize, ElementOrder) {
     let default_n_modes: usize = 10;
     let default_tol: f64 = 1e-8;
     let default_max_iters: usize = 1000;
 
     let data = match val {
         Value::StructureInstance(d) => d,
-        _ => return (default_n_modes, default_tol, default_max_iters),
+        _ => return (default_n_modes, default_tol, default_max_iters, ElementOrder::P1),
     };
 
     let n_modes = match data.fields.get(&"n_modes".to_string()) {
@@ -659,7 +647,12 @@ fn extract_buckling_options(val: &Value) -> (usize, f64, usize) {
         Some(Value::Int(n)) => (*n).max(1) as usize,
         _ => default_max_iters,
     };
+    // element_order: Enum { variant: "P2" } → P2; absent or any other variant → P1.
+    let element_order = match data.fields.get("element_order") {
+        Some(Value::Enum { variant, .. }) if variant == "P2" => ElementOrder::P2,
+        _ => ElementOrder::P1,
+    };
 
-    (n_modes, eigen_tol, eigen_max_iters)
+    (n_modes, eigen_tol, eigen_max_iters, element_order)
 }
 
