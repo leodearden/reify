@@ -7942,6 +7942,80 @@ mod tests {
         );
     }
 
+    /// Contract test (task 4142, Cluster A RED): compile_geometry_op resolves
+    /// GeomRef::Sub via `KernelHandle.id`, ignoring `KernelHandle.kernel`.
+    ///
+    /// Uses deliberately non-default `KernelId` values (Manifold for "body",
+    /// Fidget for "hole") to prove the GeomRef::Sub arm (geometry_ops.rs:368)
+    /// keys only off `.id` and never consults `.kernel`.
+    ///
+    /// RED on current main: `compile_geometry_op` still takes
+    /// `&HashMap<String, GeometryHandleId>`, so passing a
+    /// `HashMap<String, KernelHandle>` causes a compile-time type mismatch.
+    /// GREEN after step-2: signature changed + leaf projection updated.
+    #[test]
+    fn compile_geometry_op_sub_ref_resolves_via_kernel_handle_id_ignoring_kernel_field() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef};
+
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert(
+            "body".into(),
+            reify_ir::KernelHandle {
+                kernel: reify_ir::KernelId::Manifold, // deliberately non-default
+                id: GeometryHandleId(10),
+            },
+        );
+        named_steps.insert(
+            "hole".into(),
+            reify_ir::KernelHandle {
+                kernel: reify_ir::KernelId::Fidget, // deliberately non-default
+                id: GeometryHandleId(20),
+            },
+        );
+
+        let op = CompiledGeometryOp::Boolean {
+            op: BooleanOp::Difference,
+            left: GeomRef::Sub("body".into()),
+            right: GeomRef::Sub("hole".into()),
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &ValueMap::new(),
+            &[], // no step handles — Sub refs resolve via named_steps
+            &[],
+            &HashMap::new(),
+            &named_steps,
+            &mut diagnostics,
+        );
+
+        let geom_op = result
+            .expect("Sub refs with known KernelHandle values should resolve successfully");
+        match geom_op {
+            reify_ir::GeometryOp::Difference { left, right } => {
+                assert_eq!(
+                    left,
+                    GeometryHandleId(10),
+                    "left must be body's .id (10), not influenced by .kernel (Manifold)"
+                );
+                assert_eq!(
+                    right,
+                    GeometryHandleId(20),
+                    "right must be hole's .id (20), not influenced by .kernel (Fidget)"
+                );
+            }
+            other => panic!("expected Difference, got {:?}", other),
+        }
+
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics expected for successful KernelHandle Sub resolution, \
+             got: {:?}",
+            diagnostics
+        );
+    }
+
     // ── try_eval_conformance_query unit tests (task 2320) ────────────────────
     //
     // These tests pin the contract of `try_eval_conformance_query`, the
