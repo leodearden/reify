@@ -1099,6 +1099,31 @@ fn report_constraint_results(
     }
 }
 
+/// Returns `true` if the compiled module contains geometry — i.e. any template
+/// has a realization with at least one geometry operation, OR any value cell
+/// is typed `reify_core::Type::Geometry`.
+///
+/// Used by `cmd_eval` to decide whether to route through the kernel-backed
+/// `Engine::with_registered_kernel + build()` path (so that geometry-query
+/// value cells such as `mass`/`centroid` are resolved by
+/// `run_post_processes`/`post_process_geometry_queries`) or to stay on the
+/// existing lightweight `Engine::new(None) + eval()` path for plain numeric
+/// modules.
+///
+/// Both detection signals are compile-time (no kernel required) and are
+/// present for `examples/spec-shape-physical.ri` (the `box(...)` realization
+/// op + the `geometry : Solid` cell) and absent for all existing non-geometry
+/// eval fixtures.
+#[allow(dead_code)]
+fn module_has_geometry(module: &reify_compiler::CompiledModule) -> bool {
+    module.templates.iter().any(|t| {
+        t.realizations.iter().any(|r| !r.operations.is_empty())
+            || t.value_cells
+                .iter()
+                .any(|vc| vc.cell_type == reify_core::Type::Geometry)
+    })
+}
+
 /// Report constraint results and eval diagnostics in a consistent order.
 ///
 /// Writes constraint status lines to `out` (via [`report_constraint_results`]),
