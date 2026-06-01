@@ -2073,4 +2073,149 @@ mod tests {
             "extract_loop_closure_chains must return None for a record missing path_b"
         );
     }
+
+    // ── loop_residual_jacobian_by_joint tests ────────────────────────────
+    //
+    // Verifies GAP 1 resolution: the full two-chain residual Jacobian assembled
+    // by perturbing tree `at` joints in BOTH chains wherever they appear.
+    //
+    // Fixture:
+    //   jA = prismatic_x  (single-DOF, axis +X)
+    //   jB = revolute_z   (single-DOF, axis +Z)
+    //   jC = revolute_y   (third joint NOT in either chain)
+    //
+    //   chain_a = [jA]        vals_a = [0.3]
+    //   chain_b = [jA, jB]    vals_b = [0.3, 0.5]
+    //
+    // jA appears in BOTH chains at their first position — structurally
+    // identical Values (same eval_builtin output), so Value::Eq locates
+    // both occurrences correctly.
+    //
+    // For each target joint the independent FD reference is computed by
+    // perturbing that joint's value in ALL positions it appears:
+    //   jA: vals_a±=[0.3±ε], vals_b±=[0.3±ε, 0.5]
+    //   jB: vals_a unchanged, vals_b±=[0.3, 0.5±ε]
+    //   jC: absent from both chains → zero column (no perturbation site)
+    //
+    // Achievability: FD-vs-FD identity — both references use the same
+    // loop_residual_twist formula, so roundoff is the only divergence.
+    // Tolerance 1e-7 is well within central-difference O(ε²) accuracy.
+
+    /// Independent FD helper: central-difference column for perturbing
+    /// `target_idx_a` (index in vals_a, or None) AND `target_idx_b` (index
+    /// in vals_b, or None) simultaneously.
+    fn fd_column(
+        chain_a: &[Value],
+        vals_a: &[JointValue],
+        chain_b: &[Value],
+        vals_b: &[JointValue],
+        target_idx_a: Option<usize>,
+        target_idx_b: Option<usize>,
+        storage_c: usize,
+        eps: f64,
+    ) -> [f64; 6] {
+        let mut va_plus = vals_a.to_vec();
+        let mut va_minus = vals_a.to_vec();
+        let mut vb_plus = vals_b.to_vec();
+        let mut vb_minus = vals_b.to_vec();
+        if let Some(ia) = target_idx_a {
+            super::perturb_storage_component(&mut va_plus[ia], storage_c, eps);
+            super::perturb_storage_component(&mut va_minus[ia], storage_c, -eps);
+        }
+        if let Some(ib) = target_idx_b {
+            super::perturb_storage_component(&mut vb_plus[ib], storage_c, eps);
+            super::perturb_storage_component(&mut vb_minus[ib], storage_c, -eps);
+        }
+        let rp = super::loop_residual_twist(chain_a, &va_plus, chain_b, &vb_plus)
+            .expect("residual_plus");
+        let rm = super::loop_residual_twist(chain_a, &va_minus, chain_b, &vb_minus)
+            .expect("residual_minus");
+        let mut col = [0.0f64; 6];
+        for k in 0..6 {
+            col[k] = (rp[k] - rm[k]) / (2.0 * eps);
+        }
+        col
+    }
+
+    #[test]
+    fn loop_residual_jacobian_by_joint_central_difference() {
+        let eps = 1e-6_f64;
+        let tol = 1e-7_f64;
+
+        // Build three structurally-distinct joints.
+        let j_a = prismatic_x(); // axis +X, prismatic
+        let j_b = revolute_z(); // axis +Z, revolute
+        let j_c = eval_builtin("revolute", &[axis_y_unit(), angle_range_0_to_pi()]); // axis +Y
+
+        // chain_a = [jA], chain_b = [jA, jB] — jA appears in both chains.
+        let chain_a: Vec<Value> = vec![j_a.clone()];
+        let chain_b: Vec<Value> = vec![j_a.clone(), j_b.clone()];
+        let vals_a = vec![JointValue::Scalar(0.3_f64)];
+        let vals_b = vec![JointValue::Scalar(0.3_f64), JointValue::Scalar(0.5_f64)];
+
+        // ── case 1: target = [jA, jB] ─────────────────────────────────────────
+        let cols = super::loop_residual_jacobian_by_joint(
+            &chain_a, &vals_a, &chain_b, &vals_b, &[j_a.clone(), j_b.clone()], eps,
+        )
+        .expect("loop_residual_jacobian_by_joint must return Some for valid inputs");
+
+        assert_eq!(cols.len(), 2, "two single-DOF target joints → two columns");
+
+        // Column for jA: perturb jA in BOTH chains (index 0 in chain_a, index 0 in chain_b).
+        let expected_a = fd_column(
+            &chain_a, &vals_a, &chain_b, &vals_b,
+            Some(0), // chain_a index 0
+            Some(0), // chain_b index 0
+            0,       // storage component 0 (Scalar)
+            eps,
+        );
+        for k in 0..6 {
+            assert!(
+                (cols[0][k] - expected_a[k]).abs() < tol,
+                "col_jA[{k}]: got {:.6e}, want {:.6e}, diff {:.2e}",
+                cols[0][k], expected_a[k], (cols[0][k] - expected_a[k]).abs()
+            );
+        }
+
+        // Column for jB: perturb jB only in chain_b (index 1), chain_a unchanged.
+        let expected_b = fd_column(
+            &chain_a, &vals_a, &chain_b, &vals_b,
+            None,    // chain_a — jB absent
+            Some(1), // chain_b index 1
+            0,       // storage component 0 (Scalar)
+            eps,
+        );
+        for k in 0..6 {
+            assert!(
+                (cols[1][k] - expected_b[k]).abs() < tol,
+                "col_jB[{k}]: got {:.6e}, want {:.6e}, diff {:.2e}",
+                cols[1][k], expected_b[k], (cols[1][k] - expected_b[k]).abs()
+            );
+        }
+
+        // ── case 2: target = [jC] (absent from both chains) ──────────────────
+        // jC is not in chain_a or chain_b → zero column (no perturbation site).
+        let cols_c = super::loop_residual_jacobian_by_joint(
+            &chain_a, &vals_a, &chain_b, &vals_b, &[j_c.clone()], eps,
+        )
+        .expect("jC absent → Some(zero-column), not None");
+
+        assert_eq!(cols_c.len(), 1, "one target joint → one column");
+        for k in 0..6 {
+            assert!(
+                cols_c[0][k].abs() < 1e-12,
+                "col_jC[{k}] expected zero (jC absent from both chains), got {}",
+                cols_c[0][k]
+            );
+        }
+
+        // ── case 3: eps <= 0 → None ───────────────────────────────────────────
+        assert!(
+            super::loop_residual_jacobian_by_joint(
+                &chain_a, &vals_a, &chain_b, &vals_b, &[j_a.clone()], 0.0
+            )
+            .is_none(),
+            "eps=0 must return None"
+        );
+    }
 }
