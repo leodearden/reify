@@ -1474,7 +1474,7 @@ pub(crate) fn try_eval_geometry_query(
     // (2) Recognised whole-handle geometry-query name (cheap string compare
     //     before any arg resolution). length/perimeter are intentionally absent
     //     (topology-selector path — see module note above).
-    if !matches!(function.name.as_str(), "volume") {
+    if !matches!(function.name.as_str(), "volume" | "area") {
         return None;
     }
 
@@ -1496,6 +1496,13 @@ pub(crate) fn try_eval_geometry_query(
             reify_ir::GeometryQuery::Volume(handle),
             reify_core::DimensionVector::VOLUME,
             "volume",
+            diagnostics,
+        ),
+        "area" => dispatch_scalar_query(
+            kernel,
+            reify_ir::GeometryQuery::SurfaceArea(handle),
+            reify_core::DimensionVector::AREA,
+            "area",
             diagnostics,
         ),
         // Unreachable — the earlier `matches!` already filtered the name.
