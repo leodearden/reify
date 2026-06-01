@@ -642,6 +642,7 @@ fn get_slcf_value<'a>(values: &'a ValueMap, name: &str) -> &'a Value {
 fn solve_load_cases_two_cases_returns_mcr_shape() {
     let compiled = parse_and_compile_with_stdlib(SOLVE_LOAD_CASES_SOURCE);
     let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
     let result = engine.eval(&compiled);
 
     let eval_errors = collect_errors(&result.diagnostics);
@@ -820,6 +821,7 @@ fn get_pcof_value<'a>(values: &'a ValueMap, name: &str) -> &'a Value {
 fn solve_load_cases_per_case_options_both_cases_appear() {
     let compiled = parse_and_compile_with_stdlib(PER_CASE_OPTIONS_SOURCE);
     let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
     let result = engine.eval(&compiled);
 
     let eval_errors = collect_errors(&result.diagnostics);
@@ -982,6 +984,7 @@ fn solve_load_cases_one_vs_two_cases_entry_count() {
     // ── 1-case baseline ───────────────────────────────────────────────────────
     let compiled1 = parse_and_compile_with_stdlib(SINGLE_CASE_SOURCE);
     let mut engine1 = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine1);
     let result1 = engine1.eval(&compiled1);
 
     let eval_errors1 = collect_errors(&result1.diagnostics);
@@ -1020,6 +1023,7 @@ fn solve_load_cases_one_vs_two_cases_entry_count() {
     // ── 2-case solve (same body, different loads) ─────────────────────────────
     let compiled2 = parse_and_compile_with_stdlib(TWO_CASE_SHARED_MESH_SOURCE);
     let mut engine2 = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine2);
     let result2 = engine2.eval(&compiled2);
 
     let eval_errors2 = collect_errors(&result2.diagnostics);

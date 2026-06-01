@@ -536,6 +536,7 @@ structure def BodyForce : Load {
 // `cases : List<LoadCase>` uses the concrete `LoadCase` structure type (not
 // `List<Real>` placeholder) because the Reify overload resolver sees
 // `[lc1, lc2]` as `List<LoadCase>` and requires an exact match.
+@optimized("solver::multi_case")
 pub fn solve_load_cases(
     material : ConstitutiveLaw,
     length   : Length,

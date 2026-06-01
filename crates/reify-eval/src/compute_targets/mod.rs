@@ -19,6 +19,7 @@
 pub mod buckling;
 pub mod elastic_static;
 pub mod form_find;
+pub mod multi_case;
 pub mod shell_solve;
 
 // ── Shared field-construction helpers ───────────────────────────────────────
@@ -131,6 +132,10 @@ pub fn register_compute_fns(engine: &mut crate::Engine) {
     engine.register_compute_fn(
         "solver::form_find",
         form_find::solve_form_find_trampoline as crate::ComputeFn,
+    );
+    engine.register_compute_fn(
+        "solver::multi_case",
+        multi_case::solve_multi_case_trampoline as crate::ComputeFn,
     );
     // The modal trampoline lives in `crate::modal_ops` (not `compute_targets`):
     // it shares the FEA-eigensolve machinery with the modal core solver and its
