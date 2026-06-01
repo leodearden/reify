@@ -5278,6 +5278,65 @@ mod tests {
                 &mut self.dispatch_count,
             );
         }
+
+        /// Like [`Self::run`] but threads a caller-controlled `demanded_repr`,
+        /// `demanded_tol`, `realization_id`, and `realization_name` so the
+        /// conversion-executor / cache-unpin tests (task 4050 steps 7/9/11/13)
+        /// can drive a `Mesh` demand, name a realization for caching, and reuse
+        /// `self`'s shared `realization_cache` / `dispatch_count` across
+        /// sequential calls. `run` hard-codes `demanded_tol = None` /
+        /// `demanded_repr = BRep` / `TestEntity`, which the v0.2 single-kernel
+        /// tests want; the cross-kernel tests need all four under their own
+        /// control.
+        #[allow(clippy::too_many_arguments)]
+        fn run_demand(
+            &mut self,
+            kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
+            registry: &BTreeMap<String, &CapabilityDescriptor>,
+            default_kernel: &str,
+            ops: &[reify_compiler::CompiledGeometryOp],
+            realization_id: &RealizationNodeId,
+            realization_name: Option<&str>,
+            realization_span: SourceSpan,
+            demanded_repr: ReprKind,
+            demanded_tol: Option<f64>,
+        ) {
+            let values = ValueMap::new();
+            let functions: Vec<CompiledFunction> = vec![];
+            let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+            Engine::execute_realization_ops(
+                kernels,
+                registry,
+                default_kernel,
+                ops,
+                &[],
+                &values,
+                &functions,
+                &meta_map,
+                RealizationOutputs::new(
+                    &mut self.step_handles,
+                    &mut self.named_steps,
+                    &mut self.feature_tag_table,
+                    &mut self.topology_attribute_table,
+                    &mut self.swept_kind_table,
+                    &mut self.produced_repr_out,
+                ),
+                &mut self.diagnostics,
+                realization_id,
+                realization_name,
+                realization_span,
+                &mut self.kernel_error_out,
+                &mut self.realization_cache,
+                demanded_tol,
+                // Task 4050 step-8 (RED until landed): the new `demanded_repr`
+                // parameter, slotted next to `demanded_tol`. This extra
+                // argument is what makes the conversion-executor tests
+                // compile-fail RED until `execute_realization_ops` grows the
+                // parameter.
+                demanded_repr,
+                &mut self.dispatch_count,
+            );
+        }
     }
 
     // ── execute_realization_ops unit tests ────────────────────────────────────
@@ -6330,6 +6389,374 @@ mod tests {
             errors.is_empty(),
             "behavior-preserved single-default path must not emit error diagnostics; got {:?}",
             errors,
+        );
+    }
+
+    // ── cross-kernel conversion executor tests (task 4050 step-7) ─────────────
+    //
+    // These drive the multi-stage conversion executor + the Mesh→BRep dispatch
+    // fallback landing in step-8. RED before step-8: `run_demand` calls
+    // `Engine::execute_realization_ops` with the not-yet-existing `demanded_repr`
+    // parameter, so the whole `mod tests` build fails to compile until step-8
+    // grows that parameter, wires the `dispatch(.., demanded_repr, ..).or_else(
+    // BRep)` fallback, and replaces the `Some(_) =>` deferred-error arm with the
+    // tessellate→ingest cross-kernel handoff.
+
+    /// occt-like counting kernel: `execute` / `query` / `export` delegate to an
+    /// inner [`MockGeometryKernel`] (so `PrimitiveBox` → BRep solid handles),
+    /// and `tessellate` bumps a shared counter before returning a trivial
+    /// single-triangle [`Mesh`] — the BRep→Mesh source projection the conversion
+    /// executor drives for each prior-stage input handle.
+    struct CountingTessellateKernel {
+        inner: reify_test_support::mocks::MockGeometryKernel,
+        tessellate_count: std::sync::Arc<std::sync::Mutex<usize>>,
+    }
+
+    impl reify_ir::GeometryKernel for CountingTessellateKernel {
+        fn execute(
+            &mut self,
+            op: &reify_ir::GeometryOp,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            self.inner.execute(op)
+        }
+
+        fn query(
+            &self,
+            q: &reify_ir::GeometryQuery,
+        ) -> Result<reify_ir::Value, reify_ir::QueryError> {
+            self.inner.query(q)
+        }
+
+        fn export(
+            &self,
+            handle: reify_ir::GeometryHandleId,
+            format: reify_ir::ExportFormat,
+            writer: &mut dyn std::io::Write,
+        ) -> Result<(), reify_ir::ExportError> {
+            self.inner.export(handle, format, writer)
+        }
+
+        fn tessellate(
+            &self,
+            _handle: reify_ir::GeometryHandleId,
+            _tolerance: f64,
+        ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
+            *self.tessellate_count.lock().unwrap() += 1;
+            Ok(reify_ir::Mesh {
+                vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                indices: vec![0, 1, 2],
+                normals: None,
+            })
+        }
+    }
+
+    /// manifold-like counting kernel: `ingest_mesh` bumps a shared counter and
+    /// returns a fresh handle (the BRep→Mesh target projection), and `execute`
+    /// bumps a shared counter (the final cross-kernel `BooleanUnion` op runs
+    /// here). `query` / `export` / `tessellate` delegate to an inner
+    /// [`MockGeometryKernel`]; only the union is ever routed here in the
+    /// fixtures, so the `execute` counter is the `BooleanUnion`-on-Manifold
+    /// count.
+    struct CountingManifoldKernel {
+        inner: reify_test_support::mocks::MockGeometryKernel,
+        ingest_count: std::sync::Arc<std::sync::Mutex<usize>>,
+        execute_count: std::sync::Arc<std::sync::Mutex<usize>>,
+        next_ingest_id: u64,
+    }
+
+    impl reify_ir::GeometryKernel for CountingManifoldKernel {
+        fn execute(
+            &mut self,
+            op: &reify_ir::GeometryOp,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            *self.execute_count.lock().unwrap() += 1;
+            self.inner.execute(op)
+        }
+
+        fn query(
+            &self,
+            q: &reify_ir::GeometryQuery,
+        ) -> Result<reify_ir::Value, reify_ir::QueryError> {
+            self.inner.query(q)
+        }
+
+        fn export(
+            &self,
+            handle: reify_ir::GeometryHandleId,
+            format: reify_ir::ExportFormat,
+            writer: &mut dyn std::io::Write,
+        ) -> Result<(), reify_ir::ExportError> {
+            self.inner.export(handle, format, writer)
+        }
+
+        fn tessellate(
+            &self,
+            handle: reify_ir::GeometryHandleId,
+            tolerance: f64,
+        ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
+            self.inner.tessellate(handle, tolerance)
+        }
+
+        fn ingest_mesh(
+            &mut self,
+            _mesh: &reify_ir::Mesh,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            *self.ingest_count.lock().unwrap() += 1;
+            let id = reify_ir::GeometryHandleId(self.next_ingest_id);
+            self.next_ingest_id += 1;
+            Ok(reify_ir::GeometryHandle { id, repr: None })
+        }
+    }
+
+    /// step-7(A) CONVERSION PATH (RED). With `demanded_repr = Mesh`, the
+    /// dispatcher routes the terminal `BooleanUnion` to the Mesh-capable
+    /// `"manifold"` kernel, preceded by a single BRep→Mesh conversion stage
+    /// carried by `"occt"`. The executor must, for each of the union's two BRep
+    /// input handles, `occt.tessellate` → Mesh then `manifold.ingest_mesh` →
+    /// handle, substitute the converted handles, and run the union on
+    /// `"manifold"`. Asserts the per-kernel call counts (2 / 2 / 1), the
+    /// terminal `KernelId::Manifold` handle, and `produced_repr == Mesh`.
+    #[test]
+    fn execute_realization_ops_conversion_path_tessellates_and_ingests_cross_kernel() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+        use reify_core::Type;
+        use reify_ir::{
+            CapabilityDescriptor, CompiledExpr, GeometryKernel, KernelId, Operation, ReprKind,
+        };
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        // Shared call counters, read back after the call via the Arc clones.
+        let tess_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let ingest_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let union_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+
+        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "occt".to_string(),
+            Box::new(CountingTessellateKernel {
+                inner: MockGeometryKernel::new(),
+                tessellate_count: std::sync::Arc::clone(&tess_count),
+            }),
+        );
+        kernels.insert(
+            "manifold".to_string(),
+            Box::new(CountingManifoldKernel {
+                inner: MockGeometryKernel::new(),
+                ingest_count: std::sync::Arc::clone(&ingest_count),
+                execute_count: std::sync::Arc::clone(&union_count),
+                next_ingest_id: 1000,
+            }),
+        );
+
+        // occt: (PrimitiveBox, BRep) + (Convert{BRep}, Mesh); manifold:
+        // (BooleanUnion, Mesh). For demanded = Mesh / available = {BRep} the
+        // dispatcher yields plan { kernel: "manifold", conversions:
+        // [(Occt, BRep, Mesh)] } for the union.
+        let desc_occt = CapabilityDescriptor {
+            supports: vec![
+                (Operation::PrimitiveBox, ReprKind::BRep),
+                (
+                    Operation::Convert {
+                        from: ReprKind::BRep,
+                    },
+                    ReprKind::Mesh,
+                ),
+            ],
+        };
+        let desc_manifold = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("occt".to_string(), &desc_occt);
+        registry.insert("manifold".to_string(), &desc_manifold);
+
+        // Two BRep primitives + one BooleanUnion consuming them.
+        let ops = vec![
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Union,
+                left: GeomRef::Step(0),
+                right: GeomRef::Step(1),
+            },
+        ];
+
+        let realization_id = RealizationNodeId::new("Cross", 0);
+        let mut state = DispatchTestState::default();
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &realization_id,
+            Some("Cross"),
+            SourceSpan::new(0, 0),
+            ReprKind::Mesh,
+            None,
+        );
+
+        // The cross-kernel handoff must succeed: no error diagnostics, no
+        // kernel_error_out.
+        let errors: Vec<_> = state
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, reify_core::Severity::Error))
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "cross-kernel conversion must not emit error diagnostics, got: {:?}",
+            errors
+        );
+        assert!(
+            state.kernel_error_out.is_none(),
+            "cross-kernel conversion must leave kernel_error_out None, got {:?}",
+            state.kernel_error_out
+        );
+
+        // (a) occt.tessellate fires once per BooleanUnion input handle = 2.
+        assert_eq!(
+            *tess_count.lock().unwrap(),
+            2,
+            "occt.tessellate must be called once per union input handle (2)"
+        );
+        // (b) manifold.ingest_mesh fires once per converted input = 2.
+        assert_eq!(
+            *ingest_count.lock().unwrap(),
+            2,
+            "manifold.ingest_mesh must be called once per converted input (2)"
+        );
+        // (c) manifold runs the final BooleanUnion exactly once.
+        assert_eq!(
+            *union_count.lock().unwrap(),
+            1,
+            "manifold must run the final BooleanUnion exactly once"
+        );
+
+        // The terminal pushed handle is a Manifold handle (plan.kernel).
+        let terminal = state
+            .step_handles
+            .last()
+            .expect("a terminal handle must be pushed on success");
+        assert_eq!(
+            terminal.kernel,
+            KernelId::Manifold,
+            "terminal handle must be tagged KernelId::Manifold, got {:?}",
+            terminal.kernel
+        );
+
+        // produced_repr surfaced as Mesh (plan_output_repr of the union on
+        // manifold).
+        assert_eq!(
+            state.produced_repr_out,
+            Some(ReprKind::Mesh),
+            "produced_repr_out must be Mesh for the cross-kernel realization"
+        );
+    }
+
+    /// step-7(B) FALLBACK CONTROL (RED) — pins design_decision 3. With
+    /// `demanded_repr = Mesh` but a registry that has NO Mesh-capable kernel for
+    /// the op (occt supports only `(PrimitiveBox, BRep)`), a lone PrimitiveBox
+    /// realization must NOT error: the Mesh dispatch returns `None`, the
+    /// executor falls back to a BRep dispatch, and the op runs on occt producing
+    /// a BRep handle. Without the fallback this would hit the strict
+    /// no-kernel-chain error arm and regress every Stl/Obj primitive export.
+    #[test]
+    fn execute_realization_ops_mesh_demand_falls_back_to_brep_when_no_mesh_kernel() {
+        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+        use reify_core::Type;
+        use reify_ir::{
+            CapabilityDescriptor, CompiledExpr, GeometryKernel, Operation, ReprKind,
+        };
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        let tess_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "occt".to_string(),
+            Box::new(CountingTessellateKernel {
+                inner: MockGeometryKernel::new(),
+                tessellate_count: std::sync::Arc::clone(&tess_count),
+            }),
+        );
+
+        // No Mesh-capable kernel for the op: a Mesh demand can't be satisfied and
+        // must fall back to BRep rather than error.
+        let desc_occt = CapabilityDescriptor {
+            supports: vec![(Operation::PrimitiveBox, ReprKind::BRep)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("occt".to_string(), &desc_occt);
+
+        let ops = vec![CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![
+                ("width".into(), mm_lit(10.0)),
+                ("height".into(), mm_lit(20.0)),
+                ("depth".into(), mm_lit(5.0)),
+            ],
+        }];
+
+        let realization_id = RealizationNodeId::new("Lone", 0);
+        let mut state = DispatchTestState::default();
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &realization_id,
+            Some("Lone"),
+            SourceSpan::new(0, 0),
+            ReprKind::Mesh,
+            None,
+        );
+
+        let errors: Vec<_> = state
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, reify_core::Severity::Error))
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "the Mesh→BRep fallback must not emit error diagnostics, got: {:?}",
+            errors
+        );
+        assert!(
+            state.kernel_error_out.is_none(),
+            "the Mesh→BRep fallback must not set kernel_error_out, got {:?}",
+            state.kernel_error_out
+        );
+        assert_eq!(
+            state.step_handles.len(),
+            1,
+            "the fallback must produce exactly one BRep handle from occt"
+        );
+        assert_eq!(
+            state.produced_repr_out,
+            Some(ReprKind::BRep),
+            "the fallback realization's produced_repr must be BRep"
+        );
+        assert_eq!(
+            *tess_count.lock().unwrap(),
+            0,
+            "the fallback path must not tessellate (no conversion stage runs)"
         );
     }
 
