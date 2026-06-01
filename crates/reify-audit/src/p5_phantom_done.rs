@@ -822,10 +822,42 @@ fn crate_root_count(files: &[String]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DoneProvenance, MockGitOps, MockJCodemunchOps};
+    use crate::{ChangedSymbol, DoneProvenance, MockGitOps, MockJCodemunchOps};
     use rusqlite::Connection;
     use std::collections::HashMap;
     use std::path::PathBuf;
+
+    /// Asserts `h2_vacuous_breadcrumb` returns `Some` (with task-id and the word
+    /// "vacuous") for an empty symbols slice and `None` for a non-empty slice.
+    #[test]
+    fn h2_vacuous_breadcrumb_fires_only_when_empty() {
+        // Empty slice → Some(msg) containing the task id and "vacuous".
+        let result = h2_vacuous_breadcrumb(&[], "4144", "abc123^1", "abc123");
+        let msg = result.expect("expected Some for empty symbols slice");
+        assert!(
+            msg.contains("4144"),
+            "breadcrumb message must contain task_id '4144'; got: {msg}"
+        );
+        assert!(
+            msg.contains("vacuous"),
+            "breadcrumb message must contain 'vacuous'; got: {msg}"
+        );
+
+        // Non-empty slice → None.
+        let sym = ChangedSymbol {
+            name: "my_fn".to_string(),
+            file: "crates/foo/src/lib.rs".to_string(),
+            line: 42,
+            has_allow_dead_code: false,
+            has_cfg_test: false,
+            g_allow_marker: None,
+        };
+        let result = h2_vacuous_breadcrumb(&[sym], "4144", "abc123^1", "abc123");
+        assert!(
+            result.is_none(),
+            "expected None for non-empty symbols slice; got: {result:?}"
+        );
+    }
 
     /// Pins the empty-files short-circuit at `p5_phantom_done.rs:215`.
     ///
