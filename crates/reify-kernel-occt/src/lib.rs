@@ -942,6 +942,27 @@ impl OcctKernel {
         Ok(new_handle.id)
     }
 
+    /// Test whether two stored shapes share the same underlying `TShape`
+    /// (`TopoDS_Shape::IsPartner` — TShape identity ignoring location and
+    /// orientation).
+    ///
+    /// Returns `true` iff both handles resolve to shapes whose `TShape` handle
+    /// is identical (they were produced from the same source without a
+    /// geometry-baking copy).  A `BRepBuilderAPI_Transform(…, Standard_False)`
+    /// result is `IsPartner` with its source; a `Standard_True` (geometry bake)
+    /// or independently-built shape is not.
+    ///
+    /// Returns `Err(GeometryError::InvalidHandle)` if either handle is unknown.
+    pub fn shapes_share_tshape(
+        &self,
+        a: GeometryHandleId,
+        b: GeometryHandleId,
+    ) -> Result<bool, GeometryError> {
+        let shape_a = self.get_shape(a)?;
+        let shape_b = self.get_shape(b)?;
+        Ok(ffi::ffi::shapes_share_tshape(shape_a, shape_b))
+    }
+
     /// Return the closest point on the shape identified by `handle` to the
     /// query point `(px, py, pz)`.
     ///

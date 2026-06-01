@@ -456,6 +456,17 @@ pub mod ffi {
             t: &Transform3Props,
         ) -> Result<UniquePtr<OcctShape>>;
 
+        /// Test whether `a` and `b` share the same underlying `TShape`
+        /// (`TopoDS_Shape::IsPartner`) — tolerance-free TShape identity,
+        /// ignoring `TopLoc_Location` and orientation.
+        ///
+        /// `true` iff both shapes reference the same `TShape` handle.
+        /// `BRepBuilderAPI_Transform(..., Standard_False)` shares the source
+        /// `TShape` and encodes the isometry in `TopLoc_Location` → `IsPartner`
+        /// is `true`.  `Standard_True` (geometry bake) or an independent build
+        /// produces a fresh `TShape` → `IsPartner` is `false`.
+        fn shapes_share_tshape(a: &OcctShape, b: &OcctShape) -> bool;
+
         /// Apply a general non-rigid affine transform (3×3 linear + translation)
         /// to `shape` using OCCT's `gp_GTrsf` / `BRepBuilderAPI_GTransform`.
         ///

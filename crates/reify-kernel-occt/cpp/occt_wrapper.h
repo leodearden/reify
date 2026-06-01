@@ -849,6 +849,21 @@ std::unique_ptr<OcctShape> apply_transform_to_shape(
     const OcctShape& shape,
     const Transform3Props& t);
 
+/// Test whether `a` and `b` share the same underlying `TShape`.
+///
+/// Returns `TopoDS_Shape::IsPartner(a, b)`, which is `true` iff the two shapes
+/// reference the exact same `TShape` handle (ignoring `TopLoc_Location` and
+/// orientation).  This is the tolerance-free TShape-identity predicate —
+/// `IsSame` also checks location; `IsEqual` also checks orientation.
+///
+/// Used by `apply_transform_integration.rs` section (g) to decisively lock the
+/// `Standard_False` (location-only) contract: a shape produced by
+/// `apply_transform_to_shape(..., Standard_False)` must be `IsPartner` with the
+/// source (they share one `TShape`), whereas a fresh independently-built shape
+/// must not.  The AABB round-trip test (section d) alone cannot distinguish the
+/// two paths at the 1e-4 m level; TShape identity can.
+bool shapes_share_tshape(const OcctShape& a, const OcctShape& b);
+
 /// Return the closest point on `shape` to the query point (px, py, pz).
 ///
 /// Algorithm: build a TopoDS_Vertex from the query point via

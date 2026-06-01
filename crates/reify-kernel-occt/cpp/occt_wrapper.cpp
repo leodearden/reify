@@ -3223,23 +3223,37 @@ std::unique_ptr<OcctShape> apply_transform_to_shape(
         // and throws std::runtime_error on violation; that error is caught by
         // wrap_occt_call and surfaced as a cxx::Exception with the same message.
         //
-        // Copy=Standard_True: bake the transform into new independent geometry.
-        // This is required for STEP export: when multiple placed bodies share
-        // the same source TShape (e.g. two instances of the same sub structure),
-        // Standard_False (location-only) would share the underlying TShape and
-        // the STEP writer would deduplicate, emitting only 1 MANIFOLD_SOLID_BREP.
-        // With Standard_True each placed copy is a distinct TShape → each gets
-        // its own MANIFOLD_SOLID_BREP in the output.
+        // Copy=Standard_False: location-only (TopLoc_Location) path.
+        // The result shares the source TShape and encodes the rigid isometry
+        // solely in TopLoc_Location — a lightweight, non-destructive operation
+        // that preserves the round-trip invariant (T ∘ T⁻¹ = identity, no
+        // float-drift accumulation across repeated applications).
+        //
+        // Multi-instance deduplication (when multiple placed bodies sharing one
+        // source TShape are emitted into one STEP compound) is handled by
+        // make_compound via BRepBuilderAPI_Copy, not here.  This keeps
+        // apply_transform_to_shape on the lightweight location-only path for all
+        // callers: tessellation, FK distance, and distance_between_placed.
         const gp_Trsf trsf = build_trsf(t);
-        BRepBuilderAPI_Transform xform(shape.shape, trsf, Standard_True);
+        BRepBuilderAPI_Transform xform(shape.shape, trsf, Standard_False);
         xform.Build();
         if (!xform.IsDone()) {
-            throw std::runtime_error("BRepBuilderAPI_Transform (bake) failed");
+            throw std::runtime_error("BRepBuilderAPI_Transform (location-only) failed");
         }
         auto result = std::make_unique<OcctShape>();
         result->shape = xform.Shape();
         return result;
     });
+}
+
+bool shapes_share_tshape(const OcctShape& a, const OcctShape& b) {
+    // TopoDS_Shape::IsPartner returns true iff the two shapes share the same
+    // underlying TShape (ignoring location and orientation).  This is the
+    // tolerance-free TShape-identity predicate — distinct from IsSame (which
+    // also checks location) and IsEqual (which also checks orientation).
+    // Used by apply_transform_integration.rs section (g) to assert that
+    // Standard_False (location-only) leaves the source TShape intact.
+    return a.shape.IsPartner(b.shape);
 }
 
 Point3 closest_point_on_shape(const OcctShape& shape, double px, double py, double pz) {
