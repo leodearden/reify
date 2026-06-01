@@ -556,46 +556,46 @@ fn buckling_unsupported_option_diagnostics(val: &Value) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
 
     // mode: default "shift_invert" — warn for any other string.
-    if let Some(Value::String(m)) = data.fields.get("mode") {
-        if m != "shift_invert" {
-            diags.push(
-                Diagnostic::warning(format!(
-                    "BucklingOptions.mode = {:?} is declared but not yet honored by the \
-                     solver::buckling trampoline (the buckling kernel has no mode-select \
-                     input yet); solve falls back to the default \"shift_invert\"",
-                    m
-                ))
-                .with_code(DiagnosticCode::BucklingOptionUnsupported),
-            );
-        }
+    if let Some(Value::String(m)) = data.fields.get("mode")
+        && m != "shift_invert"
+    {
+        diags.push(
+            Diagnostic::warning(format!(
+                "BucklingOptions.mode = {:?} is declared but not yet honored by the \
+                 solver::buckling trampoline (the buckling kernel has no mode-select \
+                 input yet); solve falls back to the default \"shift_invert\"",
+                m
+            ))
+            .with_code(DiagnosticCode::BucklingOptionUnsupported),
+        );
     }
 
     // sigma: default 0.0 — warn for any non-zero value.
-    if let Some(Value::Real(s)) = data.fields.get("sigma") {
-        if *s != 0.0 {
-            diags.push(
-                Diagnostic::warning(format!(
-                    "BucklingOptions.sigma = {s} is declared but not yet honored by the \
-                     solver::buckling trampoline (the buckling kernel has no shift-origin \
-                     input yet); solve falls back to the default 0.0",
-                ))
-                .with_code(DiagnosticCode::BucklingOptionUnsupported),
-            );
-        }
+    if let Some(Value::Real(s)) = data.fields.get("sigma")
+        && *s != 0.0
+    {
+        diags.push(
+            Diagnostic::warning(format!(
+                "BucklingOptions.sigma = {s} is declared but not yet honored by the \
+                 solver::buckling trampoline (the buckling kernel has no shift-origin \
+                 input yet); solve falls back to the default 0.0",
+            ))
+            .with_code(DiagnosticCode::BucklingOptionUnsupported),
+        );
     }
 
     // auto_dense: default true — warn for false.
-    if let Some(Value::Bool(b)) = data.fields.get("auto_dense") {
-        if !*b {
-            diags.push(
-                Diagnostic::warning(
-                    "BucklingOptions.auto_dense = false is declared but not yet honored by the \
-                     solver::buckling trampoline (the buckling kernel has no dense-fallback \
-                     toggle yet); solve falls back to the default true",
-                )
-                .with_code(DiagnosticCode::BucklingOptionUnsupported),
-            );
-        }
+    if let Some(Value::Bool(b)) = data.fields.get("auto_dense")
+        && !*b
+    {
+        diags.push(
+            Diagnostic::warning(
+                "BucklingOptions.auto_dense = false is declared but not yet honored by the \
+                 solver::buckling trampoline (the buckling kernel has no dense-fallback \
+                 toggle yet); solve falls back to the default true",
+            )
+            .with_code(DiagnosticCode::BucklingOptionUnsupported),
+        );
     }
 
     diags
