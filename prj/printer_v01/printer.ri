@@ -206,20 +206,35 @@ pub structure TendonQuad {
 /// in the horizontal plane. Stacked 25mm apart in Z (z_a−z_b) while each pulley
 /// is only ~10mm thick along its axis, so the four clear each other. z_a/z_b kept
 /// in step with TendonQuad (override drop — task 4147).
+///
+/// FORE/AFT SPLIT: belt A's two pulleys sit FORWARD (+Y by ab_split) and belt B's
+/// two sit BEHIND (−Y by ab_split), so each belt's rope is tangent to the gantry-
+/// cross tendon (y = 0) on opposite sides — the start of the CoreXY over/under
+/// crossing, where the two ropes must pass each other without fouling. The two A
+/// discs (z = ±z_a) and two B discs (z = ±z_b) lie at different Z, so the fore/aft
+/// pairs never collide. This stack is the A-FRONT / B-BEHIND variant; the opposite
+/// carriage gets the converse by a 180°-about-Z placement (DriveTendons).
 pub structure CarriageIdlers {
     param z_a : Length = 80mm
     param z_b : Length = 55mm
+    /// Fore/aft (Y) half-separation of the belt-A vs belt-B turn points. == r_pitch
+    /// (== IdlerPulley sheave_od/2 = 18mm) so each turn point sits tangent to the
+    /// y = 0 cross tendon as the rope rides the rim (override drop — kept in step
+    /// with DriveTendons.r_pitch; task 4147).
+    param ab_split : Length = 18mm
 
     let neg_z_a = 0mm - z_a
     let neg_z_b = 0mm - z_b
+    let neg_ab  = 0mm - ab_split
 
-    sub a_upper = IdlerPulley() at transform3(orient_identity(), vec3(0mm, 0mm, z_a))      // belt A run
-    sub a_lower = IdlerPulley() at transform3(orient_identity(), vec3(0mm, 0mm, neg_z_a))
-    sub b_upper = IdlerPulley() at transform3(orient_identity(), vec3(0mm, 0mm, z_b))      // belt B run
-    sub b_lower = IdlerPulley() at transform3(orient_identity(), vec3(0mm, 0mm, neg_z_b))
+    sub a_upper = IdlerPulley() at transform3(orient_identity(), vec3(0mm, ab_split, z_a))      // belt A, front
+    sub a_lower = IdlerPulley() at transform3(orient_identity(), vec3(0mm, ab_split, neg_z_a))
+    sub b_upper = IdlerPulley() at transform3(orient_identity(), vec3(0mm, neg_ab,   z_b))      // belt B, behind
+    sub b_lower = IdlerPulley() at transform3(orient_identity(), vec3(0mm, neg_ab,   neg_z_b))
 
     constraint z_a > z_b
     constraint z_b > 0mm
+    constraint ab_split > 0mm
 }
 
 /// CoreXY drive tendons — TWELVE spans + the corner idler stacks. Belts A (outer)
@@ -244,16 +259,24 @@ pub structure DriveTendons {
 
     // Idler placement: TANGENT to the tendons it routes, not centred on the
     // rail×cross intersection. The rope rides the sheave at pitch radius r_pitch,
-    // so the idler centre sits r_pitch inboard of the rail axis AND r_pitch off the
-    // cross line — both tendon centrelines are then tangent to the rope's pitch
-    // circle (a 90° wrap from rail run to gantry cross). r_pitch == IdlerPulley
-    // sheave_od/2 (the rope rides at the rim; override drop — task 4147).
+    // so each idler centre sits r_pitch inboard of the rail axis (X); the belt-A/
+    // belt-B FORE/AFT split inside CarriageIdlers puts each turn point r_pitch off
+    // the cross line (±Y) — so every tendon centreline is tangent to its rope's
+    // pitch circle (a 90° wrap from rail run to gantry cross). r_pitch == IdlerPulley
+    // sheave_od/2 == CarriageIdlers.ab_split (rope rides the rim; override drop —
+    // task 4147). The stack CENTRE therefore sits on the cross line (y = 0); the
+    // fore/aft split alone carries the ±Y offset.
     let r_pitch    = 18mm
     let idler_in_r = rail_x - r_pitch         // right stack: inboard of the right rail
     let idler_in_l = neg_rail_x + r_pitch     // left stack: inboard of the left rail
+    let flip_ab    = orient_axis_angle(vec3(0mm, 0mm, 1m), 180deg)  // swap A↔B fore/aft
 
-    sub idlers_r = CarriageIdlers() at transform3(orient_identity(), vec3(idler_in_r, r_pitch, 0mm))  // right, tangent
-    sub idlers_l = CarriageIdlers() at transform3(orient_identity(), vec3(idler_in_l, r_pitch, 0mm))  // left, tangent
+    // Right carriage: belt A turns in FRONT (+Y), belt B BEHIND (−Y).
+    sub idlers_r = CarriageIdlers() at transform3(orient_identity(), vec3(idler_in_r, 0mm, 0mm))
+    // Left carriage: the CONVERSE (A behind, B in front). The 180°-about-Z
+    // placement swaps the fore/aft split; the pulleys lie on the x = 0 axis, so
+    // the X tangency offset (idler_in_l) is unaffected by the rotation.
+    sub idlers_l = CarriageIdlers() at transform3(flip_ab, vec3(idler_in_l, 0mm, 0mm))
 
     constraint rail_x > 0mm
 }
