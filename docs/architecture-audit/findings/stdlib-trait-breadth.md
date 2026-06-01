@@ -74,11 +74,11 @@
 
 ### M-007: `Physical : MaterialSpec` vs spec-says-no-parent
 
-- **State:** DRIFT
+- **State:** RESOLVED
 - **Failure mode:** Shape mismatch between spec and impl — Physical absorbs MaterialSpec where spec slots material in.
 - **Evidence:** `structural_physical.ri:20` `trait Physical : MaterialSpec`; spec at `docs/reify-stdlib-reference.md` §4 line 439 declares `trait Physical` with `geometry: Solid` and `material: Material` slot params, no parent. `stdlib-trait-audit.md` §4 row "Physical" lists this as a parent gap + a "param-shape gap" + a "computed-let gap" (spec uses `let mass = volume(geometry) * material.density`; impl uses `let mass = volume * density` over flat params).
-- **Blocks:** PRD §"Out of scope" defers `geometry: Solid` migration to dimensional-type work and the geometry-as-trait-typed-param surface; M-013 ORPHAN tracks the prerequisite.
-- **Note:** v0.1 trades the geometry-driven shape for flat scalar params so traits can be declared without depending on a usable `Solid` type. The DRIFT is *deliberate*; this finding is informational so Phase 3 knows the spec mismatch is load-bearing for v0.1.
+- **Blocks:** (resolved) PRD §"Out of scope" defers `geometry: Solid` migration to dimensional-type work and the geometry-as-trait-typed-param surface; M-013 ORPHAN tracks the prerequisite.
+- **Note:** Resolved via `docs/prds/v0_3/geometry-handle-runtime.md`. Spec-shape `Physical { param geometry : Solid; param material : Material; let mass = volume(geometry) * material.density }` now lands via GHR-α stdlib registrations (`structural_physical.ri` rewrite, task 3603) + GHR-ζ OCCT kernel dispatch. The deliberate v0.1 flat-scalar trade is retired — `structural_physical.ri` no longer uses flat scalar params for geometry. Owning PRD: `docs/prds/v0_3/geometry-handle-runtime.md`.
 
 ### M-008: Same-named-trait collision §4 vs §6 resolution — single declaration in `materials_mechanical.ri`
 
@@ -122,11 +122,11 @@
 
 ### M-013: `Solid` as a usable stdlib `.ri` param type
 
-- **State:** ORPHAN
+- **State:** WIRED
 - **Failure mode:** No PRD-task in scope; this PRD calls it out as out-of-scope but the spec-shape of `Physical` and the worked-example comments (`examples/drivebelt_trait_bounds.ri:10-13`) ride on its absence.
-- **Evidence:** No `: Solid` or `param.*: Solid` site in any stdlib `.ri` file (grep returns empty). Per `audit-brief.md` Things-to-take-as-given: `Solid` resolves to `Type::Geometry` in `type_resolution.rs:513` as a builtin alias, but stdlib traits cannot use it as a slot type today. `examples/drivebelt_trait_bounds.ri:10-13` explicitly notes: "Uses flat inherited params rather than `geometry: Solid` / `material: Material` slots because `Solid` is not yet a usable type (out of scope)."
-- **Blocks:** the spec-conformant shape of `Physical` (M-007), and by extension the spec-conformant shape of every §4 trait that refines it; deferred follow-up work to align stdlib with spec.
-- **Note:** ORPHAN by audit-brief definition: a real mechanism gap with no PRD currently owning it. This may be intentional (waiting for the geometry/type system to gel) but is worth surfacing.
+- **Evidence:** At audit time no `: Solid` or `param.*: Solid` site existed in any stdlib `.ri` file (grep returned empty). Per `audit-brief.md` Things-to-take-as-given: `Solid` resolved to `Type::Geometry` in `type_resolution.rs:513` as a builtin alias, but stdlib traits could not use it as a slot type. `examples/drivebelt_trait_bounds.ri:10-13` explicitly noted: "Uses flat inherited params rather than `geometry: Solid` / `material: Material` slots because `Solid` is not yet a usable type (out of scope)." **Now:** `structural_physical.ri:38` declares `param geometry : Solid` — the first stdlib `.ri` slot to use the type, landing via GHR-ζ.
+- **Blocks:** (wired) the spec-conformant shape of `Physical` (M-007), and by extension the spec-conformant shape of every §4 trait that refines it; deferred follow-up work to align stdlib with spec.
+- **Note:** WIRED via `docs/prds/v0_3/geometry-handle-runtime.md`. `Solid` is now usable in stdlib trait-slot positions via `Value::GeometryHandle` (GHR-β variant + GHR-γ lowering). Geometry-bearing `Physical` evaluates with real volume/centroid (GHR-ζ OCCT kernel dispatch). Owning PRD: `docs/prds/v0_3/geometry-handle-runtime.md`. M-007 (spec-shape Physical) resolved in the same GHR phase series.
 
 ### M-014: Composed-bound integration test surface — `DriveBelt + CeramicLiner + Copper + BorosilicateGlass + TitaniumImplant`
 
@@ -138,7 +138,7 @@
 
 ## Cross-PRD breadcrumbs
 
-- **M-007 / M-013 (Solid + geometry-driven Physical shape)** intersects `geometry-traits.md` audit findings — the half_space / extrude_infinite FICTION there blocks the same broader "Solid as a trait-bound-bearing value" story. Future Phase 3 grouping likely benefits from co-considering these.
+- **M-007 / M-013 (Solid + geometry-driven Physical shape)** — both resolved/wired via `docs/prds/v0_3/geometry-handle-runtime.md` (GHR-α through GHR-ζ). M-007 is RESOLVED (spec-shape `Physical { param geometry : Solid; let mass = volume(geometry) * material.density }` lands); M-013 is WIRED (`Solid` is now a usable trait-slot type via `Value::GeometryHandle`). The historical `geometry-traits.md` intersection (half_space / extrude_infinite FICTION) is now a sequencing dependency owned by GR-018 — the consumer surface is wired; GR-018 ships the producers.
 - **M-012 (dimensional types)** transitively gates every trait declaration here, and is also cited in `money-dimension.md` and (implicitly) in `per-purpose-tolerance.md`. The deferred task 3115 is a single choke point.
 - **M-009 / M-008 (one-slot-many-traits material composition)** is a design pattern that the FEA PRDs (`structural-analysis-fea.md`, `multi-load-case-fea.md`) lean on heavily once structure-constructor runtime evaluation (GR-001) lands. Currently safe in isolation; if GR-001 picks a structural-conformance route, the "one slot, transitive density/name inheritance" pattern here will need re-examination.
 - **M-002 (stale audit doc)** — `stdlib-trait-audit.md` is referenced from multiple per-file header comments (`materials_thermal.ri:11`, `materials_electrical.ri:7`, `materials_optical.ri:10`, `materials_chemical.ri:5`). Any future PRD that consults it as a status snapshot will read pre-2349/2352/2354 state.

@@ -75,6 +75,8 @@ support = FixedSupport(face = bracket.face("mount"))
 
 **Material.** Add `ElasticMaterial` trait to stdlib carrying `youngs_modulus : Pressure`, `poisson_ratio : Number`, `density : Density`, `yield_stress : Pressure` (optional). Provide a small starter library (`Steel_AISI_1045`, `Aluminium_6061`, `Titanium_Ti6Al4V`, `ABS_Plastic`) sourced from MMPDS / matweb-equivalent public references. Per-property provenance recorded so users can trace each constant.
 
+**Physical structure geometry (cross-PRD note, GHR-θ).** Geometry-bearing spec-shape `Physical` (`param geometry : Solid`, `let mass = volume(geometry) * material.density`) is now available via `docs/prds/v0_3/geometry-handle-runtime.md` (GHR-ζ). FEA's `Material` + `Physical` + `Load` + `Support` composition can use geometry-bearing structures — the `bracket : Physical` carrying a real `Solid` geometry is no longer blocked. Prior to GHR, the v0.1 `Physical` trait used flat scalar params (volume, density) as a deliberate placeholder; that workaround is retired in GHR-ζ.
+
 **Stress reductions.** Stdlib functions `von_mises(stress: Tensor<2,3,Pressure>) -> Pressure`, `principal_stresses(...)`, `max(field: Field<_, T>) -> T` — pure functions, no kernel binding needed beyond efficient implementations.
 
 **Mesh source.** Pipeline is two-stage:
