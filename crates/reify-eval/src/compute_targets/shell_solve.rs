@@ -103,6 +103,9 @@ pub fn resolve_extraction_failure(shell_force: ShellForce) -> FailurePolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compute_targets::elastic_static::shell_channels_to_value;
+    use crate::persistent_cache::ShellChannels;
+    use reify_ir::{FieldSourceKind, SampledGridKind, Value};
 
     /// RED (task δ step-5): pin the shell-classification routing policy.
     ///
@@ -186,5 +189,208 @@ mod tests {
             FailurePolicy::TetFallbackWithWarning,
             "ShellForce::Off must not hard-error (never attempts shell extraction)"
         );
+    }
+
+    // ── step-7 RED: driver-output → DSL-value glue ──────────────────────────
+    //
+    // Pin the three reify-eval glue builders that bridge the neutral
+    // `reify-solver-elastic` flat-plate driver output into the DSL ShellStress
+    // value, and their interaction with the existing 4067-shipped
+    // `shell_channels_to_value` mapping helper:
+    //   (a) build_shell_channels(top, bottom, frame) -> ShellChannels
+    //       — wraps the three per-element local-frame buffers into the struct.
+    //         `mid` is deliberately NOT a struct field: it is routed into the
+    //         stress field (build_mid_stress_field), per PRD §3 (result.stress
+    //         aliases ShellStress.mid).
+    //   (b) build_mid_stress_field(mid) -> Value::Field{Sampled}
+    //       — a flat per-element field of len 9*n whose axis-grid node count
+    //         equals the data length, so build_channel_field can clone its grid
+    //         for the top/bottom channels.
+    //   (c) shell_channels_to_value(&Some(ch), &mid_field) consumes both and
+    //       yields a "ShellStress" StructureInstance with mid==mid_field and
+    //       finite top/bottom Sampled fields of data length 9*n.
+    //   (d) build_slab_sdf(L, W, H) -> Value::SampledField
+    //       — a Regular3D SDF accepted by the shell-extract::extract contract.
+    //
+    // RED: build_shell_channels / build_mid_stress_field / build_slab_sdf do
+    // not exist yet, so this module fails to compile.
+
+    /// Extract the `SampledField.data` vec from a `Value::Field { Sampled }`,
+    /// panicking on any other shape. Mirrors the `extract_sampled_field_data`
+    /// idiom in `tests/solve_elastic_static_e2e.rs`.
+    fn sampled_data(v: &Value) -> Vec<f64> {
+        match v {
+            Value::Field { source, lambda, .. } => {
+                assert!(
+                    matches!(source, FieldSourceKind::Sampled),
+                    "expected a Sampled field source, got {source:?}"
+                );
+                match lambda.as_ref() {
+                    Value::SampledField(sf) => sf.data.clone(),
+                    other => panic!("field lambda must be Value::SampledField, got {other:?}"),
+                }
+            }
+            other => panic!("expected Value::Field, got {other:?}"),
+        }
+    }
+
+    /// (a) `build_shell_channels` routes the three local-frame buffers into the
+    /// `ShellChannels` struct verbatim; `mid` has no home in the struct.
+    #[test]
+    fn build_shell_channels_routes_buffers_into_struct() {
+        let n = 2usize; // 2 elements → 9 f64 per element per channel.
+        let top: Vec<f64> = (0..9 * n).map(|i| i as f64 + 1.0).collect();
+        let bottom: Vec<f64> = (0..9 * n).map(|i| i as f64 + 100.0).collect();
+        let frame: Vec<f64> = (0..9 * n).map(|i| i as f64 * 0.5).collect();
+
+        let ch: ShellChannels = build_shell_channels(top.clone(), bottom.clone(), frame.clone());
+
+        assert_eq!(ch.top, top, "top buffer must pass through unchanged");
+        assert_eq!(ch.bottom, bottom, "bottom buffer must pass through unchanged");
+        assert_eq!(ch.frame, frame, "frame buffer must pass through unchanged");
+    }
+
+    /// (b) `build_mid_stress_field` wraps the mid buffer as a flat Sampled
+    /// field whose grid node count == data length (so the channel grid clones).
+    #[test]
+    fn build_mid_stress_field_wraps_mid_as_flat_sampled_field() {
+        let n = 3usize;
+        let mid: Vec<f64> = (0..9 * n).map(|i| (i as f64) * 1.5 - 4.0).collect();
+
+        let field = build_mid_stress_field(mid.clone());
+
+        match &field {
+            Value::Field { source, lambda, .. } => {
+                assert!(
+                    matches!(source, FieldSourceKind::Sampled),
+                    "mid field must be a Sampled source, got {source:?}"
+                );
+                match lambda.as_ref() {
+                    Value::SampledField(sf) => {
+                        assert_eq!(
+                            sf.data, mid,
+                            "mid field data must equal the input buffer bit-for-bit"
+                        );
+                        assert_eq!(
+                            sf.data.len(),
+                            9 * n,
+                            "mid field is a flat per-element field of len 9*n"
+                        );
+                        let node_count: usize = sf.axis_grids.iter().map(|g| g.len()).product();
+                        assert_eq!(
+                            node_count,
+                            9 * n,
+                            "axis-grid node count must equal data len so build_channel_field's \
+                             length check passes when top/bottom reuse this grid"
+                        );
+                        assert!(!sf.axis_grids.is_empty(), "axis_grids must be non-empty");
+                    }
+                    other => panic!("mid field lambda must be Value::SampledField, got {other:?}"),
+                }
+            }
+            other => panic!("build_mid_stress_field must return Value::Field, got {other:?}"),
+        }
+    }
+
+    /// (c) The two glue outputs feed the existing `shell_channels_to_value`,
+    /// producing a "ShellStress" StructureInstance with the mid alias and
+    /// finite top/bottom channels of length 9*n.
+    #[test]
+    fn glue_outputs_feed_shell_channels_to_value() {
+        let n = 4usize;
+        let top: Vec<f64> = (0..9 * n).map(|i| i as f64 + 1.0).collect();
+        let mid: Vec<f64> = (0..9 * n).map(|i| i as f64 + 1000.0).collect();
+        let bottom: Vec<f64> = (0..9 * n).map(|i| i as f64 + 9000.0).collect();
+        let frame: Vec<f64> = (0..9 * n).map(|i| i as f64 * 0.25).collect();
+
+        let channels = build_shell_channels(top.clone(), bottom.clone(), frame);
+        let mid_field = build_mid_stress_field(mid.clone());
+
+        let value = shell_channels_to_value(&Some(channels), &mid_field);
+
+        let data = match &value {
+            Value::StructureInstance(d) => d,
+            other => panic!("shell_channels_to_value must return a StructureInstance, got {other:?}"),
+        };
+        assert_eq!(
+            data.type_name.as_str(),
+            "ShellStress",
+            "shell channels value must be a ShellStress instance"
+        );
+
+        // .mid is the mid field bit-for-bit (it is the alias source for
+        // result.stress — the I-2 invariant).
+        let mid_v = data
+            .fields
+            .get(&"mid".to_string())
+            .expect("ShellStress must carry a `mid` field");
+        assert_eq!(
+            sampled_data(mid_v),
+            mid,
+            "ShellStress.mid must carry the mid buffer bit-for-bit"
+        );
+
+        // .top / .bottom are finite Sampled fields whose data length == 9*n,
+        // reusing the mid grid (build_channel_field).
+        let top_data = sampled_data(
+            data.fields
+                .get(&"top".to_string())
+                .expect("ShellStress must carry a `top` field"),
+        );
+        let bottom_data = sampled_data(
+            data.fields
+                .get(&"bottom".to_string())
+                .expect("ShellStress must carry a `bottom` field"),
+        );
+        assert_eq!(top_data.len(), 9 * n, "top channel data length must be 9*n");
+        assert_eq!(bottom_data.len(), 9 * n, "bottom channel data length must be 9*n");
+        assert!(
+            top_data.iter().all(|x| x.is_finite()),
+            "top channel must be all-finite"
+        );
+        assert!(
+            bottom_data.iter().all(|x| x.is_finite()),
+            "bottom channel must be all-finite"
+        );
+        assert_eq!(top_data, top, "top channel data must equal the top buffer");
+        assert_eq!(
+            bottom_data, bottom,
+            "bottom channel data must equal the bottom buffer"
+        );
+    }
+
+    /// (d) `build_slab_sdf` returns a Regular3D Sampled SDF accepted by the
+    /// shell-extract::extract trampoline contract (non-empty axis grids, finite
+    /// signed-distance data, row-major data length == grid node count).
+    #[test]
+    fn build_slab_sdf_is_regular3d_sampled_field() {
+        // Fixture body dims (SI metres): 50mm × 10mm × 1mm.
+        let value = build_slab_sdf(0.050, 0.010, 0.001);
+        match &value {
+            Value::SampledField(sf) => {
+                assert!(
+                    matches!(sf.kind, SampledGridKind::Regular3D),
+                    "slab SDF must be a Regular3D field, got {:?}",
+                    sf.kind
+                );
+                assert_eq!(sf.axis_grids.len(), 3, "Regular3D field has three axis grids");
+                assert!(
+                    sf.axis_grids.iter().all(|g| !g.is_empty()),
+                    "every axis grid must be non-empty (shell-extract contract)"
+                );
+                assert!(!sf.data.is_empty(), "signed-distance data must be non-empty");
+                assert!(
+                    sf.data.iter().all(|d| d.is_finite()),
+                    "all signed-distance samples must be finite"
+                );
+                let node_count: usize = sf.axis_grids.iter().map(|g| g.len()).product();
+                assert_eq!(
+                    sf.data.len(),
+                    node_count,
+                    "data length must equal the product of axis-grid lengths (row-major grid)"
+                );
+            }
+            other => panic!("build_slab_sdf must return Value::SampledField, got {other:?}"),
+        }
     }
 }
