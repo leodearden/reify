@@ -48,11 +48,20 @@ use faer::{Mat, Side};
 /// of a symmetric Gram matrix counts as nonzero (a rank direction) only when its
 /// magnitude exceeds this fraction of the largest-magnitude eigenvalue.
 ///
-/// Same value and rationale as the layer-2 form-finding classifier
-/// ([`crate::form_find_free`]'s `NULLITY_REL_TOL`): the exact unit-scale prism
-/// has a wide spectral gap (O(1) nonzero singular values vs O(1e-15) numerical
-/// zeros), so `1e-8` cleanly separates the null space from the rest of the
-/// spectrum without a brittle absolute threshold.
+/// The *value* `1e-8` matches the layer-2 form-finding classifier
+/// ([`crate::form_find_free`]'s `NULLITY_REL_TOL`), but it is applied to a
+/// different spectrum here, which is worth stating precisely. `classify_spectrum`
+/// thresholds the eigenvalues of `D` directly; this kernel thresholds the spectra
+/// of the Gram matrices `AᵀA` / `AAᵀ`, i.e. the **squared** singular values of
+/// `A`. Squaring squares the condition number, so a `1e-8` relative threshold on
+/// the Gram spectrum corresponds to a ~`1e-4` relative threshold on `A`'s singular
+/// values — a *more conservative* (weaker) separation than the same constant
+/// applied to a non-squared spectrum. For the exact unit-scale fixtures this
+/// kernel targets the gap is O(1) nonzero vs O(1e-15) numerical-zero singular
+/// values, so even after squaring the null space is cleanly separated. The
+/// squaring only erodes robustness for genuinely near-degenerate / ill-conditioned
+/// geometries, where classifying directly from `A`'s singular values (a dedicated
+/// SVD) would be the more robust — and heavier — alternative.
 const NULLITY_REL_TOL: f64 = 1e-8;
 
 /// The self-stress / mechanism / stability verdict of a prestressed framework,
@@ -203,8 +212,10 @@ fn max_abs_entry(m: &Mat<f64>) -> f64 {
 /// Reuses the dense self-adjoint eigendecomposition pattern of
 /// [`crate::form_find_free`]'s `classify_spectrum` (faer `self_adjoint_eigen`
 /// with a relative threshold). A Gram matrix is real-symmetric PSD by
-/// construction, so the eigenvalues are the squared singular values of the
-/// underlying matrix and the relative threshold is well-scaled.
+/// construction, so its eigenvalues are the **squared** singular values of the
+/// underlying matrix — see [`NULLITY_REL_TOL`] for how that squaring makes the
+/// effective singular-value threshold conservative (`1e-8` on the Gram spectrum
+/// ≈ `1e-4` on the singular values).
 fn spectral_rank(gram: &Mat<f64>, rel_tol: f64) -> usize {
     let n = gram.nrows();
     if n == 0 {
