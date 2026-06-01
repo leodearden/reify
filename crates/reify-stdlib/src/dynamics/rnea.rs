@@ -199,6 +199,13 @@ mod tests {
     use super::{default_gravity, inverse_dynamics_open_chain, RneaLink};
     use crate::dynamics::spatial::{Frame3, SpatialTransform6, SpatialVector6};
 
+    /// Build the `(w, x, y, z)` unit quaternion for a rotation of `theta`
+    /// radians about the +y axis: `q = [cos(θ/2), 0, sin(θ/2), 0]`.
+    fn ry_quat(theta: f64) -> [f64; 4] {
+        let (s, c) = (theta / 2.0).sin_cos();
+        [c, 0.0, s, 0.0]
+    }
+
     // ── single-pendulum static gravity-torque ─────────────────────────────────
     //
     // A 1 kg point mass hanging at L = 100 mm along the link's −z axis when
@@ -245,5 +252,148 @@ mod tests {
             "expected {expected} N·m, got {}",
             tau[0][0]
         );
+    }
+
+    // ── double-pendulum dynamic cross-validation ───────────────────────────────
+    //
+    // 2-link planar elbow manipulator; both joints revolute about +y (planar
+    // motion in the x–z plane with gravity = [0, 0, −9.81]).
+    //
+    // Parameters: m₁=m₂=1 kg, l₁=l₂=1 m, l_c1=l_c2=0.5 m, I_y1=I_y2=m·l²/12.
+    //
+    // Coordinate convention (Ry(θ) sends x-hat to [cos θ, 0, −sin θ] in world):
+    //   COM 1 world pos  = [0.5·cos q₁,          0, −0.5·sin q₁]
+    //   COM 2 world pos  = [cos q₁ + 0.5·cos(q₁+q₂), 0, −sin q₁ − 0.5·sin(q₁+q₂)]
+    //
+    // Lagrangian EOM (standard derivation, matches Spong & Vidyasagar §7.4 with
+    // the coordinate mapping for our x–z plane + Ry convention):
+    //
+    //   M = [[5/3 + c₂,        1/3 + 0.5·c₂],
+    //        [1/3 + 0.5·c₂,    1/3           ]]     (c₂ = cos q₂)
+    //
+    //   Coriolis/centrifugal:  h = 0.5·sin q₂
+    //     cc₁ = −h·q̇₂·(2·q̇₁ + q̇₂)
+    //     cc₂ = +h·q̇₁²
+    //
+    //   Gravity:
+    //     g₁ = −g·(1.5·cos q₁ + 0.5·cos(q₁+q₂))
+    //     g₂ = −g·0.5·cos(q₁+q₂)
+    //
+    //   τ = M·q̈ + [cc₁; cc₂] + [g₁; g₂]
+    //
+    // RNEA and the Lagrangian EOM are two mathematically-equivalent EXACT
+    // formulations → they agree to ~1e-13 relative (pure float roundoff),
+    // so 1e-6 has ~7 orders of margin.
+    //
+    // This test is RED against the step-2 skeleton: with crossM/crossF omitted,
+    // the Coriolis/centrifugal contribution is missing, so any sample with
+    // nonzero q̇ will mismatch (relative error ~0.1–5 % >> 1e-6).
+    #[test]
+    fn double_pendulum_dynamic_cross_validation() {
+        const G: f64 = 9.81;
+
+        // Closed-form Lagrangian τ for our 2-link system.
+        let ref_tau = |q1: f64, q2: f64, qd1: f64, qd2: f64, qdd1: f64, qdd2: f64| -> [f64; 2] {
+            let c1 = q1.cos();
+            let c2 = q2.cos();
+            let s2 = q2.sin();
+            let c12 = (q1 + q2).cos();
+            // Inertia matrix entries.
+            let m11 = 5.0 / 3.0 + c2;
+            let m12 = 1.0 / 3.0 + 0.5 * c2;
+            let m22 = 1.0 / 3.0_f64;
+            // Coriolis/centrifugal.
+            let h = 0.5 * s2;
+            let cc1 = -h * qd2 * (2.0 * qd1 + qd2);
+            let cc2 = h * qd1 * qd1;
+            // Gravity (−g · ∂z/∂q for each COM).
+            let grav1 = -G * (1.5 * c1 + 0.5 * c12);
+            let grav2 = -G * 0.5 * c12;
+            [
+                m11 * qdd1 + m12 * qdd2 + cc1 + grav1,
+                m12 * qdd1 + m22 * qdd2 + cc2 + grav2,
+            ]
+        };
+
+        // 10 samples with nonzero q̇ so Coriolis/centrifugal terms are active.
+        // (q1, q2, qd1, qd2, qdd1, qdd2)
+        let samples: [(f64, f64, f64, f64, f64, f64); 10] = [
+            (0.1, 0.2, 1.0, -0.5, 0.5, 0.3),
+            (0.5, -0.3, -0.8, 1.2, -0.4, 0.7),
+            (1.0, 0.5, 2.0, 1.0, 0.0, 0.0),
+            (-0.3, 0.8, 0.5, -1.5, 1.0, -0.5),
+            (0.0, 0.1, 1.5, 0.5, 0.2, -0.1),
+            (1.2, -0.5, -1.0, 2.0, 0.3, 0.5),
+            (0.7, 0.9, 0.3, -0.8, -0.5, 0.2),
+            (-0.5, -0.5, 1.8, -1.8, 0.6, -0.3),
+            (0.3, 1.0, -0.2, 0.9, 0.4, -0.6),
+            (-1.0, 0.3, 1.0, 1.0, -0.2, 0.2),
+        ];
+
+        const REL_TOL: f64 = 1e-6;
+        // Absolute floor prevents division by zero for near-zero τ components.
+        const ABS_FLOOR: f64 = 1e-10;
+
+        let assert_close = |label: &str, got: f64, want: f64| {
+            let abs_err = (got - want).abs();
+            let scale = want.abs().max(ABS_FLOOR);
+            assert!(
+                abs_err / scale < REL_TOL,
+                "{label}: RNEA={got:.10}, ref={want:.10}, rel_err={:.2e}",
+                abs_err / scale
+            );
+        };
+
+        for (si, &(q1, q2, qd1, qd2, qdd1, qdd2)) in samples.iter().enumerate() {
+            let expected = ref_tau(q1, q2, qd1, qd2, qdd1, qdd2);
+
+            // Link 0: revolute about +y at world origin, joint angle q1.
+            // COM at [lc1, 0, 0] = [0.5, 0, 0] in the body frame.
+            // Iy = 1/12 kg·m² (uniform rod about its COM, axis along x).
+            let link0 = RneaLink {
+                parent: None,
+                parent_to_child: SpatialTransform6::from_frame3(&Frame3::new(
+                    ry_quat(q1),
+                    [0.0, 0.0, 0.0],
+                )),
+                subspace: vec![SpatialVector6::from_angular_linear(
+                    [0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0],
+                )],
+                mass: 1.0,
+                com: [0.5, 0.0, 0.0],
+                inertia_about_com: [[0.0, 0.0, 0.0], [0.0, 1.0 / 12.0, 0.0], [0.0, 0.0, 0.0]],
+                q_dot: vec![qd1],
+                q_ddot: vec![qdd1],
+            };
+
+            // Link 1: revolute about +y at the tip of link 0 ([l1, 0, 0] = [1, 0, 0]
+            // in link-0 coordinates), joint angle q2.
+            let link1 = RneaLink {
+                parent: Some(0),
+                parent_to_child: SpatialTransform6::from_frame3(&Frame3::new(
+                    ry_quat(q2),
+                    [1.0, 0.0, 0.0],
+                )),
+                subspace: vec![SpatialVector6::from_angular_linear(
+                    [0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0],
+                )],
+                mass: 1.0,
+                com: [0.5, 0.0, 0.0],
+                inertia_about_com: [[0.0, 0.0, 0.0], [0.0, 1.0 / 12.0, 0.0], [0.0, 0.0, 0.0]],
+                q_dot: vec![qd2],
+                q_ddot: vec![qdd2],
+            };
+
+            let tau = inverse_dynamics_open_chain(&[link0, link1], default_gravity());
+
+            assert_eq!(tau.len(), 2, "sample {si}: two links");
+            assert_eq!(tau[0].len(), 1, "sample {si}: link 0 has one DOF");
+            assert_eq!(tau[1].len(), 1, "sample {si}: link 1 has one DOF");
+
+            assert_close(&format!("sample {si} joint 0"), tau[0][0], expected[0]);
+            assert_close(&format!("sample {si} joint 1"), tau[1][0], expected[1]);
+        }
     }
 }
