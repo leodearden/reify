@@ -217,3 +217,39 @@ fn elastic_static_compute_producer_is_g_allow_marked() {
     )];
     assert_pins_are_g_allow_marked(&result, PINS);
 }
+
+/// Bucket 1 — degenerate-shell (MITC3+) element kinematics helpers
+/// (`crates/reify-solver-elastic/src/elements/degenerate_shell.rs`).
+///
+/// These 3 producers are reached on the shell-routing compute path via
+/// `shell_element_stiffness_degenerate` (itself fn-pointer-registered through
+/// the elastic-static ComputeFn), which the orphan audit cannot trace.
+/// PERMANENT bucket-1 pins.
+///
+/// NOTE: `in_plane` (a `pub const fn` in the same file) is DELIBERATELY
+/// EXCLUDED — at the wide `crates/reify-*/src` scope a `let in_plane = ...`
+/// local in `compute_targets/shell_solve.rs` collides on the bare token, giving
+/// `callers >= 1`, so it is in NEITHER `orphans[]` nor `allowed[]`; pinning it
+/// would fail assertion (b).  It remains live via same-file `coord.in_plane()`
+/// callees and needs no marker while the collision masks it.
+#[test]
+fn degenerate_shell_producers_are_g_allow_marked() {
+    let Some(result) = run_orphan_audit("crates/reify-*/src") else {
+        return;
+    };
+    const PINS: &[(&str, &str)] = &[
+        (
+            "crates/reify-solver-elastic/src/elements/degenerate_shell.rs",
+            "degenerate_position",
+        ),
+        (
+            "crates/reify-solver-elastic/src/elements/degenerate_shell.rs",
+            "mat3_inverse",
+        ),
+        (
+            "crates/reify-solver-elastic/src/elements/degenerate_shell.rs",
+            "directors_from_facets",
+        ),
+    ];
+    assert_pins_are_g_allow_marked(&result, PINS);
+}
