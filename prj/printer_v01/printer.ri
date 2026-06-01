@@ -117,21 +117,26 @@ pub structure TendonVPair {
     constraint v_half > 0mm
 }
 
-/// The four CoreXY drive tendons: belt A (outer) and belt B (inner), each a
-/// mirrored upper/lower VPair. Tendons run along +Y (rotate leaf +Z → +Y) and
-/// straddle the rail plane in Z. v0.1: straight full-Y spans at A-outer /
-/// B-inner transverse offsets (diagonal routing deferred).
+/// The four CoreXY drive tendons: two belt runs, each a mirrored upper/lower
+/// VPair (moment balance). Tendons run along +Y (rotate leaf +Z → +Y) and
+/// straddle the rail plane in Z. v0.1 straight-span stand-in: the two belts run
+/// alongside the two Y rails (just inboard, ±rail_x), so the four tendons share
+/// two Z levels and flank the rails symmetrically. The true CoreXY routing —
+/// each belt (A/B) crossing BOTH rails diagonally, with the concentric
+/// A-outer/B-inner offsets — is the deferred follow-on.
 pub structure DriveTendons {
-    param a_offset : Length = 140mm   // A outermost (transverse, +X)
-    param b_offset : Length = 90mm    // B innermost
-    param v_half   : Length = 12mm
+    /// Transverse position of each belt run, just inboard of its Y rail
+    /// (≈ y_rail_offset − inset; kept in step with CoreXY.y_rail_offset).
+    param rail_x : Length = 360mm
+    param v_half : Length = 12mm
 
-    let rot_to_y = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)
+    let rot_to_y   = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)
+    let neg_rail_x = 0mm - rail_x
 
-    sub belt_a = TendonVPair() at transform3(rot_to_y, vec3(a_offset, 0mm, 0mm))
-    sub belt_b = TendonVPair() at transform3(rot_to_y, vec3(b_offset, 0mm, 0mm))
+    sub belt_r = TendonVPair() at transform3(rot_to_y, vec3(rail_x, 0mm, 0mm))      // alongside +X (right) rail
+    sub belt_l = TendonVPair() at transform3(rot_to_y, vec3(neg_rail_x, 0mm, 0mm))  // alongside −X (left) rail
 
-    constraint a_offset > b_offset
+    constraint rail_x > 0mm
 }
 
 // ── CoreXY motion system (directly composed) ─────────────────────────────────
