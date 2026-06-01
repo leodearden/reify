@@ -1140,17 +1140,32 @@ fn report_constraint_results(
 /// has a realization with at least one geometry operation, OR any value cell
 /// is typed `reify_core::Type::Geometry`.
 ///
+/// Two compile-time signals are OR'd (no kernel required):
+///
+/// * **(a) Realization with ops** — any template has a realization with at
+///   least one geometry operation. This is the exact signal used by
+///   `engine_build.rs`'s `had_realization_ops` gate internally.
+///
+/// * **(b) `Type::Geometry` value cell** — any template has a value cell
+///   typed [`reify_core::Type::Geometry`]. This clause is intentionally
+///   conservative/defensive: a module with only (b) true (e.g. a structure
+///   that exposes a `Solid`-typed parameter without a realization op) is
+///   still routed through `with_registered_kernel + build()`. In that
+///   sub-case `build()` will skip the geometry pipeline (no ops → no
+///   handles) and geometry-query cells stay `undef`, but the routing is
+///   harmless: the kernel block is a no-op without ops and the broader gate
+///   future-proofs detection for geometry-forwarding structures.
+///
+/// Both signals are present for `examples/spec-shape-physical.ri` (the
+/// `box(...)` realization op + the `geometry : Solid` cell) and absent for
+/// all existing non-geometry eval fixtures.
+///
 /// Used by `cmd_eval` to decide whether to route through the kernel-backed
 /// `Engine::with_registered_kernel + build()` path (so that geometry-query
 /// value cells such as `mass`/`centroid` are resolved by
 /// `run_post_processes`/`post_process_geometry_queries`) or to stay on the
 /// existing lightweight `Engine::new(None) + eval()` path for plain numeric
 /// modules.
-///
-/// Both detection signals are compile-time (no kernel required) and are
-/// present for `examples/spec-shape-physical.ri` (the `box(...)` realization
-/// op + the `geometry : Solid` cell) and absent for all existing non-geometry
-/// eval fixtures.
 fn module_has_geometry(module: &reify_compiler::CompiledModule) -> bool {
     module.templates.iter().any(|t| {
         t.realizations.iter().any(|r| !r.operations.is_empty())
@@ -1631,6 +1646,29 @@ structure def Plain {
         assert!(
             !module_has_geometry(&compiled_plain),
             "Plain numeric module should NOT be detected as a geometry module"
+        );
+
+        // Third case: Type::Geometry cell only — no realization operations.
+        // This exercises clause (b) of module_has_geometry independently of
+        // clause (a). The Bracket test above triggers both clauses simultaneously;
+        // this case ensures a regression that breaks the cell_type check while
+        // leaving the realization check intact would still fail.
+        //
+        // Constructed directly via the builder API (no stdlib compile needed)
+        // so we can precisely control which fields are set.
+        let geo_cell_only = reify_test_support::CompiledModuleBuilder::new(
+            reify_core::ModulePath::new(vec!["test".to_string()]),
+        )
+        .template(
+            reify_test_support::TopologyTemplateBuilder::new("GeoCell")
+                .param("GeoCell", "shape", reify_core::Type::Geometry, None)
+                .build(),
+        )
+        .build();
+        assert!(
+            module_has_geometry(&geo_cell_only),
+            "Module with a Type::Geometry value cell (no realization ops) should be \
+             detected as geometry (clause (b) of module_has_geometry)"
         );
     }
 }
