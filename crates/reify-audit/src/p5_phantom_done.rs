@@ -9,7 +9,7 @@
 //! Reference: `docs/architecture-audit/f-infra-design.md` §10 (T-1) and §11
 //! (D-1 dependency row).
 
-use crate::{AuditContext, EvidenceRef, Finding, GitCommit, Pattern, Severity, TaskMetadata};
+use crate::{AuditContext, ChangedSymbol, EvidenceRef, Finding, GitCommit, Pattern, Severity, TaskMetadata};
 
 // Empty/vacuous assertion patterns scanned for by H1 (gate b).
 // Each is matched as a substring of added lines within a fn body.
@@ -753,6 +753,9 @@ fn build_high_finding(meta: &TaskMetadata, missing: &[String], summary: &str) ->
 /// `docs/prds/p5-h1-h2-live-corpus-fp-validation.md` §6 (H2 promotion
 /// criteria): real jcodemunch substrate wired, non-vacuous live sweep,
 /// measured FP rate ≤ 5%. Per task 4141 live-corpus FP validation.
+///
+/// When `get_changed_symbols` returns an empty slice a stderr vacuous
+/// breadcrumb is emitted via [`h2_vacuous_breadcrumb`] (task 4144).
 fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Finding> {
     // Cross-crate gate: requires >=2 distinct crates/<name>/ roots.
     if crate_root_count(&meta.files) < 2 {
@@ -766,6 +769,9 @@ fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
     let until_sha = commit;
 
     let symbols = ctx.jcodemunch.get_changed_symbols(&since_sha, until_sha);
+    if let Some(msg) = h2_vacuous_breadcrumb(&symbols, &meta.task_id, &since_sha, until_sha) {
+        eprintln!("{msg}");
+    }
     let mut findings = Vec::new();
     for symbol in symbols {
         // Per-symbol guards: stdlib scope-exclude, intentional-orphan opt-outs
@@ -796,6 +802,30 @@ fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
         }
     }
     findings
+}
+
+/// Returns a `reify-audit:` prefixed stderr breadcrumb message when the H2
+/// `get_changed_symbols` call returned an empty slice, so operators can
+/// distinguish a vacuous sweep from a legitimately clean corpus.
+///
+/// Returns `None` when `symbols` is non-empty (normal sweep; no annotation
+/// needed). Mirrors the `Option<String>`-diagnostic pattern from
+/// `jcodemunch_client.rs::read_source_lines_for_enrichment`.
+fn h2_vacuous_breadcrumb(
+    symbols: &[ChangedSymbol],
+    task_id: &str,
+    since_sha: &str,
+    until_sha: &str,
+) -> Option<String> {
+    if symbols.is_empty() {
+        Some(format!(
+            "reify-audit: H2 (live-path-stranded) vacuous for task {task_id}: \
+             get_changed_symbols returned empty for {since_sha}..{until_sha} \
+             — H2 produced no findings (corpus clean OR jcodemunch not wired / NoopJCodemunchOps)"
+        ))
+    } else {
+        None
+    }
 }
 
 /// Count the number of distinct `crates/<name>/` roots referenced by `files`.
