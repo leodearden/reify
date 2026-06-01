@@ -905,6 +905,11 @@ pub mod ffi {
 
         /// Materialize the unique edges of `shape` into an OcctShapeVec
         /// (canonical TopExp::MapShapes order, deduplicated by IsSame).
+        /// Assemble a non-empty `OcctShapeVec` into a `TopoDS_Compound`.
+        /// Mirrors the `BRep_Builder::MakeCompound`+`Add` pattern used by
+        /// `make_nonmanifold_compound_for_test`. Throws on empty input.
+        fn make_compound(shapes: &OcctShapeVec) -> Result<UniquePtr<OcctShape>>;
+
         fn get_edges(shape: &OcctShape) -> Result<UniquePtr<OcctShapeVec>>;
 
         /// Materialize the unique faces of `shape` into an OcctShapeVec

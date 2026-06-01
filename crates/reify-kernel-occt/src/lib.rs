@@ -764,6 +764,49 @@ impl OcctKernel {
         Ok(ids)
     }
 
+    /// Assemble N placed product solids into a single `TopoDS_Compound` handle
+    /// for multi-body STEP export (T7).
+    ///
+    /// Resolves each `GeometryHandleId` to its `OcctShape`, builds an
+    /// `OcctShapeVec`, and calls `ffi::ffi::make_compound` which uses
+    /// `BRep_Builder::MakeCompound` + `Add` (mirrors the test helper
+    /// `make_nonmanifold_compound_for_test` at occt_wrapper.cpp:3511).
+    /// The result is stored with `BRepKind::Compound`; source handles remain
+    /// valid (TopoDS_Shape copy inside shape_vec_push is a lightweight handle
+    /// increment — non-destructive).
+    ///
+    /// Returns `Err(GeometryError::OperationFailed)` when:
+    /// - `handles` is empty, or
+    /// - any handle is unknown.
+    pub fn make_compound(
+        &mut self,
+        handles: &[GeometryHandleId],
+    ) -> Result<GeometryHandle, GeometryError> {
+        if handles.is_empty() {
+            return Err(GeometryError::OperationFailed(
+                "make_compound: handles slice must not be empty".into(),
+            ));
+        }
+        // Build the OcctShapeVec while holding the immutable borrow on
+        // self.shapes (via get_shape).  shape_vec_push copies each
+        // TopoDS_Shape into the vec — the copy is a thin handle increment.
+        // The vec itself is a fresh allocation separate from self.shapes,
+        // so there is no aliasing conflict.
+        let compound_result = {
+            let mut vec = ffi::ffi::new_shape_vec();
+            for &id in handles {
+                let shape = self.get_shape(id)?;
+                ffi::ffi::shape_vec_push(vec.pin_mut(), shape);
+            }
+            // All shapes pushed; the immutable borrow on self.shapes ends here.
+            ffi::ffi::make_compound(&vec)
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+        };
+        // Immutable borrow on self.shapes is released; now safe to call
+        // store_with_repr (which takes &mut self).
+        Ok(self.store_with_repr(compound_result, BRepKind::Compound))
+    }
+
     /// Test whether two shapes are intersecting (non-positive minimum distance).
     ///
     /// Uses `BRepExtrema_DistShapeShape` — same primitive as `min_clearance` —

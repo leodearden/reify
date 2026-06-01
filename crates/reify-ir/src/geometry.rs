@@ -1993,6 +1993,32 @@ pub trait GeometryKernel: Send + Sync {
         ))
     }
 
+    /// Assemble N placed product solids into a single `TopoDS_Compound` handle
+    /// for multi-body STEP export (T7).
+    ///
+    /// Each input `handle` must be a valid `BRepKind::Solid` handle in the
+    /// kernel.  The resulting compound is stored with
+    /// `BRepKind::Compound` and the source handles remain valid (non-destructive).
+    ///
+    /// Returns `Err(GeometryError::OperationFailed)` when:
+    /// - `handles` is empty (a compound of zero shapes is nonsensical), or
+    /// - any handle is unknown / cannot be resolved, or
+    /// - the kernel does not support compound assembly.
+    ///
+    /// Default implementation returns
+    /// `Err(GeometryError::OperationFailed("make_compound not supported by this kernel"))`,
+    /// keeping non-OCCT kernels (mocks, stubs, Manifold, Fidget, …)
+    /// compiling without per-impl edits.  Mirrors the `extract_edges` /
+    /// `extract_faces` default-Err pattern.
+    fn make_compound(
+        &mut self,
+        _handles: &[GeometryHandleId],
+    ) -> Result<GeometryHandle, GeometryError> {
+        Err(GeometryError::OperationFailed(
+            "make_compound not supported by this kernel".into(),
+        ))
+    }
+
     /// Ingest an externally-supplied [`Mesh`] and return a handle to the stored
     /// geometry.
     ///

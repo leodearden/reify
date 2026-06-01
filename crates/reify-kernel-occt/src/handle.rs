@@ -52,6 +52,11 @@ enum OcctRequest {
         state: OpaqueState,
         reply: oneshot::Sender<()>,
     },
+    /// T7: assemble N placed product solids into a TopoDS_Compound.
+    MakeCompound {
+        handles: Vec<GeometryHandleId>,
+        reply: oneshot::Sender<Result<GeometryHandle, GeometryError>>,
+    },
     ExtractEdges {
         handle: GeometryHandleId,
         reply: oneshot::Sender<Result<Vec<GeometryHandleId>, QueryError>>,
@@ -290,6 +295,26 @@ impl OcctKernelHandle {
     ///
     /// Panics if called from within a tokio async execution context. Use
     /// [`extract_edges_async`](Self::extract_edges_async) instead.
+    /// Assemble N placed product solids into a single `TopoDS_Compound` handle
+    /// for multi-body STEP export (T7 `make_compound`).
+    ///
+    /// Sends a `MakeCompound` request to the kernel thread and blocks until
+    /// the result arrives.  Source handles remain valid after the call.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async execution context.
+    pub fn make_compound(
+        &self,
+        handles: &[GeometryHandleId],
+    ) -> Result<GeometryHandle, GeometryError> {
+        let handles = handles.to_vec();
+        self.send_request_blocking(
+            |reply| OcctRequest::MakeCompound { handles, reply },
+            || GeometryError::OperationFailed("kernel thread died".into()),
+        )?
+    }
+
     pub fn extract_edges(
         &self,
         handle: GeometryHandleId,
@@ -818,6 +843,10 @@ impl OcctKernelHandle {
                         kernel.with_warm_state(state);
                         let _ = reply.send(());
                     }
+                    OcctRequest::MakeCompound { handles, reply } => {
+                        let result = kernel.make_compound(&handles);
+                        let _ = reply.send(result);
+                    }
                     OcctRequest::ExtractEdges { handle, reply } => {
                         let result = kernel.extract_edges(handle);
                         let _ = reply.send(result);
@@ -1285,6 +1314,15 @@ impl GeometryKernel for OcctKernelHandle {
 
     fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError> {
         OcctKernelHandle::tessellate(self, handle, tolerance)
+    }
+
+    /// Override the trait default with a real channel-routed implementation
+    /// (T7 `make_compound`). Delegates to the inherent `make_compound`.
+    fn make_compound(
+        &mut self,
+        handles: &[GeometryHandleId],
+    ) -> Result<GeometryHandle, GeometryError> {
+        OcctKernelHandle::make_compound(self, handles)
     }
 
     /// Override the trait default with a real channel-routed implementation.

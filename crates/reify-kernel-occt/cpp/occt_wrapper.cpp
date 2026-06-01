@@ -338,6 +338,25 @@ std::unique_ptr<OcctShape> make_sphere(double radius) {
     });
 }
 
+// --- Compound assembly ---
+
+std::unique_ptr<OcctShape> make_compound(const OcctShapeVec& shapes) {
+    return wrap_occt_call("make_compound", [&]() {
+        if (shapes.shapes.empty()) {
+            throw std::runtime_error("make_compound: input shape list must not be empty");
+        }
+        TopoDS_Compound compound;
+        BRep_Builder builder;
+        builder.MakeCompound(compound);
+        for (const auto& shape : shapes.shapes) {
+            builder.Add(compound, shape);
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = compound;
+        return result;
+    });
+}
+
 // --- Boolean operations ---
 
 std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& right) {

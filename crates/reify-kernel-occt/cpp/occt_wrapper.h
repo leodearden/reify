@@ -109,6 +109,20 @@ std::unique_ptr<OcctShape> make_cylinder(double radius, double height);
 /// Create a sphere centered at origin (in meters).
 std::unique_ptr<OcctShape> make_sphere(double radius);
 
+// --- Compound assembly ---
+
+/// Assemble N solid shapes into a single TopoDS_Compound for multi-body STEP
+/// export (T7 `make_compound`).
+///
+/// Each shape in `shapes` is added to a fresh compound via
+/// `BRep_Builder::MakeCompound` + `Add` (mirrors the test helper
+/// `make_nonmanifold_compound_for_test`). The source shapes are copied by
+/// reference (TopoDS_Shape copy is a lightweight handle increment), so the
+/// originals remain valid after the call.
+///
+/// Throws `std::runtime_error` if the input vector is empty.
+std::unique_ptr<OcctShape> make_compound(const OcctShapeVec& shapes);
+
 // --- Boolean operations ---
 
 std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& right);
