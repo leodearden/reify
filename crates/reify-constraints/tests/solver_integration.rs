@@ -1353,14 +1353,12 @@ fn partial_feasibility_solved_when_close_to_boundary() {
     }
 }
 
-/// Documents the warm-start objective invariant:
-///   After the early-return for `initially_feasible && objective.is_none()`,
-///   reaching the warm-start budget branch with `initially_feasible=true`
-///   implies `objective.is_some()`.
+/// Documents the warm-start objective invariant and centrality-synthesis interaction.
 ///
 /// This test exercises both sides:
-/// (a) feasible + objective=Some → warm-start budget path runs, solver optimizes
-/// (b) feasible + objective=None → early-return path, solver returns initial point
+/// (a) feasible + explicit objective → warm-start budget path runs, solver optimizes
+/// (b) feasible + no explicit objective + inequalities → centrality synthesis (task η)
+///     engages, warm-start budget path runs, solver converges to the Chebyshev centre
 #[test]
 fn warm_start_budget_requires_objective_invariant() {
     let solver = DimensionalSolver;
@@ -1410,7 +1408,11 @@ fn warm_start_budget_requires_objective_invariant() {
         ),
     }
 
-    // (b) Without objective: early-return path, values match initial point
+    // (b) Without objective: centrality synthesis engages (task η) — optimizer converges
+    // to the Chebyshev centre of [5mm, 50mm] = 27.5mm, NOT the initial 25mm.
+    // Before task η, this case returned the first-feasible initial point (25mm).
+    // After η, inequality constraints trigger a synthetic Maximize(min-slack) objective
+    // so the warm-start budget path runs and the solver converges to the midpoint.
     let problem_no_obj = ResolutionProblem {
         auto_params,
         constraints,
@@ -1422,14 +1424,23 @@ fn warm_start_budget_requires_objective_invariant() {
     match solver.solve(&problem_no_obj) {
         SolveResult::Solved { values, .. } => {
             let si = values.get(&x_id).unwrap().as_f64().unwrap();
+            // Chebyshev centre of [5mm, 50mm] = 27.5mm (0.0275 m).
+            // Tolerance: 1e-3 m (1mm) — Nelder-Mead on a single dimension with
+            // warm-start budget (1000 iters) converges well within this margin.
             assert!(
-                (si - 0.025).abs() < 1e-12,
-                "early-return should preserve initial 25mm (0.025 m), got {} m",
+                (si - 0.0275).abs() < 1e-3,
+                "centrality synthesis should converge to ~27.5mm (0.0275 m), got {} m",
+                si
+            );
+            // Must be strictly interior to the feasible region.
+            assert!(
+                si > 0.005 && si < 0.050,
+                "result must be strictly interior to [5mm, 50mm], got {} m",
                 si
             );
         }
         other => panic!(
-            "expected Solved for feasible+no-objective (early-return path), got {:?}",
+            "expected Solved for feasible+no-objective (centrality synthesis path), got {:?}",
             other
         ),
     }

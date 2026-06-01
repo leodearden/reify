@@ -4,8 +4,8 @@ use std::collections::HashMap;
 
 use argmin::core::{CostFunction, Error as ArgminError, Executor, State, TerminationReason};
 use argmin::solver::neldermead::NelderMead;
-use reify_core::{ConstraintNodeId, DiagnosticCode, DimensionVector, Type, ValueCellId};
-use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, ConstraintSolver, ObjectiveCombination, ObjectiveSense, ObjectiveSet, ResolutionProblem, SolveResult, Value, ValueMap};
+use reify_core::{ConstraintNodeId, DiagnosticCode, DimensionVector, Type, ValueCellId, hash::ContentHash};
+use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, ConstraintSolver, ObjectiveCombination, ObjectiveSense, ObjectiveSet, ResolutionProblem, SolveResult, Value, ValueMap, TAG_CONDITIONAL};
 
 /// Maximum iterations for Nelder-Mead.
 const MAX_ITERS: u64 = 5000;
@@ -386,6 +386,166 @@ fn compute_total_violation(
         .sum()
 }
 
+/// Recursively collect signed-slack expressions from a single constraint expression.
+///
+/// For each inequality sub-expression, appends a `CompiledExpr` that evaluates
+/// to a positive value when the constraint is interior (satisfied with margin)
+/// and a negative value when violated:
+///
+/// - `BinOp::Ge` / `BinOp::Gt`: slack = `left − right`  (positive when `left ≥ right`)
+/// - `BinOp::Le` / `BinOp::Lt`: slack = `right − left`  (positive when `right ≥ left`)
+/// - `BinOp::And`: recurse into both branches
+/// - `Eq`, `Ne`, `Or`, and all other ops: skip (no well-defined signed interior slack)
+///
+/// **Duplication note**: `engine_eval.rs::has_inequality_slack` mirrors this rule
+/// exactly (same ops, same And-recursion, same skips).  The duplication is intentional
+/// — the two crates cannot share a common helper without adding a reify-eval →
+/// reify-constraints dependency, which would break dependency inversion.  If you change
+/// the decomposition rules here, apply the same change to `has_inequality_slack` and
+/// vice versa (both functions carry the cross-reference comment).
+fn collect_slack_terms(expr: &CompiledExpr, slacks: &mut Vec<CompiledExpr>) {
+    if let CompiledExprKind::BinOp { op, left, right } = &expr.kind {
+        match op {
+            BinOp::Ge | BinOp::Gt => {
+                // Interior slack: left − right > 0 when left ≥ right (satisfied, interior)
+                let slack_type = left.result_type.clone();
+                slacks.push(CompiledExpr::binop(
+                    BinOp::Sub,
+                    (**left).clone(),
+                    (**right).clone(),
+                    slack_type,
+                ));
+            }
+            BinOp::Le | BinOp::Lt => {
+                // Interior slack: right − left > 0 when right ≥ left (satisfied, interior)
+                let slack_type = right.result_type.clone();
+                slacks.push(CompiledExpr::binop(
+                    BinOp::Sub,
+                    (**right).clone(),
+                    (**left).clone(),
+                    slack_type,
+                ));
+            }
+            BinOp::And => {
+                // Recurse: AND composes multiple inequalities
+                collect_slack_terms(left, slacks);
+                collect_slack_terms(right, slacks);
+            }
+            // Eq, Ne, Or, arithmetic ops — no well-defined signed interior slack
+            _ => {}
+        }
+    }
+}
+
+/// Build a default Chebyshev-centre (max-min slack) objective for a continuous scope
+/// that has inequality constraints but no explicit user objective.
+///
+/// The synthetic objective `Maximize(min_j slack_j)` drives the solver to the
+/// centre of the feasible region, not just any feasible boundary point (PRD η).
+///
+/// Returns `Some(ObjectiveSet)` when:
+/// - All auto params have finite, valid effective bounds.
+/// - At least one inequality constraint decomposes into a signed-slack expression.
+///
+/// Returns `None` when:
+/// - Any auto param has non-finite (NaN/Inf) effective bounds → degenerate problem,
+///   fall back to first-feasible behaviour to avoid panics in the optimiser's clamp path.
+/// - There are no inequality slacks → pure-feasibility / first-feasible behaviour is
+///   preserved (equality-only or unconstrained scopes are unaffected).
+///
+/// **Normalisation**: all slacks are used at raw SI scale (UNIFORM — same divisor for
+/// the whole scope). With uniform scale the argmax of `min(slack_0, …, slack_n-1)` is
+/// the Chebyshev centre regardless of the scale value (cancelled terms), so dividing
+/// by any common constant is a no-op and is omitted for simplicity.
+///
+/// **Continuous-only guard**: the discrete-type guard (`Type::Scalar` check, B7) is
+/// added in step-4; at this step the function is called only on Scalar problems.
+fn build_centrality_objective(
+    auto_params: &[AutoParam],
+    constraints: &[(ConstraintNodeId, CompiledExpr)],
+) -> Option<ObjectiveSet> {
+    // Continuous-only guard (PRD η, B7): return None unless every auto param has
+    // a Scalar type.  Discrete (Int, Bool, Enum, …) scopes stay first-feasible;
+    // the CP-SAT and SolveSpace solvers are separate impls and never reach this
+    // function, so they are naturally unaffected.
+    for param in auto_params {
+        if !matches!(param.param_type, Type::Scalar { .. }) {
+            return None;
+        }
+    }
+
+    // Degenerate bounds guard: skip synthesis for any problem with non-finite
+    // (NaN, ±Inf) effective bounds.  Such problems are already degenerate; synthesis
+    // would proceed to the optimiser, whose `val.clamp(lo, hi)` panics on NaN bounds.
+    for param in auto_params {
+        let (lo, hi) = effective_bounds(param);
+        if !lo.is_finite() || !hi.is_finite() {
+            return None;
+        }
+    }
+
+    // Collect signed-slack sub-expressions from all inequality constraints.
+    let mut slacks: Vec<CompiledExpr> = Vec::new();
+    for (_, expr) in constraints {
+        collect_slack_terms(expr, &mut slacks);
+    }
+
+    // No inequality slacks → preserve first-feasible behaviour.
+    if slacks.is_empty() {
+        return None;
+    }
+
+    // Performance note: the nested-Conditional fold below has O(2^n) expression-tree
+    // size in the number of slack terms, because each reduce step clones the accumulator
+    // `a` into BOTH the condition (BinOp::Lt) AND the then-branch.  At n=2 this is ~2×;
+    // at n=10 it is ~512×; at n=15 it exceeds 16 000 nodes.  Since eval_objective_set
+    // traverses the expression on EVERY Nelder-Mead cost call (up to tens of thousands
+    // of iterations), high slack counts produce exponential per-eval cost.
+    //
+    // Current usage: typical scopes have ≤ 6 inequality constraints per auto param, so
+    // the blowup is modest (≤ 64×).  Warn when the count is unexpectedly high so
+    // pathological cases are visible in logs rather than silently slow.
+    const CENTRALITY_SLACK_WARN_THRESHOLD: usize = 10;
+    if slacks.len() > CENTRALITY_SLACK_WARN_THRESHOLD {
+        let approx_nodes = 1_usize
+            .checked_shl(slacks.len() as u32)
+            .unwrap_or(usize::MAX);
+        tracing::warn!(
+            slack_count = slacks.len(),
+            approx_nodes,
+            "centrality synthesis: {} inequality slacks produce a nested-Conditional \
+             min-expression with ~{} nodes (O(2^n)); Nelder-Mead eval cost will be high. \
+             Consider reducing inequality constraints in this scope.",
+            slacks.len(),
+            approx_nodes,
+        );
+    }
+
+    // Fold slacks into min(s₀, s₁, …) via nested Conditionals.
+    // min(a, b) = if a < b then a else b
+    let min_expr = slacks.into_iter().reduce(|a, b| {
+        let result_type = a.result_type.clone();
+        // Condition: a < b  (Bool)
+        let condition = CompiledExpr::binop(BinOp::Lt, a.clone(), b.clone(), Type::Bool);
+        let cond_hash = ContentHash::of(&[TAG_CONDITIONAL])
+            .combine(condition.content_hash)
+            .combine(a.content_hash)
+            .combine(b.content_hash);
+        CompiledExpr {
+            kind: CompiledExprKind::Conditional {
+                condition: Box::new(condition),
+                then_branch: Box::new(a),
+                else_branch: Box::new(b),
+            },
+            result_type,
+            content_hash: cond_hash,
+        }
+    })?;
+
+    // Maximise the minimum slack: x* = Chebyshev centre of the feasible region.
+    Some(ObjectiveSet::single(ObjectiveSense::Maximize, min_expr))
+}
+
 /// Cost function adapter for argmin's Nelder-Mead solver.
 ///
 /// Evaluates constraint violations (and optionally an objective) given
@@ -394,7 +554,7 @@ struct ConstraintCostFunction<'a> {
     auto_params: &'a [AutoParam],
     constraints: &'a [(ConstraintNodeId, CompiledExpr)],
     base_values: &'a ValueMap,
-    objective: &'a Option<ObjectiveSet>,
+    objective: Option<&'a ObjectiveSet>,
     functions: &'a [CompiledFunction],
 }
 
@@ -546,8 +706,28 @@ fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
         max_constraint_residual(&problem.constraints, &trial_values, &problem.functions)
             <= FEASIBILITY_THRESHOLD;
 
-    // Pure feasibility (no objective) + already feasible: return immediately
-    if initially_feasible && problem.objective.is_none() {
+    // Synthesise a default centrality (Chebyshev-centre) objective when the scope has
+    // inequality constraints but no explicit user objective (PRD η).  The synthetic
+    // objective is built once and threaded through the cost function exactly like a
+    // user-supplied objective; no new cost branch is added.
+    //
+    // `synth` lives for the rest of the function so the borrow in `effective_objective`
+    // remains valid.  Discrete-type guard (Type::Scalar check) is added in step-4.
+    let synth: Option<ObjectiveSet> = if problem.objective.is_none() {
+        build_centrality_objective(&problem.auto_params, &problem.constraints)
+    } else {
+        None
+    };
+
+    // Effective objective: explicit (if any), else synthetic (if any), else None.
+    // This is a borrow — `synth` and `problem` both outlive the function body.
+    let effective_objective: Option<&ObjectiveSet> =
+        problem.objective.as_ref().or(synth.as_ref());
+
+    // Pure feasibility + already feasible → return immediately.
+    // Gate on the EFFECTIVE objective so a centrality scope optimises instead of
+    // short-circuiting to the first feasible boundary point.
+    if initially_feasible && effective_objective.is_none() {
         let n_params = problem.auto_params.len();
         tracing::debug!(
             n_params,
@@ -563,11 +743,11 @@ fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
     // Nelder-Mead needs O(N+1) evaluations per simplex sweep, so scale
     // the budget proportionally to give higher-dimensional problems enough
     // iterations to converge.
-    // After the early-return above for `initially_feasible && objective.is_none()`,
-    // reaching here with `initially_feasible=true` implies `objective.is_some()`.
+    // After the early-return above for `initially_feasible && effective_objective.is_none()`,
+    // reaching here with `initially_feasible=true` implies `effective_objective.is_some()`.
     let max_iters = if initially_feasible {
         debug_assert!(
-            problem.objective.is_some(),
+            effective_objective.is_some(),
             "warm-start budget path reached without objective — early-return invariant violated"
         );
         let n_params = problem.auto_params.len() as u64;
@@ -580,7 +760,7 @@ fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
         auto_params: &problem.auto_params,
         constraints: &problem.constraints,
         base_values: &problem.current_values,
-        objective: &problem.objective,
+        objective: effective_objective,
         functions: &problem.functions,
     };
 
@@ -607,7 +787,7 @@ fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
 
     // Extract and log convergence information from the solver result.
     let termination_reason = result.state().get_termination_reason().cloned();
-    let has_objective = problem.objective.is_some();
+    let has_objective = effective_objective.is_some();
     let n_params = problem.auto_params.len();
     let iter_limited =
         termination_reason == Some(TerminationReason::MaxItersReached) && has_objective;
@@ -667,7 +847,7 @@ fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
             // Validate that the objective is numeric at the initial point
             // before promoting to Solved. The trial_values ValueMap was built
             // from the same initial point and is still in scope.
-            if let Some(obj) = &problem.objective
+            if let Some(obj) = effective_objective
                 && eval_objective_set(obj, &trial_values, &problem.functions).is_none()
             {
                 return SolveResult::NoProgress {
@@ -703,7 +883,7 @@ fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
 
     // Post-solve objective validation: if the objective is still non-numeric
     // at the solution point, report NoProgress rather than Solved.
-    if let Some(obj) = &problem.objective
+    if let Some(obj) = effective_objective
         && eval_objective_set(obj, &final_values, &problem.functions).is_none()
     {
         return SolveResult::NoProgress {
@@ -2807,7 +2987,7 @@ mod tests {
             auto_params: &auto_params,
             constraints: &constraints,
             base_values: &base_values,
-            objective: &None,
+            objective: None,
             functions: &[],
         };
 
@@ -2862,7 +3042,7 @@ mod tests {
             auto_params: &auto_params,
             constraints: &constraints,
             base_values: &base_values,
-            objective: &objective,
+            objective: objective.as_ref(),
             functions: &[],
         };
 
@@ -2875,8 +3055,17 @@ mod tests {
         );
     }
 
+    /// Task η: centrality synthesis fires for an already-feasible scope with
+    /// `objective: None` + a one-sided inequality constraint (x > 5 mm).
+    /// Maximize(x − 5 mm) drives x toward the upper bound rather than preserving
+    /// the initial-feasible point.
+    ///
+    /// (Renamed from `already_satisfied_returns_solved_immediately` — after task η
+    /// the early-return fast-path is gated on `effective_objective.is_none()`, so an
+    /// already-feasible scope with a synthetic objective now runs the optimiser and
+    /// moves the parameter, contradicting the old name and its implied behaviour.)
     #[test]
-    fn already_satisfied_returns_solved_immediately() {
+    fn centrality_moves_already_feasible_param_toward_bound() {
         use crate::DimensionalSolver;
         use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
         use reify_ir::{AutoParam, BinOp, CompiledExpr, Value};
@@ -2922,10 +3111,18 @@ mod tests {
         match result {
             SolveResult::Solved { values, .. } => {
                 let x = values.get(&x_id).unwrap().as_f64().unwrap();
-                // Should return current value since already satisfied
+                // Task η: centrality synthesis fires (single inequality x>5mm).
+                // Maximize(x−5mm) pushes x toward the upper bound 100mm.
+                // Must remain strictly feasible (x > 5mm).
                 assert!(
-                    (x - 0.010).abs() < 0.001,
-                    "already-satisfied should return value close to current, got {} m",
+                    x > 0.005,
+                    "centrality synthesis result must satisfy x > 5mm, got {} m",
+                    x
+                );
+                // Optimizer should have moved x above the initial 10mm toward the bound.
+                assert!(
+                    x > 0.010,
+                    "centrality synthesis should move x above initial 10mm, got {} m",
                     x
                 );
             }
@@ -3547,5 +3744,158 @@ mod tests {
                 other
             ),
         }
+    }
+
+    // ── centrality default objective tests (task 4013, PRD η) ──────────────
+
+    /// [B6 GREEN] x >= 2mm, x <= 8mm, objective: None → solver must return
+    /// x ≈ 5mm (the Chebyshev centre of [2mm, 8mm]).
+    ///
+    /// Before step-2 this test was RED (solver returned first-feasible boundary).
+    /// After step-2 the synthetic centrality objective drives Nelder-Mead to the
+    /// midpoint x = 5mm within the 1e-4 m tolerance required by PRD §11.
+    #[test]
+    fn centrality_default_centers_two_sided_bound() {
+        use crate::DimensionalSolver;
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
+        use reify_ir::{
+            AutoParam, BinOp, CompiledExpr, ConstraintSolver, ResolutionProblem, SolveResult,
+            Value, ValueMap,
+        };
+
+        let solver = DimensionalSolver;
+
+        let x_id = ValueCellId::new("CentredBar", "x");
+        let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
+
+        // x >= 2mm
+        let two_mm = CompiledExpr::literal(
+            Value::Scalar { si_value: 0.002, dimension: DimensionVector::LENGTH },
+            Type::length(),
+        );
+        let ge_expr = CompiledExpr::binop(BinOp::Ge, x_ref.clone(), two_mm, Type::Bool);
+
+        // x <= 8mm
+        let eight_mm = CompiledExpr::literal(
+            Value::Scalar { si_value: 0.008, dimension: DimensionVector::LENGTH },
+            Type::length(),
+        );
+        let le_expr = CompiledExpr::binop(BinOp::Le, x_ref, eight_mm, Type::Bool);
+
+        let problem = ResolutionProblem {
+            auto_params: vec![AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: None, // use default bounds (1µm–10m)
+                free: false,
+            }],
+            constraints: vec![
+                (ConstraintNodeId::new("CentredBar", 0), ge_expr),
+                (ConstraintNodeId::new("CentredBar", 1), le_expr),
+            ],
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![].into(),
+        };
+
+        let result = solver.solve(&problem);
+        match result {
+            SolveResult::Solved { values, .. } => {
+                let si = values.get(&x_id).unwrap().as_f64().unwrap();
+                // Chebyshev centre of [2mm, 8mm] is the midpoint 5mm (0.005 m).
+                // Tolerance: |x − 5mm| < 1e-4 m (0.1mm) per PRD §11.
+                assert!(
+                    (si - 0.005).abs() < 1e-4,
+                    "centrality should place x ≈ 5mm (0.005 m), got {:.6} m",
+                    si
+                );
+                // Must be strictly interior — NOT on the boundary.
+                assert!(
+                    si > 0.002 && si < 0.008,
+                    "x must be strictly interior to [2mm, 8mm], got {:.6} m",
+                    si
+                );
+            }
+            other => panic!("expected Solved (centrality), got {:?}", other),
+        }
+    }
+
+    /// [step-3 RED, step-4 GREEN] Discrete (Int) auto param with inequality constraints:
+    /// `build_centrality_objective` must return `None` (continuous-only guard, PRD B7).
+    ///
+    /// Before step-4 adds the Type::Scalar check, the function has no discrete-type
+    /// guard and returns Some(centrality) for any param type → this assertion fails (RED).
+    /// After step-4 inserts the Type::Scalar guard, Int params short-circuit to None (GREEN).
+    #[test]
+    fn centrality_objective_none_for_discrete_param() {
+        use reify_core::{ConstraintNodeId, Type, ValueCellId};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, Value};
+
+        let x_id = ValueCellId::new("DiscreteScope", "x");
+
+        // Integer-valued reference and literal
+        let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::Int);
+        let five_lit = CompiledExpr::literal(Value::Int(5), Type::Int);
+        // Inequality constraint: x >= 5
+        let ge_expr = CompiledExpr::binop(BinOp::Ge, x_ref.clone(), five_lit.clone(), Type::Bool);
+        let ten_lit = CompiledExpr::literal(Value::Int(10), Type::Int);
+        // x <= 10
+        let le_expr = CompiledExpr::binop(BinOp::Le, x_ref, ten_lit, Type::Bool);
+
+        let auto_params = vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::Int, // discrete — not Scalar
+            bounds: Some((-1e6, 1e6)),
+            free: true,
+        }];
+        let constraints = vec![
+            (ConstraintNodeId::new("DiscreteScope", 0), ge_expr),
+            (ConstraintNodeId::new("DiscreteScope", 1), le_expr),
+        ];
+
+        let result = super::build_centrality_objective(&auto_params, &constraints);
+        assert!(
+            result.is_none(),
+            "build_centrality_objective must return None for discrete (Int) auto params \
+             (continuous-only guard, B7); got Some(_)"
+        );
+    }
+
+    /// [step-3 GREEN immediately] Scalar auto param with equality-only constraints:
+    /// `build_centrality_objective` must return `None` (no inequality slacks → first-feasible).
+    ///
+    /// `collect_slack_terms` skips BinOp::Eq entirely, so slacks is empty → None is
+    /// returned already by the step-2 implementation (no inequality slacks guard).
+    /// This test documents and locks in that existing correct behaviour.
+    #[test]
+    fn centrality_objective_none_without_inequalities() {
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, Value};
+
+        let x_id = ValueCellId::new("EqScope", "x");
+
+        // Scalar reference
+        let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
+        // x == 5mm (equality only — no signed-slack decomposition)
+        let five_mm = CompiledExpr::literal(
+            Value::Scalar { si_value: 0.005, dimension: DimensionVector::LENGTH },
+            Type::length(),
+        );
+        let eq_expr = CompiledExpr::binop(BinOp::Eq, x_ref, five_mm, Type::Bool);
+
+        let auto_params = vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: None,
+            free: false,
+        }];
+        let constraints = vec![(ConstraintNodeId::new("EqScope", 0), eq_expr)];
+
+        let result = super::build_centrality_objective(&auto_params, &constraints);
+        assert!(
+            result.is_none(),
+            "build_centrality_objective must return None when only equality constraints exist \
+             (no signed-slack decomposition); got Some(_)"
+        );
     }
 }

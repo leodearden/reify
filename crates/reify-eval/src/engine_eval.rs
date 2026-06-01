@@ -492,6 +492,77 @@ fn build_solver_problem(
     })
 }
 
+/// Recursively check whether a compiled expression contains any inequality
+/// sub-expression (Ge/Gt/Le/Lt) at the top level or nested under BinOp::And.
+///
+/// **Intentional duplication**: `solver.rs::collect_slack_terms` applies the same
+/// rule (same ops, same And-recursion, same skips).  The two cannot share a helper
+/// because reify-eval src does not depend on reify-constraints (only a dev-dep).
+/// If you change which ops decompose (e.g. add Or handling, treat Eq as two
+/// inequalities), apply the matching change to `collect_slack_terms` as well.
+fn has_inequality_slack(expr: &reify_ir::CompiledExpr) -> bool {
+    match &expr.kind {
+        reify_ir::CompiledExprKind::BinOp { op, left, right } => match op {
+            reify_ir::BinOp::Ge | reify_ir::BinOp::Gt
+            | reify_ir::BinOp::Le | reify_ir::BinOp::Lt => true,
+            reify_ir::BinOp::And => has_inequality_slack(left) || has_inequality_slack(right),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// Return `true` when a template qualifies for the default Chebyshev-centre
+/// centrality objective synthesis (PRD η, I5 provenance hook).
+///
+/// The predicate mirrors `solver.rs::build_centrality_objective`'s gate:
+///   1. At least one auto cell (otherwise `build_solver_problem` returns `None`).
+///   2. **Continuous-only guard (B7)**: every auto cell has `Type::Scalar { .. }`.
+///   3. At least one constraint contains an inequality slack (Ge/Gt/Le/Lt,
+///      possibly nested under BinOp::And) — checked across ALL constraints,
+///      NOT filtered by whether the constraint reads an auto cell.
+///
+/// **Why no auto-read filter (alignment with solver)**: `build_centrality_objective`
+/// collects slacks from ALL constraints regardless of auto-cell involvement.
+/// An earlier engine version filtered by `trace.reads ∩ auto_ids`, but this diverged
+/// from the solver: a scope whose only inequality constraint involves no auto cell
+/// would get a synthetic objective from the solver but be absent from
+/// `centrality_synthesized_scopes` (under-reporting).  Removing the filter aligns
+/// the two predicates.
+///
+/// **Known limitation (finite-bounds)**: `build_centrality_objective` also returns
+/// `None` when any auto param has non-finite (NaN/Inf) effective bounds.  This check
+/// cannot be replicated here because `ValueCellDecl` does not carry numeric bounds
+/// (they are derived from runtime values in `build_solver_problem`).  In the rare
+/// case where bounds are degenerate the engine over-reports (records the scope as
+/// centrality-synthesized even though the solver returns `None`), but this is a
+/// benign inaccuracy and the scope is otherwise a degenerate problem.
+///
+/// Cross-reference: `solver.rs::build_centrality_objective`.
+fn scope_qualifies_for_centrality(template: &reify_compiler::TopologyTemplate) -> bool {
+    let auto_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|cell| cell.kind.is_auto())
+        .collect();
+
+    if auto_cells.is_empty() {
+        return false;
+    }
+
+    // Continuous-only guard: all auto cells must have a Scalar type.
+    if !auto_cells
+        .iter()
+        .all(|cell| matches!(cell.cell_type, reify_core::Type::Scalar { .. }))
+    {
+        return false;
+    }
+
+    // At least one constraint (anywhere in the scope) must contain an inequality.
+    // We do NOT filter by auto-cell reads — see the doc comment above.
+    template.constraints.iter().any(|c| has_inequality_slack(&c.expr))
+}
+
 /// Pushes the appropriate `Diagnostic::warning` for `rejection` and bumps the
 /// corresponding test counter (`type_kind_counter` for `TypeKindMismatch`,
 /// `dimension_counter` for `ScalarDimensionMismatch`).
@@ -2005,10 +2076,21 @@ impl Engine {
             .is_some();
         if has_active_solver {
             // Refresh template-native objectives so edit_param() can access them.
+            // Clear centrality tracking alongside objectives — both are per-eval state.
             self.objectives.clear();
+            self.centrality_synthesized_scopes.clear();
             for template in &module.templates {
                 if let Some(obj) = &template.objective {
                     self.objectives.insert(template.name.clone(), obj.clone());
+                } else if scope_qualifies_for_centrality(template) {
+                    // No explicit user objective AND the scope meets the Scalar + inequality
+                    // gate: the DimensionalSolver will synthesise a Chebyshev-centre
+                    // objective for it.  Record the scope name for the I5 provenance hook
+                    // (task θ) and the η integration test.
+                    //
+                    // This mirrors solver.rs::build_centrality_objective's gate predicate;
+                    // cross-reference that function when updating either site.
+                    self.centrality_synthesized_scopes.insert(template.name.clone());
                 }
             }
             for template in &module.templates {
