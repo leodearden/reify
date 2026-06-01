@@ -32,7 +32,7 @@ use reify_test_support::{
     make_engine, make_simple_engine, mm, parse_and_compile, parse_and_compile_with_stdlib,
 };
 use reify_core::{ContentHash, ModulePath, Severity, Type, ValueCellId, VersionId};
-use reify_ir::{CompiledExprKind, ObjectiveSet, ObjectiveSense, Satisfaction};
+use reify_ir::{CompiledExprKind, ObjectiveSense, Satisfaction};
 
 const EXAMPLE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
