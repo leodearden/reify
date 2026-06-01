@@ -13,7 +13,7 @@
 // frame)` dispatch helper.
 
 use crate::constitutive::IsotropicElastic;
-use crate::shell_assembly::{build_shell_frame, plane_stress_d};
+use crate::shell_assembly::{ShellFrame, build_shell_frame, plane_stress_d};
 use reify_ir::Value;
 
 /// Per-element Cauchy stress tensors in the local mid-surface frame for a
@@ -237,6 +237,72 @@ impl ShellStress {
             bottom: field,
         }
     }
+}
+
+/// Flatten per-element shell results into four neutral `Vec<f64>` buffers for
+/// the reify-eval `ShellChannels` wrapper (PRD task δ,
+/// `docs/prds/v0_4/shell-extract-engine-bridge.md` §7/§11 OQ-1).
+///
+/// reify-eval depends on this crate (not vice-versa), so the DSL-level
+/// `ShellChannels` value cannot be named here. This glue returns plain numeric
+/// buffers that reify-eval re-wraps into `ShellChannels` without a dependency
+/// cycle (task δ design decision).
+///
+/// # Layout
+///
+/// All four returned buffers are **element-major** (outer loop over elements in
+/// `stresses` / `frames` order) then **row-major** within each 3×3 matrix, so
+/// each buffer has length `9 · n_elem`:
+///
+/// - `top` / `mid` / `bottom` — each element's `.top` / `.mid` / `.bottom`
+///   Cauchy stress tensor in the element **local** frame. Von Mises is
+///   rotation-invariant, so downstream consumers can evaluate it directly on
+///   the local-frame data without first rotating to global.
+/// - `frame` — each element's [`ShellFrame::local_to_global`] rotation matrix,
+///   carried so the GUI populator (task θ) can map local-frame channels into
+///   global coordinates via `σ_global = F · σ_local · Fᵀ`.
+///
+/// # Panics
+///
+/// Debug-asserts `stresses.len() == frames.len()` (one frame per element).
+pub fn flatten_shell_channels(
+    stresses: &[ShellElementStress],
+    frames: &[ShellFrame],
+) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
+    debug_assert_eq!(
+        stresses.len(),
+        frames.len(),
+        "flatten_shell_channels: one local→global frame per stress element"
+    );
+
+    let n = stresses.len();
+    let mut top = Vec::with_capacity(9 * n);
+    let mut mid = Vec::with_capacity(9 * n);
+    let mut bottom = Vec::with_capacity(9 * n);
+    let mut frame = Vec::with_capacity(9 * n);
+
+    // Stress channels: element-major, then row-major within each local 3×3.
+    for s in stresses {
+        for row in &s.top {
+            top.extend_from_slice(row);
+        }
+        for row in &s.mid {
+            mid.extend_from_slice(row);
+        }
+        for row in &s.bottom {
+            bottom.extend_from_slice(row);
+        }
+    }
+
+    // Frame channel: row-major flatten of each local→global rotation matrix.
+    for fr in frames {
+        let l2g = fr.local_to_global();
+        for row in &l2g {
+            frame.extend_from_slice(row);
+        }
+    }
+
+    (top, mid, bottom, frame)
 }
 
 #[cfg(test)]

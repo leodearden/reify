@@ -475,7 +475,7 @@ pub use shell_assembly::{
 pub use shell_boundary::{SupportBodyKind, SupportCompatibility, SupportKind, build_support_bcs};
 pub use shell_kinematics::{ShellKinematics, shell_kinematics};
 pub use shell_result::{
-    ShellElementStress, ShellStress, shell_element_stress,
+    ShellElementStress, ShellStress, flatten_shell_channels, shell_element_stress,
 };
 // Task 3594/δ: flat-plate MITC3 cantilever shell driver (neutral types only).
 pub use shell_solve::{FlatPlateShellSolve, solve_flat_plate_shell};
