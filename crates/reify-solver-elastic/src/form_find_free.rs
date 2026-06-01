@@ -41,6 +41,7 @@
 //! wired). See `plan.json` design_decisions for the scoping rationale.
 
 use crate::form_find::MemberKind;
+use faer::Mat;
 
 /// How the per-member force densities `q` are specified for a free-standing
 /// form-find.
@@ -132,4 +133,154 @@ pub fn form_find_free(
     // avoiding unused-variable warnings in the meantime.
     let _ = (nodes_guess, members, kinds, spec);
     unimplemented!("form_find_free: implemented incrementally across Tensegrity T1b steps")
+}
+
+// ---------------------------------------------------------------------------
+// Crate-internal numeric helpers (D assembly + spectral nullity classification)
+// ---------------------------------------------------------------------------
+
+/// Relative tolerance for nullity classification: an eigenvalue counts as a null
+/// direction when its magnitude is below this fraction of the largest-magnitude
+/// eigenvalue. The prism golden has a wide spectral gap (fifth eigenvalue 6 vs
+/// fourth ≈ 2.5e-15), so 1e-8 separates the null space from the rest of the
+/// spectrum without a brittle absolute threshold.
+#[allow(dead_code)] // wired into form_find_free's validation/recovery at steps 4/6/8
+const NULLITY_REL_TOL: f64 = 1e-8;
+
+/// Spectral classification of the force-density matrix `D`.
+#[allow(dead_code)] // fields consumed by validation (step 4) / recovery (step 6)
+struct SpectrumClassification {
+    /// Eigenvalues of `D`, sorted ascending by magnitude.
+    eigenvalues: Vec<f64>,
+    /// Eigenvectors as columns, in the same order as `eigenvalues` (column `j`
+    /// is the eigenvector for `eigenvalues[j]`). The first `nullity` columns span
+    /// the null space used for coordinate recovery.
+    eigenvectors: Mat<f64>,
+    /// Number of eigenvalues whose magnitude is below the relative tolerance —
+    /// the nullity of `D`.
+    nullity: usize,
+}
+
+/// Assemble the full `N×N` force-density matrix `D = Cᵀ Q C` for the whole
+/// (unanchored) structure.
+///
+/// Reuses the anchored kernel's rank-1 per-member accumulation
+/// (`crate::form_find::form_find_anchored`): for a member `(j, k)` with force
+/// density `qᵢ`, add `qᵢ` to `D[j,j]` and `D[k,k]` and `−qᵢ` to `D[j,k]` and
+/// `D[k,j]`. Unlike the anchored case there is no free/anchor partition — the
+/// full `D` is what the eigenvalue / null-space form-finding operates on.
+#[allow(dead_code)] // wired into form_find_free's pipelines at steps 4/8/10
+fn assemble_force_density_matrix(n: usize, members: &[(usize, usize)], q: &[f64]) -> Mat<f64> {
+    let _ = (n, members, q);
+    unimplemented!("assemble_force_density_matrix: implemented in T1b step-2")
+}
+
+/// Classify the spectrum of the symmetric force-density matrix `D` via a dense
+/// self-adjoint eigendecomposition.
+///
+/// Returns the eigenpairs sorted ascending by `|λ|` together with the nullity
+/// (count of eigenvalues whose magnitude is below `rel_tol · max|λ|`). `D` is
+/// indefinite by construction (struts contribute negative `q`), so the sort is
+/// by magnitude, not algebraic value.
+#[allow(dead_code)] // wired into form_find_free's pipelines at steps 4/8/10
+fn classify_spectrum(d: &Mat<f64>, rel_tol: f64) -> SpectrumClassification {
+    let _ = (d, rel_tol);
+    unimplemented!("classify_spectrum: implemented in T1b step-2")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The complete 9-cable triplex (triangular antiprism / T-prism): 6 nodes,
+    /// 3 struts + 9 cables (3 top, 3 bottom, 3 vertical), in struts-then-cables
+    /// member order. Struts (0,4)(1,5)(2,3); top (0,1)(1,2)(2,0); bottom
+    /// (3,4)(4,5)(5,3); vertical (0,3)(1,4)(2,5).
+    fn triplex_topology() -> (Vec<(usize, usize)>, Vec<MemberKind>) {
+        let members = vec![
+            // struts
+            (0, 4),
+            (1, 5),
+            (2, 3),
+            // top horizontals
+            (0, 1),
+            (1, 2),
+            (2, 0),
+            // bottom horizontals
+            (3, 4),
+            (4, 5),
+            (5, 3),
+            // verticals
+            (0, 3),
+            (1, 4),
+            (2, 5),
+        ];
+        let mut kinds = vec![MemberKind::Strut; 3];
+        kinds.extend(std::iter::repeat(MemberKind::Cable).take(9));
+        (members, kinds)
+    }
+
+    /// Closed-form force densities for the symmetric prism, struts-then-cables
+    /// order: struts −√3, the six horizontals +1, verticals +√3. These make `D`
+    /// rank-deficient by exactly 4 (D eigenvalues 0,0,0,0,6,6).
+    fn closed_form_q() -> Vec<f64> {
+        let s = 3.0_f64.sqrt();
+        vec![
+            -s, -s, -s, // struts
+            1.0, 1.0, 1.0, // top horizontals
+            1.0, 1.0, 1.0, // bottom horizontals
+            s, s, s, // verticals
+        ]
+    }
+
+    #[test]
+    fn closed_form_prism_q_has_nullity_four_with_spectral_gap() {
+        let (members, _kinds) = triplex_topology();
+        let q = closed_form_q();
+        let d = assemble_force_density_matrix(6, &members, &q);
+        let spec = classify_spectrum(&d, NULLITY_REL_TOL);
+
+        assert_eq!(
+            spec.nullity, 4,
+            "closed-form prism q must give nullity 4 (3 coord modes + translation); eigenvalues = {:?}",
+            spec.eigenvalues,
+        );
+
+        // Eigenvalues are sorted ascending by magnitude: the fourth-smallest is
+        // still in the null space (~0), and there is a wide gap to the fifth,
+        // which sits at ~6.
+        assert!(
+            spec.eigenvalues[3].abs() < 1e-9,
+            "fourth-smallest |λ| must be ~0 (still null), got {}",
+            spec.eigenvalues[3],
+        );
+        assert!(
+            (spec.eigenvalues[4].abs() - 6.0).abs() < 1e-6,
+            "fifth |λ| must be ~6 (spectral gap above the null space), got {}",
+            spec.eigenvalues[4],
+        );
+    }
+
+    #[test]
+    fn generic_admissible_q_has_translation_only_nullity_one() {
+        let (members, kinds) = triplex_topology();
+        // A generic admissible q: all magnitudes 1, signs honouring each member
+        // kind (cables +1, struts −1). Only the all-ones translation mode is in
+        // the null space, so nullity must be exactly 1.
+        let q: Vec<f64> = kinds
+            .iter()
+            .map(|k| match k {
+                MemberKind::Cable => 1.0,
+                MemberKind::Strut => -1.0,
+            })
+            .collect();
+        let d = assemble_force_density_matrix(6, &members, &q);
+        let spec = classify_spectrum(&d, NULLITY_REL_TOL);
+
+        assert_eq!(
+            spec.nullity, 1,
+            "generic admissible q has only the all-ones translation mode in null(D); eigenvalues = {:?}",
+            spec.eigenvalues,
+        );
+    }
 }
