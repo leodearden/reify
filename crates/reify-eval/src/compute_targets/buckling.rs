@@ -304,7 +304,7 @@ pub fn solve_buckling_trampoline(
                 }
             }
             // Axial anchor at node 0 (= P1 corner (0,0,0), preserved in P2 mesh).
-            bcs.push(DirichletBc { dof: 3 * 0 + 2, value: 0.0 }); // u_z at node 0
+            bcs.push(DirichletBc { dof: 2, value: 0.0 }); // u_z at node 0
 
             // ── P2: load on top-face CORNER nodes (via node_id over nx=2 grid) ─
             // These are P1 indices (first n_p1 entries of nodes_p2), still valid
