@@ -116,7 +116,7 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use reify_core::DimensionVector;
+use reify_core::{Diagnostic, DimensionVector};
 use reify_ir::{
     FieldSourceKind, InterpolationKind, OpaqueState, PersistentMap, SampledField, SampledGridKind,
     StructureInstanceData, StructureTypeId, Value,
@@ -139,7 +139,9 @@ use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 // Shell-route classification + the reify-eval-side shell-solve orchestrator
 // (task 3594/δ). `solve_shell_static` is referenced via its full path at the
 // call site to keep the shell branch visually self-contained.
-use super::shell_solve::{ShellForce, ShellRoute, classify_shell};
+use super::shell_solve::{
+    FailurePolicy, ShellForce, ShellRoute, classify_shell, resolve_extraction_failure,
+};
 
 // ── MaterialModel ────────────────────────────────────────────────────────────
 
@@ -212,7 +214,11 @@ pub(crate) struct CantileverFeaSolve {
 ///
 /// Returns an `ElasticResult`-shaped `Value::StructureInstance`. The populated
 /// field set depends on the route (both carry `max_von_mises` (Scalar[PRESSURE]),
-/// `converged` (Bool), `iterations` (Int)):
+/// `converged` (Bool), `iterations` (Int)). **`max_von_mises` has the SAME
+/// semantics on both routes — the body's peak von Mises stress** — computed as
+/// the tet path's max over the solid stress field, or the shell path's max over
+/// all three through-thickness channels (top/mid/bottom); it is NOT a
+/// channel-specific summary (esc-3594 suggestion 4):
 ///   - **Tet/solid path** (task 4084/α): `displacement` + `stress` are populated
 ///     Regular3D Sampled `Value::Field`s; `frame` + `shell_channels` are `Undef`
 ///     (no per-element local frame / through-thickness data for solid elements —
@@ -264,10 +270,42 @@ pub fn solve_elastic_static_trampoline(
     // `shell-extract::extract` graph dependency is wired by the engine_eval
     // lowering (step-12), not here (PRD §11 OQ-2).
     let (shell_force, shell_threshold) = extract_shell_route_params(&value_inputs[6]);
-    if let (ShellRoute::Shell, MaterialModel::Isotropic(iso)) = (
-        classify_shell(shell_force, length, width, height, shell_threshold),
-        &model,
-    ) {
+    let shell_route = classify_shell(shell_force, length, width, height, shell_threshold);
+
+    // Diagnostics accrued by the shell-route material-compatibility policy
+    // (esc-3594 suggestion 3). The v0.4 MITC3 shell kernel is an ISOTROPIC
+    // formulation, so a Shell classification on a non-isotropic material cannot
+    // be honoured by the shell path. Rather than SILENTLY falling through to the
+    // tet/solid path (which contradicts the documented `ShellForce::On` hard-
+    // error intent), apply the `resolve_extraction_failure` policy: `On` aborts
+    // (the user demanded a shell solve — no silent fallback), `Auto`/`Off` fall
+    // back to tet with a VISIBLE warning carried to the final ComputeOutcome.
+    let mut route_diagnostics: Vec<Diagnostic> = Vec::new();
+    if shell_route == ShellRoute::Shell && !matches!(model, MaterialModel::Isotropic(_)) {
+        let policy = resolve_extraction_failure(shell_force);
+        let msg = format!(
+            "shell solve requested (shell_force={shell_force:?}) but the material is \
+             non-isotropic; the v0.4 MITC3 shell kernel supports isotropic materials only — {}",
+            match policy {
+                FailurePolicy::HardError =>
+                    "aborting with no tet fallback (ShellForce::On hard-error)",
+                FailurePolicy::TetFallbackWithWarning =>
+                    "falling back to the tet/solid path",
+            },
+        );
+        match policy {
+            FailurePolicy::HardError => {
+                return ComputeOutcome::Failed {
+                    diagnostics: vec![Diagnostic::error(msg)],
+                };
+            }
+            FailurePolicy::TetFallbackWithWarning => {
+                route_diagnostics.push(Diagnostic::warning(msg));
+            }
+        }
+    }
+
+    if let (ShellRoute::Shell, MaterialModel::Isotropic(iso)) = (shell_route, &model) {
         let (channels, mid_field, max_von_mises, converged, iterations) =
             super::shell_solve::solve_shell_static(length, width, height, iso, tip_force);
 
@@ -421,13 +459,16 @@ pub fn solve_elastic_static_trampoline(
     //
     // `cost_per_byte` — 1 / size_bytes of the warm state.
     //
-    // `diagnostics`   — empty (CG convergence failures are reflected in
-    //                   `converged = Bool(false)`).
+    // `diagnostics`   — `route_diagnostics`: empty on the normal tet path (CG
+    //                   convergence failures are reflected in `converged =
+    //                   Bool(false)`), or a single Warning when a Shell-
+    //                   classified non-isotropic body soft-fell-back to tet
+    //                   under `Auto`/`Off` (esc-3594 suggestion 3).
     ComputeOutcome::Completed {
         result,
         new_warm_state,
         cost_per_byte,
-        diagnostics: vec![],
+        diagnostics: route_diagnostics,
     }
 }
 
@@ -1132,8 +1173,10 @@ fn extract_tip_force(val: &Value) -> f64 {
 ///
 /// - `shell_force` is a `Value::Enum { type_name: "ShellForce", variant }`
 ///   (`Off` / `Auto` / `On`); any unknown variant is treated as `Auto`.
-/// - `shell_threshold` is a dimensionless `Value::Real` (a dimensionless
-///   `Value::Scalar` is also accepted defensively).
+/// - `shell_threshold` is a dimensionless `Value::Real` (a `Value::Scalar` is
+///   also accepted, but ONLY when it is `DIMENSIONLESS`; a scalar carrying a
+///   real dimension — e.g. PRESSURE — is treated as an upstream type error and
+///   ignored, falling back to the `0.2` default, per esc-3594 suggestion 2).
 ///
 /// A missing options instance or missing/garbled fields fall back to the stdlib
 /// defaults (`ShellForce::Auto`, `0.2`), so a bare `ElasticOptions()` classifies
@@ -1157,7 +1200,14 @@ pub(crate) fn extract_shell_route_params(options: &Value) -> (ShellForce, f64) {
         }
         match data.fields.get(&"shell_threshold".to_string()) {
             Some(Value::Real(r)) => shell_threshold = *r,
-            Some(Value::Scalar { si_value, .. }) => shell_threshold = *si_value,
+            // `shell_threshold` is a dimensionless ratio: only accept a
+            // `Value::Scalar` that is actually DIMENSIONLESS. A scalar carrying a
+            // real dimension (e.g. PRESSURE) is an upstream type error — ignore
+            // it and keep the default rather than silently consuming a
+            // mis-dimensioned magnitude as the ratio (esc-3594 suggestion 2).
+            Some(Value::Scalar { si_value, dimension }) if dimension.is_dimensionless() => {
+                shell_threshold = *si_value
+            }
             _ => {}
         }
     }
