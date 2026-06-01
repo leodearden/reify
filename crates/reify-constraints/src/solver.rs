@@ -5,8 +5,7 @@ use std::collections::HashMap;
 use argmin::core::{CostFunction, Error as ArgminError, Executor, State, TerminationReason};
 use argmin::solver::neldermead::NelderMead;
 use reify_core::{ConstraintNodeId, DiagnosticCode, DimensionVector, Type, ValueCellId};
-use reify_core::hash::ContentHash;
-use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, ConstraintSolver, ObjectiveCombination, ObjectiveSense, ObjectiveSet, ResolutionProblem, SolveResult, TAG_CONDITIONAL, Value, ValueMap};
+use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, ConstraintSolver, ObjectiveCombination, ObjectiveSense, ObjectiveSet, ResolutionProblem, SolveResult, Value, ValueMap};
 
 /// Maximum iterations for Nelder-Mead.
 const MAX_ITERS: u64 = 5000;
@@ -395,11 +394,7 @@ struct ConstraintCostFunction<'a> {
     auto_params: &'a [AutoParam],
     constraints: &'a [(ConstraintNodeId, CompiledExpr)],
     base_values: &'a ValueMap,
-    /// The effective objective to optimise: either the user-supplied
-    /// `ResolutionProblem::objective` or the synthetic centrality objective
-    /// synthesised by `build_centrality_objective`.  `None` means pure
-    /// feasibility (no optimisation direction at all).
-    objective: Option<&'a ObjectiveSet>,
+    objective: &'a Option<ObjectiveSet>,
     functions: &'a [CompiledFunction],
 }
 
@@ -533,133 +528,6 @@ const UNIQUENESS_REL_TOL: f64 = 1e-6;
 /// Absolute tolerance for uniqueness comparison between two solutions.
 const UNIQUENESS_ABS_TOL: f64 = 1e-10;
 
-// ── Centrality default objective (task 4013, PRD η) ──────────────────────
-
-/// Extract signed-slack sub-expressions from a constraint boolean expression.
-///
-/// For each inequality sub-expression, the slack g_j(x) is positive iff the
-/// constraint is satisfied:
-///   BinOp::Ge / BinOp::Gt  →  left − right   (positive when left ≥ right)
-///   BinOp::Le / BinOp::Lt  →  right − left   (positive when left ≤ right)
-///   BinOp::And              →  recurse both sides (collect from each child)
-///   Eq / Ne / Or / other    →  skip (non-decomposable or non-inequality)
-///
-/// This mirrors the decomposition pattern of `comparison_residual` /
-/// `constraint_residual` (above), extended to build signed-slack CompiledExprs
-/// rather than numeric residuals.
-fn extract_inequality_slacks(expr: &CompiledExpr) -> Vec<CompiledExpr> {
-    match &expr.kind {
-        CompiledExprKind::BinOp { op, left, right } => match op {
-            BinOp::Ge | BinOp::Gt => {
-                // slack = left − right  (positive = satisfied)
-                let ty = left.result_type.clone();
-                vec![CompiledExpr::binop(BinOp::Sub, *left.clone(), *right.clone(), ty)]
-            }
-            BinOp::Le | BinOp::Lt => {
-                // slack = right − left  (positive = satisfied)
-                let ty = right.result_type.clone();
-                vec![CompiledExpr::binop(BinOp::Sub, *right.clone(), *left.clone(), ty)]
-            }
-            BinOp::And => {
-                // Conjunction: collect slack terms from both sides.
-                let mut terms = extract_inequality_slacks(left);
-                terms.extend(extract_inequality_slacks(right));
-                terms
-            }
-            // Eq, Ne, Or, arithmetic ops: not decomposable into a signed slack.
-            _ => vec![],
-        },
-        // Non-BinOp root (Literal bool, function call, etc.): skip.
-        _ => vec![],
-    }
-}
-
-/// Build a synthetic Chebyshev-centre (max-min slack) objective for a
-/// continuous scope that has no user-supplied objective.
-///
-/// Returns `Some(ObjectiveSet)` iff there is at least one inequality constraint
-/// whose slack can be decomposed.  Returns `None` for pure-equality / unconstrained
-/// scopes (they stay on the first-feasible / uniqueness-verification path).
-///
-/// # Normalisation
-///
-/// Slacks are used as-is (SI units, metres for lengths).  A uniform divisor of
-/// 1 m is mathematically equivalent to no division; using raw SI values avoids
-/// an extra expression node and preserves the argmax.  For the B6 LEAF fixture
-/// (x ∈ [2 mm, 8 mm]):
-///   maximise min(x − 0.002, 0.008 − x)
-///   argmax ⟺ x − 0.002 = 0.008 − x  ⟹  x = 0.005 m = 5 mm  ✓
-///
-/// The min-of-slacks expression is a concave function with a unique interior
-/// maximum far from the default bounds (1 µm–10 m), so Nelder-Mead converges
-/// cleanly without boundary-infeasibility issues.
-///
-/// # Architecture
-///
-/// This function lives inside `DimensionalSolver` / `solver.rs` so that
-/// centrality synthesis is automatic for the continuous solve path and invisible
-/// to CP-SAT / SolveSpace (separate `ConstraintSolver` impls).  The synthetic
-/// `ObjectiveSet` flows through the existing `eval_objective_set` + Nelder-Mead
-/// path unchanged, honouring PRD η invariant I5.
-///
-/// Cross-reference: `scope_qualifies_for_centrality` in `engine_eval.rs` mirrors
-/// this function's gate logic to populate `Engine::centrality_synthesized_scopes`
-/// (the engine-side I5 provenance hook for θ).
-fn build_centrality_objective(
-    auto_params: &[AutoParam],
-    constraints: &[(ConstraintNodeId, CompiledExpr)],
-) -> Option<ObjectiveSet> {
-    // Continuous-only guard: all auto params must be Type::Scalar.
-    // (Discrete Int scopes stay first-feasible per PRD B7 — this guard is
-    // enforced in step-4; the happy-path test in step-1/step-2 uses Scalar
-    // params exclusively, so this early-return is inert for now.)
-    if auto_params.iter().any(|p| !matches!(p.param_type, Type::Scalar { .. })) {
-        return None;
-    }
-
-    // Collect signed-slack sub-expressions from all inequality constraints.
-    let mut slack_terms: Vec<CompiledExpr> = Vec::new();
-    for (_, expr) in constraints {
-        slack_terms.extend(extract_inequality_slacks(expr));
-    }
-
-    // No inequality slacks → pure feasibility / first-feasible fallback.
-    if slack_terms.is_empty() {
-        return None;
-    }
-
-    // Fold slack terms into a single min-expression via nested Conditionals:
-    //   min(a, b) = if a < b then a else b
-    // Starting with the first slack, reduce pairwise left-to-right.
-    let mut iter = slack_terms.into_iter();
-    let first = iter.next().expect("slack_terms non-empty checked above");
-
-    let min_expr = iter.fold(first, |acc, s| {
-        // Condition: acc < s
-        let cond = CompiledExpr::binop(BinOp::Lt, acc.clone(), s.clone(), Type::Bool);
-        let ty = acc.result_type.clone();
-        // min(acc, s) = if (acc < s) then acc else s
-        let content_hash = ContentHash::of(&[TAG_CONDITIONAL])
-            .combine(cond.content_hash)
-            .combine(acc.content_hash)
-            .combine(s.content_hash);
-        CompiledExpr {
-            kind: CompiledExprKind::Conditional {
-                condition: Box::new(cond),
-                then_branch: Box::new(acc),
-                else_branch: Box::new(s),
-            },
-            result_type: ty,
-            content_hash,
-        }
-    });
-
-    // Wrap as a 1-term Maximize ObjectiveSet (max-min slack = Chebyshev centre).
-    Some(ObjectiveSet::single(ObjectiveSense::Maximize, min_expr))
-}
-
-// ── end centrality default objective ─────────────────────────────────────
-
 /// Core solve logic: runs Nelder-Mead from a given initial point.
 ///
 /// Returns `SolveResult` with `unique: true` as placeholder — the caller
@@ -678,23 +546,8 @@ fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
         max_constraint_residual(&problem.constraints, &trial_values, &problem.functions)
             <= FEASIBILITY_THRESHOLD;
 
-    // Synthesise a default Chebyshev-centre objective when no user objective is set
-    // and the scope has at least one inequality constraint (PRD η, task 4013).
-    // `effective_objective` is `Some` iff there is any objective to optimise
-    // (user-supplied OR synthetic). The synthetic objective is computed once and
-    // threaded into ConstraintCostFunction; it does NOT modify `problem`.
-    let synthetic_centrality: Option<ObjectiveSet> = if problem.objective.is_none() {
-        build_centrality_objective(&problem.auto_params, &problem.constraints)
-    } else {
-        None
-    };
-    let effective_objective: Option<&ObjectiveSet> =
-        problem.objective.as_ref().or(synthetic_centrality.as_ref());
-
-    // Pure feasibility (no objective AND no synthetic centrality) + already feasible:
-    // return immediately. Guard widened from `problem.objective.is_none()` to
-    // `effective_objective.is_none()` so that centrality scopes proceed to optimise.
-    if initially_feasible && effective_objective.is_none() {
+    // Pure feasibility (no objective) + already feasible: return immediately
+    if initially_feasible && problem.objective.is_none() {
         let n_params = problem.auto_params.len();
         tracing::debug!(
             n_params,
@@ -710,11 +563,11 @@ fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
     // Nelder-Mead needs O(N+1) evaluations per simplex sweep, so scale
     // the budget proportionally to give higher-dimensional problems enough
     // iterations to converge.
-    // After the early-return above for `initially_feasible && effective_objective.is_none()`,
-    // reaching here with `initially_feasible=true` implies `effective_objective.is_some()`.
+    // After the early-return above for `initially_feasible && objective.is_none()`,
+    // reaching here with `initially_feasible=true` implies `objective.is_some()`.
     let max_iters = if initially_feasible {
         debug_assert!(
-            effective_objective.is_some(),
+            problem.objective.is_some(),
             "warm-start budget path reached without objective — early-return invariant violated"
         );
         let n_params = problem.auto_params.len() as u64;
@@ -727,7 +580,7 @@ fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
         auto_params: &problem.auto_params,
         constraints: &problem.constraints,
         base_values: &problem.current_values,
-        objective: effective_objective,
+        objective: &problem.objective,
         functions: &problem.functions,
     };
 
@@ -754,7 +607,7 @@ fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
 
     // Extract and log convergence information from the solver result.
     let termination_reason = result.state().get_termination_reason().cloned();
-    let has_objective = effective_objective.is_some();
+    let has_objective = problem.objective.is_some();
     let n_params = problem.auto_params.len();
     let iter_limited =
         termination_reason == Some(TerminationReason::MaxItersReached) && has_objective;
@@ -811,10 +664,10 @@ fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
         // while chasing an objective, fall back to the initial feasible values
         // rather than reporting a false Infeasible.
         if initially_feasible {
-            // Validate that the effective objective is numeric at the initial point
+            // Validate that the objective is numeric at the initial point
             // before promoting to Solved. The trial_values ValueMap was built
             // from the same initial point and is still in scope.
-            if let Some(obj) = effective_objective
+            if let Some(obj) = &problem.objective
                 && eval_objective_set(obj, &trial_values, &problem.functions).is_none()
             {
                 return SolveResult::NoProgress {
@@ -848,9 +701,9 @@ fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
         };
     }
 
-    // Post-solve objective validation: if the effective objective is still non-numeric
+    // Post-solve objective validation: if the objective is still non-numeric
     // at the solution point, report NoProgress rather than Solved.
-    if let Some(obj) = effective_objective
+    if let Some(obj) = &problem.objective
         && eval_objective_set(obj, &final_values, &problem.functions).is_none()
     {
         return SolveResult::NoProgress {
@@ -2954,7 +2807,7 @@ mod tests {
             auto_params: &auto_params,
             constraints: &constraints,
             base_values: &base_values,
-            objective: None,
+            objective: &None,
             functions: &[],
         };
 
@@ -3009,7 +2862,7 @@ mod tests {
             auto_params: &auto_params,
             constraints: &constraints,
             base_values: &base_values,
-            objective: objective.as_ref(),
+            objective: &objective,
             functions: &[],
         };
 
@@ -3691,78 +3544,6 @@ mod tests {
             other => panic!(
                 "feasible initial + region-dependent defined objective should return Solved \
                  (fallback happy path), got {:?}",
-                other
-            ),
-        }
-    }
-
-    // ── centrality default objective tests (task 4013, PRD η) ──────────────
-
-    /// [B6 RED] x >= 2mm, x <= 8mm, objective: None → solver must return
-    /// x ≈ 5mm (the Chebyshev centre of [2mm, 8mm]), NOT an arbitrary
-    /// boundary point (which is what pure-feasibility returns today).
-    ///
-    /// Fails until step-2 (build_centrality_objective + solve_core changes).
-    #[test]
-    fn centrality_default_centers_two_sided_bound() {
-        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
-        use reify_ir::{AutoParam, BinOp, CompiledExpr, ConstraintSolver, ResolutionProblem, SolveResult, Value, ValueMap};
-
-        let solver = crate::DimensionalSolver;
-
-        let x_id = ValueCellId::new("CentredBar", "x");
-        let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
-
-        // x >= 2mm
-        let two_mm = CompiledExpr::literal(
-            Value::Scalar { si_value: 0.002, dimension: DimensionVector::LENGTH },
-            Type::length(),
-        );
-        let ge_expr = CompiledExpr::binop(BinOp::Ge, x_ref.clone(), two_mm, Type::Bool);
-
-        // x <= 8mm
-        let eight_mm = CompiledExpr::literal(
-            Value::Scalar { si_value: 0.008, dimension: DimensionVector::LENGTH },
-            Type::length(),
-        );
-        let le_expr = CompiledExpr::binop(BinOp::Le, x_ref, eight_mm, Type::Bool);
-
-        let problem = ResolutionProblem {
-            auto_params: vec![AutoParam {
-                id: x_id.clone(),
-                param_type: Type::length(),
-                bounds: None, // use default bounds (1µm–10m)
-                free: false,
-            }],
-            constraints: vec![
-                (ConstraintNodeId::new("CentredBar", 0), ge_expr),
-                (ConstraintNodeId::new("CentredBar", 1), le_expr),
-            ],
-            current_values: ValueMap::new(),
-            objective: None,
-            functions: vec![].into(),
-        };
-
-        let result = solver.solve(&problem);
-        match result {
-            SolveResult::Solved { values, .. } => {
-                let si = values.get(&x_id).unwrap().as_f64().unwrap();
-                // Chebyshev centre of [2mm, 8mm] is the midpoint 5mm (0.005 m).
-                // Tolerance: |x − 5mm| < 1e-4 m (0.1mm) per PRD §11.
-                assert!(
-                    (si - 0.005).abs() < 1e-4,
-                    "centrality should place x ≈ 5mm (0.005 m), got {:.6} m",
-                    si
-                );
-                // Must be strictly interior — NOT on the boundary.
-                assert!(
-                    si > 0.002 && si < 0.008,
-                    "x must be strictly interior to [2mm, 8mm], got {:.6} m",
-                    si
-                );
-            }
-            other => panic!(
-                "expected Solved (centrality), got {:?}",
                 other
             ),
         }
