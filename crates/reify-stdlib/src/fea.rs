@@ -97,6 +97,37 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
 ///   - `converged`:   `Value::Bool(true)`
 ///   - `iterations`:  `Value::Undef` (synthesised, not solved — distinguishes from solver-converged-on-iter-0)
 ///
+/// Per-field accessor for a per-case ElasticResult value, handling both
+/// `Value::Map` (legacy / synthetic fixture shape) and
+/// `Value::StructureInstance` (the shape that `solve_load_cases` emits at
+/// runtime, task 4088).
+///
+/// Mirrors the e2e dual-shape accessor in
+/// `crates/reify-eval/tests/buckling_mode_shape.rs:77-83`.
+///
+/// Returns `Some(&value)` when `case_val` is a Map or StructureInstance that
+/// contains `field`, `None` otherwise.  Returning `Option<&Value>` (not a
+/// normalised `BTreeMap`) preserves borrows into the per-case value, so
+/// callers that return `&SampledField` / `&Type` references do not need to
+/// clone.
+///
+/// **Key layouts differ:**
+/// - `Value::Map` keys by `Value::String(field)` (BTreeMap<Value,Value>)
+/// - `Value::StructureInstance` keys by plain `String` (PersistentMap<String,Value>)
+fn case_field<'a>(case_val: &'a Value, field: &str) -> Option<&'a Value> {
+    match case_val {
+        Value::Map(m) => m.get(&Value::String(field.to_string())),
+        Value::StructureInstance(data) => data.fields.get(&field.to_string()),
+        _ => None,
+    }
+}
+
+/// True iff `case_val` is a valid per-case ElasticResult container:
+/// either `Value::Map` or `Value::StructureInstance`.
+fn is_case_container(case_val: &Value) -> bool {
+    matches!(case_val, Value::Map(_) | Value::StructureInstance(_))
+}
+
 /// # Failure modes (silent-Undef per PRD task #10 deferral)
 ///
 /// - arity != 2
@@ -109,8 +140,8 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
 ///   such as `1.4 m` is rejected)
 /// - any weight value has a non-finite representation (NaN, ±Inf)
 /// - a weight name is absent from `base_results.cases`
-/// - a case value is not `Value::Map`
-/// - a case Map is missing `displacement` or `stress` key
+/// - a case value is not a `Value::Map` or `Value::StructureInstance`
+/// - a case Map/StructureInstance is missing `displacement` or `stress` key
 /// - a displacement or stress field is not Sampled-source
 /// - a displacement or stress field has Sampled-source but non-SampledField lambda
 /// - displacement or stress fields across cases fail `metadata_matches`
@@ -135,11 +166,10 @@ fn linear_combine(args: &[Value]) -> Value {
         return Value::Undef;
     }
 
-    // Validate weights: collect (weight: f64, case_map: &BTreeMap) pairs.
+    // Validate weights: collect (weight: f64, case_val: &Value) pairs.
     // Each entry must have a String key, a finite numeric weight, a known case
-    // name, and a Map-typed case entry.
-    let mut weighted_cases: Vec<(f64, &BTreeMap<Value, Value>)> =
-        Vec::with_capacity(weights_map.len());
+    // name, and a Map-or-StructureInstance case entry.
+    let mut weighted_cases: Vec<(f64, &Value)> = Vec::with_capacity(weights_map.len());
     for (name_val, weight_val) in weights_map {
         // Key must be a string.
         let case_name = match name_val {
@@ -167,12 +197,13 @@ fn linear_combine(args: &[Value]) -> Value {
             Some(v) => v,
             None => return Value::Undef,
         };
-        // Case value must be a Map (ElasticResult struct instance).
-        let case_map = match case_val {
-            Value::Map(m) => m,
-            _ => return Value::Undef,
-        };
-        weighted_cases.push((weight, case_map));
+        // Case value must be a Map or StructureInstance (ElasticResult).
+        // Accepts both: Value::Map (synthetic / legacy shape) and
+        // Value::StructureInstance (solve_load_cases real-solver shape).
+        if !is_case_container(case_val) {
+            return Value::Undef;
+        }
+        weighted_cases.push((weight, case_val));
     }
 
     // Borrow the first weighted case's sampled fields as the reference for
@@ -180,8 +211,8 @@ fn linear_combine(args: &[Value]) -> Value {
     // axis_grids, types) is cloned for the output; the data buffer is accessed
     // via slice — no per-case Vec<f64> clone for large field buffers.
     // Safety: weighted_cases is non-empty by the is_empty() guard above.
-    let ref_cm = weighted_cases[0].1;
-    let ref_disp_val = match ref_cm.get(&Value::String("displacement".to_string())) {
+    let ref_case = weighted_cases[0].1;
+    let ref_disp_val = match case_field(ref_case, "displacement") {
         Some(v) => v,
         None => return Value::Undef,
     };
@@ -189,7 +220,7 @@ fn linear_combine(args: &[Value]) -> Value {
         Some(t) => t,
         None => return Value::Undef,
     };
-    let ref_stress_val = match ref_cm.get(&Value::String("stress".to_string())) {
+    let ref_stress_val = match case_field(ref_case, "stress") {
         Some(v) => v,
         None => return Value::Undef,
     };
@@ -209,8 +240,8 @@ fn linear_combine(args: &[Value]) -> Value {
     // Mirrors envelope_reduce's outer-cases / inner-indices nesting for
     // vectorisation and bounds-check-free iteration.
     // Borrows each case's SampledField data slice — no per-case Vec clone.
-    for (i, (weight, case_map)) in weighted_cases.iter().enumerate() {
-        let disp_val = match case_map.get(&Value::String("displacement".to_string())) {
+    for (i, (weight, case_val)) in weighted_cases.iter().enumerate() {
+        let disp_val = match case_field(case_val, "displacement") {
             Some(v) => v,
             None => return Value::Undef,
         };
@@ -218,7 +249,7 @@ fn linear_combine(args: &[Value]) -> Value {
             Some(t) => t,
             None => return Value::Undef,
         };
-        let stress_val = match case_map.get(&Value::String("stress".to_string())) {
+        let stress_val = match case_field(case_val, "stress") {
             Some(v) => v,
             None => return Value::Undef,
         };
