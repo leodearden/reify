@@ -572,19 +572,26 @@ structure Bearing { param bore : Length = 5mm }
 /// When `b` is forward-declared, `try_resolve_cross_sub_geometry_value_ref`
 /// emits a `ValueCellRef` for any member access on `b` — including members that
 /// do not exist in the child (there is no member-existence check at compile time
-/// for the forward-declared branch).  At eval time the backing cell is absent,
+/// for the forward-declared branch).  At check time the backing cell is absent,
 /// so `reify_expr::eval_expr` returns `Value::Undef` via `get_or_undef`, and
 /// `SimpleConstraintChecker` emits a `ConstraintIndeterminate` warning
 /// (`"constraint <id> indeterminate: undefined inputs"`).
+///
+/// Note: `engine.check()` is used instead of `engine.eval()` because
+/// `ConstraintIndeterminate` is emitted by `SimpleConstraintChecker` during the
+/// post-solve constraint-check pass (`check_constraints_against_templates`),
+/// which `eval()` alone does not invoke.  `check()` calls `eval()` + the
+/// post-solve pass, so it surfaces the diagnostic correctly.
 ///
 /// Note: this is a deliberate downgrade from the legacy hard
 /// `"unresolvable GeomRef::Sub"` error.  A future design follow-up could
 /// promote the warning to an error after the post-pass can distinguish
 /// forward-declared members vs genuinely absent ones.
 ///
-/// Expected GREEN on arrival — eval already emits the diagnostic; this test
-/// closes the reviewer's "verify eval emits a diagnostic" item (task 4123 S2)
-/// and guards against future silent regressions.
+/// Expected GREEN on arrival — `check()` already emits the diagnostic via
+/// `SimpleConstraintChecker`; this test closes the reviewer's "verify eval
+/// emits a diagnostic" item (task 4123 S2) and guards against future silent
+/// regressions.
 #[test]
 fn sub_override_auto_forward_declared_nonexistent_member_emits_indeterminate_warning() {
     // Parent before child; `nonexistent` is NOT a member of Bearing and is NOT
@@ -609,13 +616,17 @@ structure Bearing { param bore : Length = 10mm }
         compile_errors
     );
 
+    // Use engine.check() (eval + post-solve constraint pass) so that
+    // SimpleConstraintChecker.check() fires and emits ConstraintIndeterminate
+    // for the dangling `A.b.nonexistent` ref.  eval() alone only produces
+    // solver diagnostics (non-unique / infeasible), not ConstraintIndeterminate.
     let mut engine = engine_with_solver();
-    let result = engine.eval(&compiled);
+    let result = engine.check(&compiled);
 
     // Must produce at least one diagnostic.
     assert!(
         !result.diagnostics.is_empty(),
-        "S2/dangling-ref: expected at least one eval diagnostic for dangling \
+        "S2/dangling-ref: expected at least one check diagnostic for dangling \
          member reference; got none"
     );
 
