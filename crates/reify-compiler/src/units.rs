@@ -518,6 +518,32 @@ pub(crate) fn unit_to_scalar(value: f64, unit: &str) -> Option<(Value, Dimension
             },
             DimensionVector::TEMPERATURE,
         )),
+        // Bare SI base units completing the standard set (factor 1.0).
+        // A/mol/cd are the SI bases for Current/AmountOfSubstance/LuminousIntensity;
+        // they need the same hardcoded fallback as kg/s/K so that stdlib fn bodies
+        // and other unseeded-registry scopes can resolve these unit literals
+        // (PRD §2.2 / decision D5).
+        "A" => Some((
+            Value::Scalar {
+                si_value: value,
+                dimension: DimensionVector::CURRENT,
+            },
+            DimensionVector::CURRENT,
+        )),
+        "mol" => Some((
+            Value::Scalar {
+                si_value: value,
+                dimension: DimensionVector::AMOUNT_OF_SUBSTANCE,
+            },
+            DimensionVector::AMOUNT_OF_SUBSTANCE,
+        )),
+        "cd" => Some((
+            Value::Scalar {
+                si_value: value,
+                dimension: DimensionVector::LUMINOUS_INTENSITY,
+            },
+            DimensionVector::LUMINOUS_INTENSITY,
+        )),
         _ => None,
     }
 }
@@ -1665,5 +1691,36 @@ mod tests {
             .expect("kg*m must still resolve after affine guard is added");
         assert!((factor - 1.0).abs() < 1e-9);
         assert_eq!(dim, DimensionVector::MASS.mul(&DimensionVector::LENGTH));
+    }
+
+    // --- Task 4173: bare SI base units A / mol / cd in unit_to_scalar ---
+
+    #[test]
+    fn unit_to_scalar_resolves_bare_si_base_units_a_mol_cd() {
+        use reify_core::DimensionVector;
+
+        // Table-driven: (unit string, expected DimensionVector) — all factor 1.0.
+        for (unit, expected) in [
+            ("A", DimensionVector::CURRENT),
+            ("mol", DimensionVector::AMOUNT_OF_SUBSTANCE),
+            ("cd", DimensionVector::LUMINOUS_INTENSITY),
+        ] {
+            let (val, dim) = unit_to_scalar(2.0, unit)
+                .unwrap_or_else(|| panic!("bare SI base unit {unit} must resolve"));
+            assert_eq!(dim, expected, "{unit}: returned DimensionVector mismatch");
+            match val {
+                Value::Scalar { si_value, dimension } => {
+                    assert!(
+                        (si_value - 2.0).abs() < 1e-12,
+                        "{unit}: si_value must ≈ 2.0 (factor 1.0), got {si_value}"
+                    );
+                    assert_eq!(
+                        dimension, expected,
+                        "{unit}: Value inner dimension mismatch"
+                    );
+                }
+                _ => panic!("{unit}: expected Value::Scalar, got different variant"),
+            }
+        }
     }
 }
