@@ -9172,6 +9172,137 @@ mod tests {
         }
     }
 
+    /// Contract test (task 3906 T8, step-3 RED): bodies with an IDENTITY `world_transform`
+    /// must NOT emit an `ApplyTransform` op — only bodies with a non-identity transform do.
+    ///
+    /// Fixture: body A has an identity world_transform (rotation [1,0,0,0], translation
+    /// [0,0,0]); body B has a non-identity world_transform (translation +20mm along X).
+    /// After step-4's identity short-circuit, only body B gets an ApplyTransform op.
+    ///
+    /// RED states:
+    ///   - on main (before step-2): ZERO ApplyTransform ops (≠ 1)
+    ///   - after step-2's apply-unconditionally impl: TWO ops (identity applied too, ≠ 1)
+    /// Either way "exactly one" fails until the short-circuit lands in step-4.
+    #[test]
+    fn try_eval_kinematic_query_skips_identity_world_transform() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_ir::GeometryOp;
+        use reify_core::{Type, ValueCellId};
+
+        let src_a = reify_ir::GeometryHandleId(100);
+        let src_b = reify_ir::GeometryHandleId(200);
+        // After step-4: only body B gets ApplyTransform → posed handle 1.
+        // Body A (identity) stays at raw handle 100.
+        let posed_b = reify_ir::GeometryHandleId(1);
+
+        // Probe (src_a=100, posed_b=1) interferes; body A stays at raw handle.
+        let mut kernel = MockGeometryKernel::new()
+            .with_distance_result(src_a, posed_b, reify_ir::Value::Real(-1.0));
+
+        let make_transform = |tx: f64, ty: f64, tz: f64| -> reify_ir::Value {
+            reify_ir::Value::Transform {
+                rotation: Box::new(reify_ir::Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }),
+                translation: Box::new(reify_ir::Value::Vector(vec![
+                    reify_ir::Value::length(tx),
+                    reify_ir::Value::length(ty),
+                    reify_ir::Value::length(tz),
+                ])),
+            }
+        };
+
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert(
+            "body_a".to_string(),
+            reify_ir::KernelHandle { kernel: reify_ir::KernelId::Occt, id: src_a },
+        );
+        named_steps.insert(
+            "body_b".to_string(),
+            reify_ir::KernelHandle { kernel: reify_ir::KernelId::Occt, id: src_b },
+        );
+
+        let make_body = |id: i64, solid: &str, wt: reify_ir::Value| -> reify_ir::Value {
+            let mut m = std::collections::BTreeMap::new();
+            m.insert(reify_ir::Value::String("id".to_string()), reify_ir::Value::Int(id));
+            m.insert(
+                reify_ir::Value::String("solid".to_string()),
+                reify_ir::Value::String(solid.to_string()),
+            );
+            m.insert(reify_ir::Value::String("world_transform".to_string()), wt);
+            reify_ir::Value::Map(m)
+        };
+        let mut snap_map = std::collections::BTreeMap::new();
+        snap_map.insert(
+            reify_ir::Value::String("kind".to_string()),
+            reify_ir::Value::String("snapshot".to_string()),
+        );
+        snap_map.insert(
+            reify_ir::Value::String("bodies".to_string()),
+            reify_ir::Value::List(vec![
+                // body A: identity transform — must NOT emit ApplyTransform.
+                make_body(100, "body_a", make_transform(0.0, 0.0, 0.0)),
+                // body B: non-identity (20mm along X) — MUST emit ApplyTransform.
+                make_body(200, "body_b", make_transform(0.020, 0.0, 0.0)),
+            ]),
+        );
+        let snapshot = reify_ir::Value::Map(snap_map);
+
+        let snap_cell = ValueCellId::new("Mech", "snap");
+        let snap_arg = reify_ir::CompiledExpr::value_ref(snap_cell.clone(), Type::Geometry);
+        let content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str("interferes"))
+            .combine(snap_arg.content_hash);
+        let expr = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "interferes".to_string(),
+                    qualified_name: "interferes".to_string(),
+                },
+                args: vec![snap_arg],
+            },
+            result_type: Type::List(Box::new(Type::Map(Box::new(Type::String), Box::new(Type::Int)))),
+            content_hash,
+        };
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(snap_cell, snapshot);
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let _ = super::try_eval_kinematic_query(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        // Exactly ONE ApplyTransform op: only body B's non-identity transform.
+        // Body A's identity transform must short-circuit to its raw handle.
+        let ops = kernel.operations();
+        let apply_ops: Vec<_> = ops
+            .iter()
+            .filter(|rec| matches!(&rec.op, GeometryOp::ApplyTransform { .. }))
+            .collect();
+        assert_eq!(
+            apply_ops.len(),
+            1,
+            "expected exactly 1 ApplyTransform (body B only, not identity body A), \
+             got {}: {:?}",
+            apply_ops.len(),
+            apply_ops
+        );
+        // Verify the single op targets body B's source handle.
+        match &apply_ops[0].op {
+            GeometryOp::ApplyTransform { target, translation, .. } => {
+                assert_eq!(*target, src_b, "ApplyTransform must target body_b (non-identity)");
+                assert!(
+                    (translation[0] - 0.020).abs() < 1e-12,
+                    "body_b tx[0]: expected 0.020, got {}", translation[0]
+                );
+            }
+            other => panic!("expected ApplyTransform, got {:?}", other),
+        }
+    }
+
     /// Contract test (task 4142, Cluster B RED — topology/resolve_geometry_handle_arg leaf):
     /// `try_eval_topology_selector` resolves the geometry handle via
     /// `KernelHandle.id`, ignoring `KernelHandle.kernel`.
