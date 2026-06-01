@@ -7028,6 +7028,269 @@ mod tests {
         );
     }
 
+    /// step-9 (RED): a NAMED Mesh-demanding conversion realization must cache
+    /// its terminal handle at `(entity, Mesh, tol)` so a second identical build
+    /// hits the cache short-circuit — `dispatch_count == 0`, the cached Manifold
+    /// terminal handle returned, `produced_repr == Mesh`, and the occt/manifold
+    /// call counters UNCHANGED (the whole realization short-circuits).
+    ///
+    /// RED before step-10: `cache_repr` is pinned to `ReprKind::BRep`, so the
+    /// post-loop INSERT keys the genuinely-Mesh terminal at the BRep slot and
+    /// the cache-hit short-circuit (which also keys on the pinned BRep) reports
+    /// `produced_repr == BRep` for the second build instead of `Mesh`.
+    #[test]
+    fn execute_realization_ops_mesh_realization_caches_and_hits_at_mesh_key() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+        use reify_core::Type;
+        use reify_ir::{
+            CapabilityDescriptor, CompiledExpr, GeometryKernel, KernelId, Operation, ReprKind,
+        };
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        let tess_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let ingest_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let union_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+
+        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "occt".to_string(),
+            Box::new(CountingTessellateKernel {
+                inner: MockGeometryKernel::new(),
+                tessellate_count: std::sync::Arc::clone(&tess_count),
+            }),
+        );
+        kernels.insert(
+            "manifold".to_string(),
+            Box::new(CountingManifoldKernel {
+                inner: MockGeometryKernel::new(),
+                ingest_count: std::sync::Arc::clone(&ingest_count),
+                execute_count: std::sync::Arc::clone(&union_count),
+                next_ingest_id: 1000,
+            }),
+        );
+
+        let desc_occt = CapabilityDescriptor {
+            supports: vec![
+                (Operation::PrimitiveBox, ReprKind::BRep),
+                (
+                    Operation::Convert {
+                        from: ReprKind::BRep,
+                    },
+                    ReprKind::Mesh,
+                ),
+            ],
+        };
+        let desc_manifold = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("occt".to_string(), &desc_occt);
+        registry.insert("manifold".to_string(), &desc_manifold);
+
+        let ops = vec![
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Union,
+                left: GeomRef::Step(0),
+                right: GeomRef::Step(1),
+            },
+        ];
+
+        let realization_id = RealizationNodeId::new("Cross", 0);
+        let tol = 0.001;
+        let mut state = DispatchTestState::default();
+
+        // ── First build: cold cache, full cross-kernel conversion. ──────────
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &realization_id,
+            Some("Cross"),
+            SourceSpan::new(0, 0),
+            ReprKind::Mesh,
+            Some(tol),
+        );
+        assert!(
+            state.dispatch_count > 0,
+            "first (cold-cache) build must dispatch, got {}",
+            state.dispatch_count
+        );
+        assert_eq!(
+            state.produced_repr_out,
+            Some(ReprKind::Mesh),
+            "first build produced_repr"
+        );
+        let terminal_1 = *state
+            .step_handles
+            .last()
+            .expect("first build must push a terminal handle");
+        assert_eq!(terminal_1.kernel, KernelId::Manifold);
+        let tess_after_1 = *tess_count.lock().unwrap();
+        let ingest_after_1 = *ingest_count.lock().unwrap();
+        let union_after_1 = *union_count.lock().unwrap();
+        assert_eq!((tess_after_1, ingest_after_1, union_after_1), (2, 2, 1));
+
+        // ── Reset the per-build instrumentation the way production does. ─────
+        state.dispatch_count = 0;
+        state.produced_repr_out = None;
+        state.reset_attribute_tables();
+
+        // ── Second build: identical inputs, SAME cache → full short-circuit. ─
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &realization_id,
+            Some("Cross"),
+            SourceSpan::new(0, 0),
+            ReprKind::Mesh,
+            Some(tol),
+        );
+        assert_eq!(
+            state.dispatch_count, 0,
+            "second build must hit the cache short-circuit (no dispatch), got {}",
+            state.dispatch_count
+        );
+        assert_eq!(
+            state.produced_repr_out,
+            Some(ReprKind::Mesh),
+            "second build must report the Mesh terminal repr from the cache, not BRep"
+        );
+        let terminal_2 = *state
+            .step_handles
+            .last()
+            .expect("second build must push the cached terminal handle");
+        assert_eq!(
+            terminal_2, terminal_1,
+            "second build must return the cached Manifold terminal handle"
+        );
+        assert_eq!(
+            *tess_count.lock().unwrap(),
+            tess_after_1,
+            "tessellate must be untouched on the cache hit"
+        );
+        assert_eq!(
+            *ingest_count.lock().unwrap(),
+            ingest_after_1,
+            "ingest_mesh must be untouched on the cache hit"
+        );
+        assert_eq!(
+            *union_count.lock().unwrap(),
+            union_after_1,
+            "the boolean union must be untouched on the cache hit"
+        );
+    }
+
+    /// step-9 control: a NAMED BRep-demanding realization still caches + hits at
+    /// `(entity, BRep, tol)` and reports `produced_repr == BRep`. This is the
+    /// backward-compat guard — it passes both before and after the step-10
+    /// `cache_repr` unpin, so it pins that the BRep path is unaffected.
+    #[test]
+    fn execute_realization_ops_brep_realization_caches_and_hits_at_brep_key() {
+        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+        use reify_core::Type;
+        use reify_ir::{
+            CapabilityDescriptor, CompiledExpr, GeometryKernel, Operation, ReprKind,
+        };
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        let tess_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "occt".to_string(),
+            Box::new(CountingTessellateKernel {
+                inner: MockGeometryKernel::new(),
+                tessellate_count: std::sync::Arc::clone(&tess_count),
+            }),
+        );
+
+        let desc_occt = CapabilityDescriptor {
+            supports: vec![(Operation::PrimitiveBox, ReprKind::BRep)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("occt".to_string(), &desc_occt);
+
+        let ops = vec![CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![
+                ("width".into(), mm_lit(10.0)),
+                ("height".into(), mm_lit(20.0)),
+                ("depth".into(), mm_lit(5.0)),
+            ],
+        }];
+
+        let realization_id = RealizationNodeId::new("Solid", 0);
+        let tol = 0.001;
+        let mut state = DispatchTestState::default();
+
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &realization_id,
+            Some("Solid"),
+            SourceSpan::new(0, 0),
+            ReprKind::BRep,
+            Some(tol),
+        );
+        assert!(state.dispatch_count > 0, "first build must dispatch");
+        assert_eq!(state.produced_repr_out, Some(ReprKind::BRep));
+        let terminal_1 = *state.step_handles.last().expect("a terminal handle");
+
+        state.dispatch_count = 0;
+        state.produced_repr_out = None;
+        state.reset_attribute_tables();
+
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &realization_id,
+            Some("Solid"),
+            SourceSpan::new(0, 0),
+            ReprKind::BRep,
+            Some(tol),
+        );
+        assert_eq!(
+            state.dispatch_count, 0,
+            "second BRep build must hit the cache short-circuit"
+        );
+        assert_eq!(
+            state.produced_repr_out,
+            Some(ReprKind::BRep),
+            "second BRep build must report BRep from the cache"
+        );
+        assert_eq!(
+            *state.step_handles.last().expect("a terminal handle"),
+            terminal_1,
+            "second BRep build must return the cached terminal handle"
+        );
+    }
+
     /// When the registry claims no kernel for the op (dispatch returns
     /// `None`), `execute_realization_ops` must emit a
     /// `DiagnosticCode::NoKernelChain` error diagnostic, set
