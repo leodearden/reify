@@ -15,7 +15,8 @@
 //!   step-11 — graph-wiring assertion (both ComputeNodes + the feeding edge)
 //!   step-13 — full user-observable signal (shell_channels Some, alias, von Mises band)
 
-use reify_core::Severity;
+use reify_core::{Severity, ValueCellId};
+use reify_ir::Value;
 
 // ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -116,5 +117,147 @@ fn shell_fixture_wires_extract_node_into_elastic_static() {
         "expected shell-extract::extract output_value_cells {:?} to intersect \
          solver::elastic_static value_inputs {:?} (the upstream→downstream edge)",
         extract.output_value_cells, elastic.value_inputs
+    );
+}
+
+// ── step-13: the full user-observable signal, end-to-end ────────────────────────
+//
+// Mirrors the unit-level contract pinned by
+// `compute_targets::elastic_static::tests::shell_route_trampoline_populates_shell_channels`,
+// but exercised through the *complete* `engine.eval` path on the fixture (parse +
+// compile-with-stdlib + @optimized lowering + upstream shell-extract wiring +
+// FEA trampoline). May already pass once step-10 (trampoline shell branch) and
+// step-12 (upstream-node wiring) land — this step locks the exact assertions:
+// shell_channels `Some(_)`, the I-2 stress alias, and the one-OOM von Mises band.
+
+/// Extract the `SampledField.data` vec from a `Value::Field { Sampled }`,
+/// panicking on any other shape (mirrors the `shell9_field_data` idiom).
+fn field_data(v: &Value) -> Vec<f64> {
+    match v {
+        Value::Field { lambda, .. } => match lambda.as_ref() {
+            Value::SampledField(sf) => sf.data.clone(),
+            other => panic!("field lambda must be Value::SampledField, got {other:?}"),
+        },
+        other => panic!("expected Value::Field, got {other:?}"),
+    }
+}
+
+/// von Mises of a row-major 3×3 stress window
+/// (`[σxx,σxy,σxz, σyx,σyy,σyz, σzx,σzy,σzz]`) — rotation-invariant, so a
+/// local-frame channel window gives the correct value with no global rotation.
+fn vm9(w: &[f64]) -> f64 {
+    let (sxx, syy, szz) = (w[0], w[4], w[8]);
+    let (sxy, syz, szx) = (w[1], w[5], w[6]);
+    (0.5 * ((sxx - syy).powi(2)
+        + (syy - szz).powi(2)
+        + (szz - sxx).powi(2)
+        + 6.0 * (sxy * sxy + syz * syz + szx * szx)))
+        .sqrt()
+}
+
+/// One-level field extraction from a `StructureInstance` (returns `None` for any
+/// other Value shape or a missing field).
+fn struct_field(val: &Value, key: &str) -> Option<Value> {
+    match val {
+        Value::StructureInstance(data) => data.fields.get(&key.to_string()).cloned(),
+        _ => None,
+    }
+}
+
+/// The shell fixture solves end-to-end through `engine.eval` and surfaces a real
+/// `ShellStress` `shell_channels` with the I-2 stress alias and an in-band
+/// top-channel von Mises.
+#[test]
+fn shell_fixture_surfaces_shell_channels_with_in_band_von_mises() {
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(shell_source());
+    let mut engine = shell_engine();
+    let eval_result = engine.eval(&compiled);
+
+    // No Error-severity diagnostics — a clean end-to-end solve.
+    let errors: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics, got: {:?}",
+        errors
+    );
+
+    // The user-observable result cell.
+    let result_cell = ValueCellId::new("FeaShellFlexure", "result");
+    let result_val = eval_result
+        .values
+        .get(&result_cell)
+        .unwrap_or_else(|| panic!("cell FeaShellFlexure.result not found in eval result"));
+
+    // shell_channels must be a "ShellStress" StructureInstance (NOT Undef).
+    let shell_channels = struct_field(result_val, "shell_channels")
+        .expect("ElasticResult must carry a shell_channels field");
+    let sc_data = match &shell_channels {
+        Value::StructureInstance(d) => {
+            assert_eq!(
+                d.type_name.as_str(),
+                "ShellStress",
+                "shell_channels must be a ShellStress instance on the shell route"
+            );
+            d
+        }
+        other => panic!(
+            "result.shell_channels must be a ShellStress StructureInstance (NOT Undef) \
+             on the shell route, got {other:?}"
+        ),
+    };
+
+    // top / mid / bottom present and all-finite.
+    let top = field_data(
+        sc_data.fields.get(&"top".to_string()).expect("ShellStress.top"),
+    );
+    let mid = field_data(
+        sc_data.fields.get(&"mid".to_string()).expect("ShellStress.mid"),
+    );
+    let bottom = field_data(
+        sc_data
+            .fields
+            .get(&"bottom".to_string())
+            .expect("ShellStress.bottom"),
+    );
+    for (name, ch) in [("top", &top), ("mid", &mid), ("bottom", &bottom)] {
+        assert!(
+            !ch.is_empty() && ch.iter().all(|x| x.is_finite()),
+            "{name} channel must be non-empty and all-finite"
+        );
+    }
+
+    // I-2 alias: result.stress (Field) bit-equals shell_channels.mid.
+    let stress = struct_field(result_val, "stress")
+        .expect("ElasticResult must carry a stress field");
+    assert!(
+        !matches!(&stress, Value::Undef),
+        "stress must be a populated field on the shell route (the I-2 alias source)"
+    );
+    assert_eq!(
+        field_data(&stress),
+        mid,
+        "I-2 alias: result.stress data must equal shell_channels.mid data element-wise"
+    );
+
+    // max-over-elements top-channel von Mises in the one-OOM band around
+    // σ=6PL/(bh²)=3e8 Pa (the bare-MITC3 honest-accuracy contract, esc-3594-10).
+    assert_eq!(
+        top.len() % 9,
+        0,
+        "top must hold a row-major 3×3 per element (len % 9 == 0)"
+    );
+    let max_vm = top.chunks_exact(9).map(vm9).fold(0.0_f64, f64::max);
+    assert!(
+        max_vm.is_finite() && max_vm > 0.0,
+        "max top von Mises must be finite and > 0, got {max_vm}"
+    );
+    assert!(
+        (3e7..=3e9).contains(&max_vm),
+        "max top von Mises {max_vm:.4e} Pa outside one-OOM band [3e7, 3e9] Pa \
+         around σ=6PL/(bh²)=3e8"
     );
 }
