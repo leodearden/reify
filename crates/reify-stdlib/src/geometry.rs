@@ -3862,4 +3862,57 @@ mod tests {
         let result = eval_builtin("project", &[point, frame]);
         assert_vector3_approx!(Point, result, [1.0, 0.0, 0.0]);
     }
+
+    // ── step-3/4: project(vector, Frame<3>) tests ─────────────────────────────
+
+    /// project(vec3(1,2,3 m), frame(origin=(1,0,0 m), identity)) → Vector ≈ [1,2,3 m].
+    /// Origin is NOT subtracted for vectors (translation-invariant).
+    #[test]
+    fn project_vector_identity_basis_keeps_components() {
+        let vec3 = Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]);
+        let frame = make_frame(1.0, 0.0, 0.0, make_identity_orientation());
+        let result = eval_builtin("project", &[vec3, frame]);
+        assert_vector3_approx!(Vector, result, [1.0, 2.0, 3.0]);
+    }
+
+    /// project(vec3(1,0,0 m), frame(origin=0, rot90z)) → Vector ≈ [0,−1,0 m].
+    ///
+    /// inverse(rot90z) = rot(−90°Z).  Rotating (1,0,0) by −90°Z → (0,−1,0).
+    #[test]
+    fn project_vector_rotated_frame_inverse_rotates() {
+        let vec3 = Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        let frame = make_frame(0.0, 0.0, 0.0, make_rot90z());
+        let result = eval_builtin("project", &[vec3, frame]);
+        assert_vector3_approx!(Vector, result, [0.0, -1.0, 0.0]);
+    }
+
+    /// project(vec3, frame(origin=(7,8,9), identity)) == project(same vec3, frame(origin=(0,0,0), identity)).
+    /// Both ≈ [1,2,3] — pins translation-invariance: origin must NOT be subtracted.
+    #[test]
+    fn project_vector_ignores_frame_origin() {
+        let vec3_a = Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]);
+        let vec3_b = Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]);
+        let frame_far = make_frame(7.0, 8.0, 9.0, make_identity_orientation());
+        let frame_zero = make_frame(0.0, 0.0, 0.0, make_identity_orientation());
+        let r1 = eval_builtin("project", &[vec3_a, frame_far]);
+        let r2 = eval_builtin("project", &[vec3_b, frame_zero]);
+        assert_vector3_approx!(Vector, r1, [1.0, 2.0, 3.0]);
+        assert_vector3_approx!(Vector, r2, [1.0, 2.0, 3.0]);
+    }
 }
