@@ -2180,6 +2180,44 @@ mod tests {
         );
     }
 
+    /// `resolve_type_with_aliases` must inherit the Edge selector arm from the
+    /// builtin resolver so param-annotation resolution works for EdgeSelector.
+    #[test]
+    fn resolve_type_with_aliases_inherits_edge_selector() {
+        let reg = TypeAliasRegistry::new();
+        let result = resolve_type_with_aliases(
+            "EdgeSelector",
+            &HashSet::new(),
+            &reg,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            result,
+            Some(Type::Selector(reify_core::ty::SelectorKind::Edge)),
+            "resolve_type_with_aliases(\"EdgeSelector\", …) should return Type::Selector(Edge)"
+        );
+    }
+
+    /// `resolve_type_with_aliases` must inherit the Body selector arm from the
+    /// builtin resolver so param-annotation resolution works for BodySelector.
+    #[test]
+    fn resolve_type_with_aliases_inherits_body_selector() {
+        let reg = TypeAliasRegistry::new();
+        let result = resolve_type_with_aliases(
+            "BodySelector",
+            &HashSet::new(),
+            &reg,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            result,
+            Some(Type::Selector(reify_core::ty::SelectorKind::Body)),
+            "resolve_type_with_aliases(\"BodySelector\", …) should return Type::Selector(Body)"
+        );
+    }
+
     #[test]
     fn should_emit_skipped_parametric_prelude_info_dedups_per_span() {
         let mut reg = TypeAliasRegistry::new();

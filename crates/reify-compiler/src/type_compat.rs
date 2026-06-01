@@ -1226,6 +1226,24 @@ mod tests {
         );
     }
 
+    /// `type_compatible(List<Geometry>, Selector(Edge))` must be `true`.
+    ///
+    /// Symmetry check for the Edge selector kind: the `Selector(_)` wildcard in
+    /// the coercion guard covers all three kinds; this test locks the Edge case
+    /// explicitly alongside Face and Body to guard against future kind-specific
+    /// narrowing of the guard.
+    #[test]
+    fn type_compatible_list_geometry_param_with_selector_edge_arg_is_true() {
+        use reify_core::ty::SelectorKind;
+        assert!(
+            type_compatible(
+                &Type::List(Box::new(Type::Geometry)),
+                &Type::Selector(SelectorKind::Edge)
+            ),
+            "List<Geometry> param with Selector(Edge) arg must be compatible (PRD §4.4)"
+        );
+    }
+
     /// `type_compatible(Selector(Face), List<Geometry>)` must be `false`.
     ///
     /// One-directional: a `List<Geometry>` arg must NOT satisfy a `Selector`-typed
