@@ -51,6 +51,29 @@ fn composed_path(template: &reify_compiler::TopologyTemplate, prefix: &str, name
     format!("{prefix}#realization[{index}]")
 }
 
+/// Compute the axis-aligned bounding-box of a mesh as `(min, max)` over the flat
+/// vertex buffer (copied from `geometry_conditional_e2e.rs:23`). Panics if the
+/// mesh has no vertices.
+fn mesh_aabb(mesh: &reify_ir::Mesh) -> ([f32; 3], [f32; 3]) {
+    assert!(
+        !mesh.vertices.is_empty(),
+        "mesh_aabb: vertex buffer is empty"
+    );
+    let mut min = [f32::MAX; 3];
+    let mut max = [f32::MIN; 3];
+    for chunk in mesh.vertices.chunks_exact(3) {
+        for i in 0..3 {
+            if chunk[i] < min[i] {
+                min[i] = chunk[i];
+            }
+            if chunk[i] > max[i] {
+                max[i] = chunk[i];
+            }
+        }
+    }
+    (min, max)
+}
+
 /// step-1 (Mock): on the flat (no-composition) path, an `aux let` body is still
 /// realized, tessellated, and surfaced (mesh payload shipped) but with
 /// `default_visible == false`, while a plain `let` body surfaces with
@@ -321,4 +344,126 @@ structure Assembly {
         !blank.default_visible,
         "aux `let blank` must surface with default_visible == false even under a non-aux sub"
     );
+}
+
+/// step-9 (real OCCT, `OCCT_AVAILABLE`-gated): a contained child placed via
+/// `sub c : Child at transform3(orient_identity(), vec3(30mm, 0mm, 0mm))` must
+/// surface with REAL transformed geometry — its mesh AABB equals the source box
+/// AABB shifted +30 mm on X — while an identity-pose control child surfaces at
+/// unchanged coords.
+///
+/// `box(20mm, 20mm, 20mm)` is centered at the origin (OCCT `make_box`
+/// convention, verified in `reify-kernel-occt` lib.rs:8244), so the source AABB
+/// is `[-0.01, 0.01]³` m. Golden:
+/// - control (identity): min `[-0.01,-0.01,-0.01]`, max `[0.01,0.01,0.01]`;
+/// - placed (`+30mm` X): X-range shifts to `[0.02, 0.04]`, Y/Z unchanged.
+///
+/// Both children are contained subs (no manual lift transforms), so each
+/// surfaces once under its composed `<parent>.c#realization[0]` path. Fails
+/// until step-10 applies the composed transform to geometry: step-4 surfaces
+/// descendants un-placed, so today the placed child lands at the control coords
+/// and the `+30mm` X assertions fail.
+#[test]
+fn placed_child_surfaces_at_composed_world_aabb() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let source = r#"structure Child {
+    let body = box(20mm, 20mm, 20mm)
+}
+structure ControlAsm {
+    sub c : Child
+}
+structure PlacedAsm {
+    sub c : Child at transform3(orient_identity(), vec3(30mm, 0mm, 0mm))
+}"#;
+    let compiled = compile_source_with_stdlib(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "unexpected compile errors: {:?}",
+        compile_errors
+    );
+
+    let child = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Child")
+        .expect("Child template not found");
+    let control_path = composed_path(child, "ControlAsm.c", "body");
+    let placed_path = composed_path(child, "PlacedAsm.c", "body");
+
+    // Build engine with the real OCCT kernel (Mock cannot validate placement).
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut planner = reify_geometry::SingleKernelHolder::new();
+    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+
+    let result = engine.tessellate_realizations(&compiled);
+    let geom_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(geom_errors.is_empty(), "geometry errors: {:?}", geom_errors);
+
+    let control = result
+        .meshes
+        .iter()
+        .find(|s| s.entity_path == control_path)
+        .unwrap_or_else(|| panic!("control surface `{control_path}` must be present"));
+    let placed = result
+        .meshes
+        .iter()
+        .find(|s| s.entity_path == placed_path)
+        .unwrap_or_else(|| panic!("placed surface `{placed_path}` must be present"));
+
+    let (cmin, cmax) = mesh_aabb(&control.mesh);
+    let (pmin, pmax) = mesh_aabb(&placed.mesh);
+
+    // Tessellation of a box places vertices exactly at its 8 corners (no
+    // curvature deflection), so a tight tolerance is reliable.
+    let tol = 1e-5_f32;
+
+    // Control: identity-pose child surfaces at unchanged coords (centered cube).
+    let expect_cmin = [-0.01_f32, -0.01, -0.01];
+    let expect_cmax = [0.01_f32, 0.01, 0.01];
+    for axis in 0..3 {
+        assert!(
+            (cmin[axis] - expect_cmin[axis]).abs() < tol,
+            "control min[{axis}] expected {}, got {}",
+            expect_cmin[axis],
+            cmin[axis]
+        );
+        assert!(
+            (cmax[axis] - expect_cmax[axis]).abs() < tol,
+            "control max[{axis}] expected {}, got {}",
+            expect_cmax[axis],
+            cmax[axis]
+        );
+    }
+
+    // Placed: source box AABB translated +30 mm on X (Y/Z unchanged).
+    let expect_pmin = [0.02_f32, -0.01, -0.01];
+    let expect_pmax = [0.04_f32, 0.01, 0.01];
+    for axis in 0..3 {
+        assert!(
+            (pmin[axis] - expect_pmin[axis]).abs() < tol,
+            "placed min[{axis}] expected {}, got {} (composed placement not applied?)",
+            expect_pmin[axis],
+            pmin[axis]
+        );
+        assert!(
+            (pmax[axis] - expect_pmax[axis]).abs() < tol,
+            "placed max[{axis}] expected {}, got {} (composed placement not applied?)",
+            expect_pmax[axis],
+            pmax[axis]
+        );
+    }
 }
