@@ -932,6 +932,83 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
     }
 }
 
+/// Rewrite an op's parent/input handle ids through a substitution map
+/// (task 4050 step-8). The cross-kernel conversion executor uses this to point
+/// the final-stage op at the converted (ingested) target-kernel handles instead
+/// of the original source-kernel handles. Mirrors [`parent_handles_for_op`]'s
+/// variant coverage exactly so the compiler flags drift; non-parent fields
+/// (sweep path/spine, guides, draft plane) and parent-less ops (primitives,
+/// curve constructors, `Pipe`) are left untouched. A handle absent from the
+/// map is left as-is.
+fn substitute_op_parents(
+    op: &mut GeometryOp,
+    mapping: &HashMap<GeometryHandleId, GeometryHandleId>,
+) {
+    let sub = |h: &mut GeometryHandleId| {
+        if let Some(&new) = mapping.get(h) {
+            *h = new;
+        }
+    };
+    match op {
+        // Boolean ops — both operands are parents.
+        GeometryOp::Union { left, right }
+        | GeometryOp::Difference { left, right }
+        | GeometryOp::Intersection { left, right } => {
+            sub(left);
+            sub(right);
+        }
+
+        // Single-target shape-modifying ops — the target is the sole parent.
+        GeometryOp::Fillet { target, .. }
+        | GeometryOp::Chamfer { target, .. }
+        | GeometryOp::Translate { target, .. }
+        | GeometryOp::Rotate { target, .. }
+        | GeometryOp::Scale { target, .. }
+        | GeometryOp::RotateAround { target, .. }
+        | GeometryOp::ApplyTransform { target, .. }
+        | GeometryOp::LinearPattern { target, .. }
+        | GeometryOp::CircularPattern { target, .. }
+        | GeometryOp::Mirror { target, .. }
+        | GeometryOp::LinearPattern2D { target, .. }
+        | GeometryOp::ArbitraryPattern { target, .. }
+        | GeometryOp::Draft { target, .. }
+        | GeometryOp::Thicken { target, .. }
+        | GeometryOp::Shell { target, .. } => {
+            sub(target);
+        }
+
+        // Single-profile sweep ops — profile only; path/spine/guide excluded.
+        GeometryOp::Extrude { profile, .. }
+        | GeometryOp::ExtrudeSymmetric { profile, .. }
+        | GeometryOp::Revolve { profile, .. }
+        | GeometryOp::Sweep { profile, .. }
+        | GeometryOp::SweepGuided { profile, .. } => {
+            sub(profile);
+        }
+
+        // Multi-profile loft ops — every profile is a parent.
+        GeometryOp::Loft { profiles } | GeometryOp::LoftGuided { profiles, .. } => {
+            for p in profiles.iter_mut() {
+                sub(p);
+            }
+        }
+
+        // Parent-less ops: primitives, curve constructors, Pipe — nothing to
+        // substitute.
+        GeometryOp::Box { .. }
+        | GeometryOp::Cylinder { .. }
+        | GeometryOp::Sphere { .. }
+        | GeometryOp::Tube { .. }
+        | GeometryOp::LineSegment { .. }
+        | GeometryOp::Arc { .. }
+        | GeometryOp::Helix { .. }
+        | GeometryOp::InterpCurve { .. }
+        | GeometryOp::BezierCurve { .. }
+        | GeometryOp::NurbsCurve { .. }
+        | GeometryOp::Pipe { .. } => {}
+    }
+}
+
 /// Total `GeometryOp` → `Operation` classifier used by the per-op dispatch
 /// path (task ε / 3436, PRD §8 step-4).
 ///
@@ -1587,6 +1664,9 @@ impl Engine {
                         &mut kernel_error,
                         &mut self.realization_cache,
                         demanded_tol,
+                        // Task 4050 step-8: pass BRep until step-16 flips the
+                        // build path to the υ-derived demanded repr.
+                        ReprKind::BRep,
                         &mut self.last_dispatch_count,
                     );
                     // Step-10 (task ε / 3436): persist the executor's terminal
@@ -1932,6 +2012,9 @@ impl Engine {
                         &mut kernel_error,
                         &mut self.realization_cache,
                         demanded_tol,
+                        // Task 4050 step-8: pass BRep until step-16 flips the
+                        // build path to the υ-derived demanded repr.
+                        ReprKind::BRep,
                         &mut self.last_dispatch_count,
                     );
                     // Step-10 (task ε / 3436): persist the executor's terminal
@@ -2639,6 +2722,11 @@ impl Engine {
                     &mut kernel_error,
                     realization_cache,
                     demanded_tol,
+                    // Task 4050 step-8 / design_decision 4: the tessellate path
+                    // discards produced_repr and stays on a BRep demand
+                    // permanently (a Manifold terminal would break the trailing
+                    // default-kernel tessellate call).
+                    ReprKind::BRep,
                     &mut *dispatch_count,
                 );
 
@@ -2916,6 +3004,13 @@ impl Engine {
         kernel_error_out: &mut Option<ErrorRef>,
         realization_cache: &mut RealizationCache<KernelHandle>,
         demanded_tol: Option<f64>,
+        // Task 4050 step-8: the realization's requested terminal [`ReprKind`]
+        // (υ-derived in build/build_snapshot; `ReprKind::BRep` everywhere else).
+        // Each op dispatches at this repr; a `None` plan with
+        // `demanded_repr != BRep` falls back to a BRep dispatch (design_decision
+        // 3) so a Mesh demand no linked kernel can satisfy routes BRep instead
+        // of erroring. Slotted next to `demanded_tol`.
+        demanded_repr: ReprKind,
         // Task ε (3436) step-12: caller-write dispatch-count instrumentation
         // channel. Incremented once per `dispatch(...)` call inside the per-op
         // loop. The caller (build / build_snapshot / tessellate_*) resets the
@@ -2933,12 +3028,13 @@ impl Engine {
             produced_repr_out,
         } = outputs;
         let handle_start = step_handles.len();
-        // Step-8 (task ε / 3436): the v0.3-ε baseline asks the dispatcher for
-        // `(op, BRep)` with `available = {BRep}` on every op. The triple is
-        // hoisted out of the op loop because both inputs are loop-invariant —
-        // `available_set` would otherwise allocate a fresh HashSet per op.
-        let available_set: HashSet<ReprKind> =
-            Engine::BUDGET_QUERY_TRIPLE_V02.2.iter().copied().collect();
+        // Task 4050 step-8: the per-op `available` set is no longer a hoisted
+        // loop-invariant `{BRep}` constant — it is derived per op from the
+        // reprs of that op's resolved input handles (`realization_step_reprs`,
+        // tracked in lockstep with `realization_step_ids` below), defaulting to
+        // `{BRep}` for primitives / unresolved refs (design_decision 6). This
+        // lets a conversion stage that materialises a Mesh handle propagate the
+        // Mesh repr to downstream ops while staying `{BRep}` for the v0.2 path.
 
         // Task 2874, step-8: cache-hit short-circuit. When the caller has
         // threaded a demanded tolerance AND the realization is named (the
@@ -3078,6 +3174,12 @@ impl Engine {
         // the slice stays in lockstep without re-projecting per op.
         let mut realization_step_ids: Vec<GeometryHandleId> =
             Vec::with_capacity(operations.len());
+        // Task 4050 step-8: the produced [`ReprKind`] of each step handle,
+        // tracked in lockstep with `realization_step_ids`. The per-op
+        // `available` set is read from the reprs of the op's resolved input
+        // handles (via this Vec); every push site below pushes here too so the
+        // two Vecs stay index-aligned.
+        let mut realization_step_reprs: Vec<ReprKind> = Vec::with_capacity(operations.len());
         for (op_idx, op) in operations.iter().enumerate() {
             let geom_op = compile_geometry_op(
                 op,
@@ -3089,21 +3191,57 @@ impl Engine {
                 diagnostics,
             );
             match geom_op {
-                Ok(geom_op) => {
+                Ok(mut geom_op) => {
                     // Step-8 (task ε / 3436): per-op dispatch routing.
                     // Map the compiled `GeometryOp` to its `Operation`
-                    // classifier and ask the dispatcher for a plan. In the
-                    // v0.3-ε baseline the request is fixed at
-                    // `(op, demanded=BRep, available={BRep})` per the
-                    // `BUDGET_QUERY_TRIPLE_V02` design decision; per-op
-                    // demanded/available derivation is deferred to ζ/η/θ.
+                    // classifier and ask the dispatcher for a plan.
                     let operation = geometry_op_to_operation(&geom_op);
+                    // Task 4050 step-8: derive the per-op `available` set from
+                    // the reprs of this op's resolved input handles. Each parent
+                    // handle id is looked up in `realization_step_ids` (this
+                    // realization's step handles) to read its produced repr from
+                    // the lockstep `realization_step_reprs`; parents from other
+                    // realizations (named_steps) or parent-less ops are absent,
+                    // so the set defaults to `{BRep}` (design_decision 6).
+                    let available_for_op: HashSet<ReprKind> = {
+                        let parents = parent_handles_for_op(&geom_op);
+                        let mut set: HashSet<ReprKind> = parents
+                            .as_slice()
+                            .iter()
+                            .filter_map(|pid| {
+                                realization_step_ids
+                                    .iter()
+                                    .position(|id| id == pid)
+                                    .map(|idx| realization_step_reprs[idx])
+                            })
+                            .collect();
+                        if set.is_empty() {
+                            set.insert(ReprKind::BRep);
+                        }
+                        set
+                    };
                     // Task ε (3436) step-12: bump the per-build dispatch
                     // counter EXACTLY at the `dispatch(...)` call site so the
                     // cache-hit short-circuit (which returns above without
-                    // ever entering this loop) leaves the counter at 0.
+                    // ever entering this loop) leaves the counter at 0. Bumped
+                    // once at the primary dispatch; the design_decision-3
+                    // fallback re-dispatch below does not bump again.
                     *dispatch_count += 1;
-                    let plan = dispatch(registry, operation, ReprKind::BRep, &available_set);
+                    // Task 4050 step-8: dispatch at `demanded_repr`, then FALL
+                    // BACK to a BRep dispatch when the demand is unsatisfiable
+                    // and `demanded_repr != BRep` (design_decision 3). Without
+                    // this, every Stl/Obj-terminal Mesh demand with no linked
+                    // Mesh kernel would hit the strict no-kernel-chain error arm
+                    // and regress the whole suite; with it, such ops route BRep
+                    // exactly as the v0.2 baseline did.
+                    let plan = dispatch(registry, operation, demanded_repr, &available_for_op)
+                        .or_else(|| {
+                            if demanded_repr != ReprKind::BRep {
+                                dispatch(registry, operation, ReprKind::BRep, &available_for_op)
+                            } else {
+                                None
+                            }
+                        });
                     // Step-14 (task ε / 3436): the match returns a
                     // `(resolved_kernel_name, op_produced_repr)` tuple — a
                     // single source of truth that yokes the routing decision
@@ -3175,28 +3313,134 @@ impl Engine {
                             // untouched" rather than fabricating a repr).
                             (name, plan_output_repr(registry, plan, operation))
                         }
-                        Some(_) => {
-                            // Non-empty conversion chain. ε implements
-                            // 0-conversion routing only — conversion-stage
-                            // execution depends on ζ/η/θ (Manifold execute
-                            // arm + cross-kernel mesh-ingest trait surface).
-                            // Surface as an error diagnostic and set
-                            // `kernel_error_out` so the caller marks the
-                            // realization Failed (mirrors the kernel-error
-                            // arm below).
-                            let err_msg = format!(
-                                "non-empty conversion chain for op '{:?}' producing \
-                                 '{:?}' is not supported in v0.3-ε (deferred to ζ/η/θ)",
-                                operation,
-                                ReprKind::BRep,
-                            );
-                            diagnostics.push(Diagnostic::error(err_msg.clone()).with_label(
-                                DiagnosticLabel::new(realization_span, "in this realization"),
-                            ));
-                            if kernel_error_out.is_none() {
-                                *kernel_error_out = Some(ErrorRef::new(err_msg));
+                        Some(plan) => {
+                            // Task 4050 step-8: the MULTI-STAGE CONVERSION
+                            // EXECUTOR. A non-empty `plan.conversions` chain
+                            // names the repr crossings to perform before the
+                            // final op runs on `plan.kernel`. v0.3-ε executes
+                            // exactly one crossing — BRep→Mesh via the source
+                            // kernel's `tessellate` — so every stage must
+                            // classify as `ConversionProjection::Tessellate`
+                            // (step-6); any other stage surfaces as a
+                            // realization-failed diagnostic (mirroring the
+                            // kernel-error arm below) rather than a panic. Since
+                            // the only ε-executable projection is BRep→Mesh, a
+                            // multi-stage chain necessarily contains a
+                            // non-`(BRep,Mesh)` stage and is rejected here, so
+                            // the single-stage "tessellate each parent once"
+                            // walk below is correct for every chain that passes.
+                            //
+                            // For the surviving single BRep→Mesh stage and each
+                            // prior-stage input handle of the op: tessellate the
+                            // handle on the stage's source kernel → Mesh, then
+                            // ingest the Mesh on the target kernel (`plan.kernel`)
+                            // → a fresh handle. The converted handles are
+                            // substituted as the op's inputs and the op then runs
+                            // on `plan.kernel` via the common execute path below.
+                            // (Intermediate caching: step-12; rollback: step-14.)
+
+                            // The target kernel must be present in the map.
+                            if !kernels.contains_key(plan.kernel.as_str()) {
+                                let err_msg = format!(
+                                    "internal error: dispatcher named target kernel '{}' \
+                                     not present in engine.geometry_kernels for a \
+                                     conversion plan",
+                                    plan.kernel,
+                                );
+                                diagnostics.push(Diagnostic::error(err_msg.clone()).with_label(
+                                    DiagnosticLabel::new(realization_span, "in this realization"),
+                                ));
+                                if kernel_error_out.is_none() {
+                                    *kernel_error_out = Some(ErrorRef::new(err_msg));
+                                }
+                                break;
                             }
-                            break;
+
+                            // Per-stage tessellation tolerance for each BRep→Mesh
+                            // source projection (default-tess tolerance when the
+                            // caller threaded no demanded tolerance).
+                            let per_stage_tol = per_stage_tolerance_for_plan(
+                                plan,
+                                demanded_tol.unwrap_or(Engine::DEFAULT_TESSELLATION_TOLERANCE),
+                            );
+
+                            // Snapshot the op's input handles before mutation.
+                            let parents: Vec<GeometryHandleId> =
+                                parent_handles_for_op(&geom_op).as_slice().to_vec();
+
+                            // Walk the chain: tessellate (source) then ingest
+                            // (target) each input, recording old→new id pairs.
+                            let mut substitution: HashMap<GeometryHandleId, GeometryHandleId> =
+                                HashMap::new();
+                            let mut conversion_error: Option<String> = None;
+                            'convert: for (stage_kernel, from, to) in &plan.conversions {
+                                if crate::dispatcher::v03_conversion_projection(*from, *to)
+                                    .is_none()
+                                {
+                                    conversion_error = Some(format!(
+                                        "conversion stage {from:?}→{to:?} for op '{operation:?}' \
+                                         is not executable in v0.3-ε (only BRep→Mesh \
+                                         tessellation is supported)",
+                                    ));
+                                    break 'convert;
+                                }
+                                let source_name = (*stage_kernel).as_registry_name();
+                                for &pid in &parents {
+                                    // Tessellate on the source kernel (`&self`);
+                                    // the borrow is released before the `&mut`
+                                    // ingest borrow below.
+                                    let mesh = match kernels.get(source_name) {
+                                        Some(src) => match src.tessellate(pid, per_stage_tol) {
+                                            Ok(mesh) => mesh,
+                                            Err(e) => {
+                                                conversion_error =
+                                                    Some(format!("tessellation error: {e}"));
+                                                break 'convert;
+                                            }
+                                        },
+                                        None => {
+                                            conversion_error = Some(format!(
+                                                "internal error: conversion source kernel \
+                                                 '{source_name}' absent from \
+                                                 engine.geometry_kernels"
+                                            ));
+                                            break 'convert;
+                                        }
+                                    };
+                                    // Ingest into the target kernel (`&mut`).
+                                    let ingested = kernels
+                                        .get_mut(plan.kernel.as_str())
+                                        .expect("plan.kernel presence checked above")
+                                        .ingest_mesh(&mesh);
+                                    match ingested {
+                                        Ok(handle) => {
+                                            substitution.insert(pid, handle.id);
+                                        }
+                                        Err(e) => {
+                                            conversion_error =
+                                                Some(format!("mesh ingest error: {e}"));
+                                            break 'convert;
+                                        }
+                                    }
+                                }
+                            }
+                            if let Some(err_msg) = conversion_error {
+                                diagnostics.push(Diagnostic::error(err_msg.clone()).with_label(
+                                    DiagnosticLabel::new(realization_span, "in this realization"),
+                                ));
+                                if kernel_error_out.is_none() {
+                                    *kernel_error_out = Some(ErrorRef::new(err_msg));
+                                }
+                                break;
+                            }
+
+                            // Point the final op at the converted handles and
+                            // route it to the target kernel via the common
+                            // execute path. `plan_output_repr` of the final op on
+                            // `plan.kernel` (=Mesh) becomes this op's produced
+                            // repr.
+                            substitute_op_parents(&mut geom_op, &substitution);
+                            (plan.kernel.clone(), plan_output_repr(registry, plan, operation))
                         }
                         None => {
                             // dispatch returned None: no registered kernel
@@ -3259,10 +3503,18 @@ impl Engine {
                                 // independent).
                                 (default_kernel_name.to_string(), Some(ReprKind::BRep))
                             } else {
+                                // Task 4050 step-8: report the op's actual
+                                // available reprs (not the hoisted v0.2
+                                // `{BRep}` triple). Both the demanded dispatch
+                                // AND the BRep fallback returned None here, so
+                                // `BRep` is the accurate "could not satisfy"
+                                // demand to surface.
+                                let available_reprs: Vec<ReprKind> =
+                                    available_for_op.iter().copied().collect();
                                 let diag = crate::dispatcher::no_kernel_chain_diagnostic(
                                     operation,
                                     ReprKind::BRep,
-                                    Engine::BUDGET_QUERY_TRIPLE_V02.2,
+                                    &available_reprs,
                                 )
                                 .with_label(DiagnosticLabel::new(
                                     realization_span,
@@ -3417,6 +3669,14 @@ impl Engine {
                                 id: handle.id,
                             });
                             realization_step_ids.push(handle.id);
+                            // Task 4050 step-8: keep `realization_step_reprs` in
+                            // lockstep with `realization_step_ids` — record this
+                            // op's produced repr so downstream ops derive their
+                            // `available` set from it. `op_produced_repr` may be
+                            // `None` only when a descriptor lacks the op (an
+                            // invariant violation); default to BRep so the
+                            // available-set derivation stays total.
+                            realization_step_reprs.push(op_produced_repr.unwrap_or(ReprKind::BRep));
                             // Capture the compiled op parallel to step_handles for
                             // post-loop classification (task 2982). Cleared on
                             // rollback below. Pushed last in this arm so all the
@@ -3480,6 +3740,11 @@ impl Engine {
                         id: GeometryHandleId::INVALID,
                     });
                     realization_step_ids.push(GeometryHandleId::INVALID);
+                    // Task 4050 step-8: keep the parallel repr Vec in lockstep on
+                    // the failed-compile sentinel path too (BRep placeholder; the
+                    // whole realization rolls back below, so this is never read as
+                    // a real produced repr).
+                    realization_step_reprs.push(ReprKind::BRep);
                     had_failure = true;
                 }
             }
@@ -5275,6 +5540,9 @@ mod tests {
                 &mut self.kernel_error_out,
                 &mut self.realization_cache,
                 None,
+                // Task 4050 step-8: the existing single-kernel unit tests want
+                // the v0.2 BRep demand; the cross-kernel tests use `run_demand`.
+                ReprKind::BRep,
                 &mut self.dispatch_count,
             );
         }
