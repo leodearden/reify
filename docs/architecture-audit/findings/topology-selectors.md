@@ -94,7 +94,7 @@
 - **State:** WIRED
 - **Failure mode:** N/A
 - **Evidence:** `crates/reify-eval/src/topology_selectors.rs:780-815` (resolver: dedup via `HashSet`, fold candidates, exactly-one return; ambiguity → diagnostic + `None`); pinned by 4 unit tests at `:1481-1700` (`resolve_unique_by_tag_one_match_returns_some_with_no_diagnostics`, `_zero_matches_emits_warning_and_returns_none`, `_multiple_matches_emits_warning_and_returns_none`, `_duplicate_candidate_does_not_inflate_match_count`).
-- **Blocks:** none (resolver path now exercised end-to-end via `kernel_queries_integration.rs` since M-003 landed)
+- **Blocks:** none locally — the `resolve_unique_by_tag` primitive is unit-tested (`topology_selectors.rs:1481-1700`), but the end-to-end `.ri` → resolver path is NOT exercised: the eval dispatch bypasses the `*_with_tags` tag-populating variants (see M-007) and `kernel_queries_integration.rs` has no resolver references.
 - **Note:** PRD task 6 update note (lines 184-189): "Implemented (task 2332): ... resolver building-block `resolve_unique_by_tag` ... Re-routing existing filter selectors through the resolver is tracked separately under task 5 (task 2329 in the queue)". So this is acknowledged as a building block — the resolver itself is real, the re-routing through user-facing call sites is the unfinished piece (M-007's DRIFT).
 
 ### M-011: `DiagnosticCode::TopologyTagStale` (PRD-prose mnemonic `W_TOPOLOGY_TAG_STALE`)
@@ -103,7 +103,7 @@
 - **Failure mode:** N/A
 - **Evidence:** `crates/reify-types/src/diagnostics.rs:385` (variant definition); `:355-384` (rustdoc documents canonical message form, primary/secondary label structure, and the four `*_with_tags` populators); unit tests at `:1290-1320` (round-trip variant equality, serde PascalCase pin). Round-trip from the resolver in M-010 emits this diagnostic.
 - **Blocks:** none (diagnostic + resolver path is wired)
-- **Note:** PRD §6 satisfied at the resolver layer. With M-003 landed, the `.ri`-source → `edges_at_height(...)` → `W_TOPOLOGY_TAG_STALE` round-trip is now reachable from user-facing calls; `crates/reify-eval/tests/kernel_queries_integration.rs` exercises the topology-selector paths end-to-end. A dedicated stale-tag integration test (edit a profile so the tagged feature disappears → exactly one `W_TOPOLOGY_TAG_STALE` warning) is not pinned by a single test, but all building blocks are connected.
+- **Note:** PRD §6 satisfied at the resolver layer. The `resolve_unique_by_tag` primitive (M-010) is unit-tested, but because the eval dispatch routes base selectors straight to `GeometryQuery::*` and does NOT call the `*_with_tags` variants that populate `FeatureTagTable` (see M-007 and M-013:121), the `.ri`-source → `edges_at_height(...)` → `W_TOPOLOGY_TAG_STALE` round-trip is NOT yet reachable from user-facing calls; `kernel_queries_integration.rs` does not exercise it (zero resolver/`*_with_tags`/stale references). The end-to-end stale-tag round-trip from `.ri` remains unpinned.
 
 ### M-012: Runtime auto-population of `FeatureTagTable` during `execute_realization_ops` for top-level (per-realization-op) tags
 
