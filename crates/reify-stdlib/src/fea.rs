@@ -1263,7 +1263,10 @@ mod tests {
 
     use reify_test_support::multi_case_result_value;
     use reify_core::{DimensionVector, Type};
-    use reify_ir::{FieldSourceKind, InterpolationKind, SampledField, SampledGridKind, Value};
+    use reify_ir::{
+        FieldSourceKind, InterpolationKind, PersistentMap, SampledField, SampledGridKind,
+        StructureInstanceData, StructureTypeId, Value,
+    };
 
     // ── test helpers ────────────────────────────────────────────────────────
 
@@ -2572,6 +2575,30 @@ mod tests {
         Value::Map(m)
     }
 
+    /// Build a fixture `ElasticResult`-shaped `Value::StructureInstance` with
+    /// Field-typed displacement and stress fields. Parallel to
+    /// `make_fixture_elastic_result_with_fields` but emits
+    /// `Value::StructureInstance` — matching the shape that `solve_load_cases`
+    /// (task 4088, multi_case.rs:214-249) emits for each per-case result at
+    /// runtime.
+    fn make_elastic_result_si_with_fields(displacement: Value, stress: Value) -> Value {
+        let fields: PersistentMap<String, Value> = [
+            ("displacement".to_string(), displacement),
+            ("stress".to_string(), stress),
+            ("max_von_mises".to_string(), Value::Real(0.0)),
+            ("converged".to_string(), Value::Bool(true)),
+            ("iterations".to_string(), Value::Int(0)),
+        ]
+        .into_iter()
+        .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "ElasticResult".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
     // ── linear_combine happy path ────────────────────────────────────────────
 
     #[test]
@@ -2728,6 +2755,78 @@ mod tests {
             Value::Real(v) => assert!((v - 3680.0).abs() <= 1e-9, "max_von_mises mismatch: {}", v),
             other => panic!("expected Value::Real for max_von_mises, got {:?}", other),
         }
+    }
+
+    // step-1 (RED): linear_combine must accept per-case StructureInstance ElasticResults.
+    // RED today: linear_combine L172 `match case_val { Value::Map(m) => m, _ => Undef }`
+    // rejects StructureInstance → returns Undef.
+    // After step-2 fix: returns Value::Map with correct superposition.
+    #[test]
+    fn linear_combine_structure_instance_per_case_superposes_not_undef() {
+        // Two SI per-case ElasticResults — the shape real solve_load_cases emits.
+        // A.disp=[1,2], B.disp=[3,4]; A.stress=[10,20], B.stress=[30,40].
+        // weights {A:1.0, B:1.0}; expected superposition disp=[4,6], stress=[40,60].
+        let axis = vec![0.0, 1.0];
+
+        let a_disp = wrap_sampled_field(
+            make_sampled_1d("da", axis.clone(), vec![1.0, 2.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let a_stress = wrap_sampled_field(
+            make_sampled_1d("sa", axis.clone(), vec![10.0, 20.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let b_disp = wrap_sampled_field(
+            make_sampled_1d("db", axis.clone(), vec![3.0, 4.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let b_stress = wrap_sampled_field(
+            make_sampled_1d("sb", axis.clone(), vec![30.0, 40.0]),
+            Type::Real,
+            Type::Real,
+        );
+
+        let si_a = make_elastic_result_si_with_fields(a_disp, a_stress);
+        let si_b = make_elastic_result_si_with_fields(b_disp, b_stress);
+        let mcr = multi_case_result_value(&[("A", si_a), ("B", si_b)]);
+
+        let mut weights_map = BTreeMap::new();
+        weights_map.insert(Value::String("A".to_string()), Value::Real(1.0));
+        weights_map.insert(Value::String("B".to_string()), Value::Real(1.0));
+
+        let result = eval_fea("linear_combine", &[mcr, Value::Map(weights_map)]).unwrap();
+
+        assert!(
+            !result.is_undef(),
+            "linear_combine with SI per-cases should return Map, not Undef"
+        );
+        let result_map = match &result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+
+        let disp = result_map
+            .get(&Value::String("displacement".to_string()))
+            .expect("result must have 'displacement' key");
+        let disp_sf = extract_sampled(disp);
+        assert_eq!(
+            disp_sf.data,
+            vec![4.0, 6.0],
+            "displacement superposition: A=[1,2]+B=[3,4] = [4,6]"
+        );
+
+        let stress = result_map
+            .get(&Value::String("stress".to_string()))
+            .expect("result must have 'stress' key");
+        let stress_sf = extract_sampled(stress);
+        assert_eq!(
+            stress_sf.data,
+            vec![40.0, 60.0],
+            "stress superposition: A=[10,20]+B=[30,40] = [40,60]"
+        );
     }
 
     #[test]
