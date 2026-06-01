@@ -10149,3 +10149,421 @@ fn sample_stride_field_nearest_nan_node_returns_none() {
         "point whose nearest node is NaN (out-of-solid) must return None"
     );
 }
+
+// ── Task 4087 step-3: RED — SCALAR_CHANNEL_OOB_SENTINEL and von_mises_sample ─
+//
+// Tests:
+//   (a) SCALAR_CHANNEL_OOB_SENTINEL == -1.0_f32 and is finite/negative.
+//   (b) von_mises_sample at an in-bounds solid node returns the correct value.
+//   (c) OOB point returns the sentinel.
+//   (d) Out-of-solid (NaN-node) point returns the sentinel.
+//
+// Fails to compile until step-4 adds SCALAR_CHANNEL_OOB_SENTINEL to types.rs
+// and von_mises_sample to engine.rs.
+
+/// Build a 2×2×2 Regular3D SampledField with stride 9 (symmetric stress tensor)
+/// for von_mises_sample tests.
+///
+/// Node (0,0,0): known symmetric tensor σ = diag(100e6, 0, 0) Pa (uniaxial).
+///   von Mises for uniaxial σ_xx = σ → von Mises = σ.
+///   Layout: [σxx, σxy, σxz, σyx, σyy, σyz, σzx, σzy, σzz]
+///           = [100e6, 0, 0, 0, 0, 0, 0, 0, 0]
+/// Node (1,1,0): all-NaN (out-of-solid).
+/// All other nodes: zero tensor.
+fn make_stress_field() -> reify_ir::SampledField {
+    let mut data = Vec::with_capacity(8 * 9);
+    // (0,0,0): uniaxial 100 MPa
+    data.extend_from_slice(&[100e6_f64, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+    // (0,0,1): zero
+    data.extend_from_slice(&[0.0_f64; 9]);
+    // (0,1,0): zero
+    data.extend_from_slice(&[0.0_f64; 9]);
+    // (0,1,1): zero
+    data.extend_from_slice(&[0.0_f64; 9]);
+    // (1,0,0): zero
+    data.extend_from_slice(&[0.0_f64; 9]);
+    // (1,0,1): zero
+    data.extend_from_slice(&[0.0_f64; 9]);
+    // (1,1,0): NaN (out-of-solid)
+    let nan9 = [f64::NAN; 9];
+    data.extend_from_slice(&nan9);
+    // (1,1,1): zero
+    data.extend_from_slice(&[0.0_f64; 9]);
+
+    reify_ir::SampledField {
+        name: "stress".to_string(),
+        kind: reify_ir::SampledGridKind::Regular3D,
+        bounds_min: vec![0.0, 0.0, 0.0],
+        bounds_max: vec![1.0, 1.0, 1.0],
+        spacing: vec![1.0, 1.0, 1.0],
+        axis_grids: vec![vec![0.0, 1.0], vec![0.0, 1.0], vec![0.0, 1.0]],
+        interpolation: reify_ir::InterpolationKind::NearestNeighbor,
+        data,
+        oob_emitted: std::sync::atomic::AtomicBool::new(false),
+    }
+}
+
+/// SCALAR_CHANNEL_OOB_SENTINEL must equal -1.0 and be finite/negative.
+#[test]
+fn scalar_channel_oob_sentinel_is_negative_one_and_finite() {
+    let s = crate::types::SCALAR_CHANNEL_OOB_SENTINEL;
+    assert_eq!(s, -1.0_f32, "sentinel must be exactly -1.0");
+    assert!(s.is_finite(), "sentinel must be finite (required for wire guard)");
+    assert!(s < 0.0, "sentinel must be negative (von Mises ≥ 0 physically)");
+}
+
+/// von_mises_sample at the uniaxial (0,0,0) node returns the correct von Mises value.
+#[test]
+fn von_mises_sample_in_bounds_returns_correct_value() {
+    let sf = make_stress_field();
+    // Uniaxial σ_xx = 100 MPa → von Mises = 100 MPa
+    let tensor = [100e6_f64, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let expected = reify_stdlib::compute_von_mises_3x3(&tensor) as f32;
+    let result = crate::engine::von_mises_sample(&sf, [0.05, 0.05, 0.05], 1e-6);
+    assert!(
+        (result - expected).abs() < 1.0,
+        "von_mises_sample at (0,0,0) node: expected {expected}, got {result}"
+    );
+    assert!(result >= 0.0, "von Mises result must be non-negative");
+}
+
+/// von_mises_sample at an OOB point returns the sentinel.
+#[test]
+fn von_mises_sample_oob_returns_sentinel() {
+    let sf = make_stress_field();
+    let result = crate::engine::von_mises_sample(&sf, [2.0, 0.0, 0.0], 1e-6);
+    assert_eq!(
+        result,
+        crate::types::SCALAR_CHANNEL_OOB_SENTINEL,
+        "OOB point must return SCALAR_CHANNEL_OOB_SENTINEL"
+    );
+}
+
+/// von_mises_sample at a NaN-node (out-of-solid) point returns the sentinel.
+#[test]
+fn von_mises_sample_out_of_solid_returns_sentinel() {
+    let sf = make_stress_field();
+    // (0.9, 0.9, 0.05) is closest to node (1,1,0) which is NaN
+    let result = crate::engine::von_mises_sample(&sf, [0.9, 0.9, 0.05], 1e-6);
+    assert_eq!(
+        result,
+        crate::types::SCALAR_CHANNEL_OOB_SENTINEL,
+        "out-of-solid (NaN node) point must return SCALAR_CHANNEL_OOB_SENTINEL"
+    );
+}
+
+// ── Task 4087 step-5: RED — displaced_sample ─────────────────────────────────
+//
+// Tests:
+//   (a) in-bounds vertex → [v.x+dx, v.y+dy, v.z+dz] as f32 (warp=1).
+//   (b) OOB vertex → original [v.x,v.y,v.z] as f32.
+//   (c) out-of-solid (NaN node) vertex → original v.
+//
+// Fails to compile until step-6 adds displaced_sample to engine.rs.
+
+/// Build a 2×2×2 Regular3D SampledField with stride 3 (displacement xyz)
+/// for displaced_sample tests.
+///
+/// Node (0,0,0): displacement [0.01, 0.02, 0.03] m.
+/// Node (1,1,0): NaN (out-of-solid).
+/// All other nodes: zero displacement.
+fn make_disp_field() -> reify_ir::SampledField {
+    let mut data = Vec::with_capacity(8 * 3);
+    data.extend_from_slice(&[0.01_f64, 0.02, 0.03]); // (0,0,0)
+    data.extend_from_slice(&[0.0_f64; 3]);            // (0,0,1)
+    data.extend_from_slice(&[0.0_f64; 3]);            // (0,1,0)
+    data.extend_from_slice(&[0.0_f64; 3]);            // (0,1,1)
+    data.extend_from_slice(&[0.0_f64; 3]);            // (1,0,0)
+    data.extend_from_slice(&[0.0_f64; 3]);            // (1,0,1)
+    data.extend_from_slice(&[f64::NAN; 3]);           // (1,1,0) out-of-solid
+    data.extend_from_slice(&[0.0_f64; 3]);            // (1,1,1)
+
+    reify_ir::SampledField {
+        name: "displacement".to_string(),
+        kind: reify_ir::SampledGridKind::Regular3D,
+        bounds_min: vec![0.0, 0.0, 0.0],
+        bounds_max: vec![1.0, 1.0, 1.0],
+        spacing: vec![1.0, 1.0, 1.0],
+        axis_grids: vec![vec![0.0, 1.0], vec![0.0, 1.0], vec![0.0, 1.0]],
+        interpolation: reify_ir::InterpolationKind::NearestNeighbor,
+        data,
+        oob_emitted: std::sync::atomic::AtomicBool::new(false),
+    }
+}
+
+/// In-bounds vertex near node (0,0,0) gets warp=1 displacement added.
+#[test]
+fn displaced_sample_in_bounds_applies_displacement() {
+    let sf = make_disp_field();
+    let point = [0.05_f64, 0.05, 0.05];
+    let result = crate::engine::displaced_sample(&sf, point, 1e-6);
+    // Expected: point + displacement at (0,0,0) = [0.05+0.01, 0.05+0.02, 0.05+0.03]
+    let expected = [0.06_f32, 0.07_f32, 0.08_f32];
+    for i in 0..3 {
+        assert!(
+            (result[i] - expected[i]).abs() < 1e-5,
+            "displaced_sample[{i}]: expected {}, got {}",
+            expected[i], result[i]
+        );
+    }
+}
+
+/// OOB vertex is returned unchanged (original position as f32).
+#[test]
+fn displaced_sample_oob_returns_original() {
+    let sf = make_disp_field();
+    let point = [2.0_f64, 0.5, 0.5];
+    let result = crate::engine::displaced_sample(&sf, point, 1e-6);
+    let expected = [2.0_f32, 0.5_f32, 0.5_f32];
+    for i in 0..3 {
+        assert!(
+            (result[i] - expected[i]).abs() < 1e-7,
+            "OOB displaced_sample[{i}]: expected {}, got {}",
+            expected[i], result[i]
+        );
+    }
+}
+
+/// Out-of-solid (NaN-node) vertex is returned unchanged.
+#[test]
+fn displaced_sample_out_of_solid_returns_original() {
+    let sf = make_disp_field();
+    // (0.9, 0.9, 0.05) nearest to node (1,1,0) which is NaN
+    let point = [0.9_f64, 0.9, 0.05];
+    let result = crate::engine::displaced_sample(&sf, point, 1e-6);
+    let expected = [0.9_f32, 0.9_f32, 0.05_f32];
+    for i in 0..3 {
+        assert!(
+            (result[i] - expected[i]).abs() < 1e-5,
+            "out-of-solid displaced_sample[{i}]: expected {}, got {}",
+            expected[i], result[i]
+        );
+    }
+}
+
+// ── Task 4087 step-7: RED — extract_elastic_result_fields ────────────────────
+//
+// Tests:
+//   (a) ValueMap with a proper ElasticResult returns Some((stress_sf, disp_sf)).
+//   (b) ValueMap with no ElasticResult returns None.
+//   (c) ValueMap where stress/displacement fields are Value::Undef returns None.
+//
+// Fails to compile until step-8 adds extract_elastic_result_fields to engine.rs.
+
+/// Build a ValueMap containing a synthetic ElasticResult StructureInstance.
+///
+/// The stress field uses stride 9 (stress tensor) and the displacement field
+/// uses stride 3 (xyz displacement vector).
+fn make_elastic_result_value_map(
+    stress_sf: reify_ir::SampledField,
+    disp_sf: reify_ir::SampledField,
+) -> reify_ir::ValueMap {
+    use reify_ir::{FieldSourceKind, Value};
+    use std::sync::Arc;
+
+    let stress_field = Value::Field {
+        domain_type: reify_core::Type::Real,
+        codomain_type: reify_core::Type::Real,
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(stress_sf)),
+    };
+    let disp_field = Value::Field {
+        domain_type: reify_core::Type::Real,
+        codomain_type: reify_core::Type::Real,
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(disp_sf)),
+    };
+
+    let mut fields = reify_ir::PersistentMap::new();
+    fields.insert("stress".to_string(), stress_field);
+    fields.insert("displacement".to_string(), disp_field);
+    fields.insert(
+        "max_von_mises".to_string(),
+        Value::Real(100e6),
+    );
+
+    let elastic_instance = Value::StructureInstance(Box::new(reify_ir::StructureInstanceData {
+        type_id: reify_ir::StructureTypeId(0),
+        type_name: "ElasticResult".to_string(),
+        version: 1,
+        fields,
+    }));
+
+    let mut map = reify_ir::ValueMap::new();
+    let cell_id = reify_core::ValueCellId::new("FeaCantileverSmoke", "result");
+    map.insert(cell_id, elastic_instance);
+    map
+}
+
+/// A ValueMap with a proper ElasticResult returns Some with the correct SampledFields.
+#[test]
+fn extract_elastic_result_fields_with_valid_result_returns_some() {
+    let stress_sf = make_stress_field();
+    let disp_sf = make_disp_field();
+    let map = make_elastic_result_value_map(stress_sf, disp_sf);
+    let result = crate::engine::extract_elastic_result_fields(&map);
+    let (stress, disp) = result.expect("should find ElasticResult with stress and displacement fields");
+    // Stride 9 for stress (8 nodes × 9 = 72 data entries)
+    assert_eq!(
+        stress.data.len(),
+        8 * 9,
+        "stress field must have 8*9 data entries"
+    );
+    // Stride 3 for displacement (8 nodes × 3 = 24 data entries)
+    assert_eq!(
+        disp.data.len(),
+        8 * 3,
+        "displacement field must have 8*3 data entries"
+    );
+}
+
+/// A ValueMap with no ElasticResult returns None.
+#[test]
+fn extract_elastic_result_fields_with_no_result_returns_none() {
+    let map = reify_ir::ValueMap::new();
+    assert!(
+        crate::engine::extract_elastic_result_fields(&map).is_none(),
+        "empty ValueMap must return None"
+    );
+}
+
+/// A ValueMap where stress/displacement fields are Value::Undef returns None.
+#[test]
+fn extract_elastic_result_fields_with_undef_fields_returns_none() {
+    use reify_ir::Value;
+
+    let mut fields = reify_ir::PersistentMap::new();
+    fields.insert("stress".to_string(), Value::Undef);
+    fields.insert("displacement".to_string(), Value::Undef);
+
+    let elastic_instance = Value::StructureInstance(Box::new(reify_ir::StructureInstanceData {
+        type_id: reify_ir::StructureTypeId(0),
+        type_name: "ElasticResult".to_string(),
+        version: 1,
+        fields,
+    }));
+
+    let mut map = reify_ir::ValueMap::new();
+    let cell_id = reify_core::ValueCellId::new("Foo", "result");
+    map.insert(cell_id, elastic_instance);
+
+    assert!(
+        crate::engine::extract_elastic_result_fields(&map).is_none(),
+        "ElasticResult with Undef fields must return None"
+    );
+}
+
+// ── Task 4087 step-9: RED — apply_fea_channels ───────────────────────────────
+//
+// Tests:
+//   (a) ValueMap with an ElasticResult: scalar_channels["vonMises"] has correct
+//       length, in-bounds vertices ≥ 0, OOB vertices == sentinel; displaced_positions
+//       is Some with correct length, in-bounds moved, OOB == original.
+//   (b) ValueMap with NO ElasticResult: scalar_channels stays empty, displaced_positions
+//       stays None.
+//
+// Fails to compile until step-10 adds apply_fea_channels to engine.rs.
+
+/// Build a MeshData with 3 vertices:
+///   v0 = (0.05, 0.05, 0.05) → in-bounds, in-solid (nearest node (0,0,0))
+///   v1 = (1.0,  0.0,  0.0)  → in-bounds (nearest node (1,0,0), zero displacement)
+///   v2 = (2.0,  0.0,  0.0)  → OOB (outside [0,1]³)
+fn make_test_mesh_data() -> crate::types::MeshData {
+    crate::types::MeshData {
+        entity_path: "test_body".to_string(),
+        vertices: vec![
+            0.05_f32, 0.05, 0.05,   // v0: in-bounds
+            1.0_f32,  0.0,  0.0,    // v1: in-bounds
+            2.0_f32,  0.0,  0.0,    // v2: OOB
+        ],
+        indices: vec![0, 1, 2],
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        vector_channels: std::collections::HashMap::new(),
+    }
+}
+
+/// apply_fea_channels with an ElasticResult fills vonMises and displaced_positions correctly.
+#[test]
+fn apply_fea_channels_with_elastic_result_fills_channels() {
+    let stress_sf = make_stress_field();
+    let disp_sf = make_disp_field();
+    let map = make_elastic_result_value_map(stress_sf, disp_sf);
+    let mut meshes = vec![make_test_mesh_data()];
+
+    crate::engine::apply_fea_channels(&mut meshes, &map);
+
+    let mesh = &meshes[0];
+    let vertex_count = mesh.vertices.len() / 3; // = 3
+
+    // scalar_channels["vonMises"] must have len == vertex_count.
+    let vm = mesh
+        .scalar_channels
+        .get("vonMises")
+        .expect("vonMises channel must exist after apply_fea_channels");
+    assert_eq!(vm.len(), vertex_count, "vonMises len must == vertex_count");
+
+    // v0 is in-bounds: stress at (0,0,0) is uniaxial 100 MPa → von Mises ≥ 0.
+    assert!(
+        vm[0] >= 0.0,
+        "in-bounds in-solid vertex must have non-negative von Mises, got {}",
+        vm[0]
+    );
+    // v2 is OOB: must equal sentinel.
+    assert_eq!(
+        vm[2],
+        crate::types::SCALAR_CHANNEL_OOB_SENTINEL,
+        "OOB vertex must have sentinel value"
+    );
+
+    // displaced_positions must be Some with len == vertices.len().
+    let dp = mesh
+        .displaced_positions
+        .as_ref()
+        .expect("displaced_positions must be Some after apply_fea_channels");
+    assert_eq!(
+        dp.len(),
+        mesh.vertices.len(),
+        "displaced_positions len must == vertices.len()"
+    );
+
+    // v0 is in-bounds: displacement at (0,0,0) is [0.01, 0.02, 0.03] → position moved.
+    let orig_x = mesh.vertices[0]; // 0.05
+    let disp_x = dp[0];
+    assert!(
+        (disp_x - orig_x).abs() > 1e-5,
+        "in-bounds vertex displaced_x must differ from original; orig={orig_x}, disp={disp_x}"
+    );
+
+    // v2 is OOB: displaced_positions must equal original vertex.
+    let v2_orig = &mesh.vertices[6..9];
+    let v2_disp = &dp[6..9];
+    for i in 0..3 {
+        assert!(
+            (v2_disp[i] - v2_orig[i]).abs() < 1e-7,
+            "OOB vertex displaced_positions[{i}] must equal original vertex"
+        );
+    }
+}
+
+/// apply_fea_channels with NO ElasticResult leaves meshes untouched.
+#[test]
+fn apply_fea_channels_without_elastic_result_leaves_meshes_untouched() {
+    let map = reify_ir::ValueMap::new(); // no ElasticResult
+    let mut meshes = vec![make_test_mesh_data()];
+
+    crate::engine::apply_fea_channels(&mut meshes, &map);
+
+    let mesh = &meshes[0];
+    assert!(
+        mesh.scalar_channels.is_empty(),
+        "scalar_channels must stay empty when no ElasticResult present"
+    );
+    assert!(
+        mesh.displaced_positions.is_none(),
+        "displaced_positions must stay None when no ElasticResult present"
+    );
+}
