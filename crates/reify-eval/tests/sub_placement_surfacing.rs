@@ -1004,3 +1004,120 @@ fn single_body_export_regression_one_solid() {
         "single-body structure must export exactly 1 solid; got {solid_count}"
     );
 }
+
+/// step-5 (T7, real OCCT, `OCCT_AVAILABLE`-gated) — RED: distance between two
+/// placed product children equals the composed-transform value.
+///
+/// `Assembly` contains two `sub`s of `Child{ let body = box(20mm,20mm,20mm) }`:
+///   sub a placed at +10mm X  → box centre at (0.01, 0, 0), X-faces at [0, 0.02]
+///   sub b placed at +50mm X  → box centre at (0.05, 0, 0), X-faces at [0.04, 0.06]
+///
+/// Face gap between the inner X-faces: 0.04 − 0.02 = **0.02 m** exactly
+/// (BRepExtrema on planar faces is exact).
+///
+/// `engine.distance_between_placed(&compiled, "Assembly.a#realization[0]",
+/// "Assembly.b#realization[0]")` must return `Some(d)` where `d ≈ 0.02`.
+///
+/// RED on base: `distance_between_placed` does not exist on `Engine`.
+#[test]
+fn distance_between_placed_children_equals_composed_transform_value() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let source = r#"structure Child {
+    let body = box(20mm, 20mm, 20mm)
+}
+structure Assembly {
+    sub a : Child at transform3(orient_identity(), vec3(10mm, 0mm, 0mm))
+    sub b : Child at transform3(orient_identity(), vec3(50mm, 0mm, 0mm))
+}"#;
+    let compiled = compile_source_with_stdlib(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "unexpected compile errors: {:?}",
+        compile_errors
+    );
+
+    // Use OcctKernelHandle directly so make_compound is reachable.
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(
+        Box::new(checker),
+        Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
+    );
+
+    let dist = engine.distance_between_placed(
+        &compiled,
+        "Assembly.a#realization[0]",
+        "Assembly.b#realization[0]",
+    );
+    let dist = dist.expect(
+        "distance_between_placed must return Some for two product subs with valid geometry",
+    );
+    // Centers 40mm apart, minus two 10mm half-extents → face gap = 0.02 m exactly.
+    let expected = 0.02_f64;
+    let tol = 1e-6_f64;
+    assert!(
+        (dist - expected).abs() < tol,
+        "distance between placed children expected {expected} m, got {dist} m \
+         (composed placement not applied?)"
+    );
+}
+
+/// step-5 control (T7, real OCCT, `OCCT_AVAILABLE`-gated) — identity-pose
+/// control: both subs at vec3(0,0,0) → coincident/overlapping boxes →
+/// `distance_between_placed` returns ≈ 0.0, proving the query operates on
+/// PLACED (world-coordinate) geometry rather than source-let positions.
+#[test]
+fn distance_between_coincident_placed_children_is_zero() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let source = r#"structure Child {
+    let body = box(20mm, 20mm, 20mm)
+}
+structure ControlAsm {
+    sub a : Child at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+    sub b : Child at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+}"#;
+    let compiled = compile_source_with_stdlib(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "unexpected compile errors: {:?}",
+        compile_errors
+    );
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(
+        Box::new(checker),
+        Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
+    );
+
+    let dist = engine.distance_between_placed(
+        &compiled,
+        "ControlAsm.a#realization[0]",
+        "ControlAsm.b#realization[0]",
+    );
+    let dist = dist
+        .expect("distance_between_placed must return Some for coincident product subs");
+    // Coincident/overlapping boxes: distance is 0.
+    let tol = 1e-6_f64;
+    assert!(
+        dist < tol,
+        "coincident placed children distance expected ≈ 0.0, got {dist} m \
+         (query not using placed geometry?)"
+    );
+}
