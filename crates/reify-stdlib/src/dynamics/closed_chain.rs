@@ -273,6 +273,55 @@ mod tests {
         }
     }
 
+    // S9: error guards — rank-deficient A ⇒ Singular; bad slice lengths ⇒ DimensionMismatch.
+    #[test]
+    fn singular_and_dimension_guards() {
+        // (a) Rank-deficient A: duplicate rows ⇒ Singular.
+        // M = diag(2,3,4), n=3, A = [[1,0,0],[1,0,0]] (m=2, duplicate rows)
+        let m_diag3 = [2.0_f64, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 4.0];
+        let a_dup = [1.0_f64, 0.0, 0.0, 1.0, 0.0, 0.0]; // two identical rows
+        let tau3 = [1.0_f64, 2.0, 3.0];
+        let rhs2 = [0.0_f64, 0.0];
+        let result = solve_closed_chain(&m_diag3, &tau3, &a_dup, &rhs2, 3, 2, DEFAULT_PIVOT_EPS);
+        assert_eq!(
+            result,
+            Err(ClosedChainError::Singular),
+            "duplicate-row A should yield Singular"
+        );
+
+        // (b) Dimension mismatch: tau_open wrong length.
+        let result2 = solve_closed_chain(
+            &m_diag3,
+            &tau3[..2], // length 2 instead of 3
+            &a_dup,
+            &rhs2,
+            3,
+            2,
+            DEFAULT_PIVOT_EPS,
+        );
+        assert_eq!(
+            result2,
+            Err(ClosedChainError::DimensionMismatch),
+            "short tau_open should yield DimensionMismatch"
+        );
+
+        // (c) Dimension mismatch: a_matrix wrong length.
+        let result3 = solve_closed_chain(
+            &m_diag3,
+            &tau3,
+            &a_dup[..4], // length 4 instead of m*n=6
+            &rhs2,
+            3,
+            2,
+            DEFAULT_PIVOT_EPS,
+        );
+        assert_eq!(
+            result3,
+            Err(ClosedChainError::DimensionMismatch),
+            "short a_matrix should yield DimensionMismatch"
+        );
+    }
+
     // S7: workless-constraint / virtual-work identity.
     // A=[1,-1] (m=1,n=2), θ̇=[1,1] satisfies A·θ̇=0 exactly.
     // Constraint torque Aᵀλ does zero net power on θ̇ ⇒ τ·θ̇ = τ_open·θ̇.
