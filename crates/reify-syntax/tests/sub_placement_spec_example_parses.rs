@@ -6,8 +6,10 @@
 //! asserts zero CST ERROR nodes and zero parse errors.  This guards that the spec
 //! §4.7/§8.3 example snippets remain parseable if the grammar ever changes.
 //!
-//! The fixture is the single source of truth: spec §4.7/§8.3 embed the exact bytes
-//! this gate validates, so the spec example can never silently drift from the grammar.
+//! The fixture is the canonical parse-target for this gate.  Note that the spec code
+//! blocks in §4.7/§8.3 are independently authored — there is no include/extraction
+//! mechanism keeping them byte-for-byte in sync with this file.  The gate validates
+//! that the fixture parses cleanly; it does not guarantee the spec snippets do.
 
 use reify_core::ModulePath;
 
