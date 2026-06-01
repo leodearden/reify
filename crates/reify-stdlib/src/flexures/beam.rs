@@ -1028,4 +1028,172 @@ mod tests {
             "7-arg Option(None) neutral defaults to length(0)"
         );
     }
+
+    #[test]
+    fn prb_fixed_fixed_beam_attaches_populated_compliance() {
+        // Fixed-guided beam (Howell §5 / PRD §6.1): transverse surface bending
+        // stress σ = 3·E·t·δ / L² at the displacement endpoint — the inverse of
+        // the auto validity δ = yield·L²/(3·E·t) (the surface-yield deflection),
+        // so a declared displacement past it drives the cached stress past yield.
+        let length = 0.02_f64;
+        let width = 0.005_f64;
+        let thickness = 0.0005_f64;
+        let e = 205e9_f64;
+        let yield_si = 310e6_f64;
+        let sigma_at = |delta: f64| 3.0 * e * thickness * delta / length.powi(2);
+        let delta_auto = yield_si * length.powi(2) / (3.0 * e * thickness);
+
+        // ── Part 1: auto endpoint (6-arg call, no declared range) ────────────
+        let auto = crate::eval_builtin(
+            "prb_fixed_fixed_beam",
+            &[
+                Value::length(length),
+                Value::length(width),
+                Value::length(thickness),
+                steel(),
+                origin(),
+                axis_y(),
+            ],
+        );
+        let fields = compliance_fields(&auto);
+        let f = |k: &str| {
+            fields
+                .get(&k.to_string())
+                .unwrap_or_else(|| panic!("FlexureCompliance missing `{k}`"))
+        };
+
+        // effective_stiffness (Real) == the joint's transverse spring_rate (k_trans).
+        let spring_si = match map_get(&auto, "spring_rate") {
+            Some(Value::Scalar { si_value, .. }) => *si_value,
+            other => panic!("expected spring_rate Scalar, got {other:?}"),
+        };
+        match f("effective_stiffness") {
+            Value::Real(r) => assert!(
+                (r - spring_si).abs() / spring_si < 1e-12,
+                "effective_stiffness {r} == spring_rate {spring_si}"
+            ),
+            other => panic!("effective_stiffness Real, got {other:?}"),
+        }
+
+        // max_stress (PRESSURE) == 3·E·t·δ_auto/L² (fixed-guided surface stress
+        // at the auto yield-deflection endpoint).
+        let expected_auto = sigma_at(delta_auto);
+        match f("max_stress") {
+            Value::Scalar { si_value, dimension } => {
+                assert_eq!(*dimension, DimensionVector::PRESSURE, "max_stress is PRESSURE");
+                assert!(
+                    (si_value - expected_auto).abs() / expected_auto < 1e-9,
+                    "auto max_stress {si_value} vs analytic {expected_auto}"
+                );
+            }
+            other => panic!("max_stress Scalar, got {other:?}"),
+        }
+
+        // prb_validity_range (Real) == the auto δ == the joint range half-width.
+        let (_, up) = range_lower_upper(map_get(&auto, "range").expect("range present"));
+        let range_half = length_scalar_si(up, "auto range upper");
+        match f("prb_validity_range") {
+            Value::Real(r) => assert!(
+                (r - delta_auto).abs() / delta_auto < 1e-9
+                    && (r - range_half).abs() / range_half < 1e-9,
+                "prb_validity_range {r} == δ_auto {delta_auto} == range half {range_half}"
+            ),
+            other => panic!("prb_validity_range Real, got {other:?}"),
+        }
+
+        // ── Part 2: declared displacement BEYOND yield deflection → at_yield ──
+        // δ = 1 mm > δ_auto (≈0.40 mm): σ(1mm) ≈ 769 MPa > 310 MPa yield. Arg
+        // layout (length, width, thickness, material, pivot, axis, neutral,
+        // declared_range) — declared_range is the LENGTH displacement half-width.
+        let big = 0.001_f64;
+        let yielding = crate::eval_builtin(
+            "prb_fixed_fixed_beam",
+            &[
+                Value::length(length),
+                Value::length(width),
+                Value::length(thickness),
+                steel(),
+                origin(),
+                axis_y(),
+                Value::length(0.0), // neutral
+                Value::length(big), // declared ±1 mm displacement
+            ],
+        );
+        assert!(
+            !yielding.is_undef(),
+            "declared-displacement call returns a joint, not Undef"
+        );
+        assert_eq!(
+            map_get(&yielding, "kind"),
+            Some(&Value::String("prismatic".to_string())),
+            "yielding fixed-fixed beam is still a prismatic joint"
+        );
+        // (a) range overridden to the declared ±1 mm.
+        let (ylo, yup) = range_lower_upper(map_get(&yielding, "range").expect("range present"));
+        assert!(
+            (length_scalar_si(yup, "declared range upper") - big).abs() / big < 1e-9
+                && (length_scalar_si(ylo, "declared range lower") + big).abs() / big < 1e-9,
+            "declared displacement overrides the joint range to ±{big}"
+        );
+        let yf = compliance_fields(&yielding);
+        let yg = |k: &str| yf.get(&k.to_string()).unwrap_or_else(|| panic!("missing `{k}`"));
+        // (b) max_stress at the declared endpoint, exceeding yield.
+        let expected_big = sigma_at(big);
+        assert!(
+            expected_big > yield_si,
+            "fixture sanity: σ(1mm)={expected_big} > yield {yield_si}"
+        );
+        match yg("max_stress") {
+            Value::Scalar { si_value, dimension } => {
+                assert_eq!(*dimension, DimensionVector::PRESSURE, "max_stress is PRESSURE");
+                assert!(
+                    (si_value - expected_big).abs() / expected_big < 1e-9,
+                    "declared max_stress {si_value} vs analytic {expected_big}"
+                );
+            }
+            other => panic!("max_stress Scalar, got {other:?}"),
+        }
+        // (c) at_yield true, negative margin.
+        assert_eq!(
+            yg("at_yield"),
+            &Value::Bool(true),
+            "declared 1mm drives at_yield true"
+        );
+        match yg("yield_margin") {
+            Value::Real(r) => assert!(*r < 0.0, "yielding ⇒ negative margin, got {r}"),
+            other => panic!("yield_margin Real, got {other:?}"),
+        }
+        // prb_validity_range still advertises the auto SAFE δ, not the declared one.
+        match yg("prb_validity_range") {
+            Value::Real(r) => assert!(
+                (r - delta_auto).abs() / delta_auto < 1e-9,
+                "prb_validity_range stays the auto safe δ {delta_auto}, got {r}"
+            ),
+            other => panic!("prb_validity_range Real, got {other:?}"),
+        }
+
+        // ── Part 3: declared displacement BELOW yield deflection → safe ──────
+        // δ = 0.2 mm < δ_auto: σ ≈ 154 MPa < 310 MPa ⇒ at_yield false.
+        let small = 0.0002_f64;
+        let safe = crate::eval_builtin(
+            "prb_fixed_fixed_beam",
+            &[
+                Value::length(length),
+                Value::length(width),
+                Value::length(thickness),
+                steel(),
+                origin(),
+                axis_y(),
+                Value::length(0.0),
+                Value::length(small),
+            ],
+        );
+        assert!(!safe.is_undef(), "safe declared-displacement call returns a joint");
+        let sf = compliance_fields(&safe);
+        assert_eq!(
+            sf.get(&"at_yield".to_string()).expect("at_yield present"),
+            &Value::Bool(false),
+            "declared 0.2mm stays below yield"
+        );
+    }
 }

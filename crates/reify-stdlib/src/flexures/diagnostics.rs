@@ -467,4 +467,37 @@ mod tests {
             "non-flexure name short-circuits to empty even with a joint result"
         );
     }
+
+    #[test]
+    fn flexure_diagnose_displacement_family_geometry_invalid() {
+        // The displacement-family ctors (fixed-fixed beam, prismatic blade) reject
+        // degenerate geometry (thickness ≥ length) with Undef; flexure_diagnose
+        // re-classifies that Undef as E_FlexureGeometryInvalid (Error), exactly
+        // like the cantilever path (step-7) — confirming classify_geometry_invalid
+        // covers these names too.
+        let degenerate = vec![
+            Value::length(0.002), // L = 2 mm
+            Value::length(0.005),
+            Value::length(0.003), // t = 3 mm ≥ L (degenerate)
+            steel(),
+            origin(),
+            axis_y(),
+        ];
+        for name in ["prb_fixed_fixed_beam", "prb_prismatic_blade"] {
+            let result = crate::eval_builtin(name, &degenerate);
+            assert!(result.is_undef(), "{name}: degenerate geometry returns Undef");
+            let diags = flexure_diagnose(name, &degenerate, &result);
+            let geo = find(&diags, DiagnosticCode::FlexureGeometryInvalid);
+            assert_eq!(
+                geo.severity,
+                Severity::Error,
+                "{name}: FlexureGeometryInvalid is an Error"
+            );
+            assert!(
+                geo.message.to_lowercase().contains("geometry"),
+                "{name}: geometry-invalid message describes the degeneracy: {}",
+                geo.message
+            );
+        }
+    }
 }
