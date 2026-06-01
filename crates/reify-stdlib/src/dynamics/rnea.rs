@@ -736,6 +736,85 @@ mod tests {
         let _ = inverse_dynamics_open_chain(&[link], default_gravity());
     }
 
+    // ── joint-space inertia matrix via unit-acceleration RNEA ─────────────────
+    //
+    // The double-pendulum Lagrangian inertia matrix (independent of q1):
+    //
+    //   M = [[5/3 + cos(q2),        1/3 + 0.5·cos(q2)],
+    //        [1/3 + 0.5·cos(q2),    1/3              ]]
+    //
+    // assemble_joint_space_inertia must recover this exactly (to ≤1e-9) by
+    // driving unit accelerations through inverse_dynamics_open_chain with zero
+    // velocity and zero gravity (τ = M·eⱼ = column j).
+    //
+    // Achievability: unit-acceleration RNEA produces M exactly to float
+    // roundoff; the analytic double-pendulum M is the established reference
+    // already used in double_pendulum_dynamic_cross_validation.
+    #[test]
+    fn joint_space_inertia_matches_double_pendulum_analytic() {
+        const TOL: f64 = 1e-9;
+
+        let q2_values = [0.0_f64, 0.3, 0.7, 1.2, -0.5];
+        // Use a fixed q1=0.4 (M is independent of q1 for this system).
+        let q1 = 0.4_f64;
+
+        for &q2 in &q2_values {
+            let c2 = q2.cos();
+            // Analytic M (row-major 2×2):
+            let m_analytic = [
+                5.0 / 3.0 + c2,        // M[0,0]
+                1.0 / 3.0 + 0.5 * c2,  // M[0,1]
+                1.0 / 3.0 + 0.5 * c2,  // M[1,0]  (symmetric)
+                1.0 / 3.0_f64,          // M[1,1]
+            ];
+
+            // Build the double-pendulum links (same geometry as the cross-
+            // validation test; q_dot / q_ddot are placeholders — zeroed inside).
+            let link0 = RneaLink {
+                parent: None,
+                parent_to_child: joint_xform(ry_quat(q1), [0.0, 0.0, 0.0]),
+                subspace: vec![SpatialVector6::from_angular_linear(
+                    [0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0],
+                )],
+                mass: 1.0,
+                com: [0.5, 0.0, 0.0],
+                inertia_about_com: [[0.0, 0.0, 0.0], [0.0, 1.0 / 12.0, 0.0], [0.0, 0.0, 0.0]],
+                q_dot: vec![0.0],
+                q_ddot: vec![0.0],
+                compliance: None,
+            };
+            let link1 = RneaLink {
+                parent: Some(0),
+                parent_to_child: joint_xform(ry_quat(q2), [1.0, 0.0, 0.0]),
+                subspace: vec![SpatialVector6::from_angular_linear(
+                    [0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0],
+                )],
+                mass: 1.0,
+                com: [0.5, 0.0, 0.0],
+                inertia_about_com: [[0.0, 0.0, 0.0], [0.0, 1.0 / 12.0, 0.0], [0.0, 0.0, 0.0]],
+                q_dot: vec![0.0],
+                q_ddot: vec![0.0],
+                compliance: None,
+            };
+
+            let m = assemble_joint_space_inertia(&[link0, link1]);
+
+            assert_eq!(m.len(), 4, "q2={q2}: M must be 2×2 = 4 entries");
+
+            for (idx, (&got, &want)) in m.iter().zip(m_analytic.iter()).enumerate() {
+                let row = idx / 2;
+                let col = idx % 2;
+                let err = (got - want).abs();
+                assert!(
+                    err <= TOL,
+                    "q2={q2:.2}: M[{row},{col}]: got {got:.12}, want {want:.12}, |err|={err:.2e} > {TOL:.2e}"
+                );
+            }
+        }
+    }
+
     // ── multi-DOF joint subspace accumulation ─────────────────────────────────
     //
     // Exercises the multi-column vJ/aJ accumulation loops and the per-DOF
