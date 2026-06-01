@@ -10770,3 +10770,79 @@ fn get_entity_tree_aux_realization_default_visible_false() {
         "aux `let blank` realization must have default_visible == false"
     );
 }
+
+/// step-3 RED: a root assembly with a plain `sub part : Part at <pose>` and an
+/// `aux sub jig : Jig at <pose>`, where Part and Jig each declare a plain
+/// `let body = box(...)` (NOT directly aux).
+///
+/// After get_entity_tree():
+/// - `Asm.part#realization[0]`.default_visible == true  (product child, visible)
+/// - `Asm.jig#realization[0]`.default_visible == false  (inherited from aux sub)
+///
+/// Also verifies that placed children appear in the tree under composed paths
+/// (world-pose surfacing parity with T5).
+///
+/// Fails because step-2 only reads `real.is_aux` — the jig body is incorrectly
+/// true. Passes after step-4 threads `aux_ancestor` through build_template_node.
+#[test]
+fn get_entity_tree_aux_sub_inherits_default_visible_false() {
+    let source = r#"structure Part {
+    let body = box(10mm, 10mm, 10mm)
+}
+structure Jig {
+    let body = box(5mm, 5mm, 5mm)
+}
+structure Asm {
+    sub part : Part at transform3(orient_identity(), vec3(30mm, 0mm, 0mm))
+    aux sub jig : Jig at transform3(orient_identity(), vec3(50mm, 0mm, 0mm))
+}"#;
+    let mut session = make_session();
+    session.load_from_source(source, "asm").expect("load");
+
+    let tree = session.get_entity_tree();
+
+    let asm_root = tree
+        .iter()
+        .find(|n| n.entity_path == "Asm")
+        .expect("Asm root must exist");
+
+    // Part sub-node: find the realization child under Asm.part
+    let part_sub = asm_root
+        .children
+        .iter()
+        .find(|n| n.entity_path == "Asm.part")
+        .expect("Asm.part sub node must exist");
+    let part_realization = part_sub
+        .children
+        .iter()
+        .find(|n| n.kind == "realization")
+        .expect("Asm.part#realization[0] must exist under Asm.part");
+    assert_eq!(
+        part_realization.entity_path, "Asm.part#realization[0]",
+        "placed product child must have composed entity_path"
+    );
+    assert!(
+        part_realization.default_visible,
+        "Asm.part#realization[0] must be default_visible == true (product child, non-aux)"
+    );
+
+    // Jig sub-node: find the realization child under Asm.jig
+    let jig_sub = asm_root
+        .children
+        .iter()
+        .find(|n| n.entity_path == "Asm.jig")
+        .expect("Asm.jig sub node must exist");
+    let jig_realization = jig_sub
+        .children
+        .iter()
+        .find(|n| n.kind == "realization")
+        .expect("Asm.jig#realization[0] must exist under Asm.jig");
+    assert_eq!(
+        jig_realization.entity_path, "Asm.jig#realization[0]",
+        "placed aux child must have composed entity_path"
+    );
+    assert!(
+        !jig_realization.default_visible,
+        "Asm.jig#realization[0] must be default_visible == false (inherited from aux sub)"
+    );
+}
