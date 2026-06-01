@@ -2958,4 +2958,134 @@ mod tests {
             "3 args should return Undef"
         );
     }
+
+    // ── orient_euler EulerConvention enum-value tests (step-3 RED) ──────────
+
+    /// For each Tait-Bryan variant, assert enum path matches lowercase-string path.
+    #[test]
+    fn orient_euler_enum_xyz_matches_string_xyz() {
+        let a = 0.1_f64;
+        let b = 0.2_f64;
+        let c = 0.3_f64;
+        let by_enum = eval_builtin(
+            "orient_euler",
+            &[
+                Value::Enum { type_name: "EulerConvention".to_string(), variant: "XYZ".to_string() },
+                Value::Real(a), Value::Real(b), Value::Real(c),
+            ],
+        );
+        let by_str = eval_builtin(
+            "orient_euler",
+            &[Value::String("xyz".to_string()), Value::Real(a), Value::Real(b), Value::Real(c)],
+        );
+        assert!(!by_enum.is_undef(), "EulerConvention.XYZ should not return Undef");
+        assert_eq!(by_enum, by_str, "EulerConvention.XYZ should equal string 'xyz'");
+    }
+
+    #[test]
+    fn orient_euler_enum_xzy_matches_string_xzy() {
+        let a = 0.1_f64; let b = 0.2_f64; let c = 0.3_f64;
+        let by_enum = eval_builtin("orient_euler", &[
+            Value::Enum { type_name: "EulerConvention".to_string(), variant: "XZY".to_string() },
+            Value::Real(a), Value::Real(b), Value::Real(c),
+        ]);
+        let by_str = eval_builtin("orient_euler", &[
+            Value::String("xzy".to_string()), Value::Real(a), Value::Real(b), Value::Real(c),
+        ]);
+        assert!(!by_enum.is_undef(), "EulerConvention.XZY should not return Undef");
+        assert_eq!(by_enum, by_str);
+    }
+
+    #[test]
+    fn orient_euler_enum_yxz_matches_string_yxz() {
+        let a = 0.1_f64; let b = 0.2_f64; let c = 0.3_f64;
+        let by_enum = eval_builtin("orient_euler", &[
+            Value::Enum { type_name: "EulerConvention".to_string(), variant: "YXZ".to_string() },
+            Value::Real(a), Value::Real(b), Value::Real(c),
+        ]);
+        let by_str = eval_builtin("orient_euler", &[
+            Value::String("yxz".to_string()), Value::Real(a), Value::Real(b), Value::Real(c),
+        ]);
+        assert!(!by_enum.is_undef(), "EulerConvention.YXZ should not return Undef");
+        assert_eq!(by_enum, by_str);
+    }
+
+    #[test]
+    fn orient_euler_enum_yzx_matches_string_yzx() {
+        let a = 0.1_f64; let b = 0.2_f64; let c = 0.3_f64;
+        let by_enum = eval_builtin("orient_euler", &[
+            Value::Enum { type_name: "EulerConvention".to_string(), variant: "YZX".to_string() },
+            Value::Real(a), Value::Real(b), Value::Real(c),
+        ]);
+        let by_str = eval_builtin("orient_euler", &[
+            Value::String("yzx".to_string()), Value::Real(a), Value::Real(b), Value::Real(c),
+        ]);
+        assert!(!by_enum.is_undef(), "EulerConvention.YZX should not return Undef");
+        assert_eq!(by_enum, by_str);
+    }
+
+    #[test]
+    fn orient_euler_enum_zxy_matches_string_zxy() {
+        let a = 0.1_f64; let b = 0.2_f64; let c = 0.3_f64;
+        let by_enum = eval_builtin("orient_euler", &[
+            Value::Enum { type_name: "EulerConvention".to_string(), variant: "ZXY".to_string() },
+            Value::Real(a), Value::Real(b), Value::Real(c),
+        ]);
+        let by_str = eval_builtin("orient_euler", &[
+            Value::String("zxy".to_string()), Value::Real(a), Value::Real(b), Value::Real(c),
+        ]);
+        assert!(!by_enum.is_undef(), "EulerConvention.ZXY should not return Undef");
+        assert_eq!(by_enum, by_str);
+    }
+
+    #[test]
+    fn orient_euler_enum_zyx_matches_string_zyx() {
+        let a = 0.1_f64; let b = 0.2_f64; let c = 0.3_f64;
+        let by_enum = eval_builtin("orient_euler", &[
+            Value::Enum { type_name: "EulerConvention".to_string(), variant: "ZYX".to_string() },
+            Value::Real(a), Value::Real(b), Value::Real(c),
+        ]);
+        let by_str = eval_builtin("orient_euler", &[
+            Value::String("zyx".to_string()), Value::Real(a), Value::Real(b), Value::Real(c),
+        ]);
+        assert!(!by_enum.is_undef(), "EulerConvention.ZYX should not return Undef");
+        assert_eq!(by_enum, by_str);
+    }
+
+    #[test]
+    fn orient_euler_enum_wrong_type_name_returns_undef() {
+        // Enum from a different type must be rejected.
+        assert!(
+            eval_builtin("orient_euler", &[
+                Value::Enum { type_name: "OutputFormat".to_string(), variant: "STEP".to_string() },
+                Value::Real(0.1), Value::Real(0.2), Value::Real(0.3),
+            ]).is_undef(),
+            "Enum with wrong type_name should return Undef"
+        );
+    }
+
+    #[test]
+    fn orient_euler_enum_unknown_variant_returns_undef() {
+        // Unknown variant should fall through to Undef.
+        assert!(
+            eval_builtin("orient_euler", &[
+                Value::Enum { type_name: "EulerConvention".to_string(), variant: "ABC".to_string() },
+                Value::Real(0.1), Value::Real(0.2), Value::Real(0.3),
+            ]).is_undef(),
+            "Unknown EulerConvention variant should return Undef"
+        );
+    }
+
+    #[test]
+    fn orient_euler_uppercase_string_still_returns_undef() {
+        // Regression: String "XYZ" (not enum) must still be rejected (case-sensitive).
+        // This test mirrors orient_euler_uppercase_convention_returns_undef at line 1426.
+        assert!(
+            eval_builtin("orient_euler", &[
+                Value::String("XYZ".to_string()),
+                Value::Real(0.1), Value::Real(0.2), Value::Real(0.3),
+            ]).is_undef(),
+            "Uppercase String 'XYZ' must still return Undef (enum path only case-folds)"
+        );
+    }
 }
