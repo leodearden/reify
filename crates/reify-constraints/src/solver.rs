@@ -397,8 +397,8 @@ fn compute_total_violation(
 /// - `BinOp::And`: recurse into both branches
 /// - `Eq`, `Ne`, `Or`, and all other ops: skip (no well-defined signed interior slack)
 fn collect_slack_terms(expr: &CompiledExpr, slacks: &mut Vec<CompiledExpr>) {
-    match &expr.kind {
-        CompiledExprKind::BinOp { op, left, right } => match op {
+    if let CompiledExprKind::BinOp { op, left, right } = &expr.kind {
+        match op {
             BinOp::Ge | BinOp::Gt => {
                 // Interior slack: left − right > 0 when left ≥ right (satisfied, interior)
                 let slack_type = left.result_type.clone();
@@ -426,8 +426,7 @@ fn collect_slack_terms(expr: &CompiledExpr, slacks: &mut Vec<CompiledExpr>) {
             }
             // Eq, Ne, Or, arithmetic ops — no well-defined signed interior slack
             _ => {}
-        },
-        _ => {}
+        }
     }
 }
 
