@@ -1874,13 +1874,12 @@ fn degenerate_shell_pinched_cylinder_is_closer_to_reference_than_flat_mitc3_plus
 
 // ─── task 4065 pre-refinement baselines (prereq-1) ───────────────────────────
 //
-// The following ratios were measured against the DELIBERATELY-MINIMAL
-// centroid-only ANS-membrane of task 4069 (commit 0e41f75554) composing the
-// full integrated stack:
+// The following ratios were measured against the bubble-INERT degenerate+ANS
+// stack of task 4069 (commit 0e41f75554, centroid-only ANS membrane, K_NB ≡ 0):
 //
 //   build_shell_stiffnesses_degenerate_ans
 //     → shell_element_stiffness_degenerate_ans         (shell_assembly.rs:1104)
-//       → degenerate_stiffness_core(assumed_membrane=true)     (shell_assembly.rs:858)
+//       → degenerate_stiffness_core(assumed_membrane=true, bubble=false)
 //           ├─ 4068 substrate: degenerate_membrane_bending_b (varying J, per-node V_i)
 //           ├─ 4069 ANS-membrane: degenerate_assumed_membrane_b (centroid covariant)
 //           └─ carried 3392 MITC3+ shear: degenerate_transverse_shear_b (interior tying)
@@ -1889,22 +1888,25 @@ fn degenerate_shell_pinched_cylinder_is_closer_to_reference_than_flat_mitc3_plus
 //   Pinched cylinder 4×4: ~3.359e-6 / 1.8248e-5 → ratio ≈ 0.184 (5.43× under)
 //   Hemisphere 4×4:       ~9.4e-3   / 0.0940    → ratio ≈ 0.10  (~10× under)
 //
-// The pinched-cylinder absolute band test (step-3/4) asserts the refined stack
-// reaches ratio ∈ [0.5, 2.0] (Bathe–Lee 2014, ~50%/4×4).  The hemisphere
-// honest-report test (step-5/6) records the honest post-refinement ratio for
-// FE review per design doc §6.
+// These are the "before" anchors for task 4065's K_NB rotation-bubble activation:
+//   - Pinched cylinder: `degenerate_shell_ans_bubble_pinched_cylinder_strictly_improves_over_inert_baseline`
+//     asserts ratio(bubble) > PRE_REFINEMENT_PINCHED_RATIO strictly (RELATIVE signal).
+//     Observed 4×4 gain: ratio(ANS inert)=0.184 → ratio(ANS+bubble)=0.309 (+68%).
+//   - Hemisphere: `degenerate_shell_ans_bubble_hemisphere_honest_report` records the
+//     honest post-activation ratio for FE review (no absolute band; see design doc §6).
+//
+// Absolute ~50%/4×4 MacNeal-Harder band parked with deferred task 4136.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Pre-refinement pinched-cylinder ratio (computed/ref) with the centroid-only
-/// ANS membrane (task 4069 baseline, commit 0e41f75554).  Used as the "before"
-/// anchor in the step-4 absolute-band test to confirm the refinement closes the
-/// gap.
+/// Pre-refinement pinched-cylinder ratio (computed/ref) with the bubble-inert
+/// ANS membrane (task 4069 baseline, K_NB ≡ 0, commit 0e41f75554).  Used as
+/// the "before" anchor in the step-3/4 relative-improvement assertion: the
+/// K_NB activation (task 4065) must strictly exceed this value.
 const PRE_REFINEMENT_PINCHED_RATIO: f64 = 0.184;
 
-/// Pre-refinement hemisphere ratio (computed/ref) with the centroid-only ANS
-/// membrane (task 4069 baseline).  The post-refinement honest ratio is compared
-/// against this in the step-6 honest-report to confirm the refinement strictly
-/// improves double-curvature accuracy.
+/// Pre-refinement hemisphere ratio (computed/ref) with the bubble-inert ANS
+/// membrane (task 4069 baseline, K_NB ≡ 0).  The post-activation honest ratio
+/// is compared against this non-regression gate in the step-5/6 honest-report.
 const PRE_REFINEMENT_HEMISPHERE_RATIO: f64 = 0.10;
 
 /// **Observable signal (task 4069 step-13/14).** Activating the
@@ -2240,14 +2242,28 @@ fn degenerate_shell_hemisphere_outward_load_radial_displacement_is_outward() {
 /// pinched-cylinder radial displacement ratio above the bubble-inert ANS baseline
 /// ([`shell_element_stiffness_degenerate_ans`], task 4069).
 ///
+/// # Observed 4×4 values (step-4 measured-gain artifact)
+///
+/// | Quantity               | Value         |
+/// |------------------------|---------------|
+/// | radial (ANS inert)     | ≈ 3.359e-6    |
+/// | ratio (ANS inert)      | ≈ 0.184       |
+/// | radial (ANS + bubble)  | ≈ 5.646e-6    |
+/// | ratio (ANS + bubble)   | ≈ 0.309       |
+/// | gain                   | +68% (+0.125) |
+///
+/// MacNeal-Harder reference: 1.8248e-5; absolute ~50%/4×4 target parked with
+/// deferred task 4136 (ratio 0.309 is meaningful progress but not yet ≥0.5).
+///
 /// # Achievability (Schur/Loewner argument)
 ///
 /// The bubble coupling K_NB ≠ 0 on curved (tilted-director) elements → the Schur
 /// condensation `K* = K_NN − K_NB·K_BB⁻¹·K_BN` yields K*(bubble) ≼ K_NN (Loewner
-/// order with STRICT inequality when K_NB ≠ 0, because K_BB is SPD).  Assembly
-/// preserves the order: K_assembled(bubble) ≼ K_assembled(ANS inert).  The radial
-/// displacement is work-conjugate to the point load (`= fᵀK⁻¹f`), so a softer K
-/// strictly increases it — hence ratio strictly rises above 0.184 toward 1.0.
+/// order with STRICT inequality when K_NB ≠ 0, because K_BB is SPD and computed
+/// consistently with K_NB from the same degenerate kinematics).  Assembly preserves
+/// the order: K_assembled(bubble) ≼ K_assembled(ANS inert).  The radial displacement
+/// is work-conjugate to the point load (`= fᵀK⁻¹f`), so a softer K strictly
+/// increases it — hence ratio strictly rises above 0.184 toward 1.0.
 ///
 /// # Relative / honest signal — no absolute band asserted
 ///
@@ -2321,5 +2337,5 @@ fn degenerate_shell_ans_bubble_pinched_cylinder_strictly_improves_over_inert_bas
         ratio - PRE_REFINEMENT_PINCHED_RATIO,
     );
     // Surface the measured ratio for FE review (no band-gaming; absolute target parked with 4136).
-    // OBSERVED 4×4 ratio: see docstring after step-4 GREEN.
+    // OBSERVED 4×4: radial=5.646e-6, ratio=0.309 — see docstring for full measured-gain table.
 }

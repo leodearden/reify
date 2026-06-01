@@ -993,10 +993,17 @@ fn degenerate_stiffness_core(
                 }
             }
 
-            // ---- Nodal↔bubble coupling K_NB / K_BN (task 4065) ----
+            // ---- Nodal↔bubble coupling K_NB / K_BN + bubble self-stiffness K_BB ----
             // Active only on curved (non-parallel-director) elements.  On flat
             // patches the short-circuit above sets bubble_active=false, so K_NB
             // stays bit-zero and the condensation remains a no-op (K* = K_NN).
+            //
+            // K_BB is also accumulated here (on the curved path) using the SAME
+            // degenerate (curved) Jacobian so that the full 20×20 block
+            // [K_NN K_NB; K_BN K_BB] is a proper B^T·D·B form and the Schur
+            // complement K* = K_NN − K_NB·K_BB⁻¹·K_BN is guaranteed PSD.
+            // Using the flat K_BB (below) on a curved element breaks this
+            // guarantee and can produce indefinite K* after assembly.
             if bubble_active {
                 // Bubble bending B (3×2): Δβ_x (col 0) and Δβ_y (col 1).
                 let b_bub = degenerate_bubble_bending_b(nodes, directors, thicknesses, c3);
@@ -1022,51 +1029,66 @@ fn degenerate_stiffness_core(
                     k[a][BY] += nb_y * scale;
                     k[BY][a] += nb_y * scale;
                 }
+                // K_BB (bubble self-stiffness, curved kinematics — consistent with K_NB).
+                // B_bub^T · D_pl · B_bub, same quadrature point and scale as K_NB.
+                for a in 0..2 {
+                    let ca = if a == 0 { BX } else { BY };
+                    for b in 0..2 {
+                        let cb = if b == 0 { BX } else { BY };
+                        let v = b_bub[0][a] * db_bub[0][b]
+                            + b_bub[1][a] * db_bub[1][b]
+                            + b_bub[2][a] * db_bub[2][b];
+                        k[ca][cb] += v * scale;
+                    }
+                }
             }
         }
     }
 
-    // ---- Bubble bending self-term K_BB (retained 3392 skeleton) ----
-    // Computed from the flat mid-surface kinematics (three nodes are always
-    // coplanar, so build_shell_frame is well-posed). On a flat facet this equals
-    // the MITC3+ K_BB exactly; on a curved-director patch it is a well-posed SPD
-    // block. Either way K_NB ≡ 0 (the nodal B-matrices above never touch the
-    // bubble columns), so K_BB is condensed away — its only role here is a
-    // well-posed (SPD) static condensation. Bubble activation (K_NB ≠ 0) is the
-    // ANS-membrane work of task 4065.
-    let frame = build_shell_frame(nodes);
-    let kin = crate::shell_kinematics::shell_kinematics(nodes, &frame);
-    let inv_t = kin.jac2_inv_t;
-    let det2 = kin.det2;
-    let t_avg = (thicknesses[0] + thicknesses[1] + thicknesses[2]) / 3.0;
-    let t3_dpl = {
-        let factor = t_avg * t_avg * t_avg / 12.0;
-        let mut td = [[0.0_f64; 3]; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                td[i][j] = factor * d_pl[i][j];
-            }
-        }
-        td
-    };
-    let w_ref = 0.5 / (interior.len() as f64);
-    for tp in interior.iter() {
-        let g_ref = Mitc3Plus.bubble_grad_at(tp.coord);
-        // physical bubble gradient = J2⁻ᵀ · ∇_ref f_b
-        let fbx = inv_t[0][0] * g_ref[0] + inv_t[0][1] * g_ref[1];
-        let fby = inv_t[1][0] * g_ref[0] + inv_t[1][1] * g_ref[1];
-        let bb = [[0.0, -fbx], [fby, 0.0], [fbx, -fby]];
-        for a in 0..2 {
-            for b in 0..2 {
-                let mut v = 0.0;
-                for rr in 0..3 {
-                    for s in 0..3 {
-                        v += bb[rr][a] * t3_dpl[rr][s] * bb[s][b];
-                    }
+    // ---- Bubble bending self-term K_BB (flat mid-surface kinematics, inert path) ----
+    // Used ONLY on the inert path (bubble_active=false): flat-facet Jacobian from
+    // build_shell_frame makes this equal to the MITC3+ K_BB exactly.  K_NB ≡ 0
+    // there (the coupling loop above is never entered), so K_BB is condensed away —
+    // its only role is an SPD denominator for a well-posed condensation expression.
+    //
+    // On the bubble-active (curved) path K_BB was accumulated from the degenerate
+    // (curved) kinematics inside the quadrature loop above so that [K_NN K_NB;
+    // K_BN K_BB] is a proper B^T·D·B Gram matrix and K* is guaranteed PSD.
+    if !bubble_active {
+        let frame = build_shell_frame(nodes);
+        let kin = crate::shell_kinematics::shell_kinematics(nodes, &frame);
+        let inv_t = kin.jac2_inv_t;
+        let det2 = kin.det2;
+        let t_avg = (thicknesses[0] + thicknesses[1] + thicknesses[2]) / 3.0;
+        let t3_dpl = {
+            let factor = t_avg * t_avg * t_avg / 12.0;
+            let mut td = [[0.0_f64; 3]; 3];
+            for i in 0..3 {
+                for j in 0..3 {
+                    td[i][j] = factor * d_pl[i][j];
                 }
-                let ca = if a == 0 { BX } else { BY };
-                let cb = if b == 0 { BX } else { BY };
-                k[ca][cb] += v * w_ref * det2;
+            }
+            td
+        };
+        let w_ref = 0.5 / (interior.len() as f64);
+        for tp in interior.iter() {
+            let g_ref = Mitc3Plus.bubble_grad_at(tp.coord);
+            // physical bubble gradient = J2⁻ᵀ · ∇_ref f_b
+            let fbx = inv_t[0][0] * g_ref[0] + inv_t[0][1] * g_ref[1];
+            let fby = inv_t[1][0] * g_ref[0] + inv_t[1][1] * g_ref[1];
+            let bb = [[0.0, -fbx], [fby, 0.0], [fbx, -fby]];
+            for a in 0..2 {
+                for b in 0..2 {
+                    let mut v = 0.0;
+                    for rr in 0..3 {
+                        for s in 0..3 {
+                            v += bb[rr][a] * t3_dpl[rr][s] * bb[s][b];
+                        }
+                    }
+                    let ca = if a == 0 { BX } else { BY };
+                    let cb = if b == 0 { BX } else { BY };
+                    k[ca][cb] += v * w_ref * det2;
+                }
             }
         }
     }
