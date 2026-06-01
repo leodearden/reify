@@ -64,7 +64,147 @@ pub(crate) fn modal_aware_dt(freqs_hz: &[f64], duration: f64) -> f64 {
     }
 }
 
+use crate::dynamics::spatial::SpatialTransform6;
 use crate::modal::transient::{reconstruct_series, solve_modal_response};
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+/// Minimal pure-Rust end-effector pose: position + orientation quaternion.
+///
+/// Orientation is stored as a `(w, x, y, z)` unit quaternion matching the
+/// `SpatialTransform6`/`Frame3` convention.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Pose3 {
+    /// Position in world frame [x, y, z] (metres).
+    pub(crate) position: [f64; 3],
+    /// Orientation as `(w, x, y, z)` unit quaternion.  Represents the
+    /// rotation FROM the world frame TO this body's local frame, i.e. the
+    /// same direction as `E` in `SpatialTransform6`.
+    pub(crate) quaternion: [f64; 4],
+}
+
+// ── Pure-Rust nominal forward-kinematics ─────────────────────────────────────
+
+/// Compute the nominal end-effector pose (position + orientation) by composing
+/// a chain of `parent_to_child` [`SpatialTransform6`] transforms root→effector.
+///
+/// Each `SpatialTransform6` has block form `X(r, E) = [[E, 0]; [−r̃·E, E]]`
+/// (Featherstone Eq. 2.24) where `r` is the child-frame origin expressed in the
+/// parent frame and `E` maps parent-frame motion vectors to child-frame.
+///
+/// The FK algorithm:
+/// 1. Start: accumulated rotation `R = I₃` (world frame), position `p = 0`.
+/// 2. For each link transform `X_i`:
+///    a. Extract `E_i` from the top-left 3×3.
+///    b. Recover `r_i` from `r̃_i = −BL_i · E_i^T` where `BL_i` is bottom-left.
+///    c. `p += R^T · r_i`   (r_i is in parent frame; R^T converts to world).
+///    d. `R = E_i · R`      (update accumulated world→child rotation).
+/// 3. Return `Pose3 { position: p, quaternion: rotation_matrix_to_quat(R^T) }`.
+///
+/// The chain must be in topological order (parent before child) with the
+/// effector link last.  An empty chain returns the identity pose.
+pub(crate) fn nominal_fk_chain(link_chain: &[SpatialTransform6]) -> Pose3 {
+    // R maps from world frame to current accumulated frame (same direction as E).
+    let mut r_acc = [[1.0_f64, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    let mut p_world = [0.0_f64; 3];
+
+    for x in link_chain {
+        let m = x.as_matrix();
+
+        // Extract E (top-left 3×3).
+        let e = [
+            [m[0], m[1], m[2]],
+            [m[6], m[7], m[8]],
+            [m[12], m[13], m[14]],
+        ];
+
+        // Extract BL (bottom-left 3×3): indices [row*6+col] for rows 3..6, cols 0..3.
+        let bl = [
+            [m[18], m[19], m[20]],
+            [m[24], m[25], m[26]],
+            [m[30], m[31], m[32]],
+        ];
+
+        // Recover r̃ = -BL · E^T, then unpack r from the skew matrix.
+        // r̃[2][1] = x, r̃[0][2] = y, r̃[1][0] = z
+        let et = [[e[0][0], e[1][0], e[2][0]],
+                  [e[0][1], e[1][1], e[2][1]],
+                  [e[0][2], e[1][2], e[2][2]]];
+        let neg_bl = [[-bl[0][0], -bl[0][1], -bl[0][2]],
+                      [-bl[1][0], -bl[1][1], -bl[1][2]],
+                      [-bl[2][0], -bl[2][1], -bl[2][2]]];
+        // r̃ = neg_bl · E^T (= -BL · E^T)
+        let r_tilde = mat3x3_mul(neg_bl, et);
+
+        // Unpack r from skew matrix: r̃ = [[0,-z,y];[z,0,-x];[-y,x,0]]
+        let r_i = [r_tilde[2][1], r_tilde[0][2], r_tilde[1][0]];
+
+        // p_world += R_acc^T · r_i  (convert r_i from parent frame to world frame)
+        let r_acc_t = [[r_acc[0][0], r_acc[1][0], r_acc[2][0]],
+                       [r_acc[0][1], r_acc[1][1], r_acc[2][1]],
+                       [r_acc[0][2], r_acc[1][2], r_acc[2][2]]];
+        p_world[0] += r_acc_t[0][0] * r_i[0] + r_acc_t[0][1] * r_i[1] + r_acc_t[0][2] * r_i[2];
+        p_world[1] += r_acc_t[1][0] * r_i[0] + r_acc_t[1][1] * r_i[1] + r_acc_t[1][2] * r_i[2];
+        p_world[2] += r_acc_t[2][0] * r_i[0] + r_acc_t[2][1] * r_i[1] + r_acc_t[2][2] * r_i[2];
+
+        // R_acc = E_i · R_acc
+        r_acc = mat3x3_mul(e, r_acc);
+    }
+
+    // Orientation: R_acc maps world→effector; for the pose we return the
+    // rotation in the canonical "frame's orientation in world" sense.
+    let q = rotation_matrix_to_quat(r_acc);
+    Pose3 { position: p_world, quaternion: q }
+}
+
+/// 3×3 matrix product (nested-array row-major).
+#[inline]
+fn mat3x3_mul(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    let mut m = [[0.0; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            m[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
+        }
+    }
+    m
+}
+
+/// Convert a rotation matrix `E` (maps world → local) to a `(w, x, y, z)`
+/// unit quaternion (Shepperd method, numerically stable).
+///
+/// The returned quaternion satisfies the same convention as `Frame3::rotation`.
+fn rotation_matrix_to_quat(e: [[f64; 3]; 3]) -> [f64; 4] {
+    let trace = e[0][0] + e[1][1] + e[2][2];
+    if trace > 0.0 {
+        let s = 0.5 / (trace + 1.0).sqrt();
+        let w = 0.25 / s;
+        let x = (e[2][1] - e[1][2]) * s;
+        let y = (e[0][2] - e[2][0]) * s;
+        let z = (e[1][0] - e[0][1]) * s;
+        [w, x, y, z]
+    } else if e[0][0] > e[1][1] && e[0][0] > e[2][2] {
+        let s = 2.0 * (1.0 + e[0][0] - e[1][1] - e[2][2]).sqrt();
+        let w = (e[2][1] - e[1][2]) / s;
+        let x = 0.25 * s;
+        let y = (e[0][1] + e[1][0]) / s;
+        let z = (e[0][2] + e[2][0]) / s;
+        [w, x, y, z]
+    } else if e[1][1] > e[2][2] {
+        let s = 2.0 * (1.0 + e[1][1] - e[0][0] - e[2][2]).sqrt();
+        let w = (e[0][2] - e[2][0]) / s;
+        let x = (e[0][1] + e[1][0]) / s;
+        let y = 0.25 * s;
+        let z = (e[1][2] + e[2][1]) / s;
+        [w, x, y, z]
+    } else {
+        let s = 2.0 * (1.0 + e[2][2] - e[0][0] - e[1][1]).sqrt();
+        let w = (e[1][0] - e[0][1]) / s;
+        let x = (e[0][2] + e[2][0]) / s;
+        let y = (e[1][2] + e[2][1]) / s;
+        let z = 0.25 * s;
+        [w, x, y, z]
+    }
+}
 
 /// Superpose modal responses to produce per-location physical vibration offsets.
 ///
