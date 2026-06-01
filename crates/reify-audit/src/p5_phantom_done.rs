@@ -852,7 +852,7 @@ fn crate_root_count(files: &[String]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ChangedSymbol, DoneProvenance, MockGitOps, MockJCodemunchOps};
+    use crate::{DoneProvenance, MockGitOps, MockJCodemunchOps};
     use rusqlite::Connection;
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -886,6 +886,65 @@ mod tests {
         assert!(
             result.is_none(),
             "expected None for non-empty symbols slice; got: {result:?}"
+        );
+    }
+
+    /// Integration: `check_live_path_stranded` with `MockJCodemunchOps`
+    /// (which returns `vec![]` by default for all `get_changed_symbols` calls)
+    /// and >=2 distinct crate roots returns no findings.
+    ///
+    /// This pins the empty-symbols branch: once both the cross-crate gate
+    /// (>=2 roots) and the commit gate pass, the vacuous path is reached and
+    /// the function exits cleanly without producing spurious
+    /// `Pattern::P5LivePathStranded` findings.  Capturing the stderr
+    /// breadcrumb itself is not necessary — the absence of findings is the
+    /// observable contract.
+    #[test]
+    fn h2_vacuous_path_returns_no_findings() {
+        let conn = Connection::open_in_memory().expect("open in-memory runs.db");
+        let git = MockGitOps::new();
+        // Default MockJCodemunchOps: get_changed_symbols returns vec![] for
+        // any (since_sha, until_sha) pair not explicitly seeded — mirrors
+        // NoopJCodemunchOps behaviour.
+        let jc = MockJCodemunchOps::new();
+
+        let meta = TaskMetadata {
+            task_id: "4144".to_string(),
+            status: "done".to_string(),
+            // Two distinct crates/<name>/ roots → cross-crate gate passes.
+            files: vec![
+                "crates/reify-eval/src/lib.rs".to_string(),
+                "crates/reify-compiler/src/compile.rs".to_string(),
+            ],
+            done_provenance: Some(DoneProvenance {
+                kind: Some("merged".to_string()),
+                commit: Some("deadbeef".to_string()),
+                note: None,
+            }),
+            title: "multi-crate vacuous H2 test task".to_string(),
+            prd: None,
+            consumer_ref: None,
+            audit_foundation: None,
+            done_at: None,
+        };
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata: HashMap::new(),
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = check_live_path_stranded(&ctx, &meta);
+        assert!(
+            findings.is_empty(),
+            "vacuous H2 sweep (empty get_changed_symbols, >=2 crate roots) \
+             must yield no findings; got {findings:?}"
         );
     }
 
