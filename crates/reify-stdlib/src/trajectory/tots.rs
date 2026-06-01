@@ -1438,6 +1438,38 @@ mod tests {
         assert!(alpha < 1.0 || alpha == 0.0, "alpha={alpha}, expected < 1.0 after backtracking");
     }
 
+    /// Step-21 RED: line-search must never accept a step that increases the L1 merit.
+    ///
+    /// dx is a pure ASCENT direction (dx[n-1] = 5e4, increasing T worsens a feasible merit).
+    /// The accepted point x0 + alpha*dx must have merit ≤ m0 + 1e-9.
+    /// Under the buggy `.abs()` acceptance condition this fails (alpha=1 is wrongly accepted,
+    /// m_acc ≈ 5e4 >> m0 ≈ 3.0).
+    #[test]
+    fn line_search_rejects_merit_increase() {
+        let params = simple_params(3.0);
+        let model = gantry_model(1.0, 5.0, 0.05);
+        let m0 = merit(&params, &model, 10.0);
+
+        let n = params.n_vars();
+        let mut dx = vec![0.0_f64; n];
+        dx[n - 1] = 5.0e4; // pure ascent: increasing T worsens the merit for a feasible slack point
+
+        let alpha = line_search(&params, &dx, 10.0, &model, 1.0, 1e-4, 20);
+
+        // Reconstruct the accepted point x0 + alpha*dx; treat unpack failure as infinity.
+        let x0 = params.variable_vector();
+        let x_acc: Vec<f64> = x0.iter().zip(dx.iter()).map(|(xi, di)| xi + alpha * di).collect();
+        let m_acc = match params.unpack_variable_vector(&x_acc) {
+            Some(p_acc) => merit(&p_acc, &model, 10.0),
+            None => f64::INFINITY,
+        };
+
+        assert!(
+            m_acc <= m0 + 1e-9,
+            "line search accepted a step that increased merit: m0={m0:.6}, m_acc={m_acc:.6}, alpha={alpha:.6}"
+        );
+    }
+
     // ── Step-15 tests: SQP driver convergence ────────────────────────────────
 
     fn gantry_fixture(t_init: f64) -> (TotsParams, TotsModel) {
