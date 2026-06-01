@@ -402,18 +402,22 @@ pub structure DriveTendons {
 
     // Back-cross tendons — CLOSE each belt loop across the REAR, joining its two
     // rear ends at the belt's Z level: belt A (±z_a) BL-inboard ↔ right-outboard
-    // return idler; belt B (±z_b) BR-inboard ↔ left-outboard return idler. Each
-    // span is 2*rail_x == LinearTendon's 800mm default, centred at ±r_pitch. The
-    // two belts' back-crosses cross at the rear (different Z, no contact) — the
-    // CoreXY rear crossing — completing the loops. Each Z layer (top OR bottom)
-    // is now a full CoreXY belt; the pair is the moment-balanced double. Capstans
-    // next: each taps a back-cross.
-    let rot_to_x  = orient_axis_angle(vec3(0mm, 1m, 0mm), 90deg)  // span runs along +X
-    let neg_r_pit = 0mm - r_pitch
-    sub backcross_a_u = LinearTendon() at transform3(rot_to_x, vec3(r_pitch,   neg_corn, z_a))
-    sub backcross_a_l = LinearTendon() at transform3(rot_to_x, vec3(r_pitch,   neg_corn, neg_z_a))
-    sub backcross_b_u = LinearTendon() at transform3(rot_to_x, vec3(neg_r_pit, neg_corn, z_b))
-    sub backcross_b_l = LinearTendon() at transform3(rot_to_x, vec3(neg_r_pit, neg_corn, neg_z_b))
+    // return idler; belt B (±z_b) BR-inboard ↔ left-outboard return idler. They run
+    // r_pitch BEHIND the back pulleys (at y = −rail_half, the rail-end plane), so
+    // each is TANGENT to the rear of its pulleys — a proper 90° wrap onto the rail/
+    // return run, the same tangent relation the rail tendons have with the corner
+    // idlers. Each span is 2*rail_x == LinearTendon's 800mm default, centred at
+    // ±r_pitch. The two belts' back-crosses cross at the rear (different Z, no
+    // contact) — the CoreXY rear crossing — completing the loops. Each Z layer
+    // (top OR bottom) is a full CoreXY belt; the pair is the moment-balanced
+    // double. Capstans next: each taps a back-cross.
+    let rot_to_x    = orient_axis_angle(vec3(0mm, 1m, 0mm), 90deg)  // span runs along +X
+    let neg_r_pit   = 0mm - r_pitch
+    let backcross_y = neg_corn - r_pitch     // r_pitch behind the back pulleys (== −rail_half), tangent
+    sub backcross_a_u = LinearTendon() at transform3(rot_to_x, vec3(r_pitch,   backcross_y, z_a))
+    sub backcross_a_l = LinearTendon() at transform3(rot_to_x, vec3(r_pitch,   backcross_y, neg_z_a))
+    sub backcross_b_u = LinearTendon() at transform3(rot_to_x, vec3(neg_r_pit, backcross_y, z_b))
+    sub backcross_b_l = LinearTendon() at transform3(rot_to_x, vec3(neg_r_pit, backcross_y, neg_z_b))
 
     constraint rail_x > 0mm
 }
