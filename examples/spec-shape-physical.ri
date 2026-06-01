@@ -1,0 +1,22 @@
+// GHR-ζ user-observable signal (task 3608, PRD geometry-handle-runtime.md §8 Phase 6).
+//
+// Running
+//
+//     reify eval examples/spec-shape-physical.ri
+//
+// prints a `Bracket : Physical` whose `mass` and `centroid` value cells are
+// computed by dispatching the stdlib geometry queries `volume()` / `centroid()`
+// to the OCCT kernel against the realized `box(10mm, 20mm, 30mm)` solid:
+//
+//   - mass     = volume(geometry) * material.density  → a real Scalar<Mass> (kg)
+//   - centroid = centroid(geometry)                   → a Point at (5mm, 10mm, 15mm)
+//
+// Before GHR-ζ wired the eval-time dispatch, `mass` / `centroid` evaluated to
+// `undef` (Phase 1 was typecheck-only). See `structural_physical.ri` (the
+// `Physical` spec-shape trait, GHR-α) for the trait this `Bracket` conforms to,
+// and `materials_fea.ri` for `Steel_AISI_1045` (density 7850 kg·m^-3), whose
+// Density-dimensioned `density` makes `volume * density` fold to `Scalar<Mass>`.
+structure def Bracket : Physical {
+    param geometry : Solid = box(10mm, 20mm, 30mm)
+    param material : Material = Steel_AISI_1045()
+}
