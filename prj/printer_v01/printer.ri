@@ -292,16 +292,23 @@ pub structure CarriageIdlers {
     constraint ab_split > 0mm
 }
 
-/// CoreXY drive tendons — TWELVE spans + the corner idler stacks, routed to true
-/// CoreXY topology. Belts A (outer ±z_a) and B (inner ±z_b), each doubled above/
-/// below for moment balance. Each belt runs ONE side of each rail only (it turns
-/// onto the gantry at the carriage), so the rails use RailTendons (HALF spans):
-/// the right rail A-front/B-back, the left rail the CONVERSE via a 180°-about-Z
-/// placement (matching the idler flip). The gantry crosses stay FULL-length — a
-/// TendonQuad turned 90° about Z. A CarriageIdlers stack at each Y-carriage turns
-/// each belt from its rail run onto the cross. Deferred: the gantry-cross fore/aft
-/// split (crosses still run on y = 0) and live x_head/y_head tracking (DriveTendons
-/// cannot receive them while sub-site overrides are dropped — CAVEAT).
+/// CoreXY drive tendons — TWELVE spans + the carriage and corner idler stacks,
+/// routed to true CoreXY topology. Belts A (outer ±z_a) and B (inner ±z_b), each
+/// doubled above/below for moment balance. Each belt runs ONE side of each rail
+/// only (it turns onto the gantry at the carriage), so the rails use RailTendons
+/// (HALF spans): the right rail A-front/B-back, the left rail the CONVERSE via a
+/// 180°-about-Z placement (matching the idler flip). The gantry crosses stay
+/// FULL-length — a TendonQuad turned 90° about Z. A CarriageIdlers stack at each
+/// Y-carriage turns each belt from its rail run onto the cross. At the rail ends:
+/// the BACK corners turn the rail run inboard toward the capstan; the FRONT
+/// corners sit outboard and U-turn the run onto a front-to-back RETURN tendon +
+/// back idler, carrying the front strand to the rear so both ends of every belt
+/// land at the back, where a back-cross tendon joins them — CLOSING each belt
+/// into a full CoreXY loop (each Z layer a complete belt; the ±z pair is the
+/// moment-balanced double). PROVISIONAL beyond this point: the capstans (each taps
+/// a back-cross) are the next step. Deferred: the gantry-cross fore/aft split
+/// (crosses still run on y = 0) and live x_head/y_head tracking (sub-site
+/// overrides are dropped — CAVEAT).
 pub structure DriveTendons {
     /// Transverse position of each rail == the Y-rail axis (kept in step with
     /// CoreXY.y_rail_offset so the tendons sit in the rail's vertical plane).
@@ -338,6 +345,75 @@ pub structure DriveTendons {
     // placement swaps the fore/aft split; the pulleys lie on the x = 0 axis, so
     // the X tangency offset (idler_in_l) is unaffected by the rotation.
     sub idlers_l = CarriageIdlers() at transform3(flip_ab, vec3(idler_in_l, 0mm, 0mm))
+
+    // ── Corner idlers + front-to-back returns (rough-out) ───────────────────
+    // Close each belt loop to the REAR (where the capstans sit) WITHOUT disturbing
+    // the diagonal active runs. One belt terminates at each corner — FR & BL =
+    // belt A (±z_a outer), BR & FL = belt B (±z_b inner) — each doubled above/below
+    // for moment balance, vertical (+Z) spin axes.
+    //
+    //  • BACK corners (BR, BL): the rail run ends here; the idler sits r_pitch
+    //    INBOARD and turns the run toward the rear capstan.
+    //  • FRONT corners (FR, FL): the idler sits r_pitch OUTBOARD and U-turns the
+    //    rail run onto a front-to-back RETURN tendon that runs rearward just
+    //    outside the rail (one sheave-OD out, tangent to both idlers); a BACK
+    //    idler at the rear of each return turns it toward the capstan. This
+    //    carries the front strand to the back, so BOTH ends of every belt land at
+    //    the rear.
+    //
+    // PROVISIONAL: the capstans + the final rear connection are the next step.
+    // z_a/z_b kept in step with the sub-structures (override drop — task 4147).
+    let rot_to_y    = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)  // return runs along +Y
+    let z_a         = 80mm    // == TendonQuad / RailTendons / CarriageIdlers.z_a
+    let z_b         = 55mm    // == …z_b
+    let neg_z_a     = 0mm - z_a
+    let neg_z_b     = 0mm - z_b
+    let rail_half   = 400mm   // == BearingRod.length / 2 — rail runs end at ±rail_half
+    let corner_y    = rail_half - r_pitch         // corner-idler Y (front +corner_y, back −corner_y)
+    let neg_corn    = 0mm - corner_y
+    let idler_out_r = rail_x + r_pitch            // right FRONT idler: OUTBOARD of the right rail
+    let idler_out_l = neg_rail_x - r_pitch        // left  FRONT idler: OUTBOARD of the left rail
+    let return_x_r  = rail_x + r_pitch * 2        // right return: one sheave-OD outboard
+    let return_x_l  = neg_rail_x - r_pitch * 2    // left  return
+
+    // BACK corners — INBOARD (rail run → toward capstan). BL = belt A, BR = belt B.
+    sub corner_bl_u = IdlerPulley() at transform3(orient_identity(), vec3(idler_in_l, neg_corn, z_a))
+    sub corner_bl_l = IdlerPulley() at transform3(orient_identity(), vec3(idler_in_l, neg_corn, neg_z_a))
+    sub corner_br_u = IdlerPulley() at transform3(orient_identity(), vec3(idler_in_r, neg_corn, z_b))
+    sub corner_br_l = IdlerPulley() at transform3(orient_identity(), vec3(idler_in_r, neg_corn, neg_z_b))
+
+    // FRONT corners — OUTBOARD, U-turn onto the rearward return. FR = belt A, FL = belt B.
+    sub corner_fr_u = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_r, corner_y, z_a))
+    sub corner_fr_l = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_r, corner_y, neg_z_a))
+    sub corner_fl_u = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_l, corner_y, z_b))
+    sub corner_fl_l = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_l, corner_y, neg_z_b))
+
+    // Front-to-back RETURN tendons (full rail length, just outboard of each rail).
+    sub return_r_u = LinearTendon() at transform3(rot_to_y, vec3(return_x_r, 0mm, z_a))
+    sub return_r_l = LinearTendon() at transform3(rot_to_y, vec3(return_x_r, 0mm, neg_z_a))
+    sub return_l_u = LinearTendon() at transform3(rot_to_y, vec3(return_x_l, 0mm, z_b))
+    sub return_l_l = LinearTendon() at transform3(rot_to_y, vec3(return_x_l, 0mm, neg_z_b))
+
+    // BACK idler at the rear of each return (turns it toward the capstan).
+    sub backidler_r_u = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_r, neg_corn, z_a))
+    sub backidler_r_l = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_r, neg_corn, neg_z_a))
+    sub backidler_l_u = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_l, neg_corn, z_b))
+    sub backidler_l_l = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_l, neg_corn, neg_z_b))
+
+    // Back-cross tendons — CLOSE each belt loop across the REAR, joining its two
+    // rear ends at the belt's Z level: belt A (±z_a) BL-inboard ↔ right-outboard
+    // return idler; belt B (±z_b) BR-inboard ↔ left-outboard return idler. Each
+    // span is 2*rail_x == LinearTendon's 800mm default, centred at ±r_pitch. The
+    // two belts' back-crosses cross at the rear (different Z, no contact) — the
+    // CoreXY rear crossing — completing the loops. Each Z layer (top OR bottom)
+    // is now a full CoreXY belt; the pair is the moment-balanced double. Capstans
+    // next: each taps a back-cross.
+    let rot_to_x  = orient_axis_angle(vec3(0mm, 1m, 0mm), 90deg)  // span runs along +X
+    let neg_r_pit = 0mm - r_pitch
+    sub backcross_a_u = LinearTendon() at transform3(rot_to_x, vec3(r_pitch,   neg_corn, z_a))
+    sub backcross_a_l = LinearTendon() at transform3(rot_to_x, vec3(r_pitch,   neg_corn, neg_z_a))
+    sub backcross_b_u = LinearTendon() at transform3(rot_to_x, vec3(neg_r_pit, neg_corn, z_b))
+    sub backcross_b_l = LinearTendon() at transform3(rot_to_x, vec3(neg_r_pit, neg_corn, neg_z_b))
 
     constraint rail_x > 0mm
 }
