@@ -88,6 +88,11 @@ pub(crate) struct MergeContext {
     /// assoc-type-resolution phase can key the compiled table by
     /// `(trait_name, type_name)`. First-seen wins. (task 3972)
     pub seen_assoc_type_default_traits: HashMap<String, String>,
+    /// Conflict-detection map for assoc-type defaults: type name → (resolved Type,
+    /// originating trait). Only populated when the structure does NOT override the
+    /// name (mirroring the let-hash suppression pattern); when overridden, conflict
+    /// diagnostics are suppressed and this map is not updated. (task 3972)
+    seen_assoc_type_defaults: HashMap<String, (Type, String)>,
 }
 
 impl MergeContext {
@@ -348,19 +353,50 @@ pub(crate) fn collect_all_requirements(
 
             // Assoc-type default (task 3972): record the originating trait so the
             // assoc-type-resolution phase can key the table by (trait, type_name), then
-            // push so the default reaches conformance. First-seen-by-name dedup keeps a
-            // single entry across a diamond/refinement chain. Conflict detection (same name,
-            // different resolved Type → ConflictingTraitAssocType) is added in step-6.
-            if let DefaultKind::AssocType(_) = &default.kind {
-                if ctx
-                    .seen_assoc_type_default_traits
-                    .contains_key(name.as_str())
-                {
-                    continue; // already collected this assoc-type default (first-seen wins)
+            // push so the default reaches conformance. Conflict detection via
+            // `try_dedup_or_conflict` on the resolved Type: same type → dedup silently;
+            // different type → emit `ConflictingTraitAssocType`. Suppression: when the
+            // structure binds the name, conflict checking is skipped (mirroring the
+            // seen_let_hashes suppression pattern — only the first-seen entry is pushed
+            // via the seen_assoc_type_default_traits guard).
+            if let DefaultKind::AssocType(ty) = &default.kind {
+                if structure_members.contains_key(name.as_str()) {
+                    // Structure overrides — suppress conflict, first-seen wins.
+                    if ctx.seen_assoc_type_default_traits.contains_key(name.as_str()) {
+                        continue;
+                    }
+                    ctx.seen_assoc_type_default_traits
+                        .insert(name.clone(), trait_name.to_string());
+                    ctx.defaults.push(default.clone());
+                } else {
+                    // No override — use try_dedup_or_conflict for conflict detection.
+                    if try_dedup_or_conflict(
+                        &mut ctx.seen_assoc_type_defaults,
+                        name,
+                        ty,
+                        trait_name,
+                        span,
+                        |n, _, existing_trait, _, new_trait| {
+                            (
+                                format!(
+                                    "conflicting trait associated type defaults for '{}': \
+                                     trait '{}' and trait '{}' provide different types",
+                                    n, existing_trait, new_trait
+                                ),
+                                DiagnosticCode::ConflictingTraitAssocType,
+                            )
+                        },
+                        diagnostics,
+                    )
+                    .is_break()
+                    {
+                        continue; // already seen (dedup or conflict — second copy dropped)
+                    }
+                    // First-seen: record originating trait and push.
+                    ctx.seen_assoc_type_default_traits
+                        .insert(name.clone(), trait_name.to_string());
+                    ctx.defaults.push(default.clone());
                 }
-                ctx.seen_assoc_type_default_traits
-                    .insert(name.clone(), trait_name.to_string());
-                ctx.defaults.push(default.clone());
                 continue;
             }
 
