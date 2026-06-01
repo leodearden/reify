@@ -795,6 +795,22 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                         make_dimensioned_component(p_dim, rz),
                     ])
                 }
+                Value::Vector(_) => {
+                    // Vectors are translation-invariant: inverse-rotate only, no origin subtraction.
+                    let (v, v_dim) = match decompose_vec3(&args[0]) {
+                        Some(d) => d,
+                        None => return Some(Value::Undef),
+                    };
+                    let (rx, ry, rz) = quat_rotate(q_inv, v[0], v[1], v[2]);
+                    if !rx.is_finite() || !ry.is_finite() || !rz.is_finite() {
+                        return Some(Value::Undef);
+                    }
+                    Value::Vector(vec![
+                        make_dimensioned_component(v_dim, rx),
+                        make_dimensioned_component(v_dim, ry),
+                        make_dimensioned_component(v_dim, rz),
+                    ])
+                }
                 _ => Value::Undef,
             }
         }
