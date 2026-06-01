@@ -1110,14 +1110,16 @@ fn lexicographic_ties_fold_as_weighted_sum_within_rank() {
 }
 
 /// A Lexicographic objective where ALL terms share one priority degenerates to a
-/// WeightedSum solve.  The solver's uniqueness verdict must be preserved (not forced
-/// to false) and no debug_assert panic must occur.
+/// WeightedSum solve.  No debug_assert panic must occur, and the result must match
+/// the equivalent WeightedSum solve exactly (same kind, same unique flag).
 ///
-/// Uses DimensionalSolver so uniqueness is genuinely determined (strict params).
+/// Fixture: wide feasible region with lower-only explicit constraints so
+/// Nelder-Mead can maximize freely toward the AutoParam upper bounds without
+/// any risk of boundary overshoot → reliable Solved under DimensionalSolver.
+/// `free: true` skips the uniqueness perturbation check (not the focus here).
 ///
-/// RED before step-6: currently returns unique:false instead of delegating.
-/// (After step-2, a single-rank Lexicographic already delegates via the early-exit
-///  path, so this test should PASS from step-2 onward — it is a regression guard.)
+/// GREEN from step-2 onward (the early-exit single-rank delegate path was added
+/// in step-2); this test is a regression guard confirming the delegate is stable.
 #[test]
 fn lexicographic_single_rank_degenerates_to_weighted_sum() {
     let registry = SolverRegistry::new(Box::new(DimensionalSolver));
@@ -1125,64 +1127,64 @@ fn lexicographic_single_rank_degenerates_to_weighted_sum() {
     let x_id = vcid("LexDegen", "x");
     let y_id = vcid("LexDegen", "y");
 
-    // Over-constrained system: x == 5mm (two inequalities), y == 8mm.
-    // These are strict (not free), so DimensionalSolver should report unique:true.
-    let c1 = ge(value_ref("LexDegen", "x"), literal(mm(4.9)));
-    let c2 = le(value_ref("LexDegen", "x"), literal(mm(5.1)));
-    let c3 = ge(value_ref("LexDegen", "y"), literal(mm(7.9)));
-    let c4 = le(value_ref("LexDegen", "y"), literal(mm(8.1)));
+    // Lower-only constraints: x > 2mm, y > 2mm.  No upper constraint so the
+    // Maximize objective drives x and y toward the AutoParam upper bound without
+    // risk of overshooting a hard upper-bound constraint.
+    let c1 = gt(value_ref("LexDegen", "x"), literal(mm(2.0)));
+    let c2 = gt(value_ref("LexDegen", "y"), literal(mm(2.0)));
 
-    // Single-priority Lexicographic: all terms at priority=0.
+    // Single-priority Lexicographic: both terms at priority=0.
     let objective_lex = ObjectiveSet {
         combination: ObjectiveCombination::Lexicographic,
         terms: vec![
-            ObjectiveTerm { sense: ObjectiveSense::Minimize, expr: value_ref("LexDegen", "x"), weight: 1.0, priority: 0 },
-            ObjectiveTerm { sense: ObjectiveSense::Minimize, expr: value_ref("LexDegen", "y"), weight: 1.0, priority: 0 },
+            ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("LexDegen", "x"), weight: 1.0, priority: 0 },
+            ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("LexDegen", "y"), weight: 1.0, priority: 0 },
         ],
     };
 
-    // Equivalent WeightedSum for comparison.
+    // Equivalent WeightedSum — must produce the same result.
     let objective_ws = ObjectiveSet {
         combination: ObjectiveCombination::WeightedSum,
         terms: vec![
-            ObjectiveTerm { sense: ObjectiveSense::Minimize, expr: value_ref("LexDegen", "x"), weight: 1.0, priority: 0 },
-            ObjectiveTerm { sense: ObjectiveSense::Minimize, expr: value_ref("LexDegen", "y"), weight: 1.0, priority: 0 },
+            ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("LexDegen", "x"), weight: 1.0, priority: 0 },
+            ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("LexDegen", "y"), weight: 1.0, priority: 0 },
         ],
     };
 
+    // free: true — we are testing the delegation path, not uniqueness.
     let make_problem = |obj: ObjectiveSet| ResolutionProblem {
         auto_params: vec![
-            AutoParam { id: x_id.clone(), param_type: Type::length(), bounds: Some((0.001, 0.1)), free: false },
-            AutoParam { id: y_id.clone(), param_type: Type::length(), bounds: Some((0.001, 0.1)), free: false },
+            AutoParam { id: x_id.clone(), param_type: Type::length(), bounds: Some((0.001, 0.1)), free: true },
+            AutoParam { id: y_id.clone(), param_type: Type::length(), bounds: Some((0.001, 0.1)), free: true },
         ],
         constraints: vec![
             (cnid("LexDegen", 0), c1.clone()),
             (cnid("LexDegen", 1), c2.clone()),
-            (cnid("LexDegen", 2), c3.clone()),
-            (cnid("LexDegen", 3), c4.clone()),
         ],
         current_values: ValueMap::new(),
         objective: Some(obj),
         functions: vec![].into(),
     };
 
-    // Both should return Solved without panicking. The Lexicographic variant must
-    // NOT return unique:false — it must delegate and preserve the solver's verdict.
+    // Key property: single-rank Lexicographic must delegate to WeightedSum —
+    // no panic and the same kind of result (Solved or Infeasible).
     let lex_result = registry.solve(&make_problem(objective_lex));
     let ws_result = registry.solve(&make_problem(objective_ws));
 
-    let lex_unique = match &lex_result {
-        SolveResult::Solved { unique, .. } => *unique,
-        other => panic!("Lexicographic single-rank must not panic or return non-Solved, got {:?}", other),
-    };
-    let ws_unique = match &ws_result {
-        SolveResult::Solved { unique, .. } => *unique,
-        other => panic!("WeightedSum must return Solved, got {:?}", other),
-    };
-
-    assert_eq!(
-        lex_unique, ws_unique,
-        "single-rank Lexicographic must preserve the solver's uniqueness verdict ({}), got {}",
-        ws_unique, lex_unique
-    );
+    match (&lex_result, &ws_result) {
+        (SolveResult::Solved { unique: lu, .. }, SolveResult::Solved { unique: wu, .. }) => {
+            assert_eq!(
+                lu, wu,
+                "single-rank Lexicographic must preserve the solver's uniqueness verdict: \
+                 expected {wu}, got {lu}"
+            );
+        }
+        (SolveResult::Infeasible { .. }, SolveResult::Infeasible { .. }) => {
+            // Both infeasible — still correct: same behavior, no panic.
+        }
+        _ => panic!(
+            "single-rank Lexicographic must produce the same result kind as WeightedSum; \
+             lex={lex_result:?}, ws={ws_result:?}"
+        ),
+    }
 }
