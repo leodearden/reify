@@ -13,7 +13,7 @@
 //! # Reference
 //! Featherstone, *Rigid Body Dynamics Algorithms* (2008), §5.2.
 
-use crate::dynamics::spatial::{SpatialInertia6, SpatialTransform6, SpatialVector6};
+use crate::dynamics::spatial::{cross_f, cross_m, SpatialInertia6, SpatialTransform6, SpatialVector6};
 
 // ── Private [f64; 6] arithmetic helpers ──────────────────────────────────────
 // spatial.rs exposes no add or scalar-scale methods on SpatialVector6, so we
@@ -163,8 +163,12 @@ pub fn inverse_dynamics_open_chain(links: &[RneaLink], gravity: [f64; 3]) -> Vec
             sv_axpy(&mut aj, ddq, s);
         }
 
-        // a_i = X_{p→i} · a_p + aJ   (velocity-product term added in step-4)
-        a[i] = sv_add(&link.parent_to_child.apply(&a_p), &aj);
+        // a_i = X_{p→i} · a_p + aJ + v_i × vJ   (Coriolis/centrifugal bias)
+        // cross_m(v_i, vJ) is the Featherstone §5.2 velocity-product term.
+        a[i] = sv_add(
+            &sv_add(&link.parent_to_child.apply(&a_p), &aj),
+            &cross_m(&v[i], &vj),
+        );
 
         inertia.push(SpatialInertia6::from_mass_com_inertia(
             link.mass,
@@ -175,8 +179,17 @@ pub fn inverse_dynamics_open_chain(links: &[RneaLink], gravity: [f64; 3]) -> Vec
 
     // ── Backward pass (inward, leaves → base) ────────────────────────────────
     //
-    // Initialise f_i = I_i · a_i   (bias-force term added in step-4).
-    let mut f: Vec<SpatialVector6> = (0..n).map(|i| inertia[i].apply(&a[i])).collect();
+    // Initialise f_i = I_i · a_i + v_i × * (I_i · v_i)
+    // The second term is the Featherstone §5.2 bias (Coriolis/centrifugal) force.
+    // cross_f(v_i, I_i·v_i) is the spatial-velocity cross product on forces.
+    let mut f: Vec<SpatialVector6> = (0..n)
+        .map(|i| {
+            sv_add(
+                &inertia[i].apply(&a[i]),
+                &cross_f(&v[i], &inertia[i].apply(&v[i])),
+            )
+        })
+        .collect();
 
     for i in (0..n).rev() {
         // Transmit force to parent.
