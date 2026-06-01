@@ -374,6 +374,40 @@
 //! ];
 //! let k_3778 = element_stiffness_p1_with_field(&unit_tet_3778, &field_3778);
 //! assert_eq!(k_3778.n_dofs, 12);
+//!
+//! // Task 3795: Tensegrity T1b free-standing form-find — crate-root surface
+//! // pin. Behaviour is covered by `form_find_free::tests` and the integration
+//! // golden `tests/tensegrity_t1b_form_find_free.rs`; this block only pins that
+//! // the public surface (ForceDensitySpec / FreeFormResult / FreeFormError /
+//! // form_find_free) is reachable and callable from the crate root.
+//! use reify_solver_elastic::{
+//!     ForceDensitySpec, FreeFormError, FreeFormResult, form_find_free,
+//! };
+//! // Function-item signature pin: a renamed / removed re-export (or a changed
+//! // signature) trips this at doctest-compile time. `MemberKind` is shared with
+//! // the anchored T1a kernel and already re-exported.
+//! let _: fn(
+//!     &[[f64; 3]],
+//!     &[(usize, usize)],
+//!     &[reify_solver_elastic::MemberKind],
+//!     &ForceDensitySpec,
+//! ) -> Result<FreeFormResult, FreeFormError> = form_find_free;
+//! // Both spec variants — a renamed field or removed variant trips the doctest.
+//! let _ = ForceDensitySpec::Explicit(vec![-1.0_f64]);
+//! let _ = ForceDensitySpec::GroupRatios {
+//!     group_ids: vec![0_usize],
+//!     seed_ratios: vec![-1.0_f64],
+//!     reference_group: 0_usize,
+//! };
+//! // Tiny behavioural smoke on the up-front guard: a members/kinds/q length
+//! // disagreement is a clean DimensionMismatch (a typed error, never a panic).
+//! let dim_err = form_find_free(
+//!     &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+//!     &[(0, 1)],
+//!     &[reify_solver_elastic::MemberKind::Cable],
+//!     &ForceDensitySpec::Explicit(vec![1.0, 2.0]), // 2 densities for 1 member
+//! );
+//! assert_eq!(dim_err.unwrap_err(), FreeFormError::DimensionMismatch);
 //! ```
 
 pub mod assembly;
