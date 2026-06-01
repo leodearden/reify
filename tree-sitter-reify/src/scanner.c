@@ -167,6 +167,17 @@ bool tree_sitter_reify_external_scanner_scan(void *payload, TSLexer *lexer,
    *   - No bytes can be consumed (current position is `{`, `"`, or EOF).
    */
   if (valid_symbols[STRING_CONTENT]) {
+    /* Error-recovery guard: tree-sitter marks ALL external tokens valid during
+     * error recovery.  STRING_CONTENT and UNIT_EXPR_START are mutually exclusive
+     * in normal parsing (inside an interpolated_string we cannot also be in the
+     * post-number_literal state that admits a unit_expr).  If both are valid we
+     * are in error-recovery mode — return false so the scanner does not greedily
+     * consume non-string source text (function bodies, structure bodies, etc.)
+     * as string content runs.  Without this guard, `fn (…) { x }  structure S {}`
+     * is swallowed into a STRING_CONTENT node inside the ERROR recovery subtree. */
+    if (valid_symbols[UNIT_EXPR_START]) {
+      return false;
+    }
     bool consumed_any = false;
 
     for (;;) {
