@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use reify_core::Diagnostic;
-use reify_ir::{CompiledFunction, GeometryHandleId, ValueMap};
+use reify_ir::{CompiledFunction, GeometryHandleId, KernelHandle, ValueMap};
 
 use crate::eval_ctx_with_meta;
 
@@ -1331,7 +1331,7 @@ pub(crate) fn compile_geometry_op(
 pub(crate) fn try_eval_conformance_query(
     expr: &reify_ir::CompiledExpr,
     template_trait_bounds: &[String],
-    named_steps: &HashMap<String, GeometryHandleId>,
+    named_steps: &HashMap<String, KernelHandle>,
     kernel: &dyn reify_ir::GeometryKernel,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_ir::Value> {
@@ -1396,7 +1396,7 @@ pub(crate) fn try_eval_conformance_query(
     // (5) Resolve the cell-member name to a kernel handle. Absent →
     // `None` (and the kernel is never consulted).
     let handle = match named_steps.get(&cell_id.member) {
-        Some(h) => *h,
+        Some(kh) => kh.id,
         None => return None,
     };
 
@@ -1499,7 +1499,7 @@ pub(crate) fn try_eval_conformance_query(
 // dispatcher family's scope.
 pub(crate) fn try_eval_geometry_query(
     expr: &reify_ir::CompiledExpr,
-    named_steps: &HashMap<String, GeometryHandleId>,
+    named_steps: &HashMap<String, KernelHandle>,
     values: &ValueMap,
     functions: &[CompiledFunction],
     meta_map: &HashMap<String, HashMap<String, String>>,
@@ -1584,7 +1584,7 @@ fn expr_contains_geometry_query(expr: &reify_ir::CompiledExpr) -> bool {
 fn dispatch_geometry_query_call(
     function_name: &str,
     args: &[reify_ir::CompiledExpr],
-    named_steps: &HashMap<String, GeometryHandleId>,
+    named_steps: &HashMap<String, KernelHandle>,
     kernel: &dyn reify_ir::GeometryKernel,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_ir::Value> {
@@ -1660,7 +1660,7 @@ fn dispatch_geometry_query_call(
 /// unobservable at the current single-query scope.
 fn rewrite_geometry_queries(
     expr: &reify_ir::CompiledExpr,
-    named_steps: &HashMap<String, GeometryHandleId>,
+    named_steps: &HashMap<String, KernelHandle>,
     kernel: &dyn reify_ir::GeometryKernel,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> reify_ir::CompiledExpr {
@@ -1826,7 +1826,7 @@ fn dispatch_bounding_box(
 //                            the cell's compiled default (`Value::Undef`).
 pub(crate) fn try_eval_kinematic_query(
     expr: &reify_ir::CompiledExpr,
-    named_steps: &HashMap<String, GeometryHandleId>,
+    named_steps: &HashMap<String, KernelHandle>,
     values: &reify_ir::ValueMap,
     kernel: &dyn reify_ir::GeometryKernel,
     diagnostics: &mut Vec<Diagnostic>,
@@ -1906,7 +1906,7 @@ pub(crate) fn try_eval_kinematic_query(
             _ => continue,
         };
         if let Some(handle) = named_steps.get(solid_name) {
-            id_to_handle.push((id, *handle));
+            id_to_handle.push((id, handle.id));
         }
         // Bodies whose solid name isn't in named_steps: skipped (see comment
         // above the loop).
@@ -2156,7 +2156,7 @@ fn kernel_distance(
 //                          compiled default.
 pub(crate) fn try_eval_topology_selector(
     expr: &reify_ir::CompiledExpr,
-    named_steps: &HashMap<String, GeometryHandleId>,
+    named_steps: &HashMap<String, KernelHandle>,
     values: &reify_ir::ValueMap,
     kernel: &mut dyn reify_ir::GeometryKernel,
     diagnostics: &mut Vec<Diagnostic>,
@@ -3611,13 +3611,13 @@ fn resolve_owner_solid_handle(
 /// through" behaviour.
 fn resolve_geometry_handle_arg(
     expr: &reify_ir::CompiledExpr,
-    named_steps: &HashMap<String, GeometryHandleId>,
+    named_steps: &HashMap<String, KernelHandle>,
 ) -> Option<GeometryHandleId> {
     let cell_id = match &expr.kind {
         reify_ir::CompiledExprKind::ValueRef(id) => id,
         _ => return None,
     };
-    named_steps.get(&cell_id.member).copied()
+    named_steps.get(&cell_id.member).map(|kh| kh.id)
 }
 
 /// Resolve a `CompiledExprKind::ValueRef` arg to the full parent
@@ -4186,7 +4186,7 @@ impl FrameSubShapeKind {
 /// - `None` for non-AdHocSelector, Point-kind, or unsupported arg shapes.
 pub fn try_eval_ad_hoc_selector(
     expr: &reify_ir::CompiledExpr,
-    named_steps: &HashMap<String, GeometryHandleId>,
+    named_steps: &HashMap<String, KernelHandle>,
     kernel: &mut dyn reify_ir::GeometryKernel,
     table: &reify_ir::TopologyAttributeTable,
     selector_span: reify_core::SourceSpan,
@@ -4218,7 +4218,7 @@ pub fn try_eval_ad_hoc_selector(
 
     // (5) Look up the base name in named_steps → GeometryHandleId.
     let handle = match named_steps.get(name) {
-        Some(&h) => h,
+        Some(kh) => kh.id,
         None => return None,
     };
 
@@ -8071,8 +8071,8 @@ mod tests {
         let kernel =
             MockGeometryKernel::new().with_query_result(handle_id, reify_ir::Value::Bool(true));
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("body".to_string(), handle_id);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("body".to_string(), kh(handle_id));
 
         let expr = conformance_call("is_watertight", "Bracket", "body");
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -8116,8 +8116,8 @@ mod tests {
             .with_query_result(handle_id, reify_ir::Value::Bool(true));
         let kernel = reify_test_support::mocks::CountingMockKernel::new(inner);
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("body".to_string(), handle_id);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("body".to_string(), kh(handle_id));
 
         // `volume` is a real stdlib function name but NOT one of the three
         // recognised conformance helpers. The dispatch must return None.
@@ -8146,7 +8146,7 @@ mod tests {
             .with_query_result(handle_id, reify_ir::Value::Bool(true));
         let kernel = reify_test_support::mocks::CountingMockKernel::new(inner);
 
-        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
 
         // `is_watertight(1.0)` — recognised helper name but the arg is a
         // literal, not a `ValueRef`. The dispatch must return None *and*
@@ -8179,8 +8179,8 @@ mod tests {
             .with_query_result(handle_id, reify_ir::Value::Bool(false));
         let kernel = reify_test_support::mocks::CountingMockKernel::new(inner);
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("body".to_string(), handle_id);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("body".to_string(), kh(handle_id));
 
         let expr = conformance_call("is_watertight", "TrustedShell", "body");
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -8212,8 +8212,8 @@ mod tests {
             .with_query_result(handle_id, reify_ir::Value::Bool(false));
         let kernel = reify_test_support::mocks::CountingMockKernel::new(inner);
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("body".to_string(), handle_id);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("body".to_string(), kh(handle_id));
 
         let expr = conformance_call("is_manifold", "TrustedShell", "body");
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -8237,8 +8237,8 @@ mod tests {
             .with_query_result(handle_id, reify_ir::Value::Bool(false));
         let kernel = reify_test_support::mocks::CountingMockKernel::new(inner);
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("body".to_string(), handle_id);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("body".to_string(), kh(handle_id));
 
         let expr = conformance_call("is_orientable", "TrustedShell", "body");
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -8266,8 +8266,8 @@ mod tests {
             .with_query_result(handle_id, reify_ir::Value::Bool(false));
         let kernel = reify_test_support::mocks::CountingMockKernel::new(inner);
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("body".to_string(), handle_id);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("body".to_string(), kh(handle_id));
 
         let expr = conformance_call("is_watertight", "Bracket", "body");
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -8302,8 +8302,8 @@ mod tests {
         // `named_steps` contains "body" but the call references "ghost",
         // which is not present. The dispatch must return None and never
         // consult the kernel.
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("body".to_string(), handle_id);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("body".to_string(), kh(handle_id));
 
         let expr = conformance_call("is_watertight", "Bracket", "ghost");
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -8337,8 +8337,8 @@ mod tests {
         let kernel = reify_test_support::mocks::MockGeometryKernel::new()
             .with_query_result(handle_id, reify_ir::Value::Real(1.0));
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("body".to_string(), handle_id);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("body".to_string(), kh(handle_id));
 
         let expr = conformance_call("is_watertight", "Bracket", "body");
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -8385,8 +8385,8 @@ mod tests {
         // `Err(QueryError::QueryFailed("no mock result for …"))` for any handle.
         let kernel = reify_test_support::mocks::MockGeometryKernel::new();
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("body".to_string(), handle_id);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("body".to_string(), kh(handle_id));
 
         let expr = conformance_call("is_manifold", "Bracket", "body");
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -8739,7 +8739,7 @@ mod tests {
         );
 
         let mut named_steps = HashMap::new();
-        named_steps.insert("b".to_string(), parent_handle);
+        named_steps.insert("b".to_string(), kh(parent_handle));
 
         let mut values = reify_ir::ValueMap::new();
         values.insert(
@@ -8823,7 +8823,7 @@ mod tests {
 
         // named_steps has the handle so the kernel could serve the call …
         let mut named_steps = HashMap::new();
-        named_steps.insert("b".to_string(), parent_handle);
+        named_steps.insert("b".to_string(), kh(parent_handle));
 
         // … but values has NO Value::GeometryHandle for the arg cell.
         let values = reify_ir::ValueMap::new();
@@ -8958,8 +8958,8 @@ mod tests {
             reify_ir::Value::String("{\"x\":5.0,\"y\":0.0,\"z\":0.0}".to_string()),
         );
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("body".to_string(), body_handle);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("body".to_string(), kh(body_handle));
 
         let mut values = reify_ir::ValueMap::new();
         values.insert(
@@ -9012,8 +9012,8 @@ mod tests {
             reify_ir::Value::Bool(true),
         );
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("body".to_string(), body_handle);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("body".to_string(), kh(body_handle));
 
         let mut values = reify_ir::ValueMap::new();
         values.insert(
@@ -9063,9 +9063,9 @@ mod tests {
             reify_ir::Value::Real(std::f64::consts::FRAC_PI_2),
         );
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("face_a".to_string(), face_a);
-        named_steps.insert("face_b".to_string(), face_b);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("face_a".to_string(), kh(face_a));
+        named_steps.insert("face_b".to_string(), kh(face_b));
 
         let values = reify_ir::ValueMap::new();
 
@@ -9107,7 +9107,7 @@ mod tests {
         let inner = reify_test_support::mocks::MockGeometryKernel::new();
         let mut kernel = CountingMockKernel::new(inner);
 
-        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         let values = reify_ir::ValueMap::new();
 
         let expr = topology_selector_call_literal_args("closest_point");
@@ -9139,7 +9139,7 @@ mod tests {
         let inner = reify_test_support::mocks::MockGeometryKernel::new();
         let mut kernel = CountingMockKernel::new(inner);
 
-        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         let values = reify_ir::ValueMap::new();
 
         let expr = topology_selector_call_literal_args("is_on");
@@ -9171,7 +9171,7 @@ mod tests {
         let inner = reify_test_support::mocks::MockGeometryKernel::new();
         let mut kernel = CountingMockKernel::new(inner);
 
-        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         let values = reify_ir::ValueMap::new();
 
         let expr = topology_selector_call_literal_args("angle_between_surfaces");
@@ -9203,8 +9203,8 @@ mod tests {
         let inner = reify_test_support::mocks::MockGeometryKernel::new();
         let mut kernel = CountingMockKernel::new(inner);
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("body".to_string(), reify_ir::GeometryHandleId(7));
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("body".to_string(), kh(reify_ir::GeometryHandleId(7)));
 
         let mut values = reify_ir::ValueMap::new();
         values.insert(
@@ -9267,9 +9267,9 @@ mod tests {
             },
         );
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("face_a".to_string(), face_a);
-        named_steps.insert("face_b".to_string(), face_b);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("face_a".to_string(), kh(face_a));
+        named_steps.insert("face_b".to_string(), kh(face_b));
 
         let values = reify_ir::ValueMap::new();
 
@@ -9327,9 +9327,9 @@ mod tests {
             },
         );
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("face_a".to_string(), face_a);
-        named_steps.insert("face_b".to_string(), face_b);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("face_a".to_string(), kh(face_a));
+        named_steps.insert("face_b".to_string(), kh(face_b));
 
         let values = reify_ir::ValueMap::new();
 
@@ -9375,7 +9375,7 @@ mod tests {
     /// between the debug-panic and release-warn cases.
     fn wrong_dim_scalar_fixture() -> (
         reify_ir::CompiledExpr,
-        HashMap<String, reify_ir::GeometryHandleId>,
+        HashMap<String, reify_ir::KernelHandle>,
         reify_ir::ValueMap,
         reify_test_support::mocks::MockGeometryKernel,
     ) {
@@ -9393,9 +9393,9 @@ mod tests {
                 dimension: reify_core::DimensionVector::LENGTH,
             },
         );
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("face_a".to_string(), face_a);
-        named_steps.insert("face_b".to_string(), face_b);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("face_a".to_string(), kh(face_a));
+        named_steps.insert("face_b".to_string(), kh(face_b));
         let values = reify_ir::ValueMap::new();
         let expr = topology_selector_call_two_value_refs(
             "angle_between_surfaces",
@@ -9515,8 +9515,8 @@ mod tests {
             reify_ir::Value::Real(0.5),
         );
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("body".to_string(), body_handle);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("body".to_string(), kh(body_handle));
 
         let mut values = reify_ir::ValueMap::new();
         values.insert(
@@ -9593,8 +9593,8 @@ mod tests {
             reify_ir::Value::String("not a valid json point".to_string()),
         );
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("body".to_string(), body_handle);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("body".to_string(), kh(body_handle));
 
         let mut values = reify_ir::ValueMap::new();
         values.insert(
@@ -9666,7 +9666,7 @@ mod tests {
         use reify_test_support::mocks::MockGeometryKernel;
         let mut kernel = MockGeometryKernel::new();
 
-        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         let mut values = reify_ir::ValueMap::new();
         values.insert(
             reify_core::ValueCellId::new("AngleSmoke", "a"),
@@ -9716,7 +9716,7 @@ mod tests {
         use reify_test_support::mocks::MockGeometryKernel;
         let mut kernel = MockGeometryKernel::new();
 
-        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         let mut values = reify_ir::ValueMap::new();
         values.insert(
             reify_core::ValueCellId::new("AngleSmoke", "a"),
@@ -9767,7 +9767,7 @@ mod tests {
         use reify_test_support::mocks::MockGeometryKernel;
         let mut kernel = MockGeometryKernel::new();
 
-        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         let mut values = reify_ir::ValueMap::new();
         values.insert(
             reify_core::ValueCellId::new("AngleSmoke", "a"),
@@ -9825,7 +9825,7 @@ mod tests {
         let inner = reify_test_support::mocks::MockGeometryKernel::new();
         let mut kernel = CountingMockKernel::new(inner);
 
-        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         let values = reify_ir::ValueMap::new();
 
         let expr = topology_selector_call_literal_args("angle");
@@ -9861,7 +9861,7 @@ mod tests {
         use reify_test_support::mocks::MockGeometryKernel;
         let mut kernel = MockGeometryKernel::new();
 
-        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         let values = reify_ir::ValueMap::new(); // empty — args come from literals
 
         // Build angle(Literal(vec3(1,0,0)), Literal(vec3(0,1,0))).
@@ -9920,7 +9920,7 @@ mod tests {
         use reify_test_support::mocks::MockGeometryKernel;
         let mut kernel = MockGeometryKernel::new();
 
-        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         let mut values = reify_ir::ValueMap::new();
         values.insert(
             reify_core::ValueCellId::new("AngleSmoke", "a"),
@@ -9992,7 +9992,7 @@ mod tests {
             ("INFINITY", f64::INFINITY, 0.0, 0.0),
         ] {
             let mut kernel = MockGeometryKernel::new();
-            let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+            let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
             let mut values = reify_ir::ValueMap::new();
             values.insert(
                 reify_core::ValueCellId::new("T", "a"),
@@ -10070,9 +10070,9 @@ mod tests {
             reify_ir::Value::Bool(true),
         );
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         // args[0] = solid → resolved via named_steps by member name "solid"
-        named_steps.insert("solid".to_string(), body_handle);
+        named_steps.insert("solid".to_string(), kh(body_handle));
 
         let mut values = reify_ir::ValueMap::new();
         // args[1] = point → resolved via values by ValueCellId
@@ -10125,7 +10125,7 @@ mod tests {
         let inner = reify_test_support::mocks::MockGeometryKernel::new();
         let mut kernel = CountingMockKernel::new(inner);
 
-        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         let values = reify_ir::ValueMap::new();
 
         let expr = topology_selector_call_literal_args("contains");
@@ -10167,8 +10167,8 @@ mod tests {
             reify_ir::Value::Real(0.5),
         );
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("solid".to_string(), body_handle);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("solid".to_string(), kh(body_handle));
 
         let mut values = reify_ir::ValueMap::new();
         values.insert(
@@ -10239,8 +10239,8 @@ mod tests {
         let body_handle = reify_ir::GeometryHandleId(42);
         let mut kernel = MockGeometryKernel::new();
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("solid".to_string(), body_handle);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("solid".to_string(), kh(body_handle));
 
         let mut values = reify_ir::ValueMap::new();
         values.insert(
@@ -10324,9 +10324,9 @@ mod tests {
             reify_ir::Value::String("{\"x\":0.005,\"y\":0.0,\"z\":0.0}".to_string()),
         );
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         // args[0] = b (Shape) → named_steps by member name "b"
-        named_steps.insert("b".to_string(), box_handle);
+        named_steps.insert("b".to_string(), kh(box_handle));
 
         let mut values = reify_ir::ValueMap::new();
         // args[1] = p (Point3<Length>) → values by ValueCellId
@@ -10404,8 +10404,8 @@ mod tests {
         let box_handle = reify_ir::GeometryHandleId(55);
         let mut kernel = MockGeometryKernel::new(); // no canned reply for this handle+point
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("b".to_string(), box_handle);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("b".to_string(), kh(box_handle));
 
         let mut values = reify_ir::ValueMap::new();
         values.insert(
@@ -10468,7 +10468,7 @@ mod tests {
         let inner = reify_test_support::mocks::MockGeometryKernel::new();
         let mut kernel = CountingMockKernel::new(inner);
 
-        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         let values = reify_ir::ValueMap::new();
 
         let expr = topology_selector_call_literal_args("distance");
@@ -10515,9 +10515,9 @@ mod tests {
         let mut kernel = MockGeometryKernel::new()
             .with_distance_result(handle_a, handle_b, meters(0.04));
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("a".to_string(), handle_a);
-        named_steps.insert("b".to_string(), handle_b);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("a".to_string(), kh(handle_a));
+        named_steps.insert("b".to_string(), kh(handle_b));
 
         let values = reify_ir::ValueMap::new();
 
@@ -10575,7 +10575,7 @@ mod tests {
         let inner = reify_test_support::mocks::MockGeometryKernel::new();
         let mut kernel = CountingMockKernel::new(inner);
 
-        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
 
         let mut values = reify_ir::ValueMap::new();
         values.insert(
@@ -10669,8 +10669,8 @@ mod tests {
             point3_length_value(0.02, 0.0, 0.0),
         );
         // arg1 = b (Shape) → named_steps
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("b".to_string(), box_handle);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("b".to_string(), kh(box_handle));
 
         // distance(p, b): args[0]=p (Point3), args[1]=b (Geometry)
         let expr = topology_selector_call_two_value_refs(
@@ -10728,9 +10728,9 @@ mod tests {
         let handle_b = reify_ir::GeometryHandleId(11);
         let mut kernel = MockGeometryKernel::new(); // no Distance reply seeded
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("a".to_string(), handle_a);
-        named_steps.insert("b".to_string(), handle_b);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("a".to_string(), kh(handle_a));
+        named_steps.insert("b".to_string(), kh(handle_b));
         let values = reify_ir::ValueMap::new();
 
         let expr = topology_selector_call_two_value_refs(
@@ -10791,8 +10791,8 @@ mod tests {
         );
         let mut kernel = CountingMockKernel::new(inner);
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("b".to_string(), box_handle);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("b".to_string(), kh(box_handle));
         let mut values = reify_ir::ValueMap::new();
         values.insert(
             reify_core::ValueCellId::new("DistanceBoxPoint", "p"),
@@ -10839,9 +10839,9 @@ mod tests {
             MockGeometryKernel::new().with_distance_result(handle_a, handle_b, meters(0.04));
         let mut kernel = CountingMockKernel::new(inner);
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("a".to_string(), handle_a);
-        named_steps.insert("b".to_string(), handle_b);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("a".to_string(), kh(handle_a));
+        named_steps.insert("b".to_string(), kh(handle_b));
         let values = reify_ir::ValueMap::new();
         let expr = topology_selector_call_two_value_refs(
             "distance",
@@ -11579,11 +11579,11 @@ mod tests {
             reify_ir::Value::Bool(true),
         );
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         // args[0] = left geometry → resolved via named_steps by member "left"
-        named_steps.insert("left".to_string(), left_handle);
+        named_steps.insert("left".to_string(), kh(left_handle));
         // args[1] = right geometry → resolved via named_steps by member "right"
-        named_steps.insert("right".to_string(), right_handle);
+        named_steps.insert("right".to_string(), kh(right_handle));
 
         let mut values = reify_ir::ValueMap::new();
         // args[2] = tolerance → resolved via values by ValueCellId
@@ -11638,7 +11638,7 @@ mod tests {
         let inner = reify_test_support::mocks::MockGeometryKernel::new();
         let mut kernel = CountingMockKernel::new(inner);
 
-        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         let values = reify_ir::ValueMap::new();
 
         let expr = topology_selector_call_three_literal_args("geo_equiv");
@@ -11682,9 +11682,9 @@ mod tests {
             reify_ir::Value::Real(0.5), // Wrong type — triggers non-Bool warning arm
         );
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("left".to_string(), left_handle);
-        named_steps.insert("right".to_string(), right_handle);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("left".to_string(), kh(left_handle));
+        named_steps.insert("right".to_string(), kh(right_handle));
 
         let mut values = reify_ir::ValueMap::new();
         values.insert(
@@ -11760,9 +11760,9 @@ mod tests {
         let tol = 1e-6_f64;
         let mut kernel = MockGeometryKernel::new();
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("left".to_string(), left_handle);
-        named_steps.insert("right".to_string(), right_handle);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("left".to_string(), kh(left_handle));
+        named_steps.insert("right".to_string(), kh(right_handle));
 
         let mut values = reify_ir::ValueMap::new();
         values.insert(
@@ -11850,9 +11850,9 @@ mod tests {
             reify_ir::Value::String("{\"x\":0,\"y\":0,\"z\":1}".to_string()),
         );
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         // args[0] = surface → resolved via named_steps by member name "surface"
-        named_steps.insert("surface".to_string(), face_handle);
+        named_steps.insert("surface".to_string(), kh(face_handle));
 
         let mut values = reify_ir::ValueMap::new();
         // args[1] = point3 → resolved via values by ValueCellId
@@ -11908,7 +11908,7 @@ mod tests {
         let inner = reify_test_support::mocks::MockGeometryKernel::new();
         let mut kernel = CountingMockKernel::new(inner);
 
-        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         let values = reify_ir::ValueMap::new();
 
         let expr = topology_selector_call_literal_args("normal");
@@ -11953,10 +11953,10 @@ mod tests {
         let inner = MockGeometryKernel::new();
         let mut kernel = CountingMockKernel::new(inner);
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         // args[0] = surface → present in named_steps, so resolve_geometry_handle_arg
         // returns Some(face_handle).
-        named_steps.insert("surface".to_string(), face_handle);
+        named_steps.insert("surface".to_string(), kh(face_handle));
 
         let mut values = reify_ir::ValueMap::new();
         // args[1] = point → bare Value::Real components, NOT Value::Scalar with
@@ -12024,8 +12024,8 @@ mod tests {
         let face_handle = reify_ir::GeometryHandleId(55);
         let mut kernel = MockGeometryKernel::new();
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("surface".to_string(), face_handle);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("surface".to_string(), kh(face_handle));
 
         let mut values = reify_ir::ValueMap::new();
         values.insert(
@@ -12098,8 +12098,8 @@ mod tests {
             reify_ir::Value::Real(42.0),
         );
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("surface".to_string(), face_handle);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("surface".to_string(), kh(face_handle));
 
         let mut values = reify_ir::ValueMap::new();
         values.insert(
@@ -12203,7 +12203,7 @@ mod tests {
         // named_steps carries a different handle id to prove the arm reads from
         // values, not named_steps.
         let mut named_steps = HashMap::new();
-        named_steps.insert("b".to_string(), GeometryHandleId(99));
+        named_steps.insert("b".to_string(), kh(GeometryHandleId(99)));
 
         let mut values = reify_ir::ValueMap::new();
         values.insert(
@@ -12401,7 +12401,7 @@ mod tests {
             );
 
         let mut named_steps = HashMap::new();
-        named_steps.insert("b".to_string(), GeometryHandleId(99));
+        named_steps.insert("b".to_string(), kh(GeometryHandleId(99)));
 
         let mut values = reify_ir::ValueMap::new();
         values.insert(
@@ -12872,7 +12872,7 @@ mod tests {
             );
 
         let mut named_steps = HashMap::new();
-        named_steps.insert("b".to_string(), parent_handle);
+        named_steps.insert("b".to_string(), kh(parent_handle));
 
         let mut values = reify_ir::ValueMap::new();
         // Seed parent solid (args[0])
@@ -12954,7 +12954,7 @@ mod tests {
             .with_extracted_faces(parent_handle, vec![GeometryHandleId(1)]);
 
         let mut named_steps = HashMap::new();
-        named_steps.insert("b".to_string(), parent_handle);
+        named_steps.insert("b".to_string(), kh(parent_handle));
 
         let mut values = reify_ir::ValueMap::new();
         // Only the parent is seeded; the face cell is absent
@@ -13032,8 +13032,8 @@ mod tests {
             );
 
         let mut named_steps = HashMap::new();
-        named_steps.insert("fa".to_string(), face_a_handle);
-        named_steps.insert("fb".to_string(), face_b_handle);
+        named_steps.insert("fa".to_string(), kh(face_a_handle));
+        named_steps.insert("fb".to_string(), kh(face_b_handle));
 
         let mut values = reify_ir::ValueMap::new();
         // Parent solid — found by resolve_owner_solid_handle scanning values
@@ -13135,8 +13135,8 @@ mod tests {
             );
 
         let mut named_steps = HashMap::new();
-        named_steps.insert("fa".to_string(), face_a_handle);
-        named_steps.insert("fb".to_string(), face_b_handle);
+        named_steps.insert("fa".to_string(), kh(face_a_handle));
+        named_steps.insert("fb".to_string(), kh(face_b_handle));
 
         let mut values = reify_ir::ValueMap::new();
         // Face args present — arm resolves them, then hits dispatch_shared_edges
@@ -13209,7 +13209,7 @@ mod tests {
             .with_extracted_faces(parent_handle, vec![face_handle]);
 
         let mut named_steps = HashMap::new();
-        named_steps.insert("b".to_string(), parent_handle);
+        named_steps.insert("b".to_string(), kh(parent_handle));
 
         let mut values = reify_ir::ValueMap::new();
         values.insert(
@@ -13285,8 +13285,8 @@ mod tests {
             .with_extracted_faces(parent_handle, vec![face_a_handle, face_b_handle]);
 
         let mut named_steps = HashMap::new();
-        named_steps.insert("fa".to_string(), face_a_handle);
-        named_steps.insert("fb".to_string(), face_b_handle);
+        named_steps.insert("fa".to_string(), kh(face_a_handle));
+        named_steps.insert("fb".to_string(), kh(face_b_handle));
 
         let mut values = reify_ir::ValueMap::new();
         values.insert(
@@ -13383,8 +13383,8 @@ mod tests {
         let mut kernel = MockGeometryKernel::new()
             .with_surface_curvature_at_result(face_handle, [0.005, 0.0], reify_ir::Value::List(vec![row0, row1]));
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("face".to_string(), face_handle);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("face".to_string(), kh(face_handle));
 
         let mut values = reify_ir::ValueMap::new();
         values.insert(
@@ -13447,8 +13447,8 @@ mod tests {
         let mut kernel = MockGeometryKernel::new()
             .with_curve_curvature_at_result(edge_handle, [0.01, 0.0, 0.0], reify_ir::Value::Real(kappa));
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("edge".to_string(), edge_handle);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("edge".to_string(), kh(edge_handle));
 
         let mut values = reify_ir::ValueMap::new();
         values.insert(
@@ -13501,8 +13501,8 @@ mod tests {
         // the generic no-match error in the mock kernel, yielding QueryFailed.
         let mut kernel = MockGeometryKernel::new();
 
-        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
-        named_steps.insert("face".to_string(), face_handle);
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("face".to_string(), kh(face_handle));
 
         let mut values = reify_ir::ValueMap::new();
         values.insert(
@@ -13564,7 +13564,7 @@ mod tests {
         let inner = reify_test_support::mocks::MockGeometryKernel::new();
         let mut kernel = CountingMockKernel::new(inner);
 
-        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         let values = reify_ir::ValueMap::new();
 
         let expr = topology_selector_call_literal_args("curvature");
@@ -13658,7 +13658,7 @@ mod tests {
             Type::Geometry,
             Type::length(),
         );
-        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
         let result = super::try_eval_topology_selector(
@@ -13690,7 +13690,7 @@ mod tests {
         use reify_test_support::mocks::MockGeometryKernel;
 
         let mut kernel = MockGeometryKernel::new();
-        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         let values = reify_ir::ValueMap::new();
 
         let expr = topology_selector_call_one_literal_arg("length");
@@ -13748,7 +13748,7 @@ mod tests {
             Type::Geometry,
             Type::length(),
         );
-        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
         let result = super::try_eval_topology_selector(
@@ -13835,7 +13835,7 @@ mod tests {
             Type::Geometry,
             Type::length(),
         );
-        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
         let result = super::try_eval_topology_selector(
@@ -13867,7 +13867,7 @@ mod tests {
         use reify_test_support::mocks::MockGeometryKernel;
 
         let mut kernel = MockGeometryKernel::new();
-        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         let values = reify_ir::ValueMap::new();
 
         let expr = topology_selector_call_one_literal_arg("perimeter");
@@ -13924,7 +13924,7 @@ mod tests {
             Type::Geometry,
             Type::length(),
         );
-        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
         let result = super::try_eval_topology_selector(
@@ -13998,7 +13998,7 @@ mod tests {
             Type::Geometry,
             Type::length(),
         );
-        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
         let result = super::try_eval_topology_selector(
@@ -14074,7 +14074,7 @@ mod tests {
             Type::Geometry,
             Type::length(),
         );
-        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
         let result = super::try_eval_topology_selector(
@@ -14144,7 +14144,7 @@ mod tests {
             Type::Geometry,
             Type::length(),
         );
-        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
         let result = super::try_eval_topology_selector(
@@ -14203,7 +14203,7 @@ mod tests {
             Type::Geometry,
             Type::length(),
         );
-        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
         let result = super::try_eval_topology_selector(

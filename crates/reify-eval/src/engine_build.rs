@@ -1611,12 +1611,6 @@ impl Engine {
                     .geometry_kernels
                     .get_mut(name)
                     .expect("default kernel must remain in the map across the per-realization loop");
-                // Task 4048: project the per-template `named_steps` (now
-                // `KernelHandle`-valued) to bare `GeometryHandleId` for the
-                // post-process query/selector helpers, which resolve names to
-                // bare ids. `named_steps` itself is moved into the snapshot below.
-                let named_steps_ids: HashMap<String, GeometryHandleId> =
-                    named_steps.iter().map(|(k, h)| (k.clone(), h.id)).collect();
                 // GHR-γ step-6: mirror of the build() hydration — stamp
                 // Type::Geometry value cells with real kernel handles so
                 // build_snapshot callers see the same GeometryHandle values.
@@ -1624,7 +1618,7 @@ impl Engine {
                 // freshness-bearing cache nodes (esc-3606-37 ruling step 1).
                 Engine::post_process_geometry_handle_cells(
                     template,
-                    &named_steps_ids,
+                    &named_steps,
                     &mut values,
                     &self.functions,
                     &self.meta_map,
@@ -1639,7 +1633,7 @@ impl Engine {
                 // realization-loop duplication is tracked separately).
                 Engine::post_process_conformance_queries(
                     template,
-                    &named_steps_ids,
+                    &named_steps,
                     &mut values,
                     default_kernel.as_ref(),
                     &mut diagnostics,
@@ -1651,14 +1645,14 @@ impl Engine {
                 // a `GeometryHandleId`.
                 Engine::post_process_kinematic_queries(
                     template,
-                    &named_steps_ids,
+                    &named_steps,
                     &mut values,
                     default_kernel.as_ref(),
                     &mut diagnostics,
                 );
                 Engine::run_post_processes(
                     template,
-                    &named_steps_ids,
+                    &named_steps,
                     &mut values,
                     &self.functions,
                     &self.meta_map,
@@ -1945,12 +1939,6 @@ impl Engine {
                     .geometry_kernels
                     .get_mut(name)
                     .expect("default kernel must remain in the map across the per-realization loop");
-                // Task 4048: project the per-template `named_steps` (now
-                // `KernelHandle`-valued) to bare `GeometryHandleId` for the
-                // post-process query/selector helpers, which resolve names to
-                // bare ids. `named_steps` itself is moved into the snapshot below.
-                let named_steps_ids: HashMap<String, GeometryHandleId> =
-                    named_steps.iter().map(|(k, h)| (k.clone(), h.id)).collect();
                 // GHR-γ step-6: hydrate Type::Geometry value cells with real
                 // kernel handles before any downstream post-process that might
                 // read geometry-handle cells. GHR-δ: also records geometry-backed
@@ -1958,7 +1946,7 @@ impl Engine {
                 // ruling step 1).
                 Engine::post_process_geometry_handle_cells(
                     template,
-                    &named_steps_ids,
+                    &named_steps,
                     &mut values,
                     &self.functions,
                     &self.meta_map,
@@ -1974,7 +1962,7 @@ impl Engine {
                 // tracked separately).
                 Engine::post_process_conformance_queries(
                     template,
-                    &named_steps_ids,
+                    &named_steps,
                     &mut values,
                     default_kernel.as_ref(),
                     &mut diagnostics,
@@ -1986,14 +1974,14 @@ impl Engine {
                 // a `GeometryHandleId`.
                 Engine::post_process_kinematic_queries(
                     template,
-                    &named_steps_ids,
+                    &named_steps,
                     &mut values,
                     default_kernel.as_ref(),
                     &mut diagnostics,
                 );
                 Engine::run_post_processes(
                     template,
-                    &named_steps_ids,
+                    &named_steps,
                     &mut values,
                     &self.functions,
                     &self.meta_map,
@@ -2651,12 +2639,6 @@ impl Engine {
             let default_kernel = geometry_kernels
                 .get_mut(default_kernel_name)
                 .expect("default kernel must remain in the map across the per-realization loop");
-            // Task 4048: project the per-template `named_steps` (now
-            // `KernelHandle`-valued) to bare `GeometryHandleId` for the
-            // post-process query/selector helpers, which resolve names to bare
-            // ids. `named_steps` itself is moved into the snapshot below.
-            let named_steps_ids: HashMap<String, GeometryHandleId> =
-                named_steps.iter().map(|(k, h)| (k.clone(), h.id)).collect();
             // Task 3616: hydrate geometry-handle value cells before any
             // post-process that reads them (topology selectors need the parent
             // Value::GeometryHandle in `values`). Mirrors the
@@ -2666,7 +2648,7 @@ impl Engine {
             // `self.cache` or `self.realization_handles`.
             Engine::hydrate_geometry_handles_into_values(
                 template,
-                &named_steps_ids,
+                &named_steps,
                 values,
                 functions,
                 meta_map,
@@ -2678,7 +2660,7 @@ impl Engine {
             // `Engine::post_process_conformance_queries` docstring.
             Engine::post_process_conformance_queries(
                 template,
-                &named_steps_ids,
+                &named_steps,
                 values,
                 default_kernel.as_ref(),
                 diagnostics,
@@ -2688,14 +2670,14 @@ impl Engine {
             // values as the build surface so GUI overlays stay consistent.
             Engine::post_process_kinematic_queries(
                 template,
-                &named_steps_ids,
+                &named_steps,
                 values,
                 default_kernel.as_ref(),
                 diagnostics,
             );
             Engine::run_post_processes(
                 template,
-                &named_steps_ids,
+                &named_steps,
                 values,
                 functions,
                 meta_map,
@@ -3686,7 +3668,7 @@ impl Engine {
     #[allow(clippy::too_many_arguments)]
     fn post_process_geometry_handle_cells(
         template: &reify_compiler::TopologyTemplate,
-        named_steps: &HashMap<String, GeometryHandleId>,
+        named_steps: &HashMap<String, KernelHandle>,
         values: &mut ValueMap,
         functions: &[CompiledFunction],
         meta_map: &HashMap<String, HashMap<String, String>>,
@@ -3715,7 +3697,7 @@ impl Engine {
                     None => continue,
                 };
                 let kernel_handle = match named_steps.get(name) {
-                    Some(&h) => h,
+                    Some(kh) => kh.id,
                     None => continue,
                 };
                 // Hydrate all named realizations — geometry params AND geometry
@@ -3823,7 +3805,7 @@ impl Engine {
     /// resolve the parent `Value::GeometryHandle` via `values.get(arg_cell_id)`.
     fn hydrate_geometry_handles_into_values(
         template: &reify_compiler::TopologyTemplate,
-        named_steps: &HashMap<String, GeometryHandleId>,
+        named_steps: &HashMap<String, KernelHandle>,
         values: &mut ValueMap,
         functions: &[CompiledFunction],
         meta_map: &HashMap<String, HashMap<String, String>>,
@@ -3840,7 +3822,7 @@ impl Engine {
                     None => continue,
                 };
                 let kernel_handle = match named_steps.get(name) {
-                    Some(&h) => h,
+                    Some(kh) => kh.id,
                     None => continue,
                 };
                 let mut h = ContentHash::of(b"uvh1");
@@ -3920,7 +3902,7 @@ impl Engine {
     /// (task 2320 amendment).
     fn post_process_conformance_queries(
         template: &reify_compiler::TopologyTemplate,
-        named_steps: &HashMap<String, GeometryHandleId>,
+        named_steps: &HashMap<String, KernelHandle>,
         values: &mut ValueMap,
         kernel: &dyn GeometryKernel,
         diagnostics: &mut Vec<Diagnostic>,
@@ -3960,7 +3942,7 @@ impl Engine {
     /// tessellate paths agree on the patched value.
     fn post_process_kinematic_queries(
         template: &reify_compiler::TopologyTemplate,
-        named_steps: &HashMap<String, GeometryHandleId>,
+        named_steps: &HashMap<String, KernelHandle>,
         values: &mut ValueMap,
         kernel: &dyn GeometryKernel,
         diagnostics: &mut Vec<Diagnostic>,
@@ -4072,7 +4054,7 @@ impl Engine {
     /// point) so build / build_snapshot / tessellate_from_values all pick it up.
     fn post_process_geometry_queries(
         template: &reify_compiler::TopologyTemplate,
-        named_steps: &HashMap<String, GeometryHandleId>,
+        named_steps: &HashMap<String, KernelHandle>,
         values: &mut ValueMap,
         functions: &[CompiledFunction],
         meta_map: &HashMap<String, HashMap<String, String>>,
@@ -4130,7 +4112,7 @@ impl Engine {
     #[allow(clippy::too_many_arguments)]
     fn run_post_processes(
         template: &reify_compiler::TopologyTemplate,
-        named_steps: &HashMap<String, GeometryHandleId>,
+        named_steps: &HashMap<String, KernelHandle>,
         values: &mut ValueMap,
         functions: &[CompiledFunction],
         meta_map: &HashMap<String, HashMap<String, String>>,
@@ -4209,7 +4191,7 @@ impl Engine {
     /// tessellate paths agree on the patched value.
     fn post_process_topology_selectors(
         template: &reify_compiler::TopologyTemplate,
-        named_steps: &HashMap<String, GeometryHandleId>,
+        named_steps: &HashMap<String, KernelHandle>,
         values: &mut ValueMap,
         kernel: &mut dyn GeometryKernel,
         diagnostics: &mut Vec<Diagnostic>,
@@ -4276,7 +4258,7 @@ impl Engine {
     /// extraction before the read-only resolver and kernel-query steps.
     fn post_process_ad_hoc_selectors(
         template: &reify_compiler::TopologyTemplate,
-        named_steps: &HashMap<String, GeometryHandleId>,
+        named_steps: &HashMap<String, KernelHandle>,
         values: &mut ValueMap,
         kernel: &mut dyn GeometryKernel,
         table: &TopologyAttributeTable,

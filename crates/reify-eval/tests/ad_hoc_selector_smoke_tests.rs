@@ -126,9 +126,13 @@ fn configured_kernel() -> MockGeometryKernel {
 ///
 /// This is what the engine populates for `let body = cylinder(...)` before
 /// calling `post_process_ad_hoc_selectors`.
-fn named_steps_with_body() -> HashMap<String, GeometryHandleId> {
+fn kh(id: GeometryHandleId) -> KernelHandle {
+    KernelHandle { kernel: KernelId::Occt, id }
+}
+
+fn named_steps_with_body() -> HashMap<String, KernelHandle> {
     let mut m = HashMap::new();
-    m.insert("body".to_string(), BODY_HANDLE);
+    m.insert("body".to_string(), KernelHandle { kernel: KernelId::Occt, id: BODY_HANDLE });
     m
 }
 
