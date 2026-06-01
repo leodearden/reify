@@ -1099,4 +1099,275 @@ mod tests {
             "let axis zero vector",
         );
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // step-17: RED — hinge-family compliance population
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Read the `__flexure_compliance` FlexureCompliance record's fields from a
+    /// hinge flexure joint Map (panics if absent or the wrong shape). Local to
+    /// this test module, mirroring beam.rs / prismatic.rs / notch.rs.
+    fn compliance_fields(joint: &Value) -> &reify_ir::PersistentMap<String, Value> {
+        match map_get(joint, "__flexure_compliance") {
+            Some(Value::StructureInstance(d)) => {
+                assert_eq!(
+                    d.type_name, "FlexureCompliance",
+                    "__flexure_compliance is a FlexureCompliance record"
+                );
+                &d.fields
+            }
+            other => panic!("expected __flexure_compliance StructureInstance, got {other:?}"),
+        }
+    }
+
+    /// Auto-endpoint + declared-range compliance assertions shared by the two
+    /// bending-hinge ctors (living hinge, cross-spring pivot). Both use the
+    /// cantilever angular surface stress σ = E·(t/2)·θ/L (common.rs
+    /// `cantilever_sigma_at`), the algebraic inverse of their
+    /// θ_yield = yield·L/(E·t/2). `k_gamma` pins the effective_stiffness.
+    fn assert_bending_hinge_compliance(ctor_name: &str, k_gamma: f64) {
+        let e = 205e9_f64;
+        let yield_si = 310e6_f64;
+        let prb_limit = 5.0_f64 * PI / 180.0;
+        let ten_deg = 10.0_f64 * PI / 180.0;
+        let sigma_at =
+            |theta: f64, length: f64, thickness: f64| e * (thickness / 2.0) * theta / length;
+
+        // ── auto endpoint (6-arg, PRB-capped fixture L=20mm/t=0.5mm) ──────────
+        // θ_yield ≈ 6.93° > 5°, so endpoint = ±5° and σ(5°) ≈ 224 MPa < yield ⇒
+        // at_yield=false.
+        let length = 0.02_f64;
+        let width = 0.005_f64;
+        let thickness = 0.0005_f64;
+        let auto =
+            crate::eval_builtin(ctor_name, &bending_hinge_args_6(length, width, thickness, steel()));
+        let fields = compliance_fields(&auto);
+        let f = |k: &str| {
+            fields
+                .get(&k.to_string())
+                .unwrap_or_else(|| panic!("{ctor_name}: FlexureCompliance missing `{k}`"))
+        };
+
+        // effective_stiffness (Real) == spring_rate == k_gamma·E·I/L.
+        let i = width * thickness.powi(3) / 12.0;
+        let k_expected = k_gamma * e * i / length;
+        let spring_si = spring_rate_si(&auto);
+        match f("effective_stiffness") {
+            Value::Real(rr) => assert!(
+                (rr - spring_si).abs() / spring_si < 1e-12
+                    && (rr - k_expected).abs() / k_expected < 1e-9,
+                "{ctor_name}: effective_stiffness {rr} == spring_rate {spring_si} == k·EI/L {k_expected}"
+            ),
+            other => panic!("{ctor_name}: effective_stiffness Real, got {other:?}"),
+        }
+
+        // max_stress (PRESSURE) == σ(5°) at the auto PRB-capped endpoint, < yield.
+        let expected_auto = sigma_at(prb_limit, length, thickness);
+        match f("max_stress") {
+            Value::Scalar { si_value, dimension } => {
+                assert_eq!(*dimension, DimensionVector::PRESSURE, "{ctor_name}: max_stress PRESSURE");
+                assert!(
+                    (si_value - expected_auto).abs() / expected_auto < 1e-9,
+                    "{ctor_name}: auto max_stress {si_value} vs σ(5°) {expected_auto}"
+                );
+                assert!(*si_value < yield_si, "{ctor_name}: σ(5°) below yield ({si_value})");
+            }
+            other => panic!("{ctor_name}: max_stress Scalar, got {other:?}"),
+        }
+        assert_eq!(f("at_yield"), &Value::Bool(false), "{ctor_name}: auto endpoint not at yield");
+        match f("prb_validity_range") {
+            Value::Real(rr) => assert!(
+                (rr - prb_limit).abs() / prb_limit < 1e-9,
+                "{ctor_name}: prb_validity_range {rr} == 5°"
+            ),
+            other => panic!("{ctor_name}: prb_validity_range Real, got {other:?}"),
+        }
+
+        // ── declared ±10° on yielding geometry (t=0.05mm, L=2mm) ─────────────
+        // σ(10°) ≈ 447 MPa > 310 yield. 8-arg layout:
+        //   (length, width, thickness, material, pivot, axis, neutral, declared_range).
+        let yl = 0.002_f64;
+        let yt = 0.00005_f64;
+        let yielding = crate::eval_builtin(
+            ctor_name,
+            &[
+                Value::length(yl),
+                Value::length(width),
+                Value::length(yt),
+                steel(),
+                origin(),
+                axis_y(),
+                Value::angle(0.0),     // neutral
+                Value::angle(ten_deg), // declared ±10° half-width
+            ],
+        );
+        assert!(
+            !yielding.is_undef(),
+            "{ctor_name}: yielding declared-range call returns a joint, not Undef"
+        );
+        assert_eq!(
+            map_get(&yielding, "kind"),
+            Some(&Value::String("revolute".to_string())),
+            "{ctor_name}: yielding hinge is still a revolute joint"
+        );
+        let (lo, up) = range_lower_upper(map_get(&yielding, "range").expect("range present"));
+        assert_angle_close(lo, -ten_deg, &format!("{ctor_name}: declared-range lower bound"));
+        assert_angle_close(up, ten_deg, &format!("{ctor_name}: declared-range upper bound"));
+
+        let yf = compliance_fields(&yielding);
+        let yg = |k: &str| {
+            yf.get(&k.to_string())
+                .unwrap_or_else(|| panic!("{ctor_name}: missing `{k}`"))
+        };
+        let expected_y = sigma_at(ten_deg, yl, yt);
+        assert!(
+            expected_y > yield_si,
+            "{ctor_name}: fixture sanity σ(10°)={expected_y} must exceed yield {yield_si}"
+        );
+        match yg("max_stress") {
+            Value::Scalar { si_value, .. } => assert!(
+                (si_value - expected_y).abs() / expected_y < 1e-9,
+                "{ctor_name}: declared max_stress {si_value} vs σ(10°) {expected_y}"
+            ),
+            other => panic!("{ctor_name}: max_stress Scalar, got {other:?}"),
+        }
+        assert_eq!(yg("at_yield"), &Value::Bool(true), "{ctor_name}: declared 10° drives at_yield true");
+        match yg("yield_margin") {
+            Value::Real(rr) => assert!(*rr < 0.0, "{ctor_name}: yielding ⇒ negative margin, got {rr}"),
+            other => panic!("{ctor_name}: yield_margin Real, got {other:?}"),
+        }
+
+        // prb_validity_range still advertises the auto SAFE bound for this short
+        // geometry (θ_yield = yield·L/(E·t/2) at L=2mm/t=0.05mm), not the declared 10°.
+        let theta_yield_short = yield_si * yl / (e * yt / 2.0);
+        match yg("prb_validity_range") {
+            Value::Real(rr) => assert!(
+                (rr - theta_yield_short).abs() / theta_yield_short < 1e-9,
+                "{ctor_name}: prb_validity_range stays auto θ_yield {theta_yield_short}, got {rr}"
+            ),
+            other => panic!("{ctor_name}: prb_validity_range Real, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prb_living_hinge_attaches_populated_compliance() {
+        // γ_lh = 1.0 (Howell §5.7 SLFP).
+        assert_bending_hinge_compliance("prb_living_hinge", 1.0);
+    }
+
+    #[test]
+    fn prb_cross_spring_pivot_attaches_populated_compliance() {
+        // γ_cs = 2.0 (Haringx 1949).
+        assert_bending_hinge_compliance("prb_cross_spring_pivot", 2.0);
+    }
+
+    #[test]
+    fn prb_let_joint_attaches_populated_compliance() {
+        // LET joint (Jacobsen et al. 2009): torsional, governed by shear. The
+        // cached max_stress is the von Mises tensile-equivalent of the torsional
+        // surface stress σ_eq = √3·G·t·θ/L (the algebraic inverse of
+        // θ_yield = σy·L/(√3·G·t)), so the at_yield check — which compares against
+        // the material *tensile* yield σy — trips exactly at the LET joint's own
+        // torsional yield rotation, consistent with the auto range cap.
+        let e = 205e9_f64;
+        let nu = 0.29_f64; // steel() poisson_ratio
+        let g = e / (2.0 * (1.0 + nu));
+        let yield_si = 310e6_f64;
+        let prb_limit = 5.0_f64 * PI / 180.0;
+        let ten_deg = 10.0_f64 * PI / 180.0;
+        let vm_sigma_at =
+            |theta: f64, length: f64, thickness: f64| 3.0_f64.sqrt() * g * thickness * theta / length;
+
+        // ── auto endpoint (7-arg, L=20mm/t=0.3mm): θ_yield ≈ 8.6° > 5° ⇒
+        // endpoint = ±5°, σ_eq(5°) ≈ 180 MPa < yield ⇒ at_yield=false. ──
+        let length = 0.02_f64;
+        let width = 0.005_f64;
+        let thickness = 0.0003_f64;
+        let auto =
+            crate::eval_builtin("prb_let_joint", &let_args_7(length, width, thickness, 2, steel()));
+        let fields = compliance_fields(&auto);
+        let f = |k: &str| {
+            fields
+                .get(&k.to_string())
+                .unwrap_or_else(|| panic!("LET: FlexureCompliance missing `{k}`"))
+        };
+
+        // effective_stiffness (Real) == spring_rate (k_θ = n·G·J/L).
+        let spring_si = spring_rate_si(&auto);
+        match f("effective_stiffness") {
+            Value::Real(rr) => assert!(
+                (rr - spring_si).abs() / spring_si < 1e-12,
+                "LET: effective_stiffness {rr} == spring_rate {spring_si}"
+            ),
+            other => panic!("LET: effective_stiffness Real, got {other:?}"),
+        }
+
+        let expected_auto = vm_sigma_at(prb_limit, length, thickness);
+        assert!(expected_auto < yield_si, "LET fixture sanity: σ_eq(5°)={expected_auto} < yield");
+        match f("max_stress") {
+            Value::Scalar { si_value, dimension } => {
+                assert_eq!(*dimension, DimensionVector::PRESSURE, "LET: max_stress PRESSURE");
+                assert!(
+                    (si_value - expected_auto).abs() / expected_auto < 1e-9,
+                    "LET: auto max_stress {si_value} vs σ_eq(5°) {expected_auto}"
+                );
+            }
+            other => panic!("LET: max_stress Scalar, got {other:?}"),
+        }
+        assert_eq!(f("at_yield"), &Value::Bool(false), "LET: auto endpoint not at yield");
+        match f("prb_validity_range") {
+            Value::Real(rr) => assert!(
+                (rr - prb_limit).abs() / prb_limit < 1e-9,
+                "LET: prb_validity_range {rr} == 5°"
+            ),
+            other => panic!("LET: prb_validity_range Real, got {other:?}"),
+        }
+
+        // ── declared ±10° (9-arg layout): σ_eq(10°) ≈ 360 MPa > yield. The 9-arg
+        // layout is (length, width, thickness, n_blades, material, pivot, axis,
+        // neutral, declared_range). ──
+        let yielding = crate::eval_builtin(
+            "prb_let_joint",
+            &[
+                Value::length(length),
+                Value::length(width),
+                Value::length(thickness),
+                Value::Int(2),
+                steel(),
+                origin(),
+                axis_y(),
+                Value::angle(0.0),     // neutral
+                Value::angle(ten_deg), // declared ±10° half-width
+            ],
+        );
+        assert!(!yielding.is_undef(), "LET: declared-range call returns a joint, not Undef");
+        assert_eq!(
+            map_get(&yielding, "kind"),
+            Some(&Value::String("revolute".to_string())),
+            "LET: yielding joint is still revolute"
+        );
+        let (lo, up) = range_lower_upper(map_get(&yielding, "range").expect("range present"));
+        assert_angle_close(lo, -ten_deg, "LET declared-range lower bound");
+        assert_angle_close(up, ten_deg, "LET declared-range upper bound");
+
+        let yf = compliance_fields(&yielding);
+        let yg = |k: &str| {
+            yf.get(&k.to_string())
+                .unwrap_or_else(|| panic!("LET: missing `{k}`"))
+        };
+        let expected_y = vm_sigma_at(ten_deg, length, thickness);
+        assert!(expected_y > yield_si, "LET fixture sanity: σ_eq(10°)={expected_y} > yield");
+        match yg("max_stress") {
+            Value::Scalar { si_value, .. } => assert!(
+                (si_value - expected_y).abs() / expected_y < 1e-9,
+                "LET: declared max_stress {si_value} vs σ_eq(10°) {expected_y}"
+            ),
+            other => panic!("LET: max_stress Scalar, got {other:?}"),
+        }
+        assert_eq!(yg("at_yield"), &Value::Bool(true), "LET: declared 10° drives at_yield true");
+        match yg("yield_margin") {
+            Value::Real(rr) => assert!(*rr < 0.0, "LET: yielding ⇒ negative margin, got {rr}"),
+            other => panic!("LET: yield_margin Real, got {other:?}"),
+        }
+    }
 }
