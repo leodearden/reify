@@ -1666,4 +1666,76 @@ mod tests {
         assert!((factor - 1.0).abs() < 1e-9);
         assert_eq!(dim, DimensionVector::MASS.mul(&DimensionVector::LENGTH));
     }
+
+    // --- Task 4173: bare SI base units A / mol / cd in unit_to_scalar ---
+
+    #[test]
+    fn unit_to_scalar_resolves_bare_si_base_units_a_mol_cd() {
+        use reify_core::DimensionVector;
+
+        // A → CURRENT (factor 1.0)
+        let (val, dim) =
+            unit_to_scalar(2.0, "A").expect("bare SI base unit A must resolve");
+        assert_eq!(dim, DimensionVector::CURRENT, "A: dimension must be CURRENT");
+        match val {
+            Value::Scalar { si_value, dimension } => {
+                assert!(
+                    (si_value - 2.0).abs() < 1e-12,
+                    "A: si_value must ≈ 2.0, got {si_value}"
+                );
+                assert_eq!(
+                    dimension,
+                    DimensionVector::CURRENT,
+                    "A: Value dimension must be CURRENT"
+                );
+            }
+            _ => panic!("A: expected Value::Scalar, got different variant"),
+        }
+
+        // mol → AMOUNT_OF_SUBSTANCE (factor 1.0)
+        let (val, dim) =
+            unit_to_scalar(2.0, "mol").expect("bare SI base unit mol must resolve");
+        assert_eq!(
+            dim,
+            DimensionVector::AMOUNT_OF_SUBSTANCE,
+            "mol: dimension must be AMOUNT_OF_SUBSTANCE"
+        );
+        match val {
+            Value::Scalar { si_value, dimension } => {
+                assert!(
+                    (si_value - 2.0).abs() < 1e-12,
+                    "mol: si_value must ≈ 2.0, got {si_value}"
+                );
+                assert_eq!(
+                    dimension,
+                    DimensionVector::AMOUNT_OF_SUBSTANCE,
+                    "mol: Value dimension must be AMOUNT_OF_SUBSTANCE"
+                );
+            }
+            _ => panic!("mol: expected Value::Scalar, got different variant"),
+        }
+
+        // cd → LUMINOUS_INTENSITY (factor 1.0)
+        let (val, dim) =
+            unit_to_scalar(2.0, "cd").expect("bare SI base unit cd must resolve");
+        assert_eq!(
+            dim,
+            DimensionVector::LUMINOUS_INTENSITY,
+            "cd: dimension must be LUMINOUS_INTENSITY"
+        );
+        match val {
+            Value::Scalar { si_value, dimension } => {
+                assert!(
+                    (si_value - 2.0).abs() < 1e-12,
+                    "cd: si_value must ≈ 2.0, got {si_value}"
+                );
+                assert_eq!(
+                    dimension,
+                    DimensionVector::LUMINOUS_INTENSITY,
+                    "cd: Value dimension must be LUMINOUS_INTENSITY"
+                );
+            }
+            _ => panic!("cd: expected Value::Scalar, got different variant"),
+        }
+    }
 }
