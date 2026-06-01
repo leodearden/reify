@@ -199,3 +199,21 @@ fn modal_ops_producers_are_g_allow_marked() {
     ];
     assert_pins_are_g_allow_marked(&result, PINS);
 }
+
+/// Bucket 1 — elastic-static ComputeFn shell-channel helper
+/// (`crates/reify-eval/src/compute_targets/elastic_static.rs`).
+///
+/// `shell_channels_to_value` is reached on the elastic-static ComputeFn path
+/// via fn-pointer registration the orphan audit cannot trace, so it reads as a
+/// zero-caller orphan despite being live and tested.  PERMANENT bucket-1 pin.
+#[test]
+fn elastic_static_compute_producer_is_g_allow_marked() {
+    let Some(result) = run_orphan_audit("crates/reify-*/src") else {
+        return;
+    };
+    const PINS: &[(&str, &str)] = &[(
+        "crates/reify-eval/src/compute_targets/elastic_static.rs",
+        "shell_channels_to_value",
+    )];
+    assert_pins_are_g_allow_marked(&result, PINS);
+}
