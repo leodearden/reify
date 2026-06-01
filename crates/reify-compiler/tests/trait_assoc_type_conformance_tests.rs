@@ -10,7 +10,7 @@
 //! to store the resolved assoc-type table onto each conformer's
 //! `TopologyTemplate.assoc_types` (today entity.rs stores an empty Vec).
 
-use reify_core::DiagnosticCode;
+use reify_core::{DiagnosticCode, Type};
 use reify_test_support::{compile_source, errors_only};
 
 /// A trait with a bodyless required associated type `type Material` plus a
@@ -88,5 +88,119 @@ structure def Bar : HasMaterial {
         "default-provided assoc type should satisfy the requirement with no \
          TraitAssocTypeNotBound error; all diagnostics: {:?}",
         module.diagnostics
+    );
+}
+
+/// (a) A structure that explicitly overrides the trait default populates
+/// `TopologyTemplate.assoc_types` with `is_override = true` and the
+/// structure-provided type.
+///
+/// RED (step-9): fails because entity.rs stores `assoc_types: Vec::new()` per
+/// pre-2 (no resolve phase wired yet).
+#[test]
+fn structure_override_assoc_type_populates_template_table() {
+    let source = r#"
+structure Steel {}
+structure Aluminum {}
+trait HasMaterial {
+    type Material = Steel
+}
+structure def Beam : HasMaterial {
+    type Material = Aluminum
+    param w : Scalar = 1
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "override should compile cleanly; diagnostics: {:?}",
+        module.diagnostics
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Beam")
+        .expect("compiled module should contain a template for structure 'Beam'");
+
+    let entry = template
+        .assoc_types
+        .iter()
+        .find(|a| a.trait_name == "HasMaterial" && a.type_name == "Material")
+        .unwrap_or_else(|| {
+            panic!(
+                "Beam template should carry an assoc_types entry for \
+                 (HasMaterial, Material); assoc_types = {:?}",
+                template.assoc_types
+            )
+        });
+
+    assert_eq!(
+        entry.resolved,
+        Type::StructureRef("Aluminum".to_string()),
+        "override should resolve to Aluminum; got: {:?}",
+        entry.resolved
+    );
+    assert!(
+        entry.is_override,
+        "structure provided an explicit binding, so is_override must be true; got: {:?}",
+        entry
+    );
+}
+
+/// (b) A structure that inherits the trait default (no explicit binding)
+/// populates `TopologyTemplate.assoc_types` with `is_override = false` and the
+/// default-provided type.
+///
+/// RED (step-9): fails because entity.rs stores `assoc_types: Vec::new()` per
+/// pre-2 (no resolve phase wired yet).
+#[test]
+fn inherited_default_assoc_type_populates_template_table() {
+    let source = r#"
+structure Steel {}
+trait HasMaterial {
+    type Material = Steel
+}
+structure def Bar : HasMaterial {
+    param w : Scalar = 1
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "inherited default should compile cleanly; diagnostics: {:?}",
+        module.diagnostics
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Bar")
+        .expect("compiled module should contain a template for structure 'Bar'");
+
+    let entry = template
+        .assoc_types
+        .iter()
+        .find(|a| a.trait_name == "HasMaterial" && a.type_name == "Material")
+        .unwrap_or_else(|| {
+            panic!(
+                "Bar template should carry an assoc_types entry for \
+                 (HasMaterial, Material); assoc_types = {:?}",
+                template.assoc_types
+            )
+        });
+
+    assert_eq!(
+        entry.resolved,
+        Type::StructureRef("Steel".to_string()),
+        "inherited default should resolve to Steel; got: {:?}",
+        entry.resolved
+    );
+    assert!(
+        !entry.is_override,
+        "structure did not override the default, so is_override must be false; got: {:?}",
+        entry
     );
 }
