@@ -196,6 +196,109 @@ pub fn locate_element_p1(elements: &[LocatableTet<'_>], p: [f64; 3], tol: f64) -
 }
 
 #[cfg(test)]
+mod bvh_tests {
+    use super::*;
+
+    // ── Shared fixture: 6-tet Freudenthal box tiling [0,1]³ ─────────────────
+    fn box_nodes() -> Vec<[f64; 3]> {
+        vec![
+            [0.0, 0.0, 0.0], // 0
+            [1.0, 0.0, 0.0], // 1
+            [1.0, 1.0, 0.0], // 2
+            [0.0, 1.0, 0.0], // 3
+            [0.0, 0.0, 1.0], // 4
+            [1.0, 0.0, 1.0], // 5
+            [1.0, 1.0, 1.0], // 6
+            [0.0, 1.0, 1.0], // 7
+        ]
+    }
+    fn box_elems() -> Vec<[usize; 4]> {
+        vec![
+            [0, 1, 2, 6], // T0
+            [0, 2, 3, 6], // T1
+            [0, 5, 1, 6], // T2
+            [0, 3, 7, 6], // T3
+            [0, 4, 5, 6], // T4
+            [0, 7, 4, 6], // T5
+        ]
+    }
+    fn tet_centroid(nodes: &[[f64; 3]], conn: &[usize; 4]) -> [f64; 3] {
+        let mut c = [0.0_f64; 3];
+        for &i in conn {
+            for k in 0..3 {
+                c[k] += nodes[i][k];
+            }
+        }
+        for k in 0..3 {
+            c[k] /= 4.0;
+        }
+        c
+    }
+
+    /// Build a `Vec<LocatableTet>` from node + connectivity arrays.
+    /// The `phys` backing store must outlive the returned slice.
+    fn make_locatable<'a>(
+        nodes: &[[f64; 3]],
+        elems: &[[usize; 4]],
+        phys: &'a mut Vec<[[f64; 3]; 4]>,
+    ) -> Vec<LocatableTet<'a>> {
+        *phys = elems
+            .iter()
+            .map(|conn| {
+                [nodes[conn[0]], nodes[conn[1]], nodes[conn[2]], nodes[conn[3]]]
+            })
+            .collect();
+        phys.iter().map(|pn| LocatableTet { phys_nodes: pn }).collect()
+    }
+
+    /// Step-1 RED: TetSpatialIndex does not exist yet; this test fails to compile.
+    #[test]
+    fn tet_spatial_index_matches_linear_oracle_for_all_cases() {
+        let nodes = box_nodes();
+        let elems = box_elems();
+        let tol = 1e-9_f64;
+
+        // Build BVH index.
+        let idx = TetSpatialIndex::build(&nodes, &elems, tol);
+
+        // Build oracle.
+        let mut phys: Vec<[[f64; 3]; 4]> = Vec::new();
+        let locatable = make_locatable(&nodes, &elems, &mut phys);
+
+        let check = |label: &str, p: [f64; 3]| {
+            let bvh = idx.locate(&nodes, &elems, p, tol);
+            let oracle = locate_element_p1(&locatable, p, tol);
+            assert_eq!(
+                bvh, oracle,
+                "BVH != oracle at {label} p={p:?}: bvh={bvh:?} oracle={oracle:?}",
+            );
+        };
+
+        // (a) Centroid of each tet → strictly interior, unique hit.
+        for (ti, conn) in elems.iter().enumerate() {
+            check(
+                &format!("T{ti} centroid"),
+                tet_centroid(&nodes, conn),
+            );
+        }
+
+        // (b) Shared-face boundary between T0 (idx 0) and T1 (idx 1):
+        // face nodes 0=(0,0,0), 2=(1,1,0), 6=(1,1,1) → face centroid = (2/3, 2/3, 1/3).
+        // Both T0 and T1 contain this point within tol.  Oracle returns the
+        // LOWER index (T0=0); BVH must also return 0 via min-index selection.
+        check("shared-face T0/T1", [2.0 / 3.0, 2.0 / 3.0, 1.0 / 3.0]);
+
+        // (c) Near-vertex point just-outside within tol: (-1e-12, 0, 0) lies
+        // just outside T0's v0=(0,0,0) face (bary[0] ≈ 1 + 1e-12/Δ, well
+        // within tol=1e-9 for unit-scale edge).  AABB padding must capture it.
+        check("near-vertex within-tol", [-1e-12, 0.0, 0.0]);
+
+        // (d) Far-outside point → None in both BVH and oracle.
+        check("far outside", [10.0, 10.0, 10.0]);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
