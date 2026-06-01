@@ -3846,6 +3846,18 @@ impl Engine {
             had_failure || step_handles.len().saturating_sub(handle_start) < operations.len();
         if rolled_back {
             step_handles.truncate(handle_start);
+            // Task 4050 step-14: atomic intermediate-cache rollback. Drop every
+            // intermediate key this realization inserted (step-12) so a failed
+            // realization leaves NO cache entry behind — its handle truncation
+            // and its cache mutations roll back together (PRD §9 OQ9,
+            // provisional). `remove` is an exact-tolerance delete that no-ops on
+            // an absent key, so it is safe even if a key was never committed.
+            // The SUCCESS branch below deliberately does NOT drain this log: a
+            // completed realization's intermediates stay committed so later
+            // same-build realizations reuse them (step-11's reuse requirement).
+            for (entity, repr, tol) in &intermediate_cache_inserts {
+                realization_cache.remove(entity, *repr, *tol, NO_OPTIONS);
+            }
         } else {
             // Fully-successful realization. Three things land here, all keyed
             // on `step_handles[handle_start..].last()` so that an empty-ops
