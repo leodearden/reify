@@ -544,6 +544,56 @@ mod bvh_tests {
         phys.iter().map(|pn| LocatableTet { phys_nodes: pn }).collect()
     }
 
+    /// Step-3: locate_counted parity + count assertions.
+    ///
+    /// Asserts:
+    /// - `locate_counted` returns the same `Option<usize>` as `locate` for
+    ///   inside, boundary, and outside points.
+    /// - Far-outside point → count = 0 (root AABB culls all subtrees).
+    /// - Inside point → count ≥ 1 (at least the containing tet was tested).
+    #[test]
+    fn locate_counted_result_matches_locate_and_count_contract() {
+        // Two disjoint tets with well-separated x extents:
+        //   Tet0: (0,0,0),(1,0,0),(0,1,0),(0,0,1) — x in [0,1]
+        //   Tet1: (2,0,0),(3,0,0),(2,1,0),(2,0,1) — x in [2,3]
+        let nodes: Vec<[f64; 3]> = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [2.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [2.0, 1.0, 0.0],
+            [2.0, 0.0, 1.0],
+        ];
+        let elems: Vec<[usize; 4]> = vec![
+            [0, 1, 2, 3], // Tet0
+            [4, 5, 6, 7], // Tet1
+        ];
+        let tol = 1e-9_f64;
+        let idx = TetSpatialIndex::build(&nodes, &elems, tol);
+
+        // (1) Centroid of Tet0 — inside.
+        let p_in = [0.25_f64, 0.25, 0.25];
+        let (opt_loc, _) = idx.locate_counted(&nodes, &elems, p_in, tol);
+        let (opt_cnt, cnt_in) = idx.locate_counted(&nodes, &elems, p_in, tol);
+        assert_eq!(opt_loc, idx.locate(&nodes, &elems, p_in, tol), "inside: parity");
+        assert_eq!(opt_cnt, Some(0), "inside: must find Tet0");
+        assert!(cnt_in >= 1, "inside: count ≥ 1 (at least Tet0 tested)");
+
+        // (2) Centroid of Tet1 — inside.
+        let p_in1 = [2.25_f64, 0.25, 0.25];
+        let (opt1, _) = idx.locate_counted(&nodes, &elems, p_in1, tol);
+        assert_eq!(opt1, idx.locate(&nodes, &elems, p_in1, tol), "Tet1 centroid: parity");
+        assert_eq!(opt1, Some(1), "Tet1 centroid: must find Tet1");
+
+        // (3) Far-outside point — no AABB contains it → count = 0.
+        let p_out = [10.0_f64, 10.0, 10.0];
+        let (opt_out, cnt_out) = idx.locate_counted(&nodes, &elems, p_out, tol);
+        assert_eq!(opt_out, None, "far outside: None");
+        assert_eq!(cnt_out, 0, "far outside: count must be 0 (root AABB culls all)");
+    }
+
     /// Step-1 RED: TetSpatialIndex does not exist yet; this test fails to compile.
     #[test]
     fn tet_spatial_index_matches_linear_oracle_for_all_cases() {
