@@ -389,8 +389,8 @@ fn detect_scope_coupling(templates: &[reify_compiler::TopologyTemplate]) -> Vec<
         // span).  The message literal lives here once to prevent drift.
         let mut emit_for_reads = |reads: Vec<ValueCellId>, span| {
             for r in reads {
-                if let Some(owner) = frozen.get(&r) {
-                    if owner != b_name {
+                if let Some(owner) = frozen.get(&r)
+                    && owner != b_name {
                         let key = (owner.clone(), b_name.clone(), r.clone());
                         if seen.insert(key) {
                             let msg = format!(
@@ -410,7 +410,6 @@ fn detect_scope_coupling(templates: &[reify_compiler::TopologyTemplate]) -> Vec<
                             });
                         }
                     }
-                }
             }
         };
 
