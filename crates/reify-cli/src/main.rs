@@ -597,6 +597,21 @@ fn cmd_build(args: &[String]) -> ExitCode {
     }
 }
 
+/// Configure a freshly-constructed [`reify_eval::Engine`] for use in `cmd_eval`:
+/// wire the [`reify_constraints::DimensionalSolver`] and register all compute
+/// trampolines so `@optimized` targets dispatch correctly.
+///
+/// Both the geometry branch (`with_registered_kernel + build()`) and the plain
+/// branch (`Engine::new(None) + eval()`) share this setup; only the constructor
+/// and the terminal `build()`/`eval()` call differ.  Factoring the shared setup
+/// here eliminates the duplicated `.with_solver` + `register_compute_fns` block
+/// that would otherwise appear verbatim in each branch.
+fn configured_eval_engine(engine: reify_eval::Engine) -> reify_eval::Engine {
+    let mut engine = engine.with_solver(Box::new(reify_constraints::DimensionalSolver));
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    engine
+}
+
 /// `reify eval <file>` — parse, compile, evaluate, and print every
 /// top-level value cell as `entity.member = value`.
 ///
@@ -609,6 +624,31 @@ fn cmd_build(args: &[String]) -> ExitCode {
 /// params resolve: given box constraints and a `minimize`/`maximize` objective
 /// the solver runs Nelder-Mead and prints the resulting numeric SI value
 /// rather than `undef` (task 4132).
+///
+/// ## Geometry modules
+///
+/// When [`module_has_geometry`] detects geometry (realization ops or
+/// `Geometry`-typed value cells), the engine is constructed with
+/// [`reify_eval::Engine::with_registered_kernel`] and evaluation is routed
+/// through [`Engine::build`] so that
+/// `run_post_processes`/`post_process_geometry_queries` fires and lands
+/// geometry-query value cells (e.g. `mass`, `centroid`) into `BuildResult.values`
+/// (task 4145).  `geometry_output` from `BuildResult` is discarded — `reify eval`
+/// is a value-cell inspector, not an exporter.
+///
+/// When the OCCT kernel is absent (`cfg(has_occt)` unset), the registered kernel
+/// inventory is empty; `with_registered_kernel` returns a None-kernel engine and
+/// `build()` skips the geometry pipeline — geometry-query cells stay `undef` and
+/// exit code remains 0, matching `cmd_build`'s existing degradation in stub mode.
+///
+/// When OCCT is present but geometry realization fails at runtime (e.g. all ops
+/// fail in the kernel), `build()` emits an `Error`-severity diagnostic and those
+/// errors **do** propagate to `cmd_eval`'s exit code.  This widening is
+/// intentional: a file whose geometry is fundamentally broken should not silently
+/// exit 0 with all geometry-query cells reported as `undef`.
+///
+/// Non-geometry modules use the existing
+/// `Engine::new(None) + eval()` path unchanged.
 fn cmd_eval(args: &[String]) -> ExitCode {
     if args.is_empty() {
         eprintln!("Usage: reify eval <file>");
@@ -628,20 +668,33 @@ fn cmd_eval(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None)
-        .with_solver(Box::new(reify_constraints::DimensionalSolver));
-    // Register the compute trampolines so `@optimized` targets dispatch to their
-    // solver kernels instead of body-inlining their never-run fallback ctor (which
-    // emits an error-severity "no registered compute trampoline" diagnostic and
-    // exits non-zero). Without this, `reify eval` of ANY @optimized example
-    // (solver::form_find, solver::buckling, solver::elastic_static,
-    // modal::free_vibration) fails. See task 3794 / esc-3794-183.
-    reify_eval::compute_targets::register_compute_fns(&mut engine);
-    let result = engine.eval(&compiled);
+    // Normalise both branches to (values, diagnostics) for the shared print loop.
+    // `configured_eval_engine` handles the shared `.with_solver` +
+    // `register_compute_fns` setup; only the constructor and terminal call differ.
+    let (values, diagnostics) = if module_has_geometry(&compiled) {
+        // Geometry-bearing module: route through the kernel-backed build() path so
+        // that run_post_processes/post_process_geometry_queries fires and resolves
+        // geometry-query value cells (mass, centroid, volume, …).
+        // geometry_output is discarded — reify eval is a value inspector only.
+        let result = configured_eval_engine(
+            reify_eval::Engine::with_registered_kernel(Box::new(SimpleConstraintChecker)),
+        )
+        .build(&compiled, reify_ir::ExportFormat::Step);
+        (result.values, result.diagnostics)
+    } else {
+        // Plain numeric module: keep the existing lightweight eval() path so
+        // non-geometry eval tests (cli_eval_auto_resolve, cli_stackup_eval,
+        // cli_integration_smoke) remain on the exact unchanged code path.
+        // Note: register_compute_fns is still required so `@optimized` targets
+        // dispatch to their solver kernels (task 3794 / esc-3794-183).
+        let result = configured_eval_engine(
+            reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None),
+        )
+        .eval(&compiled);
+        (result.values, result.diagnostics)
+    };
 
-    let mut cells: Vec<(String, String)> = result
-        .values
+    let mut cells: Vec<(String, String)> = values
         .iter()
         .map(|(id, v)| (format!("{}", id), format!("{}", v)))
         .collect();
@@ -650,12 +703,11 @@ fn cmd_eval(args: &[String]) -> ExitCode {
         println!("{} = {}", id, v);
     }
 
-    for diag in &result.diagnostics {
+    for diag in &diagnostics {
         eprintln!("{}: {}", diag.severity, diag.message);
     }
 
-    if result
-        .diagnostics
+    if diagnostics
         .iter()
         .any(|d| d.severity == Severity::Error)
     {
@@ -1099,6 +1151,45 @@ fn report_constraint_results(
     }
 }
 
+/// Returns `true` if the compiled module contains geometry — i.e. any template
+/// has a realization with at least one geometry operation, OR any value cell
+/// is typed `reify_core::Type::Geometry`.
+///
+/// Two compile-time signals are OR'd (no kernel required):
+///
+/// * **(a) Realization with ops** — any template has a realization with at
+///   least one geometry operation. This is the exact signal used by
+///   `engine_build.rs`'s `had_realization_ops` gate internally.
+///
+/// * **(b) `Type::Geometry` value cell** — any template has a value cell
+///   typed [`reify_core::Type::Geometry`]. This clause is intentionally
+///   conservative/defensive: a module with only (b) true (e.g. a structure
+///   that exposes a `Solid`-typed parameter without a realization op) is
+///   still routed through `with_registered_kernel + build()`. In that
+///   sub-case `build()` will skip the geometry pipeline (no ops → no
+///   handles) and geometry-query cells stay `undef`, but the routing is
+///   harmless: the kernel block is a no-op without ops and the broader gate
+///   future-proofs detection for geometry-forwarding structures.
+///
+/// Both signals are present for `examples/spec-shape-physical.ri` (the
+/// `box(...)` realization op + the `geometry : Solid` cell) and absent for
+/// all existing non-geometry eval fixtures.
+///
+/// Used by `cmd_eval` to decide whether to route through the kernel-backed
+/// `Engine::with_registered_kernel + build()` path (so that geometry-query
+/// value cells such as `mass`/`centroid` are resolved by
+/// `run_post_processes`/`post_process_geometry_queries`) or to stay on the
+/// existing lightweight `Engine::new(None) + eval()` path for plain numeric
+/// modules.
+fn module_has_geometry(module: &reify_compiler::CompiledModule) -> bool {
+    module.templates.iter().any(|t| {
+        t.realizations.iter().any(|r| !r.operations.is_empty())
+            || t.value_cells
+                .iter()
+                .any(|vc| vc.cell_type == reify_core::Type::Geometry)
+    })
+}
+
 /// Report constraint results and eval diagnostics in a consistent order.
 ///
 /// Writes constraint status lines to `out` (via [`report_constraint_results`]),
@@ -1525,5 +1616,74 @@ mod tests {
             let outcome = report_eval_output(&entries, &no_diags, &mut out, &mut err);
             assert_eq!(outcome, ConstraintOutcome::SomeIndeterminate(2));
         }
+    }
+}
+
+#[cfg(test)]
+mod eval_geometry_gate_tests {
+    use super::module_has_geometry;
+
+    /// RED until `module_has_geometry` is implemented (step-2).
+    ///
+    /// Compiles two sources with the stdlib:
+    /// 1. A geometry-bearing `Bracket : Physical` module (has a `box(...)` realization
+    ///    op and a `geometry : Solid` value cell) — expects `true`.
+    /// 2. A plain numeric module with no realization ops and no `Geometry`-typed
+    ///    cells — expects `false`.
+    ///
+    /// No OCCT required: the predicate is compile-time only.
+    #[test]
+    fn module_has_geometry_detects_geometry_vs_plain() {
+        // Geometry-bearing: Bracket : Physical has `param geometry : Solid = box(...)`
+        // (a realization with operations) and a `geometry : Solid` value cell.
+        let geometry_source = r#"
+structure def Bracket : Physical {
+    param geometry : Solid = box(10mm, 20mm, 30mm)
+    param material : Material = Steel_AISI_1045()
+}
+"#;
+        let compiled_geo =
+            reify_test_support::parse_and_compile_with_stdlib(geometry_source);
+        assert!(
+            module_has_geometry(&compiled_geo),
+            "Bracket : Physical should be detected as a geometry module"
+        );
+
+        // Plain numeric: no realization, no Geometry-typed cells.
+        let plain_source = r#"
+structure def Plain {
+    param x : Real = 1.0
+    let y = x + 2.0
+}
+"#;
+        let compiled_plain =
+            reify_test_support::parse_and_compile_with_stdlib(plain_source);
+        assert!(
+            !module_has_geometry(&compiled_plain),
+            "Plain numeric module should NOT be detected as a geometry module"
+        );
+
+        // Third case: Type::Geometry cell only — no realization operations.
+        // This exercises clause (b) of module_has_geometry independently of
+        // clause (a). The Bracket test above triggers both clauses simultaneously;
+        // this case ensures a regression that breaks the cell_type check while
+        // leaving the realization check intact would still fail.
+        //
+        // Constructed directly via the builder API (no stdlib compile needed)
+        // so we can precisely control which fields are set.
+        let geo_cell_only = reify_test_support::CompiledModuleBuilder::new(
+            reify_core::ModulePath::new(vec!["test".to_string()]),
+        )
+        .template(
+            reify_test_support::TopologyTemplateBuilder::new("GeoCell")
+                .param("GeoCell", "shape", reify_core::Type::Geometry, None)
+                .build(),
+        )
+        .build();
+        assert!(
+            module_has_geometry(&geo_cell_only),
+            "Module with a Type::Geometry value cell (no realization ops) should be \
+             detected as geometry (clause (b) of module_has_geometry)"
+        );
     }
 }
