@@ -55,10 +55,10 @@ pub fn flexure_diagnose(name: &str, args: &[Value], result: &Value) -> Vec<Diagn
             if let Some(fields) = compliance_fields(joint) {
                 // W_FlexureYielding — the cached stress-check tripped: peak
                 // surface stress at the (declared|auto) range endpoint ≥ yield.
-                if rec_bool(fields, "at_yield") == Some(true) {
-                    if let Some(d) = yielding_diagnostic(fields, joint) {
-                        diags.push(d);
-                    }
+                if rec_bool(fields, "at_yield") == Some(true)
+                    && let Some(d) = yielding_diagnostic(fields, joint)
+                {
+                    diags.push(d);
                 }
             }
             // W_FlexurePrbOutOfRange — the user declared an angular operating
@@ -67,10 +67,10 @@ pub fn flexure_diagnose(name: &str, args: &[Value], result: &Value) -> Vec<Diagn
             // declared range. Angular joints only — the displacement families have
             // no ±5° rotational bound (their range is LENGTH-dimensioned, which
             // `angular_range_endpoint` returns `None` for).
-            if let Some(endpoint) = angular_range_endpoint(joint) {
-                if endpoint > PRB_ANGLE_LIMIT_RAD + 1e-9 {
-                    diags.push(prb_out_of_range_diagnostic(endpoint));
-                }
+            if let Some(endpoint) = angular_range_endpoint(joint)
+                && endpoint > PRB_ANGLE_LIMIT_RAD + 1e-9
+            {
+                diags.push(prb_out_of_range_diagnostic(endpoint));
             }
         }
         // Undef path: re-classify the rejection. Emit E_FlexureGeometryInvalid
