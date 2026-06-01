@@ -2498,7 +2498,7 @@ structure Widget {
 
 purpose min_margin(subject : Structure) {
     let m = subject.a - subject.b
-    objective minimize m
+    minimize m
 }
 "#;
     let compiled = parse_and_compile(source);

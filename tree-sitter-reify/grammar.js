@@ -72,6 +72,13 @@ module.exports = grammar({
     // unit_name — yielding quantity_literal(number_literal "0", unit_expr "xFF").
     // Only an external token consuming the WHOLE 0xFF/0b1010 run defeats this.
     $._radix_literal,
+    // STRING_CONTENT: external content-run token for interpolated strings.
+    // Consumed by the scanner (scanner.c STRING_CONTENT block) to capture literal
+    // bytes between `"`, `{`, and `}` delimiters — including whitespace — that
+    // would otherwise be eaten by the extras `/\s/` rule.  Aliased to the visible
+    // `string_chunk` node at each call site in `interpolated_string`.
+    // ENUM ORDER: must remain the LAST entry so appending preserves all prior indices.
+    $._string_content,
   ],
 
   extras: $ => [
@@ -1218,6 +1225,7 @@ module.exports = grammar({
       alias($._radix_literal, $.number_literal),
       $.number_literal,
       $.string_literal,
+      $.interpolated_string,
       $.bool_literal,
       $.function_call,
       $.member_access,
@@ -1423,14 +1431,50 @@ module.exports = grammar({
     // modifying this token rule.
     number_literal: $ => token(/\d(_?\d)*(\.\d(_?\d)*)?([eE][+-]?\d(_?\d)*)?/),
 
+    // Plain (brace-free) string literal — kept as an atomic token for the fast
+    // path.  The char class is narrowed from /[^"\\]/ to /[^"\\{}]/ so that any
+    // unescaped brace (`{` or `}`) makes this token fail and the parser falls
+    // through to `interpolated_string`.  Escaped braces (`\{`, `\}`) are still
+    // handled by the `seq('\\', /./)` arm, so `"a\{b\}"` still matches here.
+    // REGRESSION SAFETY: a grep of all .ri files and corpus fixtures found ZERO
+    // string literals containing a bare brace, so the narrowing causes zero CST
+    // churn for the existing corpus (PRD §4.8 fast-path premise).
     string_literal: $ => token(seq(
       '"',
       repeat(choice(
-        /[^"\\]/,
+        /[^"\\{}]/,
         seq('\\', /./),
       )),
       '"',
     )),
+
+    // Interpolated string: `"hello {name}!"` — produced by the external scanner
+    // (scanner.c STRING_CONTENT block) and used by lower_interpolated_string in
+    // reify-syntax.  The grammar task α; render-then-concat fold is deferred to γ.
+    //
+    // A string reaches this rule only when it contains at least one unescaped
+    // `{` or `}` that caused the `string_literal` token() to fail.  Doubled
+    // braces `{{`/`}}` are content (the scanner consumes them as a unit); a
+    // single `{` stops the content-run and starts an `interpolation` hole.
+    interpolated_string: $ => seq(
+      '"',
+      repeat(choice(
+        // Alias hides the internal `_string_content` name; the CST node is
+        // `string_chunk` so it matches the corpus fixtures and lowering dispatch.
+        alias($._string_content, $.string_chunk),
+        $.interpolation,
+      )),
+      '"',
+    ),
+
+    // An expression hole inside an interpolated string: `{expr}`.
+    // `$._expression` is reused directly — holes are full expressions (PRD §4.4).
+    // Empty `{}` is a parse error for free (no `$._expression` can match nothing).
+    interpolation: $ => seq(
+      '{',
+      field('expr', $._expression),
+      '}',
+    ),
 
     bool_literal: $ => choice('true', 'false'),
 

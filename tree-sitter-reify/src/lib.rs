@@ -877,4 +877,110 @@ mod tests {
             "function_signature must not appear at top-level scope: {kinds:?}"
         );
     }
+
+    // ── Task 3967: string interpolation α — grammar RED tests ────────────────
+    // These tests are RED before grammar step-2 lands (step-2 adds
+    // `interpolated_string`, `interpolation`, `string_chunk` to grammar.js and
+    // the content-run external scanner token to scanner.c).
+    //
+    // (1) plain-string fast path: `"hello"` → string_literal, NOT interpolated_string
+    // (2) simple-hole: `"a {x} b"` → interpolated_string + string_chunk + interpolation + identifier
+    // (3) empty-hole: `"{}"` → parse ERROR (interpolation requires $._expression)
+    //
+    // Tests (1)-(3) are all CLI-independent: they use make_parser + collect_kinds
+    // and do not require `tree-sitter` on PATH.
+
+    /// (1) Plain string fast path: brace-free `"hello"` stays a string_literal
+    /// and does NOT produce an interpolated_string node.
+    /// RED reason: after step-2 narrows string_literal to exclude braces, this test
+    /// will still pass (brace-free strings still lex as string_literal).
+    /// Before step-2, this test is GREEN (string_literal exists).
+    /// It serves as the REGRESSION PIN that must stay GREEN after step-2.
+    #[test]
+    fn test_plain_string_stays_string_literal() {
+        let mut parser = make_parser();
+        let source = b"structure S { let x = \"hello\" }";
+        let tree = parser.parse(source, None).expect("parse failed");
+        let root = tree.root_node();
+        let kinds = collect_kinds(root);
+
+        // No parse errors
+        assert!(
+            !root.has_error(),
+            "unexpected parse error in plain string source: {kinds:?}"
+        );
+
+        // string_literal must be present
+        assert!(
+            kinds.contains(&"string_literal".to_string()),
+            "expected string_literal node for brace-free string, got: {kinds:?}"
+        );
+
+        // interpolated_string must NOT be present
+        assert!(
+            !kinds.contains(&"interpolated_string".to_string()),
+            "interpolated_string must NOT appear for a brace-free string, got: {kinds:?}"
+        );
+    }
+
+    /// (2) Interpolated string: `"a {x} b"` must produce interpolated_string,
+    /// string_chunk (for "a " and " b"), interpolation, and identifier nodes.
+    /// RED: today every quoted string lexes as a single opaque string_literal.
+    #[test]
+    fn test_interpolated_string_simple_hole() {
+        let mut parser = make_parser();
+        let source = b"structure S { let x = \"a {y} b\" }";
+        let tree = parser.parse(source, None).expect("parse failed");
+        let root = tree.root_node();
+        let kinds = collect_kinds(root);
+
+        // interpolated_string must appear
+        assert!(
+            kinds.contains(&"interpolated_string".to_string()),
+            "expected interpolated_string node, got: {kinds:?}"
+        );
+
+        // string_chunk must appear (literal content runs)
+        assert!(
+            kinds.contains(&"string_chunk".to_string()),
+            "expected string_chunk node(s) for literal parts, got: {kinds:?}"
+        );
+
+        // interpolation must appear
+        assert!(
+            kinds.contains(&"interpolation".to_string()),
+            "expected interpolation node for {{y}}, got: {kinds:?}"
+        );
+
+        // identifier must appear inside the interpolation
+        assert!(
+            kinds.contains(&"identifier".to_string()),
+            "expected identifier inside interpolation, got: {kinds:?}"
+        );
+
+        // string_literal must NOT appear (brace-bearing strings route to interpolated_string)
+        assert!(
+            !kinds.contains(&"string_literal".to_string()),
+            "string_literal must NOT appear for an interpolated string, got: {kinds:?}"
+        );
+    }
+
+    /// (3) Empty hole `"{}"` must be a parse error (interpolation requires an expression).
+    /// RED: today `"{}"` lexes as a single opaque string_literal (no error).
+    #[test]
+    fn test_interpolated_string_empty_hole_is_error() {
+        let mut parser = make_parser();
+        let source = b"structure S { let x = \"{}\" }";
+        let tree = parser.parse(source, None).expect("parse failed");
+        let root = tree.root_node();
+
+        // Parse error expected — empty {} is not a valid interpolation
+        assert!(
+            root.has_error(),
+            "expected parse ERROR for empty hole \"{{}}\", got no error; \
+             kinds: {:?}",
+            collect_kinds(root)
+        );
+    }
+
 }

@@ -131,6 +131,27 @@ pub enum ExprKind {
         name: String,
         fields: Vec<(String, Expr)>,
     },
+    /// String interpolation: `"hello {name}!"`.
+    /// Produced by `lower_interpolated_string` in `reify-syntax` from the
+    /// `interpolated_string` CST node (grammar task α, PRD
+    /// `docs/prds/v0_6/string-interpolation.md`).
+    /// The render-then-concat fold is deferred to task γ.
+    InterpolatedString(Vec<StringPart>),
+}
+
+/// A part of an interpolated string.
+///
+/// Produced by `lower_interpolated_string` in `reify-syntax`.
+/// `Literal` carries the decoded text of a `string_chunk` node
+/// (`\\n`→newline, `\\t`→tab, `\\\\`→backslash, `\\\"`→quote,
+/// `{{`→`{`, `}}`→`}`).
+/// `Hole` carries the lowered expression inside `{…}`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StringPart {
+    /// A literal text segment, fully escape-decoded.
+    Literal(String),
+    /// An expression hole `{expr}`.
+    Hole(Box<Expr>),
 }
 
 /// A unit expression attached to a [`ExprKind::QuantityLiteral`] — the

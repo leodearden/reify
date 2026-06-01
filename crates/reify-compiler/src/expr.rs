@@ -3553,6 +3553,16 @@ pub(crate) fn compile_expr_guarded(
                 "not yet supported",
             )),
         ),
+        reify_ast::ExprKind::InterpolatedString(_) => make_poison_literal(
+            diagnostics,
+            Diagnostic::error(
+                "string interpolation is not yet supported (task γ)".to_string(),
+            )
+            .with_label(DiagnosticLabel::new(
+                expr.span,
+                "not yet supported",
+            )),
+        ),
     }
 }
 

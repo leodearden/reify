@@ -43,6 +43,11 @@ enum TokenType {
                                *   - section C of auto_binding_sites_grammar_tests.rs
                                */
   RADIX_LITERAL,              /* index 5 — 0x.../0b... integer literal          */
+  /* STRING_CONTENT: index 6 — content-run token for interpolated strings.
+   * ENUM-ORDER INVARIANT: must remain LAST — appending preserves all prior
+   * indices and matches the externals array order in grammar.js.
+   * See: grammar.js `externals` array comment and STRING_CONTENT scan block. */
+  STRING_CONTENT,             /* index 6 — literal bytes between `"`, `{`, `}` */
 };
 
 void *tree_sitter_reify_external_scanner_create(void) {
@@ -134,6 +139,105 @@ static bool is_bin_digit(int32_t c) {
 bool tree_sitter_reify_external_scanner_scan(void *payload, TSLexer *lexer,
                                               const bool *valid_symbols) {
   (void)payload;
+
+  /* ── STRING_CONTENT: content-run token for interpolated strings ─────────────
+   *
+   * Captures literal bytes between the delimiters of an interpolated_string
+   * (`"`, `{`, `}`) so they are not silently eaten by the `extras` whitespace
+   * rule.  Without this external token, spaces and other whitespace inside a
+   * quoted string would disappear from the CST before the grammar sees them.
+   *
+   * Content-run rules (PRD §G3):
+   *   Regular char (not `"`, `{`, `}`, `\`) → consumed verbatim.
+   *   `\X` (escape sequence)               → both chars consumed as content.
+   *   `{{` (doubled open  brace)            → both chars consumed as content.
+   *   `}}` (doubled close brace)            → both chars consumed as content.
+   *   Bare `{` (single, not doubled)        → STOP; grammar handles interpolation.
+   *   Bare `}` (single, not doubled)        → STOP; grammar produces ERROR
+   *                                           (use `}}` for a literal `}`).
+   *   `"` or EOF                            → STOP; grammar handles string-close.
+   *
+   * mark_end is updated AFTER each successfully consumed unit so that tentative
+   * advances past a delimiter are automatically rewound by tree-sitter's
+   * "return true uses mark_end" contract — the same technique used in
+   * RADIX_LITERAL for its trailing-`_` lookahead.
+   *
+   * Returns false (and falls through to other checks) when:
+   *   - valid_symbols[STRING_CONTENT] is false (not in string-content context).
+   *   - No bytes can be consumed (current position is `{`, `"`, or EOF).
+   */
+  if (valid_symbols[STRING_CONTENT]) {
+    /* Error-recovery guard: tree-sitter marks ALL external tokens valid during
+     * error recovery.  STRING_CONTENT and UNIT_EXPR_START are mutually exclusive
+     * in normal parsing (inside an interpolated_string we cannot also be in the
+     * post-number_literal state that admits a unit_expr).  If both are valid we
+     * are in error-recovery mode — return false so the scanner does not greedily
+     * consume non-string source text (function bodies, structure bodies, etc.)
+     * as string content runs.  Without this guard, `fn (…) { x }  structure S {}`
+     * is swallowed into a STRING_CONTENT node inside the ERROR recovery subtree. */
+    if (valid_symbols[UNIT_EXPR_START]) {
+      return false;
+    }
+    bool consumed_any = false;
+
+    for (;;) {
+      int32_t ch = lexer->lookahead;
+
+      if (ch == 0 || ch == '"') {
+        break; /* EOF or closing quote — stop, let grammar handle */
+      }
+
+      if (ch == '\\') {
+        /* Escape sequence: consume `\` and whatever follows (including `{`,`}`,`"`) */
+        lexer->advance(lexer, false); /* consume `\` */
+        if (lexer->lookahead != 0) {
+          lexer->advance(lexer, false); /* consume escaped char */
+        }
+        lexer->mark_end(lexer);
+        consumed_any = true;
+        continue;
+      }
+
+      if (ch == '{') {
+        /* Peek: consume both chars only if doubled (`{{`); else stop at bare `{` */
+        lexer->advance(lexer, false); /* tentatively consume first `{` */
+        if (lexer->lookahead == '{') {
+          lexer->advance(lexer, false); /* consume second `{` */
+          lexer->mark_end(lexer);       /* both `{` chars are content */
+          consumed_any = true;
+        } else {
+          /* Single `{` — mark_end not updated, advance rewound by tree-sitter */
+          break;
+        }
+        continue;
+      }
+
+      if (ch == '}') {
+        /* Peek: consume both chars only if doubled (`}}`); else stop at bare `}` */
+        lexer->advance(lexer, false); /* tentatively consume first `}` */
+        if (lexer->lookahead == '}') {
+          lexer->advance(lexer, false); /* consume second `}` */
+          lexer->mark_end(lexer);       /* both `}` chars are content */
+          consumed_any = true;
+        } else {
+          /* Single `}` — mark_end not updated, advance rewound by tree-sitter */
+          break;
+        }
+        continue;
+      }
+
+      /* Regular character — consume and update mark_end */
+      lexer->advance(lexer, false);
+      lexer->mark_end(lexer);
+      consumed_any = true;
+    }
+
+    if (consumed_any) {
+      lexer->result_symbol = STRING_CONTENT;
+      return true;
+    }
+    return false;
+  }
 
   int32_t c = lexer->lookahead;
 

@@ -2721,6 +2721,7 @@ impl<'a> Lowering<'a> {
             "imaginary_literal" => self.lower_imaginary_literal(node),
             "number_literal" => self.lower_number_literal(node),
             "string_literal" => self.lower_string_literal(node),
+            "interpolated_string" => self.lower_interpolated_string(node),
             "bool_literal" => self.lower_bool_literal(node),
             "identifier" => self.lower_identifier(node),
             "function_call" => self.lower_function_call(node),
@@ -3403,6 +3404,70 @@ impl<'a> Lowering<'a> {
         })
     }
 
+    /// Lower an `interpolated_string` CST node to `ExprKind::InterpolatedString`.
+    ///
+    /// Walks the node's named children in source order:
+    /// - `string_chunk` → `StringPart::Literal(decode_string_escapes(raw))`.
+    /// - `interpolation` → `StringPart::Hole(lower_expr(expr_child))`.
+    ///
+    /// The opening and closing `"` delimiters are anonymous nodes and are skipped.
+    fn lower_interpolated_string(&self, node: tree_sitter::Node) -> Option<Expr> {
+        let mut parts = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            match child.kind() {
+                "string_chunk" => {
+                    let raw = self.node_text(child);
+                    parts.push(StringPart::Literal(decode_string_escapes(raw)));
+                }
+                "interpolation" => {
+                    // The interpolation node wraps `{ expr }`.  The named child is
+                    // the expression (field "expr" in the grammar).
+                    //
+                    // Robustness: do NOT propagate `?` here.  If the expr field is
+                    // absent or lowering fails (MISSING node on malformed input like
+                    // `"x {} y"`), emit a diagnostic and *skip* the bad hole — the
+                    // surrounding literal chunks are still valid and should survive.
+                    // Silently returning `None` for the whole interpolated string
+                    // would cause the entire `let` binding to be dropped, which is
+                    // a much worse failure mode than a missing-hole diagnostic.
+                    let expr_child = match child.child_by_field_name("expr") {
+                        Some(n) => n,
+                        None => {
+                            self.push_error(
+                                "interpolated string hole is missing an expression".into(),
+                                self.span(child),
+                            );
+                            continue;
+                        }
+                    };
+                    let expr = match self.lower_expr(expr_child) {
+                        Some(e) => e,
+                        None => {
+                            // `lower_expr` returns `None` for MISSING/unrecognised
+                            // nodes (e.g. `(MISSING number_literal)` inserted by
+                            // tree-sitter error recovery for an empty hole).
+                            // Emit a diagnostic and skip this hole; the string lives.
+                            self.push_error(
+                                "interpolated string hole contains an invalid expression"
+                                    .into(),
+                                self.span(child),
+                            );
+                            continue;
+                        }
+                    };
+                    parts.push(StringPart::Hole(Box::new(expr)));
+                }
+                // Any other named child (e.g. error-recovery nodes) — skip.
+                _ => {}
+            }
+        }
+        Some(Expr {
+            kind: ExprKind::InterpolatedString(parts),
+            span: self.span(node),
+        })
+    }
+
     fn lower_bool_literal(&self, node: tree_sitter::Node) -> Option<Expr> {
         let value = match self.node_text(node) {
             "true" => true,
@@ -3780,6 +3845,55 @@ impl<'a> Lowering<'a> {
             span: self.span(node),
         })
     }
+}
+
+/// Decode escape sequences in a raw `string_chunk` token from an interpolated string.
+///
+/// Translations applied:
+/// - `\n` → newline
+/// - `\t` → tab
+/// - `\\` → backslash
+/// - `\"` → double-quote
+/// - `{{` → `{`  (doubled brace is content, not an interpolation start)
+/// - `}}` → `}`
+/// - `\X` for any other X → `X`  (lenient: drop the backslash, keep the char)
+///
+/// This is the shared unescape helper anticipated by the comment at ts_parser.rs:2174.
+/// Only brace-bearing strings reach this function; plain `string_literal` nodes
+/// are left raw by `lower_string_literal` (fast path, no braces, no decoding).
+fn decode_string_escapes(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('\\') => out.push('\\'),
+                Some('"') => out.push('"'),
+                Some(other) => out.push(other),
+                None => {}
+            },
+            '{' => {
+                if chars.peek() == Some(&'{') {
+                    chars.next();
+                    out.push('{');
+                } else {
+                    out.push('{');
+                }
+            }
+            '}' => {
+                if chars.peek() == Some(&'}') {
+                    chars.next();
+                    out.push('}');
+                } else {
+                    out.push('}');
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -5981,6 +6095,98 @@ mod tests {
                 assert!(!upper_inclusive, "upper should be exclusive for `..<`");
             }
             other => panic!("expected ExprKind::Range, got {:?}", other),
+        }
+    }
+
+    // ── Unit tests for decode_string_escapes (suggestion 2 coverage) ──────────
+
+    /// An unrecognized escape sequence (e.g. `\r`, `\0`) drops the backslash
+    /// and keeps only the character.  This pins the "lenient" behavior
+    /// documented in the `decode_string_escapes` doc-comment.
+    ///
+    /// Concretely: `\X` where X is not `n`, `t`, `\\`, or `"` → emit X,
+    /// drop the backslash.  This is data-lossy but intentional for α.
+    #[test]
+    fn decode_string_escapes_unknown_escape_drops_backslash() {
+        // `\r` → 'r' (backslash dropped, character kept)
+        assert_eq!(decode_string_escapes("x\\ry"), "xry");
+        // `\0` → '0'
+        assert_eq!(decode_string_escapes("\\0z"), "0z");
+        // `\s` → 's'
+        assert_eq!(decode_string_escapes("a\\sb"), "asb");
+    }
+
+    /// A lone `\` at the very end of a chunk (no following character) is
+    /// silently dropped — the `None => {}` branch in `decode_string_escapes`.
+    ///
+    /// This is reachable on highly-malformed input (e.g. the external scanner
+    /// consumed a lone `\` at EOF inside a string literal).  Pinning the
+    /// behavior here prevents a silent regression if the semantics ever change.
+    #[test]
+    fn decode_string_escapes_trailing_backslash_is_silently_dropped() {
+        // A chunk ending with a lone backslash: the backslash disappears.
+        assert_eq!(decode_string_escapes("x\\"), "x");
+        assert_eq!(decode_string_escapes("\\"), "");
+    }
+
+    // ── Unit test for lower_interpolated_string robustness (suggestion 3) ─────
+
+    /// Directly exercises `lower_interpolated_string` with a malformed empty
+    /// hole `{}` to verify the function-level robustness fix, *bypassing*
+    /// `check_and_lower!` (which fires at the `let_declaration` level and
+    /// prevents the function from being called in the full-pipeline path).
+    ///
+    /// Verifies that:
+    /// 1. The function returns `Some(...)` — the string is NOT silently dropped.
+    /// 2. A diagnostic is emitted for the MISSING-expr hole.
+    /// 3. The surviving literal parts remain in the result.
+    #[test]
+    fn lower_interpolated_string_malformed_hole_produces_diagnostic() {
+        let source = r#"structure S { let v = "x {} y" }"#;
+        let mut ts_parser = tree_sitter::Parser::new();
+        ts_parser
+            .set_language(&tree_sitter_reify::language().into())
+            .expect("Error loading Reify grammar");
+        let tree = ts_parser.parse(source, None).expect("Failed to parse");
+        let root = tree.root_node();
+
+        // Find the interpolated_string node (has_error due to the empty hole).
+        let interp_node = find_node_by_kind(root, "interpolated_string")
+            .expect("interpolated_string node must be present in CST");
+        assert!(
+            interp_node.has_error(),
+            "the interpolated_string node must have has_error=true for this test to be meaningful"
+        );
+
+        // Call lower_interpolated_string directly, bypassing check_and_lower!
+        let lowering = Lowering::new(source);
+        let result = lowering.lower_interpolated_string(interp_node);
+        let errors = lowering.errors.into_inner();
+
+        // The string must NOT be silently dropped (Some returned, not None).
+        let expr = result
+            .expect("lower_interpolated_string must return Some even for a malformed hole");
+
+        // At least one diagnostic for the bad hole.
+        assert!(
+            !errors.is_empty(),
+            "expected at least one diagnostic for MISSING-expr hole, got none"
+        );
+
+        // The surrounding literal chunks survive; the bad hole is skipped.
+        match &expr.kind {
+            ExprKind::InterpolatedString(parts) => {
+                let literal_count = parts
+                    .iter()
+                    .filter(|p| matches!(p, StringPart::Literal(_)))
+                    .count();
+                assert!(
+                    literal_count >= 2,
+                    "expected at least 2 surviving literal parts, got: {:?}",
+                    parts
+                );
+            }
+            other => panic!("expected InterpolatedString, got {:?}", other),
         }
     }
 }
