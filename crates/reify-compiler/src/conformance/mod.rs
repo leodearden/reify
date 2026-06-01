@@ -54,6 +54,11 @@ pub(crate) fn check_trait_conformance(
     let structure_fn_sigs =
         collect_structure_assoc_fn_sigs(structure, alias_registry, structure_names, trait_names);
 
+    // Collect the structure's explicit `type X = T` bindings (task 3972) so
+    // phase 5 can check AssocType requirement satisfaction.
+    let structure_assoc_type_bindings =
+        collect_structure_assoc_type_bindings(structure, alias_registry, structure_names, trait_names);
+
     let ctx = check_phase_collect_trait_bounds(
         structure,
         trait_registry,
@@ -87,6 +92,7 @@ pub(crate) fn check_trait_conformance(
         &structure_let_members,
         &available_defaults,
         &structure_fn_sigs,
+        &structure_assoc_type_bindings,
         diagnostics,
     );
 
@@ -2035,6 +2041,8 @@ mod tests {
             &available_defaults,
             // No structure assoc fns in this test.
             &HashMap::<String, CompiledAssocFnSig>::new(),
+            // No structure assoc type bindings in this test.
+            &HashMap::<String, Type>::new(),
             &mut diagnostics,
         );
 
@@ -3874,6 +3882,8 @@ mod tests {
             &available_defaults,
             // No structure assoc fns in this test.
             &HashMap::<String, CompiledAssocFnSig>::new(),
+            // No structure assoc type bindings in this test.
+            &HashMap::<String, Type>::new(),
             &mut diagnostics,
         );
 
@@ -3946,6 +3956,8 @@ mod tests {
             &available_defaults,
             // No structure assoc fns in this test.
             &HashMap::<String, CompiledAssocFnSig>::new(),
+            // No structure assoc type bindings in this test.
+            &HashMap::<String, Type>::new(),
             &mut diagnostics,
         );
 
@@ -4018,6 +4030,8 @@ mod tests {
             &available_defaults,
             // No structure assoc fns in this test.
             &HashMap::<String, CompiledAssocFnSig>::new(),
+            // No structure assoc type bindings in this test.
+            &HashMap::<String, Type>::new(),
             &mut diagnostics,
         );
 
@@ -4087,6 +4101,8 @@ mod tests {
             &available_defaults,
             // No structure assoc fns in this test.
             &HashMap::<String, CompiledAssocFnSig>::new(),
+            // No structure assoc type bindings in this test.
+            &HashMap::<String, Type>::new(),
             &mut diagnostics,
         );
 
@@ -4151,6 +4167,8 @@ mod tests {
             &available_defaults,
             // No structure assoc fns in this test.
             &HashMap::<String, CompiledAssocFnSig>::new(),
+            // No structure assoc type bindings in this test.
+            &HashMap::<String, Type>::new(),
             &mut diagnostics,
         );
 

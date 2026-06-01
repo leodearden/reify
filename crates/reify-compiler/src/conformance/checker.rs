@@ -826,6 +826,46 @@ pub(super) fn collect_structure_assoc_fn_sigs(
     sigs
 }
 
+/// Collect the structure's explicit `type X = T` bindings, resolving each
+/// `default_type` to a `Type` via `resolve_type_expr_with_aliases`.
+///
+/// Parallel to `collect_structure_assoc_fn_sigs`: walks `structure.members` for
+/// `MemberDecl::AssociatedType` entries. For a structure binding the
+/// `default_type` is always `Some` (a trait-body `type X` without an `=` is a
+/// *requirement*, not a binding). Resolution uses a throwaway diagnostic sink so
+/// a genuinely unresolvable annotation does not duplicate diagnostics (the real
+/// error was already reported when the structure body was compiled). An
+/// unresolvable annotation maps to `Type::Error`, which the satisfaction check
+/// treats as "bound" (suppresses `TraitAssocTypeNotBound`) so a single root-cause
+/// error yields a single diagnostic. (task 3972)
+pub(super) fn collect_structure_assoc_type_bindings(
+    structure: &EntityDefRef<'_>,
+    alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
+) -> HashMap<String, Type> {
+    let mut bindings: HashMap<String, Type> = HashMap::new();
+    let empty_params: HashSet<String> = HashSet::new();
+    let mut sink: Vec<Diagnostic> = Vec::new();
+    for m in structure.members.iter() {
+        if let reify_ast::MemberDecl::AssociatedType(at) = m {
+            if let Some(type_expr) = &at.default_type {
+                let ty = resolve_type_expr_with_aliases(
+                    type_expr,
+                    &empty_params,
+                    alias_registry,
+                    &mut sink,
+                    structure_names,
+                    trait_names,
+                )
+                .unwrap_or(Type::Error);
+                bindings.insert(at.name.clone(), ty);
+            }
+        }
+    }
+    bindings
+}
+
 /// Derive a side-effect-free [`CompiledAssocFnSig`] from a single `FnDef`.
 ///
 /// The leading `is_self` receiver is recorded as `has_self` and excluded from
@@ -1134,6 +1174,10 @@ pub(super) fn check_phase_check_members_against_requirements(
     // name (built by `collect_structure_assoc_fn_sigs`). Consulted by the
     // `RequirementKind::Fn` arm to verify a provided assoc fn's signature.
     structure_fn_sigs: &HashMap<String, CompiledAssocFnSig>,
+    // Explicit `type X = T` bindings from the structure body, keyed by type
+    // name (built by `collect_structure_assoc_type_bindings`). Consulted by
+    // the `RequirementKind::AssocType` arm to check satisfaction. (task 3972)
+    structure_assoc_type_bindings: &HashMap<String, Type>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     for req in &ctx.requirements {
@@ -1165,6 +1209,43 @@ pub(super) fn check_phase_check_members_against_requirements(
                 }
                 continue;
             }
+            // Assoc-type requirement (task 3972). Two outcomes:
+            //   * structure explicitly binds the name (`type X = T` in the
+            //     structure body) OR a `DefaultKind::AssocType` default of the
+            //     same name was merged in → satisfied; no diagnostic.
+            //   * neither → emit `TraitAssocTypeNotBound` naming the declaring
+            //     trait (via ctx.seen_assoc_type_reqs) and the type name, with
+            //     a label on structure.span (parallel to the Fn None-branch).
+            // The arm must `continue` like Sub/Fn so it never falls through to
+            // the param/let routing below.
+            RequirementKind::AssocType(_) => {
+                let bound_by_structure =
+                    structure_assoc_type_bindings.contains_key(req.name.as_str());
+                let provided_by_default = ctx.defaults.iter().any(|d| {
+                    d.name.as_deref() == Some(req.name.as_str())
+                        && matches!(d.kind, DefaultKind::AssocType(_))
+                });
+                if !bound_by_structure && !provided_by_default {
+                    let declaring_trait = ctx
+                        .seen_assoc_type_reqs
+                        .get(&req.name)
+                        .map(|t| t.clone())
+                        .unwrap_or_else(|| "<trait>".to_string());
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "associated type '{}' required by trait '{}' is not \
+                             bound by structure '{}'",
+                            req.name, declaring_trait, structure.name
+                        ))
+                        .with_code(DiagnosticCode::TraitAssocTypeNotBound)
+                        .with_label(DiagnosticLabel::new(
+                            structure.span,
+                            "required associated type not bound",
+                        )),
+                    );
+                }
+                continue;
+            }
             // Assoc-fn requirement (task 3939 δ). Three outcomes:
             //   * structure provides a `fn` of this name → exact-match its
             //     signature (§5.4: self-ness, param types, return type — no
@@ -1175,10 +1256,6 @@ pub(super) fn check_phase_check_members_against_requirements(
             //   * structure does not provide it, but a trait `DefaultKind::Fn`
             //     of the same name was merged in → satisfied by the default.
             //   * neither → emit `TraitFnNotSatisfied` naming the trait + fn.
-            // Assoc-type satisfaction is handled by check_phase_check_members_against_requirements
-            // once the full assoc-type pipeline (step-8) is wired. For now: inert arm so the
-            // exhaustive match stays GREEN with zero behavior change.
-            RequirementKind::AssocType(_) => continue,
             RequirementKind::Fn(expected_sig) => {
                 // Resolve the declaring trait lazily — only needed on a failure path.
                 let declaring_trait = || {
