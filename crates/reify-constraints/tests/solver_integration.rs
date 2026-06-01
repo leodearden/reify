@@ -21,7 +21,7 @@ use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
 use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
 use reify_test_support::*;
 use reify_core::{DiagnosticCode, DimensionVector, Severity, SourceSpan, Type};
-use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledFunction, ConstraintSolver, OptimizationObjective, ResolutionProblem, SolveResult, Value, ValueMap};
+use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledFunction, ConstraintSolver, ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm, OptimizationObjective, ResolutionProblem, SolveResult, Value, ValueMap};
 
 #[test]
 fn single_param_feasibility_via_trait_object() {
@@ -2128,4 +2128,134 @@ structure def AirCooled : Cooled {
         "depth-bound message must contain 'max_depth = 1'; got: {:?}",
         diagnostics[0].message
     );
+}
+
+// ── ObjectiveSet migration tests (step-3 RED → step-4 GREEN) ─────────────────
+
+/// [I3] Two-term WeightedSum objective drives the solver to minimise the first
+/// param while maximising the second.
+///
+/// Setup: two independent length params `a` ∈ [1 mm, 50 mm] and `b` ∈ [1 mm, 50 mm],
+/// no other constraints. Objective:
+///   term 0: Minimize a  (w = 1.0)  → additive cost += 1.0 * a
+///   term 1: Maximize b  (w = 1.0)  → additive cost -= 1.0 * b
+/// Net cost = a − b, minimised when a → lower bound (1 mm) and b → upper bound (50 mm).
+///
+/// The optimal is a vertex of the box (linear objective), so the expected value
+/// is first-principles: a ≈ 0.001 m, b ≈ 0.050 m.
+#[test]
+fn multi_term_weighted_sum_objective() {
+    let solver = DimensionalSolver;
+
+    let a_id = vcid("Part", "a");
+    let b_id = vcid("Part", "b");
+    let a_ref = value_ref("Part", "a");
+    let b_ref = value_ref("Part", "b");
+
+    // Build a 2-term WeightedSum ObjectiveSet: Minimize a, Maximize b
+    let objective = ObjectiveSet {
+        terms: vec![
+            ObjectiveTerm::new(ObjectiveSense::Minimize, a_ref),
+            ObjectiveTerm::new(ObjectiveSense::Maximize, b_ref),
+        ],
+        combination: ObjectiveCombination::WeightedSum,
+    };
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: a_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.050)), // 1 mm – 50 mm
+                free: false,
+            },
+            AutoParam {
+                id: b_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.050)), // 1 mm – 50 mm
+                free: false,
+            },
+        ],
+        constraints: vec![],
+        current_values: ValueMap::new(),
+        objective: Some(objective),
+        functions: vec![].into(),
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values, .. } => {
+            let a_si = values.get(&a_id).unwrap().as_f64().unwrap();
+            let b_si = values.get(&b_id).unwrap().as_f64().unwrap();
+            // Linear objective over a box: optimum is at bounds.
+            // Allow 3 mm tolerance for Nelder-Mead convergence.
+            assert!(
+                a_si < 0.004,
+                "[I3] Minimize-a term should push a toward 1 mm lower bound, got {} m",
+                a_si
+            );
+            assert!(
+                b_si > 0.047,
+                "[I3] Maximize-b term should push b toward 50 mm upper bound, got {} m",
+                b_si
+            );
+        }
+        other => panic!("expected Solved for 2-term WeightedSum objective, got {:?}", other),
+    }
+}
+
+/// [I2] A 1-term `ObjectiveSet::single(Maximize, expr)` must yield the same
+/// resolved value as the pre-widening `OptimizationObjective::Maximize(expr)` test
+/// (`maximize_objective` above).
+///
+/// Identical setup: thickness ∈ [1 mm, 100 mm], constraints > 2 mm AND < 20 mm,
+/// Maximize thickness.  The asserted window (17 mm – 21 mm) is preserved verbatim
+/// from the single-objective reference test — this is the I2 regression guard.
+#[test]
+fn maximize_via_objectiveset_i2() {
+    let solver = DimensionalSolver;
+
+    let thickness_id = vcid("Bracket", "thickness");
+    let thickness_ref = value_ref("Bracket", "thickness");
+
+    let gt_expr = gt(thickness_ref.clone(), literal(mm(2.0)));
+    let lt_expr = lt(thickness_ref.clone(), literal(mm(20.0)));
+
+    // 1-term WeightedSum via ObjectiveSet::single — the I2 compat constructor
+    let objective = ObjectiveSet::single(ObjectiveSense::Maximize, thickness_ref);
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: thickness_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.001, 0.1)),
+            free: false,
+        }],
+        constraints: vec![(cnid("Bracket", 0), gt_expr), (cnid("Bracket", 1), lt_expr)],
+        current_values: ValueMap::new(),
+        objective: Some(objective),
+        functions: vec![].into(),
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values, .. } => {
+            let si = values.get(&thickness_id).unwrap().as_f64().unwrap();
+            // Same assertion window as `maximize_objective` — I2 guard.
+            assert!(
+                si > 0.017 && si < 0.021,
+                "[I2] ObjectiveSet::single Maximize should match pre-widening result \
+                 (17–21 mm), got {} m",
+                si
+            );
+        }
+        SolveResult::Infeasible { .. } => {
+            // Acceptable: Nelder-Mead optimizing against the constraint boundary
+            // may produce an L1-infeasible result (see `maximize_objective` comment).
+        }
+        other => panic!(
+            "[I2] expected Solved or Infeasible for ObjectiveSet::single Maximize, got {:?}",
+            other
+        ),
+    }
 }
