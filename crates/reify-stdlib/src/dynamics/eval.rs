@@ -23,6 +23,7 @@
 //!   * `inverse_dynamics_lower`              — trajectory variant (step-8)
 //!     (closed-chain routing layered into the snapshot core, step-10)
 
+use crate::dynamics::spatial::Frame3;
 use reify_core::dimension::DimensionVector;
 use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 
@@ -178,6 +179,108 @@ fn trajectory_sample(t: f64, q: f64, v: f64, a: f64) -> Value {
             ("accels".to_string(), Value::List(vec![Value::Real(a)])),
         ],
     )
+}
+
+// ── Value↔core marshalling extractors (RBD-η steps 4/6) ───────────────────────
+//
+// These are consumed by the open-chain dispatch (`inverse_dynamics_at_snapshot`,
+// step-6) and exercised directly by the step-4 unit tests. `#[allow(dead_code)]`
+// covers the window before step-6 wires them into the (non-test) dispatch path.
+
+/// Extract three SI-unit components from a `Value::Point` / `Value::Vector` /
+/// `Value::List` of exactly three numeric cells (dimensions stripped via
+/// `si_value`). Returns `None` for any other shape or arity.
+#[allow(dead_code)]
+fn vec3_from_value(v: &Value) -> Option<[f64; 3]> {
+    let comps = match v {
+        Value::Point(c) | Value::Vector(c) | Value::List(c) => c,
+        _ => return None,
+    };
+    if comps.len() != 3 {
+        return None;
+    }
+    Some([cell_f64(&comps[0])?, cell_f64(&comps[1])?, cell_f64(&comps[2])?])
+}
+
+/// Parse a 3×3 inertia matrix from a `Value::Matrix` (or nested `Value::List` /
+/// `Value::Vector`) of numeric cells. Re-spelled locally from
+/// `reify_eval::dynamics_psd::inertia_3x3_from_value` (that one lives in another
+/// crate). Returns `None` unless the value is exactly 3×3 and all-numeric.
+#[allow(dead_code)]
+fn inertia_3x3_from_value(v: &Value) -> Option<[[f64; 3]; 3]> {
+    fn row3(vals: &[Value]) -> Option<[f64; 3]> {
+        if vals.len() != 3 {
+            return None;
+        }
+        Some([cell_f64(&vals[0])?, cell_f64(&vals[1])?, cell_f64(&vals[2])?])
+    }
+    match v {
+        Value::Matrix(rows) => {
+            if rows.len() != 3 {
+                return None;
+            }
+            Some([row3(&rows[0])?, row3(&rows[1])?, row3(&rows[2])?])
+        }
+        Value::List(outer) => {
+            if outer.len() != 3 {
+                return None;
+            }
+            let parse_row = |r: &Value| -> Option<[f64; 3]> {
+                match r {
+                    Value::List(row) | Value::Vector(row) => row3(row),
+                    _ => None,
+                }
+            };
+            Some([
+                parse_row(&outer[0])?,
+                parse_row(&outer[1])?,
+                parse_row(&outer[2])?,
+            ])
+        }
+        _ => None,
+    }
+}
+
+/// Extract `(mass, com, inertia)` from a `MassProperties` `Value::StructureInstance`.
+///
+/// Accepts the canonical `dynamics_ops::assemble_mass_properties` shape (mass: a
+/// Mass-scalar; com: a `Value::Point` of Length-scalars; inertia: a 3×3
+/// `Value::Matrix` of `Real`) plus the equivalent list-shaped encodings a
+/// user-authored MassProperties may produce. The `com` Length dimension is
+/// stripped to SI metres. Returns `None` for any non-MassProperties value or a
+/// malformed/absent field.
+#[allow(dead_code)]
+fn mass_properties_from_value(v: &Value) -> Option<(f64, [f64; 3], [[f64; 3]; 3])> {
+    let data = match v {
+        Value::StructureInstance(d) if d.type_name == "MassProperties" => d,
+        _ => return None,
+    };
+    let mass = cell_f64(data.fields.get("mass")?)?;
+    let com = vec3_from_value(data.fields.get("com")?)?;
+    let inertia = inertia_3x3_from_value(data.fields.get("inertia")?)?;
+    Some((mass, com, inertia))
+}
+
+/// Convert a `Value::Transform { rotation: Orientation, translation: Vector }`
+/// into a [`Frame3`]: the `(w, x, y, z)` quaternion verbatim and the translation
+/// in SI metres (Length dimension stripped). Returns `None` for a non-Transform,
+/// a non-Orientation rotation, or a translation that is not a 3-component
+/// numeric vector.
+#[allow(dead_code)]
+fn frame3_from_transform_value(v: &Value) -> Option<Frame3> {
+    let (rotation, translation) = match v {
+        Value::Transform {
+            rotation,
+            translation,
+        } => (rotation.as_ref(), translation.as_ref()),
+        _ => return None,
+    };
+    let quat = match rotation {
+        Value::Orientation { w, x, y, z } => [*w, *x, *y, *z],
+        _ => return None,
+    };
+    let trans = vec3_from_value(translation)?;
+    Some(Frame3::new(quat, trans))
 }
 
 #[cfg(test)]
