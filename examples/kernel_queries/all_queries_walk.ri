@@ -1,0 +1,186 @@
+// Integration-gate walk fixture: every in-scope §2 helper called at least once
+// over a multi-feature part (box + sphere + 2-arg fillet).
+// PRD: docs/prds/v0_3/kernel-geometry-queries.md §9 Phase 6 KGQ-ρ (task 3626)
+//
+// Design: one structure def (`AllQueriesWalk`) drives all 21 in-scope helpers.
+// The multi-feature part is:
+//   - `b`  = box(10mm, 20mm, 30mm)    — primary solid for top-level selectors
+//   - `sp` = sphere(5mm)              — for curvature(surface, pt)
+//   - `f`  = fillet(b, 1mm)           — 2-arg fillet (3-arg out of scope, task 3205)
+//
+// Helpers split by eval behaviour (PRD §9 Phase 6 design decision):
+//
+//   ┌─────────────────────────────────────────────────────────────────────┐
+//   │  14 TOP-LEVEL helpers (solid/value args) → non-Undef via engine.build │
+//   │     distance, contains, intersects, geo_equiv, angle,               │
+//   │     edges, faces, edges_by_length, faces_by_area,                   │
+//   │     faces_by_normal, edges_parallel_to, edges_at_height,            │
+//   │     center_of_mass, moment_of_inertia                               │
+//   ├─────────────────────────────────────────────────────────────────────┤
+//   │  7 SUB-HANDLE-arg helpers (face/edge sub-handle arg) → Value::Undef │
+//   │  at DSL eval (selector→sub-handle chaining not yet supported,       │
+//   │  engine_build.rs:3942-3949, out of scope for KGQ-ρ).               │
+//   │  Their compile-time types ARE pinned (grammar + units.rs).          │
+//   │  Runtime semantics pinned by DIRECT OcctKernelHandle queries in     │
+//   │  kernel_queries_integration.rs::multi_feature_part_sub_handle_queries_return_non_undef. │
+//   │     normal, curvature(surface), curvature(curve),                   │
+//   │     length, perimeter, adjacent_faces, shared_edges                 │
+//   └─────────────────────────────────────────────────────────────────────┘
+//
+// Arg-shape contract (§4 invariant 1):
+//   Every helper arg must be a let-bound ValueRef, NOT an inline call.
+//   Inline FunctionCall args fall through to None in the dispatcher →
+//   Value::Undef regardless of OCCT availability.
+//
+// Unit-qualification contract:
+//   point3() components must carry LENGTH units (e.g. 0mm, 5mm).
+//   geo_equiv tolerance must carry LENGTH units (e.g. 0.001mm).
+//   density must be a bare Real literal (compound units not yet supported, v0.3).
+//   vec3/range/tol are let-bound; ranges use unit-qualified bounds.
+//
+// center_of_mass has no prior example — this is the first fixture to exercise it.
+//
+// Pinning tests:
+//   crates/reify-eval/tests/kernel_queries_integration.rs (all tests in this file)
+//   crates/reify-compiler/tests/examples_smoke.rs (auto-discovered, compile-smoked)
+
+structure def AllQueriesWalk {
+
+    // ── Multi-feature part ────────────────────────────────────────────────────
+
+    // Primary solid: 10×20×30 mm box (12 edges, 6 faces; deterministic topology).
+    let b   = box(10mm, 20mm, 30mm)
+
+    // Secondary solid: sphere of radius 5mm (for curvature(surface, pt)).
+    let sp  = sphere(5mm)
+
+    // 2-arg fillet on the box (r=1mm). Exercises the fillet feature.
+    // 3-arg fillet(solid, edges, radius) is out of scope (task 3205).
+    let f   = fillet(b, 1mm)
+
+    // ── 14 TOP-LEVEL helpers (non-Undef under OCCT via engine.build) ─────────
+
+    // 1. distance(Geometry, Point3<Length>) → Scalar<Length>
+    //    Box is centred at origin (X-half-extent 5mm); p=(20mm,0,0) → d=15mm.
+    let p_dist = point3(20mm, 0mm, 0mm)
+    let dist   = distance(b, p_dist)
+
+    // 2. contains(Solid, Point3<Length>) → Bool
+    //    Centre of box is strictly inside (TopAbs_IN → true).
+    let p_in  = point3(0mm, 0mm, 0mm)
+    let inside = contains(b, p_in)
+
+    // 3. intersects(Geometry, Geometry) → Bool
+    //    b_near is translated 5mm in X → overlaps b by 5mm in X.
+    let b_near  = translate(box(10mm, 10mm, 10mm), 5mm, 0mm, 0mm)
+    let overlap  = intersects(b, b_near)
+
+    // 4. geo_equiv(Geometry, Geometry, Length) → Bool
+    //    b and b_same are identical → geo_equiv returns true.
+    let b_same = box(10mm, 20mm, 30mm)
+    let tol_eq = 0.001mm
+    let equiv  = geo_equiv(b, b_same, tol_eq)
+
+    // 5. angle(Vec3, Vec3) → Scalar<Angle>
+    //    Orthogonal unit vectors → π/2 radians (90 deg).
+    let va  = vec3(1.0, 0.0, 0.0)
+    let vb  = vec3(0.0, 1.0, 0.0)
+    let ang = angle(va, vb)
+
+    // 6. edges(Solid) → List<Geometry>
+    //    Box has 12 edges (4 per axis × 3 axes).
+    let all_edges = edges(b)
+
+    // 7. faces(Solid) → List<Geometry>
+    //    Box has 6 faces (one per axis-aligned pair of normals).
+    let all_faces = faces(b)
+
+    // 8. edges_by_length(Solid, Range<Length>) → List<Geometry>
+    //    Select the 4 y-edges (20mm) within [15,25]mm.
+    let len_range  = 15mm..25mm
+    let long_edges = edges_by_length(b, len_range)
+
+    // 9. faces_by_area(Solid, Range<Area>) → List<Geometry>
+    //    Select the 2 z-faces (200mm² = 10×20) within [196,225]mm².
+    let area_range = 14mm*14mm..15mm*15mm
+    let big_faces  = faces_by_area(b, area_range)
+
+    // 10. faces_by_normal(Solid, Vec3, Angle) → List<Geometry>
+    //     Select the 1 top face (+z) with normal within 1° of +z.
+    let zdir      = vec3(0.0, 0.0, 1.0)
+    let tol_ang   = 1deg
+    let top_faces = faces_by_normal(b, zdir, tol_ang)
+
+    // 11. edges_parallel_to(Solid, Vec3, Angle) → List<Geometry>
+    //     Select the 4 z-parallel vertical edges (sign-tolerant) within 1°.
+    let vert_edges = edges_parallel_to(b, zdir, tol_ang)
+
+    // 12. edges_at_height(Solid, Length, Length) → List<Geometry>
+    //     Select the 4 top boundary edges at z=+15mm (half of 30mm depth).
+    let top_z        = 15mm
+    let height_tol   = 0.001mm
+    let top_edge_line = edges_at_height(b, top_z, height_tol)
+
+    // 13. center_of_mass(Solid, Density) → Point3<Length>
+    //     Uniform-density centroid of the box. For an axis-aligned box centred
+    //     at origin, centroid = (0, 0, 0). Density is a bare Real per v0.3.
+    let density_com = 7850.0
+    let com         = center_of_mass(b, density_com)
+
+    // 14. moment_of_inertia(Solid, Density) → Tensor<2,3,MomentOfInertia>
+    //     3×3 centroidal inertia tensor for the steel box.
+    let density_moi = 7850.0
+    let moi         = moment_of_inertia(b, density_moi)
+
+    // ── 7 SUB-HANDLE-arg helpers (compile-type pinned; Value::Undef at DSL eval) ─
+    //
+    // Pre-Phase-3 limitation (engine_build.rs:3942-3949):
+    //   post_process_topology_selectors is single-pass and does NOT chain
+    //   through intermediate sub-handle cells. A `single(faces(b))` or
+    //   `single(edges(b))` let-binding computes to Value::Undef before the
+    //   helper that takes it as arg is dispatched, so these 7 helpers evaluate
+    //   to Value::Undef at runtime. Only compile-time types are pinned here.
+    //   Runtime semantics are verified by direct OCCT kernel queries in
+    //   multi_feature_part_sub_handle_queries_return_non_undef.
+
+    // Sub-handle intermediates (single picks the first element of the list).
+    // NOTE: these evaluate to Value::Undef pre-Phase-3; that is expected.
+    let an_edge  = single(edges(b))
+    let a_face   = single(faces(b))
+    let top_face = single(faces_by_normal(b, zdir, tol_ang))
+    let side_face = single(faces_by_normal(b, va, tol_ang))
+
+    // 15. normal(Surface, Point3<Length>) → Vector3<Dimensionless>
+    //     Outward unit normal at pt on a_face. Value::Undef at DSL eval
+    //     (face sub-handle arg chaining not supported pre-Phase-3).
+    let pt_norm   = point3(0mm, 0mm, 5mm)
+    let face_normal = normal(a_face, pt_norm)
+
+    // 16. curvature(Surface, Point3<Length>) → Scalar<Curvature>  [surface form]
+    //     Principal curvature at pt_surf on sphere face. Value::Undef at DSL eval
+    //     (sub-handle chaining limitation applies to both surface and curve forms).
+    let sp_face   = single(faces(sp))
+    let pt_surf   = point3(5mm, 0mm, 0mm)
+    let k_surf    = curvature(sp_face, pt_surf)
+
+    // 17. curvature(Curve, Point3<Length>) → Scalar<Curvature>  [curve form]
+    //     Signed curvature at pt_curve on an_edge. Value::Undef at DSL eval.
+    let pt_curve  = point3(5mm, 0mm, 0mm)
+    let k_curve   = curvature(an_edge, pt_curve)
+
+    // 18. length(Curve) → Scalar<Length>
+    //     Arc length of an_edge. Value::Undef at DSL eval.
+    let edge_len  = length(an_edge)
+
+    // 19. perimeter(Surface) → Scalar<Length>
+    //     Sum of boundary edge lengths of a_face. Value::Undef at DSL eval.
+    let face_perim = perimeter(a_face)
+
+    // 20. adjacent_faces(parent, face) → List<Geometry>
+    //     Faces of b sharing an edge with top_face. Value::Undef at DSL eval.
+    let neighbors = adjacent_faces(b, top_face)
+
+    // 21. shared_edges(face_a, face_b) → List<Geometry>
+    //     Edges shared by top_face and side_face. Value::Undef at DSL eval.
+    let shared = shared_edges(top_face, side_face)
+}
