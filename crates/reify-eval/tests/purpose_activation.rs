@@ -1503,6 +1503,125 @@ purpose check(subject : Structure) {
     );
 }
 
+/// task-4137 step-7 (RED): activating a `subject.material_params` forall in a
+/// wildcard-subject purpose against a `Beam` structure that has a `Material`-typed
+/// param (`mat`) and a `Length`-typed param (`span`) should produce a non-empty
+/// `ReflectiveCellList` containing exactly `{Beam.mat}` (`span` excluded because
+/// it is not a Material type).
+///
+/// The fixture uses a wildcard `subject : Structure` purpose (no compile-time
+/// `ResolvedSchemaQuery`), so the activation-time value_cells-scan fallback is
+/// what runs. This test fails until task-4137 step-8 generalises the fallback
+/// to also handle `material_params`.
+///
+/// Acceptance criteria (task-4137):
+///   (a) collection.kind is `CompiledExprKind::ReflectiveCellList` (not the placeholder).
+///   (b) the ReflectiveCellList is non-empty (1 element).
+///   (c) element cell ID == Beam.mat (span excluded).
+#[test]
+fn activate_expands_material_params_placeholder_to_populated_list() {
+    let source = r#"
+structure Material {
+    param density : Real = 1.0
+}
+
+structure Beam {
+    param mat : Material = Material(density: 7850.0)
+    param span : Length = 1000mm
+}
+
+purpose check(subject : Structure) {
+    constraint forall p in subject.material_params: determined(p)
+}
+"#;
+    let compiled = parse_and_compile(source);
+    assert_eq!(
+        compiled.compiled_purposes.len(),
+        1,
+        "fixture failed to compile cleanly"
+    );
+    assert!(
+        compiled
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != Severity::Error),
+        "fixture produced unexpected error diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    let mut engine = make_simple_engine();
+    engine.eval(&compiled);
+    engine.activate_purpose("check", "Beam");
+
+    let snapshot = engine.snapshot().expect("snapshot after activate_purpose");
+
+    let injected = snapshot
+        .graph
+        .constraints
+        .iter()
+        .find(|(id, _)| id.entity.starts_with("purpose:check@Beam"))
+        .map(|(_, data)| data.clone())
+        .expect(
+            "expected at least one constraint with entity prefix 'purpose:check@Beam' \
+             after activation",
+        );
+
+    let collection = match &injected.expr.kind {
+        CompiledExprKind::Quantifier { collection, .. } => collection,
+        other => panic!(
+            "expected Quantifier in injected constraint expr, got {:?}",
+            other
+        ),
+    };
+
+    // (a) collection.kind is ReflectiveCellList (not the placeholder).
+    // task-2458: must be ReflectiveCellList, not ListLiteral.
+    let elements = match &collection.kind {
+        CompiledExprKind::ReflectiveCellList(elements) => elements,
+        CompiledExprKind::PurposeReflectiveAggregation { .. } => panic!(
+            "post-activation: collection is still the `PurposeReflectiveAggregation` \
+             placeholder; activate_purpose must expand the material_params \
+             placeholder into a populated `ReflectiveCellList` (task-4137 step-8)"
+        ),
+        other => panic!(
+            "post-activation: expected `ReflectiveCellList` in Quantifier collection \
+             (task-2458), got {:?}",
+            other
+        ),
+    };
+
+    // (b) the ReflectiveCellList is non-empty (mat; span excluded).
+    assert_eq!(
+        elements.len(),
+        1,
+        "expected 1 element (Beam.mat) in material_params list; \
+         span (Length-typed) must be excluded. Got {} elements \
+         (task-4137 step-8 not yet applied)",
+        elements.len()
+    );
+
+    // (c) element cell ID is exactly Beam.mat.
+    let mut element_cells: Vec<ValueCellId> = Vec::with_capacity(elements.len());
+    for (i, element) in elements.iter().enumerate() {
+        match &element.kind {
+            CompiledExprKind::ValueRef(id) => element_cells.push(id.clone()),
+            other => panic!(
+                "expected ValueRef element at index {} of expanded material_params \
+                 ReflectiveCellList, got {:?}",
+                i, other
+            ),
+        }
+    }
+    element_cells.sort();
+    let expected = vec![ValueCellId::new("Beam", "mat")];
+    assert_eq!(
+        element_cells, expected,
+        "expected expanded element cell IDs to be {{Beam.mat}}, \
+         got {:?}",
+        element_cells
+    );
+}
+
 // task-2289 amendment (reviewer S2, round 2): the integration-level
 // precedence test that previously lived here was brittle — its witness
 // (resolved-query path preserving declaration order `[z, a]` vs

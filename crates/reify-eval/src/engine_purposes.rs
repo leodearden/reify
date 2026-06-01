@@ -4,7 +4,7 @@ use crate::Engine;
 use crate::cache::NodeId;
 use crate::deps::ReverseDependencyIndex;
 use crate::graph::ValueCellNode;
-use reify_compiler::{ResolvedSchemaQuery, ValueCellKind};
+use reify_compiler::{is_geometric_param_type, is_material_param_type, ResolvedSchemaQuery, ValueCellKind};
 use reify_core::{ConstraintNodeId, ContentHash, Type, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledExprKind, DeterminacyState, ObjectiveSet, PersistentMap, Value, ValueMap};
 use std::sync::Arc;
@@ -862,7 +862,10 @@ fn expand_purpose_reflective_placeholders(
                 .find(|q| q.param_name == *param_name && q.query_kind == *query_kind)
             {
                 q.resolved_ids.iter().map(|id| id.member.clone()).collect()
-            } else if query_kind == "params" {
+            } else if query_kind == "params"
+                || query_kind == "geometric_params"
+                || query_kind == "material_params"
+            {
                 let mut members: Vec<String> = value_cells
                     .iter()
                     .filter(|(id, node)| {
@@ -871,6 +874,11 @@ fn expand_purpose_reflective_placeholders(
                                 node.kind,
                                 ValueCellKind::Param | ValueCellKind::Auto { .. }
                             )
+                            && (query_kind == "params"
+                                || (query_kind == "geometric_params"
+                                    && is_geometric_param_type(&node.cell_type))
+                                || (query_kind == "material_params"
+                                    && is_material_param_type(&node.cell_type)))
                     })
                     .map(|(id, _)| id.member.clone())
                     .collect();
@@ -882,9 +890,9 @@ fn expand_purpose_reflective_placeholders(
                 members.sort();
                 members
             } else {
-                // geometric_params / material_params: no resolution path
-                // yet (task-1904). Empty list ⇒ vacuous-true forall, same
-                // as before this expansion existed.
+                // Unknown query_kind — no resolution path. Empty list ⇒
+                // vacuous-true forall. (All known kinds — params,
+                // geometric_params, material_params — are handled above.)
                 Vec::new()
             };
 
