@@ -983,23 +983,4 @@ mod tests {
         );
     }
 
-    /// Temporary diagnostic: check what tree-sitter produces for the annotation-leak test source.
-    #[test]
-    fn diagnose_annotation_leak_source() {
-        let mut parser = make_parser();
-        let source = b"@leaked\nfn (x: Real) -> Real { x }\nstructure Good {}";
-        let tree = parser.parse(source, None).expect("parse failed");
-        let root = tree.root_node();
-        let kinds = collect_kinds(root);
-        let mut out = String::new();
-        out.push_str(&format!("has_error: {}\n", root.has_error()));
-        out.push_str(&format!("root children count: {}\n", root.child_count()));
-        for i in 0..root.child_count() {
-            let child = root.child(i).unwrap();
-            out.push_str(&format!("  child[{}]: kind={} named={}\n", i, child.kind(), child.is_named()));
-        }
-        out.push_str(&format!("all kinds: {:?}\n", kinds));
-        std::fs::write("/tmp/diagnose_annotation.txt", &out).ok();
-        // This test is diagnostic only; it always passes.
-    }
 }
