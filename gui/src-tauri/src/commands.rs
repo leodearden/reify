@@ -108,6 +108,37 @@ pub fn update_source_impl(
     result
 }
 
+/// Reload source for the file watcher, always returning a `GuiState` to emit.
+///
+/// This is the watcher's entry point for hot-reload.  Unlike `update_source_impl`,
+/// which returns `Err` on failure, this function **never fails silently**:
+///
+/// * On success: returns `Ok(fresh GuiState)` identical to `update_source_impl`'s
+///   output.
+/// * On failure (compile error or check()-panic): records staleness via
+///   `update_source_impl`, then falls back to `get_initial_state_impl` which
+///   returns the retained last-good `GuiState` now carrying the reload-error
+///   diagnostic synthesised by `build_gui_state`.  The watcher can emit this
+///   state to push the Error-severity diagnostic to the frontend.
+///
+/// The function propagates an `Err` only if the fallback `build_gui_state` itself
+/// fails, which is not expected in normal operation.
+pub fn reload_for_watch_impl(
+    engine: &Mutex<EngineSession>,
+    path: &str,
+    content: &str,
+) -> Result<GuiState, String> {
+    match update_source_impl(engine, path, content) {
+        Ok(gui_state) => Ok(gui_state),
+        Err(_) => {
+            // update_source_impl already recorded the reload error.
+            // Return the retained last-good state; build_gui_state will
+            // synthesise the Error-severity diagnostic from last_reload_error.
+            get_initial_state_impl(engine)
+        }
+    }
+}
+
 /// Export geometry to a file.
 pub fn export_impl(engine: &Mutex<EngineSession>, format: &str, path: &str) -> Result<(), String> {
     let export_format = match format {
