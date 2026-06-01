@@ -1070,6 +1070,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn recover_coordinates_from_coplanar_guess_is_singular_recovery() {
+        let (members, kinds) = triplex_topology();
+        let q = closed_form_q();
+        // The valid nullity-4 spectrum for the closed-form prism — identical to
+        // the healthy-recovery test's input, so *only* the guess is degenerate
+        // here, isolating the SingularRecovery guard.
+        let spectrum = validate_explicit(6, &members, &kinds, &q)
+            .expect("closed-form prism q is feasible (nullity 4)");
+
+        // A *coplanar* (degenerate) guess: the canonical prism's x/y arrangement
+        // flattened into the z = 0 plane. Per-axis projection onto null(D) leaves
+        // the all-zero z column at zero (a constant vector lies in null(D) via the
+        // all-ones mode), so every recovered node has z = 0 — a strictly planar,
+        // rank-deficient realisation. The centred-covariance det-vs-isotropic
+        // guard must reject it as SingularRecovery rather than return a flat
+        // "3-D" form. (Exercises the det branch; a regression that inverts the
+        // condition or mis-scales SINGULAR_REL_TOL would let it through.)
+        let coplanar_guess: Vec<[f64; 3]> =
+            canonical_prism().iter().map(|p| [p[0], p[1], 0.0]).collect();
+
+        assert_eq!(
+            recover_coordinates(&coplanar_guess, &spectrum).unwrap_err(),
+            FreeFormError::SingularRecovery,
+        );
+    }
+
     // ---- Explicit-mode member forces + form_find_free entry point ----
 
     #[test]
@@ -1231,6 +1258,80 @@ mod tests {
         members[0] = (0, 6);
         let spec = ForceDensitySpec::GroupRatios {
             group_ids: triplex_group_ids(),
+            seed_ratios: vec![-1.0, 1.0, 1.0],
+            reference_group: 1,
+        };
+        assert_eq!(
+            form_find_free(&guess, &members, &kinds, &spec).unwrap_err(),
+            FreeFormError::DimensionMismatch,
+        );
+    }
+
+    // ---- GroupRatios-mode dimension guards (form_find_group_ratios) ----
+
+    #[test]
+    fn group_ratios_zero_seed_ratio_is_dimension_mismatch() {
+        let (members, kinds) = triplex_topology();
+        let guess = perturbed_prism_guess();
+        // A zero seed has no sign to hold fixed while the search varies its
+        // magnitude, so a zero entry in `seed_ratios` is rejected up front.
+        let spec = ForceDensitySpec::GroupRatios {
+            group_ids: triplex_group_ids(),
+            seed_ratios: vec![-1.0, 0.0, 1.0],
+            reference_group: 1,
+        };
+        assert_eq!(
+            form_find_free(&guess, &members, &kinds, &spec).unwrap_err(),
+            FreeFormError::DimensionMismatch,
+        );
+    }
+
+    #[test]
+    fn group_ratios_reference_group_out_of_range_is_dimension_mismatch() {
+        let (members, kinds) = triplex_topology();
+        let guess = perturbed_prism_guess();
+        // `seed_ratios` is indexed by group id (3 groups ⇒ valid ids 0..=2), so a
+        // `reference_group` of 3 is out of range.
+        let spec = ForceDensitySpec::GroupRatios {
+            group_ids: triplex_group_ids(),
+            seed_ratios: vec![-1.0, 1.0, 1.0],
+            reference_group: 3,
+        };
+        assert_eq!(
+            form_find_free(&guess, &members, &kinds, &spec).unwrap_err(),
+            FreeFormError::DimensionMismatch,
+        );
+    }
+
+    #[test]
+    fn group_ratios_group_id_out_of_range_is_dimension_mismatch() {
+        let (members, kinds) = triplex_topology();
+        let guess = perturbed_prism_guess();
+        // A `group_ids` entry referencing a group with no seed ratio (id 3 with
+        // only 3 groups defined) is out of range.
+        let mut group_ids = triplex_group_ids();
+        group_ids[0] = 3; // no seed_ratios[3]
+        let spec = ForceDensitySpec::GroupRatios {
+            group_ids,
+            seed_ratios: vec![-1.0, 1.0, 1.0],
+            reference_group: 1,
+        };
+        assert_eq!(
+            form_find_free(&guess, &members, &kinds, &spec).unwrap_err(),
+            FreeFormError::DimensionMismatch,
+        );
+    }
+
+    #[test]
+    fn group_ratios_group_ids_length_mismatch_is_dimension_mismatch() {
+        let (members, kinds) = triplex_topology();
+        let guess = perturbed_prism_guess();
+        // `group_ids` must be parallel to `members`; one short ⇒ dimension
+        // mismatch, caught before any search work.
+        let mut group_ids = triplex_group_ids();
+        group_ids.pop();
+        let spec = ForceDensitySpec::GroupRatios {
+            group_ids,
             seed_ratios: vec![-1.0, 1.0, 1.0],
             reference_group: 1,
         };
