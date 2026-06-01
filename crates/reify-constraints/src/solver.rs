@@ -396,6 +396,13 @@ fn compute_total_violation(
 /// - `BinOp::Le` / `BinOp::Lt`: slack = `right − left`  (positive when `right ≥ left`)
 /// - `BinOp::And`: recurse into both branches
 /// - `Eq`, `Ne`, `Or`, and all other ops: skip (no well-defined signed interior slack)
+///
+/// **Duplication note**: `engine_eval.rs::has_inequality_slack` mirrors this rule
+/// exactly (same ops, same And-recursion, same skips).  The duplication is intentional
+/// — the two crates cannot share a common helper without adding a reify-eval →
+/// reify-constraints dependency, which would break dependency inversion.  If you change
+/// the decomposition rules here, apply the same change to `has_inequality_slack` and
+/// vice versa (both functions carry the cross-reference comment).
 fn collect_slack_terms(expr: &CompiledExpr, slacks: &mut Vec<CompiledExpr>) {
     if let CompiledExprKind::BinOp { op, left, right } = &expr.kind {
         match op {
@@ -486,6 +493,32 @@ fn build_centrality_objective(
     // No inequality slacks → preserve first-feasible behaviour.
     if slacks.is_empty() {
         return None;
+    }
+
+    // Performance note: the nested-Conditional fold below has O(2^n) expression-tree
+    // size in the number of slack terms, because each reduce step clones the accumulator
+    // `a` into BOTH the condition (BinOp::Lt) AND the then-branch.  At n=2 this is ~2×;
+    // at n=10 it is ~512×; at n=15 it exceeds 16 000 nodes.  Since eval_objective_set
+    // traverses the expression on EVERY Nelder-Mead cost call (up to tens of thousands
+    // of iterations), high slack counts produce exponential per-eval cost.
+    //
+    // Current usage: typical scopes have ≤ 6 inequality constraints per auto param, so
+    // the blowup is modest (≤ 64×).  Warn when the count is unexpectedly high so
+    // pathological cases are visible in logs rather than silently slow.
+    const CENTRALITY_SLACK_WARN_THRESHOLD: usize = 10;
+    if slacks.len() > CENTRALITY_SLACK_WARN_THRESHOLD {
+        let approx_nodes = 1_usize
+            .checked_shl(slacks.len() as u32)
+            .unwrap_or(usize::MAX);
+        tracing::warn!(
+            slack_count = slacks.len(),
+            approx_nodes,
+            "centrality synthesis: {} inequality slacks produce a nested-Conditional \
+             min-expression with ~{} nodes (O(2^n)); Nelder-Mead eval cost will be high. \
+             Consider reducing inequality constraints in this scope.",
+            slacks.len(),
+            approx_nodes,
+        );
     }
 
     // Fold slacks into min(s₀, s₁, …) via nested Conditionals.
@@ -3022,13 +3055,17 @@ mod tests {
         );
     }
 
-    /// Task η: centrality synthesis fires for `objective: None` + inequality constraint.
-    /// Maximize(x−5mm) drives x toward the upper bound rather than preserving the
-    /// initial-feasible value.  Before η this test verified the early-return fast-path
-    /// (returns initial 10mm exactly); after η it verifies the solver remains feasible and
-    /// has moved above the initial point toward the upper bound.
+    /// Task η: centrality synthesis fires for an already-feasible scope with
+    /// `objective: None` + a one-sided inequality constraint (x > 5 mm).
+    /// Maximize(x − 5 mm) drives x toward the upper bound rather than preserving
+    /// the initial-feasible point.
+    ///
+    /// (Renamed from `already_satisfied_returns_solved_immediately` — after task η
+    /// the early-return fast-path is gated on `effective_objective.is_none()`, so an
+    /// already-feasible scope with a synthetic objective now runs the optimiser and
+    /// moves the parameter, contradicting the old name and its implied behaviour.)
     #[test]
-    fn already_satisfied_returns_solved_immediately() {
+    fn centrality_moves_already_feasible_param_toward_bound() {
         use crate::DimensionalSolver;
         use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
         use reify_ir::{AutoParam, BinOp, CompiledExpr, Value};
