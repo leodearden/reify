@@ -79,9 +79,14 @@ the **identity** Transform (child authored directly in the parent frame).
 
 ```reify
 sub bolt  : Bolt at transform3(orient_identity(), vec3(30mm, 0mm, 0mm))
-sub gear  : Gear { teeth: 24 } at mount_frame      // Frame target
-sub plate : Plate                                  // no clause → identity
+sub gear  : Gear { teeth = 24 } at mount_frame      // Frame target
+sub plate : Plate                                   // no clause → identity
 ```
+
+Specialization-body overrides use `=` (`name = value`), the canonical and only
+grammar-accepted form (spec §4.7/§8.7; `grammar.js` `param_assignment` is `IDENT = expr`).
+The colon form `{ teeth: 24 }` is intentionally **not** part of the grammar and produces an
+ERROR node — see the regression-gated fixture `sub_placement_spec_example.ri` (task 3907).
 
 Grammar delta (spec §15 / `grammar.js`), all three `sub_declaration` arms gain an optional
 trailing `seq('at', field('pose', $._expression))`. AST `SubDecl` gains
@@ -306,7 +311,7 @@ surface+place → STEP-export, proving geometry-level placement reaches a real c
 ### Phase 1 — Frontend foundation
 - **T1 — Grammar + parser: `aux` modifier and `at` pose clause.** *grammar_confirmed=false
   (this is the grammar work).* Signal: `tree-sitter parse --quiet` exits 0 on fixtures
-  `aux let x = …`, `aux sub a : T`, `sub b : T at frame3(…)`, `sub c : T { … } at p`
+  `aux let x = …`, `aux sub a : T`, `sub b : T at frame3(…)`, `sub c : T { f = … } at p`
   (CST has no ERROR nodes); hand-parser unit test yields `SubDecl.pose_expr = Some`,
   `SubDecl.is_aux`, `LetDecl.is_aux`.
 - **T2 — Compiler lowering.** Depends T1. Signal: a `.ri` using `at`/`aux` compiles with no
