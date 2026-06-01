@@ -3,7 +3,7 @@
 use reify_constraints::{DimensionalSolver, SolveSpaceSolver, SolverRegistry};
 use reify_test_support::*;
 use reify_core::{ContentHash, DimensionVector, Type};
-use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, ObjectiveSense, ObjectiveSet, ResolutionProblem, ResolvedFunction, SolveResult, Value, ValueMap};
+use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm, ResolutionProblem, ResolvedFunction, SolveResult, Value, ValueMap};
 
 /// Basic dispatch: SolverRegistry with DimensionalSolver as fallback
 /// produces same results as DimensionalSolver alone for a simple problem.
@@ -778,5 +778,114 @@ fn registry_merges_unique_flag() {
             }
             other => panic!("expected Solved, got {:?}", other),
         }
+    }
+}
+
+// ============================================================================
+// Lexicographic staged solve (task ε)
+// ============================================================================
+
+/// Lexicographic objective splits into stages by descending priority.
+///
+/// A 2-term Lexicographic objective [Maximize x @p=1, Maximize y @p=0] must
+/// cause `solve_lexicographic` to call the domain solver exactly TWICE — once
+/// for the priority-1 rank (WeightedSum{x}), once for the priority-0 rank
+/// (WeightedSum{y}).  The registry returns the last stage's result as
+/// `Solved { unique: false }`.
+///
+/// RED under current code: the Lexicographic objective is passed through to a
+/// single solver call (call_count == 1 instead of 2).
+#[test]
+fn lexicographic_stages_by_descending_priority() {
+    let x_id = vcid("Lex", "x");
+    let y_id = vcid("Lex", "y");
+
+    // Independent constraints — normally two components, but the Lexicographic
+    // objective references both params so decompose_into_components merges them.
+    let c1 = le(value_ref("Lex", "x"), literal(mm(3.0)));
+    let c2 = le(value_ref("Lex", "y"), literal(mm(10.0)));
+
+    // Lexicographic objective: Maximize x first (priority 1), then y (priority 0).
+    let objective = ObjectiveSet {
+        combination: ObjectiveCombination::Lexicographic,
+        terms: vec![
+            ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("Lex", "x"), weight: 1.0, priority: 1 },
+            ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("Lex", "y"), weight: 1.0, priority: 0 },
+        ],
+    };
+
+    // Stage 1 spy result: x at its bound.
+    // Stage 2 spy result: both at their bounds (returned as the final answer).
+    let mut vals1 = std::collections::HashMap::new();
+    vals1.insert(x_id.clone(), mm(3.0));
+    let mut vals2 = std::collections::HashMap::new();
+    vals2.insert(x_id.clone(), mm(3.0));
+    vals2.insert(y_id.clone(), mm(10.0));
+
+    let spy = MultiCallSpyConstraintSolver::new(vec![
+        SolveResult::Solved { values: vals1, unique: false },
+        SolveResult::Solved { values: vals2, unique: false },
+    ]);
+    let captured = spy.captured_problems();
+    let registry = SolverRegistry::new(Box::new(spy));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam { id: x_id.clone(), param_type: Type::length(), bounds: Some((0.001, 0.1)), free: true },
+            AutoParam { id: y_id.clone(), param_type: Type::length(), bounds: Some((0.001, 0.1)), free: true },
+        ],
+        constraints: vec![(cnid("Lex", 0), c1), (cnid("Lex", 1), c2)],
+        current_values: ValueMap::new(),
+        objective: Some(objective),
+        functions: vec![].into(),
+    };
+
+    let result = registry.solve(&problem);
+
+    // The domain solver must have been called exactly twice (one per rank).
+    let captured_guard = captured.lock().unwrap();
+    assert_eq!(
+        captured_guard.len(), 2,
+        "Lexicographic with 2 distinct-priority ranks must invoke solver twice; got {} call(s)",
+        captured_guard.len()
+    );
+
+    // Stage 1: highest-priority rank (priority 1 = x), presented as WeightedSum.
+    let stage1 = &captured_guard[0];
+    let obj1 = stage1.objective.as_ref().expect("stage 1 must carry an objective");
+    assert_eq!(
+        obj1.combination, ObjectiveCombination::WeightedSum,
+        "each stage must present a WeightedSum to the domain solver (debug_assert guard)"
+    );
+    assert_eq!(obj1.terms.len(), 1, "stage 1 rank has exactly one term (x)");
+    let refs1 = obj1.terms[0].expr.collect_value_refs();
+    assert!(refs1.contains(&x_id), "stage 1 must optimize x (priority 1)");
+    assert!(!refs1.contains(&y_id), "stage 1 must NOT include y");
+
+    // Stage 2: lower-priority rank (priority 0 = y), presented as WeightedSum.
+    let stage2 = &captured_guard[1];
+    let obj2 = stage2.objective.as_ref().expect("stage 2 must carry an objective");
+    assert_eq!(obj2.combination, ObjectiveCombination::WeightedSum);
+    assert_eq!(obj2.terms.len(), 1, "stage 2 rank has exactly one term (y)");
+    let refs2 = obj2.terms[0].expr.collect_value_refs();
+    assert!(refs2.contains(&y_id), "stage 2 must optimize y (priority 0)");
+    assert!(!refs2.contains(&x_id), "stage 2 must NOT include x");
+
+    // The registry result comes from the final stage (vals2: x=3mm, y=10mm).
+    match result {
+        SolveResult::Solved { values, unique } => {
+            assert!(!unique, "staged Lexicographic result must be unique:false");
+            let y_val = values
+                .get(&y_id)
+                .expect("result must contain y (from last stage)")
+                .as_f64()
+                .unwrap();
+            assert!(
+                (y_val - 0.010).abs() < 1e-9,
+                "y should be 10 mm (0.010 m) from the last stage result, got {}",
+                y_val
+            );
+        }
+        other => panic!("expected Solved, got {:?}", other),
     }
 }
