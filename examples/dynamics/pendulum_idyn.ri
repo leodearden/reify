@@ -1,0 +1,44 @@
+// Single-pendulum inverse-dynamics worked example (RBD-η, task 3836).
+//
+// PRD: docs/prds/v0_3/rigid-body-dynamics.md §5 (inverse dynamics).
+//
+// A 1 kg point mass hangs 100 mm below a revolute joint (axis +y) and is held
+// static at θ = −30°. The actuator torque holding it against gravity is the
+// task's sole user-observable signal:
+//
+//     τ = m·g·L·sin(30°) = 1 · 9.81 · 0.1 · 0.5 = 0.4905 N·m
+//
+// Running
+//
+//     reify eval examples/dynamics/pendulum_idyn.ri
+//
+// prints the `forces` cell — a List<JointForce> whose single ScalarTorque
+// magnitude is 0.4905. The Rust gate
+// `crates/reify-eval/tests/rigid_body_dynamics_e2e.rs` asserts the value
+// within 1 µN·m. The same config is validated at the pure-Rust core by
+// `reify-stdlib/src/dynamics/rnea.rs::single_pendulum_static_gravity_torque`.
+//
+// Mass-property path (PRD §5.5/§6): the body's inertial data is supplied by a
+// `MassProperties` value stored AS the body's `solid` argument — `body()`
+// records `solid` verbatim, and the η dispatch reads it back. A point mass has
+// zero rotational inertia (the inertia tensor is the all-zero 3×3, which is PSD
+// so the ctor-time inertia hook leaves it intact); with q̇ = q̈ = 0 the static
+// torque depends only on mass, com, and gravity, not on the inertia tensor.
+structure def PendulumIdyn {
+    // 1 kg point mass at com = [0, 0, −100 mm] in the body frame; zero inertia.
+    let mp = MassProperties(mass: 1kg, com: point3(0mm, 0mm, -100mm), inertia: [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], origin: 0.0)
+
+    // Revolute about +y; the [−180°, 180°] range admits θ = −30°.
+    let axis_y = vec3(0, 1, 0)
+    let joint = revolute(axis_y, -180deg .. 180deg)
+
+    // Single body parented to world (3-arg body: default parent = world).
+    let m0 = mechanism()
+    let m = body(m0, mp, joint)
+
+    // Snapshot bakes θ = −30° into the body's world_transform via FK.
+    let snap = snapshot(m, [bind(joint, -30deg)])
+
+    // Static configuration: one revolute DOF, q̇ = q̈ = 0.
+    let forces = inverse_dynamics_at_snapshot(m, snap, [0.0], [0.0])
+}
