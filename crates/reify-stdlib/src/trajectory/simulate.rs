@@ -418,6 +418,50 @@ fn empty_track_data(n_loc: usize) -> EndEffectorTrackData {
     }
 }
 
+// ── Shared RNEA link builder ──────────────────────────────────────────────────
+
+/// Build a [`RneaLink`] vector for a single trajectory sample.
+///
+/// Slices `vels` and `accs` per-link DOF using each link's `subspace` length,
+/// walking a running `dof_offset` counter.  This helper is used by both
+/// [`simulate_trajectory_core`] (tau-history computation) and
+/// `tots::evaluate` (force-constraint peaks), so both callers stay
+/// consistent if the gravity convention or DOF-offset logic ever changes.
+///
+/// # Arguments
+/// * `mechanism` — mechanism model (links in topological order).
+/// * `vels`      — per-DOF joint velocities q̇ for this sample.
+/// * `accs`      — per-DOF joint accelerations q̈ for this sample.
+pub(crate) fn build_rnea_links_for_sample(
+    mechanism: &MechanismModel,
+    vels: &[f64],
+    accs: &[f64],
+) -> Vec<RneaLink> {
+    let mut links = Vec::with_capacity(mechanism.links.len());
+    let mut dof_offset = 0usize;
+    for (i, l) in mechanism.links.iter().enumerate() {
+        let n_dof = l.subspace.len();
+        let q_dot = vels.get(dof_offset..dof_offset + n_dof)
+            .map(|s| s.to_vec())
+            .unwrap_or_else(|| vec![0.0; n_dof]);
+        let q_ddot = accs.get(dof_offset..dof_offset + n_dof)
+            .map(|s| s.to_vec())
+            .unwrap_or_else(|| vec![0.0; n_dof]);
+        dof_offset += n_dof;
+        links.push(RneaLink {
+            parent: if i == 0 { None } else { Some(i - 1) },
+            parent_to_child: l.parent_to_child,
+            subspace: l.subspace.clone(),
+            mass: l.mass,
+            com: l.com,
+            inertia_about_com: l.inertia_about_com,
+            q_dot,
+            q_ddot,
+        });
+    }
+    links
+}
+
 pub(crate) fn simulate_trajectory_core(
     spline: &MultiJointSpline,
     mechanism: &MechanismModel,
@@ -447,48 +491,11 @@ pub(crate) fn simulate_trajectory_core(
         .map(|l| l.parent_to_child)
         .collect();
 
-    // Precompute per-link DOF-start offsets once (O(n_links)) rather than
-    // re-summing a prefix on every link on every sample (O(n_links²·n_samples)).
-    let dof_starts: Vec<usize> = {
-        let mut starts = Vec::with_capacity(mechanism.links.len());
-        let mut offset = 0usize;
-        for l in &mechanism.links {
-            starts.push(offset);
-            offset += l.subspace.len();
-        }
-        starts
-    };
-
     let mut tau_history: Vec<Vec<f64>> = Vec::with_capacity(n_times);
     for sample in &traj.samples {
-        let rnea_links: Vec<RneaLink> = mechanism
-            .links
-            .iter()
-            .enumerate()
-            .map(|(i, l)| {
-                let n_dof = l.subspace.len();
-                // For fixed transforms the parent_to_child doesn't vary with q.
-                // q̇ and q̈ come from the trajectory sample (sliced per-link DOF).
-                let dof_start = dof_starts[i];
-                let q_dot = sample.vels.get(dof_start..dof_start + n_dof)
-                    .map(|s| s.to_vec())
-                    .unwrap_or_else(|| vec![0.0; n_dof]);
-                let q_ddot = sample.accels.get(dof_start..dof_start + n_dof)
-                    .map(|s| s.to_vec())
-                    .unwrap_or_else(|| vec![0.0; n_dof]);
-                RneaLink {
-                    parent: if i == 0 { None } else { Some(i - 1) },
-                    parent_to_child: l.parent_to_child,
-                    subspace: l.subspace.clone(),
-                    mass: l.mass,
-                    com: l.com,
-                    inertia_about_com: l.inertia_about_com,
-                    q_dot,
-                    q_ddot,
-                }
-            })
-            .collect();
-
+        // For fixed transforms the parent_to_child doesn't vary with q.
+        // q̇ and q̈ come from the trajectory sample (sliced per-link DOF).
+        let rnea_links = build_rnea_links_for_sample(mechanism, &sample.vels, &sample.accels);
         let tau = inverse_dynamics_open_chain(&rnea_links, [0.0, 0.0, 0.0]);
         // Flatten per-link tau into a single per-DOF vector.
         let flat_tau: Vec<f64> = tau.into_iter().flatten().collect();

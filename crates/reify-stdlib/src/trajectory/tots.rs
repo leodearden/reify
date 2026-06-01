@@ -29,9 +29,10 @@ use faer::Mat;
 
 use super::spline::{BoundaryCondition, CubicSpline, MultiJointSpline};
 use super::simulate::{
-    simulate_trajectory_core, EffectorLocation, EndEffectorTrackData, MechanismModel, ModalModel,
+    build_rnea_links_for_sample, simulate_trajectory_core,
+    EffectorLocation, EndEffectorTrackData, MechanismModel, ModalModel,
 };
-use crate::dynamics::rnea::{inverse_dynamics_open_chain, RneaLink};
+use crate::dynamics::rnea::inverse_dynamics_open_chain;
 
 // ── Parameter types ───────────────────────────────────────────────────────────
 
@@ -216,7 +217,7 @@ pub(crate) fn evaluate(params: &TotsParams, model: &TotsModel) -> Option<Evaluat
         }
 
         // Force peak via RNEA at this sample.
-        let rnea_links = build_rnea_links(&model.mechanism, &vels, &accs);
+        let rnea_links = build_rnea_links_for_sample(&model.mechanism, &vels, &accs);
         let tau = inverse_dynamics_open_chain(&rnea_links, [0.0, 0.0, 0.0]);
         // tau is Vec<Vec<f64>> (per-link per-dof); flatten to per-joint.
         let flat_tau: Vec<f64> = tau.into_iter().flatten().collect();
@@ -244,40 +245,6 @@ fn vibration_peak(track: &EndEffectorTrackData) -> f64 {
         }
     }
     peak
-}
-
-/// Build RNEA links for a single time sample from the mechanism model.
-///
-/// Correctly advances `dof_offset` per link so multi-DOF mechanisms are sliced
-/// accurately.
-fn build_rnea_links(
-    mechanism: &MechanismModel,
-    vels: &[f64],
-    accs: &[f64],
-) -> Vec<RneaLink> {
-    let mut links = Vec::with_capacity(mechanism.links.len());
-    let mut dof_offset = 0;
-    for (i, link) in mechanism.links.iter().enumerate() {
-        let n_dof = link.subspace.len();
-        let q_dot = vels.get(dof_offset..dof_offset + n_dof)
-            .map(|s| s.to_vec())
-            .unwrap_or_else(|| vec![0.0; n_dof]);
-        let q_ddot = accs.get(dof_offset..dof_offset + n_dof)
-            .map(|s| s.to_vec())
-            .unwrap_or_else(|| vec![0.0; n_dof]);
-        dof_offset += n_dof;
-        links.push(RneaLink {
-            parent: if i == 0 { None } else { Some(i - 1) },
-            parent_to_child: link.parent_to_child,
-            subspace: link.subspace.clone(),
-            mass: link.mass,
-            com: link.com,
-            inertia_about_com: link.inertia_about_com,
-            q_dot,
-            q_ddot,
-        });
-    }
-    links
 }
 
 // ── Constraint violations ─────────────────────────────────────────────────────
@@ -328,17 +295,20 @@ pub(crate) fn objective_gradient(n_vars: usize) -> Vec<f64> {
 
 /// Forward-difference Jacobian of the constraint vector w.r.t. x.
 ///
+/// `baseline` is the already-computed [`Evaluation`] at `params` (avoids a
+/// redundant forward pass since `solve_tots` always holds this value).
+///
 /// Returns an `(n_constraints × n_vars)` matrix stored row-major as `Vec<Vec<f64>>`.
-/// Returns `None` if baseline evaluation fails.
+/// Returns `None` if any perturbed evaluation fails.
 pub(crate) fn constraint_jacobian(
     params: &TotsParams,
     model: &TotsModel,
+    baseline: &Evaluation,
     h: f64,
 ) -> Option<Vec<Vec<f64>>> {
     let n_vars = params.n_vars();
     let x0 = params.variable_vector();
-    let eval0 = evaluate(params, model)?;
-    let v0 = constraint_violations(&eval0, params);
+    let v0 = constraint_violations(baseline, params);
     let n_c = v0.len();
 
     let mut jac = vec![vec![0.0_f64; n_vars]; n_c];
@@ -714,28 +684,34 @@ pub(crate) fn solve_tots(
     let mut best_is_feasible = is_feasible(&best_eval, &best_params);
 
     let grad = objective_gradient(n_vars);
+    // prev_x stores x_{i-1} (the point BEFORE the step taken last iteration).
+    // prev_lagr_grad stores g(x_{i-1}) computed from the Jacobian at x_{i-1}.
+    // Together they let the BFGS update at the start of iteration i form
+    //   s = x_i − x_{i-1}   and   y = g(x_i) − g(x_{i-1})
+    // where s and y span the SAME step — the secant-condition requirement.
     let mut prev_x: Option<Vec<f64>> = None;
     let mut prev_lagr_grad: Option<Vec<f64>> = None;
 
     for iter in 0..config.max_iters {
         let violations = constraint_violations(&current_eval, &current);
         let n_c = violations.len();
+        // Current position (used for convergence check, BFGS, and step).
+        let x0 = current.variable_vector();
 
         // Check convergence at start of each iteration.
         // If feasible and previous step was very small, we've converged.
-        if is_feasible(&current_eval, &current)
-            && let Some(ref px) = prev_x
-        {
-            let x_cur = current.variable_vector();
-            let step_norm: f64 = x_cur.iter().zip(px.iter())
-                .map(|(a, b)| (a - b).powi(2)).sum::<f64>().sqrt();
-            if step_norm < config.tol {
-                return TotsResult {
-                    outcome: TotsOutcome::Converged,
-                    params: current.clone(),
-                    evaluation: current_eval.clone(),
-                    iterations: iter + 1,
-                };
+        if is_feasible(&current_eval, &current) {
+            if let Some(ref px) = prev_x {
+                let step_norm: f64 = x0.iter().zip(px.iter())
+                    .map(|(a, b)| (a - b).powi(2)).sum::<f64>().sqrt();
+                if step_norm < config.tol {
+                    return TotsResult {
+                        outcome: TotsOutcome::Converged,
+                        params: current.clone(),
+                        evaluation: current_eval.clone(),
+                        iterations: iter + 1,
+                    };
+                }
             }
         }
 
@@ -750,8 +726,44 @@ pub(crate) fn solve_tots(
             };
         }
 
-        // Compute constraint Jacobian.
-        let jac_opt = constraint_jacobian(&current, model, config.fd_h);
+        // Compute constraint Jacobian (pass the already-held baseline eval to
+        // avoid a redundant full simulate_trajectory_core forward pass).
+        let jac_opt = constraint_jacobian(&current, model, &current_eval, config.fd_h);
+
+        // ── BFGS Hessian update ───────────────────────────────────────────────
+        // Augmented Lagrangian gradient at x_i (the CURRENT point):
+        //   g(x_i) = ∇f(x_i) + μ · ∑_{j: cⱼ > 0} ∇cⱼ(x_i)
+        // This is the "new" gradient for the BFGS update that spans [x_{i-1}, x_i].
+        // Deferring the update by one iteration ensures s = x_i − x_{i-1} and
+        // y = g(x_i) − g(x_{i-1}) come from consistent Jacobians at x_i and x_{i-1}.
+        let g_at_cur = {
+            let mut g = objective_gradient(n_vars);
+            if let Some(ref jac) = jac_opt {
+                for (ci, row) in jac.iter().enumerate() {
+                    if violations[ci] > 0.0 {
+                        for (k, &jval) in row.iter().enumerate().take(n_vars) {
+                            g[k] += mu * jval;
+                        }
+                    }
+                }
+            }
+            g
+        };
+        // Apply the BFGS update for the step taken in the PREVIOUS iteration.
+        if let (Some(px), Some(pg)) = (&prev_x, &prev_lagr_grad) {
+            let s: Vec<f64> = x0.iter().zip(px.iter()).map(|(a, b)| a - b).collect();
+            let y: Vec<f64> = g_at_cur.iter().zip(pg.iter()).map(|(a, b)| a - b).collect();
+            let s_norm: f64 = s.iter().map(|v| v * v).sum::<f64>().sqrt();
+            if s_norm > 1e-10 {
+                hessian = bfgs_update(&hessian, &s, &y);
+                // Enforce diagonal floor for positive definiteness.
+                for di in 0..n_vars {
+                    if hessian[(di, di)] < 1e-6 {
+                        hessian[(di, di)] = 1e-6;
+                    }
+                }
+            }
+        }
 
         // Active constraints: violated (> 0) or nearly active (> -active_tol).
         let active_tol = 1e-4;
@@ -791,7 +803,6 @@ pub(crate) fn solve_tots(
         // Line search with merit function.
         let alpha = line_search(&current, &dx, mu, model, 1.0, config.c1, config.max_halving);
 
-        let x0 = current.variable_vector();
         let x_new: Vec<f64> = if alpha > 0.0 {
             x0.iter().zip(dx.iter()).map(|(xi, di)| xi + alpha * di).collect()
         } else {
@@ -819,65 +830,12 @@ pub(crate) fn solve_tots(
             None => break,
         };
 
-        // BFGS update using augmented Lagrangian gradient approximation.
-        {
-            let x_cur = current.variable_vector();
-            let s: Vec<f64> = x_new.iter().zip(x_cur.iter()).map(|(a, b)| a - b).collect();
-
-            // Augmented Lagrangian gradient at new point.
-            let _viol_new = constraint_violations(&new_eval, &new_params);
-            let mut g_new = objective_gradient(n_vars);
-            // Add mu * gradient of max(0, c) sum (approximated from Jacobian).
-            if let Some(ref jac) = jac_opt {
-                for (i, row) in jac.iter().enumerate() {
-                    if violations[i] > 0.0 {
-                        for (k, &jval) in row.iter().enumerate().take(n_vars) {
-                            g_new[k] += mu * jval;
-                        }
-                    }
-                }
-            }
-
-            // Augmented Lagrangian gradient at current point.
-            let g_cur = if let Some(ref pg) = prev_lagr_grad {
-                pg.clone()
-            } else {
-                let mut g = objective_gradient(n_vars);
-                if let Some(ref jac) = jac_opt {
-                    for (i, row) in jac.iter().enumerate() {
-                        if violations[i] > 0.0 {
-                            for (k, &jval) in row.iter().enumerate().take(n_vars) {
-                                g[k] += mu * jval;
-                            }
-                        }
-                    }
-                }
-                g
-            };
-
-            let y: Vec<f64> = g_new.iter().zip(g_cur.iter()).map(|(a, b)| a - b).collect();
-
-            // Only update if step is non-trivial.
-            let s_norm: f64 = s.iter().map(|v| v * v).sum::<f64>().sqrt();
-            if s_norm > 1e-10 {
-                hessian = bfgs_update(&hessian, &s, &y);
-                // Enforce diagonal floor for positive definiteness.
-                for i in 0..n_vars {
-                    if hessian[(i, i)] < 1e-6 {
-                        hessian[(i, i)] = 1e-6;
-                    }
-                }
-            }
-
-            prev_lagr_grad = Some(g_new);
-        }
-
-        // Track the PRE-step iterate so the start-of-iteration convergence
-        // check compares the new `current` (== x_new) against the point before
-        // this step. Using x_new here would make step_norm == 0 next iteration
-        // (variable_vector()/unpack round-trip exactly), causing premature
-        // Converged termination on the second iteration regardless of progress.
+        // Store the PRE-step position and gradient for the next iteration's BFGS.
+        // prev_x = x_i,  prev_lagr_grad = g(x_i).
+        // In the next iteration (x_{i+1} is now current):
+        //   s = x_{i+1} − x_i,  y = g(x_{i+1}) − g(x_i)  → consistent secant pair.
         prev_x = Some(x0);
+        prev_lagr_grad = Some(g_at_cur);
 
         // Track best feasible solution.
         let new_is_feasible = is_feasible(&new_eval, &new_params);
@@ -909,31 +867,6 @@ pub(crate) fn solve_tots(
         evaluation: final_eval,
         iterations: config.max_iters,
     }
-}
-
-// ── Infeasibility detection helper ───────────────────────────────────────────
-
-/// Attempt to detect hard infeasibility by checking if velocity limits are
-/// physically impossible given the start/end positions and T.
-///
-/// For a 1-DOF straight-line move from `q0` to `q1` in time `T`, the minimum
-/// peak velocity for any smooth trajectory is approximately `|q1-q0| / T * k`
-/// where `k ≈ 1.5` for a cubic profile (achieved at the midpoint).
-/// If this lower bound exceeds the limit, the constraint is infeasible.
-pub(crate) fn check_velocity_infeasible(params: &TotsParams) -> bool {
-    let t = params.t_initial;
-    if !t.is_finite() || t <= 0.0 {
-        return true;
-    }
-    for joint in &params.joints {
-        let displacement = (joint.end - joint.start).abs();
-        // Rough lower bound: for a clamped cubic, peak vel ≈ 1.5 * displacement / T
-        let peak_lower_bound = 1.5 * displacement / t;
-        if peak_lower_bound > joint.vel_limit * (1.0 + 1e-6) {
-            return true;
-        }
-    }
-    false
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -1240,7 +1173,8 @@ mod tests {
     fn constraint_jacobian_finite_entries() {
         let params = simple_params(2.0);
         let model = gantry_model(1.0, 5.0, 0.05);
-        let jac = constraint_jacobian(&params, &model, 1e-5).expect("jacobian");
+        let eval = evaluate(&params, &model).expect("evaluate for baseline");
+        let jac = constraint_jacobian(&params, &model, &eval, 1e-5).expect("jacobian");
         for (i, row) in jac.iter().enumerate() {
             for (j, &v) in row.iter().enumerate() {
                 assert!(v.is_finite(), "jac[{i}][{j}] = {v}");
@@ -1254,7 +1188,8 @@ mod tests {
     fn velocity_jacobian_wrt_t_negative() {
         let params = simple_params(2.0);
         let model = gantry_model(1.0, 5.0, 0.05);
-        let jac = constraint_jacobian(&params, &model, 1e-5).expect("jacobian");
+        let eval = evaluate(&params, &model).expect("evaluate for baseline");
+        let jac = constraint_jacobian(&params, &model, &eval, 1e-5).expect("jacobian");
         let n_vars = params.n_vars();
         // Row 1 = vel constraint for joint 0; last column = dT.
         let dvel_dt = jac[1][n_vars - 1];
