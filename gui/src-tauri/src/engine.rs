@@ -4434,8 +4434,12 @@ pub(crate) fn sample_stride_field_nearest(
     }
 
     // Bounds check with tolerance.
-    for k in 0..3 {
-        if point[k] < sf.bounds_min[k] - tol || point[k] > sf.bounds_max[k] + tol {
+    for ((&p, &mn), &mx) in point
+        .iter()
+        .zip(sf.bounds_min.iter())
+        .zip(sf.bounds_max.iter())
+    {
+        if p < mn - tol || p > mx + tol {
             return None;
         }
     }
