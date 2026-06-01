@@ -155,9 +155,9 @@ fn aux_let_body_surfaces_hidden_plain_let_visible() {
 /// SUPPRESSES the standalone `Child#realization[0]` surface (no
 /// double-surfacing).
 ///
-/// Pins the exact descendant path scheme. Fails until step-4 adds the root-set
-/// + containment tree-walk + standalone-suppression (today every template is
-/// surfaced flatly, so `Child#realization[0]` appears standalone and the
+/// Pins the exact descendant path scheme. Fails until step-4 adds the root-set,
+/// the containment tree-walk, and standalone-suppression (today every template
+/// is surfaced flatly, so `Child#realization[0]` appears standalone and the
 /// composed path is absent).
 #[test]
 fn containment_child_surfaces_once_at_composed_path() {

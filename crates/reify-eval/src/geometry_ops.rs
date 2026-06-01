@@ -15163,7 +15163,7 @@ mod tests {
     #[test]
     fn compose_pose_chain_single_equals_compose_onto_identity() {
         let t = transform_of([1.0, 0.0, 0.0, 0.0], [0.05, 0.0, 0.0]);
-        let got = compose_pose_chain(&[t.clone()]);
+        let got = compose_pose_chain(std::slice::from_ref(&t));
         let expected = reify_stdlib::eval_builtin("transform_compose", &[identity_transform(), t]);
         assert_eq!(
             got, expected,
