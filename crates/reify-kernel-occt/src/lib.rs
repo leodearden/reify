@@ -8441,4 +8441,80 @@ mod tests {
             "ApplyTransform must produce a fresh handle, not reuse the source's"
         );
     }
+
+    /// step-1 (RED) — `make_compound` primitive.
+    ///
+    /// Gated on `OCCT_AVAILABLE` because compound assembly and STEP export
+    /// require the real OCCT kernel.
+    ///
+    /// Asserts:
+    /// (a) `make_compound(&[id_a, id_b])` returns `Ok` with a handle whose
+    ///     `repr` field is `Some(BRepKind::Compound)`.
+    /// (b) Exporting that compound handle to `ExportFormat::Step` yields bytes
+    ///     that contain exactly 2 `MANIFOLD_SOLID_BREP` occurrences — the two
+    ///     input box solids appear as independent solid manifolds inside the
+    ///     compound STEP document.
+    /// (c) `make_compound(&[])` returns `Err` (empty input is nonsensical).
+    ///
+    /// Fails to compile until step-2 adds `GeometryKernel::make_compound` and
+    /// the OCCT override.
+    #[cfg(has_occt)]
+    #[test]
+    fn make_compound_two_boxes_and_empty_err() {
+        if !OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+
+        let mut kernel = OcctKernel::new();
+
+        // Build two distinct box handles.
+        let ha = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::length(0.02),
+                height: Value::length(0.02),
+                depth: Value::length(0.02),
+            })
+            .expect("Box A must succeed");
+        let hb = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::length(0.02),
+                height: Value::length(0.02),
+                depth: Value::length(0.02),
+            })
+            .expect("Box B must succeed");
+
+        // (a) make_compound returns Ok and the result repr is Compound.
+        let compound = kernel
+            .make_compound(&[ha.id, hb.id])
+            .expect("make_compound of two boxes must succeed");
+        assert_eq!(
+            compound.repr,
+            Some(BRepKind::Compound),
+            "make_compound result must have BRepKind::Compound"
+        );
+
+        // (b) Exporting the compound to STEP must contain exactly 2 MANIFOLD_SOLID_BREPs.
+        let mut step_bytes: Vec<u8> = Vec::new();
+        kernel
+            .export(compound.id, ExportFormat::Step, &mut step_bytes)
+            .expect("STEP export of compound must succeed");
+        let step_text = String::from_utf8_lossy(&step_bytes);
+        let solid_count = step_text.matches("MANIFOLD_SOLID_BREP").count();
+        assert_eq!(
+            solid_count,
+            2,
+            "STEP compound must contain exactly 2 MANIFOLD_SOLID_BREP entities, got {}; \
+             STEP snippet: {:.200}",
+            solid_count,
+            &step_text
+        );
+
+        // (c) make_compound(&[]) must return Err.
+        let empty_result = kernel.make_compound(&[]);
+        assert!(
+            empty_result.is_err(),
+            "make_compound with empty input must return Err"
+        );
+    }
 }
