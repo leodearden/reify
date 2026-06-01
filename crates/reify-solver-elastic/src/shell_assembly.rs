@@ -939,7 +939,9 @@ fn degenerate_stiffness_core(
         };
         for &zeta in zeta_gauss.iter() {
             let c3 = ShellRefCoord3::new(ip.xi, ip.eta, zeta);
-            let (_jm, det) = degenerate_jacobian(nodes, directors, thicknesses, c3);
+            // jm is reused by degenerate_bubble_bending_b on the bubble-active path
+            // to avoid a redundant Jacobian evaluation.
+            let (jm, det) = degenerate_jacobian(nodes, directors, thicknesses, c3);
             let b_mb = if use_ans_membrane {
                 // ANS membrane + displacement bending remainder: swap ONLY the
                 // membrane (ζ=0) part of B_mb for the assumed-natural-strain
@@ -1006,7 +1008,8 @@ fn degenerate_stiffness_core(
             // guarantee and can produce indefinite K* after assembly.
             if bubble_active {
                 // Bubble bending B (3×2): Δβ_x (col 0) and Δβ_y (col 1).
-                let b_bub = degenerate_bubble_bending_b(nodes, directors, thicknesses, c3);
+                // Pass the already-computed Jacobian jm to avoid re-evaluating it.
+                let b_bub = degenerate_bubble_bending_b(&jm, directors, thicknesses, c3);
                 // D_pl · B_bubble (3×2).
                 let mut db_bub = [[0.0_f64; 2]; 3];
                 for r in 0..3 {
@@ -1117,10 +1120,25 @@ fn degenerate_stiffness_core(
         det_bb > 0.0,
         "degenerate bubble block K_BB must be SPD (det = {det_bb})"
     );
-    let inv_bb = [
-        [k_bb[1][1] / det_bb, -k_bb[0][1] / det_bb],
-        [-k_bb[1][0] / det_bb, k_bb[0][0] / det_bb],
-    ];
+    // Release-time guard: if K_BB is near-singular, skip condensation (K* = K_NN).
+    // K_BB is structurally SPD on the bubble-active path — it is a Gram matrix
+    // B_bub^T·D·B_bub assembled from the same degenerate kinematics as K_NB, so
+    // det(K_BB) > 0 whenever K_NB ≠ 0. Near-singularity can only arise from a
+    // nearly-flat element that narrowly passed the |cross|²<1e-28 director-parallel
+    // threshold, producing both K_NB ≈ 0 and det_bb ≈ 0 simultaneously.  Falling
+    // back to K* = K_NN is conservative (no softening, same as the inert path) and
+    // prevents a near-zero det_bb from producing a huge/indefinite Schur correction.
+    // Threshold: det_bb / (k00·k11) < 1e-14 covers ~7 orders of safety margin.
+    let k_bb_diag_prod = k_bb[0][0] * k_bb[1][1];
+    let inv_bb = if k_bb_diag_prod > 0.0 && det_bb > 1e-14 * k_bb_diag_prod {
+        [
+            [k_bb[1][1] / det_bb, -k_bb[0][1] / det_bb],
+            [-k_bb[1][0] / det_bb, k_bb[0][0] / det_bb],
+        ]
+    } else {
+        // Near-singular K_BB: treat element as inert (K* = K_NN, zero correction).
+        [[0.0_f64; 2]; 2]
+    };
     let mut k_loc = [[0.0_f64; NDOF]; NDOF];
     for i in 0..NDOF {
         let nb_i = [k[i][BX], k[i][BY]]; // K_NB row i

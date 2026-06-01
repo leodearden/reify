@@ -2308,6 +2308,16 @@ fn degenerate_shell_ans_bubble_pinched_cylinder_strictly_improves_over_inert_bas
         .expect("load node (0, R, 0) not found in mesh");
     let point_loads = vec![(load_node * 6 + 1, -P / 4.0)];
 
+    // ANS-inert baseline: same mesh / BCs / loads / directors, bubble K_NB disabled.
+    // The ONLY difference between this and the bubble solve below is whether K_NB ≠ 0.
+    // Gating against the live baseline catches a silent-inert regression (K_NB ≈ 0)
+    // that a frozen constant would pass undetected.
+    let k_ans =
+        build_shell_stiffnesses_degenerate_ans(&nodes, &connectivity, &directors, T, &mat);
+    let e_ans = assembly_elements_for(&connectivity, &k_ans);
+    let u_ans = solve_shell_system(&e_ans, n_nodes, &bcs, &point_loads);
+    let radial_ans = -u_ans[load_node * 6 + 1]; // inward = positive
+
     // ANS+bubble degenerate substrate (task 4065): same mesh / BCs / loads / directors.
     let k_bubble =
         build_shell_stiffnesses_degenerate_ans_bubble(&nodes, &connectivity, &directors, T, &mat);
@@ -2332,14 +2342,19 @@ fn degenerate_shell_ans_bubble_pinched_cylinder_strictly_improves_over_inert_bas
         radial_bubble < 1.0e-3,
         "ANS+bubble radial displacement {radial_bubble:.4e} exceeds the runaway ceiling 1e-3"
     );
-    // STRICT improvement: ratio must exceed the bubble-inert pre-refinement baseline.
-    // Schur/Loewner: K*(bubble) ≼ K_NN ⇒ fᵀK⁻¹f strictly increases ⇒ ratio > 0.184.
+    // STRICT improvement vs the LIVE ANS-inert baseline on the same mesh.
+    // Schur/Loewner: K*(bubble) ≼ K_NN ⇒ fᵀK⁻¹f strictly increases ⇒ radial_bubble > radial_ans.
+    // Using the live radial_ans (not the frozen PRE_REFINEMENT constant) guarantees that a
+    // silent-inert regression (K_NB ≈ 0, radial_bubble ≈ radial_ans) fails this assertion.
+    // PRE_REFINEMENT_PINCHED_RATIO is kept as an informational anchor only.
     assert!(
-        ratio > PRE_REFINEMENT_PINCHED_RATIO + 1e-6,
-        "ANS+bubble pinched ratio {ratio:.6} must strictly exceed the bubble-inert baseline \
-         PRE_REFINEMENT_PINCHED_RATIO={PRE_REFINEMENT_PINCHED_RATIO} by > 1e-6 \
-         (measured gain = {:.6}; Schur/Loewner guarantees strict improvement when K_NB≠0)",
-        ratio - PRE_REFINEMENT_PINCHED_RATIO,
+        radial_bubble > radial_ans,
+        "ANS+bubble pinched radial {radial_bubble:.4e} must STRICTLY exceed the live \
+         ANS-inert baseline {radial_ans:.4e}; K_NB=0 (silent-inert regression) would \
+         yield radial_bubble ≈ radial_ans and fail this gate. \
+         ratio={ratio:.6} (pre-refinement anchor: PRE_REFINEMENT_PINCHED_RATIO=\
+         {PRE_REFINEMENT_PINCHED_RATIO}); bubble gain={:.4e}",
+        radial_bubble - radial_ans,
     );
     // Surface the measured ratio for FE review (no band-gaming; absolute target parked with 4136).
     // OBSERVED 4×4: radial=5.646e-6, ratio=0.309 — see docstring for full measured-gain table.
@@ -2411,6 +2426,16 @@ fn degenerate_shell_ans_bubble_hemisphere_honest_report() {
     let load_node = hemisphere_load_node(&nodes, R, tol);
     let point_loads = vec![(load_node * 6 + 0, P / 4.0)]; // F_x = +P/4 (outward)
 
+    // ANS-inert baseline on the same mesh: bubble K_NB disabled.
+    // Gating the non-regression check against the live baseline (not a frozen constant)
+    // catches a future case where the inert substrate improves but the bubble coupling
+    // degrades — the frozen 0.10 gate would pass silently; the live gate would not.
+    let k_ans =
+        build_shell_stiffnesses_degenerate_ans(&nodes, &connectivity, &directors, T, &mat);
+    let e_ans = assembly_elements_for(&connectivity, &k_ans);
+    let u_ans = solve_shell_system(&e_ans, n_nodes, &bcs, &point_loads);
+    let radial_ans = u_ans[load_node * 6 + 0]; // u_x at (R,0,0): outward = positive
+
     // ANS+bubble degenerate substrate (task 4065).
     let k_bubble =
         build_shell_stiffnesses_degenerate_ans_bubble(&nodes, &connectivity, &directors, T, &mat);
@@ -2436,14 +2461,23 @@ fn degenerate_shell_ans_bubble_hemisphere_honest_report() {
         "ANS+bubble hemisphere: radial_disp = {radial_bubble:.4e} exceeds the \
          runaway ceiling {SMOKE_CEIL}"
     );
-    // NON-REGRESSION: bubble must not REDUCE the hemisphere response below the
-    // bubble-inert pre-refinement baseline. Schur/Loewner softening guarantees
-    // K*(bubble) ≼ K(ANS inert) ⇒ displacement cannot decrease.
+    // NON-REGRESSION vs the LIVE ANS-inert baseline on the same mesh.
+    // Schur/Loewner softening guarantees K*(bubble) ≼ K(ANS inert) ⇒ displacement
+    // cannot decrease.  The 1e-9 relative tolerance absorbs floating-point
+    // reproducibility noise without masking a real regression.
+    // Using the live radial_ans (not the frozen PRE_REFINEMENT constant) ensures this
+    // gate tracks the inert substrate — if the inert baseline later improves and the
+    // bubble coupling degrades below it, this assertion catches the regression.
+    // PRE_REFINEMENT_HEMISPHERE_RATIO is kept as an informational anchor only.
+    let regression_floor = radial_ans * (1.0 - 1e-9);
     assert!(
-        ratio >= PRE_REFINEMENT_HEMISPHERE_RATIO - 1e-4,
-        "ANS+bubble hemisphere ratio {ratio:.6} must be ≥ PRE_REFINEMENT_HEMISPHERE_RATIO \
-         {PRE_REFINEMENT_HEMISPHERE_RATIO} (non-regression); Schur/Loewner guarantees \
-         softening ⇒ displacement cannot decrease. Observed ratio surfaces below for FE review.",
+        radial_bubble >= regression_floor,
+        "ANS+bubble hemisphere non-regression violated: radial_bubble={radial_bubble:.4e} < \
+         live ANS-inert baseline {radial_ans:.4e} (floor {regression_floor:.4e}). \
+         Schur/Loewner guarantees softening; a violation means K_NB has a sign error or \
+         the bubble condensation is increasing stiffness. \
+         ratio={ratio:.6} (pre-refinement anchor: PRE_REFINEMENT_HEMISPHERE_RATIO=\
+         {PRE_REFINEMENT_HEMISPHERE_RATIO}).",
     );
     // Surface the measured ratio for FE review (design doc §6 honest-report; absolute
     // target parked with deferred task 4136). No band-gaming: only the non-regression

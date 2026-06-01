@@ -491,17 +491,20 @@ pub fn degenerate_membrane_bending_b(
 // degenerate_stiffness_core on the bubble-active path; orphan-safe (fn-pointer
 // registration the orphan audit cannot trace); guarded by the bubble coupling test.
 pub fn degenerate_bubble_bending_b(
-    nodes: &[[f64; 3]; 3],
+    jm: &[[f64; 3]; 3], // pre-computed degenerate_jacobian at this quadrature point
     directors: &[Director; 3],
     thicknesses: &[f64; 3],
     coord: ShellRefCoord3,
 ) -> [[f64; 2]; 3] {
-    let (j, _det) = degenerate_jacobian(nodes, directors, thicknesses, coord);
-    let (j_inv, _) = mat3_inverse(&j);
+    // Jacobian already computed by the caller (degenerate_stiffness_core) at this
+    // quadrature point — reuse it rather than recomputing.  This avoids one full
+    // 3×3 Jacobian evaluation (3D interpolation + outer products) per quadrature
+    // point on the curved path.
+    let (j_inv, _) = mat3_inverse(jm);
     let n = Mitc3Plus.shape_at(coord.in_plane());
     let g_fb_ref = Mitc3Plus.bubble_grad_at(coord.in_plane());
     let f_b_val = Mitc3Plus.bubble_at(coord.in_plane());
-    let q = lamina_frame(&j, &n, directors);
+    let q = lamina_frame(jm, &n, directors);
 
     // Representative director = lamina normal e₃ (row 2 of the lamina frame).
     let v_repr = q[2];
