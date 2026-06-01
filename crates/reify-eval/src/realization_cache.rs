@@ -182,6 +182,39 @@ impl<V> RealizationCache<V> {
             .and_then(|b| b.lookup(tol))
     }
 
+    /// Removes and returns the value cached at *exactly* `(entity, repr_kind,
+    /// tol, options_hash)`, or `None` if no such entry exists.
+    ///
+    /// Mirrors [`lookup`](Self::lookup)'s key navigation but with `get_mut`, and
+    /// delegates the bucket-local removal to [`ToleranceBucket::remove`] — an
+    /// **exact** tolerance match, NOT partial-order satisfaction. Used by the
+    /// intermediate-cache rollback (task 4050 step-14): a failed realization
+    /// drops exactly the keys it inserted, leaving every sibling slot intact.
+    ///
+    /// Now-empty inner maps are left in place (cheap; `is_empty`/`len` already
+    /// tolerate empty buckets), mirroring the no-prune policy elsewhere in the
+    /// cache.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if `tol` is NaN, infinite, or negative (forwards
+    /// [`ToleranceBucket::remove`]'s precondition) — but only once an actual
+    /// bucket is reached; an absent `(entity, repr_kind, options_hash)` returns
+    /// `None` before any tolerance check.
+    pub fn remove(
+        &mut self,
+        entity: &str,
+        repr_kind: ReprKind,
+        tol: f64,
+        options_hash: ContentHash,
+    ) -> Option<V> {
+        self.buckets
+            .get_mut(&repr_kind)
+            .and_then(|inner| inner.get_mut(entity))
+            .and_then(|by_options| by_options.get_mut(&options_hash))
+            .and_then(|b| b.remove(tol))
+    }
+
     /// Returns the number of entries in the bucket for `(entity, repr_kind, options_hash)`.
     pub fn bucket_len(
         &self,
