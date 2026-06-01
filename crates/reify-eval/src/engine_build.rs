@@ -7301,6 +7301,216 @@ mod tests {
         );
     }
 
+    /// step-11 (RED): intermediate caching + cross-realization reuse. After one
+    /// successful Mesh-demanding conversion realization (the step-7(A) fixture),
+    /// each BRep→Mesh intermediate produced by the conversion executor must be
+    /// present in the [`RealizationCache`] at `(intermediate_entity, Mesh,
+    /// per_stage_tol, NO_OPTIONS)`, where `intermediate_entity` is the
+    /// per-input cache-key entity (`"{entity}#conv-step{idx}"` — the input's
+    /// local step index makes it distinct-per-input AND stable across identical
+    /// rebuilds) and `per_stage_tol = per_stage_tolerance_for_plan(&plan, tol)`
+    /// for the single BRep→Mesh stage (`tol × 0.8`).
+    ///
+    /// A SECOND realization with the same entity + ops + tol but ANONYMOUS (no
+    /// name, so the whole-realization terminal cache short-circuit cannot fire —
+    /// it is gated on `realization_name.is_some()`) must reach the conversion
+    /// executor again and REUSE both cached intermediates: occt.tessellate and
+    /// manifold.ingest_mesh stay at the first realization's counts (2 / 2).
+    ///
+    /// RED before step-12: the conversion executor neither inserts intermediates
+    /// into the cache nor consults it before tessellating, so the presence
+    /// lookups miss (first assertion fails) and the anonymous second realization
+    /// re-tessellates + re-ingests (counts climb to 4 / 4).
+    #[test]
+    fn execute_realization_ops_conversion_intermediates_cache_and_reuse() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+        use reify_core::Type;
+        use reify_ir::{
+            CapabilityDescriptor, CompiledExpr, GeometryHandleId, GeometryKernel, KernelId,
+            Operation, ReprKind,
+        };
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        let tess_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let ingest_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let union_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+
+        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "occt".to_string(),
+            Box::new(CountingTessellateKernel {
+                inner: MockGeometryKernel::new(),
+                tessellate_count: std::sync::Arc::clone(&tess_count),
+            }),
+        );
+        kernels.insert(
+            "manifold".to_string(),
+            Box::new(CountingManifoldKernel {
+                inner: MockGeometryKernel::new(),
+                ingest_count: std::sync::Arc::clone(&ingest_count),
+                execute_count: std::sync::Arc::clone(&union_count),
+                next_ingest_id: 1000,
+            }),
+        );
+
+        let desc_occt = CapabilityDescriptor {
+            supports: vec![
+                (Operation::PrimitiveBox, ReprKind::BRep),
+                (
+                    Operation::Convert {
+                        from: ReprKind::BRep,
+                    },
+                    ReprKind::Mesh,
+                ),
+            ],
+        };
+        let desc_manifold = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("occt".to_string(), &desc_occt);
+        registry.insert("manifold".to_string(), &desc_manifold);
+
+        let ops = vec![
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Union,
+                left: GeomRef::Step(0),
+                right: GeomRef::Step(1),
+            },
+        ];
+
+        let realization_id = RealizationNodeId::new("Cross", 0);
+        let tol = 0.001;
+        let mut state = DispatchTestState::default();
+
+        // ── Realization 1: named, cold cache, full cross-kernel conversion. ──
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &realization_id,
+            Some("Cross"),
+            SourceSpan::new(0, 0),
+            ReprKind::Mesh,
+            Some(tol),
+        );
+        let errors: Vec<_> = state
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, reify_core::Severity::Error))
+            .collect();
+        assert!(errors.is_empty(), "realization 1 errors: {:?}", errors);
+        let tess_after_1 = *tess_count.lock().unwrap();
+        let ingest_after_1 = *ingest_count.lock().unwrap();
+        assert_eq!(
+            (tess_after_1, ingest_after_1, *union_count.lock().unwrap()),
+            (2, 2, 1),
+            "realization 1 must tessellate 2 inputs, ingest 2, run 1 union"
+        );
+
+        // The per-stage tolerance the executor used for the single BRep→Mesh
+        // stage (one conversion ⇒ `tol × 0.8`).
+        let per_stage_tol = per_stage_tolerance_for_plan(
+            &DispatchPlan {
+                kernel: "manifold".to_string(),
+                conversions: vec![(KernelId::Occt, ReprKind::BRep, ReprKind::Mesh)],
+            },
+            tol,
+        );
+
+        // Both intermediates are cached at `("Cross#conv-step{0,1}", Mesh,
+        // per_stage_tol, NO_OPTIONS)` — 2 distinct keys (the conversion source
+        // provenance is the input's local step index), each holding a genuinely-
+        // Mesh Manifold handle (the `manifold.ingest_mesh` result: ids 1000 /
+        // 1001 in tessellate order). The key format MUST match the executor's
+        // `conversion_intermediate_entity_id` (step-12).
+        let cached_0 = state.realization_cache.lookup(
+            "Cross#conv-step0",
+            ReprKind::Mesh,
+            per_stage_tol,
+            NO_OPTIONS,
+        );
+        assert!(
+            cached_0.is_some(),
+            "intermediate for input step 0 must be cached at (Cross#conv-step0, Mesh, per_stage_tol)"
+        );
+        let cached_0 = *cached_0.unwrap();
+        assert_eq!(
+            cached_0.kernel,
+            KernelId::Manifold,
+            "intermediate handle must be tagged Manifold (target kernel)"
+        );
+        assert_eq!(cached_0.id, GeometryHandleId(1000));
+
+        let cached_1 = state.realization_cache.lookup(
+            "Cross#conv-step1",
+            ReprKind::Mesh,
+            per_stage_tol,
+            NO_OPTIONS,
+        );
+        assert!(
+            cached_1.is_some(),
+            "intermediate for input step 1 must be cached at (Cross#conv-step1, Mesh, per_stage_tol)"
+        );
+        let cached_1 = *cached_1.unwrap();
+        assert_eq!(cached_1.kernel, KernelId::Manifold);
+        assert_eq!(cached_1.id, GeometryHandleId(1001));
+
+        // ── Realization 2: same entity + ops + tol, ANONYMOUS (no name) so the
+        //    whole-realization terminal short-circuit does NOT fire — the
+        //    conversion executor runs again and must REUSE both cached
+        //    intermediates rather than re-tessellate/re-ingest. ──
+        state.dispatch_count = 0;
+        state.produced_repr_out = None;
+        state.reset_attribute_tables();
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &realization_id,
+            None,
+            SourceSpan::new(0, 0),
+            ReprKind::Mesh,
+            Some(tol),
+        );
+        let errors: Vec<_> = state
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, reify_core::Severity::Error))
+            .collect();
+        assert!(errors.is_empty(), "realization 2 errors: {:?}", errors);
+        assert_eq!(
+            *tess_count.lock().unwrap(),
+            tess_after_1,
+            "the anonymous re-realization must REUSE cached intermediates — no extra tessellate"
+        );
+        assert_eq!(
+            *ingest_count.lock().unwrap(),
+            ingest_after_1,
+            "the anonymous re-realization must REUSE cached intermediates — no extra ingest_mesh"
+        );
+    }
+
     /// When the registry claims no kernel for the op (dispatch returns
     /// `None`), `execute_realization_ops` must emit a
     /// `DiagnosticCode::NoKernelChain` error diagnostic, set
