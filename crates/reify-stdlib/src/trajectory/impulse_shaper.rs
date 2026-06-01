@@ -460,11 +460,9 @@ mod tests {
         );
     }
 
-    /// EI (2-hump), damped case (ζ=0.1): exercises the damped K-formula path.
-    ///
-    /// For ζ=0.1, K ≈ 0.73; with v_tol=0.05, √v_tol ≈ 0.224 < K, so the
-    /// `sqrt_vtol.min(k)` clamp does NOT trigger here — the core damped
-    /// bisection path (not the clamp branch) is exercised.
+    /// EI (2-hump), damped case (ζ=0.1): exercises the damped decay-compensation
+    /// path (Aₖ = wₖ·Kᵏ renormalised; K ≈ 0.73 for ζ=0.1).  Confirms the
+    /// design-frequency null and structural invariants hold under damping.
     #[test]
     fn ei_train_construction_invariants_damped() {
         let omega_n = 2.0 * PI * 10.0;
@@ -508,7 +506,7 @@ mod tests {
     /// Asserts the structural invariants hold (4 impulses, positive amplitudes,
     /// monotone times, Σ A=1, V ≤ v_tol at design).
     #[test]
-    fn ei_train_construction_large_vtol_clamp_branch() {
+    fn ei_train_construction_large_vtol() {
         let omega_n = 2.0 * PI * 5.0;
         let zeta = 0.1_f64;
         let v_tol = 0.8_f64;
