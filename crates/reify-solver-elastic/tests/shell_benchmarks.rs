@@ -1160,10 +1160,17 @@ fn scordelis_lo_roof_degenerate_stack_4x4_within_bathe_lee_2014_band() {
     let (nodes, connectivity) = roof_quadrant_mesh(NX, NY);
     let n_nodes = nodes.len();
 
-    // Build per-element stiffness: bare MITC3 (RED step — yields ratio ~0.0476,
-    // which FAILS the >= LOWER (0.1512) floor and proves the band discriminates
-    // the curved cure from the flat-facet baseline).
-    let stiffness = build_shell_stiffnesses(&nodes, &connectivity, T, &mat);
+    // Analytic per-node outward-radial directors: the roof's cylinder axis is x,
+    // so the outward surface normal at (x, y, z) is (0, y, z) normalized.
+    // This mirrors the pinched-cylinder analytic-director stand-in normalize3([x, y, 0])
+    // (axis z), axis-swapped for the roof's x-axis.
+    let directors: Vec<[f64; 3]> = nodes.iter().map(|n| normalize3([0.0, n[1], n[2]])).collect();
+
+    // Full curved-shell stack: degenerate substrate (4068) + ANS-membrane (4069)
+    // + K_NB rotation-bubble (4065).  Yields ratio ~0.7646 (measured), inside
+    // [0.1512, 0.3024] with 1.53× margin above the floor and 1.31× below the ceiling.
+    let stiffness =
+        build_shell_stiffnesses_degenerate_ans_bubble(&nodes, &connectivity, &directors, T, &mat);
     let elements = assembly_elements_for(&connectivity, &stiffness);
 
     let tol = 0.5_f64;
