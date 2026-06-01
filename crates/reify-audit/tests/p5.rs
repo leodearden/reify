@@ -1414,6 +1414,71 @@ mod tests {
         );
     }
 
+    // ── H1 test helper ───────────────────────────────────────────────────────
+    //
+    // Build the full single-file AuditContext fixture, run `p5_phantom_done::check`,
+    // and return only the Pattern::P5TestsAssertEmpty findings.
+    //
+    // Use this for H1 tests that involve exactly one metadata.files path; the
+    // commit sha is derived deterministically from task_id (lowercase + "_commit")
+    // so callers don't have to manage separate identifiers.
+    //
+    // Multi-file or check_pre_done tests should build their own context because
+    // they need richer fixture control (multiple paths, H2 JCodemunch stubs, …).
+    fn run_h1_single_file(
+        task_id: &str,
+        path: &str,
+        added_lines: Vec<(usize, String)>,
+    ) -> Vec<Finding> {
+        let conn = seed_db();
+        insert_task_completed_event(&conn, task_id);
+
+        let commit = format!("{}_commit", task_id.to_lowercase());
+        let mut git = MockGitOps::new();
+        git.set_diff_changed_paths("main", &commit, vec![path.to_string()]);
+        git.set_log_grep("main", task_id, vec![]);
+        git.set_diff_added_lines_in_commit(&commit, path, added_lines);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            task_id.to_string(),
+            TaskMetadata {
+                task_id: task_id.to_string(),
+                status: "done".to_string(),
+                files: vec![path.to_string()],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some(commit),
+                    note: None,
+                }),
+                title: format!("{} single-file test task", task_id),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        p5_phantom_done::check(&ctx)
+            .into_iter()
+            .filter(|f| f.pattern == Pattern::P5TestsAssertEmpty)
+            .collect()
+    }
+    // ── end H1 test helper ────────────────────────────────────────────────────
+
     /// H1 integration test: a done task whose file-level corroboration is clean
     /// (diff covers metadata.files, task_completed event present) but whose added
     /// test lines contain a placeholder-named fn with a vacuous empty assertion.
@@ -2100,20 +2165,9 @@ mod tests {
     /// suggestion 1).
     #[test]
     fn h1_negated_is_empty_not_flagged() {
-        let conn = seed_db();
-        insert_task_completed_event(&conn, "H1NEG1");
-
-        let mut git = MockGitOps::new();
-        git.set_diff_changed_paths(
-            "main",
-            "h1neg1_commit",
-            vec!["crates/reify-eval/tests/neg_tests.rs".to_string()],
-        );
-        git.set_log_grep("main", "H1NEG1", vec![]);
-
         // fn name has "placeholder" marker BUT asserts !is_empty() (non-empty).
-        git.set_diff_added_lines_in_commit(
-            "h1neg1_commit",
+        let findings = run_h1_single_file(
+            "H1NEG1",
             "crates/reify-eval/tests/neg_tests.rs",
             vec![
                 (1, "    #[test]".to_string()),
@@ -2123,50 +2177,11 @@ mod tests {
                 (5, "    }".to_string()),
             ],
         );
-
-        let mut task_metadata = HashMap::new();
-        task_metadata.insert(
-            "H1NEG1".to_string(),
-            TaskMetadata {
-                task_id: "H1NEG1".to_string(),
-                status: "done".to_string(),
-                files: vec!["crates/reify-eval/tests/neg_tests.rs".to_string()],
-                done_provenance: Some(DoneProvenance {
-                    kind: Some("merged".to_string()),
-                    commit: Some("h1neg1_commit".to_string()),
-                    note: None,
-                }),
-                title: "Add non-empty assertion test".to_string(),
-                prd: None,
-                consumer_ref: None,
-                audit_foundation: None,
-                done_at: None,
-            },
-        );
-
-        let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
-
-        let findings = p5_phantom_done::check(&ctx);
-        let h1_findings: Vec<_> = findings
-            .iter()
-            .filter(|f| f.pattern == Pattern::P5TestsAssertEmpty)
-            .collect();
         assert!(
-            h1_findings.is_empty(),
+            findings.is_empty(),
             "placeholder-named fn asserting !is_empty() (non-empty) must NOT be flagged; \
              got {:?}",
-            h1_findings
+            findings
         );
     }
 
@@ -2180,21 +2195,10 @@ mod tests {
     /// dropping 'empty' from the marker set (task 4140 review suggestion 2).
     #[test]
     fn h1_empty_in_name_legitimate_assertion_not_flagged() {
-        let conn = seed_db();
-        insert_task_completed_event(&conn, "H1EMPTY");
-
-        let mut git = MockGitOps::new();
-        git.set_diff_changed_paths(
-            "main",
-            "h1empty_commit",
-            vec!["crates/reify-lint/tests/empty_tests.rs".to_string()],
-        );
-        git.set_log_grep("main", "H1EMPTY", vec![]);
-
         // fn name contains 'empty' as a domain noun — no stronger placeholder marker.
         // The fn legitimately asserts is_empty() for a valid empty-input case.
-        git.set_diff_added_lines_in_commit(
-            "h1empty_commit",
+        let findings = run_h1_single_file(
+            "H1EMPTY",
             "crates/reify-lint/tests/empty_tests.rs",
             vec![
                 (1, "    #[test]".to_string()),
@@ -2204,50 +2208,11 @@ mod tests {
                 (5, "    }".to_string()),
             ],
         );
-
-        let mut task_metadata = HashMap::new();
-        task_metadata.insert(
-            "H1EMPTY".to_string(),
-            TaskMetadata {
-                task_id: "H1EMPTY".to_string(),
-                status: "done".to_string(),
-                files: vec!["crates/reify-lint/tests/empty_tests.rs".to_string()],
-                done_provenance: Some(DoneProvenance {
-                    kind: Some("merged".to_string()),
-                    commit: Some("h1empty_commit".to_string()),
-                    note: None,
-                }),
-                title: "Handle empty input case".to_string(),
-                prd: None,
-                consumer_ref: None,
-                audit_foundation: None,
-                done_at: None,
-            },
-        );
-
-        let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
-
-        let findings = p5_phantom_done::check(&ctx);
-        let h1_findings: Vec<_> = findings
-            .iter()
-            .filter(|f| f.pattern == Pattern::P5TestsAssertEmpty)
-            .collect();
         assert!(
-            h1_findings.is_empty(),
+            findings.is_empty(),
             "fn with 'empty' as a domain noun (not a placeholder marker) must NOT be flagged; \
              got {:?}",
-            h1_findings
+            findings
         );
     }
 
@@ -2485,22 +2450,11 @@ mod tests {
     /// "vacuous", "nothing", "no_") and is correctly suppressed.
     #[test]
     fn h1_domain_noun_placeholder_in_sentinel_not_flagged() {
-        let conn = seed_db();
-        insert_task_completed_event(&conn, "H1DN1");
-
-        let mut git = MockGitOps::new();
-        git.set_diff_changed_paths(
-            "main",
-            "h1dn1_commit",
-            vec!["crates/reify-eval/tests/geometry_error_handling.rs".to_string()],
-        );
-        git.set_log_grep("main", "H1DN1", vec![]);
-
         // Real corpus fn name: contains "placeholder" as a domain noun (sentinel
         // geometry value), NOT as a marker for "not yet implemented". The body
         // legitimately asserts that the sentinel path produces an empty geometry list.
-        git.set_diff_added_lines_in_commit(
-            "h1dn1_commit",
+        let findings = run_h1_single_file(
+            "H1DN1",
             "crates/reify-eval/tests/geometry_error_handling.rs",
             vec![
                 (1, "    #[test]".to_string()),
@@ -2510,50 +2464,11 @@ mod tests {
                 (5, "    }".to_string()),
             ],
         );
-
-        let mut task_metadata = HashMap::new();
-        task_metadata.insert(
-            "H1DN1".to_string(),
-            TaskMetadata {
-                task_id: "H1DN1".to_string(),
-                status: "done".to_string(),
-                files: vec!["crates/reify-eval/tests/geometry_error_handling.rs".to_string()],
-                done_provenance: Some(DoneProvenance {
-                    kind: Some("merged".to_string()),
-                    commit: Some("h1dn1_commit".to_string()),
-                    note: None,
-                }),
-                title: "Sentinel placeholder geometry handling".to_string(),
-                prd: None,
-                consumer_ref: None,
-                audit_foundation: None,
-                done_at: None,
-            },
-        );
-
-        let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
-
-        let findings = p5_phantom_done::check(&ctx);
-        let h1_findings: Vec<_> = findings
-            .iter()
-            .filter(|f| f.pattern == Pattern::P5TestsAssertEmpty)
-            .collect();
         assert!(
-            h1_findings.is_empty(),
+            findings.is_empty(),
             "domain-noun 'placeholder' (sentinel geometry fn) must NOT be flagged as \
              phantom-done; got {:?}",
-            h1_findings
+            findings
         );
     }
 
@@ -2572,23 +2487,12 @@ mod tests {
     /// empty-intent token and is correctly suppressed.
     #[test]
     fn h1_domain_noun_stub_kernel_not_flagged() {
-        let conn = seed_db();
-        insert_task_completed_event(&conn, "H1DN2");
-
-        let mut git = MockGitOps::new();
-        git.set_diff_changed_paths(
-            "main",
-            "h1dn2_commit",
-            vec!["crates/reify-kernel-occt/tests/stub_tests.rs".to_string()],
-        );
-        git.set_log_grep("main", "H1DN2", vec![]);
-
         // Real corpus pattern: "stub" is the product module name (kernel stub/shim),
         // not a marker for an unimplemented test. assert_eq!(result, 0) is a
         // legitimate zero-error-code assertion. Use the bare form (no message arg)
         // so the EMPTY_ASSERTION_PATTERNS substring "assert_eq!(result, 0)" matches.
-        git.set_diff_added_lines_in_commit(
-            "h1dn2_commit",
+        let findings = run_h1_single_file(
+            "H1DN2",
             "crates/reify-kernel-occt/tests/stub_tests.rs",
             vec![
                 (1, "    #[test]".to_string()),
@@ -2598,50 +2502,11 @@ mod tests {
                 (5, "    }".to_string()),
             ],
         );
-
-        let mut task_metadata = HashMap::new();
-        task_metadata.insert(
-            "H1DN2".to_string(),
-            TaskMetadata {
-                task_id: "H1DN2".to_string(),
-                status: "done".to_string(),
-                files: vec!["crates/reify-kernel-occt/tests/stub_tests.rs".to_string()],
-                done_provenance: Some(DoneProvenance {
-                    kind: Some("merged".to_string()),
-                    commit: Some("h1dn2_commit".to_string()),
-                    note: None,
-                }),
-                title: "Stub kernel export correctness".to_string(),
-                prd: None,
-                consumer_ref: None,
-                audit_foundation: None,
-                done_at: None,
-            },
-        );
-
-        let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
-
-        let findings = p5_phantom_done::check(&ctx);
-        let h1_findings: Vec<_> = findings
-            .iter()
-            .filter(|f| f.pattern == Pattern::P5TestsAssertEmpty)
-            .collect();
         assert!(
-            h1_findings.is_empty(),
+            findings.is_empty(),
             "domain-noun 'stub' (stub-kernel module fn) must NOT be flagged as \
              phantom-done; got {:?}",
-            h1_findings
+            findings
         );
     }
 }

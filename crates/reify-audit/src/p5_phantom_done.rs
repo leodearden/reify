@@ -363,9 +363,9 @@ fn check_tests_assert_empty(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
                 severity: Severity::Medium,
                 task_id: meta.task_id.clone(),
                 summary: format!(
-                    "added test in {} carries a placeholder fn name AND asserts an \
-                     empty/vacuous result — possible placeholder test masking a \
-                     not-yet-implemented capability (task 4140 H1 double-gate)",
+                    "added test in {} carries a placeholder fn name AND empty-intent token \
+                     AND asserts an empty/vacuous result — possible placeholder test masking \
+                     a not-yet-implemented capability (task 4141 H1 three-signal gate)",
                     path
                 ),
                 evidence: vec![EvidenceRef::File { path: path.clone() }],
