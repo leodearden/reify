@@ -99,6 +99,11 @@ fn xt_apply_force(x: &SpatialTransform6, f: &SpatialVector6) -> SpatialVector6 {
 /// `damping` set will panic in release via an always-on assert in
 /// [`inverse_dynamics_open_chain`]; a multi-DOF link with both
 /// coefficients `None` will not panic (no terms are applied).
+///
+/// `Clone` is derived so [`assemble_joint_space_inertia`]'s per-column link
+/// clones compile (`RneaLink` is `Clone` and carries an
+/// `Option<JointCompliance>`).
+#[derive(Clone)]
 pub struct JointCompliance {
     /// Spring stiffness k: N·m/rad (revolute) or N/m (prismatic).
     /// `None` → no spring contribution.
@@ -114,10 +119,12 @@ pub struct JointCompliance {
     pub position: f64,
 }
 
-/// Per-link descriptor supplied to [`inverse_dynamics_open_chain`].
+/// Per-link descriptor supplied to [`inverse_dynamics_open_chain`] and
+/// [`assemble_joint_space_inertia`].
 ///
 /// Links must be ordered in spanning-tree topological order so that every
 /// parent index is strictly less than the link's own index.
+#[derive(Clone)]
 pub struct RneaLink {
     /// Index of the parent link, or `None` for the base (root) body.
     pub parent: Option<usize>,
@@ -296,6 +303,67 @@ pub fn inverse_dynamics_open_chain(links: &[RneaLink], gravity: [f64; 3]) -> Vec
             tau_i
         })
         .collect()
+}
+
+/// Assemble the n×n joint-space inertia matrix M via unit-acceleration RNEA.
+///
+/// Column j of M equals τ from [`inverse_dynamics_open_chain`] when
+/// - every `q_dot` is zero (no velocity-product / Coriolis terms),
+/// - every `q_ddot` is zero except the j-th DOF (set to 1.0),
+/// - gravity is zero (τ = I·a = M·eⱼ = column j).
+///
+/// The DOF ordering is the same flat ordering the caller uses for `q_dot`/
+/// `q_ddot` in the original links: for link 0 its DOFs come first, then
+/// link 1's DOFs, etc., matching the `subspace.len()` traversal order.
+///
+/// Returns the n×n matrix in row-major layout (length n²).  M is symmetric
+/// positive-semidefinite by construction (CRBA / unit-acceleration identity).
+///
+/// # Panics
+/// Panics (propagating from [`inverse_dynamics_open_chain`]) if links are
+/// not in topological order.
+pub fn assemble_joint_space_inertia(links: &[RneaLink]) -> Vec<f64> {
+    // Total DOF count n = Σ subspace.len() across all links.
+    let n: usize = links.iter().map(|l| l.subspace.len()).sum();
+    let mut m_matrix = vec![0.0f64; n * n];
+
+    // For each DOF j, build a zeroed-velocity, unit-j-acceleration clone,
+    // run RNEA with no gravity, and collect the resulting τ as column j.
+    let mut col = 0usize; // global DOF index (column of M)
+    for link_j in 0..links.len() {
+        let dofs = links[link_j].subspace.len();
+        for c in 0..dofs {
+            // Clone the link slice, zero all q_dot/q_ddot, set e_j.
+            let mut links_j: Vec<RneaLink> = links.to_vec();
+            for link in &mut links_j {
+                link.q_dot = vec![0.0; link.subspace.len()];
+                link.q_ddot = vec![0.0; link.subspace.len()];
+                // M is the PURE joint-space inertia: τ = M·eⱼ must contain no
+                // configuration/velocity forces. Spring compliance (task-3865,
+                // post-fork) adds a position-dependent τ term even at q̇ = 0,
+                // which would contaminate every column — strip it here. The
+                // compliance contribution belongs to τ_open (the bias side of
+                // the KKT system), never to M.
+                link.compliance = None;
+            }
+            links_j[link_j].q_ddot[c] = 1.0;
+
+            // τ = M·eⱼ (zero velocity, zero gravity).
+            let tau = inverse_dynamics_open_chain(&links_j, [0.0, 0.0, 0.0]);
+
+            // Flatten τ into column j of M (row-major storage).
+            let mut row = 0usize;
+            for t_row in &tau {
+                for &t in t_row {
+                    m_matrix[row * n + col] = t;
+                    row += 1;
+                }
+            }
+            col += 1;
+        }
+    }
+
+    m_matrix
 }
 
 #[cfg(test)]
