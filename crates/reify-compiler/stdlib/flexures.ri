@@ -209,6 +209,6 @@ structure def FlexureCompliance {
 // TODO(mechanism-type). The `Real` placeholder makes the signature
 // resolve today without depending on un-shipped types — α-task (Joint
 // surface extension) is REPORT-ONLY for β per the task description.
-pub fn flexure_compliance(joint: Real) -> FlexureCompliance {
-    FlexureCompliance()
+pub fn flexure_compliance(joint: Length) -> FlexureCompliance {
+    __flexure_compliance_get(joint)
 }

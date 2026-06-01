@@ -532,19 +532,22 @@ fn flexure_compliance_constrains_yield_margin_upper_bound() {
 // ─── step-11: flexure_compliance accessor fn signature + eval ────────────────
 
 /// `flexure_compliance(joint) -> FlexureCompliance` is the PRD §4.2 accessor
-/// surfacing the cached `FlexureCompliance` record from a joint. The β-task
-/// stub body returns a default `FlexureCompliance()` until λ (task 3821)
-/// replaces it with the cache-lookup logic that reads the reserved hidden
-/// field `__flexure_compliance` set by PRB ctors (γ / δ / ε / ζ / η / θ) on
-/// the joint Map. The joint parameter is typed as `Real` (placeholder per
-/// the module header §3 / `TODO(joint-type)`) until KCC-ζ (task 3845) lands
-/// the per-kind joint structures so we can retarget to `DrivingJoint` /
-/// `Joint`.
+/// surfacing the cached `FlexureCompliance` record from a joint. The λ task
+/// (3871) replaced the β stub body (`FlexureCompliance()`) with a delegation
+/// to the `__flexure_compliance_get` Rust intrinsic, which reads the reserved
+/// hidden field `__flexure_compliance` set by PRB ctors (γ / δ / ε / ζ / η /
+/// θ) on the joint Map and returns it, or — for a non-joint arg — a Rust-built
+/// sentinel default record. The joint parameter is now typed `Length` (λ
+/// retargeted the β `Real` placeholder so the accessor overload-matches a
+/// PRB-ctor joint, whose native-builtin return type is inferred as its first
+/// LENGTH arg) until KCC-ζ (task 3845) lands the per-kind joint structures so
+/// we can retarget to `DrivingJoint` / `Joint`.
 ///
 /// Test pins two contracts:
 ///
-///   (a) Signature shape — the function is `pub`, takes one `joint : Real`
-///       parameter, and returns `Type::StructureRef("FlexureCompliance")`.
+///   (a) Signature shape — the function is `pub`, takes one `joint : Length`
+///       parameter (λ retarget; see above), and returns
+///       `Type::StructureRef("FlexureCompliance")`.
 ///       The structure-ref return type pins the type-resolution path that
 ///       `fn_signature_type_resolution_tests.rs::
 ///       fn_signature_resolves_stdlib_structure_as_return_type` already
@@ -556,9 +559,11 @@ fn flexure_compliance_constrains_yield_margin_upper_bound() {
 ///       functions)` route (rather than reading `func.body.result_expr`
 ///       directly) yields a `Value::StructureInstance(data)` whose
 ///       `type_name == "FlexureCompliance"` and whose 7 fields carry the
-///       sentinel-zero defaults pinned in step-7 (so a future change that
-///       silently drops the body, mangles the ctor target, or shuffles the
-///       default population is caught here). Routing via `eval_expr`
+///       λ default-record values: sentinel-zero for stiffness / stresses /
+///       validity-range, `none` parasitic, `at_yield = false`, and the
+///       no-yield `yield_margin = 1.0` "maximally safe" sentinel (so a future
+///       change that silently drops the body, mangles the intrinsic target, or
+///       shuffles the default population is caught here). Routing via `eval_expr`
 ///       mirrors the discipline in `standard_stock_tests.rs::
 ///       assert_length_constant` and `standard_gravity_tests.rs::
 ///       standard_gravity_evaluates_to_9p80665_si_with_acceleration_
@@ -604,16 +609,24 @@ fn flexure_compliance_accessor_fn_signature_and_eval() {
         func.params[0].0
     );
 
-    // Joint param is `Real` per the module header §3 placeholder convention
-    // (`TODO(joint-type)` — retargets to `DrivingJoint` trait or `Joint`
-    // marker when KCC-ζ lands; task 3845). Same placeholder posture as
-    // `trajectory.ri::PiecewisePolynomialProfile.mechanism : Real`.
+    // Joint param is `Length` — the λ task (3871) retargeted the β `Real`
+    // placeholder so the accessor typechecks against a real PRB-ctor joint.
+    // A native-builtin PRB ctor (e.g. `prb_cantilever_beam`) has its return
+    // type inferred as its first arg's type, which is the LENGTH segment
+    // length, so the accessor's joint param must resolve to the same
+    // `Scalar { LENGTH }` for the call to overload-match (expr.rs first-arg
+    // inference + type_compat exact equality). Still a placeholder —
+    // `TODO(joint-type)` retargets to `DrivingJoint` / `Joint` when KCC-ζ
+    // lands (task 3845).
     assert_eq!(
         func.params[0].1,
-        Type::Real,
-        "flexure_compliance.joint param type should be Type::Real (PRD-β \
-         placeholder per module header §3; TODO(joint-type) retargets to \
-         DrivingJoint when KCC-ζ lands); got: {:?}",
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "flexure_compliance.joint param type should be Length (λ task 3871 \
+         retargeted the β `Real` placeholder so the accessor overload-matches \
+         a PRB-ctor joint, whose native-builtin return type is inferred as its \
+         first LENGTH arg); got: {:?}",
         func.params[0].1
     );
 
@@ -626,11 +639,24 @@ fn flexure_compliance_accessor_fn_signature_and_eval() {
     );
 
     // ── (b) Eval shape ─────────────────────────────────────────────────────
-    // Build a `flexure_compliance(0.0)` call expression and route it through
+    // Build a `flexure_compliance(0m)` call expression and route it through
     // the production eval path (rather than reading `func.body.result_expr`
     // directly) — robust against future `let`-binding refactors per the
     // standard_stock_tests / standard_gravity_tests precedent.
-    let joint_arg = CompiledExpr::literal(Value::Real(0.0), Type::Real);
+    //
+    // The probe arg must carry a LENGTH `result_type`: `eval_user_function_call`
+    // → `find_matching_compiled_function` selects the overload by exact arg-
+    // `result_type` ↔ param-type equality, and λ retyped the `joint` param to
+    // `Length` (see (a) above). A `Type::Real` arg (the β probe) would miss the
+    // overload and eval to `Undef`. A zero-length `0m` is still a non-joint
+    // value (not a Map carrying `__flexure_compliance`), so the
+    // `__flexure_compliance_get` intrinsic returns the sentinel default record.
+    let joint_arg = CompiledExpr::literal(
+        Value::length(0.0),
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+    );
     let call_expr = CompiledExpr::user_function_call(
         "flexure_compliance".to_string(),
         vec![joint_arg],
@@ -747,17 +773,23 @@ fn flexure_compliance_accessor_fn_signature_and_eval() {
         ),
     }
 
-    // yield_margin = 0 (Real). Accept Int(0) or Real(0.0).
+    // yield_margin = 1.0 — the no-yield "maximally safe" sentinel. The λ
+    // accessor (3871) routes through the `__flexure_compliance_get` intrinsic;
+    // a non-joint arg (`0.0` is not a joint Map carrying `__flexure_compliance`)
+    // yields the Rust-built default record `make_compliance_record(.., None
+    // yield, ..)`, whose `yield_margin` sentinel is 1.0 (not 0.0, which would
+    // falsely read as "exactly at the yield boundary"). Pairs with at_yield =
+    // false below.
     let yield_margin = data
         .fields
         .get(&"yield_margin".to_string())
         .expect("flexure_compliance(0.0).yield_margin missing");
     match yield_margin {
-        Value::Real(v) if *v == 0.0 => {}
-        Value::Int(0) => {}
+        Value::Real(v) if *v == 1.0 => {}
         other => panic!(
-            "flexure_compliance(0.0).yield_margin should be Real(0.0) or \
-             Int(0) (sentinel-zero default); got: {:?}",
+            "flexure_compliance(0.0).yield_margin should be Real(1.0) (no-yield \
+             safe sentinel from the λ __flexure_compliance_get default record); \
+             got: {:?}",
             other
         ),
     }
