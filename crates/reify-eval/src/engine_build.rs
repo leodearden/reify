@@ -2700,7 +2700,8 @@ impl Engine {
         // Roots start at the identity world transform (`compose_pose_chain(&[])`);
         // step-10 accrues each sub's `at` pose onto it down the walk.
         let identity_world = crate::geometry_ops::compose_pose_chain(&[]);
-        for root_idx in crate::geometry_ops::root_template_indices(module) {
+        let roots = crate::geometry_ops::root_template_indices(module);
+        for &root_idx in &roots {
             let root_prefix = module.templates[root_idx].name.clone();
             crate::geometry_ops::surface_subtree(
                 module,
@@ -2720,6 +2721,45 @@ impl Engine {
                 &mut meshes,
                 diagnostics,
             );
+        }
+
+        // T5 amendment (reviewer robustness_edge_case): surface any template that
+        // is reachable from NO root. Such a template is excluded from the root
+        // set (some sub names it) yet no root reaches it, which is only possible
+        // inside a non-collection containment cycle with no acyclic entry point
+        // (self-recursive `sub child : Self`, or a mutual `A -> B -> A`). Without
+        // this it would be SILENTLY DROPPED — pre-T5 it surfaced standalone. We
+        // seed each uncovered template once as a fallback root; its own
+        // (cycle-guard-bounded) walk covers its cycle peers, so we extend
+        // `covered` to avoid re-seeding them. In an acyclic module every template
+        // is already covered by `roots`, so this loop is a no-op.
+        let mut covered = crate::geometry_ops::reachable_template_indices(module, &roots);
+        for t_idx in 0..module.templates.len() {
+            if covered.contains(&t_idx) {
+                continue;
+            }
+            let fallback_prefix = module.templates[t_idx].name.clone();
+            crate::geometry_ops::surface_subtree(
+                module,
+                t_idx,
+                &fallback_prefix,
+                false,
+                &identity_world,
+                0,
+                &terminal_handles,
+                geometry_kernels,
+                default_kernel_name,
+                tessellation_budgets,
+                values,
+                functions,
+                meta_map,
+                &mut meshes,
+                diagnostics,
+            );
+            covered.extend(crate::geometry_ops::reachable_template_indices(
+                module,
+                &[t_idx],
+            ));
         }
 
         meshes

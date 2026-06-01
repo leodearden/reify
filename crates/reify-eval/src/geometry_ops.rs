@@ -4584,6 +4584,15 @@ pub(crate) fn eval_sub_pose(
 /// Used by `tessellate_from_values` to derive `MeshSurface.default_visible`
 /// on the flat (no-composition) path; the Phase-B containment walk additionally
 /// ORs in any `aux` ancestor sub (T5 steps 4/6).
+///
+/// This is intentionally a thin wrapper over the public `RealizationDecl.is_aux`
+/// field: its value is *documentary*, not behavioral. It gives the surfacing
+/// call site (`surface_subtree`) a self-describing name for the visibility
+/// intent and a single anchor for the non-obvious compiler-threading rationale
+/// above (the field exists only because escalation esc-3903-220 added it — the
+/// `aux` modifier on a geometry `let` would otherwise be dropped at lowering).
+/// Keeping it avoids re-deriving that context at the use site; inlining would
+/// either lose the doc or scatter it into a call-site comment.
 pub(crate) fn realization_is_aux(realization: &reify_compiler::RealizationDecl) -> bool {
     realization.is_aux
 }
@@ -4696,6 +4705,52 @@ pub(crate) fn root_template_indices(module: &reify_compiler::CompiledModule) -> 
         .filter(|(_, t)| !contained.contains(t.name.as_str()))
         .map(|(idx, _)| idx)
         .collect()
+}
+
+/// Indices of every template reachable from `seeds` by following NON-collection
+/// subs, inclusive of the seeds themselves (T5 amendment — cycle-loss guard).
+///
+/// The Phase-B driver surfaces from each root, but a template that is excluded
+/// from the root set (because some sub names it) yet is reachable from NO root
+/// can only sit inside a non-collection containment cycle with no acyclic entry
+/// point — a self-recursive `sub child : Self`, or a mutual `A -> B -> A`. Pre-T5
+/// every template surfaced standalone, so dropping such a template is a silent
+/// geometry-loss regression. The driver computes `reachable_template_indices(…,
+/// roots)` and surfaces any *unreached* template as a fallback root, so its
+/// geometry is preserved (the per-template `surface_subtree` walk stays bounded
+/// by the `depth > templates.len()` cycle guard).
+///
+/// `structure_name -> template index` is resolved by `position` (mirroring
+/// `surface_subtree` / `root_template_indices`); collection subs are skipped to
+/// match the root-set's containment definition. In an *acyclic* module every
+/// non-root is reachable from some root, so this returns the full index set and
+/// the fallback loop is a no-op — zero behavior change off the cyclic path.
+pub(crate) fn reachable_template_indices(
+    module: &reify_compiler::CompiledModule,
+    seeds: &[usize],
+) -> std::collections::HashSet<usize> {
+    let mut reached: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut stack: Vec<usize> = seeds.to_vec();
+    while let Some(idx) = stack.pop() {
+        if !reached.insert(idx) {
+            continue;
+        }
+        for sub in &module.templates[idx].sub_components {
+            if sub.is_collection {
+                continue;
+            }
+            // Push every non-collection child; the `reached.insert` guard above
+            // dedups on pop, so re-pushing an already-reached index is harmless.
+            if let Some(child) = module
+                .templates
+                .iter()
+                .position(|t| t.name == sub.structure_name)
+            {
+                stack.push(child);
+            }
+        }
+    }
+    reached
 }
 
 /// Phase-B containment-tree surfacing (T5 steps 4/6/10).
