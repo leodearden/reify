@@ -9,6 +9,14 @@
 //! reify-solver-elastic`, so naming it in the solver crate would close a
 //! dependency cycle — see the task δ design decisions).
 
+use std::sync::atomic::AtomicBool;
+
+use reify_ir::{InterpolationKind, SampledField, SampledGridKind, Value};
+use reify_solver_elastic::IsotropicElastic;
+
+use super::sampled_stress_field;
+use crate::persistent_cache::ShellChannels;
+
 /// Tri-state shell-formulation control — the Rust mirror of the stdlib
 /// `ShellForce` enum (`crates/reify-compiler/stdlib/solver_elastic.ri:70`,
 /// `param shell_force : ShellForce = ShellForce.Auto`).
@@ -98,6 +106,178 @@ pub fn resolve_extraction_failure(shell_force: ShellForce) -> FailurePolicy {
         ShellForce::On => FailurePolicy::HardError,
         ShellForce::Auto | ShellForce::Off => FailurePolicy::TetFallbackWithWarning,
     }
+}
+
+// ── driver-output → DSL-value glue ───────────────────────────────────────────
+//
+// These builders bridge the neutral `reify-solver-elastic` flat-plate driver
+// output (plain `Vec<f64>` buffers from `flatten_shell_channels`) into the DSL
+// `ShellStress` value. `ShellChannels` lives here in reify-eval (the crate
+// dependency direction is reify-eval → reify-solver-elastic), so the wrapping
+// happens on this side of the seam — no dependency cycle (PRD §11 OQ-2 and the
+// task δ design decisions).
+
+/// Wrap the three per-element local-frame stress/frame buffers into a
+/// [`ShellChannels`] struct.
+///
+/// The `mid` layer is deliberately **not** a field of `ShellChannels`: it is
+/// routed into the result `stress` field via [`build_mid_stress_field`] so that
+/// the I-2 alias `result.stress == result.shell_channels.mid` holds (PRD §3).
+/// `top` / `bottom` / `frame` are each `9 * n_elem` long (row-major 3×3 per
+/// element, element-major), per [`reify_solver_elastic::flatten_shell_channels`].
+pub(crate) fn build_shell_channels(top: Vec<f64>, bottom: Vec<f64>, frame: Vec<f64>) -> ShellChannels {
+    ShellChannels { top, bottom, frame }
+}
+
+/// Build the mid-surface stress `Value::Field { source: Sampled }` from the
+/// flattened mid buffer (`9 * n_elem` row-major 3×3 per element).
+///
+/// The field is a flat per-element 1D `SampledField` whose single axis grid has
+/// exactly `mid.len()` nodes, so its grid node count equals the data length.
+/// That is the precondition [`super::elastic_static::shell_channels_to_value`]'s
+/// `build_channel_field` checks before cloning this grid for the `top` /
+/// `bottom` channels (its `debug_assert_eq!(data.len(), grid_node_count)`).
+///
+/// This is the single field instance that becomes **both** `result.stress` and
+/// `result.shell_channels.mid` (the I-2 alias).
+pub(crate) fn build_mid_stress_field(mid: Vec<f64>) -> Value {
+    let n = mid.len();
+    let axis_grid: Vec<f64> = (0..n).map(|i| i as f64).collect();
+    let sf = SampledField {
+        name: "shell_channels_mid".to_string(),
+        kind: SampledGridKind::Regular1D,
+        bounds_min: vec![0.0],
+        bounds_max: vec![n.saturating_sub(1) as f64],
+        spacing: vec![1.0],
+        axis_grids: vec![axis_grid],
+        interpolation: InterpolationKind::Linear,
+        data: mid,
+        oob_emitted: AtomicBool::new(false),
+    };
+    // Stress codomain (Tensor<2,3,Pressure>) — matches `solver_elastic.ri:327`
+    // and the tet-path `stress` field, so the alias is type-consistent.
+    sampled_stress_field(sf)
+}
+
+/// Build a synthetic Regular3D slab signed-distance `Value::SampledField` from
+/// the body dimensions, for the upstream `shell-extract::extract` ComputeNode.
+///
+/// The slab is centred on `z = 0` with half-thickness `height / 2`; the SDF is
+/// `|z| − height/2` (negative inside the slab, positive outside), sampled on a
+/// small structured grid spanning `[0, length] × [0, width] × [−h/2, h/2]`.
+/// Mirrors the synthetic-slab construction in γ's
+/// `tests/shell_extract_compute_integration.rs` (row-major: z outermost, then y,
+/// then x).
+///
+/// Per PRD §11 OQ-2 this field exists only to drive the upstream
+/// `shell-extract::extract` node so it `Completes` and satisfies the
+/// graph/segmentation contract; it is **not** the geometry source for the v0.4
+/// flat-plate stress solve (that mesh is trampoline-synthesized by
+/// [`reify_solver_elastic::solve_flat_plate_shell`]).
+//
+// `#[allow(dead_code)]`: wired into the `@optimized`→ComputeNode lowering by
+// step-12 (`engine_eval.rs`) to feed the upstream `shell-extract::extract`
+// node. Until then it is reachable only from the `#[cfg(test)]` module, which
+// the non-test lib build does not see.
+#[allow(dead_code)]
+pub(crate) fn build_slab_sdf(length: f64, width: f64, height: f64) -> Value {
+    let half_t = 0.5 * height;
+    // A modest fixed grid: the field only has to satisfy the shell-extract
+    // contract (Regular3D, non-empty axis grids, finite data), not resolve the
+    // stress solve.
+    const NX: usize = 5;
+    const NY: usize = 5;
+    const NZ: usize = 3;
+    let x_grid: Vec<f64> = (0..NX).map(|i| length * i as f64 / (NX - 1) as f64).collect();
+    let y_grid: Vec<f64> = (0..NY).map(|i| width * i as f64 / (NY - 1) as f64).collect();
+    let z_grid: Vec<f64> = (0..NZ)
+        .map(|i| -half_t + height * i as f64 / (NZ - 1) as f64)
+        .collect();
+
+    // Row-major flatten: z outermost, then y, then x (γ's slab convention).
+    let mut data = Vec::with_capacity(NX * NY * NZ);
+    for &z in &z_grid {
+        for _y in &y_grid {
+            for _x in &x_grid {
+                data.push(z.abs() - half_t);
+            }
+        }
+    }
+
+    let sf = SampledField {
+        name: "shell_slab_sdf".to_string(),
+        kind: SampledGridKind::Regular3D,
+        bounds_min: vec![0.0, 0.0, -half_t],
+        bounds_max: vec![length, width, half_t],
+        spacing: vec![
+            length / (NX - 1) as f64,
+            width / (NY - 1) as f64,
+            height / (NZ - 1) as f64,
+        ],
+        axis_grids: vec![x_grid, y_grid, z_grid],
+        interpolation: InterpolationKind::Linear,
+        data,
+        oob_emitted: AtomicBool::new(false),
+    };
+    Value::SampledField(sf)
+}
+
+/// Rotation-invariant von Mises stress of a 3×3 Cauchy tensor.
+///
+/// `σ_vm = sqrt(0.5·((σxx−σyy)² + (σyy−σzz)² + (σzz−σxx)² + 6·(σxy²+σyz²+σzx²)))`.
+fn von_mises_3x3(t: &[[f64; 3]; 3]) -> f64 {
+    let (sxx, syy, szz) = (t[0][0], t[1][1], t[2][2]);
+    let (sxy, syz, szx) = (t[0][1], t[1][2], t[2][0]);
+    (0.5 * ((sxx - syy).powi(2)
+        + (syy - szz).powi(2)
+        + (szz - sxx).powi(2)
+        + 6.0 * (sxy * sxy + syz * syz + szx * szx)))
+        .sqrt()
+}
+
+/// Orchestrate a flat-plate MITC3+ shell solve and produce the reify-eval-side
+/// outputs the FEA trampoline needs for a shell-classified body.
+///
+/// Calls [`reify_solver_elastic::solve_flat_plate_shell`] (synthesized
+/// `length × width` mid-surface mesh, thickness `height`, `-Z` tip load), then
+/// [`reify_solver_elastic::flatten_shell_channels`], and wraps the buffers into
+/// the DSL value pieces.
+///
+/// Returns `(channels, mid_field, max_von_mises, converged, iterations)`:
+/// - `channels` — per-element top/bottom/frame ([`ShellChannels`]).
+/// - `mid_field` — the mid-surface stress `Value::Field` (becomes both
+///   `result.stress` and `result.shell_channels.mid`, the I-2 alias).
+/// - `max_von_mises` — max over elements of the **top**-channel von Mises (peak
+///   bending at the clamped root); the `result.max_von_mises` scalar summary.
+/// - `converged` / `iterations` — CG solve status.
+//
+// `#[allow(dead_code)]`: wired into the FEA trampoline's shell branch by step-10
+// (`compute_targets/elastic_static.rs`). Marking this live root also keeps its
+// callees (`build_shell_channels`, `build_mid_stress_field`, `von_mises_3x3`)
+// from tripping the non-test lib build's dead_code lint before then.
+#[allow(dead_code)]
+pub(crate) fn solve_shell_static(
+    length: f64,
+    width: f64,
+    height: f64,
+    material: &IsotropicElastic,
+    tip_force: f64,
+) -> (ShellChannels, Value, f64, bool, u32) {
+    let solve = reify_solver_elastic::solve_flat_plate_shell(length, width, height, material, tip_force);
+
+    let max_von_mises = solve
+        .stresses
+        .iter()
+        .map(|s| von_mises_3x3(&s.top))
+        .fold(0.0_f64, f64::max);
+
+    let (top, mid, bottom, frame) =
+        reify_solver_elastic::flatten_shell_channels(&solve.stresses, &solve.frames);
+
+    let channels = build_shell_channels(top, bottom, frame);
+    let mid_field = build_mid_stress_field(mid);
+
+    (channels, mid_field, max_von_mises, solve.converged, solve.iterations as u32)
 }
 
 #[cfg(test)]
