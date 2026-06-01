@@ -305,6 +305,33 @@ fn validate_explicit(
     Ok(spectrum)
 }
 
+/// Recover gauge-fixed free-standing node coordinates from the null space of `D`.
+///
+/// `null(D)` is 4-dimensional for a valid form: the three coordinate modes plus
+/// the always-present all-ones translation mode. Geometrically it is the space of
+/// *affine functions* of the equilibrium shape, so it pins the form only up to an
+/// affine transform (a shear changes the apparent twist). We gauge-fix by
+/// orthogonally projecting the caller's `nodes_guess` onto `null(D)` per axis —
+/// the least-squares affine alignment to the guess, the standard form-finding
+/// "refine a guess" convention.
+///
+/// Because the eigenvectors from [`classify_spectrum`] are orthonormal, the
+/// projection is just `X = U₀ (U₀ᵀ G)`, where `U₀` is the leading-`nullity`
+/// eigenvector block and `G` the guess. The result lies exactly in `null(D)`, so
+/// `D · X = 0` (equilibrium), and is the closest such configuration to the guess
+/// (the all-ones direction inside `U₀` absorbs translation).
+///
+/// Returns [`FreeFormError::SingularRecovery`] if the recovered coordinates fail
+/// to span 3-D (a rank-deficient realisation, e.g. a degenerate guess).
+#[allow(dead_code)] // wired into form_find_free's explicit path at step-8
+fn recover_coordinates(
+    nodes_guess: &[[f64; 3]],
+    spectrum: &SpectrumClassification,
+) -> Result<Vec<[f64; 3]>, FreeFormError> {
+    let _ = (nodes_guess, spectrum);
+    unimplemented!("recover_coordinates: implemented in T1b step-6")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -469,6 +496,165 @@ mod tests {
         assert_eq!(
             validate_explicit(6, &members, &kinds, &q).unwrap_err(),
             FreeFormError::DimensionMismatch,
+        );
+    }
+
+    // ---- Null-space coordinate recovery (recover_coordinates) ----
+
+    fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+        [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+    }
+    fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+        a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+    }
+    fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    }
+    fn norm(a: [f64; 3]) -> f64 {
+        dot(a, a).sqrt()
+    }
+    fn member_len(nodes: &[[f64; 3]], m: (usize, usize)) -> f64 {
+        norm(sub(nodes[m.0], nodes[m.1]))
+    }
+
+    /// Assert the members in `group` all have equal length within a relative
+    /// `tol` (max−min ≤ tol·mean).
+    fn assert_equal_lengths(nodes: &[[f64; 3]], group: &[(usize, usize)], tol: f64, what: &str) {
+        let lens: Vec<f64> = group.iter().map(|&m| member_len(nodes, m)).collect();
+        let mean = lens.iter().sum::<f64>() / lens.len() as f64;
+        let max = lens.iter().copied().fold(f64::MIN, f64::max);
+        let min = lens.iter().copied().fold(f64::MAX, f64::min);
+        assert!(
+            (max - min) <= tol * mean,
+            "{what} lengths must be equal within {tol} relative; got {lens:?} (mean {mean:.4})",
+        );
+    }
+
+    /// The canonical symmetric triplex prism consistent with the closed-form q
+    /// (derived from the per-node FD equilibrium): equal top/bottom circumradius
+    /// R = 1, unit height, twist α = 30°. Node order matches `triplex_topology`:
+    /// 0,1,2 top (z = 1) at azimuth 120°·i; 3,4,5 bottom (z = 0) at 120°·i + 30°.
+    fn canonical_prism() -> Vec<[f64; 3]> {
+        let deg = std::f64::consts::PI / 180.0;
+        let top = |i: usize| {
+            let a = 120.0 * (i as f64) * deg;
+            [a.cos(), a.sin(), 1.0]
+        };
+        let bot = |i: usize| {
+            let a = (120.0 * (i as f64) + 30.0) * deg;
+            [a.cos(), a.sin(), 0.0]
+        };
+        vec![top(0), top(1), top(2), bot(0), bot(1), bot(2)]
+    }
+
+    #[test]
+    fn recovers_metric_prism_from_perturbed_guess() {
+        let (members, kinds) = triplex_topology();
+        let q = closed_form_q();
+        // One dense EVD, shared between the nullity check and recovery.
+        let spectrum = validate_explicit(6, &members, &kinds, &q)
+            .expect("closed-form prism q is feasible (nullity 4)");
+
+        // A mildly perturbed symmetric-prism guess (≈1e-3 per coordinate). The
+        // form-finding convention refines a guess, and recovery should gauge-fix
+        // to it; deterministic offsets (no RNG) keep the test bit-stable.
+        const PERTURB: [[f64; 3]; 6] = [
+            [0.0009, -0.0011, 0.0007],
+            [-0.0013, 0.0006, 0.0010],
+            [0.0012, 0.0008, -0.0009],
+            [-0.0007, -0.0012, 0.0011],
+            [0.0010, -0.0008, -0.0013],
+            [-0.0011, 0.0013, 0.0006],
+        ];
+        let guess: Vec<[f64; 3]> = canonical_prism()
+            .iter()
+            .zip(PERTURB.iter())
+            .map(|(p, d)| [p[0] + d[0], p[1] + d[1], p[2] + d[2]])
+            .collect();
+
+        let x = recover_coordinates(&guess, &spectrum)
+            .expect("perturbed symmetric-prism guess must recover a 3-D realisation");
+
+        // (1) Equilibrium: X lies in null(D), so the per-axis residual ‖D·X‖∞
+        // must vanish to machine precision — the rock-solid correctness signal.
+        let d = assemble_force_density_matrix(6, &members, &q);
+        let mut resid = 0.0_f64;
+        for axis in 0..3 {
+            for i in 0..6 {
+                let mut row = 0.0;
+                for j in 0..6 {
+                    row += d[(i, j)] * x[j][axis];
+                }
+                resid = resid.max(row.abs());
+            }
+        }
+        assert!(
+            resid < 1e-9,
+            "equilibrium residual ‖D·X‖∞ must be ~0, got {resid:.3e}",
+        );
+
+        // (2) Metric prism: each member group is equal-length. 5% relative tol —
+        // a correct recovery drifts only ~1e-3 from the symmetric prism (the
+        // in-null-space part of the ~1e-3 guess perturbation), whereas a broken
+        // recovery (raw guess / sheared affine image) spreads O(1).
+        const MTOL: f64 = 5e-2;
+        assert_equal_lengths(&x, &members[0..3], MTOL, "strut");
+        assert_equal_lengths(&x, &members[3..9], MTOL, "horizontal cable");
+        assert_equal_lengths(&x, &members[9..12], MTOL, "vertical cable");
+
+        // (3) Top {0,1,2} and bottom {3,4,5} are each equilateral triangles...
+        assert_equal_lengths(&x, &[(0, 1), (1, 2), (2, 0)], MTOL, "top triangle edge");
+        assert_equal_lengths(&x, &[(3, 4), (4, 5), (5, 3)], MTOL, "bottom triangle edge");
+
+        // (3b) ...lying in parallel planes (the two triangle normals are parallel).
+        let n_top = cross(sub(x[1], x[0]), sub(x[2], x[0]));
+        let n_bot = cross(sub(x[4], x[3]), sub(x[5], x[3]));
+        let cos_planes = dot(n_top, n_bot).abs() / (norm(n_top) * norm(n_bot));
+        assert!(
+            cos_planes > 1.0 - 1e-3,
+            "top/bottom triangle planes must be parallel; |cos| = {cos_planes:.6}",
+        );
+
+        // (4) Vertical-pair angular offset ≈ 30°: the twist between the triangles
+        // about the prism axis (centroid-to-centroid). Project a top node and its
+        // paired bottom node onto the plane ⊥ axis and take their angle.
+        let centroid = |g: &[usize]| {
+            let mut c = [0.0; 3];
+            for &i in g {
+                for a in 0..3 {
+                    c[a] += x[i][a] / g.len() as f64;
+                }
+            }
+            c
+        };
+        let c_top = centroid(&[0, 1, 2]);
+        let c_bot = centroid(&[3, 4, 5]);
+        let axis = {
+            let a = sub(c_top, c_bot);
+            let n = norm(a);
+            [a[0] / n, a[1] / n, a[2] / n]
+        };
+        let proj = |p: [f64; 3], c: [f64; 3]| {
+            let r = sub(p, c);
+            let along = dot(r, axis);
+            [
+                r[0] - along * axis[0],
+                r[1] - along * axis[1],
+                r[2] - along * axis[2],
+            ]
+        };
+        // Vertical pair (0,3): top node 0 and its bottom partner node 3.
+        let u = proj(x[0], c_top);
+        let w = proj(x[3], c_bot);
+        let twist_deg =
+            (dot(u, w) / (norm(u) * norm(w))).acos() * 180.0 / std::f64::consts::PI;
+        assert!(
+            (twist_deg - 30.0).abs() < 2.0,
+            "vertical-pair twist must be ≈30°, got {twist_deg:.3}°",
         );
     }
 }
