@@ -276,3 +276,82 @@ fn single_body_self_pair_excluded() {
         "min_clearance(s, a, a) must be Undef (self-clearance is undefined), got {clearance_self:?}"
     );
 }
+
+// ─── FK-posed cubes: world_transform routes geometry through ApplyTransform ───
+//
+// Two 20mm unit cubes whose SOURCE-lets both sit at the origin (fully overlapping
+// if FK is ignored). cube_b is mounted on a prismatic joint bound to +40mm along X,
+// so its FK world_transform poses it to span [40,60]mm — 20mm clear of cube_a's
+// [0,20]mm span.
+//
+// T8 acceptance signal: after FK world_transform is applied via the shared
+// ApplyTransform path, interference queries operate on posed geometry.
+//
+// Expected (POSED, post-T8):
+//   pairs           → empty list (cubes are 20mm apart)
+//   collide_ab      → false
+//   clearance_ab    → 0.020 m (20mm) — strictly positive
+//
+// RED on main (world_transform ignored):
+//   source-lets both at origin → cubes fully overlap → pairs=[{a,b}], collide=true,
+//   clearance≈0 — all three assertions below fail.
+const FK_POSED_SOURCE: &str = r#"
+structure def FkPosed {
+    let cube_a = box(20mm, 20mm, 20mm)
+    let cube_b = box(20mm, 20mm, 20mm)
+
+    let j = prismatic(vec3(1, 0, 0), 0mm .. 100mm)
+
+    let m0 = mechanism()
+    let m1 = body(m0, "cube_a", fixed())
+    let m2 = body(m1, "cube_b", j)
+
+    let binding = bind(j, 40mm)
+    let s = snapshot(m2, [binding])
+
+    let id_a = body_id_of(m2, "cube_a")
+    let id_b = body_id_of(m2, "cube_b")
+
+    let pairs = interferes(s)
+    let collide_ab = interferes_with(s, id_a, id_b)
+    let clearance_ab = min_clearance(s, id_a, id_b)
+}
+"#;
+
+#[test]
+fn fk_posed_cubes_no_interference_and_correct_clearance() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let compiled = compile_no_errors(FK_POSED_SOURCE);
+    let mut engine = engine_with_occt();
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let pairs = cell(&result.values, "FkPosed", "pairs");
+    let collide_ab = cell(&result.values, "FkPosed", "collide_ab");
+    let clearance_ab = cell(&result.values, "FkPosed", "clearance_ab");
+
+    // FK world_transform applied: cube_b posed to [40,60]mm → no interference.
+    match pairs {
+        Value::List(items) => {
+            assert!(
+                items.is_empty(),
+                "interferes(s) must be empty when FK-posed cubes are 20mm apart, got {items:?}"
+            );
+        }
+        other => panic!("interferes(s) must be Value::List, got {other:?}"),
+    }
+    assert_eq!(
+        collide_ab,
+        &Value::Bool(false),
+        "interferes_with must be false when FK-posed cubes are clear, got {collide_ab:?}"
+    );
+    let clearance_m = read_si_f64(clearance_ab, "clearance_ab");
+    let expected = 0.020_f64;
+    assert!(
+        (clearance_m - expected).abs() < 1e-6,
+        "min_clearance must be ~{expected} m (20mm FK-posed gap), got {clearance_m}",
+    );
+}
