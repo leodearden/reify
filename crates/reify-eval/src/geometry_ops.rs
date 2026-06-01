@@ -12306,6 +12306,207 @@ mod tests {
         );
     }
 
+    // ── GHR-ζ (task 3608): whole-handle geometry-query defensive-downgrade ──
+    //
+    // The volume/area/centroid/bounding_box dispatch helpers each promise the
+    // PRD §4 defensive-downgrade contract: on a kernel error OR an unexpected/
+    // malformed reply, return `Some(Value::Undef)` and push EXACTLY ONE Warning
+    // (never `None`, never a panic). These unit tests drive each arm with a
+    // `MockGeometryKernel` that (a) has no registered result → `query` returns
+    // `Err`, and (b) returns a wrong-typed reply, asserting the Undef + single-
+    // Warning contract. They live here, not in the OCCT integration test,
+    // because the dispatch helpers are crate-private and a real kernel cannot be
+    // coerced into erroring for a valid primitive.
+
+    /// `volume` arm (`dispatch_scalar_query`, VOLUME): kernel `Err` and an
+    /// unexpected (non-Real/Scalar) reply each yield `Some(Value::Undef)` + one
+    /// Warning.
+    #[test]
+    fn dispatch_volume_query_error_and_unexpected_reply_yield_undef_and_one_warning() {
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        // (a) kernel Err — no registered result.
+        let kernel = MockGeometryKernel::new();
+        let mut diagnostics = Vec::new();
+        let result = super::dispatch_scalar_query(
+            &kernel,
+            reify_ir::GeometryQuery::Volume(GeometryHandleId(1)),
+            reify_core::DimensionVector::VOLUME,
+            "volume",
+            &mut diagnostics,
+        );
+        assert!(
+            matches!(result, Some(reify_ir::Value::Undef)),
+            "volume (kernel Err) must yield Some(Value::Undef); got {result:?}"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "volume (kernel Err) must emit exactly one warning; got {diagnostics:?}"
+        );
+        assert_eq!(diagnostics[0].severity, reify_core::Severity::Warning);
+
+        // (b) unexpected reply type — Bool is neither Real nor Scalar.
+        let kernel = MockGeometryKernel::new()
+            .with_volume_result(GeometryHandleId(1), reify_ir::Value::Bool(true));
+        let mut diagnostics = Vec::new();
+        let result = super::dispatch_scalar_query(
+            &kernel,
+            reify_ir::GeometryQuery::Volume(GeometryHandleId(1)),
+            reify_core::DimensionVector::VOLUME,
+            "volume",
+            &mut diagnostics,
+        );
+        assert!(
+            matches!(result, Some(reify_ir::Value::Undef)),
+            "volume (unexpected reply) must yield Some(Value::Undef); got {result:?}"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "volume (unexpected reply) must emit exactly one warning; got {diagnostics:?}"
+        );
+        assert_eq!(diagnostics[0].severity, reify_core::Severity::Warning);
+    }
+
+    /// `area` arm (`dispatch_scalar_query`, AREA): kernel `Err` and an
+    /// unexpected reply each yield `Some(Value::Undef)` + one Warning.
+    #[test]
+    fn dispatch_area_query_error_and_unexpected_reply_yield_undef_and_one_warning() {
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        // (a) kernel Err.
+        let kernel = MockGeometryKernel::new();
+        let mut diagnostics = Vec::new();
+        let result = super::dispatch_scalar_query(
+            &kernel,
+            reify_ir::GeometryQuery::SurfaceArea(GeometryHandleId(1)),
+            reify_core::DimensionVector::AREA,
+            "area",
+            &mut diagnostics,
+        );
+        assert!(
+            matches!(result, Some(reify_ir::Value::Undef)),
+            "area (kernel Err) must yield Some(Value::Undef); got {result:?}"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "area (kernel Err) must emit exactly one warning; got {diagnostics:?}"
+        );
+        assert_eq!(diagnostics[0].severity, reify_core::Severity::Warning);
+
+        // (b) unexpected reply type.
+        let kernel = MockGeometryKernel::new()
+            .with_surface_area_result(GeometryHandleId(1), reify_ir::Value::Bool(true));
+        let mut diagnostics = Vec::new();
+        let result = super::dispatch_scalar_query(
+            &kernel,
+            reify_ir::GeometryQuery::SurfaceArea(GeometryHandleId(1)),
+            reify_core::DimensionVector::AREA,
+            "area",
+            &mut diagnostics,
+        );
+        assert!(
+            matches!(result, Some(reify_ir::Value::Undef)),
+            "area (unexpected reply) must yield Some(Value::Undef); got {result:?}"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "area (unexpected reply) must emit exactly one warning; got {diagnostics:?}"
+        );
+        assert_eq!(diagnostics[0].severity, reify_core::Severity::Warning);
+    }
+
+    /// `centroid` arm (`dispatch_point3_length_reply`): kernel `Err` and a
+    /// malformed (non-String) reply each yield `Some(Value::Undef)` + one
+    /// Warning.
+    #[test]
+    fn dispatch_centroid_query_error_and_malformed_reply_yield_undef_and_one_warning() {
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        // (a) kernel Err.
+        let kernel = MockGeometryKernel::new();
+        let mut diagnostics = Vec::new();
+        let result = super::dispatch_point3_length_reply(
+            &kernel,
+            &reify_ir::GeometryQuery::Centroid(GeometryHandleId(1)),
+            "centroid",
+            &mut diagnostics,
+        );
+        assert!(
+            matches!(result, Some(reify_ir::Value::Undef)),
+            "centroid (kernel Err) must yield Some(Value::Undef); got {result:?}"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "centroid (kernel Err) must emit exactly one warning; got {diagnostics:?}"
+        );
+        assert_eq!(diagnostics[0].severity, reify_core::Severity::Warning);
+
+        // (b) malformed reply — a non-String value fails parse_xyz_value.
+        let kernel = MockGeometryKernel::new()
+            .with_centroid_result(GeometryHandleId(1), reify_ir::Value::Bool(true));
+        let mut diagnostics = Vec::new();
+        let result = super::dispatch_point3_length_reply(
+            &kernel,
+            &reify_ir::GeometryQuery::Centroid(GeometryHandleId(1)),
+            "centroid",
+            &mut diagnostics,
+        );
+        assert!(
+            matches!(result, Some(reify_ir::Value::Undef)),
+            "centroid (malformed reply) must yield Some(Value::Undef); got {result:?}"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "centroid (malformed reply) must emit exactly one warning; got {diagnostics:?}"
+        );
+        assert_eq!(diagnostics[0].severity, reify_core::Severity::Warning);
+    }
+
+    /// `bounding_box` arm (`dispatch_bounding_box`): kernel `Err` and a
+    /// malformed (non-String) reply each yield `Some(Value::Undef)` + one
+    /// Warning.
+    #[test]
+    fn dispatch_bounding_box_query_error_and_malformed_reply_yield_undef_and_one_warning() {
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        // (a) kernel Err.
+        let kernel = MockGeometryKernel::new();
+        let mut diagnostics = Vec::new();
+        let result = super::dispatch_bounding_box(&kernel, GeometryHandleId(1), &mut diagnostics);
+        assert!(
+            matches!(result, Some(reify_ir::Value::Undef)),
+            "bounding_box (kernel Err) must yield Some(Value::Undef); got {result:?}"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "bounding_box (kernel Err) must emit exactly one warning; got {diagnostics:?}"
+        );
+        assert_eq!(diagnostics[0].severity, reify_core::Severity::Warning);
+
+        // (b) malformed reply — a non-String value fails parse_bbox_axis_extents.
+        let kernel = MockGeometryKernel::new()
+            .with_bbox_result(GeometryHandleId(1), reify_ir::Value::Bool(true));
+        let mut diagnostics = Vec::new();
+        let result = super::dispatch_bounding_box(&kernel, GeometryHandleId(1), &mut diagnostics);
+        assert!(
+            matches!(result, Some(reify_ir::Value::Undef)),
+            "bounding_box (malformed reply) must yield Some(Value::Undef); got {result:?}"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "bounding_box (malformed reply) must emit exactly one warning; got {diagnostics:?}"
+        );
+        assert_eq!(diagnostics[0].severity, reify_core::Severity::Warning);
+    }
+
     // ── step-1 (task 3619): adjacent_faces dispatch unit tests ──────────────
     //
     // These tests verify that the arm emits Value::List(Value::GeometryHandle)
