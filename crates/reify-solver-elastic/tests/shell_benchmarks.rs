@@ -1180,18 +1180,35 @@ fn scordelis_lo_roof_degenerate_stack_4x4_within_bathe_lee_2014_band() {
     let u = solve_shell_system(&elements, n_nodes, &bcs, &point_loads);
 
     // Free-edge longitudinal center: x=L/2, θ=40° → (L/2, R·sin40°, R·cos40°).
+    // tol (0.5) is applied uniformly to all three axes.  The minimum angular
+    // inter-node spacing at 4×4 is ~3.3 in y and ~2.8 in z — ≥5.6× safety
+    // margin over tol.  The uniqueness assert below fires loudly if a future
+    // mesh refinement ever makes the match ambiguous.
     let theta_40 = 40.0_f64.to_radians();
     let target_x = L / 2.0;
     let target_y = R * theta_40.sin();
     let target_z = R * theta_40.cos();
-    let free_edge_center = nodes
-        .iter()
-        .position(|n| {
-            (n[0] - target_x).abs() < tol
-                && (n[1] - target_y).abs() < 1.0
-                && (n[2] - target_z).abs() < 1.0
-        })
-        .expect("free-edge center node (x=L/2, θ=40°) not found in mesh");
+    let free_edge_center = {
+        let hits: Vec<usize> = nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| {
+                ((n[0] - target_x).abs() < tol
+                    && (n[1] - target_y).abs() < tol
+                    && (n[2] - target_z).abs() < tol)
+                    .then_some(i)
+            })
+            .collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "expected exactly one free-edge center node (x=L/2, θ=40°) within \
+             tol={tol:.2} of ({target_x:.2}, {target_y:.4}, {target_z:.4}); \
+             found {} — mesh refinement may require a tighter or axis-specific tolerance",
+            hits.len()
+        );
+        hits[0]
+    };
 
     // Gravity loads −z ⇒ u_z < 0.  Report downward deflection (positive).
     let vert_defl = -u[free_edge_center * 6 + 2];
