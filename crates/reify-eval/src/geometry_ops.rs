@@ -1828,7 +1828,7 @@ pub(crate) fn try_eval_kinematic_query(
     expr: &reify_ir::CompiledExpr,
     named_steps: &HashMap<String, KernelHandle>,
     values: &reify_ir::ValueMap,
-    kernel: &dyn reify_ir::GeometryKernel,
+    kernel: &mut dyn reify_ir::GeometryKernel,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_ir::Value> {
     // (1) Must be a FunctionCall — anything else is unsupported.
@@ -8863,7 +8863,7 @@ mod tests {
         let hole_id = reify_ir::GeometryHandleId(20);
 
         // Distance <= 0.0 → interference.
-        let kernel = MockGeometryKernel::new()
+        let mut kernel = MockGeometryKernel::new()
             .with_distance_result(base_id, hole_id, reify_ir::Value::Real(-1.0));
 
         // Map solid names to KernelHandle with deliberately non-default kernels.
@@ -8932,7 +8932,7 @@ mod tests {
             &expr,
             &named_steps,
             &values,
-            &kernel,
+            &mut kernel,
             &mut diagnostics,
         );
 

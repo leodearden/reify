@@ -1802,7 +1802,7 @@ impl Engine {
                     template,
                     &named_steps,
                     &mut values,
-                    default_kernel.as_ref(),
+                    default_kernel.as_mut(),
                     &mut diagnostics,
                 );
                 Engine::run_post_processes(
@@ -2159,7 +2159,7 @@ impl Engine {
                     template,
                     &named_steps,
                     &mut values,
-                    default_kernel.as_ref(),
+                    default_kernel.as_mut(),
                     &mut diagnostics,
                 );
                 Engine::run_post_processes(
@@ -2855,7 +2855,7 @@ impl Engine {
                 template,
                 &named_steps,
                 values,
-                default_kernel.as_ref(),
+                default_kernel.as_mut(),
                 diagnostics,
             );
             Engine::run_post_processes(
@@ -4491,7 +4491,7 @@ impl Engine {
         template: &reify_compiler::TopologyTemplate,
         named_steps: &HashMap<String, KernelHandle>,
         values: &mut ValueMap,
-        kernel: &dyn GeometryKernel,
+        kernel: &mut dyn GeometryKernel,
         diagnostics: &mut Vec<Diagnostic>,
     ) {
         // Iterate `values` directly without snapshotting (parallels the
