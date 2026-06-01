@@ -148,6 +148,7 @@ pub fn form_find_free(
 const NULLITY_REL_TOL: f64 = 1e-8;
 
 /// Spectral classification of the force-density matrix `D`.
+#[derive(Debug)]
 #[allow(dead_code)] // fields consumed by validation (step 4) / recovery (step 6)
 struct SpectrumClassification {
     /// Eigenvalues of `D`, sorted ascending by magnitude.
@@ -232,6 +233,35 @@ fn classify_spectrum(d: &Mat<f64>, rel_tol: f64) -> SpectrumClassification {
         eigenvectors,
         nullity,
     }
+}
+
+/// Validate an explicit-mode force-density spec and classify `D`'s spectrum.
+///
+/// Runs the three up-front feasibility guards in order and returns the matching
+/// [`FreeFormError`] on the first failure:
+///
+/// 1. length agreement across `members` / `kinds` / `q` ([`DimensionMismatch`]),
+/// 2. the per-member sign contract — cables `q > 0`, struts `q < 0`, reusing
+///    [`MemberKind`] ([`SignViolation`]),
+/// 3. the nullity-equals-`d + 1` check via [`classify_spectrum`]
+///    ([`NullityMismatch`], carrying observed vs expected).
+///
+/// On success returns the [`SpectrumClassification`] of `D` — computed for the
+/// nullity check and reused by coordinate recovery (step 6) so the dense
+/// eigendecomposition runs only once.
+///
+/// [`DimensionMismatch`]: FreeFormError::DimensionMismatch
+/// [`SignViolation`]: FreeFormError::SignViolation
+/// [`NullityMismatch`]: FreeFormError::NullityMismatch
+#[allow(dead_code)] // wired into form_find_free's explicit path at step-8
+fn validate_explicit(
+    n: usize,
+    members: &[(usize, usize)],
+    kinds: &[MemberKind],
+    q: &[f64],
+) -> Result<SpectrumClassification, FreeFormError> {
+    let _ = (n, members, kinds, q);
+    unimplemented!("validate_explicit: implemented in T1b step-4")
 }
 
 #[cfg(test)]
@@ -342,6 +372,62 @@ mod tests {
             spec.nullity, 1,
             "generic admissible q has only the all-ones translation mode in null(D); eigenvalues = {:?}",
             spec.eigenvalues,
+        );
+    }
+
+    // ---- Explicit-mode feasibility diagnostics (validate_explicit) ----
+
+    #[test]
+    fn explicit_cable_with_nonpositive_q_is_sign_violation() {
+        let (members, kinds) = triplex_topology();
+        let mut q = closed_form_q();
+        // Force a top cable (member 3) to a non-positive density: a cable must
+        // carry tension (q > 0), so this is infeasible input.
+        q[3] = -1.0;
+        assert_eq!(
+            validate_explicit(6, &members, &kinds, &q).unwrap_err(),
+            FreeFormError::SignViolation,
+        );
+    }
+
+    #[test]
+    fn explicit_strut_with_nonnegative_q_is_sign_violation() {
+        let (members, kinds) = triplex_topology();
+        let mut q = closed_form_q();
+        // Force a strut (member 0) to a non-negative density: a strut must carry
+        // compression (q < 0), so this is infeasible input.
+        q[0] = 1.0;
+        assert_eq!(
+            validate_explicit(6, &members, &kinds, &q).unwrap_err(),
+            FreeFormError::SignViolation,
+        );
+    }
+
+    #[test]
+    fn explicit_wrong_nullity_q_is_nullity_mismatch_carrying_counts() {
+        let (members, kinds) = triplex_topology();
+        // Admissible (signs honour kinds) but non-special: nullity 1 (only the
+        // translation mode), not the d+1 = 4 a valid 3-D form requires. The error
+        // carries observed (1) vs expected (4).
+        let q = generic_admissible_q(&kinds);
+        assert_eq!(
+            validate_explicit(6, &members, &kinds, &q).unwrap_err(),
+            FreeFormError::NullityMismatch {
+                observed: 1,
+                expected: 4,
+            },
+        );
+    }
+
+    #[test]
+    fn explicit_length_mismatch_is_dimension_mismatch() {
+        let (members, kinds) = triplex_topology();
+        // One density short of the 12 members → dimension mismatch, caught up
+        // front before any sign or nullity work.
+        let q = vec![1.0; members.len() - 1];
+        assert_eq!(
+            validate_explicit(6, &members, &kinds, &q).unwrap_err(),
+            FreeFormError::DimensionMismatch,
         );
     }
 }
