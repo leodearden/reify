@@ -355,10 +355,10 @@ fn snapshot_inverse_dynamics(
     // so closed mechanisms fail loudly until task 4146 wires the closed-chain path.
     // This guard is placed before the bodies.is_empty() early-return so it fires
     // regardless of body count.
-    if let Some(Value::List(lc)) = map_get(mech, "loop_closures") {
-        if !lc.is_empty() {
-            return None;
-        }
+    if let Some(Value::List(lc)) = map_get(mech, "loop_closures")
+        && !lc.is_empty()
+    {
+        return None;
     }
 
     let bodies = match map_get(mech, "bodies") {
