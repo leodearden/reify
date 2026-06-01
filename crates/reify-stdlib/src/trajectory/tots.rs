@@ -30,7 +30,6 @@ use faer::Mat;
 use super::spline::{BoundaryCondition, CubicSpline, MultiJointSpline};
 use super::simulate::{
     simulate_trajectory_core, EffectorLocation, EndEffectorTrackData, MechanismModel, ModalModel,
-    ModeDesc,
 };
 use crate::dynamics::rnea::{inverse_dynamics_open_chain, RneaLink};
 
@@ -96,7 +95,7 @@ impl TotsParams {
     ///
     /// The last element is `T`; the preceding elements are interior waypoints
     /// in per-joint order. Returns `None` if `x` has wrong length or `T ≤ 0`.
-    pub(crate) fn from_variable_vector(&self, x: &[f64]) -> Option<TotsParams> {
+    pub(crate) fn unpack_variable_vector(&self, x: &[f64]) -> Option<TotsParams> {
         if x.len() != self.n_vars() {
             return None;
         }
@@ -346,7 +345,7 @@ pub(crate) fn constraint_jacobian(
     for k in 0..n_vars {
         let mut xk = x0.clone();
         xk[k] += h;
-        let params_k = params.from_variable_vector(&xk)?;
+        let params_k = params.unpack_variable_vector(&xk)?;
         let eval_k = evaluate(&params_k, model)?;
         let vk = constraint_violations(&eval_k, &params_k);
         for i in 0..n_c {
@@ -534,7 +533,7 @@ pub(crate) fn line_search(
     let mut alpha = alpha_init;
     for _ in 0..max_halving {
         let x_new: Vec<f64> = x0.iter().zip(dx.iter()).map(|(xi, di)| xi + alpha * di).collect();
-        if let Some(p_new) = params.from_variable_vector(&x_new) {
+        if let Some(p_new) = params.unpack_variable_vector(&x_new) {
             let m_new = merit(&p_new, model, mu);
             if m_new <= m0 + c1 * alpha * dir_deriv.abs() {
                 return alpha;
@@ -714,19 +713,19 @@ pub(crate) fn solve_tots(
 
         // Check convergence at start of each iteration.
         // If feasible and previous step was very small, we've converged.
-        if is_feasible(&current_eval, &current) {
-            if let Some(ref px) = prev_x {
-                let x_cur = current.variable_vector();
-                let step_norm: f64 = x_cur.iter().zip(px.iter())
-                    .map(|(a, b)| (a - b).powi(2)).sum::<f64>().sqrt();
-                if step_norm < config.tol {
-                    return TotsResult {
-                        outcome: TotsOutcome::Converged,
-                        params: current.clone(),
-                        evaluation: current_eval.clone(),
-                        iterations: iter + 1,
-                    };
-                }
+        if is_feasible(&current_eval, &current)
+            && let Some(ref px) = prev_x
+        {
+            let x_cur = current.variable_vector();
+            let step_norm: f64 = x_cur.iter().zip(px.iter())
+                .map(|(a, b)| (a - b).powi(2)).sum::<f64>().sqrt();
+            if step_norm < config.tol {
+                return TotsResult {
+                    outcome: TotsOutcome::Converged,
+                    params: current.clone(),
+                    evaluation: current_eval.clone(),
+                    iterations: iter + 1,
+                };
             }
         }
 
@@ -792,13 +791,13 @@ pub(crate) fn solve_tots(
             xn
         };
 
-        let new_params = match current.from_variable_vector(&x_new) {
+        let new_params = match current.unpack_variable_vector(&x_new) {
             Some(p) => p,
             None => {
                 // Invalid (T <= 0): try a 1% T reduction only.
                 let mut xn = x0.clone();
                 xn[n_vars - 1] = (xn[n_vars - 1] * 0.99).max(1e-3);
-                match current.from_variable_vector(&xn) {
+                match current.unpack_variable_vector(&xn) {
                     Some(p) => p,
                     None => break,
                 }
@@ -816,7 +815,7 @@ pub(crate) fn solve_tots(
             let s: Vec<f64> = x_new.iter().zip(x_cur.iter()).map(|(a, b)| a - b).collect();
 
             // Augmented Lagrangian gradient at new point.
-            let viol_new = constraint_violations(&new_eval, &new_params);
+            let _viol_new = constraint_violations(&new_eval, &new_params);
             let mut g_new = objective_gradient(n_vars);
             // Add mu * gradient of max(0, c) sum (approximated from Jacobian).
             if let Some(ref jac) = jac_opt {
@@ -830,7 +829,7 @@ pub(crate) fn solve_tots(
             }
 
             // Augmented Lagrangian gradient at current point.
-            let mut g_cur = if let Some(ref pg) = prev_lagr_grad {
+            let g_cur = if let Some(ref pg) = prev_lagr_grad {
                 pg.clone()
             } else {
                 let mut g = objective_gradient(n_vars);
@@ -1068,7 +1067,7 @@ mod tests {
         assert!((x[0] - 0.5).abs() < 1e-14);
         assert!((x[1] - 3.0).abs() < 1e-14);
 
-        let recovered = params.from_variable_vector(&x).expect("roundtrip");
+        let recovered = params.unpack_variable_vector(&x).expect("roundtrip");
         assert!((recovered.t_initial - 3.0).abs() < 1e-14);
         assert!((recovered.joints[0].interior[0] - 0.5).abs() < 1e-14);
     }
