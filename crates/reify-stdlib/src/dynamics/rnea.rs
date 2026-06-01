@@ -302,6 +302,40 @@ mod tests {
     // the Coriolis/centrifugal contribution is missing, so any sample with
     // nonzero q̇ will mismatch (relative error ~0.1–5 % >> 1e-6).
     #[test]
+    fn debug_first_sample_values() {
+        // Sample 1: q1=0.1, q2=0.2, qd1=1.0, qd2=-0.5, qdd1=0.5, qdd2=0.3
+        let (q1, q2, qd1, qd2, qdd1, qdd2) = (0.1_f64, 0.2_f64, 1.0_f64, -0.5_f64, 0.5_f64, 0.3_f64);
+        let link0 = RneaLink {
+            parent: None,
+            parent_to_child: SpatialTransform6::from_frame3(&Frame3::new(ry_quat(q1), [0.0, 0.0, 0.0])),
+            subspace: vec![SpatialVector6::from_angular_linear([0.0, 1.0, 0.0], [0.0, 0.0, 0.0])],
+            mass: 1.0, com: [0.5, 0.0, 0.0],
+            inertia_about_com: [[0.0, 0.0, 0.0], [0.0, 1.0 / 12.0, 0.0], [0.0, 0.0, 0.0]],
+            q_dot: vec![qd1], q_ddot: vec![qdd1],
+        };
+        let link1 = RneaLink {
+            parent: Some(0),
+            parent_to_child: SpatialTransform6::from_frame3(&Frame3::new(ry_quat(q2), [1.0, 0.0, 0.0])),
+            subspace: vec![SpatialVector6::from_angular_linear([0.0, 1.0, 0.0], [0.0, 0.0, 0.0])],
+            mass: 1.0, com: [0.5, 0.0, 0.0],
+            inertia_about_com: [[0.0, 0.0, 0.0], [0.0, 1.0 / 12.0, 0.0], [0.0, 0.0, 0.0]],
+            q_dot: vec![qd2], q_ddot: vec![qdd2],
+        };
+        let tau = inverse_dynamics_open_chain(&[link0, link1], default_gravity());
+        // reference Lagrangian
+        let c1 = q1.cos(); let c2 = q2.cos(); let s2 = q2.sin(); let c12 = (q1+q2).cos();
+        let m11 = 5.0/3.0+c2; let m12 = 1.0/3.0+0.5*c2; let m22 = 1.0/3.0_f64;
+        let h = 0.5*s2;
+        let cc1 = -h*qd2*(2.0*qd1+qd2); let cc2 = h*qd1*qd1;
+        let g1 = -9.81*(1.5*c1+0.5*c12); let g2 = -9.81*0.5*c12;
+        let ref1 = m11*qdd1 + m12*qdd2 + cc1 + g1;
+        let ref2 = m12*qdd1 + m22*qdd2 + cc2 + g2;
+        panic!("RNEA: tau0={:.8}, tau1={:.8} | REF: tau0={:.8}, tau1={:.8} | err0={:.2e}, err1={:.2e}",
+               tau[0][0], tau[1][0], ref1, ref2,
+               (tau[0][0]-ref1).abs(), (tau[1][0]-ref2).abs());
+    }
+
+    #[test]
     fn double_pendulum_dynamic_cross_validation() {
         const G: f64 = 9.81;
 
