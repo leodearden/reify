@@ -69,15 +69,45 @@ fn gmsh_kernel_name_const_matches_kernel_id_display() {
     );
 }
 
-/// Exhaustiveness reminder: all five known variants are listed explicitly so a
-/// reviewer can see at a glance that every adapter is covered.  The wildcard
-/// arm is required because `KernelId` is `#[non_exhaustive]` in `reify-core`
-/// (external crates cannot write an exhaustive match on it); exhaustiveness at
-/// the type level is guaranteed by `reify-core`'s own `ALL`-based tests.
+/// Data-driven exhaustiveness check: iterates `KernelId::ALL` so a newly added
+/// variant that lacks a corresponding `*_KERNEL_NAME` const (or a per-variant
+/// test above) fails loudly rather than being silently swallowed by a wildcard.
 ///
-/// To add a new kernel: add a new per-kernel consistency test function above
-/// (named `<kernel>_kernel_name_const_matches_kernel_id_display`).
-const _EXHAUSTIVENESS_PIN: fn(KernelId) = |id| match id {
-    KernelId::Occt | KernelId::Manifold | KernelId::Fidget | KernelId::OpenVdb | KernelId::Gmsh => {}
-    _ => {}
-};
+/// To add a new kernel:
+/// 1. Add the adapter const in the new `reify-kernel-<name>/src/register.rs`.
+/// 2. Add a per-kernel consistency test function above
+///    (named `<kernel>_kernel_name_const_matches_kernel_id_display`).
+/// 3. Update the match arm here to cover the new variant.
+/// 4. Update the `assert_eq!(KernelId::ALL.len(), ...)` count.
+#[test]
+fn all_kernel_ids_have_adapter_name_const() {
+    // Fails when a new variant is added to KernelId::ALL without updating this
+    // file.  The correct count is the new KernelId::ALL.len().
+    assert_eq!(
+        KernelId::ALL.len(),
+        5,
+        "KernelId::ALL.len() changed; add a per-kernel test above, a match \
+         arm below, and update this expected count"
+    );
+
+    // Map each variant to its adapter const.  The wildcard arm panics so a
+    // new, unhandled variant is caught at test-run time even if the len check
+    // above is not yet updated.
+    for id in KernelId::ALL {
+        let expected = id.to_string();
+        let actual = match id {
+            KernelId::Occt => reify_kernel_occt::register::OCCT_KERNEL_NAME,
+            KernelId::Manifold => reify_kernel_manifold::register::MANIFOLD_KERNEL_NAME,
+            KernelId::Fidget => reify_kernel_fidget::register::FIDGET_KERNEL_NAME,
+            KernelId::OpenVdb => reify_kernel_openvdb::register::OPENVDB_KERNEL_NAME,
+            KernelId::Gmsh => reify_kernel_gmsh::register::GMSH_KERNEL_NAME,
+            _ => panic!(
+                "Unknown KernelId variant {id:?}; add its adapter const to this match"
+            ),
+        };
+        assert_eq!(
+            expected, actual,
+            "KernelId::{id:?} adapter name drifted from KernelId::{id:?}.to_string()"
+        );
+    }
+}

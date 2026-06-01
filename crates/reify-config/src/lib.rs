@@ -72,7 +72,9 @@ use serde::Deserialize;
 /// `Occt, Manifold, Fidget, OpenVdb, Gmsh` (prior variant-declaration order)
 /// to the canonical **registry-name lexical** order
 /// `Fidget, Gmsh, Manifold, Occt, OpenVdb`.  Iteration remains deterministic;
-/// no test or consumer pins a multi-kernel ordering.
+/// no *external* consumer pins a multi-kernel ordering, but the in-crate test
+/// `multiple_kernel_pins_iterate_in_kernel_id_order` (in `src/lib.rs`) pins
+/// the canonical lexical order — reordering variants would break that test.
 pub use reify_core::KernelId;
 
 pub mod cache;
