@@ -832,4 +832,104 @@ mod tests {
             );
         }
     }
+
+    // ---- Adaptive GroupRatios force-density search (GroupRatios mode) ----
+
+    /// Per-member group ids for the triplex, parallel to `triplex_topology`'s
+    /// member order: struts → group 0, the six horizontals (top + bottom) →
+    /// group 1, verticals → group 2.
+    fn triplex_group_ids() -> Vec<usize> {
+        vec![
+            0, 0, 0, // struts
+            1, 1, 1, // top horizontals
+            1, 1, 1, // bottom horizontals
+            2, 2, 2, // verticals
+        ]
+    }
+
+    #[test]
+    fn group_ratios_search_recovers_closed_form_prism_relative_q() {
+        let (members, kinds) = triplex_topology();
+        let guess = perturbed_prism_guess();
+
+        // Seed near the *signs* of the closed form — struts compressive (−1),
+        // horizontals (the reference) and verticals tensile (+1) — but with
+        // magnitudes all 1, not the √3 closed form. The adaptive search must
+        // discover the relative magnitudes on its own.
+        let spec = ForceDensitySpec::GroupRatios {
+            group_ids: triplex_group_ids(),
+            seed_ratios: vec![-1.0, 1.0, 1.0],
+            reference_group: 1, // horizontals held fixed as the scale gauge
+        };
+
+        let result = form_find_free(&guess, &members, &kinds, &spec)
+            .expect("group-ratio search must form-find the prism");
+
+        // Spectrum / convergence metadata: a valid 3-D form has nullity d+1 = 4.
+        assert_eq!(result.nullity, 4, "form-found prism must have nullity 4");
+        assert!(result.converged, "group-ratio solve must converge");
+
+        // Recovered *relative* densities: struts −√3, verticals +√3, horizontals
+        // pinned at the +1 reference. Every member in a group shares its ratio.
+        let s = 3.0_f64.sqrt();
+        for i in 0..3 {
+            assert!(
+                (result.force_densities[i] - (-s)).abs() < 1e-6,
+                "strut {i} relative q must be ≈ −√3, got {}",
+                result.force_densities[i],
+            );
+        }
+        for i in 3..9 {
+            assert!(
+                (result.force_densities[i] - 1.0).abs() < 1e-12,
+                "horizontal {i} is the reference group, must stay = 1, got {}",
+                result.force_densities[i],
+            );
+        }
+        for i in 9..12 {
+            assert!(
+                (result.force_densities[i] - s).abs() < 1e-6,
+                "vertical {i} relative q must be ≈ +√3, got {}",
+                result.force_densities[i],
+            );
+        }
+
+        // Force signs follow the recovered q: struts compressive, cables tensile.
+        for (idx, (&kind, &n_i)) in kinds.iter().zip(result.member_forces.iter()).enumerate() {
+            match kind {
+                MemberKind::Strut => assert!(
+                    n_i < 0.0,
+                    "strut {idx} must be compressive (N < 0), got {n_i}",
+                ),
+                MemberKind::Cable => assert!(
+                    n_i > 0.0,
+                    "cable {idx} must be tensile (N > 0), got {n_i}",
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn group_ratios_search_all_positive_does_not_converge() {
+        let (members, _kinds) = triplex_topology();
+        // Treat every member as a cable and seed every group positive. A
+        // positive-only force-density assignment keeps D a connected-graph
+        // weighted Laplacian, whose nullity is exactly 1 (the all-ones
+        // translation mode) for *any* positive ratios — so no nullity-4 q exists
+        // in the search space. The search must exhaust its budget and report
+        // SearchDidNotConverge, never panic.
+        let kinds = vec![MemberKind::Cable; members.len()];
+        let guess = perturbed_prism_guess();
+
+        let spec = ForceDensitySpec::GroupRatios {
+            group_ids: triplex_group_ids(),
+            seed_ratios: vec![1.0, 1.0, 1.0], // all tension → nullity stuck at 1
+            reference_group: 1,
+        };
+
+        assert_eq!(
+            form_find_free(&guess, &members, &kinds, &spec).unwrap_err(),
+            FreeFormError::SearchDidNotConverge,
+        );
+    }
 }
