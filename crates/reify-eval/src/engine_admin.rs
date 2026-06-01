@@ -246,6 +246,11 @@ impl Engine {
             last_param_override_dimension_rejections: 0,
             last_sub_component_unknown_structure_errors: 0,
             last_dispatch_count: 0,
+            // Task 4050 test seam: no registry override by default; installed
+            // only via `with_test_kernels_and_registry`. cfg-gated to match the
+            // field declaration in lib.rs (absent in production builds).
+            #[cfg(any(test, feature = "test-instrumentation"))]
+            test_registry_override: None,
             // GHR-δ §5: empty until the first build() populates it.
             realization_handles: HashMap::new(),
             geometry_revalidation_slow_path: std::sync::atomic::AtomicUsize::new(0),
@@ -291,6 +296,63 @@ impl Engine {
             #[cfg(any(test, feature = "test-instrumentation"))]
             panic_on_eval_cells: std::collections::HashSet::new(),
         }
+    }
+
+    /// **`#[cfg(any(test, feature = "test-instrumentation"))]`-gated** test
+    /// constructor (task 4050): build an `Engine` from a caller-supplied kernel
+    /// map AND a caller-supplied dispatch capability registry, bypassing the
+    /// link-time `inventory` (`crate::kernel_registry::collect_registry()`).
+    ///
+    /// This is the harness seam the cross-kernel-handoff integration test needs:
+    /// reify-eval links no Mesh-capable boolean kernel (no `reify-kernel-manifold`
+    /// dependency), so the live registry cannot drive a BRep→Mesh cross-kernel
+    /// realization, and there is no public constructor accepting a custom kernel
+    /// map + descriptors. Injecting both the counting mock kernels and a
+    /// deterministic `{occt, manifold}` capability map lets `build()` exercise
+    /// the conversion executor hermetically, independent of which kernel crates
+    /// are compiled in.
+    ///
+    /// Wraps the private [`Self::with_prelude_and_kernels`] (embedded stdlib
+    /// prelude, matching `Engine::new`), then installs `registry` as the
+    /// `test_registry_override` consulted at the two build-path dispatch sites
+    /// in `engine_build.rs`.
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn with_test_kernels_and_registry(
+        constraint_checker: Box<dyn ConstraintChecker>,
+        kernels: BTreeMap<String, Box<dyn GeometryKernel>>,
+        registry: BTreeMap<String, reify_ir::CapabilityDescriptor>,
+        default_kernel_name: Option<String>,
+    ) -> Self {
+        let mut engine = Self::with_prelude_and_kernels(
+            constraint_checker,
+            kernels,
+            default_kernel_name,
+            reify_compiler::stdlib_loader::load_stdlib(),
+        );
+        engine.test_registry_override = Some(registry);
+        engine
+    }
+
+    /// **`#[cfg(any(test, feature = "test-instrumentation"))]`-gated** accessor
+    /// (task 4050): return the terminal `KernelHandle` cached for a realization
+    /// at `(entity, repr, tol, NO_OPTIONS)`, or `None` if no entry satisfies.
+    ///
+    /// The terminal handle is not graph-observable (a `RealizationNodeData`
+    /// stores only `produced_repr: ReprKind`, not the originating `KernelId`),
+    /// so the cross-kernel-handoff test reads it back through the realization
+    /// cache to assert the terminal kernel is Manifold (gap-3 cross-kernel
+    /// routing). `KernelHandle` is `Copy`, so the borrowed cache entry is copied
+    /// out without disturbing the cache.
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn test_terminal_handle(
+        &self,
+        entity: &str,
+        repr: reify_ir::ReprKind,
+        tol: f64,
+    ) -> Option<reify_ir::KernelHandle> {
+        self.realization_cache
+            .lookup(entity, repr, tol, crate::NO_OPTIONS)
+            .copied()
     }
 
     /// Return a reference to the feature-tag table populated by the most recent

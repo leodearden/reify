@@ -482,6 +482,25 @@ pub struct Engine {
     /// itself is always present (module-private, no `pub`) so that the
     /// reset / increment sites in `engine_build.rs` need no cfg-gating.
     last_dispatch_count: usize,
+    /// **`#[cfg(any(test, feature = "test-instrumentation"))]`-gated** test seam
+    /// (task 4050 / gaps 3-4): when `Some`, overrides the link-time
+    /// `kernel_registry::collect_registry()` capability map at the two
+    /// build-path dispatch sites (`build` / `build_snapshot` in
+    /// `engine_build.rs`), letting the cross-kernel-handoff integration test
+    /// inject a deterministic multi-kernel registry (e.g. occt + manifold) that
+    /// the live `inventory` cannot supply — reify-eval links no Mesh-capable
+    /// boolean kernel, so the BRep→Mesh cross-kernel handoff path is otherwise
+    /// undrivable from a hermetic test.
+    ///
+    /// `None` in every production constructor; set only by
+    /// `with_test_kernels_and_registry` (engine_admin.rs). Deliberately mirrors
+    /// the `panic_on_eval_cells` cfg-gated-field convention (task 2555): the
+    /// field is absent from production binaries entirely (no allocation, no
+    /// drop), and the matching consult sites in `engine_build.rs` are gated
+    /// with the same predicate. Typed via a qualified path so the always-present
+    /// `use reify_ir::{…}` block carries no production-only unused import.
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    test_registry_override: Option<BTreeMap<String, reify_ir::CapabilityDescriptor>>,
     /// GHR-δ §5 lazy-revalidation validity oracle: maps each geometry-backed
     /// `RealizationNodeId` to the kernel handle it currently resolves to.
     ///

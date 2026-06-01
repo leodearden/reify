@@ -932,6 +932,131 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
     }
 }
 
+/// Rewrite an op's parent/input handle ids through a substitution map
+/// (task 4050 step-8). The cross-kernel conversion executor uses this to point
+/// the final-stage op at the converted (ingested) target-kernel handles instead
+/// of the original source-kernel handles. Mirrors [`parent_handles_for_op`]'s
+/// variant coverage exactly so the compiler flags drift; non-parent fields
+/// (sweep path/spine, guides, draft plane) and parent-less ops (primitives,
+/// curve constructors, `Pipe`) are left untouched. A handle absent from the
+/// map is left as-is.
+fn substitute_op_parents(
+    op: &mut GeometryOp,
+    mapping: &HashMap<GeometryHandleId, GeometryHandleId>,
+) {
+    let sub = |h: &mut GeometryHandleId| {
+        if let Some(&new) = mapping.get(h) {
+            *h = new;
+        }
+    };
+    match op {
+        // Boolean ops — both operands are parents.
+        GeometryOp::Union { left, right }
+        | GeometryOp::Difference { left, right }
+        | GeometryOp::Intersection { left, right } => {
+            sub(left);
+            sub(right);
+        }
+
+        // Single-target shape-modifying ops — the target is the sole parent.
+        GeometryOp::Fillet { target, .. }
+        | GeometryOp::Chamfer { target, .. }
+        | GeometryOp::Translate { target, .. }
+        | GeometryOp::Rotate { target, .. }
+        | GeometryOp::Scale { target, .. }
+        | GeometryOp::RotateAround { target, .. }
+        | GeometryOp::ApplyTransform { target, .. }
+        | GeometryOp::LinearPattern { target, .. }
+        | GeometryOp::CircularPattern { target, .. }
+        | GeometryOp::Mirror { target, .. }
+        | GeometryOp::LinearPattern2D { target, .. }
+        | GeometryOp::ArbitraryPattern { target, .. }
+        | GeometryOp::Draft { target, .. }
+        | GeometryOp::Thicken { target, .. }
+        | GeometryOp::Shell { target, .. } => {
+            sub(target);
+        }
+
+        // Single-profile sweep ops — profile only; path/spine/guide excluded.
+        GeometryOp::Extrude { profile, .. }
+        | GeometryOp::ExtrudeSymmetric { profile, .. }
+        | GeometryOp::Revolve { profile, .. }
+        | GeometryOp::Sweep { profile, .. }
+        | GeometryOp::SweepGuided { profile, .. } => {
+            sub(profile);
+        }
+
+        // Multi-profile loft ops — every profile is a parent.
+        GeometryOp::Loft { profiles } | GeometryOp::LoftGuided { profiles, .. } => {
+            for p in profiles.iter_mut() {
+                sub(p);
+            }
+        }
+
+        // Parent-less ops: primitives, curve constructors, Pipe — nothing to
+        // substitute.
+        GeometryOp::Box { .. }
+        | GeometryOp::Cylinder { .. }
+        | GeometryOp::Sphere { .. }
+        | GeometryOp::Tube { .. }
+        | GeometryOp::LineSegment { .. }
+        | GeometryOp::Arc { .. }
+        | GeometryOp::Helix { .. }
+        | GeometryOp::InterpCurve { .. }
+        | GeometryOp::BezierCurve { .. }
+        | GeometryOp::NurbsCurve { .. }
+        | GeometryOp::Pipe { .. } => {}
+    }
+}
+
+/// Cache-key `entity` id for a cross-kernel conversion intermediate (task 4050
+/// step-12).
+///
+/// The conversion executor tessellates each BRep input handle of an op and
+/// ingests the result into the target kernel, producing a Mesh intermediate
+/// that is cached (keyed `(entity, Mesh, per_stage_tol, NO_OPTIONS)`) so a later
+/// realization can reuse it instead of re-tessellating. The `entity` component
+/// must be both DISTINCT per input (so an op's N inputs cache as N separate
+/// intermediates — no within-realization clobber) AND STABLE across identical
+/// rebuilds of the same realization (so the reuse hit fires).
+///
+/// For a same-realization `Step` input — the only shape the v0.3-ε fixtures
+/// exercise — the input's *local step index* (its position in
+/// `realization_step_ids`) satisfies both: it is the input's slot in the op
+/// stream, identical on every rebuild, and unique among the realization's
+/// steps. A cross-realization (`Sub`) input is absent from
+/// `realization_step_ids` and falls back to the input handle id, which is
+/// itself a stable cached-terminal handle (the producing realization re-hits
+/// its own terminal cache on rebuild and hands back the same id). The `#`
+/// separator cannot occur in a DSL entity identifier, so the synthesised key
+/// can never collide with a real entity's terminal-cache key.
+///
+/// **Cross-realization keying invariant.** The synthesised key embeds
+/// `realization_entity` but NOT the realization's index within its template, so
+/// two realizations that share an entity name (differing only by index) would
+/// generate identical intermediate keys for their first conversion input. This
+/// is deliberately consistent with the TERMINAL cache keying — the post-loop
+/// `realization_cache.insert(&realization_id.entity, …)` likewise keys on
+/// `entity` alone — and BOTH rely on the same invariant: within a single build a
+/// realization's `entity` uniquely identifies it in the cache (distinct cached
+/// realizations carry distinct entity names). If that invariant is ever weakened
+/// (e.g. multiple indexed realizations of one entity become independently
+/// cacheable), this key AND the terminal key must additionally incorporate
+/// `realization_id.index`; they must change together to stay consistent.
+fn conversion_intermediate_entity_id(
+    realization_entity: &str,
+    input_handle: GeometryHandleId,
+    realization_step_ids: &[GeometryHandleId],
+) -> String {
+    match realization_step_ids
+        .iter()
+        .position(|id| *id == input_handle)
+    {
+        Some(idx) => format!("{realization_entity}#conv-step{idx}"),
+        None => format!("{realization_entity}#conv-ext{}", input_handle.0),
+    }
+}
+
 /// Total `GeometryOp` → `Operation` classifier used by the per-op dispatch
 /// path (task ε / 3436, PRD §8 step-4).
 ///
@@ -1226,7 +1351,6 @@ impl Engine {
     /// the conservative path (BRep) regardless of whether the base component
     /// coincidentally matches a local realization name — see step-8 for the
     /// debug log.
-    #[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
     pub(crate) fn compute_demanded_reprs(
         &self,
         module: &CompiledModule,
@@ -1240,7 +1364,6 @@ impl Engine {
     }
 }
 
-#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
 fn demanded_reprs_for_template(template: &TopologyTemplate, format: ExportFormat) -> Vec<ReprKind> {
     let n = template.realizations.len();
     if n == 0 {
@@ -1459,6 +1582,14 @@ impl Engine {
         // mutable borrows handed to `execute_realization_ops`. Missing keys
         // are treated as `None`.
         let demanded_tols = self.compute_demanded_tols(module);
+        // Task 4050 step-16 (gap 3 / υ wiring): derive the per-realization
+        // demanded terminal `ReprKind` once per build, positionally aligned
+        // with `demanded_tols` by `[t_idx][r_idx]`. Terminal Stl/Obj
+        // realizations demand Mesh, driving the cross-kernel conversion
+        // executor when a Mesh-capable kernel is registered (and otherwise
+        // falling back to BRep — design_decision 3). Same `&self`-query
+        // hoisting rationale as `compute_demanded_tols` above.
+        let demanded_reprs = self.compute_demanded_reprs(module, format);
         // Task ε (3436): resolve the engine's default kernel through the new
         // multi-handle map. Single-handle surfaces (export, post-process)
         // operate on this kernel; per-op dispatch routing is delegated to
@@ -1471,6 +1602,21 @@ impl Engine {
         // outlives the borrowed view because both are local bindings.
         // Mirrors the "one allocation per build, not per realization"
         // pattern established by `compute_tessellation_budgets`.
+        //
+        // Task 4050 test seam: in test / `test-instrumentation` builds an
+        // injected `test_registry_override` (set via
+        // `with_test_kernels_and_registry`) takes precedence over the link-time
+        // inventory so the cross-kernel-handoff integration test can supply a
+        // deterministic multi-kernel capability map (the live inventory links no
+        // Mesh-capable boolean kernel). The override is cloned into an owned
+        // local so the borrowed view below does not pin `&self`. Production
+        // builds always use `collect_registry()` — the field is absent there.
+        #[cfg(any(test, feature = "test-instrumentation"))]
+        let registry_owned = self
+            .test_registry_override
+            .clone()
+            .unwrap_or_else(crate::kernel_registry::collect_registry);
+        #[cfg(not(any(test, feature = "test-instrumentation")))]
         let registry_owned = crate::kernel_registry::collect_registry();
         let registry_borrowed: BTreeMap<String, &CapabilityDescriptor> =
             registry_owned.iter().map(|(k, v)| (k.clone(), v)).collect();
@@ -1572,6 +1718,15 @@ impl Engine {
                         &mut kernel_error,
                         &mut self.realization_cache,
                         demanded_tol,
+                        // Task 4050 step-16 (gap 3): pass the υ-derived
+                        // per-realization demanded terminal repr, positionally
+                        // aligned with `demanded_tols` (`[t_idx][r_idx]`);
+                        // out-of-range defaults to BRep (backward-compat).
+                        demanded_reprs
+                            .get(t_idx)
+                            .and_then(|v| v.get(r_idx))
+                            .copied()
+                            .unwrap_or(ReprKind::BRep),
                         &mut self.last_dispatch_count,
                     );
                     // Step-10 (task ε / 3436): persist the executor's terminal
@@ -1791,6 +1946,14 @@ impl Engine {
         // `build_snapshot` does NOT call eval, so its placement (after the
         // constraint check) was already semantically correct.
         let demanded_tols = self.compute_demanded_tols(module);
+        // Task 4050 step-16 (gap 3 / υ wiring): derive the per-realization
+        // demanded terminal `ReprKind` once per build, positionally aligned
+        // with `demanded_tols` by `[t_idx][r_idx]`. Terminal Stl/Obj
+        // realizations demand Mesh, driving the cross-kernel conversion
+        // executor when a Mesh-capable kernel is registered (and otherwise
+        // falling back to BRep — design_decision 3). Same post-`check()`
+        // placement rationale as `compute_demanded_tols` above.
+        let demanded_reprs = self.compute_demanded_reprs(module, format);
         // Task 2320: `values` is moved out of `check_result` here so the
         // per-template post-process can patch conformance-query results
         // (`is_watertight` / `is_manifold` / `is_orientable`) into the map
@@ -1810,6 +1973,17 @@ impl Engine {
         // once per build and materialise the borrowed view that
         // `dispatcher::dispatch` expects — see `build_snapshot` mirror for
         // the rationale (one allocation per build, not per realization).
+        //
+        // Task 4050 test seam: an injected `test_registry_override` takes
+        // precedence over the link-time inventory in test / `test-instrumentation`
+        // builds (see the `build_snapshot` mirror for the full rationale).
+        // Production builds always use `collect_registry()`.
+        #[cfg(any(test, feature = "test-instrumentation"))]
+        let registry_owned = self
+            .test_registry_override
+            .clone()
+            .unwrap_or_else(crate::kernel_registry::collect_registry);
+        #[cfg(not(any(test, feature = "test-instrumentation")))]
         let registry_owned = crate::kernel_registry::collect_registry();
         let registry_borrowed: BTreeMap<String, &CapabilityDescriptor> =
             registry_owned.iter().map(|(k, v)| (k.clone(), v)).collect();
@@ -1906,6 +2080,15 @@ impl Engine {
                         &mut kernel_error,
                         &mut self.realization_cache,
                         demanded_tol,
+                        // Task 4050 step-16 (gap 3): pass the υ-derived
+                        // per-realization demanded terminal repr, positionally
+                        // aligned with `demanded_tols` (`[t_idx][r_idx]`);
+                        // out-of-range defaults to BRep (backward-compat).
+                        demanded_reprs
+                            .get(t_idx)
+                            .and_then(|v| v.get(r_idx))
+                            .copied()
+                            .unwrap_or(ReprKind::BRep),
                         &mut self.last_dispatch_count,
                     );
                     // Step-10 (task ε / 3436): persist the executor's terminal
@@ -2613,6 +2796,11 @@ impl Engine {
                     &mut kernel_error,
                     realization_cache,
                     demanded_tol,
+                    // Task 4050 step-8 / design_decision 4: the tessellate path
+                    // discards produced_repr and stays on a BRep demand
+                    // permanently (a Manifold terminal would break the trailing
+                    // default-kernel tessellate call).
+                    ReprKind::BRep,
                     &mut *dispatch_count,
                 );
 
@@ -2890,6 +3078,13 @@ impl Engine {
         kernel_error_out: &mut Option<ErrorRef>,
         realization_cache: &mut RealizationCache<KernelHandle>,
         demanded_tol: Option<f64>,
+        // Task 4050 step-8: the realization's requested terminal [`ReprKind`]
+        // (υ-derived in build/build_snapshot; `ReprKind::BRep` everywhere else).
+        // Each op dispatches at this repr; a `None` plan with
+        // `demanded_repr != BRep` falls back to a BRep dispatch (design_decision
+        // 3) so a Mesh demand no linked kernel can satisfy routes BRep instead
+        // of erroring. Slotted next to `demanded_tol`.
+        demanded_repr: ReprKind,
         // Task ε (3436) step-12: caller-write dispatch-count instrumentation
         // channel. Incremented once per `dispatch(...)` call inside the per-op
         // loop. The caller (build / build_snapshot / tessellate_*) resets the
@@ -2907,12 +3102,13 @@ impl Engine {
             produced_repr_out,
         } = outputs;
         let handle_start = step_handles.len();
-        // Step-8 (task ε / 3436): the v0.3-ε baseline asks the dispatcher for
-        // `(op, BRep)` with `available = {BRep}` on every op. The triple is
-        // hoisted out of the op loop because both inputs are loop-invariant —
-        // `available_set` would otherwise allocate a fresh HashSet per op.
-        let available_set: HashSet<ReprKind> =
-            Engine::BUDGET_QUERY_TRIPLE_V02.2.iter().copied().collect();
+        // Task 4050 step-8: the per-op `available` set is no longer a hoisted
+        // loop-invariant `{BRep}` constant — it is derived per op from the
+        // reprs of that op's resolved input handles (`realization_step_reprs`,
+        // tracked in lockstep with `realization_step_ids` below), defaulting to
+        // `{BRep}` for primitives / unresolved refs (design_decision 6). This
+        // lets a conversion stage that materialises a Mesh handle propagate the
+        // Mesh repr to downstream ops while staying `{BRep}` for the v0.2 path.
 
         // Task 2874, step-8: cache-hit short-circuit. When the caller has
         // threaded a demanded tolerance AND the realization is named (the
@@ -2935,62 +3131,107 @@ impl Engine {
         // shifts the cache key to a non-`BRep` `ReprKind` (the cache's
         // `(entity, repr, tol, options)` shape already supports it; see
         // `RealizationCache::lookup`), the `produced_repr_out` write follows
-        // without a separate edit. The `debug_assert_eq!` below pins the
-        // current invariant (cache-only-stores-BRep) so a future Mesh cache
-        // entry trips loudly in dev rather than silently corrupting
-        // `produced_repr` on the cache-hit branch.
-        let cache_repr = ReprKind::BRep;
-        if let (Some(tol), Some(name)) = (demanded_tol, realization_name)
-            && let Some(&cached_handle) =
-                realization_cache.lookup(&realization_id.entity, cache_repr, tol, NO_OPTIONS)
-        {
-            // Internal-consistency invariant (amendment): the per-build
-            // reset of `feature_tag_table` / `topology_attribute_table` at
-            // the top of build() / build_snapshot() / tessellate_*()
-            // guarantees neither table can already carry an entry for the
-            // cached handle on a clean cache-hit path. If a future refactor
-            // weakens the reset or routes the cached handle through a path
-            // that ALSO populates the tables, this debug_assert fires loudly
-            // during development rather than silently regressing attribute-
-            // query results for cached handles.
-            debug_assert!(
-                feature_tag_table.lookup(cached_handle.id).is_none(),
-                "feature_tag_table already has an entry for cached handle \
-                 {:?} on cache-hit short-circuit — per-build reset invariant \
-                 violated",
-                cached_handle,
-            );
-            debug_assert!(
-                topology_attribute_table.lookup(cached_handle.id).is_none(),
-                "topology_attribute_table already has an entry for cached \
-                 handle {:?} on cache-hit short-circuit — per-build reset \
-                 invariant violated",
-                cached_handle,
-            );
-            step_handles.push(cached_handle);
-            named_steps.insert(name.to_string(), cached_handle);
-            // Step-10 (task ε / 3436): the [`RealizationCache`] key includes
-            // `cache_repr` (see the post-success `realization_cache.insert`
-            // call at the bottom of this function), so every cached entry's
-            // terminal handle was produced by a kernel capable of that repr.
-            // Surface `cache_repr` through `produced_repr_out` so the caller
-            // writes the same value into the realization graph node it would
-            // have written on a cold-path miss for this realization.
-            //
-            // **Amendment (suggestion #3)**: pinned by `debug_assert_eq!` to
-            // `ReprKind::BRep` — every cache populate today is BRep-keyed (the
-            // op loop writes `realization_cache.insert(..., cache_repr, ...)`
-            // below). When ζ/η extend the cache key to other repr kinds the
-            // assertion will need to relax in lockstep with the populate-side
-            // change.
-            debug_assert_eq!(
-                cache_repr,
-                ReprKind::BRep,
-                "cache_repr is pinned to BRep until ζ/η extend the cache to other ReprKinds; \
-                 if this asserts, the populate site also needs to migrate",
-            );
-            *produced_repr_out = Some(cache_repr);
-            return;
+        // without a separate edit.
+        //
+        // **Task 4050 step-10 (gap 4)**: `cache_repr` is unpinned from `BRep` to
+        // the realization's `demanded_repr` (the υ-derived requested terminal
+        // repr, known before the op loop). The cache-hit LOOKUP keys on it, so a
+        // second identical Mesh build short-circuits at `(entity, Mesh, tol)`.
+        // The post-loop INSERT keys on the RESOLVED repr instead (see below), so
+        // a fallback realization that demanded Mesh but resolved BRep is stored
+        // at BRep: a later Mesh lookup correctly MISSES at the Mesh key (never
+        // returning a BRep handle as if it were Mesh), and the BRep fallback
+        // probe added below then recovers the hit at the resolved BRep key.
+        let cache_repr = demanded_repr;
+        // **Amendment (reviewer_comprehensive #1, perf regression)**: probe the
+        // terminal cache at the demanded repr first, then — for a non-BRep
+        // demand that missed — RETRY at `BRep`. This mirrors the per-op dispatch
+        // BRep fallback (design_decision 3) at the cache layer, and is the fix
+        // for the realization-cache regression flagged in review.
+        //
+        // WHY THE FALLBACK PROBE IS LOAD-BEARING. With υ wired, an Stl/Obj export
+        // marks its terminal realization `Mesh`, so the primary probe keys on
+        // `(entity, Mesh, tol)`. But reify-eval links no Mesh-capable boolean
+        // kernel (Cargo.toml: openvdb dep, occt dev-dep, no manifold), so every
+        // op falls back to a BRep dispatch, the terminal RESOLVES to BRep, and
+        // the post-loop INSERT keys on `(entity, BRep, tol)` (the resolved repr;
+        // design_decision 2). Without this fallback probe a Mesh demand would
+        // miss the BRep entry on EVERY rebuild and recompute the (typically most
+        // expensive) terminal body in full — defeating the task-2874 cache for
+        // the dominant production export path. Retrying at BRep lets the
+        // fell-back realization hit its true resolved repr and report
+        // `produced_repr = BRep` (exactly the cold-path value).
+        //
+        // SAFETY (no stale Mesh↦BRep substitution). A `BRep` cache entry is
+        // written ONLY when a realization RESOLVED to BRep (the INSERT keys on
+        // the resolved repr). On a Mesh-CAPABLE engine a Mesh demand resolves
+        // Mesh and inserts at `(entity, Mesh, tol)`, so the PRIMARY probe hits
+        // and the BRep fallback is never consulted for that entity. The only
+        // residual edge — a Mesh-capable engine doing both a `Step` (BRep) build
+        // and an `Stl` (Mesh) build of the SAME entity at the SAME tol, where the
+        // fallback could serve the Step entry to the Stl demand — cannot arise in
+        // reify-eval (no Mesh boolean kernel is linked, so a Mesh demand can never
+        // resolve Mesh here) and is task ζ's (#3437) surface, not this task's.
+        if let (Some(tol), Some(name)) = (demanded_tol, realization_name) {
+            let cache_probe = realization_cache
+                .lookup(&realization_id.entity, cache_repr, tol, NO_OPTIONS)
+                .map(|&handle| (handle, cache_repr))
+                .or_else(|| {
+                    if cache_repr != ReprKind::BRep {
+                        realization_cache
+                            .lookup(&realization_id.entity, ReprKind::BRep, tol, NO_OPTIONS)
+                            .map(|&handle| (handle, ReprKind::BRep))
+                    } else {
+                        None
+                    }
+                });
+            if let Some((cached_handle, resolved_repr)) = cache_probe {
+                // Internal-consistency invariant (amendment): the per-build
+                // reset of `feature_tag_table` / `topology_attribute_table` at
+                // the top of build() / build_snapshot() / tessellate_*()
+                // guarantees neither table can already carry an entry for the
+                // cached handle on a clean cache-hit path. If a future refactor
+                // weakens the reset or routes the cached handle through a path
+                // that ALSO populates the tables, this debug_assert fires loudly
+                // during development rather than silently regressing attribute-
+                // query results for cached handles.
+                debug_assert!(
+                    feature_tag_table.lookup(cached_handle.id).is_none(),
+                    "feature_tag_table already has an entry for cached handle \
+                     {:?} on cache-hit short-circuit — per-build reset invariant \
+                     violated",
+                    cached_handle,
+                );
+                debug_assert!(
+                    topology_attribute_table.lookup(cached_handle.id).is_none(),
+                    "topology_attribute_table already has an entry for cached \
+                     handle {:?} on cache-hit short-circuit — per-build reset \
+                     invariant violated",
+                    cached_handle,
+                );
+                step_handles.push(cached_handle);
+                named_steps.insert(name.to_string(), cached_handle);
+                // Step-10 (task ε / 3436): the [`RealizationCache`] key includes
+                // the repr (see the post-success `realization_cache.insert` call
+                // at the bottom of this function), so the cached terminal handle
+                // was produced by a kernel capable of `resolved_repr` —
+                // `cache_repr` on a primary hit, or `BRep` on the fallback hit.
+                // Surface that SAME repr through `produced_repr_out` so the
+                // caller writes into the realization graph node exactly what a
+                // cold-path build of this realization would have written.
+                *produced_repr_out = Some(resolved_repr);
+                // **Task 4050 step-10**: consistency guard, reordered AFTER the
+                // `produced_repr_out` write. The surfaced produced_repr always
+                // equals the cache key's repr on the cache-hit branch (the line
+                // above just wrote `Some(resolved_repr)`); kept as a documented
+                // invariant guarding future edits to the probe/surface pair.
+                debug_assert_eq!(
+                    resolved_repr,
+                    produced_repr_out.unwrap_or(ReprKind::BRep),
+                    "cache-hit produced_repr must equal the cache key's repr",
+                );
+                return;
+            }
         }
 
         let mut had_failure = false;
@@ -3052,6 +3293,19 @@ impl Engine {
         // the slice stays in lockstep without re-projecting per op.
         let mut realization_step_ids: Vec<GeometryHandleId> =
             Vec::with_capacity(operations.len());
+        // Task 4050 step-8: the produced [`ReprKind`] of each step handle,
+        // tracked in lockstep with `realization_step_ids`. The per-op
+        // `available` set is read from the reprs of the op's resolved input
+        // handles (via this Vec); every push site below pushes here too so the
+        // two Vecs stay index-aligned.
+        let mut realization_step_reprs: Vec<ReprKind> = Vec::with_capacity(operations.len());
+        // Task 4050 step-12: per-realization log of intermediate-cache keys the
+        // conversion executor inserted, so step-14's rollback branch can drop
+        // exactly those keys (atomic with `step_handles.truncate(handle_start)`).
+        // Each entry is `(entity, repr, per_stage_tol)`; the options_hash is
+        // always `NO_OPTIONS` for conversion intermediates. On the success path
+        // the inserts stay committed so later same-build realizations reuse them.
+        let mut intermediate_cache_inserts: Vec<(String, ReprKind, f64)> = Vec::new();
         for (op_idx, op) in operations.iter().enumerate() {
             let geom_op = compile_geometry_op(
                 op,
@@ -3063,21 +3317,57 @@ impl Engine {
                 diagnostics,
             );
             match geom_op {
-                Ok(geom_op) => {
+                Ok(mut geom_op) => {
                     // Step-8 (task ε / 3436): per-op dispatch routing.
                     // Map the compiled `GeometryOp` to its `Operation`
-                    // classifier and ask the dispatcher for a plan. In the
-                    // v0.3-ε baseline the request is fixed at
-                    // `(op, demanded=BRep, available={BRep})` per the
-                    // `BUDGET_QUERY_TRIPLE_V02` design decision; per-op
-                    // demanded/available derivation is deferred to ζ/η/θ.
+                    // classifier and ask the dispatcher for a plan.
                     let operation = geometry_op_to_operation(&geom_op);
+                    // Task 4050 step-8: derive the per-op `available` set from
+                    // the reprs of this op's resolved input handles. Each parent
+                    // handle id is looked up in `realization_step_ids` (this
+                    // realization's step handles) to read its produced repr from
+                    // the lockstep `realization_step_reprs`; parents from other
+                    // realizations (named_steps) or parent-less ops are absent,
+                    // so the set defaults to `{BRep}` (design_decision 6).
+                    let available_for_op: HashSet<ReprKind> = {
+                        let parents = parent_handles_for_op(&geom_op);
+                        let mut set: HashSet<ReprKind> = parents
+                            .as_slice()
+                            .iter()
+                            .filter_map(|pid| {
+                                realization_step_ids
+                                    .iter()
+                                    .position(|id| id == pid)
+                                    .map(|idx| realization_step_reprs[idx])
+                            })
+                            .collect();
+                        if set.is_empty() {
+                            set.insert(ReprKind::BRep);
+                        }
+                        set
+                    };
                     // Task ε (3436) step-12: bump the per-build dispatch
                     // counter EXACTLY at the `dispatch(...)` call site so the
                     // cache-hit short-circuit (which returns above without
-                    // ever entering this loop) leaves the counter at 0.
+                    // ever entering this loop) leaves the counter at 0. Bumped
+                    // once at the primary dispatch; the design_decision-3
+                    // fallback re-dispatch below does not bump again.
                     *dispatch_count += 1;
-                    let plan = dispatch(registry, operation, ReprKind::BRep, &available_set);
+                    // Task 4050 step-8: dispatch at `demanded_repr`, then FALL
+                    // BACK to a BRep dispatch when the demand is unsatisfiable
+                    // and `demanded_repr != BRep` (design_decision 3). Without
+                    // this, every Stl/Obj-terminal Mesh demand with no linked
+                    // Mesh kernel would hit the strict no-kernel-chain error arm
+                    // and regress the whole suite; with it, such ops route BRep
+                    // exactly as the v0.2 baseline did.
+                    let plan = dispatch(registry, operation, demanded_repr, &available_for_op)
+                        .or_else(|| {
+                            if demanded_repr != ReprKind::BRep {
+                                dispatch(registry, operation, ReprKind::BRep, &available_for_op)
+                            } else {
+                                None
+                            }
+                        });
                     // Step-14 (task ε / 3436): the match returns a
                     // `(resolved_kernel_name, op_produced_repr)` tuple — a
                     // single source of truth that yokes the routing decision
@@ -3149,28 +3439,179 @@ impl Engine {
                             // untouched" rather than fabricating a repr).
                             (name, plan_output_repr(registry, plan, operation))
                         }
-                        Some(_) => {
-                            // Non-empty conversion chain. ε implements
-                            // 0-conversion routing only — conversion-stage
-                            // execution depends on ζ/η/θ (Manifold execute
-                            // arm + cross-kernel mesh-ingest trait surface).
-                            // Surface as an error diagnostic and set
-                            // `kernel_error_out` so the caller marks the
-                            // realization Failed (mirrors the kernel-error
-                            // arm below).
-                            let err_msg = format!(
-                                "non-empty conversion chain for op '{:?}' producing \
-                                 '{:?}' is not supported in v0.3-ε (deferred to ζ/η/θ)",
-                                operation,
-                                ReprKind::BRep,
-                            );
-                            diagnostics.push(Diagnostic::error(err_msg.clone()).with_label(
-                                DiagnosticLabel::new(realization_span, "in this realization"),
-                            ));
-                            if kernel_error_out.is_none() {
-                                *kernel_error_out = Some(ErrorRef::new(err_msg));
+                        Some(plan) => {
+                            // Task 4050 step-8: the MULTI-STAGE CONVERSION
+                            // EXECUTOR. A non-empty `plan.conversions` chain
+                            // names the repr crossings to perform before the
+                            // final op runs on `plan.kernel`. v0.3-ε executes
+                            // exactly one crossing — BRep→Mesh via the source
+                            // kernel's `tessellate` — so every stage must
+                            // classify as `ConversionProjection::Tessellate`
+                            // (step-6); any other stage surfaces as a
+                            // realization-failed diagnostic (mirroring the
+                            // kernel-error arm below) rather than a panic. Since
+                            // the only ε-executable projection is BRep→Mesh, a
+                            // multi-stage chain necessarily contains a
+                            // non-`(BRep,Mesh)` stage and is rejected here, so
+                            // the single-stage "tessellate each parent once"
+                            // walk below is correct for every chain that passes.
+                            //
+                            // For the surviving single BRep→Mesh stage and each
+                            // prior-stage input handle of the op: tessellate the
+                            // handle on the stage's source kernel → Mesh, then
+                            // ingest the Mesh on the target kernel (`plan.kernel`)
+                            // → a fresh handle. The converted handles are
+                            // substituted as the op's inputs and the op then runs
+                            // on `plan.kernel` via the common execute path below.
+                            // (Intermediate caching: step-12; rollback: step-14.)
+
+                            // The target kernel must be present in the map.
+                            if !kernels.contains_key(plan.kernel.as_str()) {
+                                let err_msg = format!(
+                                    "internal error: dispatcher named target kernel '{}' \
+                                     not present in engine.geometry_kernels for a \
+                                     conversion plan",
+                                    plan.kernel,
+                                );
+                                diagnostics.push(Diagnostic::error(err_msg.clone()).with_label(
+                                    DiagnosticLabel::new(realization_span, "in this realization"),
+                                ));
+                                if kernel_error_out.is_none() {
+                                    *kernel_error_out = Some(ErrorRef::new(err_msg));
+                                }
+                                break;
                             }
-                            break;
+
+                            // Per-stage tessellation tolerance for each BRep→Mesh
+                            // source projection (default-tess tolerance when the
+                            // caller threaded no demanded tolerance).
+                            let per_stage_tol = per_stage_tolerance_for_plan(
+                                plan,
+                                demanded_tol.unwrap_or(Engine::DEFAULT_TESSELLATION_TOLERANCE),
+                            );
+
+                            // Snapshot the op's input handles before mutation.
+                            let parents: Vec<GeometryHandleId> =
+                                parent_handles_for_op(&geom_op).as_slice().to_vec();
+
+                            // Walk the chain: tessellate (source) then ingest
+                            // (target) each input, recording old→new id pairs.
+                            let mut substitution: HashMap<GeometryHandleId, GeometryHandleId> =
+                                HashMap::new();
+                            let mut conversion_error: Option<String> = None;
+                            'convert: for (stage_kernel, from, to) in &plan.conversions {
+                                if crate::dispatcher::v03_conversion_projection(*from, *to)
+                                    .is_none()
+                                {
+                                    conversion_error = Some(format!(
+                                        "conversion stage {from:?}→{to:?} for op '{operation:?}' \
+                                         is not executable in v0.3-ε (only BRep→Mesh \
+                                         tessellation is supported)",
+                                    ));
+                                    break 'convert;
+                                }
+                                let source_name = (*stage_kernel).as_registry_name();
+                                for &pid in &parents {
+                                    // Task 4050 step-12: the intermediate cache
+                                    // key for THIS input — distinct per input
+                                    // (local step index) and stable across
+                                    // rebuilds (see `conversion_intermediate_entity_id`).
+                                    let intermediate_entity = conversion_intermediate_entity_id(
+                                        &realization_id.entity,
+                                        pid,
+                                        &realization_step_ids,
+                                    );
+                                    // Consult the cache BEFORE any kernel work. A
+                                    // hit returns the previously-ingested
+                                    // target-kernel handle (Copy); reuse its id
+                                    // and skip the redundant tessellate+ingest.
+                                    if let Some(&cached) = realization_cache.lookup(
+                                        &intermediate_entity,
+                                        *to,
+                                        per_stage_tol,
+                                        NO_OPTIONS,
+                                    ) {
+                                        substitution.insert(pid, cached.id);
+                                        continue;
+                                    }
+                                    // Cache miss: tessellate on the source kernel
+                                    // (`&self`); the borrow is released before the
+                                    // `&mut` ingest borrow below.
+                                    let mesh = match kernels.get(source_name) {
+                                        Some(src) => match src.tessellate(pid, per_stage_tol) {
+                                            Ok(mesh) => mesh,
+                                            Err(e) => {
+                                                conversion_error =
+                                                    Some(format!("tessellation error: {e}"));
+                                                break 'convert;
+                                            }
+                                        },
+                                        None => {
+                                            conversion_error = Some(format!(
+                                                "internal error: conversion source kernel \
+                                                 '{source_name}' absent from \
+                                                 engine.geometry_kernels"
+                                            ));
+                                            break 'convert;
+                                        }
+                                    };
+                                    // Ingest into the target kernel (`&mut`).
+                                    let ingested = kernels
+                                        .get_mut(plan.kernel.as_str())
+                                        .expect("plan.kernel presence checked above")
+                                        .ingest_mesh(&mesh);
+                                    match ingested {
+                                        Ok(handle) => {
+                                            // Wrap the fresh target-kernel handle
+                                            // with its KernelId provenance, cache
+                                            // it for cross-realization reuse, and
+                                            // log the key for step-14's atomic
+                                            // rollback.
+                                            let intermediate_handle = KernelHandle {
+                                                kernel: kernel_id_for_registry_name(
+                                                    plan.kernel.as_str(),
+                                                ),
+                                                id: handle.id,
+                                            };
+                                            realization_cache.insert(
+                                                &intermediate_entity,
+                                                *to,
+                                                per_stage_tol,
+                                                NO_OPTIONS,
+                                                intermediate_handle,
+                                            );
+                                            intermediate_cache_inserts.push((
+                                                intermediate_entity,
+                                                *to,
+                                                per_stage_tol,
+                                            ));
+                                            substitution.insert(pid, handle.id);
+                                        }
+                                        Err(e) => {
+                                            conversion_error =
+                                                Some(format!("mesh ingest error: {e}"));
+                                            break 'convert;
+                                        }
+                                    }
+                                }
+                            }
+                            if let Some(err_msg) = conversion_error {
+                                diagnostics.push(Diagnostic::error(err_msg.clone()).with_label(
+                                    DiagnosticLabel::new(realization_span, "in this realization"),
+                                ));
+                                if kernel_error_out.is_none() {
+                                    *kernel_error_out = Some(ErrorRef::new(err_msg));
+                                }
+                                break;
+                            }
+
+                            // Point the final op at the converted handles and
+                            // route it to the target kernel via the common
+                            // execute path. `plan_output_repr` of the final op on
+                            // `plan.kernel` (=Mesh) becomes this op's produced
+                            // repr.
+                            substitute_op_parents(&mut geom_op, &substitution);
+                            (plan.kernel.clone(), plan_output_repr(registry, plan, operation))
                         }
                         None => {
                             // dispatch returned None: no registered kernel
@@ -3233,10 +3674,18 @@ impl Engine {
                                 // independent).
                                 (default_kernel_name.to_string(), Some(ReprKind::BRep))
                             } else {
+                                // Task 4050 step-8: report the op's actual
+                                // available reprs (not the hoisted v0.2
+                                // `{BRep}` triple). Both the demanded dispatch
+                                // AND the BRep fallback returned None here, so
+                                // `BRep` is the accurate "could not satisfy"
+                                // demand to surface.
+                                let available_reprs: Vec<ReprKind> =
+                                    available_for_op.iter().copied().collect();
                                 let diag = crate::dispatcher::no_kernel_chain_diagnostic(
                                     operation,
                                     ReprKind::BRep,
-                                    Engine::BUDGET_QUERY_TRIPLE_V02.2,
+                                    &available_reprs,
                                 )
                                 .with_label(DiagnosticLabel::new(
                                     realization_span,
@@ -3391,6 +3840,14 @@ impl Engine {
                                 id: handle.id,
                             });
                             realization_step_ids.push(handle.id);
+                            // Task 4050 step-8: keep `realization_step_reprs` in
+                            // lockstep with `realization_step_ids` — record this
+                            // op's produced repr so downstream ops derive their
+                            // `available` set from it. `op_produced_repr` may be
+                            // `None` only when a descriptor lacks the op (an
+                            // invariant violation); default to BRep so the
+                            // available-set derivation stays total.
+                            realization_step_reprs.push(op_produced_repr.unwrap_or(ReprKind::BRep));
                             // Capture the compiled op parallel to step_handles for
                             // post-loop classification (task 2982). Cleared on
                             // rollback below. Pushed last in this arm so all the
@@ -3454,6 +3911,11 @@ impl Engine {
                         id: GeometryHandleId::INVALID,
                     });
                     realization_step_ids.push(GeometryHandleId::INVALID);
+                    // Task 4050 step-8: keep the parallel repr Vec in lockstep on
+                    // the failed-compile sentinel path too (BRep placeholder; the
+                    // whole realization rolls back below, so this is never read as
+                    // a real produced repr).
+                    realization_step_reprs.push(ReprKind::BRep);
                     had_failure = true;
                 }
             }
@@ -3463,6 +3925,18 @@ impl Engine {
             had_failure || step_handles.len().saturating_sub(handle_start) < operations.len();
         if rolled_back {
             step_handles.truncate(handle_start);
+            // Task 4050 step-14: atomic intermediate-cache rollback. Drop every
+            // intermediate key this realization inserted (step-12) so a failed
+            // realization leaves NO cache entry behind — its handle truncation
+            // and its cache mutations roll back together (PRD §9 OQ9,
+            // provisional). `remove` is an exact-tolerance delete that no-ops on
+            // an absent key, so it is safe even if a key was never committed.
+            // The SUCCESS branch below deliberately does NOT drain this log: a
+            // completed realization's intermediates stay committed so later
+            // same-build realizations reuse them (step-11's reuse requirement).
+            for (entity, repr, tol) in &intermediate_cache_inserts {
+                realization_cache.remove(entity, *repr, *tol, NO_OPTIONS);
+            }
         } else {
             // Fully-successful realization. Three things land here, all keyed
             // on `step_handles[handle_start..].last()` so that an empty-ops
@@ -3580,14 +4054,19 @@ impl Engine {
                     named_steps.insert(name.to_string(), last);
                 }
                 if let (Some(tol), Some(_name)) = (demanded_tol, realization_name) {
-                    // **Amendment (suggestion #3)**: use the same `cache_repr`
-                    // local that the cache-hit short-circuit at the top of
-                    // this helper consulted, so the populate-side and the
-                    // lookup-side stay in sync when ζ/η extend the cache key
-                    // beyond `ReprKind::BRep`.
+                    // **Task 4050 step-10 (gap 4)**: key the INSERT on the
+                    // RESOLVED terminal repr (`last_produced_repr`), falling
+                    // back to `cache_repr` only when no op captured a repr. On
+                    // the non-fallback path resolved == demanded == cache_repr,
+                    // so the lookup and insert coincide and the next identical
+                    // build hits. On a fallback realization (demanded Mesh but
+                    // resolved BRep because no Mesh kernel was linked) this
+                    // stores at BRep, so a later Mesh lookup correctly MISSES
+                    // rather than handing back a BRep handle as if it were Mesh.
+                    let resolved_repr = last_produced_repr.unwrap_or(cache_repr);
                     realization_cache.insert(
                         &realization_id.entity,
-                        cache_repr,
+                        resolved_repr,
                         tol,
                         NO_OPTIONS,
                         last,
@@ -5249,6 +5728,68 @@ mod tests {
                 &mut self.kernel_error_out,
                 &mut self.realization_cache,
                 None,
+                // Task 4050 step-8: the existing single-kernel unit tests want
+                // the v0.2 BRep demand; the cross-kernel tests use `run_demand`.
+                ReprKind::BRep,
+                &mut self.dispatch_count,
+            );
+        }
+
+        /// Like [`Self::run`] but threads a caller-controlled `demanded_repr`,
+        /// `demanded_tol`, `realization_id`, and `realization_name` so the
+        /// conversion-executor / cache-unpin tests (task 4050 steps 7/9/11/13)
+        /// can drive a `Mesh` demand, name a realization for caching, and reuse
+        /// `self`'s shared `realization_cache` / `dispatch_count` across
+        /// sequential calls. `run` hard-codes `demanded_tol = None` /
+        /// `demanded_repr = BRep` / `TestEntity`, which the v0.2 single-kernel
+        /// tests want; the cross-kernel tests need all four under their own
+        /// control.
+        #[allow(clippy::too_many_arguments)]
+        fn run_demand(
+            &mut self,
+            kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
+            registry: &BTreeMap<String, &CapabilityDescriptor>,
+            default_kernel: &str,
+            ops: &[reify_compiler::CompiledGeometryOp],
+            realization_id: &RealizationNodeId,
+            realization_name: Option<&str>,
+            realization_span: SourceSpan,
+            demanded_repr: ReprKind,
+            demanded_tol: Option<f64>,
+        ) {
+            let values = ValueMap::new();
+            let functions: Vec<CompiledFunction> = vec![];
+            let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+            Engine::execute_realization_ops(
+                kernels,
+                registry,
+                default_kernel,
+                ops,
+                &[],
+                &values,
+                &functions,
+                &meta_map,
+                RealizationOutputs::new(
+                    &mut self.step_handles,
+                    &mut self.named_steps,
+                    &mut self.feature_tag_table,
+                    &mut self.topology_attribute_table,
+                    &mut self.swept_kind_table,
+                    &mut self.produced_repr_out,
+                ),
+                &mut self.diagnostics,
+                realization_id,
+                realization_name,
+                realization_span,
+                &mut self.kernel_error_out,
+                &mut self.realization_cache,
+                demanded_tol,
+                // Task 4050 step-8 (RED until landed): the new `demanded_repr`
+                // parameter, slotted next to `demanded_tol`. This extra
+                // argument is what makes the conversion-executor tests
+                // compile-fail RED until `execute_realization_ops` grows the
+                // parameter.
+                demanded_repr,
                 &mut self.dispatch_count,
             );
         }
@@ -6304,6 +6845,1188 @@ mod tests {
             errors.is_empty(),
             "behavior-preserved single-default path must not emit error diagnostics; got {:?}",
             errors,
+        );
+    }
+
+    // ── cross-kernel conversion executor tests (task 4050 step-7) ─────────────
+    //
+    // These drive the multi-stage conversion executor + the Mesh→BRep dispatch
+    // fallback landing in step-8. RED before step-8: `run_demand` calls
+    // `Engine::execute_realization_ops` with the not-yet-existing `demanded_repr`
+    // parameter, so the whole `mod tests` build fails to compile until step-8
+    // grows that parameter, wires the `dispatch(.., demanded_repr, ..).or_else(
+    // BRep)` fallback, and replaces the `Some(_) =>` deferred-error arm with the
+    // tessellate→ingest cross-kernel handoff.
+
+    /// occt-like counting kernel: `execute` / `query` / `export` delegate to an
+    /// inner [`MockGeometryKernel`] (so `PrimitiveBox` → BRep solid handles),
+    /// and `tessellate` bumps a shared counter before returning a trivial
+    /// single-triangle [`Mesh`] — the BRep→Mesh source projection the conversion
+    /// executor drives for each prior-stage input handle.
+    struct CountingTessellateKernel {
+        inner: reify_test_support::mocks::MockGeometryKernel,
+        tessellate_count: std::sync::Arc<std::sync::Mutex<usize>>,
+    }
+
+    impl reify_ir::GeometryKernel for CountingTessellateKernel {
+        fn execute(
+            &mut self,
+            op: &reify_ir::GeometryOp,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            self.inner.execute(op)
+        }
+
+        fn query(
+            &self,
+            q: &reify_ir::GeometryQuery,
+        ) -> Result<reify_ir::Value, reify_ir::QueryError> {
+            self.inner.query(q)
+        }
+
+        fn export(
+            &self,
+            handle: reify_ir::GeometryHandleId,
+            format: reify_ir::ExportFormat,
+            writer: &mut dyn std::io::Write,
+        ) -> Result<(), reify_ir::ExportError> {
+            self.inner.export(handle, format, writer)
+        }
+
+        fn tessellate(
+            &self,
+            _handle: reify_ir::GeometryHandleId,
+            _tolerance: f64,
+        ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
+            *self.tessellate_count.lock().unwrap() += 1;
+            Ok(reify_ir::Mesh {
+                vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                indices: vec![0, 1, 2],
+                normals: None,
+            })
+        }
+    }
+
+    /// manifold-like counting kernel: `ingest_mesh` bumps a shared counter and
+    /// returns a fresh handle (the BRep→Mesh target projection), and `execute`
+    /// bumps a shared counter (the final cross-kernel `BooleanUnion` op runs
+    /// here). `query` / `export` / `tessellate` delegate to an inner
+    /// [`MockGeometryKernel`]; only the union is ever routed here in the
+    /// fixtures, so the `execute` counter is the `BooleanUnion`-on-Manifold
+    /// count.
+    struct CountingManifoldKernel {
+        inner: reify_test_support::mocks::MockGeometryKernel,
+        ingest_count: std::sync::Arc<std::sync::Mutex<usize>>,
+        execute_count: std::sync::Arc<std::sync::Mutex<usize>>,
+        next_ingest_id: u64,
+    }
+
+    impl reify_ir::GeometryKernel for CountingManifoldKernel {
+        fn execute(
+            &mut self,
+            op: &reify_ir::GeometryOp,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            *self.execute_count.lock().unwrap() += 1;
+            self.inner.execute(op)
+        }
+
+        fn query(
+            &self,
+            q: &reify_ir::GeometryQuery,
+        ) -> Result<reify_ir::Value, reify_ir::QueryError> {
+            self.inner.query(q)
+        }
+
+        fn export(
+            &self,
+            handle: reify_ir::GeometryHandleId,
+            format: reify_ir::ExportFormat,
+            writer: &mut dyn std::io::Write,
+        ) -> Result<(), reify_ir::ExportError> {
+            self.inner.export(handle, format, writer)
+        }
+
+        fn tessellate(
+            &self,
+            handle: reify_ir::GeometryHandleId,
+            tolerance: f64,
+        ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
+            self.inner.tessellate(handle, tolerance)
+        }
+
+        fn ingest_mesh(
+            &mut self,
+            _mesh: &reify_ir::Mesh,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            *self.ingest_count.lock().unwrap() += 1;
+            let id = reify_ir::GeometryHandleId(self.next_ingest_id);
+            self.next_ingest_id += 1;
+            Ok(reify_ir::GeometryHandle { id, repr: None })
+        }
+    }
+
+    /// step-7(A) CONVERSION PATH (RED). With `demanded_repr = Mesh`, the
+    /// dispatcher routes the terminal `BooleanUnion` to the Mesh-capable
+    /// `"manifold"` kernel, preceded by a single BRep→Mesh conversion stage
+    /// carried by `"occt"`. The executor must, for each of the union's two BRep
+    /// input handles, `occt.tessellate` → Mesh then `manifold.ingest_mesh` →
+    /// handle, substitute the converted handles, and run the union on
+    /// `"manifold"`. Asserts the per-kernel call counts (2 / 2 / 1), the
+    /// terminal `KernelId::Manifold` handle, and `produced_repr == Mesh`.
+    #[test]
+    fn execute_realization_ops_conversion_path_tessellates_and_ingests_cross_kernel() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+        use reify_core::Type;
+        use reify_ir::{
+            CapabilityDescriptor, CompiledExpr, GeometryKernel, KernelId, Operation, ReprKind,
+        };
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        // Shared call counters, read back after the call via the Arc clones.
+        let tess_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let ingest_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let union_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+
+        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "occt".to_string(),
+            Box::new(CountingTessellateKernel {
+                inner: MockGeometryKernel::new(),
+                tessellate_count: std::sync::Arc::clone(&tess_count),
+            }),
+        );
+        kernels.insert(
+            "manifold".to_string(),
+            Box::new(CountingManifoldKernel {
+                inner: MockGeometryKernel::new(),
+                ingest_count: std::sync::Arc::clone(&ingest_count),
+                execute_count: std::sync::Arc::clone(&union_count),
+                next_ingest_id: 1000,
+            }),
+        );
+
+        // occt: (PrimitiveBox, BRep) + (Convert{BRep}, Mesh); manifold:
+        // (BooleanUnion, Mesh). For demanded = Mesh / available = {BRep} the
+        // dispatcher yields plan { kernel: "manifold", conversions:
+        // [(Occt, BRep, Mesh)] } for the union.
+        let desc_occt = CapabilityDescriptor {
+            supports: vec![
+                (Operation::PrimitiveBox, ReprKind::BRep),
+                (
+                    Operation::Convert {
+                        from: ReprKind::BRep,
+                    },
+                    ReprKind::Mesh,
+                ),
+            ],
+        };
+        let desc_manifold = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("occt".to_string(), &desc_occt);
+        registry.insert("manifold".to_string(), &desc_manifold);
+
+        // Two BRep primitives + one BooleanUnion consuming them.
+        let ops = vec![
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Union,
+                left: GeomRef::Step(0),
+                right: GeomRef::Step(1),
+            },
+        ];
+
+        let realization_id = RealizationNodeId::new("Cross", 0);
+        let mut state = DispatchTestState::default();
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &realization_id,
+            Some("Cross"),
+            SourceSpan::new(0, 0),
+            ReprKind::Mesh,
+            None,
+        );
+
+        // The cross-kernel handoff must succeed: no error diagnostics, no
+        // kernel_error_out.
+        let errors: Vec<_> = state
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, reify_core::Severity::Error))
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "cross-kernel conversion must not emit error diagnostics, got: {:?}",
+            errors
+        );
+        assert!(
+            state.kernel_error_out.is_none(),
+            "cross-kernel conversion must leave kernel_error_out None, got {:?}",
+            state.kernel_error_out
+        );
+
+        // (a) occt.tessellate fires once per BooleanUnion input handle = 2.
+        assert_eq!(
+            *tess_count.lock().unwrap(),
+            2,
+            "occt.tessellate must be called once per union input handle (2)"
+        );
+        // (b) manifold.ingest_mesh fires once per converted input = 2.
+        assert_eq!(
+            *ingest_count.lock().unwrap(),
+            2,
+            "manifold.ingest_mesh must be called once per converted input (2)"
+        );
+        // (c) manifold runs the final BooleanUnion exactly once.
+        assert_eq!(
+            *union_count.lock().unwrap(),
+            1,
+            "manifold must run the final BooleanUnion exactly once"
+        );
+
+        // The terminal pushed handle is a Manifold handle (plan.kernel).
+        let terminal = state
+            .step_handles
+            .last()
+            .expect("a terminal handle must be pushed on success");
+        assert_eq!(
+            terminal.kernel,
+            KernelId::Manifold,
+            "terminal handle must be tagged KernelId::Manifold, got {:?}",
+            terminal.kernel
+        );
+
+        // produced_repr surfaced as Mesh (plan_output_repr of the union on
+        // manifold).
+        assert_eq!(
+            state.produced_repr_out,
+            Some(ReprKind::Mesh),
+            "produced_repr_out must be Mesh for the cross-kernel realization"
+        );
+    }
+
+    /// step-7(B) FALLBACK CONTROL (RED) — pins design_decision 3. With
+    /// `demanded_repr = Mesh` but a registry that has NO Mesh-capable kernel for
+    /// the op (occt supports only `(PrimitiveBox, BRep)`), a lone PrimitiveBox
+    /// realization must NOT error: the Mesh dispatch returns `None`, the
+    /// executor falls back to a BRep dispatch, and the op runs on occt producing
+    /// a BRep handle. Without the fallback this would hit the strict
+    /// no-kernel-chain error arm and regress every Stl/Obj primitive export.
+    #[test]
+    fn execute_realization_ops_mesh_demand_falls_back_to_brep_when_no_mesh_kernel() {
+        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+        use reify_core::Type;
+        use reify_ir::{
+            CapabilityDescriptor, CompiledExpr, GeometryKernel, Operation, ReprKind,
+        };
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        let tess_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "occt".to_string(),
+            Box::new(CountingTessellateKernel {
+                inner: MockGeometryKernel::new(),
+                tessellate_count: std::sync::Arc::clone(&tess_count),
+            }),
+        );
+
+        // No Mesh-capable kernel for the op: a Mesh demand can't be satisfied and
+        // must fall back to BRep rather than error.
+        let desc_occt = CapabilityDescriptor {
+            supports: vec![(Operation::PrimitiveBox, ReprKind::BRep)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("occt".to_string(), &desc_occt);
+
+        let ops = vec![CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![
+                ("width".into(), mm_lit(10.0)),
+                ("height".into(), mm_lit(20.0)),
+                ("depth".into(), mm_lit(5.0)),
+            ],
+        }];
+
+        let realization_id = RealizationNodeId::new("Lone", 0);
+        let mut state = DispatchTestState::default();
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &realization_id,
+            Some("Lone"),
+            SourceSpan::new(0, 0),
+            ReprKind::Mesh,
+            None,
+        );
+
+        let errors: Vec<_> = state
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, reify_core::Severity::Error))
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "the Mesh→BRep fallback must not emit error diagnostics, got: {:?}",
+            errors
+        );
+        assert!(
+            state.kernel_error_out.is_none(),
+            "the Mesh→BRep fallback must not set kernel_error_out, got {:?}",
+            state.kernel_error_out
+        );
+        assert_eq!(
+            state.step_handles.len(),
+            1,
+            "the fallback must produce exactly one BRep handle from occt"
+        );
+        assert_eq!(
+            state.produced_repr_out,
+            Some(ReprKind::BRep),
+            "the fallback realization's produced_repr must be BRep"
+        );
+        assert_eq!(
+            *tess_count.lock().unwrap(),
+            0,
+            "the fallback path must not tessellate (no conversion stage runs)"
+        );
+    }
+
+    /// step-9 (RED): a NAMED Mesh-demanding conversion realization must cache
+    /// its terminal handle at `(entity, Mesh, tol)` so a second identical build
+    /// hits the cache short-circuit — `dispatch_count == 0`, the cached Manifold
+    /// terminal handle returned, `produced_repr == Mesh`, and the occt/manifold
+    /// call counters UNCHANGED (the whole realization short-circuits).
+    ///
+    /// RED before step-10: `cache_repr` is pinned to `ReprKind::BRep`, so the
+    /// post-loop INSERT keys the genuinely-Mesh terminal at the BRep slot and
+    /// the cache-hit short-circuit (which also keys on the pinned BRep) reports
+    /// `produced_repr == BRep` for the second build instead of `Mesh`.
+    #[test]
+    fn execute_realization_ops_mesh_realization_caches_and_hits_at_mesh_key() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+        use reify_core::Type;
+        use reify_ir::{
+            CapabilityDescriptor, CompiledExpr, GeometryKernel, KernelId, Operation, ReprKind,
+        };
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        let tess_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let ingest_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let union_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+
+        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "occt".to_string(),
+            Box::new(CountingTessellateKernel {
+                inner: MockGeometryKernel::new(),
+                tessellate_count: std::sync::Arc::clone(&tess_count),
+            }),
+        );
+        kernels.insert(
+            "manifold".to_string(),
+            Box::new(CountingManifoldKernel {
+                inner: MockGeometryKernel::new(),
+                ingest_count: std::sync::Arc::clone(&ingest_count),
+                execute_count: std::sync::Arc::clone(&union_count),
+                next_ingest_id: 1000,
+            }),
+        );
+
+        let desc_occt = CapabilityDescriptor {
+            supports: vec![
+                (Operation::PrimitiveBox, ReprKind::BRep),
+                (
+                    Operation::Convert {
+                        from: ReprKind::BRep,
+                    },
+                    ReprKind::Mesh,
+                ),
+            ],
+        };
+        let desc_manifold = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("occt".to_string(), &desc_occt);
+        registry.insert("manifold".to_string(), &desc_manifold);
+
+        let ops = vec![
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Union,
+                left: GeomRef::Step(0),
+                right: GeomRef::Step(1),
+            },
+        ];
+
+        let realization_id = RealizationNodeId::new("Cross", 0);
+        let tol = 0.001;
+        let mut state = DispatchTestState::default();
+
+        // ── First build: cold cache, full cross-kernel conversion. ──────────
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &realization_id,
+            Some("Cross"),
+            SourceSpan::new(0, 0),
+            ReprKind::Mesh,
+            Some(tol),
+        );
+        assert!(
+            state.dispatch_count > 0,
+            "first (cold-cache) build must dispatch, got {}",
+            state.dispatch_count
+        );
+        assert_eq!(
+            state.produced_repr_out,
+            Some(ReprKind::Mesh),
+            "first build produced_repr"
+        );
+        let terminal_1 = *state
+            .step_handles
+            .last()
+            .expect("first build must push a terminal handle");
+        assert_eq!(terminal_1.kernel, KernelId::Manifold);
+        let tess_after_1 = *tess_count.lock().unwrap();
+        let ingest_after_1 = *ingest_count.lock().unwrap();
+        let union_after_1 = *union_count.lock().unwrap();
+        assert_eq!((tess_after_1, ingest_after_1, union_after_1), (2, 2, 1));
+
+        // ── Reset the per-build instrumentation the way production does. ─────
+        state.dispatch_count = 0;
+        state.produced_repr_out = None;
+        state.reset_attribute_tables();
+
+        // ── Second build: identical inputs, SAME cache → full short-circuit. ─
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &realization_id,
+            Some("Cross"),
+            SourceSpan::new(0, 0),
+            ReprKind::Mesh,
+            Some(tol),
+        );
+        assert_eq!(
+            state.dispatch_count, 0,
+            "second build must hit the cache short-circuit (no dispatch), got {}",
+            state.dispatch_count
+        );
+        assert_eq!(
+            state.produced_repr_out,
+            Some(ReprKind::Mesh),
+            "second build must report the Mesh terminal repr from the cache, not BRep"
+        );
+        let terminal_2 = *state
+            .step_handles
+            .last()
+            .expect("second build must push the cached terminal handle");
+        assert_eq!(
+            terminal_2, terminal_1,
+            "second build must return the cached Manifold terminal handle"
+        );
+        assert_eq!(
+            *tess_count.lock().unwrap(),
+            tess_after_1,
+            "tessellate must be untouched on the cache hit"
+        );
+        assert_eq!(
+            *ingest_count.lock().unwrap(),
+            ingest_after_1,
+            "ingest_mesh must be untouched on the cache hit"
+        );
+        assert_eq!(
+            *union_count.lock().unwrap(),
+            union_after_1,
+            "the boolean union must be untouched on the cache hit"
+        );
+    }
+
+    /// step-9 control: a NAMED BRep-demanding realization still caches + hits at
+    /// `(entity, BRep, tol)` and reports `produced_repr == BRep`. This is the
+    /// backward-compat guard — it passes both before and after the step-10
+    /// `cache_repr` unpin, so it pins that the BRep path is unaffected.
+    #[test]
+    fn execute_realization_ops_brep_realization_caches_and_hits_at_brep_key() {
+        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+        use reify_core::Type;
+        use reify_ir::{
+            CapabilityDescriptor, CompiledExpr, GeometryKernel, Operation, ReprKind,
+        };
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        let tess_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "occt".to_string(),
+            Box::new(CountingTessellateKernel {
+                inner: MockGeometryKernel::new(),
+                tessellate_count: std::sync::Arc::clone(&tess_count),
+            }),
+        );
+
+        let desc_occt = CapabilityDescriptor {
+            supports: vec![(Operation::PrimitiveBox, ReprKind::BRep)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("occt".to_string(), &desc_occt);
+
+        let ops = vec![CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![
+                ("width".into(), mm_lit(10.0)),
+                ("height".into(), mm_lit(20.0)),
+                ("depth".into(), mm_lit(5.0)),
+            ],
+        }];
+
+        let realization_id = RealizationNodeId::new("Solid", 0);
+        let tol = 0.001;
+        let mut state = DispatchTestState::default();
+
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &realization_id,
+            Some("Solid"),
+            SourceSpan::new(0, 0),
+            ReprKind::BRep,
+            Some(tol),
+        );
+        assert!(state.dispatch_count > 0, "first build must dispatch");
+        assert_eq!(state.produced_repr_out, Some(ReprKind::BRep));
+        let terminal_1 = *state.step_handles.last().expect("a terminal handle");
+
+        state.dispatch_count = 0;
+        state.produced_repr_out = None;
+        state.reset_attribute_tables();
+
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &realization_id,
+            Some("Solid"),
+            SourceSpan::new(0, 0),
+            ReprKind::BRep,
+            Some(tol),
+        );
+        assert_eq!(
+            state.dispatch_count, 0,
+            "second BRep build must hit the cache short-circuit"
+        );
+        assert_eq!(
+            state.produced_repr_out,
+            Some(ReprKind::BRep),
+            "second BRep build must report BRep from the cache"
+        );
+        assert_eq!(
+            *state.step_handles.last().expect("a terminal handle"),
+            terminal_1,
+            "second BRep build must return the cached terminal handle"
+        );
+    }
+
+    /// Amendment (reviewer_comprehensive #1, perf regression): a NAMED
+    /// Mesh-demanding realization whose registry has NO Mesh-capable terminal
+    /// kernel falls back to a BRep dispatch (design_decision 3), RESOLVES to
+    /// BRep, and caches its terminal at `(entity, BRep, tol)`. A second
+    /// identical Mesh-demanding build must STILL hit that cache — via the BRep
+    /// fallback probe — so `dispatch_count == 0`, the cached BRep terminal
+    /// handle is returned, `produced_repr == BRep`, and `tessellate` stays at 0.
+    ///
+    /// This pins the fix for the regression where the cache_repr unpin keyed the
+    /// lookup at Mesh while the fell-back terminal was stored at BRep: without
+    /// the BRep fallback probe the second build's Mesh lookup would miss the
+    /// BRep entry and recompute the whole realization on every rebuild — the
+    /// dominant occt-only Stl/Obj production export path.
+    #[test]
+    fn execute_realization_ops_mesh_demand_resolved_brep_hits_cache_via_brep_fallback() {
+        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+        use reify_core::Type;
+        use reify_ir::{
+            CapabilityDescriptor, CompiledExpr, GeometryKernel, Operation, ReprKind,
+        };
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        let tess_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "occt".to_string(),
+            Box::new(CountingTessellateKernel {
+                inner: MockGeometryKernel::new(),
+                tessellate_count: std::sync::Arc::clone(&tess_count),
+            }),
+        );
+
+        // No Mesh-capable kernel for the op: a Mesh demand resolves only via the
+        // BRep fallback (design_decision 3) — the occt-only production config.
+        let desc_occt = CapabilityDescriptor {
+            supports: vec![(Operation::PrimitiveBox, ReprKind::BRep)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("occt".to_string(), &desc_occt);
+
+        let ops = vec![CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![
+                ("width".into(), mm_lit(10.0)),
+                ("height".into(), mm_lit(20.0)),
+                ("depth".into(), mm_lit(5.0)),
+            ],
+        }];
+
+        let realization_id = RealizationNodeId::new("FellBack", 0);
+        let tol = 0.001;
+        let mut state = DispatchTestState::default();
+
+        // ── First (cold) build: Mesh demand falls back to BRep, caches at BRep. ─
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &realization_id,
+            Some("FellBack"),
+            SourceSpan::new(0, 0),
+            ReprKind::Mesh,
+            Some(tol),
+        );
+        assert!(state.dispatch_count > 0, "first build must dispatch");
+        assert_eq!(
+            state.produced_repr_out,
+            Some(ReprKind::BRep),
+            "a Mesh demand with no Mesh kernel must resolve BRep (fallback)"
+        );
+        let terminal_1 = *state.step_handles.last().expect("a terminal handle");
+        assert_eq!(
+            *tess_count.lock().unwrap(),
+            0,
+            "the fallback path must not tessellate"
+        );
+
+        // ── Reset the per-build instrumentation the way production does. ────────
+        state.dispatch_count = 0;
+        state.produced_repr_out = None;
+        state.reset_attribute_tables();
+
+        // ── Second build: SAME Mesh demand → BRep fallback probe must HIT. ──────
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &realization_id,
+            Some("FellBack"),
+            SourceSpan::new(0, 0),
+            ReprKind::Mesh,
+            Some(tol),
+        );
+        assert_eq!(
+            state.dispatch_count, 0,
+            "second Mesh build must hit the cache via the BRep fallback probe, got {}",
+            state.dispatch_count
+        );
+        assert_eq!(
+            state.produced_repr_out,
+            Some(ReprKind::BRep),
+            "the fallback cache-hit must report the resolved BRep repr, not Mesh"
+        );
+        assert_eq!(
+            *state.step_handles.last().expect("a terminal handle"),
+            terminal_1,
+            "the fallback cache-hit must return the cached BRep terminal handle"
+        );
+        assert_eq!(
+            *tess_count.lock().unwrap(),
+            0,
+            "the cache hit must not tessellate"
+        );
+    }
+
+    /// step-11 (RED): intermediate caching + cross-realization reuse. After one
+    /// successful Mesh-demanding conversion realization (the step-7(A) fixture),
+    /// each BRep→Mesh intermediate produced by the conversion executor must be
+    /// present in the [`RealizationCache`] at `(intermediate_entity, Mesh,
+    /// per_stage_tol, NO_OPTIONS)`, where `intermediate_entity` is the
+    /// per-input cache-key entity (`"{entity}#conv-step{idx}"` — the input's
+    /// local step index makes it distinct-per-input AND stable across identical
+    /// rebuilds) and `per_stage_tol = per_stage_tolerance_for_plan(&plan, tol)`
+    /// for the single BRep→Mesh stage (`tol × 0.8`).
+    ///
+    /// A SECOND realization with the same entity + ops + tol but ANONYMOUS (no
+    /// name, so the whole-realization terminal cache short-circuit cannot fire —
+    /// it is gated on `realization_name.is_some()`) must reach the conversion
+    /// executor again and REUSE both cached intermediates: occt.tessellate and
+    /// manifold.ingest_mesh stay at the first realization's counts (2 / 2).
+    ///
+    /// RED before step-12: the conversion executor neither inserts intermediates
+    /// into the cache nor consults it before tessellating, so the presence
+    /// lookups miss (first assertion fails) and the anonymous second realization
+    /// re-tessellates + re-ingests (counts climb to 4 / 4).
+    #[test]
+    fn execute_realization_ops_conversion_intermediates_cache_and_reuse() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+        use reify_core::Type;
+        use reify_ir::{
+            CapabilityDescriptor, CompiledExpr, GeometryHandleId, GeometryKernel, KernelId,
+            Operation, ReprKind,
+        };
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        let tess_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let ingest_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let union_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+
+        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "occt".to_string(),
+            Box::new(CountingTessellateKernel {
+                inner: MockGeometryKernel::new(),
+                tessellate_count: std::sync::Arc::clone(&tess_count),
+            }),
+        );
+        kernels.insert(
+            "manifold".to_string(),
+            Box::new(CountingManifoldKernel {
+                inner: MockGeometryKernel::new(),
+                ingest_count: std::sync::Arc::clone(&ingest_count),
+                execute_count: std::sync::Arc::clone(&union_count),
+                next_ingest_id: 1000,
+            }),
+        );
+
+        let desc_occt = CapabilityDescriptor {
+            supports: vec![
+                (Operation::PrimitiveBox, ReprKind::BRep),
+                (
+                    Operation::Convert {
+                        from: ReprKind::BRep,
+                    },
+                    ReprKind::Mesh,
+                ),
+            ],
+        };
+        let desc_manifold = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("occt".to_string(), &desc_occt);
+        registry.insert("manifold".to_string(), &desc_manifold);
+
+        let ops = vec![
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Union,
+                left: GeomRef::Step(0),
+                right: GeomRef::Step(1),
+            },
+        ];
+
+        let realization_id = RealizationNodeId::new("Cross", 0);
+        let tol = 0.001;
+        let mut state = DispatchTestState::default();
+
+        // ── Realization 1: named, cold cache, full cross-kernel conversion. ──
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &realization_id,
+            Some("Cross"),
+            SourceSpan::new(0, 0),
+            ReprKind::Mesh,
+            Some(tol),
+        );
+        let errors: Vec<_> = state
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, reify_core::Severity::Error))
+            .collect();
+        assert!(errors.is_empty(), "realization 1 errors: {:?}", errors);
+        let tess_after_1 = *tess_count.lock().unwrap();
+        let ingest_after_1 = *ingest_count.lock().unwrap();
+        assert_eq!(
+            (tess_after_1, ingest_after_1, *union_count.lock().unwrap()),
+            (2, 2, 1),
+            "realization 1 must tessellate 2 inputs, ingest 2, run 1 union"
+        );
+
+        // The per-stage tolerance the executor used for the single BRep→Mesh
+        // stage (one conversion ⇒ `tol × 0.8`).
+        let per_stage_tol = per_stage_tolerance_for_plan(
+            &DispatchPlan {
+                kernel: "manifold".to_string(),
+                conversions: vec![(KernelId::Occt, ReprKind::BRep, ReprKind::Mesh)],
+            },
+            tol,
+        );
+
+        // Both intermediates are cached at `("Cross#conv-step{0,1}", Mesh,
+        // per_stage_tol, NO_OPTIONS)` — 2 distinct keys (the conversion source
+        // provenance is the input's local step index), each holding a genuinely-
+        // Mesh Manifold handle (the `manifold.ingest_mesh` result: ids 1000 /
+        // 1001 in tessellate order). The key format MUST match the executor's
+        // `conversion_intermediate_entity_id` (step-12).
+        let cached_0 = state.realization_cache.lookup(
+            "Cross#conv-step0",
+            ReprKind::Mesh,
+            per_stage_tol,
+            NO_OPTIONS,
+        );
+        assert!(
+            cached_0.is_some(),
+            "intermediate for input step 0 must be cached at (Cross#conv-step0, Mesh, per_stage_tol)"
+        );
+        let cached_0 = *cached_0.unwrap();
+        assert_eq!(
+            cached_0.kernel,
+            KernelId::Manifold,
+            "intermediate handle must be tagged Manifold (target kernel)"
+        );
+        assert_eq!(cached_0.id, GeometryHandleId(1000));
+
+        let cached_1 = state.realization_cache.lookup(
+            "Cross#conv-step1",
+            ReprKind::Mesh,
+            per_stage_tol,
+            NO_OPTIONS,
+        );
+        assert!(
+            cached_1.is_some(),
+            "intermediate for input step 1 must be cached at (Cross#conv-step1, Mesh, per_stage_tol)"
+        );
+        let cached_1 = *cached_1.unwrap();
+        assert_eq!(cached_1.kernel, KernelId::Manifold);
+        assert_eq!(cached_1.id, GeometryHandleId(1001));
+
+        // ── Realization 2: same entity + ops + tol, ANONYMOUS (no name) so the
+        //    whole-realization terminal short-circuit does NOT fire — the
+        //    conversion executor runs again and must REUSE both cached
+        //    intermediates rather than re-tessellate/re-ingest. ──
+        state.dispatch_count = 0;
+        state.produced_repr_out = None;
+        state.reset_attribute_tables();
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &realization_id,
+            None,
+            SourceSpan::new(0, 0),
+            ReprKind::Mesh,
+            Some(tol),
+        );
+        let errors: Vec<_> = state
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, reify_core::Severity::Error))
+            .collect();
+        assert!(errors.is_empty(), "realization 2 errors: {:?}", errors);
+        assert_eq!(
+            *tess_count.lock().unwrap(),
+            tess_after_1,
+            "the anonymous re-realization must REUSE cached intermediates — no extra tessellate"
+        );
+        assert_eq!(
+            *ingest_count.lock().unwrap(),
+            ingest_after_1,
+            "the anonymous re-realization must REUSE cached intermediates — no extra ingest_mesh"
+        );
+    }
+
+    /// manifold-like mock whose `ingest_mesh` SUCCEEDS (counting + fresh ids, so
+    /// the conversion executor produces and caches intermediates) but whose
+    /// `execute` (the final `BooleanUnion`) FAILS — driving the realization into
+    /// the rollback branch AFTER at least one intermediate was inserted. Used by
+    /// step-13 to pin atomic intermediate-cache rollback.
+    struct FailingUnionManifoldKernel {
+        ingest_count: std::sync::Arc<std::sync::Mutex<usize>>,
+        next_ingest_id: u64,
+    }
+
+    impl reify_ir::GeometryKernel for FailingUnionManifoldKernel {
+        fn execute(
+            &mut self,
+            _op: &reify_ir::GeometryOp,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            Err(reify_ir::GeometryError::OperationFailed(
+                "simulated union failure".into(),
+            ))
+        }
+
+        fn query(
+            &self,
+            _q: &reify_ir::GeometryQuery,
+        ) -> Result<reify_ir::Value, reify_ir::QueryError> {
+            Err(reify_ir::QueryError::QueryFailed(
+                "should not reach: execute always fails".into(),
+            ))
+        }
+
+        fn export(
+            &self,
+            _handle: reify_ir::GeometryHandleId,
+            _format: reify_ir::ExportFormat,
+            _writer: &mut dyn std::io::Write,
+        ) -> Result<(), reify_ir::ExportError> {
+            Err(reify_ir::ExportError::FormatError(
+                "should not reach: execute always fails".into(),
+            ))
+        }
+
+        fn tessellate(
+            &self,
+            _handle: reify_ir::GeometryHandleId,
+            _tolerance: f64,
+        ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
+            Err(reify_ir::TessError::TessellationFailed(
+                "should not reach: execute always fails".into(),
+            ))
+        }
+
+        fn ingest_mesh(
+            &mut self,
+            _mesh: &reify_ir::Mesh,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            *self.ingest_count.lock().unwrap() += 1;
+            let id = reify_ir::GeometryHandleId(self.next_ingest_id);
+            self.next_ingest_id += 1;
+            Ok(reify_ir::GeometryHandle { id, repr: None })
+        }
+    }
+
+    /// step-13 (RED): atomic intermediate-cache rollback. A Mesh-demanding
+    /// conversion realization whose final `BooleanUnion` execute FAILS (after
+    /// both BRep→Mesh intermediates were tessellated, ingested, and cached) must
+    /// roll back ATOMICALLY: (i) `step_handles` truncated back to `handle_start`
+    /// (no terminal handle leaked), and (ii) every intermediate cache entry the
+    /// realization inserted is REMOVED, so a later lookup misses rather than
+    /// returning a handle from a realization that never completed.
+    ///
+    /// RED before step-14: step-12 inserts the intermediates but the
+    /// `rolled_back` branch does not yet remove them, so the post-failure
+    /// lookups still HIT.
+    #[test]
+    fn execute_realization_ops_failed_conversion_rolls_back_intermediate_cache() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+        use reify_core::Type;
+        use reify_ir::{
+            CapabilityDescriptor, CompiledExpr, GeometryHandleId, GeometryKernel, KernelId,
+            Operation, ReprKind,
+        };
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        let tess_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let ingest_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+
+        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "occt".to_string(),
+            Box::new(CountingTessellateKernel {
+                inner: MockGeometryKernel::new(),
+                tessellate_count: std::sync::Arc::clone(&tess_count),
+            }),
+        );
+        kernels.insert(
+            "manifold".to_string(),
+            Box::new(FailingUnionManifoldKernel {
+                ingest_count: std::sync::Arc::clone(&ingest_count),
+                next_ingest_id: 1000,
+            }),
+        );
+
+        let desc_occt = CapabilityDescriptor {
+            supports: vec![
+                (Operation::PrimitiveBox, ReprKind::BRep),
+                (
+                    Operation::Convert {
+                        from: ReprKind::BRep,
+                    },
+                    ReprKind::Mesh,
+                ),
+            ],
+        };
+        let desc_manifold = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("occt".to_string(), &desc_occt);
+        registry.insert("manifold".to_string(), &desc_manifold);
+
+        let ops = vec![
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Union,
+                left: GeomRef::Step(0),
+                right: GeomRef::Step(1),
+            },
+        ];
+
+        let realization_id = RealizationNodeId::new("Cross", 0);
+        let tol = 0.001;
+        let mut state = DispatchTestState::default();
+        // Pre-seed a sentinel so we can assert truncation went back to exactly
+        // the pre-call length (handle_start = 1), not merely "emptied".
+        let sentinel = KernelHandle {
+            kernel: KernelId::Occt,
+            id: GeometryHandleId(0xCAFE),
+        };
+        state.step_handles.push(sentinel);
+
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &realization_id,
+            Some("Cross"),
+            SourceSpan::new(0, 0),
+            ReprKind::Mesh,
+            Some(tol),
+        );
+
+        // The realization must have FAILED at the union execute, AFTER both
+        // intermediates were produced (proving the rollback is non-vacuous).
+        assert!(
+            state.kernel_error_out.is_some(),
+            "the failing union must surface a kernel error"
+        );
+        assert_eq!(
+            *tess_count.lock().unwrap(),
+            2,
+            "both inputs must have been tessellated before the union failed"
+        );
+        assert_eq!(
+            *ingest_count.lock().unwrap(),
+            2,
+            "both intermediates must have been ingested (and cached) before the union failed"
+        );
+
+        // (i) step_handles truncated back to handle_start — only the sentinel
+        //     survives; no occt primitive handles and no terminal handle leaked.
+        assert_eq!(
+            state.step_handles.len(),
+            1,
+            "step_handles must truncate back to the pre-call length of 1"
+        );
+        assert_eq!(
+            state.step_handles[0], sentinel,
+            "the pre-existing sentinel must be preserved unchanged"
+        );
+
+        // (ii) the intermediate cache entries inserted during the failed
+        //      realization must be GONE.
+        let per_stage_tol = per_stage_tolerance_for_plan(
+            &DispatchPlan {
+                kernel: "manifold".to_string(),
+                conversions: vec![(KernelId::Occt, ReprKind::BRep, ReprKind::Mesh)],
+            },
+            tol,
+        );
+        assert!(
+            state
+                .realization_cache
+                .lookup("Cross#conv-step0", ReprKind::Mesh, per_stage_tol, NO_OPTIONS)
+                .is_none(),
+            "intermediate step-0 must be rolled out of the cache on realization failure"
+        );
+        assert!(
+            state
+                .realization_cache
+                .lookup("Cross#conv-step1", ReprKind::Mesh, per_stage_tol, NO_OPTIONS)
+                .is_none(),
+            "intermediate step-1 must be rolled out of the cache on realization failure"
         );
     }
 

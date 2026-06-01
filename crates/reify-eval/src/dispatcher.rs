@@ -552,6 +552,58 @@ pub fn per_stage_tolerance_for_plan(plan: &DispatchPlan, requested_tol: f64) -> 
     }
 }
 
+/// A v0.3-ε-executable projection for a single conversion stage `(from, to)`.
+///
+/// [`dispatch`] returns a [`DispatchPlan`] whose `conversions` chain names the
+/// reprs to cross *before* the final op runs, but it does not say *how* each
+/// crossing is performed. [`v03_conversion_projection`] is that bridge: it maps
+/// a `(from, to)` repr pair to the concrete kernel work the conversion executor
+/// must run.
+///
+/// v0.3 ε ships exactly one projection — `BRep → Mesh` via the source kernel's
+/// `GeometryKernel::tessellate` — so the enum has a single variant today. It is
+/// a closed enum (not a bare bool) so that future conversions (`Mesh → Sdf`,
+/// voxelisation, …) extend it by adding variants and rows to
+/// [`v03_conversion_projection`], with the executor's `match` forcing every
+/// call site to handle the new shape.
+// `#[allow(dead_code)]`: constructed/consumed only from `#[cfg(test)]` until the
+// conversion executor in `execute_realization_ops` wires it into the non-test
+// build path (task 4050 step-8). Mirrors the `compute_demanded_reprs`
+// "deferred to task 4050" precedent in engine_build.rs.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConversionProjection {
+    /// Tessellate the source kernel's BRep handle into a mesh — the only
+    /// `BRep → Mesh` realisation in v0.3 ε. The executor calls
+    /// `source_kernel.tessellate(handle, per_stage_tol)` to produce the mesh,
+    /// then hands it to the target kernel's `ingest_mesh`.
+    Tessellate,
+}
+
+/// Classifies a single conversion stage `(from, to)` into the v0.3-ε-executable
+/// [`ConversionProjection`], or `None` when ε cannot perform that crossing.
+///
+/// The conversion executor walks a [`DispatchPlan`]'s `conversions` chain and
+/// calls this for each `(from, to)` stage: a `Some(projection)` is run, while a
+/// `None` surfaces as the realization-failed diagnostic (NOT a panic) — the
+/// plan named a crossing the current ε slice cannot execute.
+///
+/// v0.3 ε supports exactly one crossing: `(BRep, Mesh) ⇒ Tessellate`. Every
+/// other ordered pair returns `None`. Adding a conversion to ε means adding a
+/// [`ConversionProjection`] variant and a row to the match below.
+// `#[allow(dead_code)]`: see [`ConversionProjection`] — wired into the non-test
+// build path by `execute_realization_ops` in task 4050 step-8.
+#[allow(dead_code)]
+pub(crate) fn v03_conversion_projection(
+    from: ReprKind,
+    to: ReprKind,
+) -> Option<ConversionProjection> {
+    match (from, to) {
+        (ReprKind::BRep, ReprKind::Mesh) => Some(ConversionProjection::Tessellate),
+        _ => None,
+    }
+}
+
 /// Ordered sequence of conversion stages: each entry is
 /// `(kernel, from_repr, to_repr)`, where `kernel` is the [`KernelId`] that
 /// performs that stage. Factored as a type alias to keep the internal BFS
@@ -1669,6 +1721,52 @@ mod tests {
             req * SAFETY_FACTOR,
             "single-conversion chain must return requested_tol × SAFETY_FACTOR (N=1 short-circuit)",
         );
+    }
+
+    /// Task 4050 (steps 5/6): [`v03_conversion_projection`] classifies a single
+    /// conversion stage `(from, to)` into the v0.3-ε-executable projection.
+    ///
+    /// ε supports exactly ONE conversion shape — `(BRep, Mesh)` ⇒ `Tessellate`
+    /// (the source kernel tessellates its BRep handle into a mesh, which the
+    /// target kernel then ingests via `ingest_mesh`). EVERY other ordered
+    /// `(from, to)` pair over the four [`ReprKind`] variants is NOT runnable in
+    /// ε and must classify as `None`, so the conversion executor surfaces it as
+    /// a realization-failed diagnostic rather than attempting (or panicking on)
+    /// an unsupported stage.
+    ///
+    /// Exhaustively pins all 16 ordered pairs: the one supported cell returns
+    /// `Some(Tessellate)`; the other 15 return `None`. A future ε that learns a
+    /// new conversion (e.g. `(Mesh, Voxel)`) must update this table explicitly.
+    #[test]
+    fn v03_conversion_projection_supports_only_brep_to_mesh_tessellate() {
+        use super::{ConversionProjection, v03_conversion_projection};
+
+        let all = [
+            ReprKind::BRep,
+            ReprKind::Mesh,
+            ReprKind::Sdf,
+            ReprKind::Voxel,
+        ];
+
+        for &from in &all {
+            for &to in &all {
+                let got = v03_conversion_projection(from, to);
+                if from == ReprKind::BRep && to == ReprKind::Mesh {
+                    assert_eq!(
+                        got,
+                        Some(ConversionProjection::Tessellate),
+                        "(BRep, Mesh) is the sole ε-executable stage and must \
+                         classify as the Tessellate projection",
+                    );
+                } else {
+                    assert_eq!(
+                        got, None,
+                        "({from:?}, {to:?}) is not ε-executable and must classify \
+                         as None (only BRep→Mesh is supported in v0.3 ε)",
+                    );
+                }
+            }
+        }
     }
 
     /// Pins the wire-contract of [`no_kernel_chain_diagnostic`]: the emitted

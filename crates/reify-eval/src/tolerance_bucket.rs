@@ -143,6 +143,42 @@ impl<V> ToleranceBucket<V> {
             .rev()
             .find_map(|(t, v)| if *t <= requested_tol { Some(v) } else { None })
     }
+
+    /// Removes and returns the value stored at *exactly* `tol`, or `None` if no
+    /// entry has that precise tolerance key.
+    ///
+    /// Unlike [`lookup`](Self::lookup) this is an **exact** match — NOT
+    /// partial-order satisfaction — because the caller (intermediate-cache
+    /// rollback, task 4050 step-14) must drop the specific entry it inserted at
+    /// a known tolerance, not the loosest satisfying one. The match mirrors how
+    /// [`insert`](Self::insert) positions by tolerance value: exact f64
+    /// equality on the key the rollback log recorded, which is recomputed by the
+    /// identical `per_stage_tolerance_for_plan` call (no derivation drift).
+    ///
+    /// Removing from a sorted-ascending `Vec` preserves the ordering invariant
+    /// assumed by [`lookup`](Self::lookup), so no re-sort is needed.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics when `tol` is `NaN`, infinite, or negative —
+    /// mirroring [`insert`](Self::insert) / [`lookup`](Self::lookup) so an
+    /// invalid key never reaches the equality scan.
+    pub fn remove(&mut self, tol: f64) -> Option<V> {
+        debug_assert!(
+            crate::tolerance_gate::is_valid_tolerance_si(tol),
+            "ToleranceBucket: tolerance must be finite and non-negative, got {tol}"
+        );
+        // Exact f64-key match is intentional here (see the doc above): the
+        // rollback removes the precise tolerance it inserted, recomputed
+        // identically, so value equality — not an epsilon/partial-order check —
+        // is correct. `clippy::float_cmp` would otherwise flag the `==`.
+        #[allow(clippy::float_cmp)]
+        let idx = self
+            .entries
+            .iter()
+            .position(|(cached_tol, _)| *cached_tol == tol)?;
+        Some(self.entries.remove(idx).1)
+    }
 }
 
 #[cfg(test)]
@@ -382,5 +418,103 @@ mod tests {
         // tighter request than cached entry — no satisfaction
         assert!(bucket.lookup(0.001).is_none());
         assert_eq!(bucket.len(), 1);
+    }
+
+    // ---- task 4050: ToleranceBucket::remove (exact-tolerance removal) ----
+    //
+    // `remove` underpins atomic intermediate-cache rollback (step-14): a failed
+    // realization must drop exactly the entries it inserted, keyed on the
+    // precise f64 tolerance used at insert. Unlike `lookup`/`insert` it is an
+    // EXACT match (no partial-order satisfaction), and the bucket's `entries`
+    // field is private, so the cache layer needs the bucket to expose `remove`.
+
+    #[test]
+    fn remove_returns_value_and_empties_bucket() {
+        let mut bucket = ToleranceBucket::<u32>::new();
+        assert!(bucket.insert(0.01, 7u32));
+        assert_eq!(bucket.len(), 1);
+
+        assert_eq!(
+            bucket.remove(0.01),
+            Some(7u32),
+            "remove must return the value stored at the exact tolerance"
+        );
+        assert_eq!(
+            bucket.len(),
+            0,
+            "bucket must be empty after removing its only entry"
+        );
+        assert!(
+            bucket.lookup(0.01).is_none(),
+            "the removed entry must no longer be found"
+        );
+    }
+
+    #[test]
+    fn remove_of_absent_tolerance_returns_none() {
+        // Removing a tolerance that was never inserted is a no-op returning
+        // None — both on an empty bucket and on a populated one (whose entry is
+        // left intact). This is the rollback-of-an-uninserted-key path.
+        let mut empty = ToleranceBucket::<u32>::new();
+        assert_eq!(empty.remove(0.5), None, "remove on an empty bucket returns None");
+
+        let mut bucket = ToleranceBucket::<u32>::new();
+        assert!(bucket.insert(0.01, 7u32));
+        assert_eq!(
+            bucket.remove(0.5),
+            None,
+            "remove of a never-inserted tolerance returns None"
+        );
+        assert_eq!(
+            bucket.len(),
+            1,
+            "a no-op remove must leave the bucket unchanged"
+        );
+        assert_eq!(
+            bucket.lookup(0.01),
+            Some(&7u32),
+            "the existing entry must remain after a no-op remove"
+        );
+    }
+
+    #[test]
+    fn remove_middle_entry_keeps_others_and_preserves_sorted_order() {
+        // Insert three successively-tightening tolerances (each strictly tighter
+        // than the prior, so all three land): entries == [0.001, 0.01, 0.1].
+        let mut bucket = ToleranceBucket::<&str>::new();
+        assert!(bucket.insert(0.1, "loose"));
+        assert!(bucket.insert(0.01, "mid"));
+        assert!(bucket.insert(0.001, "tight"));
+        assert_eq!(bucket.len(), 3);
+
+        // Remove the middle entry by its exact tolerance.
+        assert_eq!(bucket.remove(0.01), Some("mid"));
+        assert_eq!(bucket.len(), 2, "exactly one entry must be removed");
+
+        // The other two entries are intact and still reachable.
+        assert_eq!(bucket.lookup(0.001), Some(&"tight"));
+        assert_eq!(bucket.lookup(0.1), Some(&"loose"));
+        // The middle tolerance is gone: a request at exactly 0.01 now falls
+        // through to the tighter 0.001 entry (loosest-satisfying partial order).
+        assert_eq!(bucket.lookup(0.01), Some(&"tight"));
+
+        // The entries Vec remains sorted ascending. The child test module can
+        // read the private `entries` field directly; this mirrors the
+        // debug-invariant insert/lookup assert.
+        assert!(
+            bucket.entries.windows(2).all(|w| w[0].0 <= w[1].0),
+            "entries must remain sorted ascending after remove"
+        );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "tolerance must be finite and non-negative")]
+    fn remove_panics_on_nan_tolerance() {
+        // remove mirrors insert/lookup's precondition guard so a NaN key never
+        // reaches the f64 equality scan.
+        let mut bucket = ToleranceBucket::<u32>::new();
+        bucket.insert(0.01, 42u32);
+        bucket.remove(f64::NAN);
     }
 }
