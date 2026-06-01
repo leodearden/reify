@@ -124,3 +124,103 @@ fn interpolated_string_arithmetic_hole() {
         other => panic!("expected InterpolatedString, got {:?}", other),
     }
 }
+
+// ── step-5 RED: escape-decoding assertions ────────────────────────────────────
+
+/// `"tab\there {a} brace {{lit}}"` must decode to:
+///   [Literal("tab\there "), Hole(Ident "a"), Literal(" brace {lit}")]
+///
+/// Verifies: `\t` → tab, `{{` → `{`, `}}` → `}`.
+/// Fails until step-6 adds `decode_string_escapes`.
+#[test]
+fn escape_decoding_tab_and_doubled_braces() {
+    // The .ri source string: "tab\there {a} brace {{lit}}"
+    let source = "structure S { let v = \"tab\\there {a} brace {{lit}}\" }";
+    let expr = extract_let_value(source);
+    match &expr.kind {
+        ExprKind::InterpolatedString(parts) => {
+            assert_eq!(parts.len(), 3, "expected 3 parts, got {}: {:?}", parts.len(), parts);
+            match &parts[0] {
+                StringPart::Literal(s) => {
+                    assert_eq!(s, "tab\there ", "\\t not decoded to tab in part[0]")
+                }
+                other => panic!("expected Literal for part[0], got {:?}", other),
+            }
+            match &parts[1] {
+                StringPart::Hole(expr) => match &expr.kind {
+                    ExprKind::Ident(name) => assert_eq!(name, "a"),
+                    other => panic!("expected Ident(a) in Hole, got {:?}", other),
+                },
+                other => panic!("expected Hole for part[1], got {:?}", other),
+            }
+            match &parts[2] {
+                StringPart::Literal(s) => {
+                    assert_eq!(s, " brace {lit}", "{{/}} not decoded to braces in part[2]")
+                }
+                other => panic!("expected Literal for part[2], got {:?}", other),
+            }
+        }
+        other => panic!("expected InterpolatedString, got {:?}", other),
+    }
+}
+
+/// `"line\nend {a}"` must decode to [Literal("line\nend "), Hole(Ident "a")].
+///
+/// Verifies: `\n` → newline.
+/// Fails until step-6 adds `decode_string_escapes`.
+#[test]
+fn escape_decoding_newline() {
+    let source = "structure S { let v = \"line\\nend {a}\" }";
+    let expr = extract_let_value(source);
+    match &expr.kind {
+        ExprKind::InterpolatedString(parts) => {
+            assert_eq!(parts.len(), 2, "expected 2 parts, got {}: {:?}", parts.len(), parts);
+            match &parts[0] {
+                StringPart::Literal(s) => {
+                    assert_eq!(s, "line\nend ", "\\n not decoded to newline in part[0]")
+                }
+                other => panic!("expected Literal for part[0], got {:?}", other),
+            }
+            match &parts[1] {
+                StringPart::Hole(expr) => match &expr.kind {
+                    ExprKind::Ident(name) => assert_eq!(name, "a"),
+                    other => panic!("expected Ident(a) in Hole, got {:?}", other),
+                },
+                other => panic!("expected Hole for part[1], got {:?}", other),
+            }
+        }
+        other => panic!("expected InterpolatedString, got {:?}", other),
+    }
+}
+
+/// `"q\\b \"x\" {a}"` must decode to [Literal(`q\b "x" `), Hole(Ident "a")].
+///
+/// Verifies: `\\` → backslash, `\"` → quote.
+/// Fails until step-6 adds `decode_string_escapes`.
+#[test]
+fn escape_decoding_backslash_and_quote() {
+    // The .ri source string: "q\\b \"x\" {a}"
+    // After decoding: q\b "x" {then hole a}
+    let source = r#"structure S { let v = "q\\b \"x\" {a}" }"#;
+    let expr = extract_let_value(source);
+    match &expr.kind {
+        ExprKind::InterpolatedString(parts) => {
+            assert_eq!(parts.len(), 2, "expected 2 parts, got {}: {:?}", parts.len(), parts);
+            match &parts[0] {
+                StringPart::Literal(s) => {
+                    // decoded: q + backslash + b + space + quote + x + quote + space
+                    assert_eq!(s, "q\\b \"x\" ", "\\\\, \\\" not decoded correctly in part[0]")
+                }
+                other => panic!("expected Literal for part[0], got {:?}", other),
+            }
+            match &parts[1] {
+                StringPart::Hole(expr) => match &expr.kind {
+                    ExprKind::Ident(name) => assert_eq!(name, "a"),
+                    other => panic!("expected Ident(a) in Hole, got {:?}", other),
+                },
+                other => panic!("expected Hole for part[1], got {:?}", other),
+            }
+        }
+        other => panic!("expected InterpolatedString, got {:?}", other),
+    }
+}
