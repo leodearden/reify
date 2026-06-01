@@ -11,7 +11,7 @@
 
 #![allow(clippy::mutable_key_type)]
 
-use reify_core::{Severity, ValueCellId};
+use reify_core::{DiagnosticCode, Severity, ValueCellId};
 use reify_ir::Value;
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
@@ -35,6 +35,12 @@ fn parallelogram_source() -> &'static str {
 /// (same geometry as parallelogram; two stages in mirror-symmetric series).
 fn double_parallelogram_source() -> &'static str {
     include_str!("../../../examples/flexures/double_parallelogram.ri")
+}
+
+/// The yielding-cantilever worked-example source (t=0.05mm, L=2mm, forced ±10°
+/// declared range so σ(10°) ≈ 447MPa > 310MPa yield AND ±10° > ±5° PRB bound).
+fn yield_warning_source() -> &'static str {
+    include_str!("../../../examples/flexures/yield_warning.ri")
 }
 
 /// Look up `key` in a `Value::Map`, returning `None` for any other variant.
@@ -317,5 +323,107 @@ fn double_parallelogram_runs_end_to_end() {
             other => panic!("parasitic_error inner: expected Scalar, got {other:?}"),
         },
         other => panic!("expected parasitic_error Option(Some(Scalar)), got {other:?}"),
+    }
+}
+
+/// step-9 (RED→GREEN): the yielding-cantilever fixture surfaces the §5.3
+/// operating-stress diagnostics end-to-end.
+///
+/// `examples/flexures/yield_warning.ri` forces a ±10° declared operating range
+/// on a short, thin cantilever (t=0.05mm, L=2mm), so σ(10°) ≈ 447 MPa exceeds
+/// the 310 MPa steel yield AND the ±10° range exceeds the ±5° PRB bound. The
+/// eval pipeline must therefore emit `W_FlexureYielding` + `W_FlexurePrbOutOfRange`
+/// (both Warning) and exactly one `W_FlexureFatigueCheckMissing` (Info), while
+/// the ctor still returns a valid revolute joint whose cached compliance has
+/// `at_yield == true`.
+///
+/// RED until reify-expr's `FunctionCall` arm calls `flexure_diagnose` on the
+/// builtin result and pushes the diagnostics into the eval sink (step-10): today
+/// the constructor populates the cached record (so the joint / at_yield
+/// assertions already hold) but no flexure diagnostic ever reaches
+/// `eval_result.diagnostics`.
+#[test]
+fn yield_warning_surfaces_flexure_diagnostics_end_to_end() {
+    let compiled = parse_and_compile_with_stdlib(yield_warning_source());
+    let mut engine = make_simple_engine();
+    let eval_result = engine.eval(&compiled);
+
+    let with_code = |code: DiagnosticCode| -> Vec<_> {
+        eval_result
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(code))
+            .collect()
+    };
+
+    // W_FlexureYielding (Warning): peak surface stress at the declared ±10°
+    // endpoint exceeds the material yield.
+    let yielding = with_code(DiagnosticCode::FlexureYielding);
+    assert_eq!(
+        yielding.len(),
+        1,
+        "exactly one W_FlexureYielding; got diagnostics {:?}",
+        eval_result.diagnostics
+    );
+    assert_eq!(
+        yielding[0].severity,
+        Severity::Warning,
+        "FlexureYielding is a Warning"
+    );
+
+    // W_FlexurePrbOutOfRange (Warning): the forced ±10° range exceeds the ±5°
+    // pseudo-rigid-body small-deflection bound.
+    let oor = with_code(DiagnosticCode::FlexurePrbOutOfRange);
+    assert_eq!(
+        oor.len(),
+        1,
+        "exactly one W_FlexurePrbOutOfRange; got diagnostics {:?}",
+        eval_result.diagnostics
+    );
+    assert_eq!(
+        oor[0].severity,
+        Severity::Warning,
+        "FlexurePrbOutOfRange is a Warning"
+    );
+
+    // Exactly ONE W_FlexureFatigueCheckMissing (Info) — once per eval session.
+    let fatigue = with_code(DiagnosticCode::FlexureFatigueCheckMissing);
+    assert_eq!(
+        fatigue.len(),
+        1,
+        "exactly one Info W_FlexureFatigueCheckMissing; got diagnostics {:?}",
+        eval_result.diagnostics
+    );
+    assert_eq!(
+        fatigue[0].severity,
+        Severity::Info,
+        "FlexureFatigueCheckMissing is Info (advisory)"
+    );
+
+    // The flexure cell is still a valid revolute joint (not Undef) whose cached
+    // compliance record has at_yield == true.
+    let id = ValueCellId::new("YieldWarning", "pivot_flexure");
+    let flexure = eval_result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("YieldWarning.pivot_flexure cell missing from eval result"));
+    assert_eq!(
+        map_get(flexure, "kind"),
+        Some(&Value::String("revolute".to_string())),
+        "pivot_flexure is a valid revolute joint (not Undef); got {flexure:?}"
+    );
+    match map_get(flexure, "__flexure_compliance") {
+        Some(Value::StructureInstance(d)) => {
+            assert_eq!(
+                d.type_name, "FlexureCompliance",
+                "__flexure_compliance is a FlexureCompliance record"
+            );
+            assert_eq!(
+                d.fields.get(&"at_yield".to_string()),
+                Some(&Value::Bool(true)),
+                "the forced ±10° declared range drives at_yield true"
+            );
+        }
+        other => panic!("expected __flexure_compliance StructureInstance, got {other:?}"),
     }
 }
