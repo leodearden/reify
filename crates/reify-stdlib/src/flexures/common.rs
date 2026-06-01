@@ -30,6 +30,15 @@ pub(super) const FIXED_GUIDED_GAMMA: f64 = 12.0;
 /// small-deflection model degrades past ~0.1·L.
 pub(super) const SMALL_DEFLECTION_FRACTION: f64 = 0.1;
 
+/// Relative tolerance for the `FlexureCompliance.at_yield` stress check
+/// ([`make_compliance_record`]). A flexure operating at its auto
+/// yield-deflection endpoint sits exactly at yield by construction; the
+/// closed-form θ_yield→σ round-trip accrues ~1e-16 relative FP noise that can
+/// nudge `max_stress` a few ulps above yield. `at_yield` therefore flags only
+/// stresses past `yield·(1 + this)` — orders of magnitude below any genuine
+/// (≥10%) overshoot, orders of magnitude above the round-trip noise floor.
+const AT_YIELD_REL_TOL: f64 = 1e-9;
+
 /// Return a both-inclusive symmetric angle range `[−h, +h]` centred on zero.
 pub(super) fn symmetric_angle_range(half_width_rad: f64) -> Value {
     Value::range(
@@ -264,8 +273,10 @@ fn parse_declared_range_value(v: &Value, kind: &RangeKind) -> Option<f64> {
 /// - `prb_validity_range` → [`Value::Real`]: the SI half-angle (revolute) or
 ///   half-displacement (prismatic) of the auto-computed SAFE range (the bare
 ///   `Real` placeholder matches the `flexures.ri` `TODO(range-angle-type)`).
-/// - `at_yield` → [`Value::Bool`]: `max_stress ≥ yield` (always `false` when no
-///   yield stress is known).
+/// - `at_yield` → [`Value::Bool`]: `max_stress > yield·(1 + AT_YIELD_REL_TOL)`
+///   (strict, with a tiny relative tolerance so operating exactly at the
+///   yield-deflection endpoint — the SAFE-envelope boundary — is not flagged by
+///   FP round-trip noise). Always `false` when no yield stress is known.
 pub(super) fn make_compliance_record(
     effective_stiffness: f64,
     max_stress_si: f64,
@@ -279,7 +290,21 @@ pub(super) fn make_compliance_record(
         dimension: DimensionVector::PRESSURE,
     };
     let (yield_margin, at_yield) = match yield_si {
-        Some(y) => ((y - max_stress_si) / y, max_stress_si >= y),
+        // `at_yield` is STRICT and carries a small relative tolerance: a flexure
+        // operating AT its yield-deflection endpoint is at the SAFE-envelope
+        // boundary (max_stress == yield by construction), not over it. The
+        // yield-capped families (notch) and the fixed-guided compound stages sit
+        // exactly there at their auto endpoint, and the closed-form round-trip
+        // (θ_yield → σ(θ_yield)) accrues ~1e-16 relative FP noise that can nudge
+        // max_stress a few ulps ABOVE yield. The `(1 + AT_YIELD_REL_TOL)` band
+        // absorbs that noise so safe defaults are never flagged, while a genuine
+        // overshoot (a declared range past the safe bound — ≥10% over in every
+        // fixture) clears it by orders of magnitude. yield_margin stays the exact
+        // signed `(yield − max_stress)/yield` (≈0 at the boundary).
+        Some(y) => (
+            (y - max_stress_si) / y,
+            max_stress_si > y * (1.0 + AT_YIELD_REL_TOL),
+        ),
         // No yield datum: maximally-safe sentinel margin, never "at yield".
         None => (1.0, false),
     };

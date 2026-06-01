@@ -3,10 +3,10 @@
 //!
 //! - `cantilever_beam_prb_runs_end_to_end`: compiles and evals
 //!   `examples/flexures/cantilever_beam_prb.ri` (PRD §10.1 row 1), checks
-//!   diagnostic-clean and spring_rate within 1% of Howell k_θ = 2.65·E·I/L.
+//!   Error-clean and spring_rate within 1% of Howell k_θ = 2.65·E·I/L.
 //! - `notch_hinge_circular_prb_runs_end_to_end`: compiles and evals
 //!   `examples/flexures/notch_hinge_circular_prb.ri` (PRD §10.1 row 2), checks
-//!   diagnostic-clean and spring_rate within 2% of Paros-Weisbord
+//!   Error-clean and spring_rate within 2% of Paros-Weisbord
 //!   k_θ = 2·E·b·t^2.5/(9π·r^0.5).
 
 #![allow(clippy::mutable_key_type)]
@@ -57,7 +57,9 @@ fn cantilever_beam_prb_runs_end_to_end() {
     let mut engine = make_simple_engine();
     let eval_result = engine.eval(&compiled);
 
-    // The example must be diagnostic-clean — γ emits no diagnostics.
+    // The example must be Error-clean. λ adds a standing once-per-session Info
+    // W_FlexureFatigueCheckMissing advisory to every PRB ctor, so the example is
+    // no longer strictly diagnostic-free — but it emits no Error severity.
     let errors: Vec<_> = eval_result
         .diagnostics
         .iter()
@@ -102,7 +104,7 @@ fn cantilever_beam_prb_runs_end_to_end() {
 /// step-13: RED→GREEN — parallelogram stage end-to-end (§10.1 row 3).
 ///
 /// Compiles and evals `examples/flexures/parallelogram_stage.ri`, asserts
-/// diagnostic-clean, and checks the §10.1 row-3 producer signal:
+/// Error-clean, and checks the §10.1 row-3 producer signal:
 /// - spring_rate within 1% of 48·E·I/L³
 /// - transverse_stiffness / spring_rate ≥ 1000 (stiffness ratio)
 /// - parasitic_error < L/1000
@@ -191,7 +193,9 @@ fn notch_hinge_circular_prb_runs_end_to_end() {
     let mut engine = make_simple_engine();
     let eval_result = engine.eval(&compiled);
 
-    // The example must be diagnostic-clean — δ emits no diagnostics.
+    // The example must be Error-clean. λ adds a standing once-per-session Info
+    // W_FlexureFatigueCheckMissing advisory to every PRB ctor, so the example is
+    // no longer strictly diagnostic-free — but it emits no Error severity.
     let errors: Vec<_> = eval_result
         .diagnostics
         .iter()
@@ -236,7 +240,7 @@ fn notch_hinge_circular_prb_runs_end_to_end() {
 /// step-14: RED→GREEN — double-parallelogram end-to-end (§10.1 row 4).
 ///
 /// Compiles and evals `examples/flexures/double_parallelogram.ri`, asserts
-/// diagnostic-clean, and checks the §10.1 row-4 producer signal:
+/// Error-clean, and checks the §10.1 row-4 producer signal:
 /// - spring_rate within 1% of 24·E·I/L³ (series-halved)
 /// - parasitic_error < L/100000 (mirror-cancellation, 4+ orders better than single)
 #[test]
