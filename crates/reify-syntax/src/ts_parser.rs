@@ -2253,14 +2253,16 @@ impl<'a> Lowering<'a> {
     /// `keyed_member_block` lowering (task 3929) — both block forms parse via the same
     /// `specialization_body` grammar rule and both lower via this helper.
     ///
-    /// Dispatch strategy (mirrors the pre-extracted inline logic in `lower_sub`):
-    /// - `_member` children → `lower_member` (single source of truth).
-    /// - `param_assignment` children → silently skipped for now.
-    ///   TODO(task 3573): lower param_assignment once a MemberDecl variant or
-    ///   let-rewrite is decided for the `name = value where?` form.
-    ///   Exception: `auto_keyword` values invoke `lower_binding_value` for
-    ///   centralised auto-keyword tracking (β = task 3804, PRD §4.2), but
-    ///   the result is discarded until γ = task 3806 wires the AST plumbing.
+    /// Dispatch strategy:
+    /// - `_member` children → lowered via `lower_member` and returned (single
+    ///   source of truth for member lowering).
+    /// - `param_assignment` children → collected into `spec_param_overrides` by
+    ///   the caller `lower_sub` (task 3806, PRD §4.2).  This helper itself skips
+    ///   the param_assignment children and returns only the `_member` MemberDecls.
+    ///   Exception: `auto_keyword` values in param_assignments invoke
+    ///   `lower_binding_value` here for centralised auto-keyword tracking
+    ///   (β = task 3804, PRD §4.2); the binding-value result is otherwise unused
+    ///   by this helper.
     fn lower_specialization_body_members(&mut self, body_node: tree_sitter::Node) -> Vec<MemberDecl> {
         let mut members = Vec::new();
         let mut cursor = body_node.walk();
