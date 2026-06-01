@@ -259,6 +259,17 @@ pub(crate) fn substitute_expr(
                 .map(|(f, v)| (f.clone(), substitute_expr(v, bindings)))
                 .collect(),
         },
+        ExprKind::InterpolatedString(parts) => ExprKind::InterpolatedString(
+            parts
+                .iter()
+                .map(|p| match p {
+                    reify_ast::StringPart::Literal(s) => reify_ast::StringPart::Literal(s.clone()),
+                    reify_ast::StringPart::Hole(e) => {
+                        reify_ast::StringPart::Hole(Box::new(substitute_expr(e, bindings)))
+                    }
+                })
+                .collect(),
+        ),
     };
     Expr {
         kind: new_kind,

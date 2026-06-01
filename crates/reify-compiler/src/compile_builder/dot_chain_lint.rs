@@ -478,6 +478,14 @@ fn walk_expr_depth(expr: &Expr, diagnostics: &mut Vec<Diagnostic>, depth: usize)
                 walk_expr_depth(v, diagnostics, next);
             }
         }
+        // InterpolatedString — recurse into each Hole expr; Literal parts are leaves.
+        ExprKind::InterpolatedString(parts) => {
+            for part in parts {
+                if let reify_ast::StringPart::Hole(e) = part {
+                    walk_expr_depth(e, diagnostics, next);
+                }
+            }
+        }
         // Leaf expressions — no children. `EnumAccess`, like `IndexAccess` and
         // `FunctionCall`, acts as a chain root simply by virtue of not being
         // `ExprKind::MemberAccess` — chain detection in the MemberAccess arm

@@ -28,8 +28,8 @@ pub mod decl;
 // Flat re-export so code using `reify_ast::Expr` (etc.) resolves alongside the
 // module-path form `reify_ast::ast::Expr`.
 pub use ast::{
-    DimOp, Expr, ExprKind, LambdaParam, MatchArm, MatchPattern, QuantifierKind, TypeExpr,
-    TypeExprKind, UnitExpr,
+    DimOp, Expr, ExprKind, LambdaParam, MatchArm, MatchPattern, QuantifierKind, StringPart,
+    TypeExpr, TypeExprKind, UnitExpr,
 };
 
 // ── declaration AST flat re-exports ─────────────────────────────────────────

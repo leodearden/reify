@@ -652,6 +652,14 @@ fn walk_expr_depth(
                 walk_expr_depth(v, frames, diagnostics, next);
             }
         }
+        // InterpolatedString — recurse into each Hole expr; Literal parts are leaves.
+        ExprKind::InterpolatedString(parts) => {
+            for part in parts {
+                if let reify_ast::StringPart::Hole(e) = part {
+                    walk_expr_depth(e, frames, diagnostics, next);
+                }
+            }
+        }
         // Leaf expressions — no children.
         ExprKind::NumberLiteral { .. }
         | ExprKind::QuantityLiteral { .. }
