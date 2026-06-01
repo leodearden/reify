@@ -4,7 +4,7 @@
 // orientations) and attached as metadata; user `.ri` sources only need to
 // reference these names — no fields are required for conformance.
 //
-// Reference: docs/reify-stdlib-reference.md §3.10. Scope: marker traits only.
+// Reference: docs/reify-stdlib-reference.md §3.10. Scope: marker traits and orientation enums.
 // §3.10's `Geometry` / `Transformable` supertraits and the Plane / Axis /
 // BoundingBox structures (with helpers like plane_xy) are deferred to a
 // follow-up task.
@@ -78,3 +78,9 @@ trait Watertight : Closed + Manifold {}
 // value eval), bypassing the conformance-query surface entirely. We follow
 // the same convention as constructors like `box`/`cylinder` (also recognised
 // by name in `units.rs::GEOMETRY_FUNCTION_NAMES`, not declared here).
+
+// ── Enumerations ────────────────────────────────────────────────────────────
+
+// The six Tait-Bryan rotation-sequence conventions accepted by orient_euler /
+// orient_to_euler. Use as: orient_euler(EulerConvention.XYZ, a, b, c).
+enum EulerConvention { XYZ, XZY, YXZ, YZX, ZXY, ZYX }
