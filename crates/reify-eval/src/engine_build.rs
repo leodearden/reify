@@ -4130,6 +4130,11 @@ impl Engine {
     /// `functions` / `meta_map` build the `EvalContext` that
     /// `post_process_geometry_queries` uses to recompute nested geometry-query
     /// expressions (GHR-ζ step-10, e.g. `mass = volume(g) * material.density`).
+    //
+    // `functions` + `meta_map` (added by GHR-ζ for the geometry-query EvalContext)
+    // push this consolidator to 8 args; matches the sibling post-process helpers'
+    // allow (e.g. post_process_geometry_handle_cells at line 3694).
+    #[allow(clippy::too_many_arguments)]
     fn run_post_processes(
         template: &reify_compiler::TopologyTemplate,
         named_steps: &HashMap<String, GeometryHandleId>,
