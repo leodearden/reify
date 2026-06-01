@@ -2,10 +2,21 @@
 //! (`docs/prds/v0_3/rigid-body-dynamics.md` §5 / task RBD-η, Phase 4).
 //!
 //! This module is the `Value`-marshalling half of the dynamics surface: it
-//! extracts `Value`s into the pure-`f64` `RneaLink` / KKT inputs consumed by
-//! the [`crate::dynamics::rnea`] and [`crate::dynamics::closed_chain`] cores,
-//! invokes them, and reshapes the result `τ` back into registry-free
-//! `JointForce` / `MotionTrajectory` `Value::StructureInstance`s.
+//! extracts `Value`s into the pure-`f64` `RneaLink` inputs consumed by the
+//! [`crate::dynamics::rnea`] open-chain RNEA core, invokes it, and reshapes the
+//! result `τ` back into registry-free `JointForce` / `MotionTrajectory`
+//! `Value::StructureInstance`s.
+//!
+//! **Open-chain only — closed-chain routing is deferred to task 4146.** The
+//! open-chain path (`inverse_dynamics_at_snapshot`, the trajectory variant
+//! `inverse_dynamics`, and `ramp_profile`) is complete and GREEN. Routing
+//! closed mechanisms (marshalling `M` / `τ_open` / the loop Jacobian `A` into
+//! [`crate::dynamics::closed_chain`]) is NOT wired here: the
+//! `Value`→`closed_chain` bridge needs a per-body-DOF incidence map and an
+//! effective-rank reduction of `A` that this task (RBD-η, 3836) did not design,
+//! and its only real correctness check (the `closed_4bar_idyn.ri` virtual-work
+//! e2e) was deferred — so both are carried to task 4146 rather than landed
+//! behind a finiteness-only test. Closed mechanisms are not yet routed.
 //!
 //! **Why this lives in `reify-stdlib`, not `reify-eval/src/dynamics_ops.rs`.**
 //! `joints::motion_subspace_columns` is `pub(crate)` and the RNEA / closed-chain
@@ -20,8 +31,8 @@
 //! The recognised intrinsic names are:
 //!   * `ramp_profile_lower`                  — trajectory generator (step-2)
 //!   * `inverse_dynamics_at_snapshot_lower`  — open-chain snapshot RNEA (step-6)
-//!   * `inverse_dynamics_lower`              — trajectory variant (step-8)
-//!     (closed-chain routing layered into the snapshot core, step-10)
+//!   * `inverse_dynamics_lower`              — trajectory variant (step-8;
+//!     open-chain only — closed-chain routing deferred to task 4146)
 
 use crate::dynamics::rnea::{default_gravity, inverse_dynamics_open_chain, RneaLink};
 use crate::dynamics::spatial::{Frame3, SpatialTransform6, SpatialVector6};
@@ -76,8 +87,9 @@ pub(crate) fn eval_dynamics(name: &str, args: &[Value]) -> Option<Value> {
             Some(eval_inverse_dynamics_at_snapshot(args))
         }
         "inverse_dynamics_lower" => Some(eval_inverse_dynamics(args)),
-        // Closed-chain routing layered into the snapshot core lands in
-        // RBD-η step-10.
+        // Closed-chain routing (assembling the loop Jacobian `A` / `M` /
+        // `τ_open` for `dynamics::closed_chain`) is deferred to task 4146;
+        // the open-chain path above handles open mechanisms only.
         _ => None,
     }
 }
