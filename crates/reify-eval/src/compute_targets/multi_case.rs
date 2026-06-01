@@ -122,6 +122,14 @@ pub fn solve_multi_case_trampoline(
     let mut accumulated_diagnostics: Vec<Diagnostic> = Vec::new();
 
     for case_val in cases.iter() {
+        // Cooperative cancellation: allow long batches to be interrupted between
+        // sub-solves.  `solve_elastic_static_trampoline` ignores its own
+        // cancellation handle, so this loop is the only place a multi-case
+        // solve can be interrupted before completion.
+        if cancellation.is_cancelled() {
+            return ComputeOutcome::Cancelled;
+        }
+
         // ── Extract LoadCase fields ───────────────────────────────────────────
         let data = match case_val {
             Value::StructureInstance(d) => d,
@@ -205,11 +213,26 @@ pub fn solve_multi_case_trampoline(
         match outcome {
             ComputeOutcome::Completed { result, diagnostics: case_diags, .. } => {
                 accumulated_diagnostics.extend(case_diags);
-                inner.insert(Value::String(name), result);
+                let key = Value::String(name.clone());
+                if inner.contains_key(&key) {
+                    // Duplicate case name: emit a warning so the user can
+                    // correct it; we overwrite the earlier result (matching
+                    // BTreeMap::insert semantics) rather than silently losing it.
+                    accumulated_diagnostics.push(Diagnostic::warning(format!(
+                        "solve_load_cases (solver::multi_case): duplicate LoadCase \
+                         name \"{name}\" — the earlier result for this case is \
+                         overwritten; this is almost certainly a user error"
+                    )));
+                }
+                inner.insert(key, result);
             }
             ComputeOutcome::Cancelled => return ComputeOutcome::Cancelled,
             ComputeOutcome::Failed { diagnostics: fail_diags } => {
-                return ComputeOutcome::Failed { diagnostics: fail_diags };
+                // Prepend any warnings collected from earlier completed cases so
+                // they are not silently discarded along with the failure.
+                let mut all_diags = accumulated_diagnostics;
+                all_diags.extend(fail_diags);
+                return ComputeOutcome::Failed { diagnostics: all_diags };
             }
         }
     }

@@ -423,36 +423,16 @@ fn multi_case_second_eval_reuses_compute_result() {
     let compiled = parse_and_compile_with_stdlib(TWO_CASE_SOURCE);
 
     let mut engine = make_simple_engine();
-    // Register only the counting wrapper for "solver::multi_case".
-    // We also need "solver::elastic_static" for the per-case sub-solves;
-    // register it via register_compute_fns FIRST then override multi_case.
-    // To avoid double-registration panic, register elastic_static directly.
+    // Register only what TWO_CASE_SOURCE actually exercises:
+    //   - "solver::elastic_static"  for the per-case sub-solves
+    //   - "solver::multi_case"      as the counting wrapper
+    // Registering only these two keeps the test minimal and intention-revealing;
+    // it does not drift with register_compute_fns internals and avoids
+    // double-registration panics.
     engine.register_compute_fn(
         "solver::elastic_static",
         reify_eval::compute_targets::elastic_static::solve_elastic_static_trampoline as ComputeFn,
     );
-    engine.register_compute_fn(
-        "solver::buckling",
-        reify_eval::compute_targets::buckling::solve_buckling_trampoline as ComputeFn,
-    );
-    engine.register_compute_fn(
-        "solver::form_find",
-        reify_eval::compute_targets::form_find::solve_form_find_trampoline as ComputeFn,
-    );
-    engine.register_compute_fn(
-        "modal::free_vibration",
-        reify_eval::modal_ops::solve_modal_analysis_trampoline as ComputeFn,
-    );
-    engine.register_compute_fn(
-        "modal::transient_response",
-        reify_eval::modal_ops::solve_transient_response_trampoline as ComputeFn,
-    );
-    engine.register_compute_fn(
-        "modal::displacement_at",
-        reify_eval::modal_ops::displacement_at_trampoline as ComputeFn,
-    );
-    // Register the counting wrapper for "solver::multi_case" (bypassing
-    // register_compute_fns so the engine holds exactly one registration).
     engine.register_compute_fn("solver::multi_case", mc_counting_wrapper as ComputeFn);
 
     // ── First eval: trampoline dispatched once (cold start) ───────────────────
