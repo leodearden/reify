@@ -75,8 +75,9 @@ pub(crate) fn eval_dynamics(name: &str, args: &[Value]) -> Option<Value> {
         "inverse_dynamics_at_snapshot_lower" => {
             Some(eval_inverse_dynamics_at_snapshot(args))
         }
-        // inverse_dynamics_lower (trajectory variant) + closed-chain routing
-        // land in RBD-η steps 8/10.
+        "inverse_dynamics_lower" => Some(eval_inverse_dynamics(args)),
+        // Closed-chain routing layered into the snapshot core lands in
+        // RBD-η step-10.
         _ => None,
     }
 }
@@ -588,6 +589,109 @@ fn make_joint_force(joint_id: i64, value: Value) -> Value {
             ("value".to_string(), value),
         ],
     )
+}
+
+// ── inverse_dynamics — trajectory variant (RBD-η step-8) ──────────────────────
+
+/// `inverse_dynamics_lower(mechanism, trajectory)` — RNEA inverse dynamics over
+/// a whole `MotionTrajectory` (PRD §5.2). For each `TrajectorySample` it bakes
+/// the sample's joint positions into an FK snapshot, then drives the shared
+/// open-chain core ([`snapshot_inverse_dynamics`]) with the sample's velocities
+/// / accelerations. Returns a `List<List<JointForce>>` parallel to
+/// `trajectory.samples`, or `Value::Undef` on any malformed input.
+fn eval_inverse_dynamics(args: &[Value]) -> Value {
+    if args.len() != 2 {
+        return Value::Undef;
+    }
+    let mechanism = &args[0];
+    let samples = match trajectory_samples(&args[1]) {
+        Some(s) => s,
+        None => return Value::Undef,
+    };
+    let mut out = Vec::with_capacity(samples.len());
+    for sample in samples {
+        let (values, vels, accels) = match sample_fields(sample) {
+            Some(t) => t,
+            None => return Value::Undef,
+        };
+        // Bake the sample's joint positions into an FK snapshot, then run the
+        // shared snapshot core with the sample's q̇ / q̈. Mass properties are
+        // re-read per sample from `body.solid` inside the core; they are
+        // trajectory-invariant, so this is redundant work the small fixtures
+        // don't notice — a future optimisation can hoist the MassProperties
+        // extraction across samples.
+        let snapshot = match snapshot_for_sample(mechanism, values) {
+            Some(s) => s,
+            None => return Value::Undef,
+        };
+        let forces = match snapshot_inverse_dynamics(mechanism, &snapshot, vels, accels) {
+            Some(f) => f,
+            None => return Value::Undef,
+        };
+        out.push(Value::List(forces));
+    }
+    Value::List(out)
+}
+
+/// Read the `samples` list of a `MotionTrajectory` `Value::StructureInstance`.
+fn trajectory_samples(traj: &Value) -> Option<&[Value]> {
+    match instance_field(traj, "MotionTrajectory", "samples")? {
+        Value::List(s) => Some(s.as_slice()),
+        _ => None,
+    }
+}
+
+/// Read a `TrajectorySample`'s `(values, vels, accels)` fields. `values` is a
+/// slice (one joint position per body, consumed to build the snapshot); `vels` /
+/// `accels` are the raw `List` `Value`s the snapshot core slices flat-per-DOF.
+fn sample_fields(sample: &Value) -> Option<(&[Value], &Value, &Value)> {
+    let values = match instance_field(sample, "TrajectorySample", "values")? {
+        Value::List(v) => v.as_slice(),
+        _ => return None,
+    };
+    let vels = instance_field(sample, "TrajectorySample", "vels")?;
+    let accels = instance_field(sample, "TrajectorySample", "accels")?;
+    Some((values, vels, accels))
+}
+
+/// Read a named field from a `Value::StructureInstance`, gated on `type_name`.
+fn instance_field<'a>(v: &'a Value, type_name: &str, member: &str) -> Option<&'a Value> {
+    match v {
+        Value::StructureInstance(d) if d.type_name == type_name => d.fields.get(member),
+        _ => None,
+    }
+}
+
+/// Build an FK snapshot for one trajectory sample: bind each mechanism body's
+/// `at` joint to the corresponding `values` entry (one joint position per body,
+/// in `bodies` order), then call the `snapshot` builder. Returns `None` on a
+/// values/bodies length mismatch or an FK failure (e.g. an unbindable value).
+fn snapshot_for_sample(mechanism: &Value, values: &[Value]) -> Option<Value> {
+    let mech = match mechanism {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    let bodies = match map_get(mech, "bodies") {
+        Some(Value::List(b)) => b,
+        _ => return None,
+    };
+    if values.len() != bodies.len() {
+        return None;
+    }
+    let mut bindings = Vec::with_capacity(bodies.len());
+    for (body, value) in bodies.iter().zip(values) {
+        let bm = match body {
+            Value::Map(m) => m,
+            _ => return None,
+        };
+        let at = map_get(bm, "at")?;
+        bindings.push(crate::eval_builtin("bind", &[at.clone(), value.clone()]));
+    }
+    let snapshot = crate::eval_builtin("snapshot", &[mechanism.clone(), Value::List(bindings)]);
+    if snapshot.is_undef() {
+        return None;
+    }
+    Some(snapshot)
 }
 
 #[cfg(test)]
