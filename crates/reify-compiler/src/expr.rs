@@ -121,6 +121,45 @@ fn propagate_poison() -> CompiledExpr {
     CompiledExpr::literal(Value::Undef, Type::Error)
 }
 
+/// Scan raw AST `args` for the first `ExprKind::Auto` and emit an
+/// `E_AUTO_NOT_AT_BINDING_SITE` gate diagnostic if one is found.
+///
+/// Returns `Some(poison)` so the caller can `return` immediately on a match,
+/// short-circuiting all downstream compilation of the poisoned subtree and
+/// guaranteeing exactly ONE diagnostic (anti-cascade, task-448/1912/1921).
+/// Returns `None` when no `auto` arg is present.
+///
+/// The `position` descriptor is interpolated into the diagnostic message so
+/// each operand-position site can name itself (e.g. `"a function-call argument
+/// (function 'clamp')"` or `"a trait-static-call argument (Defaultable::make_default)"`).
+/// Only the first offending arg is reported (`.find()`, not `.filter()`) — the
+/// first-arg-only anti-cascade contract is locked in by
+/// `function_call_multi_auto_reports_only_first_arg`.
+fn reject_auto_in_arg_list(
+    args: &[reify_ast::Expr],
+    position: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<CompiledExpr> {
+    if let Some(auto_arg) =
+        args.iter().find(|a| matches!(a.kind, reify_ast::ExprKind::Auto { .. }))
+    {
+        Some(make_poison_literal(
+            diagnostics,
+            Diagnostic::error(format!(
+                "auto is not allowed in {position}; to expose a free parameter, \
+                 declare `param <name> = auto` at a binding site instead",
+            ))
+            .with_code(DiagnosticCode::AutoNotAtBindingSite)
+            .with_label(DiagnosticLabel::new(
+                auto_arg.span,
+                "auto not allowed at this operand position",
+            )),
+        ))
+    } else {
+        None
+    }
+}
+
 /// Emit the cross-sub geometry-access diagnostic via `make_poison_literal` (task-3397).
 ///
 /// Used at all three sub-member-access sites (non-collection sub, bare collection
@@ -1264,24 +1303,14 @@ pub(crate) fn compile_expr_guarded(
                 .and_then(|r| r.get(name.as_str()))
                 .map(|t| t.entity_kind == EntityKind::Structure)
                 .unwrap_or(false);
-            if !is_structure_ctor
-                && let Some(auto_arg) =
-                    args.iter().find(|a| matches!(a.kind, reify_ast::ExprKind::Auto { .. }))
-            {
-                return make_poison_literal(
+            if !is_structure_ctor {
+                if let Some(poison) = reject_auto_in_arg_list(
+                    args,
+                    &format!("a function-call argument (function '{}')", name),
                     diagnostics,
-                    Diagnostic::error(format!(
-                        "auto is not allowed in a function-call argument \
-                         (function '{}'); to expose a free parameter, declare \
-                         `param <name> = auto` at a binding site instead",
-                        name,
-                    ))
-                    .with_code(DiagnosticCode::AutoNotAtBindingSite)
-                    .with_label(DiagnosticLabel::new(
-                        auto_arg.span,
-                        "auto not allowed in a function-call argument",
-                    )),
-                );
+                ) {
+                    return poison;
+                }
             }
 
             // Intercept `some(expr)` before general function resolution.
@@ -3385,6 +3414,18 @@ pub(crate) fn compile_expr_guarded(
         // Name-drift guard: both sites call `trait_static_fn_symbol(trait, method)`
         // so the symbol is byte-for-byte identical.
         reify_ast::ExprKind::TraitStaticCall { trait_name, method, args } => {
+            // ── task 4143: semantic gate — reject `auto` in trait-static-call args ──
+            // Mirrors the FunctionCall gate (task 3808). Neither TraitStaticCall nor
+            // AdHocSelector is a binding site (no structure-construction exemption applies).
+            // Scanning raw AST args before any compilation avoids wasted work on poisoned subtrees.
+            if let Some(poison) = reject_auto_in_arg_list(
+                args,
+                &format!("a trait-static-call argument ({}::{})", trait_name, method),
+                diagnostics,
+            ) {
+                return poison;
+            }
+
             // Compile each argument.
             let compiled_args: Vec<CompiledExpr> = args
                 .iter()
