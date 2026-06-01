@@ -121,6 +121,7 @@ impl ShellRefCoord3 {
 /// `t_i = thicknesses[i]` the nodal thicknesses, and `V_i = directors[i]` the
 /// unit directors. At `ζ = 0` this is the pure mid-surface interpolation
 /// `Σ N_i x_i`; at `ζ = ±1` it reaches the top/bottom fibre endpoints.
+// G-allow: degenerate-shell (MITC3+) position interpolation, tasks #4068/#4069; reached via shell_element_stiffness_degenerate on the compute-target-wired shell-routing path (fn-pointer registration the orphan audit cannot trace); exercised by element unit tests.
 pub fn degenerate_position(
     nodes: &[[f64; 3]; 3],
     directors: &[Director; 3],
@@ -195,6 +196,7 @@ pub fn degenerate_jacobian(
 /// alongside so callers can guard against a singular Jacobian without a second
 /// pass. Shares the cofactor convention of
 /// [`crate::elements::Jacobian::from_matrix`].
+// G-allow: degenerate-shell (MITC3+) Jacobian-inverse helper, tasks #4068/#4069; reached via shell_element_stiffness_degenerate on the compute-target-wired shell-routing path (fn-pointer registration the orphan audit cannot trace); exercised by element unit tests.
 pub fn mat3_inverse(m: &[[f64; 3]; 3]) -> ([[f64; 3]; 3], f64) {
     // Cofactors C[i][j] = (−1)^(i+j) · minor(i,j).
     let c00 = m[1][1] * m[2][2] - m[1][2] * m[2][1];
@@ -876,6 +878,7 @@ pub type Director = [f64; 3];
 /// benchmarks instead supply analytic vertex normals (the extraction
 /// stand-in). A node with no incident facet, or whose incident normals exactly
 /// cancel, falls back to `+z` so the result is always unit-norm.
+// G-allow: degenerate-shell (MITC3+) default director source, tasks #4068/#4069; reached via shell_element_stiffness_degenerate on the compute-target-wired shell-routing path (fn-pointer registration the orphan audit cannot trace); exercised by element unit tests.
 pub fn directors_from_facets(nodes: &[[f64; 3]], connectivity: &[[usize; 3]]) -> Vec<Director> {
     let mut acc = vec![[0.0_f64; 3]; nodes.len()];
     for conn in connectivity {

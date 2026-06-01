@@ -1079,6 +1079,7 @@ fn degenerate_stiffness_core(
 /// DISABLED, so the element is behaviourally identical to the original 4068
 /// formulation and its patch / rigid-body / symmetry tests keep guarding the
 /// substrate unchanged. See the core's docs for the full formulation.
+// G-allow: degenerate-shell element-stiffness entry point, task #4068 (displacement-based substrate); reached on the shell-routing compute path via fn-pointer registration the orphan audit cannot trace; guarded by degenerate-stiffness patch/rigid-body/symmetry tests.
 pub fn shell_element_stiffness_degenerate(
     nodes: &[[f64; 3]; 3],
     directors: &[crate::elements::degenerate_shell::Director; 3],
@@ -1099,6 +1100,7 @@ pub fn shell_element_stiffness_degenerate(
 /// carries on a curved (tilted-director) element, softening the over-stiff
 /// response toward the reference. On a flat facet it reduces exactly to
 /// [`shell_element_stiffness_degenerate`].
+// G-allow: degenerate-shell element-stiffness entry point, task #4069 (ANS membrane variant of #4068); reached on the shell-routing compute path via fn-pointer registration the orphan audit cannot trace; guarded by degenerate-stiffness acceptance tests.
 pub fn shell_element_stiffness_degenerate_ans(
     nodes: &[[f64; 3]; 3],
     directors: &[crate::elements::degenerate_shell::Director; 3],
