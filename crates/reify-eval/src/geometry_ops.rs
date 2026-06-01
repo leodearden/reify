@@ -1906,7 +1906,36 @@ pub(crate) fn try_eval_kinematic_query(
             _ => continue,
         };
         if let Some(handle) = named_steps.get(solid_name) {
-            id_to_handle.push((id, handle.id));
+            let raw_id = handle.id;
+            // Apply the body's FK world_transform (if present and decomposable)
+            // via the shared ApplyTransform primitive so the distance probe
+            // operates on FK-posed geometry. Identity/missing world_transform
+            // falls back to the raw handle (no kernel op).
+            let posed_id = if let Some(wt) = body_map
+                .get(&reify_ir::Value::String("world_transform".to_string()))
+            {
+                if let Some((rotation, translation)) = decompose_transform_to_arrays(wt) {
+                    match kernel.execute(&reify_ir::GeometryOp::ApplyTransform {
+                        target: raw_id,
+                        rotation,
+                        translation,
+                    }) {
+                        Ok(posed) => posed.id,
+                        Err(e) => {
+                            diagnostics.push(Diagnostic::warning(format!(
+                                "{}: ApplyTransform failed for body '{}': {e}",
+                                function.name, solid_name
+                            )));
+                            raw_id
+                        }
+                    }
+                } else {
+                    raw_id
+                }
+            } else {
+                raw_id
+            };
+            id_to_handle.push((id, posed_id));
         }
         // Bodies whose solid name isn't in named_steps: skipped (see comment
         // above the loop).
