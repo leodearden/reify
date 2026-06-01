@@ -2222,57 +2222,16 @@ impl Engine {
                 // This replaces the old *step_handles.last() single-handle
                 // export that did not honor surfacing, composed transforms, or
                 // aux exclusion.
-                let identity_world = crate::geometry_ops::compose_pose_chain(&[]);
-                let roots = crate::geometry_ops::root_template_indices(module);
-                let mut export_bodies: Vec<crate::geometry_ops::ExportBody> = Vec::new();
-                for &root_idx in &roots {
-                    let root_prefix = module.templates[root_idx].name.clone();
-                    crate::geometry_ops::surface_export_bodies(
-                        module,
-                        root_idx,
-                        &root_prefix,
-                        false,
-                        &identity_world,
-                        0,
-                        &terminal_handles,
-                        &mut self.geometry_kernels,
-                        name,
-                        &values,
-                        &self.functions,
-                        &self.meta_map,
-                        &mut export_bodies,
-                        &mut diagnostics,
-                    );
-                }
-                // Fallback: surface any template unreachable from roots
-                // (cycle/orphan guard — mirrors tessellate_from_values).
-                let mut covered = crate::geometry_ops::reachable_template_indices(module, &roots);
-                for t_idx in 0..module.templates.len() {
-                    if covered.contains(&t_idx) {
-                        continue;
-                    }
-                    let fallback_prefix = module.templates[t_idx].name.clone();
-                    crate::geometry_ops::surface_export_bodies(
-                        module,
-                        t_idx,
-                        &fallback_prefix,
-                        false,
-                        &identity_world,
-                        0,
-                        &terminal_handles,
-                        &mut self.geometry_kernels,
-                        name,
-                        &values,
-                        &self.functions,
-                        &self.meta_map,
-                        &mut export_bodies,
-                        &mut diagnostics,
-                    );
-                    covered.extend(crate::geometry_ops::reachable_template_indices(
-                        module,
-                        &[t_idx],
-                    ));
-                }
+                let export_bodies = Self::collect_export_bodies_walk(
+                    module,
+                    &terminal_handles,
+                    &mut self.geometry_kernels,
+                    name,
+                    &values,
+                    &self.functions,
+                    &self.meta_map,
+                    &mut diagnostics,
+                );
 
                 // Keep only product (non-aux) bodies for export.
                 let product_bodies: Vec<_> = export_bodies
@@ -2314,32 +2273,36 @@ impl Engine {
                             .geometry_kernels
                             .get_mut(name)
                             .expect("default kernel must remain in the map for compound export");
-                        let compound = match default_kernel.make_compound(&ids) {
-                            Ok(h) => h,
+                        // On compound-assembly error, push the diagnostic and
+                        // fall through with no geometry output.  The canonical
+                        // BuildResult construction at the end of build() handles
+                        // all remaining fields — avoids a duplicate struct literal
+                        // that would silently drift on future field additions
+                        // (reviewer_comprehensive / robustness suggestion).
+                        match default_kernel.make_compound(&ids) {
                             Err(e) => {
                                 diagnostics.push(Diagnostic::error(format!(
                                     "compound assembly error: {}",
                                     e
                                 )));
-                                return BuildResult {
-                                    values,
-                                    constraint_results: check_result.constraint_results,
-                                    geometry_output: None,
-                                    diagnostics,
-                                    resolved_params: check_result.resolved_params,
-                                };
-                            }
-                        };
-                        let mut output = Vec::new();
-                        let default_kernel = self
-                            .geometry_kernels
-                            .get(name)
-                            .expect("default kernel must remain in the map for export");
-                        match default_kernel.export(compound.id, format, &mut output) {
-                            Ok(()) => Some(output),
-                            Err(e) => {
-                                diagnostics.push(Diagnostic::error(format!("export error: {}", e)));
                                 None
+                            }
+                            Ok(compound) => {
+                                let mut output = Vec::new();
+                                let default_kernel = self
+                                    .geometry_kernels
+                                    .get(name)
+                                    .expect("default kernel must remain in the map for export");
+                                match default_kernel.export(compound.id, format, &mut output) {
+                                    Ok(()) => Some(output),
+                                    Err(e) => {
+                                        diagnostics.push(Diagnostic::error(format!(
+                                            "export error: {}",
+                                            e
+                                        )));
+                                        None
+                                    }
+                                }
                             }
                         }
                     }
@@ -2389,6 +2352,17 @@ impl Engine {
 
         // Phase-A: evaluate the module and execute geometry ops to populate
         // terminal_handles, mirroring the build() realization loop.
+        //
+        // NOTE (task-3905 amendment, suggestion 1): This loop (~130 lines below)
+        // mirrors build()'s Phase-A realization loop.  A full extraction into a
+        // shared collect_placed_export_bodies helper would require restructuring
+        // build()'s post-processing (conformance/kinematic queries, GHR, journal
+        // writes) to run AFTER all templates complete — currently the
+        // post-processing is interleaved per-template using a local `named_steps`
+        // that is moved into module_named_steps before the next template.  This
+        // carries semantic risk for cross-template geometry references (task 3441),
+        // so Phase-A extraction is deferred; any changes to the realization
+        // execution or terminal_handles bookkeeping in build() must be mirrored here.
         let check_result = self.check(module);
         let mut diagnostics = check_result.diagnostics;
         let values = check_result.values;
@@ -2486,57 +2460,27 @@ impl Engine {
             snapshot_named_steps(template, named_steps, &mut module_named_steps);
         }
 
+        // Performance note (task-3905 amendment, suggestion 5): surface_export_bodies
+        // calls ApplyTransform for every non-identity placed realization, minting one
+        // new kernel handle per call.  Repeated invocations of distance_between_placed
+        // on the same module therefore accumulate transient placed handles in the kernel
+        // store across calls (handles are engine-scoped, not call-scoped).  This mirrors
+        // the pre-existing surface_subtree / tessellate pattern and is not a new regression,
+        // but the distance query's likely repeated-call frequency makes the accumulation
+        // more impactful.  Future mitigations: short-circuit the walk once both path_a and
+        // path_b are resolved, or maintain a placed-handle cache keyed by entity_path.
+        //
         // Phase-B: collect placed product handles via the T7 surfacing walk.
-        let identity_world = crate::geometry_ops::compose_pose_chain(&[]);
-        let roots = crate::geometry_ops::root_template_indices(module);
-        let mut export_bodies: Vec<crate::geometry_ops::ExportBody> = Vec::new();
-        for &root_idx in &roots {
-            let root_prefix = module.templates[root_idx].name.clone();
-            crate::geometry_ops::surface_export_bodies(
-                module,
-                root_idx,
-                &root_prefix,
-                false,
-                &identity_world,
-                0,
-                &terminal_handles,
-                &mut self.geometry_kernels,
-                &name,
-                &values,
-                &self.functions,
-                &self.meta_map,
-                &mut export_bodies,
-                &mut diagnostics,
-            );
-        }
-        // Fallback: surface orphan/cyclic templates unreachable from roots.
-        let mut covered = crate::geometry_ops::reachable_template_indices(module, &roots);
-        for t_idx in 0..module.templates.len() {
-            if covered.contains(&t_idx) {
-                continue;
-            }
-            let fallback_prefix = module.templates[t_idx].name.clone();
-            crate::geometry_ops::surface_export_bodies(
-                module,
-                t_idx,
-                &fallback_prefix,
-                false,
-                &identity_world,
-                0,
-                &terminal_handles,
-                &mut self.geometry_kernels,
-                &name,
-                &values,
-                &self.functions,
-                &self.meta_map,
-                &mut export_bodies,
-                &mut diagnostics,
-            );
-            covered.extend(crate::geometry_ops::reachable_template_indices(
-                module,
-                &[t_idx],
-            ));
-        }
+        let export_bodies = Self::collect_export_bodies_walk(
+            module,
+            &terminal_handles,
+            &mut self.geometry_kernels,
+            &name,
+            &values,
+            &self.functions,
+            &self.meta_map,
+            &mut diagnostics,
+        );
 
         // Resolve the two product (default_visible == true) handles by entity_path.
         let find_handle = |path: &str| -> Option<GeometryHandleId> {
@@ -2567,6 +2511,79 @@ impl Engine {
             &mut diagnostics,
             "distance_between_placed",
         )
+    }
+
+    /// Phase-B helper: run the root + fallback `surface_export_bodies` walk and
+    /// return all collected `ExportBody` entries.
+    ///
+    /// Factored out of both `build()` and `distance_between_placed()` to eliminate
+    /// the ~50-line duplicated root/fallback traversal pattern.  Phase-A realization
+    /// execution remains per-caller due to differing post-processing requirements:
+    /// `build()` populates engine state (conformance/kinematic queries, GHR, journal)
+    /// interleaved within the template loop; `distance_between_placed()` skips it.
+    fn collect_export_bodies_walk(
+        module: &CompiledModule,
+        terminal_handles: &[Vec<Option<KernelHandle>>],
+        geometry_kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
+        name: &str,
+        values: &ValueMap,
+        functions: &[CompiledFunction],
+        meta_map: &HashMap<String, HashMap<String, String>>,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Vec<crate::geometry_ops::ExportBody> {
+        use crate::geometry_ops::{
+            compose_pose_chain, reachable_template_indices, root_template_indices,
+            surface_export_bodies,
+        };
+        let identity_world = compose_pose_chain(&[]);
+        let roots = root_template_indices(module);
+        let mut export_bodies = Vec::new();
+        for &root_idx in &roots {
+            let root_prefix = module.templates[root_idx].name.clone();
+            surface_export_bodies(
+                module,
+                root_idx,
+                &root_prefix,
+                false,
+                &identity_world,
+                0,
+                terminal_handles,
+                geometry_kernels,
+                name,
+                values,
+                functions,
+                meta_map,
+                &mut export_bodies,
+                diagnostics,
+            );
+        }
+        // Fallback: surface any template unreachable from roots
+        // (cycle/orphan guard — mirrors tessellate_from_values).
+        let mut covered = reachable_template_indices(module, &roots);
+        for t_idx in 0..module.templates.len() {
+            if covered.contains(&t_idx) {
+                continue;
+            }
+            let fallback_prefix = module.templates[t_idx].name.clone();
+            surface_export_bodies(
+                module,
+                t_idx,
+                &fallback_prefix,
+                false,
+                &identity_world,
+                0,
+                terminal_handles,
+                geometry_kernels,
+                name,
+                values,
+                functions,
+                meta_map,
+                &mut export_bodies,
+                diagnostics,
+            );
+            covered.extend(reachable_template_indices(module, &[t_idx]));
+        }
+        export_bodies
     }
 
     /// Tessellate all realizations in the module for GUI mesh rendering.

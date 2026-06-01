@@ -4840,28 +4840,36 @@ pub(crate) struct ExportBody {
     pub default_visible: bool,
 }
 
-/// T7 export walk (task 3905): collect placed-product BRep handles for STEP export.
+/// Shared inner walk for T5 (tessellate) and T7 (export) containment-tree surfacing.
 ///
-/// Mirrors `surface_subtree`'s composition/aux logic (reusing `eval_sub_pose`,
-/// `compose_pose_chain`, `decompose_transform_to_arrays`, `realization_is_aux`,
-/// and the cycle/fallback guards) but COLLECTS each realization's placed
-/// `GeometryHandleId` + entity_path + default_visible instead of tessellating.
+/// Implements the common cycle guard, placement decomposition, `ApplyTransform`
+/// application, `default_visible` derivation, and `entity_path` formatting shared
+/// by `surface_subtree` and `surface_export_bodies`.  The terminal action per
+/// realization is delegated to `visit_realization`.
 ///
-/// The `default_visible` flag uses the same OR-of-aux derivation as
-/// `surface_subtree` — `default_visible == false` ⟺ aux or under-aux-sub ⟺
-/// excluded from export by the caller.  Source handles remain valid after
-/// `ApplyTransform` (T3 non-destructive).  Identity/undecomposable world
-/// transforms short-circuit to the source handle (no extra kernel op).
+/// # Visitor
 ///
-/// Cycle guard: same `depth > module.templates.len()` bound as `surface_subtree`.
+/// `visit_realization(kernel, placed_id, entity_path, default_visible, t_idx, r_idx, diagnostics)`
+/// — called once per realization that produced a handle, after the composed world
+/// transform is applied:
+/// - `kernel`: mutable borrow of the default kernel (over the visit call; released before
+///   recursion so the sub loop can re-borrow).
+/// - `placed_id`: the `GeometryHandleId` after `ApplyTransform` (or the source handle for
+///   identity/undecomposable poses — no extra kernel op).
+/// - `entity_path`: PRD §11.2 composed path (owned `String`).
+/// - `default_visible`: `false` iff aux or under-aux-sub (same OR rule as the callers).
+/// - `t_idx`, `r_idx`: template and realization indices (for budget lookup in the
+///   tessellate visitor).
+/// - `diagnostics`: the walk's diagnostic accumulator; the visitor may push to it.
+///
+/// Callers (`surface_subtree`, `surface_export_bodies`) preserve their public signatures
+/// unchanged — they are thin wrappers that capture their output collection in the closure.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn surface_export_bodies(
+pub(crate) fn walk_placed_realizations<V>(
     module: &reify_compiler::CompiledModule,
     t_idx: usize,
     path_prefix: &str,
-    // True when any ancestor sub was declared `aux` (inherited down the walk).
     aux_ancestor: bool,
-    // Composed world transform inherited from root, accrued down the walk.
     composed_world: &reify_ir::Value,
     depth: usize,
     terminal_handles: &[Vec<Option<KernelHandle>>],
@@ -4870,17 +4878,27 @@ pub(crate) fn surface_export_bodies(
     values: &ValueMap,
     functions: &[CompiledFunction],
     meta_map: &HashMap<String, HashMap<String, String>>,
-    export_bodies: &mut Vec<ExportBody>,
     diagnostics: &mut Vec<Diagnostic>,
-) {
+    visit_realization: &mut V,
+) where
+    V: FnMut(
+        &mut dyn GeometryKernel,
+        GeometryHandleId,
+        String,
+        bool,
+        usize,
+        usize,
+        &mut Vec<Diagnostic>,
+    ),
+{
     if depth > module.templates.len() {
         return;
     }
     let template = &module.templates[t_idx];
 
     // Decompose the inherited world transform once for this template.
-    // `Some(non-identity)` → apply via ApplyTransform before collecting;
-    // identity / non-decomposable short-circuits to the source handle directly.
+    // `Some(non-identity)` → apply via ApplyTransform before visiting;
+    // identity / non-decomposable short-circuits to the source handle (no kernel op).
     let placement: Option<([f64; 4], [f64; 3])> =
         match decompose_transform_to_arrays(composed_world) {
             Some((rotation, translation))
@@ -4897,7 +4915,7 @@ pub(crate) fn surface_export_bodies(
         };
         let default_kernel = geometry_kernels
             .get_mut(default_kernel_name)
-            .expect("default kernel must remain in the map across the export walk");
+            .expect("default kernel must remain in the map across the surfacing walk");
         let placed_id = match placement {
             Some((rotation, translation)) => {
                 match default_kernel.execute(&reify_ir::GeometryOp::ApplyTransform {
@@ -4919,11 +4937,20 @@ pub(crate) fn surface_export_bodies(
         };
         let default_visible = !(aux_ancestor || realization_is_aux(realization));
         let entity_path = format!("{}#realization[{}]", path_prefix, realization.id.index);
-        export_bodies.push(ExportBody {
+        // Pass a mutable borrow of the kernel to the visitor; the borrow is
+        // released when visit_realization returns, before the sub-component
+        // loop re-borrows geometry_kernels for the recursive call.
+        // Explicit deref-coercion: `default_kernel` is `&mut Box<dyn GeometryKernel>`;
+        // `&mut **default_kernel` gives the `&mut dyn GeometryKernel` the visitor expects.
+        visit_realization(
+            &mut **default_kernel,
+            placed_id,
             entity_path,
-            handle_id: placed_id,
             default_visible,
-        });
+            t_idx,
+            r_idx,
+            diagnostics,
+        );
     }
 
     // Recurse into each non-collection sub, composing the sub's `at` pose.
@@ -4941,7 +4968,7 @@ pub(crate) fn surface_export_bodies(
         let child_prefix = format!("{}.{}", path_prefix, sub.name);
         let sub_pose = eval_sub_pose(sub.pose.as_ref(), values, functions, meta_map, diagnostics);
         let child_world = compose_pose_chain(&[composed_world.clone(), sub_pose]);
-        surface_export_bodies(
+        walk_placed_realizations(
             module,
             child_idx,
             &child_prefix,
@@ -4954,13 +4981,70 @@ pub(crate) fn surface_export_bodies(
             values,
             functions,
             meta_map,
-            export_bodies,
             diagnostics,
+            visit_realization,
         );
     }
 }
 
+/// T7 export walk (task 3905): collect placed-product BRep handles for STEP export.
+///
+/// Thin wrapper over `walk_placed_realizations` that pushes each placed realization
+/// as an `ExportBody` (handle_id + entity_path + default_visible) without tessellating.
+///
+/// The `default_visible` flag uses the same OR-of-aux derivation as `surface_subtree` —
+/// `default_visible == false` ⟺ aux or under-aux-sub ⟺ excluded from export by the
+/// caller.  Source handles remain valid after `ApplyTransform` (T3 non-destructive).
+/// Identity/undecomposable world transforms short-circuit to the source handle (no kernel op).
+///
+/// Cycle guard: same `depth > module.templates.len()` bound as `walk_placed_realizations`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn surface_export_bodies(
+    module: &reify_compiler::CompiledModule,
+    t_idx: usize,
+    path_prefix: &str,
+    // True when any ancestor sub was declared `aux` (inherited down the walk).
+    aux_ancestor: bool,
+    // Composed world transform inherited from root, accrued down the walk.
+    composed_world: &reify_ir::Value,
+    depth: usize,
+    terminal_handles: &[Vec<Option<KernelHandle>>],
+    geometry_kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
+    default_kernel_name: &str,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    export_bodies: &mut Vec<ExportBody>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    walk_placed_realizations(
+        module,
+        t_idx,
+        path_prefix,
+        aux_ancestor,
+        composed_world,
+        depth,
+        terminal_handles,
+        geometry_kernels,
+        default_kernel_name,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+        &mut |_kernel, placed_id, entity_path, default_visible, _t, _r, _diag| {
+            export_bodies.push(ExportBody {
+                entity_path,
+                handle_id: placed_id,
+                default_visible,
+            });
+        },
+    );
+}
+
 /// Phase-B containment-tree surfacing (T5 steps 4/6/10).
+///
+/// Thin wrapper over `walk_placed_realizations` that tessellates each placed
+/// realization into a `MeshSurface`.
 ///
 /// Depth-first walk from a root template: surface the current template's
 /// realizations under `path_prefix` (the dotted entity-path prefix that precedes
@@ -5019,118 +5103,39 @@ pub(crate) fn surface_subtree(
     meshes: &mut Vec<crate::MeshSurface>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    // Cycle guard (see docstring): bail once we have descended more levels than
-    // there are templates, which is only reachable via a non-collection sub
-    // cycle.
-    if depth > module.templates.len() {
-        return;
-    }
-    let template = &module.templates[t_idx];
-
-    // step-10: decompose the inherited world transform once for this template.
-    // `Some(non-identity)` → apply via `ApplyTransform` before tessellating;
-    // identity, or a non-decomposable pose (e.g. an `eval_sub_pose` Undef already
-    // diagnosed upstream), short-circuits to tessellating the recorded handle
-    // directly — surfacing at the parent frame, bit-identical to the pre-step-10
-    // (root / identity-containment) path so no extra kernel op or handle is made.
-    let placement: Option<([f64; 4], [f64; 3])> =
-        match decompose_transform_to_arrays(composed_world) {
-            Some((rotation, translation))
-                if rotation != [1.0, 0.0, 0.0, 0.0] || translation != [0.0, 0.0, 0.0] =>
-            {
-                Some((rotation, translation))
-            }
-            _ => None,
-        };
-
-    // Surface this template's own realizations at `path_prefix`.
-    for (r_idx, realization) in template.realizations.iter().enumerate() {
-        let Some(handle) = terminal_handles[t_idx][r_idx] else {
-            continue;
-        };
-        let budget = tessellation_budgets[t_idx][r_idx];
-        // ApplyTransform + tessellate both route through the DEFAULT kernel,
-        // consistent with the pre-step-10 tessellate path. A single `&mut` borrow
-        // covers the `execute` (`&mut self`) then `tessellate` (`&self`) sequence.
-        let default_kernel = geometry_kernels
-            .get_mut(default_kernel_name)
-            .expect("default kernel must remain in the map across the surfacing walk");
-        let tess_id = match placement {
-            Some((rotation, translation)) => {
-                match default_kernel.execute(&reify_ir::GeometryOp::ApplyTransform {
-                    target: handle.id,
-                    rotation,
-                    translation,
-                }) {
-                    Ok(transformed) => transformed.id,
-                    Err(e) => {
-                        diagnostics.push(Diagnostic::error(format!(
-                            "transform application error: {}",
-                            e
-                        )));
-                        continue;
-                    }
+    walk_placed_realizations(
+        module,
+        t_idx,
+        path_prefix,
+        aux_ancestor,
+        composed_world,
+        depth,
+        terminal_handles,
+        geometry_kernels,
+        default_kernel_name,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+        &mut |kernel, placed_id, entity_path, default_visible, t, r, diag| {
+            let budget = tessellation_budgets[t][r];
+            match kernel.tessellate(placed_id, budget) {
+                Ok(mesh) => {
+                    // step-6: hide iff any `aux` ancestor sub OR this realization's
+                    // own `aux` let. aux bodies are still tessellated and shipped —
+                    // only hidden by default.
+                    meshes.push(crate::MeshSurface {
+                        entity_path,
+                        mesh,
+                        default_visible,
+                    });
+                }
+                Err(e) => {
+                    diag.push(Diagnostic::error(format!("tessellation error: {}", e)));
                 }
             }
-            None => handle.id,
-        };
-        match default_kernel.tessellate(tess_id, budget) {
-            Ok(mesh) => {
-                // step-6: hide iff any `aux` ancestor sub OR this realization's
-                // own `aux` let. aux bodies are still tessellated and shipped —
-                // only hidden by default.
-                let default_visible = !(aux_ancestor || realization_is_aux(realization));
-                let entity_path = format!("{}#realization[{}]", path_prefix, realization.id.index);
-                meshes.push(crate::MeshSurface {
-                    entity_path,
-                    mesh,
-                    default_visible,
-                });
-            }
-            Err(e) => {
-                diagnostics.push(Diagnostic::error(format!("tessellation error: {}", e)));
-            }
-        }
-    }
-
-    // Recurse into each non-collection sub at the composed dotted path,
-    // accumulating its `at` pose onto the inherited world transform.
-    for sub in &template.sub_components {
-        if sub.is_collection {
-            continue;
-        }
-        let Some(child_idx) = module
-            .templates
-            .iter()
-            .position(|t| t.name == sub.structure_name)
-        else {
-            continue;
-        };
-        let child_prefix = format!("{}.{}", path_prefix, sub.name);
-        // step-10: evaluate this sub's `at` pose in the parent context and
-        // compose it onto the inherited world transform. A poseless sub
-        // (`pose == None`) yields the identity Transform, so an un-placed
-        // containment chain stays identity and short-circuits in the child.
-        let sub_pose = eval_sub_pose(sub.pose.as_ref(), values, functions, meta_map, diagnostics);
-        let child_world = compose_pose_chain(&[composed_world.clone(), sub_pose]);
-        surface_subtree(
-            module,
-            child_idx,
-            &child_prefix,
-            aux_ancestor || sub.is_aux,
-            &child_world,
-            depth + 1,
-            terminal_handles,
-            geometry_kernels,
-            default_kernel_name,
-            tessellation_budgets,
-            values,
-            functions,
-            meta_map,
-            meshes,
-            diagnostics,
-        );
-    }
+        },
+    );
 }
 
 #[cfg(test)]

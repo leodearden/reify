@@ -3142,10 +3142,16 @@ static gp_Trsf build_trsf(const Transform3Props& t) {
 
 /// Apply `trsf` to `shape` via `BRepBuilderAPI_Transform(…, Standard_False)`.
 ///
-/// Copy=Standard_False encodes the transform as a `TopLoc_Location` rather than
-/// baking it into the underlying geometry. The returned shape shares topology
-/// pointers with the original and is transient — it is dropped before any
-/// naming bookkeeping runs, so no PNv2 concerns arise.
+/// Standard_False = location-only path: the result shares the source TShape and
+/// encodes the rigid isometry solely via TopLoc_Location — a lightweight,
+/// non-destructive operation that preserves the round-trip invariant
+/// (T ∘ T⁻¹ = identity, no float-drift accumulation across repeated applications).
+/// The returned shape shares topology pointers with the original.
+///
+/// Multi-instance deduplication (when multiple placed bodies sharing one source
+/// TShape are emitted into one STEP compound) is handled by `make_compound` via
+/// BRepBuilderAPI_Copy — NOT here.  This keeps all callers (apply_transform_to_shape,
+/// dist_with_pre_compose) on the lightweight location-only path.
 static TopoDS_Shape apply_location_trsf(const TopoDS_Shape& shape, const gp_Trsf& trsf) {
     BRepBuilderAPI_Transform xform(shape, trsf, Standard_False);
     xform.Build();
@@ -3223,25 +3229,12 @@ std::unique_ptr<OcctShape> apply_transform_to_shape(
         // and throws std::runtime_error on violation; that error is caught by
         // wrap_occt_call and surfaced as a cxx::Exception with the same message.
         //
-        // Copy=Standard_False: location-only (TopLoc_Location) path.
-        // The result shares the source TShape and encodes the rigid isometry
-        // solely in TopLoc_Location — a lightweight, non-destructive operation
-        // that preserves the round-trip invariant (T ∘ T⁻¹ = identity, no
-        // float-drift accumulation across repeated applications).
-        //
-        // Multi-instance deduplication (when multiple placed bodies sharing one
-        // source TShape are emitted into one STEP compound) is handled by
-        // make_compound via BRepBuilderAPI_Copy, not here.  This keeps
-        // apply_transform_to_shape on the lightweight location-only path for all
-        // callers: tessellation, FK distance, and distance_between_placed.
+        // Delegates to apply_location_trsf (Standard_False / location-only).
+        // See apply_location_trsf for the full rationale: shared TShape,
+        // round-trip invariant, and multi-instance bake deferred to make_compound.
         const gp_Trsf trsf = build_trsf(t);
-        BRepBuilderAPI_Transform xform(shape.shape, trsf, Standard_False);
-        xform.Build();
-        if (!xform.IsDone()) {
-            throw std::runtime_error("BRepBuilderAPI_Transform (location-only) failed");
-        }
         auto result = std::make_unique<OcctShape>();
-        result->shape = xform.Shape();
+        result->shape = apply_location_trsf(shape.shape, trsf);
         return result;
     });
 }
