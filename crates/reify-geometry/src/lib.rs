@@ -84,6 +84,18 @@ impl GeometryKernel for SingleKernelHolder {
             )),
         }
     }
+
+    fn make_compound(
+        &mut self,
+        handles: &[GeometryHandleId],
+    ) -> Result<reify_ir::GeometryHandle, GeometryError> {
+        match self.kernel.as_mut() {
+            Some(k) => k.make_compound(handles),
+            None => Err(GeometryError::OperationFailed(
+                "no geometry kernel registered".to_string(),
+            )),
+        }
+    }
 }
 
 #[cfg(test)]
