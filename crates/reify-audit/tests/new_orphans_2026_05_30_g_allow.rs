@@ -68,11 +68,60 @@
 //! The failure message lists every failing (file_suffix, fn_name) pair — search
 //! for them in this file when `G-allow pin(s) failed` appears unexpectedly.
 //!
-//! Graceful skip: if `python3`, `git`, or the audit script are absent from
-//! PATH/disk the test prints a note to stderr and returns without failing.
+//! Audit invocation: the wide-scope audit is run ONCE per test binary and
+//! shared across all six per-file `#[test]` fns via `cached_audit()` (a
+//! process-wide `OnceLock`) — the whole-corpus `python3` sweep fires a single
+//! time, not once per pin.  Graceful skip: if `python3`, `git`, or the audit
+//! script are absent from PATH/disk the test prints a note to stderr and
+//! returns without failing.  The authoritative CI lane that owns this check
+//! MUST set `REIFY_REQUIRE_ORPHAN_AUDIT=1`, which promotes that skip to a hard
+//! failure so a dropped `// G-allow:` marker cannot hide on a minimal image.
 //! The shared helper is `reify_test_support::run_orphan_audit`.
 
+use std::sync::OnceLock;
+
 use reify_test_support::run_orphan_audit;
+
+/// The wide-scope orphan audit, run **once** per test binary and shared across
+/// every per-file pin `#[test]`.
+///
+/// # Why cache
+///
+/// Every pin test interrogates the same single fact — the current
+/// orphan/allowed classification of `crates/reify-*/src`. Calling
+/// `run_orphan_audit` once per `#[test]` would re-scan the entire corpus (≈1800
+/// `pub fn` across ≈390 files) six times for one logical query. A process-wide
+/// `OnceLock` pays that cost a single time; Rust's parallel test runner blocks
+/// the other test threads inside `get_or_init` until the first finishes, then
+/// they all read the cached envelope.
+///
+/// # Authoritative-lane enforcement (`REIFY_REQUIRE_ORPHAN_AUDIT`)
+///
+/// `run_orphan_audit` returns `None` — a graceful skip — when `python3`, `git`,
+/// or the audit script are absent. That keeps the suite green on minimal images
+/// but means a dropped `// G-allow:` marker would go UNDETECTED there, with only
+/// an easily-lost stderr note. The canonical CI lane that owns this check MUST
+/// set `REIFY_REQUIRE_ORPHAN_AUDIT` (to any non-empty value other than `0`);
+/// under that flag a missing-tooling skip is promoted to a hard panic so the
+/// regression cannot hide. With the flag unset the graceful skip is preserved
+/// for local/partial runs.
+fn cached_audit() -> Option<&'static serde_json::Value> {
+    static AUDIT: OnceLock<Option<serde_json::Value>> = OnceLock::new();
+    let audit = AUDIT.get_or_init(|| run_orphan_audit("crates/reify-*/src"));
+    if audit.is_none() {
+        let required = std::env::var("REIFY_REQUIRE_ORPHAN_AUDIT")
+            .map(|v| !v.is_empty() && v != "0")
+            .unwrap_or(false);
+        assert!(
+            !required,
+            "REIFY_REQUIRE_ORPHAN_AUDIT is set but the orphan audit could not run \
+             (python3, git, or scripts/audit-orphan-producers.sh missing). This is \
+             the authoritative G-allow-pin lane and must not skip silently — install \
+             the tooling or unset the flag."
+        );
+    }
+    audit.as_ref()
+}
 
 /// Shared assertion body for one slice of `(file_suffix, fn_name)` pins.
 ///
@@ -130,11 +179,14 @@ fn assert_pins_are_g_allow_marked(result: &serde_json::Value, pins: &[(&str, &st
             let n = matching_allowed.len();
             let detail = if n == 0 {
                 format!(
-                    "0 entries — either a real consumer call was wired (delete this \
-                     pin per the removal contract) OR a same-name token elsewhere in \
-                     `crates/reify-*/src` pushed callers > 0 (incidental collision); \
-                     run `rg '\\b{fn_name}\\b' crates/reify-*/src` to distinguish \
-                     before removing the row."
+                    "0 entries. Disambiguate via assertion (a) for `{fn_name}`: if (a) \
+                     ALSO failed, the `// G-allow:` marker is simply missing/misplaced — \
+                     add it on the line immediately above the declaration. If (a) \
+                     PASSED, the fn left BOTH lists, which means either a real consumer \
+                     call was wired (delete this pin per the removal contract) OR a \
+                     same-name token elsewhere in `crates/reify-*/src` pushed callers > 0 \
+                     (incidental collision); run `rg '\\b{fn_name}\\b' crates/reify-*/src` \
+                     to distinguish before removing the row."
                 )
             } else {
                 format!("{n} entries — unexpected duplicate `// G-allow:` markers")
@@ -149,6 +201,16 @@ fn assert_pins_are_g_allow_marked(result: &serde_json::Value, pins: &[(&str, &st
         }
 
         // (c) The allow_reason must cite SOME tracked owner task as `#NNNN`.
+        //
+        // INTENTIONALLY MINIMAL (design decision, plan.json): this verifies only
+        // that *a* `#NNNN` token is present, NOT that it equals a specific owner
+        // number. The owning/consumer task is single-sourced in the source
+        // `// G-allow:` marker; copying the exact number into the test would
+        // couple it to a guess and break on legitimate re-attribution. The
+        // trade-off is accepted: a typo'd `#NNNN` still passes (c). By the same
+        // principle this is the ONLY assertion on marker text — keep it the bare
+        // presence check; do NOT grow it into substring/regex pinning of the
+        // rest of the comment prose.
         let reason = matching_allowed[0]["allow_reason"]
             .as_str()
             .unwrap_or_default();
@@ -188,7 +250,7 @@ fn assert_pins_are_g_allow_marked(result: &serde_json::Value, pins: &[(&str, &st
 /// zero-caller orphans despite being live and tested.  PERMANENT bucket-1 pins.
 #[test]
 fn modal_ops_producers_are_g_allow_marked() {
-    let Some(result) = run_orphan_audit("crates/reify-*/src") else {
+    let Some(result) = cached_audit() else {
         return;
     };
     const PINS: &[(&str, &str)] = &[
@@ -198,7 +260,7 @@ fn modal_ops_producers_are_g_allow_marked() {
         ("crates/reify-eval/src/modal_ops.rs", "solve_modal_core"),
         ("crates/reify-eval/src/modal_ops.rs", "run_modal_analysis"),
     ];
-    assert_pins_are_g_allow_marked(&result, PINS);
+    assert_pins_are_g_allow_marked(result, PINS);
 }
 
 /// Bucket 1 — elastic-static ComputeFn shell-channel helper
@@ -209,14 +271,14 @@ fn modal_ops_producers_are_g_allow_marked() {
 /// zero-caller orphan despite being live and tested.  PERMANENT bucket-1 pin.
 #[test]
 fn elastic_static_compute_producer_is_g_allow_marked() {
-    let Some(result) = run_orphan_audit("crates/reify-*/src") else {
+    let Some(result) = cached_audit() else {
         return;
     };
     const PINS: &[(&str, &str)] = &[(
         "crates/reify-eval/src/compute_targets/elastic_static.rs",
         "shell_channels_to_value",
     )];
-    assert_pins_are_g_allow_marked(&result, PINS);
+    assert_pins_are_g_allow_marked(result, PINS);
 }
 
 /// Bucket 1 — degenerate-shell (MITC3+) element kinematics helpers
@@ -235,7 +297,7 @@ fn elastic_static_compute_producer_is_g_allow_marked() {
 /// callees and needs no marker while the collision masks it.
 #[test]
 fn degenerate_shell_producers_are_g_allow_marked() {
-    let Some(result) = run_orphan_audit("crates/reify-*/src") else {
+    let Some(result) = cached_audit() else {
         return;
     };
     const PINS: &[(&str, &str)] = &[
@@ -252,7 +314,7 @@ fn degenerate_shell_producers_are_g_allow_marked() {
             "directors_from_facets",
         ),
     ];
-    assert_pins_are_g_allow_marked(&result, PINS);
+    assert_pins_are_g_allow_marked(result, PINS);
 }
 
 /// Bucket 1 — degenerate-shell element-stiffness entry points
@@ -272,7 +334,7 @@ fn degenerate_shell_producers_are_g_allow_marked() {
 /// no longer an orphan; pinning it would fail assertion (b).
 #[test]
 fn shell_assembly_producers_are_g_allow_marked() {
-    let Some(result) = run_orphan_audit("crates/reify-*/src") else {
+    let Some(result) = cached_audit() else {
         return;
     };
     const PINS: &[(&str, &str)] = &[
@@ -285,7 +347,7 @@ fn shell_assembly_producers_are_g_allow_marked() {
             "shell_element_stiffness_degenerate_ans",
         ),
     ];
-    assert_pins_are_g_allow_marked(&result, PINS);
+    assert_pins_are_g_allow_marked(result, PINS);
 }
 
 /// Bucket 2 — input-shaping (impulse-shaper) producers
@@ -302,7 +364,7 @@ fn shell_assembly_producers_are_g_allow_marked() {
 /// assertion (b) at the wide `crates/reify-*/src` scope.
 #[test]
 fn impulse_shaper_producers_are_g_allow_marked() {
-    let Some(result) = run_orphan_audit("crates/reify-*/src") else {
+    let Some(result) = cached_audit() else {
         return;
     };
     const PINS: &[(&str, &str)] = &[
@@ -328,7 +390,7 @@ fn impulse_shaper_producers_are_g_allow_marked() {
             "convolve_at",
         ),
     ];
-    assert_pins_are_g_allow_marked(&result, PINS);
+    assert_pins_are_g_allow_marked(result, PINS);
 }
 
 /// Bucket 2 — profile→MotionTrajectory sampling bridge
@@ -344,7 +406,7 @@ fn impulse_shaper_producers_are_g_allow_marked() {
 /// assertion (b) at the wide `crates/reify-*/src` scope.
 #[test]
 fn sampling_producers_are_g_allow_marked() {
-    let Some(result) = run_orphan_audit("crates/reify-*/src") else {
+    let Some(result) = cached_audit() else {
         return;
     };
     const PINS: &[(&str, &str)] = &[
@@ -357,5 +419,5 @@ fn sampling_producers_are_g_allow_marked() {
             "to_trajectory_samples",
         ),
     ];
-    assert_pins_are_g_allow_marked(&result, PINS);
+    assert_pins_are_g_allow_marked(result, PINS);
 }
