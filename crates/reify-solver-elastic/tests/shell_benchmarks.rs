@@ -872,6 +872,107 @@ fn twisted_beam_mesh(nz: usize, ny: usize) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
 
 // ─── step-3: Scordelis-Lo roof (MacNeal-Harder §3.4) ─────────────────────────
 
+/// Compute Dirichlet BCs for the Scordelis-Lo roof 1/4-quadrant model.
+///
+/// Mirrors [`pinched_cylinder_octant_symmetry_bcs`]; the roof's 1/4 model
+/// exploits two symmetry planes and one support condition:
+///
+/// | Plane | Physical role | Constrained DOFs |
+/// |-------|---------------|-----------------|
+/// | x=0 | Rigid end diaphragm | u_y=0, u_z=0 |
+/// | y=0 (θ=0) | Crown / longitudinal mid-plane symmetry | u_y=0, θ_x=0, θ_z=0 |
+/// | x=L/2 | Longitudinal midspan (x-symmetry) | u_x=0, θ_y=0 |
+///
+/// # Arguments
+///
+/// * `nodes` — node coordinates (`nodes[k]` is the 3-D position of node `k`)
+/// * `l` — full cylinder length (the quadrant spans `x ∈ [0, l/2]`);
+///   `l/2` is the midspan symmetry plane
+/// * `tol` — node-on-boundary detection tolerance; must be strictly less than
+///   half the smallest inter-node spacing to avoid pinning interior nodes
+fn roof_quadrant_symmetry_bcs(nodes: &[[f64; 3]], l: f64, tol: f64) -> Vec<DirichletBc> {
+    let mut bcs = Vec::new();
+    for (node, n) in nodes.iter().enumerate() {
+        let dof = |d: usize| node * 6 + d;
+        let is_crown = n[1].abs() < tol; // y ≈ 0: θ=0 crown symmetry
+        let is_diaphragm = n[0].abs() < tol; // x=0: rigid end diaphragm
+        let is_midspan = (n[0] - l / 2.0).abs() < tol; // x=L/2: longitudinal midspan symmetry
+
+        // Rigid end diaphragm at x=0.
+        //
+        // MacNeal-Harder "rigid end diaphragm": the end cross-section is a rigid
+        // plate in the yz-plane supported on axial rollers.  The plate constrains
+        // in-plane (yz) displacement but allows axial (x) sliding:
+        //   u_y = 0  (circumferential: cross-section cannot spread sideways)
+        //   u_z = 0  (vertical: cross-section cannot sink)
+        //   u_x = FREE (axial: the plate slides freely along the cylinder axis)
+        //
+        // Note: the axial rigid-body mode is eliminated by the midspan symmetry
+        // condition u_x=0 at x=L/2, not by this diaphragm constraint.
+        if is_diaphragm {
+            bcs.push(DirichletBc { dof: dof(1), value: 0.0 }); // u_y = 0 (circumferential)
+            bcs.push(DirichletBc { dof: dof(2), value: 0.0 }); // u_z = 0 (vertical)
+        }
+        // Crown / longitudinal mid-plane symmetry (θ=0, y=0).
+        if is_crown {
+            bcs.push(DirichletBc { dof: dof(1), value: 0.0 }); // u_y = 0
+            bcs.push(DirichletBc { dof: dof(3), value: 0.0 }); // θ_x = 0
+            bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z = 0
+        }
+        // Longitudinal midspan symmetry at x=L/2.
+        //
+        // x=L/2 is the center of the full roof.  For symmetric gravity loading:
+        //   u_x(x=L/2) = 0  (axial displacement antisymmetric about midspan)
+        //   θ_y(x=L/2) = 0  (rotation symmetric about midspan)
+        //
+        // Crucially, u_z is NOT constrained here — the midspan vertical
+        // displacement is the quantity we measure (it equals the max deflection).
+        if is_midspan {
+            bcs.push(DirichletBc { dof: dof(0), value: 0.0 }); // u_x = 0 (antisymmetry)
+            bcs.push(DirichletBc { dof: dof(4), value: 0.0 }); // θ_y = 0 (symmetry)
+        }
+    }
+    bcs
+}
+
+/// Compute lumped gravity loads for the Scordelis-Lo roof 1/4-quadrant model.
+///
+/// Each triangular element contributes `area × g / 3` per node as a downward
+/// (−z, DOF 2) point load.  Returns `(dof_index, force_value)` pairs ready
+/// for [`solve_shell_system`].
+///
+/// # Arguments
+///
+/// * `nodes` — node coordinates
+/// * `connectivity` — element node indices (`[n0, n1, n2]` per element)
+/// * `g` — gravity load per unit area (positive value; loads are applied in −z)
+fn roof_quadrant_gravity_loads(
+    nodes: &[[f64; 3]],
+    connectivity: &[[usize; 3]],
+    g: f64,
+) -> Vec<(usize, f64)> {
+    let mut loads = Vec::new();
+    for conn in connectivity {
+        let a = nodes[conn[0]];
+        let b = nodes[conn[1]];
+        let c = nodes[conn[2]];
+        // Triangle area = |AB × AC| / 2.
+        let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        let cross = [
+            ab[1] * ac[2] - ab[2] * ac[1],
+            ab[2] * ac[0] - ab[0] * ac[2],
+            ab[0] * ac[1] - ab[1] * ac[0],
+        ];
+        let area = (cross[0].powi(2) + cross[1].powi(2) + cross[2].powi(2)).sqrt() / 2.0;
+        let f_node = -area * g / 3.0; // downward (−z)
+        for &n in conn.iter() {
+            loads.push((n * 6 + 2, f_node));
+        }
+    }
+    loads
+}
+
 /// Scordelis-Lo roof smoke test — geometry from MacNeal-Harder (1985) §3.4.
 ///
 /// **NOT a validated benchmark** — see file-level docs. Asserts only that
@@ -943,94 +1044,11 @@ fn scordelis_lo_roof_quadrant_smoke_test_vertical_deflection_is_finite_and_downw
     let stiffness = build_shell_stiffnesses(&nodes, &connectivity, T, &mat);
     let elements = assembly_elements_for(&connectivity, &stiffness);
 
-    // Lumped gravity load: per-element area × G / 3 per node, in −z (DOF 2).
-    let mut point_loads: Vec<(usize, f64)> = Vec::new();
-    for conn in &connectivity {
-        let a = nodes[conn[0]];
-        let b = nodes[conn[1]];
-        let c = nodes[conn[2]];
-        // Triangle area = |AB × AC| / 2.
-        let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-        let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-        let cross = [
-            ab[1] * ac[2] - ab[2] * ac[1],
-            ab[2] * ac[0] - ab[0] * ac[2],
-            ab[0] * ac[1] - ab[1] * ac[0],
-        ];
-        let area = (cross[0].powi(2) + cross[1].powi(2) + cross[2].powi(2)).sqrt() / 2.0;
-        let f_node = -area * G / 3.0; // downward (−z)
-        for &n in conn.iter() {
-            point_loads.push((n * 6 + 2, f_node));
-        }
-    }
-
-    // BCs: detect nodes by position.
     // tol is chosen well within each mesh spacing (spacing ≈ L/2/NY ≈ 6.25 in x;
     // arc-length ≈ R·40°·π/180/NX ≈ 4.36 in θ-direction).
     let tol = 0.5_f64;
-    let mut bcs: Vec<DirichletBc> = Vec::new();
-
-    for (node, n) in nodes.iter().enumerate() {
-        let dof = |d: usize| node * 6 + d;
-        let is_crown = n[1].abs() < tol; // y ≈ 0: θ=0 crown symmetry
-        let is_diaphragm = n[0].abs() < tol; // x=0: rigid end diaphragm
-        let is_midspan = (n[0] - L / 2.0).abs() < tol; // x=L/2: longitudinal midspan symmetry
-
-        // Rigid end diaphragm at x=0 (one end of the full doubly-supported roof).
-        //
-        // MacNeal-Harder "rigid end diaphragm": the end cross-section is a rigid
-        // plate in the yz-plane supported on axial rollers. The plate constrains
-        // in-plane (yz) displacement but allows axial (x) sliding:
-        //   u_y = 0  (circumferential: cross-section cannot spread sideways)
-        //   u_z = 0  (vertical: cross-section cannot sink)
-        //   u_x = FREE (axial: the plate slides freely along the cylinder axis)
-        //
-        // Note: the axial rigid-body mode is eliminated by the midspan symmetry
-        // condition u_x=0 at x=L/2, not by this diaphragm constraint.
-        if is_diaphragm {
-            bcs.push(DirichletBc {
-                dof: dof(1),
-                value: 0.0,
-            }); // u_y = 0 (circumferential)
-            bcs.push(DirichletBc {
-                dof: dof(2),
-                value: 0.0,
-            }); // u_z = 0 (vertical)
-        }
-        // Crown / longitudinal mid-plane symmetry (θ=0).
-        if is_crown {
-            bcs.push(DirichletBc {
-                dof: dof(1),
-                value: 0.0,
-            }); // u_y = 0
-            bcs.push(DirichletBc {
-                dof: dof(3),
-                value: 0.0,
-            }); // θ_x = 0
-            bcs.push(DirichletBc {
-                dof: dof(5),
-                value: 0.0,
-            }); // θ_z = 0
-        }
-        // Longitudinal midspan symmetry at x=L/2.
-        //
-        // x=L/2 is the center of the full roof. For symmetric gravity loading:
-        //   u_x(x=L/2) = 0  (axial displacement antisymmetric about midspan)
-        //   θ_y(x=L/2) = 0  (rotation symmetric about midspan)
-        //
-        // Crucially, u_z is NOT constrained here — the midspan vertical
-        // displacement is the quantity we measure (it equals the max deflection).
-        if is_midspan {
-            bcs.push(DirichletBc {
-                dof: dof(0),
-                value: 0.0,
-            }); // u_x = 0 (antisymmetry)
-            bcs.push(DirichletBc {
-                dof: dof(4),
-                value: 0.0,
-            }); // θ_y = 0 (symmetry)
-        }
-    }
+    let point_loads = roof_quadrant_gravity_loads(&nodes, &connectivity, G);
+    let bcs = roof_quadrant_symmetry_bcs(&nodes, L, tol);
 
     let u = solve_shell_system(&elements, n_nodes, &bcs, &point_loads);
 
@@ -1075,6 +1093,144 @@ fn scordelis_lo_roof_quadrant_smoke_test_vertical_deflection_is_finite_and_downw
          MITC3 4×4 output is ~1.4e-2; published MacNeal-Harder reference \
          is {MACNEAL_HARDER_REF:.4e}. A correctness fix should land inside \
          this band, not outside it."
+    );
+}
+
+// ─── task-3513: Scordelis-Lo validated benchmark (Bathe & Lee 2014 band) ─────
+
+/// Scordelis-Lo roof 4×4 validated benchmark — Bathe & Lee (2014) published band.
+///
+/// # Purpose
+///
+/// This test verifies that the **full curved-shell accuracy stack** (degenerate
+/// substrate 4068 + ANS-membrane 4069 + K_NB rotation-bubble 4065) delivers a
+/// vertical deflection at the free-edge center within the published ~50%-of-reference
+/// accuracy band from Bathe & Lee 2014 at the 4×4 coarse-mesh resolution.
+///
+/// # Published reference
+///
+/// MacNeal-Harder (1985) / Bathe-Lee (2014) reference free-edge deflection:
+/// **0.3024** (downward vertical displacement at the longitudinal free-edge center
+/// under self-weight gravity 90 per unit area).
+///
+/// The Bathe & Lee (2014) figure for the MITC3+ element at 4×4 is "~50% of reference"
+/// at this mesh resolution.  The full deg+ANS+bubble stack (task 4065) reaches ratio
+/// ~0.765 (measured directly; task 3513 plan), comfortably inside the published band.
+///
+/// # Accepted band
+///
+/// `[0.50·REF, 1.0·REF]` = `[0.1512, 0.3024]`:
+/// - Floor 0.50·REF: encodes the published "~50% of reference at 4×4" deliverable;
+///   the curved stack clears this by 1.53× margin.
+/// - Ceiling 1.0·REF: "no overshoot" — the coarse-mesh degenerate element under-predicts
+///   via residual faceting/lock, so overshoot of the reference is not expected.
+///
+/// # Discriminator
+///
+/// The bare-MITC3 flat-facet path (this test's RED state, ratio ~0.0476) cannot reach
+/// the ≥50% floor — the band discriminates the curved cure from the flat-facet baseline.
+///
+/// # Geometry and material
+///
+/// Same as the smoke test: R=25, L=50, θ∈[0°,40°], t=0.25, E=4.32e8, ν=0.0, g=90.
+#[test]
+fn scordelis_lo_roof_degenerate_stack_4x4_within_bathe_lee_2014_band() {
+    const R: f64 = 25.0;
+    const L: f64 = 50.0;
+    const T: f64 = 0.25;
+    const NX: usize = 4; // angular (θ) divisions
+    const NY: usize = 4; // axial (x) divisions
+    const G: f64 = 90.0; // gravity load per unit area
+
+    /// MacNeal-Harder (1985) / Bathe & Lee (2014) reference free-edge deflection at 4×4.
+    const MACNEAL_HARDER_REF: f64 = 0.3024;
+
+    /// Lower bound: ~50% of reference (Bathe & Lee 2014 figure for MITC3+ at 4×4).
+    const LOWER: f64 = 0.50 * MACNEAL_HARDER_REF;
+
+    /// Upper bound: no overshoot of reference (coarse-mesh degenerate element
+    /// under-predicts via residual faceting/lock).
+    const UPPER: f64 = MACNEAL_HARDER_REF;
+
+    let mat = IsotropicElastic {
+        youngs_modulus: 4.32e8,
+        poisson_ratio: 0.0,
+    };
+
+    let (nodes, connectivity) = roof_quadrant_mesh(NX, NY);
+    let n_nodes = nodes.len();
+
+    // Analytic per-node outward-radial directors: the roof's cylinder axis is x,
+    // so the outward surface normal at (x, y, z) is (0, y, z) normalized.
+    // This mirrors the pinched-cylinder analytic-director stand-in normalize3([x, y, 0])
+    // (axis z), axis-swapped for the roof's x-axis.
+    let directors: Vec<[f64; 3]> = nodes.iter().map(|n| normalize3([0.0, n[1], n[2]])).collect();
+
+    // Full curved-shell stack: degenerate substrate (4068) + ANS-membrane (4069)
+    // + K_NB rotation-bubble (4065).  Yields ratio ~0.7646 (measured), inside
+    // [0.1512, 0.3024] with 1.53× margin above the floor and 1.31× below the ceiling.
+    let stiffness =
+        build_shell_stiffnesses_degenerate_ans_bubble(&nodes, &connectivity, &directors, T, &mat);
+    let elements = assembly_elements_for(&connectivity, &stiffness);
+
+    let tol = 0.5_f64;
+    let point_loads = roof_quadrant_gravity_loads(&nodes, &connectivity, G);
+    let bcs = roof_quadrant_symmetry_bcs(&nodes, L, tol);
+
+    let u = solve_shell_system(&elements, n_nodes, &bcs, &point_loads);
+
+    // Free-edge longitudinal center: x=L/2, θ=40° → (L/2, R·sin40°, R·cos40°).
+    // tol (0.5) is applied uniformly to all three axes.  The minimum angular
+    // inter-node spacing at 4×4 is ~3.3 in y and ~2.8 in z — ≥5.6× safety
+    // margin over tol.  The uniqueness assert below fires loudly if a future
+    // mesh refinement ever makes the match ambiguous.
+    let theta_40 = 40.0_f64.to_radians();
+    let target_x = L / 2.0;
+    let target_y = R * theta_40.sin();
+    let target_z = R * theta_40.cos();
+    let free_edge_center = {
+        let hits: Vec<usize> = nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| {
+                ((n[0] - target_x).abs() < tol
+                    && (n[1] - target_y).abs() < tol
+                    && (n[2] - target_z).abs() < tol)
+                    .then_some(i)
+            })
+            .collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "expected exactly one free-edge center node (x=L/2, θ=40°) within \
+             tol={tol:.2} of ({target_x:.2}, {target_y:.4}, {target_z:.4}); \
+             found {} — mesh refinement may require a tighter or axis-specific tolerance",
+            hits.len()
+        );
+        hits[0]
+    };
+
+    // Gravity loads −z ⇒ u_z < 0.  Report downward deflection (positive).
+    let vert_defl = -u[free_edge_center * 6 + 2];
+
+    assert!(
+        vert_defl.is_finite(),
+        "Scordelis-Lo Bathe & Lee 2014 band test: vert_defl = {vert_defl} is not finite"
+    );
+    assert!(
+        vert_defl > 0.0,
+        "Scordelis-Lo Bathe & Lee 2014 band test: vert_defl = {vert_defl:.4e} must be \
+         positive (downward) under gravity load; sign reversal indicates a BC / load / \
+         director bug"
+    );
+    assert!(
+        (LOWER..=UPPER).contains(&vert_defl),
+        "Scordelis-Lo Bathe & Lee 2014 band test: vert_defl = {vert_defl:.4e} outside \
+         [{LOWER:.4e}, {UPPER:.4e}].  Published MacNeal-Harder reference = {MACNEAL_HARDER_REF:.4}; \
+         Bathe & Lee (2014) figure: ~50% of reference at 4×4 mesh.  The full \
+         deg+ANS+bubble curved stack (tasks 4068/4069/4065) is required to clear the \
+         >= 0.50·REF floor; the bare-MITC3 flat-facet path yields ratio ~0.0476, which \
+         should NOT pass this test."
     );
 }
 
@@ -1784,10 +1940,14 @@ fn pinched_cylinder_octant_symmetry_bcs_pins_exact_dofs_on_1x1_mesh() {
 /// A bending/faceting-dominated benchmark is where directors-alone measurably
 /// help; on the membrane-dominated hemisphere (R/t=250) the reintroduced lock
 /// would mask the gain — reviewers should NOT expect improvement there. The
-/// Scordelis-Lo roof was evaluated empirically at 4×4 and REJECTED: under the
-/// degenerate substrate its free-edge mode is sign-reversed at this coarse mesh
-/// (no clean directional signal). The pinched cylinder is the more
-/// director-favourable of the two bending-dominated candidates.
+/// Scordelis-Lo roof was evaluated empirically at 4×4 under the degenerate
+/// substrate and initially showed a sign-reversed free-edge mode; task 4065's
+/// K_BB curved-kinematics fix (commit 784465ab57) corrected the sign, and task
+/// 3513 now GREENs the Scordelis-Lo absolute published band (correctly-signed
+/// downward deflection ~0.2312, ratio ~0.765 of the 0.3024 reference, at 4×4).
+/// The pinched cylinder remains the directional (relative) benchmark here
+/// because the relative gain from directors-alone is cleaner on a purely
+/// bending-dominated problem; the Scordelis-Lo result is the absolute band test.
 ///
 /// # Observed (4×4 octant, t=3, R=300, E=3e6, ν=0.3)
 ///
@@ -1943,11 +2103,17 @@ const PRE_REFINEMENT_HEMISPHERE_RATIO: f64 = 0.10;
 /// # Why the pinched cylinder (bending-dominated) and not the roof / hemisphere
 ///
 /// The pinched cylinder already runs the degenerate element end-to-end and is
-/// ~6.4× under — clear, well-signed headroom for a clean directional move. Per
-/// task 4068's findings the Scordelis-Lo free-edge mode is sign-reversed at 4×4
-/// (no clean directional signal; that GREEN is 3513's job) and the
-/// membrane-dominated hemisphere (R/t=250) would let the residual lock mask the
-/// gain (4065's job).
+/// ~6.4× under — clear, well-signed headroom for a clean directional move. The
+/// Scordelis-Lo free-edge mode was sign-reversed under the degenerate substrate
+/// in the task-4068 era; task 4065's K_BB curved-kinematics fix (commit
+/// 784465ab57) corrected the sign, and task 3513 now GREENs the Scordelis-Lo
+/// absolute published band (correctly-signed downward deflection ~0.2312, ratio
+/// ~0.765 of the 0.3024 reference, at 4×4).  This test keeps the pinched
+/// cylinder as the directional (relative) benchmark because the relative gain
+/// from the ANS membrane field is cleanest on that geometry; see
+/// `scordelis_lo_roof_degenerate_stack_4x4_within_bathe_lee_2014_band` for the
+/// absolute band.  The membrane-dominated hemisphere (R/t=250) would let the
+/// residual lock mask the ANS gain (4065's job on that geometry).
 #[test]
 fn degenerate_shell_ans_membrane_pinched_cylinder_moves_toward_reference() {
     const R: f64 = 300.0;
