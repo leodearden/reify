@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use argmin::core::{CostFunction, Error as ArgminError, Executor, State, TerminationReason};
 use argmin::solver::neldermead::NelderMead;
 use reify_core::{ConstraintNodeId, DiagnosticCode, DimensionVector, Type, ValueCellId};
-use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, ConstraintSolver, ObjectiveSense, ObjectiveSet, ResolutionProblem, SolveResult, Value, ValueMap};
+use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, ConstraintSolver, ObjectiveCombination, ObjectiveSense, ObjectiveSet, ResolutionProblem, SolveResult, Value, ValueMap};
 
 /// Maximum iterations for Nelder-Mead.
 const MAX_ITERS: u64 = 5000;
@@ -410,10 +410,12 @@ struct ConstraintCostFunction<'a> {
 /// Returns `None` if ANY term evaluates to a non-numeric / non-finite value,
 /// preserving the single-term None → UNDEF_OBJECTIVE_PENALTY / NoProgress paths.
 ///
-/// I2 bit-identity: for a single term with weight 1.0,
+/// I2 numerical equivalence: for a single term with weight 1.0,
 ///   Minimize → 0.0 + 1.0·v == v  (IEEE-754, finite v)
 ///   Maximize → 0.0 − 1.0·v == -v (IEEE-754, finite v)
-/// both are bit-identical to the former single-variant objective enum eval.
+/// both are numerically equivalent to the former single-variant objective enum eval
+/// (modulo signed-zero, which is solver-irrelevant: −0.0 == 0.0 in all IEEE-754
+/// comparisons and additions used by Nelder-Mead).
 ///
 /// Lexicographic folds as WeightedSum here (degenerate, PRD §6.3); full
 /// ε-band staged solve is task ε.
@@ -422,6 +424,15 @@ fn eval_objective_set(
     values: &ValueMap,
     functions: &[CompiledFunction],
 ) -> Option<f64> {
+    // Guard: only WeightedSum is implemented here.  A Lexicographic set must
+    // not be silently mis-solved as a weighted sum.  Assert in debug builds;
+    // task ε will implement the full ε-band staged solve.
+    debug_assert!(
+        matches!(objective.combination, ObjectiveCombination::WeightedSum),
+        "eval_objective_set: Lexicographic combination is not yet implemented \
+         (task ε owns the ε-band staged solve); received {:?}",
+        objective.combination,
+    );
     let mut acc = 0.0_f64;
     for term in &objective.terms {
         let v = reify_expr::eval_expr(&term.expr, &reify_expr::EvalContext::new(values, functions))

@@ -2259,3 +2259,67 @@ fn maximize_via_objectiveset_i2() {
         ),
     }
 }
+
+/// [weight-semantics] Verify that `term.weight` is actually multiplied into the
+/// objective cost — a regression would silently drop the factor, making the two
+/// terms cancel instead of having the heavier-weighted Maximize win.
+///
+/// Setup: one auto-param `x` ∈ [1 mm, 100 mm], no constraints, 2-term objective:
+///   term 0: Minimize x, weight = 1.0  → cost += 1.0 · x
+///   term 1: Maximize x, weight = 3.0  → cost -= 3.0 · x
+/// Net cost = (1.0 − 3.0) · x = −2.0 · x, minimized at x → upper bound (0.1 m).
+///
+/// If the weight factor were dropped (both treated as 1.0):
+///   net cost = 1.0·x − 1.0·x = 0 → solver sees flat landscape, won't push to bound.
+///
+/// Assert x > 0.08 m (80 mm) to confirm the 3.0 weight drives the Maximize term.
+#[test]
+fn weighted_objective_weight_factor_applied() {
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Part", "x");
+    let x_ref = value_ref("Part", "x");
+
+    // Two terms referencing the same variable with differing weights.
+    // Struct-literal construction forces explicit weight — ObjectiveTerm::new
+    // defaults to 1.0, so we use the literal to set weight = 3.0 on term 1.
+    let objective = ObjectiveSet {
+        terms: vec![
+            ObjectiveTerm { sense: ObjectiveSense::Minimize, expr: x_ref.clone(), weight: 1.0, priority: 0 },
+            ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: x_ref,         weight: 3.0, priority: 0 },
+        ],
+        combination: ObjectiveCombination::WeightedSum,
+    };
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.001, 0.1)), // 1 mm – 100 mm
+            free: false,
+        }],
+        constraints: vec![],
+        current_values: ValueMap::new(),
+        objective: Some(objective),
+        functions: vec![].into(),
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values, .. } => {
+            let x_si = values.get(&x_id).unwrap().as_f64().unwrap();
+            // Net cost = -2.0·x; linear over a box → optimum at upper bound (0.1 m).
+            // The 3.0 weight must be applied; without it the cost is identically 0.
+            assert!(
+                x_si > 0.08,
+                "[weight-semantics] heavier-weighted Maximize (w=3.0) should drive x \
+                 toward 100 mm upper bound, got {} m",
+                x_si
+            );
+        }
+        other => panic!(
+            "[weight-semantics] expected Solved for weight-factor test, got {:?}",
+            other
+        ),
+    }
+}
