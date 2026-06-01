@@ -3931,4 +3931,128 @@ mod tests {
         assert_vector3_approx!(Vector, r1, [1.0, 2.0, 3.0]);
         assert_vector3_approx!(Vector, r2, [1.0, 2.0, 3.0]);
     }
+
+    // ── step-5/6: project rejection tests ────────────────────────────────────
+
+    /// Structural rejections: wrong arg count, non-Frame 2nd arg, non-Point/Vector 1st arg,
+    /// wrong-length arg, degenerate basis, NaN component.
+    #[test]
+    fn project_rejections_return_undef() {
+        let pt = Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]);
+        let v3 = Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]);
+        let frame = make_frame(0.0, 0.0, 0.0, make_identity_orientation());
+
+        // --- wrong arg count ---
+        assert!(eval_builtin("project", &[]).is_undef(), "no args");
+        assert!(eval_builtin("project", std::slice::from_ref(&pt)).is_undef(), "one arg");
+        assert!(
+            eval_builtin("project", &[pt.clone(), frame.clone(), Value::Real(0.0)]).is_undef(),
+            "three args"
+        );
+
+        // --- non-Frame 2nd arg ---
+        assert!(
+            eval_builtin("project", &[pt.clone(), Value::Real(1.0)]).is_undef(),
+            "2nd arg Real"
+        );
+        assert!(
+            eval_builtin("project", &[pt.clone(), pt.clone()]).is_undef(),
+            "2nd arg Point"
+        );
+        assert!(
+            eval_builtin("project", &[v3.clone(), v3.clone()]).is_undef(),
+            "2nd arg Vector"
+        );
+
+        // --- arg[0] neither Point nor Vector ---
+        assert!(
+            eval_builtin("project", &[Value::Real(1.0), frame.clone()]).is_undef(),
+            "1st arg Real"
+        );
+
+        // --- arg[0] wrong length (2 components) ---
+        let pt2 = Value::Point(vec![Value::length(1.0), Value::length(2.0)]);
+        let v2 = Value::Vector(vec![Value::length(1.0), Value::length(2.0)]);
+        assert!(
+            eval_builtin("project", &[pt2, frame.clone()]).is_undef(),
+            "Point2"
+        );
+        assert!(
+            eval_builtin("project", &[v2, frame.clone()]).is_undef(),
+            "Vector2"
+        );
+
+        // --- degenerate basis (zero quaternion) ---
+        let degenerate_frame = Value::Frame {
+            origin: Box::new(Value::Point(vec![
+                Value::length(0.0),
+                Value::length(0.0),
+                Value::length(0.0),
+            ])),
+            basis: Box::new(Value::Orientation {
+                w: 0.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+        };
+        assert!(
+            eval_builtin("project", &[pt.clone(), degenerate_frame.clone()]).is_undef(),
+            "degenerate basis for Point"
+        );
+        assert!(
+            eval_builtin("project", &[v3.clone(), degenerate_frame]).is_undef(),
+            "degenerate basis for Vector"
+        );
+
+        // --- non-finite point component (NaN x) ---
+        let nan_pt = Value::Point(vec![
+            Value::Scalar {
+                si_value: f64::NAN,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        assert!(
+            eval_builtin("project", &[nan_pt, frame.clone()]).is_undef(),
+            "NaN point component"
+        );
+    }
+
+    /// project(point in LENGTH, frame with DIMENSIONLESS origin) → Undef.
+    ///
+    /// Subtracting LENGTH si_values from DIMENSIONLESS si_values is meaningless;
+    /// the cross-dimension guard (deferred to step-6) must reject this.
+    /// Currently (before step-6) the guard is absent, so this test is RED.
+    #[test]
+    fn project_point_origin_dimension_mismatch_undef() {
+        // Point3 in LENGTH
+        let pt = Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]);
+        // Frame with dimensionless (Real) origin
+        let dimensionless_frame = Value::Frame {
+            origin: Box::new(Value::Point(vec![
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(0.0),
+            ])),
+            basis: Box::new(make_identity_orientation()),
+        };
+        assert!(
+            eval_builtin("project", &[pt, dimensionless_frame]).is_undef(),
+            "point/origin dimension mismatch should be Undef"
+        );
+    }
 }
