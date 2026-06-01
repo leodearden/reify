@@ -2619,6 +2619,32 @@ mod tests {
             assert_eq!(s, expected, "serde mismatch for {code:?}");
         }
     }
+
+    // --- ScopeCoupling tests (task 4020 — W_SCOPE_COUPLING, PRD §3.7/§10.6, B11) ---
+    // Pairs with `detect_scope_coupling` in `crates/reify-eval/src/engine_eval.rs`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; the tests below pin the
+    // per-variant round-trip, Debug string, and serde wire format.
+
+    /// `DiagnosticCode::ScopeCoupling` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)` and Debug-prints as `"ScopeCoupling"`.
+    /// Shape mirrors `diagnostic_code_shadowing_with_code_round_trips`.
+    /// A future enum reorganisation that drops `ScopeCoupling` is caught here.
+    #[test]
+    fn diagnostic_code_scope_coupling_with_code_round_trips() {
+        let d = Diagnostic::warning("x").with_code(DiagnosticCode::ScopeCoupling);
+        assert_eq!(d.code, Some(DiagnosticCode::ScopeCoupling));
+        assert_eq!(format!("{:?}", DiagnosticCode::ScopeCoupling), "ScopeCoupling");
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::ScopeCoupling` serializes as
+    /// `"ScopeCoupling"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_scope_coupling_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::ScopeCoupling).unwrap();
+        assert_eq!(s, "\"ScopeCoupling\"");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
