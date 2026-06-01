@@ -80,7 +80,7 @@
 
 use std::collections::BTreeMap;
 
-use reify_core::DimensionVector;
+use reify_core::{Diagnostic, DiagnosticCode, DimensionVector};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_solver_elastic::{
     DirichletBc, ElementOrder, IsotropicElastic,
@@ -522,15 +522,84 @@ pub fn solve_buckling_trampoline(
     }));
 
     // ── (13) Return ComputeOutcome::Completed ────────────────────────────────
+    let diagnostics = buckling_unsupported_option_diagnostics(&value_inputs[6]);
     ComputeOutcome::Completed {
         result,
         new_warm_state: None,
         cost_per_byte:  None,
-        diagnostics:    vec![],
+        diagnostics,
     }
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+/// Emit a `W_BucklingOptionUnsupported` Warning for each PRESENT-and-non-default
+/// BucklingOptions field that the trampoline silently ignores.
+///
+/// The three declared-but-not-yet-honored params are:
+///   - `mode`       — default `"shift_invert"`; any other string triggers a warning.
+///   - `sigma`      — default `0.0`; any non-zero value triggers a warning.
+///   - `auto_dense` — default `true`; `false` triggers a warning.
+///
+/// Absent fields AND default values produce no diagnostic — robust to whether the
+/// eval pipeline materializes defaulted params or omits them.
+///
+/// Firing on ANY non-default value (not just out-of-allowlist values) is more honest
+/// than allowlist validation because even a valid value like `mode:"dense"` is silently
+/// dropped today.  The solve continues with kernel defaults (advisory Warning only).
+fn buckling_unsupported_option_diagnostics(val: &Value) -> Vec<Diagnostic> {
+    let data = match val {
+        Value::StructureInstance(d) => d,
+        _ => return Vec::new(),
+    };
+
+    let mut diags = Vec::new();
+
+    // mode: default "shift_invert" — warn for any other string.
+    if let Some(Value::String(m)) = data.fields.get("mode") {
+        if m != "shift_invert" {
+            diags.push(
+                Diagnostic::warning(format!(
+                    "BucklingOptions.mode = {:?} is declared but not yet honored by the \
+                     solver::buckling trampoline (the buckling kernel has no mode-select \
+                     input yet); solve falls back to the default \"shift_invert\"",
+                    m
+                ))
+                .with_code(DiagnosticCode::BucklingOptionUnsupported),
+            );
+        }
+    }
+
+    // sigma: default 0.0 — warn for any non-zero value.
+    if let Some(Value::Real(s)) = data.fields.get("sigma") {
+        if *s != 0.0 {
+            diags.push(
+                Diagnostic::warning(format!(
+                    "BucklingOptions.sigma = {s} is declared but not yet honored by the \
+                     solver::buckling trampoline (the buckling kernel has no shift-origin \
+                     input yet); solve falls back to the default 0.0",
+                ))
+                .with_code(DiagnosticCode::BucklingOptionUnsupported),
+            );
+        }
+    }
+
+    // auto_dense: default true — warn for false.
+    if let Some(Value::Bool(b)) = data.fields.get("auto_dense") {
+        if !*b {
+            diags.push(
+                Diagnostic::warning(
+                    "BucklingOptions.auto_dense = false is declared but not yet honored by the \
+                     solver::buckling trampoline (the buckling kernel has no dense-fallback \
+                     toggle yet); solve falls back to the default true",
+                )
+                .with_code(DiagnosticCode::BucklingOptionUnsupported),
+            );
+        }
+    }
+
+    diags
+}
 
 /// Extract `IsotropicElastic` from a `Value::StructureInstance` carrying
 /// `youngs_modulus: Scalar(PRESSURE)` and `poisson_ratio: Real`.
