@@ -669,4 +669,57 @@ mod tests {
             other => panic!("build_slab_sdf must return Value::SampledField, got {other:?}"),
         }
     }
+
+    // ── step-3 RED (task ε #3837): is_too_thick_for_shell helper ────────────
+    //
+    // Pins the `is_too_thick_for_shell(length, width, height, shell_threshold)
+    // -> bool` helper that is the exact logical complement of `classify_shell`'s
+    // Auto criterion:
+    //   thin  ↔  height / min(length, width) < shell_threshold   → NOT too thick
+    //   thick ↔  height / min(length, width) ≥ shell_threshold   → too thick
+    //
+    // Degenerate (non-positive in-plane dim) → too thick (cannot shell-mesh).
+    // Boundary ratio == threshold → true (NOT thin under strict `<`).
+    //
+    // RED: `is_too_thick_for_shell` does not exist yet → compile fail.
+    // GREEN after step-4 adds the helper to this module.
+
+    /// `is_too_thick_for_shell` correctly classifies thin vs. thick bodies.
+    ///
+    /// - Thin flexure (50×10×1 mm, ratio 0.1 < threshold 0.2) → `false`
+    ///   (not too thick; the shell path is valid for this body).
+    /// - Thick block (50×20×20 mm, ratio 1.0 ≥ threshold 0.2) → `true`
+    ///   (too thick; shell route would be inappropriate).
+    /// - Boundary case (ratio == threshold) → `true` (classify_shell's strict
+    ///   `<` makes ratio==threshold a Tet → helper must agree: too thick).
+    /// - Degenerate (non-positive in-plane dimension) → `true` (cannot
+    ///   shell-mesh a body with zero or negative in-plane extent).
+    #[test]
+    fn is_too_thick_for_shell_classifies_correctly() {
+        // Thin flexure: height=1mm, min(L,W)=10mm → ratio 0.1 < 0.2 → NOT too thick
+        assert!(
+            !is_too_thick_for_shell(0.050, 0.010, 0.001, 0.2),
+            "thin flexure (ratio 0.1 < 0.2) must return false (not too thick)"
+        );
+        // Thick block: height=20mm, min(L,W)=20mm → ratio 1.0 ≥ 0.2 → too thick
+        assert!(
+            is_too_thick_for_shell(0.050, 0.020, 0.020, 0.2),
+            "thick block (ratio 1.0 ≥ 0.2) must return true (too thick)"
+        );
+        // Boundary: height/min(L,W) == threshold exactly → too thick
+        // (classify_shell uses strict `<`, so == threshold routes Tet)
+        assert!(
+            is_too_thick_for_shell(0.010, 0.010, 0.002, 0.2),
+            "boundary ratio==threshold (0.2/1.0=0.2) must return true (not strictly thin)"
+        );
+        // Degenerate: non-positive in-plane dimension → cannot shell-mesh
+        assert!(
+            is_too_thick_for_shell(0.050, 0.0, 0.001, 0.2),
+            "zero width (degenerate in-plane) must return true (cannot shell-mesh)"
+        );
+        assert!(
+            is_too_thick_for_shell(0.050, -1.0, 0.001, 0.2),
+            "negative width (degenerate in-plane) must return true (cannot shell-mesh)"
+        );
+    }
 }
