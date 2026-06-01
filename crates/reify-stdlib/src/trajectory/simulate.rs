@@ -288,6 +288,103 @@ pub(crate) fn forces_to_forcing_history(
 mod tests {
     use super::*;
 
+    // ─── step-9: RED (mandated signal #1) — static → zero vibration ──────────
+
+    use super::super::spline::{BoundaryCondition, CubicSpline, MultiJointSpline};
+
+    /// Build a constant-pose (all-equal-waypoints) 1-joint clamped cubic spline on [0, T].
+    fn constant_pose_spline(duration: f64, q_val: f64) -> MultiJointSpline {
+        let knots = vec![0.0, duration / 2.0, duration];
+        let vals = vec![q_val, q_val, q_val];
+        let bc = BoundaryCondition::Clamped { start_vel: 0.0, end_vel: 0.0 };
+        let s = CubicSpline::fit(&knots, &vals, &bc).expect("cubic fit");
+        MultiJointSpline::new_cubic(vec![s]).expect("multi-joint")
+    }
+
+    /// (a) Static profile → vibration_offset all ≤1e-12, combined==nominal.
+    /// (b) t_samples: first=0, last=duration.
+    /// (c) nominal_pose constant across time.
+    #[test]
+    fn static_profile_zero_vibration() {
+        let duration = 0.5_f64;
+        let spline = constant_pose_spline(duration, 0.0);
+
+        // 1-link mechanism: identity transform, 1 kg point mass, 1 DOF (prismatic X).
+        let link = LinkDesc {
+            parent_to_child: SpatialTransform6::from_frame3(
+                &crate::dynamics::spatial::Frame3::identity()
+            ),
+            subspace: vec![SpatialVector6::from_array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0])],
+            mass: 1.0,
+            com: [0.0; 3],
+            inertia_about_com: [[0.0; 3]; 3],
+        };
+        let mech = MechanismModel { links: vec![link] };
+
+        // 1 mode (5 Hz, ζ=0.05), unit force projection, unit mode coefficient at location.
+        let modal = ModalModel {
+            modes: vec![ModeDesc {
+                freq_hz: 5.0,
+                zeta: 0.05,
+                force_projection: vec![1.0],
+            }],
+        };
+        let effector_locs = vec![EffectorLocation { mode_coeffs: vec![1.0] }];
+
+        let result = simulate_trajectory_core(&spline, &mech, &modal, &effector_locs);
+
+        // t_samples: first=0, last=duration.
+        assert!(!result.t_samples.is_empty(), "t_samples non-empty");
+        assert!((result.t_samples[0]).abs() < 1e-12, "first sample t=0");
+        assert!(
+            (result.t_samples.last().unwrap() - duration).abs() < 1e-12,
+            "last sample t=duration"
+        );
+
+        // Vibration all zero.
+        let n_loc = result.vibration_offset.len();
+        assert_eq!(n_loc, 1, "1 location");
+        for (loc_idx, vib_series) in result.vibration_offset.iter().enumerate() {
+            for (t_idx, &[dx, dy, dz]) in vib_series.iter().enumerate() {
+                let mag = dx.abs().max(dy.abs()).max(dz.abs());
+                assert!(
+                    mag <= 1e-12,
+                    "loc {loc_idx} t_idx {t_idx}: vibration mag {mag:.2e} > 1e-12"
+                );
+            }
+        }
+
+        // combined_pose == nominal_pose at every sample.
+        for loc in 0..n_loc {
+            let n_t = result.nominal_pose[loc].len();
+            assert_eq!(result.combined_pose[loc].len(), n_t, "combined and nominal same length");
+            for i in 0..n_t {
+                let nom = &result.nominal_pose[loc][i];
+                let comb = &result.combined_pose[loc][i];
+                for k in 0..3 {
+                    assert!(
+                        (comb.position[k] - nom.position[k]).abs() <= 1e-12,
+                        "loc {loc} t {i} pos[{k}]: combined={} nominal={}",
+                        comb.position[k], nom.position[k]
+                    );
+                }
+            }
+        }
+
+        // nominal_pose constant across time.
+        if result.nominal_pose[0].len() > 1 {
+            let p0 = result.nominal_pose[0][0].position;
+            for (i, pose) in result.nominal_pose[0].iter().enumerate() {
+                for k in 0..3 {
+                    assert!(
+                        (pose.position[k] - p0[k]).abs() <= 1e-12,
+                        "nominal_pose[0][{i}].position[{k}] not constant"
+                    );
+                }
+            }
+        }
+    }
+
     // ─── step-7: RED — nominal_fk_pose ───────────────────────────────────────
 
     use crate::dynamics::spatial::{Frame3, SpatialTransform6};
