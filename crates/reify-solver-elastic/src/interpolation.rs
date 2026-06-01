@@ -195,6 +195,299 @@ pub fn locate_element_p1(elements: &[LocatableTet<'_>], p: [f64; 3], tol: f64) -
     None
 }
 
+// ── BVH spatial index ─────────────────────────────────────────────────────────
+
+/// Axis-aligned bounding box used internally by [`TetSpatialIndex`].
+#[derive(Debug, Clone, Copy)]
+struct Aabb {
+    min: [f64; 3],
+    max: [f64; 3],
+}
+
+impl Aabb {
+    #[inline]
+    fn contains(&self, p: [f64; 3]) -> bool {
+        p[0] >= self.min[0]
+            && p[0] <= self.max[0]
+            && p[1] >= self.min[1]
+            && p[1] <= self.max[1]
+            && p[2] >= self.min[2]
+            && p[2] <= self.max[2]
+    }
+}
+
+/// A node in the flat BVH array.
+#[derive(Debug, Clone)]
+enum BvhNode {
+    Internal {
+        aabb: Aabb,
+        left: usize,
+        right: usize,
+    },
+    Leaf {
+        aabb: Aabb,
+        /// Inclusive start into `TetSpatialIndex::perm`.
+        start: usize,
+        /// Exclusive end into `TetSpatialIndex::perm`.
+        end: usize,
+    },
+}
+
+/// A binary BVH spatial index over a P1-tet mesh.
+///
+/// Accelerates element-location queries from O(n\_elems) to O(log n\_elems)
+/// per query while guaranteeing bit-identical results to the linear scan in
+/// [`locate_element_p1`].
+///
+/// # Bit-identical contract
+///
+/// `locate` and `locate_counted` return the **minimum** element index among
+/// all AABB-candidate elements that pass `point_in_tet_p1(.., tol)`.  This
+/// matches the linear scan's "first-hit" behaviour because the linear scan
+/// also returns the lowest-index containing element; on shared-face boundary
+/// points (where two elements both pass) the minimum index is selected in
+/// both paths.
+///
+/// # AABB padding
+///
+/// Each element AABB is padded by
+/// `δ = tol * (max_k − min_k) + TINY_ABS_FLOOR`
+/// per axis, making the bounding boxes conservative: every point that
+/// `point_in_tet_p1(.., tol)` accepts is guaranteed to lie inside the padded
+/// AABB.  Over-padding only adds a few extra `point_in_tet_p1` evaluations;
+/// under-padding (not possible here) would silently miss the correct element.
+pub struct TetSpatialIndex {
+    nodes: Vec<BvhNode>,
+    root: usize,
+    /// Element-index permutation; leaves reference contiguous sub-ranges.
+    perm: Vec<usize>,
+}
+
+impl TetSpatialIndex {
+    /// Maximum elements per BVH leaf.
+    const LEAF_MAX: usize = 8;
+    /// Absolute padding floor: prevents zero padding on degenerate (flat) faces.
+    const TINY_ABS_FLOOR: f64 = 1e-12;
+
+    /// Build a BVH over the mesh defined by `nodes` and `elems`.
+    ///
+    /// `tol` controls AABB padding so that the padded boxes conservatively
+    /// contain every point accepted by `point_in_tet_p1(.., tol)`.
+    pub fn build(nodes: &[[f64; 3]], elems: &[[usize; 4]], tol: f64) -> Self {
+        let n = elems.len();
+        if n == 0 {
+            return TetSpatialIndex { nodes: vec![], root: 0, perm: vec![] };
+        }
+
+        // Per-element padded AABB.
+        let elem_aabbs: Vec<Aabb> = elems
+            .iter()
+            .map(|conn| {
+                let pts = [nodes[conn[0]], nodes[conn[1]], nodes[conn[2]], nodes[conn[3]]];
+                let mut mn = pts[0];
+                let mut mx = pts[0];
+                for pt in &pts[1..] {
+                    for k in 0..3 {
+                        if pt[k] < mn[k] {
+                            mn[k] = pt[k];
+                        }
+                        if pt[k] > mx[k] {
+                            mx[k] = pt[k];
+                        }
+                    }
+                }
+                // Pad per axis: δ = tol * extent + tiny_floor
+                for k in 0..3 {
+                    let pad = tol * (mx[k] - mn[k]) + Self::TINY_ABS_FLOOR;
+                    mn[k] -= pad;
+                    mx[k] += pad;
+                }
+                Aabb { min: mn, max: mx }
+            })
+            .collect();
+
+        // Centroid of each padded AABB (used for median-split sorting).
+        let centroids: Vec<[f64; 3]> = elem_aabbs
+            .iter()
+            .map(|ab| {
+                [
+                    0.5 * (ab.min[0] + ab.max[0]),
+                    0.5 * (ab.min[1] + ab.max[1]),
+                    0.5 * (ab.min[2] + ab.max[2]),
+                ]
+            })
+            .collect();
+
+        let mut perm: Vec<usize> = (0..n).collect();
+        let mut bvh_nodes: Vec<BvhNode> = Vec::with_capacity(2 * n);
+
+        let root = Self::build_recursive(
+            &mut perm,
+            0,
+            n,
+            &elem_aabbs,
+            &centroids,
+            &mut bvh_nodes,
+        );
+
+        TetSpatialIndex { nodes: bvh_nodes, root, perm }
+    }
+
+    fn build_recursive(
+        perm: &mut Vec<usize>,
+        start: usize,
+        end: usize,
+        elem_aabbs: &[Aabb],
+        centroids: &[[f64; 3]],
+        bvh_nodes: &mut Vec<BvhNode>,
+    ) -> usize {
+        // Union AABB of this range.
+        let mut union_aabb = elem_aabbs[perm[start]];
+        for i in (start + 1)..end {
+            let ab = &elem_aabbs[perm[i]];
+            for k in 0..3 {
+                if ab.min[k] < union_aabb.min[k] {
+                    union_aabb.min[k] = ab.min[k];
+                }
+                if ab.max[k] > union_aabb.max[k] {
+                    union_aabb.max[k] = ab.max[k];
+                }
+            }
+        }
+
+        let count = end - start;
+        if count <= Self::LEAF_MAX {
+            let idx = bvh_nodes.len();
+            bvh_nodes.push(BvhNode::Leaf { aabb: union_aabb, start, end });
+            return idx;
+        }
+
+        // Choose split axis: longest centroid extent.
+        let mut axis = 0;
+        let mut max_extent = -1.0_f64;
+        for k in 0..3 {
+            let lo = perm[start..end]
+                .iter()
+                .map(|&i| centroids[i][k])
+                .fold(f64::INFINITY, f64::min);
+            let hi = perm[start..end]
+                .iter()
+                .map(|&i| centroids[i][k])
+                .fold(f64::NEG_INFINITY, f64::max);
+            let ext = hi - lo;
+            if ext > max_extent {
+                max_extent = ext;
+                axis = k;
+            }
+        }
+
+        // Median split: sort perm[start..end] by centroid along `axis`.
+        perm[start..end].sort_unstable_by(|&a, &b| {
+            centroids[a][axis]
+                .partial_cmp(&centroids[b][axis])
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let mid = start + count / 2;
+
+        // Reserve this node's slot before recursing (recursion pushes more nodes).
+        let this_idx = bvh_nodes.len();
+        bvh_nodes.push(BvhNode::Internal { aabb: union_aabb, left: 0, right: 0 }); // placeholder
+
+        let left = Self::build_recursive(perm, start, mid, elem_aabbs, centroids, bvh_nodes);
+        let right = Self::build_recursive(perm, mid, end, elem_aabbs, centroids, bvh_nodes);
+
+        // Back-fill the child indices now that they are known.
+        bvh_nodes[this_idx] = BvhNode::Internal { aabb: union_aabb, left, right };
+        this_idx
+    }
+
+    /// Return the minimum element index `e` with `point_in_tet_p1(.., tol) == true`,
+    /// or `None` if no element contains `p`.
+    ///
+    /// Result is bit-identical to [`locate_element_p1`] for every query point.
+    pub fn locate(
+        &self,
+        nodes: &[[f64; 3]],
+        elems: &[[usize; 4]],
+        p: [f64; 3],
+        tol: f64,
+    ) -> Option<usize> {
+        self.locate_counted(nodes, elems, p, tol).0
+    }
+
+    /// Like [`locate`] but also returns the number of `point_in_tet_p1`
+    /// evaluations performed (for deterministic performance assertions).
+    pub fn locate_counted(
+        &self,
+        nodes: &[[f64; 3]],
+        elems: &[[usize; 4]],
+        p: [f64; 3],
+        tol: f64,
+    ) -> (Option<usize>, usize) {
+        if self.nodes.is_empty() {
+            return (None, 0);
+        }
+        let mut best: Option<usize> = None;
+        let mut count: usize = 0;
+        Self::traverse(
+            &self.nodes,
+            self.root,
+            &self.perm,
+            nodes,
+            elems,
+            p,
+            tol,
+            &mut best,
+            &mut count,
+        );
+        (best, count)
+    }
+
+    fn traverse(
+        bvh_nodes: &[BvhNode],
+        node_idx: usize,
+        perm: &[usize],
+        nodes: &[[f64; 3]],
+        elems: &[[usize; 4]],
+        p: [f64; 3],
+        tol: f64,
+        best: &mut Option<usize>,
+        count: &mut usize,
+    ) {
+        match &bvh_nodes[node_idx] {
+            BvhNode::Internal { aabb, left, right } => {
+                if !aabb.contains(p) {
+                    return;
+                }
+                Self::traverse(bvh_nodes, *left, perm, nodes, elems, p, tol, best, count);
+                Self::traverse(bvh_nodes, *right, perm, nodes, elems, p, tol, best, count);
+            }
+            BvhNode::Leaf { aabb, start, end } => {
+                if !aabb.contains(p) {
+                    return;
+                }
+                for &elem_idx in &perm[*start..*end] {
+                    let conn = &elems[elem_idx];
+                    let phys4: [[f64; 3]; 4] = [
+                        nodes[conn[0]],
+                        nodes[conn[1]],
+                        nodes[conn[2]],
+                        nodes[conn[3]],
+                    ];
+                    *count += 1;
+                    if point_in_tet_p1(&phys4, p, tol) {
+                        *best = Some(match *best {
+                            Some(prev) => prev.min(elem_idx),
+                            None => elem_idx,
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod bvh_tests {
     use super::*;
