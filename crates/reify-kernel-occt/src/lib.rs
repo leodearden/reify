@@ -910,11 +910,12 @@ impl OcctKernel {
     /// source handle is preserved unmodified so the same child shape can be
     /// placed under several different frames (sub-placement PRD §5, task 3901).
     ///
-    /// The transform is encoded via `BRepBuilderAPI_Transform(…, Standard_False)`
-    /// (TopLoc_Location) — no geometry bake, exact-isometry preserved at
-    /// machine precision. The result inherits the source's [`BRepKind`] because
-    /// a rigid isometry preserves topology (a Solid stays a Solid, a Face stays
-    /// a Face, …).
+    /// The transform is encoded via `BRepBuilderAPI_Transform(…, Standard_True)`
+    /// (geometry bake) — each placed copy is a topologically independent
+    /// `TopoDS_Shape` so that the STEP writer emits a distinct
+    /// `MANIFOLD_SOLID_BREP` for every placed body.  The result inherits the
+    /// source's [`BRepKind`] because a rigid isometry preserves topology
+    /// (a Solid stays a Solid, a Face stays a Face, …).
     ///
     /// # Errors
     /// - `GeometryError::InvalidReference(handle)` if `handle` is unknown to

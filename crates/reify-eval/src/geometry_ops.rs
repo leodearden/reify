@@ -2127,7 +2127,10 @@ fn make_pair_map(id_a: i64, id_b: i64) -> reify_ir::Value {
 /// SI metres f64. Returns `None` (and emits a Warning diagnostic) on kernel
 /// error or when the kernel returns a non-numeric `Value` — caller maps
 /// `None` to a defensive `Value::Undef`.
-fn kernel_distance(
+///
+/// `pub(crate)` so `Engine::distance_between_placed` (engine_build.rs) can
+/// reuse the same error-handling convention (T7 task 3905).
+pub(crate) fn kernel_distance(
     kernel: &dyn reify_ir::GeometryKernel,
     from: GeometryHandleId,
     to: GeometryHandleId,
@@ -4890,10 +4893,8 @@ pub(crate) fn surface_export_bodies(
 
     for (r_idx, realization) in template.realizations.iter().enumerate() {
         let Some(handle) = terminal_handles[t_idx][r_idx] else {
-            eprintln!("[DEBUG surface_export_bodies] t_idx={t_idx} r_idx={r_idx} path_prefix={path_prefix:?} -> no terminal handle, skipping");
             continue;
         };
-        eprintln!("[DEBUG surface_export_bodies] t_idx={t_idx} r_idx={r_idx} path_prefix={path_prefix:?} handle.id={:?} placement={:?}", handle.id, placement);
         let default_kernel = geometry_kernels
             .get_mut(default_kernel_name)
             .expect("default kernel must remain in the map across the export walk");
@@ -4904,9 +4905,8 @@ pub(crate) fn surface_export_bodies(
                     rotation,
                     translation,
                 }) {
-                    Ok(transformed) => { eprintln!("[DEBUG] ApplyTransform ok -> placed_id={:?}", transformed.id); transformed.id }
+                    Ok(transformed) => transformed.id,
                     Err(e) => {
-                        eprintln!("[DEBUG] ApplyTransform error: {e}");
                         diagnostics.push(Diagnostic::error(format!(
                             "transform application error: {}",
                             e
@@ -4915,11 +4915,10 @@ pub(crate) fn surface_export_bodies(
                     }
                 }
             }
-            None => { eprintln!("[DEBUG] no placement, using source handle.id={:?}", handle.id); handle.id }
+            None => handle.id,
         };
         let default_visible = !(aux_ancestor || realization_is_aux(realization));
         let entity_path = format!("{}#realization[{}]", path_prefix, realization.id.index);
-        eprintln!("[DEBUG] pushing ExportBody: {entity_path:?} visible={default_visible}");
         export_bodies.push(ExportBody {
             entity_path,
             handle_id: placed_id,

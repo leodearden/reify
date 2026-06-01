@@ -3205,16 +3205,25 @@ std::unique_ptr<OcctShape> apply_transform_to_shape(
     const Transform3Props& t)
 {
     return wrap_occt_call("apply_transform_to_shape", [&]() {
-        // Re-use the existing static helpers verbatim — no new OCCT math.
         // build_trsf validates the unit-quaternion invariant (|q|² ∈ [1±1e-6])
         // and throws std::runtime_error on violation; that error is caught by
         // wrap_occt_call and surfaced as a cxx::Exception with the same message.
-        // apply_location_trsf wraps BRepBuilderAPI_Transform(..., Standard_False)
-        // → TopLoc_Location encoding, no geometry bake, no PNv2 concerns.
+        //
+        // Copy=Standard_True: bake the transform into new independent geometry.
+        // This is required for STEP export: when multiple placed bodies share
+        // the same source TShape (e.g. two instances of the same sub structure),
+        // Standard_False (location-only) would share the underlying TShape and
+        // the STEP writer would deduplicate, emitting only 1 MANIFOLD_SOLID_BREP.
+        // With Standard_True each placed copy is a distinct TShape → each gets
+        // its own MANIFOLD_SOLID_BREP in the output.
         const gp_Trsf trsf = build_trsf(t);
-        TopoDS_Shape placed = apply_location_trsf(shape.shape, trsf);
+        BRepBuilderAPI_Transform xform(shape.shape, trsf, Standard_True);
+        xform.Build();
+        if (!xform.IsDone()) {
+            throw std::runtime_error("BRepBuilderAPI_Transform (bake) failed");
+        }
         auto result = std::make_unique<OcctShape>();
-        result->shape = placed;
+        result->shape = xform.Shape();
         return result;
     });
 }

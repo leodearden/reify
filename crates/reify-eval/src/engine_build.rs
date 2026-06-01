@@ -2280,11 +2280,6 @@ impl Engine {
                     .filter(|b| b.default_visible)
                     .collect();
 
-                eprintln!("[DEBUG build] product_bodies.len()={}", product_bodies.len());
-                for b in &product_bodies {
-                    eprintln!("[DEBUG build]   body: {:?} visible={}", b.entity_path, b.default_visible);
-                }
-
                 match product_bodies.len() {
                     0 => {
                         // All bodies were aux — no product geometry to export.
@@ -2315,15 +2310,13 @@ impl Engine {
                         // Multiple product bodies — assemble a compound then export.
                         let ids: Vec<GeometryHandleId> =
                             product_bodies.iter().map(|b| b.handle_id).collect();
-                        eprintln!("[DEBUG build] calling make_compound with {} ids: {:?}", ids.len(), ids);
                         let default_kernel = self
                             .geometry_kernels
                             .get_mut(name)
                             .expect("default kernel must remain in the map for compound export");
                         let compound = match default_kernel.make_compound(&ids) {
-                            Ok(h) => { eprintln!("[DEBUG build] make_compound ok, compound.id={:?}", h.id); h }
+                            Ok(h) => h,
                             Err(e) => {
-                                eprintln!("[DEBUG build] make_compound ERROR: {e}");
                                 diagnostics.push(Diagnostic::error(format!(
                                     "compound assembly error: {}",
                                     e
@@ -2363,6 +2356,219 @@ impl Engine {
             diagnostics,
             resolved_params: check_result.resolved_params,
         }
+    }
+
+    /// T7 (task 3905): compute the minimum distance (SI metres) between two
+    /// placed product bodies identified by their composed `entity_path` strings
+    /// (e.g. `"Assembly.a#realization[0]"`).
+    ///
+    /// Runs the same Phase-A realization execution and Phase-B
+    /// `surface_export_bodies` walk as [`Self::build`], resolves the two placed
+    /// handles by `entity_path` (product bodies only: `default_visible == true`),
+    /// and issues `GeometryQuery::Distance{from, to}` via the default kernel.
+    ///
+    /// Returns `Some(d)` where `d` is the BRepExtrema minimum distance in metres,
+    /// or `None` if either path is unresolvable, no geometry kernel is configured,
+    /// or the distance query fails (with a warning diagnostic). Consistent with the
+    /// `kernel_distance` error-handling convention.
+    ///
+    /// Uses the engine's `RealizationCache` — if `build()` was called first on the
+    /// same module the Phase-A kernel ops are served from cache and this method
+    /// incurs only the surfacing + Distance query overhead.
+    pub fn distance_between_placed(
+        &mut self,
+        module: &CompiledModule,
+        path_a: &str,
+        path_b: &str,
+    ) -> Option<f64> {
+        let Some(name) = self.default_kernel_name.as_deref() else {
+            return None;
+        };
+        if !self.geometry_kernels.contains_key(name) {
+            return None;
+        }
+        let name = name.to_owned();
+
+        // Phase-A: evaluate the module and execute geometry ops to populate
+        // terminal_handles, mirroring the build() realization loop.
+        let check_result = self.check(module);
+        let mut diagnostics = check_result.diagnostics;
+        let values = check_result.values;
+
+        let demanded_tols = self.compute_demanded_tols(module);
+        let demanded_reprs = self.compute_demanded_reprs(module, ExportFormat::Step);
+
+        #[cfg(any(test, feature = "test-instrumentation"))]
+        let registry_owned = self
+            .test_registry_override
+            .clone()
+            .unwrap_or_else(crate::kernel_registry::collect_registry);
+        #[cfg(not(any(test, feature = "test-instrumentation")))]
+        let registry_owned = crate::kernel_registry::collect_registry();
+        let registry_borrowed: BTreeMap<String, &CapabilityDescriptor> =
+            registry_owned.iter().map(|(k, v)| (k.clone(), v)).collect();
+
+        let mut step_handles: Vec<KernelHandle> = Vec::new();
+        let mut terminal_handles: Vec<Vec<Option<KernelHandle>>> = module
+            .templates
+            .iter()
+            .map(|t| vec![None; t.realizations.len()])
+            .collect();
+
+        // Scratch tables required by execute_realization_ops signature;
+        // not used by the distance query (no post-process conformance/kinematic
+        // queries needed — only raw geometry handles are needed).
+        let mut scratch_feature_tags = FeatureTagTable::default();
+        let mut scratch_topo_attrs = TopologyAttributeTable::default();
+        let mut scratch_swept_kinds = SweptKindTable::default();
+        let mut module_named_steps: HashMap<String, HashMap<String, KernelHandle>> =
+            HashMap::new();
+
+        for (t_idx, template) in module.templates.iter().enumerate() {
+            let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
+            seed_cross_sub_named_steps(
+                template,
+                &module_named_steps,
+                &mut named_steps,
+                &mut self.geometry_kernels,
+                &name,
+                &values,
+                &self.functions,
+                &self.meta_map,
+                &mut diagnostics,
+                &module.templates,
+            );
+            for (r_idx, realization) in template.realizations.iter().enumerate() {
+                let demanded_tol = demanded_tols
+                    .get(t_idx)
+                    .and_then(|v| v.get(r_idx))
+                    .copied()
+                    .unwrap_or(None);
+                let mut kernel_error: Option<ErrorRef> = None;
+                let mut produced_repr_out: Option<ReprKind> = None;
+                let handle_start = step_handles.len();
+                Engine::execute_realization_ops(
+                    &mut self.geometry_kernels,
+                    &registry_borrowed,
+                    &name,
+                    &realization.operations,
+                    &realization.feature_tags,
+                    &values,
+                    &self.functions,
+                    &self.meta_map,
+                    RealizationOutputs::new(
+                        &mut step_handles,
+                        &mut named_steps,
+                        &mut scratch_feature_tags,
+                        &mut scratch_topo_attrs,
+                        &mut scratch_swept_kinds,
+                        &mut produced_repr_out,
+                    ),
+                    &mut diagnostics,
+                    &realization.id,
+                    realization.name.as_deref(),
+                    realization.span,
+                    &mut kernel_error,
+                    &mut self.realization_cache,
+                    demanded_tol,
+                    demanded_reprs
+                        .get(t_idx)
+                        .and_then(|v| v.get(r_idx))
+                        .copied()
+                        .unwrap_or(ReprKind::BRep),
+                    &mut self.last_dispatch_count,
+                );
+                if step_handles.len() > handle_start {
+                    terminal_handles[t_idx][r_idx] = step_handles.last().copied();
+                }
+                // Kernel errors are recorded in diagnostics by execute_realization_ops;
+                // the distance query will simply find no handle for failed realizations.
+                let _ = kernel_error;
+            }
+            snapshot_named_steps(template, named_steps, &mut module_named_steps);
+        }
+
+        // Phase-B: collect placed product handles via the T7 surfacing walk.
+        let identity_world = crate::geometry_ops::compose_pose_chain(&[]);
+        let roots = crate::geometry_ops::root_template_indices(module);
+        let mut export_bodies: Vec<crate::geometry_ops::ExportBody> = Vec::new();
+        for &root_idx in &roots {
+            let root_prefix = module.templates[root_idx].name.clone();
+            crate::geometry_ops::surface_export_bodies(
+                module,
+                root_idx,
+                &root_prefix,
+                false,
+                &identity_world,
+                0,
+                &terminal_handles,
+                &mut self.geometry_kernels,
+                &name,
+                &values,
+                &self.functions,
+                &self.meta_map,
+                &mut export_bodies,
+                &mut diagnostics,
+            );
+        }
+        // Fallback: surface orphan/cyclic templates unreachable from roots.
+        let mut covered = crate::geometry_ops::reachable_template_indices(module, &roots);
+        for t_idx in 0..module.templates.len() {
+            if covered.contains(&t_idx) {
+                continue;
+            }
+            let fallback_prefix = module.templates[t_idx].name.clone();
+            crate::geometry_ops::surface_export_bodies(
+                module,
+                t_idx,
+                &fallback_prefix,
+                false,
+                &identity_world,
+                0,
+                &terminal_handles,
+                &mut self.geometry_kernels,
+                &name,
+                &values,
+                &self.functions,
+                &self.meta_map,
+                &mut export_bodies,
+                &mut diagnostics,
+            );
+            covered.extend(crate::geometry_ops::reachable_template_indices(
+                module,
+                &[t_idx],
+            ));
+        }
+
+        // Resolve the two product (default_visible == true) handles by entity_path.
+        let find_handle = |path: &str| -> Option<GeometryHandleId> {
+            export_bodies
+                .iter()
+                .find(|b| b.default_visible && b.entity_path == path)
+                .map(|b| b.handle_id)
+        };
+        let handle_a = find_handle(path_a);
+        let handle_b = find_handle(path_b);
+        let (Some(from), Some(to)) = (handle_a, handle_b) else {
+            diagnostics.push(Diagnostic::warning(format!(
+                "distance_between_placed: could not resolve product handle(s) \
+                 (path_a={path_a:?} → {handle_a:?}, path_b={path_b:?} → {handle_b:?})"
+            )));
+            return None;
+        };
+
+        // Issue GeometryQuery::Distance on the placed handles.
+        let kernel = self
+            .geometry_kernels
+            .get(name.as_str())
+            .expect("default kernel must remain in the map");
+        crate::geometry_ops::kernel_distance(
+            kernel.as_ref(),
+            from,
+            to,
+            &mut diagnostics,
+            "distance_between_placed",
+        )
     }
 
     /// Tessellate all realizations in the module for GUI mesh rendering.
