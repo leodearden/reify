@@ -525,6 +525,113 @@ mod tests {
         );
     }
 
+    /// Task 4050: `RealizationCache::remove` exact-key round-trip + wrong-key
+    /// no-ops that leave every sibling slot intact.
+    ///
+    /// Underpins atomic intermediate-cache rollback (step-14): a failed
+    /// realization must drop exactly the entries it inserted at their precise
+    /// `(entity, repr_kind, tol, options_hash)` keys while leaving sibling slots
+    /// (differing only in `options_hash` or `repr_kind`) untouched. Uses the
+    /// real `KernelHandle` value type the production cache stores.
+    #[test]
+    fn remove_round_trip_and_wrong_key_no_ops_leave_siblings_intact() {
+        use super::NO_OPTIONS;
+        use reify_ir::{GeometryHandleId, KernelHandle, KernelId};
+
+        let primary = KernelHandle {
+            kernel: KernelId::Manifold,
+            id: GeometryHandleId(5),
+        };
+        let sibling_opts = KernelHandle {
+            kernel: KernelId::Manifold,
+            id: GeometryHandleId(6),
+        };
+        let sibling_repr = KernelHandle {
+            kernel: KernelId::Occt,
+            id: GeometryHandleId(7),
+        };
+
+        let mut cache = RealizationCache::<KernelHandle>::new();
+        // Primary slot + two siblings differing only in options_hash / repr_kind.
+        cache.insert("Bracket", ReprKind::Mesh, 0.01, NO_OPTIONS, primary);
+        cache.insert("Bracket", ReprKind::Mesh, 0.01, ContentHash(7), sibling_opts);
+        cache.insert("Bracket", ReprKind::BRep, 0.01, NO_OPTIONS, sibling_repr);
+
+        // All three are independently retrievable up front.
+        assert_eq!(
+            cache.lookup("Bracket", ReprKind::Mesh, 0.01, NO_OPTIONS),
+            Some(&primary)
+        );
+        assert_eq!(
+            cache.lookup("Bracket", ReprKind::Mesh, 0.01, ContentHash(7)),
+            Some(&sibling_opts)
+        );
+        assert_eq!(
+            cache.lookup("Bracket", ReprKind::BRep, 0.01, NO_OPTIONS),
+            Some(&sibling_repr)
+        );
+
+        // Wrong-key removes are None no-ops (no panic), one per key dimension.
+        assert_eq!(
+            cache.remove("Other", ReprKind::Mesh, 0.01, NO_OPTIONS),
+            None,
+            "wrong entity must miss"
+        );
+        assert_eq!(
+            cache.remove("Bracket", ReprKind::Voxel, 0.01, NO_OPTIONS),
+            None,
+            "wrong repr_kind must miss"
+        );
+        assert_eq!(
+            cache.remove("Bracket", ReprKind::Mesh, 0.005, NO_OPTIONS),
+            None,
+            "wrong (exact) tol must miss — remove is exact, not partial-order"
+        );
+        assert_eq!(
+            cache.remove("Bracket", ReprKind::Mesh, 0.01, ContentHash(999)),
+            None,
+            "wrong options_hash must miss"
+        );
+
+        // None of the no-op removes disturbed any slot.
+        assert_eq!(
+            cache.lookup("Bracket", ReprKind::Mesh, 0.01, NO_OPTIONS),
+            Some(&primary)
+        );
+        assert_eq!(
+            cache.lookup("Bracket", ReprKind::Mesh, 0.01, ContentHash(7)),
+            Some(&sibling_opts)
+        );
+        assert_eq!(
+            cache.lookup("Bracket", ReprKind::BRep, 0.01, NO_OPTIONS),
+            Some(&sibling_repr)
+        );
+
+        // Remove the primary at its exact key: returns the stored handle.
+        assert_eq!(
+            cache.remove("Bracket", ReprKind::Mesh, 0.01, NO_OPTIONS),
+            Some(primary),
+            "exact-key remove must return the stored handle"
+        );
+        // The primary slot now misses…
+        assert_eq!(
+            cache.lookup("Bracket", ReprKind::Mesh, 0.01, NO_OPTIONS),
+            None,
+            "removed slot must miss on subsequent lookup"
+        );
+        // …but the options_hash and repr_kind siblings are untouched.
+        assert_eq!(
+            cache.lookup("Bracket", ReprKind::Mesh, 0.01, ContentHash(7)),
+            Some(&sibling_opts),
+            "options_hash sibling must survive removal of the NO_OPTIONS slot"
+        );
+        assert_eq!(
+            cache.lookup("Bracket", ReprKind::BRep, 0.01, NO_OPTIONS),
+            Some(&sibling_repr),
+            "repr_kind sibling must survive removal of the Mesh slot"
+        );
+    }
+
     /// Structural regression pin: two distinct `options_hash` values must produce two distinct
     /// `ToleranceBucket` slots at SOFT_CAPACITY scale — neither set of inserts displaces or
     /// shadows the other.
