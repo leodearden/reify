@@ -185,6 +185,18 @@ beforeEach(() => {
   mockBakeColours.mockClear();
 });
 
+// Module-scope FEA mesh factory — shared by 'Viewport FEA auto-range' and
+// 'Viewport FEA Lock Current + readout wiring' suites to avoid drift.
+function makeFEAMesh(values: number[]): MeshData {
+  return {
+    entity_path: 'bracket',
+    vertices: new Float32Array(0),
+    indices: new Uint32Array(0),
+    normals: null,
+    scalar_channels: { vonMises: new Float32Array(values) },
+  };
+}
+
 describe('Viewport', () => {
   it('renders a canvas element with data-testid viewport-canvas', () => {
     render(() => <Viewport meshes={{}} viewportId="test-vp" />);
@@ -1037,16 +1049,6 @@ describe('Viewport wireManager integration (T0b)', () => {
 // memo to Viewport.tsx.
 // ─────────────────────────────────────────────────────────────────────────────
 describe('Viewport FEA auto-range', () => {
-  function makeFEAMesh(values: number[]): MeshData {
-    return {
-      entity_path: 'bracket',
-      vertices: new Float32Array(0),
-      indices: new Uint32Array(0),
-      normals: null,
-      scalar_channels: { vonMises: new Float32Array(values) },
-    };
-  }
-
   it('(a) enabled + auto mode + meshes with vonMises [1,2,3] → range becomes {mode:auto,min:1,max:3}', () => {
     const store = createFeaModeStore();
     store.setEnabled(true);
@@ -1074,6 +1076,8 @@ describe('Viewport FEA auto-range', () => {
 
     // Trigger a bake by toggling colorize (force re-set via channel change)
     const colorize = mockMeshSetColorize.mock.calls[mockMeshSetColorize.mock.calls.length - 1]?.[0];
+    // If colorize is undefined, setColorize was never called — that is itself a regression.
+    expect(colorize).toBeTruthy();
     if (colorize) {
       colorize.bake(new Float32Array([1, 2, 3]));
       expect(mockBakeColours.mock.calls[0][1]).toEqual({ mode: 'auto', min: 1, max: 3 });
@@ -1135,16 +1139,6 @@ describe('Viewport FEA auto-range', () => {
 // Tests fail until step-8 wires onLockCurrent and maxValue into <FeaModeToolbar>.
 // ─────────────────────────────────────────────────────────────────────────────
 describe('Viewport FEA Lock Current + readout wiring', () => {
-  function makeFEAMesh(values: number[]): MeshData {
-    return {
-      entity_path: 'bracket',
-      vertices: new Float32Array(0),
-      indices: new Uint32Array(0),
-      normals: null,
-      scalar_channels: { vonMises: new Float32Array(values) },
-    };
-  }
-
   it('(a) clicking fea-mode-lock-current sets range to {locked, min:2, max:8}', () => {
     const store = createFeaModeStore();
     store.setEnabled(true);
