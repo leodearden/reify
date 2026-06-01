@@ -1272,3 +1272,83 @@ fn reload_for_watch_impl_failure_returns_ok_with_diagnostic_and_staleness() {
         "session must be stale after reload_for_watch_impl returns a failure state"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Watcher delta surfacing test (task 4153, step-9 RED)
+// ---------------------------------------------------------------------------
+
+/// (step-9 RED) Prove that the watcher's failure path surfaces the Error-severity
+/// diagnostic to the frontend via the `compile-diagnostics` Tauri event.
+///
+/// Drive a forced compile-error reload, take the GuiState from
+/// `reload_for_watch_impl` (failure path → last-good + reload-error diagnostic),
+/// run it through `diff::compute_delta` then `diff::delta_to_events`, and assert
+/// the resulting events contain a `("compile-diagnostics", payload)` tuple whose
+/// payload array includes at least one Error-severity entry.
+///
+/// This validates the full chain: failure → last-good state with diagnostic →
+/// delta computation → Tauri event the frontend already listens for.
+///
+/// The plan says "RED until reload_for_watch_impl returns the diagnostic-bearing
+/// last-good state (step-6) and build_gui_state synthesis (step-2) are both in
+/// place."  Both are done, so this test should pass immediately after being written.
+#[test]
+fn watcher_failure_surfaces_compile_diagnostics_event() {
+    let engine = make_test_engine_for_commands();
+
+    // Capture the clean GuiState before the failed reload.
+    let prev_good_state = crate::commands::get_initial_state_impl(&engine)
+        .expect("get_initial_state_impl should succeed on clean engine");
+    assert!(
+        !prev_good_state.meshes.is_empty(),
+        "prev_good_state must have non-empty meshes (test fixture)"
+    );
+    assert!(
+        prev_good_state.compile_diagnostics.is_empty(),
+        "prev_good_state must have no compile_diagnostics before the reload"
+    );
+
+    // Drive a failed reload.
+    let failure_state =
+        crate::commands::reload_for_watch_impl(&engine, "bracket.ri", "invalid syntax $$$")
+            .expect("reload_for_watch_impl must return Ok even on failure");
+
+    // The failure state must carry at least one Error-severity diagnostic.
+    assert!(
+        failure_state
+            .compile_diagnostics
+            .iter()
+            .any(|d| d.severity == "Error"),
+        "failure GuiState.compile_diagnostics must contain an Error-severity entry"
+    );
+
+    // Run the state through the watcher's delta pipeline.
+    let last_state_mutex = Mutex::new(Some(prev_good_state));
+    let delta = crate::diff::compute_delta(&last_state_mutex, &failure_state);
+    let events = crate::diff::delta_to_events(&delta);
+
+    // Assert there is a "compile-diagnostics" event with an Error-severity entry.
+    let compile_diag_event = events
+        .iter()
+        .find(|(name, _)| name == "compile-diagnostics");
+    assert!(
+        compile_diag_event.is_some(),
+        "delta_to_events must produce a 'compile-diagnostics' event after a failed reload; \
+         got events: {:?}",
+        events.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+
+    let payload = &compile_diag_event.unwrap().1;
+    let diags = payload
+        .as_array()
+        .expect("compile-diagnostics payload must be an array");
+    let has_error = diags
+        .iter()
+        .any(|d| d["severity"].as_str() == Some("Error"));
+    assert!(
+        has_error,
+        "compile-diagnostics payload must contain an Error-severity entry; \
+         got: {:?}",
+        diags
+    );
+}
