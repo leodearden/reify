@@ -2854,7 +2854,8 @@ mod tests {
     fn orient_look_at_forward_x_up_z() {
         // forward=(1,0,0), up=(0,0,1):
         // z=(1,0,0), x=cross((0,0,1),(1,0,0))=(0,1,0), y=cross((1,0,0),(0,1,0))=(0,0,1)
-        // basis cols [(0,1,0),(0,0,1),(1,0,0)] → Shepperd r22-branch → (0.5,0.5,0.5,0.5)
+        // basis cols [(0,1,0),(0,0,1),(1,0,0)]: trace=0, r00=r11=r22=0
+        // → Shepperd final-else (z-dominant) branch → (0.5,0.5,0.5,0.5)
         let fwd = t3(1.0, 0.0, 0.0);
         let up = t3(0.0, 0.0, 1.0);
         assert_orientation_approx!(
@@ -2955,6 +2956,30 @@ mod tests {
         assert!(
             eval_builtin("orient_look_at", &[fwd, up]).is_undef(),
             "Inf in forward should return Undef"
+        );
+    }
+
+    #[test]
+    fn orient_look_at_nan_component_in_up_returns_undef() {
+        // NaN in up propagates through cross3(up, z), making the cross product
+        // non-finite → normalize_vec3_arr returns None → Undef.
+        let fwd = t3(0.0, 0.0, 1.0);
+        let up = t3(0.0, f64::NAN, 0.0);
+        assert!(
+            eval_builtin("orient_look_at", &[fwd, up]).is_undef(),
+            "NaN in up should return Undef"
+        );
+    }
+
+    #[test]
+    fn orient_look_at_inf_component_in_up_returns_undef() {
+        // Inf in up propagates through cross3(up, z), making the cross product
+        // non-finite → normalize_vec3_arr returns None → Undef.
+        let fwd = t3(0.0, 0.0, 1.0);
+        let up = t3(f64::INFINITY, 0.0, 0.0);
+        assert!(
+            eval_builtin("orient_look_at", &[fwd, up]).is_undef(),
+            "Inf in up should return Undef"
         );
     }
 
