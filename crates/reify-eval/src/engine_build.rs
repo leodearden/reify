@@ -4049,6 +4049,57 @@ impl Engine {
         }
     }
 
+    /// Post-process value cells for a template after `execute_realization_ops`
+    /// has populated `named_steps`, dispatching the whole-handle geometry
+    /// queries `volume` / `area` / `centroid` / `bounding_box` on a
+    /// `Value::GeometryHandle` (task 3608, GHR-ζ; PRD
+    /// `docs/prds/v0_3/geometry-handle-runtime.md` §8 Phase 6).
+    ///
+    /// Sibling to `post_process_conformance_queries` /
+    /// `post_process_body_mass_props`. For each `ValueCellDecl` whose
+    /// `default_expr` is a recognised geometry-query call,
+    /// [`crate::geometry_ops::try_eval_geometry_query`] resolves the handle and
+    /// dispatches to the kernel, writing the typed `Value` (`Scalar<Volume>` /
+    /// `Scalar<Area>` / `Point3<Length>` / `BoundingBox`) into `values`,
+    /// overwriting the `Value::Undef` left by the pure `eval_expr` path (these
+    /// geometry-query builtins have no pure-eval rule). Cells whose dispatch
+    /// returns `None` (non-call expr, a different function name, an unresolvable
+    /// handle arg) are left untouched — the geometry_ops `None`-means-skip
+    /// contract.
+    ///
+    /// Takes `kernel: &dyn GeometryKernel` (immutable — the dispatch only issues
+    /// read-only `kernel.query(...)` round-trips and does not mutate the
+    /// kernel); `run_post_processes` reborrows its `&mut dyn` kernel as
+    /// `&*kernel`. Wired into `run_post_processes` (task 3745 consolidation
+    /// point) so build / build_snapshot / tessellate_from_values all pick it up.
+    fn post_process_geometry_queries(
+        template: &reify_compiler::TopologyTemplate,
+        named_steps: &HashMap<String, GeometryHandleId>,
+        values: &mut ValueMap,
+        kernel: &dyn GeometryKernel,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        // Iterate `values` directly without snapshotting (parallels the
+        // `post_process_body_mass_props` sibling). Safe for the top-level case:
+        // a geometry-query cell's arg resolves to a `named_steps` handle
+        // (populated by `execute_realization_ops`), never to another
+        // geometry-query cell.
+        for cell in &template.value_cells {
+            let default_expr = match &cell.default_expr {
+                Some(e) => e,
+                None => continue,
+            };
+            if let Some(value) = crate::geometry_ops::try_eval_geometry_query(
+                default_expr,
+                named_steps,
+                kernel,
+                diagnostics,
+            ) {
+                values.insert(cell.id.clone(), value);
+            }
+        }
+    }
+
     /// Run all selector / AdHocSelector post-process passes for a template
     /// after `execute_realization_ops` has populated `named_steps`.
     ///
@@ -4085,6 +4136,16 @@ impl Engine {
         // it, yielding incorrect geometry — at which point this call likely must
         // move AFTER the selector passes (or gain an explicit dependency
         // ordering). Do not wire 3620 without revisiting this ordering.
+        // GHR-ζ (task 3608): whole-handle geometry-query dispatch
+        // (volume / area / centroid / bounding_box). Added here — rather than a
+        // separate explicit call at each build / build_snapshot /
+        // tessellate_from_values site — so all three sites pick it up
+        // automatically (task 3745 consolidation contract). Reborrows the `&mut`
+        // kernel as `&dyn`: the dispatch only issues read-only queries.
+        // Order-independent w.r.t. the sibling passes — geometry-query cells are
+        // not consumed by body_mass_props or the selector passes, and this pass
+        // reads only `named_steps` handles + eval_expr-populated cells.
+        Engine::post_process_geometry_queries(template, named_steps, values, &*kernel, diagnostics);
         Engine::post_process_body_mass_props(template, values, &*kernel, diagnostics);
         Engine::post_process_topology_selectors(template, named_steps, values, kernel, diagnostics);
         Engine::post_process_ad_hoc_selectors(

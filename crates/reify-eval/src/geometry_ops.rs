@@ -1428,6 +1428,118 @@ pub(crate) fn try_eval_conformance_query(
     }
 }
 
+// ── Whole-handle geometry-query dispatch (task 3608, GHR-ζ) ─────────────────
+//
+// `try_eval_geometry_query` is the kernel-aware eval-time dispatch for the
+// stdlib whole-handle geometry queries `volume` / `area` / `centroid` /
+// `bounding_box` on a `Value::GeometryHandle` (PRD
+// `docs/prds/v0_3/geometry-handle-runtime.md` §8 Phase 6). Sibling to
+// `try_eval_conformance_query` / `try_eval_topology_selector`, dispatched from
+// `Engine::post_process_geometry_queries`.
+//
+// `length` / `perimeter` are deliberately NOT handled here: they are already
+// delivered via the edge/face topology-selector path (`dispatch_edge_length` /
+// `dispatch_perimeter`), and `GeometryQuery` has no whole-handle
+// Length/Perimeter variant — routing them here would double-dispatch.
+//
+// Kernel reply contract (`reify-kernel-occt/src/lib.rs:2519`): Volume /
+// SurfaceArea return `Value::Real` (SI m³ / m²); Centroid / BoundingBox return
+// the canonical JSON `Value::String` wire format.
+//
+// Returns:
+//   `Some(Value::Scalar { dimension: VOLUME/AREA, .. })` for volume / area,
+//   `Some(Value::Undef)` (with a Warning) when the single handle arg resolves
+//        but the kernel errors or replies with an unexpected type (PRD §4
+//        defensive-downgrade contract),
+//   `None` when the expr is not a recognised whole-handle geometry-query call
+//        or its single arg is unresolvable — the caller leaves the cell at its
+//        compiled default (`Value::Undef`).
+//
+// GHR-ζ does NOT route through `gate_query_capability` (task 3623): consistent
+// with the existing selector-dispatch siblings, and all GHR-ζ fixtures realize
+// as BRep so the gate would route `Occt` anyway. Wiring the gate is the KGQ
+// dispatcher family's scope.
+pub(crate) fn try_eval_geometry_query(
+    expr: &reify_ir::CompiledExpr,
+    named_steps: &HashMap<String, GeometryHandleId>,
+    kernel: &dyn reify_ir::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    // (1) Must be a FunctionCall — anything else is unsupported (top-level case).
+    let (function, args) = match &expr.kind {
+        reify_ir::CompiledExprKind::FunctionCall { function, args } => (function, args),
+        _ => return None,
+    };
+
+    // (2) Recognised whole-handle geometry-query name (cheap string compare
+    //     before any arg resolution). length/perimeter are intentionally absent
+    //     (topology-selector path — see module note above).
+    if !matches!(function.name.as_str(), "volume") {
+        return None;
+    }
+
+    // (3) Exactly one handle arg.
+    if args.len() != 1 {
+        return None;
+    }
+
+    // (4) Resolve the arg to a kernel handle via `named_steps` (hydrated +
+    //     revalidated by `post_process_geometry_handle_cells` before this pass).
+    //     Unresolvable (literal, non-`ValueRef`, missing entry) → `None`, so the
+    //     cell keeps its compiled default.
+    let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
+
+    // (5) Build the matching kernel query and convert the reply to a typed Value.
+    match function.name.as_str() {
+        "volume" => dispatch_scalar_query(
+            kernel,
+            reify_ir::GeometryQuery::Volume(handle),
+            reify_core::DimensionVector::VOLUME,
+            "volume",
+            diagnostics,
+        ),
+        // Unreachable — the earlier `matches!` already filtered the name.
+        _ => None,
+    }
+}
+
+/// Issue a scalar-returning kernel query (`Volume` / `SurfaceArea`) and wrap the
+/// `Value::Real` (or, defensively, `Value::Scalar`) reply as
+/// `Value::Scalar { si_value, dimension }`. Returns `Some(Value::Undef)` + one
+/// Warning on a kernel error or unexpected reply type (PRD §4 defensive
+/// downgrade), mirroring `dispatch_edge_length`.
+fn dispatch_scalar_query(
+    kernel: &dyn reify_ir::GeometryKernel,
+    query: reify_ir::GeometryQuery,
+    dimension: reify_core::DimensionVector,
+    helper_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    match kernel.query(&query) {
+        Ok(reify_ir::Value::Real(v)) => Some(reify_ir::Value::Scalar {
+            si_value: v,
+            dimension,
+        }),
+        Ok(reify_ir::Value::Scalar { si_value, .. }) => Some(reify_ir::Value::Scalar {
+            si_value,
+            dimension,
+        }),
+        Ok(unexpected) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{helper_name}(...) kernel reply has unexpected type (expected Real, \
+                 got {unexpected:?}); cell left at Undef",
+            )));
+            Some(reify_ir::Value::Undef)
+        }
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{helper_name}(...) kernel query failed: {err}",
+            )));
+            Some(reify_ir::Value::Undef)
+        }
+    }
+}
+
 // ── Kinematic-query dispatch (task 2531) ────────────────────────────────────
 //
 // `try_eval_kinematic_query` is the kernel-aware eval-time dispatch for the
