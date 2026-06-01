@@ -352,6 +352,33 @@ pub(crate) fn extract_internal_mechanisms(a: &Mat<f64>, nodes: &[[f64; 3]]) -> M
     out
 }
 
+/// Assemble the geometric / stress stiffness `K_G = D ⊗ I₃` (`3N × 3N`) from the
+/// layer-2 force-density matrix `D = CᵀQC`.
+///
+/// `D` ([`crate::form_find_free::assemble_force_density_matrix`]) is reused
+/// verbatim (PRD §5 "shares layer 2's core"), then expanded by the Kronecker
+/// product with the 3×3 identity: `K_G[3a+α, 3b+α] = D[a,b]` for each axis
+/// `α ∈ {0,1,2}`, with every off-axis (`α≠β`) entry zero. There is NO sign flip —
+/// `q` already encodes cable(+)/strut(−), so `K_G` is the prestress energy
+/// Hessian directly (contrast the buckling kernel's `−K_g`).
+pub(crate) fn assemble_geometric_stiffness(
+    n: usize,
+    members: &[(usize, usize)],
+    q: &[f64],
+) -> Mat<f64> {
+    let d = crate::form_find_free::assemble_force_density_matrix(n, members, q);
+    let mut k_g = Mat::<f64>::zeros(3 * n, 3 * n);
+    for a in 0..n {
+        for b in 0..n {
+            let dab = d[(a, b)];
+            for axis in 0..3 {
+                k_g[(3 * a + axis, 3 * b + axis)] = dab;
+            }
+        }
+    }
+    k_g
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
