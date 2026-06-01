@@ -160,6 +160,40 @@ pub fn resolve_extraction_failure(shell_force: ShellForce) -> FailurePolicy {
     }
 }
 
+/// Test whether a body is too thick for the shell route, using the EXACT
+/// same metric as [`classify_shell`]'s `Auto` branch.
+///
+/// Returns `true` (too thick) when the body is **not** thin, i.e. when
+/// `classify_shell(Auto, length, width, height, shell_threshold)` would
+/// return [`ShellRoute::Tet`]:
+///
+/// - Degenerate: `min(length, width) ≤ 0` → `true` (cannot shell-mesh).
+/// - Non-degenerate: `height / min(length, width) ≥ shell_threshold` → `true`.
+/// - Non-degenerate: `height / min(length, width) < shell_threshold` → `false`
+///   (the body IS thin enough to shell-solve).
+///
+/// # Thickness-axis invariant (esc-3594 suggestion 1)
+///
+/// This helper reuses [`classify_shell`]'s **exact metric** (same divisor
+/// `min(length, width)`, same strict `<` comparison) so the dispatch-site
+/// "too-thick" gate and the shell-route classifier can never disagree.
+/// A body classified too-thick always routes [`ShellRoute::Tet`] under `Auto`;
+/// a body classified thin (not too-thick) always routes
+/// [`ShellRoute::Shell`] under `Auto`.
+///
+/// `pub(crate)` — called by `elastic_static::solve_elastic_static_trampoline`.
+pub(crate) fn is_too_thick_for_shell(
+    length: f64,
+    width: f64,
+    height: f64,
+    shell_threshold: f64,
+) -> bool {
+    // Mirror classify_shell's Auto branch exactly.  thin ↔ in_plane > 0 AND
+    // height/in_plane < threshold.  too-thick is the logical complement.
+    let in_plane = length.min(width);
+    !(in_plane > 0.0 && height / in_plane < shell_threshold)
+}
+
 // ── driver-output → DSL-value glue ───────────────────────────────────────────
 //
 // These builders bridge the neutral `reify-solver-elastic` flat-plate driver
