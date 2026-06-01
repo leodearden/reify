@@ -507,6 +507,7 @@ pub fn solve_elastic_static_trampoline(
 ///
 /// Task 3594/δ calls this on the shell-routing path with real `Some(_)` data.
 /// This task (#4067) ships the helper; 3594/δ wires the call site.
+// G-allow: shell-channel->Value helper shipped by task #4067; consumer is the task #3594/δ shell-routing call site (not yet wired). Reached on the elastic-static ComputeFn path via fn-pointer registration the orphan audit cannot trace.
 pub fn shell_channels_to_value(channels: &Option<ShellChannels>, mid_stress: &Value) -> Value {
     let ch = match channels {
         None => return Value::Undef,
