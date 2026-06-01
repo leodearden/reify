@@ -402,6 +402,7 @@ pub(crate) fn forces_to_forcing_history(
 ///   well-formed empty output vectors — no panic, no index-out-of-bounds.
 /// - Empty modal modes: vibration_offset is all-zero, combined == nominal.
 /// - Location count is respected in all output inner-vector lengths.
+///
 /// Return an empty [`EndEffectorTrackData`] shaped for `n_loc` effector locations.
 ///
 /// All inner `Vec`s are empty and `t_samples` is empty.  This is the canonical
