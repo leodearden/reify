@@ -136,6 +136,11 @@ use reify_solver_elastic::{
 
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
+// Shell-route classification + the reify-eval-side shell-solve orchestrator
+// (task 3594/δ). `solve_shell_static` is referenced via its full path at the
+// call site to keep the shell branch visually self-contained.
+use super::shell_solve::{ShellForce, ShellRoute, classify_shell};
+
 // ── MaterialModel ────────────────────────────────────────────────────────────
 
 /// Dispatch tag used by `solve_cantilever_fea` to route element assembly and
@@ -236,6 +241,73 @@ pub fn solve_elastic_static_trampoline(
 
     // ── (3) Sum tip-force magnitudes from PointLoad list ─────────────────────
     let tip_force = extract_tip_force(&value_inputs[4]);
+
+    // ── (3b) Shell-route dispatch (task 3594/δ) ──────────────────────────────
+    //
+    // Classify the body from `ElasticOptions.shell_force` (value_inputs[6]) and
+    // the thickness/extent ratio vs `shell_threshold`. On the Shell route,
+    // assemble through the MITC3 shell kernel (`solve_shell_static`) and return
+    // an ElasticResult carrying a real `ShellStress` `shell_channels` EARLY —
+    // before the §7a 4084/α tet resampling below. On the Tet route this `if`
+    // is skipped and execution falls through to the existing solid path,
+    // byte-identical to the pre-δ trampoline.
+    //
+    // Shells are an isotropic-material formulation in v0.4, so the branch is
+    // gated on `MaterialModel::Isotropic`; an anisotropic material (or a Tet
+    // classification) falls through to the solid path. The upstream
+    // `shell-extract::extract` graph dependency is wired by the engine_eval
+    // lowering (step-12), not here (PRD §11 OQ-2).
+    let (shell_force, shell_threshold) = extract_shell_route_params(&value_inputs[6]);
+    if let (ShellRoute::Shell, MaterialModel::Isotropic(iso)) = (
+        classify_shell(shell_force, length, width, height, shell_threshold),
+        &model,
+    ) {
+        let (channels, mid_field, max_von_mises, converged, iterations) =
+            super::shell_solve::solve_shell_static(length, width, height, iso, tip_force);
+
+        // `shell_channels_to_value` clones `mid_field` into the ShellStress.mid
+        // field, so the same field becomes BOTH `result.stress` and
+        // `shell_channels.mid` — the I-2 alias (their SampledField data are
+        // element-wise equal). This is the `Some(_)` arm of the 4067-shipped
+        // helper; the tet path keeps using its `None`→Undef arm untouched.
+        let shell_channels = shell_channels_to_value(&Some(channels), &mid_field);
+
+        let fields: PersistentMap<String, Value> = [
+            // Per-element shell displacement resampling is out of scope (task θ);
+            // Undef is the accepted sentinel against the Field-typed DSL param.
+            ("displacement".to_string(),   Value::Undef),
+            ("stress".to_string(),         mid_field),
+            // Per-element local→global frames are carried inside
+            // `ShellChannels.frame` for the GUI populator (task θ); the top-level
+            // `frame` field stays Undef.
+            ("frame".to_string(),          Value::Undef),
+            ("shell_channels".to_string(), shell_channels),
+            ("max_von_mises".to_string(),  Value::Scalar {
+                si_value:  max_von_mises,
+                dimension: DimensionVector::PRESSURE,
+            }),
+            ("converged".to_string(),      Value::Bool(converged)),
+            ("iterations".to_string(),     Value::Int(iterations as i64)),
+        ]
+        .into_iter()
+        .collect();
+
+        let result = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id:   StructureTypeId(u32::MAX),
+            type_name: "ElasticResult".to_string(),
+            version:   1,
+            fields,
+        }));
+
+        // One-shot shell solve: the shell kernel runs its own cold CG, so no
+        // `CgWarmState` is donated back (warm-state caching is tet-only in v0.4).
+        return ComputeOutcome::Completed {
+            result,
+            new_warm_state: None,
+            cost_per_byte:  None,
+            diagnostics:    vec![],
+        };
+    }
 
     // ── (4) Supports: non-empty list → cantilever is clamped at root ─────────
     // (We don't inspect individual FixedSupport fields; presence is sufficient.)
@@ -1044,6 +1116,39 @@ fn extract_tip_force(val: &Value) -> f64 {
         }
     }
     total
+}
+
+/// Extract `(ShellForce, shell_threshold)` from the `ElasticOptions`
+/// `Value::StructureInstance` at `value_inputs[6]` for shell-route classification
+/// (task 3594/δ).
+///
+/// - `shell_force` is a `Value::Enum { type_name: "ShellForce", variant }`
+///   (`Off` / `Auto` / `On`); any unknown variant is treated as `Auto`.
+/// - `shell_threshold` is a dimensionless `Value::Real` (a dimensionless
+///   `Value::Scalar` is also accepted defensively).
+///
+/// A missing options instance or missing/garbled fields fall back to the stdlib
+/// defaults (`ShellForce::Auto`, `0.2`), so a bare `ElasticOptions()` classifies
+/// exactly as `solver_elastic.ri` declares.
+fn extract_shell_route_params(options: &Value) -> (ShellForce, f64) {
+    // stdlib defaults (solver_elastic.ri:173,176).
+    let mut shell_force = ShellForce::Auto;
+    let mut shell_threshold = 0.2_f64;
+    if let Value::StructureInstance(data) = options {
+        if let Some(Value::Enum { variant, .. }) = data.fields.get(&"shell_force".to_string()) {
+            shell_force = match variant.as_str() {
+                "Off" => ShellForce::Off,
+                "On" => ShellForce::On,
+                _ => ShellForce::Auto, // "Auto" or any unknown variant
+            };
+        }
+        match data.fields.get(&"shell_threshold".to_string()) {
+            Some(Value::Real(r)) => shell_threshold = *r,
+            Some(Value::Scalar { si_value, .. }) => shell_threshold = *si_value,
+            _ => {}
+        }
+    }
+    (shell_force, shell_threshold)
 }
 
 // ── unit tests ────────────────────────────────────────────────────────────────
