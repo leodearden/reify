@@ -1005,6 +1005,86 @@ fn single_body_export_regression_one_solid() {
     );
 }
 
+/// Robustness regression (T7, esc-3905-277, real OCCT, `OCCT_AVAILABLE`-gated):
+/// named boolean operands bound to `let`s must NOT be exported as standalone
+/// solids. The common CAD idiom `let a = box; let b = box; let r = union(a, b)`
+/// compiles to THREE realizations (two `Box`, one `Union`); `a` and `b` are
+/// consumed as operands of the union and are contained in its result. The export
+/// body set must therefore be exactly the single un-consumed `union` result.
+///
+/// Pre-fix the export walk surfaced every realization (filtered only by `aux`),
+/// so it collected all 3 → `make_compound` → a STEP file with 3 overlapping
+/// MANIFOLD_SOLID_BREP (the two input boxes PLUS their union). This test locks
+/// exactly **1** solid.
+#[test]
+fn boolean_operand_lets_are_not_exported_as_separate_solids() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let source = r#"structure S {
+    let a = box(10mm, 10mm, 10mm)
+    let b = box(5mm, 5mm, 5mm)
+    let r = union(a, b)
+}"#;
+    let compiled = compile_source_with_stdlib(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "unexpected compile errors: {:?}",
+        compile_errors
+    );
+
+    // Pin the realization shape so the assertion below is unambiguous about
+    // WHICH bodies the export walk must filter (mirrors
+    // multi_handle_engine_dispatch::with_registered_kernels_end_to_end_two_boxes_plus_union).
+    assert_eq!(
+        compiled.templates[0].realizations.len(),
+        3,
+        "expected three realizations (two Box, one Union); got {}",
+        compiled.templates[0].realizations.len()
+    );
+
+    // Use OcctKernelHandle directly so make_compound is reachable — if the
+    // regression returns (it would collect 3 bodies), the export takes the
+    // compound path rather than the single-body path.
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(
+        Box::new(checker),
+        Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
+    );
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+    let geom_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        geom_errors.is_empty(),
+        "unexpected geometry errors: {:?}",
+        geom_errors
+    );
+
+    let step_bytes = result
+        .geometry_output
+        .expect("build must produce geometry output for the union result");
+    let step_str = String::from_utf8(step_bytes).expect("STEP output must be valid UTF-8");
+
+    let solid_count = step_str.matches("MANIFOLD_SOLID_BREP(").count();
+    assert_eq!(
+        solid_count, 1,
+        "exported STEP must contain exactly 1 solid (the union result); \
+         got {solid_count} MANIFOLD_SOLID_BREP entities \
+         (3 → consumed boolean operands `a`/`b` leaked into the export)"
+    );
+}
+
 /// step-5 (T7, real OCCT, `OCCT_AVAILABLE`-gated) — RED: distance between two
 /// placed product children equals the composed-transform value.
 ///

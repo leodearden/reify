@@ -3,7 +3,7 @@
 // Free functions with no Engine coupling — they take values, functions, meta_map
 // as plain arguments.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use reify_core::Diagnostic;
 use reify_ir::{CompiledFunction, GeometryHandleId, GeometryKernel, KernelHandle, ValueMap};
@@ -4987,10 +4987,67 @@ pub(crate) fn walk_placed_realizations<V>(
     }
 }
 
+/// T7 (task 3905, robustness fix esc-3905-277): for each template, the set of
+/// realization indices to **exclude** from the export walk — every
+/// geometry-producing realization except the template's *final* one.
+///
+/// Rationale: a boolean (or modify / sweep / …) whose operands are bound to named
+/// lets — e.g. `let a = box(...); let b = box(...); let r = union(a, b)` — compiles
+/// to one realization per let, BUT the compiler *inlines* each operand's
+/// construction into the consuming realization (`r`'s ops are `[Box, Box,
+/// Boolean(Step0, Step1)]`, referencing its operands by intra-realization
+/// `GeomRef::Step`, not by cross-realization `GeomRef::Sub`). The `a`/`b`
+/// realizations are therefore standalone duplicates of geometry already contained
+/// in `r`. Surfacing all three (the pre-fix behavior, filtered only by `aux`)
+/// shipped a STEP file with the two consumed input boxes PLUS their union — three
+/// overlapping solids.
+///
+/// The pre-T7 export took `*step_handles.last()` — the terminal handle of the LAST
+/// geometry-producing realization in declaration order, i.e. the un-consumed
+/// result. This restores that "final realization per template" semantics while
+/// preserving T7's multi-body-via-sub-components behavior: each *sub-component* is a
+/// distinct template surfaced by the containment walk, so two product subs still
+/// yield two bodies — only redundant *intra-template* intermediate lets are pruned.
+///
+/// `final` is the highest `r_idx` for which `terminal_handles[t][r]` is `Some`
+/// (matching `step_handles.last()`); realizations that produced no handle are
+/// already skipped by the walk, so including them in the skip set is harmless.
+pub(crate) fn non_final_realization_indices(
+    module: &reify_compiler::CompiledModule,
+    terminal_handles: &[Vec<Option<KernelHandle>>],
+) -> Vec<HashSet<usize>> {
+    module
+        .templates
+        .iter()
+        .enumerate()
+        .map(|(t_idx, template)| {
+            // Index of the final geometry-producing realization (highest r_idx
+            // with a recorded terminal handle) — equals `step_handles.last()`.
+            let final_idx = terminal_handles
+                .get(t_idx)
+                .and_then(|handles| {
+                    handles
+                        .iter()
+                        .enumerate()
+                        .rev()
+                        .find_map(|(r_idx, h)| h.is_some().then_some(r_idx))
+                });
+            // Skip every realization that is not the final one.
+            (0..template.realizations.len())
+                .filter(|r_idx| Some(*r_idx) != final_idx)
+                .collect()
+        })
+        .collect()
+}
+
 /// T7 export walk (task 3905): collect placed-product BRep handles for STEP export.
 ///
 /// Thin wrapper over `walk_placed_realizations` that pushes each placed realization
 /// as an `ExportBody` (handle_id + entity_path + default_visible) without tessellating.
+///
+/// `skip` (indexed by `t_idx`) lists realization indices to exclude — every
+/// non-final intra-template realization (see [`non_final_realization_indices`]) —
+/// so only the un-consumed final product body of each template is exported.
 ///
 /// The `default_visible` flag uses the same OR-of-aux derivation as `surface_subtree` —
 /// `default_visible == false` ⟺ aux or under-aux-sub ⟺ excluded from export by the
@@ -5014,6 +5071,11 @@ pub(crate) fn surface_export_bodies(
     values: &ValueMap,
     functions: &[CompiledFunction],
     meta_map: &HashMap<String, HashMap<String, String>>,
+    // T7 robustness fix (esc-3905-277): per-template non-final realization
+    // indices. A realization at (t, r) with `skip[t].contains(&r)` is a redundant
+    // intra-template intermediate let (its geometry is inlined into the template's
+    // final realization) and is excluded from export.
+    skip: &[HashSet<usize>],
     export_bodies: &mut Vec<ExportBody>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -5031,7 +5093,13 @@ pub(crate) fn surface_export_bodies(
         functions,
         meta_map,
         diagnostics,
-        &mut |_kernel, placed_id, entity_path, default_visible, _t, _r, _diag| {
+        &mut |_kernel, placed_id, entity_path, default_visible, t, r, _diag| {
+            // Skip non-final intra-template realizations — their geometry is
+            // inlined into the template's final realization, so exporting them
+            // would ship duplicate / consumed-operand solids.
+            if skip.get(t).is_some_and(|set| set.contains(&r)) {
+                return;
+            }
             export_bodies.push(ExportBody {
                 entity_path,
                 handle_id: placed_id,

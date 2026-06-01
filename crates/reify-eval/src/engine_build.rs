@@ -2533,11 +2533,18 @@ impl Engine {
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Vec<crate::geometry_ops::ExportBody> {
         use crate::geometry_ops::{
-            compose_pose_chain, reachable_template_indices, root_template_indices,
-            surface_export_bodies,
+            compose_pose_chain, non_final_realization_indices, reachable_template_indices,
+            root_template_indices, surface_export_bodies,
         };
         let identity_world = compose_pose_chain(&[]);
         let roots = root_template_indices(module);
+        // T7 robustness fix (esc-3905-277): a template's non-final realizations
+        // are redundant intermediate lets whose geometry is inlined into the
+        // final realization (the compiler inlines boolean/etc. operands rather
+        // than cross-referencing them), so they must NOT be exported as
+        // standalone solids. Restores the pre-T7 "final realization per template"
+        // export semantics while keeping T7's multi-body-via-subs behavior.
+        let skip = non_final_realization_indices(module, terminal_handles);
         let mut export_bodies = Vec::new();
         for &root_idx in &roots {
             let root_prefix = module.templates[root_idx].name.clone();
@@ -2554,6 +2561,7 @@ impl Engine {
                 values,
                 functions,
                 meta_map,
+                &skip,
                 &mut export_bodies,
                 diagnostics,
             );
@@ -2579,6 +2587,7 @@ impl Engine {
                 values,
                 functions,
                 meta_map,
+                &skip,
                 &mut export_bodies,
                 diagnostics,
             );
