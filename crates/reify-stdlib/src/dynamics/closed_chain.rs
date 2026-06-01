@@ -266,7 +266,103 @@ fn ldlt_solve_symmetric(a: &mut [f64], b: &mut [f64], k: usize, pivot_eps: f64) 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{reduce_constraint_rank, solve_closed_chain, ClosedChainError, DEFAULT_PIVOT_EPS};
+
+    // ── reduce_constraint_rank: planar revolute 4-bar row filter ─────────────
+    //
+    // Builds a synthetic 6×3 raw A that mimics the raw twist Jacobian of a
+    // planar revolute 4-bar (mechanism in the x-z plane, revolute pins about +y):
+    //
+    //   ωx row = [0, 0, 0]   — structurally zero (planar motion)
+    //   ωy row = [a, b, c]   — nonzero BUT absorbed by closing revolute (+y)
+    //   ωz row = [0, 0, 0]   — structurally zero
+    //   vx row = [d, e, f]   — active constraint
+    //   vy row = [0, 0, 0]   — structurally zero (planar motion)
+    //   vz row = [g, h, k]   — active constraint
+    //
+    // Closing-joint motion subspace S_close = [[0,1,0, 0,0,0]] (+y revolute).
+    // After projecting out S_close and row-reducing, expected m_eff = 2
+    // (vx-row, vz-row).
+    //
+    // A second case checks that a duplicate row is dropped (full-row-rank
+    // reduction leaves m_eff = 1 for a 2×3 A with identical rows).
+    //
+    // Achievability: deterministic linear algebra — exact expected result.
+    #[test]
+    fn reduce_constraint_rank_drops_closing_freedom_and_zero_rows() {
+        let eps = 1e-10_f64;
+
+        // ── case 1: planar revolute 4-bar synthetic A (6×3) ─────────────────
+        let d = 1.3_f64;
+        let e = -0.7_f64;
+        let f = 0.4_f64;
+        let g = -0.5_f64;
+        let h = 0.9_f64;
+        let k = -1.1_f64;
+        let a_wy = 2.0_f64;
+        let b_wy = -1.5_f64;
+        let c_wy = 0.8_f64;
+        // Row order: [ωx, ωy, ωz, vx, vy, vz] (6 rows) × 3 cols (row-major).
+        let a_raw: Vec<f64> = vec![
+            0.0, 0.0, 0.0,    // ωx
+            a_wy, b_wy, c_wy, // ωy — absorbed by closing revolute +y
+            0.0, 0.0, 0.0,    // ωz
+            d,   e,   f,      // vx — active
+            0.0, 0.0, 0.0,    // vy
+            g,   h,   k,      // vz — active
+        ];
+        // Closing revolute about +y: S_close = [0,1,0, 0,0,0].
+        let s_close: [f64; 6] = [0.0, 1.0, 0.0, 0.0, 0.0, 0.0];
+
+        let (a_red, m_eff) = reduce_constraint_rank(&a_raw, 6, 3, &[s_close], eps);
+        assert_eq!(m_eff, 2, "case1: expected m_eff=2 (vx-row + vz-row)");
+        assert_eq!(a_red.len(), 2 * 3, "case1: reduced A is 2×3");
+
+        // The two independent rows must span vx-row and vz-row (up to row order
+        // and possible row scaling — we check that each retained row is a scalar
+        // multiple of either vx-row or vz-row by verifying the cross-product
+        // of the reduced row with the expected is zero).
+        let vx_row = [d, e, f];
+        let vz_row = [g, h, k];
+
+        let is_parallel_to = |row: &[f64], ref_row: &[f64; 3]| -> bool {
+            // row × ref_row == 0 ⟺ parallel (in ℝ³)
+            // Use |row × ref_row|² / (|row|²·|ref_row|²) < eps²
+            let cx = row[1] * ref_row[2] - row[2] * ref_row[1];
+            let cy = row[2] * ref_row[0] - row[0] * ref_row[2];
+            let cz = row[0] * ref_row[1] - row[1] * ref_row[0];
+            let cross_sq = cx * cx + cy * cy + cz * cz;
+            let norm_sq = row.iter().map(|x| x * x).sum::<f64>()
+                * ref_row.iter().map(|x| x * x).sum::<f64>();
+            cross_sq < 1e-20 * norm_sq.max(1e-30)
+        };
+
+        let row0 = &a_red[0..3];
+        let row1 = &a_red[3..6];
+        let row0_ok = is_parallel_to(row0, &vx_row) || is_parallel_to(row0, &vz_row);
+        let row1_ok = is_parallel_to(row1, &vx_row) || is_parallel_to(row1, &vz_row);
+        assert!(row0_ok, "case1: reduced row0 must be parallel to vx-row or vz-row");
+        assert!(row1_ok, "case1: reduced row1 must be parallel to vx-row or vz-row");
+        // The two rows must not be parallel to each other.
+        assert!(
+            !is_parallel_to(row0, &[row1[0], row1[1], row1[2]]),
+            "case1: two reduced rows must be independent"
+        );
+
+        // ── case 2: 2×3 A with duplicate rows → m_eff = 1 ──────────────────
+        let a_dup: Vec<f64> = vec![
+            1.0, -2.0, 3.0,
+            1.0, -2.0, 3.0,
+        ];
+        // No closing subspace to project (pass empty slice).
+        let (a_red2, m_eff2) = reduce_constraint_rank(&a_dup, 2, 3, &[], eps);
+        assert_eq!(m_eff2, 1, "case2: duplicate rows → m_eff=1");
+        assert_eq!(a_red2.len(), 3, "case2: 1×3 reduced A");
+        assert!(
+            is_parallel_to(&a_red2, &[1.0, -2.0, 3.0]),
+            "case2: retained row must be parallel to original"
+        );
+    }
 
     /// Helper: assert two f64 slices are element-wise within `tol`.
     fn assert_near(label: &str, got: &[f64], want: &[f64], tol: f64) {
