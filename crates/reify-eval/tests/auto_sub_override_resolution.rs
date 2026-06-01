@@ -477,3 +477,88 @@ structure Bearing { param bore : Length = 5mm }
         val
     );
 }
+
+// ── Test (f): S1 — DimensionalSolver type-agnosticism regression (task 4123) ──
+
+/// (f) Forward-declared child, DIMENSIONAL/arithmetic constraint.
+///
+/// When the parent structure is declared before the child (forward-declared),
+/// `try_resolve_cross_sub_geometry_value_ref` emits a `ValueCellRef` with a
+/// placeholder `Type::Geometry` (the real type is unknown until the post-pass).
+/// This test proves that the `DimensionalSolver` resolves the constraint
+/// `2 * self.b.bore == 20mm` to `bore == 10mm` regardless of that placeholder
+/// type, because the solver evaluates constraint operands numerically via
+/// `reify_expr::eval_expr(...).as_f64()` and is completely type-agnostic on the
+/// operand's static `Type`.
+///
+/// Source order: `structure A { … }  structure Bearing { … }` — Bearing is
+/// forward-declared.  The child default is intentionally 5mm (≠ 10mm) so the
+/// test discriminates "solver did real work (10mm)" from "child default leaked
+/// (5mm)".
+///
+/// Expected GREEN on arrival: the DimensionalSolver is provably type-agnostic
+/// (same numeric residuals regardless of declaration order).  Regression guard
+/// against any future change that would make the solver inspect static types.
+///
+/// See also: `crates/reify-compiler/src/expr.rs`
+/// `try_resolve_cross_sub_geometry_value_ref` — the forward-declared branch
+/// cross-references this test.
+#[test]
+fn sub_override_auto_forward_declared_dimensional_constraint_type_agnostic() {
+    // Parent before child; arithmetic constraint 2 * bore == 20mm → bore == 10mm.
+    // Child default is 5mm (different) so the result discriminates solver work
+    // from a silent "use the default" path.
+    let source = r#"
+structure A {
+    sub b : Bearing { bore = auto }
+    constraint 2 * self.b.bore == 20mm
+}
+structure Bearing { param bore : Length = 5mm }
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let compile_errors = errors_only(&compiled.diagnostics);
+    assert!(
+        compile_errors.is_empty(),
+        "S1/type-agnostic: unexpected compile errors: {:?}",
+        compile_errors
+    );
+
+    let mut engine = engine_with_solver();
+    let result = engine.eval(&compiled);
+
+    let eval_errors = errors_only(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "S1/type-agnostic: expected no error-severity eval diagnostics; got: {:?}",
+        eval_errors
+    );
+
+    let snap = engine.snapshot().expect("snapshot should exist");
+    let id = ValueCellId::new("A.b", "bore");
+    let (val, det) = snap.values.get(&id).unwrap_or_else(|| {
+        panic!(
+            "S1/type-agnostic: A.b.bore should be in snapshot; keys: {:?}",
+            snap.values
+                .iter()
+                .map(|(k, _)| format!("{}", k))
+                .collect::<Vec<_>>()
+        )
+    });
+
+    assert_eq!(
+        *det,
+        DeterminacyState::Determined,
+        "S1/type-agnostic: A.b.bore should be Determined; got {:?}",
+        det
+    );
+
+    // 2 * bore == 20mm  →  bore == 10mm == 0.010 SI.
+    // Must NOT be 5mm (child default), proving the solver used the constraint.
+    assert!(
+        matches!(val, Value::Scalar { si_value, .. } if (*si_value - 0.010).abs() < 1e-6),
+        "S1/type-agnostic: A.b.bore should equal 10mm (0.010 SI) via \
+         arithmetic constraint; got {:?}",
+        val
+    );
+}
