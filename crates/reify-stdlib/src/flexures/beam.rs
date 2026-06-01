@@ -415,6 +415,99 @@ mod tests {
         assert_angle_close(up, prb_limit, "prb-limited upper bound");
     }
 
+    /// Read the `__flexure_compliance` FlexureCompliance record's fields from a
+    /// flexure joint Map (panics if absent or the wrong shape).
+    fn compliance_fields(joint: &Value) -> &PersistentMap<String, Value> {
+        match map_get(joint, "__flexure_compliance") {
+            Some(Value::StructureInstance(d)) => {
+                assert_eq!(
+                    d.type_name, "FlexureCompliance",
+                    "__flexure_compliance is a FlexureCompliance record"
+                );
+                &d.fields
+            }
+            other => panic!("expected __flexure_compliance StructureInstance, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prb_cantilever_beam_attaches_populated_compliance() {
+        // step-1 safe geometry (L=20mm, w=5mm, t=0.5mm, steel): θ_yield ≈ 6.93° >
+        // 5°, so the auto prb_validity endpoint is the ±5° PRB cap and the surface
+        // stress there stays below yield ⇒ at_yield == false.
+        let length = 0.02_f64;
+        let width = 0.005_f64;
+        let thickness = 0.0005_f64;
+        let e = 205e9_f64;
+        let prb_limit = 5.0_f64 * std::f64::consts::PI / 180.0;
+
+        let result = crate::eval_builtin(
+            "prb_cantilever_beam",
+            &[
+                Value::length(length),
+                Value::length(width),
+                Value::length(thickness),
+                steel(),
+                origin(),
+                axis_y(),
+            ],
+        );
+        let fields = compliance_fields(&result);
+        let f = |k: &str| {
+            fields
+                .get(&k.to_string())
+                .unwrap_or_else(|| panic!("FlexureCompliance missing `{k}`"))
+        };
+
+        // effective_stiffness (Real) == the joint's spring_rate si (k_θ).
+        let spring_si = match map_get(&result, "spring_rate") {
+            Some(Value::Scalar { si_value, .. }) => *si_value,
+            other => panic!("expected spring_rate Scalar, got {other:?}"),
+        };
+        match f("effective_stiffness") {
+            Value::Real(r) => assert!(
+                (r - spring_si).abs() / spring_si < 1e-12,
+                "effective_stiffness {r} == spring_rate {spring_si}"
+            ),
+            other => panic!("effective_stiffness Real, got {other:?}"),
+        }
+
+        // max_stress (PRESSURE) == E·(t/2)·θ_end/L at θ_end = the ±5° cap.
+        let theta_end = prb_limit;
+        let expected_sigma = e * (thickness / 2.0) * theta_end / length;
+        match f("max_stress") {
+            Value::Scalar { si_value, dimension } => {
+                assert_eq!(*dimension, DimensionVector::PRESSURE, "max_stress is PRESSURE");
+                assert!(
+                    (si_value - expected_sigma).abs() / expected_sigma < 1e-9,
+                    "max_stress {si_value} vs analytic {expected_sigma}"
+                );
+                assert!(
+                    *si_value < 310e6,
+                    "5° endpoint stays below the 310MPa yield ({si_value})"
+                );
+            }
+            other => panic!("max_stress Scalar, got {other:?}"),
+        }
+
+        // at_yield == false at the auto (safe) endpoint.
+        assert_eq!(f("at_yield"), &Value::Bool(false), "auto endpoint is not at yield");
+
+        // prb_validity_range (Real) == the joint range half-angle (θ_end).
+        let (_, up) = range_lower_upper(map_get(&result, "range").expect("range present"));
+        let range_half = match up {
+            Value::Scalar { si_value, .. } => *si_value,
+            other => panic!("range upper Scalar, got {other:?}"),
+        };
+        match f("prb_validity_range") {
+            Value::Real(r) => assert!(
+                (r - range_half).abs() / range_half < 1e-9,
+                "prb_validity_range {r} == joint range half-angle {range_half}"
+            ),
+            other => panic!("prb_validity_range Real, got {other:?}"),
+        }
+    }
+
     /// Invoke `prb_cantilever_beam` on the step-1 geometry, optionally appending
     /// a 7th `neutral` arg.
     fn cantilever_with_neutral(neutral: Option<Value>) -> Value {
