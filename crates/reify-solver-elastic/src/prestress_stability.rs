@@ -42,6 +42,7 @@
 //! the T1a ([`crate::form_find`]) and T1b ([`crate::form_find_free`]) kernels
 //! before it. See `plan.json` design_decisions for the scoping rationale.
 
+use faer::mat::MatRef;
 use faer::{Mat, Side};
 
 /// Relative tolerance for spectral rank / nullity classification: an eigenvalue
@@ -234,23 +235,35 @@ fn spectral_rank(gram: &Mat<f64>, rel_tol: f64) -> usize {
     eigenvalues.iter().filter(|v| v.abs() > threshold).count()
 }
 
-/// Form the Gram matrix `AᵀA` (`m × m`) of `a` (`p × m`) by explicit
-/// accumulation. The matrices here are tiny (`m = 12`, `p = 18` for the
+/// Column-Gram matrix `MᵀM` (`cols × cols`) of a matrix view `m`
+/// (`contracted × cols`): the symmetric PSD matrix `Gᵢⱼ = Σ_t m[t,i]·m[t,j]`
+/// (inner products of `m`'s columns).
+///
+/// This single contraction loop backs both Gram variants the kernel needs —
+/// [`gram_transpose_self`] (`AᵀA`, the columns of `A`) and [`gram_self_transpose`]
+/// (`AAᵀ`, the columns of `Aᵀ` = the rows of `A`, reached through a zero-cost faer
+/// transpose view). The matrices here are tiny (`m = 12`, `p = 18` for the
 /// triplex), so the direct triple loop is clear and cheap.
-fn gram_transpose_self(a: &Mat<f64>) -> Mat<f64> {
-    let p = a.nrows();
-    let m = a.ncols();
-    let mut gram = Mat::<f64>::zeros(m, m);
-    for i in 0..m {
-        for j in 0..m {
+fn column_gram(m: MatRef<'_, f64>) -> Mat<f64> {
+    let cols = m.ncols();
+    let contracted = m.nrows();
+    let mut gram = Mat::<f64>::zeros(cols, cols);
+    for i in 0..cols {
+        for j in 0..cols {
             let mut acc = 0.0;
-            for r in 0..p {
-                acc += a[(r, i)] * a[(r, j)];
+            for t in 0..contracted {
+                acc += m[(t, i)] * m[(t, j)];
             }
             gram[(i, j)] = acc;
         }
     }
     gram
+}
+
+/// Form the Gram matrix `AᵀA` (`m × m`) of `a` (`p × m`): the inner products of
+/// `A`'s columns. `AᵀA` shares `A`'s rank, which drives the self-stress count.
+fn gram_transpose_self(a: &Mat<f64>) -> Mat<f64> {
+    column_gram(a.as_ref())
 }
 
 /// Number of self-stress states `s = nullity(A) = m − rank(A)`, where `m` is the
@@ -366,25 +379,14 @@ fn orthonormalize_columns(vectors: &[Vec<f64>], drop_tol: f64) -> Vec<Vec<f64>> 
     basis
 }
 
-/// Form the Gram matrix `AAᵀ` (`p × p`) of `a` (`p × m`) by explicit
-/// accumulation. `AAᵀ` is symmetric PSD and shares `A`'s left null space
+/// Form the Gram matrix `AAᵀ` (`p × p`) of `a` (`p × m`): the inner products of
+/// `A`'s rows, obtained by contracting the columns of the zero-cost transpose
+/// view. `AAᵀ` is symmetric PSD and shares `A`'s left null space
 /// (`AAᵀ v = 0 ⟺ Aᵀ v = 0`, since `vᵀAAᵀv = ‖Aᵀv‖²`), so its zero-eigenvalue
 /// eigenvectors span `null(Aᵀ)` — the infinitesimal mechanisms before
 /// rigid-body removal.
 fn gram_self_transpose(a: &Mat<f64>) -> Mat<f64> {
-    let p = a.nrows();
-    let m = a.ncols();
-    let mut gram = Mat::<f64>::zeros(p, p);
-    for i in 0..p {
-        for j in 0..p {
-            let mut acc = 0.0;
-            for c in 0..m {
-                acc += a[(i, c)] * a[(j, c)];
-            }
-            gram[(i, j)] = acc;
-        }
-    }
-    gram
+    column_gram(a.as_ref().transpose())
 }
 
 /// Orthonormal basis of the null space of a symmetric Gram matrix: its
