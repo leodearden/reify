@@ -286,3 +286,46 @@ fn shell_assembly_producers_are_g_allow_marked() {
     ];
     assert_pins_are_g_allow_marked(&result, PINS);
 }
+
+/// Bucket 2 — input-shaping (impulse-shaper) producers
+/// (`crates/reify-stdlib/src/trajectory/impulse_shaper.rs`).
+///
+/// Tracked producer-before-consumer: producer task #3866 (ε) has landed; the
+/// consumer task #3867 (ζ — `input_shape` dispatcher +
+/// `reify-eval/src/trajectory_ops.rs` eval wiring) is PENDING, so no in-tree
+/// caller exists yet.
+///
+/// **Removal contract**: consumer task #3867 MUST delete this entire `#[test]`
+/// fn as part of its consumer-wiring commit.  Auto-retirement: once #3867 wires
+/// the dispatcher these fns gain callers and leave `allowed[]`, tripping
+/// assertion (b) at the wide `crates/reify-*/src` scope.
+#[test]
+fn impulse_shaper_producers_are_g_allow_marked() {
+    let Some(result) = run_orphan_audit("crates/reify-*/src") else {
+        return;
+    };
+    const PINS: &[(&str, &str)] = &[
+        ("crates/reify-stdlib/src/trajectory/impulse_shaper.rs", "zvd"),
+        (
+            "crates/reify-stdlib/src/trajectory/impulse_shaper.rs",
+            "cascade",
+        ),
+        (
+            "crates/reify-stdlib/src/trajectory/impulse_shaper.rs",
+            "amplitude_sum",
+        ),
+        (
+            "crates/reify-stdlib/src/trajectory/impulse_shaper.rs",
+            "trailing_time",
+        ),
+        (
+            "crates/reify-stdlib/src/trajectory/impulse_shaper.rs",
+            "residual_vibration",
+        ),
+        (
+            "crates/reify-stdlib/src/trajectory/impulse_shaper.rs",
+            "convolve_at",
+        ),
+    ];
+    assert_pins_are_g_allow_marked(&result, PINS);
+}
