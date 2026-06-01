@@ -1713,16 +1713,17 @@ pub(crate) fn compile_entity(
                 });
 
                 // Sub-instance auto overrides (task 3806, γ-slice):
-                // For each `(name, expr)` in param_overrides where the value is `auto` /
-                // `auto(free)`, push a scoped `ValueCellDecl { kind: Auto { free }, … }` into
-                // the PARENT template's `value_cells` under id
-                // `ValueCellId("<entity>.<sub>", "<member>")`.  This places the Auto cell in
-                // the same per-template resolution problem as the parent's constraints, so the
-                // existing M3 solver resolves it identically to a param-default `auto` cell
-                // (the §4.4 invariant).  Non-auto overrides are carried in `param_overrides`
-                // for future slices; the no-op here preserves the previous silent-discard
-                // behaviour so there is no regression.
-                for (override_name, override_expr) in &sub.param_overrides {
+                // For each `(name, expr)` in spec_param_overrides where the value is
+                // `auto` / `auto(free)`, push a scoped
+                // `ValueCellDecl { kind: Auto { free }, … }` into the PARENT template's
+                // `value_cells` under id `ValueCellId("<entity>.<sub>", "<member>")`.
+                // This places the Auto cell in the same per-template resolution problem
+                // as the parent's constraints, so the existing M3 solver resolves it
+                // identically to a param-default `auto` cell (the §4.4 invariant).
+                // Non-auto overrides are carried in `spec_param_overrides` for future
+                // slices; the no-op here preserves the previous silent-discard behaviour
+                // so there is no regression.
+                for (override_name, override_expr) in &sub.spec_param_overrides {
                     let Some(free) = extract_auto_free(override_expr) else {
                         continue;
                     };
@@ -1772,17 +1773,25 @@ pub(crate) fn compile_entity(
                                 let scoped_entity = format!("{}.{}", entity_name, sub.name);
                                 let scoped_id =
                                     ValueCellId::new(&scoped_entity, override_name.as_str());
-                                value_cells.push(ValueCellDecl {
-                                    id: scoped_id,
-                                    kind: ValueCellKind::Auto { free },
-                                    visibility: Visibility::Public,
-                                    cell_type: ty.clone(),
-                                    default_expr: None,
-                                    solver_hints: vec![],
-                                    span: sub.span,
-                                    // Auto sub-override cells are never aux declarations.
-                                    is_aux: false,
-                                });
+                                // Dedup guard (task 4123 S6): Cases 1 and 3 are mutually
+                                // exclusive by declaration order (Case 1 defers, Case 3 pushes
+                                // inline), so a duplicate scoped id can only arise when the
+                                // specialization body contains two param_assignment nodes for the
+                                // same member (e.g. `{ bore = auto\n    bore = auto }`).
+                                // First-assignment-wins: skip if already present.
+                                if !value_cells.iter().any(|c| c.id == scoped_id) {
+                                    value_cells.push(ValueCellDecl {
+                                        id: scoped_id,
+                                        kind: ValueCellKind::Auto { free },
+                                        visibility: Visibility::Public,
+                                        cell_type: ty.clone(),
+                                        default_expr: None,
+                                        solver_hints: vec![],
+                                        span: sub.span,
+                                        // Auto sub-override cells are never aux declarations.
+                                        is_aux: false,
+                                    });
+                                }
                             }
                         },
                     }

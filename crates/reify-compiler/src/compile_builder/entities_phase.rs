@@ -453,17 +453,26 @@ pub(crate) fn phase_sub_override_autos(ctx: &mut CompilationCtx, prelude: &[&Com
     // and push into its `value_cells`.
     for (parent_name, scoped_id, cell_type, free, span) in cells_to_push {
         if let Some(parent_tmpl) = ctx.templates.iter_mut().find(|t| t.name == parent_name) {
-            parent_tmpl.value_cells.push(ValueCellDecl {
-                id: scoped_id,
-                kind: ValueCellKind::Auto { free },
-                visibility: Visibility::Public,
-                cell_type,
-                default_expr: None,
-                solver_hints: vec![],
-                span,
-                // Auto sub-override cells are never aux declarations.
-                is_aux: false,
-            });
+            // Dedup guard (task 4123 S6): the deferred post-pass (Case 1) and
+            // the inline push (Case 3 in entity.rs) are mutually exclusive by
+            // declaration order, so a duplicate can only arise when the
+            // specialization body has two param_assignment nodes for the same
+            // member (e.g. `{ bore = auto\n    bore = auto }`), producing two
+            // PendingSubOverrideAuto entries.  First-assignment-wins: skip if
+            // the scoped id is already present in the parent's value_cells.
+            if !parent_tmpl.value_cells.iter().any(|c| c.id == scoped_id) {
+                parent_tmpl.value_cells.push(ValueCellDecl {
+                    id: scoped_id,
+                    kind: ValueCellKind::Auto { free },
+                    visibility: Visibility::Public,
+                    cell_type,
+                    default_expr: None,
+                    solver_hints: vec![],
+                    span,
+                    // Auto sub-override cells are never aux declarations.
+                    is_aux: false,
+                });
+            }
         }
     }
 }
