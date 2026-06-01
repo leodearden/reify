@@ -205,6 +205,12 @@ pub fn solve_closed_chain(
 ///
 /// Returns `true` on success (`b` holds the solution), `false` if any pivot is
 /// too small (singular or near-singular matrix).
+///
+/// **Limitation:** Without pivoting, a near-zero intermediate pivot can trigger
+/// a false `Singular` return even for a full-rank indefinite K if the system is
+/// ill-conditioned between the M-block and the Schur complement.  Callers
+/// needing maximum robustness should switch to a pivoted or Bunch-Kaufman
+/// factorisation (out of scope here given the no-linalg-dependency constraint).
 fn ldlt_solve_symmetric(a: &mut [f64], b: &mut [f64], k: usize, pivot_eps: f64) -> bool {
     if k == 0 {
         return true;
@@ -320,6 +326,38 @@ mod tests {
             Err(ClosedChainError::DimensionMismatch),
             "short a_matrix should yield DimensionMismatch"
         );
+
+        // (d) Dimension mismatch: m_matrix wrong length.
+        let result4 = solve_closed_chain(
+            &m_diag3[..8], // length 8 instead of n*n=9
+            &tau3,
+            &a_dup,
+            &rhs2,
+            3,
+            2,
+            DEFAULT_PIVOT_EPS,
+        );
+        assert_eq!(
+            result4,
+            Err(ClosedChainError::DimensionMismatch),
+            "short m_matrix should yield DimensionMismatch"
+        );
+
+        // (e) Dimension mismatch: accel_rhs wrong length.
+        let result5 = solve_closed_chain(
+            &m_diag3,
+            &tau3,
+            &a_dup,
+            &rhs2[..1], // length 1 instead of m=2
+            3,
+            2,
+            DEFAULT_PIVOT_EPS,
+        );
+        assert_eq!(
+            result5,
+            Err(ClosedChainError::DimensionMismatch),
+            "short accel_rhs should yield DimensionMismatch"
+        );
     }
 
     // S7: workless-constraint / virtual-work identity.
@@ -360,6 +398,10 @@ mod tests {
             diff < 1e-10,
             "virtual-work identity violated: |τ·θ̇ - τ_open·θ̇| = {diff:.2e} > 1e-10"
         );
+
+        // (c) Pin the solved λ — hand-derived closed form (to 1e-10).
+        // KKT (3×3): 2q̈₀+λ=5, 3q̈₁−λ=−2, q̈₀−q̈₁=0.3 ⇒ 19−5λ=1.8 ⇒ 5λ=17.2 ⇒ λ=3.44
+        assert_near("lambda", &sol.lambda, &[17.2 / 5.0], 1e-10);
     }
 
     // S5: 4×4 SPD non-diagonal M + full-row-rank 2×4 A — verify KKT residuals.
