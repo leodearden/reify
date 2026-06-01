@@ -353,6 +353,102 @@ fn emit_outside_match_collision(
     collisions.insert(name.to_string());
 }
 
+/// Detect the E_OBJECTIVE_CONFLICT case (PRD §3.3/§6.3, task 4010).
+///
+/// Returns `Some(Diagnostic)` iff all of the following hold:
+/// - `obj.combination == WeightedSum`
+/// - `obj.terms.len() > 1`
+/// - every term has default `weight == 1.0` and `priority == 0`
+/// - at least one pair of terms has **opposite sense** (`Minimize` vs `Maximize`)
+///   over **distinct expressions** (compared by `CompiledExpr.content_hash`)
+///
+/// Correctly excluded cases:
+/// - Two same-sense terms (`minimize + minimize`) — no opposite-sense pair.
+/// - Single objective — `terms.len() == 1`.
+/// - Mixed-sense over the **same** expression — `content_hash` equality.
+/// - `Lexicographic` combination — not yet source-reachable per PRD §5.
+///
+/// The returned diagnostic embeds `"E_OBJECTIVE_CONFLICT"` as the message prefix
+/// (for CLI surfacing via `"{severity}: {message}"`) and attaches
+/// `DiagnosticCode::ObjectiveConflict` for structured LSP/MCP consumers.
+fn check_objective_conflict(
+    obj: &ObjectiveSet,
+    spans: &[SourceSpan],
+    entity_name: &str,
+) -> Option<Diagnostic> {
+    use reify_ir::{ObjectiveCombination, ObjectiveSense};
+
+    // Guard: WeightedSum only (Lexicographic is out of scope per §5).
+    if obj.combination != ObjectiveCombination::WeightedSum {
+        return None;
+    }
+    // Guard: more than one term.
+    if obj.terms.len() <= 1 {
+        return None;
+    }
+    // Guard: all terms at default weight and priority.
+    if !obj.terms.iter().all(|t| t.weight == 1.0 && t.priority == 0) {
+        return None;
+    }
+    // Detect: a pair of terms with opposite sense and distinct content_hash.
+    let has_minimize = obj.terms.iter().any(|t| t.sense == ObjectiveSense::Minimize);
+    let has_maximize = obj.terms.iter().any(|t| t.sense == ObjectiveSense::Maximize);
+    if !has_minimize || !has_maximize {
+        return None;
+    }
+    // Check that some minimize and maximize pair are over distinct expressions.
+    let distinct_pair = obj.terms.iter().any(|a| {
+        obj.terms.iter().any(|b| {
+            a.sense == ObjectiveSense::Minimize
+                && b.sense == ObjectiveSense::Maximize
+                && a.expr.content_hash != b.expr.content_hash
+        })
+    });
+    if !distinct_pair {
+        return None;
+    }
+
+    // Build the diagnostic.  Pick the first two spans (Minimize and Maximize)
+    // for the labels; spans is parallel to terms, so index 0 is the first term.
+    // The convention (diagnostic_coverage_checkpoint.rs) requires ≥1 label with
+    // a non-empty span.
+    let mut diag = Diagnostic::error(format!(
+        "E_OBJECTIVE_CONFLICT: entity '{}' has conflicting unweighted objectives \
+         (minimize and maximize over distinct expressions with default weight/priority). \
+         To resolve, choose one of: \
+         (1) assign non-default weight values to distinguish objective importance; \
+         (2) assign non-default priority values to lexicographically order objectives; \
+         (3) combine objectives into a single expression before minimize/maximize.",
+        entity_name
+    ))
+    .with_code(DiagnosticCode::ObjectiveConflict);
+
+    // Attach spans for all terms (parallel to `spans`), labelling each.
+    for (i, &span) in spans.iter().enumerate() {
+        if span.len() > 0 {
+            let label_msg = if i < obj.terms.len() {
+                match obj.terms[i].sense {
+                    ObjectiveSense::Minimize => "minimize objective declared here",
+                    ObjectiveSense::Maximize => "maximize objective declared here",
+                }
+            } else {
+                "conflicting objective declared here"
+            };
+            diag = diag.with_label(DiagnosticLabel::new(span, label_msg));
+        }
+    }
+
+    // Ensure at least one label even if all spans are empty (defensive; should
+    // not happen for well-formed AST).
+    if diag.labels.is_empty() {
+        if let Some(&span) = spans.first() {
+            diag = diag.with_label(DiagnosticLabel::new(span, "conflicting objective declared here"));
+        }
+    }
+
+    Some(diag)
+}
+
 /// # Shadowing
 ///
 /// `CompilationScope::register` (`scope.rs`) uses `HashMap::insert`, so a
@@ -433,6 +529,7 @@ pub(crate) fn compile_entity(
     let mut structure_controlling: HashSet<ValueCellId> = HashSet::new();
     let mut connections: Vec<CompiledConnection> = Vec::new();
     let mut objective_terms: Vec<ObjectiveTerm> = Vec::new();
+    let mut objective_spans: Vec<SourceSpan> = Vec::new();
     let mut first_meta_span: Option<SourceSpan> = None;
     let mut constraint_index: u32 = 0;
     let mut guard_index: u32 = 0;
@@ -1566,11 +1663,13 @@ pub(crate) fn compile_entity(
             reify_ast::MemberDecl::Minimize(min_decl) => {
                 let compiled_expr =
                     compile_expr(&min_decl.expr, &scope, enum_defs, functions, diagnostics);
+                objective_spans.push(min_decl.span);
                 objective_terms.push(ObjectiveTerm::new(ObjectiveSense::Minimize, compiled_expr));
             }
             reify_ast::MemberDecl::Maximize(max_decl) => {
                 let compiled_expr =
                     compile_expr(&max_decl.expr, &scope, enum_defs, functions, diagnostics);
+                objective_spans.push(max_decl.span);
                 objective_terms.push(ObjectiveTerm::new(ObjectiveSense::Maximize, compiled_expr));
             }
             reify_ast::MemberDecl::GuardedGroup(g) => {
@@ -2412,7 +2511,11 @@ pub(crate) fn compile_entity(
     let objective = if objective_terms.is_empty() {
         None
     } else {
-        Some(ObjectiveSet { terms: objective_terms, combination: ObjectiveCombination::WeightedSum })
+        let obj_set = ObjectiveSet { terms: objective_terms, combination: ObjectiveCombination::WeightedSum };
+        if let Some(diag) = check_objective_conflict(&obj_set, &objective_spans, entity_name) {
+            diagnostics.push(diag);
+        }
+        Some(obj_set)
     };
 
     TopologyTemplate {
