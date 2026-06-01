@@ -10071,3 +10071,81 @@ fn set_parameter_edit_check_err_still_fires_solve_finished() {
         "Finished must fire even on edit_check Err (SolveFinishedGuard covers ? early-return)"
     );
 }
+
+// ── Task 4087 step-1: RED — sample_stride_field_nearest ──────────────────────
+//
+// Build a synthetic Regular3D SampledField with 2 nodes per axis (8 nodes
+// total), stride 3 (3 values per node).  One node is set to all-NaN to model
+// an out-of-solid grid point.
+//
+// Fails to compile until step-2 adds `sample_stride_field_nearest` to engine.rs.
+
+/// Build a 2×2×2 Regular3D SampledField with stride 3 for testing.
+///
+/// Grid: bounds [0,1]³, spacing 1.0 per axis, nodes at 0.0 and 1.0 each axis.
+/// 8 nodes × stride 3 = 24 data entries.
+/// Node layout (row-major, axis-0 outermost): indices (ix,iy,iz) → flat=(ix*2+iy)*2+iz.
+///   (0,0,0)→0: [1.0,2.0,3.0]     (in-solid)
+///   (0,0,1)→1: [4.0,5.0,6.0]     (in-solid)
+///   (0,1,0)→2: [7.0,8.0,9.0]     (in-solid)
+///   (0,1,1)→3: [10.0,11.0,12.0]  (in-solid)
+///   (1,0,0)→4: [13.0,14.0,15.0]  (in-solid)
+///   (1,0,1)→5: [16.0,17.0,18.0]  (in-solid)
+///   (1,1,0)→6: [NaN,NaN,NaN]     (out-of-solid sentinel)
+///   (1,1,1)→7: [22.0,23.0,24.0]  (in-solid)
+fn make_3d_stride3_field() -> reify_ir::SampledField {
+    let mut data = Vec::with_capacity(24);
+    data.extend_from_slice(&[1.0f64, 2.0, 3.0]);    // (0,0,0)
+    data.extend_from_slice(&[4.0, 5.0, 6.0]);        // (0,0,1)
+    data.extend_from_slice(&[7.0, 8.0, 9.0]);        // (0,1,0)
+    data.extend_from_slice(&[10.0, 11.0, 12.0]);     // (0,1,1)
+    data.extend_from_slice(&[13.0, 14.0, 15.0]);     // (1,0,0)
+    data.extend_from_slice(&[16.0, 17.0, 18.0]);     // (1,0,1)
+    data.extend_from_slice(&[f64::NAN, f64::NAN, f64::NAN]); // (1,1,0) out-of-solid
+    data.extend_from_slice(&[22.0, 23.0, 24.0]);     // (1,1,1)
+    reify_ir::SampledField {
+        name: "test_field".to_string(),
+        kind: reify_ir::SampledGridKind::Regular3D,
+        bounds_min: vec![0.0, 0.0, 0.0],
+        bounds_max: vec![1.0, 1.0, 1.0],
+        spacing: vec![1.0, 1.0, 1.0],
+        axis_grids: vec![vec![0.0, 1.0], vec![0.0, 1.0], vec![0.0, 1.0]],
+        interpolation: reify_ir::InterpolationKind::NearestNeighbor,
+        data,
+        oob_emitted: std::sync::atomic::AtomicBool::new(false),
+    }
+}
+
+/// In-bounds point near node (0,0,0) returns Some([1.0,2.0,3.0]).
+#[test]
+fn sample_stride_field_nearest_in_bounds_returns_node_values() {
+    let sf = make_3d_stride3_field();
+    let result = crate::engine::sample_stride_field_nearest(&sf, [0.05, 0.05, 0.05], 1e-6);
+    let window = result.expect("in-bounds point must return Some");
+    assert_eq!(window.len(), 3, "stride must be 3");
+    assert_eq!(
+        window,
+        vec![1.0, 2.0, 3.0],
+        "point near (0,0,0) must return that node's values"
+    );
+}
+
+/// Point clearly outside bounds returns None.
+#[test]
+fn sample_stride_field_nearest_out_of_bounds_returns_none() {
+    let sf = make_3d_stride3_field();
+    let result = crate::engine::sample_stride_field_nearest(&sf, [2.0, 0.0, 0.0], 1e-6);
+    assert!(result.is_none(), "point outside bounds must return None");
+}
+
+/// In-bounds point nearest to the NaN node (1,1,0) returns None (out-of-solid).
+#[test]
+fn sample_stride_field_nearest_nan_node_returns_none() {
+    let sf = make_3d_stride3_field();
+    // (0.9, 0.9, 0.05) is closest to node (1,1,0) which is NaN
+    let result = crate::engine::sample_stride_field_nearest(&sf, [0.9, 0.9, 0.05], 1e-6);
+    assert!(
+        result.is_none(),
+        "point whose nearest node is NaN (out-of-solid) must return None"
+    );
+}

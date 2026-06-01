@@ -4388,3 +4388,204 @@ pub(crate) fn offset_to_line_col_fast(
     (line, col)
 }
 
+// ── Task 4087: FEA result-model δ — surface-vertex sampling helpers ───────────
+
+/// Sample a 3D regular-grid sampled field at the nearest grid node.
+///
+/// Returns the stride-element window at that node as `Some(Vec<f64>)`, or `None`
+/// if the point is outside the field bounds (±`tol`) or if the nearest node's
+/// window contains any NaN (the reify-solver-elastic out-of-solid sentinel).
+///
+/// # Layout
+///
+/// `sf.data` is stored row-major with axis-0 outermost:
+/// flat index = `((ix * ny + iy) * nz + iz) * stride`
+/// where stride = `data.len() / node_count`.
+///
+/// # Tolerance
+///
+/// `tol` is added to the per-axis `[bounds_min, bounds_max]` interval before
+/// the bounds check.  Use a small fraction of the minimum grid spacing so that
+/// vertices that lie exactly on the boundary (floating-point rounding) are not
+/// incorrectly rejected.
+pub(crate) fn sample_stride_field_nearest(
+    sf: &reify_ir::SampledField,
+    point: [f64; 3],
+    tol: f64,
+) -> Option<Vec<f64>> {
+    // Axis counts (number of nodes per axis).
+    let nx = sf.axis_grids[0].len();
+    let ny = sf.axis_grids[1].len();
+    let nz = sf.axis_grids[2].len();
+    let node_count = nx * ny * nz;
+    if node_count == 0 {
+        return None;
+    }
+    let stride = sf.data.len() / node_count;
+    if stride == 0 {
+        return None;
+    }
+
+    // Bounds check with tolerance.
+    for k in 0..3 {
+        if point[k] < sf.bounds_min[k] - tol || point[k] > sf.bounds_max[k] + tol {
+            return None;
+        }
+    }
+
+    // Nearest-node index per axis: round((c - min) / spacing), clamped to [0, len-1].
+    let snap = |c: f64, min: f64, sp: f64, len: usize| -> usize {
+        let raw = ((c - min) / sp).round() as isize;
+        raw.clamp(0, (len as isize) - 1) as usize
+    };
+
+    let ix = snap(point[0], sf.bounds_min[0], sf.spacing[0], nx);
+    let iy = snap(point[1], sf.bounds_min[1], sf.spacing[1], ny);
+    let iz = snap(point[2], sf.bounds_min[2], sf.spacing[2], nz);
+
+    let flat = ((ix * ny + iy) * nz + iz) * stride;
+    let window = &sf.data[flat..flat + stride];
+
+    // Return None if any value in the window is NaN (out-of-solid sentinel).
+    if window.iter().any(|v| v.is_nan()) {
+        return None;
+    }
+
+    Some(window.to_vec())
+}
+
+/// Sample von Mises stress at the nearest grid node.
+///
+/// Returns `crate::types::SCALAR_CHANNEL_OOB_SENTINEL` when the point is
+/// out-of-bounds, out-of-solid (NaN window), or the stress window has fewer
+/// than 9 elements.
+pub(crate) fn von_mises_sample(
+    stress_sf: &reify_ir::SampledField,
+    point: [f64; 3],
+    tol: f64,
+) -> f32 {
+    match sample_stride_field_nearest(stress_sf, point, tol) {
+        Some(w) if w.len() >= 9 => reify_stdlib::compute_von_mises_3x3(&w) as f32,
+        _ => crate::types::SCALAR_CHANNEL_OOB_SENTINEL,
+    }
+}
+
+/// Sample displaced position at the nearest grid node (warp = 1).
+///
+/// Returns `[x + dx, y + dy, z + dz]` when the point maps to an in-solid grid
+/// node with a stride-≥3 displacement window, or the original `[x, y, z]` cast
+/// to f32 when the point is OOB or out-of-solid.
+pub(crate) fn displaced_sample(
+    disp_sf: &reify_ir::SampledField,
+    point: [f64; 3],
+    tol: f64,
+) -> [f32; 3] {
+    match sample_stride_field_nearest(disp_sf, point, tol) {
+        Some(w) if w.len() >= 3 => [
+            (point[0] + w[0]) as f32,
+            (point[1] + w[1]) as f32,
+            (point[2] + w[2]) as f32,
+        ],
+        _ => [point[0] as f32, point[1] as f32, point[2] as f32],
+    }
+}
+
+/// Extract stress and displacement `SampledField` references from a
+/// `ValueMap` containing an `ElasticResult` `StructureInstance`.
+///
+/// Iterates `values` and returns the first entry whose type_name is
+/// `"ElasticResult"` and both `"stress"` and `"displacement"` fields resolve
+/// to `Value::Field { source: Sampled, lambda: Arc<Value::SampledField(_)> }`.
+///
+/// Returns `None` if no such result is found or either field is absent/Undef.
+/// Mirrors `extract_buckling_data` for the ElasticResult variant.
+pub(crate) fn extract_elastic_result_fields(
+    values: &reify_ir::ValueMap,
+) -> Option<(&reify_ir::SampledField, &reify_ir::SampledField)> {
+    use reify_ir::{FieldSourceKind, Value};
+
+    for (_, value) in values.iter() {
+        let data = match value {
+            Value::StructureInstance(d) if d.type_name == "ElasticResult" => d,
+            _ => continue,
+        };
+
+        let resolve_sampled = |field_name: &str| -> Option<&reify_ir::SampledField> {
+            let field_val = data.fields.get(field_name)?;
+            match field_val {
+                Value::Field {
+                    source: FieldSourceKind::Sampled,
+                    lambda,
+                    ..
+                } => match lambda.as_ref() {
+                    Value::SampledField(sf) => Some(sf),
+                    _ => None,
+                },
+                _ => None,
+            }
+        };
+
+        let stress_sf = resolve_sampled("stress")?;
+        let disp_sf = resolve_sampled("displacement")?;
+        return Some((stress_sf, disp_sf));
+    }
+    None
+}
+
+/// Fill per-vertex FEA scalar/displacement channels on all meshes.
+///
+/// If `values` contains an `ElasticResult` (detected via
+/// `extract_elastic_result_fields`), this function:
+/// - Sets `mesh.scalar_channels["vonMises"]` (length = vertex_count) by
+///   sampling the stress field at each vertex; OOB/out-of-solid vertices
+///   receive `SCALAR_CHANNEL_OOB_SENTINEL`.
+/// - Sets `mesh.displaced_positions` (length = vertices.len()) by sampling
+///   the displacement field at each vertex and adding it to the vertex
+///   position (warp = 1); OOB/out-of-solid vertices keep their original
+///   position.
+///
+/// If no `ElasticResult` is present, the meshes are left untouched (non-FEA
+/// meshes keep empty scalar_channels and None displaced_positions).
+///
+/// The sampling tolerance is chosen as 1% of the minimum grid spacing
+/// (or 1e-9 if spacing cannot be determined), so that surface vertices that
+/// lie exactly on the field boundary are not incorrectly classified as OOB
+/// due to floating-point rounding.
+pub(crate) fn apply_fea_channels(
+    meshes: &mut [crate::types::MeshData],
+    values: &reify_ir::ValueMap,
+) {
+    let (stress_sf, disp_sf) = match extract_elastic_result_fields(values) {
+        Some(pair) => pair,
+        None => return,
+    };
+
+    // Tolerance: 1% of the minimum grid spacing (or a small absolute fallback).
+    let min_spacing = stress_sf
+        .spacing
+        .iter()
+        .chain(disp_sf.spacing.iter())
+        .cloned()
+        .filter(|s| s.is_finite() && *s > 0.0)
+        .fold(f64::MAX, f64::min);
+    let tol = if min_spacing < f64::MAX { min_spacing * 0.01 } else { 1e-9 };
+
+    for mesh in meshes.iter_mut() {
+        let vertex_count = mesh.vertices.len() / 3;
+        let mut vm_vec: Vec<f32> = Vec::with_capacity(vertex_count);
+        let mut disp_vec: Vec<f32> = Vec::with_capacity(mesh.vertices.len());
+
+        for chunk in mesh.vertices.chunks_exact(3) {
+            let point = [chunk[0] as f64, chunk[1] as f64, chunk[2] as f64];
+            vm_vec.push(von_mises_sample(stress_sf, point, tol));
+            let [dx, dy, dz] = displaced_sample(disp_sf, point, tol);
+            disp_vec.push(dx);
+            disp_vec.push(dy);
+            disp_vec.push(dz);
+        }
+
+        mesh.scalar_channels.insert("vonMises".to_string(), vm_vec);
+        mesh.displaced_positions = Some(disp_vec);
+    }
+}
+

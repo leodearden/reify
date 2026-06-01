@@ -213,6 +213,20 @@ impl<'a> serde::Serialize for FiniteF32MapRef<'a> {
 /// This is the single source of truth for the OQ-4 naming convention (PRD §11).
 pub const PER_FACE_CHANNEL_SUFFIX: &str = "_per_face";
 
+/// Sentinel value used in `scalar_channels["vonMises"]` for vertices that fall
+/// outside the FEA field bounds or coincide with an out-of-solid grid point.
+///
+/// Von Mises stress is physically non-negative (≥ 0), so a negative value is an
+/// unambiguous out-of-range marker.  Using a finite sentinel (not NaN) lets the
+/// value pass the `FiniteF32MapRef` wire guard in the manual `Serialize` impl.
+///
+/// ## Consumer contract
+///
+/// Downstream colormap consumers (ε = task 2962, θ = task 3026) must exclude
+/// values `< 0` (or `== SCALAR_CHANNEL_OOB_SENTINEL`) from the colormap range
+/// computation so that OOB vertices do not perturb the stress scale.
+pub const SCALAR_CHANNEL_OOB_SENTINEL: f32 = -1.0;
+
 /// Tessellated mesh for 3D display.
 ///
 /// # Serialization
