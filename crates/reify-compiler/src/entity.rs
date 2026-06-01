@@ -425,7 +425,7 @@ fn check_objective_conflict(
 
     // Attach spans for all terms (parallel to `spans`), labelling each.
     for (i, &span) in spans.iter().enumerate() {
-        if span.len() > 0 {
+        if !span.is_empty() {
             let label_msg = if i < obj.terms.len() {
                 match obj.terms[i].sense {
                     ObjectiveSense::Minimize => "minimize objective declared here",
@@ -440,10 +440,10 @@ fn check_objective_conflict(
 
     // Ensure at least one label even if all spans are empty (defensive; should
     // not happen for well-formed AST).
-    if diag.labels.is_empty() {
-        if let Some(&span) = spans.first() {
-            diag = diag.with_label(DiagnosticLabel::new(span, "conflicting objective declared here"));
-        }
+    if diag.labels.is_empty()
+        && let Some(&span) = spans.first()
+    {
+        diag = diag.with_label(DiagnosticLabel::new(span, "conflicting objective declared here"));
     }
 
     Some(diag)
