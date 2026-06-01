@@ -527,4 +527,86 @@ mod tests {
             }
         }
     }
+
+    // ── step-5 RED: open-chain inverse_dynamics_at_snapshot pendulum ───────────
+    //
+    // A 1 kg point mass at com = [0, 0, −0.1] (100 mm along −z) on a revolute
+    // joint about +y, held static at θ = −30°. Expected actuator torque holding
+    // it static:
+    //     τ = m · g · L · sin(30°) = 1 · 9.81 · 0.1 · 0.5 = 0.4905 N·m
+    //
+    // This reproduces — through the full Value-marshalling path (mechanism +
+    // snapshot builders, then `inverse_dynamics_at_snapshot_lower`) — the exact
+    // config validated by `rnea.rs::single_pendulum_static_gravity_torque`
+    // (mass=1, com=[0,0,−0.1], inertia=0, revolute +y, θ=−30° ⇒ 0.4905, <1e-6).
+    // The snapshot's per-body `world_transform` bakes the −30° orientation
+    // (`transform_at(revolute_+y, angle(−π/6))` ⇒ quaternion
+    // [cos(π/12), 0, −sin(π/12), 0]) — the same quaternion the validated RNEA
+    // test passes to `SpatialTransform6::from_frame3`. With q̇ = q̈ = 0 the
+    // velocity-product terms vanish, so only the gravity/inertia/transmission
+    // path is exercised; the +0.4905 sign pins the gravity-projection sense
+    // (a wrong rotation sense would place the body at +30° ⇒ −0.4905).
+    //
+    // Fails against the pre-1 stub (`eval_dynamics` returns None for this name).
+    #[test]
+    fn inverse_dynamics_at_snapshot_single_pendulum_static_gravity() {
+        use crate::eval_builtin;
+        use std::f64::consts::PI;
+
+        // MassProperties point mass: 1 kg at [0,0,−0.1], zero inertia. Stored
+        // verbatim as the body's `solid` (the kernel-free mass-props path).
+        let mp = mass_properties_fixture(1.0, [0.0, 0.0, -0.1], [[0.0; 3]; 3]);
+
+        // Revolute about +y. The range only needs to be a bounded ANGLE range
+        // (validated at construction); `transform_at` does not clamp the bound
+        // value, so a symmetric [−π, π] range admits θ = −30°.
+        let axis_y = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let range = Value::Range {
+            lower: Some(Box::new(Value::angle(-PI))),
+            upper: Some(Box::new(Value::angle(PI))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        };
+        let joint = eval_builtin("revolute", &[axis_y, range]);
+
+        // mechanism().body(mp, joint) — single body parented to world (3-arg
+        // form: default parent = world, identity pose).
+        let mech = eval_builtin("mechanism", &[]);
+        let mech = eval_builtin("body", &[mech, mp.clone(), joint.clone()]);
+        assert!(matches!(mech, Value::Map(_)), "body() must yield a Mechanism Map");
+
+        // snapshot(mech, [bind(joint, −30°)]) bakes θ = −30° into the body's
+        // world_transform via the FK walk.
+        let theta = -PI / 6.0; // −30°
+        let binding = eval_builtin("bind", &[joint.clone(), Value::angle(theta)]);
+        let snap = eval_builtin("snapshot", &[mech.clone(), Value::List(vec![binding])]);
+        assert!(matches!(snap, Value::Map(_)), "snapshot() must yield a Snapshot Map");
+
+        // Static configuration: one revolute DOF, q̇ = q̈ = 0.
+        let q_dot = Value::List(vec![Value::Real(0.0)]);
+        let q_ddot = Value::List(vec![Value::Real(0.0)]);
+
+        let result = eval_dynamics(
+            "inverse_dynamics_at_snapshot_lower",
+            &[mech, snap, q_dot, q_ddot],
+        )
+        .expect("inverse_dynamics_at_snapshot_lower must be a recognised dynamics intrinsic");
+
+        // Result: List<JointForce> of length 1 (one joint).
+        let forces = match &result {
+            Value::List(f) => f,
+            other => panic!("expected a List<JointForce>, got {other:?}"),
+        };
+        assert_eq!(forces.len(), 1, "one joint ⇒ one JointForce");
+
+        // revolute ⇒ JointForce { value: ScalarTorque { magnitude } }.
+        let value = field(&forces[0], "JointForce", "value");
+        let torque = num(field(value, "ScalarTorque", "magnitude"));
+
+        let expected = 0.4905_f64; // m·g·L·sin(30°)
+        assert!(
+            (torque - expected).abs() < 1e-6,
+            "expected {expected} N·m, got {torque}"
+        );
+    }
 }
