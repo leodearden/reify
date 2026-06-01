@@ -1145,6 +1145,105 @@ mod tests {
         assert!(!modulo_operands_are_int(&Type::Bool, &Type::Int));
     }
 
+    // ── Selector conformance + Selector→List<Geometry> coercion (task 4117 / β) ─
+
+    /// `type_compatible(Selector(Face), Selector(Face))` must be `true`.
+    ///
+    /// Relies on the existing identity short-circuit (line 78). Already passes;
+    /// locked here as a regression guard.
+    #[test]
+    fn type_compatible_selector_same_kind_is_true() {
+        use reify_core::ty::SelectorKind;
+        assert!(
+            type_compatible(
+                &Type::Selector(SelectorKind::Face),
+                &Type::Selector(SelectorKind::Face)
+            ),
+            "Selector(Face) param with Selector(Face) arg must be compatible"
+        );
+    }
+
+    /// `type_compatible(Selector(Face), Selector(Edge))` must be `false`.
+    ///
+    /// Different kinds must be rejected. Already passes via default `_ => false`
+    /// in `implicitly_converts_to`; locked here as a regression guard.
+    #[test]
+    fn type_compatible_selector_cross_kind_is_false() {
+        use reify_core::ty::SelectorKind;
+        assert!(
+            !type_compatible(
+                &Type::Selector(SelectorKind::Face),
+                &Type::Selector(SelectorKind::Edge)
+            ),
+            "Selector(Face) param with Selector(Edge) arg must be incompatible"
+        );
+    }
+
+    /// `type_compatible(List<Geometry>, Selector(Face))` must be `true`.
+    ///
+    /// PRD §4.4: a selector arg coerces to a `List<Geometry>` param (one-directional).
+    /// RED until step-4 adds the explicit guard in `type_compatible`.
+    #[test]
+    fn type_compatible_list_geometry_param_with_selector_face_arg_is_true() {
+        use reify_core::ty::SelectorKind;
+        assert!(
+            type_compatible(
+                &Type::List(Box::new(Type::Geometry)),
+                &Type::Selector(SelectorKind::Face)
+            ),
+            "List<Geometry> param with Selector(Face) arg must be compatible (PRD §4.4)"
+        );
+    }
+
+    /// `type_compatible(List<Geometry>, Selector(Body))` must be `true`.
+    ///
+    /// Same rule for Body-kind selectors.
+    /// RED until step-4 adds the explicit guard in `type_compatible`.
+    #[test]
+    fn type_compatible_list_geometry_param_with_selector_body_arg_is_true() {
+        use reify_core::ty::SelectorKind;
+        assert!(
+            type_compatible(
+                &Type::List(Box::new(Type::Geometry)),
+                &Type::Selector(SelectorKind::Body)
+            ),
+            "List<Geometry> param with Selector(Body) arg must be compatible (PRD §4.4)"
+        );
+    }
+
+    /// `type_compatible(Selector(Face), List<Geometry>)` must be `false`.
+    ///
+    /// One-directional: a `List<Geometry>` arg must NOT satisfy a `Selector`-typed
+    /// param. Already passes (no rule admits this); locked here to prevent
+    /// inadvertently adding the reverse direction.
+    #[test]
+    fn type_compatible_selector_param_with_list_geometry_arg_is_false() {
+        use reify_core::ty::SelectorKind;
+        assert!(
+            !type_compatible(
+                &Type::Selector(SelectorKind::Face),
+                &Type::List(Box::new(Type::Geometry))
+            ),
+            "Selector(Face) param with List<Geometry> arg must be incompatible (one-directional)"
+        );
+    }
+
+    /// `type_compatible(List<Real>, Selector(Face))` must be `false`.
+    ///
+    /// Only `List<Geometry>` coerces from a selector — other list element types
+    /// must not be widened.
+    #[test]
+    fn type_compatible_list_real_param_with_selector_arg_is_false() {
+        use reify_core::ty::SelectorKind;
+        assert!(
+            !type_compatible(
+                &Type::List(Box::new(Type::Real)),
+                &Type::Selector(SelectorKind::Face)
+            ),
+            "List<Real> param with Selector(Face) arg must be incompatible (only List<Geometry> coerces)"
+        );
+    }
+
     #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "param_defaults.len() == params.len()")]
