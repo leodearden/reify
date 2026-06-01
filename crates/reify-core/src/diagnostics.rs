@@ -1620,6 +1620,29 @@ pub enum DiagnosticCode {
     /// re-ordering) is explicitly out of scope per PRD §10.  A future task may
     /// add resolution on top of this detection signal.
     ScopeCoupling,
+    /// Origin: `crates/reify-eval/src/compute_targets/buckling.rs`
+    /// (`solve_buckling_trampoline` option extractor — `buckling_unsupported_option_diagnostics`).
+    ///
+    /// Canonical message form:
+    /// `"BucklingOptions.<param> = <value> is declared but not yet honored by the solver::buckling trampoline (the buckling kernel has no <param> input yet); solve falls back to the default <default>"`.
+    ///
+    /// Emitted as a `Severity::Warning` (PRD-prose mnemonic `W_BucklingOptionUnsupported`)
+    /// when a declared-but-not-yet-honored `BucklingOptions` param (`mode`, `sigma`,
+    /// `auto_dense`) is present AND set to a non-default value:
+    ///   - `mode != "shift_invert"` (default from `solver_buckling.ri:84`)
+    ///   - `sigma != 0.0`           (default from `solver_buckling.ri:85`)
+    ///   - `auto_dense != true`     (default from `solver_buckling.ri:88`)
+    ///
+    /// One Warning is emitted per non-default unsupported param.  Absent fields
+    /// and default values produce no diagnostic — robust to whether the eval
+    /// pipeline materializes defaulted params or omits them.
+    ///
+    /// Firing on ANY non-default value (not just out-of-allowlist values) is more
+    /// honest than allowlist validation because even a valid value like
+    /// `mode: "dense"` is silently dropped today — the user deserves to know it
+    /// has no effect.  The solve continues with kernel defaults (this is advisory,
+    /// not an error).
+    BucklingOptionUnsupported,
 }
 
 /// A diagnostic message with location and optional labels.
