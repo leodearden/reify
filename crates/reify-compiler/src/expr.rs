@@ -140,10 +140,8 @@ fn reject_auto_in_arg_list(
     position: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledExpr> {
-    if let Some(auto_arg) =
-        args.iter().find(|a| matches!(a.kind, reify_ast::ExprKind::Auto { .. }))
-    {
-        Some(make_poison_literal(
+    args.iter().find(|a| matches!(a.kind, reify_ast::ExprKind::Auto { .. })).map(|auto_arg| {
+        make_poison_literal(
             diagnostics,
             Diagnostic::error(format!(
                 "auto is not allowed in {position}; to expose a free parameter, \
@@ -154,10 +152,8 @@ fn reject_auto_in_arg_list(
                 auto_arg.span,
                 "auto not allowed at this operand position",
             )),
-        ))
-    } else {
-        None
-    }
+        )
+    })
 }
 
 /// Emit the cross-sub geometry-access diagnostic via `make_poison_literal` (task-3397).
@@ -1303,14 +1299,14 @@ pub(crate) fn compile_expr_guarded(
                 .and_then(|r| r.get(name.as_str()))
                 .map(|t| t.entity_kind == EntityKind::Structure)
                 .unwrap_or(false);
-            if !is_structure_ctor {
-                if let Some(poison) = reject_auto_in_arg_list(
+            if !is_structure_ctor
+                && let Some(poison) = reject_auto_in_arg_list(
                     args,
                     &format!("a function-call argument (function '{}')", name),
                     diagnostics,
-                ) {
-                    return poison;
-                }
+                )
+            {
+                return poison;
             }
 
             // Intercept `some(expr)` before general function resolution.
