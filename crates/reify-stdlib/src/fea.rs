@@ -867,8 +867,10 @@ fn envelope_tensor_projection(
 /// `envelope_displacement_magnitude`).
 ///
 /// Returns `Some((domain, codomain, sf))` when ALL of the following hold:
-///   - `elastic_result` is `Value::Map` (the ElasticResult struct shape)
-///   - the Map has the `field_name` key
+///   - `elastic_result` is `Value::Map` or `Value::StructureInstance`
+///     (the ElasticResult struct shape — both the synthetic/fixture Map shape
+///     and the real solve_load_cases StructureInstance shape are accepted)
+///   - the container has the `field_name` key
 ///   - the value at that key is `Value::Field { source: Sampled, .. }`
 ///   - the Sampled lambda slot carries `Value::SampledField`
 ///   - `sf.data.len() == axis_grids product * expected_stride`
@@ -889,11 +891,7 @@ fn extract_per_case_sampled_field<'a>(
     field_name: &str,
     expected_stride: usize,
 ) -> Option<(&'a Type, &'a Type, &'a SampledField)> {
-    let case_map = match elastic_result {
-        Value::Map(m) => m,
-        _ => return None,
-    };
-    let field_val = case_map.get(&Value::String(field_name.to_string()))?;
+    let field_val = case_field(elastic_result, field_name)?;
     let (dom, cod, sf) = as_sampled_field(field_val)?;
     let grid_count: usize = sf.axis_grids.iter().map(|g| g.len()).product();
     if sf.data.len() != grid_count * expected_stride {
