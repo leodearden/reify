@@ -1699,69 +1699,28 @@ mod tests {
     fn unit_to_scalar_resolves_bare_si_base_units_a_mol_cd() {
         use reify_core::DimensionVector;
 
-        // A → CURRENT (factor 1.0)
-        let (val, dim) =
-            unit_to_scalar(2.0, "A").expect("bare SI base unit A must resolve");
-        assert_eq!(dim, DimensionVector::CURRENT, "A: dimension must be CURRENT");
-        match val {
-            Value::Scalar { si_value, dimension } => {
-                assert!(
-                    (si_value - 2.0).abs() < 1e-12,
-                    "A: si_value must ≈ 2.0, got {si_value}"
-                );
-                assert_eq!(
-                    dimension,
-                    DimensionVector::CURRENT,
-                    "A: Value dimension must be CURRENT"
-                );
+        // Table-driven: (unit string, expected DimensionVector) — all factor 1.0.
+        for (unit, expected) in [
+            ("A", DimensionVector::CURRENT),
+            ("mol", DimensionVector::AMOUNT_OF_SUBSTANCE),
+            ("cd", DimensionVector::LUMINOUS_INTENSITY),
+        ] {
+            let (val, dim) = unit_to_scalar(2.0, unit)
+                .unwrap_or_else(|| panic!("bare SI base unit {unit} must resolve"));
+            assert_eq!(dim, expected, "{unit}: returned DimensionVector mismatch");
+            match val {
+                Value::Scalar { si_value, dimension } => {
+                    assert!(
+                        (si_value - 2.0).abs() < 1e-12,
+                        "{unit}: si_value must ≈ 2.0 (factor 1.0), got {si_value}"
+                    );
+                    assert_eq!(
+                        dimension, expected,
+                        "{unit}: Value inner dimension mismatch"
+                    );
+                }
+                _ => panic!("{unit}: expected Value::Scalar, got different variant"),
             }
-            _ => panic!("A: expected Value::Scalar, got different variant"),
-        }
-
-        // mol → AMOUNT_OF_SUBSTANCE (factor 1.0)
-        let (val, dim) =
-            unit_to_scalar(2.0, "mol").expect("bare SI base unit mol must resolve");
-        assert_eq!(
-            dim,
-            DimensionVector::AMOUNT_OF_SUBSTANCE,
-            "mol: dimension must be AMOUNT_OF_SUBSTANCE"
-        );
-        match val {
-            Value::Scalar { si_value, dimension } => {
-                assert!(
-                    (si_value - 2.0).abs() < 1e-12,
-                    "mol: si_value must ≈ 2.0, got {si_value}"
-                );
-                assert_eq!(
-                    dimension,
-                    DimensionVector::AMOUNT_OF_SUBSTANCE,
-                    "mol: Value dimension must be AMOUNT_OF_SUBSTANCE"
-                );
-            }
-            _ => panic!("mol: expected Value::Scalar, got different variant"),
-        }
-
-        // cd → LUMINOUS_INTENSITY (factor 1.0)
-        let (val, dim) =
-            unit_to_scalar(2.0, "cd").expect("bare SI base unit cd must resolve");
-        assert_eq!(
-            dim,
-            DimensionVector::LUMINOUS_INTENSITY,
-            "cd: dimension must be LUMINOUS_INTENSITY"
-        );
-        match val {
-            Value::Scalar { si_value, dimension } => {
-                assert!(
-                    (si_value - 2.0).abs() < 1e-12,
-                    "cd: si_value must ≈ 2.0, got {si_value}"
-                );
-                assert_eq!(
-                    dimension,
-                    DimensionVector::LUMINOUS_INTENSITY,
-                    "cd: Value dimension must be LUMINOUS_INTENSITY"
-                );
-            }
-            _ => panic!("cd: expected Value::Scalar, got different variant"),
         }
     }
 }
