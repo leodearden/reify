@@ -1,0 +1,85 @@
+// Shell-classified flexure flat-plate smoke test for `fn solve_elastic_static`.
+//
+// PRD reference: docs/prds/v0_4/shell-extract-engine-bridge.md task δ (§9 Phase 3).
+//
+// Analytical reference (Euler–Bernoulli beam theory, rectangular cross-section):
+//
+//   σ_max = 6 · P · L / (b · h²)
+//
+// Where:
+//   P = 10 N       (tip point load magnitude)
+//   L = 0.05 m     (beam length, along x-axis)
+//   b = 0.01 m     (cross-section width)
+//   h = 0.001 m    (cross-section height)
+//
+//   σ_max = 6 × 10 × 0.05 / (0.01 × 1e-6) = 3 / 1e-8 = 3×10⁸ Pa = 300 MPa
+//
+// Accuracy contract (bare-MITC3 honest band, esc-3594-10 re-spec):
+// The integration test at `crates/reify-eval/tests/shell_solve_e2e.rs` asserts
+// the max-over-elements von Mises of the `shell_channels.top` channel is FINITE,
+// NON-ZERO, and within ONE ORDER OF MAGNITUDE of the 300 MPa reference — band
+// [3×10⁷, 3×10⁹] Pa.  A flat-facet cantilever is the benign MITC3 case (no
+// curvature → no membrane locking), so 1 OOM is a wide, deterministically-met
+// band; this fixture is NOT gated on MITC3+ tight accuracy (task 3392).
+//
+// Shell auto-classification (PRD §5):
+// The body is 50 mm × 10 mm × 1 mm.  thickness/extent = min(L,W,H)/max(L,W,H)
+// = 0.001/0.05 = 0.02 < the ElasticOptions shell_threshold default 0.2, so under
+// a bare `ElasticOptions()` (shell_force default `Auto`) the trampoline
+// auto-classifies this body as a SHELL solve: it declares a shell-extract::extract
+// ComputeNode upstream, routes assembly through the MITC3 shell kernel, and
+// populates `result.shell_channels: Some(_)` (DSL: a ShellStress StructureInstance).
+//
+// The `@optimized("solver::elastic_static")` annotation on `solve_elastic_static`
+// causes the engine to insert a ComputeNode with target == "solver::elastic_static"
+// (not body-inline) when the trampoline is registered via
+// `reify_eval::compute_targets::register_compute_fns`; on the shell path the
+// engine additionally inserts an upstream "shell-extract::extract" ComputeNode
+// (PRD §9 task δ graph contract).
+//
+// Type-coercion notes mirror examples/fea_cantilever_smoke.ri verbatim:
+//   - Material wrapped via ConstitutiveLawInput(law:) so member-access .law has
+//     compile-time type ConstitutiveLaw (matching the fn param type, task δ/3780).
+//   - Loads / supports bundled via LoadCase so member-access .loads / .supports
+//     has compile-time type List<Real> (matching the placeholder fn param types).
+
+structure FeaShellFlexure {
+    // Geometry: 50 mm long flexure with a 10 mm × 1 mm cross-section.
+    // thickness/extent = 1/50 = 0.02 < shell_threshold 0.2 → shell-classified.
+    param length : Length = 50mm
+    param width  : Length = 10mm
+    param height : Length = 1mm
+
+    // Material: AISI 1045 hot-rolled medium-carbon steel (E = 205 GPa, ν = 0.29).
+    let material = Steel_AISI_1045()
+
+    // Loads: 10 N point load applied at the flexure tip.
+    let tip_load = PointLoad(point: "tip", force: 10.0)
+
+    // Supports: fully clamped (fixed) at the flexure root.
+    let mount = FixedSupport(target: "root")
+
+    // Bundle loads + supports via LoadCase so that member-access .loads / .supports
+    // has compile-time type `List<Real>` (matching the fn param type).
+    let lc = LoadCase(name: "flexure", loads: [tip_load], supports: [mount])
+
+    // Wrap material in ConstitutiveLawInput so that member-access .law has
+    // compile-time type ConstitutiveLaw (matching the fn param type, task δ/3780).
+    let ci = ConstitutiveLawInput(law: material)
+
+    // FEA solve: the @optimized dispatcher routes this call to the
+    // `solver::elastic_static` trampoline in
+    //   crates/reify-eval/src/compute_targets/elastic_static.rs
+    //
+    // Bare `ElasticOptions()` uses all solver defaults (shell_force=Auto,
+    // shell_threshold=0.2); the 0.02 aspect ratio auto-classifies this as a
+    // shell solve end-to-end.
+    let result = solve_elastic_static(
+        ci.law, length, width, height, lc.loads, lc.supports, ElasticOptions()
+    )
+
+    // Geometry realization: provides the surface mesh the GUI stress contour
+    // (task θ) renders onto.  Deferred Value::GeometryHandle (GHR-β) — no kernel
+    // call at eval, so no Error diagnostic under make_simple_engine().
+    let body = box(length, width, height)
+}
