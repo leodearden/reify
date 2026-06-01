@@ -45,7 +45,7 @@
 //! 25 mm correctly.
 
 use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
-use reify_core::{Severity, ValueCellId};
+use reify_core::{DiagnosticCode, Severity, ValueCellId};
 use reify_eval::Engine;
 use reify_ir::{DeterminacyState, Value};
 use reify_test_support::parse_and_compile_with_stdlib;
@@ -560,5 +560,79 @@ structure Bearing { param bore : Length = 5mm }
         "S1/type-agnostic: A.b.bore should equal 10mm (0.010 SI) via \
          arithmetic constraint; got {:?}",
         val
+    );
+}
+
+// ── Test (g): S2 — dangling forward-declared member emits ConstraintIndeterminate ─
+
+/// (g) A constraint referencing a non-existent member of a forward-declared child
+/// (member NOT in param_overrides) must surface a `ConstraintIndeterminate`
+/// warning rather than failing silently.
+///
+/// When `b` is forward-declared, `try_resolve_cross_sub_geometry_value_ref`
+/// emits a `ValueCellRef` for any member access on `b` — including members that
+/// do not exist in the child (there is no member-existence check at compile time
+/// for the forward-declared branch).  At eval time the backing cell is absent,
+/// so `reify_expr::eval_expr` returns `Value::Undef` via `get_or_undef`, and
+/// `SimpleConstraintChecker` emits a `ConstraintIndeterminate` warning
+/// (`"constraint <id> indeterminate: undefined inputs"`).
+///
+/// Note: this is a deliberate downgrade from the legacy hard
+/// `"unresolvable GeomRef::Sub"` error.  A future design follow-up could
+/// promote the warning to an error after the post-pass can distinguish
+/// forward-declared members vs genuinely absent ones.
+///
+/// Expected GREEN on arrival — eval already emits the diagnostic; this test
+/// closes the reviewer's "verify eval emits a diagnostic" item (task 4123 S2)
+/// and guards against future silent regressions.
+#[test]
+fn sub_override_auto_forward_declared_nonexistent_member_emits_indeterminate_warning() {
+    // Parent before child; `nonexistent` is NOT a member of Bearing and is NOT
+    // in param_overrides (empty body `{ }`).
+    let source = r#"
+structure A {
+    sub b : Bearing { }
+    constraint self.b.nonexistent == 10mm
+}
+structure Bearing { param bore : Length = 10mm }
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    // No compile-time errors expected: the forward-declared branch emits a
+    // ValueCellRef for any member access, deferring the "does it exist?"
+    // check to the post-pass (and the post-pass only processes param_overrides,
+    // not constraint refs, so no error is produced there either).
+    let compile_errors = errors_only(&compiled.diagnostics);
+    assert!(
+        compile_errors.is_empty(),
+        "S2/dangling-ref: unexpected compile errors: {:?}",
+        compile_errors
+    );
+
+    let mut engine = engine_with_solver();
+    let result = engine.eval(&compiled);
+
+    // Must produce at least one diagnostic.
+    assert!(
+        !result.diagnostics.is_empty(),
+        "S2/dangling-ref: expected at least one eval diagnostic for dangling \
+         member reference; got none"
+    );
+
+    // Must contain a ConstraintIndeterminate warning (not a hard error).
+    let indeterminate_warnings: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.code == Some(DiagnosticCode::ConstraintIndeterminate)
+        })
+        .collect();
+
+    assert!(
+        !indeterminate_warnings.is_empty(),
+        "S2/dangling-ref: expected a ConstraintIndeterminate warning for \
+         undefined inputs; diagnostics: {:?}",
+        result.diagnostics
     );
 }
