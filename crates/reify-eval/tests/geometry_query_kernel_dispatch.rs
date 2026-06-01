@@ -108,6 +108,25 @@ fn assert_point_abs(value: Option<&Value>, expected: [f64; 3], tol: f64, what: &
     }
 }
 
+/// Assert `value` is a `Value::BoundingBox` whose `min` and `max` corners are
+/// each a `Point3<Length>` within `tol` ABSOLUTE (in metres) of `expected_min`
+/// / `expected_max`. Delegates each corner to [`assert_point_abs`].
+fn assert_bbox_abs(
+    value: Option<&Value>,
+    expected_min: [f64; 3],
+    expected_max: [f64; 3],
+    tol: f64,
+    what: &str,
+) {
+    match value {
+        Some(Value::BoundingBox { min, max }) => {
+            assert_point_abs(Some(min.as_ref()), expected_min, tol, &format!("{what} min"));
+            assert_point_abs(Some(max.as_ref()), expected_max, tol, &format!("{what} max"));
+        }
+        other => panic!("{what}: expected Value::BoundingBox, got {other:?}"),
+    }
+}
+
 // ── volume() ────────────────────────────────────────────────────────────────
 
 const VOLUME_SOURCE: &str = r#"
@@ -240,5 +259,37 @@ fn centroid_dispatch_box_is_origin() {
         [0.0, 0.0, 0.0],
         1e-6,
         "centroid(box(10,20,30)mm)",
+    );
+}
+
+// ── bounding_box() ────────────────────────────────────────────────────────────
+
+const BBOX_SOURCE: &str = r#"
+structure def BBoxBox {
+    let body = box(10mm, 20mm, 30mm)
+    let bb = bounding_box(body)
+}
+"#;
+
+/// `bounding_box(handle)` dispatches to OCCT and yields a `Value::BoundingBox`
+/// of two `Point3<Length>` corners.
+///
+/// Reify's `box(w,h,d)` is CENTERED at the origin (`occt_wrapper.cpp`
+/// `make_box` corner `(-w/2,-h/2,-d/2)`), so `box(10,20,30)mm` spans
+/// `min(-5,-10,-15)mm` / `max(5,10,15)mm` — NOT `min(0,0,0)`. (Corrects the
+/// plan's corner-at-origin premise; consistent with the centroid pin and
+/// `distance_box_point.ri`.)
+#[test]
+fn bounding_box_dispatch_box() {
+    let Some(result) = compile_and_build_occt(BBOX_SOURCE) else {
+        return;
+    };
+
+    assert_bbox_abs(
+        result.values.get(&ValueCellId::new("BBoxBox", "bb")),
+        [-0.005, -0.010, -0.015],
+        [0.005, 0.010, 0.015],
+        1e-6,
+        "bounding_box(box(10,20,30)mm)",
     );
 }
