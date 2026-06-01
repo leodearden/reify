@@ -122,3 +122,56 @@ fn volume_dispatch_box_sphere_cylinder() {
         "volume(cylinder(10mm,20mm))",
     );
 }
+
+// ── area() ──────────────────────────────────────────────────────────────────
+
+const AREA_SOURCE: &str = r#"
+structure def AreaBox {
+    let body = box(10mm, 20mm, 30mm)
+    let a = area(body)
+}
+structure def AreaSphere {
+    let body = sphere(10mm)
+    let a = area(body)
+}
+structure def AreaCyl {
+    let body = cylinder(10mm, 20mm)
+    let a = area(body)
+}
+"#;
+
+/// `area(handle)` dispatches to OCCT and yields `Scalar<Area>` for box, sphere,
+/// and cylinder primitives, matching the analytic surface areas:
+///   - box(10,20,30)mm  → 2(lw+lh+wh)        = 0.0022 m²
+///   - sphere(10mm)      → 4π·0.010²          ≈ 1.256637e-3 m²
+///   - cylinder(10,20)mm → 2πr·h + 2π·r²      ≈ 1.884956e-3 m²
+#[test]
+fn area_dispatch_box_sphere_cylinder() {
+    let Some(result) = compile_and_build_occt(AREA_SOURCE) else {
+        return;
+    };
+
+    let box_a = 2.0 * (0.010 * 0.020 + 0.010 * 0.030 + 0.020 * 0.030);
+    let sphere_a = 4.0 * std::f64::consts::PI * 0.010_f64.powi(2);
+    let cyl_a = 2.0 * std::f64::consts::PI * 0.010 * 0.020 // lateral
+        + 2.0 * std::f64::consts::PI * 0.010_f64.powi(2); // two caps
+
+    assert_scalar_rel(
+        result.values.get(&ValueCellId::new("AreaBox", "a")),
+        DimensionVector::AREA,
+        box_a,
+        "area(box(10,20,30)mm)",
+    );
+    assert_scalar_rel(
+        result.values.get(&ValueCellId::new("AreaSphere", "a")),
+        DimensionVector::AREA,
+        sphere_a,
+        "area(sphere(10mm))",
+    );
+    assert_scalar_rel(
+        result.values.get(&ValueCellId::new("AreaCyl", "a")),
+        DimensionVector::AREA,
+        cyl_a,
+        "area(cylinder(10mm,20mm))",
+    );
+}
