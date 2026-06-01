@@ -5,7 +5,7 @@
 
 use crate::decompose::decompose_into_components;
 use reify_core::ValueCellId;
-use reify_ir::{AutoParam, ConstraintDomain, ConstraintSolver, ObjectiveSet, ResolutionProblem, SolveResult, Value, ValueMap};
+use reify_ir::{AutoParam, ConstraintDomain, ConstraintSolver, ObjectiveCombination, ObjectiveSet, ObjectiveTerm, ResolutionProblem, SolveResult, Value, ValueMap};
 use std::collections::HashMap;
 
 /// A registry that dispatches constraint sub-problems to domain-specific solvers.
@@ -153,7 +153,16 @@ impl ConstraintSolver for SolverRegistry {
 
             // Select solver based on component domain
             let solver = self.solver_for(component.domain);
-            let result = solver.solve(&sub_problem);
+
+            // Branch: Lexicographic objectives require staged solving so that each
+            // priority rank is presented to the domain solver as a WeightedSum (the
+            // domain solver's debug_assert rejects Lexicographic directly).
+            let result = match &sub_problem.objective {
+                Some(obj) if obj.combination == ObjectiveCombination::Lexicographic => {
+                    solve_lexicographic(solver, &sub_problem)
+                }
+                _ => solver.solve(&sub_problem),
+            };
 
             match result {
                 SolveResult::Solved { values, unique } => {
@@ -174,4 +183,115 @@ impl ConstraintSolver for SolverRegistry {
             unique: all_unique,
         }
     }
+}
+
+// ============================================================================
+// Lexicographic staged solve helper (task ε)
+// ============================================================================
+
+/// Solve a `ResolutionProblem` whose objective is `ObjectiveCombination::Lexicographic`
+/// by sequencing sub-solves in descending priority order.
+///
+/// For each distinct priority rank (highest first), a fresh `ResolutionProblem` is
+/// built whose objective is the rank's terms presented as `WeightedSum` (the domain
+/// solver's `eval_objective_set` carries a `debug_assert` rejecting Lexicographic
+/// directly).  All auto-params are forced `free = true` for intermediate stages so
+/// the perturbation-based uniqueness check does not spuriously fail on intentionally
+/// underdetermined faces.
+///
+/// A degenerate single-rank Lexicographic (all terms share the same priority) is
+/// delegated to the underlying `solver.solve` with a WeightedSum-rebuilt objective,
+/// preserving the solver's own uniqueness verdict.
+///
+/// Returns the final stage's `SolveResult`, overriding `unique` to `false` for any
+/// multi-rank solve (the ε-band leaves real slack on earlier ranks).
+/// Infeasible / NoProgress from any stage propagates immediately.
+fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) -> SolveResult {
+    let obj = base.objective.as_ref().expect("solve_lexicographic: objective must be Some");
+
+    // --- Group terms into ranks by distinct priority, sorted DESCENDING ---
+    let mut priority_order: Vec<u32> = {
+        let mut priorities: Vec<u32> = obj.terms.iter().map(|t| t.priority).collect();
+        priorities.sort_unstable();
+        priorities.dedup();
+        priorities.reverse(); // highest first
+        priorities
+    };
+
+    // Degenerate case: all terms share one priority — delegate as WeightedSum.
+    if priority_order.len() == 1 {
+        let ws_objective = ObjectiveSet {
+            terms: obj.terms.clone(),
+            combination: ObjectiveCombination::WeightedSum,
+        };
+        let ws_problem = ResolutionProblem {
+            objective: Some(ws_objective),
+            ..base.clone()
+        };
+        return solver.solve(&ws_problem);
+    }
+
+    // Multi-rank staged loop.
+    let num_ranks = priority_order.len();
+    let mut current_values = base.current_values.clone();
+    let mut accumulated_constraints = base.constraints.clone();
+    let mut last_result: Option<SolveResult> = None;
+
+    for (stage_idx, priority) in priority_order.iter().enumerate() {
+        // Collect terms for this rank.
+        let rank_terms: Vec<ObjectiveTerm> = obj
+            .terms
+            .iter()
+            .filter(|t| t.priority == *priority)
+            .cloned()
+            .collect();
+
+        // Build stage objective as WeightedSum of this rank's terms.
+        let stage_objective = ObjectiveSet {
+            terms: rank_terms,
+            combination: ObjectiveCombination::WeightedSum,
+        };
+
+        // Force all auto-params to free=true for intermediate stages so that the
+        // perturbation-based uniqueness check does not spuriously fail on faces
+        // that later ranks will resolve.  The final stage also uses free=true
+        // because the ε-band on earlier ranks leaves real slack (unique:false).
+        let free_auto_params: Vec<AutoParam> = base
+            .auto_params
+            .iter()
+            .map(|ap| AutoParam { free: true, ..ap.clone() })
+            .collect();
+
+        let stage_problem = ResolutionProblem {
+            auto_params: free_auto_params,
+            constraints: accumulated_constraints.clone(),
+            current_values: current_values.clone(),
+            objective: Some(stage_objective),
+            functions: base.functions.clone(),
+        };
+
+        let stage_result = solver.solve(&stage_problem);
+
+        match stage_result {
+            SolveResult::Solved { values, .. } => {
+                // Warm-start the next stage from this stage's solution.
+                for (k, v) in &values {
+                    current_values.insert(k.clone(), v.clone());
+                }
+
+                let is_final = stage_idx == num_ranks - 1;
+                last_result = Some(SolveResult::Solved { values, unique: false });
+
+                if is_final {
+                    break;
+                }
+                // (band constraints will be added here in step-4)
+            }
+            infeasible_or_no_progress => {
+                return infeasible_or_no_progress;
+            }
+        }
+    }
+
+    last_result.expect("solve_lexicographic: priority_order is non-empty so at least one stage ran")
 }
