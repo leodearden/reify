@@ -1471,6 +1471,21 @@ impl Engine {
         // outlives the borrowed view because both are local bindings.
         // Mirrors the "one allocation per build, not per realization"
         // pattern established by `compute_tessellation_budgets`.
+        //
+        // Task 4050 test seam: in test / `test-instrumentation` builds an
+        // injected `test_registry_override` (set via
+        // `with_test_kernels_and_registry`) takes precedence over the link-time
+        // inventory so the cross-kernel-handoff integration test can supply a
+        // deterministic multi-kernel capability map (the live inventory links no
+        // Mesh-capable boolean kernel). The override is cloned into an owned
+        // local so the borrowed view below does not pin `&self`. Production
+        // builds always use `collect_registry()` — the field is absent there.
+        #[cfg(any(test, feature = "test-instrumentation"))]
+        let registry_owned = self
+            .test_registry_override
+            .clone()
+            .unwrap_or_else(crate::kernel_registry::collect_registry);
+        #[cfg(not(any(test, feature = "test-instrumentation")))]
         let registry_owned = crate::kernel_registry::collect_registry();
         let registry_borrowed: BTreeMap<String, &CapabilityDescriptor> =
             registry_owned.iter().map(|(k, v)| (k.clone(), v)).collect();
@@ -1810,6 +1825,17 @@ impl Engine {
         // once per build and materialise the borrowed view that
         // `dispatcher::dispatch` expects — see `build_snapshot` mirror for
         // the rationale (one allocation per build, not per realization).
+        //
+        // Task 4050 test seam: an injected `test_registry_override` takes
+        // precedence over the link-time inventory in test / `test-instrumentation`
+        // builds (see the `build_snapshot` mirror for the full rationale).
+        // Production builds always use `collect_registry()`.
+        #[cfg(any(test, feature = "test-instrumentation"))]
+        let registry_owned = self
+            .test_registry_override
+            .clone()
+            .unwrap_or_else(crate::kernel_registry::collect_registry);
+        #[cfg(not(any(test, feature = "test-instrumentation")))]
         let registry_owned = crate::kernel_registry::collect_registry();
         let registry_borrowed: BTreeMap<String, &CapabilityDescriptor> =
             registry_owned.iter().map(|(k, v)| (k.clone(), v)).collect();
