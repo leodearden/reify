@@ -385,6 +385,8 @@ pub mod elements;
 pub mod error_estimator;
 // Task 3794: Tensegrity T1a — anchored Force-Density form-finding kernel.
 pub mod form_find;
+// Task 3795: Tensegrity T1b — free-standing Force-Density form-finding kernel.
+pub mod form_find_free;
 pub mod geometric_stiffness;
 pub mod interpolation;
 // Task 3868: κ — additive joint-stiffness kernel (PRD compliant-joints-flexures.md §7.2).
@@ -580,3 +582,8 @@ pub use joint_stiffness::{JointStiffness, add_joint_stiffness};
 // the `solver::form_find` ComputeNode target; the Value-cracking trampoline
 // lives in reify-eval's compute_targets/form_find.rs.
 pub use form_find::{FormFindError, FormFindSolve, MemberKind, form_find_anchored};
+// Task 3795: Tensegrity T1b — free-standing Force-Density form-finding kernel.
+// PRD: docs/prds/v0_6/tensegrity-structures.md Tier-1 leaf T1b. Eigenvalue /
+// null-space q search via faer; kernel-only (no .ri / stdlib / trampoline
+// wiring in this task, per plan.json design_decisions).
+pub use form_find_free::{ForceDensitySpec, FreeFormError, FreeFormResult, form_find_free};
