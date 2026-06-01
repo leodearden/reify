@@ -467,3 +467,180 @@ structure PlacedAsm {
         );
     }
 }
+
+/// step-11 (real OCCT, `OCCT_AVAILABLE`-gated) — full T5 acceptance signal.
+///
+/// A 2-level assembly with NO manual lift transforms exercises BOTH new T5
+/// behaviors on sibling subtrees of a single root:
+/// - a PRODUCT child `sub part : Part at +30 mm X` — its composed world
+///   placement is applied to REAL geometry and it surfaces visible; and
+/// - an AUX child `aux sub jig : Jig at +50 mm Y` — still realized, transformed,
+///   tessellated and shipped (mesh payload present) but `default_visible ==
+///   false` (hidden, not skipped).
+///
+/// `Part` is `box(20mm)` (centered AABB `[-0.01, 0.01]³` m) and `Jig` is
+/// `box(10mm)` (centered AABB `[-0.005, 0.005]³` m), so the two surfaces are
+/// distinguishable by extent as well as by placement axis. Both children
+/// reference the assembly root only as subs, so each surfaces exactly once under
+/// its composed `Assembly.<sub>#realization[0]` path.
+///
+/// Asserts the full signal: (a) one mesh per surfaced descendant, each at its
+/// composed world AABB (golden per child); (b) the aux body's surface is PRESENT
+/// in meshes but `default_visible == false`; (c) the product child surface is
+/// `default_visible == true`; (d) no standalone duplicate of either contained
+/// child (exactly two surfaces total). Reconciles aux-with-placement on the same
+/// walk: the aux subtree is transformed AND hidden, while the product subtree is
+/// transformed AND visible.
+#[test]
+fn placed_product_and_aux_children_surface_at_world_aabb_with_visibility() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let source = r#"structure Part {
+    let body = box(20mm, 20mm, 20mm)
+}
+structure Jig {
+    let body = box(10mm, 10mm, 10mm)
+}
+structure Assembly {
+    sub part : Part at transform3(orient_identity(), vec3(30mm, 0mm, 0mm))
+    aux sub jig : Jig at transform3(orient_identity(), vec3(0mm, 50mm, 0mm))
+}"#;
+    let compiled = compile_source_with_stdlib(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "unexpected compile errors: {:?}",
+        compile_errors
+    );
+
+    let part = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Part")
+        .expect("Part template not found");
+    let jig = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Jig")
+        .expect("Jig template not found");
+    let part_path = composed_path(part, "Assembly.part", "body");
+    let jig_path = composed_path(jig, "Assembly.jig", "body");
+
+    // Build engine with the real OCCT kernel (Mock cannot validate placement).
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut planner = reify_geometry::SingleKernelHolder::new();
+    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+
+    let result = engine.tessellate_realizations(&compiled);
+    let geom_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(geom_errors.is_empty(), "geometry errors: {:?}", geom_errors);
+
+    let paths: Vec<&str> = result
+        .meshes
+        .iter()
+        .map(|s| s.entity_path.as_str())
+        .collect();
+
+    // (d) no standalone duplicate of either contained child.
+    assert!(
+        !paths.contains(&"Part#realization[0]"),
+        "standalone `Part#realization[0]` must be suppressed (no double-surfacing); got {:?}",
+        paths
+    );
+    assert!(
+        !paths.contains(&"Jig#realization[0]"),
+        "standalone `Jig#realization[0]` must be suppressed (no double-surfacing); got {:?}",
+        paths
+    );
+    // (a) one mesh per surfaced descendant — exactly the product + the aux child.
+    assert_eq!(
+        result.meshes.len(),
+        2,
+        "exactly two surfaced descendants expected (product + aux); got {:?}",
+        paths
+    );
+
+    let part_surface = result
+        .meshes
+        .iter()
+        .find(|s| s.entity_path == part_path)
+        .unwrap_or_else(|| panic!("product surface `{part_path}` must be present"));
+    let jig_surface = result
+        .meshes
+        .iter()
+        .find(|s| s.entity_path == jig_path)
+        .unwrap_or_else(|| {
+            panic!("aux surface `{jig_path}` must still be shipped (hidden, not skipped)")
+        });
+
+    // (c) product child surfaces visible; (b) aux child surfaces hidden but
+    // present with a real mesh payload.
+    assert!(
+        part_surface.default_visible,
+        "product child `part` must surface with default_visible == true"
+    );
+    assert!(
+        !jig_surface.default_visible,
+        "aux child `jig` must surface with default_visible == false (hidden)"
+    );
+    assert!(
+        !jig_surface.mesh.vertices.is_empty(),
+        "aux `jig` mesh payload must still be shipped (realized + transformed + tessellated)"
+    );
+
+    // Box tessellation places vertices exactly at the 8 corners (no curvature
+    // deflection), so a tight tolerance is reliable (matches step-9).
+    let tol = 1e-5_f32;
+
+    // (a) product child: box(20mm) centered, composed-translated +30 mm on X.
+    let (part_min, part_max) = mesh_aabb(&part_surface.mesh);
+    let expect_part_min = [0.02_f32, -0.01, -0.01];
+    let expect_part_max = [0.04_f32, 0.01, 0.01];
+    for axis in 0..3 {
+        assert!(
+            (part_min[axis] - expect_part_min[axis]).abs() < tol,
+            "product min[{axis}] expected {}, got {} (composed placement not applied?)",
+            expect_part_min[axis],
+            part_min[axis]
+        );
+        assert!(
+            (part_max[axis] - expect_part_max[axis]).abs() < tol,
+            "product max[{axis}] expected {}, got {}",
+            expect_part_max[axis],
+            part_max[axis]
+        );
+    }
+
+    // (a) aux child: box(10mm) centered, composed-translated +50 mm on Y. The
+    // placement is applied even though the body is hidden — aux is realized +
+    // transformed + tessellated, not skipped.
+    let (jig_min, jig_max) = mesh_aabb(&jig_surface.mesh);
+    let expect_jig_min = [-0.005_f32, 0.045, -0.005];
+    let expect_jig_max = [0.005_f32, 0.055, 0.005];
+    for axis in 0..3 {
+        assert!(
+            (jig_min[axis] - expect_jig_min[axis]).abs() < tol,
+            "aux min[{axis}] expected {}, got {} (aux placement not applied?)",
+            expect_jig_min[axis],
+            jig_min[axis]
+        );
+        assert!(
+            (jig_max[axis] - expect_jig_max[axis]).abs() < tol,
+            "aux max[{axis}] expected {}, got {}",
+            expect_jig_max[axis],
+            jig_max[axis]
+        );
+    }
+}
