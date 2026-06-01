@@ -224,3 +224,68 @@ fn escape_decoding_backslash_and_quote() {
         other => panic!("expected InterpolatedString, got {:?}", other),
     }
 }
+
+// ── Amendment: pinned edge-case tests ────────────────────────────────────────
+
+/// An unrecognized escape sequence `\r` inside an interpolated string is
+/// decoded leniently: the backslash is dropped and only `r` survives.
+///
+/// Pins the `Some(other) => out.push(other)` arm of `decode_string_escapes`
+/// through the full parse→lower pipeline.
+#[test]
+fn escape_decoding_unknown_escape_lenient_integration() {
+    // Source: "x\ry {a}" — `\r` is not a recognized escape.
+    // Scanner includes `x\ry ` as one string_chunk (both `\` and `r` consumed).
+    // `decode_string_escapes` then drops the backslash → "xry ".
+    let source = "structure S { let v = \"x\\ry {a}\" }";
+    let expr = extract_let_value(source);
+    match &expr.kind {
+        ExprKind::InterpolatedString(parts) => {
+            assert_eq!(parts.len(), 2, "expected 2 parts, got {}: {:?}", parts.len(), parts);
+            match &parts[0] {
+                StringPart::Literal(s) => assert_eq!(
+                    s, "xry ",
+                    "unrecognized \\r should yield 'r' with backslash dropped"
+                ),
+                other => panic!("expected Literal for part[0], got {:?}", other),
+            }
+            match &parts[1] {
+                StringPart::Hole(expr) => match &expr.kind {
+                    ExprKind::Ident(name) => assert_eq!(name, "a"),
+                    other => panic!("expected Ident(a) in Hole, got {:?}", other),
+                },
+                other => panic!("expected Hole for part[1], got {:?}", other),
+            }
+        }
+        other => panic!("expected InterpolatedString, got {:?}", other),
+    }
+}
+
+/// When an interpolated string contains a malformed empty hole `{}`, the
+/// `check_and_lower!` guard at the `let_declaration` level fires (the MISSING
+/// node inside `interpolation` propagates `has_error()` up to the let) and
+/// emits a diagnostic before `lower_interpolated_string` is ever called.
+///
+/// This test pins the *observable* public-API behaviour: at least one error is
+/// produced, and the let member is absent from the declaration list.  The unit
+/// test `lower_interpolated_string_malformed_hole_produces_diagnostic` in
+/// `ts_parser.rs` (which calls `lower_interpolated_string` directly, bypassing
+/// `check_and_lower!`) verifies the function-level robustness fix.
+#[test]
+fn malformed_empty_hole_produces_error_at_member_level() {
+    // "x {} y" — empty `{}` is a parse error (grammar requires $._expression).
+    let source = r#"structure S { let v = "x {} y" }"#;
+    let (members, errors) = parse_members(source);
+    // check_and_lower! on the let_declaration fires and emits at least one error.
+    assert!(
+        !errors.is_empty(),
+        "expected at least one diagnostic for empty-hole input, got none"
+    );
+    // The let member is absent because check_and_lower! returned None.
+    // (This is the correct behaviour — the member has a syntax error.)
+    assert!(
+        members.is_empty(),
+        "expected no members (check_and_lower! should have aborted the let), got: {:?}",
+        members
+    );
+}
