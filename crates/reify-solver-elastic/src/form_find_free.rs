@@ -127,12 +127,61 @@ pub fn form_find_free(
     kinds: &[MemberKind],
     spec: &ForceDensitySpec,
 ) -> Result<FreeFormResult, FreeFormError> {
-    // Scaffold only (prerequisite pre-1): the explicit-mode and group-ratio
-    // pipelines are filled in incrementally across the T1b steps. Binding the
-    // parameters to `_` keeps the real names in place for those steps while
-    // avoiding unused-variable warnings in the meantime.
-    let _ = (nodes_guess, members, kinds, spec);
-    unimplemented!("form_find_free: implemented incrementally across Tensegrity T1b steps")
+    match spec {
+        // Deterministic foundation: assemble D, classify nullity, recover
+        // coordinates, compute forces.
+        ForceDensitySpec::Explicit(q) => form_find_explicit(nodes_guess, members, kinds, q),
+        // Adaptive eigenvalue-minimisation search over relative group densities;
+        // on success it produces an admissible q and delegates to the explicit
+        // path. Implemented in T1b step-10.
+        ForceDensitySpec::GroupRatios { .. } => {
+            unimplemented!("GroupRatios adaptive force-density search: implemented in T1b step-10")
+        }
+    }
+}
+
+/// Explicit-mode pipeline: validate the spec, recover the gauge-fixed
+/// free-standing coordinates, and compute member forces — the deterministic core
+/// that [`ForceDensitySpec::GroupRatios`] also delegates to once its search finds
+/// an admissible `q`.
+fn form_find_explicit(
+    nodes_guess: &[[f64; 3]],
+    members: &[(usize, usize)],
+    kinds: &[MemberKind],
+    q: &[f64],
+) -> Result<FreeFormResult, FreeFormError> {
+    let n = nodes_guess.len();
+
+    // Up-front feasibility guards + the single dense EVD (length / sign / nullity).
+    let spectrum = validate_explicit(n, members, kinds, q)?;
+    let nullity = spectrum.nullity;
+
+    // Gauge-fixed coordinates from null(D), aligned to the caller's guess.
+    let nodes = recover_coordinates(nodes_guess, &spectrum)?;
+
+    // Per-member axial force Nᵢ = qᵢ · Lᵢ on the recovered geometry, in
+    // struts-then-cables (input) order — mirrors the anchored kernel's force pass.
+    let member_forces: Vec<f64> = members
+        .iter()
+        .zip(q.iter())
+        .map(|(&(j, k), &qi)| {
+            let pj = nodes[j];
+            let pk = nodes[k];
+            let len = ((pj[0] - pk[0]).powi(2)
+                + (pj[1] - pk[1]).powi(2)
+                + (pj[2] - pk[2]).powi(2))
+            .sqrt();
+            qi * len
+        })
+        .collect();
+
+    Ok(FreeFormResult {
+        nodes,
+        member_forces,
+        force_densities: q.to_vec(),
+        nullity,
+        converged: true,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -144,14 +193,16 @@ pub fn form_find_free(
 /// eigenvalue. The prism golden has a wide spectral gap (fifth eigenvalue 6 vs
 /// fourth ≈ 2.5e-15), so 1e-8 separates the null space from the rest of the
 /// spectrum without a brittle absolute threshold.
-#[allow(dead_code)] // wired into form_find_free's validation/recovery at steps 4/6/8
 const NULLITY_REL_TOL: f64 = 1e-8;
 
 /// Spectral classification of the force-density matrix `D`.
 #[derive(Debug)]
-#[allow(dead_code)] // fields consumed by validation (step 4) / recovery (step 6)
 struct SpectrumClassification {
-    /// Eigenvalues of `D`, sorted ascending by magnitude.
+    /// Eigenvalues of `D`, sorted ascending by magnitude. Consumed by the
+    /// step-10 adaptive search (which drives the `d+1`-th toward zero) and the
+    /// spectral-gap unit tests; the explicit path reads only `nullity` /
+    /// `eigenvectors`, so this field is otherwise unused for now.
+    #[allow(dead_code)]
     eigenvalues: Vec<f64>,
     /// Eigenvectors as columns, in the same order as `eigenvalues` (column `j`
     /// is the eigenvector for `eigenvalues[j]`). The first `nullity` columns span
@@ -170,7 +221,6 @@ struct SpectrumClassification {
 /// density `qᵢ`, add `qᵢ` to `D[j,j]` and `D[k,k]` and `−qᵢ` to `D[j,k]` and
 /// `D[k,j]`. Unlike the anchored case there is no free/anchor partition — the
 /// full `D` is what the eigenvalue / null-space form-finding operates on.
-#[allow(dead_code)] // wired into form_find_free's pipelines at steps 4/8/10
 fn assemble_force_density_matrix(n: usize, members: &[(usize, usize)], q: &[f64]) -> Mat<f64> {
     let mut d = Mat::<f64>::zeros(n, n);
     for (&(j, k), &qi) in members.iter().zip(q.iter()) {
@@ -189,7 +239,6 @@ fn assemble_force_density_matrix(n: usize, members: &[(usize, usize)], q: &[f64]
 /// (count of eigenvalues whose magnitude is below `rel_tol · max|λ|`). `D` is
 /// indefinite by construction (struts contribute negative `q`), so the sort is
 /// by magnitude, not algebraic value.
-#[allow(dead_code)] // wired into form_find_free's pipelines at steps 4/8/10
 fn classify_spectrum(d: &Mat<f64>, rel_tol: f64) -> SpectrumClassification {
     let n = d.nrows();
 
@@ -253,7 +302,6 @@ fn classify_spectrum(d: &Mat<f64>, rel_tol: f64) -> SpectrumClassification {
 /// [`DimensionMismatch`]: FreeFormError::DimensionMismatch
 /// [`SignViolation`]: FreeFormError::SignViolation
 /// [`NullityMismatch`]: FreeFormError::NullityMismatch
-#[allow(dead_code)] // wired into form_find_free's explicit path at step-8
 fn validate_explicit(
     n: usize,
     members: &[(usize, usize)],
@@ -323,7 +371,6 @@ fn validate_explicit(
 ///
 /// Returns [`FreeFormError::SingularRecovery`] if the recovered coordinates fail
 /// to span 3-D (a rank-deficient realisation, e.g. a degenerate guess).
-#[allow(dead_code)] // wired into form_find_free's explicit path at step-8
 fn recover_coordinates(
     nodes_guess: &[[f64; 3]],
     spectrum: &SpectrumClassification,
