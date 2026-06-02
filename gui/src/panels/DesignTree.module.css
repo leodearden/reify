@@ -16,6 +16,26 @@
   scrollbar-gutter: stable;
 }
 
+/* Force WebKitGTK overlay scrollbar into a classic, space-reserving scrollbar.
+   Overlay scrollbars float over content and ignore `scrollbar-gutter`, so they
+   cover the right-aligned .eyeIcon buttons (#3394 under-fixed).  Giving
+   ::-webkit-scrollbar an explicit width converts the scrollbar to a non-overlay
+   type that renders inside the gutter already reserved above.  Rows then lay
+   out within clientWidth (excluding the scrollbar), so the eye-icon is always
+   reachable.  See: https://webkit.org/blog/363/styling-scrollbars/ */
+.treeScroll::-webkit-scrollbar {
+  width: 10px;
+}
+
+.treeScroll::-webkit-scrollbar-thumb {
+  background: var(--reify-border, #45475a);
+  border-radius: 5px;
+}
+
+.treeScroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 .nodeWrapper {
   user-select: none;
 }
