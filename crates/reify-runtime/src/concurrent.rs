@@ -296,12 +296,17 @@ impl ConcurrentScheduler {
         };
 
         // Per-dirty-node metadata bundle. Fields are named so every downstream
-        // loop reads `dn.id`, `dn.override_`, or `dn.has_non_final` rather than
-        // positional `(_, _, _)` destructuring.
+        // loop reads `dn.id`, `dn.override_`, `dn.has_non_final`, or
+        // `dn.priority` rather than positional `(_, _, _)` destructuring.
+        // `priority` is populated once at construction (after
+        // default_populate_priorities guarantees every eval-set node has an
+        // entry) so the promoter-register and sort_by_key loops each reuse it
+        // rather than issuing a second HashMap lookup.
         struct DirtyNode {
             id: NodeId,
             override_: NodeCommitmentOverride,
             has_non_final: bool,
+            priority: Priority,
         }
 
         let node_set: HashSet<NodeId> = eval_set.into_iter().collect();
@@ -358,10 +363,16 @@ impl ConcurrentScheduler {
                     {
                         skipped.insert(node);
                     } else {
+                        let priority = config
+                            .node_priorities
+                            .get(&node)
+                            .copied()
+                            .unwrap_or(Priority::P3Speculative);
                         dirty_nodes.push(DirtyNode {
                             id: node,
                             override_,
                             has_non_final: has_non_final_flag,
+                            priority,
                         });
                     }
                 } else {
@@ -372,26 +383,18 @@ impl ConcurrentScheduler {
             // Register dirty nodes in priority promoter and sort by priority
             if let Some(ref promoter) = config.priority_promoter {
                 for dn in &dirty_nodes {
-                    let priority = config
-                        .node_priorities
-                        .get(&dn.id)
-                        .copied()
-                        .unwrap_or(Priority::P3Speculative);
-                    promoter.register(dn.id.clone(), priority);
+                    // dn.priority was populated once at dirty-node construction;
+                    // no second HashMap lookup needed here.
+                    promoter.register(dn.id.clone(), dn.priority);
                 }
                 // Sort by config priority: ascending (P0 < P3 in Ord).
                 // At this point, nodes were just registered (lines above) with
                 // values from config.node_priorities and no promotions have
                 // occurred yet, so effective_priority == config priority.
-                // Sorting directly from config avoids O(N log N) mutex
-                // acquisitions through SharedPriorityPromoter.
-                dirty_nodes.sort_by_key(|dn| {
-                    config
-                        .node_priorities
-                        .get(&dn.id)
-                        .copied()
-                        .unwrap_or(Priority::P3Speculative)
-                });
+                // Sorting directly from dn.priority (already resolved above)
+                // avoids both a second HashMap lookup per node and O(N log N)
+                // mutex acquisitions through SharedPriorityPromoter.
+                dirty_nodes.sort_by_key(|dn| dn.priority);
             }
 
             // Register dirty nodes in commitment tracker before spawning,

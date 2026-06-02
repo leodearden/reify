@@ -3917,6 +3917,16 @@ mod execute_with_config_tests {
             eval_order: Arc<Mutex<Vec<NodeId>>>,
         }
         impl AsyncNodeEvaluator for OrderTrackingEvaluator {
+            // DETERMINISM NOTE: the order assertion below relies on each
+            // spawned future completing on its *first* poll under the
+            // current-thread (#[tokio::test]) runtime.  That holds because
+            // there is NO `.await` point before the `eval_order.push(node)`
+            // call, so the future is immediately ready.  If a future `.await`
+            // is added before the push (or the runtime flavor changes to
+            // multi-thread), the spawn-completion order may no longer match
+            // the sort order and the assertion could become flaky.  Prefer
+            // asserting on SharedPriorityPromoter-registered priorities
+            // directly if you need to drop this assumption.
             async fn evaluate(&self, node: NodeId) -> EvalOutcome {
                 self.eval_order.lock().unwrap().push(node);
                 EvalOutcome::Changed
