@@ -842,10 +842,10 @@ fn populate_loft_op(
 /// Binary-boolean variant of `populate_single_parent_sweep_op` for
 /// `GeometryOp::{Union,Difference,Intersection}`.
 ///
-/// Extracts the left and right operand face/edge slices (via the
-/// `extracted_faces`/`extracted_edges` caches — already minted and seeded
-/// when those primitives were built earlier in the realization), extracts
-/// the result face/edge slices, builds a
+/// Extracts the left and right operand face/edge slices live via
+/// `kernel.extract_faces` / `kernel.extract_edges` (the same per-call
+/// pattern as `populate_single_parent_sweep_op`), then extracts the result
+/// face/edge slices, builds a
 /// `BooleanOpParents::Binary { faces: [left, right], edges: [left, right] }`
 /// and calls the existing `propagate_attributes_via_brepalgoapi_history`
 /// helper (which implements split → `mod_history` `ModEntry` logic).

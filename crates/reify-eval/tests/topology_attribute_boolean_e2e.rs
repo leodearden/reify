@@ -145,14 +145,23 @@ fn union_splitting_a_face_feeds_mod_history() {
     );
 }
 
-/// Guard test: `intersection(box, box)` builds cleanly, produces geometry,
-/// and leaves the attribute table non-empty (both input primitives are seeded
-/// even when no split occurs). Verifies the intersection engine arm does not
-/// regress the build to Failed.
+/// Guard test: `intersection(box, offset_box)` builds cleanly, produces
+/// geometry, and leaves the attribute table non-empty. Uses a partial-overlap
+/// setup (second box translated +2mm in X) rather than fully-coincident boxes
+/// to avoid OCCT coplanar-face fragility.
+///
+/// The `!table.is_empty()` assertion is intentionally minimal for this guard:
+/// the intersection of two convex boxes cannot split a parent face, so
+/// `mod_history` — the stronger signal used by the union/difference tests —
+/// is not available here. The primary regression guard is the no-Error +
+/// non-empty-geometry assertion inside `build_boolean_source`; those WOULD
+/// fail if the intersection engine arm regressed to a build error.
 #[test]
 fn intersection_build_populates_attributes() {
+    // Offset second box +2mm in X for a genuine partial overlap
+    // (8mm×10mm×10mm result solid) — avoids OCCT coincident-face fragility.
     let source = r#"structure S {
-    let r = intersection(box(10mm, 10mm, 10mm), box(10mm, 10mm, 10mm))
+    let r = intersection(box(10mm, 10mm, 10mm), translate(box(10mm, 10mm, 10mm), 2mm, 0mm, 0mm))
 }"#;
     let Some(engine) = build_boolean_source(source) else {
         return;
@@ -162,6 +171,6 @@ fn intersection_build_populates_attributes() {
     assert!(
         !table.is_empty(),
         "topology attribute table must be non-empty after intersection build; \
-         both input box primitives should have been seeded"
+         both input box primitives and the intersection result should have been seeded"
     );
 }
