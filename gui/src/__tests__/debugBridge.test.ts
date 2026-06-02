@@ -67,9 +67,8 @@ function makeStores(selectedEntities: string[] = [], anchorEntity: string | null
         currentMessageId: null,
       },
     },
-    // Cast to any until step-4 adds viewState to the DebugStores type
     viewState: { resetToDefaultView: vi.fn() },
-  } as any;
+  };
 }
 
 describe('debug bridge store_state includes selectedEntities', () => {
@@ -590,14 +589,14 @@ describe('debug bridge open_file', () => {
       guiState: rawGuiState,
     });
 
-    expect((stores as any).viewState.resetToDefaultView).toHaveBeenCalledTimes(1);
+    expect(stores.viewState.resetToDefaultView).toHaveBeenCalledTimes(1);
   });
 
   it('resetToDefaultView is called AFTER initFromState (engine rebuilt first, then visibility baseline reset)', async () => {
     const stores = makeStores();
     const callOrder: string[] = [];
     vi.mocked(stores.engine.initFromState).mockImplementation(() => { callOrder.push('initFromState'); });
-    (stores as any).viewState.resetToDefaultView.mockImplementation(() => { callOrder.push('resetToDefaultView'); });
+    vi.mocked(stores.viewState.resetToDefaultView).mockImplementation(() => { callOrder.push('resetToDefaultView'); });
 
     await initDebugBridge(stores);
 
@@ -628,7 +627,7 @@ describe('debug bridge open_file', () => {
       content: 'def Open() {}',
     });
 
-    expect((stores as any).viewState.resetToDefaultView).not.toHaveBeenCalled();
+    expect(stores.viewState.resetToDefaultView).not.toHaveBeenCalled();
   });
 
   it('resetToDefaultView is NOT called when path is missing (error path)', async () => {
@@ -637,7 +636,7 @@ describe('debug bridge open_file', () => {
 
     await dispatch(capturedHandler!, 513, { content: 'def X() {}' });
 
-    expect((stores as any).viewState.resetToDefaultView).not.toHaveBeenCalled();
+    expect(stores.viewState.resetToDefaultView).not.toHaveBeenCalled();
   });
 
   it('resetToDefaultView is NOT called when content is missing (error path)', async () => {
@@ -646,7 +645,7 @@ describe('debug bridge open_file', () => {
 
     await dispatch(capturedHandler!, 514, { path: '/tmp/x.ri' });
 
-    expect((stores as any).viewState.resetToDefaultView).not.toHaveBeenCalled();
+    expect(stores.viewState.resetToDefaultView).not.toHaveBeenCalled();
   });
 });
 
