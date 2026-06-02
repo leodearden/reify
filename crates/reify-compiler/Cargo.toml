@@ -25,7 +25,8 @@ tracing.workspace = true
 reify-ast.workspace = true
 reify-core.workspace = true
 reify-ir.workspace = true
-reify-test-support.workspace = true
+reify-test-support = { workspace = true, features = ["eval-helpers"] }
+reify-eval.workspace = true
 reify-expr.workspace = true
 tempfile.workspace = true
 # Self-pull with the test-support feature so the integration test in
