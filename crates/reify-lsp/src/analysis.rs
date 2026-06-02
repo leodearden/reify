@@ -1657,4 +1657,29 @@ mod tests {
              got: {errors:?}"
         );
     }
+
+    // --- compute_document_symbols tests (task 4207 η) ---
+
+    #[test]
+    fn compute_document_symbols_single_structure_top_level() {
+        use tower_lsp::lsp_types::SymbolKind;
+        let source = "structure Bracket { param width: Scalar = 80mm }";
+        let symbols = compute_document_symbols(source, &test_uri());
+        assert_eq!(
+            symbols.len(),
+            1,
+            "should return exactly one top-level symbol for one structure"
+        );
+        let bracket = &symbols[0];
+        assert_eq!(bracket.name, "Bracket");
+        assert_eq!(bracket.kind, SymbolKind::STRUCT);
+        // range covers the full declaration, which starts on line 0.
+        assert_eq!(bracket.range.start.line, 0);
+        // selection_range is the "Bracket" name token: line 0, chars 10..17
+        // ("structure " is 10 chars; "Bracket" is 7 chars).
+        assert_eq!(bracket.selection_range.start.line, 0);
+        assert_eq!(bracket.selection_range.start.character, 10);
+        assert_eq!(bracket.selection_range.end.line, 0);
+        assert_eq!(bracket.selection_range.end.character, 17);
+    }
 }
