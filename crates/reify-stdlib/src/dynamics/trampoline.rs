@@ -85,7 +85,7 @@ mod tests {
     use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
     use std::collections::BTreeMap;
 
-    use super::InverseDynamicsCacheKey;
+    use super::{body_solid_hashes, InverseDynamicsCacheKey};
 
     /// Default gravity used across the cache-key fixtures: SI `[0, 0, −9.81]`
     /// (matches `reify_stdlib::dynamics::rnea::default_gravity()`).
@@ -214,5 +214,50 @@ mod tests {
                 "a change to gravity component {axis} must MISS"
             );
         }
+    }
+
+    // ── step-3: body_solid_hashes ───────────────────────────────────────────────
+
+    /// (a) One `ContentHash` per body, in `bodies` order, each equal to that
+    /// body's `solid.content_hash()`.
+    #[test]
+    fn body_solid_hashes_one_per_body_in_order() {
+        let masses = [1.0, 2.0, 3.0];
+        let mech = mechanism(&masses);
+        let hashes = body_solid_hashes(&mech);
+        assert_eq!(hashes.len(), masses.len(), "one hash per body");
+        for (i, &m) in masses.iter().enumerate() {
+            assert_eq!(
+                hashes[i],
+                solid(m).content_hash(),
+                "hash[{i}] must equal body[{i}].solid.content_hash()"
+            );
+        }
+    }
+
+    /// (b) Changing one body's solid `Value` changes only that entry.
+    #[test]
+    fn body_solid_hashes_changes_only_the_touched_body() {
+        let base = body_solid_hashes(&mechanism(&[1.0, 2.0, 3.0]));
+        let changed = body_solid_hashes(&mechanism(&[1.0, 2.5, 3.0]));
+        assert_eq!(base.len(), 3);
+        assert_eq!(changed.len(), 3);
+        assert_eq!(base[0], changed[0], "body 0 solid unchanged → same hash");
+        assert_ne!(base[1], changed[1], "body 1 solid changed → different hash");
+        assert_eq!(base[2], changed[2], "body 2 solid unchanged → same hash");
+    }
+
+    /// (c) A non-mechanism `Value` yields an empty `Vec` (a bare scalar and a
+    /// non-mechanism `StructureInstance` are both rejected).
+    #[test]
+    fn body_solid_hashes_empty_for_non_mechanism() {
+        assert!(
+            body_solid_hashes(&Value::Real(1.0)).is_empty(),
+            "a bare scalar is not a mechanism"
+        );
+        assert!(
+            body_solid_hashes(&instance("MotionTrajectory", vec![])).is_empty(),
+            "a non-mechanism StructureInstance is not a mechanism Map"
+        );
     }
 }
