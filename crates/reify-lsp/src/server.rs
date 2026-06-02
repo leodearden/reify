@@ -855,6 +855,55 @@ mod tests {
         }
     }
 
+    // --- task 4207 η: document_symbol handler tests ---
+
+    #[tokio::test]
+    async fn document_symbol_handler_returns_nested_symbols() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        let uri = open_bracket_source(server).await;
+
+        let result = server
+            .document_symbol(DocumentSymbolParams {
+                text_document: TextDocumentIdentifier { uri },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        match result {
+            Some(DocumentSymbolResponse::Nested(syms)) => {
+                assert_eq!(syms.len(), 1, "bracket_source has one top-level symbol");
+                assert_eq!(syms[0].name, "Bracket");
+            }
+            other => panic!("expected Some(Nested(..)), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn document_symbol_unknown_uri_returns_none() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+
+        // Never opened — the document is not in the store.
+        let result = server
+            .document_symbol(DocumentSymbolParams {
+                text_document: TextDocumentIdentifier {
+                    uri: Url::parse("file:///never_opened.ri").unwrap(),
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            result.is_none(),
+            "document_symbol for an unknown URI should return Ok(None), got {result:?}"
+        );
+    }
+
     #[tokio::test]
     async fn server_captures_published_diagnostics() {
         let (service, _socket) = test_service();
