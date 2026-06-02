@@ -78,6 +78,14 @@ export function DualViewport(props: DualViewportProps) {
   // definition whose preview has not yet loaded leaves the pane minimized
   // instead of opening a blank grid. forceExpanded is an unconditional manual
   // override (clicking the strip must always expand, even before meshes load).
+  //
+  // Layering note: the design-pane equivalent gate lives in App.tsx
+  // (`designViewportActive={hasMeshes}`), while this gate is applied here.
+  // Both enforce the same "don't open a blank pane" rule, just at different
+  // layers. App.tsx already computes `hasMeshes` for other purposes and passes
+  // it as a prop; `defPreviewStore` is only consumed by DualViewport, so the
+  // gate naturally belongs here rather than requiring a parallel `hasPreviewMeshes`
+  // signal to be threaded through App.tsx.
   const defPreviewHasPreviewMeshes = createMemo(
     () => Object.keys(props.defPreviewStore.state.meshes).length > 0,
   );
