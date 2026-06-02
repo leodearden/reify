@@ -753,4 +753,71 @@ mod tests {
         ]);
         assert_real_approx!(eval_builtin("determinant", &[m]), 1.0);
     }
+
+    // --- determinant(AffineMap) tests (step-1 RED / step-2 GREEN) ---
+
+    /// Build a `Value::AffineMap` directly (no constructor — the stdlib
+    /// constructors validate inputs; we need full control for the singular case).
+    fn make_affine_map(linear: [[f64; 3]; 3], translation: [f64; 3]) -> Value {
+        Value::AffineMap {
+            linear,
+            translation,
+        }
+    }
+
+    #[test]
+    fn det_affine_diagonal_2_3_4() {
+        // det(diag(2,3,4)) = 24 — exact product from Sarrus on a diagonal matrix.
+        let a = make_affine_map(
+            [[2.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 4.0]],
+            [0.0, 0.0, 0.0],
+        );
+        assert_real_approx!(eval_builtin("determinant", &[a]), 24.0);
+    }
+
+    #[test]
+    fn det_affine_shear_shape_is_1() {
+        // Identity diagonal + one off-diagonal ⇒ det = 1 (volume-preserving shear).
+        let a = make_affine_map(
+            [[1.0, 0.5, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            [0.0, 0.0, 0.0],
+        );
+        assert_real_approx!(eval_builtin("determinant", &[a]), 1.0);
+    }
+
+    #[test]
+    fn det_affine_singular_zero_row_is_0() {
+        // A zero row ⇒ det = 0.
+        let a = make_affine_map(
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.0]],
+            [0.0, 0.0, 0.0],
+        );
+        assert_real_approx!(eval_builtin("determinant", &[a]), 0.0);
+    }
+
+    #[test]
+    fn det_affine_general_linear_2_3_1_0_4() {
+        // linear = [[2,0,0],[0,3,0],[1,0,4]], det = 2*(3*4-0*0) - 0*... + 0*... = 24.
+        let a = make_affine_map(
+            [[2.0, 0.0, 0.0], [0.0, 3.0, 0.0], [1.0, 0.0, 4.0]],
+            [0.1, 0.2, 0.3],
+        );
+        assert_real_approx!(eval_builtin("determinant", &[a]), 24.0);
+    }
+
+    #[test]
+    fn det_affine_result_is_dimensionless_real_not_scalar() {
+        // The linear part is dimensionless (G6 contract), so the result must be
+        // Value::Real (not Value::Scalar with a dimension).
+        let a = make_affine_map(
+            [[2.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 4.0]],
+            [0.0, 0.0, 0.0],
+        );
+        let result = eval_builtin("determinant", &[a]);
+        assert!(
+            matches!(result, Value::Real(_)),
+            "determinant(AffineMap) must return Value::Real (dimensionless), got {:?}",
+            result
+        );
+    }
 }
