@@ -736,3 +736,170 @@ mod tests {
         assert_eq!(diags[0].code, Some(DiagnosticCode::DynamicsBodyMassPropsArity));
     }
 }
+
+// ── inverse_dynamics ComputeNode trampoline (task RBD-ι) ─────────────────────
+
+#[cfg(test)]
+mod inverse_dynamics_trampoline_tests {
+    use reify_core::dimension::DimensionVector;
+    use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+    use reify_stdlib::eval_builtin;
+
+    use super::{run_inverse_dynamics, InverseDynamicsRun};
+    use crate::{CancellationHandle, ComputeOutcome};
+
+    /// Static single-pendulum ground truth: τ = m·g·L·sin(30°)
+    /// = 1·9.81·0.1·0.5 = 0.4905 N·m (validated at <1e-6 by `rnea.rs` and
+    /// `dynamics::eval.rs`).
+    const STATIC_TORQUE: f64 = 0.4905;
+
+    /// Mint a registry-free `Value::StructureInstance` (mirrors the eval-side
+    /// `mint_instance`).
+    fn instance(type_name: &str, fields: Vec<(String, Value)>) -> Value {
+        let fields: PersistentMap<String, Value> = fields.into_iter().collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: type_name.to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// Pull a named field from a `StructureInstance`, asserting `type_name`.
+    fn field<'a>(v: &'a Value, type_name: &str, member: &str) -> &'a Value {
+        match v {
+            Value::StructureInstance(d) if d.type_name == type_name => d
+                .fields
+                .get(member)
+                .unwrap_or_else(|| panic!("{type_name} missing field `{member}`")),
+            other => panic!("expected a {type_name} StructureInstance, got {other:?}"),
+        }
+    }
+
+    /// A `MassProperties` instance: mass (Mass-scalar), com (Point3<Length>),
+    /// inertia (3×3 Matrix<Real>), origin (Real) — the shape the η snapshot RNEA
+    /// core parses from `body.solid`.
+    fn mass_properties(mass: f64, com: [f64; 3], inertia: [[f64; 3]; 3]) -> Value {
+        let com_point = Value::Point(com.iter().map(|&c| Value::length(c)).collect());
+        let inertia_matrix = Value::Matrix(
+            inertia
+                .iter()
+                .map(|row| row.iter().map(|&x| Value::Real(x)).collect())
+                .collect(),
+        );
+        instance(
+            "MassProperties",
+            vec![
+                (
+                    "mass".to_string(),
+                    Value::Scalar { si_value: mass, dimension: DimensionVector::MASS },
+                ),
+                ("com".to_string(), com_point),
+                ("inertia".to_string(), inertia_matrix),
+                ("origin".to_string(), Value::Real(0.0)),
+            ],
+        )
+    }
+
+    /// The single-pendulum mechanism (1 kg point mass at com=[0,0,−0.1] on a
+    /// revolute joint about +y), built via the `eval_builtin` mechanism/body/
+    /// joint builders so the Map shape (kind, bodies.solid, joint_parents) is the
+    /// real one the trampoline reads.
+    fn pendulum_mechanism() -> Value {
+        use std::f64::consts::PI;
+        let mp = mass_properties(1.0, [0.0, 0.0, -0.1], [[0.0; 3]; 3]);
+        let axis_y = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let range = Value::Range {
+            lower: Some(Box::new(Value::angle(-PI))),
+            upper: Some(Box::new(Value::angle(PI))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        };
+        let joint = eval_builtin("revolute", &[axis_y, range]);
+        let mech = eval_builtin("mechanism", &[]);
+        eval_builtin("body", &[mech, mp, joint])
+    }
+
+    /// A motionless single-pendulum `MotionTrajectory` of `n` samples, all at
+    /// θ = −30° with q̇ = q̈ = 0, so every sample's RNEA torque is the
+    /// static-gravity 0.4905 N·m.
+    fn motionless_trajectory(n: usize) -> Value {
+        let theta = -std::f64::consts::PI / 6.0;
+        let samples: Vec<Value> = (0..n)
+            .map(|k| {
+                instance(
+                    "TrajectorySample",
+                    vec![
+                        (
+                            "t".to_string(),
+                            Value::Scalar { si_value: k as f64, dimension: DimensionVector::TIME },
+                        ),
+                        ("values".to_string(), Value::List(vec![Value::Real(theta)])),
+                        ("vels".to_string(), Value::List(vec![Value::Real(0.0)])),
+                        ("accels".to_string(), Value::List(vec![Value::Real(0.0)])),
+                    ],
+                )
+            })
+            .collect();
+        instance(
+            "MotionTrajectory",
+            vec![
+                ("mechanism".to_string(), Value::Real(0.0)),
+                ("samples".to_string(), Value::List(samples)),
+            ],
+        )
+    }
+
+    /// Assert `result` is a `List<List<JointForce>>` of `expected_samples` outer
+    /// entries, each a length-1 inner list whose `JointForce.value` is a
+    /// `ScalarTorque` of magnitude ≈ 0.4905 N·m (<1e-6).
+    fn assert_static_pendulum_result(result: &Value, expected_samples: usize) {
+        let per_sample = match result {
+            Value::List(s) => s,
+            other => panic!("expected List<List<JointForce>>, got {other:?}"),
+        };
+        assert_eq!(per_sample.len(), expected_samples, "one force list per sample");
+        for (i, sample_forces) in per_sample.iter().enumerate() {
+            let forces = match sample_forces {
+                Value::List(f) => f,
+                other => panic!("sample {i}: expected List<JointForce>, got {other:?}"),
+            };
+            assert_eq!(forces.len(), 1, "sample {i}: one joint ⇒ one JointForce");
+            let value = field(&forces[0], "JointForce", "value");
+            let magnitude = match field(value, "ScalarTorque", "magnitude") {
+                Value::Real(m) => *m,
+                other => panic!("magnitude must be a Real, got {other:?}"),
+            };
+            assert!(
+                (magnitude - STATIC_TORQUE).abs() < 1e-6,
+                "sample {i}: expected {STATIC_TORQUE} N·m, got {magnitude}"
+            );
+        }
+    }
+
+    // ── step-7 RED: run_inverse_dynamics MISS path ──────────────────────────────
+
+    /// A fresh run (prior_warm_state = None) on the motionless single-pendulum
+    /// trajectory completes with `reused = false`, donates a warm-state cache,
+    /// and returns every sample's static-gravity torque (0.4905 N·m).
+    #[test]
+    fn run_inverse_dynamics_miss_returns_static_torque_and_donates_warm_state() {
+        let mech = pendulum_mechanism();
+        let traj = motionless_trajectory(2);
+
+        let run: InverseDynamicsRun =
+            run_inverse_dynamics(&[mech, traj], None, &CancellationHandle::new());
+
+        assert!(!run.reused, "a fresh run (no prior warm state) must not be a cache reuse");
+        match &run.outcome {
+            ComputeOutcome::Completed { result, new_warm_state, .. } => {
+                assert!(
+                    new_warm_state.is_some(),
+                    "the MISS path must donate a warm-state cache"
+                );
+                assert_static_pendulum_result(result, 2);
+            }
+            other => panic!("expected ComputeOutcome::Completed, got {other:?}"),
+        }
+    }
+}
