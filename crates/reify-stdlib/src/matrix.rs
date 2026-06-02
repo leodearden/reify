@@ -7,6 +7,12 @@ pub(crate) fn eval_matrix(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
         // --- Advanced linear algebra: determinant, inverse, transpose, outer, trace, eigenvalues ---
         "determinant" => unary(args, |v| {
+            // AffineMap: linear part is dimensionless (G6 contract) → Value::Real.
+            if let Value::AffineMap { linear, .. } = v {
+                let [[a, b, c], [d, e, f], [g, h, i]] = *linear;
+                let det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+                return sanitize_value(Value::Real(det));
+            }
             let (n, ncols, data, dim) = match matrix_components_f64(v) {
                 Some(c) => c,
                 None => return Value::Undef,
