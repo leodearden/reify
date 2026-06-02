@@ -16,7 +16,7 @@
 //! not model `at` / `aux`).
 
 use reify_core::Severity;
-use reify_ir::ExportFormat;
+use reify_ir::{ExportFormat, GeometryOp, Value};
 use reify_test_support::{MockConstraintChecker, MockGeometryKernel, compile_source_with_stdlib};
 
 /// Build a Mock-kernel engine for structural surfacing assertions.
@@ -1289,6 +1289,121 @@ fn intra_template_two_independent_lets_exports_only_final_body() {
         "intra-template single-final-body heuristic: only the LAST non-consumed let \
          is exported (got {solid_count} solids; expected 1). \
          If this changes, it must be an intentional semantic decision."
+    );
+}
+
+/// task-4147 step-1 (Mock, RED): an `at`-placed child with a constructor-arg
+/// override must surface re-realized geometry at the OVERRIDDEN dimension,
+/// NOT the 200mm Phase-A definition default.
+///
+/// The `at`-placed sub (`sub b = Bar(len: 600mm) at transform3(...)`) forces a
+/// non-identity world transform, so the surfacing walk emits an `ApplyTransform`
+/// kernel op.  The `target` of that `ApplyTransform` must be the Box handle
+/// produced from a re-realization with the OVERRIDDEN `len` (600mm = 0.6m in SI).
+///
+/// **RED on base**: `walk_placed_realizations` reads `terminal_handles[Bar_idx]`
+/// (the Phase-A 200mm handle), so the `ApplyTransform` targets a Box whose
+/// `width ≈ 0.2m`, NOT 0.6m.  The assertion `width_si ≈ 0.6m` fails.
+/// **GREEN after step-2**: the walk calls `realize_sub_override_handles` for
+/// subs with `!sub.args.is_empty()`, minting a fresh 0.6m handle that the
+/// `ApplyTransform` targets.
+///
+/// Also asserts exactly one `ApplyTransform` is emitted (no double-surfacing).
+#[test]
+fn at_placed_constructor_override_surfaces_re_realized_geometry() {
+    let source = r#"structure Bar {
+    param len : Length = 200mm
+    let body = box(len, 50mm, 50mm)
+}
+structure HolderAt {
+    sub b = Bar(len: 600mm) at transform3(orient_identity(), vec3(100mm, 0mm, 0mm))
+}"#;
+    let compiled = compile_source_with_stdlib(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "unexpected compile errors: {:?}",
+        compile_errors
+    );
+
+    // Construct the engine inline to retain `operations_ref()`.
+    // `mock_engine()` moves the kernel before we can clone the Arc, so we
+    // build the engine here as cross_sub_geometry_e2e.rs:51-54 does.
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let result = engine.tessellate_realizations(&compiled);
+    let tess_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        tess_errors.is_empty(),
+        "unexpected tessellation errors: {:?}",
+        tess_errors
+    );
+
+    let recorded = ops_ref.lock().unwrap().clone();
+
+    // The at-placed child (non-identity +100mm X pose) must produce exactly
+    // one ApplyTransform in the surfacing walk.
+    let apply_transforms: Vec<_> = recorded
+        .iter()
+        .filter(|rec| matches!(rec.op, GeometryOp::ApplyTransform { .. }))
+        .collect();
+    assert_eq!(
+        apply_transforms.len(),
+        1,
+        "expected exactly one ApplyTransform for the at-placed child; got {}: {:?}",
+        apply_transforms.len(),
+        apply_transforms
+            .iter()
+            .map(|r| format!("{:?}", r.op))
+            .collect::<Vec<_>>()
+    );
+
+    // The ApplyTransform's `target` must be the Box handle produced by a
+    // re-realization with the OVERRIDDEN dimension (600mm = 0.6m in SI).
+    let apply_target = match &apply_transforms[0].op {
+        GeometryOp::ApplyTransform { target, .. } => *target,
+        _ => unreachable!(),
+    };
+
+    // Find the Box op whose result_handle is the ApplyTransform target.
+    let box_rec = recorded
+        .iter()
+        .find(|rec| {
+            matches!(rec.op, GeometryOp::Box { .. }) && rec.result_handle == apply_target
+        })
+        .expect(
+            "a Box op whose result_handle equals the ApplyTransform target must exist \
+             (child body realized with the override)",
+        );
+
+    // Assert the Box's `len`-axis width is the OVERRIDDEN 600mm (0.6m in SI),
+    // NOT the 200mm (0.2m) definition default.
+    let width_si = match &box_rec.op {
+        GeometryOp::Box { width, .. } => match width {
+            Value::Scalar { si_value, .. } => *si_value,
+            other => panic!("expected Scalar width in Box op; got {:?}", other),
+        },
+        _ => unreachable!(),
+    };
+    let expected_m = 0.6_f64; // 600mm override in SI
+    let default_m = 0.2_f64; // 200mm definition default in SI
+    assert!(
+        (width_si - expected_m).abs() < 1e-9,
+        "ApplyTransform target Box must have width = {expected_m} m (600mm override); \
+         got {width_si} m \
+         (is this the {default_m} m definition default? — override dropped by \
+         walk_placed_realizations, fix pending in step-2)"
     );
 }
 
