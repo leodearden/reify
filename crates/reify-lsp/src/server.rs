@@ -701,6 +701,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn initialize_advertises_document_symbol_provider() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        let init_result = server
+            .initialize(InitializeParams::default())
+            .await
+            .unwrap();
+
+        assert!(
+            init_result.capabilities.document_symbol_provider.is_some(),
+            "should advertise document_symbol_provider (task 4207 η)"
+        );
+    }
+
+    #[tokio::test]
     async fn did_open_stores_document_and_runs_pipeline() {
         let (service, _socket) = test_service();
         let server = service.inner();
