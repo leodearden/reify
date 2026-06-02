@@ -351,6 +351,25 @@ impl LanguageServer for ReifyLanguageServer {
         Ok(Some(CompletionResponse::Array(items)))
     }
 
+    async fn document_symbol(
+        &self,
+        params: DocumentSymbolParams,
+    ) -> Result<Option<DocumentSymbolResponse>> {
+        let uri = params.text_document.uri;
+
+        // Brief read lock: snapshot the document text, then release before the
+        // (pure, CPU-only) symbol walk — mirrors the hover/completion handlers.
+        let state = self.state.read().await;
+        let text = match state.documents.get(&uri) {
+            Some(doc) => doc.text.clone(),
+            None => return Ok(None),
+        };
+        drop(state);
+
+        let symbols = crate::analysis::compute_document_symbols(&text, &uri);
+        Ok(Some(DocumentSymbolResponse::Nested(symbols)))
+    }
+
     async fn shutdown(&self) -> Result<()> {
         Ok(())
     }
