@@ -1404,6 +1404,234 @@ structure HolderAt {
     );
 }
 
+/// task-4147 step-3 (real OCCT, `OCCT_AVAILABLE`-gated): constructor-arg
+/// overrides are honored for BOTH the auto-realize path (`HolderOverride`, no
+/// `at`) and the `at`-placed path (`HolderAt`).  This is the user-observable
+/// signal for the fix — real mesh extents prove the geometry was re-realized
+/// at the overridden dimension (600 mm), not the 200 mm definition default.
+///
+/// `Box(600mm, 50mm, 50mm)` is centered at the OCCT origin (half-extent 0.3 m
+/// on X), so:
+/// - HolderOverride (identity pose): X-extent ≈ 0.6 m, AABB ≈ [-0.3, 0.3].
+/// - HolderAt (+100 mm X): X-extent ≈ 0.6 m, AABB ≈ [-0.2, 0.4]
+///   (override AND placement compose).
+///
+/// Box tessellation is corner-exact, so a tight tolerance (1e-4 m) is reliable.
+///
+/// RED on base (bar surfaces at 0.2 m default extent).
+/// GREEN after step-2 (`walk_placed_realizations` re-realizes override subs).
+#[test]
+fn override_children_surface_at_overridden_extent_occt() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let source = r#"structure Bar {
+    param len : Length = 200mm
+    let body = box(len, 50mm, 50mm)
+}
+structure HolderOverride {
+    sub b = Bar(len: 600mm)
+}
+structure HolderAt {
+    sub b = Bar(len: 600mm) at transform3(orient_identity(), vec3(100mm, 0mm, 0mm))
+}"#;
+    let compiled = compile_source_with_stdlib(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "unexpected compile errors: {:?}",
+        compile_errors
+    );
+
+    let bar = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Bar")
+        .expect("Bar template not found");
+    let override_path = composed_path(bar, "HolderOverride.b", "body");
+    let at_path = composed_path(bar, "HolderAt.b", "body");
+
+    // Build with the real OCCT kernel — Mock cannot validate mesh extents.
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut planner = reify_geometry::SingleKernelHolder::new();
+    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+
+    let result = engine.tessellate_realizations(&compiled);
+    let geom_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(geom_errors.is_empty(), "geometry errors: {:?}", geom_errors);
+
+    let override_surface = result
+        .meshes
+        .iter()
+        .find(|s| s.entity_path == override_path)
+        .unwrap_or_else(|| panic!("auto-realize surface `{override_path}` must be present"));
+    let at_surface = result
+        .meshes
+        .iter()
+        .find(|s| s.entity_path == at_path)
+        .unwrap_or_else(|| panic!("at-placed surface `{at_path}` must be present"));
+
+    // Box tessellation places vertices exactly at its 8 corners (no curvature
+    // deflection), so a tight tolerance is reliable.
+    let tol = 1e-4_f32;
+
+    // HolderOverride (identity pose): X-extent == 600mm = 0.6m.
+    // OCCT make_box centers the box at the origin, so x ∈ [-0.3, 0.3].
+    let (omin, omax) = mesh_aabb(&override_surface.mesh);
+    let override_extent = omax[0] - omin[0];
+    assert!(
+        (override_extent - 0.6_f32).abs() < tol,
+        "HolderOverride surface X-extent expected 0.6 m (600mm override); \
+         got {override_extent} m (is this 0.2 m — the 200mm default?)"
+    );
+
+    // HolderAt (+100 mm X): X-extent still 0.6m; AABB X-range ≈ [-0.2, 0.4]
+    // (the 0.6m box centered at +0.1m → [-0.3+0.1, 0.3+0.1]).
+    let (amin, amax) = mesh_aabb(&at_surface.mesh);
+    let at_extent = amax[0] - amin[0];
+    assert!(
+        (at_extent - 0.6_f32).abs() < tol,
+        "HolderAt surface X-extent expected 0.6 m (600mm override + at-placement); \
+         got {at_extent} m (override dropped or placement not composed?)"
+    );
+    assert!(
+        (amin[0] - (-0.2_f32)).abs() < tol,
+        "HolderAt surface X-min expected -0.2 m; got {} m \
+         (override and placement must compose: box[-0.3,0.3] + 0.1m shift)",
+        amin[0]
+    );
+    assert!(
+        (amax[0] - 0.4_f32).abs() < tol,
+        "HolderAt surface X-max expected 0.4 m; got {} m \
+         (override and placement must compose: box[-0.3,0.3] + 0.1m shift)",
+        amax[0]
+    );
+}
+
+/// task-4147 step-4 (Mock, regression guard): the `sub.args.is_empty()` fast
+/// path is preserved for non-overridden subs — the override re-realization
+/// branch does NOT fire for an arg-free `sub c : Child`.
+///
+/// Source: `structure Child { let body = box(20mm,20mm,20mm) }  structure Asm { sub c : Child }`
+///
+/// Asserts:
+/// (a) Exactly one surface, at the composed path `Asm.c#realization[0]`.
+/// (b) NO standalone `Child#realization[0]` duplicate.
+/// (c) Child's `box(20mm,...)` is realized exactly ONCE across all recorded
+///     kernel ops — the override path did NOT fire a second `execute` sequence,
+///     so no spurious extra Box op was emitted.
+///
+/// GREEN immediately after step-2 (arg-free fast path preserved).
+/// Regression lock: if `!sub.args.is_empty()` is accidentally widened (e.g.
+/// the guard is removed), a second Box re-realization will appear and (c) fails.
+#[test]
+fn non_override_contained_sub_still_surfaces_once_from_shared_handle() {
+    let source = r#"structure Child {
+    let body = box(20mm, 20mm, 20mm)
+}
+structure Asm {
+    sub c : Child
+}"#;
+    let compiled = compile_source_with_stdlib(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "unexpected compile errors: {:?}",
+        compile_errors
+    );
+
+    // Construct the engine inline to retain `operations_ref()` — mirrors
+    // the pattern in `at_placed_constructor_override_surfaces_re_realized_geometry`.
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let result = engine.tessellate_realizations(&compiled);
+    let tess_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        tess_errors.is_empty(),
+        "unexpected tessellation errors: {:?}",
+        tess_errors
+    );
+
+    let paths: Vec<&str> = result
+        .meshes
+        .iter()
+        .map(|s| s.entity_path.as_str())
+        .collect();
+
+    // (a) Exactly one surface, at the composed path.
+    assert_eq!(
+        result.meshes.len(),
+        1,
+        "expected exactly one surface for Asm with one non-overridden sub; got {:?}",
+        paths
+    );
+    assert!(
+        paths.contains(&"Asm.c#realization[0]"),
+        "non-overridden sub must surface under `Asm.c#realization[0]`; got {:?}",
+        paths
+    );
+
+    // (b) No standalone Child#realization[0] duplicate.
+    assert!(
+        !paths.contains(&"Child#realization[0]"),
+        "standalone `Child#realization[0]` must be suppressed; got {:?}",
+        paths
+    );
+
+    // (c) Child's box(20mm, 20mm, 20mm) is realized exactly ONCE across
+    // all recorded kernel ops — the override path must NOT have fired for an
+    // arg-free sub (which would produce a second Box execute call).
+    //
+    // 20mm = 0.02 m in SI.  The MockGeometryKernel records ops including
+    // Phase-A realization, but NOT tessellate() calls (no geometry op there).
+    // Phase B (the surfacing walk) re-uses the Phase-A handle for arg-free
+    // subs, so no additional Box op is issued.
+    let recorded = ops_ref.lock().unwrap().clone();
+    let box_ops: Vec<_> = recorded
+        .iter()
+        .filter(|rec| {
+            matches!(
+                &rec.op,
+                GeometryOp::Box { width, .. }
+                if matches!(width, Value::Scalar { si_value, .. } if (*si_value - 0.02_f64).abs() < 1e-9)
+            )
+        })
+        .collect();
+    assert_eq!(
+        box_ops.len(),
+        1,
+        "Child's box(20mm,20mm,20mm) must be realized exactly ONCE (arg-free sub reuses \
+         Phase-A handle; override re-realization must NOT fire); got {} Box ops: {:?}",
+        box_ops.len(),
+        box_ops
+            .iter()
+            .map(|r| format!("{:?}", r.op))
+            .collect::<Vec<_>>()
+    );
+}
+
 /// Amendment (T7 suggestion 2): cross-path consistency test — `build()` and
 /// `distance_between_placed()` operate on the SAME Phase-A realization loop.
 ///
