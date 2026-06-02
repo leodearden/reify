@@ -17,13 +17,6 @@
 //! (the `is_math_typed_fn` arm) in step-14. The family is pinned disjoint from
 //! the geometry / dynamics families by the `units.rs` disjointness tests.
 
-// Until step-14 wires the `expr.rs::resolve_function_overload` arm, none of this
-// module's items are reachable from a non-test build, so `dead_code` would fire
-// on every one (the name slice, the predicate, the result-type resolver, and its
-// private shape helpers). A single module-level allow covers them uniformly; it
-// is removed in step-14 once the arm makes the family production-live.
-#![allow(dead_code)]
-
 use reify_core::Type;
 use reify_ir::{CompiledExpr, CompiledExprKind, Value};
 
@@ -134,14 +127,14 @@ fn list_shape(arg: &CompiledExpr) -> (usize, Type) {
 ///   projects to `n = N`, per design decision D5).
 /// - otherwise → `(0, <innermost List element>)` — DEGRADE (D7).
 fn matrix_shape(arg: &CompiledExpr) -> (usize, Type) {
-    if let CompiledExprKind::ListLiteral(rows) = &arg.kind {
-        if let Some(CompiledExprKind::ListLiteral(cells)) = rows.first().map(|r| &r.kind) {
-            let quantity = cells
-                .first()
-                .map(|c| c.result_type.clone())
-                .unwrap_or(Type::Real);
-            return (cells.len(), quantity);
-        }
+    if let CompiledExprKind::ListLiteral(rows) = &arg.kind
+        && let Some(CompiledExprKind::ListLiteral(cells)) = rows.first().map(|r| &r.kind)
+    {
+        let quantity = cells
+            .first()
+            .map(|c| c.result_type.clone())
+            .unwrap_or(Type::Real);
+        return (cells.len(), quantity);
     }
     (0, innermost_list_element(&arg.result_type))
 }

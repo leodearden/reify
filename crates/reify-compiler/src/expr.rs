@@ -1667,6 +1667,30 @@ pub(crate) fn compile_expr_guarded(
                         // determinant(AffineMap) → Real   (else falls through to first-arg)
                         // PRD §4.3 (task γ) algebra free-functions.
                         t
+                    } else if is_math_typed_fn(name) {
+                        // vec / matrix / diag / identity: the math-linalg α
+                        // CONSTRUCTION family (task 4179, §3 contract). The
+                        // per-call result type comes from `math_fn_result_type`,
+                        // which recovers the return *shape* (`n`) from the
+                        // COMPILED ARGUMENT STRUCTURE — list length from a
+                        // `ListLiteral`, the literal value from
+                        // `Literal(Value::Int)` — since `Type::List` carries no
+                        // length. Setting `vec(...)` → `Vector{n,..}` and
+                        // matrix/diag/identity → `Tensor{rank:2,n,..}` up-front
+                        // is load-bearing: the eval'd values are a real
+                        // `Value::Vector` / `Value::Tensor`, so falling through
+                        // to the first-arg `List`/`Int` fallback would make the
+                        // assigned cell type mismatch under
+                        // `value_type_kind_matches` (List ≠ Vector/Tensor) and
+                        // raise a runtime `TypeKindMismatch` (design decision
+                        // D6/D7). `math_fn_result_type` therefore NEVER returns
+                        // the first-arg type — it degrades to the correct
+                        // Vector/Tensor variant with a best-effort `n` when the
+                        // shape is not statically determinable. The MATH family
+                        // is pinned disjoint from the geometry/dynamics families
+                        // (units.rs `math_typed_fn_names_are_disjoint_from_other_families`),
+                        // so this arm's position in the ladder is unobservable.
+                        math_fn_result_type(name, &compiled_args)
                     } else {
                         compiled_args
                             .first()
