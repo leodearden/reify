@@ -109,4 +109,67 @@ mod tests {
             d.labels[1].message
         );
     }
+
+    fn keyed_entry(key: &str, span: SourceSpan) -> reify_ast::KeyedSubMemberEntry {
+        reify_ast::KeyedSubMemberEntry {
+            key: key.to_string(),
+            overrides: vec![],
+            span,
+        }
+    }
+
+    #[test]
+    fn check_duplicate_member_keys_flags_one_diagnostic_at_second_occurrence() {
+        let s1 = SourceSpan::new(0, 1);
+        let s2 = SourceSpan::new(2, 3);
+        let s3 = SourceSpan::new(4, 5);
+        let entries = [
+            keyed_entry("intake", s1),
+            keyed_entry("intake", s2),
+            keyed_entry("exhaust", s3),
+        ];
+
+        let diags = check_duplicate_member_keys("vents", &entries);
+        assert_eq!(diags.len(), 1, "expected exactly one duplicate diagnostic");
+        assert_eq!(diags[0].code, Some(DiagnosticCode::DuplicateMemberKey));
+        // Anchored at the SECOND "intake" (the duplicate occurrence) …
+        assert_eq!(diags[0].labels[0].span, s2);
+        // … with the first-defined label pointing at the FIRST "intake".
+        assert_eq!(diags[0].labels[1].span, s1);
+    }
+
+    #[test]
+    fn check_duplicate_member_keys_passes_distinct_keys() {
+        let entries = [
+            keyed_entry("intake", SourceSpan::new(0, 1)),
+            keyed_entry("exhaust", SourceSpan::new(2, 3)),
+        ];
+        assert!(check_duplicate_member_keys("vents", &entries).is_empty());
+    }
+
+    #[test]
+    fn check_duplicate_member_keys_emits_one_per_later_duplicate() {
+        let s1 = SourceSpan::new(0, 1);
+        let s2 = SourceSpan::new(2, 3);
+        let s3 = SourceSpan::new(4, 5);
+        let entries = [
+            keyed_entry("intake", s1),
+            keyed_entry("intake", s2),
+            keyed_entry("intake", s3),
+        ];
+
+        let diags = check_duplicate_member_keys("vents", &entries);
+        // Three identical keys → two diagnostics (one per later duplicate),
+        // each anchored at its own later occurrence; first-defined stays s1.
+        assert_eq!(diags.len(), 2);
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.code == Some(DiagnosticCode::DuplicateMemberKey))
+        );
+        assert_eq!(diags[0].labels[0].span, s2);
+        assert_eq!(diags[0].labels[1].span, s1);
+        assert_eq!(diags[1].labels[0].span, s3);
+        assert_eq!(diags[1].labels[1].span, s1);
+    }
 }
