@@ -252,6 +252,49 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             }
         }
 
+        // --- Affine map constructors ---
+        // `Value::AffineMap` is a general 3D affine map x ↦ linear·x + translation,
+        // where `linear` is a dimensionless row-major 3×3 and `translation` carries
+        // Length (SI meters). All arms follow the transform3 convention: bad arity /
+        // types / dimensions return `Value::Undef`.
+        "affine_identity" => {
+            if args.is_empty() {
+                Value::AffineMap {
+                    linear: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                    translation: [0.0, 0.0, 0.0],
+                }
+            } else {
+                Value::Undef
+            }
+        }
+        "affine_scale" => {
+            if args.len() != 3 {
+                return Some(Value::Undef);
+            }
+            // Each factor must be dimensionless (G6 dimensionless-linear-part
+            // contract), numeric, finite, and non-zero. Negative factors are valid
+            // orientation-reversing reflections (det<0); a zero factor is degenerate
+            // (det=0, non-invertible) and rejected.
+            let mut factors = [0.0_f64; 3];
+            for (i, arg) in args.iter().enumerate() {
+                if !arg.dimension().is_dimensionless() {
+                    return Some(Value::Undef);
+                }
+                match arg.as_f64() {
+                    Some(v) if v.is_finite() && v != 0.0 => factors[i] = v,
+                    _ => return Some(Value::Undef),
+                }
+            }
+            Value::AffineMap {
+                linear: [
+                    [factors[0], 0.0, 0.0],
+                    [0.0, factors[1], 0.0],
+                    [0.0, 0.0, factors[2]],
+                ],
+                translation: [0.0, 0.0, 0.0],
+            }
+        }
+
         // --- Transform operations ---
         "frame_to_frame" => {
             if args.len() != 2 {
