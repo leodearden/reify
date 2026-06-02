@@ -89,6 +89,12 @@ pub enum Type {
     Set(Box<Type>),
     /// Homogeneous map type (key, value).
     Map(Box<Type>, Box<Type>),
+    /// Keyed sub-collection kind — members addressed by author-assigned String
+    /// key; distinct from Map (values) and List (positional).
+    ///
+    /// A `Keyed<T>` sub is structural: it lowers to a `SubComponentDecl`, never
+    /// held in a value cell. Introduced in task 3930 β (PRD keyed-collection-identity.md).
+    Keyed(Box<Type>),
     /// Optional type.
     Option(Box<Type>),
     /// Function type.
@@ -420,6 +426,7 @@ impl std::fmt::Display for Type {
             Type::List(inner) => write!(f, "List<{}>", inner),
             Type::Set(inner) => write!(f, "Set<{}>", inner),
             Type::Map(k, v) => write!(f, "Map<{}, {}>", k, v),
+            Type::Keyed(inner) => write!(f, "Keyed<{}>", inner),
             Type::Option(inner) => write!(f, "Option<{}>", inner),
             Type::Function {
                 params,
