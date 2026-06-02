@@ -111,6 +111,10 @@ pub type Action = Energy * Time
 /// type-alias RHS (PRD §3.6).
 pub type StefanBoltzmannDim = Power / Area / Temperature / Temperature / Temperature / Temperature
 
+/// Permittivity dimension (F/m = kg⁻¹·m⁻³·s⁴·A²) — dimension of the vacuum
+/// electric permittivity. Equals Capacitance per unit length.
+pub type Permittivity = Capacitance / Length
+
 /// Standard acceleration of gravity (g_n), 9.80665 m/s² — BIPM/CGPM 1901 §70
 /// reference value. Use in body-force loads: `gravity(5 * STANDARD_GRAVITY())`.
 /// Body uses the compositional `1m / (1s * 1s)` form rather than the compound
@@ -155,4 +159,12 @@ pub fn PLANCK_CONSTANT() -> Action { 6.62607015e-34 * 1kg * 1m * 1m / 1s }
 /// Body uses base units; W and m² from std.si_units are unavailable here.
 pub fn STEFAN_BOLTZMANN_CONSTANT() -> StefanBoltzmannDim {
     5.670374419e-8 * 1kg / 1s / 1s / 1s / 1K / 1K / 1K / 1K
+}
+
+/// Vacuum electric permittivity (ε₀), 8.8541878128×10⁻¹² F/m — CODATA 2018.
+/// Fundamental constant in electrostatics: F = ε₀·E²/2. Dimension: kg⁻¹·m⁻³·s⁴·A².
+/// Body uses base units; F from std.si_units is unavailable here. Requires
+/// dependency α bare `1A` arm in unit_to_scalar.
+pub fn VACUUM_PERMITTIVITY() -> Permittivity {
+    8.8541878128e-12 * 1s * 1s * 1s * 1s * 1A * 1A / 1kg / 1m / 1m / 1m
 }
