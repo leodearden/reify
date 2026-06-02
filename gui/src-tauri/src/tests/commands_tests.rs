@@ -1117,11 +1117,20 @@ fn make_test_engine_for_commands() -> Arc<Mutex<EngineSession>> {
 /// mechanism injects panics caught *inside* the eval loop (engine_eval.rs:3677
 /// catches per-cell panics via catch_unwind), so `update_source` still returns Ok.
 /// A compile error via invalid source is the correct proxy for triggering
-/// `update_source → Err` at the commands layer.
+/// `update_source → Err` at the commands layer.  This test therefore covers the
+/// **compile-error** staleness path, not the check()-panic path.
+///
+/// The check()-panic path (compile_failure=None, last_reload_error=Some, synthetic
+/// DiagnosticInfo emitted) is exercised at the unit level via
+/// `record_reload_error` in `engine_tests.rs` (e.g.
+/// `build_gui_state_appends_synth_diagnostic_when_stale`).  An end-to-end
+/// integration test that triggers a true check()-panic through `update_source`
+/// would require a language-level construct that causes a panic after successful
+/// compilation — none exists today, so unit-level coverage is the accepted approach.
 ///
 /// RED until step-4 adds the `record_reload_error` call inside `update_source_impl`.
 #[test]
-fn update_source_impl_records_staleness_on_panic_failure() {
+fn update_source_impl_records_staleness_on_compile_error() {
     let engine = make_test_engine_for_commands();
 
     // Use invalid source to trigger a compile error — the reliable path for
@@ -1261,6 +1270,24 @@ fn reload_for_watch_impl_failure_returns_ok_with_diagnostic_and_staleness() {
         has_error_diag,
         "GuiState.compile_diagnostics must contain at least one Error-severity entry \
          after a failed reload; got: {:?}",
+        gui_state.compile_diagnostics
+    );
+
+    // Assert the no-dup contract: the compile-error path sets compile_failure
+    // (LiveEdit) so build_gui_state gates the synthetic reload-error diagnostic
+    // on compile_failure.is_none() and must NOT produce a `hot-reload-error`
+    // code entry.  The structured LiveEdit diags are the only Error entries here.
+    // A regression that removed the is_none() gate would cause double-reporting
+    // and this assertion would catch it (engine.rs:2190-2196).
+    let has_hot_reload_error_synthetic = gui_state
+        .compile_diagnostics
+        .iter()
+        .any(|d| d.code.as_deref() == Some("hot-reload-error"));
+    assert!(
+        !has_hot_reload_error_synthetic,
+        "compile-error path must NOT produce a 'hot-reload-error' synthetic diagnostic \
+         (compile_failure is Some(LiveEdit) so build_gui_state skips the synthesis); \
+         got: {:?}",
         gui_state.compile_diagnostics
     );
 

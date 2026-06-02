@@ -88,6 +88,19 @@ pub fn set_parameter_impl(
 /// `with_engine_lock` call.  The second lock is panic-safe because the first call's
 /// panic was already caught and converted to `Err` by `with_engine_lock`; the second
 /// call cannot panic on a just-caught-panic session.
+///
+/// **Single-writer assumption:** recording staleness uses two separate lock
+/// acquisitions, so a concurrent writer (e.g. a second Tauri `update_source`
+/// command) that succeeds and clears `last_reload_error` between the two locks
+/// would have its success masked by this function re-setting the error flag.
+/// In practice both callers (the Tauri `update_source` command and the file
+/// watcher via `reload_for_watch_impl`) are single-event-driven and do not
+/// fire concurrently on the same engine instance — the Tauri command queue is
+/// single-threaded per app window and the watcher fires sequential debounced
+/// events — so this interleaving cannot occur in production.  If the calling
+/// model ever changes to allow concurrent writes, recording should be moved
+/// inside the first lock (e.g. by threading an error-recording callback into
+/// `update_source` itself).
 pub fn update_source_impl(
     engine: &Mutex<EngineSession>,
     path: &str,

@@ -2039,28 +2039,60 @@ impl EngineSession {
         // current `commit_state` atomic-commit (both fields are assigned together),
         // so this branch is reached only when `compiled` has never been set.
         if self.core.compiled().is_none() || self.core.last_check().is_none() {
+            // Build compile_diagnostics for the cold-start / never-committed path.
+            // Factor out the construction so we can append the last_reload_error
+            // synthetic diagnostic on this branch too — matching the main-branch
+            // synthesis at the bottom of this function.  Without this, a
+            // cold-start session where compile() succeeded but check() panicked
+            // (compile_failure is None, last_reload_error is Some) would return
+            // empty compile_diagnostics from this early-return, silently dropping
+            // the staleness signal from the GUI channel.
+            let mut compile_diagnostics_early = match &self.compile_failure {
+                Some(f) => {
+                    // `compiled` is `None` on this branch, so only `ColdStart`
+                    // failures are expected.  A `LiveEdit` failure here means
+                    // `self.compiled` was set back to `None` without clearing
+                    // `compile_failure`, which is an invariant violation.
+                    debug_assert!(
+                        matches!(f.kind, CompileFailureKind::ColdStart),
+                        "LiveEdit failure stored while compiled is None — invariant broken; kind = {:?}",
+                        f.kind
+                    );
+                    f.diags.clone()
+                }
+                None => Vec::new(),
+            };
+            // Mirror the main-branch reload-error synthesis: when no structured
+            // compile_failure exists but last_reload_error is set (e.g. a
+            // cold-start check()-panic), surface the Error diagnostic so a stale
+            // cold-start session still shows the diagnostic regardless of path.
+            // Gating on compile_failure.is_none() avoids double-reporting just
+            // as on the main branch.
+            if self.compile_failure.is_none()
+                && let Some(msg) = &self.last_reload_error
+            {
+                let file_path = self
+                    .resolve_source()
+                    .map(|(k, _)| k)
+                    .unwrap_or("<unknown>");
+                compile_diagnostics_early.push(DiagnosticInfo {
+                    file_path: file_path.to_owned(),
+                    line: 1,
+                    column: 1,
+                    end_line: 1,
+                    end_column: 1,
+                    severity: "Error".to_owned(),
+                    message: msg.clone(),
+                    code: Some("hot-reload-error".to_owned()),
+                });
+            }
             return Ok(GuiState {
                 meshes: Vec::new(),
                 values: Vec::new(),
                 constraints: Vec::new(),
                 files: Vec::new(),
                 tessellation_diagnostics: Vec::new(),
-                compile_diagnostics: match &self.compile_failure {
-                    Some(f) if f.kind == CompileFailureKind::ColdStart => f.diags.clone(),
-                    Some(f) => {
-                        // `compiled` is `None` on this branch, so only `ColdStart`
-                        // failures are expected.  A `LiveEdit` failure here means
-                        // `self.compiled` was set back to `None` without clearing
-                        // `compile_failure`, which is an invariant violation.
-                        debug_assert!(
-                            matches!(f.kind, CompileFailureKind::ColdStart),
-                            "LiveEdit failure stored while compiled is None — invariant broken; kind = {:?}",
-                            f.kind
-                        );
-                        f.diags.clone()
-                    }
-                    None => Vec::new(),
-                },
+                compile_diagnostics: compile_diagnostics_early,
                 tensegrity_wires: Vec::new(),
             });
         }
