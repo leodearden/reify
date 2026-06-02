@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
-import { createStore } from 'solid-js/store';
+import { createStore, reconcile } from 'solid-js/store';
 import type { MeshData } from '../../types';
 import { createViewportStore } from '../../stores/viewportStore';
 import type { ViewportState } from '../../stores/viewportStore';
@@ -63,9 +63,12 @@ function makeEngineStore(meshPaths: string[] = []) {
 function makeDefPreviewStore(meshPaths: string[] = [], defName: string | null = null) {
   const meshes: Record<string, MeshData> = {};
   for (const p of meshPaths) meshes[p] = makeMesh(p);
-  const [state] = createStore({ defName, meshes, isLoading: false, error: null as string | null });
+  // Expose setState so reactive-transition tests can mutate meshes without
+  // hand-rolling a parallel store double.
+  const [state, setState] = createStore({ defName, meshes, isLoading: false, error: null as string | null });
   return {
     state,
+    setState,
     applyPreview: vi.fn(),
     clearPreview: vi.fn(),
     setError: vi.fn(),
@@ -799,22 +802,9 @@ describe('DualViewport', () => {
   it('(n-B) REACTIVE TRANSITION: def-preview pane expands once meshes arrive', async () => {
     const { DualViewport } = await importDualViewport();
 
-    // Build a mutable store (expose the setter) so we can reactively add meshes
-    const [dpState, setDpState] = createStore({
-      defName: 'BoltFlange',
-      meshes: {} as Record<string, MeshData>,
-      isLoading: false,
-      error: null as string | null,
-    });
-    const defPreviewStore = {
-      state: dpState,
-      applyPreview: vi.fn(),
-      clearPreview: vi.fn(),
-      setError: vi.fn(),
-      setLoading: vi.fn(),
-      loadPreview: vi.fn(),
-    };
-
+    // makeDefPreviewStore exposes setState so we can reactively add meshes
+    // without hand-rolling a parallel store double.
+    const defPreviewStore = makeDefPreviewStore([], 'BoltFlange');
     const engineStore = makeEngineStore(['design/A']);
     const viewportStore = makeViewportStore();
 
@@ -835,7 +825,7 @@ describe('DualViewport', () => {
     expect(screen.queryByTestId('viewport-def-preview')).toBeNull();
 
     // Simulate applyPreview resolving: add a mesh
-    setDpState('meshes', { 'preview/B': makeMesh('preview/B') });
+    defPreviewStore.setState('meshes', { 'preview/B': makeMesh('preview/B') });
 
     // Phase 2: mesh present → viewport mounts, strip gone, splitter appears
     expect(screen.getByTestId('viewport-def-preview')).toBeTruthy();
@@ -864,6 +854,39 @@ describe('DualViewport', () => {
 
     // Manual override must bypass the mesh gate
     expect(screen.getByTestId('viewport-def-preview')).toBeTruthy();
+  });
+
+  it('(n-D) REVERSE TRANSITION: clearing meshes collapses the expanded pane back to a strip', async () => {
+    const { DualViewport } = await importDualViewport();
+    // Start with meshes present — auto-expansion should mount the viewport
+    const defPreviewStore = makeDefPreviewStore(['preview/B'], 'BoltFlange');
+    const engineStore = makeEngineStore(['design/A']);
+    const viewportStore = makeViewportStore();
+
+    render(() => (
+      <DualViewport
+        engineStore={engineStore}
+        defPreviewStore={defPreviewStore}
+        viewportStore={viewportStore}
+        defPreviewActive={() => true}
+        designViewportActive={() => true}
+        defName={() => 'BoltFlange'}
+        onForceExpand={vi.fn()}
+      />
+    ));
+
+    // Phase 1: meshes present → viewport mounted, strip absent
+    expect(screen.getByTestId('viewport-def-preview')).toBeTruthy();
+    expect(screen.queryByTestId('strip-def-preview')).toBeNull();
+
+    // SolidJS store merges nested objects by default, so `setState('meshes', {})`
+    // would keep existing keys. Use reconcile({}) to force key removal and truly
+    // empty the record — mirroring what clearPreview does in the real store.
+    defPreviewStore.setState('meshes', reconcile({}) as any);
+
+    // Phase 2: meshes gone → viewport unmounts, strip reappears (no blank grid)
+    expect(screen.queryByTestId('viewport-def-preview')).toBeNull();
+    expect(screen.getByTestId('strip-def-preview')).toBeTruthy();
   });
 
   it('(m) makeViewportStore wraps the real createViewportStore — spies delegate to real impl', () => {
