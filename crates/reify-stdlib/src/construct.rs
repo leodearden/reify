@@ -37,6 +37,7 @@ pub(crate) fn eval_construct(name: &str, args: &[Value]) -> Option<Value> {
         "vec" => eval_vec(args),
         "matrix" => eval_matrix(args),
         "diag" => eval_diag(args),
+        "identity" => eval_identity(args),
         _ => return None,
     })
 }
@@ -105,6 +106,25 @@ fn eval_diag(args: &[Value]) -> Value {
         data[i * n + i] = v;
     }
     build_tensor_rank2(n, n, &data, dim)
+}
+
+/// `identity(n: Int)` → N×N **dimensionless** identity [`Value::Tensor`]
+/// (`Real(1.0)` on the diagonal, `Real(0.0)` off).
+///
+/// Accepts exactly one `Value::Int(n)` with `n >= 1`. The slice pattern
+/// rejects wrong arity and any non-`Int` argument (Real / String), and the
+/// guard rejects `n <= 0` — all collapse to [`Value::Undef`]. The quantity is
+/// always `DIMENSIONLESS`, so every cell is a `Real`.
+fn eval_identity(args: &[Value]) -> Value {
+    let n = match args {
+        [Value::Int(n)] if *n >= 1 => *n as usize,
+        _ => return Value::Undef,
+    };
+    let mut data = vec![0.0_f64; n * n];
+    for i in 0..n {
+        data[i * n + i] = 1.0;
+    }
+    build_tensor_rank2(n, n, &data, DimensionVector::DIMENSIONLESS)
 }
 
 /// Extract uniform numeric components from a `Value::List` into
