@@ -2133,12 +2133,12 @@ impl<'a> Lowering<'a> {
         // `keyed_member_block` (task 3929, PRD §2.2).
         //
         // γ = task 3806: a specialization_body's param_assignment children are
-        // collected into `param_overrides` (PRD §4.2) so an overridden auto-binding
-        // resolves identically to a param-default auto. Populated in the
-        // specialization_body arm of the match below. `lower_binding_value` is pure,
-        // so collecting here alongside the helper's member lowering has no double
-        // side effect.
-        let mut param_overrides: Vec<(String, Expr)> = Vec::new();
+        // collected into `spec_param_overrides` (PRD §4.2) so an overridden
+        // auto-binding resolves identically to a param-default auto. Populated in
+        // the specialization_body arm of the match below. `lower_binding_value` is
+        // pure, so collecting here alongside the helper's member lowering has no
+        // double side effect.
+        let mut spec_param_overrides: Vec<(String, Expr)> = Vec::new();
         // The two body kinds are mutually exclusive by construction:
         //   specialization_body → body: Some(_), keyed_members: empty
         //   keyed_member_block  → body: None,    keyed_members: non-empty
@@ -2195,12 +2195,13 @@ impl<'a> Lowering<'a> {
             Some(body_node) => {
                 // specialization_body: `{ repeat(param_assignment | _member) }`
                 // γ = task 3806: collect each param_assignment as (name, value_expr)
-                // into `param_overrides` via the shared `lower_binding_value` helper
-                // (PRD §4.2). Both auto and non-auto values are captured so the AST is
-                // complete; the compiler acts only on ExprKind::Auto entries this task
-                // (ε handles non-auto resolution). The helper below independently lowers
-                // the `_member` children; `lower_binding_value` is pure so this second
-                // walk over param_assignment children has no double side effect.
+                // into `spec_param_overrides` via the shared `lower_binding_value`
+                // helper (PRD §4.2). Both auto and non-auto values are captured so
+                // the AST is complete; the compiler acts only on ExprKind::Auto
+                // entries this task (ε handles non-auto resolution). The helper below
+                // independently lowers the `_member` children; `lower_binding_value`
+                // is pure so this second walk over param_assignment children has no
+                // double side effect.
                 let mut value_cursor = body_node.walk();
                 for child in body_node.children(&mut value_cursor) {
                     if child.kind() == "param_assignment"
@@ -2209,7 +2210,7 @@ impl<'a> Lowering<'a> {
                     {
                         let param_name = self.node_text(name_node).to_string();
                         if let Some(expr) = self.lower_binding_value(value_node) {
-                            param_overrides.push((param_name, expr));
+                            spec_param_overrides.push((param_name, expr));
                         }
                     }
                 }
@@ -2236,7 +2237,7 @@ impl<'a> Lowering<'a> {
             is_collection,
             where_clause,
             body,
-            param_overrides,
+            spec_param_overrides,
             keyed_members,
             is_aux,
             is_priv: self.has_priv_keyword(node),
@@ -3143,7 +3144,7 @@ impl<'a> Lowering<'a> {
             is_collection: false,
             where_clause: None,
             body: None,
-            param_overrides: vec![],
+            spec_param_overrides: vec![],
             keyed_members: Vec::new(),
             is_aux: false,
             is_priv: false,

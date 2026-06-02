@@ -18,7 +18,7 @@
 //!    `parse_mixed_auto_and_auto_free`; no new tests needed here.
 //! 5. **`param_assignment.value` via `lower_sub`** — covered here (γ = task 3806).
 //!    Previously deferred in β (task 3804) because `SubDecl` had no field to
-//!    carry param-override values; γ adds `SubDecl.param_overrides` and wires
+//!    carry param-override values; γ adds `SubDecl.spec_param_overrides` and wires
 //!    the round-trip. CST-level coverage lives in
 //!    `auto_binding_sites_grammar_tests.rs::param_assignment_auto_strict_produces_auto_keyword`
 //!    and `param_assignment_auto_free_has_modifier_field`.
@@ -390,8 +390,8 @@ fn function_call_named_arg_value_non_auto_lowers_normally() {
 // ── Site 5: param_assignment.value via `lower_sub` (γ = task 3806) ───────────
 
 /// Parse `structure S { sub b : Bearing { bore = <v> } }`, extract the
-/// `SubDecl`, and return the expression stored in `param_overrides` for the
-/// `bore` entry. Panics with a descriptive message if the override is absent.
+/// `SubDecl`, and return the expression stored in `spec_param_overrides` for
+/// the `bore` entry. Panics with a descriptive message if the override is absent.
 fn param_override_expr(source: &str, param_name: &str) -> ExprKind {
     let module = reify_syntax::parse(source, ModulePath::single("test"));
     assert!(
@@ -408,15 +408,15 @@ fn param_override_expr(source: &str, param_name: &str) -> ExprKind {
         other => panic!("expected Sub, got {:?}", other),
     };
     let (_, expr) = sub_decl
-        .param_overrides
+        .spec_param_overrides
         .iter()
         .find(|(n, _)| n == param_name)
         .unwrap_or_else(|| {
             panic!(
-                "expected a '{}' entry in param_overrides; got: {:?}",
+                "expected a '{}' entry in spec_param_overrides; got: {:?}",
                 param_name,
                 sub_decl
-                    .param_overrides
+                    .spec_param_overrides
                     .iter()
                     .map(|(n, _)| n.as_str())
                     .collect::<Vec<_>>()
@@ -426,7 +426,7 @@ fn param_override_expr(source: &str, param_name: &str) -> ExprKind {
 }
 
 /// `sub b : Bearing { bore = auto }` — strict auto at the param_assignment site
-/// must lower to `ExprKind::Auto { free: false }` in `param_overrides`.
+/// must lower to `ExprKind::Auto { free: false }` in `spec_param_overrides`.
 #[test]
 fn param_assignment_auto_strict_lowers_to_expr_kind_auto_false() {
     let kind = param_override_expr(
@@ -443,7 +443,7 @@ fn param_assignment_auto_strict_lowers_to_expr_kind_auto_false() {
 }
 
 /// `sub b : Bearing { bore = auto(free) }` — free auto at the param_assignment
-/// site must lower to `ExprKind::Auto { free: true }` in `param_overrides`.
+/// site must lower to `ExprKind::Auto { free: true }` in `spec_param_overrides`.
 #[test]
 fn param_assignment_auto_free_lowers_to_expr_kind_auto_true() {
     let kind = param_override_expr(
@@ -460,10 +460,10 @@ fn param_assignment_auto_free_lowers_to_expr_kind_auto_true() {
 }
 
 /// `sub b : Bearing { bore = 5mm }` — a non-auto quantity literal at the
-/// param_assignment site must be captured in `param_overrides` as a
+/// param_assignment site must be captured in `spec_param_overrides` as a
 /// `QuantityLiteral` (NOT silently discarded).
 ///
-/// This proves that `param_overrides` is the uniform carrier for all
+/// This proves that `spec_param_overrides` is the uniform carrier for all
 /// param_assignment values, enabling future non-auto sub-override resolution
 /// (task ε) without a second lowering pass.
 #[test]

@@ -96,7 +96,7 @@ fn make_sub_with_body(name: &str, body: Option<Vec<MemberDecl>>) -> SubDecl {
         is_collection: false,
         where_clause: None,
         body,
-        param_overrides: Vec::new(),
+        spec_param_overrides: Vec::new(),
         keyed_members: Vec::new(),
         is_aux: false,
         is_priv: false,
