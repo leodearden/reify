@@ -82,12 +82,16 @@ vi.mock('three', () => {
     type = 'GridHelper';
     visible = true;
     rotation = { x: 0, y: 0, z: 0 };
+    renderOrder = 0;
+    material = { depthTest: true, depthWrite: true };
     constructor(public size?: number, public divisions?: number) {}
   }
 
   class MockAxesHelper {
     type = 'AxesHelper';
     visible = true;
+    renderOrder = 0;
+    material = { depthTest: true, depthWrite: true };
     constructor(public size?: number) {}
   }
 
@@ -319,5 +323,18 @@ describe('createScene', () => {
     expect(camera.near).toBe(origNear);
     expect(camera.far).toBe(origFar);
     expect(camera.updateProjectionMatrix).not.toHaveBeenCalled();
+  });
+
+  it('axes draw after the grid (renderOrder) so the grid cannot occlude them', () => {
+    const result = setup();
+    expect(result.axes.renderOrder).toBe(1);
+    expect(result.axes.renderOrder).toBeGreaterThan(result.grid.renderOrder);
+  });
+
+  it('axes ignore the depth buffer so coplanar grid lines never z-fight over them', () => {
+    const result = setup();
+    const ax = result.axes as any;
+    expect(ax.material.depthTest).toBe(false);
+    expect(ax.material.depthWrite).toBe(false);
   });
 });
