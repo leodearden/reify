@@ -76,9 +76,12 @@ pub fn shaper_damping_ratio(shaper: &Value) -> f64 {
 /// - `ZVDShaper` → [`ImpulseTrain::zvd`]`(2π·f, ζ)`.
 /// - `EIShaper`  → [`ImpulseTrain::ei`]`(2π·f, ζ, v_tol)`.
 /// - `CascadedShaper` → recurse over the `shapers` `List<Shaper>`, build each
-///   child train (dropping any that fail to resolve), and fold via
-///   [`ImpulseTrain::cascade`]; an empty / missing list yields the identity
-///   unit-impulse train (a no-op shaping, per `CascadedShaper.ri`).
+///   child train and fold via [`ImpulseTrain::cascade`]. **Every child must
+///   resolve**: a single unrecognised child fails the whole cascade (`None`,
+///   surfacing as `Value::Undef`) rather than being silently dropped — silently
+///   weakening a requested shaper would be a robustness hazard on a
+///   safety-relevant signal. An empty / missing list is the identity unit-impulse
+///   train (a no-op shaping, per `CascadedShaper.ri`).
 ///
 /// The Hz→rad/s conversion `ω_n = 2π·f` happens here — this is ζ's marshalling
 /// boundary; `impulse_shaper`'s entire API is in angular frequency (rad/s).
@@ -110,12 +113,15 @@ pub fn build_train_for_shaper(shaper: &Value) -> Option<ImpulseTrain> {
             Some(ImpulseTrain::ei(omega_n, zeta, v_tol))
         }
         "CascadedShaper" => {
-            // Recurse over the child shapers, dropping any that fail to resolve;
-            // a missing / non-List `shapers` field is treated as the empty
-            // cascade (→ identity unit impulse).
+            // Recurse over the child shapers. EVERY child must resolve: collecting
+            // into Option<Vec<_>> short-circuits to None if any child is None, so
+            // `?` fails the whole cascade rather than silently dropping a child and
+            // returning a weaker shaper. A missing / non-List `shapers` field is the
+            // empty cascade (→ identity unit impulse); an explicit empty list folds
+            // to the same identity.
             let trains: Vec<ImpulseTrain> = match data.fields.get(&"shapers".to_string()) {
                 Some(Value::List(items)) => {
-                    items.iter().filter_map(build_train_for_shaper).collect()
+                    items.iter().map(build_train_for_shaper).collect::<Option<Vec<_>>>()?
                 }
                 _ => Vec::new(),
             };
@@ -338,6 +344,24 @@ mod tests {
         let train =
             build_train_for_shaper(&cascade).expect("CascadedShaper([]) → Some(identity)");
         assert_points_close(&train.points(), &[(0.0, 1.0)], "CascadedShaper([]) identity");
+    }
+
+    /// A CascadedShaper with ANY unresolved child fails the whole cascade
+    /// (→ `None` → `eval_input_shape` `Undef`) rather than silently dropping the
+    /// bad child and returning a weaker shaper — a requested shaper must not
+    /// quietly degrade on this safety-relevant signal.
+    #[test]
+    fn cascaded_with_unresolved_child_is_none() {
+        let good = shaper("ZVShaper", vec![freq(10.0)]);
+        let bad = shaper("FooShaper", vec![freq(10.0)]); // unknown type_name → None
+        let cascade = shaper(
+            "CascadedShaper",
+            vec![("shapers", Value::List(vec![good, bad]))],
+        );
+        assert!(
+            build_train_for_shaper(&cascade).is_none(),
+            "a cascade with any unresolved child → None (not a silently-weakened shaper)"
+        );
     }
 
     // ── bad inputs → None ─────────────────────────────────────────────────────
