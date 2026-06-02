@@ -4621,4 +4621,69 @@ mod tests {
             "2 args"
         );
     }
+
+    // ── diagnose classifier tests (step-15) ───────────────────────────────────
+    // The post-Undef diagnose hook (mirrors stackup_diagnose/fea_diagnose) lets a
+    // pure value constructor surface a CLI warning for the two distinguishable
+    // affine_scale failure causes: a zero (degenerate) factor and a dimensioned
+    // factor. Arity errors stay silent (None); only these two cases warn.
+
+    #[test]
+    fn diagnose_affine_scale_zero_factor_warns_degenerate() {
+        let diag = super::diagnose(
+            "affine_scale",
+            &[Value::Real(0.0), Value::Real(1.0), Value::Real(1.0)],
+        )
+        .expect("zero scale factor must produce a diagnostic");
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Warning,
+            "zero-factor diagnostic must be a warning"
+        );
+        assert!(
+            diag.message.contains("degenerate"),
+            "zero-factor message must mention the degenerate (det=0) cause, got: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn diagnose_affine_scale_dimensioned_factor_warns_dimensionless() {
+        let diag = super::diagnose(
+            "affine_scale",
+            &[Value::length(2.0), Value::Real(1.0), Value::Real(1.0)],
+        )
+        .expect("dimensioned scale factor must produce a diagnostic");
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Warning,
+            "dimensioned-factor diagnostic must be a warning"
+        );
+        assert!(
+            diag.message.contains("dimensionless"),
+            "dimensioned-factor message must mention the dimensionless requirement, got: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn diagnose_affine_scale_valid_factors_returns_none() {
+        assert!(
+            super::diagnose(
+                "affine_scale",
+                &[Value::Real(2.0), Value::Real(1.0), Value::Real(0.5)],
+            )
+            .is_none(),
+            "valid scale factors must not produce a diagnostic"
+        );
+    }
+
+    #[test]
+    fn diagnose_non_affine_name_returns_none() {
+        assert!(
+            super::diagnose("box", &[Value::Real(0.0), Value::Real(1.0), Value::Real(1.0)])
+                .is_none(),
+            "a non-affine_scale name must not produce a diagnostic"
+        );
+    }
 }
