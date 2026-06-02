@@ -484,6 +484,33 @@ impl Default for CancellationToken {
     }
 }
 
+/// Default-populate `node_priorities` for every node in `eval_nodes` that does
+/// not already have an explicit entry.
+///
+/// Implements the PRD §6 priority-resolution chain, level 2 (trait-derived):
+/// explicit entries (level 1) take precedence and are never overwritten.
+///
+/// For each node without an explicit entry, inserts
+/// `traits_to_priority(node_traits.resolve(node))` as the derived default.
+/// After this call every node in `eval_nodes` has an entry in
+/// `node_priorities` — invariant I-1.
+///
+/// Extracted as a `pub(crate)` helper so the two load-bearing guarantees
+/// (I-1 and explicit-entry precedence) can be verified in a synchronous,
+/// deterministic unit test independent of the async scheduler path.
+pub(crate) fn default_populate_priorities(
+    node_priorities: &mut HashMap<NodeId, Priority>,
+    eval_nodes: &HashSet<NodeId>,
+    node_traits: &NodeTraitsMap<NodeId>,
+) {
+    for node in eval_nodes {
+        if !node_priorities.contains_key(node) {
+            let derived = crate::traits_to_priority(node_traits.resolve(node));
+            node_priorities.insert(node.clone(), derived);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
