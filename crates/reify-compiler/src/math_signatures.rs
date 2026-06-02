@@ -363,4 +363,99 @@ mod tests {
             other => panic!("expected a Type::Vector variant, got {other:?}"),
         }
     }
+
+    // ── D7 degrade-path coverage (amendment: reviewer test_coverage) ─────────
+    // The DEGRADE invariant (D7) — a non-statically-determinable arg must still
+    // resolve to the correct Vector/Tensor *variant*, never the first-arg
+    // List/Int — was originally unit-tested only for `vec` (test f). These pin
+    // the same invariant for the matrix/diag/identity branches that protect it.
+
+    /// `matrix`, degrade branch 1: a non-literal arg (a `ValueRef` typed
+    /// `List(List(Real))`, length unknown) must STILL resolve to a rank-2
+    /// `Type::Tensor` variant, NEVER the first-arg `Type::List`. A `List`
+    /// fallback would make the eval'd `Value::Tensor` fail
+    /// `value_type_kind_matches` at runtime.
+    #[test]
+    fn matrix_result_type_non_literal_arg_degrades_to_tensor_not_list() {
+        let arg = CompiledExpr::value_ref(
+            ValueCellId::new("S", "m"),
+            Type::List(Box::new(Type::List(Box::new(Type::Real)))),
+        );
+        let result = math_fn_result_type("matrix", &[arg]);
+        assert!(
+            !matches!(result, Type::List(_)),
+            "non-literal matrix arg must NOT degrade to Type::List (D7), got {result:?}"
+        );
+        assert!(
+            matches!(result, Type::Tensor { rank: 2, .. }),
+            "non-literal matrix arg must degrade to a rank-2 Type::Tensor variant, got {result:?}"
+        );
+    }
+
+    /// `matrix`, degrade branch 2: an outer `ListLiteral` whose first row is NOT
+    /// itself a `ListLiteral` (a malformed depth-1 list, e.g. `matrix([1.0, 2.0])`)
+    /// must STILL resolve to a rank-2 `Type::Tensor` variant, never `Type::List`.
+    #[test]
+    fn matrix_result_type_non_list_first_row_degrades_to_tensor_not_list() {
+        let arg = list_lit(vec![real_elem(1.0), real_elem(2.0)], Type::Real);
+        let result = math_fn_result_type("matrix", &[arg]);
+        assert!(
+            !matches!(result, Type::List(_)),
+            "matrix with a non-list first row must NOT degrade to Type::List (D7), got {result:?}"
+        );
+        assert!(
+            matches!(result, Type::Tensor { rank: 2, .. }),
+            "matrix with a non-list first row must degrade to a rank-2 Type::Tensor variant, got {result:?}"
+        );
+    }
+
+    /// `diag`: a non-literal arg (a `ValueRef` typed `List(Real)`) must STILL
+    /// resolve to a rank-2 `Type::Tensor` variant, never the first-arg `Type::List`.
+    #[test]
+    fn diag_result_type_non_literal_arg_degrades_to_tensor_not_list() {
+        let arg =
+            CompiledExpr::value_ref(ValueCellId::new("S", "d"), Type::List(Box::new(Type::Real)));
+        let result = math_fn_result_type("diag", &[arg]);
+        assert!(
+            !matches!(result, Type::List(_)),
+            "non-literal diag arg must NOT degrade to Type::List (D7), got {result:?}"
+        );
+        assert!(
+            matches!(result, Type::Tensor { rank: 2, .. }),
+            "non-literal diag arg must degrade to a rank-2 Type::Tensor variant, got {result:?}"
+        );
+    }
+
+    /// `identity`: a non-literal / non-Int / non-positive arg must STILL resolve
+    /// to a rank-2 `Type::Tensor` variant, NEVER the first-arg `Type::Int`.
+    /// (`identity` always types as a Tensor; only `n` is unknown off the literal
+    /// path.)
+    #[test]
+    fn identity_result_type_non_literal_arg_degrades_to_tensor_not_int() {
+        let cases = [
+            (
+                "non-literal ValueRef<Int>",
+                CompiledExpr::value_ref(ValueCellId::new("S", "i"), Type::Int),
+            ),
+            (
+                "non-positive Literal(Int(0))",
+                CompiledExpr::literal(Value::Int(0), Type::Int),
+            ),
+            (
+                "non-Int Literal(Real)",
+                CompiledExpr::literal(Value::Real(4.0), Type::Real),
+            ),
+        ];
+        for (label, arg) in cases {
+            let result = math_fn_result_type("identity", &[arg]);
+            assert!(
+                !matches!(result, Type::Int),
+                "identity degrade ({label}) must NOT yield Type::Int (D7), got {result:?}"
+            );
+            assert!(
+                matches!(result, Type::Tensor { rank: 2, .. }),
+                "identity degrade ({label}) must yield a rank-2 Type::Tensor variant, got {result:?}"
+            );
+        }
+    }
 }
