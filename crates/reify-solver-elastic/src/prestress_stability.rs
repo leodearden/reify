@@ -122,6 +122,7 @@ pub enum StabilityError {
 /// any member references a node index `≥ nodes.len()`; returns
 /// [`StabilityError::DegenerateMember`] if any member is a self-loop or joins two
 /// (near-)coincident nodes (a zero-length member has no well-defined direction).
+// G-allow: Tensegrity T2 stability API (analyze_prestress_stability), task #3796 (T2, DONE); Type-A: crate-root re-exported but consumed only by tests/tensegrity_t2_stability.rs — no production/DSL consumer yet.
 pub fn analyze_prestress_stability(
     nodes: &[[f64; 3]],
     members: &[(usize, usize)],
@@ -272,6 +273,7 @@ fn gram_transpose_self(a: &Mat<f64>) -> Mat<f64> {
 /// `rank(A) = rank(AᵀA)` (the Gram matrix shares `A`'s rank), computed as the
 /// spectral rank of `AᵀA` under [`NULLITY_REL_TOL`]. A valid tensegrity needs
 /// `s ≥ 1` — at least one self-equilibrated prestress (PRD §5).
+// G-allow: Tensegrity T2 stability API (count_self_stress_states), task #3796 (T2, DONE); Type-A: consumed only by tests/tensegrity_t2_stability.rs — no production/DSL consumer yet.
 pub(crate) fn count_self_stress_states(a: &Mat<f64>) -> usize {
     let m = a.ncols();
     let gram = gram_transpose_self(a);
@@ -321,6 +323,7 @@ fn is_degenerate_member(nodes: &[[f64; 3]], j: usize, k: usize) -> bool {
 /// form (they differ by a nonsingular diagonal length scaling), so the
 /// self-stress and mechanism counts are identical while matching the standard
 /// equilibrium-matrix definition.
+// G-allow: Tensegrity T2 stability API (assemble_equilibrium_matrix), task #3796 (T2, DONE); Type-A: consumed only by tests/tensegrity_t2_stability.rs — no production/DSL consumer yet.
 pub(crate) fn assemble_equilibrium_matrix(
     nodes: &[[f64; 3]],
     members: &[(usize, usize)],
@@ -483,6 +486,7 @@ fn rigid_body_modes(nodes: &[[f64; 3]]) -> Mat<f64> {
 /// The returned matrix is `3N × m_count` with orthonormal columns, where
 /// `m_count = nullity(Aᵀ) − n_rigid` is the internal mechanism count (1 for the
 /// canonical triplex: its single non-affine prism twist).
+// G-allow: Tensegrity T2 stability API (extract_internal_mechanisms), task #3796 (T2, DONE); Type-A: consumed only by tests/tensegrity_t2_stability.rs — no production/DSL consumer yet.
 pub(crate) fn extract_internal_mechanisms(a: &Mat<f64>, nodes: &[[f64; 3]]) -> Mat<f64> {
     let dim = a.nrows();
 
@@ -533,6 +537,7 @@ pub(crate) fn extract_internal_mechanisms(a: &Mat<f64>, nodes: &[[f64; 3]]) -> M
 /// `α ∈ {0,1,2}`, with every off-axis (`α≠β`) entry zero. There is NO sign flip —
 /// `q` already encodes cable(+)/strut(−), so `K_G` is the prestress energy
 /// Hessian directly (contrast the buckling kernel's `−K_g`).
+// G-allow: Tensegrity T2 stability API (assemble_geometric_stiffness), task #3796 (T2, DONE); Type-A: consumed only by tests/tensegrity_t2_stability.rs — no production/DSL consumer yet.
 pub(crate) fn assemble_geometric_stiffness(
     n: usize,
     members: &[(usize, usize)],
