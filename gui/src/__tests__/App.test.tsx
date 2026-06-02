@@ -5744,6 +5744,64 @@ describe('App SolverProgressOverlay integration', () => {
 });
 
 // ---------------------------------------------------------------------------
+// App hover sync wiring — Edge C (task-4209)
+// Edge C: editor cursor → createEditorHoverSync → store → DualViewport.hoveredEntity
+// ---------------------------------------------------------------------------
+
+describe('App hover sync wiring — Edge C', () => {
+  it('(a) editor cursor change routes hover through createEditorHoverSync to DualViewport.hoveredEntity', async () => {
+    // Bridge returns 'Bracket.width' for any source location lookup
+    vi.mocked((bridge as any).getEntityAtSourceLocation).mockResolvedValue('Bracket.width');
+
+    await renderAndWaitForReady();
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    vi.useFakeTimers();
+    try {
+      capturedEditorStore.setCursorPosition(2, 11);
+      await vi.advanceTimersByTimeAsync(250);
+      // Flush microtasks so Promise resolutions propagate
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // createEditorHoverSync must have resolved the position and called hoverEntity;
+      // do NOT constrain getEntityAtSourceLocation call count — both hover and selection
+      // sync hooks call it for the same cursor position.
+      await waitFor(() => {
+        expect(capturedDualViewportProps.hoveredEntity).toBe('Bracket.width');
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('(b) null cursor position clears DualViewport.hoveredEntity', async () => {
+    vi.mocked((bridge as any).getEntityAtSourceLocation).mockResolvedValue('Bracket.width');
+
+    await renderAndWaitForReady();
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    vi.useFakeTimers();
+    try {
+      // First set a cursor to establish hover
+      capturedEditorStore.setCursorPosition(2, 11);
+      await vi.advanceTimersByTimeAsync(250);
+      await Promise.resolve();
+      await Promise.resolve();
+      await waitFor(() => expect(capturedDualViewportProps.hoveredEntity).toBe('Bracket.width'));
+
+      // Then clear cursor — hook must immediately call hoverEntity(null)
+      capturedEditorStore.setCursorPosition(null);
+      await vi.advanceTimersByTimeAsync(0);
+      await Promise.resolve();
+      await waitFor(() => expect(capturedDualViewportProps.hoveredEntity).toBeNull());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // App hover sync wiring — Edges A & B (task-4209)
 // Edge A: DesignTree row mouseenter → store → DualViewport.hoveredEntity
 // Edge B: DualViewport.onHover → store → DesignTree row data-hovered
