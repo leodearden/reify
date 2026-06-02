@@ -460,9 +460,11 @@ fn children_or_none(children: Vec<DocumentSymbol>) -> Option<Vec<DocumentSymbol>
 /// and match-arm ([`reify_ast::MemberDecl::MatchArmDeclGroup`]) members are
 /// FLATTENED up to the owning declaration's children — no synthetic guard nodes —
 /// so guarded and match-arm params/lets stay discoverable for symbol-jump. Named
-/// members map as: param→FIELD, let→VARIABLE. Unlabeled constraints, connects,
+/// members map as: param→FIELD, let→VARIABLE, sub→OBJECT, port→INTERFACE; subs
+/// and ports form true nested nodes (a sub's specialization body and a port's
+/// internal members become grandchildren). Unlabeled constraints, connects,
 /// chains, minimize/maximize, and meta blocks have no stable identifier to jump
-/// to and are skipped (sub/port nesting is added in a later step).
+/// to and are skipped.
 ///
 /// Recursion is bounded by [`reify_ast::MAX_MEMBER_NESTING_DEPTH`] to prevent
 /// stack overflow on pathological input, matching the AST member-walk helpers.
@@ -511,8 +513,32 @@ fn members_to_symbols_depth(
                     ));
                 }
             }
-            // Constraints/connects/chains/minimize/maximize/meta (and sub/port,
-            // handled in a later step) are not emitted here.
+            // sub-components nest their specialization-body members (when the
+            // `sub` opens a `{ … }` body) as grandchildren; a bare `sub` is a leaf.
+            MemberDecl::Sub(s) => {
+                let body = s
+                    .body
+                    .as_ref()
+                    .map(|b| members_to_symbols_depth(source, b, depth + 1))
+                    .unwrap_or_default();
+                symbols.push(make_symbol(
+                    &s.name,
+                    SymbolKind::OBJECT,
+                    span_to_range(source, s.span),
+                    name_selection_range(source, s.span, &s.name),
+                    children_or_none(body),
+                ));
+            }
+            // ports nest their internal members as grandchildren.
+            MemberDecl::Port(port) => symbols.push(make_symbol(
+                &port.name,
+                SymbolKind::INTERFACE,
+                span_to_range(source, port.span),
+                name_selection_range(source, port.span, &port.name),
+                children_or_none(members_to_symbols_depth(source, &port.members, depth + 1)),
+            )),
+            // Constraints/connects/chains/minimize/maximize/meta are not emitted
+            // here — they have no stable identifier to jump to.
             _ => {}
         }
     }
