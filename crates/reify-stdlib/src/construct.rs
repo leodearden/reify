@@ -220,4 +220,113 @@ mod tests {
             "vec(Real) with a non-List arg should be Undef"
         );
     }
+
+    // ── `matrix(rows)` → rank-2 Value::Tensor (step-3 RED / step-4 GREEN) ─────
+
+    /// Build a `Value::List` row of dimensionless `Real`s (test fixture).
+    fn list_row(vals: &[f64]) -> Value {
+        Value::List(vals.iter().map(|&v| Value::Real(v)).collect())
+    }
+
+    /// Build a `Value::Tensor` row of dimensionless `Real`s (expected cell).
+    fn tensor_row(vals: &[f64]) -> Value {
+        Value::Tensor(vals.iter().map(|&v| Value::Real(v)).collect())
+    }
+
+    /// (a) A 2×2 list-of-lists builds a rank-2 nested `Tensor`.
+    #[test]
+    fn matrix_square_builds_rank2_tensor() {
+        let input = Value::List(vec![list_row(&[1.0, 2.0]), list_row(&[3.0, 4.0])]);
+        let out = eval_builtin("matrix", &[input]);
+        assert_eq!(
+            out,
+            Value::Tensor(vec![tensor_row(&[1.0, 2.0]), tensor_row(&[3.0, 4.0])]),
+            "matrix([[1,2],[3,4]]) should build a 2×2 nested Tensor"
+        );
+    }
+
+    /// (b) A non-square 2×3 list-of-lists builds a 2×3 nested `Tensor`.
+    #[test]
+    fn matrix_non_square_builds_2x3_tensor() {
+        let input = Value::List(vec![list_row(&[1.0, 2.0, 3.0]), list_row(&[4.0, 5.0, 6.0])]);
+        let out = eval_builtin("matrix", &[input]);
+        assert_eq!(
+            out,
+            Value::Tensor(vec![
+                tensor_row(&[1.0, 2.0, 3.0]),
+                tensor_row(&[4.0, 5.0, 6.0]),
+            ]),
+            "matrix of a 2×3 list-of-lists should build a 2×3 nested Tensor"
+        );
+    }
+
+    /// (c) Dimensioned elements build `Scalar` cells with the shared dimension.
+    #[test]
+    fn matrix_dimensioned_elements_build_scalar_cells() {
+        let m = |v: f64| scalar(v, DimensionVector::LENGTH);
+        let input = Value::List(vec![
+            Value::List(vec![m(1.0), m(2.0)]),
+            Value::List(vec![m(3.0), m(4.0)]),
+        ]);
+        let out = eval_builtin("matrix", &[input]);
+        assert_eq!(
+            out,
+            Value::Tensor(vec![
+                Value::Tensor(vec![m(1.0), m(2.0)]),
+                Value::Tensor(vec![m(3.0), m(4.0)]),
+            ]),
+            "matrix of LENGTH Scalars should build a nested Tensor of LENGTH Scalars"
+        );
+    }
+
+    /// (d) Ragged rows are malformed → `Undef`.
+    #[test]
+    fn matrix_ragged_rows_is_undef() {
+        let input = Value::List(vec![list_row(&[1.0, 2.0]), list_row(&[3.0])]);
+        assert_eq!(
+            eval_builtin("matrix", &[input]),
+            Value::Undef,
+            "matrix([[1,2],[3]]) (ragged) should be Undef"
+        );
+    }
+
+    /// (e) An empty outer list or an empty row is malformed → `Undef`.
+    #[test]
+    fn matrix_empty_outer_or_empty_row_is_undef() {
+        assert_eq!(
+            eval_builtin("matrix", &[Value::List(vec![])]),
+            Value::Undef,
+            "matrix([]) (empty outer) should be Undef"
+        );
+        assert_eq!(
+            eval_builtin("matrix", &[Value::List(vec![Value::List(vec![])])]),
+            Value::Undef,
+            "matrix([[]]) (empty row) should be Undef"
+        );
+    }
+
+    /// (f) A non-list row is malformed → `Undef`.
+    #[test]
+    fn matrix_non_list_row_is_undef() {
+        let input = Value::List(vec![list_row(&[1.0]), Value::Real(2.0)]);
+        assert_eq!(
+            eval_builtin("matrix", &[input]),
+            Value::Undef,
+            "matrix([[1],2]) (non-list row) should be Undef"
+        );
+    }
+
+    /// (g) A mixed dimension across cells is malformed → `Undef`.
+    #[test]
+    fn matrix_mixed_dimension_is_undef() {
+        let input = Value::List(vec![
+            Value::List(vec![Value::Real(1.0), scalar(2.0, DimensionVector::LENGTH)]),
+            Value::List(vec![Value::Real(3.0), Value::Real(4.0)]),
+        ]);
+        assert_eq!(
+            eval_builtin("matrix", &[input]),
+            Value::Undef,
+            "matrix mixing dimensionless and LENGTH cells should be Undef"
+        );
+    }
 }
