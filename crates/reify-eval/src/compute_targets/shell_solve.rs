@@ -160,26 +160,26 @@ pub fn resolve_extraction_failure(shell_force: ShellForce) -> FailurePolicy {
     }
 }
 
-/// Test whether a body is too thick for the shell route, using the EXACT
-/// same metric as [`classify_shell`]'s `Auto` branch.
+/// Test whether a body is too thick for the shell route, returning the
+/// thickness/extent ratio when it is.
 ///
-/// Returns `true` (too thick) when the body is **not** thin, i.e. when
-/// `classify_shell(Auto, length, width, height, shell_threshold)` would
-/// return [`ShellRoute::Tet`]:
+/// Returns `Some(ratio)` when the body is too thick (where `ratio =
+/// height / min(length, width)`, or [`f64::INFINITY`] for degenerate
+/// in-plane dimensions), and `None` when the body is thin enough for the
+/// shell path.  Both the binary decision and the ratio come from the same
+/// call so the message at the dispatch site and the routing decision can
+/// never disagree (esc-3837 reviewer suggestion 4).
 ///
-/// - Degenerate: `min(length, width) ≤ 0` → `true` (cannot shell-mesh).
-/// - Non-degenerate: `height / min(length, width) ≥ shell_threshold` → `true`.
-/// - Non-degenerate: `height / min(length, width) < shell_threshold` → `false`
-///   (the body IS thin enough to shell-solve).
+/// # Thickness-axis invariant (esc-3594 suggestion 1 / esc-3837 suggestion 1)
 ///
-/// # Thickness-axis invariant (esc-3594 suggestion 1)
+/// The decision delegates to [`classify_shell`] with [`ShellForce::Auto`],
+/// making the "never disagree" invariant **structurally** true: if
+/// [`classify_shell`] ever changes its metric (different divisor, strict `<`
+/// boundary, etc.) this helper automatically stays in sync — there is no
+/// copy to drift.
 ///
-/// This helper reuses [`classify_shell`]'s **exact metric** (same divisor
-/// `min(length, width)`, same strict `<` comparison) so the dispatch-site
-/// "too-thick" gate and the shell-route classifier can never disagree.
-/// A body classified too-thick always routes [`ShellRoute::Tet`] under `Auto`;
-/// a body classified thin (not too-thick) always routes
-/// [`ShellRoute::Shell`] under `Auto`.
+/// - `Some(ratio)` ↔ `classify_shell(Auto, …) == ShellRoute::Tet`.
+/// - `None`        ↔ `classify_shell(Auto, …) == ShellRoute::Shell`.
 ///
 /// `pub(crate)` — called by `elastic_static::solve_elastic_static_trampoline`.
 pub(crate) fn is_too_thick_for_shell(
@@ -187,11 +187,22 @@ pub(crate) fn is_too_thick_for_shell(
     width: f64,
     height: f64,
     shell_threshold: f64,
-) -> bool {
-    // Mirror classify_shell's Auto branch exactly.  thin ↔ in_plane > 0 AND
-    // height/in_plane < threshold.  too-thick is the logical complement.
-    let in_plane = length.min(width);
-    !(in_plane > 0.0 && height / in_plane < shell_threshold)
+) -> Option<f64> {
+    // Delegate to classify_shell for the binary decision.  Structural
+    // delegation (not a re-implementation of the criterion) guarantees that
+    // the route and the too-thick gate are always consistent.
+    let too_thick = classify_shell(ShellForce::Auto, length, width, height, shell_threshold)
+        == ShellRoute::Tet;
+    if too_thick {
+        // Compute the ratio for the error/warning message using the same
+        // formula as classify_shell's Auto branch so the displayed value
+        // matches the routing decision.
+        let in_plane = length.min(width);
+        let ratio = if in_plane > 0.0 { height / in_plane } else { f64::INFINITY };
+        Some(ratio)
+    } else {
+        None
+    }
 }
 
 // ── driver-output → DSL-value glue ───────────────────────────────────────────
@@ -707,53 +718,65 @@ mod tests {
     // ── step-3 RED (task ε #3837): is_too_thick_for_shell helper ────────────
     //
     // Pins the `is_too_thick_for_shell(length, width, height, shell_threshold)
-    // -> bool` helper that is the exact logical complement of `classify_shell`'s
-    // Auto criterion:
-    //   thin  ↔  height / min(length, width) < shell_threshold   → NOT too thick
-    //   thick ↔  height / min(length, width) ≥ shell_threshold   → too thick
+    // -> Option<f64>` helper that delegates to `classify_shell` for the binary
+    // decision and returns the ratio for use in the dispatch-site message:
+    //   thin  ↔  classify_shell(Auto, …) == Shell → None (not too thick)
+    //   thick ↔  classify_shell(Auto, …) == Tet   → Some(ratio)
     //
-    // Degenerate (non-positive in-plane dim) → too thick (cannot shell-mesh).
-    // Boundary ratio == threshold → true (NOT thin under strict `<`).
+    // Degenerate (non-positive in-plane dim) → Some(INFINITY) (cannot shell-mesh).
+    // Boundary ratio == threshold → Some(ratio) (NOT thin under strict `<`).
     //
     // RED: `is_too_thick_for_shell` does not exist yet → compile fail.
     // GREEN after step-4 adds the helper to this module.
+    //
+    // NOTE (esc-3837 amendment, suggestions 1+4): the return type was changed
+    // from `bool` to `Option<f64>` so the dispatch site can use the ratio from
+    // one source without re-deriving `length.min(width)` locally.
 
-    /// `is_too_thick_for_shell` correctly classifies thin vs. thick bodies.
+    /// `is_too_thick_for_shell` correctly classifies thin vs. thick bodies and
+    /// returns the thickness/extent ratio for thick bodies.
     ///
-    /// - Thin flexure (50×10×1 mm, ratio 0.1 < threshold 0.2) → `false`
+    /// - Thin flexure (50×10×1 mm, ratio 0.1 < threshold 0.2) → `None`
     ///   (not too thick; the shell path is valid for this body).
-    /// - Thick block (50×20×20 mm, ratio 1.0 ≥ threshold 0.2) → `true`
+    /// - Thick block (50×20×20 mm, ratio 1.0 ≥ threshold 0.2) → `Some(1.0)`
     ///   (too thick; shell route would be inappropriate).
-    /// - Boundary case (ratio == threshold) → `true` (classify_shell's strict
-    ///   `<` makes ratio==threshold a Tet → helper must agree: too thick).
-    /// - Degenerate (non-positive in-plane dimension) → `true` (cannot
+    /// - Boundary case (ratio == threshold) → `Some(ratio)` (classify_shell's
+    ///   strict `<` makes ratio==threshold a Tet → helper must agree: too thick).
+    /// - Degenerate (non-positive in-plane dimension) → `Some(INFINITY)` (cannot
     ///   shell-mesh a body with zero or negative in-plane extent).
     #[test]
     fn is_too_thick_for_shell_classifies_correctly() {
         // Thin flexure: height=1mm, min(L,W)=10mm → ratio 0.1 < 0.2 → NOT too thick
         assert!(
-            !is_too_thick_for_shell(0.050, 0.010, 0.001, 0.2),
-            "thin flexure (ratio 0.1 < 0.2) must return false (not too thick)"
+            is_too_thick_for_shell(0.050, 0.010, 0.001, 0.2).is_none(),
+            "thin flexure (ratio 0.1 < 0.2) must return None (not too thick)"
         );
         // Thick block: height=20mm, min(L,W)=20mm → ratio 1.0 ≥ 0.2 → too thick
-        assert!(
+        assert_eq!(
             is_too_thick_for_shell(0.050, 0.020, 0.020, 0.2),
-            "thick block (ratio 1.0 ≥ 0.2) must return true (too thick)"
+            Some(1.0),
+            "thick block (ratio 1.0 ≥ 0.2) must return Some(1.0)"
         );
         // Boundary: height/min(L,W) == threshold exactly → too thick
         // (classify_shell uses strict `<`, so == threshold routes Tet)
+        let boundary = is_too_thick_for_shell(0.010, 0.010, 0.002, 0.2);
         assert!(
-            is_too_thick_for_shell(0.010, 0.010, 0.002, 0.2),
-            "boundary ratio==threshold (0.2/1.0=0.2) must return true (not strictly thin)"
+            boundary.is_some(),
+            "boundary ratio==threshold must return Some(_) (not strictly thin)"
         );
-        // Degenerate: non-positive in-plane dimension → cannot shell-mesh
-        assert!(
-            is_too_thick_for_shell(0.050, 0.0, 0.001, 0.2),
-            "zero width (degenerate in-plane) must return true (cannot shell-mesh)"
+        // Degenerate: zero in-plane dimension → Some(INFINITY)
+        let degen_zero = is_too_thick_for_shell(0.050, 0.0, 0.001, 0.2);
+        assert_eq!(
+            degen_zero,
+            Some(f64::INFINITY),
+            "zero width (degenerate in-plane) must return Some(INFINITY)"
         );
-        assert!(
-            is_too_thick_for_shell(0.050, -1.0, 0.001, 0.2),
-            "negative width (degenerate in-plane) must return true (cannot shell-mesh)"
+        // Degenerate: negative in-plane dimension → Some(INFINITY)
+        let degen_neg = is_too_thick_for_shell(0.050, -1.0, 0.001, 0.2);
+        assert_eq!(
+            degen_neg,
+            Some(f64::INFINITY),
+            "negative width (degenerate in-plane) must return Some(INFINITY)"
         );
     }
 }

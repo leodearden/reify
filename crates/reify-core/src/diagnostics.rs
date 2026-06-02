@@ -1133,11 +1133,15 @@ pub enum DiagnosticCode {
     /// or more dimensions (i.e. no voxel grid exists). The producer cannot
     /// compute a medial mask or extract a mid-surface from a zero-extent grid.
     ///
-    /// Canonical message form:
-    /// `"shell-extract::extract: grid validation: empty axis grid — no voxel grid to process"`.
+    /// Illustrative message form (Phase 1 — medial-mask):
+    /// `"shell-extract::extract: voxel grid is empty on axis {axis}; cannot compute medial mask. Verify the body geometry produces a valid voxel grid."`.
     ///
-    /// The PRD-prose mnemonic for this code is `E_SHELL_NO_VOXEL_GRID`
-    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    /// Illustrative message form (Phase 2 — mid-surface):
+    /// `"shell-extract::extract: voxel grid is empty on axis {axis}; cannot extract mid-surface. Verify the body geometry produces a valid voxel grid."`.
+    ///
+    /// The exact text is not a stable contract — use the `code` field to match
+    /// programmatically. The PRD-prose mnemonic for this code is
+    /// `E_SHELL_NO_VOXEL_GRID` (severity convention: `W_*` → Warning, `E_*` → Error).
     ShellNoVoxelGrid,
     /// Origin: `crates/reify-eval/src/shell_extract_compute.rs` (ε trampoline,
     /// mid-surface phase, `MidSurfaceError::MaskVoxelOutOfBounds` arm).
@@ -1146,11 +1150,12 @@ pub enum DiagnosticCode {
     /// index that falls outside the SDF grid bounds during mid-surface
     /// extraction. This indicates an internal grid/mask size mismatch.
     ///
-    /// Canonical message form:
-    /// `"shell-extract::extract: mid-surface: medial-mask voxel index out of bounds"`.
+    /// Illustrative message form:
+    /// `"shell-extract::extract: medial-mask voxel [{vx}, {vy}, {vz}] is outside the SDF grid extent [{ex}, {ey}, {ez}]."`.
     ///
-    /// The PRD-prose mnemonic for this code is `E_SHELL_MEDIAL_MASK_OOB`
-    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    /// The exact text is not a stable contract — use the `code` field to match
+    /// programmatically. The PRD-prose mnemonic for this code is
+    /// `E_SHELL_MEDIAL_MASK_OOB` (severity convention: `W_*` → Warning, `E_*` → Error).
     ShellMedialMaskOob,
     /// Origin: `crates/reify-eval/src/shell_extract_compute.rs` (ε trampoline,
     /// branch-pruning phase, any `PruneError` arm).
@@ -1160,24 +1165,26 @@ pub enum DiagnosticCode {
     /// medial-surface skeleton; a failure here indicates an ill-conditioned
     /// mesh or degenerate geometry.
     ///
-    /// Canonical message form:
-    /// `"shell-extract::extract: prune phase: branch pruning failed"`.
+    /// Illustrative message form:
+    /// `"shell-extract::extract: branch-pruning failed: {prune_error}"`.
     ///
-    /// The PRD-prose mnemonic for this code is `E_SHELL_PRUNE_FAILED`
-    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    /// The exact text is not a stable contract — use the `code` field to match
+    /// programmatically. The PRD-prose mnemonic for this code is
+    /// `E_SHELL_PRUNE_FAILED` (severity convention: `W_*` → Warning, `E_*` → Error).
     ShellPruneFailed,
     /// Origin: `crates/reify-eval/src/shell_extract_compute.rs` (ε trampoline,
     /// meshing phase, `MesherError::QualityBelowThreshold` arm).
     ///
     /// Emitted as `Severity::Error` when the mid-surface mesher produces a mesh
-    /// whose worst-element quality (minimum angle) falls below the configured
-    /// `min_angle_degrees` threshold, making the mesh unusable for FEA.
+    /// whose worst-element quality falls below the configured `min_angle_degrees`
+    /// threshold, making the mesh unusable for FEA.
     ///
-    /// Canonical message form:
-    /// `"shell-extract::extract: mesh phase: mesh quality below threshold — minimum angle too small"`.
+    /// Illustrative message form:
+    /// `"shell-extract::extract: mid-surface mesh quality is below threshold (worst aspect ratio: {min_aspect_ratio:.4}, worst min angle: {min_angle_degrees:.2}°). The shell geometry may be too complex or degenerate for meshing."`.
     ///
-    /// The PRD-prose mnemonic for this code is `E_SHELL_MESH_QUALITY`
-    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    /// The exact text is not a stable contract — use the `code` field to match
+    /// programmatically. The PRD-prose mnemonic for this code is
+    /// `E_SHELL_MESH_QUALITY` (severity convention: `W_*` → Warning, `E_*` → Error).
     ShellMeshQuality,
     /// Origin: `crates/reify-eval/src/compute_targets/elastic_static.rs`
     /// (`solve_elastic_static_trampoline` — too-thick dispatch-site policy,

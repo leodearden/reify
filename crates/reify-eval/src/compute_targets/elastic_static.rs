@@ -320,9 +320,10 @@ pub fn solve_elastic_static_trampoline(
     //     (step-8; classify_shell already routed Tet for this body, so the
     //      shell branch below is skipped even without an early return here).
     //   - `Off`               → Tet    (regardless of thickness; silent).
-    if is_too_thick_for_shell(length, width, height, shell_threshold) {
-        let in_plane = length.min(width);
-        let ratio = if in_plane > 0.0 { height / in_plane } else { f64::INFINITY };
+    // `is_too_thick_for_shell` returns `Some(ratio)` when too thick so the
+    // decision and the message value come from one source — no local
+    // re-derivation of `in_plane` / ratio needed (esc-3837 suggestion 4).
+    if let Some(ratio) = is_too_thick_for_shell(length, width, height, shell_threshold) {
         let policy = resolve_extraction_failure(shell_force);
         match policy {
             FailurePolicy::HardError => {

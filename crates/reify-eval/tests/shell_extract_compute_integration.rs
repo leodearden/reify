@@ -450,6 +450,46 @@ fn shell_extract_double_registration_panics_naming_target() {
 // ─────────────────────────────────────────────────────────────────────────────
 // Step-9 test (empty-axis-grid → E_SHELL_NO_VOXEL_GRID)
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// Coverage note (esc-3837 reviewer suggestion 2)
+// ──────────────────────────────────────────────
+// Four of the seven §7 error-code arms are tested by integration tests in this
+// file or the e2e fixture tests:
+//
+//   ShellBadThreshold   — step-5 test above (invalid threshold = 0.0)
+//   ShellNoVoxelGrid    — step-9 test below (empty axis grid → Phase 1 fails)
+//   ShellTooThick       — shell_too_thick_at_shell_annotation_errors.rs (e2e)
+//                         and shell_too_thick_at_auto_falls_back.rs (e2e)
+//
+// Three arms are intentionally NOT driven by integration tests because no clean
+// synthetic SDF input reliably reaches those producer states in the current
+// pipeline (as documented in the task ε design decisions, §"All six §7 codes"):
+//
+//   ShellMedialMaskOob  — requires `medial_mask` to contain indices outside the
+//     (MidSurface::       SDF grid bounds, which indicates an internal
+//      MaskVoxelOut       mask/grid size mismatch — not triggerable by a
+//      OfBounds)          caller-supplied SDF alone; the medial-mask and grid
+//                         are both derived from the same SDF, so they share
+//                         extent by construction.
+//
+//   ShellPruneFailed    — requires the branch-pruning step to fail on the
+//     (any PruneError)    raw mid-surface mesh.  Pruning validates configuration
+//                         parameters (ratio, max-iterations, alignment tolerance)
+//                         AFTER phases 1 and 2 succeed, but passing invalid
+//                         prune options via ElasticOptions currently propagates
+//                         no PruneError (the default options are always valid
+//                         and the parser clamps/ignores out-of-range values).
+//
+//   ShellMeshQuality    — requires the mesher to produce a mesh whose worst
+//     (Mesher::Quality    element quality is below threshold.  This is a property
+//      BelowThreshold)    of the SDF geometry, not of the caller-supplied options;
+//                         a synthetically well-behaved slab always produces a
+//                         quality mesh within the default threshold.
+//
+// These three arms are wired by inspection and rely on the `with_code(...)` call
+// being visually verifiable in the source.  A future task that adds shell-extract
+// fuzz/property-based testing may be able to drive them.  The serde/constructible
+// tests in diagnostics.rs confirm the variants exist and serialize correctly.
 
 /// Build a `SampledField` whose first axis grid is empty, which triggers
 /// `GridValidationError::EmptyAxisGrid { axis: 0 }` in Phase 1 (medial-mask).
