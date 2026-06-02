@@ -5,7 +5,9 @@ use reify_ast::{Declaration, ParsedModule};
 pub use reify_ast::{MemberSpanInfo, find_named_member_span};
 use reify_core::{ModulePath, SourceSpan, Type, ValueCellId};
 use reify_ir::Value;
-use tower_lsp::lsp_types::Url;
+use tower_lsp::lsp_types::{DocumentSymbol, Range, SymbolKind, Url};
+
+use crate::convert::{offset_to_position, span_to_range};
 
 /// Extract a module name from a file URI.
 ///
@@ -347,6 +349,144 @@ pub fn count_members_recursive(members: &[reify_ast::MemberDecl]) -> (usize, usi
 /// on Value itself so that adding a new variant only requires editing value.rs.
 pub fn format_value(value: &Value) -> String {
     value.format_hover()
+}
+
+/// Compute a hierarchical [`DocumentSymbol`] tree for `source` (task 4207 η).
+///
+/// This is a purely SYNTACTIC outline: it parses the module via
+/// [`reify_compiler::parse_with_stdlib`] (the same prelude-aware parse used by
+/// goto-def) and walks `parsed.declarations` WITHOUT compiling or
+/// constraint-checking. It is deliberately kept distinct from the outline's
+/// semantic realization tree (`get_entity_tree`) per PRD design decision 5 —
+/// the symbol list reflects declaration structure, not evaluation.
+///
+/// Top-level declarations map to symbols as: structure→STRUCT,
+/// occurrence→CLASS, trait→INTERFACE, enum→ENUM, fn→FUNCTION. All other
+/// top-level declarations (import/unit/type-alias/constraint-def/field/
+/// purpose/module) are not navigable symbols and are skipped.
+pub fn compute_document_symbols(source: &str, uri: &Url) -> Vec<DocumentSymbol> {
+    let module_name = module_name_from_uri(uri);
+    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
+
+    let mut symbols = Vec::new();
+    for decl in &parsed.declarations {
+        match decl {
+            Declaration::Structure(s) => {
+                symbols.push(make_symbol(
+                    &s.name,
+                    SymbolKind::STRUCT,
+                    span_to_range(source, s.span),
+                    name_selection_range(source, s.span, &s.name),
+                    None,
+                ));
+            }
+            // All other top-level declarations are not navigable symbols.
+            _ => {}
+        }
+    }
+    symbols
+}
+
+/// Build a [`DocumentSymbol`] with every field set explicitly.
+///
+/// `lsp-types` 0.94 marks `DocumentSymbol.deprecated` as `#[deprecated]` and
+/// provides no `Default`, so the field cannot be omitted; centralizing the
+/// `#[allow(deprecated)]` here keeps the verify/clippy pipeline clean while
+/// every construction site stays a one-liner (PRD design decision 6).
+#[allow(deprecated)]
+fn make_symbol(
+    name: &str,
+    kind: SymbolKind,
+    range: Range,
+    selection_range: Range,
+    children: Option<Vec<DocumentSymbol>>,
+) -> DocumentSymbol {
+    DocumentSymbol {
+        name: name.to_string(),
+        detail: None,
+        kind,
+        tags: None,
+        deprecated: None,
+        range,
+        selection_range,
+        children,
+    }
+}
+
+/// Compute the `selection_range` (the name token) for a declaration whose full
+/// span is `span` and whose declared name is `name`.
+///
+/// Declaration AST nodes carry only `name: String` plus the full declaration
+/// span (no separate name-token span), so the name's byte offset must be
+/// recovered from the source. LSP requires `selection_range ⊆ range` and ideally
+/// on the name token; this performs a *word-boundary* search bounded to the
+/// declaration's own span, falling back to `span.start` when the name cannot be
+/// located (defensive; should not happen for well-formed declarations).
+fn name_selection_range(source: &str, span: SourceSpan, name: &str) -> Range {
+    let name_offset = find_name_offset_in_span(source, span, name);
+    Range {
+        start: offset_to_position(source, name_offset),
+        end: offset_to_position(source, name_offset + name.len() as u32),
+    }
+}
+
+/// Find the byte offset of `name` as a *whole identifier* within
+/// `[span.start, span.end)`, returning `span.start` if no word-boundary match
+/// is found.
+///
+/// A naive substring search is unsafe — e.g. the member name `a` would match
+/// inside the `param` keyword — so a match must have non-identifier neighbours
+/// (or a source boundary) on both sides. Search bounds are clamped to the
+/// source length and snapped forward to UTF-8 character boundaries, mirroring
+/// the safety pattern in `convert::offset_to_position` and
+/// `goto_def::find_name_offset_in_decl`.
+fn find_name_offset_in_span(source: &str, span: SourceSpan, name: &str) -> u32 {
+    if name.is_empty() {
+        return span.start;
+    }
+    let len = source.len();
+    let mut start = (span.start as usize).min(len);
+    let mut end = (span.end as usize).min(len);
+    // Snap both ends forward to valid UTF-8 boundaries so the slice is valid
+    // even when tree-sitter error-recovery spans land mid-character.
+    while start < len && !source.is_char_boundary(start) {
+        start += 1;
+    }
+    while end < len && !source.is_char_boundary(end) {
+        end += 1;
+    }
+    if start >= end {
+        return span.start;
+    }
+
+    let hay = &source[start..end];
+    let bytes = source.as_bytes();
+    let name_len = name.len();
+    let mut search_from = 0usize;
+    while search_from < hay.len() {
+        let Some(rel) = hay[search_from..].find(name) else {
+            break;
+        };
+        let abs = start + search_from + rel; // absolute byte offset of the match
+        // Left and right neighbours must be non-identifier bytes (or source
+        // boundaries) for this to be a whole-word match.
+        let left_ok = abs == 0 || !is_ident_byte(bytes[abs - 1]);
+        let right = abs + name_len;
+        let right_ok = right >= len || !is_ident_byte(bytes[right]);
+        if left_ok && right_ok {
+            return abs as u32;
+        }
+        search_from += rel + 1;
+    }
+    span.start
+}
+
+/// Whether `b` is an identifier byte (ASCII alphanumeric or underscore).
+///
+/// Local to this module — mirrors `convert::is_ident_byte` (which is private)
+/// so the document-symbol name search stays scoped to analysis.rs.
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
 }
 
 #[cfg(test)]
