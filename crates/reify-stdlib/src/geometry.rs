@@ -4284,4 +4284,85 @@ mod tests {
             );
         }
     }
+
+    // ── affine_translate tests (step-5) ───────────────────────────────────────
+
+    #[test]
+    fn affine_translate_length_components_stored_si_meters() {
+        // affine_translate(5mm, 0, 0) → identity linear, translation [0.005, 0, 0] m.
+        let args = [
+            Value::length(0.005),
+            Value::length(0.0),
+            Value::length(0.0),
+        ];
+        let (linear, translation) = expect_affine(eval_builtin("affine_translate", &args));
+        assert_eq!(linear, IDENTITY_3X3, "affine_translate linear must be I");
+        assert_eq!(
+            translation,
+            [0.005, 0.0, 0.0],
+            "affine_translate translation must be SI meters"
+        );
+    }
+
+    #[test]
+    fn affine_translate_mixed_dimensions_returns_undef() {
+        let args = [
+            Value::length(1.0),
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::MASS,
+            },
+            Value::length(3.0),
+        ];
+        assert!(
+            eval_builtin("affine_translate", &args).is_undef(),
+            "mixed-dimension components must be Undef"
+        );
+    }
+
+    #[test]
+    fn affine_translate_non_numeric_or_non_finite_returns_undef() {
+        // Non-numeric component.
+        let bad = [
+            Value::String("x".to_string()),
+            Value::length(0.0),
+            Value::length(0.0),
+        ];
+        assert!(
+            eval_builtin("affine_translate", &bad).is_undef(),
+            "non-numeric component must be Undef"
+        );
+        // Non-finite component.
+        let nan = [Value::Real(f64::NAN), Value::Real(0.0), Value::Real(0.0)];
+        assert!(
+            eval_builtin("affine_translate", &nan).is_undef(),
+            "non-finite component must be Undef"
+        );
+    }
+
+    #[test]
+    fn affine_translate_wrong_arity_returns_undef() {
+        assert!(eval_builtin("affine_translate", &[]).is_undef(), "0 args");
+        assert!(
+            eval_builtin("affine_translate", &[Value::length(1.0)]).is_undef(),
+            "1 arg"
+        );
+        assert!(
+            eval_builtin("affine_translate", &[Value::length(1.0), Value::length(2.0)]).is_undef(),
+            "2 args"
+        );
+        assert!(
+            eval_builtin(
+                "affine_translate",
+                &[
+                    Value::length(1.0),
+                    Value::length(2.0),
+                    Value::length(3.0),
+                    Value::length(4.0)
+                ]
+            )
+            .is_undef(),
+            "4 args"
+        );
+    }
 }
