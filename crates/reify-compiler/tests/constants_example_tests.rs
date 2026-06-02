@@ -1,21 +1,27 @@
-//! Regression test for `examples/stdlib/constants.ri` (task 4026).
+//! Regression tests for `examples/stdlib/constants.ri` (tasks 4026, 4176).
 //!
-//! Pins five leaf signals per the multi_load_bracket_example_tests precedent:
-//!
+//! Test 1 — compile-clean + leaf-signal pins:
 //!   1. The file parses with zero errors.
 //!   2. It compiles under the stdlib prelude with zero Error-severity diagnostics.
 //!   3. The compiled module exposes a `PhysicalConstants` structure template.
-//!   4. Positive source-text pins: `SPEED_OF_LIGHT` and `BOLTZMANN_CONSTANT`
-//!      must appear in the source.
-//!   5. Negative source-text pins: `299792458` and `1380649` must NOT appear
-//!      in the source (guards against inline magic numbers — comments must
-//!      describe what each constant IS, not echo its SI numeric value; see
-//!      design decision 4 in the task plan).
+//!   4. Positive source-text pins: every named constant must appear in source.
+//!   5. Negative source-text pins: SI digit sequences must NOT appear in source.
 //!
-//! Pattern lifted from `multi_load_bracket_example_tests.rs` (task 3587).
-//! PRD reference: `docs/prds/v0_6/stdlib-reconstruction.md` task ζ.
+//! Test 2 — eval cross-check assertions (task 4176):
+//!   6. Eval produces zero Error diagnostics.
+//!   7. `circ` ≈ 2π (proves pi resolves correctly).
+//!   8. `euler` ≈ e (proves e resolves correctly).
+//!   9. |r_check| < 1e-6  — R ≈ N_A·k_B (gas-constant identity).
+//!  10. em_check is dimensionless AND ≈ 1 — ε₀μ₀c² ≈ 1 (EM identity).
+//!
+//! Pattern lifted from `multi_load_bracket_example_tests.rs` (task 3587);
+//! eval pipeline from `crates/reify-eval/tests/m8_3_stdlib_integration.rs`.
+//! PRD references: `docs/prds/v0_6/stdlib-reconstruction.md` task ζ,
+//!                 `docs/prds/v0_6/units-physical-constants.md` §7 task δ.
 
-use reify_core::{ModulePath, Severity};
+use reify_core::{DimensionVector, ModulePath, Severity, ValueCellId};
+use reify_ir::Value;
+use reify_test_support::make_simple_engine;
 
 // ─── examples/stdlib/constants.ri compiles clean and pins leaf signals ─────
 
@@ -182,5 +188,148 @@ fn constants_example_compiles_under_stdlib_with_zero_errors_and_pins_constant_re
     assert!(
         !src.contains("1602176634"),
         "constants.ri must NOT contain '1602176634' inline — use ELEMENTARY_CHARGE() instead"
+    );
+}
+
+// ─── eval cross-check: physics-identity assertions (task 4176) ────────────────
+
+/// Evaluates `examples/stdlib/constants.ri` end-to-end and asserts that the
+/// four cross-check fields in `PhysicalConstants` satisfy physics-identity
+/// tolerance bounds (task δ, PRD §3.8).
+///
+/// Cross-checks:
+///   circ  = 2.0 * pi          → ≈ 2π  (proves pi resolves and is correct)
+///   euler = e                  → ≈ e   (proves e resolves and is correct)
+///   r_check = MOLAR_GAS_CONSTANT() - AVOGADRO_CONSTANT() * BOLTZMANN_CONSTANT()
+///             → |r_check| < 1e-6  (R = N_A·k_B; residual ≈ −1.53e-10)
+///   em_check = VACUUM_PERMITTIVITY() * VACUUM_PERMEABILITY()
+///              * SPEED_OF_LIGHT() * SPEED_OF_LIGHT()
+///             → dimensionless; |em_check − 1| < 1e-6  (ε₀μ₀c² = 1; residual ≈ −4.34e-14)
+///
+/// A wrong-dimension constant in γ (the stdlib units.ri) would cause the `−`
+/// or `*` in a cross-check to emit a `dimension mismatch` Error diagnostic at
+/// compile time, failing the compile-clean assertion. The eval assertions catch
+/// wrong-value errors (e.g. a misplaced exponent) that the inert fn return
+/// annotation cannot surface.
+#[test]
+fn constants_example_cross_checks_eval_within_tolerance() {
+    const EXAMPLE_PATH: &str =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/stdlib/constants.ri");
+
+    let src = std::fs::read_to_string(EXAMPLE_PATH).expect(
+        "failed to read examples/stdlib/constants.ri — \
+         check CARGO_MANIFEST_DIR resolution and that the file exists",
+    );
+
+    // ── Parse ─────────────────────────────────────────────────────────────────
+
+    let parsed = reify_syntax::parse(&src, ModulePath::single("constants"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors in examples/stdlib/constants.ri: {:?}",
+        parsed.errors
+    );
+
+    // ── Compile ───────────────────────────────────────────────────────────────
+
+    let compiled = reify_compiler::compile_with_stdlib(&parsed);
+
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "expected zero Error diagnostics compiling examples/stdlib/constants.ri under stdlib \
+         (a wrong-dimension constant causes the cross-check `-`/`*` to emit \
+         'dimension mismatch' here):\n{:#?}",
+        compile_errors
+    );
+
+    // ── Eval (reify-eval) ─────────────────────────────────────────────────────
+
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        eval_errors.is_empty(),
+        "expected zero Error diagnostics evaluating examples/stdlib/constants.ri:\n{:#?}",
+        eval_errors
+    );
+
+    // ── Helper: get a Scalar cell's (si_value, dimension) ─────────────────────
+
+    let get_scalar = |field: &str| -> (f64, DimensionVector) {
+        let id = ValueCellId::new("PhysicalConstants", field);
+        let val = result
+            .values
+            .get(&id)
+            .unwrap_or_else(|| {
+                panic!(
+                    "PhysicalConstants.{} not found in eval result; \
+                     available keys: {:?}",
+                    field,
+                    result.values.iter().map(|(k, _v)| k).collect::<Vec<_>>()
+                )
+            });
+        match val {
+            Value::Scalar { si_value, dimension } => (*si_value, *dimension),
+            other => panic!(
+                "PhysicalConstants.{} expected Value::Scalar, got {:?}",
+                field, other
+            ),
+        }
+    };
+
+    // ── circ = 2.0 * pi  — proves pi resolves and is correct ─────────────────
+
+    let (circ_si, _circ_dim) = get_scalar("circ");
+    assert!(
+        (circ_si - std::f64::consts::TAU).abs() < 1e-9,
+        "PhysicalConstants.circ: expected ≈ 2π ({:.17}), got {:.17}",
+        std::f64::consts::TAU,
+        circ_si
+    );
+
+    // ── euler = e  — proves e resolves and is correct ─────────────────────────
+
+    let (euler_si, _euler_dim) = get_scalar("euler");
+    assert!(
+        (euler_si - std::f64::consts::E).abs() < 1e-9,
+        "PhysicalConstants.euler: expected ≈ e ({:.17}), got {:.17}",
+        std::f64::consts::E,
+        euler_si
+    );
+
+    // ── r_check = R − N_A·k_B ≈ 0  (gas-constant identity) ──────────────────
+    // Residual is ≈ −1.53e-10 (exact 2019-SI: R = N_A·k_B to machine precision).
+
+    let (r_si, _r_dim) = get_scalar("r_check");
+    assert!(
+        r_si.abs() < 1e-6,
+        "PhysicalConstants.r_check: |R − N_A·k_B| expected < 1e-6, got {}",
+        r_si
+    );
+
+    // ── em_check = ε₀·μ₀·c² ≈ 1  (dimensionless)  ───────────────────────────
+    // Residual is ≈ −4.34e-14 (exact identity ε₀μ₀ = 1/c²).
+
+    let (em_si, em_dim) = get_scalar("em_check");
+    assert!(
+        em_dim.is_dimensionless(),
+        "PhysicalConstants.em_check must be dimensionless (ε₀μ₀c² = 1); \
+         got dimension {:?}",
+        em_dim
+    );
+    assert!(
+        (em_si - 1.0_f64).abs() < 1e-6,
+        "PhysicalConstants.em_check: |ε₀μ₀c² − 1| expected < 1e-6, got {}",
+        em_si
     );
 }
