@@ -22,7 +22,6 @@ vi.mock('@codemirror/state', () => ({
   // Minimal mock
 }));
 
-import type { EditorView } from '@codemirror/view';
 import { invoke } from '@tauri-apps/api/core';
 import { reifyGotoDefinition, gotoDefinitionCommand } from '../editor/gotoDefinition';
 
