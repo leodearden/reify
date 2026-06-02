@@ -18,6 +18,7 @@
 #include <BRepPrimAPI_MakeSphere.hxx>
 
 // OCCT booleans
+#include <BRepAlgoAPI_BooleanOperation.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Common.hxx>
@@ -417,26 +418,25 @@ std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape
 namespace {
 
 /// Walk `parent_map` (canonical TopExp 1-based order), querying
-/// `fuse.Modified()/Generated()/IsDeleted()` for each parent sub-shape.
+/// `op.Modified()/Generated()/IsDeleted()` for each parent sub-shape.
 /// For each child reported by Modified or Generated, look up its
 /// 0-based index in `result_map` (skipping unmapped children — they
 /// can occur when BRepAlgoAPI reports an internal sub-shape that the
 /// result `face_map`/`edge_map` doesn't expose). Push flat tuples into
 /// the corresponding output buffers.
 ///
-/// Templated only over `parent_map` / `result_map` types so the same
-/// helper handles faces and edges; the type is `TopTools_IndexedMapOfShape`
-/// in both calls (shape kind is determined by which map was built).
+/// Accepts the common base class `BRepAlgoAPI_BooleanOperation&` so the
+/// same helper works for Fuse, Cut, and Common (all three derive from it
+/// and expose identical Modified()/Generated()/IsDeleted() APIs).
 ///
 /// `out_drop_count` is intentionally a **shared accumulator** passed through
-/// all four call sites in `boolean_fuse_with_history` (left faces, right
-/// faces, left edges, right edges). The resulting `silent_drop_count` on
-/// `BooleanOpHistory` is therefore a single bulk total with no per-kind or
-/// per-operand breakdown. Callers that need finer granularity should split
-/// this parameter into separate face/edge or left/right counters before
-/// adding new consumers.
+/// all four call sites (left faces, right faces, left edges, right edges).
+/// The resulting `silent_drop_count` on `BooleanOpHistory` is therefore a
+/// single bulk total with no per-kind or per-operand breakdown. Callers that
+/// need finer granularity should split this parameter into separate face/edge
+/// or left/right counters before adding new consumers.
 void emit_history_for_parent(
-    BRepAlgoAPI_Fuse& fuse,
+    BRepAlgoAPI_BooleanOperation& op,
     const TopTools_IndexedMapOfShape& parent_map,
     const TopTools_IndexedMapOfShape& result_map,
     uint32_t parent_index,
@@ -451,7 +451,7 @@ void emit_history_for_parent(
 
         // Modified: parent sub-shape replaced by N result sub-shapes
         // (split, merged, or otherwise transformed).
-        const TopTools_ListOfShape& modified = fuse.Modified(parent_sub);
+        const TopTools_ListOfShape& modified = op.Modified(parent_sub);
         for (TopTools_ListIteratorOfListOfShape it(modified); it.More(); it.Next()) {
             const TopoDS_Shape& child = it.Value();
             Standard_Integer one_based = result_map.FindIndex(child);
@@ -466,7 +466,7 @@ void emit_history_for_parent(
 
         // Generated: parent sub-shape gives rise to NEW sub-shapes
         // (e.g. fuse-section walls created from intersecting faces).
-        const TopTools_ListOfShape& generated = fuse.Generated(parent_sub);
+        const TopTools_ListOfShape& generated = op.Generated(parent_sub);
         for (TopTools_ListIteratorOfListOfShape it(generated); it.More(); it.Next()) {
             const TopoDS_Shape& child = it.Value();
             Standard_Integer one_based = result_map.FindIndex(child);
@@ -481,7 +481,7 @@ void emit_history_for_parent(
 
         // Deleted: parent sub-shape has no result analogue. Emit only
         // (parent_index, parent_subshape_index_0); no result index.
-        if (fuse.IsDeleted(parent_sub)) {
+        if (op.IsDeleted(parent_sub)) {
             out_deleted.push_back(parent_index);
             out_deleted.push_back(parent_idx_0);
         }
@@ -499,6 +499,48 @@ rust::Vec<uint32_t> to_rust_vec(const std::vector<uint32_t>& src) {
     return out;
 }
 
+/// Shared body: run `emit_history_for_parent` for both operands / both
+/// sub-shape kinds and populate a fresh `BooleanOpHistory`. The caller
+/// constructs `op` (Fuse, Cut, or Common), calls `.Build()`, checks
+/// `IsDone()`, and then delegates to this helper. `op` is accepted as a
+/// non-const reference because `BRepAlgoAPI_BooleanOperation::Modified()`
+/// and `Generated()` are non-const in OCCT.
+std::unique_ptr<BooleanOpHistory> extract_boolean_history(
+    BRepAlgoAPI_BooleanOperation& op,
+    const OcctShape& left,
+    const OcctShape& right) {
+    auto history = std::make_unique<BooleanOpHistory>();
+    history->result = std::make_unique<OcctShape>();
+    history->result->shape = op.Shape();
+
+    // Build the result face/edge maps once via the cached lazy
+    // accessors so subsequent FindIndex calls are O(1).
+    const auto& result_face_map = history->result->face_map();
+    const auto& result_edge_map = history->result->edge_map();
+
+    // Faces: emit per-parent records.
+    emit_history_for_parent(
+        op, left.face_map(), result_face_map, /*parent_index=*/0,
+        history->face_modified, history->face_generated, history->face_deleted,
+        history->silent_drop_count);
+    emit_history_for_parent(
+        op, right.face_map(), result_face_map, /*parent_index=*/1,
+        history->face_modified, history->face_generated, history->face_deleted,
+        history->silent_drop_count);
+
+    // Edges: emit per-parent records.
+    emit_history_for_parent(
+        op, left.edge_map(), result_edge_map, /*parent_index=*/0,
+        history->edge_modified, history->edge_generated, history->edge_deleted,
+        history->silent_drop_count);
+    emit_history_for_parent(
+        op, right.edge_map(), result_edge_map, /*parent_index=*/1,
+        history->edge_modified, history->edge_generated, history->edge_deleted,
+        history->silent_drop_count);
+
+    return history;
+}
+
 } // anonymous namespace
 
 std::unique_ptr<BooleanOpHistory> boolean_fuse_with_history(const OcctShape& left, const OcctShape& right) {
@@ -508,36 +550,29 @@ std::unique_ptr<BooleanOpHistory> boolean_fuse_with_history(const OcctShape& lef
         if (!fuse.IsDone()) {
             throw std::runtime_error("BRepAlgoAPI_Fuse failed");
         }
-        auto history = std::make_unique<BooleanOpHistory>();
-        history->result = std::make_unique<OcctShape>();
-        history->result->shape = fuse.Shape();
+        return extract_boolean_history(fuse, left, right);
+    });
+}
 
-        // Build the result face/edge maps once via the cached lazy
-        // accessors so subsequent FindIndex calls are O(1).
-        const auto& result_face_map = history->result->face_map();
-        const auto& result_edge_map = history->result->edge_map();
+std::unique_ptr<BooleanOpHistory> boolean_cut_with_history(const OcctShape& left, const OcctShape& right) {
+    return wrap_occt_call("boolean_cut_with_history", [&]() {
+        BRepAlgoAPI_Cut cut(left.shape, right.shape);
+        cut.Build();
+        if (!cut.IsDone()) {
+            throw std::runtime_error("BRepAlgoAPI_Cut failed");
+        }
+        return extract_boolean_history(cut, left, right);
+    });
+}
 
-        // Faces: emit per-parent records.
-        emit_history_for_parent(
-            fuse, left.face_map(), result_face_map, /*parent_index=*/0,
-            history->face_modified, history->face_generated, history->face_deleted,
-            history->silent_drop_count);
-        emit_history_for_parent(
-            fuse, right.face_map(), result_face_map, /*parent_index=*/1,
-            history->face_modified, history->face_generated, history->face_deleted,
-            history->silent_drop_count);
-
-        // Edges: emit per-parent records.
-        emit_history_for_parent(
-            fuse, left.edge_map(), result_edge_map, /*parent_index=*/0,
-            history->edge_modified, history->edge_generated, history->edge_deleted,
-            history->silent_drop_count);
-        emit_history_for_parent(
-            fuse, right.edge_map(), result_edge_map, /*parent_index=*/1,
-            history->edge_modified, history->edge_generated, history->edge_deleted,
-            history->silent_drop_count);
-
-        return history;
+std::unique_ptr<BooleanOpHistory> boolean_common_with_history(const OcctShape& left, const OcctShape& right) {
+    return wrap_occt_call("boolean_common_with_history", [&]() {
+        BRepAlgoAPI_Common common(left.shape, right.shape);
+        common.Build();
+        if (!common.IsDone()) {
+            throw std::runtime_error("BRepAlgoAPI_Common failed");
+        }
+        return extract_boolean_history(common, left, right);
     });
 }
 

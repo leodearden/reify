@@ -190,6 +190,18 @@ struct BooleanOpHistory {
 /// the result `face_map`/`edge_map`) are silently skipped.
 std::unique_ptr<BooleanOpHistory> boolean_fuse_with_history(const OcctShape& left, const OcctShape& right);
 
+/// Run `BRepAlgoAPI_Cut` on `left` and `right` (left − right), eagerly
+/// capturing the per-parent face/edge Modified/Generated/Deleted records
+/// alongside the cut result shape. Mirrors `boolean_fuse_with_history`
+/// exactly. Part of v0.2 persistent-naming-v2 (task 2656, step-2).
+std::unique_ptr<BooleanOpHistory> boolean_cut_with_history(const OcctShape& left, const OcctShape& right);
+
+/// Run `BRepAlgoAPI_Common` on `left` and `right` (A ∩ B), eagerly
+/// capturing the per-parent face/edge Modified/Generated/Deleted records
+/// alongside the intersection result shape. Mirrors `boolean_fuse_with_history`
+/// exactly. Part of v0.2 persistent-naming-v2 (task 2656, step-4).
+std::unique_ptr<BooleanOpHistory> boolean_common_with_history(const OcctShape& left, const OcctShape& right);
+
 /// Move the result shape out of the history wrapper. Returns the freshly
 /// constructed `OcctShape` for the kernel to register; subsequent calls
 /// observe an empty `unique_ptr`.

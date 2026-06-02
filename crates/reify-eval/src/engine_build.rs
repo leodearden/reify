@@ -11,7 +11,7 @@ use reify_solver_elastic::{
     Mesh2d, Mesh2dError, Mesh2dReport, MpcRow, SweepError, SweepParams, SweptMesh3d,
 };
 use reify_core::{Diagnostic, DiagnosticLabel, RealizationNodeId, SourceSpan, VersionId};
-use reify_ir::{AttributeHistory, CapabilityDescriptor, CompiledFunction, ElementOrderTag, ErrorRef, ExportFormat, FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelHandle, KernelId, LoftOpHistoryRecords, Operation, ReprKind, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable, ValueMap, VolumeMesh};
+use reify_ir::{AttributeHistory, BooleanOpHistoryRecords, BooleanOpParents, CapabilityDescriptor, CompiledFunction, ElementOrderTag, ErrorRef, ExportFormat, FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelHandle, KernelId, LoftOpHistoryRecords, Operation, ReprKind, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable, ValueMap, VolumeMesh};
 use reify_shell_extract::{MidSurfaceMesh, ShellTetInterface};
 
 use crate::cache::{CacheStore, CachedResult, FAILED_REALIZATION_STUB_HANDLE, NodeCache, NodeId};
@@ -27,7 +27,7 @@ use crate::sweep_classifier::{
 use crate::topology_attribute_propagation::{
     LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M, detect_local_index_reassignment_diagnostics,
     populate_extrude_attributes, populate_loft_attributes, populate_revolve_attributes,
-    populate_sweep_attributes,
+    populate_sweep_attributes, propagate_attributes_via_brepalgoapi_history,
 };
 use crate::{BuildResult, Engine, MeshSurface, TessellateResult};
 
@@ -542,6 +542,30 @@ fn populate_attribute_history(
             };
             populate_loft_op(table, kernel, feature_id, profiles, result_handle, history)
         }
+        AttributeHistory::Boolean(history) => {
+            // Binary boolean ops (Union/Difference/Intersection): two parents
+            // — left (parent_index 0) and right (parent_index 1).
+            let (left_handle, right_handle) = match geom_op {
+                GeometryOp::Union { left, right }
+                | GeometryOp::Difference { left, right }
+                | GeometryOp::Intersection { left, right } => (*left, *right),
+                _ => {
+                    return Err(reify_ir::QueryError::QueryFailed(format!(
+                        "AttributeHistory::Boolean returned for non-boolean GeometryOp: {:?}",
+                        geom_op
+                    )));
+                }
+            };
+            populate_boolean_op(
+                table,
+                kernel,
+                feature_id,
+                left_handle,
+                right_handle,
+                result_handle,
+                history,
+            )
+        }
     }
 }
 
@@ -812,6 +836,51 @@ fn populate_loft_op(
         &result_vertices,
         &start_cap_vertex_index_lists,
         &end_cap_vertex_index_lists,
+    )
+}
+
+/// Binary-boolean variant of `populate_single_parent_sweep_op` for
+/// `GeometryOp::{Union,Difference,Intersection}`.
+///
+/// Extracts the left and right operand face/edge slices live via
+/// `kernel.extract_faces` / `kernel.extract_edges` (the same per-call
+/// pattern as `populate_single_parent_sweep_op`), then extracts the result
+/// face/edge slices, builds a
+/// `BooleanOpParents::Binary { faces: [left, right], edges: [left, right] }`
+/// and calls the existing `propagate_attributes_via_brepalgoapi_history`
+/// helper (which implements split → `mod_history` `ModEntry` logic).
+///
+/// Modelled on `populate_single_parent_sweep_op`; failure semantics are
+/// identical (returned `QueryError` surfaces as `Diagnostic::warning` at the
+/// call site — no Failed regression, per the task-2574 convention).
+fn populate_boolean_op(
+    table: &mut TopologyAttributeTable,
+    kernel: &mut dyn GeometryKernel,
+    feature_id: &FeatureId,
+    left_handle: GeometryHandleId,
+    right_handle: GeometryHandleId,
+    result_handle: GeometryHandleId,
+    history: &BooleanOpHistoryRecords,
+) -> Result<(), reify_ir::QueryError> {
+    let left_faces = kernel.extract_faces(left_handle)?;
+    let left_edges = kernel.extract_edges(left_handle)?;
+    let right_faces = kernel.extract_faces(right_handle)?;
+    let right_edges = kernel.extract_edges(right_handle)?;
+    let result_faces = kernel.extract_faces(result_handle)?;
+    let result_edges = kernel.extract_edges(result_handle)?;
+
+    let parents = BooleanOpParents::Binary {
+        faces: [left_faces.as_slice(), right_faces.as_slice()],
+        edges: [left_edges.as_slice(), right_edges.as_slice()],
+    };
+
+    propagate_attributes_via_brepalgoapi_history(
+        table,
+        &parents,
+        &result_faces,
+        &result_edges,
+        history,
+        feature_id,
     )
 }
 

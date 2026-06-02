@@ -1355,6 +1355,56 @@ impl OcctKernel {
         Ok((handle, records))
     }
 
+    /// Run `BRepAlgoAPI_Cut` on `left` and `right` (left − right), capturing
+    /// the per-parent face/edge Modified/Generated/Deleted history records
+    /// alongside the result solid.
+    ///
+    /// Returns `Err(GeometryError::InvalidReference(_))` if either handle
+    /// is unknown to this kernel, or `Err(GeometryError::OperationFailed(_))`
+    /// if the OCCT call fails.
+    ///
+    /// Part of v0.2 persistent-naming-v2 (task 2656, step-2).
+    pub fn boolean_cut_with_history(
+        &mut self,
+        left: GeometryHandleId,
+        right: GeometryHandleId,
+    ) -> Result<(GeometryHandle, BooleanOpHistoryRecords), GeometryError> {
+        let (result_shape, records) = {
+            let l = self.get_shape(left)?;
+            let r = self.get_shape(right)?;
+            let history = ffi::ffi::boolean_cut_with_history(l, r)
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+            decode_six_buffer_history(history, &BOOLEAN_OP_ACCESSORS)
+        };
+        let handle = self.store_with_repr(result_shape, BRepKind::Solid);
+        Ok((handle, records))
+    }
+
+    /// Run `BRepAlgoAPI_Common` on `left` and `right` (A ∩ B), capturing
+    /// the per-parent face/edge Modified/Generated/Deleted history records
+    /// alongside the result solid.
+    ///
+    /// Returns `Err(GeometryError::InvalidReference(_))` if either handle
+    /// is unknown to this kernel, or `Err(GeometryError::OperationFailed(_))`
+    /// if the OCCT call fails.
+    ///
+    /// Part of v0.2 persistent-naming-v2 (task 2656, step-4).
+    pub fn boolean_common_with_history(
+        &mut self,
+        left: GeometryHandleId,
+        right: GeometryHandleId,
+    ) -> Result<(GeometryHandle, BooleanOpHistoryRecords), GeometryError> {
+        let (result_shape, records) = {
+            let l = self.get_shape(left)?;
+            let r = self.get_shape(right)?;
+            let history = ffi::ffi::boolean_common_with_history(l, r)
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+            decode_six_buffer_history(history, &BOOLEAN_OP_ACCESSORS)
+        };
+        let handle = self.store_with_repr(result_shape, BRepKind::Solid);
+        Ok((handle, records))
+    }
+
     /// Shared body for `fillet_with_history` and `chamfer_with_history`.
     ///
     /// Looks up `shape_id`, calls `build` to run the OCCT algorithm and obtain a
