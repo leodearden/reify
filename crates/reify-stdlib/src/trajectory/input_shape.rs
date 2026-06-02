@@ -537,6 +537,37 @@ mod tests {
         }
     }
 
+    /// An infeasible TOTSShaper (velocity_limit = 0 on a nonzero P2P) must cause
+    /// `eval_input_shape` to return `Value::Undef`.
+    ///
+    /// `velocity_limit = 0` is constructible directly as a `StructureInstance`
+    /// (bypassing the `.ri` `velocity_limit > 0` ctor constraint), making it a
+    /// valid test vector. `solve_tots` detects this as `ConstraintInfeasible` at
+    /// iteration 1 (early-exit, per `tots.rs::sqp_infeasible_zero_velocity_limit`).
+    ///
+    /// Fails after step-2 because the step-2 arm returns the profile echo for
+    /// ALL outcomes, including `ConstraintInfeasible`. Outcome-mapping is wired
+    /// in step-4.
+    #[test]
+    fn tots_shaper_infeasible_returns_undef() {
+        let p = profile();
+        // velocity_limit = 0 → canonical P2P (start=0, end=1, nonzero) is
+        // infeasible; all other params are slack positives.
+        let s = tots_shaper(vec![
+            ("velocity_limit", Value::Real(0.0)),
+            ("acceleration_limit", Value::Real(5000.0)),
+            ("vibration_tolerance", Value::Real(0.02)),
+            ("max_iters", Value::Int(100)),
+            ("tol", Value::Real(1e-6)),
+        ]);
+        assert_eq!(
+            eval_input_shape(&[p, s]),
+            Value::Undef,
+            "eval_input_shape with velocity_limit=0 TOTSShaper should return Value::Undef \
+             (ConstraintInfeasible → Undef), but outcome mapping is not yet wired"
+        );
+    }
+
     // ── bad inputs → None ─────────────────────────────────────────────────────
 
     /// A non-`StructureInstance` argument is not a shaper → `None`.
