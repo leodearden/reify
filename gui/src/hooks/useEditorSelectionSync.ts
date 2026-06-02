@@ -104,7 +104,13 @@ export function createEditorSelectionSync(opts: EditorSelectionSyncOptions): voi
 
       // Capture (do not increment) the current token before the await
       const token = latestRequestToken;
-      const result = await getEntityAtSourceLocation(line, column);
+      let result: string | null = null;
+      try {
+        result = await getEntityAtSourceLocation(line, column);
+      } catch {
+        // IPC failure — treat as null (no-op: preserves existing selection).
+        return;
+      }
 
       // Discard stale results: a newer cursor-move fired while this was in flight
       if (token !== latestRequestToken) return;
@@ -193,7 +199,13 @@ export function createEditorHoverSync(opts: EditorHoverSyncOptions): void {
       timerId = null;
 
       const token = latestRequestToken;
-      const result = await getEntityAtSourceLocation(line, column);
+      let result: string | null = null;
+      try {
+        result = await getEntityAtSourceLocation(line, column);
+      } catch {
+        // IPC failure — treat as null resolution (clears hover, same as
+        // cursor-on-whitespace) while still respecting the token guard.
+      }
 
       if (token !== latestRequestToken) return;
 
