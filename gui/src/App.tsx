@@ -36,7 +36,7 @@ import { createDefPreviewStore } from './stores/defPreviewStore';
 import { createMechanismStore } from './stores/mechanismStore';
 import { createBucklingStore, subscribeModeShapeFrames } from './stores/bucklingStore';
 import { createDefPreviewActivation } from './hooks/useDefPreviewActivation';
-import { createEditorSelectionSync } from './hooks/useEditorSelectionSync';
+import { createEditorSelectionSync, createEditorHoverSync } from './hooks/useEditorSelectionSync';
 import {
   getInitialState,
   getEntityTree as bridgeGetEntityTree,
@@ -256,6 +256,16 @@ const App: Component = () => {
     getEntityAtSourceLocation: bridgeGetEntityAtSourceLocation,
     selectEntity: (ep) => selectionStore.selectEntity(ep),
     flyToEntity: (ep) => flyToEntityFn?.(ep),
+    debounceMs: 200,
+  });
+
+  // Editor→hover sync: watches editor cursor → debounces 200ms → resolves entity
+  // at cursor position → updates selectionStore.hoveredEntity (transient; clears on
+  // null cursor or null resolution, unlike the selection hook which preserves selection).
+  createEditorHoverSync({
+    editorStore,
+    getEntityAtSourceLocation: bridgeGetEntityAtSourceLocation,
+    hoverEntity: (ep) => selectionStore.hoverEntity(ep),
     debounceMs: 200,
   });
 
