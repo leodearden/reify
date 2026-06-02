@@ -146,56 +146,27 @@ fn call_form_find_free(value_inputs: &[Value]) -> ComputeOutcome {
 
 // ── step-3: trampoline-unit tests ─────────────────────────────────────────────
 
-/// (a) Happy path: the trampoline cracks the Tensegrity / group_ids / seed_ratios
-/// / reference_group Values, runs the adaptive GroupRatios search, and returns
-/// `Completed` with a `FormFindResult` whose:
-///   - `converged` == Bool(true)
-///   - `nodes` is a 6-element List of 3-component Points
-///   - `member_forces[0..3]` (struts) < 0 (compressive)
-///   - `member_forces[3..12]` (cables) > 0 (tensile)
-///   - `force_densities[0..3]` ≈ −√3 (within 1e-6)
-///   - `force_densities[3..9]` ≈ +1 (reference, within 1e-12)
-///   - `force_densities[9..12]` ≈ +√3 (within 1e-6)
+/// Shared assertion helper for the canonical triplex prism `FormFindResult`.
 ///
-/// Numeric bounds are backed by the landed kernel test
-/// `group_ratios_search_recovers_closed_form_prism_relative_q`.
-#[test]
-fn trampoline_happy_path_solves_triplex_prism() {
-    let value_inputs = vec![
-        triplex_tensegrity(),
-        triplex_group_ids(),
-        triplex_seeds(),
-        Value::Int(1), // reference_group
-    ];
-
-    let fields = match call_form_find_free(&value_inputs) {
-        ComputeOutcome::Completed { result, .. } => match result {
-            Value::StructureInstance(d) => {
-                assert_eq!(
-                    d.type_name, "FormFindResult",
-                    "result should be a FormFindResult, got {:?}",
-                    d.type_name
-                );
-                d.fields
-            }
-            other => panic!("Completed result should be a StructureInstance, got {other:?}"),
-        },
-        other => panic!("expected ComputeOutcome::Completed for the triplex prism, got {other:?}"),
-    };
-
-    // converged == true
-    assert_eq!(
-        fields.get(&"converged".to_string()),
-        Some(&Value::Bool(true)),
-        "triplex GroupRatios solve must report converged == true"
-    );
-
-    // nodes: 6 Points
+/// Asserts the invariants shared by both the trampoline-unit test and the e2e
+/// test so a single contract change is updated in one place:
+///   - `nodes` is a 6-element List of 3-component Points
+///   - `member_forces` has 12 entries: struts (indices 0–2) compressive (< 0),
+///     cables (indices 3–11) tensile (> 0)
+///   - `force_densities` has 12 entries: struts ≈ −√3 (1e-6), horizontals = 1
+///     (1e-12), verticals ≈ +√3 (1e-6) — backed by the landed kernel test
+///     `group_ratios_search_recovers_closed_form_prism_relative_q`
+///
+/// Does NOT assert `converged` — callers should check that themselves before
+/// invoking this helper (the trampoline test reads it from the Completed result;
+/// the e2e test reads it via `crack_form_find_result`).
+fn assert_triplex_form_find_result(fields: &PersistentMap<String, Value>) {
+    // nodes: 6 Points, each with 3 components.
     let nodes = match fields.get(&"nodes".to_string()) {
         Some(Value::List(ns)) => ns,
         other => panic!("FormFindResult.nodes must be a List, got {other:?}"),
     };
-    assert_eq!(nodes.len(), 6, "expected 6 recovered nodes for the triplex prism");
+    assert_eq!(nodes.len(), 6, "expected 6 solved nodes for the triplex prism");
     for (i, n) in nodes.iter().enumerate() {
         match n {
             Value::Point(c) if c.len() == 3 => {}
@@ -218,7 +189,7 @@ fn trampoline_happy_path_solves_triplex_prism() {
         assert!(f > 0.0, "cable member_forces[{i}] must be tensile (> 0), got {f}");
     }
 
-    // force_densities: 12 entries; closed-form values (backed by kernel test).
+    // force_densities: 12 entries; closed-form values.
     let fds = match fields.get(&"force_densities".to_string()) {
         Some(Value::List(fds)) => fds,
         other => panic!("FormFindResult.force_densities must be a List, got {other:?}"),
@@ -246,6 +217,47 @@ fn trampoline_happy_path_solves_triplex_prism() {
             "vertical force_densities[{i}] must be ≈ +√3, got {q}"
         );
     }
+}
+
+/// (a) Happy path: the trampoline cracks the Tensegrity / group_ids / seed_ratios
+/// / reference_group Values, runs the adaptive GroupRatios search, and returns
+/// `Completed` with a `FormFindResult` satisfying the canonical triplex prism
+/// contract (see `assert_triplex_form_find_result`).
+///
+/// Numeric bounds are backed by the landed kernel test
+/// `group_ratios_search_recovers_closed_form_prism_relative_q`.
+#[test]
+fn trampoline_happy_path_solves_triplex_prism() {
+    let value_inputs = vec![
+        triplex_tensegrity(),
+        triplex_group_ids(),
+        triplex_seeds(),
+        Value::Int(1), // reference_group
+    ];
+
+    let fields = match call_form_find_free(&value_inputs) {
+        ComputeOutcome::Completed { result, .. } => match result {
+            Value::StructureInstance(d) => {
+                assert_eq!(
+                    d.type_name, "FormFindResult",
+                    "result should be a FormFindResult, got {:?}",
+                    d.type_name
+                );
+                d.fields
+            }
+            other => panic!("Completed result should be a StructureInstance, got {other:?}"),
+        },
+        other => panic!("expected ComputeOutcome::Completed for the triplex prism, got {other:?}"),
+    };
+
+    // converged == true (checked here; not in the shared helper).
+    assert_eq!(
+        fields.get(&"converged".to_string()),
+        Some(&Value::Bool(true)),
+        "triplex GroupRatios solve must report converged == true"
+    );
+
+    assert_triplex_form_find_result(&fields);
 }
 
 /// (b) Infeasible: all members tagged Cable with all-positive seeds → the
@@ -316,11 +328,112 @@ fn trampoline_short_value_inputs_is_failed() {
                 "expected E_FormFindInfeasible in short-inputs diagnostic, got: {joined}"
             );
             assert!(
-                joined.contains("4 inputs") || joined.contains("4"),
-                "expected mention of 4 inputs in diagnostic, got: {joined}"
+                joined.contains("expects 4 inputs"),
+                "expected 'expects 4 inputs' in diagnostic, got: {joined}"
             );
         }
         other => panic!("expected ComputeOutcome::Failed for short inputs, got {other:?}"),
+    }
+}
+
+/// (d) Sign-contract violation: a cable group is given a negative seed ratio,
+/// which fixes that group's force density to q < 0 throughout the GroupRatios
+/// search. When `form_find_explicit` is called at the end of the search it sees
+/// cables with q < 0 → `FreeFormError::SignViolation` → `E_FormFindInfeasible`
+/// with "sign violation" in the message.
+///
+/// Concretely: group 1 contains the six horizontal cables (top + bottom rings)
+/// but receives seed_ratios[1] = −1.0. The search preserves the negative sign
+/// (only magnitude is searched) so the assembled q for those cable members
+/// remains negative, violating the cable sign contract (q > 0 required).
+#[test]
+fn trampoline_cable_group_negative_seed_is_sign_violation() {
+    // seeds: struts→−1 (correct), horizontal cables→−1 (WRONG sign for cables),
+    //        verticals→+1 (correct).
+    let sign_violating_seeds = Value::List(vec![
+        Value::Real(-1.0), // group 0: struts — correct (compressive)
+        Value::Real(-1.0), // group 1: horizontal cables — WRONG (cables need q > 0)
+        Value::Real(1.0),  // group 2: vertical cables — correct
+    ]);
+
+    let value_inputs = vec![
+        triplex_tensegrity(),
+        triplex_group_ids(), // struts→0, horizontals→1, verticals→2
+        sign_violating_seeds,
+        Value::Int(1), // reference_group
+    ];
+
+    match call_form_find_free(&value_inputs) {
+        ComputeOutcome::Failed { diagnostics } => {
+            let joined: String =
+                diagnostics.iter().map(|d| d.message.as_str()).collect::<Vec<_>>().join(" | ");
+            assert!(
+                joined.contains("E_FormFindInfeasible"),
+                "expected E_FormFindInfeasible in sign-violation diagnostic, got: {joined}"
+            );
+            assert!(
+                joined.contains("sign violation"),
+                "expected 'sign violation' wording in diagnostic (sign contract pinned), got: {joined}"
+            );
+        }
+        other => panic!(
+            "expected ComputeOutcome::Failed for cable group with negative seed, got {other:?}"
+        ),
+    }
+}
+
+/// (e) Out-of-range group id: a group_ids entry references group index 99,
+/// which exceeds seed_ratios.len() == 3. The kernel's dimension guard in
+/// `form_find_group_ratios` catches this and returns `FreeFormError::DimensionMismatch`
+/// → `E_FormFindInfeasible` with "dimension mismatch" in the message.
+///
+/// This test pins the delegated-validation assumption: the trampoline passes
+/// group_ids directly to the kernel, which is responsible for the out-of-range
+/// check. Confirming the kernel surfaces `DimensionMismatch` (not a panic) is
+/// the documented boundary.
+#[test]
+fn trampoline_out_of_range_group_id_is_dimension_mismatch() {
+    // Replace the last group_id (2) with 99, which exceeds seed_ratios.len() == 3.
+    let bad_group_ids = Value::List(vec![
+        Value::Int(0),
+        Value::Int(0),
+        Value::Int(0), // struts
+        Value::Int(1),
+        Value::Int(1),
+        Value::Int(1),
+        Value::Int(1),
+        Value::Int(1),
+        Value::Int(1),
+        Value::Int(99), // out-of-range: seed_ratios only has indices 0,1,2
+        Value::Int(2),
+        Value::Int(2),
+    ]);
+
+    let value_inputs = vec![
+        triplex_tensegrity(),
+        bad_group_ids,
+        triplex_seeds(), // only 3 groups: 0, 1, 2
+        Value::Int(1),   // reference_group
+    ];
+
+    match call_form_find_free(&value_inputs) {
+        ComputeOutcome::Failed { diagnostics } => {
+            let joined: String =
+                diagnostics.iter().map(|d| d.message.as_str()).collect::<Vec<_>>().join(" | ");
+            assert!(
+                joined.contains("E_FormFindInfeasible"),
+                "expected E_FormFindInfeasible for out-of-range group id, got: {joined}"
+            );
+            // The kernel returns DimensionMismatch for group ids >= n_groups; confirm
+            // the trampoline surfaces "dimension mismatch" rather than panicking.
+            assert!(
+                joined.contains("dimension mismatch"),
+                "expected 'dimension mismatch' wording for out-of-range group id, got: {joined}"
+            );
+        }
+        other => panic!(
+            "expected ComputeOutcome::Failed for out-of-range group id, got {other:?}"
+        ),
     }
 }
 
@@ -397,54 +510,7 @@ fn e2e_t_prism_lowers_to_compute_node_and_solves() {
     let (fields, converged) = crack_form_find_result(form);
     assert!(converged, "free-standing triplex form-find must report converged == true");
 
-    // nodes: 6 entries
-    let nodes = match fields.get(&"nodes".to_string()) {
-        Some(Value::List(ns)) => ns,
-        other => panic!("FormFindResult.nodes must be a List, got {other:?}"),
-    };
-    assert_eq!(nodes.len(), 6, "expected 6 solved nodes for the triplex prism");
-
-    // member_forces: 12 entries; struts compressive, cables tensile.
-    let forces = match fields.get(&"member_forces".to_string()) {
-        Some(Value::List(fs)) => fs,
-        other => panic!("FormFindResult.member_forces must be a List, got {other:?}"),
-    };
-    assert_eq!(forces.len(), 12, "expected 12 member forces (3 struts + 9 cables)");
-    for (i, v) in forces.iter().enumerate().take(3) {
-        let f = force_val(v);
-        assert!(f < 0.0, "strut member_forces[{i}] must be compressive (< 0), got {f}");
-    }
-    for (i, v) in forces.iter().enumerate().skip(3) {
-        let f = force_val(v);
-        assert!(f > 0.0, "cable member_forces[{i}] must be tensile (> 0), got {f}");
-    }
-
-    // force_densities: closed-form values ≈ {struts −√3, horizontals +1, verticals +√3}.
-    let fds = match fields.get(&"force_densities".to_string()) {
-        Some(Value::List(fds)) => fds,
-        other => panic!("FormFindResult.force_densities must be a List, got {other:?}"),
-    };
-    assert_eq!(fds.len(), 12, "expected 12 force densities");
-    let sqrt3 = 3.0_f64.sqrt();
-    for (i, v) in fds.iter().enumerate().take(3) {
-        let q = coord(v);
-        assert!(
-            (q - (-sqrt3)).abs() < 1e-6,
-            "strut force_densities[{i}] ≈ −√3, got {q}"
-        );
-    }
-    for (i, v) in fds.iter().enumerate().skip(3).take(6) {
-        let q = coord(v);
-        assert!(
-            (q - 1.0).abs() < 1e-12,
-            "horizontal force_densities[{i}] (reference) = 1, got {q}"
-        );
-    }
-    for (i, v) in fds.iter().enumerate().skip(9) {
-        let q = coord(v);
-        assert!(
-            (q - sqrt3).abs() < 1e-6,
-            "vertical force_densities[{i}] ≈ +√3, got {q}"
-        );
-    }
+    // Delegate nodes / member_forces / force_densities checks to the shared
+    // canonical-prism assertion helper (same contract as the trampoline-unit test).
+    assert_triplex_form_find_result(fields);
 }
