@@ -68,9 +68,13 @@ fn eval_affine_algebra_determinant_prints_24() {
         status.success(),
         "reify eval affine_algebra.ri should exit 0;\nstdout: {stdout}\nstderr: {stderr}"
     );
+    // Check that the determinant cell `d` carries the exact value 24 (not a
+    // coincidental substring of another number or a line/column in a diagnostic).
+    // Format: "<Structure>.<cell> = <value>" — the same form the sibling
+    // constructor test uses to anchor its affine_map(...) assertions.
     assert!(
-        stdout.contains("24"),
-        "stdout should contain determinant value 24; got:\n{stdout}\nstderr:\n{stderr}"
+        stdout.contains("AffineAlgebra.d = 24"),
+        "stdout should contain 'AffineAlgebra.d = 24' (cell label anchors the determinant result); got:\n{stdout}\nstderr:\n{stderr}"
     );
 }
 

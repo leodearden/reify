@@ -4,7 +4,7 @@ use reify_core::DimensionVector;
 use reify_ir::{Value, quaternion_is_finite};
 
 use crate::helpers::tensor_components_f64;
-use crate::matrix::matrix_components_f64;
+use crate::matrix::{mat3_det, matrix_components_f64};
 
 /// Inner validator shared by [`decompose_vec3`] and [`decompose_point3`].
 ///
@@ -195,7 +195,7 @@ fn mat3_apply(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
 /// Returns `None` when the determinant is zero or non-finite.
 fn affine_mat3_inv(m: [[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
     let [[a, b, c], [d, e, f], [g, h, i]] = m;
-    let det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+    let det = mat3_det(m);
     if det == 0.0 || !det.is_finite() {
         return None;
     }

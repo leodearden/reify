@@ -3,15 +3,24 @@ use reify_ir::Value;
 
 use crate::helpers::{binary, sanitize_value, tensor_components_f64, unary};
 
+/// Compute the determinant of a 3×3 row-major matrix using the Sarrus /
+/// cofactor expansion along the first row:
+/// det = a(ei−fh) − b(di−fg) + c(dh−eg).
+///
+/// Shared by the `determinant` builtin's `AffineMap` arm (matrix.rs) and
+/// `affine_mat3_inv` in geometry.rs — single source of truth for the formula.
+pub(crate) fn mat3_det(m: [[f64; 3]; 3]) -> f64 {
+    let [[a, b, c], [d, e, f], [g, h, i]] = m;
+    a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+}
+
 pub(crate) fn eval_matrix(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
         // --- Advanced linear algebra: determinant, inverse, transpose, outer, trace, eigenvalues ---
         "determinant" => unary(args, |v| {
             // AffineMap: linear part is dimensionless (G6 contract) → Value::Real.
             if let Value::AffineMap { linear, .. } = v {
-                let [[a, b, c], [d, e, f], [g, h, i]] = *linear;
-                let det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
-                return sanitize_value(Value::Real(det));
+                return sanitize_value(Value::Real(mat3_det(*linear)));
             }
             let (n, ncols, data, dim) = match matrix_components_f64(v) {
                 Some(c) => c,
