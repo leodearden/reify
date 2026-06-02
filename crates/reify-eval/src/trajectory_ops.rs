@@ -48,6 +48,7 @@
 /// `cargo build`. Same "implemented ahead of wiring" suppression the trajectory
 /// stdlib modules use.
 #[allow(dead_code)]
+// G-allow: trajectory robustness metric seam (worst_case_residual_fraction), task #3869 (θ/ι — simulate_trajectory, DONE) and task #3870 (κ — TOTS, DONE); consumers PENDING, so no in-tree caller yet.
 pub fn worst_case_residual_fraction(
     shaper: &reify_ir::Value,
     f_lo_hz: f64,
