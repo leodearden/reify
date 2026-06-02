@@ -1470,6 +1470,8 @@ const App: Component = () => {
                 onSelectAll={selectionStore.selectAll}
                 onOpenManage={() => setViewManageOpen(true)}
                 onSaveViews={handleSaveViews}
+                onHover={(path) => selectionStore.hoverEntity(path)}
+                hoveredEntity={selectionStore.state.hoveredEntity}
               />
               <Splitter orientation="horizontal" onResize={handleDesignTreeResize} data-testid="splitter-design-tree" />
               <PropertyEditor
