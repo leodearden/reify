@@ -409,6 +409,7 @@ structure def ProbeAllConstants {
 /// The 2019-SI value 1.602176634×10⁻¹⁹ appears in two places:
 ///   - `si_units.rs` (Rust kernel — the `eV` unit factor, registered in `std/si_units`), and
 ///   - `units.ri` (the `ELEMENTARY_CHARGE` fn body, in `std/units`).
+///
 /// This test cross-checks them so an edit to either layer is caught here.
 ///
 /// Note: `eV` lives in `std/si_units`, not `std/units`, so this test searches
