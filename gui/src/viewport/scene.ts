@@ -9,7 +9,7 @@ import {
   Color,
   Vector3,
 } from 'three';
-import type { Box3 } from 'three';
+import type { Box3, Material } from 'three';
 import { THEME_TOKENS } from '../theme';
 
 export interface SceneContext {
@@ -77,6 +77,17 @@ export function createScene(
   scene.add(grid);
 
   const axes = new AxesHelper(2);
+  // The AxesHelper is coplanar with the XY GridHelper (both lie in the Z=0 plane). Without
+  // intervention, floating-point depth jitter at some zoom levels causes the grey grid lines
+  // to win the LESS_EQUAL depth test and occlude the red (X) / green (Y) axis vectors.
+  // Fix: make the axes an always-on-top overlay so the grid can never z-fight over them.
+  //   renderOrder = 1  — draw axes AFTER the grid (grid keeps the default renderOrder 0)
+  //   depthTest = false — axes fragments are never discarded by the depth buffer
+  //   depthWrite = false — axes do not pollute the depth buffer for subsequent draws
+  // The cast to Material is safe: AxesHelper always constructs a single LineBasicMaterial.
+  axes.renderOrder = 1;
+  (axes.material as Material).depthTest = false;
+  (axes.material as Material).depthWrite = false;
   scene.add(axes);
 
   function resize(w: number, h: number) {
