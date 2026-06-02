@@ -1,3 +1,4 @@
+use nalgebra::DMatrix;
 use reify_core::DimensionVector;
 use reify_ir::Value;
 
@@ -39,7 +40,7 @@ pub(crate) fn eval_matrix(name: &str, args: &[Value]) -> Option<Value> {
                     let (g, h, i) = (data[6], data[7], data[8]);
                     a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
                 }
-                _ => return Value::Undef, // only 1×1, 2×2, 3×3 supported
+                _ => DMatrix::from_row_slice(n, n, &data).determinant(),
             };
             let result_dim = dim.pow(n as i8);
             if result_dim == DimensionVector::DIMENSIONLESS {
