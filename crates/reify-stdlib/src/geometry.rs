@@ -5028,6 +5028,78 @@ mod tests {
         assert!(eval_builtin("affine_inverse", &[Value::Real(1.0)]).is_undef());
     }
 
+    // ── δ step-2: transform-widening structural-invariant pin ─────────────────
+    // Goes beyond γ's bare matrix-equality by asserting det=+1 (orientation-
+    // preserving) and orthonormality (linear·linearᵀ=I) on the widened rotation.
+
+    #[test]
+    fn affine_from_transform_z90_det_is_one() {
+        // 90°-Z rotation widened to AffineMap must have det(linear) = +1.
+        let q = Value::Orientation {
+            w: std::f64::consts::FRAC_1_SQRT_2,
+            x: 0.0,
+            y: 0.0,
+            z: std::f64::consts::FRAC_1_SQRT_2,
+        };
+        let trans = Value::Vector(vec![
+            Value::length(0.005),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        let t = eval_builtin("transform3", &[q, trans]);
+        let w = eval_builtin("affine_from_transform", &[t]);
+        // Verify matrix and translation as in γ (reuse assert_matrix_approx)
+        let (linear, translation) = expect_affine(w.clone());
+        assert_matrix_approx(
+            linear,
+            [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+            1e-12,
+        );
+        assert!((translation[0] - 0.005).abs() < 1e-12, "tx");
+        assert!(translation[1].abs() < 1e-12, "ty");
+        assert!(translation[2].abs() < 1e-12, "tz");
+        // Now pin det=+1 via the determinant builtin's AffineMap arm.
+        let det_val = eval_builtin("determinant", std::slice::from_ref(&w));
+        match det_val {
+            Value::Real(d) => {
+                assert!(
+                    (d - 1.0).abs() < 1e-12,
+                    "widened rotation det must be +1, got {}",
+                    d
+                );
+            }
+            other => panic!("determinant must return Value::Real, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn affine_from_transform_z90_is_orthonormal() {
+        // linear·linearᵀ must equal I₃ within 1e-12 (pins "proper rotation").
+        let q = Value::Orientation {
+            w: std::f64::consts::FRAC_1_SQRT_2,
+            x: 0.0,
+            y: 0.0,
+            z: std::f64::consts::FRAC_1_SQRT_2,
+        };
+        let trans = Value::Vector(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        let t = eval_builtin("transform3", &[q, trans]);
+        let (linear, _) = expect_affine(eval_builtin("affine_from_transform", &[t]));
+        // Compute linear · linearᵀ in the test.
+        let mut product = [[0.0f64; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                for k in 0..3 {
+                    product[i][j] += linear[i][k] * linear[j][k]; // linearᵀ[k][j] = linear[j][k]
+                }
+            }
+        }
+        assert_matrix_approx(product, IDENTITY_3X3, 1e-12);
+    }
+
     // ── δ step-1: composition-order point-application pin ─────────────────────
     // Pins the left-applied a∘b convention: (a∘b)(p) = a(b(p)).
     // Uses linear·p + translation computed in-test (affine_apply is owned by
