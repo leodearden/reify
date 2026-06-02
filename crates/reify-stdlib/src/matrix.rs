@@ -990,7 +990,7 @@ mod tests {
     #[test]
     fn inverse_4x4_times_original_approx_identity() {
         let m = make_4x4_tridiagonal_dimensionless();
-        let inv = eval_builtin("inverse", &[m.clone()]);
+        let inv = eval_builtin("inverse", std::slice::from_ref(&m));
 
         // Must not be Undef
         assert!(
