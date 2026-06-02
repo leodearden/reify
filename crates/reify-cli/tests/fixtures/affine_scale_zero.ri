@@ -1,0 +1,13 @@
+// affine_scale_zero.ri — CLI eval fixture: a zero scale factor is degenerate.
+//
+// affine_scale(0.0, 1.0, 1.0) returns Value::Undef (det=0, non-invertible), and
+// the post-Undef geometry diagnose hook must emit on stderr:
+//   warning: affine_scale dropped: factor=0 produces a degenerate (det=0) ...
+// `reify eval` still exits 0 (the diagnostic is a Warning, not an Error).
+//
+// Lives in tests/fixtures/ (NOT examples/) since it intentionally triggers a
+// runtime Warning diagnostic.
+
+structure def AffineScaleZero {
+    let m = affine_scale(0.0, 1.0, 1.0)
+}
