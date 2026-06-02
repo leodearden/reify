@@ -73,9 +73,17 @@ export function DualViewport(props: DualViewportProps) {
   props.flyToEntityRef?.((p) => innerFlyToEntity?.(p));
 
   // ── Effective activation: auto signal OR user forceExpanded override ───────
+  // Mirrors App.tsx's `hasMeshes` gate on the design pane (Object.keys idiom):
+  // automatic expansion requires preview content so a cursor move into a
+  // definition whose preview has not yet loaded leaves the pane minimized
+  // instead of opening a blank grid. forceExpanded is an unconditional manual
+  // override (clicking the strip must always expand, even before meshes load).
+  const defPreviewHasPreviewMeshes = createMemo(
+    () => Object.keys(props.defPreviewStore.state.meshes).length > 0,
+  );
   const defPreviewEffective = createMemo(
     () =>
-      props.defPreviewActive() ||
+      (props.defPreviewActive() && defPreviewHasPreviewMeshes()) ||
       (props.viewportStore.state.viewports['def-preview']?.forceExpanded ?? false),
   );
   const designEffective = createMemo(
