@@ -94,6 +94,12 @@ pub type Velocity = Length / Time
 /// Boltzmann constant. Local alias because no J/K named dimension exists.
 pub type HeatCapacity = Energy / Temperature
 
+/// Inverse amount of substance — dimension of Avogadro constant (mol⁻¹).
+/// Written as `Dimensionless / AmountOfSubstance` because `Real` is a scalar
+/// type, not a dimension identifier; `Dimensionless` is the special-cased zero
+/// dimension vector resolved by the compiler.
+pub type InverseAmount = Dimensionless / AmountOfSubstance
+
 /// Standard acceleration of gravity (g_n), 9.80665 m/s² — BIPM/CGPM 1901 §70
 /// reference value. Use in body-force loads: `gravity(5 * STANDARD_GRAVITY())`.
 /// Body uses the compositional `1m / (1s * 1s)` form rather than the compound
@@ -120,3 +126,10 @@ pub fn SPEED_OF_LIGHT() -> Velocity { 299792458.0 * 1m / 1s }
 pub fn BOLTZMANN_CONSTANT() -> HeatCapacity {
     0.00000000000000000000001380649 * 1kg * 1m * 1m / (1s * 1s * 1K)
 }
+
+/// Avogadro constant (N_A), 6.02214076×10²³ mol⁻¹ — exact by the 2019 SI
+/// redefinition (26th CGPM, Resolution 1). Body: `coefficient * 1mol / 1mol / 1mol`
+/// anchors a mol in the numerator so the expression is Scalar-valued from the
+/// first `*` (eval_div requires Scalar in the numerator; Real / Scalar is
+/// unhandled). Net dimension: mol¹ / mol¹ / mol¹ = mol⁻¹ = InverseAmount.
+pub fn AVOGADRO_CONSTANT() -> InverseAmount { 6.02214076e23 * 1mol / 1mol / 1mol }
