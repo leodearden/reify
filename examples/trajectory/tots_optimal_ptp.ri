@@ -1,0 +1,103 @@
+// Time-Optimal Trajectory Shaping (TOTS) example  (task λ — 3872)
+//
+// Demonstrates TOTSShaper + input_shape(profile, shaper) construction
+// (PRD docs/prds/v0_3/trajectory-input-shaping.md §5.2, §5.3 / §11 Phase 4).
+//
+// The TOTS (Time-Optimal Trajectory Shaping) shaper minimises trajectory
+// duration subject to vibration, velocity, acceleration, and actuator-force
+// constraints.  The SQP solver (κ task, tots.rs) is invoked by
+// eval_input_shape when the shaper is a TOTSShaper, calling
+// simulate_trajectory_core + inverse_dynamics_open_chain per iteration.
+//
+// ── scope / what this example shows ─────────────────────────────────────────
+// This is a construction + input_shape compile-smoke example.
+// "Runs end-to-end" at λ means: compiles with ZERO Error diagnostics under
+// the examples_smoke gate (matching zvd_robustness.ri / zv_shaped_ramp.ri).
+//
+// ── what is NOT shown (θ-deferred) ──────────────────────────────────────────
+// No numeric `.ri`-level duration assertion is possible here:
+//   - `profile_duration` / `.duration` is a θ-stub returning `0.0 * 1s`.
+//   - `simulate_trajectory` is not a stdlib signature; calling it would emit
+//     an Error diagnostic that breaks this compile gate.
+// The PRD's `optimal.duration < baseline.duration` property is verified at
+// the Rust solver layer by tots.rs::sqp_gantry_converges
+// (result duration ≤ baseline).  This .ri fixture therefore carries NO
+// numeric duration assertion — identical deferral to zvd_robustness.ri.
+//
+// ── element-type inference ──────────────────────────────────────────────────
+// `modes: []` infers `List<Mode>` from the TOTSShaper.modes param type in
+// the ctor-argument position.  `actuator_limits: [jl]` uses a non-empty
+// literal so JointLimit.max_force > 0 ctor constraint is always exercised.
+//
+// Verification: the reify-compiler examples_smoke gate
+// (`all_examples_parse_and_compile_with_stdlib`) auto-discovers this file and
+// requires it to compile with ZERO Error-severity diagnostics.  The dedicated
+// regression test at
+//   crates/reify-compiler/tests/tots_optimal_ptp_example_tests.rs
+// pins the same compile-clean contract plus the TOTSShaper / input_shape /
+// PiecewisePolynomialProfile source pins.
+// ─────────────────────────────────────────────────────────────────────────────
+structure def TotsOptimalPtp {
+    // ── Baseline two-waypoint profile ─────────────────────────────────────────
+    // A point-to-point cubic ramp over [0 s, 1 s], one joint (scalar Real).
+    // CubicSpline interpolation needs only positions, so vels / accels are none.
+    let wp0 = Waypoint(
+        t: 0.0s,
+        values: [0.0],
+        vels: none,
+        accels: none
+    )
+    let wp1 = Waypoint(
+        t: 1.0s,
+        values: [1.0],
+        vels: none,
+        accels: none
+    )
+
+    let profile = PiecewisePolynomialProfile(
+        mechanism: 1.0,
+        waypoints: [wp0, wp1],
+        boundary: NaturalSpline(),
+        spline_kind: SplineKind.CubicSpline
+    )
+
+    // ── Per-joint actuator limit ──────────────────────────────────────────────
+    // One JointLimit for the single translational DOF.
+    // max_force > 0 ctor constraint (trajectory.ri:530) is satisfied.
+    let jl = JointLimit(joint: 0.0, max_force: 1000.0)
+
+    // ── TOTS shaper ───────────────────────────────────────────────────────────
+    // modes: [] infers List<Mode> from the TOTSShaper.modes param-type context.
+    // All six ctor constraints are satisfied:
+    //   velocity_limit > 0, acceleration_limit > 0,
+    //   vibration_tolerance > 0, vibration_tolerance <= 1,
+    //   max_iters > 0, tol > 0.
+    let shaper = TOTSShaper(
+        modes: [],
+        actuator_limits: [jl],
+        velocity_limit: 300.0,
+        acceleration_limit: 5000.0,
+        vibration_tolerance: 0.02
+    )
+
+    // ── Trait-coercion shims ──────────────────────────────────────────────────
+    // The overload resolver uses exact type equality, so a bare
+    // PiecewisePolynomialProfile / TOTSShaper does NOT match input_shape's
+    // `Profile` / `Shaper` trait params — member access on the shim carries the
+    // declared trait type (same workaround as GcodeDialectInput / zvd_robustness.ri).
+    let pi = ProfileInput(profile: profile)
+    let si = ShaperInput(shaper: shaper)
+
+    // ── TOTS-shaped optimal profile ───────────────────────────────────────────
+    // The λ dispatcher runs the real solve_tots SQP loop (simulate_trajectory_core
+    // + inverse_dynamics_open_chain per iteration) on a canonical 1-DOF stand-in
+    // parameterised by the shaper's readable scalar fields.
+    // At λ the result echoes the baseline profile (command re-waypointing is
+    // θ-deferred), so `optimal` is type-correct as a Profile stand-in.
+    let optimal = input_shape(pi.profile, si.shaper)
+
+    // ── Trivially satisfiable leaf constraint ─────────────────────────────────
+    // Confirms that the shaper construction satisfies its ctor constraints at
+    // the design point (vibration_tolerance = 0.02 > 0).
+    constraint shaper.vibration_tolerance > 0
+}
