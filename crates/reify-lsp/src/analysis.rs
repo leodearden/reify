@@ -398,6 +398,31 @@ pub fn compute_document_symbols(source: &str, uri: &Url) -> Vec<DocumentSymbol> 
                     children_or_none(members_to_symbols(source, &t.members)),
                 ));
             }
+            Declaration::Enum(e) => {
+                // Each variant becomes an ENUM_MEMBER child. Named-payload
+                // variant fields (`Circle { radius: Length }`) are not expanded
+                // into grandchildren for this task.
+                let variants = e
+                    .variants
+                    .iter()
+                    .map(|v| {
+                        make_symbol(
+                            &v.name,
+                            SymbolKind::ENUM_MEMBER,
+                            span_to_range(source, v.span),
+                            name_selection_range(source, v.span, &v.name),
+                            None,
+                        )
+                    })
+                    .collect();
+                symbols.push(make_symbol(
+                    &e.name,
+                    SymbolKind::ENUM,
+                    span_to_range(source, e.span),
+                    name_selection_range(source, e.span, &e.name),
+                    children_or_none(variants),
+                ));
+            }
             // All other top-level declarations are not navigable symbols.
             _ => {}
         }
