@@ -144,6 +144,32 @@ impl CgResult {
     pub fn u(&self) -> &[f64] {
         &self.u
     }
+
+    /// Donate the solution allocation to the caller without copying.
+    ///
+    /// Consumes `self` and returns the `Arc<Vec<f64>>` directly. The caller
+    /// receives sole ownership of this handle; if no other `Arc` clones exist,
+    /// the allocation is uniquely owned by the returned `Arc`.
+    ///
+    /// Use this when you need to pass the solution into a struct field typed
+    /// `Arc<Vec<f64>>` (e.g. `CantileverFeaSolve.u`) without a 10⁴–10⁶-DOF copy.
+    /// For the representation-agnostic read path, use [`u()`](Self::u) instead.
+    pub fn into_shared_u(self) -> Arc<Vec<f64>> {
+        self.u
+    }
+
+    /// Clone the internal `Arc` without consuming `self`.
+    ///
+    /// Bumps the reference count and returns a new handle to the same allocation.
+    /// Required by [`solve_cg_with_warm_state`] which must return both the
+    /// `CgResult` and a [`crate::CgWarmState`] sharing one allocation — the
+    /// consuming [`into_shared_u`](Self::into_shared_u) cannot serve a dual-return.
+    ///
+    /// Kept `pub(crate)` so the public surface is exactly the two accessors the
+    /// task specifies ([`u()`](Self::u) and [`into_shared_u`](Self::into_shared_u)).
+    pub(crate) fn shared_u(&self) -> Arc<Vec<f64>> {
+        Arc::clone(&self.u)
+    }
 }
 
 /// Return value of the per-iteration progress callback passed to
