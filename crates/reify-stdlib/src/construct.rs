@@ -22,20 +22,72 @@
 //! sibling tasks β/γ — avoids narrow-file-lock contention and merge
 //! serialization (PRD §7).
 
+use reify_core::DimensionVector;
 use reify_ir::Value;
+
+use crate::helpers::sanitize_value;
 
 /// Evaluate a construction builtin (`vec` / `matrix` / `diag` / `identity`).
 ///
 /// Returns `Some(value)` when `name` is one of the four constructors (the
 /// value is `Value::Undef` on malformed input), or `None` when `name` is not a
 /// construction builtin (so `eval_builtin` continues its dispatch chain).
-//
-// STUB (pre-1): always `None` until the per-builtin arms land in steps 2/4/6/8.
-// `#[allow(dead_code)]` because this is not yet wired into `eval_builtin`'s
-// dispatch chain — that wiring arrives in step-2. The allow is removed then.
-#[allow(dead_code)]
-pub(crate) fn eval_construct(_name: &str, _args: &[Value]) -> Option<Value> {
-    None
+pub(crate) fn eval_construct(name: &str, args: &[Value]) -> Option<Value> {
+    Some(match name {
+        "vec" => eval_vec(args),
+        _ => return None,
+    })
+}
+
+/// `vec(list)` → [`Value::Vector`] with one cell per list element.
+///
+/// Extracts a uniform `(values, dim)` from the single `Value::List` argument
+/// and rebuilds each cell via [`Value::from_real_scalar`] (Real if
+/// dimensionless, else Scalar) wrapped in [`sanitize_value`]. Wrong arity, a
+/// non-`List` arg, or a malformed list (empty / mixed-dimension / non-numeric)
+/// collapses to [`Value::Undef`].
+fn eval_vec(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::Undef;
+    }
+    let (vals, dim) = match list_components_f64(&args[0]) {
+        Some(c) => c,
+        None => return Value::Undef,
+    };
+    let cells = vals
+        .into_iter()
+        .map(|x| sanitize_value(Value::from_real_scalar(x, dim)))
+        .collect();
+    Value::Vector(cells)
+}
+
+/// Extract uniform numeric components from a `Value::List` into
+/// `(values, element_dim)`.
+///
+/// Returns `None` (→ caller yields `Undef`) when the list is empty, mixes
+/// dimensions, or contains a non-numeric element. This is the `Value::List`
+/// analogue of `helpers::tensor_components_f64`, which deliberately rejects
+/// `Value::List` (it accepts only Vector/Tensor/Point) — the construction
+/// builtins receive their argument as an already-evaluated list literal, so a
+/// List-accepting extractor is required. Kept local to construct.rs rather than
+/// widening the shared `helpers.rs` surface (β/γ own that file).
+fn list_components_f64(v: &Value) -> Option<(Vec<f64>, DimensionVector)> {
+    let items = match v {
+        Value::List(items) if !items.is_empty() => items,
+        _ => return None,
+    };
+    let first_dim = items[0].dimension();
+    let mut vals = Vec::with_capacity(items.len());
+    for item in items {
+        if item.dimension() != first_dim {
+            return None; // mixed dimensions
+        }
+        match item.as_f64() {
+            Some(x) => vals.push(x),
+            None => return None, // non-numeric component
+        }
+    }
+    Some((vals, first_dim))
 }
 
 #[cfg(test)]
