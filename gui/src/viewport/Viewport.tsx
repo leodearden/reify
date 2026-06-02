@@ -83,7 +83,7 @@ export function Viewport(props: ViewportProps) {
     const width = rect.width || 800;
     const height = rect.height || 600;
 
-    const { scene, camera, renderer, resize, adjustClipping, grid, axes, axisLabels } = createScene(canvasRef, width, height);
+    const { scene, camera, renderer, resize, adjustClipping, grid, axes, axisLabels, disposeAxisLabels } = createScene(canvasRef, width, height);
     const controls = createControls(camera, renderer.domElement);
     const meshManager = createMeshManager(scene);
     const wireManager = createWireManager(scene);
@@ -394,6 +394,7 @@ export function Viewport(props: ViewportProps) {
       controls.dispose();
       meshManager.dispose();
       wireManager.dispose();
+      disposeAxisLabels();
       renderer.dispose();
       if (window.__REIFY_DEBUG__) {
         // Per-key cleanup — only remove this viewport's entry from the map

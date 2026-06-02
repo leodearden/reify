@@ -64,6 +64,7 @@ const mockMeshGetDeformedOverlays = vi.fn(() => new Map());
 const mockGrid = { type: 'GridHelper', visible: true };
 const mockAxes = { type: 'AxesHelper', visible: true };
 const mockAxisLabels = { type: 'Group', visible: true };
+const mockDisposeAxisLabels = vi.fn();
 
 // Camera stub with position/up set-spies and mutable zoom — shared across tests
 const mockCameraPositionSet = vi.fn();
@@ -92,6 +93,7 @@ vi.mock('../../viewport/scene', () => ({
     grid: mockGrid,
     axes: mockAxes,
     axisLabels: mockAxisLabels,
+    disposeAxisLabels: mockDisposeAxisLabels,
   })),
 }));
 

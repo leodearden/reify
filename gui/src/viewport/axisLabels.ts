@@ -88,11 +88,27 @@ function makeTextSprite(spec: LabelSpec): Sprite {
  * Visibility should be driven by the same signal that controls the axes
  * (see Viewport.tsx createEffect — set `axisLabels.visible` alongside
  * `axes.visible` so they toggle together with the Grid button).
+ *
+ * Returns `{ group, dispose }`. Call `dispose()` in the owning component's
+ * onCleanup to release the CanvasTexture and SpriteMaterial GPU resources
+ * for each sprite (renderer.dispose() does NOT free per-object materials or
+ * textures, so on Viewport unmount/remount these would otherwise leak).
  */
-export function createAxisLabels(): Group {
+export function createAxisLabels(): { group: Group; dispose(): void } {
   const group = new Group();
+  const sprites: Sprite[] = [];
   for (const spec of LABELS) {
-    group.add(makeTextSprite(spec));
+    const sprite = makeTextSprite(spec);
+    sprites.push(sprite);
+    group.add(sprite);
   }
-  return group;
+
+  function dispose(): void {
+    for (const sprite of sprites) {
+      sprite.material.map?.dispose();
+      sprite.material.dispose();
+    }
+  }
+
+  return { group, dispose };
 }

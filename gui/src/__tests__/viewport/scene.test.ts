@@ -375,4 +375,9 @@ describe('createScene', () => {
     const axisLabels = (result as any).axisLabels;
     expect(axisLabels.children).toHaveLength(3);
   });
+
+  it('exposes disposeAxisLabels function for GPU resource cleanup on unmount', () => {
+    const result = setup();
+    expect(typeof result.disposeAxisLabels).toBe('function');
+  });
 });

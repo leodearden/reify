@@ -28,25 +28,31 @@ beforeEach(() => {
 });
 
 describe('createAxisLabels', () => {
-  it('returns a Group', () => {
-    const group = createAxisLabels();
+  it('returns { group, dispose }', () => {
+    const result = createAxisLabels();
+    expect(result).toHaveProperty('group');
+    expect(typeof result.dispose).toBe('function');
+  });
+
+  it('group is a Group', () => {
+    const { group } = createAxisLabels();
     expect(group.type).toBe('Group');
   });
 
   it('group has exactly 3 children', () => {
-    const group = createAxisLabels();
+    const { group } = createAxisLabels();
     expect(group.children).toHaveLength(3);
   });
 
   it('all children are Sprites', () => {
-    const group = createAxisLabels();
+    const { group } = createAxisLabels();
     for (const child of group.children) {
       expect(child.type).toBe('Sprite');
     }
   });
 
   it('labels identified by exact sprite.name AND sprite.userData.axis — both must be present', () => {
-    const group = createAxisLabels();
+    const { group } = createAxisLabels();
     const xSprite = group.children.find((s: any) => s.name === 'axis-label-X') as any;
     const ySprite = group.children.find((s: any) => s.name === 'axis-label-Y') as any;
     const zSprite = group.children.find((s: any) => s.name === 'axis-label-Z') as any;
@@ -62,7 +68,7 @@ describe('createAxisLabels', () => {
   });
 
   it('X label color is red — value 0xff0000 passed to SpriteMaterial ctor', () => {
-    const group = createAxisLabels();
+    const { group } = createAxisLabels();
     const xSprite = group.children.find((s: any) => s.name === 'axis-label-X') as any;
     expect(xSprite).toBeDefined();
     // Assert on ctorOpts.color (the value passed to the constructor) rather than
@@ -71,21 +77,21 @@ describe('createAxisLabels', () => {
   });
 
   it('Y label color is green — value 0x00ff00 passed to SpriteMaterial ctor', () => {
-    const group = createAxisLabels();
+    const { group } = createAxisLabels();
     const ySprite = group.children.find((s: any) => s.name === 'axis-label-Y') as any;
     expect(ySprite).toBeDefined();
     expect(ySprite.material.ctorOpts.color).toBe(0x00ff00);
   });
 
   it('Z label color is blue — value 0x0000ff passed to SpriteMaterial ctor', () => {
-    const group = createAxisLabels();
+    const { group } = createAxisLabels();
     const zSprite = group.children.find((s: any) => s.name === 'axis-label-Z') as any;
     expect(zSprite).toBeDefined();
     expect(zSprite.material.ctorOpts.color).toBe(0x0000ff);
   });
 
   it('X label is positioned beyond the X axis tip (x > 2, y === 0, z === 0)', () => {
-    const group = createAxisLabels();
+    const { group } = createAxisLabels();
     const xSprite = group.children.find((s: any) => s.name === 'axis-label-X') as any;
     expect(xSprite.position.x).toBeGreaterThan(2);
     expect(xSprite.position.y).toBe(0);
@@ -93,7 +99,7 @@ describe('createAxisLabels', () => {
   });
 
   it('Y label is positioned beyond the Y axis tip (y > 2, x === 0, z === 0)', () => {
-    const group = createAxisLabels();
+    const { group } = createAxisLabels();
     const ySprite = group.children.find((s: any) => s.name === 'axis-label-Y') as any;
     expect(ySprite.position.y).toBeGreaterThan(2);
     expect(ySprite.position.x).toBe(0);
@@ -101,7 +107,7 @@ describe('createAxisLabels', () => {
   });
 
   it('Z label is positioned beyond the Z axis tip (z > 2, x === 0, y === 0)', () => {
-    const group = createAxisLabels();
+    const { group } = createAxisLabels();
     const zSprite = group.children.find((s: any) => s.name === 'axis-label-Z') as any;
     expect(zSprite.position.z).toBeGreaterThan(2);
     expect(zSprite.position.x).toBe(0);
@@ -109,34 +115,43 @@ describe('createAxisLabels', () => {
   });
 
   it('all sprites have depthTest === false (always-on-top)', () => {
-    const group = createAxisLabels();
+    const { group } = createAxisLabels();
     for (const child of group.children as any[]) {
       expect(child.material.depthTest).toBe(false);
     }
   });
 
   it('all sprites have depthWrite === false (always-on-top)', () => {
-    const group = createAxisLabels();
+    const { group } = createAxisLabels();
     for (const child of group.children as any[]) {
       expect(child.material.depthWrite).toBe(false);
     }
   });
 
   it('all sprites have renderOrder > 0', () => {
-    const group = createAxisLabels();
+    const { group } = createAxisLabels();
     for (const child of group.children as any[]) {
       expect(child.renderOrder).toBeGreaterThan(0);
     }
   });
 
   it('all sprites have a non-degenerate positive scale', () => {
-    const group = createAxisLabels();
+    const { group } = createAxisLabels();
     for (const child of group.children as any[]) {
       // scale is set via set() — check that scale.set was called with positive values
       expect(child.scale.set).toHaveBeenCalled();
       const setArgs = (child.scale.set as any).mock.calls[0];
       expect(setArgs[0]).toBeGreaterThan(0);
       expect(setArgs[1]).toBeGreaterThan(0);
+    }
+  });
+
+  it('dispose() calls material.dispose() and material.map.dispose() for each sprite', () => {
+    const { group, dispose } = createAxisLabels();
+    dispose();
+    for (const child of group.children as any[]) {
+      expect(child.material.dispose).toHaveBeenCalledTimes(1);
+      expect(child.material.map.dispose).toHaveBeenCalledTimes(1);
     }
   });
 });

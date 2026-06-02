@@ -22,6 +22,9 @@ export interface SceneContext {
   grid: GridHelper;
   axes: AxesHelper;
   axisLabels: Group;
+  /** Dispose the CanvasTexture and SpriteMaterial for each axis-label sprite.
+   *  Call from Viewport.tsx onCleanup to release GPU resources on unmount. */
+  disposeAxisLabels: () => void;
 }
 
 /**
@@ -106,7 +109,7 @@ export function createScene(
   axes.material.depthWrite = false;
   scene.add(axes);
 
-  const axisLabels = createAxisLabels();
+  const { group: axisLabels, dispose: disposeAxisLabels } = createAxisLabels();
   scene.add(axisLabels);
 
   function resize(w: number, h: number) {
@@ -133,5 +136,5 @@ export function createScene(
     camera.updateProjectionMatrix();
   }
 
-  return { scene, camera, renderer, resize, adjustClipping, grid, axes, axisLabels };
+  return { scene, camera, renderer, resize, adjustClipping, grid, axes, axisLabels, disposeAxisLabels };
 }
