@@ -28,7 +28,17 @@ function makeMockVector3() {
   return v;
 }
 
-vi.mock('three', () => {
+vi.mock('three', async () => {
+  // Axis-label sprite mocks are shared with axisLabels.test.ts via threeAxisMocks.ts
+  // to prevent silent drift between the two suites.
+  const {
+    MockGroup,
+    MockSprite,
+    MockSpriteMaterial,
+    MockCanvasTexture,
+    MockColor: MockColorShared,
+  } = await import('./threeAxisMocks');
+
   class MockScene {
     children = mockSceneChildren;
     add = mockSceneAdd;
@@ -95,10 +105,6 @@ vi.mock('three', () => {
     constructor(public size?: number) {}
   }
 
-  class MockColor {
-    constructor(public color?: any) {}
-  }
-
   class MockVector3 {
     x: number;
     y: number;
@@ -111,44 +117,6 @@ vi.mock('three', () => {
     }
   }
 
-  class MockGroup {
-    type = 'Group';
-    children: any[] = [];
-    visible = true;
-    add(obj: any) { this.children.push(obj); }
-  }
-
-  class MockSpriteMaterial {
-    map: any;
-    color: any;
-    depthTest: boolean;
-    depthWrite: boolean;
-    transparent: boolean;
-    constructor(opts: any = {}) {
-      this.map = opts.map;
-      this.color = opts.color;
-      this.depthTest = opts.depthTest ?? true;
-      this.depthWrite = opts.depthWrite ?? true;
-      this.transparent = opts.transparent ?? false;
-    }
-  }
-
-  class MockSprite {
-    type = 'Sprite';
-    material: any;
-    name = '';
-    userData: Record<string, any> = {};
-    renderOrder = 0;
-    scale = { x: 1, y: 1, z: 1, set: vi.fn() };
-    position = { x: 0, y: 0, z: 0, set: vi.fn() };
-    constructor(mat: any) { this.material = mat; }
-  }
-
-  class MockCanvasTexture {
-    canvas: any;
-    constructor(canvas: any) { this.canvas = canvas; }
-  }
-
   return {
     Scene: MockScene,
     PerspectiveCamera: MockPerspectiveCamera,
@@ -157,7 +125,7 @@ vi.mock('three', () => {
     DirectionalLight: MockDirectionalLight,
     GridHelper: MockGridHelper,
     AxesHelper: MockAxesHelper,
-    Color: MockColor,
+    Color: MockColorShared,
     Vector3: MockVector3,
     Group: MockGroup,
     Sprite: MockSprite,

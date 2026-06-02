@@ -1,69 +1,17 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// Self-contained vi.mock('three') for axisLabels unit tests.
-// Captures ctor args so tests can assert color/position/flags without a real WebGL context.
+// Mock classes shared with scene.test.ts — imported from threeAxisMocks.ts to
+// keep both suites in sync and prevent silent drift between the two mocks.
 
-vi.mock('three', () => {
-  class MockGroup {
-    type = 'Group';
-    children: any[] = [];
-    visible = true;
-    renderOrder = 0;
-    add(obj: any) {
-      this.children.push(obj);
-    }
-  }
-
-  class MockSpriteMaterial {
-    map: any;
-    color: any;
-    depthTest: boolean;
-    depthWrite: boolean;
-    transparent: boolean;
-    /** Raw options passed to the constructor — use for assertions about what value
-     *  was supplied; avoids coupling tests to the mock's pass-through behavior. */
-    ctorOpts: any;
-    constructor(opts: any = {}) {
-      this.ctorOpts = { ...opts };
-      this.map = opts.map;
-      this.color = opts.color;
-      this.depthTest = opts.depthTest ?? true;
-      this.depthWrite = opts.depthWrite ?? true;
-      this.transparent = opts.transparent ?? false;
-    }
-  }
-
-  class MockSprite {
-    type = 'Sprite';
-    material: MockSpriteMaterial;
-    name = '';
-    userData: Record<string, any> = {};
-    renderOrder = 0;
-    scale = { x: 1, y: 1, z: 1, set: vi.fn((_x: number, _y: number, _z: number) => { /* recorded per instance */ }) };
-    position = {
-      x: 0, y: 0, z: 0,
-      set: vi.fn(function(this: any, x: number, y: number, z: number) {
-        this.x = x; this.y = y; this.z = z;
-      }),
-    };
-    constructor(mat: MockSpriteMaterial) {
-      this.material = mat;
-    }
-  }
-
-  class MockCanvasTexture {
-    canvas: any;
-    constructor(canvas: any) {
-      this.canvas = canvas;
-    }
-  }
-
-  class MockColor {
-    value: any;
-    constructor(v?: any) { this.value = v; }
-  }
-
+vi.mock('three', async () => {
+  const {
+    MockGroup,
+    MockSprite,
+    MockSpriteMaterial,
+    MockCanvasTexture,
+    MockColor,
+  } = await import('./threeAxisMocks');
   return {
     Group: MockGroup,
     Sprite: MockSprite,
