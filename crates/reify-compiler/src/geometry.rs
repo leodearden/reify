@@ -603,15 +603,14 @@ fn check_profile_arg(
     if let Some(traits) = crate::geometry_traits_inference::try_infer_traits_for_function_call(
         function.name.as_str(),
         args,
-    ) {
-        if violates(&traits) {
-            crate::conformance::emit_geometry_profile_required(
-                function.name.as_str(),
-                requirement,
-                span,
-                diagnostics,
-            );
-        }
+    ) && violates(&traits)
+    {
+        crate::conformance::emit_geometry_profile_required(
+            function.name.as_str(),
+            requirement,
+            span,
+            diagnostics,
+        );
     }
 }
 
