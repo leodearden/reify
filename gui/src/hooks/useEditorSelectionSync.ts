@@ -1,5 +1,14 @@
 import { createEffect, onCleanup, untrack } from 'solid-js';
 
+// ── createEditorHoverSync types ───────────────────────────────────────────────
+
+export interface EditorHoverSyncOptions {
+  editorStore: { state: { cursorPosition: { line: number; column: number } | null } };
+  getEntityAtSourceLocation: (line: number, col: number) => Promise<string | null>;
+  hoverEntity: (path: string | null) => void;
+  debounceMs?: number;
+}
+
 // ── Dependency types ─────────────────────────────────────────────────────────
 
 interface EditorStoreLike {
@@ -115,6 +124,69 @@ export function createEditorSelectionSync(opts: EditorSelectionSyncOptions): voi
 
       selectEntity(result);
       flyToEntity?.(result);
+    }, debounceMs);
+  });
+
+  onCleanup(() => {
+    if (timerId !== null) {
+      clearTimeout(timerId);
+      timerId = null;
+    }
+  });
+}
+
+// ── createEditorHoverSync ─────────────────────────────────────────────────────
+
+/**
+ * createEditorHoverSync
+ *
+ * Watches `editorStore.state.cursorPosition`, debounces by `debounceMs`
+ * (default 200ms), resolves `getEntityAtSourceLocation(line, col)`, then calls
+ * `hoverEntity(result | null)`:
+ * - null cursor pos → hoverEntity(null) immediately (clear on hover-off)
+ * - null resolution → hoverEntity(null) (cursor on whitespace/comment)
+ * - non-null resolution → hoverEntity(entity)
+ *
+ * Uses a latestRequestToken race-guard to discard stale async results.
+ * Clears hoverEntity on cleanup.
+ */
+export function createEditorHoverSync(opts: EditorHoverSyncOptions): void {
+  const {
+    editorStore,
+    getEntityAtSourceLocation,
+    hoverEntity,
+    debounceMs = 200,
+  } = opts;
+
+  let timerId: ReturnType<typeof setTimeout> | null = null;
+  let latestRequestToken = 0;
+
+  createEffect(() => {
+    const pos = editorStore.state.cursorPosition;
+
+    if (timerId !== null) {
+      clearTimeout(timerId);
+      timerId = null;
+    }
+
+    ++latestRequestToken;
+
+    if (pos === null) {
+      hoverEntity(null);
+      return;
+    }
+
+    const { line, column } = pos;
+
+    timerId = setTimeout(async () => {
+      timerId = null;
+
+      const token = latestRequestToken;
+      const result = await getEntityAtSourceLocation(line, column);
+
+      if (token !== latestRequestToken) return;
+
+      hoverEntity(result);
     }, debounceMs);
   });
 
