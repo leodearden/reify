@@ -143,11 +143,8 @@ pub fn SPEED_OF_LIGHT() -> Velocity { 299792458.0 * 1m / 1s }
 /// Body uses `1m * 1m * 1kg / (1s * 1s * 1K)` because `J` is generated in
 /// std.si_units, which compiles AFTER std.units; the resulting SI value is
 /// identical (J = kg·m²·s⁻²).
-/// Value is written in decimal form because Reify's number-literal grammar
-/// does not accept scientific notation in value position (see
-/// `modal_analysis.ri:32-33` for the same convention).
 pub fn BOLTZMANN_CONSTANT() -> HeatCapacity {
-    0.00000000000000000000001380649 * 1kg * 1m * 1m / (1s * 1s * 1K)
+    1.380649e-23 * 1kg * 1m * 1m / (1s * 1s * 1K)
 }
 
 /// Avogadro constant (N_A), 6.02214076×10²³ mol⁻¹ — exact by the 2019 SI
