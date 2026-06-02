@@ -1,0 +1,100 @@
+// Printer-toolhead motor-sizing worked example (RBD-κ, task 3840).
+//
+// PRD: docs/prds/v0_3/rigid-body-dynamics.md §1 / task κ (Phase 5).
+//
+// ─── Motivation ─────────────────────────────────────────────────────────────
+//
+// A 3D-printer toolhead has three motors: X carriage, Y gantry, and extruder.
+// The dominant sizing axis for belt-driven CoreXY and Cartesian printers is the
+// X carriage: it accelerates the full moving mass (carriage + hotend + extruder
+// motor if direct-drive) at the highest programmed acceleration.
+//
+// ─── Modeling scope ──────────────────────────────────────────────────────────
+//
+// The toolhead is modeled as a single 1-DOF prismatic X-axis carriage.
+//
+// This is NOT a simplification born of laziness — it is the ONLY mechanism
+// shape compatible with `ramp_profile + inverse_dynamics` as landed in η
+// (task 3836):
+//   • `ramp_profile` emits length-1-per-sample values/vels/accels (one DOF).
+//   • `snapshot_for_sample` requires `values.len() == bodies.len()`.
+//   • `slice_generalized` requires total mechanism DOF == vels length.
+// A 3-body X/Y/extruder composite would mismatcha and return `Value::Undef`.
+// Multi-axis motor sizing requires a richer multi-DOF trajectory builder not
+// yet in the surface; that is deferred to a future task.
+//
+// ─── Parameters ──────────────────────────────────────────────────────────────
+//
+//   Mass  M = 0.5 kg    (realistic toolhead carriage + hotend)
+//   Max accel  a = 5.0 m/s²  (= 5000 mm/s², the PRD §1 snippet value)
+//   Travel     0 → 0.5 m  (= 0 → 500 mm, full X range)
+//
+// ─── Analytic ground truth ───────────────────────────────────────────────────
+//
+// For a horizontal +x prismatic DOF RNEA gives τ = M·a EXACTLY:
+//
+//   default_gravity() = [0, 0, −9.81]  (rnea.rs:127)
+//   base spatial accel linear-z = +9.81  (inertial acceleration)
+//   +x motion subspace S = [0,0,0,1,0,0]  → linear-x component only
+//   gravity (z) projects ZERO onto x-DOF for any joint position.
+//
+// Therefore peak |force| = M·max_accel = 0.5·5.0 = 2.5 N exactly (RNEA
+// roundoff ~1e-13 ≪ the 1e-6 assertion tolerance in the gate below).
+//
+// ─── Bare-Real ramp_profile convention ───────────────────────────────────────
+//
+// `ramp_profile(joint, from, to, max_accel)` accepts bare Real (SI) arguments:
+//   joint    = 0.0  (joint handle placeholder — unused by inverse_dynamics)
+//   from     = 0.0  (metres)
+//   to       = 0.5  (metres = 500 mm, within the 0mm..500mm joint range)
+//   max_accel= 5.0  (m/s²)
+//
+// Dimensioned literals (0mm / 500mm / 5000mm/s²) MISMATCH the Real params and
+// are rejected; the bare-float SI convention is the proven pattern from
+// `crates/reify-eval/tests/dynamics_compute_node.rs:51`.
+//
+// Prismatic FK accepts bare-Real position bindings as METRES
+// (joints.rs:1486-1502 "Accept Length Scalar or bare Real/Int as metres").
+//
+// ─── Numeric gate ────────────────────────────────────────────────────────────
+//
+// The `forces` cell (List<List<JointForce>>, 101 samples × 1 joint) is exposed
+// here so the Rust gate can reduce it:
+//
+//   crates/reify-eval/tests/toolhead_motor_sizing_e2e.rs
+//
+// asserts peak |ScalarForce.magnitude| ≈ 2.5 N within 1 µN.
+//
+// The peak CANNOT be computed in pure .ri:
+//   • JointForce.value is typed as the marker trait `JointForceValue` — no
+//     `.magnitude` member at compile time (jf.value.magnitude won't type-check).
+//   • stdlib `max` is a binary scalar max, not a list aggregate.
+//   • There is no `report()` builtin.
+// This is the established pendulum_idyn.ri / printer_gantry_modes.ri idiom:
+// expose the result cell, let the Rust test drill in and reduce.
+structure def ToolheadMotorSizing {
+    // 0.5 kg toolhead carriage (realistic direct-drive hotend + carriage mass).
+    // COM at origin (symmetric carriage); zero rotational inertia (point-mass
+    // model — rotational inertia negligible for motor sizing on prismatic DOF).
+    let mp = MassProperties(mass: 0.5kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], origin: 0.0)
+
+    // Prismatic joint along +X; range 0..500 mm (full X travel).
+    let axis_x = vec3(1, 0, 0)
+    let joint = prismatic(axis_x, 0mm .. 500mm)
+
+    // Single body parented to world (3-arg body: default parent = world).
+    let m0 = mechanism()
+    let m = body(m0, mp, joint)
+
+    // rest-to-rest ramp: 0 m → 0.5 m at max_accel = 5 m/s².
+    // Bare-Real SI args (joint handle unused, from/to in metres, accel in m/s²).
+    // A triangular ramp (no max-velocity cap) emits T = 2·sqrt(0.5/5.0) = 0.632 s
+    // duration sampled at 101 equally-spaced time points.
+    let traj = ramp_profile(0.0, 0.0, 0.5, 5.0)
+
+    // Inverse dynamics over the full trajectory.
+    // Returns List<List<JointForce>>: 101 samples × 1 prismatic JointForce.
+    // Each JointForce.value is a ScalarForce { magnitude } in Newtons.
+    // Peak |magnitude| = M·max_accel = 2.5 N (asserted by toolhead_motor_sizing_e2e.rs).
+    let forces = inverse_dynamics(m, traj)
+}
