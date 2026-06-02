@@ -9,8 +9,9 @@ import {
   Color,
   Vector3,
 } from 'three';
-import type { Box3 } from 'three';
+import type { Box3, Group } from 'three';
 import { THEME_TOKENS } from '../theme';
+import { createAxisLabels } from './axisLabels';
 
 export interface SceneContext {
   scene: Scene;
@@ -20,6 +21,7 @@ export interface SceneContext {
   adjustClipping: (sceneBounds: Box3) => void;
   grid: GridHelper;
   axes: AxesHelper;
+  axisLabels: Group;
 }
 
 /**
@@ -104,6 +106,9 @@ export function createScene(
   axes.material.depthWrite = false;
   scene.add(axes);
 
+  const axisLabels = createAxisLabels();
+  scene.add(axisLabels);
+
   function resize(w: number, h: number) {
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
@@ -128,5 +133,5 @@ export function createScene(
     camera.updateProjectionMatrix();
   }
 
-  return { scene, camera, renderer, resize, adjustClipping, grid, axes };
+  return { scene, camera, renderer, resize, adjustClipping, grid, axes, axisLabels };
 }
