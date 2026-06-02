@@ -143,6 +143,62 @@ structure def FormFindResult {
     param converged : Bool
 }
 
+// ── form_find_free ────────────────────────────────────────────────────────────
+//
+// Free-standing Force-Density form-finding (PRD §4 / T1b). The structure has
+// no fixed anchors; a self-stressed equilibrium exists only when the
+// force-density matrix D = CᵀQC is rank-deficient by exactly d+1 = 4 (three
+// coordinate null directions plus the always-present all-ones translation mode).
+//
+// At eval time the `@optimized("solver::form_find_free")` annotation causes the
+// engine (engine_eval.rs) to allocate a ComputeNode with
+//   target == "solver::form_find_free"
+// and dispatch to the registered trampoline in
+//   crates/reify-eval/src/compute_targets/form_find.rs
+// rather than inlining the body below. The trampoline cracks the group_ids,
+// seed_ratios, and reference_group into a ForceDensitySpec::GroupRatios and
+// calls the pure free-standing FD kernel (`reify_solver_elastic::form_find_free`).
+//
+// Body discipline: `{ FormFindResult() }` is the never-run inline fallback
+// (same policy as form_find above and solver_elastic.ri's solve_elastic_static).
+//
+// Signature / ordering contract:
+//
+//   structure : Tensegrity
+//     The typed network. Node coordinates serve as the initial guess for
+//     null-space coordinate recovery (the search uses only connectivity and
+//     relative q signs, not absolute coordinates). Struts-then-cables member
+//     order matches the group_ids indexing.
+//
+//   group_ids : List<Int>
+//     One group id per member, in struts-then-cables order. Members sharing a
+//     group id move together in the adaptive ratio search. All ids must be
+//     non-negative and less than seed_ratios.len().
+//
+//   seed_ratios : List<Real>
+//     One signed seed ratio per group, indexed by group id. The sign of each
+//     ratio fixes the group's tension/compression sense (strut groups < 0,
+//     cable groups > 0) and is held fixed during the search; only magnitudes
+//     are refined. The reference_group's magnitude is held at its seed value
+//     as the scale gauge.
+//
+//   reference_group : Int
+//     Group id held fixed as the scale gauge during the adaptive search.
+//     Overall scaling of q is nullity-invariant, so only relative ratios matter.
+//
+// Sign contract (hard constraint): cable groups must have positive seed ratios
+// (q > 0 tension) and strut groups must have negative seed ratios (q < 0
+// compression). A violation surfaces as an E_FormFindInfeasible diagnostic.
+@optimized("solver::form_find_free")
+pub fn form_find_free(
+    structure : Tensegrity,
+    group_ids : List<Int>,
+    seed_ratios : List<Real>,
+    reference_group : Int
+) -> FormFindResult {
+    FormFindResult()
+}
+
 // ── form_find ─────────────────────────────────────────────────────────────────
 //
 // Anchored Force-Density form-finding (PRD §4 / T1a) — the first tensegrity
