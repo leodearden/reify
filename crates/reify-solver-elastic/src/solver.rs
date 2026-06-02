@@ -117,17 +117,20 @@ impl Default for CgSolverOptions {
 /// The `max_iter_exhaustion_returns_unconverged` test pins the cap-out path.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CgResult {
-    /// Solution vector `u` of length `k.nrows()`.
+    /// Solution displacement vector (private backing store).
     ///
-    /// Wrapped in `Arc<Vec<f64>>` so [`solve_cg_with_warm_state`] (PRD task
-    /// #14) can share this allocation with the [`crate::CgWarmState`] it
-    /// emits — avoiding a 10⁴–10⁶-DOF `Vec<f64>` copy on every solve. All
-    /// read paths work transparently through `Deref`: `result.u[i]`,
-    /// `result.u.len()`, `result.u.iter()`, `&result.u[..]`. Cloning a
-    /// `CgResult` now bumps the refcount instead of deep-copying `u`,
-    /// which is the desired behaviour given `u` is logically immutable
-    /// after the solve completes.
-    pub u: Arc<Vec<f64>>,
+    /// Access via the stable public accessors:
+    /// - `u(&self) -> &[f64]` — representation-agnostic read path; prefer
+    ///   this over any direct field access.
+    /// - `into_shared_u(self) -> Arc<Vec<f64>>` — consuming zero-copy
+    ///   donation; use when you need an `Arc<Vec<f64>>` handle (e.g. to
+    ///   populate a struct field) without copying the 10⁴–10⁶-DOF buffer.
+    ///
+    /// The field is private so the internal representation (`Arc<Vec<f64>>`,
+    /// `Arc<[f64]>`, or a plain `Vec<f64>`) can be changed in a future
+    /// refactor without breaking any external consumer that goes through
+    /// the accessors.
+    u: Arc<Vec<f64>>,
     /// Number of CG iterations executed.
     pub iterations: usize,
     /// `true` if the residual met the tolerance criterion before `max_iter`.
