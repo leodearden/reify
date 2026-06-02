@@ -1015,3 +1015,45 @@ describe('DesignTree — freshness badge', () => {
     expect(onSelect).toHaveBeenCalledWith('Root.A', expect.objectContaining({ ctrl: false, shift: false }));
   });
 });
+
+describe('DesignTree — hover sync', () => {
+  it('mouseEnter on a row calls onHover with the entity path', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    const onHover = vi.fn();
+    render(() => (
+      <DesignTree tree={nodes} viewStateStore={store} onHover={onHover} />
+    ));
+    fireEvent.mouseEnter(screen.getByTestId('tree-row-Root.A'));
+    expect(onHover).toHaveBeenCalledWith('Root.A');
+  });
+
+  it('mouseLeave on a row calls onHover with null', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    const onHover = vi.fn();
+    render(() => (
+      <DesignTree tree={nodes} viewStateStore={store} onHover={onHover} />
+    ));
+    fireEvent.mouseLeave(screen.getByTestId('tree-row-Root.A'));
+    expect(onHover).toHaveBeenCalledWith(null);
+  });
+
+  it('mouseEnter/Leave on multiple rows each call onHover with correct path / null', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({ entity_path: 'Root.B' }),
+    ];
+    const store = makeStore(nodes);
+    const onHover = vi.fn();
+    render(() => (
+      <DesignTree tree={nodes} viewStateStore={store} onHover={onHover} />
+    ));
+    fireEvent.mouseEnter(screen.getByTestId('tree-row-Root.A'));
+    expect(onHover).toHaveBeenLastCalledWith('Root.A');
+    fireEvent.mouseLeave(screen.getByTestId('tree-row-Root.A'));
+    expect(onHover).toHaveBeenLastCalledWith(null);
+    fireEvent.mouseEnter(screen.getByTestId('tree-row-Root.B'));
+    expect(onHover).toHaveBeenLastCalledWith('Root.B');
+  });
+});
