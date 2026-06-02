@@ -241,6 +241,54 @@ pub(crate) fn topology_selector_result_type(name: &str) -> Option<reify_core::Ty
     })
 }
 
+/// The complete set of AffineMap **constructor** free-function names recognised
+/// by the compiler (PRD §4.2, task β). A sibling classifier list to the geometry
+/// families above. Unlike [`GEOMETRY_FUNCTION_NAMES`] (geometry-handle producers
+/// carrying the geometry-traits-inference dispatch contract), these constructors
+/// produce a first-class `Value::AffineMap` value, so they live in their own
+/// list and lower through the ordinary builtin path
+/// (`reify_stdlib::geometry::eval_geometry`), NOT the geometry-op path.
+///
+/// Every name resolves to the SAME result type — `Type::AffineMap(3)` — via
+/// [`affine_map_constructor_result_type`]; the list exists for call-site
+/// classification in `expr.rs` (the `is_affine_map_constructor` arm, before the
+/// first-arg fallback). Registering them here replaces the wrong first-arg
+/// fallback type (e.g. `affine_scale(...)` → Real) and silences the zero-arg
+/// "cannot infer return type" warning for `affine_identity()`.
+///
+/// Case-sensitive: Reify function names are snake_case.
+pub const AFFINE_MAP_CONSTRUCTOR_NAMES: &[&str] = &[
+    "affine_scale",
+    "affine_shear_xy",
+    "affine_shear_xz",
+    "affine_shear_yx",
+    "affine_shear_yz",
+    "affine_shear_zx",
+    "affine_shear_zy",
+    "affine_translate",
+    "affine_identity",
+    "affine_map",
+    "affine_from_transform",
+];
+
+pub(crate) fn is_affine_map_constructor(name: &str) -> bool {
+    AFFINE_MAP_CONSTRUCTOR_NAMES.contains(&name)
+}
+
+/// Result type for every AffineMap constructor: `Type::AffineMap(3)`.
+///
+/// All 11 constructors share one result type, so this is a single membership
+/// check rather than a per-name match. Returns `None` for any name not in
+/// [`AFFINE_MAP_CONSTRUCTOR_NAMES`] (caller falls through to its default
+/// type-inference path).
+pub(crate) fn affine_map_constructor_result_type(name: &str) -> Option<reify_core::Type> {
+    if is_affine_map_constructor(name) {
+        Some(reify_core::Type::AffineMap(3))
+    } else {
+        None
+    }
+}
+
 /// The complete set of stdlib **geometry-query** helper names recognised by
 /// the compiler. Fifth geometry-name family, structurally parallel to the
 /// existing four ([`GEOMETRY_FUNCTION_NAMES`],
