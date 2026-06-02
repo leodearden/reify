@@ -1822,4 +1822,76 @@ mod tests {
         assert_eq!(bracket.selection_range.end.line, 0);
         assert_eq!(bracket.selection_range.end.character, 17);
     }
+
+    /// Assert `sym.selection_range` lies within `sym.range` and covers exactly
+    /// `sym.name` in `source`. Shared across the document-symbol tests.
+    fn assert_selection_on_name(source: &str, sym: &DocumentSymbol) {
+        let r = &sym.range;
+        let sr = &sym.selection_range;
+        assert!(
+            (sr.start.line, sr.start.character) >= (r.start.line, r.start.character),
+            "selection_range.start {:?} should be >= range.start {:?} for {}",
+            sr.start,
+            r.start,
+            sym.name
+        );
+        assert!(
+            (sr.end.line, sr.end.character) <= (r.end.line, r.end.character),
+            "selection_range.end {:?} should be <= range.end {:?} for {}",
+            sr.end,
+            r.end,
+            sym.name
+        );
+        let start = crate::convert::position_to_offset(source, sr.start);
+        let end = crate::convert::position_to_offset(source, sr.end);
+        assert_eq!(
+            &source[start..end],
+            sym.name,
+            "selection_range should cover the name token for {}",
+            sym.name
+        );
+    }
+
+    #[test]
+    fn compute_document_symbols_members_as_children() {
+        use tower_lsp::lsp_types::SymbolKind;
+        let source = reify_test_support::bracket_source();
+        let symbols = compute_document_symbols(source, &test_uri());
+        assert_eq!(symbols.len(), 1, "bracket_source has one structure");
+        let bracket = &symbols[0];
+        assert_eq!(bracket.name, "Bracket");
+
+        let children = bracket
+            .children
+            .as_ref()
+            .expect("Bracket should have children");
+        // 5 params + 2 lets = 7 named members; the 3 unlabeled constraints
+        // are NOT navigable symbols and must be excluded.
+        assert_eq!(
+            children.len(),
+            7,
+            "expected 7 named members (constraints excluded), got: {:?}",
+            children.iter().map(|c| c.name.as_str()).collect::<Vec<_>>()
+        );
+
+        // Source order: the 5 params, then volume, then body.
+        let expected: [(&str, SymbolKind); 7] = [
+            ("width", SymbolKind::FIELD),
+            ("height", SymbolKind::FIELD),
+            ("thickness", SymbolKind::FIELD),
+            ("fillet_radius", SymbolKind::FIELD),
+            ("hole_diameter", SymbolKind::FIELD),
+            ("volume", SymbolKind::VARIABLE),
+            ("body", SymbolKind::VARIABLE),
+        ];
+        for (child, (name, kind)) in children.iter().zip(expected.iter()) {
+            assert_eq!(&child.name, name, "child name/order mismatch");
+            assert_eq!(child.kind, *kind, "child {name} kind mismatch");
+            assert!(
+                child.children.is_none() || child.children.as_ref().unwrap().is_empty(),
+                "leaf member {name} should have no children"
+            );
+            assert_selection_on_name(source, child);
+        }
+    }
 }
