@@ -1661,6 +1661,77 @@ function makeTreeNode(entity_path: string, kind = 'structure'): EntityTreeNode {
   };
 }
 
+describe('engineStore reconcileToTree — value and constraint pruning (step-3)', () => {
+  it('reconcileToTree prunes orphan value and orphan constraint while keeping live ones', () => {
+    createRoot((dispose) => {
+      const spy = vi.fn();
+      const store = createEngineStore({ onEntityRemoved: spy });
+
+      // Live value: entity_path 'CapstanDrive.shuttle.plate' is in the tree
+      const liveValue: ValueData = {
+        cell_id: 'cell_live',
+        name: 'thickness',
+        value: '3.0',
+        unit: 'mm',
+        determinacy: 'determined',
+        entity_path: 'CapstanDrive.shuttle.plate',
+        kind: 'Param',
+        freshness: 'final',
+      };
+      // Orphan value: entity_path 'ShuttlePlates' is NOT in the tree
+      const orphanValue: ValueData = {
+        cell_id: 'cell_orphan',
+        name: 'width',
+        value: '10.0',
+        unit: 'mm',
+        determinacy: 'determined',
+        entity_path: 'ShuttlePlates',
+        kind: 'Param',
+        freshness: 'final',
+      };
+
+      // Live constraint: node_id owner (before '#') = 'CapstanDrive.shuttle.plate' is in tree
+      const liveConstraint: ConstraintData = {
+        node_id: 'CapstanDrive.shuttle.plate#constraint0',
+        expression: 'thickness > 1',
+        status: 'satisfied',
+        label: null,
+        parameter_ids: ['cell_live'],
+      };
+      // Orphan constraint: node_id owner = 'ShuttlePlates' is NOT in tree
+      const orphanConstraint: ConstraintData = {
+        node_id: 'ShuttlePlates#constraint0',
+        expression: 'width > 5',
+        status: 'satisfied',
+        label: null,
+        parameter_ids: ['cell_orphan'],
+      };
+
+      store.applyValueUpdates([liveValue, orphanValue]);
+      store.applyConstraintUpdates([liveConstraint, orphanConstraint]);
+      expect(Object.keys(store.state.values)).toHaveLength(2);
+      expect(Object.keys(store.state.constraints)).toHaveLength(2);
+
+      // Tree contains only the live structure
+      const tree: EntityTreeNode[] = [makeTreeNode('CapstanDrive.shuttle.plate')];
+      store.reconcileToTree(tree);
+
+      // Orphan value pruned, live value retained
+      expect(store.state.values['cell_orphan']).toBeUndefined();
+      expect(store.state.values['cell_live']).toBeDefined();
+      // Orphan constraint pruned, live constraint retained
+      expect(store.state.constraints['ShuttlePlates#constraint0']).toBeUndefined();
+      expect(store.state.constraints['CapstanDrive.shuttle.plate#constraint0']).toBeDefined();
+      // onEntityRemoved fired for both orphans
+      expect(spy).toHaveBeenCalledWith('cell_orphan');
+      expect(spy).toHaveBeenCalledWith('ShuttlePlates#constraint0');
+      expect(spy).toHaveBeenCalledTimes(2);
+
+      dispose();
+    });
+  });
+});
+
 describe('engineStore reconcileToTree — mesh pruning (step-1)', () => {
   it('reconcileToTree removes orphan mesh and retains live mesh, fires onEntityRemoved for orphan', () => {
     createRoot((dispose) => {
