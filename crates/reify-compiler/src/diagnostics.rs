@@ -42,4 +42,47 @@ mod tests {
             d.labels[0].message
         );
     }
+
+    #[test]
+    fn dup_member_key_error_is_error_with_code_and_two_labels() {
+        let first_span = SourceSpan::new(0, 5);
+        let dup_span = SourceSpan::new(10, 15);
+        let d = dup_member_key_error("vents", "intake", first_span, dup_span);
+
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::DuplicateMemberKey));
+
+        // Message embeds the E_DUP_MEMBER_KEY mnemonic, the offending key, and
+        // the sub name (downstream tooling matches on the code, not the text).
+        assert!(
+            d.message.contains("E_DUP_MEMBER_KEY"),
+            "expected 'E_DUP_MEMBER_KEY' in message: {:?}",
+            d.message
+        );
+        assert!(
+            d.message.contains("intake"),
+            "expected key 'intake' in message: {:?}",
+            d.message
+        );
+        assert!(
+            d.message.contains("vents"),
+            "expected sub name 'vents' in message: {:?}",
+            d.message
+        );
+
+        // Exactly two labels: the duplicate site first, then the first-seen site.
+        assert_eq!(d.labels.len(), 2);
+        assert_eq!(d.labels[0].span, dup_span);
+        assert!(
+            d.labels[0].message.contains("duplicate key defined here"),
+            "expected 'duplicate key defined here' in label 0: {:?}",
+            d.labels[0].message
+        );
+        assert_eq!(d.labels[1].span, first_span);
+        assert!(
+            d.labels[1].message.contains("first defined here"),
+            "expected 'first defined here' in label 1: {:?}",
+            d.labels[1].message
+        );
+    }
 }
