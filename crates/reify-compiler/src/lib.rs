@@ -26,6 +26,7 @@ mod geometry_transform;
 mod guards;
 mod ice;
 mod list_helpers;
+mod math_signatures;
 pub mod module_dag;
 mod module_pragmas;
 pub mod prelude_context;
