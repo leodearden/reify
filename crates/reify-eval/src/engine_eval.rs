@@ -3142,7 +3142,7 @@ impl Engine {
 
         // Trampoline inputs (γ-only seam): value_inputs[0]=options,
         // value_inputs[1]=synthetic slab SDF (a `Value::SampledField`).
-        let extract_args = vec![arg_values[6].clone(), build_slab_sdf(length, width, height)];
+        let extract_args = vec![arg_values[6].clone(), build_slab_sdf(height)];
 
         let extract_cancel = crate::graph::CancellationHandle::new();
         snapshot

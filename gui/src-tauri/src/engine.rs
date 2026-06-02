@@ -970,6 +970,9 @@ impl EngineSession {
         // Install FEA / buckling / modal compute trampolines once at session
         // construction.  This is the single registration site — see doc above.
         reify_eval::compute_targets::register_compute_fns(&mut engine);
+        // Register the shell-extract trampoline so shell-classified bodies
+        // can produce a ShellExtractionResult (task θ / #3598 pre-1).
+        reify_eval::register_shell_extract_compute_fns(&mut engine);
 
         Self {
             core: CoreState::new(engine),
@@ -2184,6 +2187,16 @@ impl EngineSession {
                 if let Some(check) = self.core.last_check() {
                     apply_fea_channels(&mut meshes, &check.values);
                 }
+                // Populate shell-extract channels (element_kind, region_tags,
+                // vonMises_top/mid/bottom, per-face normals) for shell-classified
+                // bodies, replacing their displayed geometry with the extraction
+                // mid-surface. `shell_gui_mesh_data` returns owned data (the
+                // &Engine borrow ends at the call), so it does not conflict with
+                // the mutable `meshes` borrow; it scans the engine graph + cache
+                // and returns an empty Vec for non-shell scenes (one graph scan),
+                // so non-shell scenes are unaffected.
+                let shell_views = self.core.engine().shell_gui_mesh_data();
+                apply_shell_channels(&mut meshes, &shell_views);
                 (meshes, tess_diags)
             }
             None => (Vec::new(), Vec::new()),
@@ -4737,6 +4750,80 @@ pub(crate) fn apply_fea_channels(
 
         mesh.scalar_channels.insert("vonMises".to_string(), vm_vec);
         mesh.displaced_positions = Some(disp_vec);
+    }
+}
+
+/// Match a tessellated `MeshData.entity_path` against a shell view's template
+/// `entity_path`.
+///
+/// The tessellation path carries a `#realization[N]` suffix
+/// (`RealizationNodeId` Display form, e.g. `"FeaShellFlexure#realization[0]"`),
+/// while the engine-side accessor keys its view by the bare compute-node entity
+/// (`"FeaShellFlexure"`). Comparing the prefix before the first `#` on BOTH
+/// sides reconciles them (and degrades to plain equality when neither carries a
+/// suffix), so the populator binds to the right body instead of silently
+/// no-op-ing.
+fn shell_entity_matches(mesh_path: &str, view_path: &str) -> bool {
+    fn template(p: &str) -> &str {
+        p.split('#').next().unwrap_or(p)
+    }
+    template(mesh_path) == template(view_path)
+}
+
+/// Populate shell-extract MeshData channels from the engine-side
+/// [`reify_eval::ShellGuiMeshData`] views produced by
+/// [`reify_eval::Engine::shell_gui_mesh_data`] (PRD
+/// `docs/prds/v0_4/shell-extract-engine-bridge.md` §9 Phase 6 task θ).
+///
+/// For each view, the [`MeshData`](crate::types::MeshData) whose `entity_path`
+/// matches (by [`shell_entity_matches`]) has the shell representation installed:
+///
+/// - `vertices` / `indices` are **replaced** by the view's extraction
+///   mid-surface mesh. Per PRD §11 OQ-2 the v0.4 stress solver's internal
+///   flat-plate mesh ≠ the extraction mid-surface, so the displayed shell uses
+///   the mid-surface geometry; this also makes every length contract close by
+///   construction (`region_tags` / `element_kind` are per-mid-triangle, the
+///   recovered von Mises is per-mid-vertex).
+/// - `element_kind` = `view.element_kind` (all `1` = shell triangle),
+///   `region_tags` = `view.region_tags` (`SegmentationResult` labels).
+/// - `scalar_channels` gains `vonMises_top` / `vonMises_mid` /
+///   `vonMises_bottom` (recovered per-vertex; `len == vertex_count`).
+/// - `vector_channels` gains `shell_normal_per_face` — the
+///   [`PER_FACE_CHANNEL_SUFFIX`](crate::types::PER_FACE_CHANNEL_SUFFIX) makes
+///   the serialize-time length check use `3 * face_count`.
+///
+/// Non-matching meshes (tet / non-FEA bodies) are left untouched. The accessor
+/// returns an empty slice for non-shell scenes, so this is a no-op there.
+pub(crate) fn apply_shell_channels(
+    meshes: &mut [crate::types::MeshData],
+    views: &[reify_eval::ShellGuiMeshData],
+) {
+    for view in views {
+        let Some(mesh) = meshes
+            .iter_mut()
+            .find(|m| shell_entity_matches(&m.entity_path, &view.entity_path))
+        else {
+            continue;
+        };
+
+        // Swap the displayed solid tessellation for the extraction mid-surface
+        // so the per-triangle / per-vertex shell channels line up exactly.
+        mesh.vertices = view.vertices.clone();
+        mesh.indices = view.indices.clone();
+        mesh.element_kind = Some(view.element_kind.clone());
+        mesh.region_tags = Some(view.region_tags.clone());
+
+        mesh.scalar_channels
+            .insert("vonMises_top".to_string(), view.von_mises_top.clone());
+        mesh.scalar_channels
+            .insert("vonMises_mid".to_string(), view.von_mises_mid.clone());
+        mesh.scalar_channels
+            .insert("vonMises_bottom".to_string(), view.von_mises_bottom.clone());
+
+        mesh.vector_channels.insert(
+            format!("shell_normal{}", crate::types::PER_FACE_CHANNEL_SUFFIX),
+            view.shell_normals_per_face.clone(),
+        );
     }
 }
 

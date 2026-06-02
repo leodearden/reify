@@ -436,6 +436,24 @@ async fn handle_engine_state(state: &DebugServerState) -> Result<Value, String> 
     .await
 }
 
+/// Histogram of a mesh's per-face `element_kind` bytes.
+///
+/// Returns an empty map when `element_kind` is `None` (tet-only / non-shell
+/// meshes carry no per-face classification). `BTreeMap` keeps the byte keys in
+/// deterministic ascending order so the serialized JSON object
+/// (`{"1": <n>}`) is stable across runs — the PRD §9 θ observable signal.
+pub(crate) fn element_kind_count(
+    mesh: &crate::types::MeshData,
+) -> std::collections::BTreeMap<u8, usize> {
+    let mut counts = std::collections::BTreeMap::new();
+    if let Some(element_kind) = &mesh.element_kind {
+        for &kind in element_kind {
+            *counts.entry(kind).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
 async fn handle_mesh_stats(state: &DebugServerState) -> Result<Value, String> {
     run_on_engine(&state.engine, |session| {
         let gui_state = session
@@ -458,10 +476,19 @@ async fn handle_mesh_stats(state: &DebugServerState) -> Result<Value, String> {
                     }
                 }
 
+                // Per-face element-kind histogram, byte→count as a JSON object
+                // with string keys (e.g. {"1": <n>}) — the PRD §9 θ signal.
+                let element_kind_hist: serde_json::Map<String, Value> =
+                    element_kind_count(m)
+                        .into_iter()
+                        .map(|(kind, count)| (kind.to_string(), json!(count)))
+                        .collect();
+
                 json!({
                     "entity_path": m.entity_path,
                     "vertex_count": vertex_count,
                     "face_count": face_count,
+                    "element_kind_count": element_kind_hist,
                     "bounding_box": if vertex_count > 0 {
                         json!({"min": min, "max": max})
                     } else {

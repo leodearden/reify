@@ -10572,6 +10572,227 @@ fn apply_fea_channels_without_elastic_result_leaves_meshes_untouched() {
     );
 }
 
+// ── Task 3598 step-3: RED — apply_shell_channels (synthetic, no kernel) ───────
+//
+// apply_shell_channels installs the shell-extract mid-surface geometry + the
+// element_kind / region_tags / vonMises_top|mid|bottom / shell_normal_per_face
+// channels onto the MeshData whose entity_path matches the view (by the prefix
+// before `#realization[N]`). The serialize length contracts are the oracle.
+//
+// Fails to compile until step-4 adds apply_shell_channels to engine.rs.
+
+/// A synthetic shell view: a 2-triangle / 4-vertex mid-surface, entity
+/// `"FeaShellFlexure"` (bare template name, as the engine accessor emits it).
+fn make_test_shell_view() -> reify_eval::ShellGuiMeshData {
+    reify_eval::ShellGuiMeshData {
+        entity_path: "FeaShellFlexure".to_string(),
+        // 4 vertices (flat XYZ, len 12).
+        vertices: vec![
+            0.0, 0.0, 0.0, // v0
+            1.0, 0.0, 0.0, // v1
+            1.0, 1.0, 0.0, // v2
+            0.0, 1.0, 0.0, // v3
+        ],
+        // 2 triangles (flat, len 6).
+        indices: vec![0, 1, 2, 0, 2, 3],
+        element_kind: vec![1, 1],
+        region_tags: vec![0, 1],
+        von_mises_top: vec![10.0, 20.0, 30.0, 40.0],
+        von_mises_mid: vec![1.0, 2.0, 3.0, 4.0],
+        von_mises_bottom: vec![5.0, 6.0, 7.0, 8.0],
+        // Per-face normals: 2 faces × XYZ = 6.
+        shell_normals_per_face: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+    }
+}
+
+/// apply_shell_channels replaces a matching mesh's geometry with the mid-surface
+/// and installs all shell channels; the result satisfies the serialize contracts.
+#[test]
+fn apply_shell_channels_populates_matching_mesh() {
+    // A placeholder solid tessellation (3 verts / 1 tri) that the populator must
+    // REPLACE with the mid-surface. entity_path carries the #realization[N]
+    // suffix; the view uses the bare template name — the prefix match must bind.
+    let mut meshes = vec![crate::types::MeshData {
+        entity_path: "FeaShellFlexure#realization[0]".to_string(),
+        vertices: vec![0.0, 0.0, 0.0, 9.0, 9.0, 9.0, 3.0, 3.0, 3.0],
+        indices: vec![0, 1, 2],
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        vector_channels: std::collections::HashMap::new(),
+    }];
+    let views = vec![make_test_shell_view()];
+
+    crate::engine::apply_shell_channels(&mut meshes, &views);
+
+    let mesh = &meshes[0];
+    let vertex_count = mesh.vertices.len() / 3;
+    let face_count = mesh.indices.len() / 3;
+    assert_eq!(vertex_count, 4, "vertices replaced by the 4-vertex mid-surface");
+    assert_eq!(face_count, 2, "indices replaced by the 2-triangle mid-surface");
+
+    assert_eq!(mesh.element_kind, Some(vec![1, 1]), "element_kind all-shell");
+    assert_eq!(mesh.region_tags, Some(vec![0, 1]), "region_tags == labels");
+
+    for key in ["vonMises_top", "vonMises_mid", "vonMises_bottom"] {
+        let ch = mesh
+            .scalar_channels
+            .get(key)
+            .unwrap_or_else(|| panic!("scalar_channels must contain {key}"));
+        assert_eq!(ch.len(), vertex_count, "{key} len must == vertex_count");
+    }
+
+    let normals = mesh
+        .vector_channels
+        .get("shell_normal_per_face")
+        .expect("vector_channels must contain shell_normal_per_face");
+    assert_eq!(
+        normals.len(),
+        3 * face_count,
+        "per-face normal channel len must == 3*face_count"
+    );
+
+    // Wire-contract oracle: every MeshData::serialize length check must pass.
+    serde_json::to_string(mesh)
+        .expect("populated shell MeshData must serialize (length contracts hold)");
+}
+
+/// apply_shell_channels leaves a non-matching mesh entirely untouched.
+#[test]
+fn apply_shell_channels_leaves_non_matching_mesh_untouched() {
+    let mut meshes = vec![crate::types::MeshData {
+        entity_path: "SomeOtherBody#realization[0]".to_string(),
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        indices: vec![0, 1, 2],
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        vector_channels: std::collections::HashMap::new(),
+    }];
+    let views = vec![make_test_shell_view()]; // entity "FeaShellFlexure" — no match
+
+    crate::engine::apply_shell_channels(&mut meshes, &views);
+
+    let mesh = &meshes[0];
+    assert!(
+        mesh.element_kind.is_none(),
+        "non-matching mesh keeps element_kind None"
+    );
+    assert!(
+        mesh.region_tags.is_none(),
+        "non-matching mesh keeps region_tags None"
+    );
+    assert!(
+        !mesh.scalar_channels.contains_key("vonMises_top"),
+        "non-matching mesh gets no vonMises_* channels"
+    );
+    assert!(
+        mesh.vector_channels.is_empty(),
+        "non-matching mesh gets no vector channels"
+    );
+    assert_eq!(mesh.vertices.len(), 9, "non-matching mesh geometry unchanged");
+}
+
+// ── Task 3598 step-7: RED — element_kind_count histogram ──────────────────────
+//
+// Fails to compile until step-8 adds element_kind_count to debug_server.rs.
+
+/// element_kind_count histograms the per-face bytes; None → empty map.
+///
+/// `debug_server` is gated behind the `gui` feature, so this test compiles and
+/// runs only under `--features gui` (the OCCT/Tauri build).
+#[cfg(feature = "gui")]
+#[test]
+fn element_kind_count_histograms_element_kind_bytes() {
+    let make = |element_kind: Option<Vec<u8>>| crate::types::MeshData {
+        entity_path: "b".to_string(),
+        vertices: Vec::new(),
+        indices: Vec::new(),
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
+        element_kind,
+        region_tags: None,
+        vector_channels: std::collections::HashMap::new(),
+    };
+
+    let all_shell = crate::debug_server::element_kind_count(&make(Some(vec![1, 1, 1])));
+    assert_eq!(
+        all_shell,
+        std::collections::BTreeMap::from([(1u8, 3usize)]),
+        "three shell faces → {{1: 3}}"
+    );
+
+    let mixed = crate::debug_server::element_kind_count(&make(Some(vec![0, 1, 1])));
+    assert_eq!(
+        mixed,
+        std::collections::BTreeMap::from([(0u8, 1usize), (1u8, 2usize)]),
+        "mixed faces → {{0: 1, 1: 2}}"
+    );
+
+    let none = crate::debug_server::element_kind_count(&make(None));
+    assert!(none.is_empty(), "None element_kind → empty histogram");
+}
+
+// ── Task 3598 step-5: integration — build_gui_state wires the shell populator ──
+//
+// Drives build_gui_state on the shell flexure fixture (FeaShellFlexure, a
+// 50×10×1mm auto-classified shell) under MockGeometryKernel. The shell-extract
+// + elastic solves are synthetic (no real kernel), and the body tessellates to
+// a mock mesh whose entity_path prefix ("FeaShellFlexure") matches the shell
+// view, so pre-1 (trampoline registration in from_engine) + step-6 (wiring) +
+// apply_shell_channels must yield a MeshData with an all-shell element_kind and
+// a per-vertex vonMises_top channel.
+
+#[test]
+fn build_gui_state_shell_flexure_populates_element_kind_and_von_mises_top() {
+    let source = include_str!("../../../../examples/fea_shell_flexure.ri");
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let kernel = reify_test_support::MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(source, "FeaShellFlexure")
+        .expect("load_from_source must succeed for fea_shell_flexure.ri");
+
+    // The shell populator must have installed element_kind on the body mesh.
+    let shell_mesh = state
+        .meshes
+        .iter()
+        .find(|m| m.element_kind.is_some())
+        .expect(
+            "build_gui_state must produce a mesh with element_kind populated \
+             (shell-extract trampoline registered + shell populator wired)",
+        );
+
+    let face_count = shell_mesh.indices.len() / 3;
+    let vertex_count = shell_mesh.vertices.len() / 3;
+
+    assert_eq!(
+        shell_mesh.element_kind.as_ref().unwrap(),
+        &vec![1u8; face_count],
+        "element_kind must be all-shell (1), len == face_count"
+    );
+
+    let vm_top = shell_mesh
+        .scalar_channels
+        .get("vonMises_top")
+        .expect("shell mesh must carry a vonMises_top scalar channel");
+    assert_eq!(
+        vm_top.len(),
+        vertex_count,
+        "vonMises_top len must == vertex_count"
+    );
+
+    // Wire contract: the populated shell MeshData must serialize.
+    serde_json::to_string(shell_mesh)
+        .expect("populated shell MeshData must serialize (length contracts hold)");
+}
+
 // ── Task 4087 step-11: RED (integration / B5+B6 signal) ──────────────────────
 //
 // Load `examples/fea_cantilever_smoke.ri` under MockGeometryKernel (whose

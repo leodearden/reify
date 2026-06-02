@@ -1590,6 +1590,415 @@ pub fn sweep_persistent_cache_at_startup(
     )
 }
 
+// ── ShellGuiMeshData — engine-side shell GUI mesh accessor (task θ / #3598) ──
+
+/// Per-shell-body mesh data surfaced by `Engine::shell_gui_mesh_data`.
+///
+/// The accessor scans the evaluation graph for paired `shell-extract::extract`
+/// and `solver::elastic_static` ComputeNodes, parses their cached results,
+/// recovers per-vertex von Mises (top / mid / bottom), and derives per-face
+/// shell normals — returning one entry per shell-classified body.
+///
+/// Field lengths are self-consistent by construction:
+/// - `vertices.len() % 3 == 0`; `vertex_count = vertices.len() / 3`
+/// - `indices.len() % 3 == 0`; `face_count = indices.len() / 3`
+/// - `element_kind.len() == face_count`
+/// - `region_tags.len() == face_count`
+/// - `von_mises_{top,mid,bottom}.len() == vertex_count`
+/// - `shell_normals_per_face.len() == 3 * face_count`
+///
+/// Physical stress accuracy is intentionally out of scope for v0.4 (PRD §11
+/// OQ-2: the solver's internal flat-plate mesh ≠ the extraction mid-surface);
+/// tests assert structural/length/finiteness only.
+#[derive(Debug, Clone)]
+pub struct ShellGuiMeshData {
+    /// Template entity name (e.g. `"FeaShellFlexure"`). Used by
+    /// `apply_shell_channels` to match against `MeshData.entity_path` by
+    /// comparing the entity prefix before the `#realization[N]` suffix.
+    pub entity_path: String,
+    /// Mid-surface vertex positions, flat XYZ f32 (len == 3 * vertex_count).
+    pub vertices: Vec<f32>,
+    /// Mid-surface triangle indices, flat u32 (len == 3 * face_count).
+    pub indices: Vec<u32>,
+    /// Element-kind byte per triangle: all == 1 (shell triangle).
+    /// len == face_count.
+    pub element_kind: Vec<u8>,
+    /// Segmentation region label per triangle (from
+    /// `SegmentationResult.triangle_labels`). len == face_count.
+    pub region_tags: Vec<u32>,
+    /// Recovered per-vertex von Mises stress at the top fibre (z = +t/2).
+    /// len == vertex_count; all values ≥ 0.0 (von Mises is non-negative).
+    pub von_mises_top: Vec<f32>,
+    /// Recovered per-vertex von Mises stress at the mid surface.
+    /// len == vertex_count; all values ≥ 0.0.
+    pub von_mises_mid: Vec<f32>,
+    /// Recovered per-vertex von Mises stress at the bottom fibre (z = -t/2).
+    /// len == vertex_count; all values ≥ 0.0.
+    pub von_mises_bottom: Vec<f32>,
+    /// Per-face geometric shell normals (cross-product of triangle edges),
+    /// flat XYZ f32. len == 3 * face_count.
+    /// The channel name `"shell_normal_per_face"` ends in `_per_face` so
+    /// `apply_shell_channels` honours the `PER_FACE_CHANNEL_SUFFIX` contract.
+    pub shell_normals_per_face: Vec<f32>,
+}
+
+impl Engine {
+    /// Scan the evaluation graph for shell-classified bodies and return one
+    /// [`ShellGuiMeshData`] per body.
+    ///
+    /// Returns an empty `Vec` when:
+    /// - `eval()` has not yet been called (no `eval_state`).
+    /// - No `shell-extract::extract` ComputeNode is present (non-shell scene).
+    /// - A shell-extract node exists but its paired `solver::elastic_static`
+    ///   node lacks `shell_channels` (tet fallback or partial solve).
+    ///
+    /// Overhead is negligible for non-shell scenes: one scan of
+    /// `snapshot.graph.compute_nodes` (typically a handful of entries) plus
+    /// a few cache lookups.
+    ///
+    /// # OQ-2 note
+    ///
+    /// The v0.4 stress solver uses an internal flat-plate mesh that differs
+    /// from the extraction mid-surface (PRD §11 OQ-2). The accessor recovers
+    /// von Mises with an element-count guard: when the per-element channel
+    /// count ≠ the mid-surface triangle count, recovery runs over the minimum
+    /// and the remainder is zero-filled. Output length always equals
+    /// `n_mid_vertices` (the scalar_channels length contract is satisfied).
+    pub fn shell_gui_mesh_data(&self) -> Vec<ShellGuiMeshData> {
+        use crate::cache::CachedResult;
+
+        let Some(eval_state) = self.eval_state.as_ref() else {
+            return Vec::new();
+        };
+        let snapshot = &eval_state.snapshot;
+
+        // ── Pass 1: collect cached Values for extract + elastic nodes ─────────
+        // Keyed by entity name. When multiple nodes exist for the same entity
+        // (unusual but possible), last-write wins; we take the first result
+        // that successfully parses below.
+        let mut extract_vals: HashMap<String, reify_ir::Value> = HashMap::new();
+        let mut elastic_vals: HashMap<String, reify_ir::Value> = HashMap::new();
+
+        for (c_id, node) in snapshot.graph.compute_nodes.iter() {
+            let output_cell = match node.output_value_cells.first() {
+                Some(c) => c,
+                None => continue,
+            };
+            let cached = match self.cache.get(&NodeId::Value(output_cell.clone())) {
+                Some(e) => e,
+                None => continue,
+            };
+            let value = match &cached.result {
+                CachedResult::Value(v, _) => v.clone(),
+                _ => continue,
+            };
+
+            match node.target.as_str() {
+                "shell-extract::extract" => {
+                    extract_vals.insert(c_id.entity.clone(), value);
+                }
+                "solver::elastic_static" => {
+                    elastic_vals.insert(c_id.entity.clone(), value);
+                }
+                _ => {}
+            }
+        }
+
+        // ── Pass 2: parse + recover ───────────────────────────────────────────
+        let mut result = Vec::new();
+
+        for (entity, extract_val) in extract_vals.iter() {
+            // Parse ShellExtractionResult → mid-surface geometry + labels.
+            let (verts_f64, tris_usize, tri_labels) =
+                match parse_shell_extraction_result(extract_val) {
+                    Some(x) => x,
+                    None => continue,
+                };
+
+            // Find matching elastic result with shell channels.
+            let elastic_val = match elastic_vals.get(entity) {
+                Some(v) => v,
+                None => continue,
+            };
+            let (top_data, mid_data, bottom_data) =
+                match parse_shell_channels_from_elastic(elastic_val) {
+                    Some(x) => x,
+                    None => continue, // tet result — no shell_channels
+                };
+
+            let n_verts = verts_f64.len() / 3;
+            let n_tris = tris_usize.len() / 3;
+
+            // Per-vertex von Mises recovery for each through-thickness channel.
+            let von_mises_top =
+                recover_von_mises_channel(n_verts, &tris_usize, &verts_f64, &top_data);
+            let von_mises_mid =
+                recover_von_mises_channel(n_verts, &tris_usize, &verts_f64, &mid_data);
+            let von_mises_bottom =
+                recover_von_mises_channel(n_verts, &tris_usize, &verts_f64, &bottom_data);
+
+            // Per-face shell normals (geometric cross product of triangle edges).
+            let shell_normals_per_face =
+                compute_shell_normals_per_face(&verts_f64, &tris_usize);
+
+            result.push(ShellGuiMeshData {
+                entity_path: entity.clone(),
+                vertices: verts_f64.iter().map(|&x| x as f32).collect(),
+                indices: tris_usize.iter().map(|&i| i as u32).collect(),
+                element_kind: vec![1u8; n_tris],
+                region_tags: tri_labels,
+                von_mises_top,
+                von_mises_mid,
+                von_mises_bottom,
+                shell_normals_per_face,
+            });
+        }
+
+        result
+    }
+}
+
+// ── shell_gui_mesh_data helpers ───────────────────────────────────────────────
+
+/// Parse a `Value::StructureInstance("ShellExtractionResult")` into flat
+/// (vertices_f64, indices_usize, triangle_labels_u32).
+///
+/// Reverses `shell_extraction_result_to_value` for the fields needed by the
+/// GUI populator: `mid_surface.vertices`, `mid_surface.triangles`, and
+/// `segmentation.triangle_labels`.
+fn parse_shell_extraction_result(
+    val: &reify_ir::Value,
+) -> Option<(Vec<f64>, Vec<usize>, Vec<u32>)> {
+    use reify_ir::Value;
+    let data = match val {
+        Value::StructureInstance(d) if d.type_name == "ShellExtractionResult" => d,
+        _ => return None,
+    };
+
+    // mid_surface.vertices: List of List([Real, Real, Real])
+    let mid_surface = match data.fields.get("mid_surface")? {
+        Value::StructureInstance(d) if d.type_name == "MidSurfaceMesh" => d,
+        _ => return None,
+    };
+
+    let verts_f64: Vec<f64> = match mid_surface.fields.get("vertices")? {
+        Value::List(verts) => {
+            let mut flat = Vec::with_capacity(verts.len() * 3);
+            for v in verts.iter() {
+                match v {
+                    Value::List(coords) => {
+                        for c in coords.iter() {
+                            match c {
+                                Value::Real(x) => flat.push(*x),
+                                _ => return None,
+                            }
+                        }
+                    }
+                    _ => return None,
+                }
+            }
+            flat
+        }
+        _ => return None,
+    };
+
+    // mid_surface.triangles: List of List([Int, Int, Int])
+    let tris_usize: Vec<usize> = match mid_surface.fields.get("triangles")? {
+        Value::List(tris) => {
+            let mut flat = Vec::with_capacity(tris.len() * 3);
+            for t in tris.iter() {
+                match t {
+                    Value::List(idxs) => {
+                        for i in idxs.iter() {
+                            match i {
+                                Value::Int(x) => flat.push(*x as usize),
+                                _ => return None,
+                            }
+                        }
+                    }
+                    _ => return None,
+                }
+            }
+            flat
+        }
+        _ => return None,
+    };
+
+    // segmentation.triangle_labels: List of Int
+    let seg = match data.fields.get("segmentation")? {
+        Value::StructureInstance(d) if d.type_name == "SegmentationResult" => d,
+        _ => return None,
+    };
+    let tri_labels: Vec<u32> = match seg.fields.get("triangle_labels")? {
+        Value::List(labels) => labels
+            .iter()
+            .map(|l| match l {
+                Value::Int(x) => Some(*x as u32),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()?,
+        _ => return None,
+    };
+
+    Some((verts_f64, tris_usize, tri_labels))
+}
+
+/// Parse an `ElasticResult` `Value::StructureInstance` and extract
+/// `shell_channels.{top, mid, bottom}` field data.
+///
+/// Returns `None` when:
+/// - `val` is not an `ElasticResult` StructureInstance.
+/// - `shell_channels` is `Value::Undef` (tet/solid result).
+/// - Any of the three channel fields is missing or not a Sampled `Value::Field`.
+fn parse_shell_channels_from_elastic(
+    val: &reify_ir::Value,
+) -> Option<(Vec<f64>, Vec<f64>, Vec<f64>)> {
+    use reify_ir::{FieldSourceKind, Value};
+
+    let data = match val {
+        Value::StructureInstance(d) if d.type_name == "ElasticResult" => d,
+        _ => return None,
+    };
+
+    // shell_channels must be ShellStress (not Undef = tet solve).
+    let sc_data = match data.fields.get("shell_channels")? {
+        Value::StructureInstance(d) if d.type_name == "ShellStress" => d,
+        _ => return None,
+    };
+
+    let extract_sampled = |field_name: &str| -> Option<Vec<f64>> {
+        match sc_data.fields.get(field_name)? {
+            Value::Field {
+                source: FieldSourceKind::Sampled,
+                lambda,
+                ..
+            } => match lambda.as_ref() {
+                Value::SampledField(sf) => Some(sf.data.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
+    };
+
+    let top = extract_sampled("top")?;
+    let mid = extract_sampled("mid")?;
+    let bottom = extract_sampled("bottom")?;
+
+    Some((top, mid, bottom))
+}
+
+/// Recover per-vertex von Mises from a flat per-element stress channel.
+///
+/// Uses `recover_nodal_stress_p1` (volume-weighted averaging) + `compute_von_mises_3x3`.
+/// `channel_data` is flat with 9 `f64` per element (row-major 3×3 tensor).
+/// Von Mises is rotation-invariant so local-frame computation is correct.
+///
+/// # OQ-2 guard
+/// When `channel_data.len() / 9 != n_tri`, recovery runs over
+/// `min(n_elem_channel, n_tri)` elements; unweighted vertices receive the zero
+/// tensor → zero von Mises. Output length is always `n_vertices`.
+fn recover_von_mises_channel(
+    n_vertices: usize,
+    triangles: &[usize],
+    vertices_f64: &[f64],
+    channel_data: &[f64],
+) -> Vec<f32> {
+    use reify_solver_elastic::{StressElement, recover_nodal_stress_p1};
+    use reify_stdlib::compute_von_mises_3x3;
+
+    if channel_data.is_empty() || !channel_data.len().is_multiple_of(9) || triangles.is_empty() {
+        return vec![0.0_f32; n_vertices];
+    }
+
+    let n_tri = triangles.len() / 3;
+    let n_elem_channel = channel_data.len() / 9;
+    // OQ-2 guard: use the minimum to handle solver-mesh vs extraction-mesh mismatch.
+    let n_recover = n_elem_channel.min(n_tri);
+
+    let elements: Vec<StressElement<'_>> = (0..n_recover)
+        .map(|i| {
+            let conn = &triangles[3 * i..3 * i + 3];
+            let sflat = &channel_data[9 * i..9 * (i + 1)];
+            let stress = [
+                [sflat[0], sflat[1], sflat[2]],
+                [sflat[3], sflat[4], sflat[5]],
+                [sflat[6], sflat[7], sflat[8]],
+            ];
+            // Triangle area as volume proxy for volume-weighted recovery.
+            let i0 = conn[0];
+            let i1 = conn[1];
+            let i2 = conn[2];
+            let v0 = &vertices_f64[3 * i0..3 * i0 + 3];
+            let v1 = &vertices_f64[3 * i1..3 * i1 + 3];
+            let v2 = &vertices_f64[3 * i2..3 * i2 + 3];
+            let e0 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
+            let e1 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
+            let cross = [
+                e0[1] * e1[2] - e0[2] * e1[1],
+                e0[2] * e1[0] - e0[0] * e1[2],
+                e0[0] * e1[1] - e0[1] * e1[0],
+            ];
+            let area = 0.5
+                * (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2])
+                    .sqrt();
+            let volume = area.max(1e-30_f64);
+            StressElement { connectivity: conn, stress, volume }
+        })
+        .collect();
+
+    let nodal_tensors = recover_nodal_stress_p1(n_vertices, &elements);
+
+    nodal_tensors
+        .iter()
+        .map(|t| {
+            // Flatten [[f64;3];3] to [f64;9] row-major for compute_von_mises_3x3.
+            let flat = [
+                t[0][0], t[0][1], t[0][2], t[1][0], t[1][1], t[1][2], t[2][0], t[2][1],
+                t[2][2],
+            ];
+            compute_von_mises_3x3(&flat) as f32
+        })
+        .collect()
+}
+
+/// Compute per-face geometric shell normals from mid-surface geometry.
+///
+/// For each triangle `(i0, i1, i2)`, the normal is `unit((v1-v0) × (v2-v0))`.
+/// Degenerate triangles (zero area) yield `(0, 0, 1)` as a fallback.
+/// Returns a flat buffer `[nx0, ny0, nz0, ...]` with len == 3 * face_count.
+fn compute_shell_normals_per_face(vertices_f64: &[f64], triangles: &[usize]) -> Vec<f32> {
+    let n_tri = triangles.len() / 3;
+    let mut normals = Vec::with_capacity(3 * n_tri);
+
+    for i in 0..n_tri {
+        let i0 = triangles[3 * i];
+        let i1 = triangles[3 * i + 1];
+        let i2 = triangles[3 * i + 2];
+        let v0 = &vertices_f64[3 * i0..3 * i0 + 3];
+        let v1 = &vertices_f64[3 * i1..3 * i1 + 3];
+        let v2 = &vertices_f64[3 * i2..3 * i2 + 3];
+        let e0 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
+        let e1 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
+        let cross = [
+            e0[1] * e1[2] - e0[2] * e1[1],
+            e0[2] * e1[0] - e0[0] * e1[2],
+            e0[0] * e1[1] - e0[1] * e1[0],
+        ];
+        let len =
+            (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
+        let (nx, ny, nz) = if len > 0.0 {
+            (cross[0] / len, cross[1] / len, cross[2] / len)
+        } else {
+            (0.0, 0.0, 1.0)
+        };
+        normals.push(nx as f32);
+        normals.push(ny as f32);
+        normals.push(nz as f32);
+    }
+
+    normals
+}
+
 #[cfg(test)]
 mod tests {
     use super::ParamOverrideRejection;

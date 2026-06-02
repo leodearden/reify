@@ -264,42 +264,55 @@ pub(crate) fn build_mid_stress_field(mid: Vec<f64>) -> Value {
     sampled_stress_field(sf)
 }
 
-/// Build a synthetic Regular3D slab signed-distance `Value::SampledField` from
-/// the body dimensions, for the upstream `shell-extract::extract` ComputeNode.
+/// Build a synthetic Regular3D slab signed-distance `Value::SampledField` for the
+/// upstream `shell-extract::extract` ComputeNode.
 ///
 /// The slab is centred on `z = 0` with half-thickness `height / 2`; the SDF is
 /// `|z| − height/2` (negative inside the slab, positive outside), sampled on a
-/// small structured grid spanning `[0, length] × [0, width] × [−h/2, h/2]`.
-/// Mirrors the synthetic-slab construction in γ's
-/// `tests/shell_extract_compute_integration.rs` (row-major: z outermost, then y,
-/// then x).
+/// **fully-isotropic** `16 × 16 × 7` structured grid (row-major: z outermost,
+/// then y, then x).
 ///
-/// Per PRD §11 OQ-2 this field exists only to drive the upstream
+/// ## Why isotropic + half-thickness exactly 3 voxels
+///
+/// `compute_medial_mask` only flags voxels whose narrow-band signed distance
+/// `|φ|` is within `narrow_band_half_width_voxels (=3) × min_spacing`, so the
+/// slab medial plane (`z = 0`, depth `half_t` below the surface) is reachable
+/// **only when `half_t ≤ 3 × min_spacing`**, i.e. the half-thickness is at most
+/// ~3 voxels. Empirically the medial extraction is also resolution-sensitive:
+/// the robust, proven configuration (the one the medial unit-test
+/// `compute_medial_mask_flags_slab_centerline_voxels` relies on) is a
+/// square `16 × 16` in-plane grid with **isotropic spacing** and the medial
+/// plane exactly 3 voxels deep (`NZ = 7`, `z ∈ {−3,…,3}·sp`). That regime yields
+/// ~332 triangles; anisotropic spacing (z far finer than x/y, as a thin body's
+/// true aspect ratio would force) collapses the mask to empty and produced the
+/// empty `ShellGuiMeshData.vertices` that failed the θ accessor test.
+///
+/// Per PRD §11 OQ-2 this field exists **only** to drive the upstream
 /// `shell-extract::extract` node so it `Completes` and satisfies the
 /// graph/segmentation contract; it is **not** the geometry source for the v0.4
 /// flat-plate stress solve (that mesh is trampoline-synthesized by
-/// [`reify_solver_elastic::solve_flat_plate_shell`]).
+/// [`reify_solver_elastic::solve_flat_plate_shell`], which carries the real
+/// length × width). Because the slab is a placeholder, the in-plane footprint is
+/// a `15·sp` square at the z-scale rather than the body's true (extreme) aspect
+/// ratio — the only choice that keeps the spacing isotropic and the mask
+/// non-empty. `height` sets the physical thickness (`z ∈ [−h/2, h/2]`); the
+/// voxel size is `sp = height / 6`.
 //
 // Wired into the `@optimized`→ComputeNode lowering (step-12,
 // `engine_eval::insert_shell_extract_upstream`) to feed the upstream
 // `shell-extract::extract` node's `value_inputs[1]`.
-pub(crate) fn build_slab_sdf(length: f64, width: f64, height: f64) -> Value {
+pub(crate) fn build_slab_sdf(height: f64) -> Value {
     let half_t = 0.5 * height;
-    // A modest fixed grid: the field only has to satisfy the shell-extract
-    // contract (Regular3D, non-empty axis grids, finite data), not resolve the
-    // stress solve.
-    const NX: usize = 5;
-    const NY: usize = 5;
-    const NZ: usize = 3;
-    let x_grid: Vec<f64> = (0..NX)
-        .map(|i| length * i as f64 / (NX - 1) as f64)
-        .collect();
-    let y_grid: Vec<f64> = (0..NY)
-        .map(|i| width * i as f64 / (NY - 1) as f64)
-        .collect();
-    let z_grid: Vec<f64> = (0..NZ)
-        .map(|i| -half_t + height * i as f64 / (NZ - 1) as f64)
-        .collect();
+    // Fully-isotropic grid: voxel size `sp` chosen so the medial plane (z=0) is
+    // exactly 3 voxels below each face (half_t = 3·sp ⇒ NZ=7, z ∈ {−3,…,3}·sp).
+    // In-plane footprint is a 15·sp square (16 samples per axis at spacing sp).
+    const NX: usize = 16;
+    const NY: usize = 16;
+    const NZ: usize = 7;
+    let sp = half_t / 3.0; // == height / 6
+    let x_grid: Vec<f64> = (0..NX).map(|i| i as f64 * sp).collect();
+    let y_grid: Vec<f64> = (0..NY).map(|i| i as f64 * sp).collect();
+    let z_grid: Vec<f64> = (0..NZ).map(|i| -half_t + i as f64 * sp).collect();
 
     // Row-major flatten: z outermost, then y, then x (γ's slab convention).
     let mut data = Vec::with_capacity(NX * NY * NZ);
@@ -315,12 +328,8 @@ pub(crate) fn build_slab_sdf(length: f64, width: f64, height: f64) -> Value {
         name: "shell_slab_sdf".to_string(),
         kind: SampledGridKind::Regular3D,
         bounds_min: vec![0.0, 0.0, -half_t],
-        bounds_max: vec![length, width, half_t],
-        spacing: vec![
-            length / (NX - 1) as f64,
-            width / (NY - 1) as f64,
-            height / (NZ - 1) as f64,
-        ],
+        bounds_max: vec![(NX - 1) as f64 * sp, (NY - 1) as f64 * sp, half_t],
+        spacing: vec![sp, sp, sp],
         axis_grids: vec![x_grid, y_grid, z_grid],
         interpolation: InterpolationKind::Linear,
         data,
@@ -713,8 +722,10 @@ mod tests {
     /// signed-distance data, row-major data length == grid node count).
     #[test]
     fn build_slab_sdf_is_regular3d_sampled_field() {
-        // Fixture body dims (SI metres): 50mm × 10mm × 1mm.
-        let value = build_slab_sdf(0.050, 0.010, 0.001);
+        // Fixture body thickness (SI metres): 1mm. The synthetic placeholder
+        // slab is isotropic at the z-scale (footprint is a 15·sp square), not the
+        // body's true 50mm × 10mm extent — see the `build_slab_sdf` doc comment.
+        let value = build_slab_sdf(0.001);
         match &value {
             Value::SampledField(sf) => {
                 assert!(
@@ -731,10 +742,14 @@ mod tests {
                     sf.axis_grids.iter().all(|g| !g.is_empty()),
                     "every axis grid must be non-empty (shell-extract contract)"
                 );
+                // Fully-isotropic spacing — the regime that keeps the medial mask
+                // non-empty (anisotropic z-fine spacing collapses it to empty).
                 assert!(
-                    !sf.data.is_empty(),
-                    "signed-distance data must be non-empty"
+                    sf.spacing.windows(2).all(|w| (w[0] - w[1]).abs() < 1e-18),
+                    "slab spacing must be isotropic, got {:?}",
+                    sf.spacing
                 );
+                assert!(!sf.data.is_empty(), "signed-distance data must be non-empty");
                 assert!(
                     sf.data.iter().all(|d| d.is_finite()),
                     "all signed-distance samples must be finite"
