@@ -18,7 +18,7 @@
 //! for the inference pipeline.
 
 use reify_compiler::geometry_traits_inference::{
-    EmptyLetEnv, GeometryTrait, InferredTraits, LetBindingEnv, combine_difference,
+    EmptyLetEnv, GeomDim, GeometryTrait, InferredTraits, LetBindingEnv, combine_difference,
     combine_intersection, combine_modify, combine_pattern, combine_sweep, combine_transform,
     combine_union, infer_primitive, infer_traits_for_expr, infer_traits_for_expr_in_env,
     infer_traits_for_op,
@@ -96,6 +96,230 @@ fn inferred_traits_has_returns_corresponding_flag() {
     assert!(b_only.has(GeometryTrait::Bounded));
     assert!(!b_only.has(GeometryTrait::Connected));
     assert!(!b_only.has(GeometryTrait::Convex));
+}
+
+// ─── GeomDim + dimension/planar/closed fields (task α data model) ────────────
+//
+// These tests pin the extended record introduced in step-4. They are RED until
+// `GeomDim`, the `dimension`/`planar`/`closed` fields, and the `curve()`
+// constructor exist in `geometry_traits_inference.rs`.
+
+/// The three dimensionality variants exist and are pairwise distinct (a shape
+/// is exactly one of 1-D / 2-D / 3-D).
+#[test]
+fn geom_dim_has_three_distinct_variants() {
+    assert_ne!(GeomDim::Curve, GeomDim::Surface);
+    assert_ne!(GeomDim::Surface, GeomDim::Solid);
+    assert_ne!(GeomDim::Curve, GeomDim::Solid);
+}
+
+/// Every named constructor (`all`/`none`/`bounded_only`/`bounded_connected`)
+/// carries `dimension == GeomDim::Solid` with `planar == false` and
+/// `closed == false` — the Solid default that assigns box/cylinder/sphere/tube
+/// and all boolean/modify/pattern/sweep results to Solid for free.
+#[test]
+fn named_constructors_carry_solid_dimension_non_planar_non_closed() {
+    assert_eq!(InferredTraits::all().dimension, GeomDim::Solid);
+    assert_eq!(InferredTraits::none().dimension, GeomDim::Solid);
+    assert_eq!(InferredTraits::bounded_only().dimension, GeomDim::Solid);
+    assert_eq!(InferredTraits::bounded_connected().dimension, GeomDim::Solid);
+
+    assert!(!InferredTraits::all().planar, "all() must be planar=false");
+    assert!(!InferredTraits::all().closed, "all() must be closed=false");
+    assert!(!InferredTraits::none().planar);
+    assert!(!InferredTraits::none().closed);
+    assert!(!InferredTraits::bounded_only().planar);
+    assert!(!InferredTraits::bounded_only().closed);
+    assert!(!InferredTraits::bounded_connected().planar);
+    assert!(!InferredTraits::bounded_connected().closed);
+}
+
+/// `curve()` yields `dimension == GeomDim::Curve` while preserving the prior
+/// `all()`-equivalent flags (bounded/connected/convex all true) and keeping
+/// planar/closed false — the dedicated constructor for 1-D primitives.
+#[test]
+fn curve_constructor_is_one_dimensional_preserving_all_flags() {
+    let c = InferredTraits::curve();
+    assert_eq!(c.dimension, GeomDim::Curve);
+    assert!(c.bounded, "curve() must keep bounded=true");
+    assert!(c.connected, "curve() must keep connected=true");
+    assert!(c.convex, "curve() must keep convex=true");
+    assert!(!c.planar, "curve() must be planar=false");
+    assert!(!c.closed, "curve() must be closed=false");
+}
+
+// ─── dimension assignment across both inference paths (task α) ───────────────
+//
+// Solid cases already pass after step-4 (named constructors default to Solid);
+// the Curve cases are RED until step-6 routes the curve arms to
+// `InferredTraits::curve()`.
+
+/// Name-dispatch: primitives and every combinator family (boolean / modify /
+/// pattern / sweep) infer `GeomDim::Solid`.
+#[test]
+fn name_dispatch_assigns_solid_to_primitives_and_combinators() {
+    use reify_compiler::geometry_traits_inference::try_infer_traits_for_function_call;
+    let g = || CompiledExpr::literal(Value::Real(10.0), Type::length());
+    let box_g = || make_function_call("box", vec![g(), g(), g()], Type::Geometry);
+
+    for name in ["box", "cylinder", "sphere", "tube"] {
+        let t = try_infer_traits_for_function_call(name, &[g(), g(), g()]).unwrap();
+        assert_eq!(t.dimension, GeomDim::Solid, "{name} must infer Solid");
+    }
+    for name in ["union", "difference", "intersection", "union_all", "intersection_all"] {
+        let t = try_infer_traits_for_function_call(name, &[box_g(), box_g()]).unwrap();
+        assert_eq!(t.dimension, GeomDim::Solid, "{name} must infer Solid");
+    }
+    for name in ["fillet", "shell"] {
+        let t = try_infer_traits_for_function_call(name, &[box_g()]).unwrap();
+        assert_eq!(t.dimension, GeomDim::Solid, "{name} must infer Solid");
+    }
+    for name in ["linear_pattern", "circular_pattern", "mirror"] {
+        let t = try_infer_traits_for_function_call(name, &[box_g()]).unwrap();
+        assert_eq!(t.dimension, GeomDim::Solid, "{name} must infer Solid");
+    }
+    for name in ["extrude", "revolve", "sweep", "loft"] {
+        let t = try_infer_traits_for_function_call(name, &[box_g()]).unwrap();
+        assert_eq!(t.dimension, GeomDim::Solid, "{name} must infer Solid");
+    }
+}
+
+/// Name-dispatch: every curve constructor infers `GeomDim::Curve`.
+/// RED until step-6 (currently the curve arm returns `all()` → Solid).
+#[test]
+fn name_dispatch_assigns_curve_to_curve_constructors() {
+    use reify_compiler::geometry_traits_inference::try_infer_traits_for_function_call;
+    let g = || CompiledExpr::literal(Value::Real(10.0), Type::length());
+    for name in ["line_segment", "arc", "helix", "interp", "bezier", "nurbs"] {
+        let t = try_infer_traits_for_function_call(name, &[g(), g()]).unwrap();
+        assert_eq!(t.dimension, GeomDim::Curve, "{name} must infer Curve");
+    }
+}
+
+/// Name-dispatch: a transform of a curve PRESERVES Curve (combine_transform is
+/// identity), while a transform of a box stays Solid. The Curve half is RED
+/// until step-6.
+#[test]
+fn name_dispatch_transform_preserves_operand_dimension() {
+    use reify_compiler::geometry_traits_inference::try_infer_traits_for_function_call;
+    let g = || CompiledExpr::literal(Value::Real(10.0), Type::length());
+
+    let arc = make_function_call("arc", vec![g(), g(), g()], Type::Geometry);
+    let translate_arc_args = vec![arc, g(), g(), g()];
+    let t = try_infer_traits_for_function_call("translate", &translate_arc_args).unwrap();
+    assert_eq!(
+        t.dimension,
+        GeomDim::Curve,
+        "translate(arc(...)) must preserve Curve"
+    );
+
+    let box_g = make_function_call("box", vec![g(), g(), g()], Type::Geometry);
+    let translate_box_args = vec![box_g, g(), g(), g()];
+    let t2 = try_infer_traits_for_function_call("translate", &translate_box_args).unwrap();
+    assert_eq!(
+        t2.dimension,
+        GeomDim::Solid,
+        "translate(box(...)) must stay Solid"
+    );
+}
+
+/// Op-array: Primitive / Boolean / Modify / Pattern / Sweep roots infer Solid.
+/// These already pass after step-4.
+#[test]
+fn op_array_assigns_solid_to_primitive_and_combinator_ops() {
+    let prim = vec![CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![],
+    }];
+    assert_eq!(infer_traits_for_op(&prim).dimension, GeomDim::Solid);
+
+    let sweep = vec![
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        },
+        CompiledGeometryOp::Sweep {
+            kind: SweepKind::Extrude,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![],
+        },
+    ];
+    assert_eq!(infer_traits_for_op(&sweep).dimension, GeomDim::Solid);
+
+    let boolean = vec![
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        },
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        },
+        CompiledGeometryOp::Boolean {
+            op: BooleanOp::Union,
+            left: GeomRef::Step(0),
+            right: GeomRef::Step(1),
+        },
+    ];
+    assert_eq!(infer_traits_for_op(&boolean).dimension, GeomDim::Solid);
+
+    let modify = vec![
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        },
+        CompiledGeometryOp::Modify {
+            kind: ModifyKind::Fillet,
+            target: GeomRef::Step(0),
+            args: vec![],
+        },
+    ];
+    assert_eq!(infer_traits_for_op(&modify).dimension, GeomDim::Solid);
+
+    let pattern = vec![
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        },
+        CompiledGeometryOp::Pattern {
+            kind: PatternKind::Linear,
+            target: GeomRef::Step(0),
+            args: vec![],
+        },
+    ];
+    assert_eq!(infer_traits_for_op(&pattern).dimension, GeomDim::Solid);
+}
+
+/// Op-array: a `Curve` op infers Curve, and a Transform of a Curve op preserves
+/// Curve. RED until step-6 (currently the `Curve` arm returns `all()` → Solid).
+#[test]
+fn op_array_assigns_curve_to_curve_op_and_preserves_through_transform() {
+    let curve_ops = vec![CompiledGeometryOp::Curve {
+        kind: CurveKind::Arc,
+        args: vec![],
+    }];
+    assert_eq!(
+        infer_traits_for_op(&curve_ops).dimension,
+        GeomDim::Curve,
+        "a Curve op must infer GeomDim::Curve"
+    );
+
+    let transform_curve = vec![
+        CompiledGeometryOp::Curve {
+            kind: CurveKind::Arc,
+            args: vec![],
+        },
+        CompiledGeometryOp::Transform {
+            kind: TransformKind::Translate,
+            target: GeomRef::Step(0),
+            args: vec![],
+        },
+    ];
+    assert_eq!(
+        infer_traits_for_op(&transform_curve).dimension,
+        GeomDim::Curve,
+        "a Transform of a Curve op must preserve GeomDim::Curve"
+    );
 }
 
 // ─── infer_primitive — per-PrimitiveKind lookup ─────────────────────────────
@@ -196,6 +420,9 @@ fn combine_intersection_of_two_full_inputs_preserves_bounded_and_convex() {
             bounded: true,
             connected: false,
             convex: true,
+            dimension: GeomDim::Solid,
+            planar: false,
+            closed: false,
         }
     );
 }
@@ -402,6 +629,9 @@ fn infer_traits_for_expr_handles_variadic_intersection_all() {
             bounded: true,
             connected: false,
             convex: true,
+            dimension: GeomDim::Solid,
+            planar: false,
+            closed: false,
         },
         "intersection_all of two Bounded+Convex boxes must fold combine_intersection \
          (bounded preserved, convex preserved, connected dropped)"
@@ -543,6 +773,9 @@ fn infer_traits_for_expr_pins_intersection_dispatch_via_connected_drop() {
             bounded: true,
             connected: false,
             convex: true,
+            dimension: GeomDim::Solid,
+            planar: false,
+            closed: false,
         },
         "intersection dispatch must fold combine_intersection — bounded+convex \
          preserved, connected dropped (regressing to the `_ => all()` fallback \
@@ -769,7 +1002,10 @@ fn infer_traits_for_op_handles_boolean_intersection_root() {
         InferredTraits {
             bounded: true,
             connected: false,
-            convex: true
+            convex: true,
+            dimension: GeomDim::Solid,
+            planar: false,
+            closed: false,
         },
         "intersection of two all-trait ops must be bounded+convex (connected dropped)"
     );
@@ -874,15 +1110,18 @@ fn infer_traits_for_op_handles_sweep_root() {
     );
 }
 
-/// `Curve` root → safe default `InferredTraits::all()` (1-D primitives,
-/// not a solid geometry — inferred as fully safe).
+/// `Curve` root → `InferredTraits::curve()` (1-D primitive: preserves the
+/// all()-equivalent bounded/connected/convex flags but carries
+/// `dimension == GeomDim::Curve`). The dedicated dimension assertion lives in
+/// `op_array_assigns_curve_to_curve_op_and_preserves_through_transform`; this
+/// full-struct pin guards the complete record.
 #[test]
 fn infer_traits_for_op_handles_curve_root() {
     let ops = vec![CompiledGeometryOp::Curve {
         kind: CurveKind::Arc,
         args: vec![],
     }];
-    assert_eq!(infer_traits_for_op(&ops), InferredTraits::all());
+    assert_eq!(infer_traits_for_op(&ops), InferredTraits::curve());
 }
 
 /// `GeomRef::Sub(_)` in a boolean op returns the safe default `all()` —

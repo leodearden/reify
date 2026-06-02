@@ -441,6 +441,48 @@ pub(crate) fn emit_geometry_unbounded(
     );
 }
 
+/// Emit `DiagnosticCode::GeometryProfileRequired` for a geometry-typed argument
+/// at a profile-consuming op (`extrude`/`extrude_symmetric`/`revolve`/`loft`/
+/// `loft_guided`/`sweep`/`sweep_guided`/`pipe`) whose statically-known operand
+/// violates the op's dimensionality precondition.
+///
+/// Pushes exactly one `Diagnostic::error(...)` with code
+/// [`DiagnosticCode::GeometryProfileRequired`] and a single label at `span`. The
+/// `requirement` is parameterized so the one helper serves both the Surface
+/// profile consumers (`requirement` e.g. `"a 2D Surface profile (Closed, Planar)"`)
+/// and the Curve path consumers (`requirement` e.g. `"a 1D Curve path"`). The
+/// canonical message wording is documented on the variant declaration in
+/// `crates/reify-core/src/diagnostics.rs` — keep the two in sync.
+///
+/// `arg_name` is the **consumer's parameter-slot label** (e.g. `"profile"` or
+/// `"path"`), shown to the user as the offending argument's name — callers pass
+/// the slot role, NOT the operand's own producer function name, so the message
+/// points at the role that is wrong (`geometry argument 'profile' must be …`).
+/// Callers should pass `span` as the offending operand's own span so the label
+/// pinpoints that argument.
+///
+/// Sibling of [`emit_geometry_unbounded`]: same shape (one Error diagnostic, one
+/// label at `span`) and the same non-fatal contract — the caller still lowers
+/// the op. See PRD `docs/prds/geometry-primitive-constructors.md` task α.
+pub(crate) fn emit_geometry_profile_required(
+    arg_name: &str,
+    requirement: &str,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    diagnostics.push(
+        Diagnostic::error(format!(
+            "geometry argument '{}' must be {}",
+            arg_name, requirement
+        ))
+        .with_code(DiagnosticCode::GeometryProfileRequired)
+        .with_label(DiagnosticLabel::new(
+            span,
+            format!("'{}' is not {}", arg_name, requirement),
+        )),
+    );
+}
+
 /// Emit a "does not conform to trait" geometry diagnostic for the `Connected`/`Convex`
 /// cases — the symmetric sibling of [`emit_geometry_unbounded`] for the `Bounded` case.
 ///
@@ -4683,6 +4725,52 @@ mod tests {
         assert!(
             d.message.contains("Bounded"),
             "message should mention the Bounded trait, got: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("'g'"),
+            "message should mention the arg name 'g', got: {}",
+            d.message
+        );
+        assert_eq!(
+            d.labels.len(),
+            1,
+            "expected exactly one label attached at the supplied span"
+        );
+        assert_eq!(d.labels[0].span, span);
+    }
+
+    /// `emit_geometry_profile_required` pushes exactly one `Diagnostic` with
+    /// severity `Error`, code `Some(DiagnosticCode::GeometryProfileRequired)`, a
+    /// message naming both the arg and the `requirement`, and a single
+    /// `DiagnosticLabel` at the supplied span. Pins the diagnostic-shape contract
+    /// independent of the geometry.rs consumer wiring (which is exercised
+    /// end-to-end in `geometry_profile_precondition_tests.rs`). Mirrors
+    /// `emit_geometry_unbounded_helper_produces_error_with_code_and_label`; the
+    /// `requirement` is parameterized so the one helper serves both the Surface
+    /// profile and Curve path consumers.
+    #[test]
+    fn emit_geometry_profile_required_helper_produces_error_with_code_and_label() {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let span = SourceSpan::new(7, 19);
+        emit_geometry_profile_required(
+            "g",
+            "a 2D Surface profile (Closed, Planar)",
+            span,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "emit_geometry_profile_required should push exactly one diagnostic"
+        );
+        let d = &diagnostics[0];
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::GeometryProfileRequired));
+        assert!(
+            d.message.contains("Surface"),
+            "message should mention the requirement text, got: {}",
             d.message
         );
         assert!(

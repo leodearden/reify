@@ -1,6 +1,6 @@
 //! Tests for the W_TRAIT_USER_ASSERTED specialization escape hatch warning.
 //!
-//! When a structure (or occurrence) explicitly declares one of the seven stdlib
+//! When a structure (or occurrence) explicitly declares one of the stdlib
 //! geometry-conformance marker traits as a trait bound, the compiler emits a
 //! `W_TRAIT_USER_ASSERTED` warning (PRD `docs/prds/geometry-traits.md` task 6,
 //! `DiagnosticCode::TraitUserAsserted`). The declaration is treated as a user
@@ -78,7 +78,7 @@ structure def Foo : Watertight {
 
 /// A structure with only a non-geometry trait bound must emit zero
 /// `W_TRAIT_USER_ASSERTED` warnings.  `Elastic` is a stdlib mechanical
-/// material trait — not one of the seven geometry markers.
+/// material trait — not one of the geometry markers.
 #[test]
 fn non_geometry_trait_emits_no_user_asserted_warning() {
     let source = r#"

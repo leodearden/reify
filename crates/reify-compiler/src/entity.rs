@@ -1245,7 +1245,7 @@ pub(crate) fn compile_entity(
                     diagnostics,
                 );
             }
-            // Geometry-marker escape hatch: if the bound names one of the seven stdlib
+            // Geometry-marker escape hatch: if the bound names one of the stdlib
             // geometry-conformance marker traits, emit W_TRAIT_USER_ASSERTED. The
             // declaration is treated as a user assertion that bypasses any future runtime
             // conformance check (PRD geometry-traits.md task 6 / W_TRAIT_USER_ASSERTED).

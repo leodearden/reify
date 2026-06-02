@@ -946,7 +946,9 @@ pub const EXPECTED_MATERIAL_TRAITS: &[&str] = &[
 /// Geometry conformance marker traits defined in `geometry_traits.ri`. These
 /// are pure markers — no fields, no constraints, no defaults — declared at
 /// module path `std.geometry.traits` and intended to be inferred from kernel
-/// results and attached as metadata.
+/// results and attached as metadata. Includes the planarity marker `Planar`
+/// and the mutually-exclusive dimensionality markers `Curve`/`Surface`/`Solid`
+/// (task α), which surface `InferredTraits::{planar, dimension}`.
 pub const EXPECTED_GEOMETRY_TRAITS: &[&str] = &[
     "Bounded",
     "Closed",
@@ -954,6 +956,10 @@ pub const EXPECTED_GEOMETRY_TRAITS: &[&str] = &[
     "Orientable",
     "Convex",
     "Connected",
+    "Planar",
+    "Curve",
+    "Surface",
+    "Solid",
     "Watertight",
 ];
 

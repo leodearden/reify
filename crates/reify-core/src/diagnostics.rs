@@ -209,6 +209,24 @@ pub enum DiagnosticCode {
     /// at the same call-site shape reuse [`TypeNotConformingToTrait`] per the
     /// task's design decision §2.
     GeometryUnbounded,
+    /// Origin: `crates/reify-compiler/src/conformance/mod.rs::emit_geometry_profile_required`,
+    /// called by the profile-consumer arms in `crates/reify-compiler/src/geometry.rs`
+    /// (`extrude`/`extrude_symmetric`/`revolve`/`loft`/`loft_guided`/`sweep`/
+    /// `sweep_guided`/`pipe`).
+    /// Canonical message form:
+    /// `"geometry argument '<name>' must be <requirement>"`.
+    ///
+    /// Emitted when a profile-consuming geometry op receives a statically-known
+    /// operand whose inferred dimensionality refinement violates the op's
+    /// precondition: a profile slot requires a 2-D `Surface` (Closed ∧ Planar),
+    /// a sweep/pipe path slot requires a 1-D `Curve` (see
+    /// [`GeomDim`](../../reify_compiler/geometry_traits_inference/enum.GeomDim.html)).
+    /// Permissive (PRD decision 5): the check fires only for operands that are
+    /// nested geometry constructors (FunctionCall `CompiledExpr`s resolved via
+    /// `try_infer_traits_for_function_call`); `param`/`let` value-refs are
+    /// accepted. Non-fatal — the op is still lowered (mirrors [`GeometryUnbounded`]).
+    /// See `docs/prds/geometry-primitive-constructors.md` task α.
+    GeometryProfileRequired,
     /// Origin: `crates/reify-constraints/src/lib.rs::SimpleConstraintChecker::check`.
     /// Replaces canonical messages:
     /// - `"constraint <id> violated"` (Bool(false) branch, Severity::Error)
@@ -2068,6 +2086,33 @@ mod tests {
     fn diagnostic_code_geometry_unbounded_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::GeometryUnbounded).unwrap();
         assert_eq!(s, "\"GeometryUnbounded\"");
+    }
+
+    // --- GeometryProfileRequired tests (geometry-primitive-constructors task α) ---
+    // Pairs with the `emit_geometry_profile_required` producer in
+    // `crates/reify-compiler/src/conformance/mod.rs`, called by the profile-consumer
+    // arms in `crates/reify-compiler/src/geometry.rs` (extrude/revolve/loft/sweep/pipe…).
+
+    /// `DiagnosticCode::GeometryProfileRequired` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` (mirrors the GeometryUnbounded
+    /// shape so a future enum reorganisation that drops it is caught here).
+    #[test]
+    fn diagnostic_code_geometry_profile_required_with_code_round_trips() {
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::GeometryProfileRequired);
+        assert_eq!(d.code, Some(DiagnosticCode::GeometryProfileRequired));
+        assert_eq!(
+            format!("{:?}", DiagnosticCode::GeometryProfileRequired),
+            "GeometryProfileRequired"
+        );
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::GeometryProfileRequired` serializes
+    /// as `"GeometryProfileRequired"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_geometry_profile_required_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::GeometryProfileRequired).unwrap();
+        assert_eq!(s, "\"GeometryProfileRequired\"");
     }
 
     // --- Shadowing tests (task 2310 — spec §8.5) ---

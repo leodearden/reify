@@ -37,6 +37,36 @@ trait Convex {}
 // A body whose region is path-connected (a single component).
 trait Connected {}
 
+// ── Planarity ────────────────────────────────────────────────────────────────
+
+// A body whose region lies entirely within a single plane (zero thickness
+// along the plane normal). Used as a profile precondition for the sweep
+// family (extrude/revolve/loft require a Planar profile). Surfaced as a
+// bound-able name mapping to InferredTraits.planar.
+trait Planar {}
+
+// ── Dimensionality (computed, mutually-exclusive) ────────────────────────────
+//
+// A shape is exactly ONE of Curve (1-D), Surface (2-D), or Solid (3-D). Unlike
+// the orthogonal markers above (a body may be both Bounded and Convex), these
+// three are mutually exclusive — the compiler computes the single dimension
+// per geometry expression and surfaces it as these bound-able names, each
+// mapping to the InferredTraits.dimension enum
+// (crates/reify-compiler/src/geometry_traits_inference.rs::GeomDim).
+
+// A 1-D curve (line_segment/arc/helix/interp/bezier/nurbs and transforms
+// thereof). Accepted as a sweep/pipe *path*.
+trait Curve {}
+
+// A 2-D surface (a profile). Combined with Closed + Planar it is the profile
+// precondition for extrude/revolve/loft. (Surface producers land in sibling
+// tasks ζ/η; no task-α producer is a Surface.)
+trait Surface {}
+
+// A 3-D solid (box/cylinder/sphere/tube, boolean/sweep/pattern/modify results,
+// and transforms thereof). The default dimension for every non-curve producer.
+trait Solid {}
+
 // ── Watertightness (multi-refinement) ───────────────────────────────────────
 
 // A body that is both Closed and Manifold — the canonical predicate for
