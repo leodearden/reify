@@ -14,6 +14,8 @@ import { reifyCompletionSource } from './completions';
 import { createDiagnosticsListener, lspDiagnosticToCodeMirror, type CmDiagnostic } from './diagnostics';
 import { reifyHoverTooltip } from './hover';
 import { reifyGotoDefinition, gotoDefinitionCommand } from './gotoDefinition';
+import { createNavHistory } from '../hooks/useNavHistory';
+import type { NavEntry } from '../hooks/useNavHistory';
 import type { createEditorStore } from '../stores/editorStore';
 import type { FileData, SourceLocation } from '../types';
 import { errorMessage } from '../utils/errorClassifier';
@@ -62,6 +64,10 @@ export function Editor(props: EditorProps) {
   // Current URI — updated on file switch, read by LSP extension getters
   let currentUri = 'file:///untitled.ri';
 
+  // Bounded back/forward navigation-history stack (max 50 entries).
+  // Pure closure, no SolidJS dependency.
+  const navHistory = createNavHistory();
+
   // Create LSP client for communicating with the in-process LSP server
   const lspClient = createLspClient();
 
@@ -106,6 +112,50 @@ export function Editor(props: EditorProps) {
         .catch((err: unknown) => console.error('Cross-file goto-definition error:', err));
     };
 
+    // Nav-history record hook: push origin then destination on a successful
+    // same-file goto-definition.  Called by both reifyGotoDefinition (Ctrl+Click)
+    // and gotoDefinitionCommand (F12).  Consecutive-dedupe in navHistory makes
+    // re-pushes of the same entry idempotent.
+    const onRecordJump = (origin: NavEntry, dest: NavEntry): void => {
+      navHistory.push(origin);
+      navHistory.push(dest);
+    };
+
+    // Apply a NavEntry by placing the cursor at entry.offset.
+    // Same-file: direct dispatch clamped to doc length.
+    // Cross-file: open the target file (if not already open), then defer the
+    //             cursor dispatch until after the file-switch effect has run.
+    // Pushes never happen here — only goto-def and scrollToLocation push.
+    const applyNavEntry = (entry: NavEntry): void => {
+      if (isSameFile(entry.uri, currentUri)) {
+        if (!view) return;
+        const docLen = view.state.doc.length;
+        const offset = Math.min(Math.max(0, entry.offset), docLen);
+        view.dispatch({ selection: { anchor: offset }, scrollIntoView: true });
+      } else {
+        // Cross-file: ensure the target file is open, then defer cursor placement.
+        const path = normalizePath(entry.uri);
+        const existingFile = props.store.state.openFiles.find((f) => isSameFile(f.path, path));
+        if (existingFile) {
+          props.store.setActiveFile(existingFile.path);
+        } else {
+          bridgeOpenFile(path)
+            .then((fileData) => {
+              if (destroyed) return;
+              props.store.openFile(fileData);
+            })
+            .catch((err: unknown) => console.error('Nav history cross-file error:', err));
+        }
+        setTimeout(() => {
+          if (view && !destroyed) {
+            const docLen = view.state.doc.length;
+            const offset = Math.min(Math.max(0, entry.offset), docLen);
+            view.dispatch({ selection: { anchor: offset }, scrollIntoView: true });
+          }
+        }, 0);
+      }
+    };
+
     // Extract extensions into a shared variable for reuse when creating
     // fresh EditorState instances for newly opened files
     extensions = [
@@ -123,17 +173,35 @@ export function Editor(props: EditorProps) {
       // LSP-powered hover tooltips — dynamic URI getter
       reifyHoverTooltip(() => currentUri),
       // LSP-powered go-to-definition (Ctrl+Click) — dynamic URI getter
-      reifyGotoDefinition(() => currentUri, onCrossFileNavigate),
+      reifyGotoDefinition(() => currentUri, onCrossFileNavigate, onRecordJump),
       // Find/replace (Ctrl+F, Ctrl+H)
       search(),
       // Diagnostic linter (diagnostics are pushed from LSP via Tauri events)
       linter(() => [] as Diagnostic[]),
-      // Navigation keymap — registered BEFORE the defaultKeymap so F12 and
-      // Alt-Arrow bindings take higher precedence over word-group motion.
+      // Navigation keymap — registered BEFORE the defaultKeymap keymap.of so
+      // F12 and Alt-Arrow bindings take higher precedence over word-group motion.
       keymap.of([
         {
           key: 'F12',
-          run: gotoDefinitionCommand(() => currentUri, onCrossFileNavigate),
+          run: gotoDefinitionCommand(() => currentUri, onCrossFileNavigate, onRecordJump),
+          preventDefault: true,
+        },
+        {
+          key: 'Alt-ArrowLeft',
+          run: () => {
+            const entry = navHistory.back();
+            if (entry) applyNavEntry(entry);
+            return true; // always consume — prevents browser back-navigation
+          },
+          preventDefault: true,
+        },
+        {
+          key: 'Alt-ArrowRight',
+          run: () => {
+            const entry = navHistory.forward();
+            if (entry) applyNavEntry(entry);
+            return true; // always consume — prevents browser forward-navigation
+          },
           preventDefault: true,
         },
       ]),
@@ -427,6 +495,14 @@ export function Editor(props: EditorProps) {
       const endLine = doc.line(location.end_line);
       head = Math.min(endLine.from + (location.end_column - 1), endLine.to);
     }
+
+    // Record nav history: push origin (current cursor) then destination (anchor).
+    // Consecutive-dedupe in navHistory makes this idempotent under SolidJS
+    // effect re-runs (e.g., when the activeFile signal changes with an unchanged
+    // scrollToLocation value) — no spurious duplicate entries are created.
+    const originOffset = view.state.selection.main.head;
+    navHistory.push({ uri: currentUri, offset: originOffset });
+    navHistory.push({ uri: currentUri, offset: anchor });
 
     view.dispatch({
       selection: { anchor, head },
