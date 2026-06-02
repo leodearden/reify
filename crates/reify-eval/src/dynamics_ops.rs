@@ -1157,4 +1157,52 @@ mod inverse_dynamics_trampoline_tests {
             other => panic!("expected ComputeOutcome::Completed, got {other:?}"),
         }
     }
+
+    // ── step-11 RED: run_inverse_dynamics cooperative cancellation ──────────────
+
+    /// An already-cancelled handle short-circuits to `ComputeOutcome::Cancelled`
+    /// (no partial result `Value` is produced), even with a multi-sample
+    /// trajectory. RED until step-12 polls the handle: step-10 binds `cancellation`
+    /// with `let _` and always runs to Completed.
+    #[test]
+    fn run_inverse_dynamics_pre_cancelled_yields_cancelled() {
+        let inputs = [pendulum_mechanism(), motionless_trajectory(4)];
+        let handle = CancellationHandle::new();
+        handle.cancel();
+
+        let run = run_inverse_dynamics(&inputs, None, &handle);
+        assert!(!run.reused, "a cancelled run is not a cache reuse");
+        assert!(
+            matches!(run.outcome, ComputeOutcome::Cancelled),
+            "a pre-cancelled handle must yield Cancelled (no partial result), got {:?}",
+            run.outcome
+        );
+    }
+
+    /// A cancel fired *after* the per-sample loop has started — the canceller
+    /// thread sleeps briefly so the on-entry poll passes — is observed at the next
+    /// sample boundary and yields `ComputeOutcome::Cancelled`. This pins the
+    /// per-sample polling granularity (PRD §9.1 "abort within 1 sample interval")
+    /// that an entry-only check could not deliver. The 10k-sample trajectory runs
+    /// far longer than the 1 ms delay, so the loop is still going when the cancel
+    /// fires. RED until step-12 (step-10 ignores the handle and runs to Completed).
+    #[test]
+    fn run_inverse_dynamics_cancelled_mid_loop_yields_cancelled() {
+        let inputs = [pendulum_mechanism(), motionless_trajectory(10_000)];
+        let handle = CancellationHandle::new();
+        let canceller_handle = handle.clone();
+        let canceller = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            canceller_handle.cancel();
+        });
+
+        let run = run_inverse_dynamics(&inputs, None, &handle);
+        canceller.join().expect("canceller thread must not panic");
+
+        assert!(
+            matches!(run.outcome, ComputeOutcome::Cancelled),
+            "a cancel fired during the per-sample loop must yield Cancelled, got {:?}",
+            run.outcome
+        );
+    }
 }
