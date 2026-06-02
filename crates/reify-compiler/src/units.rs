@@ -1773,26 +1773,16 @@ mod tests {
     }
 
     // ── AffineMap constructor registration tests (step-11, task 3960 β) ────────
-
-    /// All 11 AffineMap constructor names (PRD §4.2, task β). Single source of
-    /// truth for the registration tests below.
-    const AFFINE_CONSTRUCTOR_NAMES_FIXTURE: [&str; 11] = [
-        "affine_scale",
-        "affine_shear_xy",
-        "affine_shear_xz",
-        "affine_shear_yx",
-        "affine_shear_yz",
-        "affine_shear_zx",
-        "affine_shear_zy",
-        "affine_translate",
-        "affine_identity",
-        "affine_map",
-        "affine_from_transform",
-    ];
+    //
+    // These tests iterate the production `AFFINE_MAP_CONSTRUCTOR_NAMES` directly
+    // (not a local copy), so they track the production list automatically: adding
+    // a 12th constructor — or removing one — is exercised here without any test
+    // edit, and a name present in the const but unhandled by the classifier/
+    // result-type fns fails loudly.
 
     #[test]
     fn is_affine_map_constructor_recognises_all_constructor_names() {
-        for name in AFFINE_CONSTRUCTOR_NAMES_FIXTURE {
+        for &name in AFFINE_MAP_CONSTRUCTOR_NAMES {
             assert!(
                 is_affine_map_constructor(name),
                 "{name} must be recognised as an AffineMap constructor"
@@ -1815,7 +1805,7 @@ mod tests {
 
     #[test]
     fn affine_map_constructor_result_type_is_affine_map_3_for_all() {
-        for name in AFFINE_CONSTRUCTOR_NAMES_FIXTURE {
+        for &name in AFFINE_MAP_CONSTRUCTOR_NAMES {
             assert_eq!(
                 affine_map_constructor_result_type(name),
                 Some(reify_core::Type::AffineMap(3)),
