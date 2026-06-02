@@ -872,6 +872,15 @@ pub struct SubComponentDecl {
     /// visibility. They are kept as separate fields so both states are
     /// independently representable.
     pub is_aux: bool,
+    /// Author-assigned keys for a `Keyed<T>` sub-collection (task 3930 β);
+    /// empty = not keyed.
+    ///
+    /// Distinct from `is_collection` (the positional `List<T>` form): a
+    /// non-empty `keyed_members` marks a `Keyed<T>` sub whose members are
+    /// addressed by these String keys rather than by position. Populated from
+    /// the AST `SubDecl.keyed_members` at the lowering site; γ/δ consume it to
+    /// resolve `coll["key"]` access.
+    pub keyed_members: Vec<reify_ir::MemberKey>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }

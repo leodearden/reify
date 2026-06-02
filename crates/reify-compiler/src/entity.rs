@@ -1172,6 +1172,17 @@ pub(crate) fn compile_entity(
                         &mut clusters_with_outside_collision,
                     );
                 }
+
+                // Duplicate keyed-member key detection (task 3930 β): each member
+                // of a `Keyed<T>` sub-collection carries an author-assigned String
+                // key that must be unique within the collection. Gated on a
+                // non-empty keyed block so plain/positional subs are unaffected.
+                if !sub.keyed_members.is_empty() {
+                    diagnostics.extend(crate::diagnostics::check_duplicate_member_keys(
+                        &sub.name,
+                        &sub.keyed_members,
+                    ));
+                }
             }
             reify_ast::MemberDecl::MetaBlock(meta) => {
                 if let Some(first_span) = first_meta_span {
@@ -1705,6 +1716,11 @@ pub(crate) fn compile_entity(
                     args: compiled_args,
                     type_args: resolved_type_args,
                     is_collection: sub.is_collection,
+                    keyed_members: sub
+                        .keyed_members
+                        .iter()
+                        .map(|e| reify_ir::MemberKey::new(&e.key))
+                        .collect(),
                     count_cell: None,
                     guard_state,
                     pose,
@@ -3182,6 +3198,7 @@ fn compile_match_arm_decl_group(
                 args: compiled_args,
                 type_args: resolved_type_args,
                 is_collection: false,
+                keyed_members: Vec::new(),
                 count_cell: None,
                 guard_state: GuardState::Compiled(Box::new(arm_guard_expr.clone())),
                 pose,
