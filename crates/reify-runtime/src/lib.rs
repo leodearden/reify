@@ -10,6 +10,34 @@ use std::collections::HashSet;
 
 use reify_eval::cache::{EvalOutcome, NodeId};
 use reify_core::ValueCellId;
+use reify_ir::NodeTraits;
+
+/// Derive a scheduling [`Priority`] from node execution traits.
+///
+/// Implements the trait→priority mapping from PRD §5 B2, with the Q-2
+/// resolution that `IMMEDIATE` maps to `P1Fast` (not `P0Interactive`) as the
+/// kind-derived default — `P0Interactive` is reserved for external/GUI
+/// per-instance assignment. The Q-4 resolution places this function here in
+/// `reify-runtime` (beside `Priority`) because `reify-ir` cannot see
+/// `Priority` without a circular-dependency lift; PRD §5 B2 explicitly blesses
+/// this fallback placement.
+///
+/// Mapping:
+/// - `IMMEDIATE` (checked first) → [`Priority::P1Fast`]
+/// - `COMMITTABLE` (when `IMMEDIATE` absent) → [`Priority::P1Slow`]
+/// - otherwise → [`Priority::P3Speculative`]
+///
+/// Combined flags are resolved by this precedence order, so
+/// `IMMEDIATE | COMMITTABLE` → `P1Fast`.
+pub const fn traits_to_priority(traits: NodeTraits) -> Priority {
+    if traits.contains(NodeTraits::IMMEDIATE) {
+        Priority::P1Fast
+    } else if traits.contains(NodeTraits::COMMITTABLE) {
+        Priority::P1Slow
+    } else {
+        Priority::P3Speculative
+    }
+}
 
 /// Task scheduling priority.
 ///
