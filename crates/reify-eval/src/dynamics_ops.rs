@@ -1103,4 +1103,41 @@ mod inverse_dynamics_trampoline_tests {
             other => panic!("expected ComputeOutcome::Completed, got {other:?}"),
         }
     }
+
+    // ── step-9 RED: run_inverse_dynamics cache HIT ──────────────────────────────
+
+    /// A second run with identical `[mechanism, trajectory]` inputs, fed the
+    /// warm-state cache the first (MISS) run donated, is a cache HIT: it reports
+    /// `reused = true` and returns a result equal to the first run's — without
+    /// recomputing the per-sample RNEA loop. RED until the step-10 HIT path reads
+    /// `prior_warm_state` (step-8 always recomputes, so `reused` stays false).
+    #[test]
+    fn run_inverse_dynamics_hit_reuses_donated_warm_state() {
+        let inputs = [pendulum_mechanism(), motionless_trajectory(2)];
+        let handle = CancellationHandle::new();
+
+        // First run: cache MISS, donates a warm-state cache.
+        let first = run_inverse_dynamics(&inputs, None, &handle);
+        assert!(!first.reused, "first run (no prior warm state) must be a MISS");
+        let (first_result, warm) = match first.outcome {
+            ComputeOutcome::Completed { result, new_warm_state, .. } => {
+                (result, new_warm_state.expect("the MISS path must donate a warm state"))
+            }
+            other => panic!("expected ComputeOutcome::Completed, got {other:?}"),
+        };
+
+        // Second run: identical inputs + the donated warm state ⇒ cache HIT.
+        let second = run_inverse_dynamics(&inputs, Some(&warm), &handle);
+        assert!(
+            second.reused,
+            "identical inputs + a matching warm state must be a cache HIT (reused=true)"
+        );
+        match second.outcome {
+            ComputeOutcome::Completed { result, .. } => assert_eq!(
+                result, first_result,
+                "the cache HIT must return the cached result unchanged"
+            ),
+            other => panic!("expected ComputeOutcome::Completed, got {other:?}"),
+        }
+    }
 }
