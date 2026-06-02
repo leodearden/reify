@@ -472,3 +472,90 @@ fn stefan_boltzmann_constant_evaluates_to_5p670374419e_minus_8_si_with_stefan_bo
         ),
     }
 }
+
+// ─── Test 11: VACUUM_PERMITTIVITY present and has correct signature ────────────
+
+/// `VACUUM_PERMITTIVITY` must be present in `std/units`, be `pub`, take no
+/// parameters, and return `Scalar<CAPACITANCE / LENGTH>` (= kg⁻¹·m⁻³·s⁴·A²).
+///
+/// ε₀ = 8.8541878128×10⁻¹² F/m — CODATA 2018 value.
+#[test]
+fn vacuum_permittivity_function_present_in_std_units() {
+    let module = common::units_module();
+
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "VACUUM_PERMITTIVITY")
+        .unwrap_or_else(|| {
+            panic!(
+                "VACUUM_PERMITTIVITY not found in std/units; found functions: {:?}",
+                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+            )
+        });
+
+    assert!(func.is_pub, "VACUUM_PERMITTIVITY should be pub");
+    assert!(
+        func.params.is_empty(),
+        "VACUUM_PERMITTIVITY should take no params, got: {:?}",
+        func.params
+    );
+
+    let expected_dim = DimensionVector::CAPACITANCE.div(&DimensionVector::LENGTH);
+    assert_eq!(
+        func.return_type,
+        Type::Scalar {
+            dimension: expected_dim
+        },
+        "VACUUM_PERMITTIVITY return type should be Scalar<CAPACITANCE / LENGTH>, got {:?}",
+        func.return_type
+    );
+}
+
+// ─── Test 12: VACUUM_PERMITTIVITY evaluates to 8.8541878128e-12 ───────────────
+
+/// Evaluating `VACUUM_PERMITTIVITY()` via `eval_expr` must yield a
+/// `Value::Scalar` with `si_value ≈ 8.8541878128e-12` and
+/// `dimension = CAPACITANCE / LENGTH` (kg⁻¹·m⁻³·s⁴·A²).
+///
+/// ε₀ = 8.8541878128×10⁻¹² F/m — CODATA 2018 value.
+#[test]
+fn vacuum_permittivity_evaluates_to_8p8541878128e_minus_12_si_with_permittivity_dim() {
+    let module = common::units_module();
+
+    let expected_dim = DimensionVector::CAPACITANCE.div(&DimensionVector::LENGTH);
+    let call_expr = CompiledExpr::user_function_call(
+        "VACUUM_PERMITTIVITY".to_string(),
+        vec![],
+        Type::Scalar {
+            dimension: expected_dim,
+        },
+    );
+    let values = ValueMap::new();
+    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    let result = reify_expr::eval_expr(&call_expr, &ctx);
+
+    match result {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(
+                dimension,
+                DimensionVector::CAPACITANCE.div(&DimensionVector::LENGTH),
+                "VACUUM_PERMITTIVITY() should have CAPACITANCE / LENGTH dimension, got {:?}",
+                dimension
+            );
+            common::assert_eq_rel(
+                si_value,
+                8.8541878128e-12,
+                1e-12,
+                "VACUUM_PERMITTIVITY() si_value",
+            );
+        }
+        other => panic!(
+            "VACUUM_PERMITTIVITY() should return Value::Scalar, got {:?}",
+            other
+        ),
+    }
+}
