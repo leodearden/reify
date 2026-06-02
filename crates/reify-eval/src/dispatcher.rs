@@ -761,9 +761,9 @@ mod tests {
         DispatchPlan, LONG_CHAIN_DEFAULT_THRESHOLD_MS, LONG_CHAIN_MIN_STAGES,
         LONG_CHAIN_THRESHOLD_ENV_VAR, dispatch, is_long_chain_realization,
         kernel_pragma_unsatisfiable_diagnostic, kernel_version_mismatch_diagnostic,
-        long_chain_diagnostic, long_chain_threshold_from_env_value,
-        no_kernel_chain_diagnostic, per_stage_tolerance_for_plan,
-        pinned_kernel_missing_diagnostic, unpinned_kernel_loaded_diagnostic,
+        long_chain_diagnostic, long_chain_threshold_from_env_value, no_kernel_chain_diagnostic,
+        per_stage_tolerance_for_plan, pinned_kernel_missing_diagnostic,
+        unpinned_kernel_loaded_diagnostic,
     };
     use crate::tolerance_budget::{SAFETY_FACTOR, per_stage_tolerance};
     use std::time::Duration;

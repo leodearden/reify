@@ -18,18 +18,18 @@
 //!
 //! Expected GREEN on write against the shipped dispatch harness.
 
-use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use reify_core::{ComputeNodeId, ValueCellId, VersionId};
 use reify_eval::cache::{CachedResult, NodeCache, NodeId};
 use reify_eval::deps::DependencyTrace;
 use reify_eval::{
     CancellationHandle, ComputeFn, ComputeOutcome, DispatchError, RealizationReadHandle,
 };
-use reify_test_support::make_simple_engine;
-use reify_core::{ComputeNodeId, ValueCellId, VersionId};
 use reify_ir::{DeterminacyState, Freshness, OpaqueState, Value};
+use reify_test_support::make_simple_engine;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Synthetic cooperative trampoline — mirrors the slow_poll_fn pattern from
@@ -130,8 +130,8 @@ fn material_field_retick_cancel_keeps_prior_fea_cache_intact_without_orphaned_th
         material_field_retick_fn as ComputeFn,
     );
 
-    let cell  = ValueCellId::new("MaterialFieldFea", "result");
-    let c_id  = ComputeNodeId::new("MaterialFieldFea", 0);
+    let cell = ValueCellId::new("MaterialFieldFea", "result");
+    let c_id = ComputeNodeId::new("MaterialFieldFea", 0);
 
     // Sentinel prior FEA-result: represents a Final ElasticResult from a
     // previous solve that must survive the cancelled retick dispatch.
@@ -149,7 +149,7 @@ fn material_field_retick_cancel_keeps_prior_fea_cache_intact_without_orphaned_th
     );
 
     // Shared flag: confirms the canceller fired before dispatch returned.
-    let cancel_fired  = Arc::new(AtomicBool::new(false));
+    let cancel_fired = Arc::new(AtomicBool::new(false));
     let cancel_fired2 = cancel_fired.clone();
 
     // Canceller thread: represents the "rapid retick" superseding the in-flight
@@ -169,9 +169,9 @@ fn material_field_retick_cancel_keeps_prior_fea_cache_intact_without_orphaned_th
 
     // The handle passed into run_compute_dispatch is the one the trampoline
     // receives; the canceller fires it via the published clone (same Arc).
-    let handle  = CancellationHandle::new();
-    let start   = Instant::now();
-    let result  = engine.run_compute_dispatch(
+    let handle = CancellationHandle::new();
+    let start = Instant::now();
+    let result = engine.run_compute_dispatch(
         &c_id,
         std::slice::from_ref(&cell),
         "test::material_field_retick_fea_solve",

@@ -140,14 +140,12 @@ structure def DialectHolder {
                     "DialectHolder.marlin.d should be MarlinDialect; got {:?}",
                     d.type_name
                 ),
-                other => panic!(
-                    "expected StructureInstance for DialectHolder.marlin.d; got {other:?}"
-                ),
+                other => {
+                    panic!("expected StructureInstance for DialectHolder.marlin.d; got {other:?}")
+                }
             }
         }
-        other => panic!(
-            "expected StructureInstance for DialectHolder.marlin sub; got {other:?}"
-        ),
+        other => panic!("expected StructureInstance for DialectHolder.marlin sub; got {other:?}"),
     }
 
     let klipper_sub = result
@@ -164,14 +162,12 @@ structure def DialectHolder {
                     "DialectHolder.klipper.d should be KlipperDialect; got {:?}",
                     d.type_name
                 ),
-                other => panic!(
-                    "expected StructureInstance for DialectHolder.klipper.d; got {other:?}"
-                ),
+                other => {
+                    panic!("expected StructureInstance for DialectHolder.klipper.d; got {other:?}")
+                }
             }
         }
-        other => panic!(
-            "expected StructureInstance for DialectHolder.klipper sub; got {other:?}"
-        ),
+        other => panic!("expected StructureInstance for DialectHolder.klipper sub; got {other:?}"),
     }
 }
 

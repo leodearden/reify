@@ -6,9 +6,9 @@
 //! no "not yet implemented" fallback warnings.
 
 use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, ModifyKind, PrimitiveKind};
-use reify_test_support::*;
 use reify_core::{ModulePath, Severity, Type};
 use reify_ir::{CompiledExpr, ExportFormat, GeometryOp};
+use reify_test_support::*;
 
 // ---------------------------------------------------------------------------
 // Helper: build a 3-realization module for the Sub-resolution scenario

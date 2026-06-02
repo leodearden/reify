@@ -4,12 +4,12 @@
 //! dispatcher.
 
 use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+use reify_core::{ModulePath, Type};
 use reify_eval::Engine;
+use reify_ir::{CompiledExpr, ReprKind, Value};
 use reify_test_support::{
     CompiledModuleBuilder, MockConstraintChecker, MockGeometryKernel, TopologyTemplateBuilder,
 };
-use reify_core::{ModulePath, Type};
-use reify_ir::{CompiledExpr, ReprKind, Value};
 
 /// Build a minimal compiled module containing a single Box primitive
 /// realization for the "Widget" structure. No constraints or params — the

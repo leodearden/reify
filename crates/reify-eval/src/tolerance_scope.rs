@@ -119,10 +119,7 @@ pub(crate) fn extract_tolerance_bindings(
         // Resolve the param's bound entity from the bindings slice. Each param routes
         // to its own entity so multi-param purposes produce per-param ToleranceBindings
         // rather than collapsing all constraints onto a single ref.
-        let subject_entity = match bindings
-            .iter()
-            .find(|(p, _)| p == &subject_cell_id.entity)
-        {
+        let subject_entity = match bindings.iter().find(|(p, _)| p == &subject_cell_id.entity) {
             Some((_, entity)) => entity.clone(),
             // Param not in bindings — skip. Defensively safe; valid activations guarantee
             // every declared param has a binding (C2).
@@ -201,9 +198,9 @@ mod tests {
     use super::*;
     use crate::graph::ValueCellNode;
     use reify_compiler::ValueCellKind;
-    use reify_test_support::builders::CompiledPurposeBuilder;
     use reify_core::{ContentHash, DimensionVector, Type, ValueCellId};
     use reify_ir::{BinOp, CompiledExpr, PersistentMap, Value};
+    use reify_test_support::builders::CompiledPurposeBuilder;
     use std::collections::HashMap;
 
     /// Build a one-cell `PersistentMap` entry shaped like the existing

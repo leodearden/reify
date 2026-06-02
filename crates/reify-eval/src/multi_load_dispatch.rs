@@ -63,8 +63,8 @@ pub fn detect_multi_case_result(value: &Value) -> Option<DetectedCases> {
 
 #[cfg(test)]
 mod tests {
-    use reify_test_support::values::multi_case_result_value;
     use reify_ir::Value;
+    use reify_test_support::values::multi_case_result_value;
     use std::collections::BTreeMap;
 
     use super::detect_multi_case_result;
@@ -105,7 +105,11 @@ mod tests {
         assert_eq!(result.active_case_id, "operating");
         assert_eq!(
             result.available_cases,
-            vec!["operating".to_string(), "overload".to_string(), "transport".to_string()]
+            vec![
+                "operating".to_string(),
+                "overload".to_string(),
+                "transport".to_string()
+            ]
         );
     }
 
@@ -136,10 +140,7 @@ mod tests {
     /// real `MultiCaseResult` values into `CheckResult.values`.
     #[test]
     fn detector_accepts_stdlib_produced_shape_contract() {
-        let v = multi_case_result_value(&[
-            ("case_a", Value::Int(1)),
-            ("case_b", Value::Int(2)),
-        ]);
+        let v = multi_case_result_value(&[("case_a", Value::Int(1)), ("case_b", Value::Int(2))]);
         let result = detect_multi_case_result(&v).expect(
             "detect_multi_case_result must accept the shape produced by \
              multi_case_result_value (which mirrors stdlib extract_cases_map); \

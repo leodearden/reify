@@ -4,9 +4,13 @@ use crate::Engine;
 use crate::cache::NodeId;
 use crate::deps::ReverseDependencyIndex;
 use crate::graph::ValueCellNode;
-use reify_compiler::{is_geometric_param_type, is_material_param_type, ResolvedSchemaQuery, ValueCellKind};
+use reify_compiler::{
+    ResolvedSchemaQuery, ValueCellKind, is_geometric_param_type, is_material_param_type,
+};
 use reify_core::{ConstraintNodeId, ContentHash, Type, ValueCellId};
-use reify_ir::{CompiledExpr, CompiledExprKind, DeterminacyState, ObjectiveSet, PersistentMap, Value, ValueMap};
+use reify_ir::{
+    CompiledExpr, CompiledExprKind, DeterminacyState, ObjectiveSet, PersistentMap, Value, ValueMap,
+};
 use std::sync::Arc;
 
 impl Engine {
@@ -302,8 +306,7 @@ impl Engine {
             }
 
             // Build the injected cell id: "{purpose_entity}::__let_{name}".
-            let injected_id =
-                ValueCellId::new(&purpose_entity, format!("__let_{}", let_decl.name));
+            let injected_id = ValueCellId::new(&purpose_entity, format!("__let_{}", let_decl.name));
 
             // Evaluate the remapped expression against the current local values.
             let val = reify_expr::eval_expr(
@@ -686,7 +689,8 @@ impl Engine {
             // RepresentationWithin constraint is routed to its own bound entity.
             // Single-param purposes produce one binding (byte-identical to before);
             // multi-param produce one per param.
-            let bindings = crate::tolerance_scope::extract_tolerance_bindings(purpose, param_bindings);
+            let bindings =
+                crate::tolerance_scope::extract_tolerance_bindings(purpose, param_bindings);
             for binding in bindings {
                 let descendants = crate::tolerance_scope::propagate_subject_to_descendants(
                     &binding.subject_entity,
@@ -1147,7 +1151,12 @@ mod tests {
             Type::List(Box::new(Type::Real)),
         );
 
-        expand_purpose_reflective_placeholders(&mut expr, &queries, &[("subject".to_string(), entity.to_string())], &value_cells);
+        expand_purpose_reflective_placeholders(
+            &mut expr,
+            &queries,
+            &[("subject".to_string(), entity.to_string())],
+            &value_cells,
+        );
 
         let elements = match &expr.kind {
             CompiledExprKind::ReflectiveCellList(elements) => elements,
@@ -1205,7 +1214,12 @@ mod tests {
             Type::List(Box::new(Type::Real)),
         );
 
-        expand_purpose_reflective_placeholders(&mut expr, &queries, &[("subject".to_string(), entity.to_string())], &value_cells);
+        expand_purpose_reflective_placeholders(
+            &mut expr,
+            &queries,
+            &[("subject".to_string(), entity.to_string())],
+            &value_cells,
+        );
 
         let elements = match &expr.kind {
             CompiledExprKind::ReflectiveCellList(elements) => elements,
@@ -1307,7 +1321,12 @@ mod tests {
         // release builds both complete and let us read the warn counter.
         let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
             tracing::subscriber::with_default(subscriber, || {
-                expand_purpose_reflective_placeholders(&mut expr, &queries, &[("subject".to_string(), entity.to_string())], &value_cells);
+                expand_purpose_reflective_placeholders(
+                    &mut expr,
+                    &queries,
+                    &[("subject".to_string(), entity.to_string())],
+                    &value_cells,
+                );
             });
         }));
 
@@ -1418,7 +1437,12 @@ mod tests {
 
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
             tracing::subscriber::with_default(subscriber, || {
-                expand_purpose_reflective_placeholders(&mut expr, &queries, &[("subject".to_string(), entity.to_string())], &value_cells);
+                expand_purpose_reflective_placeholders(
+                    &mut expr,
+                    &queries,
+                    &[("subject".to_string(), entity.to_string())],
+                    &value_cells,
+                );
             });
         }));
 
@@ -1486,7 +1510,12 @@ mod tests {
             Type::List(Box::new(Type::Real)),
         );
 
-        expand_purpose_reflective_placeholders(&mut expr, &queries, &[("subject".to_string(), entity.to_string())], &value_cells);
+        expand_purpose_reflective_placeholders(
+            &mut expr,
+            &queries,
+            &[("subject".to_string(), entity.to_string())],
+            &value_cells,
+        );
 
         let elements = match &expr.kind {
             CompiledExprKind::ReflectiveCellList(elements) => elements,
@@ -1596,7 +1625,12 @@ mod tests {
         let mut failures: Vec<String> = Vec::new();
         for (label, wrap) in &wrappers {
             let mut wrapped = wrap(make_placeholder());
-            expand_purpose_reflective_placeholders(&mut wrapped, &queries, &[("subject".to_string(), entity.to_string())], &value_cells);
+            expand_purpose_reflective_placeholders(
+                &mut wrapped,
+                &queries,
+                &[("subject".to_string(), entity.to_string())],
+                &value_cells,
+            );
             if tree_contains_placeholder(&wrapped) {
                 failures.push(format!("{label}: placeholder not rewritten"));
             }
@@ -1623,8 +1657,8 @@ mod tests {
     /// and Match arm body.
     #[test]
     fn expand_recurses_through_branching_wrappers() {
-        use reify_test_support::conditional_expr;
         use reify_ir::{CompiledMatchArm, Value};
+        use reify_test_support::conditional_expr;
 
         let wrappers: Vec<(&'static str, WrapFn)> = vec![
             (
@@ -1970,7 +2004,12 @@ mod tests {
             Type::List(Box::new(Type::Real)),
         );
 
-        expand_purpose_reflective_placeholders(&mut expr, &queries, &[("subject".to_string(), entity.to_string())], &value_cells);
+        expand_purpose_reflective_placeholders(
+            &mut expr,
+            &queries,
+            &[("subject".to_string(), entity.to_string())],
+            &value_cells,
+        );
 
         // task-2458: must be ReflectiveCellList, NOT ListLiteral.
         let elements = match &expr.kind {
@@ -2060,7 +2099,12 @@ mod tests {
             Type::List(Box::new(Type::length())),
         );
 
-        expand_purpose_reflective_placeholders(&mut expr, &queries, &[("subject".to_string(), entity.to_string())], &value_cells);
+        expand_purpose_reflective_placeholders(
+            &mut expr,
+            &queries,
+            &[("subject".to_string(), entity.to_string())],
+            &value_cells,
+        );
 
         // task-2458: must be ReflectiveCellList (not ListLiteral).
         let elements = match &expr.kind {

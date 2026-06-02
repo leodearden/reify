@@ -16,7 +16,7 @@
 //! not model `at` / `aux`).
 
 use reify_core::Severity;
-use reify_ir::ExportFormat;
+use reify_ir::{ExportFormat, GeometryOp, Value};
 use reify_test_support::{MockConstraintChecker, MockGeometryKernel, compile_source_with_stdlib};
 
 /// Build a Mock-kernel engine for structural surfacing assertions.
@@ -24,6 +24,36 @@ fn mock_engine() -> reify_eval::Engine {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)))
+}
+
+/// Build a real-OCCT engine via the production `SingleKernelHolder` planner.
+///
+/// Use for tessellation / `surface_subtree` tests where a single-kernel
+/// planner suffices (no need for `make_compound` on a multi-body assembly).
+/// The holder's `register_kernel` wires in the OCCT kernel the same way the
+/// production CLI path does.
+fn occt_engine_via_holder() -> reify_eval::Engine {
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut planner = reify_geometry::SingleKernelHolder::new();
+    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+    reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)))
+}
+
+/// Build a real-OCCT engine using `OcctKernelHandle` directly (no holder).
+///
+/// Required for `build()` and `distance_between_placed()` tests where
+/// `make_compound` must be reachable on the kernel itself.  The split between
+/// this helper and `occt_engine_via_holder` is intentional: the holder *does*
+/// delegate `make_compound` to its inner kernel (see
+/// `reify-geometry/src/lib.rs`), but the production holder/registry compound
+/// path is exercised by the CLI integration test; here we exercise the kernel
+/// directly so the in-process test asserts the kernel-level contract.
+fn occt_engine_direct() -> reify_eval::Engine {
+    let checker = reify_constraints::SimpleConstraintChecker;
+    reify_eval::Engine::new(
+        Box::new(checker),
+        Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
+    )
 }
 
 /// Resolve the `entity_path` a realization named `name` surfaces under on the
@@ -365,12 +395,8 @@ structure Assembly {
 /// descendants un-placed, so today the placed child lands at the control coords
 /// and the `+30mm` X assertions fail.
 #[test]
+#[ignore = "requires OCCT"]
 fn placed_child_surfaces_at_composed_world_aabb() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
-
     let source = r#"structure Child {
     let body = box(20mm, 20mm, 20mm)
 }
@@ -400,11 +426,7 @@ structure PlacedAsm {
     let control_path = composed_path(child, "ControlAsm.c", "body");
     let placed_path = composed_path(child, "PlacedAsm.c", "body");
 
-    // Build engine with the real OCCT kernel (Mock cannot validate placement).
-    let checker = reify_constraints::SimpleConstraintChecker;
-    let mut planner = reify_geometry::SingleKernelHolder::new();
-    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = occt_engine_via_holder();
 
     let result = engine.tessellate_realizations(&compiled);
     let geom_errors: Vec<_> = result
@@ -493,12 +515,8 @@ structure PlacedAsm {
 /// walk: the aux subtree is transformed AND hidden, while the product subtree is
 /// transformed AND visible.
 #[test]
+#[ignore = "requires OCCT"]
 fn placed_product_and_aux_children_surface_at_world_aabb_with_visibility() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
-
     let source = r#"structure Part {
     let body = box(20mm, 20mm, 20mm)
 }
@@ -534,11 +552,7 @@ structure Assembly {
     let part_path = composed_path(part, "Assembly.part", "body");
     let jig_path = composed_path(jig, "Assembly.jig", "body");
 
-    // Build engine with the real OCCT kernel (Mock cannot validate placement).
-    let checker = reify_constraints::SimpleConstraintChecker;
-    let mut planner = reify_geometry::SingleKernelHolder::new();
-    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = occt_engine_via_holder();
 
     let result = engine.tessellate_realizations(&compiled);
     let geom_errors: Vec<_> = result
@@ -881,12 +895,8 @@ structure B {
 /// Fails on base because `Engine::build` exports only `*step_handles.last()`
 /// — a single un-placed solid — not the two placed product bodies.
 #[test]
+#[ignore = "requires OCCT"]
 fn multi_body_export_has_two_product_solids_not_three_not_one() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
-
     let source = r#"structure Child {
     let body = box(20mm, 20mm, 20mm)
 }
@@ -915,11 +925,7 @@ structure Assembly {
     // (see reify-geometry/src/lib.rs:88-98), so the production holder/registry
     // compound path is exercised by the CLI test
     // `build_sub_placement_export_has_two_product_solids` in cli_build.rs.
-    let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(
-        Box::new(checker),
-        Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
-    );
+    let mut engine = occt_engine_direct();
 
     let result = engine.build(&compiled, ExportFormat::Step);
     let geom_errors: Vec<_> = result
@@ -957,12 +963,8 @@ structure Assembly {
 /// This test is GREEN on base (the old `*step_handles.last()` export produces
 /// 1 solid for single-body structures) and must remain GREEN after step-4.
 #[test]
+#[ignore = "requires OCCT"]
 fn single_body_export_regression_one_solid() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
-
     let source = r#"structure Bracket {
     let body = box(30mm, 20mm, 10mm)
 }"#;
@@ -978,10 +980,7 @@ fn single_body_export_regression_one_solid() {
         compile_errors
     );
 
-    let checker = reify_constraints::SimpleConstraintChecker;
-    let mut planner = reify_geometry::SingleKernelHolder::new();
-    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = occt_engine_via_holder();
 
     let result = engine.build(&compiled, ExportFormat::Step);
     let geom_errors: Vec<_> = result
@@ -1019,12 +1018,8 @@ fn single_body_export_regression_one_solid() {
 /// MANIFOLD_SOLID_BREP (the two input boxes PLUS their union). This test locks
 /// exactly **1** solid.
 #[test]
+#[ignore = "requires OCCT"]
 fn boolean_operand_lets_are_not_exported_as_separate_solids() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
-
     let source = r#"structure S {
     let a = box(10mm, 10mm, 10mm)
     let b = box(5mm, 5mm, 5mm)
@@ -1055,11 +1050,7 @@ fn boolean_operand_lets_are_not_exported_as_separate_solids() {
     // Use OcctKernelHandle directly so make_compound is reachable — if the
     // regression returns (it would collect 3 bodies), the export takes the
     // compound path rather than the single-body path.
-    let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(
-        Box::new(checker),
-        Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
-    );
+    let mut engine = occt_engine_direct();
 
     let result = engine.build(&compiled, ExportFormat::Step);
     let geom_errors: Vec<_> = result
@@ -1102,12 +1093,8 @@ fn boolean_operand_lets_are_not_exported_as_separate_solids() {
 ///
 /// RED on base: `distance_between_placed` does not exist on `Engine`.
 #[test]
+#[ignore = "requires OCCT"]
 fn distance_between_placed_children_equals_composed_transform_value() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
-
     let source = r#"structure Child {
     let body = box(20mm, 20mm, 20mm)
 }
@@ -1127,12 +1114,7 @@ structure Assembly {
         compile_errors
     );
 
-    // Use OcctKernelHandle directly so make_compound is reachable.
-    let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(
-        Box::new(checker),
-        Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
-    );
+    let mut engine = occt_engine_direct();
 
     let dist = engine.distance_between_placed(
         &compiled,
@@ -1157,12 +1139,8 @@ structure Assembly {
 /// `distance_between_placed` returns ≈ 0.0, proving the query operates on
 /// PLACED (world-coordinate) geometry rather than source-let positions.
 #[test]
+#[ignore = "requires OCCT"]
 fn distance_between_coincident_placed_children_is_zero() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
-
     let source = r#"structure Child {
     let body = box(20mm, 20mm, 20mm)
 }
@@ -1182,19 +1160,14 @@ structure ControlAsm {
         compile_errors
     );
 
-    let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(
-        Box::new(checker),
-        Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
-    );
+    let mut engine = occt_engine_direct();
 
     let dist = engine.distance_between_placed(
         &compiled,
         "ControlAsm.a#realization[0]",
         "ControlAsm.b#realization[0]",
     );
-    let dist = dist
-        .expect("distance_between_placed must return Some for coincident product subs");
+    let dist = dist.expect("distance_between_placed must return Some for coincident product subs");
     // Coincident/overlapping boxes: distance is 0.
     let tol = 1e-6_f64;
     assert!(
@@ -1230,12 +1203,8 @@ structure ControlAsm {
 /// A future diagnostic should warn when a template has >1 non-consumed,
 /// non-aux terminal realization so that silent geometry dropping is visible.
 #[test]
+#[ignore = "requires OCCT"]
 fn intra_template_two_independent_lets_exports_only_final_body() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
-
     let source = r#"structure S {
     let a = box(10mm, 10mm, 10mm)
     let b = box(5mm, 5mm, 5mm)
@@ -1260,11 +1229,7 @@ fn intra_template_two_independent_lets_exports_only_final_body() {
         compiled.templates[0].realizations.len()
     );
 
-    let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(
-        Box::new(checker),
-        Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
-    );
+    let mut engine = occt_engine_direct();
 
     let result = engine.build(&compiled, ExportFormat::Step);
     let geom_errors: Vec<_> = result
@@ -1292,6 +1257,339 @@ fn intra_template_two_independent_lets_exports_only_final_body() {
     );
 }
 
+/// task-4147 step-1 (Mock, RED): an `at`-placed child with a constructor-arg
+/// override must surface re-realized geometry at the OVERRIDDEN dimension,
+/// NOT the 200mm Phase-A definition default.
+///
+/// The `at`-placed sub (`sub b = Bar(len: 600mm) at transform3(...)`) forces a
+/// non-identity world transform, so the surfacing walk emits an `ApplyTransform`
+/// kernel op.  The `target` of that `ApplyTransform` must be the Box handle
+/// produced from a re-realization with the OVERRIDDEN `len` (600mm = 0.6m in SI).
+///
+/// **RED on base**: `walk_placed_realizations` reads `terminal_handles[Bar_idx]`
+/// (the Phase-A 200mm handle), so the `ApplyTransform` targets a Box whose
+/// `width ≈ 0.2m`, NOT 0.6m.  The assertion `width_si ≈ 0.6m` fails.
+/// **GREEN after step-2**: the walk calls `realize_sub_override_handles` for
+/// subs with `!sub.args.is_empty()`, minting a fresh 0.6m handle that the
+/// `ApplyTransform` targets.
+///
+/// Also asserts exactly one `ApplyTransform` is emitted (no double-surfacing).
+#[test]
+fn at_placed_constructor_override_surfaces_re_realized_geometry() {
+    let source = r#"structure Bar {
+    param len : Length = 200mm
+    let body = box(len, 50mm, 50mm)
+}
+structure HolderAt {
+    sub b = Bar(len: 600mm) at transform3(orient_identity(), vec3(100mm, 0mm, 0mm))
+}"#;
+    let compiled = compile_source_with_stdlib(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "unexpected compile errors: {:?}",
+        compile_errors
+    );
+
+    // Construct the engine inline to retain `operations_ref()`.
+    // `mock_engine()` moves the kernel before we can clone the Arc, so we
+    // build the engine here as cross_sub_geometry_e2e.rs:51-54 does.
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let result = engine.tessellate_realizations(&compiled);
+    let tess_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        tess_errors.is_empty(),
+        "unexpected tessellation errors: {:?}",
+        tess_errors
+    );
+
+    let recorded = ops_ref.lock().unwrap().clone();
+
+    // The at-placed child (non-identity +100mm X pose) must produce exactly
+    // one ApplyTransform in the surfacing walk.
+    let apply_transforms: Vec<_> = recorded
+        .iter()
+        .filter(|rec| matches!(rec.op, GeometryOp::ApplyTransform { .. }))
+        .collect();
+    assert_eq!(
+        apply_transforms.len(),
+        1,
+        "expected exactly one ApplyTransform for the at-placed child; got {}: {:?}",
+        apply_transforms.len(),
+        apply_transforms
+            .iter()
+            .map(|r| format!("{:?}", r.op))
+            .collect::<Vec<_>>()
+    );
+
+    // The ApplyTransform's `target` must be the Box handle produced by a
+    // re-realization with the OVERRIDDEN dimension (600mm = 0.6m in SI).
+    let apply_target = match &apply_transforms[0].op {
+        GeometryOp::ApplyTransform { target, .. } => *target,
+        _ => unreachable!(),
+    };
+
+    // Find the Box op whose result_handle is the ApplyTransform target.
+    let box_rec = recorded
+        .iter()
+        .find(|rec| matches!(rec.op, GeometryOp::Box { .. }) && rec.result_handle == apply_target)
+        .expect(
+            "a Box op whose result_handle equals the ApplyTransform target must exist \
+             (child body realized with the override)",
+        );
+
+    // Assert the Box's `len`-axis width is the OVERRIDDEN 600mm (0.6m in SI),
+    // NOT the 200mm (0.2m) definition default.
+    let width_si = match &box_rec.op {
+        GeometryOp::Box { width, .. } => match width {
+            Value::Scalar { si_value, .. } => *si_value,
+            other => panic!("expected Scalar width in Box op; got {:?}", other),
+        },
+        _ => unreachable!(),
+    };
+    let expected_m = 0.6_f64; // 600mm override in SI
+    let default_m = 0.2_f64; // 200mm definition default in SI
+    assert!(
+        (width_si - expected_m).abs() < 1e-9,
+        "ApplyTransform target Box must have width = {expected_m} m (600mm override); \
+         got {width_si} m \
+         (is this the {default_m} m definition default? — override dropped by \
+         walk_placed_realizations, fix pending in step-2)"
+    );
+}
+
+/// task-4147 step-3 (real OCCT, `OCCT_AVAILABLE`-gated): constructor-arg
+/// overrides are honored for BOTH the auto-realize path (`HolderOverride`, no
+/// `at`) and the `at`-placed path (`HolderAt`).  This is the user-observable
+/// signal for the fix — real mesh extents prove the geometry was re-realized
+/// at the overridden dimension (600 mm), not the 200 mm definition default.
+///
+/// `Box(600mm, 50mm, 50mm)` is centered at the OCCT origin (half-extent 0.3 m
+/// on X), so:
+/// - HolderOverride (identity pose): X-extent ≈ 0.6 m, AABB ≈ [-0.3, 0.3].
+/// - HolderAt (+100 mm X): X-extent ≈ 0.6 m, AABB ≈ [-0.2, 0.4]
+///   (override AND placement compose).
+///
+/// Box tessellation is corner-exact, so a tight tolerance (1e-4 m) is reliable.
+///
+/// RED on base (bar surfaces at 0.2 m default extent).
+/// GREEN after step-2 (`walk_placed_realizations` re-realizes override subs).
+#[test]
+#[ignore = "requires OCCT"]
+fn override_children_surface_at_overridden_extent_occt() {
+    let source = r#"structure Bar {
+    param len : Length = 200mm
+    let body = box(len, 50mm, 50mm)
+}
+structure HolderOverride {
+    sub b = Bar(len: 600mm)
+}
+structure HolderAt {
+    sub b = Bar(len: 600mm) at transform3(orient_identity(), vec3(100mm, 0mm, 0mm))
+}"#;
+    let compiled = compile_source_with_stdlib(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "unexpected compile errors: {:?}",
+        compile_errors
+    );
+
+    let bar = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Bar")
+        .expect("Bar template not found");
+    let override_path = composed_path(bar, "HolderOverride.b", "body");
+    let at_path = composed_path(bar, "HolderAt.b", "body");
+
+    let mut engine = occt_engine_via_holder();
+
+    let result = engine.tessellate_realizations(&compiled);
+    let geom_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(geom_errors.is_empty(), "geometry errors: {:?}", geom_errors);
+
+    let override_surface = result
+        .meshes
+        .iter()
+        .find(|s| s.entity_path == override_path)
+        .unwrap_or_else(|| panic!("auto-realize surface `{override_path}` must be present"));
+    let at_surface = result
+        .meshes
+        .iter()
+        .find(|s| s.entity_path == at_path)
+        .unwrap_or_else(|| panic!("at-placed surface `{at_path}` must be present"));
+
+    // Box tessellation places vertices exactly at its 8 corners (no curvature
+    // deflection), so a tight tolerance is reliable.
+    let tol = 1e-4_f32;
+
+    // HolderOverride (identity pose): X-extent == 600mm = 0.6m.
+    // OCCT make_box centers the box at the origin, so x ∈ [-0.3, 0.3].
+    let (omin, omax) = mesh_aabb(&override_surface.mesh);
+    let override_extent = omax[0] - omin[0];
+    assert!(
+        (override_extent - 0.6_f32).abs() < tol,
+        "HolderOverride surface X-extent expected 0.6 m (600mm override); \
+         got {override_extent} m (is this 0.2 m — the 200mm default?)"
+    );
+
+    // HolderAt (+100 mm X): X-extent still 0.6m; AABB X-range ≈ [-0.2, 0.4]
+    // (the 0.6m box centered at +0.1m → [-0.3+0.1, 0.3+0.1]).
+    let (amin, amax) = mesh_aabb(&at_surface.mesh);
+    let at_extent = amax[0] - amin[0];
+    assert!(
+        (at_extent - 0.6_f32).abs() < tol,
+        "HolderAt surface X-extent expected 0.6 m (600mm override + at-placement); \
+         got {at_extent} m (override dropped or placement not composed?)"
+    );
+    assert!(
+        (amin[0] - (-0.2_f32)).abs() < tol,
+        "HolderAt surface X-min expected -0.2 m; got {} m \
+         (override and placement must compose: box[-0.3,0.3] + 0.1m shift)",
+        amin[0]
+    );
+    assert!(
+        (amax[0] - 0.4_f32).abs() < tol,
+        "HolderAt surface X-max expected 0.4 m; got {} m \
+         (override and placement must compose: box[-0.3,0.3] + 0.1m shift)",
+        amax[0]
+    );
+}
+
+/// task-4147 step-4 (Mock, regression guard): the `sub.args.is_empty()` fast
+/// path is preserved for non-overridden subs — the override re-realization
+/// branch does NOT fire for an arg-free `sub c : Child`.
+///
+/// Source: `structure Child { let body = box(20mm,20mm,20mm) }  structure Asm { sub c : Child }`
+///
+/// Asserts:
+/// (a) Exactly one surface, at the composed path `Asm.c#realization[0]`.
+/// (b) NO standalone `Child#realization[0]` duplicate.
+/// (c) Child's `box(20mm,...)` is realized exactly ONCE across all recorded
+///     kernel ops — the override path did NOT fire a second `execute` sequence,
+///     so no spurious extra Box op was emitted.
+///
+/// GREEN immediately after step-2 (arg-free fast path preserved).
+/// Regression lock: if `!sub.args.is_empty()` is accidentally widened (e.g.
+/// the guard is removed), a second Box re-realization will appear and (c) fails.
+#[test]
+fn non_override_contained_sub_still_surfaces_once_from_shared_handle() {
+    let source = r#"structure Child {
+    let body = box(20mm, 20mm, 20mm)
+}
+structure Asm {
+    sub c : Child
+}"#;
+    let compiled = compile_source_with_stdlib(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "unexpected compile errors: {:?}",
+        compile_errors
+    );
+
+    // Construct the engine inline to retain `operations_ref()` — mirrors
+    // the pattern in `at_placed_constructor_override_surfaces_re_realized_geometry`.
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let result = engine.tessellate_realizations(&compiled);
+    let tess_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        tess_errors.is_empty(),
+        "unexpected tessellation errors: {:?}",
+        tess_errors
+    );
+
+    let paths: Vec<&str> = result
+        .meshes
+        .iter()
+        .map(|s| s.entity_path.as_str())
+        .collect();
+
+    // (a) Exactly one surface, at the composed path.
+    assert_eq!(
+        result.meshes.len(),
+        1,
+        "expected exactly one surface for Asm with one non-overridden sub; got {:?}",
+        paths
+    );
+    assert!(
+        paths.contains(&"Asm.c#realization[0]"),
+        "non-overridden sub must surface under `Asm.c#realization[0]`; got {:?}",
+        paths
+    );
+
+    // (b) No standalone Child#realization[0] duplicate.
+    assert!(
+        !paths.contains(&"Child#realization[0]"),
+        "standalone `Child#realization[0]` must be suppressed; got {:?}",
+        paths
+    );
+
+    // (c) Child's box(20mm, 20mm, 20mm) is realized exactly ONCE across
+    // all recorded kernel ops — the override path must NOT have fired for an
+    // arg-free sub (which would produce a second Box execute call).
+    //
+    // 20mm = 0.02 m in SI.  The MockGeometryKernel records ops including
+    // Phase-A realization, but NOT tessellate() calls (no geometry op there).
+    // Phase B (the surfacing walk) re-uses the Phase-A handle for arg-free
+    // subs, so no additional Box op is issued.
+    let recorded = ops_ref.lock().unwrap().clone();
+    let box_ops: Vec<_> = recorded
+        .iter()
+        .filter(|rec| {
+            matches!(
+                &rec.op,
+                GeometryOp::Box { width, .. }
+                if matches!(width, Value::Scalar { si_value, .. } if (*si_value - 0.02_f64).abs() < 1e-9)
+            )
+        })
+        .collect();
+    assert_eq!(
+        box_ops.len(),
+        1,
+        "Child's box(20mm,20mm,20mm) must be realized exactly ONCE (arg-free sub reuses \
+         Phase-A handle; override re-realization must NOT fire); got {} Box ops: {:?}",
+        box_ops.len(),
+        box_ops
+            .iter()
+            .map(|r| format!("{:?}", r.op))
+            .collect::<Vec<_>>()
+    );
+}
+
 /// Amendment (T7 suggestion 2): cross-path consistency test — `build()` and
 /// `distance_between_placed()` operate on the SAME Phase-A realization loop.
 ///
@@ -1304,12 +1602,8 @@ fn intra_template_two_independent_lets_exports_only_final_body() {
 /// bookkeeping or executor arguments while the other is not updated), one of
 /// the two assertions will fail, catching the divergence automatically.
 #[test]
+#[ignore = "requires OCCT"]
 fn build_and_distance_between_placed_are_consistent() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
-
     let source = r#"structure Child {
     let body = box(20mm, 20mm, 20mm)
 }
@@ -1329,11 +1623,7 @@ structure Assembly {
         compile_errors
     );
 
-    let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(
-        Box::new(checker),
-        Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
-    );
+    let mut engine = occt_engine_direct();
 
     // Assert 1: build() produces exactly 2 product solids.
     let build_result = engine.build(&compiled, ExportFormat::Step);

@@ -44,9 +44,8 @@ const DISTANCE_BOX_POINT_PATH: &str = concat!(
 fn distance_box_point_evals_to_15mm() {
     // Read the fixture unconditionally so a missing file is caught even on
     // OCCT-less runners — fixture presence is a CI contract independent of OCCT.
-    let source = std::fs::read_to_string(DISTANCE_BOX_POINT_PATH).expect(
-        "examples/kernel_queries/distance_box_point.ri should exist (task 3610 pre-1)",
-    );
+    let source = std::fs::read_to_string(DISTANCE_BOX_POINT_PATH)
+        .expect("examples/kernel_queries/distance_box_point.ri should exist (task 3610 pre-1)");
 
     // Validate fixture compilation unconditionally — a grammar/compile regression
     // (e.g. `distance` signature change) should fail on every runner.
@@ -78,9 +77,10 @@ fn distance_box_point_evals_to_15mm() {
     // LENGTH dimension. Modelled on the Scalar epsilon-match in
     // kernel_queries_angle_smoke.rs::angle_smoke_evals_to_ninety_degrees.
     match actual {
-        Some(Value::Scalar { si_value, dimension })
-            if *dimension == reify_core::DimensionVector::LENGTH =>
-        {
+        Some(Value::Scalar {
+            si_value,
+            dimension,
+        }) if *dimension == reify_core::DimensionVector::LENGTH => {
             let expected = 0.015_f64; // 15 mm in SI metres
             let epsilon = 1e-9;
             assert!(

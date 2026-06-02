@@ -30,8 +30,14 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use reify_compiler::{CompiledConnection, CompiledForallBody, CompiledFunction, CompiledModule};
-use reify_core::{ConstraintNodeId, ContentHash, Diagnostic, RealizationNodeId, SnapshotId, Type, ValueCellId, VersionId};
-use reify_ir::{AutoParam, CompiledExpr, DeterminacyState, PersistentMap, ResolutionProblem, SnapshotProvenance, SolveResult, Value, ValueMap};
+use reify_core::{
+    ConstraintNodeId, ContentHash, Diagnostic, RealizationNodeId, SnapshotId, Type, ValueCellId,
+    VersionId,
+};
+use reify_ir::{
+    AutoParam, CompiledExpr, DeterminacyState, PersistentMap, ResolutionProblem,
+    SnapshotProvenance, SolveResult, Value, ValueMap,
+};
 
 use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
 use crate::deps::{DependencyTrace, extract_dependency_trace};
@@ -4907,8 +4913,8 @@ mod tests {
         use super::PendingWarmSeedsGuard;
         use crate::cache::{CacheStore, NodeId};
         use crate::warm_pool::WarmStatePool;
-        use reify_test_support::CountingSubscriberBuilder;
         use reify_ir::OpaqueState;
+        use reify_test_support::CountingSubscriberBuilder;
         use std::sync::atomic::Ordering;
 
         // ---- Arm 1: safety-net fires (non-empty Drop) ----
@@ -4985,8 +4991,8 @@ mod tests {
         use super::PendingWarmSeedsGuard;
         use crate::cache::NodeId;
         use crate::warm_pool::WarmStatePool;
-        use reify_test_support::warn_capturing_subscriber;
         use reify_ir::OpaqueState;
+        use reify_test_support::warn_capturing_subscriber;
 
         // Inoculate against tracing's per-callsite Interest cache — see
         // `prime_tracing_callsite_cache` in reify-test-support for why.

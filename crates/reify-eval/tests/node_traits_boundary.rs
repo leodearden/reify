@@ -8,8 +8,10 @@
 //! `impl HasNodeKind for NodeId` bridge in `reify-eval/src/cache.rs` is exercised
 //! against the production type rather than a test stub.
 
+use reify_core::{
+    ComputeNodeId, ConstraintNodeId, RealizationNodeId, ResolutionNodeId, ValueCellId,
+};
 use reify_eval::cache::NodeId;
-use reify_core::{ComputeNodeId, ConstraintNodeId, RealizationNodeId, ResolutionNodeId, ValueCellId};
 use reify_ir::{NodeKind, NodeTraits, NodeTraitsMap};
 
 // ── helpers ─────────────────────────────────────────────────────────────────
@@ -117,10 +119,10 @@ mod t5 {
 
     use reify_eval::cache::EvalOutcome;
     use reify_eval::deps::DependencyTrace;
+    use reify_ir::WarmStartableRegistry;
     use reify_runtime::concurrent::{
         AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerConfig,
     };
-    use reify_ir::WarmStartableRegistry;
 
     /// Minimal no-op evaluator: every node evaluates to `Changed`. The T5 cases
     /// don't care about the evaluation result — they care only whether the
@@ -162,7 +164,14 @@ mod t5 {
         // spawn — `.await` is required because the function is async even though
         // the panic happens pre-spawn in debug builds.
         let _ = scheduler
-            .execute_with_config(eval_set, evaluator, &traces, &cancel, &changed_cells, config)
+            .execute_with_config(
+                eval_set,
+                evaluator,
+                &traces,
+                &cancel,
+                &changed_cells,
+                config,
+            )
             .await;
     }
 

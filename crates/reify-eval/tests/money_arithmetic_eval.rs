@@ -12,9 +12,9 @@
 //! wired by deps 57 (Money slot 9), 208 (unit registry), 209 (user-defined
 //! units), and 2378 (`unit USD : Money` instances).
 
-use reify_test_support::eval_source;
 use reify_core::{DimensionVector, ValueCellId};
 use reify_ir::Value;
+use reify_test_support::eval_source;
 
 // ─── test 1: runtime `(25USD/1kg) * 2kg → 50.0 USD` ──────────────────────────
 

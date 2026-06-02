@@ -44,24 +44,63 @@ fn capability_kind_table_matches_prd_5_4() {
         GeometryQuery::Centroid(h),
         GeometryQuery::BoundingBox(h),
         GeometryQuery::Distance { from: h, to: h2 },
-        GeometryQuery::MomentOfInertia { handle: h, axis: [0.0, 0.0, 1.0] },
-        GeometryQuery::AdjacentFaces { shape: h, face_index: 0 },
-        GeometryQuery::SharedEdges { shape: h, face_a: 0, face_b: 1 },
+        GeometryQuery::MomentOfInertia {
+            handle: h,
+            axis: [0.0, 0.0, 1.0],
+        },
+        GeometryQuery::AdjacentFaces {
+            shape: h,
+            face_index: 0,
+        },
+        GeometryQuery::SharedEdges {
+            shape: h,
+            face_a: 0,
+            face_b: 1,
+        },
         GeometryQuery::IsWatertight(h),
         GeometryQuery::IsManifold(h),
         GeometryQuery::IsOrientable(h),
-        GeometryQuery::CenterOfMass { handle: h, density: 1.0 },
-        GeometryQuery::InertiaTensor { handle: h, density: 1.0 },
+        GeometryQuery::CenterOfMass {
+            handle: h,
+            density: 1.0,
+        },
+        GeometryQuery::InertiaTensor {
+            handle: h,
+            density: 1.0,
+        },
         GeometryQuery::EdgeTangent(h),
         GeometryQuery::FaceNormal(h),
         GeometryQuery::FaceSurfaceKind(h),
         GeometryQuery::EdgeCurveKind(h),
-        GeometryQuery::AncestorFacesOfEdge { shape: h, edge_index: 0 },
+        GeometryQuery::AncestorFacesOfEdge {
+            shape: h,
+            edge_index: 0,
+        },
         GeometryQuery::OwnerBody(h),
-        GeometryQuery::ClosestPointOnShape { handle: h, px: 0.0, py: 0.0, pz: 0.0 },
-        GeometryQuery::PointOnShape { handle: h, px: 0.0, py: 0.0, pz: 0.0, tolerance: 1e-7 },
-        GeometryQuery::SurfaceAngle { face_a: h, face_b: h2 },
-        GeometryQuery::Contains { handle: h, px: 0.0, py: 0.0, pz: 0.0, tolerance: 1e-7 },
+        GeometryQuery::ClosestPointOnShape {
+            handle: h,
+            px: 0.0,
+            py: 0.0,
+            pz: 0.0,
+        },
+        GeometryQuery::PointOnShape {
+            handle: h,
+            px: 0.0,
+            py: 0.0,
+            pz: 0.0,
+            tolerance: 1e-7,
+        },
+        GeometryQuery::SurfaceAngle {
+            face_a: h,
+            face_b: h2,
+        },
+        GeometryQuery::Contains {
+            handle: h,
+            px: 0.0,
+            py: 0.0,
+            pz: 0.0,
+            tolerance: 1e-7,
+        },
     ];
 
     for q in brep_and_mesh_cases {

@@ -123,7 +123,11 @@ fn box_edges_integration_test() {
 
     for (i, elem) in list.iter().enumerate() {
         match elem {
-            Value::GeometryHandle { realization_ref, upstream_values_hash, .. } => {
+            Value::GeometryHandle {
+                realization_ref,
+                upstream_values_hash,
+                ..
+            } => {
                 assert!(
                     *upstream_values_hash != [0u8; 32],
                     "es[{i}] upstream_values_hash must be non-zero (PRD §4 i)"
@@ -217,7 +221,10 @@ fn box_faces_integration_test() {
     let mut hashes: Vec<[u8; 32]> = Vec::new();
     for (i, elem) in list.iter().enumerate() {
         match elem {
-            Value::GeometryHandle { upstream_values_hash, .. } => {
+            Value::GeometryHandle {
+                upstream_values_hash,
+                ..
+            } => {
                 assert!(
                     *upstream_values_hash != [0u8; 32],
                     "fs[{i}] upstream_values_hash must be non-zero (PRD §4 i)"
@@ -292,7 +299,10 @@ fn box_edges_freshness_cascade() {
     // Sanity: the `b` cell must be a GeometryHandle (realization_reads wired).
     let b_cell_id = ValueCellId::new("BoxEdges", "b");
     assert!(
-        matches!(result.values.get(&b_cell_id), Some(Value::GeometryHandle { .. })),
+        matches!(
+            result.values.get(&b_cell_id),
+            Some(Value::GeometryHandle { .. })
+        ),
         "BoxEdges.b must hydrate to Value::GeometryHandle after build"
     );
 
@@ -324,7 +334,10 @@ fn box_edges_freshness_cascade() {
 
     // 1. width → R0: the realization re-derives Pending from dirty scalar input.
     assert!(
-        matches!(engine.cache_store().freshness(&r0_node), Freshness::Pending { .. }),
+        matches!(
+            engine.cache_store().freshness(&r0_node),
+            Freshness::Pending { .. }
+        ),
         "BoxEdges Realization#0 (R0) must be Pending after width is dirtied; \
          got {:?}",
         engine.cache_store().freshness(&r0_node)
@@ -332,7 +345,10 @@ fn box_edges_freshness_cascade() {
 
     // 2. R0 → b: the geometry cell folds R0's Pending via realization_reads.
     assert!(
-        matches!(engine.cache_store().freshness(&b_node), Freshness::Pending { .. }),
+        matches!(
+            engine.cache_store().freshness(&b_node),
+            Freshness::Pending { .. }
+        ),
         "BoxEdges.b must be Pending via the Realization→ValueCell edge (GHR-δ §5); \
          got {:?}",
         engine.cache_store().freshness(&b_node)
@@ -340,7 +356,10 @@ fn box_edges_freshness_cascade() {
 
     // 3. b → es: the selector cell folds b's Pending via VC→VC reads edge.
     assert!(
-        matches!(engine.cache_store().freshness(&es_node), Freshness::Pending { .. }),
+        matches!(
+            engine.cache_store().freshness(&es_node),
+            Freshness::Pending { .. }
+        ),
         "BoxEdges.es must be Pending via the VC→VC edge es reads=[b] (PRD §4 v); \
          got {:?}",
         engine.cache_store().freshness(&es_node)

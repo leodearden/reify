@@ -17,15 +17,13 @@
 
 use reify_compiler::{CompiledGeometryOp, PrimitiveKind, compile};
 use reify_constraints::SimpleConstraintChecker;
+use reify_core::{ModulePath, Type};
 use reify_eval::Engine;
+use reify_ir::{CompiledExpr, ExportFormat, ReprKind};
 use reify_syntax::parse;
 use reify_test_support::builders::{CompiledModuleBuilder, TopologyTemplateBuilder};
 use reify_test_support::mocks::MockGeometryKernel;
-use reify_test_support::{
-    MockConstraintChecker, manufacturing_purpose, mm, step_output_template,
-};
-use reify_core::{ModulePath, Type};
-use reify_ir::{CompiledExpr, ExportFormat, ReprKind};
+use reify_test_support::{MockConstraintChecker, manufacturing_purpose, mm, step_output_template};
 
 /// `Engine::with_registered_kernels(checker)` must build an engine whose
 /// `registered_kernel_names()` set matches the inventory registry: when

@@ -77,7 +77,9 @@ fn build_and_get_body(source: &str) -> Value {
             .collect::<Vec<_>>()
     );
 
-    result.values.get_or_undef(&ValueCellId::new("Widget", "body"))
+    result
+        .values
+        .get_or_undef(&ValueCellId::new("Widget", "body"))
 }
 
 /// Cross-Engine cache-key stability: the same source compiled and built in two

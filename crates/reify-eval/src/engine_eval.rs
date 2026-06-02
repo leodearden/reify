@@ -7,9 +7,16 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use reify_compiler::{CompiledModule, ValueCellDecl, ValueCellKind, find_template};
+use reify_core::{
+    ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, FIELD_ENTITY_PREFIX, SnapshotId,
+    ValueCellId, VersionId,
+};
 use reify_ir::sampled::{LinspaceError, linspace_inclusive};
-use reify_core::{ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, FIELD_ENTITY_PREFIX, SnapshotId, ValueCellId, VersionId};
-use reify_ir::{AutoParam, CompiledFunction, DeterminacyState, ErrorRef, Freshness, InterpolationKind, PersistentMap, ResolutionProblem, SampledField, SampledGridKind, SnapshotProvenance, SolveResult, Value, ValueMap};
+use reify_ir::{
+    AutoParam, CompiledFunction, DeterminacyState, ErrorRef, Freshness, InterpolationKind,
+    PersistentMap, ResolutionProblem, SampledField, SampledGridKind, SnapshotProvenance,
+    SolveResult, Value, ValueMap,
+};
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
 use crate::demand::DemandRegistry;
@@ -390,26 +397,24 @@ fn detect_scope_coupling(templates: &[reify_compiler::TopologyTemplate]) -> Vec<
         let mut emit_for_reads = |reads: Vec<ValueCellId>, span| {
             for r in reads {
                 if let Some(owner) = frozen.get(&r)
-                    && owner != b_name {
-                        let key = (owner.clone(), b_name.clone(), r.clone());
-                        if seen.insert(key) {
-                            let msg = format!(
-                                "W_SCOPE_COUPLING: scope '{b_name}' reads auto cell '{r}' \
+                    && owner != b_name
+                {
+                    let key = (owner.clone(), b_name.clone(), r.clone());
+                    if seen.insert(key) {
+                        let msg = format!(
+                            "W_SCOPE_COUPLING: scope '{b_name}' reads auto cell '{r}' \
                                  owned by already-resolved scope '{owner}'; \
                                  bottom-up resolution may be approximate"
-                            );
-                            let diag = Diagnostic::warning(msg)
-                                .with_code(DiagnosticCode::ScopeCoupling);
-                            diagnostics.push(if let Some(s) = span {
-                                diag.with_label(DiagnosticLabel::new(
-                                    s,
-                                    "scope coupling read site",
-                                ))
-                            } else {
-                                diag
-                            });
-                        }
+                        );
+                        let diag =
+                            Diagnostic::warning(msg).with_code(DiagnosticCode::ScopeCoupling);
+                        diagnostics.push(if let Some(s) = span {
+                            diag.with_label(DiagnosticLabel::new(s, "scope coupling read site"))
+                        } else {
+                            diag
+                        });
                     }
+                }
             }
         };
 
@@ -503,8 +508,10 @@ fn build_solver_problem(
 fn has_inequality_slack(expr: &reify_ir::CompiledExpr) -> bool {
     match &expr.kind {
         reify_ir::CompiledExprKind::BinOp { op, left, right } => match op {
-            reify_ir::BinOp::Ge | reify_ir::BinOp::Gt
-            | reify_ir::BinOp::Le | reify_ir::BinOp::Lt => true,
+            reify_ir::BinOp::Ge
+            | reify_ir::BinOp::Gt
+            | reify_ir::BinOp::Le
+            | reify_ir::BinOp::Lt => true,
             reify_ir::BinOp::And => has_inequality_slack(left) || has_inequality_slack(right),
             _ => false,
         },
@@ -560,7 +567,10 @@ fn scope_qualifies_for_centrality(template: &reify_compiler::TopologyTemplate) -
 
     // At least one constraint (anywhere in the scope) must contain an inequality.
     // We do NOT filter by auto-cell reads — see the doc comment above.
-    template.constraints.iter().any(|c| has_inequality_slack(&c.expr))
+    template
+        .constraints
+        .iter()
+        .any(|c| has_inequality_slack(&c.expr))
 }
 
 /// Pushes the appropriate `Diagnostic::warning` for `rejection` and bumps the
@@ -845,12 +855,8 @@ pub(crate) fn elaborate_field(
         reify_compiler::CompiledFieldSource::Analytical { .. } => {
             reify_ir::FieldSourceKind::Analytical
         }
-        reify_compiler::CompiledFieldSource::Sampled { .. } => {
-            reify_ir::FieldSourceKind::Sampled
-        }
-        reify_compiler::CompiledFieldSource::Composed { .. } => {
-            reify_ir::FieldSourceKind::Composed
-        }
+        reify_compiler::CompiledFieldSource::Sampled { .. } => reify_ir::FieldSourceKind::Sampled,
+        reify_compiler::CompiledFieldSource::Composed { .. } => reify_ir::FieldSourceKind::Composed,
         reify_compiler::CompiledFieldSource::Imported { .. } => reify_ir::FieldSourceKind::Imported,
     };
 
@@ -2090,7 +2096,8 @@ impl Engine {
                     //
                     // This mirrors solver.rs::build_centrality_objective's gate predicate;
                     // cross-reference that function when updating either site.
-                    self.centrality_synthesized_scopes.insert(template.name.clone());
+                    self.centrality_synthesized_scopes
+                        .insert(template.name.clone());
                 }
             }
             for template in &module.templates {
@@ -2364,12 +2371,10 @@ impl Engine {
                         {
                             let result = match data.fields.get(&"inertia".to_string()) {
                                 None | Some(Value::Undef) => InertiaResult::Skip,
-                                Some(v) => {
-                                    match crate::dynamics_psd::inertia_3x3_from_value(v) {
-                                        Some(m) => InertiaResult::Valid(m),
-                                        None => InertiaResult::Malformed,
-                                    }
-                                }
+                                Some(v) => match crate::dynamics_psd::inertia_3x3_from_value(v) {
+                                    Some(m) => InertiaResult::Valid(m),
+                                    None => InertiaResult::Malformed,
+                                },
                             };
                             // Only collect cells that need attention.
                             match result {
@@ -2398,10 +2403,9 @@ impl Engine {
                                 .with_code(DiagnosticCode::DynamicsInertiaNotPSD),
                             );
                             values.insert(id.clone(), Value::Undef);
-                            snapshot.values.insert(
-                                id.clone(),
-                                (Value::Undef, DeterminacyState::Determined),
-                            );
+                            snapshot
+                                .values
+                                .insert(id.clone(), (Value::Undef, DeterminacyState::Determined));
                         }
                         InertiaResult::Valid(m) => {
                             let tol = crate::dynamics_psd::psd_tol(&m);
@@ -2465,8 +2469,8 @@ impl Engine {
                 // bindings in active_purpose_bindings. The single-entity shim
                 // activate_purpose_constraints refuses purposes with params.len()!=1,
                 // so it cannot round-trip multi-param purposes.
-                any_injected |=
-                    self.activate_purpose_constraints_with_bindings_inner(purpose_name, param_bindings);
+                any_injected |= self
+                    .activate_purpose_constraints_with_bindings_inner(purpose_name, param_bindings);
             }
             if any_injected {
                 self.rebuild_purpose_infrastructure();
@@ -3108,7 +3112,8 @@ impl Engine {
         let height = scalar_si(&arg_values[3])?;
 
         let (shell_force, shell_threshold) = extract_shell_route_params(&arg_values[6]);
-        if classify_shell(shell_force, length, width, height, shell_threshold) != ShellRoute::Shell {
+        if classify_shell(shell_force, length, width, height, shell_threshold) != ShellRoute::Shell
+        {
             return None;
         }
 
@@ -3367,12 +3372,9 @@ impl Engine {
                         let output_node_id = NodeId::Value(cell_id.clone());
                         let prior_had_compute_node =
                             self.eval_state.as_ref().is_some_and(|prior| {
-                                prior.snapshot.graph.compute_nodes.iter().any(
-                                    |(_, cn)| {
-                                        cn.target == target
-                                            && cn.output_value_cells.contains(cell_id)
-                                    },
-                                )
+                                prior.snapshot.graph.compute_nodes.iter().any(|(_, cn)| {
+                                    cn.target == target && cn.output_value_cells.contains(cell_id)
+                                })
                             });
                         if prior_had_compute_node
                             && self.cache.freshness(&output_node_id) == Freshness::Final
@@ -3380,16 +3382,9 @@ impl Engine {
                             && let CachedResult::Value(cached_val, det) = entry.result.clone()
                         {
                             values.insert(cell_id.clone(), cached_val.clone());
-                            snapshot.values.insert(
-                                cell_id.clone(),
-                                (cached_val, det),
-                            );
-                            let _trace = take_trace(
-                                &mut let_traces,
-                                &node_id,
-                                "sorted_lets",
-                                "let_traces",
-                            );
+                            snapshot.values.insert(cell_id.clone(), (cached_val, det));
+                            let _trace =
+                                take_trace(&mut let_traces, &node_id, "sorted_lets", "let_traces");
                             self.journal.record(EvalEvent {
                                 timestamp: Instant::now(),
                                 node_id,
@@ -3397,9 +3392,7 @@ impl Engine {
                                     outcome: EvalOutcome::Unchanged,
                                 },
                                 version: VersionId(version_id),
-                                payload: Some(EventPayload::Duration(
-                                    start.elapsed(),
-                                )),
+                                payload: Some(EventPayload::Duration(start.elapsed())),
                             });
                             continue;
                         }
@@ -3409,10 +3402,9 @@ impl Engine {
                         // Evaluate args in a scoped block so the eval_ctx borrow on
                         // `snapshot.values` ends before we mutably access `snapshot`.
                         let arg_values: Vec<Value> = {
-                            let eval_ctx =
-                                eval_ctx_with_meta(values, functions, meta_map)
-                                    .with_determinacy(&snapshot.values)
-                                    .with_runtime_diagnostics(runtime_sink);
+                            let eval_ctx = eval_ctx_with_meta(values, functions, meta_map)
+                                .with_determinacy(&snapshot.values)
+                                .with_runtime_diagnostics(runtime_sink);
                             args.iter()
                                 .map(|a| reify_expr::eval_expr(a, &eval_ctx))
                                 .collect()
@@ -3485,9 +3477,9 @@ impl Engine {
                         let mut value_inputs: Vec<reify_core::ValueCellId> = args
                             .iter()
                             .filter_map(|arg| match &arg.kind {
-                                reify_ir::CompiledExprKind::ValueRef(
-                                    target_cell,
-                                ) => Some(target_cell.clone()),
+                                reify_ir::CompiledExprKind::ValueRef(target_cell) => {
+                                    Some(target_cell.clone())
+                                }
                                 _ => None,
                             })
                             .collect();
@@ -3512,10 +3504,8 @@ impl Engine {
                         // CacheStore is now the canonical at-rest store for the
                         // result (PRD §5); the prior γ wiring set it
                         // post-dispatch.
-                        let c_id = reify_core::ComputeNodeId::new(
-                            cell_id.entity.as_str(),
-                            next_index,
-                        );
+                        let c_id =
+                            reify_core::ComputeNodeId::new(cell_id.entity.as_str(), next_index);
 
                         // ε / §5 step-3: create the cancellation handle.
                         //
@@ -3542,8 +3532,9 @@ impl Engine {
                         }
                         let cancel = crate::graph::CancellationHandle::new();
 
-                        snapshot.graph.insert_compute_node(
-                            crate::graph::ComputeNodeData {
+                        snapshot
+                            .graph
+                            .insert_compute_node(crate::graph::ComputeNodeData {
                                 computation_id: c_id.clone(),
                                 target: target.clone(),
                                 value_inputs,
@@ -3559,8 +3550,7 @@ impl Engine {
                                 // trampoline's cooperative poll sees the signal).
                                 running: Some(cancel.clone()),
                                 output_value_cells: vec![cell_id.clone()],
-                            },
-                        );
+                            });
 
                         // ε / §8-ε: the begin → invoke trampoline →
                         // atomic-complete-or-leave-Pending lifecycle is owned by
@@ -3708,10 +3698,7 @@ impl Engine {
                                 );
                                 self.cache.record_evaluation_propagating_freshness(
                                     node_id.clone(),
-                                    CachedResult::Value(
-                                        Value::Undef,
-                                        DeterminacyState::Determined,
-                                    ),
+                                    CachedResult::Value(Value::Undef, DeterminacyState::Determined),
                                     VersionId(version_id),
                                     trace,
                                     false,
@@ -3879,7 +3866,9 @@ impl Engine {
                 self.geometry_revalidation_slow_path
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 // Preserve the cell's DeterminacyState; only the handle changes.
-                snapshot.values.insert(cell.clone(), (resolved.clone(), det));
+                snapshot
+                    .values
+                    .insert(cell.clone(), (resolved.clone(), det));
                 resolved
             }
             RevalidationOutcome::Undef => {

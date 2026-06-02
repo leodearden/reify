@@ -8,15 +8,15 @@ mod common;
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
+use reify_core::*;
 use reify_eval::Engine;
+use reify_ir::*;
 use reify_test_support::builders::{and, ge, gt, literal, value_ref, value_ref_typed};
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{
     CompiledModuleBuilder, MockConstraintSolver, SequencedMockConstraintSolver,
     TopologyTemplateBuilder, mm, parse_and_compile, wave2_flip_fixture,
 };
-use reify_core::*;
-use reify_ir::*;
 
 use reify_compiler::{CompiledConstraint, ValueCellDecl, ValueCellKind, Visibility};
 

@@ -4,9 +4,9 @@
 //! using MockGeometryKernel to capture executed operations without OCCT.
 
 use reify_compiler::ModifyKind;
-use reify_test_support::*;
 use reify_core::Type;
 use reify_ir::GeometryOp;
+use reify_test_support::*;
 
 // ---------------------------------------------------------------------------
 // step-1: Compiler rejects wrong arg counts, accepts correct count

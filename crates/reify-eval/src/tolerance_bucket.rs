@@ -456,7 +456,11 @@ mod tests {
         // None — both on an empty bucket and on a populated one (whose entry is
         // left intact). This is the rollback-of-an-uninserted-key path.
         let mut empty = ToleranceBucket::<u32>::new();
-        assert_eq!(empty.remove(0.5), None, "remove on an empty bucket returns None");
+        assert_eq!(
+            empty.remove(0.5),
+            None,
+            "remove on an empty bucket returns None"
+        );
 
         let mut bucket = ToleranceBucket::<u32>::new();
         assert!(bucket.insert(0.01, 7u32));

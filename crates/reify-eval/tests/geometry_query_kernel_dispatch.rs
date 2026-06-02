@@ -55,7 +55,10 @@ fn compile_and_build_occt(source: &str) -> Option<reify_eval::BuildResult> {
 /// within 1e-6 relative of `expected` (which must be non-zero).
 fn assert_scalar_rel(value: Option<&Value>, dim: DimensionVector, expected: f64, what: &str) {
     match value {
-        Some(Value::Scalar { si_value, dimension }) => {
+        Some(Value::Scalar {
+            si_value,
+            dimension,
+        }) => {
             assert_eq!(
                 *dimension, dim,
                 "{what}: expected dimension {dim:?}, got {dimension:?}"
@@ -86,7 +89,10 @@ fn assert_point_abs(value: Option<&Value>, expected: [f64; 3], tol: f64, what: &
             );
             for (i, (comp, exp)) in components.iter().zip(expected.iter()).enumerate() {
                 match comp {
-                    Value::Scalar { si_value, dimension } => {
+                    Value::Scalar {
+                        si_value,
+                        dimension,
+                    } => {
                         assert_eq!(
                             *dimension,
                             DimensionVector::LENGTH,
@@ -98,9 +104,9 @@ fn assert_point_abs(value: Option<&Value>, expected: [f64; 3], tol: f64, what: &
                              (absolute) of {exp:.12}"
                         );
                     }
-                    other => panic!(
-                        "{what}: component {i} should be Scalar<Length>, got {other:?}"
-                    ),
+                    other => {
+                        panic!("{what}: component {i} should be Scalar<Length>, got {other:?}")
+                    }
                 }
             }
         }
@@ -120,8 +126,18 @@ fn assert_bbox_abs(
 ) {
     match value {
         Some(Value::BoundingBox { min, max }) => {
-            assert_point_abs(Some(min.as_ref()), expected_min, tol, &format!("{what} min"));
-            assert_point_abs(Some(max.as_ref()), expected_max, tol, &format!("{what} max"));
+            assert_point_abs(
+                Some(min.as_ref()),
+                expected_min,
+                tol,
+                &format!("{what} min"),
+            );
+            assert_point_abs(
+                Some(max.as_ref()),
+                expected_max,
+                tol,
+                &format!("{what} max"),
+            );
         }
         other => panic!("{what}: expected Value::BoundingBox, got {other:?}"),
     }
@@ -491,7 +507,9 @@ fn cross_cell_factored_dependent_stays_undef() {
 
     // `v = volume(body)` — DIRECT geometry-query cell → folds to Scalar<Volume>.
     assert_scalar_rel(
-        result.values.get(&ValueCellId::new("CrossCellFactored", "v")),
+        result
+            .values
+            .get(&ValueCellId::new("CrossCellFactored", "v")),
         DimensionVector::VOLUME,
         0.010 * 0.020 * 0.030,
         "v = volume(box) (direct cell folds)",
@@ -500,7 +518,9 @@ fn cross_cell_factored_dependent_stays_undef() {
     // `m = v * 2` references `v` by ValueRef — no query leaf in its own expr —
     // so the dependent cell is NOT folded and stays Undef (documented limitation,
     // NOT the real Scalar<Volume> that a fixpoint re-eval would produce).
-    let m = result.values.get(&ValueCellId::new("CrossCellFactored", "m"));
+    let m = result
+        .values
+        .get(&ValueCellId::new("CrossCellFactored", "m"));
     assert!(
         matches!(m, None | Some(Value::Undef)),
         "cross-cell dependent `m` should stay Undef (known limitation: this pass \

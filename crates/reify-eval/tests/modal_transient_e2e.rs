@@ -130,8 +130,12 @@ fn mode0_freq_damping(result: &Value) -> (f64, f64) {
     let Some(mode0) = modes.first() else {
         return (f64::NAN, f64::NAN);
     };
-    let f = struct_field(mode0, "frequency").map(read_real).unwrap_or(f64::NAN);
-    let z = struct_field(mode0, "damping_ratio").map(read_real).unwrap_or(f64::NAN);
+    let f = struct_field(mode0, "frequency")
+        .map(read_real)
+        .unwrap_or(f64::NAN);
+    let z = struct_field(mode0, "damping_ratio")
+        .map(read_real)
+        .unwrap_or(f64::NAN);
     (f, z)
 }
 
@@ -151,8 +155,10 @@ fn measure_decay_constant(times: &[f64], u: &[f64]) -> (f64, f64, usize) {
         }
     }
     // Swing magnitude between consecutive extrema, timestamped at the first.
-    let swings: Vec<(f64, f64)> =
-        extrema.windows(2).map(|w| (w[0].0, (w[0].1 - w[1].1).abs())).collect();
+    let swings: Vec<(f64, f64)> = extrema
+        .windows(2)
+        .map(|w| (w[0].0, (w[0].1 - w[1].1).abs()))
+        .collect();
     let max_swing = swings.iter().map(|&(_, d)| d).fold(0.0_f64, f64::max);
     let pts: Vec<(f64, f64)> = swings
         .iter()
@@ -190,9 +196,16 @@ fn e2e_cantilever_step_response_decay_matches_modal_damping() {
     let eval_result = engine.eval(&compiled);
 
     // (a) No Error-severity diagnostics.
-    let errors: Vec<_> =
-        eval_result.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
-    assert!(errors.is_empty(), "expected no Error diagnostics, got: {:?}", errors);
+    let errors: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics, got: {:?}",
+        errors
+    );
 
     // (b) ComputeNodes for BOTH transient targets must be present.
     let snapshot = engine
@@ -200,8 +213,12 @@ fn e2e_cantilever_step_response_decay_matches_modal_damping() {
         .expect("eval_state must be Some after eval()")
         .snapshot
         .clone();
-    let targets: Vec<&str> =
-        snapshot.graph.compute_nodes.iter().map(|(_, d)| d.target.as_str()).collect();
+    let targets: Vec<&str> = snapshot
+        .graph
+        .compute_nodes
+        .iter()
+        .map(|(_, d)| d.target.as_str())
+        .collect();
     for want in ["modal::transient_response", "modal::displacement_at"] {
         assert!(
             targets.contains(&want),
@@ -217,7 +234,11 @@ fn e2e_cantilever_step_response_decay_matches_modal_damping() {
         .get(&tip_cell)
         .unwrap_or_else(|| panic!("cell CantileverStepResponse.tip not found in eval result"));
     let tip = read_real_list(tip_val);
-    assert!(!tip.is_empty(), "tip series must be a non-empty List, got: {:?}", tip_val);
+    assert!(
+        !tip.is_empty(),
+        "tip series must be a non-empty List, got: {:?}",
+        tip_val
+    );
     assert!(
         tip.iter().all(|x| x.is_finite()),
         "tip series must be all-finite Reals, got: {:?}",
@@ -250,7 +271,11 @@ fn e2e_cantilever_step_response_decay_matches_modal_damping() {
         .get(&result_cell)
         .unwrap_or_else(|| panic!("cell CantileverStepResponse.result not found in eval result"));
     let (f1, zeta1) = mode0_freq_damping(result_val);
-    assert!(f1.is_finite() && f1 > 0.0, "f1 must be finite and positive, got: {}", f1);
+    assert!(
+        f1.is_finite() && f1 > 0.0,
+        "f1 must be finite and positive, got: {}",
+        f1
+    );
     assert!(
         zeta1.is_finite() && zeta1 > 0.0 && zeta1 < 1.0,
         "ζ₁ must be a finite underdamped ratio in (0,1) — the fixture must use \
@@ -275,14 +300,22 @@ fn e2e_cantilever_step_response_decay_matches_modal_damping() {
         npts
     );
 
-    assert!(npts >= 4, "need ≥4 clean fundamental-mode swings for a decay fit, got {}", npts);
+    assert!(
+        npts >= 4,
+        "need ≥4 clean fundamental-mode swings for a decay fit, got {}",
+        npts
+    );
     assert!(
         span >= 3.0 * period1,
         "decay fit must span ≥3 fundamental periods ({:.4}s), got {:.4}s",
         3.0 * period1,
         span
     );
-    assert!(sigma_measured.is_finite() && sigma_measured > 0.0, "σ_measured must be finite and positive, got: {}", sigma_measured);
+    assert!(
+        sigma_measured.is_finite() && sigma_measured > 0.0,
+        "σ_measured must be finite and positive, got: {}",
+        sigma_measured
+    );
     let rel_err = (sigma_measured - sigma_theory).abs() / sigma_theory;
     assert!(
         rel_err < 0.05,

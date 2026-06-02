@@ -28,9 +28,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, OnceLock};
 
 use reify_compiler::CompiledModule;
-use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_with_stdlib};
 use reify_core::{ContentHash, DimensionVector, ModulePath, Type, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledExprKind, FieldSourceKind, Satisfaction, Value, ValueMap};
+use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_with_stdlib};
 
 // ── Cross-milestone inline source ─────────────────────────────────────────────
 //

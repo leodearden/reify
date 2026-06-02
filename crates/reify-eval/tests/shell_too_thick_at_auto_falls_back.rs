@@ -71,9 +71,10 @@ fn auto_on_too_thick_body_warns_and_falls_back_to_tet() {
     );
 
     // (2) Must surface a Severity::Warning with ShellTooThick code.
-    let shell_too_thick_warning = eval_result.diagnostics.iter().find(|d| {
-        d.severity == Severity::Warning && d.code == Some(DiagnosticCode::ShellTooThick)
-    });
+    let shell_too_thick_warning = eval_result
+        .diagnostics
+        .iter()
+        .find(|d| d.severity == Severity::Warning && d.code == Some(DiagnosticCode::ShellTooThick));
     assert!(
         shell_too_thick_warning.is_some(),
         "expected a Severity::Warning diagnostic with code=DiagnosticCode::ShellTooThick; \
@@ -88,8 +89,7 @@ fn auto_on_too_thick_body_warns_and_falls_back_to_tet() {
         .get(&result_cell)
         .expect("result cell must be present — tet solve should have succeeded");
 
-    let shell_channels = struct_field(result_val, "shell_channels")
-        .unwrap_or(Value::Undef);
+    let shell_channels = struct_field(result_val, "shell_channels").unwrap_or(Value::Undef);
     assert!(
         matches!(shell_channels, Value::Undef),
         "expected result.shell_channels == Undef (tet path, no ShellStress), \
@@ -98,8 +98,7 @@ fn auto_on_too_thick_body_warns_and_falls_back_to_tet() {
     );
 
     // (4) result.stress must be a populated (non-Undef) Field.
-    let stress = struct_field(result_val, "stress")
-        .unwrap_or(Value::Undef);
+    let stress = struct_field(result_val, "stress").unwrap_or(Value::Undef);
     assert!(
         !matches!(stress, Value::Undef),
         "expected result.stress to be a populated Field (tet solve produces stress), \

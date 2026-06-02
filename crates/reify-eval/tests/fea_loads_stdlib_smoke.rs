@@ -8,9 +8,9 @@
 
 #![allow(clippy::mutable_key_type)]
 
-use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 use reify_core::ValueCellId;
 use reify_ir::{PersistentMap, Value};
+use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 /// `PersistentMap<String, Value>::get` is keyed by `&String`; this lets the
 /// scenarios index `StructureInstance.fields` with a string literal.

@@ -5,9 +5,11 @@
 //! - Diagnostic messages that use the label instead of the raw ConstraintNodeId
 //! - Individual satisfaction states per predicate
 
-use reify_test_support::{check_source, error_diags, parse_and_compile};
 use reify_core::{Diagnostic, DiagnosticLabel, Severity, SourceSpan};
-use reify_ir::{ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Satisfaction};
+use reify_ir::{
+    ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Satisfaction,
+};
+use reify_test_support::{check_source, error_diags, parse_and_compile};
 
 /// Shared fixture: violated single-predicate constraint def instantiation.
 /// `thickness = 1` means `wall > 2` is Violated, producing label `MinWall#0[0]`.

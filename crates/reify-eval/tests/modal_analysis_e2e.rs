@@ -163,7 +163,11 @@ fn e2e_cantilever_first_mode_within_two_percent() {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "expected no Error diagnostics, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics, got: {:?}",
+        errors
+    );
 
     // (b) A ComputeNode with target == "modal::free_vibration" must be present.
     let snapshot = engine
@@ -208,7 +212,11 @@ fn e2e_cantilever_first_mode_within_two_percent() {
             .get(&f1_cell)
             .unwrap_or_else(|| panic!("cell CantileverBeamModes.f1 not found in eval result")),
     );
-    assert!(f1.is_finite() && f1 > 0.0, "f1 must be finite and positive, got: {}", f1);
+    assert!(
+        f1.is_finite() && f1 > 0.0,
+        "f1 must be finite and positive, got: {}",
+        f1
+    );
 
     let f1_analytic = analytic_beam_frequency(1.875);
     let rel_err = (f1 - f1_analytic).abs() / f1_analytic;
@@ -382,7 +390,11 @@ fn e2e_simply_supported_modes_match_analytic() {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "expected no Error diagnostics, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics, got: {:?}",
+        errors
+    );
 
     // (b) A ComputeNode with target == "modal::free_vibration" must be present.
     let snapshot = engine
@@ -467,7 +479,11 @@ fn e2e_simply_supported_modes_match_analytic() {
     //     (βL = π). f1 = first_frequency(result) is the lowest mode, which is
     //     unambiguously the vertical (Z-bending) fundamental. RED at P1 (~8.54%);
     //     GREEN once the fixture runs at P2.
-    assert!(f1.is_finite() && f1 > 0.0, "f1 must be finite and positive, got: {}", f1);
+    assert!(
+        f1.is_finite() && f1 > 0.0,
+        "f1 must be finite and positive, got: {}",
+        f1
+    );
     let f1_err = (f1 - f1_analytic).abs() / f1_analytic;
     assert!(
         f1_err < SS_P2_REL_TOL,
@@ -488,7 +504,12 @@ fn e2e_simply_supported_modes_match_analytic() {
     //     classification, mirroring the kernel gate
     //     modal_benchmarks.rs::simply_supported_beam_p2_modal_within_two_percent.
     for (name, f) in [("f2", f2), ("f3", f3)] {
-        assert!(f.is_finite() && f > 0.0, "{} must be finite and positive, got: {}", name, f);
+        assert!(
+            f.is_finite() && f > 0.0,
+            "{} must be finite and positive, got: {}",
+            name,
+            f
+        );
     }
     assert!(
         f1 < f2 && f2 < f3,
@@ -587,7 +608,11 @@ fn e2e_printer_gantry_prints_five_modes() {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "expected no Error diagnostics, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics, got: {:?}",
+        errors
+    );
 
     // (b) A ComputeNode with target == "modal::free_vibration" must be present.
     let snapshot = engine

@@ -85,7 +85,10 @@
 
 use std::collections::HashMap;
 
-use reify_ir::{AxisSign, CapKind, FeatureId, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, QueryError, Role, TopologyAttribute, TopologyAttributeTable, Value};
+use reify_ir::{
+    AxisSign, CapKind, FeatureId, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery,
+    QueryError, Role, TopologyAttribute, TopologyAttributeTable, Value,
+};
 
 /// Tolerance for cylinder cap-vs-side classification by face-normal
 /// z-component. A face whose normal satisfies `nz > 1.0 - eps` is the
@@ -432,9 +435,21 @@ fn record_box_corner_vertices(
     for &vertex_id in vertex_handles {
         let bbox_value = kernel.query(&GeometryQuery::BoundingBox(vertex_id))?;
         let (xmin, ymin, zmin) = parse_bbox_xyz_min(&bbox_value)?;
-        let x = if xmin >= 0.0 { AxisSign::Pos } else { AxisSign::Neg };
-        let y = if ymin >= 0.0 { AxisSign::Pos } else { AxisSign::Neg };
-        let z = if zmin >= 0.0 { AxisSign::Pos } else { AxisSign::Neg };
+        let x = if xmin >= 0.0 {
+            AxisSign::Pos
+        } else {
+            AxisSign::Neg
+        };
+        let y = if ymin >= 0.0 {
+            AxisSign::Pos
+        } else {
+            AxisSign::Neg
+        };
+        let z = if zmin >= 0.0 {
+            AxisSign::Pos
+        } else {
+            AxisSign::Neg
+        };
         table.record(
             vertex_id,
             TopologyAttribute {
@@ -571,7 +586,10 @@ mod tests {
     //! that branches based on op shape (e.g. accidentally treating
     //! `Tube` as a primitive because it has a `radius` field).
     use super::*;
-    use reify_ir::{ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryQuery, Mesh, TessError};
+    use reify_ir::{
+        ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryQuery,
+        Mesh, TessError,
+    };
 
     /// In-test `GeometryKernel` that errors from every method. Used to
     /// prove that `seed_primitive_attributes` does not call into the

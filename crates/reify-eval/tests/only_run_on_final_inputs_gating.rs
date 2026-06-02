@@ -30,15 +30,15 @@
 //! See arch §7.3 lines 762-767 (`OnlyRunOnFinalInputs` policy) and §3.5 line 436
 //! ("freshness propagation can unlock gated work").
 
+use reify_core::{ModulePath, Type, ValueCellId};
 use reify_eval::Engine;
 use reify_eval::cache::{CachedResult, NodeId};
 use reify_eval::freshness_walk;
 use reify_eval::gating;
+use reify_ir::{BinOp, Freshness, Value};
 use reify_test_support::builders::{binop, literal, value_ref_typed};
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
-use reify_core::{ModulePath, Type, ValueCellId};
-use reify_ir::{BinOp, Freshness, Value};
 use std::collections::HashSet;
 
 /// Build the 3-cell synthetic module: param `a = 5.0`, param `c = 3.0`,

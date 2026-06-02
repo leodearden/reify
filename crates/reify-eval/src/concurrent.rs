@@ -5,7 +5,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use reify_core::{ContentHash, Diagnostic, SnapshotId, ValueCellId, VersionId};
-use reify_ir::{AutoParam, CompiledFunction, DeterminacyState, ObjectiveSet, PersistentMap, ResolutionProblem, SnapshotProvenance, SolveResult, Value, ValueMap};
+use reify_ir::{
+    AutoParam, CompiledFunction, DeterminacyState, ObjectiveSet, PersistentMap, ResolutionProblem,
+    SnapshotProvenance, SolveResult, Value, ValueMap,
+};
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
 use crate::deps::{DependencyTrace, ReverseDependencyIndex, extract_dependency_trace};

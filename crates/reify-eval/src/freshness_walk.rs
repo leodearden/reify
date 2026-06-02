@@ -209,9 +209,7 @@ pub fn propagate_freshness_only<'a>(
             // ComputeNodes (edge #10) and its backing GH ValueCells (S4); we
             // filter to `NodeId::Value(_)` so this fan-out touches only the GH
             // cells and leaves ComputeNode propagation exactly as it was.
-            if cutoffs_passed
-                && let NodeId::Realization(rid) = &dependent
-            {
+            if cutoffs_passed && let NodeId::Realization(rid) = &dependent {
                 // Clone the Value dependents so the immutable borrow on
                 // `reverse_index` drops before any `&mut cache` write below
                 // (same pattern as the snapshotted `dependents` Vec above).
@@ -403,7 +401,10 @@ mod tests {
             NodeCache::new(
                 CachedResult::Value(value, DeterminacyState::Determined),
                 freshness,
-                DependencyTrace { realization_reads: Vec::new(), reads },
+                DependencyTrace {
+                    realization_reads: Vec::new(),
+                    reads,
+                },
                 basis_version,
             ),
         );
@@ -1244,7 +1245,8 @@ mod tests {
             NodeCache::new(
                 CachedResult::GeometryHandle(GeometryHandleId(0)),
                 Freshness::Intermediate { generation: 1 },
-                DependencyTrace { realization_reads: Vec::new(),
+                DependencyTrace {
+                    realization_reads: Vec::new(),
                     reads: vec![a.clone()],
                 },
                 VersionId(1),
@@ -1540,7 +1542,8 @@ mod tests {
             NodeCache::new(
                 CachedResult::Value(Value::Real(0.0), DeterminacyState::Determined),
                 Freshness::Intermediate { generation: 1 },
-                DependencyTrace { realization_reads: Vec::new(),
+                DependencyTrace {
+                    realization_reads: Vec::new(),
                     reads: vec![a.clone()],
                 },
                 VersionId(1),
@@ -1627,10 +1630,8 @@ mod tests {
             VersionId(1),
         );
         assert!(
-            cache.mark_pending_with_cause(
-                &NodeId::Value(b.clone()),
-                NodeId::Compute(c_id.clone()),
-            ),
+            cache
+                .mark_pending_with_cause(&NodeId::Value(b.clone()), NodeId::Compute(c_id.clone()),),
             "mark_pending_with_cause must succeed on the seeded output VC \
              (this is the in-flight begin_compute_dispatch state)"
         );

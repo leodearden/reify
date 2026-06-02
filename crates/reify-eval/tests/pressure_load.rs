@@ -12,11 +12,11 @@
 
 #![allow(clippy::mutable_key_type)]
 
+use reify_core::ValueCellId;
+use reify_ir::{PersistentMap, Value};
 use reify_test_support::{
     collect_errors, compile_source_with_stdlib, make_simple_engine, parse_and_compile_with_stdlib,
 };
-use reify_core::ValueCellId;
-use reify_ir::{PersistentMap, Value};
 
 /// `PersistentMap<String, Value>::get` is keyed by `&String`; this lets the
 /// scenarios index `StructureInstance.fields` with a string literal.
@@ -202,8 +202,7 @@ structure def BadUsage {
     assert!(
         errors
             .iter()
-            .any(|d| d.message.contains("does not conform to trait")
-                && d.message.contains("Load")),
+            .any(|d| d.message.contains("does not conform to trait") && d.message.contains("Load")),
         "NotALoad must be rejected for a Load-typed param with a 'does not conform \
          to trait Load' error (empty-marker trait still enforces nominal identity); \
          got errors: {errors:?}"

@@ -4,9 +4,9 @@
 //! using MockGeometryKernel to capture executed operations without OCCT.
 
 use reify_compiler::{CompiledGeometryOp, GeomRef, PrimitiveKind, SweepKind};
-use reify_test_support::*;
 use reify_core::Type;
 use reify_ir::{ExportFormat, GeometryOp};
+use reify_test_support::*;
 
 /// Exercises the full compile -> eval path for SweepGuided.
 ///

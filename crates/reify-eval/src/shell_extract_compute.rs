@@ -24,8 +24,8 @@
 
 use std::hash::{Hash, Hasher};
 
-use reify_core::persistent_cache::PersistentlyCacheable;
 use reify_core::Diagnostic;
+use reify_core::persistent_cache::PersistentlyCacheable;
 use reify_ir::{
     FeatureId, GeometryHandleId, OpaqueState, PersistentMap, Role, StructureInstanceData,
     StructureTypeId, TopologyAttribute, TopologyAttributeTable, Value,
@@ -37,9 +37,9 @@ use reify_shell_extract::{
     prune_branches, segment_regions,
 };
 
+use crate::Engine;
 use crate::engine_compute::{ComputeFn, ComputeOutcome, RealizationReadHandle};
 use crate::graph::CancellationHandle;
-use crate::Engine;
 
 // ── Value-projection helper ──────────────────────────────────────────────────
 
@@ -65,23 +65,14 @@ use crate::Engine;
 ///   rather than from the cached `Value`.
 ///
 /// PRD §5 cache-key composition forward link: `shell-extract-engine-bridge.md §5`.
-fn shell_extraction_result_to_value(
-    result: &reify_shell_extract::ShellExtractionResult,
-) -> Value {
+fn shell_extraction_result_to_value(result: &reify_shell_extract::ShellExtractionResult) -> Value {
     // ── mid_surface ─────────────────────────────────────────────────────────
     let vertices_value = Value::List(
         result
             .mid_surface
             .vertices
             .iter()
-            .map(|v| {
-                Value::List(
-                    v.iter()
-                        .copied()
-                        .map(Value::Real)
-                        .collect::<Vec<_>>(),
-                )
-            })
+            .map(|v| Value::List(v.iter().copied().map(Value::Real).collect::<Vec<_>>()))
             .collect::<Vec<_>>(),
     );
     let triangles_value = Value::List(
@@ -89,13 +80,7 @@ fn shell_extraction_result_to_value(
             .mid_surface
             .triangles
             .iter()
-            .map(|t| {
-                Value::List(
-                    t.iter()
-                        .map(|&i| Value::Int(i as i64))
-                        .collect::<Vec<_>>(),
-                )
-            })
+            .map(|t| Value::List(t.iter().map(|&i| Value::Int(i as i64)).collect::<Vec<_>>()))
             .collect::<Vec<_>>(),
     );
     let thickness_value = Value::List(
@@ -131,10 +116,7 @@ fn shell_extraction_result_to_value(
                     "classification".to_string(),
                     Value::String(format!("{:?}", r.classification)),
                 );
-                rf.insert(
-                    "voxel_count".to_string(),
-                    Value::Int(r.voxels.len() as i64),
-                );
+                rf.insert("voxel_count".to_string(), Value::Int(r.voxels.len() as i64));
                 Value::StructureInstance(Box::new(StructureInstanceData {
                     type_id: StructureTypeId(0),
                     type_name: "RegionInfo".to_string(),
@@ -194,7 +176,10 @@ fn shell_extraction_result_to_value(
                     "feature_id".to_string(),
                     Value::String(attr.feature_id.to_string()),
                 );
-                rf.insert("local_index".to_string(), Value::Int(attr.local_index as i64));
+                rf.insert(
+                    "local_index".to_string(),
+                    Value::Int(attr.local_index as i64),
+                );
                 Value::StructureInstance(Box::new(StructureInstanceData {
                     type_id: StructureTypeId(0),
                     type_name: "MidSurfaceFaceRecord".to_string(),
@@ -325,7 +310,13 @@ fn parse_elastic_options_from_value(
     }
     // Value::Undef or any other variant → all defaults (correct per PRD §5).
 
-    (medial_opts, mid_surf_opts, prune_opts, mesher_opts, seg_opts)
+    (
+        medial_opts,
+        mid_surf_opts,
+        prune_opts,
+        mesher_opts,
+        seg_opts,
+    )
 }
 
 // ── Trampoline ───────────────────────────────────────────────────────────────
@@ -385,12 +376,14 @@ pub fn shell_extract_compute_fn(
         // to the generic coded-less arm.
         Err(MedialError::GridValidation(GridValidationError::EmptyAxisGrid { axis })) => {
             return ComputeOutcome::Failed {
-                diagnostics: vec![Diagnostic::error(format!(
-                    "shell-extract::extract: voxel grid is empty on axis {axis}; \
+                diagnostics: vec![
+                    Diagnostic::error(format!(
+                        "shell-extract::extract: voxel grid is empty on axis {axis}; \
                      cannot compute medial mask. Verify the body geometry produces \
                      a valid voxel grid."
-                ))
-                .with_code(reify_core::DiagnosticCode::ShellNoVoxelGrid)],
+                    ))
+                    .with_code(reify_core::DiagnosticCode::ShellNoVoxelGrid),
+                ],
             };
         }
         Err(e) => {
@@ -412,25 +405,33 @@ pub fn shell_extract_compute_fn(
         // phase (same root cause as medial-mask EmptyAxisGrid).
         Err(MidSurfaceError::GridValidation(GridValidationError::EmptyAxisGrid { axis })) => {
             return ComputeOutcome::Failed {
-                diagnostics: vec![Diagnostic::error(format!(
-                    "shell-extract::extract: voxel grid is empty on axis {axis}; \
+                diagnostics: vec![
+                    Diagnostic::error(format!(
+                        "shell-extract::extract: voxel grid is empty on axis {axis}; \
                      cannot extract mid-surface. Verify the body geometry produces \
                      a valid voxel grid."
-                ))
-                .with_code(reify_core::DiagnosticCode::ShellNoVoxelGrid)],
+                    ))
+                    .with_code(reify_core::DiagnosticCode::ShellNoVoxelGrid),
+                ],
             };
         }
         // PRD §7 row 2 — E_SHELL_MEDIAL_MASK_OOB: a medial-mask voxel lies
         // outside the SDF grid extent.
         Err(MidSurfaceError::MaskVoxelOutOfBounds { voxel, grid_extent }) => {
             return ComputeOutcome::Failed {
-                diagnostics: vec![Diagnostic::error(format!(
-                    "shell-extract::extract: medial-mask voxel [{}, {}, {}] is \
+                diagnostics: vec![
+                    Diagnostic::error(format!(
+                        "shell-extract::extract: medial-mask voxel [{}, {}, {}] is \
                      outside the SDF grid extent [{}, {}, {}].",
-                    voxel[0], voxel[1], voxel[2],
-                    grid_extent[0], grid_extent[1], grid_extent[2],
-                ))
-                .with_code(reify_core::DiagnosticCode::ShellMedialMaskOob)],
+                        voxel[0],
+                        voxel[1],
+                        voxel[2],
+                        grid_extent[0],
+                        grid_extent[1],
+                        grid_extent[2],
+                    ))
+                    .with_code(reify_core::DiagnosticCode::ShellMedialMaskOob),
+                ],
             };
         }
         Err(e) => {
@@ -454,10 +455,12 @@ pub fn shell_extract_compute_fn(
         // configuration or geometry constraint violation.
         Err(e) => {
             return ComputeOutcome::Failed {
-                diagnostics: vec![Diagnostic::error(format!(
-                    "shell-extract::extract: branch-pruning failed: {e}"
-                ))
-                .with_code(reify_core::DiagnosticCode::ShellPruneFailed)],
+                diagnostics: vec![
+                    Diagnostic::error(format!(
+                        "shell-extract::extract: branch-pruning failed: {e}"
+                    ))
+                    .with_code(reify_core::DiagnosticCode::ShellPruneFailed),
+                ],
             };
         }
     };
@@ -474,13 +477,15 @@ pub fn shell_extract_compute_fn(
         // parameters) fall through to the generic coded-less arm.
         Err(MesherError::QualityBelowThreshold { metrics, .. }) => {
             return ComputeOutcome::Failed {
-                diagnostics: vec![Diagnostic::error(format!(
-                    "shell-extract::extract: mid-surface mesh quality is below threshold \
+                diagnostics: vec![
+                    Diagnostic::error(format!(
+                        "shell-extract::extract: mid-surface mesh quality is below threshold \
                      (worst aspect ratio: {:.4}, worst min angle: {:.2}°). \
                      The shell geometry may be too complex or degenerate for meshing.",
-                    metrics.min_aspect_ratio, metrics.min_angle_degrees,
-                ))
-                .with_code(reify_core::DiagnosticCode::ShellMeshQuality)],
+                        metrics.min_aspect_ratio, metrics.min_angle_degrees,
+                    ))
+                    .with_code(reify_core::DiagnosticCode::ShellMeshQuality),
+                ],
             };
         }
         Err(e) => {
@@ -504,10 +509,10 @@ pub fn shell_extract_compute_fn(
             // `DiagnosticCode::ShellBadThreshold` added in step-6 (task γ,
             // #3834). Message template matches the PRD §7 canonical form.
             return ComputeOutcome::Failed {
-                diagnostics: vec![Diagnostic::error(format!(
-                    "shell_threshold = {value} must be in (0.0, 1.0)."
-                ))
-                .with_code(reify_core::DiagnosticCode::ShellBadThreshold)],
+                diagnostics: vec![
+                    Diagnostic::error(format!("shell_threshold = {value} must be in (0.0, 1.0)."))
+                        .with_code(reify_core::DiagnosticCode::ShellBadThreshold),
+                ],
             };
         }
         Err(e) => {
@@ -576,7 +581,10 @@ pub fn shell_extract_compute_fn(
 /// γ design decision). Future task ι (end-to-end smoke binary) is the natural
 /// point to introduce an aggregator if needed.
 pub fn register_shell_extract_compute_fns(engine: &mut Engine) {
-    engine.register_compute_fn("shell-extract::extract", shell_extract_compute_fn as ComputeFn);
+    engine.register_compute_fn(
+        "shell-extract::extract",
+        shell_extract_compute_fn as ComputeFn,
+    );
 }
 
 // ── ζ §9-dispatch-complete fold hook ─────────────────────────────────────────
@@ -606,10 +614,8 @@ fn synthetic_mid_surface_handle_id(
     feature_id.hash(&mut hasher);
     let h = hasher.finish();
     let h30 = h & 0x3FFF_FFFF;
-    let id = 0x8000_0000_0000_0000u64
-        | (h30 << 33)
-        | ((is_edge as u64) << 32)
-        | (local_index as u64);
+    let id =
+        0x8000_0000_0000_0000u64 | (h30 << 33) | ((is_edge as u64) << 32) | (local_index as u64);
     GeometryHandleId(id)
 }
 
@@ -668,7 +674,9 @@ pub(crate) fn fold_mid_surface_attributes_into_table(
     let naming = match outer.fields.get(&"naming".to_string()) {
         Some(Value::StructureInstance(d)) => d,
         _ => {
-            tracing::warn!("fold_mid_surface_attributes: naming field missing or not a StructureInstance");
+            tracing::warn!(
+                "fold_mid_surface_attributes: naming field missing or not a StructureInstance"
+            );
             return;
         }
     };
@@ -794,14 +802,11 @@ pub(crate) fn fold_mid_surface_attributes_into_table(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_ir::{StructureTypeId, PersistentMap};
+    use reify_ir::{PersistentMap, StructureTypeId};
 
     /// Build a minimal ShellExtractionResult-shaped Value with known face/edge
     /// records for testing fold_mid_surface_attributes_into_table.
-    fn make_result_value(
-        face_records: &[(&str, u32)],
-        edges: &[(&str, u32)],
-    ) -> Value {
+    fn make_result_value(face_records: &[(&str, u32)], edges: &[(&str, u32)]) -> Value {
         let face_records_val = Value::List(
             face_records
                 .iter()
@@ -835,7 +840,10 @@ mod tests {
                 .collect::<Vec<_>>(),
         );
         let mut naming_fields = PersistentMap::default();
-        naming_fields.insert("face_count".to_string(), Value::Int(face_records.len() as i64));
+        naming_fields.insert(
+            "face_count".to_string(),
+            Value::Int(face_records.len() as i64),
+        );
         naming_fields.insert("edge_count".to_string(), Value::Int(edges.len() as i64));
         naming_fields.insert("face_records".to_string(), face_records_val);
         naming_fields.insert("edges".to_string(), edges_val);

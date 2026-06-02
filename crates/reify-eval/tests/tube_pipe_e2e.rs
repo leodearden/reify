@@ -5,9 +5,9 @@
 //! OCCT-gated full-pipeline tests (source → parse → compile → Engine → build).
 
 use reify_compiler::{CompiledGeometryOp, CurveKind, GeomRef, PrimitiveKind, SweepKind};
-use reify_test_support::*;
 use reify_core::{ModulePath, Severity, Type};
 use reify_ir::{ExportFormat, GeometryOp, GeometryQuery, Value};
+use reify_test_support::*;
 
 /// Exercises the full compile -> eval path for Tube.
 ///

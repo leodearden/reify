@@ -140,9 +140,8 @@ fn extract_n_nodes(outcome: ComputeOutcome) -> usize {
         ComputeOutcome::Completed { result, .. } => result,
         other => panic!("expected ComputeOutcome::Completed, got: {:?}", other),
     };
-    let base = extract_field(&result, "base_node_positions").unwrap_or_else(|| {
-        panic!("BucklingResult must have 'base_node_positions' field")
-    });
+    let base = extract_field(&result, "base_node_positions")
+        .unwrap_or_else(|| panic!("BucklingResult must have 'base_node_positions' field"));
     match base {
         Value::List(v) => {
             assert_eq!(
@@ -152,10 +151,7 @@ fn extract_n_nodes(outcome: ComputeOutcome) -> usize {
             );
             v.len() / 3
         }
-        other => panic!(
-            "base_node_positions must be Value::List, got: {:?}",
-            other
-        ),
+        other => panic!("base_node_positions must be Value::List, got: {:?}", other),
     }
 }
 
@@ -194,11 +190,9 @@ fn trampoline_honors_element_order_p2_buckling() {
 
     // 1. P1 path produces the unchanged nx=8 grid.
     assert_eq!(
-        p1_n,
-        P1_EXPECTED_N_NODES,
+        p1_n, P1_EXPECTED_N_NODES,
         "P1 (absent element_order) should produce {} nodes (nx=8 grid), got {}",
-        P1_EXPECTED_N_NODES,
-        p1_n
+        P1_EXPECTED_N_NODES, p1_n
     );
 
     // 2. P2 path produces MORE than the bare nx=2 corner grid (promotion ran).
@@ -211,11 +205,9 @@ fn trampoline_honors_element_order_p2_buckling() {
 
     // 3. The two paths must produce different node counts — proving dispatch ran.
     assert_ne!(
-        p2_n,
-        p1_n,
+        p2_n, p1_n,
         "P2 path (n_nodes={}) must differ from P1 path (n_nodes={}) — \
          trampoline should branch on element_order but currently ignores it",
-        p2_n,
-        p1_n
+        p2_n, p1_n
     );
 }

@@ -12,12 +12,12 @@
 //! helper so the resolution policy stays in one auditable location.
 
 use reify_compiler::{CompiledModule, SolverPragma};
+use reify_core::{ModulePath, Severity, Type};
 use reify_eval::Engine;
 use reify_test_support::mocks::{MockConstraintChecker, SpyConstraintSolver};
 use reify_test_support::{
     CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref,
 };
-use reify_core::{ModulePath, Severity, Type};
 use std::collections::{BTreeMap, HashMap};
 
 /// Build a one-template CompiledModule with a single auto-param so the engine

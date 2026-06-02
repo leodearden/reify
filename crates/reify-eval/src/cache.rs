@@ -1,8 +1,14 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use reify_core::{ComputeNodeId, ConstraintNodeId, ContentHash, RealizationNodeId, ResolutionNodeId, ValueCellId, VersionId};
-use reify_ir::{CompiledExpr, DeterminacyState, Freshness, GeometryHandleId, OpaqueState, ResultRef, Satisfaction, Value, ValueMap};
+use reify_core::{
+    ComputeNodeId, ConstraintNodeId, ContentHash, RealizationNodeId, ResolutionNodeId, ValueCellId,
+    VersionId,
+};
+use reify_ir::{
+    CompiledExpr, DeterminacyState, Freshness, GeometryHandleId, OpaqueState, ResultRef,
+    Satisfaction, Value, ValueMap,
+};
 
 use crate::deps::DependencyTrace;
 
@@ -2314,7 +2320,8 @@ mod tests {
         let expected_hash = result.content_hash();
 
         let version = VersionId(1);
-        let trace = DependencyTrace { realization_reads: Vec::new(),
+        let trace = DependencyTrace {
+            realization_reads: Vec::new(),
             reads: vec![ValueCellId::new("A", "x")],
         };
 
@@ -2580,10 +2587,10 @@ mod tests {
 
     #[test]
     fn cold_start_cache_miss() {
-        use reify_test_support::builders::*;
-        use reify_test_support::mocks::MockConstraintChecker;
         use reify_core::{ModulePath, Type, VersionId};
         use reify_ir::BinOp;
+        use reify_test_support::builders::*;
+        use reify_test_support::mocks::MockConstraintChecker;
 
         let e = "T";
         let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -2629,10 +2636,10 @@ mod tests {
 
     #[test]
     fn version_fast_path_100_percent_hits() {
-        use reify_test_support::builders::*;
-        use reify_test_support::mocks::MockConstraintChecker;
         use reify_core::{ModulePath, Type, VersionId};
         use reify_ir::BinOp;
+        use reify_test_support::builders::*;
+        use reify_test_support::mocks::MockConstraintChecker;
 
         let e = "T";
         let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -2679,10 +2686,10 @@ mod tests {
 
     #[test]
     fn selective_re_evaluation_on_param_change() {
-        use reify_test_support::builders::*;
-        use reify_test_support::mocks::MockConstraintChecker;
         use reify_core::{ModulePath, Type, VersionId};
         use reify_ir::BinOp;
+        use reify_test_support::builders::*;
+        use reify_test_support::mocks::MockConstraintChecker;
 
         let e = "T";
         // param a = 10, param b = 20, let x = a + 1, let y = b + 1
@@ -2755,10 +2762,10 @@ mod tests {
 
     #[test]
     fn early_cutoff_prevents_downstream_re_evaluation() {
-        use reify_test_support::builders::*;
-        use reify_test_support::mocks::MockConstraintChecker;
         use reify_core::{ContentHash, ModulePath, Type, VersionId};
         use reify_ir::{BinOp, CompiledExpr, CompiledExprKind};
+        use reify_test_support::builders::*;
+        use reify_test_support::mocks::MockConstraintChecker;
 
         let e = "T";
 
@@ -2844,10 +2851,10 @@ mod tests {
 
     #[test]
     fn diamond_dependency_early_cutoff_correctness() {
-        use reify_test_support::builders::*;
-        use reify_test_support::mocks::MockConstraintChecker;
         use reify_core::{ContentHash, ModulePath, Type, VersionId};
         use reify_ir::{BinOp, CompiledExpr, CompiledExprKind};
+        use reify_test_support::builders::*;
+        use reify_test_support::mocks::MockConstraintChecker;
 
         let e = "T";
 
@@ -2931,10 +2938,10 @@ mod tests {
 
     #[test]
     fn triple_fan_in_dirty_reasons_multiple_independent_reasons() {
-        use reify_test_support::builders::*;
-        use reify_test_support::mocks::MockConstraintChecker;
         use reify_core::{ContentHash, ModulePath, Type, VersionId};
         use reify_ir::{BinOp, CompiledExpr, CompiledExprKind};
+        use reify_test_support::builders::*;
+        use reify_test_support::mocks::MockConstraintChecker;
 
         let e = "T";
 
@@ -3148,11 +3155,8 @@ mod tests {
         store.put(node.clone(), make_test_node_cache(42, 1));
 
         // Donate warm state + cost.
-        let donated = store.donate_warm_state_with_cost(
-            &node,
-            reify_ir::OpaqueState::new(7i32, 4),
-            0.75,
-        );
+        let donated =
+            store.donate_warm_state_with_cost(&node, reify_ir::OpaqueState::new(7i32, 4), 0.75);
         assert!(donated);
         assert_eq!(store.cost_per_byte_of(&node), Some(0.75));
 
@@ -3691,7 +3695,8 @@ mod tests {
         );
 
         // A trace that only reads `a` (Final) → should yield Final
-        let trace_a_only = DependencyTrace { realization_reads: Vec::new(),
+        let trace_a_only = DependencyTrace {
+            realization_reads: Vec::new(),
             reads: vec![a_id.clone()],
         };
         assert_eq!(
@@ -3701,7 +3706,8 @@ mod tests {
         );
 
         // A trace that reads `b` (Intermediate) → should yield Intermediate
-        let trace_b_only = DependencyTrace { realization_reads: Vec::new(),
+        let trace_b_only = DependencyTrace {
+            realization_reads: Vec::new(),
             reads: vec![b_id.clone()],
         };
         assert_eq!(
@@ -3734,7 +3740,8 @@ mod tests {
         let b_id = ValueCellId::new("T", "b");
 
         // Cold-start: trace reads `a`
-        let trace_a = DependencyTrace { realization_reads: Vec::new(),
+        let trace_a = DependencyTrace {
+            realization_reads: Vec::new(),
             reads: vec![a_id.clone()],
         };
         store.record_evaluation_with_freshness(
@@ -3751,7 +3758,8 @@ mod tests {
         );
 
         // Early cutoff: same hash, but different trace (reads `b` now)
-        let trace_b = DependencyTrace { realization_reads: Vec::new(),
+        let trace_b = DependencyTrace {
+            realization_reads: Vec::new(),
             reads: vec![b_id.clone()],
         };
         let outcome = store.record_evaluation_with_freshness(
@@ -3801,7 +3809,8 @@ mod tests {
 
         // Call record_evaluation_propagating_freshness with a trace that reads `a`.
         // version=7 → generation derived as version.0=7 per §7.1 (single source of truth).
-        let trace = DependencyTrace { realization_reads: Vec::new(),
+        let trace = DependencyTrace {
+            realization_reads: Vec::new(),
             reads: vec![a_id.clone()],
         };
         let out_node = NodeId::Value(out_id.clone());
@@ -4177,7 +4186,8 @@ mod tests {
         // Row 1: all-Final (simplest path through the classifier)
         {
             let store = make_store(Freshness::Final, Freshness::Final);
-            let trace = DependencyTrace { realization_reads: Vec::new(),
+            let trace = DependencyTrace {
+                realization_reads: Vec::new(),
                 reads: vec![a_id.clone(), b_id.clone()],
             };
             assert_agree!(store, &trace, sr, g, "all-Final");
@@ -4187,7 +4197,8 @@ mod tests {
         {
             let mut store = make_store(Freshness::Final, Freshness::Final);
             store.mark_pending(&NodeId::Value(b_id.clone()));
-            let trace = DependencyTrace { realization_reads: Vec::new(),
+            let trace = DependencyTrace {
+                realization_reads: Vec::new(),
                 reads: vec![a_id.clone(), b_id.clone()],
             };
             assert_agree!(store, &trace, sr, g, "one-Pending");
@@ -4197,7 +4208,8 @@ mod tests {
         {
             let mut store = make_store(Freshness::Final, Freshness::Final);
             store.mark_failed(&NodeId::Value(b_id.clone()), ErrorRef::new("x"));
-            let trace = DependencyTrace { realization_reads: Vec::new(),
+            let trace = DependencyTrace {
+                realization_reads: Vec::new(),
                 reads: vec![a_id.clone(), b_id.clone()],
             };
             assert_agree!(store, &trace, sr, g, "one-Failed");
@@ -4206,7 +4218,8 @@ mod tests {
         // Row 4: still_refining=true (exercises the Pending-when-still-refining branch)
         {
             let store = make_store(Freshness::Final, Freshness::Final);
-            let trace = DependencyTrace { realization_reads: Vec::new(),
+            let trace = DependencyTrace {
+                realization_reads: Vec::new(),
                 reads: vec![a_id.clone(), b_id.clone()],
             };
             assert_agree!(store, &trace, true, g, "all-Final-still-refining");
@@ -4288,7 +4301,11 @@ mod tests {
                 matches!(f2, Freshness::Pending { .. }),
                 "for-node (cached-trace) variant must agree on Pending"
             );
-            assert_eq!(cause2, Some(r0_node.clone()), "for-node variant cause must agree");
+            assert_eq!(
+                cause2,
+                Some(r0_node.clone()),
+                "for-node variant cause must agree"
+            );
         }
 
         // (b) R0 Intermediate{GEN} → Intermediate{GEN}, no cause.
@@ -4300,8 +4317,7 @@ mod tests {
                 store.derive_output_freshness_from_trace_with_cause(&trace, false, GEN);
             assert_eq!(f, Freshness::Intermediate { generation: GEN });
             assert_eq!(cause, None);
-            let (f2, _) =
-                store.derive_output_freshness_for_node_with_cause(&gh_node, false, GEN);
+            let (f2, _) = store.derive_output_freshness_for_node_with_cause(&gh_node, false, GEN);
             assert_eq!(
                 f2,
                 Freshness::Intermediate { generation: GEN },
@@ -4316,8 +4332,7 @@ mod tests {
                 store.derive_output_freshness_from_trace_with_cause(&trace, false, GEN);
             assert_eq!(f, Freshness::Final);
             assert_eq!(cause, None);
-            let (f2, _) =
-                store.derive_output_freshness_for_node_with_cause(&gh_node, false, GEN);
+            let (f2, _) = store.derive_output_freshness_for_node_with_cause(&gh_node, false, GEN);
             assert_eq!(f2, Freshness::Final, "for-node variant must agree on Final");
         }
     }
@@ -4625,7 +4640,10 @@ mod tests {
             .result_hash;
 
         // (b) begin → Pending.
-        assert_eq!(store.begin_compute_dispatch(&c_id, std::slice::from_ref(&b)), 1);
+        assert_eq!(
+            store.begin_compute_dispatch(&c_id, std::slice::from_ref(&b)),
+            1
+        );
 
         // (c) mid-state: (Pending{last_substantive: prior}, Compute cause,
         //     prior value still on display).
@@ -4762,17 +4780,18 @@ mod tests {
         );
         assert_eq!(outcome, EvalOutcome::Unchanged);
         let entry = store.get(&node).expect("entry must still exist");
-        assert!(entry.warm_state.is_none(), "early-cutoff must clear warm_state");
+        assert!(
+            entry.warm_state.is_none(),
+            "early-cutoff must clear warm_state"
+        );
         assert_eq!(
             entry.cost_per_byte, 0.0,
             "early-cutoff must clear cost_per_byte (paired with warm_state)",
         );
 
         // Different hash → changed/cold-start path: also resets both.
-        store
-            .donate_warm_state_with_cost(&node, OpaqueState::new(8i32, 4), 0.4);
-        let new_cached =
-            CachedResult::Value(Value::Int(2), DeterminacyState::Determined);
+        store.donate_warm_state_with_cost(&node, OpaqueState::new(8i32, 4), 0.4);
+        let new_cached = CachedResult::Value(Value::Int(2), DeterminacyState::Determined);
         let outcome = store.record_evaluation(
             node.clone(),
             new_cached,
@@ -4781,7 +4800,10 @@ mod tests {
         );
         assert_eq!(outcome, EvalOutcome::Changed);
         let entry = store.get(&node).expect("entry must still exist");
-        assert!(entry.warm_state.is_none(), "changed path must clear warm_state");
+        assert!(
+            entry.warm_state.is_none(),
+            "changed path must clear warm_state"
+        );
         assert_eq!(
             entry.cost_per_byte, 0.0,
             "changed path must clear cost_per_byte (paired with warm_state)",
@@ -4802,11 +4824,7 @@ mod tests {
             "fresh entry's cost defaults to 0.0",
         );
 
-        let donated = store.donate_warm_state_with_cost(
-            &node,
-            OpaqueState::new(123i32, 4),
-            0.625,
-        );
+        let donated = store.donate_warm_state_with_cost(&node, OpaqueState::new(123i32, 4), 0.625);
         assert!(donated, "donate must report true when the node exists");
         assert_eq!(
             store.cost_per_byte_of(&node),

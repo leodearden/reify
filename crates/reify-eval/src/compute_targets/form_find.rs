@@ -146,7 +146,9 @@ fn crack_nodes(v: Option<&Value>) -> Result<Vec<[f64; 3]>, String> {
         match node {
             Value::Point(c) if c.len() == 3 => {
                 let bad = || {
-                    format!("E_FormFindInfeasible: Tensegrity.nodes[{i}] has a non-numeric coordinate")
+                    format!(
+                        "E_FormFindInfeasible: Tensegrity.nodes[{i}] has a non-numeric coordinate"
+                    )
                 };
                 out.push([
                     scalar_f64(&c[0]).ok_or_else(bad)?,
@@ -281,10 +283,18 @@ fn check_index(idx: i64, n: usize, ctx: &str) -> Result<usize, String> {
 /// discipline the elastic-static / buckling trampolines use for their field
 /// helpers.
 fn build_result(solve: &FormFindSolve) -> Value {
-    let nodes: Vec<Value> = solve.nodes.iter().map(|&p| super::point3_length(p)).collect();
+    let nodes: Vec<Value> = solve
+        .nodes
+        .iter()
+        .map(|&p| super::point3_length(p))
+        .collect();
     // member_forces Nᵢ = qᵢ·Lᵢ are forces (N/m · m), so FORCE-dimensioned.
     let member_forces = super::scalar_list(&solve.member_forces, DimensionVector::FORCE);
-    let force_densities: Vec<Value> = solve.force_densities.iter().map(|&q| Value::Real(q)).collect();
+    let force_densities: Vec<Value> = solve
+        .force_densities
+        .iter()
+        .map(|&q| Value::Real(q))
+        .collect();
 
     let fields: PersistentMap<String, Value> = [
         ("nodes".to_string(), Value::List(nodes)),

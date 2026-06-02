@@ -22,9 +22,9 @@
 
 #![allow(clippy::mutable_key_type)]
 
-use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_with_stdlib};
 use reify_core::ValueCellId;
 use reify_ir::{PersistentMap, Value};
+use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_with_stdlib};
 
 /// `PersistentMap<String, Value>::get` is keyed by `&String`; this lets the
 /// scenarios index `StructureInstance.fields` with a string literal.
@@ -99,10 +99,7 @@ structure def LoadCaseFixture {
                         items[1]
                     );
                 }
-                other => panic!(
-                    "expected Value::List for LoadCase.loads, got {:?}",
-                    other
-                ),
+                other => panic!("expected Value::List for LoadCase.loads, got {:?}", other),
             }
 
             // supports = [30.0]
@@ -136,9 +133,9 @@ structure def LoadCaseFixture {
                 data.fields
             );
         }
-        other => panic!(
-            "expected Value::StructureInstance for LoadCaseFixture.case — got {other:?}"
-        ),
+        other => {
+            panic!("expected Value::StructureInstance for LoadCaseFixture.case — got {other:?}")
+        }
     }
 }
 
@@ -218,8 +215,7 @@ structure def LoadCaseAccess {
 /// user-observable signal cells documented in the file's comments.
 #[test]
 fn load_case_example_evals_clean_and_exercises_signal_cells() {
-    const EXAMPLE_PATH: &str =
-        concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/load_case.ri");
+    const EXAMPLE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/load_case.ri");
 
     let src = std::fs::read_to_string(EXAMPLE_PATH).expect("read examples/load_case.ri");
     let compiled = parse_and_compile_with_stdlib(&src);

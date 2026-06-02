@@ -13,9 +13,9 @@
 //! Satisfaction::Violated results.
 
 use reify_compiler::CompiledModule;
-use reify_test_support::{kg, make_simple_engine, mm, parse_and_compile_with_stdlib};
 use reify_core::{SnapshotId, ValueCellId};
 use reify_ir::{Satisfaction, SnapshotProvenance, Value};
+use reify_test_support::{kg, make_simple_engine, mm, parse_and_compile_with_stdlib};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(

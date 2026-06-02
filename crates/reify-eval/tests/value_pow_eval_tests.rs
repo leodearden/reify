@@ -21,9 +21,9 @@
 //! - `2.0 ^ 3.0`: 8.0 (exact)
 //! - `2 ^ 3`: 8 (exact integer)
 
-use reify_test_support::eval_source;
 use reify_core::{DimensionVector, ValueCellId};
 use reify_ir::Value;
+use reify_test_support::eval_source;
 
 const EPSILON: f64 = 1e-9;
 
@@ -47,7 +47,10 @@ fn pow_5mm_2_evaluates_to_area() {
         .get(&id)
         .unwrap_or_else(|| panic!("'p' not found in eval result"));
     match val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert!(
                 (*si_value - 2.5e-5).abs() < EPSILON,
                 "expected si_value 2.5e-5 (0.005^2), got {}",
@@ -80,11 +83,7 @@ fn pow_real_real_evaluates_to_8() {
         .unwrap_or_else(|| panic!("'p' not found in eval result"));
     match val {
         Value::Real(v) => {
-            assert!(
-                (*v - 8.0).abs() < EPSILON,
-                "expected 8.0, got {}",
-                v
-            );
+            assert!((*v - 8.0).abs() < EPSILON, "expected 8.0, got {}", v);
         }
         other => panic!("expected Value::Real(8.0), got {:?}", other),
     }
@@ -236,7 +235,10 @@ fn pow_5mm_neg2_evaluates_to_inv_length_sq() {
         .get(&id)
         .unwrap_or_else(|| panic!("'p' not found in eval result"));
     match val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert!(
                 (*si_value - 40000.0).abs() < EPSILON,
                 "expected si_value 40000.0 (1/0.005^2), got {}",

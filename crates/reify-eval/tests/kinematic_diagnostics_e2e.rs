@@ -20,9 +20,9 @@ use reify_constraints::{
     JointValue, LoopClosureReport, NewtonConfig, NewtonOutcome, StartStrategy,
     solve_loop_closure_with_diagnostics,
 };
-use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_with_stdlib};
 use reify_core::{DiagnosticCode, Severity, ValueCellId};
 use reify_ir::{Value, ValueMap};
+use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_with_stdlib};
 
 /// Six free prismatic-x joints (chain_b) plus a single prismatic-x
 /// reference (chain_a) — all on the same +X axis with range 0..1000mm.

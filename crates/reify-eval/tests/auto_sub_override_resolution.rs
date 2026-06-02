@@ -310,9 +310,10 @@ fn sub_override_auto_free_non_unique_emits_warning() {
     // only if a future change breaks the solver wiring.
     let snap = engine.snapshot().expect("snapshot should exist");
     let id = ValueCellId::new("A.b", "bore");
-    let (val, det) = snap.values.get(&id).expect(
-        "A.b.bore should be present after auto(free) resolution with DimensionalSolver",
-    );
+    let (val, det) = snap
+        .values
+        .get(&id)
+        .expect("A.b.bore should be present after auto(free) resolution with DimensionalSolver");
     assert_eq!(
         *det,
         DeterminacyState::Determined,

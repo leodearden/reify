@@ -17,9 +17,9 @@
 //! This task is the v0.1 consumer at the graph level.
 
 use reify_compiler::AutoTypeSubstitution;
+use reify_core::Type;
 use reify_eval::graph::EvaluationGraph;
 use reify_test_support::TopologyTemplateBuilder;
-use reify_core::Type;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -300,8 +300,8 @@ fn multi_param_resolution_outcome_substitution_drives_topology_fingerprint() {
 
     use reify_compiler::auto_type_param::{AutoTypeParam, resolve_auto_type_params};
     use reify_compiler::{CompiledTrait, TopologyTemplate};
-    use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
     use reify_core::SourceSpan;
+    use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
 
     const EXAMPLE_PATH: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),

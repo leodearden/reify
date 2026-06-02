@@ -145,7 +145,10 @@ fn type_alias_three_deep_resolves() {
     // Jerk = Length / Time³  →  DimensionVector: L¹·T⁻³
     let expected_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME.pow(3));
     match j_val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(
                 dimension, &expected_dim,
                 "JerkDemo.j dimension should be Length/Time^3 (Jerk), got: {:?}",

@@ -32,7 +32,9 @@
 use std::collections::HashSet;
 
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, hash::ContentHash};
-use reify_ir::{FeatureTag, FeatureTagTable, GeometryHandleId, GeometryKernel, GeometryQuery, QueryError, Value};
+use reify_ir::{
+    FeatureTag, FeatureTagTable, GeometryHandleId, GeometryKernel, GeometryQuery, QueryError, Value,
+};
 
 // ── Sub-handle lowering primitives (task 3616, KGQ-η) ──────────────────────
 
@@ -1004,7 +1006,9 @@ pub(crate) fn parse_bbox_axis_extents_json(s: &str, axis: u8) -> Option<(f64, f6
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_ir::{ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryOp, Mesh, TessError};
+    use reify_ir::{
+        ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryOp, Mesh, TessError,
+    };
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -2054,7 +2058,9 @@ mod tests {
         let parent_hash: [u8; 32] = [0xAA; 32];
         let sub = make_sub_handle(&rr, &parent_hash, SubKind::Edge, 0, GeometryHandleId(5));
         match sub {
-            Value::GeometryHandle { realization_ref, .. } => {
+            Value::GeometryHandle {
+                realization_ref, ..
+            } => {
                 assert_eq!(realization_ref.entity, "BoxEdges");
                 assert_eq!(realization_ref.index, 0);
             }
@@ -2071,7 +2077,10 @@ mod tests {
         let expected_hash = compose_sub_handle_hash(&parent_hash, SubKind::Edge, 3);
         let sub = make_sub_handle(&rr, &parent_hash, SubKind::Edge, 3, GeometryHandleId(7));
         match sub {
-            Value::GeometryHandle { upstream_values_hash, .. } => {
+            Value::GeometryHandle {
+                upstream_values_hash,
+                ..
+            } => {
                 assert_eq!(upstream_values_hash, expected_hash);
             }
             other => panic!("expected Value::GeometryHandle, got {:?}", other),
@@ -2100,6 +2109,9 @@ mod tests {
         let parent_hash: [u8; 32] = [0xDD; 32];
         let a = make_sub_handle(&rr, &parent_hash, SubKind::Edge, 2, GeometryHandleId(100));
         let b = make_sub_handle(&rr, &parent_hash, SubKind::Edge, 2, GeometryHandleId(999));
-        assert_eq!(a, b, "same (parent, kind, index) must be EQUAL regardless of kernel_handle");
+        assert_eq!(
+            a, b,
+            "same (parent, kind, index) must be EQUAL regardless of kernel_handle"
+        );
     }
 }

@@ -54,9 +54,8 @@ const FIXTURE_PATH: &str = concat!(
 fn filtered_edges_compile_and_return_geometry_handles() {
     // ── assertion 1: fixture exists and compiles cleanly (unconditional) ──────
 
-    let source = std::fs::read_to_string(FIXTURE_PATH).expect(
-        "examples/kernel_queries/filtered_edges.ri should exist (task 3617)",
-    );
+    let source = std::fs::read_to_string(FIXTURE_PATH)
+        .expect("examples/kernel_queries/filtered_edges.ri should exist (task 3617)");
     let compiled = parse_and_compile_with_stdlib(&source);
     assert!(
         errors_only(&compiled).is_empty(),
@@ -98,10 +97,12 @@ fn filtered_edges_compile_and_return_geometry_handles() {
     let mut mid_hashes: Vec<[u8; 32]> = Vec::new();
     for (i, elem) in mid_list.iter().enumerate() {
         match elem {
-            Value::GeometryHandle { upstream_values_hash, .. } => {
+            Value::GeometryHandle {
+                upstream_values_hash,
+                ..
+            } => {
                 assert_ne!(
-                    upstream_values_hash,
-                    &[0u8; 32],
+                    upstream_values_hash, &[0u8; 32],
                     "mid_edges[{i}] upstream_values_hash must be non-zero (PRD §4 i)"
                 );
                 mid_hashes.push(*upstream_values_hash);
@@ -142,10 +143,12 @@ fn filtered_edges_compile_and_return_geometry_handles() {
     let mut sf_hashes: Vec<[u8; 32]> = Vec::new();
     for (i, elem) in sf_list.iter().enumerate() {
         match elem {
-            Value::GeometryHandle { upstream_values_hash, .. } => {
+            Value::GeometryHandle {
+                upstream_values_hash,
+                ..
+            } => {
                 assert_ne!(
-                    upstream_values_hash,
-                    &[0u8; 32],
+                    upstream_values_hash, &[0u8; 32],
                     "small_faces[{i}] upstream_values_hash must be non-zero (PRD §4 i)"
                 );
                 sf_hashes.push(*upstream_values_hash);
@@ -182,10 +185,12 @@ fn filtered_edges_compile_and_return_geometry_handles() {
     let mut te_hashes: Vec<[u8; 32]> = Vec::new();
     for (i, elem) in te_list.iter().enumerate() {
         match elem {
-            Value::GeometryHandle { upstream_values_hash, .. } => {
+            Value::GeometryHandle {
+                upstream_values_hash,
+                ..
+            } => {
                 assert_ne!(
-                    upstream_values_hash,
-                    &[0u8; 32],
+                    upstream_values_hash, &[0u8; 32],
                     "top_edges[{i}] upstream_values_hash must be non-zero (PRD §4 i)"
                 );
                 te_hashes.push(*upstream_values_hash);

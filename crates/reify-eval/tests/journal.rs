@@ -1,12 +1,12 @@
 //! Integration tests for the EventJournal instrumentation in Engine.
 
+use reify_core::{ValueCellId, VersionId};
 use reify_eval::Engine;
 use reify_eval::cache::NodeId;
 use reify_eval::journal::EventKind;
+use reify_ir::Value;
 use reify_test_support::bracket_compiled_module;
 use reify_test_support::mocks::MockConstraintChecker;
-use reify_core::{ValueCellId, VersionId};
-use reify_ir::Value;
 
 /// After eval(), the journal should contain events for all evaluated nodes.
 #[test]

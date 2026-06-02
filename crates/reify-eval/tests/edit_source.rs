@@ -1814,12 +1814,12 @@ structure def Widget {
 /// Task 2087 — coverage gap 5.
 #[test]
 fn edit_source_refreshes_objectives_against_cold_eval() {
+    use reify_core::{ModulePath, Type};
+    use reify_ir::{ObjectiveSense, ObjectiveSet, SolveResult};
     use reify_test_support::{
         CompiledModuleBuilder, MockConstraintChecker, MockConstraintSolver,
         MultiCallSpyConstraintSolver, TopologyTemplateBuilder, gt, literal, lt, mm, value_ref,
     };
-    use reify_core::{ModulePath, Type};
-    use reify_ir::{ObjectiveSet, ObjectiveSense, SolveResult};
     use std::collections::HashMap;
 
     let thickness_id = ValueCellId::new("S", "thickness");
@@ -1841,7 +1841,10 @@ fn edit_source_refreshes_objectives_against_cold_eval() {
             None,
             lt(value_ref("S", "thickness"), literal(mm(20.0))),
         )
-        .objective(ObjectiveSet::single(ObjectiveSense::Minimize, value_ref("S", "thickness")))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            value_ref("S", "thickness"),
+        ))
         .build();
 
     let module_a = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -1871,7 +1874,10 @@ fn edit_source_refreshes_objectives_against_cold_eval() {
             None,
             gt(value_ref("S", "thickness"), literal(mm(3.0))),
         )
-        .objective(ObjectiveSet::single(ObjectiveSense::Maximize, value_ref("S", "thickness")))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Maximize,
+            value_ref("S", "thickness"),
+        ))
         .build();
 
     let module_b = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -1921,7 +1927,12 @@ fn edit_source_refreshes_objectives_against_cold_eval() {
 
     // Call 0 (eval(A)): objective must be Minimize.
     assert!(
-        problems[0].objective.as_ref().and_then(|o| o.terms.first()).map(|t| t.sense) == Some(ObjectiveSense::Minimize),
+        problems[0]
+            .objective
+            .as_ref()
+            .and_then(|o| o.terms.first())
+            .map(|t| t.sense)
+            == Some(ObjectiveSense::Minimize),
         "eval(A) should forward Minimize objective, got: {:?}",
         problems[0].objective
     );
@@ -1929,7 +1940,12 @@ fn edit_source_refreshes_objectives_against_cold_eval() {
     // Call 1 (edit_source(B)): objective must be Maximize — proving Step-11 refreshed
     // self.objectives before the solver phase ran.
     assert!(
-        problems[1].objective.as_ref().and_then(|o| o.terms.first()).map(|t| t.sense) == Some(ObjectiveSense::Maximize),
+        problems[1]
+            .objective
+            .as_ref()
+            .and_then(|o| o.terms.first())
+            .map(|t| t.sense)
+            == Some(ObjectiveSense::Maximize),
         "edit_source(B) should forward the refreshed Maximize objective; \
          got {:?} — likely self.objectives was not refreshed in edit_source \
          (stale Minimize carried from eval(A))",
@@ -2928,12 +2944,12 @@ fn edit_source_wave2_does_not_corrupt_inactive_members() {
 #[test]
 fn edit_source_wave2_guard_flip_activates_else_members() {
     use reify_compiler::{ValueCellDecl, ValueCellKind, Visibility};
+    use reify_core::{ModulePath, SourceSpan, Type};
+    use reify_ir::SolveResult;
     use reify_test_support::{
         CompiledModuleBuilder, MockConstraintChecker, SequencedMockConstraintSolver,
         TopologyTemplateBuilder, and, ge, gt, literal, mm, value_ref,
     };
-    use reify_core::{ModulePath, SourceSpan, Type};
-    use reify_ir::SolveResult;
     use std::collections::HashMap;
 
     let depth_id = ValueCellId::new("S", "depth");
@@ -3205,12 +3221,12 @@ fn edit_source_wave2_guard_flip_activates_else_members() {
 #[allow(clippy::doc_overindented_list_items)]
 fn edit_source_role_flip_wave2_and_phase3_dedup() {
     use reify_compiler::{ValueCellDecl, ValueCellKind, Visibility};
+    use reify_core::{ModulePath, SourceSpan, Type};
+    use reify_ir::SolveResult;
     use reify_test_support::{
         CompiledModuleBuilder, MockConstraintChecker, SequencedMockConstraintSolver,
         TopologyTemplateBuilder, eq, gt, literal, mm, value_ref, value_ref_typed,
     };
-    use reify_core::{ModulePath, SourceSpan, Type};
-    use reify_ir::SolveResult;
     use std::collections::HashMap;
 
     let depth_id = ValueCellId::new("S", "depth");
@@ -3702,8 +3718,8 @@ fn edit_source_role_flip_probe_memoised_across_multiple_groups() {
 #[cfg(debug_assertions)]
 #[allow(clippy::single_element_loop)]
 fn edit_source_panics_on_unrepresentable_cell_type() {
-    use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
     use reify_core::{ModulePath, Type};
+    use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
     use std::panic;
 
     for ty in [Type::TypeParam("T".into())] {

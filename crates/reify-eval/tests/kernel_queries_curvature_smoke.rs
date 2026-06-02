@@ -66,9 +66,8 @@ const CURVATURE_SMOKE_PATH: &str = concat!(
 fn curvature_smoke_compiles_and_occt_query_chain_live() {
     // ── assertion 1: fixture exists and compiles with no ERROR diagnostics ────
 
-    let source = std::fs::read_to_string(CURVATURE_SMOKE_PATH).expect(
-        "examples/kernel_queries/curvature_smoke.ri should exist (task 3621 step-7)",
-    );
+    let source = std::fs::read_to_string(CURVATURE_SMOKE_PATH)
+        .expect("examples/kernel_queries/curvature_smoke.ri should exist (task 3621 step-7)");
 
     let compiled = parse_and_compile_with_stdlib(&source);
     assert!(
@@ -101,10 +100,7 @@ fn curvature_smoke_compiles_and_occt_query_chain_live() {
     let faces = kernel
         .extract_faces(sphere_handle.id)
         .expect("extract_faces should succeed on sphere");
-    assert!(
-        !faces.is_empty(),
-        "sphere should have at least one face"
-    );
+    assert!(!faces.is_empty(), "sphere should have at least one face");
 
     // Parametric point (u=π, v=0): safe interior point away from poles,
     // consistent with curve_curvature_integration.rs.
@@ -168,11 +164,7 @@ fn curvature_smoke_compiles_and_occt_query_chain_live() {
     let edges = kernel
         .extract_edges(arc_handle.id)
         .expect("extract_edges should succeed on circle arc");
-    assert_eq!(
-        edges.len(),
-        1,
-        "full-circle arc should have exactly 1 edge"
-    );
+    assert_eq!(edges.len(), 1, "full-circle arc should have exactly 1 edge");
 
     // Probe point: (r, 0, 0) — on the circle in the XY plane.
     let curve_reply = kernel
@@ -186,9 +178,9 @@ fn curvature_smoke_compiles_and_occt_query_chain_live() {
 
     let kappa = match curve_reply {
         Value::Real(v) => v,
-        other => panic!(
-            "CurveCurvatureAt on circle edge should return Value::Real(κ), got: {other:?}"
-        ),
+        other => {
+            panic!("CurveCurvatureAt on circle edge should return Value::Real(κ), got: {other:?}")
+        }
     };
     let expected_curve = 1.0 / r_curve; // 100 m⁻¹
     let rel_err_curve = (kappa.abs() - expected_curve).abs() / expected_curve;

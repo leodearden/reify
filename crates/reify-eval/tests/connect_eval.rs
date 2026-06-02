@@ -2,9 +2,9 @@
 //!
 //! Tests the complete pipeline: parse → compile → Engine.check() → verify constraint results.
 
-use reify_test_support::mocks::{FailingMockGeometryKernel, MockConstraintChecker};
 use reify_core::{ModulePath, Severity};
 use reify_ir::{Satisfaction, Value};
+use reify_test_support::mocks::{FailingMockGeometryKernel, MockConstraintChecker};
 
 /// Parse and compile source with two ports and a connect statement.
 /// Run engine.check() and assert the connection's compatibility constraint

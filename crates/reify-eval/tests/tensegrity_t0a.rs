@@ -9,10 +9,10 @@
 
 #![allow(clippy::mutable_key_type)]
 
-use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 use reify_core::{DimensionVector, ValueCellId};
 use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_stdlib::eval_builtin;
+use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 /// Index `StructureInstance.fields` with a string literal.
 fn field<'a>(m: &'a PersistentMap<String, Value>, k: &str) -> Option<&'a Value> {
@@ -46,17 +46,25 @@ structure def F {
 
     match v {
         Value::StructureInstance(data) => {
-            assert_eq!(data.type_name, "Strut", "type_name should be Strut, got {:?}", data.type_name);
+            assert_eq!(
+                data.type_name, "Strut",
+                "type_name should be Strut, got {:?}",
+                data.type_name
+            );
 
             // section_area: Area-dimensioned scalar, non-Undef
-            let sa = field(&data.fields, "section_area")
-                .unwrap_or_else(|| panic!("Strut missing section_area field; fields: {:?}",
-                    data.fields.iter().map(|(k, _)| k).collect::<Vec<_>>()));
+            let sa = field(&data.fields, "section_area").unwrap_or_else(|| {
+                panic!(
+                    "Strut missing section_area field; fields: {:?}",
+                    data.fields.iter().map(|(k, _)| k).collect::<Vec<_>>()
+                )
+            });
             match sa {
                 Value::Scalar { dimension, .. } => assert_eq!(
                     *dimension,
                     DimensionVector::AREA,
-                    "Strut.section_area should have AREA dimension, got {:?}", dimension
+                    "Strut.section_area should have AREA dimension, got {:?}",
+                    dimension
                 ),
                 other => panic!("Strut.section_area should be Scalar, got {:?}", other),
             }
@@ -67,9 +75,13 @@ structure def F {
             match mat {
                 Value::StructureInstance(mdata) => assert_eq!(
                     mdata.type_name, "Steel_AISI_1045",
-                    "Strut.material should be Steel_AISI_1045, got {:?}", mdata.type_name
+                    "Strut.material should be Steel_AISI_1045, got {:?}",
+                    mdata.type_name
                 ),
-                other => panic!("Strut.material should be StructureInstance, got {:?}", other),
+                other => panic!(
+                    "Strut.material should be StructureInstance, got {:?}",
+                    other
+                ),
             }
         }
         other => panic!("expected Value::StructureInstance for F.s, got {:?}", other),
@@ -101,22 +113,34 @@ structure def F {
 
     match v {
         Value::StructureInstance(data) => {
-            assert_eq!(data.type_name, "Cable", "type_name should be Cable, got {:?}", data.type_name);
+            assert_eq!(
+                data.type_name, "Cable",
+                "type_name should be Cable, got {:?}",
+                data.type_name
+            );
 
             // pretension defaults to 0N (Force dimension, si_value ≈ 0.0)
-            let pt = field(&data.fields, "pretension")
-                .unwrap_or_else(|| panic!("Cable missing pretension field; fields: {:?}",
-                    data.fields.iter().map(|(k, _)| k).collect::<Vec<_>>()));
+            let pt = field(&data.fields, "pretension").unwrap_or_else(|| {
+                panic!(
+                    "Cable missing pretension field; fields: {:?}",
+                    data.fields.iter().map(|(k, _)| k).collect::<Vec<_>>()
+                )
+            });
             match pt {
-                Value::Scalar { si_value, dimension } => {
+                Value::Scalar {
+                    si_value,
+                    dimension,
+                } => {
                     assert_eq!(
                         *dimension,
                         DimensionVector::FORCE,
-                        "Cable.pretension should have FORCE dimension, got {:?}", dimension
+                        "Cable.pretension should have FORCE dimension, got {:?}",
+                        dimension
                     );
                     assert!(
                         si_value.abs() < 1e-9,
-                        "Cable.pretension default should be 0N (si_value ≈ 0), got {}", si_value
+                        "Cable.pretension default should be 0N (si_value ≈ 0), got {}",
+                        si_value
                     );
                 }
                 other => panic!("Cable.pretension should be Scalar(Force), got {:?}", other),
@@ -165,11 +189,18 @@ structure def TNet {
                 .unwrap_or_else(|| panic!("Tensegrity missing nodes field"));
             match nodes {
                 Value::List(items) => {
-                    assert_eq!(items.len(), 4, "Tensegrity.nodes should have 4 points, got {}", items.len());
+                    assert_eq!(
+                        items.len(),
+                        4,
+                        "Tensegrity.nodes should have 4 points, got {}",
+                        items.len()
+                    );
                     for (i, item) in items.iter().enumerate() {
                         assert!(
                             matches!(item, Value::Point(_)),
-                            "nodes[{}] should be Value::Point, got {:?}", i, item
+                            "nodes[{}] should be Value::Point, got {:?}",
+                            i,
+                            item
                         );
                     }
                 }
@@ -181,7 +212,12 @@ structure def TNet {
                 .unwrap_or_else(|| panic!("Tensegrity missing struts field"));
             match struts {
                 Value::List(pairs) => {
-                    assert_eq!(pairs.len(), 1, "struts should have 1 pair, got {}", pairs.len());
+                    assert_eq!(
+                        pairs.len(),
+                        1,
+                        "struts should have 1 pair, got {}",
+                        pairs.len()
+                    );
                     match &pairs[0] {
                         Value::List(indices) => {
                             assert_eq!(indices.len(), 2, "strut pair should have 2 indices");
@@ -199,7 +235,12 @@ structure def TNet {
                 .unwrap_or_else(|| panic!("Tensegrity missing cables field"));
             match cables {
                 Value::List(pairs) => {
-                    assert_eq!(pairs.len(), 1, "cables should have 1 pair, got {}", pairs.len());
+                    assert_eq!(
+                        pairs.len(),
+                        1,
+                        "cables should have 1 pair, got {}",
+                        pairs.len()
+                    );
                     match &pairs[0] {
                         Value::List(indices) => {
                             assert_eq!(indices.len(), 2, "cable pair should have 2 indices");
@@ -212,7 +253,10 @@ structure def TNet {
                 other => panic!("Tensegrity.cables should be Value::List, got {:?}", other),
             }
         }
-        other => panic!("expected Value::StructureInstance for TNet.t, got {:?}", other),
+        other => panic!(
+            "expected Value::StructureInstance for TNet.t, got {:?}",
+            other
+        ),
     }
 }
 
@@ -222,7 +266,10 @@ structure def TNet {
 // the compile pipeline) so these tests are purely unit-level.
 
 fn make_length(meters: f64) -> Value {
-    Value::Scalar { si_value: meters, dimension: DimensionVector::LENGTH }
+    Value::Scalar {
+        si_value: meters,
+        dimension: DimensionVector::LENGTH,
+    }
 }
 
 fn make_node(x: f64, y: f64, z: f64) -> Value {
@@ -238,12 +285,8 @@ fn make_valid_tensegrity() -> Value {
         make_node(0.5, 0.866, 0.0),
         make_node(0.5, 0.289, 0.816),
     ]);
-    let struts = Value::List(vec![
-        Value::List(vec![Value::Int(0), Value::Int(3)]),
-    ]);
-    let cables = Value::List(vec![
-        Value::List(vec![Value::Int(0), Value::Int(1)]),
-    ]);
+    let struts = Value::List(vec![Value::List(vec![Value::Int(0), Value::Int(3)])]);
+    let cables = Value::List(vec![Value::List(vec![Value::Int(0), Value::Int(1)])]);
     let fields: PersistentMap<String, Value> = [
         ("nodes".to_string(), nodes),
         ("struts".to_string(), struts),
@@ -265,7 +308,11 @@ fn make_valid_tensegrity() -> Value {
 #[test]
 fn tensegrity_wires_undef_on_zero_args() {
     let result = eval_builtin("tensegrity_wires", &[]);
-    assert!(result.is_undef(), "zero args should return Undef, got {:?}", result);
+    assert!(
+        result.is_undef(),
+        "zero args should return Undef, got {:?}",
+        result
+    );
 
     // Positive control: the function IS recognized and a valid Tensegrity
     // returns a non-Undef list. Fails RED until step-6 registers the builtin.
@@ -282,7 +329,11 @@ fn tensegrity_wires_undef_on_zero_args() {
 #[test]
 fn tensegrity_wires_undef_on_two_args() {
     let result = eval_builtin("tensegrity_wires", &[Value::Real(1.0), Value::Real(2.0)]);
-    assert!(result.is_undef(), "two args should return Undef, got {:?}", result);
+    assert!(
+        result.is_undef(),
+        "two args should return Undef, got {:?}",
+        result
+    );
 
     let valid = make_valid_tensegrity();
     let positive = eval_builtin("tensegrity_wires", &[valid]);
@@ -297,7 +348,11 @@ fn tensegrity_wires_undef_on_two_args() {
 #[test]
 fn tensegrity_wires_undef_on_real_arg() {
     let result = eval_builtin("tensegrity_wires", &[Value::Real(1.0)]);
-    assert!(result.is_undef(), "Real arg should return Undef, got {:?}", result);
+    assert!(
+        result.is_undef(),
+        "Real arg should return Undef, got {:?}",
+        result
+    );
 
     let valid = make_valid_tensegrity();
     let positive = eval_builtin("tensegrity_wires", &[valid]);
@@ -319,7 +374,11 @@ fn tensegrity_wires_undef_on_wrong_type_name() {
         fields,
     }));
     let result = eval_builtin("tensegrity_wires", &[wrong]);
-    assert!(result.is_undef(), "wrong type_name should return Undef, got {:?}", result);
+    assert!(
+        result.is_undef(),
+        "wrong type_name should return Undef, got {:?}",
+        result
+    );
 
     let valid = make_valid_tensegrity();
     let positive = eval_builtin("tensegrity_wires", &[valid]);
@@ -346,13 +405,13 @@ fn tensegrity_wires_emits_six_tagged_wires() {
     // Canonical twist: top triangle rotated 60° relative to bottom.
     let nodes = vec![
         // bottom triangle
-        make_node(1.0,   0.0,   0.0),  // node 0
-        make_node(-0.5,  0.866, 0.0),  // node 1
-        make_node(-0.5, -0.866, 0.0),  // node 2
+        make_node(1.0, 0.0, 0.0),     // node 0
+        make_node(-0.5, 0.866, 0.0),  // node 1
+        make_node(-0.5, -0.866, 0.0), // node 2
         // top triangle (60° rotated, z=1m)
-        make_node(0.0,   1.0,   1.0),  // node 3
-        make_node(-0.866, -0.5, 1.0),  // node 4
-        make_node(0.866, -0.5, 1.0),   // node 5
+        make_node(0.0, 1.0, 1.0),     // node 3
+        make_node(-0.866, -0.5, 1.0), // node 4
+        make_node(0.866, -0.5, 1.0),  // node 5
     ];
     // 3 struts: cross-members connecting bottom to top
     let strut_pairs = [(0usize, 3usize), (1, 4), (2, 5)];
@@ -372,7 +431,7 @@ fn tensegrity_wires_emits_six_tagged_wires() {
             .collect(),
     );
     let fields: PersistentMap<String, Value> = [
-        ("nodes".to_string(),  Value::List(nodes.clone())),
+        ("nodes".to_string(), Value::List(nodes.clone())),
         ("struts".to_string(), struts),
         ("cables".to_string(), cables),
     ]
@@ -391,7 +450,11 @@ fn tensegrity_wires_emits_six_tagged_wires() {
         Value::List(w) => w,
         other => panic!("expected Value::List of wires, got {:?}", other),
     };
-    assert_eq!(wires.len(), 6, "T-prism should have 6 wires (3 struts + 3 cables)");
+    assert_eq!(
+        wires.len(),
+        6,
+        "T-prism should have 6 wires (3 struts + 3 cables)"
+    );
 
     // First 3: struts
     for (i, (from, to)) in strut_pairs.iter().enumerate() {
@@ -403,33 +466,66 @@ fn tensegrity_wires_emits_six_tagged_wires() {
         assert_eq!(
             wire.fields.get(&"kind".to_string()),
             Some(&Value::String("strut".to_string())),
-            "wire[{}] kind should be 'strut'", i
+            "wire[{}] kind should be 'strut'",
+            i
         );
         assert_eq!(
             wire.fields.get(&"from_index".to_string()),
             Some(&Value::Int(*from as i64)),
-            "wire[{}] from_index", i
+            "wire[{}] from_index",
+            i
         );
         assert_eq!(
             wire.fields.get(&"to_index".to_string()),
             Some(&Value::Int(*to as i64)),
-            "wire[{}] to_index", i
+            "wire[{}] to_index",
+            i
         );
         // Verify x1/y1/z1 match nodes[from] components
         let expected_from = match &nodes[*from] {
             Value::Point(comps) => comps.clone(),
             other => panic!("nodes[{}] should be Point, got {:?}", from, other),
         };
-        assert_eq!(wire.fields.get(&"x1".to_string()), Some(&expected_from[0]), "wire[{}] x1", i);
-        assert_eq!(wire.fields.get(&"y1".to_string()), Some(&expected_from[1]), "wire[{}] y1", i);
-        assert_eq!(wire.fields.get(&"z1".to_string()), Some(&expected_from[2]), "wire[{}] z1", i);
+        assert_eq!(
+            wire.fields.get(&"x1".to_string()),
+            Some(&expected_from[0]),
+            "wire[{}] x1",
+            i
+        );
+        assert_eq!(
+            wire.fields.get(&"y1".to_string()),
+            Some(&expected_from[1]),
+            "wire[{}] y1",
+            i
+        );
+        assert_eq!(
+            wire.fields.get(&"z1".to_string()),
+            Some(&expected_from[2]),
+            "wire[{}] z1",
+            i
+        );
         let expected_to = match &nodes[*to] {
             Value::Point(comps) => comps.clone(),
             other => panic!("nodes[{}] should be Point, got {:?}", to, other),
         };
-        assert_eq!(wire.fields.get(&"x2".to_string()), Some(&expected_to[0]), "wire[{}] x2", i);
-        assert_eq!(wire.fields.get(&"y2".to_string()), Some(&expected_to[1]), "wire[{}] y2", i);
-        assert_eq!(wire.fields.get(&"z2".to_string()), Some(&expected_to[2]), "wire[{}] z2", i);
+        assert_eq!(
+            wire.fields.get(&"x2".to_string()),
+            Some(&expected_to[0]),
+            "wire[{}] x2",
+            i
+        );
+        assert_eq!(
+            wire.fields.get(&"y2".to_string()),
+            Some(&expected_to[1]),
+            "wire[{}] y2",
+            i
+        );
+        assert_eq!(
+            wire.fields.get(&"z2".to_string()),
+            Some(&expected_to[2]),
+            "wire[{}] z2",
+            i
+        );
     }
 
     // Last 3: cables
@@ -443,17 +539,20 @@ fn tensegrity_wires_emits_six_tagged_wires() {
         assert_eq!(
             wire.fields.get(&"kind".to_string()),
             Some(&Value::String("cable".to_string())),
-            "wire[{}] kind should be 'cable'", idx
+            "wire[{}] kind should be 'cable'",
+            idx
         );
         assert_eq!(
             wire.fields.get(&"from_index".to_string()),
             Some(&Value::Int(*from as i64)),
-            "wire[{}] from_index", idx
+            "wire[{}] from_index",
+            idx
         );
         assert_eq!(
             wire.fields.get(&"to_index".to_string()),
             Some(&Value::Int(*to as i64)),
-            "wire[{}] to_index", idx
+            "wire[{}] to_index",
+            idx
         );
     }
 }
@@ -469,7 +568,7 @@ fn tensegrity_wires_preserves_declaration_order_struts_then_cables() {
     let struts = Value::List(vec![Value::List(vec![Value::Int(0), Value::Int(1)])]);
     let cables = Value::List(vec![Value::List(vec![Value::Int(1), Value::Int(2)])]);
     let fields: PersistentMap<String, Value> = [
-        ("nodes".to_string(),  nodes),
+        ("nodes".to_string(), nodes),
         ("struts".to_string(), struts),
         ("cables".to_string(), cables),
     ]
@@ -494,14 +593,20 @@ fn tensegrity_wires_preserves_declaration_order_struts_then_cables() {
         Value::StructureInstance(d) => d,
         other => panic!("wires[0] should be StructureInstance, got {:?}", other),
     };
-    assert_eq!(w0.fields.get(&"kind".to_string()), Some(&Value::String("strut".to_string())));
+    assert_eq!(
+        w0.fields.get(&"kind".to_string()),
+        Some(&Value::String("strut".to_string()))
+    );
 
     // Second wire must be the cable
     let w1 = match &wires[1] {
         Value::StructureInstance(d) => d,
         other => panic!("wires[1] should be StructureInstance, got {:?}", other),
     };
-    assert_eq!(w1.fields.get(&"kind".to_string()), Some(&Value::String("cable".to_string())));
+    assert_eq!(
+        w1.fields.get(&"kind".to_string()),
+        Some(&Value::String("cable".to_string()))
+    );
 }
 
 // ── step-9: CLI golden test ───────────────────────────────────────────────────
@@ -526,7 +631,16 @@ fn cli_reify_eval_prints_t_prism_wireframe() {
 
     let output = std::process::Command::new(env!("CARGO"))
         .current_dir(&workspace_root)
-        .args(["run", "-q", "-p", "reify-cli", "--bin", "reify", "--", "eval"])
+        .args([
+            "run",
+            "-q",
+            "-p",
+            "reify-cli",
+            "--bin",
+            "reify",
+            "--",
+            "eval",
+        ])
         .arg(&example)
         .output()
         .expect("failed to spawn `cargo run -p reify-cli -- eval`");
@@ -573,10 +687,7 @@ fn cli_reify_eval_prints_t_prism_wireframe() {
 #[test]
 fn tensegrity_wires_undef_on_out_of_range_index() {
     // 2 nodes but struts references node index 5 (out of range).
-    let nodes = Value::List(vec![
-        make_node(0.0, 0.0, 0.0),
-        make_node(1.0, 0.0, 0.0),
-    ]);
+    let nodes = Value::List(vec![make_node(0.0, 0.0, 0.0), make_node(1.0, 0.0, 0.0)]);
     let struts = Value::List(vec![
         Value::List(vec![Value::Int(0), Value::Int(5)]), // index 5 >= nodes.len()=2
     ]);

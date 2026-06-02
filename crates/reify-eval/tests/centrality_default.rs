@@ -84,9 +84,8 @@ fn centrality_resolves_to_midpoint_and_records_scope() {
 
     let x_id = ValueCellId::new("CentredBar", "x");
 
-    let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None)
-            .with_solver(Box::new(DimensionalSolver));
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(DimensionalSolver));
 
     let result = engine.eval(&compiled);
 

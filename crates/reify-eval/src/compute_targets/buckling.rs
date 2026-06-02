@@ -83,12 +83,9 @@ use std::collections::BTreeMap;
 use reify_core::{Diagnostic, DiagnosticCode, DimensionVector};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_solver_elastic::{
-    DirichletBc, ElementOrder, IsotropicElastic,
-    apply_point_load,
-    BucklingKernelOptions, solve_buckling_kernel, solve_buckling_kernel_p2,
-    recover_nodal_stress_p1, StressElement, tet_volume_p1,
-    GridSpec, resample_multi_nodal_to_grid,
-    assembly::test_support::promote_tets_to_p2,
+    BucklingKernelOptions, DirichletBc, ElementOrder, GridSpec, IsotropicElastic, StressElement,
+    apply_point_load, assembly::test_support::promote_tets_to_p2, recover_nodal_stress_p1,
+    resample_multi_nodal_to_grid, solve_buckling_kernel, solve_buckling_kernel_p2, tet_volume_p1,
 };
 
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
@@ -129,14 +126,15 @@ pub fn solve_buckling_trampoline(
 
     // ── (2) Extract geometry scalars (SI: metres) ─────────────────────────────
     let length = extract_scalar_si(&value_inputs[1]);
-    let width  = extract_scalar_si(&value_inputs[2]);
+    let width = extract_scalar_si(&value_inputs[2]);
     let height = extract_scalar_si(&value_inputs[3]);
 
     // ── (3) Extract total compressive load magnitude from loads list ──────────
     let total_load = extract_total_load(&value_inputs[4]);
 
     // ── (4) Extract BucklingOptions ───────────────────────────────────────────
-    let (n_modes, eigen_tol, eigen_max_iters, element_order) = extract_buckling_options(&value_inputs[6]);
+    let (n_modes, eigen_tol, eigen_max_iters, element_order) =
+        extract_buckling_options(&value_inputs[6]);
 
     // ── (4b) supports input — intentionally unused in task-ε slice ────────────
     //
@@ -184,9 +182,7 @@ pub fn solve_buckling_trampoline(
     let n_nodes_p1 = nx1 * ny1 * nz1;
 
     // Node linearisation: (k, j, i) — matches euler_column_pin_pin.rs
-    let node_id = |i: usize, j: usize, k: usize| -> usize {
-        k * nx1 * ny1 + j * nx1 + i
-    };
+    let node_id = |i: usize, j: usize, k: usize| -> usize { k * nx1 * ny1 + j * nx1 + i };
     let node_xyz = |i: usize, j: usize, k: usize| -> [f64; 3] {
         [
             i as f64 * lx / nx as f64,
@@ -219,17 +215,22 @@ pub fn solve_buckling_trampoline(
         for j in 0..ny {
             for i in 0..nx {
                 let corner = [
-                    node_id(i,     j,     k    ),
-                    node_id(i + 1, j,     k    ),
-                    node_id(i + 1, j + 1, k    ),
-                    node_id(i,     j + 1, k    ),
-                    node_id(i,     j,     k + 1),
-                    node_id(i + 1, j,     k + 1),
+                    node_id(i, j, k),
+                    node_id(i + 1, j, k),
+                    node_id(i + 1, j + 1, k),
+                    node_id(i, j + 1, k),
+                    node_id(i, j, k + 1),
+                    node_id(i + 1, j, k + 1),
                     node_id(i + 1, j + 1, k + 1),
-                    node_id(i,     j + 1, k + 1),
+                    node_id(i, j + 1, k + 1),
                 ];
                 for split in TET_SPLITS {
-                    tets.push([corner[split[0]], corner[split[1]], corner[split[2]], corner[split[3]]]);
+                    tets.push([
+                        corner[split[0]],
+                        corner[split[1]],
+                        corner[split[2]],
+                        corner[split[3]],
+                    ]);
                 }
             }
         }
@@ -255,7 +256,7 @@ pub fn solve_buckling_trampoline(
     //   mesh (DD-5): corners are the first n_p1 entries of nodes_p2.
     let kernel_result;
     let nodes_p2_storage: Vec<[f64; 3]>; // populated only in P2 branch; uninit in P1 path
-    let active_nodes: &[[f64; 3]];       // borrows nodes (P1) or nodes_p2_storage (P2)
+    let active_nodes: &[[f64; 3]]; // borrows nodes (P1) or nodes_p2_storage (P2)
 
     match element_order {
         ElementOrder::P1 => {
@@ -265,13 +266,22 @@ pub fn solve_buckling_trampoline(
                 for j in 0..=ny {
                     for i in 0..=nx {
                         let n = node_id(i, j, k_face);
-                        bcs.push(DirichletBc { dof: 3 * n,     value: 0.0 }); // u_x
-                        bcs.push(DirichletBc { dof: 3 * n + 1, value: 0.0 }); // u_y
+                        bcs.push(DirichletBc {
+                            dof: 3 * n,
+                            value: 0.0,
+                        }); // u_x
+                        bcs.push(DirichletBc {
+                            dof: 3 * n + 1,
+                            value: 0.0,
+                        }); // u_y
                     }
                 }
             }
             let anchor = node_id(0, 0, 0);
-            bcs.push(DirichletBc { dof: 3 * anchor + 2, value: 0.0 }); // u_z
+            bcs.push(DirichletBc {
+                dof: 3 * anchor + 2,
+                value: 0.0,
+            }); // u_z
 
             // ── P1: load — distribute across top-face nodes ───────────────────
             let n_top = (nx + 1) * (ny + 1);
@@ -300,8 +310,14 @@ pub fn solve_buckling_trampoline(
                 let z = xyz[2];
                 if (z).abs() < 1e-10 || (z - lz).abs() < 1e-10 {
                     // Node is on z=0 or z=lz face: lateral clamp (pin-pin).
-                    bcs.push(DirichletBc { dof: 3 * n,     value: 0.0 }); // u_x
-                    bcs.push(DirichletBc { dof: 3 * n + 1, value: 0.0 }); // u_y
+                    bcs.push(DirichletBc {
+                        dof: 3 * n,
+                        value: 0.0,
+                    }); // u_x
+                    bcs.push(DirichletBc {
+                        dof: 3 * n + 1,
+                        value: 0.0,
+                    }); // u_y
                 }
             }
             // Axial anchor at node 0 (= P1 corner (0,0,0), preserved in P2 mesh).
@@ -320,7 +336,8 @@ pub fn solve_buckling_trampoline(
                 }
             }
 
-            kernel_result = solve_buckling_kernel_p2(&nodes_p2_storage, &tets_p2, &mat, &bcs, &f, &[], opts);
+            kernel_result =
+                solve_buckling_kernel_p2(&nodes_p2_storage, &tets_p2, &mat, &bcs, &f, &[], opts);
             active_nodes = &nodes_p2_storage;
         }
     }
@@ -339,12 +356,12 @@ pub fn solve_buckling_trampoline(
             let sxy = sigma[0][1];
             let syz = sigma[1][2];
             let szx = sigma[0][2];
-            f64::sqrt(0.5 * (
-                (sxx - syy).powi(2)
-                + (syy - szz).powi(2)
-                + (szz - sxx).powi(2)
-                + 6.0 * (sxy * sxy + syz * syz + szx * szx)
-            ))
+            f64::sqrt(
+                0.5 * ((sxx - syy).powi(2)
+                    + (syy - szz).powi(2)
+                    + (szz - sxx).powi(2)
+                    + 6.0 * (sxy * sxy + syz * syz + szx * szx)),
+            )
         })
         .fold(0.0f64, f64::max);
 
@@ -402,33 +419,40 @@ pub fn solve_buckling_trampoline(
         &pre_stress_grid,
         1e-9,
     );
-    debug_assert_eq!(sampled.len(), 2, "expected 2 sampled fields (displacement + stress)");
-    let ps_stress_sf = sampled.pop().unwrap();  // index 1
-    let ps_disp_sf   = sampled.pop().unwrap();  // index 0
+    debug_assert_eq!(
+        sampled.len(),
+        2,
+        "expected 2 sampled fields (displacement + stress)"
+    );
+    let ps_stress_sf = sampled.pop().unwrap(); // index 1
+    let ps_disp_sf = sampled.pop().unwrap(); // index 0
 
-    let ps_disp_field   = super::sampled_disp_field(ps_disp_sf);
+    let ps_disp_field = super::sampled_disp_field(ps_disp_sf);
     let ps_stress_field = super::sampled_stress_field(ps_stress_sf);
 
     // ── (10) Build pre_stress ElasticResult StructureInstance ─────────────────
     let pre_stress_fields: PersistentMap<String, Value> = [
         ("displacement".to_string(), ps_disp_field),
-        ("stress".to_string(),       ps_stress_field),
-        ("frame".to_string(),        Value::Undef),
-        ("max_von_mises".to_string(), Value::Scalar {
-            si_value:  max_von_mises,
-            dimension: DimensionVector::PRESSURE,
-        }),
-        ("converged".to_string(),   Value::Bool(true)),
-        ("iterations".to_string(),  Value::Int(0)),
+        ("stress".to_string(), ps_stress_field),
+        ("frame".to_string(), Value::Undef),
+        (
+            "max_von_mises".to_string(),
+            Value::Scalar {
+                si_value: max_von_mises,
+                dimension: DimensionVector::PRESSURE,
+            },
+        ),
+        ("converged".to_string(), Value::Bool(true)),
+        ("iterations".to_string(), Value::Int(0)),
     ]
     .into_iter()
     .collect();
 
     let pre_stress = Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id:   StructureTypeId(u32::MAX),
+        type_id: StructureTypeId(u32::MAX),
         type_name: "ElasticResult".to_string(),
-        version:   1,
-        fields:    pre_stress_fields,
+        version: 1,
+        fields: pre_stress_fields,
     }));
 
     // ── (11) Build modes list ─────────────────────────────────────────────────
@@ -481,10 +505,10 @@ pub fn solve_buckling_trampoline(
             .into_iter()
             .collect();
             Value::StructureInstance(Box::new(StructureInstanceData {
-                type_id:   StructureTypeId(u32::MAX),
+                type_id: StructureTypeId(u32::MAX),
                 type_name: "Mode".to_string(),
-                version:   1,
-                fields:    mode_fields,
+                version: 1,
+                fields: mode_fields,
             }))
         })
         .collect();
@@ -498,27 +522,37 @@ pub fn solve_buckling_trampoline(
     let base_node_positions: Vec<Value> = active_nodes
         .iter()
         .flat_map(|xyz| {
-            [Value::Real(xyz[0]), Value::Real(xyz[1]), Value::Real(xyz[2])]
+            [
+                Value::Real(xyz[0]),
+                Value::Real(xyz[1]),
+                Value::Real(xyz[2]),
+            ]
         })
         .collect();
 
     let result_fields: PersistentMap<String, Value> = [
-        ("modes".to_string(),               Value::List(modes_list)),
-        ("converged".to_string(),           Value::Bool(kernel_result.converged)),
+        ("modes".to_string(), Value::List(modes_list)),
+        (
+            "converged".to_string(),
+            Value::Bool(kernel_result.converged),
+        ),
         // iterations: BucklingKernelResult carries no eigensolver iteration count;
         // this field is intentionally unpopulated for task ε (see trampoline doc).
-        ("iterations".to_string(),          Value::Int(0)),
-        ("pre_stress".to_string(),          pre_stress),
-        ("base_node_positions".to_string(), Value::List(base_node_positions)),
+        ("iterations".to_string(), Value::Int(0)),
+        ("pre_stress".to_string(), pre_stress),
+        (
+            "base_node_positions".to_string(),
+            Value::List(base_node_positions),
+        ),
     ]
     .into_iter()
     .collect();
 
     let result = Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id:   StructureTypeId(u32::MAX),
+        type_id: StructureTypeId(u32::MAX),
         type_name: "BucklingResult".to_string(),
-        version:   1,
-        fields:    result_fields,
+        version: 1,
+        fields: result_fields,
     }));
 
     // ── (13) Return ComputeOutcome::Completed ────────────────────────────────
@@ -526,7 +560,7 @@ pub fn solve_buckling_trampoline(
     ComputeOutcome::Completed {
         result,
         new_warm_state: None,
-        cost_per_byte:  None,
+        cost_per_byte: None,
         diagnostics,
     }
 }
@@ -653,7 +687,10 @@ fn extract_material(val: &Value) -> IsotropicElastic {
             other
         ),
     };
-    IsotropicElastic { youngs_modulus, poisson_ratio }
+    IsotropicElastic {
+        youngs_modulus,
+        poisson_ratio,
+    }
 }
 
 /// Extract SI scalar value from `Value::Scalar { si_value, .. }`.
@@ -723,7 +760,14 @@ fn extract_buckling_options(val: &Value) -> (usize, f64, usize, ElementOrder) {
 
     let data = match val {
         Value::StructureInstance(d) => d,
-        _ => return (default_n_modes, default_tol, default_max_iters, ElementOrder::P1),
+        _ => {
+            return (
+                default_n_modes,
+                default_tol,
+                default_max_iters,
+                ElementOrder::P1,
+            );
+        }
     };
 
     let n_modes = match data.fields.get(&"n_modes".to_string()) {
@@ -733,7 +777,11 @@ fn extract_buckling_options(val: &Value) -> (usize, f64, usize, ElementOrder) {
     let eigen_tol = match data.fields.get(&"tol".to_string()) {
         Some(Value::Real(r)) => {
             let v = *r;
-            if v.is_finite() && v > 0.0 { v } else { default_tol }
+            if v.is_finite() && v > 0.0 {
+                v
+            } else {
+                default_tol
+            }
         }
         _ => default_tol,
     };
@@ -749,4 +797,3 @@ fn extract_buckling_options(val: &Value) -> (usize, f64, usize, ElementOrder) {
 
     (n_modes, eigen_tol, eigen_max_iters, element_order)
 }
-

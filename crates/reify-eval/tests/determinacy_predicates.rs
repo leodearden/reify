@@ -9,10 +9,13 @@
 
 use std::borrow::Cow;
 
-use reify_eval::Engine;
-use reify_test_support::{make_engine, parse_and_compile};
 use reify_core::{ContentHash, Type, ValueCellId};
-use reify_ir::{CompiledExpr, CompiledExprKind, DeterminacyPredicateKind, Satisfaction, TAG_DETERMINACY_PREDICATE, Value};
+use reify_eval::Engine;
+use reify_ir::{
+    CompiledExpr, CompiledExprKind, DeterminacyPredicateKind, Satisfaction,
+    TAG_DETERMINACY_PREDICATE, Value,
+};
+use reify_test_support::{make_engine, parse_and_compile};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(

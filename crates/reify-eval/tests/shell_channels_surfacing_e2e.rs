@@ -74,8 +74,8 @@ fn shell_channels_top_mid_bottom_are_non_undef_fields() {
 
     // (c) result.shell_channels.top / .mid / .bottom must be non-Undef Value::Fields.
     for channel in &["top", "mid", "bottom"] {
-        let field_val = extract_nested(result_val, "shell_channels", channel)
-            .unwrap_or_else(|| {
+        let field_val =
+            extract_nested(result_val, "shell_channels", channel).unwrap_or_else(|| {
                 panic!(
                     "result.shell_channels.{channel} not found in ElasticResult; \
                      this is the expected RED failure until step-2 adds \
@@ -128,13 +128,12 @@ fn shell_channels_mid_equals_stress() {
 
     let stress = extract_field(result_val, "stress")
         .unwrap_or_else(|| panic!("ElasticResult.stress field not found"));
-    let mid = extract_nested(result_val, "shell_channels", "mid")
-        .unwrap_or_else(|| {
-            panic!(
-                "result.shell_channels.mid not found; this is the expected RED failure \
+    let mid = extract_nested(result_val, "shell_channels", "mid").unwrap_or_else(|| {
+        panic!(
+            "result.shell_channels.mid not found; this is the expected RED failure \
                  until step-2 adds `param shell_channels : ShellStress`"
-            )
-        });
+        )
+    });
 
     assert_eq!(
         stress, mid,

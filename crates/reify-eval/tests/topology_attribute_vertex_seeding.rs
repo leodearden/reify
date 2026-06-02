@@ -22,15 +22,17 @@
 use std::collections::{HashMap, HashSet};
 
 use reify_compiler::compile_with_stdlib;
-use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 use reify_core::{ModulePath, RealizationNodeId, Severity};
 use reify_ir::{AxisSign, ExportFormat, FeatureId, GeometryOp, Role, Value};
+use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 
 // ─── helpers (copied from topology_attribute_primitives_e2e.rs convention) ──
 
 fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
-    let parsed =
-        reify_syntax::parse(source, ModulePath::single("test_topology_attr_vertex_seeding"));
+    let parsed = reify_syntax::parse(
+        source,
+        ModulePath::single("test_topology_attr_vertex_seeding"),
+    );
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",

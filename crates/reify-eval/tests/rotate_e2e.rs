@@ -8,10 +8,10 @@
 //! compiler emitted `ax/ay/az` — causing the Rotate/RotateAround realization to be
 //! silently dropped (ops.len() == 1, only the Cylinder, not 2).
 
-use reify_eval::{BuildResult, Engine};
-use reify_test_support::{MockConstraintChecker, MockGeometryKernel, parse_and_compile};
 use reify_core::Severity;
+use reify_eval::{BuildResult, Engine};
 use reify_ir::{ExportFormat, GeometryOp};
+use reify_test_support::{MockConstraintChecker, MockGeometryKernel, parse_and_compile};
 
 // ── step-1 (RED) ─────────────────────────────────────────────────────────────
 

@@ -12,11 +12,11 @@
 
 use reify_compiler::CompiledModule;
 use reify_constraints::SimpleConstraintChecker;
+use reify_core::{Diagnostic, ModulePath, Severity, ValueCellId};
+use reify_ir::{Satisfaction, Value};
 use reify_test_support::{
     check_source_with_stdlib as check_source, make_simple_engine, parse_and_compile_with_stdlib,
 };
-use reify_core::{Diagnostic, ModulePath, Severity, ValueCellId};
-use reify_ir::{Satisfaction, Value};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(

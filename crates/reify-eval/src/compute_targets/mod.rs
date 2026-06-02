@@ -46,9 +46,7 @@ pub(crate) fn flatten_nodal_stress(nodal_stress: &[[[f64; 3]; 3]]) -> Vec<f64> {
         .iter()
         .flat_map(|s| {
             [
-                s[0][0], s[0][1], s[0][2],
-                s[1][0], s[1][1], s[1][2],
-                s[2][0], s[2][1], s[2][2],
+                s[0][0], s[0][1], s[0][2], s[1][0], s[1][1], s[1][2], s[2][0], s[2][1], s[2][2],
             ]
         })
         .collect()
@@ -60,7 +58,7 @@ pub(crate) fn flatten_nodal_stress(nodal_stress: &[[[f64; 3]; 3]]) -> Vec<f64> {
 /// `solver_elastic.ri:326` (PRD §4.2 type contract).
 pub(crate) fn sampled_disp_field(sf: SampledField) -> Value {
     Value::Field {
-        domain_type:   reify_core::Type::point3(reify_core::Type::length()),
+        domain_type: reify_core::Type::point3(reify_core::Type::length()),
         codomain_type: reify_core::Type::vec3(reify_core::Type::length()),
         source: FieldSourceKind::Sampled,
         lambda: Arc::new(Value::SampledField(sf)),
@@ -73,10 +71,14 @@ pub(crate) fn sampled_disp_field(sf: SampledField) -> Value {
 /// `solver_elastic.ri:327` (PRD §4.2 type contract).
 pub(crate) fn sampled_stress_field(sf: SampledField) -> Value {
     Value::Field {
-        domain_type:   reify_core::Type::point3(reify_core::Type::length()),
-        codomain_type: reify_core::Type::tensor(2, 3, reify_core::Type::Scalar {
-            dimension: DimensionVector::PRESSURE,
-        }),
+        domain_type: reify_core::Type::point3(reify_core::Type::length()),
+        codomain_type: reify_core::Type::tensor(
+            2,
+            3,
+            reify_core::Type::Scalar {
+                dimension: DimensionVector::PRESSURE,
+            },
+        ),
         source: FieldSourceKind::Sampled,
         lambda: Arc::new(Value::SampledField(sf)),
     }
@@ -95,7 +97,10 @@ pub(crate) fn sampled_stress_field(sf: SampledField) -> Value {
 /// definition site for the `Value::Scalar { .. }` encoding used by the builders
 /// below.
 fn scalar(si_value: f64, dimension: DimensionVector) -> Value {
-    Value::Scalar { si_value, dimension }
+    Value::Scalar {
+        si_value,
+        dimension,
+    }
 }
 
 /// A Length-dimensioned coordinate Scalar (SI metres).

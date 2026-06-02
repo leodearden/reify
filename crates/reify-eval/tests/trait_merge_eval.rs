@@ -3,9 +3,9 @@
 //! Full pipeline (parse → compile → eval/check) tests verifying that merged
 //! trait constraints are actually enforced and let defaults are evaluated.
 
-use reify_test_support::assert_no_eval_errors;
 use reify_core::{ModulePath, Severity, ValueCellId};
 use reify_ir::Satisfaction;
+use reify_test_support::assert_no_eval_errors;
 
 // ── Helper ───────────────────────────────────────────────────────────────────
 

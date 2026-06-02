@@ -7,7 +7,10 @@ use crate::snapshot::Snapshot;
 use crate::{Engine, EvaluationState};
 use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
 use reify_core::Diagnostic;
-use reify_ir::{CompiledFunction, ConstraintChecker, ConstraintSolver, FeatureTagTable, GeometryKernel, OptimizedImpl, TopologyAttributeTable};
+use reify_ir::{
+    CompiledFunction, ConstraintChecker, ConstraintSolver, FeatureTagTable, GeometryKernel,
+    OptimizedImpl, TopologyAttributeTable,
+};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -673,8 +676,8 @@ impl Engine {
         // handle surfaces (export / tessellate) when a BRep-capable kernel is
         // also loaded.  Falls back to pure lex-min when no entry claims any
         // BRep pair (preserves Mesh-only-binary semantics).
-        let default_kernel_name: Option<String> = crate::kernel_registry::pick_lexmin_brep_kernel()
-            .map(|reg| reg.name.to_string());
+        let default_kernel_name: Option<String> =
+            crate::kernel_registry::pick_lexmin_brep_kernel().map(|reg| reg.name.to_string());
         if let Some(name) = default_kernel_name.as_deref() {
             crate::kernel_registry::emit_kernel_selection(name, geometry_kernels.len());
         }
@@ -821,10 +824,7 @@ impl Engine {
     /// The returned value is a plain function pointer and therefore `Copy`.
     ///
     /// See `docs/prds/v0_3/compute-node-contract.md` §4.
-    pub fn compute_dispatch(
-        &self,
-        target: &str,
-    ) -> Option<crate::engine_compute::ComputeFn> {
+    pub fn compute_dispatch(&self, target: &str) -> Option<crate::engine_compute::ComputeFn> {
         self.compute_registry.fns.get(target).copied()
     }
 
@@ -856,8 +856,7 @@ impl Engine {
         realization_inputs: &[crate::engine_compute::RealizationReadHandle],
         options: &reify_ir::Value,
         prior_warm_state: Option<&reify_ir::OpaqueState>,
-    ) -> Result<(reify_ir::Value, Vec<reify_core::Diagnostic>), Vec<reify_core::Diagnostic>>
-    {
+    ) -> Result<(reify_ir::Value, Vec<reify_core::Diagnostic>), Vec<reify_core::Diagnostic>> {
         use crate::engine_compute::ComputeOutcome;
         use crate::graph::CancellationHandle;
 
@@ -877,12 +876,10 @@ impl Engine {
                         ..
                     } => Ok((result, diagnostics)),
                     ComputeOutcome::Failed { diagnostics } => Err(diagnostics),
-                    ComputeOutcome::Cancelled => Err(vec![reify_core::Diagnostic::error(
-                        format!(
-                            "@optimized target {:?}: compute trampoline was cancelled",
-                            target
-                        ),
-                    )]),
+                    ComputeOutcome::Cancelled => Err(vec![reify_core::Diagnostic::error(format!(
+                        "@optimized target {:?}: compute trampoline was cancelled",
+                        target
+                    ))]),
                 }
             }
             // The "(falling back to body-inlining)" clause is intentionally
@@ -1525,9 +1522,7 @@ impl Engine {
     /// eval-boundary call site that wires the existing warm_pool event buffer
     /// to the diagnostic journal, subsuming M-010.
     // G-allow: task #3541 eval-boundary warm-pool→journal drain; consumer EngineSession::drain_and_emit_warm_pool_events (engine.rs) wiring lands in subsequent #3541 steps
-    pub fn drain_and_record_warm_pool_events(
-        &mut self,
-    ) -> Vec<crate::warm_pool::WarmPoolEvent> {
+    pub fn drain_and_record_warm_pool_events(&mut self) -> Vec<crate::warm_pool::WarmPoolEvent> {
         let events = self.warm_pool.drain_events();
         let version = reify_core::VersionId(self.next_version_id.saturating_sub(1));
         let timestamp = std::time::Instant::now();
@@ -1660,8 +1655,8 @@ mod tests {
     /// amendment).
     #[test]
     fn panic_on_eval_set_remove_and_clear_round_trip() {
-        use reify_test_support::mocks::MockConstraintChecker;
         use reify_core::ValueCellId;
+        use reify_test_support::mocks::MockConstraintChecker;
 
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
         let a = ValueCellId::new("M", "a");
@@ -1735,10 +1730,10 @@ mod tests {
     #[test]
     fn freshness_returns_final_for_unknown_node_and_failed_after_forced_panic() {
         use crate::cache::NodeId;
-        use reify_test_support::mocks::MockConstraintChecker;
-        use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
         use reify_core::{ModulePath, Type, ValueCellId};
         use reify_ir::{Freshness, Value};
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
 
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
 
@@ -1801,11 +1796,11 @@ mod tests {
     #[test]
     fn pending_cause_returns_failed_leaf_for_pending_dependent() {
         use crate::cache::NodeId;
+        use reify_core::{ModulePath, Type, ValueCellId};
+        use reify_ir::{BinOp, Value};
         use reify_test_support::builders::{binop, literal, value_ref};
         use reify_test_support::mocks::MockConstraintChecker;
         use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
-        use reify_core::{ModulePath, Type, ValueCellId};
-        use reify_ir::{BinOp, Value};
 
         let a_id = ValueCellId::new("T", "a");
         let b_id = ValueCellId::new("T", "b");
@@ -1895,9 +1890,9 @@ mod tests {
     fn pending_cause_admits_compute_node_id_as_chain_root() {
         use crate::cache::{CachedResult, NodeCache, NodeId};
         use crate::deps::DependencyTrace;
-        use reify_test_support::mocks::MockConstraintChecker;
         use reify_core::{ComputeNodeId, ValueCellId, VersionId};
         use reify_ir::{DeterminacyState, Freshness, Value};
+        use reify_test_support::mocks::MockConstraintChecker;
 
         let v_id = ValueCellId::new("T", "v");
         let v_node = NodeId::Value(v_id.clone());

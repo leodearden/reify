@@ -27,7 +27,7 @@ use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeI
 use reify_stdlib::dynamics::eval::{inverse_dynamics_sample, motion_trajectory_samples};
 use reify_stdlib::dynamics::mass_props::{DensitySource, resolve_density};
 use reify_stdlib::dynamics::rnea::default_gravity;
-use reify_stdlib::dynamics::trampoline::{body_solid_hashes, InverseDynamicsCacheKey};
+use reify_stdlib::dynamics::trampoline::{InverseDynamicsCacheKey, body_solid_hashes};
 
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
@@ -56,8 +56,7 @@ fn cell_f64(v: &Value) -> Option<f64> {
 /// simply skipped.
 fn body_material_density(body: &Value) -> Option<f64> {
     if let Value::StructureInstance(data) = body
-        && let Some(Value::StructureInstance(material)) =
-            data.fields.get("material")
+        && let Some(Value::StructureInstance(material)) = data.fields.get("material")
         && let Some(cell) = material.fields.get("density")
     {
         return cell_f64(cell);
@@ -387,7 +386,10 @@ mod tests {
     }
 
     fn assert_close(got: f64, want: f64, what: &str) {
-        assert!((got - want).abs() < 1e-12, "{what}: expected {want}, got {got}");
+        assert!(
+            (got - want).abs() < 1e-12,
+            "{what}: expected {want}, got {got}"
+        );
     }
 
     fn assert_matches_geom(result: &Value, density: f64) {
@@ -433,7 +435,11 @@ mod tests {
         let mut diags = Vec::new();
         eval_body_mass_props_core(&b, None, |d| uniform_box_inertia(DIMS, d), &mut diags);
 
-        assert_eq!(diags.len(), 1, "default-water fallback must emit exactly one diagnostic");
+        assert_eq!(
+            diags.len(),
+            1,
+            "default-water fallback must emit exactly one diagnostic"
+        );
         assert!(
             diags[0].message.contains("WidgetA"),
             "warning message must use the body's `name` field; got: {:?}",
@@ -449,7 +455,11 @@ mod tests {
         let mut diags = Vec::new();
         eval_body_mass_props_core(&b, None, |d| uniform_box_inertia(DIMS, d), &mut diags);
 
-        assert_eq!(diags.len(), 1, "default-water fallback must emit exactly one diagnostic");
+        assert_eq!(
+            diags.len(),
+            1,
+            "default-water fallback must emit exactly one diagnostic"
+        );
         assert!(
             diags[0].message.contains("Block"),
             "warning message must fall back to the body's type_name 'Block'; got: {:?}",
@@ -470,7 +480,11 @@ mod tests {
         let mut diags = Vec::new();
         let result = eval_body_mass_props_core(&b, None, geom, &mut diags);
 
-        assert_eq!(used.get(), 2700.0, "geom_query must be called with the material density");
+        assert_eq!(
+            used.get(),
+            2700.0,
+            "geom_query must be called with the material density"
+        );
         assert_matches_geom(&result, 2700.0);
         assert!(
             diags.is_empty(),
@@ -491,9 +505,17 @@ mod tests {
         let mut diags = Vec::new();
         let result = eval_body_mass_props_core(&b, None, geom, &mut diags);
 
-        assert_eq!(used.get(), 1000.0, "geom_query must be called with the 1000 kg/m³ default");
+        assert_eq!(
+            used.get(),
+            1000.0,
+            "geom_query must be called with the 1000 kg/m³ default"
+        );
         assert_matches_geom(&result, 1000.0);
-        assert_eq!(diags.len(), 1, "default-water fallback must emit exactly one diagnostic");
+        assert_eq!(
+            diags.len(),
+            1,
+            "default-water fallback must emit exactly one diagnostic"
+        );
         assert_eq!(diags[0].severity, Severity::Warning);
         assert_eq!(
             diags[0].code,
@@ -516,7 +538,11 @@ mod tests {
         let explicit = Value::Real(5000.0);
         let result = eval_body_mass_props_core(&b, Some(&explicit), geom, &mut diags);
 
-        assert_eq!(used.get(), 5000.0, "geom_query must be called with the explicit density");
+        assert_eq!(
+            used.get(),
+            5000.0,
+            "geom_query must be called with the explicit density"
+        );
         assert_matches_geom(&result, 5000.0);
         assert!(
             diags.is_empty(),
@@ -541,8 +567,8 @@ mod tests {
             .iter()
             .map(|c| CompiledExpr::value_ref(c.clone(), Type::Real))
             .collect();
-        let mut content_hash = ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
-            .combine(ContentHash::of_str(fn_name));
+        let mut content_hash =
+            ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL]).combine(ContentHash::of_str(fn_name));
         for a in &args {
             content_hash = content_hash.combine(a.content_hash);
         }
@@ -665,7 +691,10 @@ mod tests {
             result.is_none(),
             "unrelated fn `volume` must return None, got {result:?}"
         );
-        assert!(diags.is_empty(), "None-dispatch must not emit diagnostics, got {diags:?}");
+        assert!(
+            diags.is_empty(),
+            "None-dispatch must not emit diagnostics, got {diags:?}"
+        );
     }
 
     // ── (b) non-call expr -> None ─────────────────────────────────────────────
@@ -738,9 +767,16 @@ mod tests {
             result.is_none(),
             "3-arg body_mass_props(...) must return None, got {result:?}"
         );
-        assert_eq!(diags.len(), 1, "malformed arity must emit one diagnostic, got {diags:?}");
+        assert_eq!(
+            diags.len(),
+            1,
+            "malformed arity must emit one diagnostic, got {diags:?}"
+        );
         assert_eq!(diags[0].severity, Severity::Error);
-        assert_eq!(diags[0].code, Some(DiagnosticCode::DynamicsBodyMassPropsArity));
+        assert_eq!(
+            diags[0].code,
+            Some(DiagnosticCode::DynamicsBodyMassPropsArity)
+        );
     }
 }
 
@@ -867,7 +903,11 @@ fn undef_outcome() -> ComputeOutcome {
 fn completed_donating(cache: InverseDynamicsCache) -> ComputeOutcome {
     let result = cache.result.as_ref().clone();
     let (state, size_bytes) = cache.into_opaque_state();
-    let cost_per_byte = if size_bytes > 0 { Some(1.0 / size_bytes as f64) } else { None };
+    let cost_per_byte = if size_bytes > 0 {
+        Some(1.0 / size_bytes as f64)
+    } else {
+        None
+    };
     ComputeOutcome::Completed {
         result,
         new_warm_state: Some(state),
@@ -913,13 +953,19 @@ pub(crate) fn run_inverse_dynamics(
     // ComputeOutcome::Cancelled (reused = false), donating no warm state and
     // discarding any partial per-sample output, mirroring run_modal_analysis.
     if cancellation.is_cancelled() {
-        return InverseDynamicsRun { outcome: ComputeOutcome::Cancelled, reused: false };
+        return InverseDynamicsRun {
+            outcome: ComputeOutcome::Cancelled,
+            reused: false,
+        };
     }
 
     // Arity guard, mirroring eval_inverse_dynamics: inverse_dynamics(mechanism,
     // trajectory). The engine always supplies the two fn args, so this is defensive.
     if value_inputs.len() != 2 {
-        return InverseDynamicsRun { outcome: undef_outcome(), reused: false };
+        return InverseDynamicsRun {
+            outcome: undef_outcome(),
+            reused: false,
+        };
     }
     let mechanism = &value_inputs[0];
     let trajectory = &value_inputs[1];
@@ -942,7 +988,10 @@ pub(crate) fn run_inverse_dynamics(
     if let Some(cache) = prior_warm_state.and_then(|s| s.downcast_ref::<InverseDynamicsCache>())
         && cache.key.matches(&key)
     {
-        return InverseDynamicsRun { outcome: completed_donating(cache.clone()), reused: true };
+        return InverseDynamicsRun {
+            outcome: completed_donating(cache.clone()),
+            reused: true,
+        };
     }
 
     // ── cache MISS ───────────────────────────────────────────────────────────────
@@ -963,7 +1012,12 @@ pub(crate) fn run_inverse_dynamics(
     let body_solid_hashes = body_solid_hashes(mechanism);
     let samples = match motion_trajectory_samples(trajectory) {
         Some(s) => s,
-        None => return InverseDynamicsRun { outcome: undef_outcome(), reused: false },
+        None => {
+            return InverseDynamicsRun {
+                outcome: undef_outcome(),
+                reused: false,
+            };
+        }
     };
     let mut per_sample = Vec::with_capacity(samples.len());
     for sample in samples {
@@ -973,11 +1027,19 @@ pub(crate) fn run_inverse_dynamics(
         // `per_sample` is dropped — a Cancelled outcome returns no result Value and
         // donates no warm state.
         if cancellation.is_cancelled() {
-            return InverseDynamicsRun { outcome: ComputeOutcome::Cancelled, reused: false };
+            return InverseDynamicsRun {
+                outcome: ComputeOutcome::Cancelled,
+                reused: false,
+            };
         }
         match inverse_dynamics_sample(mechanism, sample) {
             Some(forces) => per_sample.push(Value::List(forces)),
-            None => return InverseDynamicsRun { outcome: undef_outcome(), reused: false },
+            None => {
+                return InverseDynamicsRun {
+                    outcome: undef_outcome(),
+                    reused: false,
+                };
+            }
         }
     }
     let result = Value::List(per_sample);
@@ -988,8 +1050,15 @@ pub(crate) fn run_inverse_dynamics(
     // MISS path `completed_donating` still deep-clones it exactly once for the
     // output value cell (the freshly-built `Value::List` would otherwise be moved
     // whole into the cache, leaving nothing for the cell).
-    let cache = InverseDynamicsCache { key, body_solid_hashes, result: Arc::new(result) };
-    InverseDynamicsRun { outcome: completed_donating(cache), reused: false }
+    let cache = InverseDynamicsCache {
+        key,
+        body_solid_hashes,
+        result: Arc::new(result),
+    };
+    InverseDynamicsRun {
+        outcome: completed_donating(cache),
+        reused: false,
+    }
 }
 
 /// `@optimized("dynamics::inverse_dynamics")` public `ComputeFn` for `fn
@@ -1015,7 +1084,7 @@ mod inverse_dynamics_trampoline_tests {
     use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
     use reify_stdlib::eval_builtin;
 
-    use super::{run_inverse_dynamics, InverseDynamicsRun};
+    use super::{InverseDynamicsRun, run_inverse_dynamics};
     use crate::{CancellationHandle, ComputeOutcome};
 
     /// Static single-pendulum ground truth: τ = m·g·L·sin(30°)
@@ -1062,7 +1131,10 @@ mod inverse_dynamics_trampoline_tests {
             vec![
                 (
                     "mass".to_string(),
-                    Value::Scalar { si_value: mass, dimension: DimensionVector::MASS },
+                    Value::Scalar {
+                        si_value: mass,
+                        dimension: DimensionVector::MASS,
+                    },
                 ),
                 ("com".to_string(), com_point),
                 ("inertia".to_string(), inertia_matrix),
@@ -1102,7 +1174,10 @@ mod inverse_dynamics_trampoline_tests {
                     vec![
                         (
                             "t".to_string(),
-                            Value::Scalar { si_value: k as f64, dimension: DimensionVector::TIME },
+                            Value::Scalar {
+                                si_value: k as f64,
+                                dimension: DimensionVector::TIME,
+                            },
                         ),
                         ("values".to_string(), Value::List(vec![Value::Real(theta)])),
                         ("vels".to_string(), Value::List(vec![Value::Real(0.0)])),
@@ -1128,7 +1203,11 @@ mod inverse_dynamics_trampoline_tests {
             Value::List(s) => s,
             other => panic!("expected List<List<JointForce>>, got {other:?}"),
         };
-        assert_eq!(per_sample.len(), expected_samples, "one force list per sample");
+        assert_eq!(
+            per_sample.len(),
+            expected_samples,
+            "one force list per sample"
+        );
         for (i, sample_forces) in per_sample.iter().enumerate() {
             let forces = match sample_forces {
                 Value::List(f) => f,
@@ -1160,9 +1239,16 @@ mod inverse_dynamics_trampoline_tests {
         let run: InverseDynamicsRun =
             run_inverse_dynamics(&[mech, traj], None, &CancellationHandle::new());
 
-        assert!(!run.reused, "a fresh run (no prior warm state) must not be a cache reuse");
+        assert!(
+            !run.reused,
+            "a fresh run (no prior warm state) must not be a cache reuse"
+        );
         match &run.outcome {
-            ComputeOutcome::Completed { result, new_warm_state, .. } => {
+            ComputeOutcome::Completed {
+                result,
+                new_warm_state,
+                ..
+            } => {
                 assert!(
                     new_warm_state.is_some(),
                     "the MISS path must donate a warm-state cache"
@@ -1187,11 +1273,19 @@ mod inverse_dynamics_trampoline_tests {
 
         // First run: cache MISS, donates a warm-state cache.
         let first = run_inverse_dynamics(&inputs, None, &handle);
-        assert!(!first.reused, "first run (no prior warm state) must be a MISS");
+        assert!(
+            !first.reused,
+            "first run (no prior warm state) must be a MISS"
+        );
         let (first_result, warm) = match first.outcome {
-            ComputeOutcome::Completed { result, new_warm_state, .. } => {
-                (result, new_warm_state.expect("the MISS path must donate a warm state"))
-            }
+            ComputeOutcome::Completed {
+                result,
+                new_warm_state,
+                ..
+            } => (
+                result,
+                new_warm_state.expect("the MISS path must donate a warm state"),
+            ),
             other => panic!("expected ComputeOutcome::Completed, got {other:?}"),
         };
 

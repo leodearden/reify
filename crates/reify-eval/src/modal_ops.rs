@@ -23,9 +23,10 @@ use faer::sparse::{SparseRowMat, Triplet};
 use reify_core::{Diagnostic, DimensionVector};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_solver_elastic::{
-    AssemblyElement, AssemblyMode, DirichletBc, EigenSolverOptions, EigenSolverResult, ElementOrder,
-    ElementStiffness, IsotropicElastic, assemble_global_stiffness, consistent_element_mass_tet_p1,
-    consistent_element_mass_tet_p2, element_stiffness, solve_eigen_dense, solve_eigen_shift_invert,
+    AssemblyElement, AssemblyMode, DirichletBc, EigenSolverOptions, EigenSolverResult,
+    ElementOrder, ElementStiffness, IsotropicElastic, assemble_global_stiffness,
+    consistent_element_mass_tet_p1, consistent_element_mass_tet_p2, element_stiffness,
+    solve_eigen_dense, solve_eigen_shift_invert,
 };
 use reify_stdlib::modal::free_vibration::{
     eigenvalue_to_frequency_hz, is_rigid_body_mode, mass_normalization_scale,
@@ -137,7 +138,10 @@ pub(crate) enum ModalMesh<'a> {
     /// P1 constant-strain path: the 4-node beam mesh, used directly.
     P1(&'a BeamMesh),
     /// P2 path: the pre-promoted 10-node tet mesh (`nodes`, `tets`).
-    P2 { nodes: &'a [[f64; 3]], tets: &'a [[usize; 10]] },
+    P2 {
+        nodes: &'a [[f64; 3]],
+        tets: &'a [[usize; 10]],
+    },
 }
 
 impl ModalMesh<'_> {
@@ -291,7 +295,13 @@ pub(crate) fn assemble_modal_km(
     let stiffness_matrix_norm = frobenius_norm(&k_full);
     let mass_matrix_norm = frobenius_norm(&m_full);
 
-    ModalAssembly { k_full, m_full, mass_matrix_norm, stiffness_matrix_norm, n_nodes }
+    ModalAssembly {
+        k_full,
+        m_full,
+        mass_matrix_norm,
+        stiffness_matrix_norm,
+        n_nodes,
+    }
 }
 
 /// Eigensolve over a prebuilt [`ModalAssembly`]: project `K`/`M` to the free-DOF
@@ -354,8 +364,10 @@ pub(crate) fn eigensolve_modal(
     // translational DOFs (axis = full DOF index mod 3). Precomputing
     // md = M_free·d_free once lets the per-mode participation factor be a single
     // dot product p_i = φ_iᵀ·M_free·d_free = φ_i·md (M_free symmetric).
-    let d_free: Vec<f64> =
-        full_of_free.iter().map(|&g| reference_direction[g % 3]).collect();
+    let d_free: Vec<f64> = full_of_free
+        .iter()
+        .map(|&g| reference_direction[g % 3])
+        .collect();
     let md = m_matvec(&m_free, &d_free);
 
     // ---- Generalized eigensolve  K_free φ = λ M_free φ --------------------
@@ -392,8 +404,7 @@ pub(crate) fn eigensolve_modal(
         // zero rather than producing NaN/∞.
         let mut phi_f: Vec<f64> = eig.eigenvectors.col_as_slice(i).to_vec();
         let m_phi = m_matvec(&m_free, &phi_f);
-        let generalized_mass: f64 =
-            phi_f.iter().zip(m_phi.iter()).map(|(a, b)| a * b).sum();
+        let generalized_mass: f64 = phi_f.iter().zip(m_phi.iter()).map(|(a, b)| a * b).sum();
         let scale = mass_normalization_scale(generalized_mass);
         for x in &mut phi_f {
             *x *= scale;
@@ -425,7 +436,9 @@ pub(crate) fn eigensolve_modal(
     // dependent on the solver invariant (suggestion 3 / architecture).
     let mut order: Vec<usize> = (0..n_modes_out).collect();
     order.sort_by(|&a, &b| {
-        frequencies[a].partial_cmp(&frequencies[b]).unwrap_or(std::cmp::Ordering::Equal)
+        frequencies[a]
+            .partial_cmp(&frequencies[b])
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
     if order.iter().enumerate().any(|(i, &src)| i != src) {
         frequencies = permute_by(frequencies, &order);
@@ -558,7 +571,11 @@ fn assemble_global_matrix<const N: usize>(
         .iter()
         .zip(elems.iter())
         .enumerate()
-        .map(|(id, (conn, k_e))| AssemblyElement { id, connectivity: conn, k_e })
+        .map(|(id, (conn, k_e))| AssemblyElement {
+            id,
+            connectivity: conn,
+            k_e,
+        })
         .collect();
     assemble_global_stiffness(nodes.len(), &assembly, AssemblyMode::Deterministic)
 }
@@ -645,7 +662,10 @@ fn csr_nnz(a: &SparseRowMat<usize, f64>) -> usize {
 /// twice. Applies the ascending-frequency sort across `solve_modal_core`'s
 /// parallel per-mode arrays in lockstep.
 fn permute_by<T: Default>(mut items: Vec<T>, order: &[usize]) -> Vec<T> {
-    order.iter().map(|&i| std::mem::take(&mut items[i])).collect()
+    order
+        .iter()
+        .map(|&i| std::mem::take(&mut items[i]))
+        .collect()
 }
 
 /// Solve the generalized symmetric eigenproblem `K_free φ = λ M_free φ`,
@@ -877,7 +897,10 @@ pub(crate) fn run_modal_analysis(
     // `solve_eigen_shift_invert` (3-arg, no callback) — out of scope, owned by the
     // buckling-eigensolver PRD; coarse polling satisfies CN-contract §2 / PRD §6.
     if cancellation.is_cancelled() {
-        return ModalTrampolineRun { outcome: ComputeOutcome::Cancelled, reused_assembly: false };
+        return ModalTrampolineRun {
+            outcome: ComputeOutcome::Cancelled,
+            reused_assembly: false,
+        };
     }
 
     // ── (1) density guard — no M without a positive density (short-circuit) ──
@@ -885,7 +908,12 @@ pub(crate) fn run_modal_analysis(
     // missing density neither reuses nor donates a cache (reused_assembly = false).
     let density = match extract_density_or_degenerate(&value_inputs[0]) {
         Ok(d) => d,
-        Err(outcome) => return ModalTrampolineRun { outcome, reused_assembly: false },
+        Err(outcome) => {
+            return ModalTrampolineRun {
+                outcome,
+                reused_assembly: false,
+            };
+        }
     };
 
     // ── (2) material elastic constants (E, ν) ────────────────────────────────
@@ -932,7 +960,12 @@ pub(crate) fn run_modal_analysis(
     // slice directly (no half-populated `BeamMesh` sentinel): the P1 mesh nodes or
     // the promoted P2 node set, whichever `modal_mesh` carries.
     let bcs = build_dirichlet_bcs(options, modal_mesh.nodes(), length, width, height);
-    let eigen_opts = EigenSolverOptions { n_modes, tol, max_iters, sigma };
+    let eigen_opts = EigenSolverOptions {
+        n_modes,
+        tol,
+        max_iters,
+        sigma,
+    };
 
     // ── (5) cache lookup: reuse the assembled (K, M) on a key HIT ────────────
     // The key captures EXACTLY the (K, M)-determining inputs (geometry + material
@@ -966,7 +999,10 @@ pub(crate) fn run_modal_analysis(
     // matrices without donating them; run_compute_dispatch restores the prior
     // warm state on a Cancelled outcome (so reused_assembly is reported false).
     if cancellation.is_cancelled() {
-        return ModalTrampolineRun { outcome: ComputeOutcome::Cancelled, reused_assembly: false };
+        return ModalTrampolineRun {
+            outcome: ComputeOutcome::Cancelled,
+            reused_assembly: false,
+        };
     }
 
     // Free-DOF eigensolve over the reused-or-fresh assembly (the cheap half).
@@ -992,8 +1028,17 @@ pub(crate) fn run_modal_analysis(
             let participation_mass = core.participation_mass.get(i).copied().unwrap_or(0.0);
             let fields: PersistentMap<String, Value> = [
                 ("frequency".to_string(), Value::Real(f)),
-                ("shape".to_string(), core.phi_full.get(i).map(|p| mode_shape_value(p)).unwrap_or(Value::Undef)),
-                ("participation_mass".to_string(), Value::Real(participation_mass)),
+                (
+                    "shape".to_string(),
+                    core.phi_full
+                        .get(i)
+                        .map(|p| mode_shape_value(p))
+                        .unwrap_or(Value::Undef),
+                ),
+                (
+                    "participation_mass".to_string(),
+                    Value::Real(participation_mass),
+                ),
                 ("damping_ratio".to_string(), Value::Real(damping_ratio)),
             ]
             .into_iter()
@@ -1015,8 +1060,14 @@ pub(crate) fn run_modal_analysis(
         ("modes".to_string(), Value::List(modes_list)),
         ("boundary_conditions".to_string(), boundary_conditions),
         ("damping".to_string(), damping),
-        ("mass_matrix_norm".to_string(), Value::Real(core.mass_matrix_norm)),
-        ("stiffness_matrix_norm".to_string(), Value::Real(core.stiffness_matrix_norm)),
+        (
+            "mass_matrix_norm".to_string(),
+            Value::Real(core.mass_matrix_norm),
+        ),
+        (
+            "stiffness_matrix_norm".to_string(),
+            Value::Real(core.stiffness_matrix_norm),
+        ),
     ]
     .into_iter()
     .collect();
@@ -1039,7 +1090,11 @@ pub(crate) fn run_modal_analysis(
     // so the `None` branch is unreachable for a real assembly but kept for parity.
     let cache = ModalAnalysisCache { key, assembly };
     let (state, size_bytes) = cache.into_opaque_state();
-    let cost_per_byte = if size_bytes > 0 { Some(1.0 / size_bytes as f64) } else { None };
+    let cost_per_byte = if size_bytes > 0 {
+        Some(1.0 / size_bytes as f64)
+    } else {
+        None
+    };
     let new_warm_state = Some(state);
     let outcome = ComputeOutcome::Completed {
         result,
@@ -1047,7 +1102,10 @@ pub(crate) fn run_modal_analysis(
         cost_per_byte,
         diagnostics: core.diagnostics,
     };
-    ModalTrampolineRun { outcome, reused_assembly }
+    ModalTrampolineRun {
+        outcome,
+        reused_assembly,
+    }
 }
 
 /// `@optimized("modal::free_vibration")` public `ComputeFn` for `fn
@@ -1212,7 +1270,10 @@ fn read_mode_shape(mode: &Value) -> Vec<[f64; 3]> {
 /// Shared by [`solve_transient_response_trampoline`] (forcing projection) and
 /// [`displacement_at_trampoline`] (reconstruction) — both form Φᵢ[node]·dir.
 fn extract_mode_shapes(modal_result: &Value) -> Vec<Vec<[f64; 3]>> {
-    modal_result_modes(modal_result).iter().map(read_mode_shape).collect()
+    modal_result_modes(modal_result)
+        .iter()
+        .map(read_mode_shape)
+        .collect()
 }
 
 /// The forcing sources of a `ForcingTimeHistory` StructureInstance, cloned; empty
@@ -1255,10 +1316,23 @@ fn resolve_location_node(location: &str, mode0_shape: &[[f64; 3]]) -> usize {
 /// source that arose when the closed-form params were re-parsed on every one of
 /// the T timesteps.
 enum ResolvedForcing {
-    Step { magnitude: f64, start_time: f64 },
-    Harmonic { amplitude: f64, frequency: f64, phase: f64 },
-    Impulse { impulse: f64, time: f64 },
-    Sampled { times: Vec<f64>, forces: Vec<f64> },
+    Step {
+        magnitude: f64,
+        start_time: f64,
+    },
+    Harmonic {
+        amplitude: f64,
+        frequency: f64,
+        phase: f64,
+    },
+    Impulse {
+        impulse: f64,
+        time: f64,
+    },
+    Sampled {
+        times: Vec<f64>,
+        forces: Vec<f64>,
+    },
     /// Unrecognised / non-struct source — contributes no force at any `t`.
     Zero,
 }
@@ -1284,12 +1358,17 @@ impl ResolvedForcing {
                 frequency: scalar("frequency"),
                 phase: scalar("phase"),
             },
-            "ImpulseForce" => {
-                ResolvedForcing::Impulse { impulse: scalar("impulse"), time: scalar("time") }
-            }
+            "ImpulseForce" => ResolvedForcing::Impulse {
+                impulse: scalar("impulse"),
+                time: scalar("time"),
+            },
             "SampledForce" => ResolvedForcing::Sampled {
-                times: field_ref(source, "time_samples").map(read_real_list).unwrap_or_default(),
-                forces: field_ref(source, "force_samples").map(read_real_list).unwrap_or_default(),
+                times: field_ref(source, "time_samples")
+                    .map(read_real_list)
+                    .unwrap_or_default(),
+                forces: field_ref(source, "force_samples")
+                    .map(read_real_list)
+                    .unwrap_or_default(),
             },
             _ => ResolvedForcing::Zero,
         }
@@ -1300,12 +1379,15 @@ impl ResolvedForcing {
     /// step (only the `Impulse` discrete-pulse approximation needs it).
     fn sample(&self, t: f64, dt: f64) -> f64 {
         match self {
-            ResolvedForcing::Step { magnitude, start_time } => {
-                step_force_at(*magnitude, *start_time, t)
-            }
-            ResolvedForcing::Harmonic { amplitude, frequency, phase } => {
-                harmonic_force_at(*amplitude, *frequency, *phase, t)
-            }
+            ResolvedForcing::Step {
+                magnitude,
+                start_time,
+            } => step_force_at(*magnitude, *start_time, t),
+            ResolvedForcing::Harmonic {
+                amplitude,
+                frequency,
+                phase,
+            } => harmonic_force_at(*amplitude, *frequency, *phase, t),
             ResolvedForcing::Impulse { impulse, time } => impulse_force_at(*impulse, *time, t, dt),
             ResolvedForcing::Sampled { times, forces } => sampled_force_at(times, forces, t),
             ResolvedForcing::Zero => 0.0,
@@ -1352,8 +1434,8 @@ impl TransientCache {
         let grid_bytes = self.grid.len() * std::mem::size_of::<f64>();
         let prepared_bytes = self.prepared.len() * std::mem::size_of::<PreparedIntegrator>();
         // key: 3 f64s + Vec<(f64,f64)> — approximate the Vec payload.
-        let key_bytes = 3 * std::mem::size_of::<f64>()
-            + self.key.modes.len() * 2 * std::mem::size_of::<f64>();
+        let key_bytes =
+            3 * std::mem::size_of::<f64>() + self.key.modes.len() * 2 * std::mem::size_of::<f64>();
         (grid_bytes + prepared_bytes + key_bytes).max(1)
     }
 
@@ -1470,8 +1552,12 @@ pub(crate) fn run_transient_response(
     let mode_params: Vec<(f64, f64)> = modes
         .iter()
         .map(|mode| {
-            let freq = field_ref(mode, "frequency").map(read_scalar_si).unwrap_or(0.0);
-            let zeta = field_ref(mode, "damping_ratio").map(read_scalar_si).unwrap_or(0.0);
+            let freq = field_ref(mode, "frequency")
+                .map(read_scalar_si)
+                .unwrap_or(0.0);
+            let zeta = field_ref(mode, "damping_ratio")
+                .map(read_scalar_si)
+                .unwrap_or(0.0);
             (freq, zeta)
         })
         .collect();
@@ -1480,8 +1566,7 @@ pub(crate) fn run_transient_response(
     // Key excludes `forcing` (cheap-varying) and mode shapes (not needed by
     // the coefficients); see TransientCacheKey docs.
     let key = TransientCacheKey::new(t_start, t_end, dt, mode_params.clone());
-    let prior_cache =
-        prior_warm_state.and_then(|s| s.downcast_ref::<TransientCache>());
+    let prior_cache = prior_warm_state.and_then(|s| s.downcast_ref::<TransientCache>());
     let (grid, prepared, reused_setup) = match prior_cache {
         Some(cache) if cache.key.matches(&key) => {
             // HIT: reuse the cached grid + integrators (Clone only on confirmed hit).
@@ -1536,7 +1621,9 @@ pub(crate) fn run_transient_response(
                 _ => "",
             };
             let node = resolve_location_node(at, mode0_shape);
-            let dir = field_ref(src, "direction").map(read_vec3).unwrap_or([0.0; 3]);
+            let dir = field_ref(src, "direction")
+                .map(read_vec3)
+                .unwrap_or([0.0; 3]);
             let resolved = ResolvedForcing::from_value(src);
             let samples = grid.iter().map(|&t| resolved.sample(t, dt)).collect();
             SourceProjection { node, dir, samples }
@@ -1584,7 +1671,10 @@ pub(crate) fn run_transient_response(
     // ── (7) shape the DisplacementTimeHistory ────────────────────────────────
     let t_samples = Value::List(
         grid.iter()
-            .map(|&t| Value::Scalar { si_value: t, dimension: DimensionVector::TIME })
+            .map(|&t| Value::Scalar {
+                si_value: t,
+                dimension: DimensionVector::TIME,
+            })
             .collect(),
     );
     let fields: PersistentMap<String, Value> = [
@@ -1603,16 +1693,27 @@ pub(crate) fn run_transient_response(
     }));
 
     // ── (8) donate the grid + prepared integrators as warm state (task λ) ─────
-    let cache = TransientCache { key, grid, prepared };
+    let cache = TransientCache {
+        key,
+        grid,
+        prepared,
+    };
     let (state, size_bytes) = cache.into_opaque_state();
-    let cost_per_byte = if size_bytes > 0 { Some(1.0 / size_bytes as f64) } else { None };
+    let cost_per_byte = if size_bytes > 0 {
+        Some(1.0 / size_bytes as f64)
+    } else {
+        None
+    };
     let outcome = ComputeOutcome::Completed {
         result,
         new_warm_state: Some(state),
         cost_per_byte,
         diagnostics: Vec::new(),
     };
-    TransientTrampolineRun { outcome, reused_setup }
+    TransientTrampolineRun {
+        outcome,
+        reused_setup,
+    }
 }
 
 /// `@optimized("modal::transient_response")` public `ComputeFn` (task ι;
@@ -1743,7 +1844,10 @@ fn extract_isotropic_material(val: &Value) -> IsotropicElastic {
             poisson_ratio = read_scalar_si(v);
         }
     }
-    IsotropicElastic { youngs_modulus, poisson_ratio }
+    IsotropicElastic {
+        youngs_modulus,
+        poisson_ratio,
+    }
 }
 
 /// Extract the eigensolver knobs `(n_modes, tol, max_iters, sigma)` from a
@@ -1759,7 +1863,14 @@ fn extract_eigen_knobs(val: &Value) -> (usize, f64, usize, f64) {
 
     let data = match val {
         Value::StructureInstance(d) => d,
-        _ => return (default_n_modes, default_tol, default_max_iters, default_sigma),
+        _ => {
+            return (
+                default_n_modes,
+                default_tol,
+                default_max_iters,
+                default_sigma,
+            );
+        }
     };
     let n_modes = match data.fields.get("n_modes") {
         Some(Value::Int(n)) => (*n).max(1) as usize,
@@ -1790,16 +1901,14 @@ fn extract_eigen_knobs(val: &Value) -> (usize, f64, usize, f64) {
 fn extract_reference_direction(val: &Value) -> [f64; 3] {
     let default_dir = [0.0, 0.0, 1.0];
     let raw = match val {
-        Value::StructureInstance(data) => {
-            match data.fields.get("reference_direction") {
-                Some(Value::Vector(items)) if items.len() == 3 => [
-                    read_scalar_si(&items[0]),
-                    read_scalar_si(&items[1]),
-                    read_scalar_si(&items[2]),
-                ],
-                _ => return default_dir,
-            }
-        }
+        Value::StructureInstance(data) => match data.fields.get("reference_direction") {
+            Some(Value::Vector(items)) if items.len() == 3 => [
+                read_scalar_si(&items[0]),
+                read_scalar_si(&items[1]),
+                read_scalar_si(&items[2]),
+            ],
+            _ => return default_dir,
+        },
         _ => return default_dir,
     };
     let norm = (raw[0] * raw[0] + raw[1] * raw[1] + raw[2] * raw[2]).sqrt();
@@ -1821,8 +1930,16 @@ fn extract_damping(val: &Value) -> (f64, f64) {
         && let Some(Value::StructureInstance(damping)) = data.fields.get("damping")
         && damping.type_name == "RayleighDamping"
     {
-        let alpha = damping.fields.get("alpha").map(read_scalar_si).unwrap_or(0.0);
-        let beta = damping.fields.get("beta").map(read_scalar_si).unwrap_or(0.0);
+        let alpha = damping
+            .fields
+            .get("alpha")
+            .map(read_scalar_si)
+            .unwrap_or(0.0);
+        let beta = damping
+            .fields
+            .get("beta")
+            .map(read_scalar_si)
+            .unwrap_or(0.0);
         return (alpha, beta);
     }
     (0.0, 0.0)
@@ -1908,7 +2025,10 @@ fn build_dirichlet_bcs(
             };
             if on_face {
                 for axis in 0..3 {
-                    bcs.push(DirichletBc { dof: 3 * n + axis, value: 0.0 });
+                    bcs.push(DirichletBc {
+                        dof: 3 * n + axis,
+                        value: 0.0,
+                    });
                 }
             }
         }
@@ -1958,16 +2078,28 @@ fn simply_supported_pin_pin_bcs(nodes: &[[f64; 3]], length: f64, height: f64) ->
     for (n, coord) in nodes.iter().enumerate() {
         let on_end = coord[0] <= eps || coord[0] >= length - eps;
         if on_end {
-            bcs.push(DirichletBc { dof: 3 * n + 2, value: 0.0 }); // Z (bending)
+            bcs.push(DirichletBc {
+                dof: 3 * n + 2,
+                value: 0.0,
+            }); // Z (bending)
         }
     }
 
     // (2) Minimal anchors at the two end-face neutral-axis nodes (z = h/2).
     let root = nearest_node(nodes, [0.0, 0.0, height / 2.0]);
     let tip = nearest_node(nodes, [length, 0.0, height / 2.0]);
-    bcs.push(DirichletBc { dof: 3 * root, value: 0.0 }); // X anchor (axial)
-    bcs.push(DirichletBc { dof: 3 * root + 1, value: 0.0 }); // Y anchor (lateral, root)
-    bcs.push(DirichletBc { dof: 3 * tip + 1, value: 0.0 }); // Y anchor (lateral, tip)
+    bcs.push(DirichletBc {
+        dof: 3 * root,
+        value: 0.0,
+    }); // X anchor (axial)
+    bcs.push(DirichletBc {
+        dof: 3 * root + 1,
+        value: 0.0,
+    }); // Y anchor (lateral, root)
+    bcs.push(DirichletBc {
+        dof: 3 * tip + 1,
+        value: 0.0,
+    }); // Y anchor (lateral, tip)
     bcs
 }
 
@@ -1987,7 +2119,9 @@ fn nearest_node(nodes: &[[f64; 3]], target: [f64; 3]) -> usize {
         .iter()
         .enumerate()
         .min_by(|(_, a), (_, b)| {
-            dist2(a).partial_cmp(&dist2(b)).unwrap_or(std::cmp::Ordering::Equal)
+            dist2(a)
+                .partial_cmp(&dist2(b))
+                .unwrap_or(std::cmp::Ordering::Equal)
         })
         .map(|(i, _)| i)
         .expect("beam mesh has at least one node")
@@ -2026,7 +2160,13 @@ fn mode_shape_value(phi_full: &[f64]) -> Value {
     Value::List(
         phi_full
             .chunks_exact(3)
-            .map(|c| Value::Vector(vec![Value::Real(c[0]), Value::Real(c[1]), Value::Real(c[2])]))
+            .map(|c| {
+                Value::Vector(vec![
+                    Value::Real(c[0]),
+                    Value::Real(c[1]),
+                    Value::Real(c[2]),
+                ])
+            })
             .collect(),
     )
 }
@@ -2056,14 +2196,12 @@ mod tests {
 
     use super::{
         ModalAnalysisCache, ModalAssembly, ModalCoreResult, ModalMesh, ModalTrampolineRun,
-        TransientCache,
-        assemble_modal_km, build_beam_mesh, build_dirichlet_bcs, displacement_at_trampoline,
-        eigensolve_modal, extract_damping,
+        TransientCache, assemble_modal_km, build_beam_mesh, build_dirichlet_bcs,
+        displacement_at_trampoline, eigensolve_modal, extract_damping,
         extract_density_or_degenerate, extract_eigen_knobs, extract_reference_direction,
         mode_shape_value, read_real_list, read_scalar_si, resolve_location_node,
-        run_modal_analysis, run_transient_response,
-        simply_supported_pin_pin_bcs, solve_modal_analysis_trampoline, solve_modal_core,
-        solve_transient_response_trampoline,
+        run_modal_analysis, run_transient_response, simply_supported_pin_pin_bcs,
+        solve_modal_analysis_trampoline, solve_modal_core, solve_transient_response_trampoline,
     };
     use crate::{CancellationHandle, ComputeOutcome};
 
@@ -2088,7 +2226,10 @@ mod tests {
     /// Steel-like isotropic material (E = 205 GPa, ν = 0.29) shared across the
     /// modal core-solver fixtures.
     fn steel() -> IsotropicElastic {
-        IsotropicElastic { youngs_modulus: 205e9, poisson_ratio: 0.29 }
+        IsotropicElastic {
+            youngs_modulus: 205e9,
+            poisson_ratio: 0.29,
+        }
     }
 
     /// Steel density (kg/m³) — feeds the consistent mass matrix.
@@ -2107,7 +2248,10 @@ mod tests {
         for (n, coord) in nodes.iter().enumerate() {
             if coord[0] <= 1e-9 {
                 for axis in 0..3 {
-                    bcs.push(DirichletBc { dof: 3 * n + axis, value: 0.0 });
+                    bcs.push(DirichletBc {
+                        dof: 3 * n + axis,
+                        value: 0.0,
+                    });
                     dofs.push(3 * n + axis);
                 }
             }
@@ -2136,8 +2280,12 @@ mod tests {
             "fixture must clamp at least one face DOF",
         );
 
-        let eigen_opts =
-            EigenSolverOptions { n_modes: 3, tol: 1e-8, max_iters: 200, sigma: 0.0 };
+        let eigen_opts = EigenSolverOptions {
+            n_modes: 3,
+            tol: 1e-8,
+            max_iters: 200,
+            sigma: 0.0,
+        };
 
         let result: ModalCoreResult = solve_modal_core(
             ModalMesh::P1(&mesh),
@@ -2238,7 +2386,12 @@ mod tests {
         // ── (a) assembly n_nodes / norms equal a full solve_modal_core's ──────
         let assembly: ModalAssembly =
             assemble_modal_km(ModalMesh::P1(&mesh), STEEL_DENSITY, &steel());
-        let opts2 = EigenSolverOptions { n_modes: 2, tol: 1e-9, max_iters: 200, sigma: 0.0 };
+        let opts2 = EigenSolverOptions {
+            n_modes: 2,
+            tol: 1e-9,
+            max_iters: 200,
+            sigma: 0.0,
+        };
         let core = solve_modal_core(
             ModalMesh::P1(&mesh),
             STEEL_DENSITY,
@@ -2263,11 +2416,14 @@ mod tests {
         );
 
         // ── (b) one assembly, two eigensolves differing only in n_modes ───────
-        let r2: ModalCoreResult =
-            eigensolve_modal(&assembly, reference_direction, &bcs, &opts2);
-        let opts4 = EigenSolverOptions { n_modes: 4, tol: 1e-9, max_iters: 200, sigma: 0.0 };
-        let r4: ModalCoreResult =
-            eigensolve_modal(&assembly, reference_direction, &bcs, &opts4);
+        let r2: ModalCoreResult = eigensolve_modal(&assembly, reference_direction, &bcs, &opts2);
+        let opts4 = EigenSolverOptions {
+            n_modes: 4,
+            tol: 1e-9,
+            max_iters: 200,
+            sigma: 0.0,
+        };
+        let r4: ModalCoreResult = eigensolve_modal(&assembly, reference_direction, &bcs, &opts4);
         assert_eq!(r2.frequencies.len(), 2, "n_modes = 2 must return 2 modes");
         assert_eq!(r4.frequencies.len(), 4, "n_modes = 4 must return 4 modes");
 
@@ -2275,7 +2431,10 @@ mod tests {
         // in both runs → identical to a tight relative tolerance (the assembly
         // was reused, not rebuilt; both runs take the dense path).
         let (f2, f4) = (r2.frequencies[0], r4.frequencies[0]);
-        assert!(f2 > 0.0 && f2.is_finite(), "fundamental must be finite/positive: {f2}");
+        assert!(
+            f2 > 0.0 && f2.is_finite(),
+            "fundamental must be finite/positive: {f2}"
+        );
         let rel = (f2 - f4).abs() / f4.abs().max(1.0);
         assert!(
             rel < 1e-9,
@@ -2360,8 +2519,15 @@ mod tests {
         // ── (1) cold call → fresh assembly, donates a matching cache ──────────
         let inputs2 = modal_inputs(0.02, 0.05, 0.1, STEEL_DENSITY, 2, None);
         let run1: ModalTrampolineRun = run_modal_analysis(&inputs2, None, &handle);
-        assert!(!run1.reused_assembly, "cold call (prior None) must assemble fresh");
-        assert_eq!(modes_len(&run1.outcome), 2, "cold call returns n_modes = 2 modes");
+        assert!(
+            !run1.reused_assembly,
+            "cold call (prior None) must assemble fresh"
+        );
+        assert_eq!(
+            modes_len(&run1.outcome),
+            2,
+            "cold call returns n_modes = 2 modes"
+        );
 
         let ComputeOutcome::Completed { new_warm_state, .. } = &run1.outcome else {
             panic!("cold call must Complete, got {:?}", run1.outcome);
@@ -2411,8 +2577,11 @@ mod tests {
         let (l1, w, h) = (0.02_f64, 0.05_f64, 0.1_f64);
 
         // Prior cache: geometry L1 + steel + P1.
-        let cold =
-            run_modal_analysis(&modal_inputs(l1, w, h, STEEL_DENSITY, 3, None), None, &handle);
+        let cold = run_modal_analysis(
+            &modal_inputs(l1, w, h, STEEL_DENSITY, 3, None),
+            None,
+            &handle,
+        );
         let ComputeOutcome::Completed { new_warm_state, .. } = &cold.outcome else {
             panic!("prior cold call must Complete, got {:?}", cold.outcome);
         };
@@ -2431,7 +2600,10 @@ mod tests {
             Some(&prior),
             &handle,
         );
-        assert!(!a.reused_assembly, "different geometry must re-assemble (no stale K/M)");
+        assert!(
+            !a.reused_assembly,
+            "different geometry must re-assemble (no stale K/M)"
+        );
 
         // (b) different density → MISS.
         let b = run_modal_analysis(
@@ -2439,7 +2611,10 @@ mod tests {
             Some(&prior),
             &handle,
         );
-        assert!(!b.reused_assembly, "different density must re-assemble (M depends on ρ)");
+        assert!(
+            !b.reused_assembly,
+            "different density must re-assemble (M depends on ρ)"
+        );
 
         // (c) different element_order (P2 vs the P1 prior) → MISS.
         let p2 = Value::Enum {
@@ -2462,7 +2637,10 @@ mod tests {
             Some(&prior),
             &handle,
         );
-        assert!(d.reused_assembly, "changing only n_modes must HIT the cached assembly");
+        assert!(
+            d.reused_assembly,
+            "changing only n_modes must HIT the cached assembly"
+        );
     }
 
     /// step-9 (RED → GREEN in step-10): cooperative cancellation in
@@ -2553,17 +2731,30 @@ mod tests {
         for (n, coord) in nodes_p2.iter().enumerate() {
             if coord[0] <= 1e-9 {
                 for axis in 0..3 {
-                    bcs.push(DirichletBc { dof: 3 * n + axis, value: 0.0 });
+                    bcs.push(DirichletBc {
+                        dof: 3 * n + axis,
+                        value: 0.0,
+                    });
                 }
             }
         }
-        assert!(!bcs.is_empty(), "fixture must clamp at least one root-face DOF");
+        assert!(
+            !bcs.is_empty(),
+            "fixture must clamp at least one root-face DOF"
+        );
 
-        let eigen_opts =
-            EigenSolverOptions { n_modes: 3, tol: 1e-8, max_iters: 200, sigma: 0.0 };
+        let eigen_opts = EigenSolverOptions {
+            n_modes: 3,
+            tol: 1e-8,
+            max_iters: 200,
+            sigma: 0.0,
+        };
 
         let result: ModalCoreResult = solve_modal_core(
-            ModalMesh::P2 { nodes: &nodes_p2, tets: &tets_p2 },
+            ModalMesh::P2 {
+                nodes: &nodes_p2,
+                tets: &tets_p2,
+            },
             STEEL_DENSITY,
             &steel(),
             [0.0, 0.0, 1.0], // reference_direction; unused by this assertion
@@ -2638,8 +2829,12 @@ mod tests {
 
         let mesh = build_beam_mesh(length, width, height);
         let (bcs, _constrained) = clamp_x_min_face(&mesh.nodes);
-        let eigen_opts =
-            EigenSolverOptions { n_modes: 3, tol: 1e-8, max_iters: 200, sigma: 0.0 };
+        let eigen_opts = EigenSolverOptions {
+            n_modes: 3,
+            tol: 1e-8,
+            max_iters: 200,
+            sigma: 0.0,
+        };
 
         let result: ModalCoreResult = solve_modal_core(
             ModalMesh::P1(&mesh),
@@ -2712,8 +2907,12 @@ mod tests {
         assert!(n_free > 0, "fixture must leave at least one free DOF");
 
         // Full spectrum: request every free mode so {φ_i} is a complete basis.
-        let eigen_opts =
-            EigenSolverOptions { n_modes: n_free, tol: 1e-8, max_iters: 200, sigma: 0.0 };
+        let eigen_opts = EigenSolverOptions {
+            n_modes: n_free,
+            tol: 1e-8,
+            max_iters: 200,
+            sigma: 0.0,
+        };
 
         let result: ModalCoreResult = solve_modal_core(
             ModalMesh::P1(&mesh),
@@ -2739,14 +2938,18 @@ mod tests {
         for &g in &constrained_dofs {
             is_constrained[g] = true;
         }
-        let full_of_free: Vec<usize> =
-            (0..n_dofs).filter(|&g| !is_constrained[g]).collect();
-        let d_free: Vec<f64> =
-            full_of_free.iter().map(|&g| reference_direction[g % 3]).collect();
+        let full_of_free: Vec<usize> = (0..n_dofs).filter(|&g| !is_constrained[g]).collect();
+        let d_free: Vec<f64> = full_of_free
+            .iter()
+            .map(|&g| reference_direction[g % 3])
+            .collect();
 
         // RHS: total translational mass of the free DOFs along d.
         let total_mass = m_quadratic_form(&result.m_free, &d_free, &d_free);
-        assert!(total_mass > 0.0, "reference-direction mass must be positive");
+        assert!(
+            total_mass > 0.0,
+            "reference-direction mass must be positive"
+        );
 
         // LHS: Σ_i participation_mass[i] = Σ_i (φ_iᵀ M d)².
         let captured: f64 = result.participation_mass.iter().sum();
@@ -2899,8 +3102,12 @@ mod tests {
         );
 
         // Production default n_modes; empty BCs → 0 constrained DOFs (< 6).
-        let eigen_opts =
-            EigenSolverOptions { n_modes: 10, tol: 1e-8, max_iters: 200, sigma: 0.0 };
+        let eigen_opts = EigenSolverOptions {
+            n_modes: 10,
+            tol: 1e-8,
+            max_iters: 200,
+            sigma: 0.0,
+        };
 
         let result: ModalCoreResult = solve_modal_core(
             ModalMesh::P1(&mesh),
@@ -2936,14 +3143,20 @@ mod tests {
         let mut fields: Vec<(String, Value)> = vec![
             (
                 "youngs_modulus".to_string(),
-                Value::Scalar { si_value: 205e9, dimension: DimensionVector::PRESSURE },
+                Value::Scalar {
+                    si_value: 205e9,
+                    dimension: DimensionVector::PRESSURE,
+                },
             ),
             ("poisson_ratio".to_string(), Value::Real(0.29)),
         ];
         if let Some(d) = density {
             fields.push((
                 "density".to_string(),
-                Value::Scalar { si_value: d, dimension: DimensionVector::MASS_DENSITY },
+                Value::Scalar {
+                    si_value: d,
+                    dimension: DimensionVector::MASS_DENSITY,
+                },
             ));
         }
         Value::StructureInstance(Box::new(StructureInstanceData {
@@ -2959,14 +3172,19 @@ mod tests {
     /// `"E_ModalNoMassMatrix"` and (b) a degenerate `ModalResult` whose `modes`
     /// list is empty (no eigenproblem was solved). No panic on any path.
     fn assert_no_mass_degenerate(outcome: ComputeOutcome) {
-        let ComputeOutcome::Completed { result, diagnostics, .. } = outcome else {
+        let ComputeOutcome::Completed {
+            result,
+            diagnostics,
+            ..
+        } = outcome
+        else {
             panic!("expected a Completed degenerate outcome, got a non-Completed variant");
         };
 
         // (a) an Error diagnostic identifies the no-mass-matrix condition.
-        let has_err = diagnostics.iter().any(|d| {
-            d.severity == Severity::Error && d.message.starts_with("E_ModalNoMassMatrix")
-        });
+        let has_err = diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error && d.message.starts_with("E_ModalNoMassMatrix"));
         assert!(
             has_err,
             "expected an Error starting \"E_ModalNoMassMatrix\"; got {diagnostics:?}",
@@ -3079,7 +3297,10 @@ mod tests {
 
     /// A `Length` scalar (SI metres), as the trampoline reads geometry inputs.
     fn length_scalar(m: f64) -> Value {
-        Value::Scalar { si_value: m, dimension: DimensionVector::LENGTH }
+        Value::Scalar {
+            si_value: m,
+            dimension: DimensionVector::LENGTH,
+        }
     }
 
     /// Amendment (suggestion 2): `extract_eigen_knobs` reads populated fields and
@@ -3097,7 +3318,10 @@ mod tests {
         assert_eq!(extract_eigen_knobs(&opts), (7, 1e-7, 50, 2.5));
 
         // Missing fields → defaults (10, 1e-9, 200, 0.0).
-        assert_eq!(extract_eigen_knobs(&modal_options(vec![])), (10, 1e-9, 200, 0.0));
+        assert_eq!(
+            extract_eigen_knobs(&modal_options(vec![])),
+            (10, 1e-9, 200, 0.0)
+        );
 
         // Malformed: non-positive n_modes clamps to ≥ 1; non-positive tol and
         // non-finite sigma fall back to their defaults.
@@ -3131,8 +3355,14 @@ mod tests {
         assert!(got[0] == 0.0 && got[1] == 0.0 && (got[2] - 1.0).abs() < 1e-12);
 
         // Zero-norm → bending default; missing field → default; non-struct → default.
-        assert_eq!(extract_reference_direction(&dir(0.0, 0.0, 0.0)), [0.0, 0.0, 1.0]);
-        assert_eq!(extract_reference_direction(&modal_options(vec![])), [0.0, 0.0, 1.0]);
+        assert_eq!(
+            extract_reference_direction(&dir(0.0, 0.0, 0.0)),
+            [0.0, 0.0, 1.0]
+        );
+        assert_eq!(
+            extract_reference_direction(&modal_options(vec![])),
+            [0.0, 0.0, 1.0]
+        );
         assert_eq!(extract_reference_direction(&Value::Undef), [0.0, 0.0, 1.0]);
     }
 
@@ -3144,8 +3374,10 @@ mod tests {
         let damped = modal_options(vec![("damping".to_string(), rayleigh_damping(0.5, 1e-6))]);
         assert_eq!(extract_damping(&damped), (0.5, 1e-6));
 
-        let nodamp =
-            modal_options(vec![("damping".to_string(), struct_instance("NoDamping", vec![]))]);
+        let nodamp = modal_options(vec![(
+            "damping".to_string(),
+            struct_instance("NoDamping", vec![]),
+        )]);
         assert_eq!(extract_damping(&nodamp), (0.0, 0.0));
 
         assert_eq!(extract_damping(&modal_options(vec![])), (0.0, 0.0));
@@ -3183,7 +3415,10 @@ mod tests {
                 && !pin_set.contains(&(3 * n))
                 && !pin_set.contains(&(3 * n + 1))
         });
-        assert!(z_only_end_node, "pin-pin must leave an end-face node with only Z constrained");
+        assert!(
+            z_only_end_node,
+            "pin-pin must leave an end-face node with only Z constrained"
+        );
 
         // (b) Only x_min named → clamp: every x_min node has all three DOFs.
         let clamp_opts = modal_options(vec![(
@@ -3275,7 +3510,12 @@ mod tests {
             &CancellationHandle::new(),
         );
 
-        let ComputeOutcome::Completed { result, diagnostics, .. } = outcome else {
+        let ComputeOutcome::Completed {
+            result,
+            diagnostics,
+            ..
+        } = outcome
+        else {
             panic!("expected a Completed outcome");
         };
         // A well-constrained clamped beam produces no Error diagnostics.
@@ -3318,13 +3558,22 @@ mod tests {
                 Some(Value::Real(f)) => *f,
                 other => panic!("mode {i} frequency must be Real; got {other:?}"),
             };
-            assert!(f.is_finite() && f > 0.0, "mode {i} frequency {f} must be finite > 0");
-            assert!(f >= prev_f, "modes must be ascending by frequency: {f} < {prev_f}");
+            assert!(
+                f.is_finite() && f > 0.0,
+                "mode {i} frequency {f} must be finite > 0"
+            );
+            assert!(
+                f >= prev_f,
+                "modes must be ascending by frequency: {f} < {prev_f}"
+            );
             prev_f = f;
 
             let omega = 2.0 * std::f64::consts::PI * f;
             let expected = rayleigh_damping_ratio(alpha, beta, omega);
-            assert!(expected > 0.0, "fixture (α, β) must give nonzero ζ (≠ NoDamping)");
+            assert!(
+                expected > 0.0,
+                "fixture (α, β) must give nonzero ζ (≠ NoDamping)"
+            );
             match m.fields.get("damping_ratio") {
                 Some(Value::Real(zeta)) => assert!(
                     (zeta - expected).abs() < 1e-12,
@@ -3333,10 +3582,7 @@ mod tests {
                 other => panic!("mode {i} damping_ratio must be Real; got {other:?}"),
             }
             assert!(
-                matches!(
-                    m.fields.get("participation_mass"),
-                    Some(Value::Real(_))
-                ),
+                matches!(m.fields.get("participation_mass"), Some(Value::Real(_))),
                 "mode {i} participation_mass must be Real",
             );
         }
@@ -3469,7 +3715,12 @@ mod tests {
         // Oracle: direct solve_modal_core call with the same inputs the trampoline uses.
         let mesh = build_beam_mesh(length, width, height);
         let (bcs, _) = clamp_x_min_face(&mesh.nodes);
-        let eigen_opts = EigenSolverOptions { n_modes: 3, tol: 1e-9, max_iters: 200, sigma: 0.0 };
+        let eigen_opts = EigenSolverOptions {
+            n_modes: 3,
+            tol: 1e-9,
+            max_iters: 200,
+            sigma: 0.0,
+        };
         let core = solve_modal_core(
             ModalMesh::P1(&mesh),
             STEEL_DENSITY,
@@ -3478,14 +3729,21 @@ mod tests {
             &bcs,
             &eigen_opts,
         );
-        assert!(!core.phi_full.is_empty(), "oracle must return ≥ 1 phi_full vector");
+        assert!(
+            !core.phi_full.is_empty(),
+            "oracle must return ≥ 1 phi_full vector"
+        );
 
         // Reshape phi_full[0] into the expected List<Vector3<Dimensionless>>.
         let expected = Value::List(
             core.phi_full[0]
                 .chunks_exact(3)
                 .map(|c| {
-                    Value::Vector(vec![Value::Real(c[0]), Value::Real(c[1]), Value::Real(c[2])])
+                    Value::Vector(vec![
+                        Value::Real(c[0]),
+                        Value::Real(c[1]),
+                        Value::Real(c[2]),
+                    ])
                 })
                 .collect(),
         );
@@ -3618,7 +3876,12 @@ mod tests {
                 None,
                 &CancellationHandle::new(),
             );
-            let ComputeOutcome::Completed { result, diagnostics, .. } = outcome else {
+            let ComputeOutcome::Completed {
+                result,
+                diagnostics,
+                ..
+            } = outcome
+            else {
                 panic!("expected a Completed outcome");
             };
             assert!(
@@ -3679,12 +3942,19 @@ mod tests {
     /// A `Vector3<Dimensionless>` runtime value — the per-node `Value::Vector(
     /// [Real;3])` encoding `mode_shape_value` and `read_vec3` traffic in.
     fn vec3_value(v: [f64; 3]) -> Value {
-        Value::Vector(vec![Value::Real(v[0]), Value::Real(v[1]), Value::Real(v[2])])
+        Value::Vector(vec![
+            Value::Real(v[0]),
+            Value::Real(v[1]),
+            Value::Real(v[2]),
+        ])
     }
 
     /// A `Time` scalar (SI seconds), as the trampoline reads `t_start/t_end/dt`.
     fn time_scalar(s: f64) -> Value {
-        Value::Scalar { si_value: s, dimension: DimensionVector::TIME }
+        Value::Scalar {
+            si_value: s,
+            dimension: DimensionVector::TIME,
+        }
     }
 
     /// Build a synthetic `Mode` StructureInstance with a known frequency (Hz),
@@ -3728,7 +3998,10 @@ mod tests {
                 ("direction".to_string(), vec3_value(dir)),
                 (
                     "magnitude".to_string(),
-                    Value::Scalar { si_value: magnitude_n, dimension: DimensionVector::FORCE },
+                    Value::Scalar {
+                        si_value: magnitude_n,
+                        dimension: DimensionVector::FORCE,
+                    },
                 ),
                 ("start_time".to_string(), time_scalar(start_time_s)),
             ],
@@ -3814,7 +4087,12 @@ mod tests {
             None,
             &CancellationHandle::new(),
         );
-        let ComputeOutcome::Completed { result, diagnostics, .. } = outcome else {
+        let ComputeOutcome::Completed {
+            result,
+            diagnostics,
+            ..
+        } = outcome
+        else {
             panic!("expected a Completed outcome");
         };
         // The happy path (non-empty forcing) emits no Error diagnostics.
@@ -3830,12 +4108,19 @@ mod tests {
         assert_eq!(data.type_name, "DisplacementTimeHistory");
 
         let n_times = uniform_time_grid(t_start, t_end, dt).len();
-        assert!(n_times > 1, "fixture grid must have > 1 sample (got {n_times})");
+        assert!(
+            n_times > 1,
+            "fixture grid must have > 1 sample (got {n_times})"
+        );
 
         // t_samples: one finite Time scalar per grid point.
         match data.fields.get("t_samples") {
             Some(Value::List(ts)) => {
-                assert_eq!(ts.len(), n_times, "t_samples length must equal the grid count");
+                assert_eq!(
+                    ts.len(),
+                    n_times,
+                    "t_samples length must equal the grid count"
+                );
                 assert!(
                     ts.iter().all(|v| read_scalar_si(v).is_finite()),
                     "every t_sample must be finite",
@@ -3847,7 +4132,11 @@ mod tests {
         // mode_coords: outer length == n_modes, each inner length == n_times, finite.
         match data.fields.get("mode_coords") {
             Some(Value::List(modes)) => {
-                assert_eq!(modes.len(), 2, "mode_coords outer length must equal n_modes");
+                assert_eq!(
+                    modes.len(),
+                    2,
+                    "mode_coords outer length must equal n_modes"
+                );
                 for (i, coords) in modes.iter().enumerate() {
                     match coords {
                         Value::List(series) => {
@@ -3874,12 +4163,18 @@ mod tests {
                 assert_eq!(mr.type_name, "ModalResult", "echoed modal_result type");
                 match mr.fields.get("modes") {
                     Some(Value::List(m)) => {
-                        assert_eq!(m.len(), 2, "echoed modal_result must carry the 2 input modes")
+                        assert_eq!(
+                            m.len(),
+                            2,
+                            "echoed modal_result must carry the 2 input modes"
+                        )
                     }
                     other => panic!("echoed modal_result.modes must be a List; got {other:?}"),
                 }
             }
-            other => panic!("modal_result must echo a ModalResult StructureInstance; got {other:?}"),
+            other => {
+                panic!("modal_result must echo a ModalResult StructureInstance; got {other:?}")
+            }
         }
     }
 
@@ -3937,7 +4232,12 @@ mod tests {
             None,
             &CancellationHandle::new(),
         );
-        let ComputeOutcome::Completed { result, diagnostics, .. } = outcome else {
+        let ComputeOutcome::Completed {
+            result,
+            diagnostics,
+            ..
+        } = outcome
+        else {
             panic!("expected a Completed outcome");
         };
 
@@ -4013,7 +4313,12 @@ mod tests {
                 None,
                 &CancellationHandle::new(),
             );
-            let ComputeOutcome::Completed { result, diagnostics, .. } = outcome else {
+            let ComputeOutcome::Completed {
+                result,
+                diagnostics,
+                ..
+            } = outcome
+            else {
                 panic!("expected a Completed outcome");
             };
             assert!(
@@ -4070,14 +4375,24 @@ mod tests {
         // whose `modes` field is absent, and a non-ModalResult struct. All four
         // route through the same `modal_result_modes(&modal_result).is_empty()`
         // branch and must emit the same E_TransientModalResultMissing diagnostic.
-        let modal_result_no_modes_field =
-            struct_instance("ModalResult", vec![("part".to_string(), Value::String(String::new()))]);
-        let non_modal_result_struct =
-            struct_instance("SomeOtherStruct", vec![("modes".to_string(), Value::List(vec![]))]);
+        let modal_result_no_modes_field = struct_instance(
+            "ModalResult",
+            vec![("part".to_string(), Value::String(String::new()))],
+        );
+        let non_modal_result_struct = struct_instance(
+            "SomeOtherStruct",
+            vec![("modes".to_string(), Value::List(vec![]))],
+        );
         for (label, modal_result) in [
             ("Value::Undef", Value::Undef),
-            ("modal_result_with_modes(vec![])", modal_result_with_modes(vec![])),
-            ("ModalResult without modes field", modal_result_no_modes_field),
+            (
+                "modal_result_with_modes(vec![])",
+                modal_result_with_modes(vec![]),
+            ),
+            (
+                "ModalResult without modes field",
+                modal_result_no_modes_field,
+            ),
             ("non-ModalResult struct", non_modal_result_struct),
         ] {
             let value_inputs = vec![
@@ -4094,14 +4409,18 @@ mod tests {
                 None,
                 &CancellationHandle::new(),
             );
-            let ComputeOutcome::Completed { result, diagnostics, .. } = outcome else {
+            let ComputeOutcome::Completed {
+                result,
+                diagnostics,
+                ..
+            } = outcome
+            else {
                 panic!("[{label}] expected a Completed outcome");
             };
 
             // (a) an Error diagnostic identifies the missing-modal-result condition.
             let has_err = diagnostics.iter().any(|d| {
-                d.severity == Severity::Error
-                    && d.message.contains("E_TransientModalResultMissing")
+                d.severity == Severity::Error && d.message.contains("E_TransientModalResultMissing")
             });
             assert!(
                 has_err,
@@ -4175,8 +4494,11 @@ mod tests {
 
         // Invoke the trampoline for `location` and return the List<Real> as Vec<f64>.
         let query = |location: &str| -> Vec<f64> {
-            let value_inputs =
-                vec![history.clone(), Value::String(location.to_string()), vec3_value(dir)];
+            let value_inputs = vec![
+                history.clone(),
+                Value::String(location.to_string()),
+                vec3_value(dir),
+            ];
             let outcome = displacement_at_trampoline(
                 &value_inputs,
                 &[],
@@ -4184,7 +4506,12 @@ mod tests {
                 None,
                 &CancellationHandle::new(),
             );
-            let ComputeOutcome::Completed { result, diagnostics, .. } = outcome else {
+            let ComputeOutcome::Completed {
+                result,
+                diagnostics,
+                ..
+            } = outcome
+            else {
                 panic!("expected a Completed outcome");
             };
             assert!(
@@ -4193,7 +4520,10 @@ mod tests {
             );
             match result {
                 Value::List(items) => {
-                    assert!(!items.is_empty(), "displacement_at must not return an empty list");
+                    assert!(
+                        !items.is_empty(),
+                        "displacement_at must not return an empty list"
+                    );
                     assert_eq!(items.len(), n_times, "series length must equal n_times");
                     assert!(
                         items.iter().map(read_scalar_si).all(f64::is_finite),
@@ -4208,14 +4538,19 @@ mod tests {
         // Closed-form expectation u[j] = c0·mc0[j] + c1·mc1[j] (same mode-order
         // summation as `reconstruct_series`).
         let expect = |c0: f64, c1: f64| -> Vec<f64> {
-            (0..n_times).map(|j| c0 * mc0[j] + c1 * mc1[j]).collect::<Vec<_>>()
+            (0..n_times)
+                .map(|j| c0 * mc0[j] + c1 * mc1[j])
+                .collect::<Vec<_>>()
         };
 
         // Case A — numeric "1" → node 1: c0 = Φ₀[1]·ẑ = 0.5, c1 = Φ₁[1]·ẑ = -0.7.
         let got_node1 = query("1");
         let want_node1 = expect(0.5, -0.7);
         for (j, (g, w)) in got_node1.iter().zip(want_node1.iter()).enumerate() {
-            assert!((g - w).abs() < 1e-12, "node-1 series[{j}]: got {g}, want {w}");
+            assert!(
+                (g - w).abs() < 1e-12,
+                "node-1 series[{j}]: got {g}, want {w}"
+            );
         }
 
         // Case B — non-numeric "tip" → antinode node 2: c0 = Φ₀[2]·ẑ = 1.0,
@@ -4223,11 +4558,17 @@ mod tests {
         let got_tip = query("tip");
         let want_tip = expect(1.0, 0.4);
         for (j, (g, w)) in got_tip.iter().zip(want_tip.iter()).enumerate() {
-            assert!((g - w).abs() < 1e-12, "tip (antinode) series[{j}]: got {g}, want {w}");
+            assert!(
+                (g - w).abs() < 1e-12,
+                "tip (antinode) series[{j}]: got {g}, want {w}"
+            );
         }
 
         // The two locations resolve to different nodes → observably different series.
-        assert_ne!(got_node1, got_tip, "numeric index and antinode must resolve distinctly");
+        assert_ne!(
+            got_node1, got_tip,
+            "numeric index and antinode must resolve distinctly"
+        );
     }
 
     /// Amendment (reviewer suggestion 4): pin the out-of-range numeric-index
@@ -4246,14 +4587,26 @@ mod tests {
         assert_eq!(resolve_location_node("2", &shape), 2);
 
         // Out-of-range explicit indices clamp to the last node (n_nodes − 1 = 2).
-        assert_eq!(resolve_location_node("3", &shape), 2, "index just past the end clamps");
-        assert_eq!(resolve_location_node("99", &shape), 2, "far out-of-range clamps");
+        assert_eq!(
+            resolve_location_node("3", &shape),
+            2,
+            "index just past the end clamps"
+        );
+        assert_eq!(
+            resolve_location_node("99", &shape),
+            2,
+            "far out-of-range clamps"
+        );
 
         // A non-numeric string resolves to the antinode (node 2 here), not the clamp path.
         assert_eq!(resolve_location_node("tip", &shape), 2);
 
         // Empty shape: the saturating clamp floor is 0 (no panic / underflow).
-        assert_eq!(resolve_location_node("5", &[]), 0, "empty shape clamps to 0 without panic");
+        assert_eq!(
+            resolve_location_node("5", &[]),
+            0,
+            "empty shape clamps to 0 without panic"
+        );
     }
 
     // ── task λ: run_transient_response cache-hit tests (RED → GREEN step-6) ──
@@ -4267,7 +4620,13 @@ mod tests {
         t_end: f64,
         dt: f64,
     ) -> Vec<Value> {
-        vec![modal_result, forcing, time_scalar(t_start), time_scalar(t_end), time_scalar(dt)]
+        vec![
+            modal_result,
+            forcing,
+            time_scalar(t_start),
+            time_scalar(t_end),
+            time_scalar(dt),
+        ]
     }
 
     /// Extract the per-mode `Vec<Vec<f64>>` modal-coordinate matrix from a
@@ -4319,8 +4678,15 @@ mod tests {
             None,
             &handle,
         );
-        assert!(!cold.reused_setup, "cold call (prior=None) must report reused_setup = false");
-        let ComputeOutcome::Completed { new_warm_state: ref ws1, .. } = cold.outcome else {
+        assert!(
+            !cold.reused_setup,
+            "cold call (prior=None) must report reused_setup = false"
+        );
+        let ComputeOutcome::Completed {
+            new_warm_state: ref ws1,
+            ..
+        } = cold.outcome
+        else {
             panic!("cold call must Complete; got {:?}", cold.outcome);
         };
         // Donated warm state must be a TransientCache with the correct key.
@@ -4329,9 +4695,8 @@ mod tests {
             .expect("cold Completed must donate a warm state")
             .downcast_ref::<TransientCache>()
             .expect("donated state must be a TransientCache");
-        let expected_key = TransientCacheKey::new(
-            t_start, t_end, dt, vec![(40.0, 0.01), (250.0, 0.02)],
-        );
+        let expected_key =
+            TransientCacheKey::new(t_start, t_end, dt, vec![(40.0, 0.01), (250.0, 0.02)]);
         assert!(
             cache1.key.matches(&expected_key),
             "donated cache key must match (t_start, t_end, dt, modes)",
@@ -4345,18 +4710,23 @@ mod tests {
             Some(&prior),
             &handle,
         );
-        assert!(warm.reused_setup, "call with same modal_result/t_range/dt but different forcing must HIT");
+        assert!(
+            warm.reused_setup,
+            "call with same modal_result/t_range/dt but different forcing must HIT"
+        );
         assert!(
             matches!(warm.outcome, ComputeOutcome::Completed { .. }),
-            "warm hit must Completed; got {:?}", warm.outcome,
+            "warm hit must Completed; got {:?}",
+            warm.outcome,
         );
         let coords_f2 = mode_coords_from_outcome(&warm.outcome);
         // The ODE was re-integrated against f2 (magnitude 20 vs 10): at least one
         // coordinate must differ.
         assert!(
-            coords_f1.iter().zip(coords_f2.iter()).any(|(v1, v2)| {
-                v1.iter().zip(v2.iter()).any(|(a, b)| (a - b).abs() > 1e-15)
-            }),
+            coords_f1
+                .iter()
+                .zip(coords_f2.iter())
+                .any(|(v1, v2)| { v1.iter().zip(v2.iter()).any(|(a, b)| (a - b).abs() > 1e-15) }),
             "forcing-only re-integration must change the mode_coords",
         );
 
@@ -4371,12 +4741,14 @@ mod tests {
         );
         let coords_f2_cold = mode_coords_from_outcome(&cold_f2.outcome);
         assert_eq!(
-            coords_f2.len(), coords_f2_cold.len(),
+            coords_f2.len(),
+            coords_f2_cold.len(),
             "warm-hit and cold-f2 must produce the same number of modes",
         );
         for (i, (warm_mode, cold_mode)) in coords_f2.iter().zip(coords_f2_cold.iter()).enumerate() {
             assert_eq!(
-                warm_mode.len(), cold_mode.len(),
+                warm_mode.len(),
+                cold_mode.len(),
                 "mode {i}: warm-hit and cold-f2 must produce the same number of time steps",
             );
             for (j, (w, c)) in warm_mode.iter().zip(cold_mode.iter()).enumerate() {
@@ -4402,7 +4774,10 @@ mod tests {
             Some(&prior2),
             &handle,
         );
-        assert!(!miss_freq.reused_setup, "changed frequency_hz must be a cache MISS");
+        assert!(
+            !miss_freq.reused_setup,
+            "changed frequency_hz must be a cache MISS"
+        );
 
         // (b) different dt → MISS
         let prior3 = cache1.clone().into_opaque_state().0;
@@ -4420,7 +4795,10 @@ mod tests {
             Some(&prior4),
             &handle,
         );
-        assert!(!miss_tend.reused_setup, "changed t_end must be a cache MISS");
+        assert!(
+            !miss_tend.reused_setup,
+            "changed t_end must be a cache MISS"
+        );
     }
 
     // ── task λ step-7: cancellation tests (RED → GREEN in step-8) ────────────
@@ -4454,14 +4832,18 @@ mod tests {
             "a pre-cancelled handle must yield ComputeOutcome::Cancelled; got {:?}",
             run.outcome,
         );
-        assert!(!run.reused_setup, "a cancelled run must report reused_setup = false");
+        assert!(
+            !run.reused_setup,
+            "a cancelled run must report reused_setup = false"
+        );
 
         // (b) fresh handle → Completed (happy path unaffected by the added polls)
         let fresh = CancellationHandle::new();
         let ok = run_transient_response(&inputs, None, &fresh);
         assert!(
             matches!(ok.outcome, ComputeOutcome::Completed { .. }),
-            "a fresh handle must Complete; got {:?}", ok.outcome,
+            "a fresh handle must Complete; got {:?}",
+            ok.outcome,
         );
     }
 }

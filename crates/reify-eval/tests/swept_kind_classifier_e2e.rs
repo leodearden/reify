@@ -10,10 +10,10 @@
 use reify_compiler::{
     CompiledGeometryOp, CurveKind, GeomRef, ModifyKind, PrimitiveKind, SweepKind,
 };
-use reify_eval::SweptKind;
-use reify_test_support::*;
 use reify_core::Type;
+use reify_eval::SweptKind;
 use reify_ir::{ExportFormat, Value};
+use reify_test_support::*;
 
 /// (a) Extrude-only realization populates the table with a single
 /// `SweptKind::Extrude` keyed by the realization's final handle.

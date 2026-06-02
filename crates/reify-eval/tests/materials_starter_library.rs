@@ -12,9 +12,9 @@
 
 #![allow(clippy::mutable_key_type)]
 
-use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 use reify_core::ValueCellId;
 use reify_ir::{PersistentMap, Value};
+use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 /// `PersistentMap<String, Value>::get` is keyed by `&String`; this lets tests
 /// index `StructureInstance.fields` with a string literal.
@@ -85,9 +85,7 @@ structure def {fixture_name} {{
                 );
             }
         }
-        other => panic!(
-            "expected Value::StructureInstance for {fixture_name}.mat, got {other:?}"
-        ),
+        other => panic!("expected Value::StructureInstance for {fixture_name}.mat, got {other:?}"),
     }
 
     // (c) member-access cells must resolve to non-Undef scalars.
@@ -173,12 +171,20 @@ fn cli_reify_eval_prints_inspectable_material_values() {
         .expect("workspace root is two levels above crates/reify-eval")
         .to_path_buf();
     let example = workspace_root.join("examples/materials_starter_library.ri");
-    let golden =
-        std::path::Path::new(manifest).join("tests/golden/materials_starter_library.txt");
+    let golden = std::path::Path::new(manifest).join("tests/golden/materials_starter_library.txt");
 
     let output = std::process::Command::new(env!("CARGO"))
         .current_dir(&workspace_root)
-        .args(["run", "-q", "-p", "reify-cli", "--bin", "reify", "--", "eval"])
+        .args([
+            "run",
+            "-q",
+            "-p",
+            "reify-cli",
+            "--bin",
+            "reify",
+            "--",
+            "eval",
+        ])
         .arg(&example)
         .output()
         .expect("failed to spawn `cargo run -p reify-cli -- eval`");

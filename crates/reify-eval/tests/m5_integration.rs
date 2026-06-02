@@ -6,10 +6,10 @@
 use std::fs;
 
 use reify_compiler::module_dag::{ModuleResolver, compile_project};
-use reify_test_support::mocks::MockConstraintChecker;
-use reify_test_support::{parse_and_compile, parse_and_compile_with_stdlib};
 use reify_core::ValueCellId;
 use reify_ir::{ExportFormat, Satisfaction};
+use reify_test_support::mocks::MockConstraintChecker;
+use reify_test_support::{parse_and_compile, parse_and_compile_with_stdlib};
 
 // ── Step 1: trait_implementing_structure ─────────────────────────────
 
@@ -207,11 +207,7 @@ structure S {
         .values
         .get(&n_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", n_id));
-    assert_eq!(
-        *n_val,
-        reify_ir::Value::Int(3),
-        "items.count should be 3"
-    );
+    assert_eq!(*n_val, reify_ir::Value::Int(3), "items.count should be 3");
 
     // total = items.sum = 60
     let total_id = ValueCellId::new("S", "total");
@@ -667,11 +663,7 @@ structure def Widget : Sizable {
         .values
         .get(&n_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", n_id));
-    assert_eq!(
-        *n_val,
-        reify_ir::Value::Int(5),
-        "items.count should be 5"
-    );
+    assert_eq!(*n_val, reify_ir::Value::Int(5), "items.count should be 5");
 
     // Check constraints
     let result = engine.check(&compiled);
@@ -1014,11 +1006,7 @@ fn collection_with_quantifier() {
         .values
         .get(&n_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", n_id));
-    assert_eq!(
-        *n_val,
-        reify_ir::Value::Int(4),
-        "items.count should be 4"
-    );
+    assert_eq!(*n_val, reify_ir::Value::Int(4), "items.count should be 4");
 
     // Check total = items.sum = 50
     let total_id = ValueCellId::new("Inventory", "total");
@@ -1038,11 +1026,7 @@ fn collection_with_quantifier() {
         .values
         .get(&first_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", first_id));
-    assert_eq!(
-        *first_val,
-        reify_ir::Value::Int(5),
-        "items[0] should be 5"
-    );
+    assert_eq!(*first_val, reify_ir::Value::Int(5), "items[0] should be 5");
 
     // Check last = items[3] = 20
     let last_id = ValueCellId::new("Inventory", "last");
@@ -1050,11 +1034,7 @@ fn collection_with_quantifier() {
         .values
         .get(&last_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", last_id));
-    assert_eq!(
-        *last_val,
-        reify_ir::Value::Int(20),
-        "items[3] should be 20"
-    );
+    assert_eq!(*last_val, reify_ir::Value::Int(20), "items[3] should be 20");
 
     // Check constraints — forall may evaluate as Undef but MockConstraintChecker
     // returns Satisfied for all constraints
@@ -1503,11 +1483,7 @@ fn combined_all_features() {
         .values
         .get(&ic_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", ic_id));
-    assert_eq!(
-        *ic_val,
-        reify_ir::Value::Int(4),
-        "item_count should be 4"
-    );
+    assert_eq!(*ic_val, reify_ir::Value::Int(4), "item_count should be 4");
 
     // Check item_total = items.sum = 100
     let it_id = ValueCellId::new("Widget", "item_total");

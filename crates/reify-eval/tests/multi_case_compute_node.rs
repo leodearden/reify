@@ -32,11 +32,11 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use reify_eval::{ComputeFn, ComputeOutcome, RealizationReadHandle};
 use reify_core::{DimensionVector, Severity, Type, ValueCellId};
+use reify_eval::graph::CancellationHandle;
+use reify_eval::{ComputeFn, ComputeOutcome, RealizationReadHandle};
 use reify_ir::{FieldSourceKind, OpaqueState, SampledGridKind, Value};
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
-use reify_eval::graph::CancellationHandle;
 
 // ── Fixture source ────────────────────────────────────────────────────────────
 //
@@ -83,9 +83,9 @@ fn extract_max_von_mises_f64(result: &Value, case_name: &str) -> f64 {
     });
     match mvm {
         Value::Scalar { si_value, .. } => si_value,
-        other => panic!(
-            "case \"{case_name}\": max_von_mises must be Value::Scalar, got: {other:?}"
-        ),
+        other => {
+            panic!("case \"{case_name}\": max_von_mises must be Value::Scalar, got: {other:?}")
+        }
     }
 }
 
@@ -179,9 +179,7 @@ fn two_case_solve_returns_populated_multi_case_result() {
     let cases_map = match result_val {
         Value::Map(outer) => match outer.get(&Value::String("cases".to_string())) {
             Some(Value::Map(inner)) => inner.clone(),
-            other => panic!(
-                "result[\"cases\"] must be Value::Map, got: {other:?}"
-            ),
+            other => panic!("result[\"cases\"] must be Value::Map, got: {other:?}"),
         },
         other => panic!(
             "solve_load_cases result must be Value::Map (not {:?})",
@@ -231,7 +229,12 @@ fn two_case_solve_returns_populated_multi_case_result() {
             panic!("case \"{case_name}\": displacement field missing from ElasticResult")
         });
         let (disp_domain, disp_codomain, disp_sf) = match &disp_val {
-            Value::Field { domain_type, codomain_type, source, lambda } => {
+            Value::Field {
+                domain_type,
+                codomain_type,
+                source,
+                lambda,
+            } => {
                 assert!(
                     matches!(source, FieldSourceKind::Sampled),
                     "case \"{case_name}\": displacement source must be Sampled, got: {source:?}"
@@ -285,7 +288,12 @@ fn two_case_solve_returns_populated_multi_case_result() {
             panic!("case \"{case_name}\": stress field missing from ElasticResult")
         });
         let (stress_domain, stress_codomain, stress_sf) = match &stress_val {
-            Value::Field { domain_type, codomain_type, source, lambda } => {
+            Value::Field {
+                domain_type,
+                codomain_type,
+                source,
+                lambda,
+            } => {
                 assert!(
                     matches!(source, FieldSourceKind::Sampled),
                     "case \"{case_name}\": stress source must be Sampled, got: {source:?}"
@@ -299,9 +307,9 @@ fn two_case_solve_returns_populated_multi_case_result() {
                 };
                 (domain_type.clone(), codomain_type.clone(), sf)
             }
-            other => panic!(
-                "case \"{case_name}\": expected stress to be Value::Field, got: {other:?}"
-            ),
+            other => {
+                panic!("case \"{case_name}\": expected stress to be Value::Field, got: {other:?}")
+            }
         };
         assert_eq!(
             stress_sf.kind,
@@ -315,7 +323,13 @@ fn two_case_solve_returns_populated_multi_case_result() {
         );
         assert_eq!(
             stress_codomain,
-            Type::tensor(2, 3, Type::Scalar { dimension: DimensionVector::PRESSURE }),
+            Type::tensor(
+                2,
+                3,
+                Type::Scalar {
+                    dimension: DimensionVector::PRESSURE
+                }
+            ),
             "case \"{case_name}\": stress codomain_type mismatch"
         );
         assert_eq!(

@@ -7,12 +7,12 @@
 //!   step-7/8: unregistered target fallback diagnostic
 //!   step-9/10: public seam API-surface pin
 
+use reify_core::{Severity, ValueCellId};
 use reify_eval::{
     CancellationHandle, ComputeDispatchRegistry, ComputeFn, ComputeOutcome, RealizationReadHandle,
 };
-use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
-use reify_core::{Severity, ValueCellId};
 use reify_ir::{OpaqueState, Value};
+use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 // ── step-9: RED — public seam API-surface pin ─────────────────────────────────
 // Compile-time test that coerces a concrete fn to `reify_eval::ComputeFn`,
@@ -147,7 +147,13 @@ fn dispatch_compute_node_registered_identity_returns_input_value() {
 
     let input = Value::Int(99);
     let (result_value, diagnostics) = engine
-        .dispatch_compute_node("test::identity", std::slice::from_ref(&input), &[], &Value::Undef, None)
+        .dispatch_compute_node(
+            "test::identity",
+            std::slice::from_ref(&input),
+            &[],
+            &Value::Undef,
+            None,
+        )
         .expect("expected Ok for registered trampoline");
 
     assert_eq!(
@@ -201,7 +207,10 @@ fn dispatch_compute_node_failed_outcome_surfaces_diagnostics() {
         .dispatch_compute_node("test::failing", &[Value::Int(1)], &[], &Value::Undef, None)
         .expect_err("expected Err for Failed trampoline");
 
-    assert!(!diags.is_empty(), "expected at least one diagnostic from Failed");
+    assert!(
+        !diags.is_empty(),
+        "expected at least one diagnostic from Failed"
+    );
     let error_diag = diags.iter().find(|d| d.severity == Severity::Error);
     assert!(
         error_diag.is_some(),
@@ -301,7 +310,9 @@ fn e2e_unregistered_optimized_target_emits_diagnostic_and_inlines() {
          got diagnostics: {:?}",
         eval_result.diagnostics
     );
-    let target_named = error_diags.iter().any(|d| d.message.contains("test::identity"));
+    let target_named = error_diags
+        .iter()
+        .any(|d| d.message.contains("test::identity"));
     assert!(
         target_named,
         "expected at least one Error diagnostic to name \"test::identity\", \

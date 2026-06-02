@@ -4819,11 +4819,9 @@ mod tests {
             })
             .sum();
         assert_eq!(
-            on_disk,
-            cap,
+            on_disk, cap,
             "on-disk .bin total {} must equal cap {} (dangling symlink filtered; exactly one real entry survives)",
-            on_disk,
-            cap
+            on_disk, cap
         );
     }
 
@@ -5051,8 +5049,7 @@ mod tests {
     ///
     /// Fails RED before the `tracing::info!` site is added in step-2.
     #[test]
-    fn evict_over_cap_emits_info_summary_with_expected_fields()
-    {
+    fn evict_over_cap_emits_info_summary_with_expected_fields() {
         reify_test_support::prime_tracing_callsite_cache();
 
         let tmp = tempfile::TempDir::new().unwrap();

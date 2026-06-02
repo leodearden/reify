@@ -56,9 +56,10 @@ fn shell_annotation_on_too_thick_body_errors_with_shell_too_thick_code() {
     let eval_result = engine.eval(&compiled);
 
     // (1) Must surface a Severity::Error diagnostic with ShellTooThick code.
-    let shell_too_thick_error = eval_result.diagnostics.iter().find(|d| {
-        d.severity == Severity::Error && d.code == Some(DiagnosticCode::ShellTooThick)
-    });
+    let shell_too_thick_error = eval_result
+        .diagnostics
+        .iter()
+        .find(|d| d.severity == Severity::Error && d.code == Some(DiagnosticCode::ShellTooThick));
     assert!(
         shell_too_thick_error.is_some(),
         "expected a Severity::Error diagnostic with code=DiagnosticCode::ShellTooThick; \

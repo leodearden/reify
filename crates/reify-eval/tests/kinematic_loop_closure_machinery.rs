@@ -17,14 +17,16 @@
 //!
 //! See docs/prds/v0_2/kinematic-constraints.md, §"Decomposition plan", task 2.
 
-use reify_constraints::{JointValue, NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure};
+use reify_constraints::{
+    JointValue, NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure,
+};
+use reify_core::ValueCellId;
+use reify_ir::{Value, ValueMap};
 use reify_stdlib::loop_closure::loop_residual_twist;
 use reify_test_support::{
     CapturingSubscriberBuilder, collect_errors, make_simple_engine, parse_and_compile_with_stdlib,
     prime_tracing_callsite_cache,
 };
-use reify_core::ValueCellId;
-use reify_ir::{Value, ValueMap};
 
 /// Source for the KCC-γ step-13 planar-in-loop e2e fixture: a structure with a
 /// revolute joint on one side and a planar joint on the other, mirroring the

@@ -57,9 +57,8 @@ const INTERSECTS_SMOKE_PATH: &str = concat!(
 fn intersects_smoke_evals_expected_booleans() {
     // Read the fixture unconditionally so a missing file is caught even on
     // OCCT-less runners — fixture presence is a CI contract independent of OCCT.
-    let source = std::fs::read_to_string(INTERSECTS_SMOKE_PATH).expect(
-        "examples/kernel_queries/intersects_smoke.ri should exist (task 3612 pre-1)",
-    );
+    let source = std::fs::read_to_string(INTERSECTS_SMOKE_PATH)
+        .expect("examples/kernel_queries/intersects_smoke.ri should exist (task 3612 pre-1)");
 
     // Validate fixture compilation unconditionally — a grammar/compile regression
     // (e.g. `intersects` signature change) should fail on every runner.

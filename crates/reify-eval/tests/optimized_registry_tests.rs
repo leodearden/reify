@@ -11,11 +11,11 @@
 //!   - Mixed batches (one optimized + one fallback) produce correct per-id
 //!     results in the order `active_constraint_ids` returns them.
 
+use reify_core::{ConstraintNodeId, Diagnostic, Severity};
+use reify_ir::{ConstraintDiagnostics, ConstraintResult, Satisfaction};
 use reify_test_support::{
     BrokenCountOptimizedImpl, MockOptimizedImpl, make_simple_engine, parse_and_compile,
 };
-use reify_core::{ConstraintNodeId, Diagnostic, Severity};
-use reify_ir::{ConstraintDiagnostics, ConstraintResult, Satisfaction};
 
 /// Assert that `diagnostics` contains an `Error`-severity diagnostic describing
 /// the OptimizedImpl-count-mismatch fallback for `expected_target`. Used by tests

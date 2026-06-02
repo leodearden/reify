@@ -15,12 +15,12 @@
 
 use std::time::Duration;
 
+use reify_core::{DiagnosticCode, Severity};
 use reify_eval::{
     DispatchPlan, LONG_CHAIN_DEFAULT_THRESHOLD_MS, LONG_CHAIN_MIN_STAGES,
     LONG_CHAIN_THRESHOLD_ENV_VAR, is_long_chain_realization, long_chain_diagnostic,
     long_chain_threshold_from_env, long_chain_threshold_from_env_value,
 };
-use reify_core::{DiagnosticCode, Severity};
 use reify_ir::{KernelId, ReprKind};
 
 /// Smoke-test every long-chain item re-exported through the crate root.

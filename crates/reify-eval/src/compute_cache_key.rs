@@ -200,7 +200,8 @@ mod tests {
     ) {
         graph.realizations.insert(
             id.clone(),
-            RealizationNodeData { geometry_cell: None,
+            RealizationNodeData {
+                geometry_cell: None,
                 id,
                 operations: vec![],
                 content_hash,

@@ -5,9 +5,12 @@
 //! export with a bogus handle.
 
 use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
-use reify_test_support::*;
 use reify_core::{Diagnostic, Type};
-use reify_ir::{ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value};
+use reify_ir::{
+    ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
+    GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value,
+};
+use reify_test_support::*;
 
 // ---------------------------------------------------------------------------
 // Shared helper: build a CompiledModule with fixed params and optional ops
@@ -569,10 +572,9 @@ fn realization_abort_is_per_realization() {
         .realization(e, 1, vec![box_op])
         .build();
 
-    let module =
-        CompiledModuleBuilder::new(reify_core::ModulePath::single("test_per_realization"))
-            .template(template)
-            .build();
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single("test_per_realization"))
+        .template(template)
+        .build();
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();

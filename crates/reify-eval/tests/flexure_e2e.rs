@@ -73,9 +73,10 @@ fn cantilever_beam_prb_runs_end_to_end() {
 
     // The pivot_flexure cell is a revolute joint Map.
     let id = ValueCellId::new("CantileverBeamPrb", "pivot_flexure");
-    let flexure = eval_result.values.get(&id).unwrap_or_else(|| {
-        panic!("CantileverBeamPrb.pivot_flexure cell missing from eval result")
-    });
+    let flexure = eval_result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("CantileverBeamPrb.pivot_flexure cell missing from eval result"));
     assert_eq!(
         map_get(flexure, "kind"),
         Some(&Value::String("revolute".to_string())),

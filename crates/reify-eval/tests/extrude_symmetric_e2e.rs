@@ -4,9 +4,9 @@
 //! using MockGeometryKernel to capture executed operations without OCCT.
 
 use reify_compiler::{CompiledGeometryOp, GeomRef, PrimitiveKind, SweepKind};
-use reify_test_support::*;
 use reify_core::Type;
 use reify_ir::{ExportFormat, GeometryOp};
+use reify_test_support::*;
 
 /// Exercises the full compile -> eval path for ExtrudeSymmetric.
 ///
@@ -176,11 +176,10 @@ fn extrude_symmetric_per_side_just_below_threshold_rejected() {
     let template = TopologyTemplateBuilder::new(e)
         .realization(e, 0, vec![sphere_op, extrude_sym_op])
         .build();
-    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single(
-        "test_extsym_per_side_below",
-    ))
-    .template(template)
-    .build();
+    let module =
+        CompiledModuleBuilder::new(reify_core::ModulePath::single("test_extsym_per_side_below"))
+            .template(template)
+            .build();
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();

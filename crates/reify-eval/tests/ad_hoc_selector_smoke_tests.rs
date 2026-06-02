@@ -23,10 +23,15 @@
 use std::collections::HashMap;
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_eval::try_eval_ad_hoc_selector;
-use reify_test_support::{MockGeometryKernel, compile_source, errors_only, parse_and_compile_with_stdlib};
 use reify_core::{DiagnosticCode, Severity, SourceSpan, Type, ValueCellId};
-use reify_ir::{CapKind, CompiledExpr, ExportFormat, FeatureId, GeometryHandleId, KernelHandle, KernelId, QueryError, Role, SelectorKind, TopologyAttribute, TopologyAttributeTable, Value};
+use reify_eval::try_eval_ad_hoc_selector;
+use reify_ir::{
+    CapKind, CompiledExpr, ExportFormat, FeatureId, GeometryHandleId, KernelHandle, KernelId,
+    QueryError, Role, SelectorKind, TopologyAttribute, TopologyAttributeTable, Value,
+};
+use reify_test_support::{
+    MockGeometryKernel, compile_source, errors_only, parse_and_compile_with_stdlib,
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Deterministic handle constants
@@ -127,7 +132,10 @@ fn configured_kernel() -> MockGeometryKernel {
 /// Used by test fixtures that migrate from `HashMap<String, GeometryHandleId>`
 /// to `HashMap<String, KernelHandle>`.
 fn kh(id: GeometryHandleId) -> KernelHandle {
-    KernelHandle { kernel: KernelId::Occt, id }
+    KernelHandle {
+        kernel: KernelId::Occt,
+        id,
+    }
 }
 
 /// Build a named-steps map mapping the string `"body"` to `BODY_HANDLE`.
@@ -176,13 +184,24 @@ fn try_eval_ad_hoc_selector_face_top_resolves_to_frame_via_attribute_table() {
     let mut kernel = configured_kernel();
     let mut diagnostics = Vec::new();
 
-    let result = try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, SourceSpan::empty(0), &mut diagnostics);
+    let result = try_eval_ad_hoc_selector(
+        &expr,
+        &named_steps,
+        &mut kernel,
+        &table,
+        SourceSpan::empty(0),
+        &mut diagnostics,
+    );
 
     // ── Verify exact Frame contents ──────────────────────────────────────────
     // Kernel returns centroid {"x":0.0,"y":0.0,"z":0.01} → origin at (0m, 0m, 0.01m)
     // and normal {"x":0.0,"y":0.0,"z":1.0} → +Z → +Z = identity quaternion
     // (quaternion_from_z_to_axis(0,0,1): w_unnorm=2, len=2, w=1 — exact IEEE 754).
-    let Some(Value::Frame { ref origin, ref basis }) = result else {
+    let Some(Value::Frame {
+        ref origin,
+        ref basis,
+    }) = result
+    else {
         panic!(
             "@face(\"top\") against a seeded cylinder should resolve to Some(Value::Frame {{ .. }}), \
              got {:?}",
@@ -200,7 +219,12 @@ fn try_eval_ad_hoc_selector_face_top_resolves_to_frame_via_attribute_table() {
     );
     assert_eq!(
         **basis,
-        Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+        Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0
+        },
         "@face(\"top\") basis should be identity (normal +Z → +Z is zero rotation)"
     );
     assert!(
@@ -246,7 +270,14 @@ fn try_eval_ad_hoc_selector_face_unresolved_name_returns_undef_with_warning() {
         .with_extracted_faces(BODY_HANDLE, vec![TOP_FACE, BOTTOM_FACE, SIDE_FACE]);
     let mut diagnostics = Vec::new();
 
-    let result = try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, SourceSpan::empty(0), &mut diagnostics);
+    let result = try_eval_ad_hoc_selector(
+        &expr,
+        &named_steps,
+        &mut kernel,
+        &table,
+        SourceSpan::empty(0),
+        &mut diagnostics,
+    );
 
     assert!(
         matches!(result, Some(Value::Undef)),
@@ -285,8 +316,14 @@ fn try_eval_ad_hoc_selector_non_ad_hoc_expr_returns_none() {
     // (a) Bool literal — not an AdHocSelector.
     let bool_expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
     let mut diagnostics = Vec::new();
-    let result_a =
-        try_eval_ad_hoc_selector(&bool_expr, &named_steps, &mut kernel, &table, SourceSpan::empty(0), &mut diagnostics);
+    let result_a = try_eval_ad_hoc_selector(
+        &bool_expr,
+        &named_steps,
+        &mut kernel,
+        &table,
+        SourceSpan::empty(0),
+        &mut diagnostics,
+    );
     assert!(
         result_a.is_none(),
         "a Bool literal should return None (not applicable), got {:?}",
@@ -376,9 +413,9 @@ fn configured_engine_kernel() -> MockGeometryKernel {
         .with_face_normal_result(SIDE_FACE, side_normal_json)
         // Centroid of TOP_FACE for Frame origin in post_process_ad_hoc_selectors.
         .with_centroid_result(TOP_FACE, centroid_json)
-        // The TOP_FACE FaceNormal is already registered above (top_normal_json).
-        // MockGeometryKernel reuses the same entry for both the seeder query
-        // and the post-process basis-derivation query.
+    // The TOP_FACE FaceNormal is already registered above (top_normal_json).
+    // MockGeometryKernel reuses the same entry for both the seeder query
+    // and the post-process basis-derivation query.
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -454,7 +491,12 @@ fn engine_build_post_processes_ad_hoc_face_selector_to_frame() {
     );
     assert_eq!(
         **basis,
-        Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+        Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0
+        },
         "engine-level @face(\"top\") basis should be identity"
     );
 }
@@ -502,10 +544,9 @@ fn engine_build_emits_warning_on_unresolved_face_name() {
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let mystery_id = ValueCellId::new("AdHocCylinderUnresolved", "mystery_frame");
-    let mystery_val = result
-        .values
-        .get(&mystery_id)
-        .unwrap_or_else(|| panic!("AdHocCylinderUnresolved.mystery_frame not found in build result values"));
+    let mystery_val = result.values.get(&mystery_id).unwrap_or_else(|| {
+        panic!("AdHocCylinderUnresolved.mystery_frame not found in build result values")
+    });
 
     assert!(
         matches!(mystery_val, Value::Undef),
@@ -616,7 +657,12 @@ fn face_selector_ri_example_compiles_and_evaluates_to_frame() {
     );
     assert_eq!(
         **basis,
-        Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+        Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0
+        },
         ".ri example @face(\"top\") basis should be identity"
     );
 }
@@ -690,13 +736,24 @@ fn try_eval_ad_hoc_selector_edge_resolves_to_frame_via_user_label() {
     let mut kernel = configured_edge_kernel();
     let mut diagnostics = Vec::new();
 
-    let result = try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, SourceSpan::empty(0), &mut diagnostics);
+    let result = try_eval_ad_hoc_selector(
+        &expr,
+        &named_steps,
+        &mut kernel,
+        &table,
+        SourceSpan::empty(0),
+        &mut diagnostics,
+    );
 
     // ── Verify exact Frame contents ──────────────────────────────────────────
     // Edge tangent {"x":0.0,"y":0.0,"z":1.0} → +Z → +Z = identity quaternion.
     // Edge centroid {"x":0.0,"y":0.0,"z":0.005} → origin at (0m, 0m, 0.005m).
     // Convention: tangent aligns to frame +Z (documented in construct_frame_from_kernel).
-    let Some(Value::Frame { ref origin, ref basis }) = result else {
+    let Some(Value::Frame {
+        ref origin,
+        ref basis,
+    }) = result
+    else {
         panic!(
             "@edge(\"top_edge\") against a user-labelled edge should resolve to \
              Some(Value::Frame {{ .. }}), got {:?}",
@@ -714,7 +771,12 @@ fn try_eval_ad_hoc_selector_edge_resolves_to_frame_via_user_label() {
     );
     assert_eq!(
         **basis,
-        Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+        Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0
+        },
         "@edge(\"top_edge\") basis should be identity (tangent +Z → +Z is zero rotation)"
     );
     assert!(
@@ -776,12 +838,23 @@ fn try_eval_ad_hoc_selector_face_side_resolves_via_cap_kind_translation() {
     let mut kernel = configured_side_kernel();
     let mut diagnostics = Vec::new();
 
-    let result = try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, SourceSpan::empty(0), &mut diagnostics);
+    let result = try_eval_ad_hoc_selector(
+        &expr,
+        &named_steps,
+        &mut kernel,
+        &table,
+        SourceSpan::empty(0),
+        &mut diagnostics,
+    );
 
     // ── Verify exact Frame contents ──────────────────────────────────────────
     // centroid {"x":0.0,"y":0.0,"z":0.0} → origin at world origin.
     // normal {"x":0.0,"y":0.0,"z":1.0} → +Z → +Z = identity quaternion.
-    let Some(Value::Frame { ref origin, ref basis }) = result else {
+    let Some(Value::Frame {
+        ref origin,
+        ref basis,
+    }) = result
+    else {
         panic!(
             "@face(\"side\") against a Cylinder side face should resolve to \
              Some(Value::Frame {{ .. }}) after cap_kind_translation adds \"side\", \
@@ -800,7 +873,12 @@ fn try_eval_ad_hoc_selector_face_side_resolves_via_cap_kind_translation() {
     );
     assert_eq!(
         **basis,
-        Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+        Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0
+        },
         "@face(\"side\") basis should be identity for mock +Z normal"
     );
     assert!(
@@ -839,12 +917,20 @@ fn try_eval_ad_hoc_selector_face_kernel_error_returns_undef_with_warning() {
 
     let named_steps = named_steps_with_body();
     let table = seeded_cylinder_table();
-    let mut kernel = MockGeometryKernel::new()
-        .with_extract_faces_error(BODY_HANDLE, QueryError::QueryFailed("mock face extraction failure".into()));
+    let mut kernel = MockGeometryKernel::new().with_extract_faces_error(
+        BODY_HANDLE,
+        QueryError::QueryFailed("mock face extraction failure".into()),
+    );
     let mut diagnostics = Vec::new();
 
-    let result =
-        try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, SourceSpan::empty(0), &mut diagnostics);
+    let result = try_eval_ad_hoc_selector(
+        &expr,
+        &named_steps,
+        &mut kernel,
+        &table,
+        SourceSpan::empty(0),
+        &mut diagnostics,
+    );
 
     assert!(
         matches!(result, Some(Value::Undef)),
@@ -852,8 +938,10 @@ fn try_eval_ad_hoc_selector_face_kernel_error_returns_undef_with_warning() {
         result
     );
 
-    let warnings: Vec<_> =
-        diagnostics.iter().filter(|d| d.severity == Severity::Warning).collect();
+    let warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .collect();
     assert_eq!(
         warnings.len(),
         1,
@@ -897,12 +985,20 @@ fn try_eval_ad_hoc_selector_edge_kernel_error_returns_undef_with_warning() {
 
     let named_steps = named_steps_with_body();
     let table = seeded_edge_table();
-    let mut kernel = MockGeometryKernel::new()
-        .with_extract_edges_error(BODY_HANDLE, QueryError::QueryFailed("mock edge extraction failure".into()));
+    let mut kernel = MockGeometryKernel::new().with_extract_edges_error(
+        BODY_HANDLE,
+        QueryError::QueryFailed("mock edge extraction failure".into()),
+    );
     let mut diagnostics = Vec::new();
 
-    let result =
-        try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, SourceSpan::empty(0), &mut diagnostics);
+    let result = try_eval_ad_hoc_selector(
+        &expr,
+        &named_steps,
+        &mut kernel,
+        &table,
+        SourceSpan::empty(0),
+        &mut diagnostics,
+    );
 
     assert!(
         matches!(result, Some(Value::Undef)),
@@ -910,8 +1006,10 @@ fn try_eval_ad_hoc_selector_edge_kernel_error_returns_undef_with_warning() {
         result
     );
 
-    let warnings: Vec<_> =
-        diagnostics.iter().filter(|d| d.severity == Severity::Warning).collect();
+    let warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .collect();
     assert_eq!(
         warnings.len(),
         1,
@@ -960,8 +1058,14 @@ fn try_eval_ad_hoc_selector_non_literal_arg_returns_none() {
     let mut kernel = configured_kernel();
     let mut diagnostics = Vec::new();
 
-    let result =
-        try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, SourceSpan::empty(0), &mut diagnostics);
+    let result = try_eval_ad_hoc_selector(
+        &expr,
+        &named_steps,
+        &mut kernel,
+        &table,
+        SourceSpan::empty(0),
+        &mut diagnostics,
+    );
 
     assert!(
         result.is_none(),
@@ -1168,7 +1272,11 @@ fn try_eval_ad_hoc_selector_resolves_base_via_kernel_handle_id() {
     );
 
     // Kernel is set up for BODY_HANDLE; `.kernel` (Manifold) must be ignored.
-    let Some(Value::Frame { ref origin, ref basis }) = result else {
+    let Some(Value::Frame {
+        ref origin,
+        ref basis,
+    }) = result
+    else {
         panic!(
             "@face(\"top\") with KernelHandle{{Manifold, BODY_HANDLE}} should resolve to \
              Some(Value::Frame {{ .. }}), got {:?}",
@@ -1186,7 +1294,12 @@ fn try_eval_ad_hoc_selector_resolves_base_via_kernel_handle_id() {
     );
     assert_eq!(
         **basis,
-        Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+        Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0
+        },
         "@face(\"top\") basis should be identity (normal +Z → +Z is zero rotation)"
     );
     assert!(

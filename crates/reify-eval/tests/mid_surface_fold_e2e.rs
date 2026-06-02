@@ -15,11 +15,10 @@
 //!   Round-trip is verified via re-derivation on two fresh engines (step-7).
 
 use reify_core::{ComputeNodeId, ValueCellId, VersionId};
-use reify_eval::{CancellationHandle, register_shell_extract_compute_fns};
 use reify_eval::cache::NodeId;
+use reify_eval::{CancellationHandle, register_shell_extract_compute_fns};
 use reify_ir::{
-    Freshness, InterpolationKind, Role, SampledField, SampledGridKind, StructureInstanceData,
-    Value,
+    Freshness, InterpolationKind, Role, SampledField, SampledGridKind, StructureInstanceData, Value,
 };
 use reify_test_support::make_simple_engine;
 
@@ -110,8 +109,8 @@ fn naming_value_carries_face_records_and_edges_lists() {
         Value::StructureInstance(d) => d,
         other => panic!("expected Value::StructureInstance, got {other:?}"),
     };
-    let naming_val = field(outer, "naming")
-        .expect("ShellExtractionResult must have a 'naming' field");
+    let naming_val =
+        field(outer, "naming").expect("ShellExtractionResult must have a 'naming' field");
 
     let naming = match naming_val {
         Value::StructureInstance(d) => d,
@@ -170,8 +169,8 @@ fn naming_value_carries_face_records_and_edges_lists() {
     }
 
     // edges: must be a List with len == edge_count
-    let edges_val = field(naming, "edges")
-        .expect("naming must carry an 'edges' field (step-2 enrichment)");
+    let edges_val =
+        field(naming, "edges").expect("naming must carry an 'edges' field (step-2 enrichment)");
     let edges = match edges_val {
         Value::List(l) => l,
         other => panic!("expected edges: List, got {other:?}"),

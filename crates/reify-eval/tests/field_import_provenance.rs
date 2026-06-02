@@ -7,8 +7,8 @@
 //! are kept minimal — the unit tests in `field_import_provenance.rs` cover
 //! behaviour; this file covers reachability.
 
-use reify_eval::field_import_provenance::build_field_import_provenance;
 use reify_core::ContentHash;
+use reify_eval::field_import_provenance::build_field_import_provenance;
 use reify_ir::FieldImportProvenance;
 
 #[test]

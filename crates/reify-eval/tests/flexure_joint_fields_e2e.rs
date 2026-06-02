@@ -40,7 +40,10 @@ structure def Probe {
             // spring_rate = some(1 N·m/rad) → Value::Option(Some(Scalar))
             match field(&data.fields, "spring_rate") {
                 Some(Value::Option(Some(inner))) => match inner.as_ref() {
-                    Value::Scalar { si_value, dimension } => {
+                    Value::Scalar {
+                        si_value,
+                        dimension,
+                    } => {
                         assert!(
                             (*si_value - 1.0).abs() < 1e-12,
                             "Revolute.spring_rate si_value should be 1.0, got {si_value}"
@@ -98,7 +101,10 @@ structure def Probe {
     match r {
         Value::StructureInstance(data) => {
             assert_eq!(data.type_name, "Revolute");
-            assert_eq!(field(&data.fields, "spring_rate"), Some(&Value::Option(None)));
+            assert_eq!(
+                field(&data.fields, "spring_rate"),
+                Some(&Value::Option(None))
+            );
             assert_eq!(field(&data.fields, "damping"), Some(&Value::Option(None)));
             assert_eq!(field(&data.fields, "neutral"), Some(&Value::Option(None)));
         }
@@ -132,7 +138,10 @@ structure def Probe {
             // spring_rate = some(1 N/m) → Value::Option(Some(Scalar{TRANSLATIONAL_STIFFNESS}))
             match field(&data.fields, "spring_rate") {
                 Some(Value::Option(Some(inner))) => match inner.as_ref() {
-                    Value::Scalar { si_value, dimension } => {
+                    Value::Scalar {
+                        si_value,
+                        dimension,
+                    } => {
                         assert!(
                             (*si_value - 1.0).abs() < 1e-12,
                             "Prismatic.spring_rate si_value should be 1.0, got {si_value}"
@@ -199,7 +208,10 @@ structure def Probe {
             // neutral = some(ref_len) where ref_len=1000mm=1.0m SI → Value::Option(Some(Scalar{LENGTH}))
             match field(&data.fields, "neutral") {
                 Some(Value::Option(Some(inner))) => match inner.as_ref() {
-                    Value::Scalar { si_value, dimension } => {
+                    Value::Scalar {
+                        si_value,
+                        dimension,
+                    } => {
                         assert!(
                             (*si_value - 1.0).abs() < 1e-12,
                             "Prismatic.neutral si_value should be 1.0 (ref_len=1000mm), got {si_value}"
@@ -212,9 +224,9 @@ structure def Probe {
                     }
                     other => panic!("Prismatic.neutral inner should be Scalar, got {other:?}"),
                 },
-                other => panic!(
-                    "Prismatic.neutral should be Value::Option(Some(Scalar)), got {other:?}"
-                ),
+                other => {
+                    panic!("Prismatic.neutral should be Value::Option(Some(Scalar)), got {other:?}")
+                }
             }
         }
         other => panic!("expected Value::StructureInstance for Probe.p, got {other:?}"),

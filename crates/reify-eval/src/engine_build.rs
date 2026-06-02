@@ -5,14 +5,20 @@ use std::time::Instant;
 
 use reify_compiler::{
     BooleanOp, CompiledGeometryOp, CompiledModule, CurveKind, GeomRef, ModifyKind, PatternKind,
-    PrimitiveKind, SweepKind, TopologyTemplate, TransformKind,
+    PrimitiveKind, SubComponentDecl, SweepKind, TopologyTemplate, TransformKind,
 };
+use reify_core::{Diagnostic, DiagnosticLabel, RealizationNodeId, SourceSpan, VersionId};
+use reify_ir::{
+    AttributeHistory, BooleanOpHistoryRecords, BooleanOpParents, CapabilityDescriptor,
+    CompiledFunction, ElementOrderTag, ErrorRef, ExportFormat, FeatureId, FeatureTag,
+    FeatureTagTable, Freshness, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp,
+    GeometryQuery, KernelHandle, KernelId, LoftOpHistoryRecords, Operation, ReprKind,
+    SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable, ValueMap, VolumeMesh,
+};
+use reify_shell_extract::{MidSurfaceMesh, ShellTetInterface};
 use reify_solver_elastic::{
     Mesh2d, Mesh2dError, Mesh2dReport, MpcRow, SweepError, SweepParams, SweptMesh3d,
 };
-use reify_core::{Diagnostic, DiagnosticLabel, RealizationNodeId, SourceSpan, VersionId};
-use reify_ir::{AttributeHistory, BooleanOpHistoryRecords, BooleanOpParents, CapabilityDescriptor, CompiledFunction, ElementOrderTag, ErrorRef, ExportFormat, FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelHandle, KernelId, LoftOpHistoryRecords, Operation, ReprKind, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable, ValueMap, VolumeMesh};
-use reify_shell_extract::{MidSurfaceMesh, ShellTetInterface};
 
 use crate::cache::{CacheStore, CachedResult, FAILED_REALIZATION_STUB_HANDLE, NodeCache, NodeId};
 use crate::deps::{DependencyTrace, extract_realization_dependencies};
@@ -246,11 +252,11 @@ fn seed_cross_sub_named_steps(
             //    an external or forward-declared structure) skip silently —
             //    the missing-structure diagnostic was already emitted during
             //    compilation.
-            let child_template =
-                match reify_compiler::find_template(templates, &sub.structure_name) {
-                    Some(t) => t,
-                    None => continue,
-                };
+            let child_template = match reify_compiler::find_template(templates, &sub.structure_name)
+            {
+                Some(t) => t,
+                None => continue,
+            };
 
             // 2. Obtain the default kernel.  The entry-point guards in
             //    `build` / `build_snapshot` / `tessellate_from_values` all
@@ -400,9 +406,7 @@ fn seed_cross_sub_named_steps(
                     }
                 }
 
-                if realization_ok
-                    && let Some(&final_handle) = per_instance_step_handles.last()
-                {
+                if realization_ok && let Some(&final_handle) = per_instance_step_handles.last() {
                     // Override-path handles are produced by `default_kernel_name`
                     // (the kernel borrowed above), so tag them with that kernel's
                     // KernelId. (The no-args path copies child-snapshot handles
@@ -411,15 +415,147 @@ fn seed_cross_sub_named_steps(
                         kernel: kernel_id_for_registry_name(default_kernel_name),
                         id: final_handle,
                     };
-                    named_steps.insert(
-                        format!("{}.{}", sub.name, realization_name),
-                        final_handle,
-                    );
+                    named_steps.insert(format!("{}.{}", sub.name, realization_name), final_handle);
                     per_call_dedup.insert(dedup_key, final_handle);
                 }
             }
         }
     }
+}
+
+/// task-4147: per-instance re-realization for overridden subs in the surfacing
+/// walk (`walk_placed_realizations`).
+///
+/// When `sub b = Bar(len: 600mm)` is surfaced via the containment walk, the
+/// child's default Phase-A handles (built against `len = 200mm`) give the wrong
+/// geometry.  This helper re-executes every realization in `child_template`
+/// against a per-instance value overlay (same override-scope construction as
+/// `seed_cross_sub_named_steps`) and returns one `Option<KernelHandle>` per
+/// realization index, aligned with `terminal_handles[child_idx]`.
+///
+/// **One-level boundary**: the child's op compiler receives an EMPTY
+/// `child_named_steps` map, matching the v0.1 boundary documented in
+/// `seed_cross_sub_named_steps` — nested sub-of-sub override propagation
+/// is deferred.
+///
+/// Returns `None` for realizations that fail (compile or kernel error) or
+/// produce no geometry.  On success, the terminal `KernelHandle` is tagged
+/// with the default kernel's `KernelId` via `kernel_id_for_registry_name`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn realize_sub_override_handles(
+    parent_name: &str,
+    sub: &SubComponentDecl,
+    child_template: &TopologyTemplate,
+    geometry_kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
+    default_kernel_name: &str,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<Option<KernelHandle>> {
+    use reify_core::identity::ValueCellId;
+
+    debug_assert!(
+        !sub.args.is_empty(),
+        "realize_sub_override_handles called for arg-free sub {}.{}; \
+         caller must guard on !sub.args.is_empty()",
+        parent_name,
+        sub.name
+    );
+
+    let n = child_template.realizations.len();
+
+    let kernel = match geometry_kernels.get_mut(default_kernel_name) {
+        Some(k) => k.as_mut(),
+        None => return vec![None; n],
+    };
+
+    // Build per-instance value overlay: clone the global map and overlay
+    // `ValueCellId(parent.sub, param)` → `ValueCellId(child, param)` for
+    // each constructor arg.  `elaborate_child_instance` guarantees the
+    // scoped cells exist; a missing key keeps the child's existing default.
+    let mut values_override = values.clone();
+    for (param_name, _) in &sub.args {
+        let scoped_key =
+            ValueCellId::new(format!("{}.{}", parent_name, sub.name), param_name.as_str());
+        if let Some(val) = values.get(&scoped_key) {
+            let child_key = ValueCellId::new(child_template.name.as_str(), param_name.as_str());
+            values_override.insert(child_key, val.clone());
+        }
+    }
+
+    // v0.1 boundary: empty child named-steps (no nested sub-of-sub propagation).
+    let child_named_steps: HashMap<String, KernelHandle> = HashMap::new();
+
+    let mut result: Vec<Option<KernelHandle>> = Vec::with_capacity(n);
+
+    for realization in &child_template.realizations {
+        let mut per_instance_step_handles: Vec<GeometryHandleId> = Vec::new();
+        let mut realization_ok = true;
+
+        for op in &realization.operations {
+            let geom_op = match compile_geometry_op(
+                op,
+                &values_override,
+                &per_instance_step_handles,
+                functions,
+                meta_map,
+                &child_named_steps,
+                diagnostics,
+            ) {
+                Ok(g) => g,
+                Err(msg) => {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "per-instance re-realization compile error for {}.{}: {}",
+                            parent_name, sub.name, msg
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            sub.span,
+                            "sub-component override declared here",
+                        )),
+                    );
+                    realization_ok = false;
+                    break;
+                }
+            };
+
+            match kernel.execute_with_history(&geom_op) {
+                Ok((handle, _)) => {
+                    per_instance_step_handles.push(handle.id);
+                }
+                Err(e) => {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "per-instance re-realization kernel error for {}.{}: {}",
+                            parent_name, sub.name, e
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            sub.span,
+                            "sub-component override declared here",
+                        )),
+                    );
+                    realization_ok = false;
+                    break;
+                }
+            }
+        }
+
+        if realization_ok {
+            if let Some(&final_id) = per_instance_step_handles.last() {
+                result.push(Some(KernelHandle {
+                    kernel: kernel_id_for_registry_name(default_kernel_name),
+                    id: final_id,
+                }));
+            } else {
+                result.push(None); // realization produced no geometry ops
+            }
+        } else {
+            result.push(None);
+        }
+    }
+
+    result
 }
 
 /// Task 3441: snapshot this template's `named_steps` under its template name
@@ -607,16 +743,13 @@ fn build_cap_vertex_index_lists(
 ) -> Result<Vec<Vec<u32>>, reify_ir::QueryError> {
     let mut index_lists: Vec<Vec<u32>> = Vec::with_capacity(cap_face_indices.len());
     for &cap_idx in cap_face_indices {
-        let cap_face_handle = result_faces
-            .get(cap_idx as usize)
-            .copied()
-            .ok_or_else(|| {
-                reify_ir::QueryError::QueryFailed(format!(
-                    "cap vertex index list: cap face index {cap_idx} is out of range \
+        let cap_face_handle = result_faces.get(cap_idx as usize).copied().ok_or_else(|| {
+            reify_ir::QueryError::QueryFailed(format!(
+                "cap vertex index list: cap face index {cap_idx} is out of range \
                      for result_faces of len {}",
-                    result_faces.len()
-                ))
-            })?;
+                result_faces.len()
+            ))
+        })?;
         let cap_vertices = kernel.extract_vertices(cap_face_handle)?;
         let mut inner: Vec<u32> = Vec::with_capacity(cap_vertices.len());
         for &cap_vertex_handle in &cap_vertices {
@@ -657,10 +790,7 @@ fn try_extract_sweep_cap_vertex_data(
     result_handle: GeometryHandleId,
     start_cap_face_indices: &[u32],
     end_cap_face_indices: &[u32],
-) -> Result<
-    (Vec<GeometryHandleId>, Vec<Vec<u32>>, Vec<Vec<u32>>),
-    reify_ir::QueryError,
-> {
+) -> Result<(Vec<GeometryHandleId>, Vec<Vec<u32>>, Vec<Vec<u32>>), reify_ir::QueryError> {
     let result_vertices = kernel.extract_vertices(result_handle)?;
     let result_vertex_positions: Vec<(f64, f64, f64)> = result_vertices
         .iter()
@@ -681,7 +811,11 @@ fn try_extract_sweep_cap_vertex_data(
         &result_vertex_positions,
         end_cap_face_indices,
     )?;
-    Ok((result_vertices, start_cap_vertex_index_lists, end_cap_vertex_index_lists))
+    Ok((
+        result_vertices,
+        start_cap_vertex_index_lists,
+        end_cap_vertex_index_lists,
+    ))
 }
 
 /// Shared helper for the three single-parent sweep variants (extrude,
@@ -1240,9 +1374,7 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
         BooleanUnion | BooleanDifference | BooleanIntersection => Some(BREP_MESH),
 
         // Modify — BRep-only consumers
-        ModifyFillet | ModifyChamfer | ModifyShell | ModifyDraft | ModifyThicken => {
-            Some(BREP_ONLY)
-        }
+        ModifyFillet | ModifyChamfer | ModifyShell | ModifyDraft | ModifyThicken => Some(BREP_ONLY),
 
         // Transform — accept both reprs. `TransformApplyTransform` is the
         // post-realization rigid-isometry application (task 3901); like the
@@ -1279,11 +1411,7 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
         PrimitiveBox | PrimitiveCylinder | PrimitiveSphere | PrimitiveTube => Some(BREP_ONLY),
 
         // Curves — sources (no geometric input); same rationale as Primitives.
-        CurveLineSegment
-        | CurveArc
-        | CurveHelix
-        | CurveInterpCurve
-        | CurveBezierCurve
+        CurveLineSegment | CurveArc | CurveHelix | CurveInterpCurve | CurveBezierCurve
         | CurveNurbsCurve => Some(BREP_ONLY),
 
         // Catch-all: genuinely-new future variants → conservative (None).
@@ -1807,7 +1935,8 @@ impl Engine {
                     // write so the construction-time default survives.
                     if let Some(repr) = produced_repr_out
                         && let Some(state) = self.eval_state.as_mut()
-                        && let Some(node) = state.snapshot.graph.realizations.get_mut(&realization.id)
+                        && let Some(node) =
+                            state.snapshot.graph.realizations.get_mut(&realization.id)
                     {
                         node.produced_repr = repr;
                     }
@@ -1831,10 +1960,9 @@ impl Engine {
                 // released its `&mut self.geometry_kernels` borrow). The
                 // `expect` is justified by the outer `contains_key(name)`
                 // gate: the executor never removes entries from the map.
-                let default_kernel = self
-                    .geometry_kernels
-                    .get_mut(name)
-                    .expect("default kernel must remain in the map across the per-realization loop");
+                let default_kernel = self.geometry_kernels.get_mut(name).expect(
+                    "default kernel must remain in the map across the per-realization loop",
+                );
                 // GHR-γ step-6: mirror of the build() hydration — stamp
                 // Type::Geometry value cells with real kernel handles so
                 // build_snapshot callers see the same GeometryHandle values.
@@ -2186,7 +2314,8 @@ impl Engine {
                     // `self.geometry_kernels` vs. `self.eval_state`.
                     if let Some(repr) = produced_repr_out
                         && let Some(state) = self.eval_state.as_mut()
-                        && let Some(node) = state.snapshot.graph.realizations.get_mut(&realization.id)
+                        && let Some(node) =
+                            state.snapshot.graph.realizations.get_mut(&realization.id)
                     {
                         node.produced_repr = repr;
                     }
@@ -2206,10 +2335,9 @@ impl Engine {
                 }
                 // Step-8 (task ε / 3436): re-borrow the default kernel from
                 // the map for post-process — see `build_snapshot` mirror.
-                let default_kernel = self
-                    .geometry_kernels
-                    .get_mut(name)
-                    .expect("default kernel must remain in the map across the per-realization loop");
+                let default_kernel = self.geometry_kernels.get_mut(name).expect(
+                    "default kernel must remain in the map across the per-realization loop",
+                );
                 // GHR-γ step-6: hydrate Type::Geometry value cells with real
                 // kernel handles before any downstream post-process that might
                 // read geometry-handle cells. GHR-δ: also records geometry-backed
@@ -2327,7 +2455,11 @@ impl Engine {
                             .geometry_kernels
                             .get(name)
                             .expect("default kernel must remain in the map for export");
-                        match default_kernel.export(product_bodies[0].handle_id, format, &mut output) {
+                        match default_kernel.export(
+                            product_bodies[0].handle_id,
+                            format,
+                            &mut output,
+                        ) {
                             Ok(()) => Some(output),
                             Err(e) => {
                                 diagnostics.push(Diagnostic::error(format!("export error: {}", e)));
@@ -2463,8 +2595,7 @@ impl Engine {
         let mut scratch_feature_tags = FeatureTagTable::default();
         let mut scratch_topo_attrs = TopologyAttributeTable::default();
         let mut scratch_swept_kinds = SweptKindTable::default();
-        let mut module_named_steps: HashMap<String, HashMap<String, KernelHandle>> =
-            HashMap::new();
+        let mut module_named_steps: HashMap<String, HashMap<String, KernelHandle>> = HashMap::new();
 
         for (t_idx, template) in module.templates.iter().enumerate() {
             let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
@@ -2631,8 +2762,7 @@ impl Engine {
                     Box::new(move |_t: usize, _r: usize, path: &str| path == pa || path == pb);
                 f
             });
-        let pre_filter: Option<&dyn Fn(usize, usize, &str) -> bool> =
-            boxed_filter.as_deref();
+        let pre_filter: Option<&dyn Fn(usize, usize, &str) -> bool> = boxed_filter.as_deref();
         let mut export_bodies = Vec::new();
         for &root_idx in &roots {
             let root_prefix = module.templates[root_idx].name.clone();
@@ -3153,8 +3283,7 @@ impl Engine {
         // Helper invocations (`seed_cross_sub_named_steps`,
         // `snapshot_named_steps`) factor the per-template seed/snapshot
         // logic out so the three eval loop sites stay in sync.
-        let mut module_named_steps: HashMap<String, HashMap<String, KernelHandle>> =
-            HashMap::new();
+        let mut module_named_steps: HashMap<String, HashMap<String, KernelHandle>> = HashMap::new();
 
         // T5 step-4 (Phase A): record each realization's terminal `KernelHandle`
         // positionally by `(t_idx, r_idx)` instead of tessellating it here. The
@@ -3751,8 +3880,7 @@ impl Engine {
         // `realization_step_ids` mirrors `step_handles[handle_start..]`:
         // every `step_handles.push(...)` below pushes the same `.id` here, so
         // the slice stays in lockstep without re-projecting per op.
-        let mut realization_step_ids: Vec<GeometryHandleId> =
-            Vec::with_capacity(operations.len());
+        let mut realization_step_ids: Vec<GeometryHandleId> = Vec::with_capacity(operations.len());
         // Task 4050 step-8: the produced [`ReprKind`] of each step handle,
         // tracked in lockstep with `realization_step_ids`. The per-op
         // `available` set is read from the reprs of the op's resolved input
@@ -3839,330 +3967,346 @@ impl Engine {
                     // below so the post-loop write sees the terminal op's
                     // repr (mirroring how `step_handles.push(handle.id)`
                     // tracks the terminal handle).
-                    let (resolved_kernel_name, op_produced_repr): (String, Option<ReprKind>) = match &plan {
-                        Some(plan) if plan.conversions.is_empty() => {
-                            // 0-conversion plan: route to plan.kernel,
-                            // falling back to the engine's default kernel if
-                            // the dispatcher named an entry not present in
-                            // the kernels map (defence against
-                            // dispatch/registry-vs-map drift; in practice the
-                            // builder always loads one adapter per registry
-                            // entry so the fallback is dormant).
-                            //
-                            // **Amendment round 2 (suggestion #3)**: also
-                            // gate the default-fallback on
-                            // `contains_key(default_kernel_name)` so the
-                            // subsequent `.expect(...)` on `kernels.get_mut`
-                            // is structurally honest. Without this gate a
-                            // hypothetical caller that bypasses the entry-
-                            // point `contains_key` check (build /
-                            // build_snapshot / tessellate_from_values all gate
-                            // there today) could land on a missing default
-                            // and surface a confusing internal error several
-                            // lines downstream. Mirrors the parallel
-                            // `contains_key` gate in the `None` arm below and
-                            // the post-loop `.expect` idiom at
-                            // engine_build.rs:967 / :2626.
-                            let name = if kernels.contains_key(plan.kernel.as_str()) {
-                                plan.kernel.clone()
-                            } else if kernels.contains_key(default_kernel_name) {
-                                default_kernel_name.to_string()
-                            } else {
-                                let err_msg = format!(
-                                    "internal error: dispatcher named kernel '{}' \
+                    let (resolved_kernel_name, op_produced_repr): (String, Option<ReprKind>) =
+                        match &plan {
+                            Some(plan) if plan.conversions.is_empty() => {
+                                // 0-conversion plan: route to plan.kernel,
+                                // falling back to the engine's default kernel if
+                                // the dispatcher named an entry not present in
+                                // the kernels map (defence against
+                                // dispatch/registry-vs-map drift; in practice the
+                                // builder always loads one adapter per registry
+                                // entry so the fallback is dormant).
+                                //
+                                // **Amendment round 2 (suggestion #3)**: also
+                                // gate the default-fallback on
+                                // `contains_key(default_kernel_name)` so the
+                                // subsequent `.expect(...)` on `kernels.get_mut`
+                                // is structurally honest. Without this gate a
+                                // hypothetical caller that bypasses the entry-
+                                // point `contains_key` check (build /
+                                // build_snapshot / tessellate_from_values all gate
+                                // there today) could land on a missing default
+                                // and surface a confusing internal error several
+                                // lines downstream. Mirrors the parallel
+                                // `contains_key` gate in the `None` arm below and
+                                // the post-loop `.expect` idiom at
+                                // engine_build.rs:967 / :2626.
+                                let name = if kernels.contains_key(plan.kernel.as_str()) {
+                                    plan.kernel.clone()
+                                } else if kernels.contains_key(default_kernel_name) {
+                                    default_kernel_name.to_string()
+                                } else {
+                                    let err_msg = format!(
+                                        "internal error: dispatcher named kernel '{}' \
                                      not present in engine.geometry_kernels; default \
                                      '{default_kernel_name}' also absent",
-                                    plan.kernel,
+                                        plan.kernel,
+                                    );
+                                    diagnostics.push(
+                                        Diagnostic::error(err_msg.clone()).with_label(
+                                            DiagnosticLabel::new(
+                                                realization_span,
+                                                "in this realization",
+                                            ),
+                                        ),
+                                    );
+                                    if kernel_error_out.is_none() {
+                                        *kernel_error_out = Some(ErrorRef::new(err_msg));
+                                    }
+                                    break;
+                                };
+                                // Step-14 (task ε / 3436): derive the per-op
+                                // output repr from the dispatcher-named kernel's
+                                // descriptor — the step-10 `plan_output_repr`
+                                // derivation, now computed inline alongside the
+                                // routing decision so both flow through the
+                                // single capture-and-write idiom below. May
+                                // return `None` if the named kernel's descriptor
+                                // has no entry for `op` (an invariant violation
+                                // that surfaces as "leave produced_repr_out
+                                // untouched" rather than fabricating a repr).
+                                (name, plan_output_repr(registry, plan, operation))
+                            }
+                            Some(plan) => {
+                                // Task 4050 step-8: the MULTI-STAGE CONVERSION
+                                // EXECUTOR. A non-empty `plan.conversions` chain
+                                // names the repr crossings to perform before the
+                                // final op runs on `plan.kernel`. v0.3-ε executes
+                                // exactly one crossing — BRep→Mesh via the source
+                                // kernel's `tessellate` — so every stage must
+                                // classify as `ConversionProjection::Tessellate`
+                                // (step-6); any other stage surfaces as a
+                                // realization-failed diagnostic (mirroring the
+                                // kernel-error arm below) rather than a panic. Since
+                                // the only ε-executable projection is BRep→Mesh, a
+                                // multi-stage chain necessarily contains a
+                                // non-`(BRep,Mesh)` stage and is rejected here, so
+                                // the single-stage "tessellate each parent once"
+                                // walk below is correct for every chain that passes.
+                                //
+                                // For the surviving single BRep→Mesh stage and each
+                                // prior-stage input handle of the op: tessellate the
+                                // handle on the stage's source kernel → Mesh, then
+                                // ingest the Mesh on the target kernel (`plan.kernel`)
+                                // → a fresh handle. The converted handles are
+                                // substituted as the op's inputs and the op then runs
+                                // on `plan.kernel` via the common execute path below.
+                                // (Intermediate caching: step-12; rollback: step-14.)
+
+                                // The target kernel must be present in the map.
+                                if !kernels.contains_key(plan.kernel.as_str()) {
+                                    let err_msg = format!(
+                                        "internal error: dispatcher named target kernel '{}' \
+                                     not present in engine.geometry_kernels for a \
+                                     conversion plan",
+                                        plan.kernel,
+                                    );
+                                    diagnostics.push(
+                                        Diagnostic::error(err_msg.clone()).with_label(
+                                            DiagnosticLabel::new(
+                                                realization_span,
+                                                "in this realization",
+                                            ),
+                                        ),
+                                    );
+                                    if kernel_error_out.is_none() {
+                                        *kernel_error_out = Some(ErrorRef::new(err_msg));
+                                    }
+                                    break;
+                                }
+
+                                // Per-stage tessellation tolerance for each BRep→Mesh
+                                // source projection (default-tess tolerance when the
+                                // caller threaded no demanded tolerance).
+                                let per_stage_tol = per_stage_tolerance_for_plan(
+                                    plan,
+                                    demanded_tol.unwrap_or(Engine::DEFAULT_TESSELLATION_TOLERANCE),
                                 );
-                                diagnostics.push(
-                                    Diagnostic::error(err_msg.clone()).with_label(
+
+                                // Snapshot the op's input handles before mutation.
+                                let parents: Vec<GeometryHandleId> =
+                                    parent_handles_for_op(&geom_op).as_slice().to_vec();
+
+                                // Walk the chain: tessellate (source) then ingest
+                                // (target) each input, recording old→new id pairs.
+                                let mut substitution: HashMap<GeometryHandleId, GeometryHandleId> =
+                                    HashMap::new();
+                                let mut conversion_error: Option<String> = None;
+                                'convert: for (stage_kernel, from, to) in &plan.conversions {
+                                    if crate::dispatcher::v03_conversion_projection(*from, *to)
+                                        .is_none()
+                                    {
+                                        conversion_error = Some(format!(
+                                            "conversion stage {from:?}→{to:?} for op '{operation:?}' \
+                                         is not executable in v0.3-ε (only BRep→Mesh \
+                                         tessellation is supported)",
+                                        ));
+                                        break 'convert;
+                                    }
+                                    let source_name = (*stage_kernel).as_registry_name();
+                                    for &pid in &parents {
+                                        // Task 4050 step-12: the intermediate cache
+                                        // key for THIS input — distinct per input
+                                        // (local step index) and stable across
+                                        // rebuilds (see `conversion_intermediate_entity_id`).
+                                        let intermediate_entity = conversion_intermediate_entity_id(
+                                            &realization_id.entity,
+                                            pid,
+                                            &realization_step_ids,
+                                        );
+                                        // Consult the cache BEFORE any kernel work. A
+                                        // hit returns the previously-ingested
+                                        // target-kernel handle (Copy); reuse its id
+                                        // and skip the redundant tessellate+ingest.
+                                        if let Some(&cached) = realization_cache.lookup(
+                                            &intermediate_entity,
+                                            *to,
+                                            per_stage_tol,
+                                            NO_OPTIONS,
+                                        ) {
+                                            substitution.insert(pid, cached.id);
+                                            continue;
+                                        }
+                                        // Cache miss: tessellate on the source kernel
+                                        // (`&self`); the borrow is released before the
+                                        // `&mut` ingest borrow below.
+                                        let mesh = match kernels.get(source_name) {
+                                            Some(src) => match src.tessellate(pid, per_stage_tol) {
+                                                Ok(mesh) => mesh,
+                                                Err(e) => {
+                                                    conversion_error =
+                                                        Some(format!("tessellation error: {e}"));
+                                                    break 'convert;
+                                                }
+                                            },
+                                            None => {
+                                                conversion_error = Some(format!(
+                                                    "internal error: conversion source kernel \
+                                                 '{source_name}' absent from \
+                                                 engine.geometry_kernels"
+                                                ));
+                                                break 'convert;
+                                            }
+                                        };
+                                        // Ingest into the target kernel (`&mut`).
+                                        let ingested = kernels
+                                            .get_mut(plan.kernel.as_str())
+                                            .expect("plan.kernel presence checked above")
+                                            .ingest_mesh(&mesh);
+                                        match ingested {
+                                            Ok(handle) => {
+                                                // Wrap the fresh target-kernel handle
+                                                // with its KernelId provenance, cache
+                                                // it for cross-realization reuse, and
+                                                // log the key for step-14's atomic
+                                                // rollback.
+                                                let intermediate_handle = KernelHandle {
+                                                    kernel: kernel_id_for_registry_name(
+                                                        plan.kernel.as_str(),
+                                                    ),
+                                                    id: handle.id,
+                                                };
+                                                realization_cache.insert(
+                                                    &intermediate_entity,
+                                                    *to,
+                                                    per_stage_tol,
+                                                    NO_OPTIONS,
+                                                    intermediate_handle,
+                                                );
+                                                intermediate_cache_inserts.push((
+                                                    intermediate_entity,
+                                                    *to,
+                                                    per_stage_tol,
+                                                ));
+                                                substitution.insert(pid, handle.id);
+                                            }
+                                            Err(e) => {
+                                                conversion_error =
+                                                    Some(format!("mesh ingest error: {e}"));
+                                                break 'convert;
+                                            }
+                                        }
+                                    }
+                                }
+                                if let Some(err_msg) = conversion_error {
+                                    diagnostics.push(
+                                        Diagnostic::error(err_msg.clone()).with_label(
+                                            DiagnosticLabel::new(
+                                                realization_span,
+                                                "in this realization",
+                                            ),
+                                        ),
+                                    );
+                                    if kernel_error_out.is_none() {
+                                        *kernel_error_out = Some(ErrorRef::new(err_msg));
+                                    }
+                                    break;
+                                }
+
+                                // Point the final op at the converted handles and
+                                // route it to the target kernel via the common
+                                // execute path. `plan_output_repr` of the final op on
+                                // `plan.kernel` (=Mesh) becomes this op's produced
+                                // repr.
+                                substitute_op_parents(&mut geom_op, &substitution);
+                                (
+                                    plan.kernel.clone(),
+                                    plan_output_repr(registry, plan, operation),
+                                )
+                            }
+                            None => {
+                                // dispatch returned None: no registered kernel
+                                // claims `(op, BRep)` in the inventory-derived
+                                // registry. Two cases:
+                                //
+                                // (a) Backward-compat mode — the engine was
+                                //     constructed via `Engine::new(_, Some(k))` /
+                                //     `with_prelude(_, Some(k), _)`, which wraps
+                                //     the caller-supplied kernel under the
+                                //     synthetic [`Engine::DEFAULT_KERNEL_NAME`]
+                                //     sentinel. The inventory registry is
+                                //     deliberately out of sync with the kernels
+                                //     map in this mode (the caller's kernel
+                                //     never submits to `inventory::submit!`).
+                                //     For runtime behaviour to remain identical
+                                //     to v0.2 in this path, fall back to the
+                                //     default kernel — exactly as we already do
+                                //     in the `Some(plan)` branch when the
+                                //     dispatched name is absent from the kernels
+                                //     map. Without this fallback, every
+                                //     `Engine::new(Some(MockGeometryKernel))`
+                                //     integration test that doesn't transitively
+                                //     pull in an inventory-registered adapter
+                                //     would regress to "no kernel chain" errors.
+                                //
+                                // (b) Strict mode — the engine was constructed
+                                //     via `with_registered_kernels` (or the test
+                                //     drives `execute_realization_ops` with a
+                                //     non-synthetic `default_kernel_name`).
+                                //     Emit the `NoKernelChain` diagnostic so the
+                                //     missing-coverage configuration is surfaced
+                                //     rather than silently masked.
+                                //
+                                // The sentinel comparison distinguishes the two
+                                // paths without adding a separate flag — the
+                                // name `"__reify_eval_default_kernel"` is chosen
+                                // to be impossible for any real inventory
+                                // registration (`"occt"`, `"manifold"`, …).
+                                if default_kernel_name == Engine::DEFAULT_KERNEL_NAME
+                                    && kernels.contains_key(default_kernel_name)
+                                {
+                                    // Step-14 (task ε / 3436): backward-compat
+                                    // fallback success — yokes the routing
+                                    // decision (default kernel) to a synthetic
+                                    // `Some(ReprKind::BRep)` capture. The
+                                    // inventory registry has no descriptor for
+                                    // the caller-supplied kernel (it never
+                                    // submits to `inventory::submit!`), so
+                                    // `plan_output_repr` is not applicable here;
+                                    // the v0.2 single-kernel-path invariant
+                                    // guarantees the synthetic default kernel's
+                                    // terminal handle is always BRep in the BRep
+                                    // baseline, so direct `Some(ReprKind::BRep)`
+                                    // capture is honest and complete. This is
+                                    // the production gap closure for
+                                    // `executor_writes_produced_repr_brep_on_build_snapshot`
+                                    // (the step-13 unit test pins the same gap
+                                    // with a synthetic registry, build-profile-
+                                    // independent).
+                                    (default_kernel_name.to_string(), Some(ReprKind::BRep))
+                                } else {
+                                    // Task 4050 step-8: report the op's actual
+                                    // available reprs (not the hoisted v0.2
+                                    // `{BRep}` triple). Both the demanded dispatch
+                                    // AND the BRep fallback returned None here, so
+                                    // `BRep` is the accurate "could not satisfy"
+                                    // demand to surface.
+                                    let available_reprs: Vec<ReprKind> =
+                                        available_for_op.iter().copied().collect();
+                                    let diag = crate::dispatcher::no_kernel_chain_diagnostic(
+                                        operation,
+                                        ReprKind::BRep,
+                                        &available_reprs,
+                                    )
+                                    .with_label(
                                         DiagnosticLabel::new(
                                             realization_span,
                                             "in this realization",
                                         ),
-                                    ),
-                                );
-                                if kernel_error_out.is_none() {
-                                    *kernel_error_out = Some(ErrorRef::new(err_msg));
-                                }
-                                break;
-                            };
-                            // Step-14 (task ε / 3436): derive the per-op
-                            // output repr from the dispatcher-named kernel's
-                            // descriptor — the step-10 `plan_output_repr`
-                            // derivation, now computed inline alongside the
-                            // routing decision so both flow through the
-                            // single capture-and-write idiom below. May
-                            // return `None` if the named kernel's descriptor
-                            // has no entry for `op` (an invariant violation
-                            // that surfaces as "leave produced_repr_out
-                            // untouched" rather than fabricating a repr).
-                            (name, plan_output_repr(registry, plan, operation))
-                        }
-                        Some(plan) => {
-                            // Task 4050 step-8: the MULTI-STAGE CONVERSION
-                            // EXECUTOR. A non-empty `plan.conversions` chain
-                            // names the repr crossings to perform before the
-                            // final op runs on `plan.kernel`. v0.3-ε executes
-                            // exactly one crossing — BRep→Mesh via the source
-                            // kernel's `tessellate` — so every stage must
-                            // classify as `ConversionProjection::Tessellate`
-                            // (step-6); any other stage surfaces as a
-                            // realization-failed diagnostic (mirroring the
-                            // kernel-error arm below) rather than a panic. Since
-                            // the only ε-executable projection is BRep→Mesh, a
-                            // multi-stage chain necessarily contains a
-                            // non-`(BRep,Mesh)` stage and is rejected here, so
-                            // the single-stage "tessellate each parent once"
-                            // walk below is correct for every chain that passes.
-                            //
-                            // For the surviving single BRep→Mesh stage and each
-                            // prior-stage input handle of the op: tessellate the
-                            // handle on the stage's source kernel → Mesh, then
-                            // ingest the Mesh on the target kernel (`plan.kernel`)
-                            // → a fresh handle. The converted handles are
-                            // substituted as the op's inputs and the op then runs
-                            // on `plan.kernel` via the common execute path below.
-                            // (Intermediate caching: step-12; rollback: step-14.)
-
-                            // The target kernel must be present in the map.
-                            if !kernels.contains_key(plan.kernel.as_str()) {
-                                let err_msg = format!(
-                                    "internal error: dispatcher named target kernel '{}' \
-                                     not present in engine.geometry_kernels for a \
-                                     conversion plan",
-                                    plan.kernel,
-                                );
-                                diagnostics.push(Diagnostic::error(err_msg.clone()).with_label(
-                                    DiagnosticLabel::new(realization_span, "in this realization"),
-                                ));
-                                if kernel_error_out.is_none() {
-                                    *kernel_error_out = Some(ErrorRef::new(err_msg));
-                                }
-                                break;
-                            }
-
-                            // Per-stage tessellation tolerance for each BRep→Mesh
-                            // source projection (default-tess tolerance when the
-                            // caller threaded no demanded tolerance).
-                            let per_stage_tol = per_stage_tolerance_for_plan(
-                                plan,
-                                demanded_tol.unwrap_or(Engine::DEFAULT_TESSELLATION_TOLERANCE),
-                            );
-
-                            // Snapshot the op's input handles before mutation.
-                            let parents: Vec<GeometryHandleId> =
-                                parent_handles_for_op(&geom_op).as_slice().to_vec();
-
-                            // Walk the chain: tessellate (source) then ingest
-                            // (target) each input, recording old→new id pairs.
-                            let mut substitution: HashMap<GeometryHandleId, GeometryHandleId> =
-                                HashMap::new();
-                            let mut conversion_error: Option<String> = None;
-                            'convert: for (stage_kernel, from, to) in &plan.conversions {
-                                if crate::dispatcher::v03_conversion_projection(*from, *to)
-                                    .is_none()
-                                {
-                                    conversion_error = Some(format!(
-                                        "conversion stage {from:?}→{to:?} for op '{operation:?}' \
-                                         is not executable in v0.3-ε (only BRep→Mesh \
-                                         tessellation is supported)",
-                                    ));
-                                    break 'convert;
-                                }
-                                let source_name = (*stage_kernel).as_registry_name();
-                                for &pid in &parents {
-                                    // Task 4050 step-12: the intermediate cache
-                                    // key for THIS input — distinct per input
-                                    // (local step index) and stable across
-                                    // rebuilds (see `conversion_intermediate_entity_id`).
-                                    let intermediate_entity = conversion_intermediate_entity_id(
-                                        &realization_id.entity,
-                                        pid,
-                                        &realization_step_ids,
                                     );
-                                    // Consult the cache BEFORE any kernel work. A
-                                    // hit returns the previously-ingested
-                                    // target-kernel handle (Copy); reuse its id
-                                    // and skip the redundant tessellate+ingest.
-                                    if let Some(&cached) = realization_cache.lookup(
-                                        &intermediate_entity,
-                                        *to,
-                                        per_stage_tol,
-                                        NO_OPTIONS,
-                                    ) {
-                                        substitution.insert(pid, cached.id);
-                                        continue;
+                                    diagnostics.push(diag);
+                                    if kernel_error_out.is_none() {
+                                        *kernel_error_out = Some(ErrorRef::new(format!(
+                                            "no kernel chain for op '{:?}' producing '{:?}'",
+                                            operation,
+                                            ReprKind::BRep,
+                                        )));
                                     }
-                                    // Cache miss: tessellate on the source kernel
-                                    // (`&self`); the borrow is released before the
-                                    // `&mut` ingest borrow below.
-                                    let mesh = match kernels.get(source_name) {
-                                        Some(src) => match src.tessellate(pid, per_stage_tol) {
-                                            Ok(mesh) => mesh,
-                                            Err(e) => {
-                                                conversion_error =
-                                                    Some(format!("tessellation error: {e}"));
-                                                break 'convert;
-                                            }
-                                        },
-                                        None => {
-                                            conversion_error = Some(format!(
-                                                "internal error: conversion source kernel \
-                                                 '{source_name}' absent from \
-                                                 engine.geometry_kernels"
-                                            ));
-                                            break 'convert;
-                                        }
-                                    };
-                                    // Ingest into the target kernel (`&mut`).
-                                    let ingested = kernels
-                                        .get_mut(plan.kernel.as_str())
-                                        .expect("plan.kernel presence checked above")
-                                        .ingest_mesh(&mesh);
-                                    match ingested {
-                                        Ok(handle) => {
-                                            // Wrap the fresh target-kernel handle
-                                            // with its KernelId provenance, cache
-                                            // it for cross-realization reuse, and
-                                            // log the key for step-14's atomic
-                                            // rollback.
-                                            let intermediate_handle = KernelHandle {
-                                                kernel: kernel_id_for_registry_name(
-                                                    plan.kernel.as_str(),
-                                                ),
-                                                id: handle.id,
-                                            };
-                                            realization_cache.insert(
-                                                &intermediate_entity,
-                                                *to,
-                                                per_stage_tol,
-                                                NO_OPTIONS,
-                                                intermediate_handle,
-                                            );
-                                            intermediate_cache_inserts.push((
-                                                intermediate_entity,
-                                                *to,
-                                                per_stage_tol,
-                                            ));
-                                            substitution.insert(pid, handle.id);
-                                        }
-                                        Err(e) => {
-                                            conversion_error =
-                                                Some(format!("mesh ingest error: {e}"));
-                                            break 'convert;
-                                        }
-                                    }
+                                    break;
                                 }
                             }
-                            if let Some(err_msg) = conversion_error {
-                                diagnostics.push(Diagnostic::error(err_msg.clone()).with_label(
-                                    DiagnosticLabel::new(realization_span, "in this realization"),
-                                ));
-                                if kernel_error_out.is_none() {
-                                    *kernel_error_out = Some(ErrorRef::new(err_msg));
-                                }
-                                break;
-                            }
-
-                            // Point the final op at the converted handles and
-                            // route it to the target kernel via the common
-                            // execute path. `plan_output_repr` of the final op on
-                            // `plan.kernel` (=Mesh) becomes this op's produced
-                            // repr.
-                            substitute_op_parents(&mut geom_op, &substitution);
-                            (plan.kernel.clone(), plan_output_repr(registry, plan, operation))
-                        }
-                        None => {
-                            // dispatch returned None: no registered kernel
-                            // claims `(op, BRep)` in the inventory-derived
-                            // registry. Two cases:
-                            //
-                            // (a) Backward-compat mode — the engine was
-                            //     constructed via `Engine::new(_, Some(k))` /
-                            //     `with_prelude(_, Some(k), _)`, which wraps
-                            //     the caller-supplied kernel under the
-                            //     synthetic [`Engine::DEFAULT_KERNEL_NAME`]
-                            //     sentinel. The inventory registry is
-                            //     deliberately out of sync with the kernels
-                            //     map in this mode (the caller's kernel
-                            //     never submits to `inventory::submit!`).
-                            //     For runtime behaviour to remain identical
-                            //     to v0.2 in this path, fall back to the
-                            //     default kernel — exactly as we already do
-                            //     in the `Some(plan)` branch when the
-                            //     dispatched name is absent from the kernels
-                            //     map. Without this fallback, every
-                            //     `Engine::new(Some(MockGeometryKernel))`
-                            //     integration test that doesn't transitively
-                            //     pull in an inventory-registered adapter
-                            //     would regress to "no kernel chain" errors.
-                            //
-                            // (b) Strict mode — the engine was constructed
-                            //     via `with_registered_kernels` (or the test
-                            //     drives `execute_realization_ops` with a
-                            //     non-synthetic `default_kernel_name`).
-                            //     Emit the `NoKernelChain` diagnostic so the
-                            //     missing-coverage configuration is surfaced
-                            //     rather than silently masked.
-                            //
-                            // The sentinel comparison distinguishes the two
-                            // paths without adding a separate flag — the
-                            // name `"__reify_eval_default_kernel"` is chosen
-                            // to be impossible for any real inventory
-                            // registration (`"occt"`, `"manifold"`, …).
-                            if default_kernel_name == Engine::DEFAULT_KERNEL_NAME
-                                && kernels.contains_key(default_kernel_name)
-                            {
-                                // Step-14 (task ε / 3436): backward-compat
-                                // fallback success — yokes the routing
-                                // decision (default kernel) to a synthetic
-                                // `Some(ReprKind::BRep)` capture. The
-                                // inventory registry has no descriptor for
-                                // the caller-supplied kernel (it never
-                                // submits to `inventory::submit!`), so
-                                // `plan_output_repr` is not applicable here;
-                                // the v0.2 single-kernel-path invariant
-                                // guarantees the synthetic default kernel's
-                                // terminal handle is always BRep in the BRep
-                                // baseline, so direct `Some(ReprKind::BRep)`
-                                // capture is honest and complete. This is
-                                // the production gap closure for
-                                // `executor_writes_produced_repr_brep_on_build_snapshot`
-                                // (the step-13 unit test pins the same gap
-                                // with a synthetic registry, build-profile-
-                                // independent).
-                                (default_kernel_name.to_string(), Some(ReprKind::BRep))
-                            } else {
-                                // Task 4050 step-8: report the op's actual
-                                // available reprs (not the hoisted v0.2
-                                // `{BRep}` triple). Both the demanded dispatch
-                                // AND the BRep fallback returned None here, so
-                                // `BRep` is the accurate "could not satisfy"
-                                // demand to surface.
-                                let available_reprs: Vec<ReprKind> =
-                                    available_for_op.iter().copied().collect();
-                                let diag = crate::dispatcher::no_kernel_chain_diagnostic(
-                                    operation,
-                                    ReprKind::BRep,
-                                    &available_reprs,
-                                )
-                                .with_label(DiagnosticLabel::new(
-                                    realization_span,
-                                    "in this realization",
-                                ));
-                                diagnostics.push(diag);
-                                if kernel_error_out.is_none() {
-                                    *kernel_error_out = Some(ErrorRef::new(format!(
-                                        "no kernel chain for op '{:?}' producing '{:?}'",
-                                        operation,
-                                        ReprKind::BRep,
-                                    )));
-                                }
-                                break;
-                            }
-                        }
-                    };
+                        };
                     // Amendment round 2 (suggestion #3): the
                     // `resolved_kernel_name` match arms above each guarantee
                     // `kernels.contains_key(resolved_kernel_name)`:
@@ -4491,9 +4635,7 @@ impl Engine {
                 // it matches the v0.2 single-kernel semantics.
                 let default_kernel: &mut dyn GeometryKernel = kernels
                     .get_mut(default_kernel_name)
-                    .expect(
-                        "default kernel must remain in the map for centroid queries",
-                    )
+                    .expect("default kernel must remain in the map for centroid queries")
                     .as_mut();
                 let (centroids, centroid_diags) = collect_centroids_with_failure_summary(
                     &realization_attrs,
@@ -5764,9 +5906,8 @@ pub(crate) fn build_mixed_region_mesh(
 
         // Shell tie node: nearest shell vertex to the interface location. Its
         // unified index equals the shell vertex index (shell nodes are first).
-        let shell_n = nearest_node_index(&nodes[..n_shell], iface.location).ok_or(
-            MixedRegionError::InterfaceResolutionFailed { interface_index },
-        )?;
+        let shell_n = nearest_node_index(&nodes[..n_shell], iface.location)
+            .ok_or(MixedRegionError::InterfaceResolutionFailed { interface_index })?;
         // The through-thickness tie needs 3 distinct tet nodes (top/mid/bot);
         // fewer means the interface cannot be resolved.
         if n_tet < 3 {
@@ -6274,9 +6415,9 @@ mod tests {
     #[test]
     fn execute_realization_ops_happy_path_appends_handle() {
         use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::Type;
         use reify_ir::CompiledExpr;
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
 
@@ -6410,9 +6551,9 @@ mod tests {
     #[test]
     fn execute_realization_ops_kernel_error_truncates_handles() {
         use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
-        use reify_test_support::mocks::FailingMockGeometryKernel;
         use reify_core::Type;
         use reify_ir::CompiledExpr;
+        use reify_test_support::mocks::FailingMockGeometryKernel;
 
         let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
 
@@ -6462,9 +6603,9 @@ mod tests {
     #[test]
     fn execute_realization_ops_partial_success_then_failure_discards_earlier_handles() {
         use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::Type;
         use reify_ir::CompiledExpr;
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
 
@@ -6599,9 +6740,9 @@ mod tests {
     #[test]
     fn execute_realization_ops_named_realization_populates_named_steps() {
         use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::Type;
         use reify_ir::CompiledExpr;
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
 
@@ -6730,9 +6871,9 @@ mod tests {
     #[test]
     fn execute_realization_ops_duplicate_name_shadows_previous() {
         use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::Type;
         use reify_ir::CompiledExpr;
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
 
@@ -6863,9 +7004,9 @@ mod tests {
     #[test]
     fn execute_realization_ops_failed_shadow_does_not_overwrite_previous() {
         use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::Type;
         use reify_ir::CompiledExpr;
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
 
@@ -6987,8 +7128,8 @@ mod tests {
     #[test]
     fn execute_realization_ops_compile_failure_diagnostic_has_realization_span_label() {
         use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef};
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::{Severity, SourceSpan};
+        use reify_test_support::mocks::MockGeometryKernel;
 
         // Step(99) is out-of-bounds when step_handles is empty →
         // compile_geometry_op returns Err("unresolvable GeomRef::Step(99) …")
@@ -7052,9 +7193,9 @@ mod tests {
     #[test]
     fn execute_realization_ops_kernel_error_diagnostic_has_realization_span_label() {
         use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
-        use reify_test_support::mocks::FailingMockGeometryKernel;
         use reify_core::{Severity, SourceSpan, Type};
         use reify_ir::CompiledExpr;
+        use reify_test_support::mocks::FailingMockGeometryKernel;
 
         let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
 
@@ -7176,9 +7317,9 @@ mod tests {
     #[test]
     fn execute_realization_ops_routes_to_dispatcher_picked_kernel() {
         use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::Type;
         use reify_ir::{CapabilityDescriptor, CompiledExpr, Operation, ReprKind};
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
 
@@ -7256,9 +7397,9 @@ mod tests {
     #[test]
     fn execute_realization_ops_routes_to_default_when_only_default_registered() {
         use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::Type;
         use reify_ir::{CapabilityDescriptor, CompiledExpr, Operation, ReprKind};
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
 
@@ -7608,9 +7749,7 @@ mod tests {
     fn execute_realization_ops_mesh_demand_falls_back_to_brep_when_no_mesh_kernel() {
         use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
         use reify_core::Type;
-        use reify_ir::{
-            CapabilityDescriptor, CompiledExpr, GeometryKernel, Operation, ReprKind,
-        };
+        use reify_ir::{CapabilityDescriptor, CompiledExpr, GeometryKernel, Operation, ReprKind};
         use reify_test_support::mocks::MockGeometryKernel;
 
         let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
@@ -7869,9 +8008,7 @@ mod tests {
     fn execute_realization_ops_brep_realization_caches_and_hits_at_brep_key() {
         use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
         use reify_core::Type;
-        use reify_ir::{
-            CapabilityDescriptor, CompiledExpr, GeometryKernel, Operation, ReprKind,
-        };
+        use reify_ir::{CapabilityDescriptor, CompiledExpr, GeometryKernel, Operation, ReprKind};
         use reify_test_support::mocks::MockGeometryKernel;
 
         let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
@@ -7968,9 +8105,7 @@ mod tests {
     fn execute_realization_ops_mesh_demand_resolved_brep_hits_cache_via_brep_fallback() {
         use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
         use reify_core::Type;
-        use reify_ir::{
-            CapabilityDescriptor, CompiledExpr, GeometryKernel, Operation, ReprKind,
-        };
+        use reify_ir::{CapabilityDescriptor, CompiledExpr, GeometryKernel, Operation, ReprKind};
         use reify_test_support::mocks::MockGeometryKernel;
 
         let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
@@ -8489,14 +8624,24 @@ mod tests {
         assert!(
             state
                 .realization_cache
-                .lookup("Cross#conv-step0", ReprKind::Mesh, per_stage_tol, NO_OPTIONS)
+                .lookup(
+                    "Cross#conv-step0",
+                    ReprKind::Mesh,
+                    per_stage_tol,
+                    NO_OPTIONS
+                )
                 .is_none(),
             "intermediate step-0 must be rolled out of the cache on realization failure"
         );
         assert!(
             state
                 .realization_cache
-                .lookup("Cross#conv-step1", ReprKind::Mesh, per_stage_tol, NO_OPTIONS)
+                .lookup(
+                    "Cross#conv-step1",
+                    ReprKind::Mesh,
+                    per_stage_tol,
+                    NO_OPTIONS
+                )
                 .is_none(),
             "intermediate step-1 must be rolled out of the cache on realization failure"
         );
@@ -8513,9 +8658,9 @@ mod tests {
     #[test]
     fn execute_realization_ops_emits_no_kernel_chain_diagnostic_when_dispatch_returns_none() {
         use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::{DiagnosticCode, Type};
         use reify_ir::{CapabilityDescriptor, CompiledExpr, Operation, ReprKind};
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
 
@@ -8638,9 +8783,9 @@ mod tests {
     #[test]
     fn execute_realization_ops_writes_produced_repr_brep_in_none_fallback_backward_compat() {
         use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::{DiagnosticCode, Type};
         use reify_ir::{CapabilityDescriptor, CompiledExpr, Operation, ReprKind};
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
 
@@ -8652,10 +8797,7 @@ mod tests {
             supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
         };
         let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
-        registry.insert(
-            Engine::DEFAULT_KERNEL_NAME.to_string(),
-            &desc_none_match,
-        );
+        registry.insert(Engine::DEFAULT_KERNEL_NAME.to_string(), &desc_none_match);
 
         // (i) Sanity check: dispatch returns `None` for `(PrimitiveBox, BRep,
         //     {BRep})` against this registry, confirming the test reaches the
@@ -8666,7 +8808,13 @@ mod tests {
             s
         };
         assert!(
-            dispatch(&registry, Operation::PrimitiveBox, ReprKind::BRep, &available_set).is_none(),
+            dispatch(
+                &registry,
+                Operation::PrimitiveBox,
+                ReprKind::BRep,
+                &available_set
+            )
+            .is_none(),
             "test invariant: synthetic registry must yield dispatch() == None for \
              (PrimitiveBox, BRep, {{BRep}}) so the executor reaches the backward-compat \
              fallback arm. If this fires, the registry was accidentally given coverage \
@@ -8803,8 +8951,8 @@ mod tests {
     /// overrides the engine's hardcoded default.
     #[test]
     fn effective_tessellation_tolerance_uses_module_default_when_set() {
-        use reify_test_support::builders::CompiledModuleBuilder;
         use reify_core::ModulePath;
+        use reify_test_support::builders::CompiledModuleBuilder;
 
         let mut module = CompiledModuleBuilder::new(ModulePath::single("t")).build();
         module.default_tolerance = Some(0.005);
@@ -8822,8 +8970,8 @@ mod tests {
     /// for modules without a `#precision` pragma.
     #[test]
     fn effective_tessellation_tolerance_falls_back_to_default_when_none() {
-        use reify_test_support::builders::CompiledModuleBuilder;
         use reify_core::ModulePath;
+        use reify_test_support::builders::CompiledModuleBuilder;
 
         let module = CompiledModuleBuilder::new(ModulePath::single("t")).build();
         assert!(
@@ -8899,9 +9047,9 @@ mod tests {
     /// fixture in `geometry_error_handling.rs::module_with_box_realization`.
     fn module_with_one_box_realization() -> reify_compiler::CompiledModule {
         use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
-        use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, mm};
         use reify_core::{ModulePath, Type};
         use reify_ir::CompiledExpr;
+        use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, mm};
 
         let e = "TestShape";
         let mm_lit = |v: f64| CompiledExpr::literal(mm(v), Type::length());
@@ -9238,10 +9386,10 @@ mod tests {
     ///     required or present in the production code.
     #[test]
     fn compute_demanded_tols_returns_positionally_indexed_vec_of_vec() {
+        use reify_core::ModulePath;
         use reify_test_support::{
             CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder,
         };
-        use reify_core::ModulePath;
 
         let checker = MockConstraintChecker::new();
         // `mut` required for the positive-path sub-scenario where we seed
@@ -9793,10 +9941,10 @@ mod tests {
     ///     demand through `compute_realization_tolerance_budget` unchanged.
     #[test]
     fn compute_tessellation_budgets_returns_positionally_indexed_vec_of_vec() {
+        use reify_core::ModulePath;
         use reify_test_support::{
             CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder,
         };
-        use reify_core::ModulePath;
 
         let checker = MockConstraintChecker::new();
         // `mut` required for sub-scenario (b) where we seed
@@ -10085,9 +10233,9 @@ mod tests {
     /// naming the count, the realization_id, and the first error message.
     #[test]
     fn collect_centroids_with_failure_summary_coalesces_query_errors() {
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::Severity;
         use reify_ir::Role;
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let realization_id = RealizationNodeId::new("TestEntity", 0);
         let feature_id = FeatureId::from(&realization_id);
@@ -10167,9 +10315,9 @@ mod tests {
     /// parse-fail warning, no query-fail warning.
     #[test]
     fn collect_centroids_with_failure_summary_coalesces_parse_errors() {
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::Severity;
         use reify_ir::{Role, Value};
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let realization_id = RealizationNodeId::new("TestEntity", 0);
         let feature_id = FeatureId::from(&realization_id);
@@ -10254,9 +10402,9 @@ mod tests {
     #[test]
     fn collect_centroids_with_failure_summary_separates_failure_classes_and_preserves_first_message()
      {
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::Severity;
         use reify_ir::{Role, Value};
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let realization_id = RealizationNodeId::new("TestEntity", 0);
         let feature_id = FeatureId::from(&realization_id);
@@ -10379,10 +10527,10 @@ mod tests {
 #[cfg(test)]
 mod dispatch_volume_mesh_tests {
     use super::*;
+    use reify_ir::{ElementOrderTag, GeometryError, VolumeMesh};
     use reify_solver_elastic::{
         Mesh2d, Mesh2dError, Mesh2dReport, SweepError, SweepParams, SweptMesh3d,
     };
-    use reify_ir::{ElementOrderTag, GeometryError, VolumeMesh};
 
     fn make_empty_volume_mesh() -> VolumeMesh {
         VolumeMesh {
@@ -11016,7 +11164,9 @@ mod mixed_region_tests {
                 .iter()
                 .find(|r| r.dofs == vec![shell_disp, tet_mid_dof])
                 .unwrap_or_else(|| {
-                    panic!("missing displacement row for axis {a}: dofs [{shell_disp}, {tet_mid_dof}]")
+                    panic!(
+                        "missing displacement row for axis {a}: dofs [{shell_disp}, {tet_mid_dof}]"
+                    )
                 });
             assert_eq!(
                 row.coeffs,
@@ -11341,7 +11491,9 @@ mod mixed_region_tests {
         use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, ModifyKind, PrimitiveKind};
         use reify_core::ModulePath;
         use reify_ir::{ExportFormat, ReprKind};
-        use reify_test_support::{CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder};
+        use reify_test_support::{
+            CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder,
+        };
 
         let engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
 
@@ -11372,7 +11524,11 @@ mod mixed_region_tests {
 
         // ── Test a: mesh sink → terminal BooleanUnion demands Mesh ───────────
         let result_a = engine.compute_demanded_reprs(&module_a, ExportFormat::Stl);
-        assert_eq!(result_a.len(), 1, "outer Vec must have one entry per template");
+        assert_eq!(
+            result_a.len(),
+            1,
+            "outer Vec must have one entry per template"
+        );
         assert_eq!(result_a[0].len(), 3, "template has 3 realizations");
         // demanded_tols alignment: same shape
         assert_eq!(
@@ -11422,7 +11578,11 @@ mod mixed_region_tests {
 
         // ── Test b ────────────────────────────────────────────────────────────
         let result_b = engine.compute_demanded_reprs(&module_b, ExportFormat::Stl);
-        assert_eq!(result_b.len(), 1, "outer Vec must have one entry per template");
+        assert_eq!(
+            result_b.len(),
+            1,
+            "outer Vec must have one entry per template"
+        );
         assert_eq!(result_b[0].len(), 4, "template has 4 realizations");
         assert_eq!(
             result_b[0][2],

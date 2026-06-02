@@ -5,13 +5,16 @@
 
 use std::sync::Arc;
 
+use reify_core::{ContentHash, DiagnosticCode, FIELD_ENTITY_PREFIX, Severity, Type, ValueCellId};
 use reify_expr::{EvalContext, eval_expr};
+use reify_ir::{
+    BinOp, CompiledExpr, CompiledExprKind, FieldSourceKind, InterpolationKind, ResolvedFunction,
+    SampledGridKind, Value, ValueMap,
+};
 use reify_test_support::{
     collect_errors, eval_source, make_engine, make_simple_engine, parse_and_compile,
     parse_and_compile_with_stdlib,
 };
-use reify_core::{ContentHash, DiagnosticCode, FIELD_ENTITY_PREFIX, Severity, Type, ValueCellId};
-use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, FieldSourceKind, InterpolationKind, ResolvedFunction, SampledGridKind, Value, ValueMap};
 
 /// Extract eigenvalues from a `Value::List` of three `Value::Real` items.
 ///

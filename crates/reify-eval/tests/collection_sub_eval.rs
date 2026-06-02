@@ -4,14 +4,14 @@
 //! count-based elaboration, and count re-elaboration.
 
 use reify_compiler::TopologyTemplate;
+use reify_core::*;
 use reify_eval::cache::NodeId;
 use reify_eval::graph::EvaluationGraph;
 use reify_eval::{Engine, EvalResult};
+use reify_ir::*;
 use reify_test_support::builders::value_ref_typed;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
-use reify_core::*;
-use reify_ir::*;
 
 /// Build the canonical Bolt + Parent (collection sub) templates and return
 /// `(TopologyTemplate, TopologyTemplate)` in `(parent, bolt)` order.

@@ -23,9 +23,14 @@
 use std::sync::{Arc, Mutex};
 
 use reify_compiler::{BooleanOp, CompiledGeometryOp, CurveKind, GeomRef, PrimitiveKind, SweepKind};
-use reify_test_support::*;
 use reify_core::{ModulePath, RealizationNodeId, Severity, Type};
-use reify_ir::{AttributeHistory, CompiledExpr, ExportFormat, FeatureId, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, KernelAttributeOutcome, Mesh, QueryError, SweepOpHistoryRecords, TessError, TopologyAttributeTable, Value};
+use reify_ir::{
+    AttributeHistory, CompiledExpr, ExportFormat, FeatureId, GeometryError, GeometryHandle,
+    GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook,
+    KernelAttributeOutcome, Mesh, QueryError, SweepOpHistoryRecords, TessError,
+    TopologyAttributeTable, Value,
+};
+use reify_test_support::*;
 
 // ─── Shared call-recording type ──────────────────────────────────────────────
 

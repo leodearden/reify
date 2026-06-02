@@ -34,12 +34,14 @@
 //!     table. An explicit precondition assertion confirms the derived id
 //!     is absent before the resolver call.
 
+use reify_core::{RealizationNodeId, SourceSpan};
 use reify_eval::{
     AttributeQuery, AttributeResolution, resolve_unique_by_attribute, seed_primitive_attributes,
 };
+use reify_ir::{
+    FeatureId, GeometryHandleId, GeometryOp, Role, TopologyAttribute, TopologyAttributeTable, Value,
+};
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
-use reify_core::{RealizationNodeId, SourceSpan};
-use reify_ir::{FeatureId, GeometryHandleId, GeometryOp, Role, TopologyAttribute, TopologyAttributeTable, Value};
 
 /// 10×10×10 mm box, expressed in SI metres at the kernel boundary.
 const BOX_SIDE_M: f64 = 10.0e-3;

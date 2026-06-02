@@ -43,10 +43,7 @@ fn parse_bbox_z(s: &str) -> (f64, f64) {
 /// Parse z from the JSON-encoded centroid returned by `GeometryQuery::Centroid`.
 /// Format: `{"x":<f>,"y":<f>,"z":<f>}`
 fn parse_centroid_z(s: &str) -> f64 {
-    let z_start = s
-        .find("\"z\":")
-        .expect("no \"z\" field in centroid JSON")
-        + 4;
+    let z_start = s.find("\"z\":").expect("no \"z\" field in centroid JSON") + 4;
     let z_end = s[z_start..].find([',', '}']).unwrap() + z_start;
     s[z_start..z_end].trim().parse::<f64>().unwrap()
 }

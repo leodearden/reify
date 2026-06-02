@@ -3,9 +3,9 @@
 //! Tests A/B (step-1/step-2): single-param function with a default.
 //! Tests C/D (step-3): multi-param with provided-prefix + defaulted-suffix.
 
-use reify_test_support::mocks::MockConstraintChecker;
 use reify_core::{ModulePath, Severity, ValueCellId};
 use reify_ir::Value;
+use reify_test_support::mocks::MockConstraintChecker;
 
 /// Test A: all-defaulted call evaluates to the default value.
 ///
@@ -153,7 +153,11 @@ structure S {
         .unwrap_or_else(|| panic!("value for {:?} not found in eval result", v_id));
     match v_val {
         Value::Real(v) => {
-            assert!((v - 12.0).abs() < 1e-12, "expected 12.0 (10.0 + 2.0), got {}", v);
+            assert!(
+                (v - 12.0).abs() < 1e-12,
+                "expected 12.0 (10.0 + 2.0), got {}",
+                v
+            );
         }
         other => panic!("expected Value::Real(12.0), got {:?}", other),
     }
@@ -201,7 +205,11 @@ structure S {
         .unwrap_or_else(|| panic!("value for {:?} not found in eval result", v_id));
     match v_val {
         Value::Real(v) => {
-            assert!((v - 15.0).abs() < 1e-12, "expected 15.0 (10.0 + 5.0), got {}", v);
+            assert!(
+                (v - 15.0).abs() < 1e-12,
+                "expected 15.0 (10.0 + 5.0), got {}",
+                v
+            );
         }
         other => panic!("expected Value::Real(15.0), got {:?}", other),
     }

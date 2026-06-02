@@ -1,9 +1,9 @@
 //! Tests for stdlib prelude integration with the eval Engine.
 
 use reify_compiler::stdlib_loader;
+use reify_core::{ModulePath, ValueCellId};
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{collect_errors, steel_elastic_source, steel_material_elastic_source};
-use reify_core::{ModulePath, ValueCellId};
 
 // ─── step-7: Engine stores prelude ──────────────────────────────────
 

@@ -6,12 +6,14 @@
 //! shape, then asserts the propagated tolerance scope is observable via
 //! `Engine::active_tolerance_for`.
 
-use reify_test_support::builders::{CompiledModuleBuilder, CompiledPurposeBuilder, TopologyTemplateBuilder};
+use reify_core::{DimensionVector, ModulePath, Type, ValueCellId};
+use reify_ir::{CompiledExpr, Value};
+use reify_test_support::builders::{
+    CompiledModuleBuilder, CompiledPurposeBuilder, TopologyTemplateBuilder,
+};
 use reify_test_support::{
     make_engine, manufacturing_purpose_with_inner_name, my_design_template_with_subs,
 };
-use reify_core::{DimensionVector, ModulePath, Type, ValueCellId};
-use reify_ir::{CompiledExpr, Value};
 
 /// Build a minimal CompiledModule with templates `MyDesign` (sub `head: Head`)
 /// and `Head`, plus a `manufacturing` purpose whose sole constraint is
@@ -83,7 +85,12 @@ fn two_param_fits_purpose(
         .param("part", "Structure")
         .param("envelope", "Structure")
         .constraint("part", 0, None, rep_within("part", "Bracket", tol_part))
-        .constraint("envelope", 1, None, rep_within("envelope", "Envelope", tol_env))
+        .constraint(
+            "envelope",
+            1,
+            None,
+            rep_within("envelope", "Envelope", tol_env),
+        )
         .build()
 }
 

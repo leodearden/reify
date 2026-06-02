@@ -370,7 +370,9 @@ fn match_one_kind(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_ir::{AxisSign, CapKind, FeatureId, ModEntry, Role, TopologyAttribute, TopologyAttributeTable};
+    use reify_ir::{
+        AxisSign, CapKind, FeatureId, ModEntry, Role, TopologyAttribute, TopologyAttributeTable,
+    };
 
     fn feat() -> FeatureId {
         FeatureId::new("Feature#realization[0]")
@@ -1156,5 +1158,4 @@ mod tests {
             "expected UnmappedElement for the second duplicate handle in release mode"
         );
     }
-
 }

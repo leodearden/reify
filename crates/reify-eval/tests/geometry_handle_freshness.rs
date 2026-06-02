@@ -91,7 +91,10 @@ fn build_widget() -> Engine {
     // realization↔cell name-match (and hence the freshness edge) is in play.
     let geom_cell = ValueCellId::new("Widget", "geometry");
     assert!(
-        matches!(result.values.get_or_undef(&geom_cell), Value::GeometryHandle { .. }),
+        matches!(
+            result.values.get_or_undef(&geom_cell),
+            Value::GeometryHandle { .. }
+        ),
         "Widget.geometry must hydrate to a Value::GeometryHandle"
     );
 
@@ -212,7 +215,10 @@ fn width_edit_cascades_through_realization_to_geometry_handle_cell() {
     // width → Realization[0]: the realization re-derives Pending from its dirty
     // scalar input (its cached trace reads [width]).
     assert!(
-        matches!(engine.cache_store().freshness(&r0_node), Freshness::Pending { .. }),
+        matches!(
+            engine.cache_store().freshness(&r0_node),
+            Freshness::Pending { .. }
+        ),
         "Realization Widget#0 must be Pending after its scalar input width is dirtied; got {:?}",
         engine.cache_store().freshness(&r0_node)
     );
@@ -220,7 +226,10 @@ fn width_edit_cascades_through_realization_to_geometry_handle_cell() {
     // Realization[0] → ValueCell(geometry): the S8 fan-out re-derives the GH
     // cell, whose cached trace now folds in R0's Pending freshness.
     assert!(
-        matches!(engine.cache_store().freshness(&geom_node), Freshness::Pending { .. }),
+        matches!(
+            engine.cache_store().freshness(&geom_node),
+            Freshness::Pending { .. }
+        ),
         "GeometryHandle cell must be Pending via the Realization→ValueCell edge; got {:?}",
         engine.cache_store().freshness(&geom_node)
     );
@@ -404,7 +413,10 @@ fn lazy_revalidation_reresolves_stale_handle_and_undefs_missing_realization() {
             kernel_handle,
             ..
         } => (realization_ref.clone(), *kernel_handle),
-        other => panic!("Widget.geometry must hydrate to a GeometryHandle; got {:?}", other),
+        other => panic!(
+            "Widget.geometry must hydrate to a GeometryHandle; got {:?}",
+            other
+        ),
     };
 
     // Clone the post-build snapshot so it can be mutated independently of the

@@ -50,9 +50,8 @@ const FIXTURE_PATH: &str = concat!(
 fn directional_selectors_compile_and_return_geometry_handles() {
     // ── assertion 1: fixture exists and compiles cleanly (unconditional) ──────
 
-    let source = std::fs::read_to_string(FIXTURE_PATH).expect(
-        "examples/kernel_queries/directional_selectors.ri should exist (task 3618)",
-    );
+    let source = std::fs::read_to_string(FIXTURE_PATH)
+        .expect("examples/kernel_queries/directional_selectors.ri should exist (task 3618)");
     let compiled = parse_and_compile_with_stdlib(&source);
     assert!(
         errors_only(&compiled).is_empty(),
@@ -91,10 +90,12 @@ fn directional_selectors_compile_and_return_geometry_handles() {
         top_list.len()
     );
     match &top_list[0] {
-        Value::GeometryHandle { upstream_values_hash, .. } => {
+        Value::GeometryHandle {
+            upstream_values_hash,
+            ..
+        } => {
             assert_ne!(
-                upstream_values_hash,
-                &[0u8; 32],
+                upstream_values_hash, &[0u8; 32],
                 "top[0] upstream_values_hash must be non-zero (PRD §4 i)"
             );
         }
@@ -123,17 +124,19 @@ fn directional_selectors_compile_and_return_geometry_handles() {
     let mut hashes: Vec<[u8; 32]> = Vec::new();
     for (i, elem) in vert_list.iter().enumerate() {
         match elem {
-            Value::GeometryHandle { upstream_values_hash, .. } => {
+            Value::GeometryHandle {
+                upstream_values_hash,
+                ..
+            } => {
                 assert_ne!(
-                    upstream_values_hash,
-                    &[0u8; 32],
+                    upstream_values_hash, &[0u8; 32],
                     "vert[{i}] upstream_values_hash must be non-zero (PRD §4 i)"
                 );
                 hashes.push(*upstream_values_hash);
             }
-            other => panic!(
-                "vert[{i}] must be Value::GeometryHandle (PRD §4 KGQ-ι), got: {other:?}"
-            ),
+            other => {
+                panic!("vert[{i}] must be Value::GeometryHandle (PRD §4 KGQ-ι), got: {other:?}")
+            }
         }
     }
     for i in 0..hashes.len() {
