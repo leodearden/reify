@@ -19,29 +19,28 @@
 
 // ── ThermallyCharacterized ───────────────────────────────────────────────────
 
-// Root thermal-material trait. Every thermally characterised material must
-// supply the six scalar thermal properties below (all Real pending dimensional
-// type wiring):
-//   thermal_conductivity  — W/(m·K)
-//   specific_heat         — J/(kg·K)
-//   thermal_expansion     — 1/K (coefficient of linear thermal expansion)
-//   melting_point         — K
-//   max_service_temperature — K (upper operating limit)
-//   glass_transition      — K (Tg).  Pass 0.0 for crystalline / non-glass materials
-//                            (e.g. metals, ceramics) where Tg is physically undefined.
-//                            Convention: 0.0 is a sentinel meaning "not applicable";
-//                            no constraint references glass_transition, so the sentinel
-//                            value is inert in constraint checking.
-//                            Future work: a Glassy sub-trait may carry this param so
-//                            that only amorphous / glassy materials are required to
-//                            supply a meaningful Tg value.
+// Root thermal-material trait. Three scalar thermal properties are required;
+// three temperature-point params are optional (= undef) because not every
+// material has a well-defined value for all three:
+//
+//   Required (dimensioned scalar types tightened by task #3115):
+//     thermal_conductivity  — W/(m·K)
+//     specific_heat         — J/(kg·K)
+//     thermal_expansion     — 1/K (coefficient of linear thermal expansion)
+//
+//   Optional (= undef; tightenable to Temperature by task #3112):
+//     melting_point         — K; undef for amorphous/composite materials
+//     max_service_temperature — K (upper operating limit); undef when not rated
+//     glass_transition      — K (Tg); genuinely undefined for crystalline
+//                             materials (metals, ceramics). Use undef rather
+//                             than the former 0.0 sentinel (PRD D6).
 trait ThermallyCharacterized : MaterialSpec {
     param thermal_conductivity : ThermalConductivity
     param specific_heat : SpecificHeat
     param thermal_expansion : ThermalExpansion
-    param melting_point : Real
-    param max_service_temperature : Real
-    param glass_transition : Real
+    param melting_point : Real = undef
+    param max_service_temperature : Real = undef
+    param glass_transition : Real = undef
 }
 
 // ── Refractory ───────────────────────────────────────────────────────────────
