@@ -5027,4 +5027,138 @@ mod tests {
     fn affine_inverse_non_affine_arg_returns_undef() {
         assert!(eval_builtin("affine_inverse", &[Value::Real(1.0)]).is_undef());
     }
+
+    // ── δ step-1: composition-order point-application pin ─────────────────────
+    // Pins the left-applied a∘b convention: (a∘b)(p) = a(b(p)).
+    // Uses linear·p + translation computed in-test (affine_apply is owned by
+    // downstream ζ/3963 and absent on main).
+
+    /// Apply an AffineMap to a point: result[i] = sum_j(linear[i][j]*p[j]) + translation[i].
+    fn apply_affine_to_point(
+        linear: [[f64; 3]; 3],
+        translation: [f64; 3],
+        p: [f64; 3],
+    ) -> [f64; 3] {
+        let mut result = [0.0f64; 3];
+        for i in 0..3 {
+            result[i] = linear[i][0] * p[0]
+                + linear[i][1] * p[1]
+                + linear[i][2] * p[2]
+                + translation[i];
+        }
+        result
+    }
+
+    #[test]
+    fn affine_compose_order_ab_point_application() {
+        // a = scale(2,1,1): linear=diag(2,1,1)
+        // b = shear_xy(1):  linear=[[1,1,0],[0,1,0],[0,0,1]]
+        // ab = compose(a, b): a.linear · b.linear = [[2,2,0],[0,1,0],[0,0,1]]
+        // ab applied to (1,1,0) = (2*1+2*1, 1, 0) = (4, 1, 0)  [pins left-applied a∘b]
+        let scale = eval_builtin(
+            "affine_scale",
+            &[Value::Real(2.0), Value::Real(1.0), Value::Real(1.0)],
+        );
+        let shear = eval_builtin("affine_shear_xy", &[Value::Real(1.0)]);
+        let ab = eval_builtin("affine_compose", &[scale, shear]);
+        let (ab_linear, ab_trans) = expect_affine(ab);
+
+        let p = [1.0, 1.0, 0.0];
+        let result = apply_affine_to_point(ab_linear, ab_trans, p);
+
+        assert!(
+            (result[0] - 4.0).abs() < 1e-12,
+            "ab(p).x: expected 4.0, got {}",
+            result[0]
+        );
+        assert!(
+            (result[1] - 1.0).abs() < 1e-12,
+            "ab(p).y: expected 1.0, got {}",
+            result[1]
+        );
+        assert!(
+            result[2].abs() < 1e-12,
+            "ab(p).z: expected 0.0, got {}",
+            result[2]
+        );
+    }
+
+    #[test]
+    fn affine_compose_order_decomposition_a_of_b_of_p() {
+        // Verify the decomposition: (a∘b)(p) = a(b(p)).
+        // b(p=(1,1,0)) with shear_xy(1): x+y=2, y=1, z=0 → (2,1,0)
+        // a((2,1,0)) with scale(2,1,1): 2*2=4, 1, 0 → (4,1,0)
+        let scale = eval_builtin(
+            "affine_scale",
+            &[Value::Real(2.0), Value::Real(1.0), Value::Real(1.0)],
+        );
+        let shear = eval_builtin("affine_shear_xy", &[Value::Real(1.0)]);
+        let (scale_linear, scale_trans) = expect_affine(scale.clone());
+        let (shear_linear, shear_trans) = expect_affine(shear.clone());
+
+        let p = [1.0, 1.0, 0.0];
+        let bp = apply_affine_to_point(shear_linear, shear_trans, p);
+        assert!(
+            (bp[0] - 2.0).abs() < 1e-12,
+            "b(p).x: expected 2.0, got {}",
+            bp[0]
+        );
+        assert!(
+            (bp[1] - 1.0).abs() < 1e-12,
+            "b(p).y: expected 1.0, got {}",
+            bp[1]
+        );
+
+        let abp = apply_affine_to_point(scale_linear, scale_trans, bp);
+        assert!(
+            (abp[0] - 4.0).abs() < 1e-12,
+            "a(b(p)).x: expected 4.0, got {}",
+            abp[0]
+        );
+        assert!(
+            (abp[1] - 1.0).abs() < 1e-12,
+            "a(b(p)).y: expected 1.0, got {}",
+            abp[1]
+        );
+        assert!(
+            abp[2].abs() < 1e-12,
+            "a(b(p)).z: expected 0.0, got {}",
+            abp[2]
+        );
+    }
+
+    #[test]
+    fn affine_compose_order_is_load_bearing() {
+        // The OPPOSITE order ba = compose(b, a) must give a DIFFERENT result at (1,1,0).
+        // ba.linear = b.linear · a.linear = [[2,1,0],[0,1,0],[0,0,1]]
+        // ba(1,1,0) = (2*1+1*1, 1, 0) = (3, 1, 0) ≠ (4, 1, 0)
+        // This proves the left-applied a∘b convention is truly load-bearing.
+        let scale = eval_builtin(
+            "affine_scale",
+            &[Value::Real(2.0), Value::Real(1.0), Value::Real(1.0)],
+        );
+        let shear = eval_builtin("affine_shear_xy", &[Value::Real(1.0)]);
+        let ba = eval_builtin("affine_compose", &[shear, scale]);
+        let (ba_linear, ba_trans) = expect_affine(ba);
+
+        let p = [1.0, 1.0, 0.0];
+        let result = apply_affine_to_point(ba_linear, ba_trans, p);
+
+        assert!(
+            (result[0] - 3.0).abs() < 1e-12,
+            "ba(p).x: expected 3.0, got {}",
+            result[0]
+        );
+        assert!(
+            (result[1] - 1.0).abs() < 1e-12,
+            "ba(p).y: expected 1.0, got {}",
+            result[1]
+        );
+        // Prove the two orders diverge: ba(p).x=3 ≠ ab(p).x=4
+        assert!(
+            (result[0] - 4.0).abs() > 0.5,
+            "compose(b,a)(p).x must differ from compose(a,b)(p).x=4.0; got {}",
+            result[0]
+        );
+    }
 }
