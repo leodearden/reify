@@ -26,6 +26,36 @@ fn mock_engine() -> reify_eval::Engine {
     reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)))
 }
 
+/// Build a real-OCCT engine via the production `SingleKernelHolder` planner.
+///
+/// Use for tessellation / `surface_subtree` tests where a single-kernel
+/// planner suffices (no need for `make_compound` on a multi-body assembly).
+/// The holder's `register_kernel` wires in the OCCT kernel the same way the
+/// production CLI path does.
+fn occt_engine_via_holder() -> reify_eval::Engine {
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut planner = reify_geometry::SingleKernelHolder::new();
+    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+    reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)))
+}
+
+/// Build a real-OCCT engine using `OcctKernelHandle` directly (no holder).
+///
+/// Required for `build()` and `distance_between_placed()` tests where
+/// `make_compound` must be reachable on the kernel itself.  The split between
+/// this helper and `occt_engine_via_holder` is intentional: the holder *does*
+/// delegate `make_compound` to its inner kernel (see
+/// `reify-geometry/src/lib.rs`), but the production holder/registry compound
+/// path is exercised by the CLI integration test; here we exercise the kernel
+/// directly so the in-process test asserts the kernel-level contract.
+fn occt_engine_direct() -> reify_eval::Engine {
+    let checker = reify_constraints::SimpleConstraintChecker;
+    reify_eval::Engine::new(
+        Box::new(checker),
+        Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
+    )
+}
+
 /// Resolve the `entity_path` a realization named `name` surfaces under on the
 /// flat (root) path: `<entity>#realization[<index>]`.
 fn root_realization_path(template: &reify_compiler::TopologyTemplate, name: &str) -> String {
@@ -365,12 +395,8 @@ structure Assembly {
 /// descendants un-placed, so today the placed child lands at the control coords
 /// and the `+30mm` X assertions fail.
 #[test]
+#[ignore = "requires OCCT"]
 fn placed_child_surfaces_at_composed_world_aabb() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
-
     let source = r#"structure Child {
     let body = box(20mm, 20mm, 20mm)
 }
@@ -400,11 +426,7 @@ structure PlacedAsm {
     let control_path = composed_path(child, "ControlAsm.c", "body");
     let placed_path = composed_path(child, "PlacedAsm.c", "body");
 
-    // Build engine with the real OCCT kernel (Mock cannot validate placement).
-    let checker = reify_constraints::SimpleConstraintChecker;
-    let mut planner = reify_geometry::SingleKernelHolder::new();
-    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = occt_engine_via_holder();
 
     let result = engine.tessellate_realizations(&compiled);
     let geom_errors: Vec<_> = result
@@ -493,12 +515,8 @@ structure PlacedAsm {
 /// walk: the aux subtree is transformed AND hidden, while the product subtree is
 /// transformed AND visible.
 #[test]
+#[ignore = "requires OCCT"]
 fn placed_product_and_aux_children_surface_at_world_aabb_with_visibility() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
-
     let source = r#"structure Part {
     let body = box(20mm, 20mm, 20mm)
 }
@@ -534,11 +552,7 @@ structure Assembly {
     let part_path = composed_path(part, "Assembly.part", "body");
     let jig_path = composed_path(jig, "Assembly.jig", "body");
 
-    // Build engine with the real OCCT kernel (Mock cannot validate placement).
-    let checker = reify_constraints::SimpleConstraintChecker;
-    let mut planner = reify_geometry::SingleKernelHolder::new();
-    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = occt_engine_via_holder();
 
     let result = engine.tessellate_realizations(&compiled);
     let geom_errors: Vec<_> = result
@@ -881,12 +895,8 @@ structure B {
 /// Fails on base because `Engine::build` exports only `*step_handles.last()`
 /// — a single un-placed solid — not the two placed product bodies.
 #[test]
+#[ignore = "requires OCCT"]
 fn multi_body_export_has_two_product_solids_not_three_not_one() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
-
     let source = r#"structure Child {
     let body = box(20mm, 20mm, 20mm)
 }
@@ -915,11 +925,7 @@ structure Assembly {
     // (see reify-geometry/src/lib.rs:88-98), so the production holder/registry
     // compound path is exercised by the CLI test
     // `build_sub_placement_export_has_two_product_solids` in cli_build.rs.
-    let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(
-        Box::new(checker),
-        Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
-    );
+    let mut engine = occt_engine_direct();
 
     let result = engine.build(&compiled, ExportFormat::Step);
     let geom_errors: Vec<_> = result
@@ -957,12 +963,8 @@ structure Assembly {
 /// This test is GREEN on base (the old `*step_handles.last()` export produces
 /// 1 solid for single-body structures) and must remain GREEN after step-4.
 #[test]
+#[ignore = "requires OCCT"]
 fn single_body_export_regression_one_solid() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
-
     let source = r#"structure Bracket {
     let body = box(30mm, 20mm, 10mm)
 }"#;
@@ -978,10 +980,7 @@ fn single_body_export_regression_one_solid() {
         compile_errors
     );
 
-    let checker = reify_constraints::SimpleConstraintChecker;
-    let mut planner = reify_geometry::SingleKernelHolder::new();
-    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = occt_engine_via_holder();
 
     let result = engine.build(&compiled, ExportFormat::Step);
     let geom_errors: Vec<_> = result
@@ -1019,12 +1018,8 @@ fn single_body_export_regression_one_solid() {
 /// MANIFOLD_SOLID_BREP (the two input boxes PLUS their union). This test locks
 /// exactly **1** solid.
 #[test]
+#[ignore = "requires OCCT"]
 fn boolean_operand_lets_are_not_exported_as_separate_solids() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
-
     let source = r#"structure S {
     let a = box(10mm, 10mm, 10mm)
     let b = box(5mm, 5mm, 5mm)
@@ -1055,11 +1050,7 @@ fn boolean_operand_lets_are_not_exported_as_separate_solids() {
     // Use OcctKernelHandle directly so make_compound is reachable — if the
     // regression returns (it would collect 3 bodies), the export takes the
     // compound path rather than the single-body path.
-    let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(
-        Box::new(checker),
-        Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
-    );
+    let mut engine = occt_engine_direct();
 
     let result = engine.build(&compiled, ExportFormat::Step);
     let geom_errors: Vec<_> = result
@@ -1102,12 +1093,8 @@ fn boolean_operand_lets_are_not_exported_as_separate_solids() {
 ///
 /// RED on base: `distance_between_placed` does not exist on `Engine`.
 #[test]
+#[ignore = "requires OCCT"]
 fn distance_between_placed_children_equals_composed_transform_value() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
-
     let source = r#"structure Child {
     let body = box(20mm, 20mm, 20mm)
 }
@@ -1127,12 +1114,7 @@ structure Assembly {
         compile_errors
     );
 
-    // Use OcctKernelHandle directly so make_compound is reachable.
-    let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(
-        Box::new(checker),
-        Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
-    );
+    let mut engine = occt_engine_direct();
 
     let dist = engine.distance_between_placed(
         &compiled,
@@ -1157,12 +1139,8 @@ structure Assembly {
 /// `distance_between_placed` returns ≈ 0.0, proving the query operates on
 /// PLACED (world-coordinate) geometry rather than source-let positions.
 #[test]
+#[ignore = "requires OCCT"]
 fn distance_between_coincident_placed_children_is_zero() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
-
     let source = r#"structure Child {
     let body = box(20mm, 20mm, 20mm)
 }
@@ -1182,11 +1160,7 @@ structure ControlAsm {
         compile_errors
     );
 
-    let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(
-        Box::new(checker),
-        Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
-    );
+    let mut engine = occt_engine_direct();
 
     let dist = engine.distance_between_placed(
         &compiled,
@@ -1229,12 +1203,8 @@ structure ControlAsm {
 /// A future diagnostic should warn when a template has >1 non-consumed,
 /// non-aux terminal realization so that silent geometry dropping is visible.
 #[test]
+#[ignore = "requires OCCT"]
 fn intra_template_two_independent_lets_exports_only_final_body() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
-
     let source = r#"structure S {
     let a = box(10mm, 10mm, 10mm)
     let b = box(5mm, 5mm, 5mm)
@@ -1259,11 +1229,7 @@ fn intra_template_two_independent_lets_exports_only_final_body() {
         compiled.templates[0].realizations.len()
     );
 
-    let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(
-        Box::new(checker),
-        Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
-    );
+    let mut engine = occt_engine_direct();
 
     let result = engine.build(&compiled, ExportFormat::Step);
     let geom_errors: Vec<_> = result
@@ -1421,12 +1387,8 @@ structure HolderAt {
 /// RED on base (bar surfaces at 0.2 m default extent).
 /// GREEN after step-2 (`walk_placed_realizations` re-realizes override subs).
 #[test]
+#[ignore = "requires OCCT"]
 fn override_children_surface_at_overridden_extent_occt() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
-
     let source = r#"structure Bar {
     param len : Length = 200mm
     let body = box(len, 50mm, 50mm)
@@ -1457,11 +1419,7 @@ structure HolderAt {
     let override_path = composed_path(bar, "HolderOverride.b", "body");
     let at_path = composed_path(bar, "HolderAt.b", "body");
 
-    // Build with the real OCCT kernel — Mock cannot validate mesh extents.
-    let checker = reify_constraints::SimpleConstraintChecker;
-    let mut planner = reify_geometry::SingleKernelHolder::new();
-    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = occt_engine_via_holder();
 
     let result = engine.tessellate_realizations(&compiled);
     let geom_errors: Vec<_> = result
@@ -1644,12 +1602,8 @@ structure Asm {
 /// bookkeeping or executor arguments while the other is not updated), one of
 /// the two assertions will fail, catching the divergence automatically.
 #[test]
+#[ignore = "requires OCCT"]
 fn build_and_distance_between_placed_are_consistent() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
-
     let source = r#"structure Child {
     let body = box(20mm, 20mm, 20mm)
 }
@@ -1669,11 +1623,7 @@ structure Assembly {
         compile_errors
     );
 
-    let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(
-        Box::new(checker),
-        Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
-    );
+    let mut engine = occt_engine_direct();
 
     // Assert 1: build() produces exactly 2 product solids.
     let build_result = engine.build(&compiled, ExportFormat::Step);
