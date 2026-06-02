@@ -409,4 +409,74 @@ mod tests {
             "matrix mixing dimensionless and LENGTH cells should be Undef"
         );
     }
+
+    // ── `diag(list)` → N×N Value::Tensor (step-5 RED / step-6 GREEN) ──────────
+
+    /// (a) A dimensionless list lands on the diagonal; off-diagonal is `0.0`.
+    #[test]
+    fn diag_dimensionless_builds_diagonal_tensor() {
+        let out = eval_builtin("diag", &[list_row(&[3.0, 5.0, 7.0])]);
+        assert_eq!(
+            out,
+            Value::Tensor(vec![
+                tensor_row(&[3.0, 0.0, 0.0]),
+                tensor_row(&[0.0, 5.0, 0.0]),
+                tensor_row(&[0.0, 0.0, 7.0]),
+            ]),
+            "diag([3,5,7]) should be a 3×3 Tensor with 3,5,7 on the diagonal"
+        );
+    }
+
+    /// (b) Off-diagonal zeros share the element dimension (dimensioned zeros).
+    #[test]
+    fn diag_dimensioned_off_diagonal_zeros_share_dimension() {
+        let m = |v: f64| scalar(v, DimensionVector::LENGTH);
+        let out = eval_builtin("diag", &[Value::List(vec![m(3.0), m(5.0)])]);
+        assert_eq!(
+            out,
+            Value::Tensor(vec![
+                Value::Tensor(vec![m(3.0), m(0.0)]),
+                Value::Tensor(vec![m(0.0), m(5.0)]),
+            ]),
+            "diag of LENGTH Scalars should place LENGTH-dimensioned zeros off-diagonal"
+        );
+    }
+
+    /// (c) A single-element list builds a 1×1 Tensor.
+    #[test]
+    fn diag_single_element_builds_1x1() {
+        let out = eval_builtin("diag", &[list_row(&[4.0])]);
+        assert_eq!(
+            out,
+            Value::Tensor(vec![tensor_row(&[4.0])]),
+            "diag([4]) should be a 1×1 Tensor [[4]]"
+        );
+    }
+
+    /// (d) An empty list is malformed → `Undef`.
+    #[test]
+    fn diag_empty_list_is_undef() {
+        assert_eq!(
+            eval_builtin("diag", &[Value::List(vec![])]),
+            Value::Undef,
+            "diag([]) should be Undef"
+        );
+    }
+
+    /// (e) A mixed-dimension or non-numeric list is malformed → `Undef`.
+    #[test]
+    fn diag_mixed_dimension_or_non_numeric_is_undef() {
+        let mixed = Value::List(vec![Value::Real(1.0), scalar(2.0, DimensionVector::LENGTH)]);
+        assert_eq!(
+            eval_builtin("diag", &[mixed]),
+            Value::Undef,
+            "diag of mixed dimensions should be Undef"
+        );
+        let non_numeric = Value::List(vec![Value::Real(1.0), Value::String("x".to_string())]);
+        assert_eq!(
+            eval_builtin("diag", &[non_numeric]),
+            Value::Undef,
+            "diag containing a String should be Undef"
+        );
+    }
 }
