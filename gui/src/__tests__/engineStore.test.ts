@@ -7,6 +7,7 @@ import type {
   ConstraintData,
   EvaluationStatus,
   DiagnosticInfo,
+  EntityTreeNode,
 } from '../types';
 import type { KernelStatus } from '../bridge';
 
@@ -1641,6 +1642,65 @@ describe('engineStore solverProgress', () => {
       // Oldest entry is iter:2 (iter:1 was evicted)
       expect(state.solverProgress.trace[0].iter).toBe(2);
       expect(state.solverProgress.trace[199].iter).toBe(201);
+      dispose();
+    });
+  });
+});
+
+// ── reconcileToTree ──────────────────────────────────────────────────────────
+// Helper to build a minimal EntityTreeNode with no children.
+function makeTreeNode(entity_path: string, kind = 'structure'): EntityTreeNode {
+  return {
+    entity_path,
+    kind,
+    type_name: null,
+    has_mesh: true,
+    trait_geometry: false,
+    freshness: 'final',
+    children: [],
+  };
+}
+
+describe('engineStore reconcileToTree — mesh pruning (step-1)', () => {
+  it('reconcileToTree removes orphan mesh and retains live mesh, fires onEntityRemoved for orphan', () => {
+    createRoot((dispose) => {
+      const spy = vi.fn();
+      const store = createEngineStore({ onEntityRemoved: spy });
+
+      // Seed: one live mesh (owner = CapstanDrive.shuttle.plate), one orphan (owner = ShuttlePlates)
+      const liveMeshKey = 'CapstanDrive.shuttle.plate#realization0';
+      const orphanMeshKey = 'ShuttlePlates#realization0';
+
+      const liveMesh: MeshData = {
+        entity_path: liveMeshKey,
+        vertices: new Float32Array([0, 1, 2]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: null,
+      };
+      const orphanMesh: MeshData = {
+        entity_path: orphanMeshKey,
+        vertices: new Float32Array([3, 4, 5]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: null,
+      };
+
+      store.applyMeshUpdate(liveMesh);
+      store.applyMeshUpdate(orphanMesh);
+      expect(Object.keys(store.state.meshes)).toHaveLength(2);
+
+      // Tree contains only the live structure node (CapstanDrive.shuttle.plate)
+      const tree: EntityTreeNode[] = [makeTreeNode('CapstanDrive.shuttle.plate')];
+
+      store.reconcileToTree(tree);
+
+      // Orphan mesh pruned
+      expect(store.state.meshes[orphanMeshKey]).toBeUndefined();
+      // Live mesh retained
+      expect(store.state.meshes[liveMeshKey]).toBeDefined();
+      // onEntityRemoved fired with orphan key
+      expect(spy).toHaveBeenCalledWith(orphanMeshKey);
+      expect(spy).toHaveBeenCalledTimes(1);
+
       dispose();
     });
   });
