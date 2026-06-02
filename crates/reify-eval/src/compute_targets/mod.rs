@@ -155,4 +155,14 @@ pub fn register_compute_fns(engine: &mut crate::Engine) {
         "modal::displacement_at",
         crate::modal_ops::displacement_at_trampoline as crate::ComputeFn,
     );
+    // The inverse-dynamics trajectory trampoline (RBD-ι, task 3838) lives in
+    // `crate::dynamics_ops` (not `compute_targets`): it co-locates with the
+    // body_mass_props Value-marshalling + warm-state cache there, and the
+    // reify-eval ← reify-stdlib dep direction forbids the pure cache-key half
+    // (`reify_stdlib::dynamics::trampoline`) from holding the ComputeOutcome /
+    // CancellationHandle types. Mirrors the modal placement above.
+    engine.register_compute_fn(
+        "dynamics::inverse_dynamics",
+        crate::dynamics_ops::solve_inverse_dynamics_trampoline as crate::ComputeFn,
+    );
 }

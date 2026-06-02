@@ -19,10 +19,17 @@
 //!     assembles a `MassProperties` whose geometric fields stay the deferred
 //!     `Value::Undef` sentinel until the KGQ kernel seam (task 3620) is wired.
 
+use std::sync::Arc;
+
 use reify_core::dimension::DimensionVector;
-use reify_core::{Diagnostic, DiagnosticCode};
-use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use reify_core::{ContentHash, Diagnostic, DiagnosticCode};
+use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use reify_stdlib::dynamics::eval::{inverse_dynamics_sample, motion_trajectory_samples};
 use reify_stdlib::dynamics::mass_props::{DensitySource, resolve_density};
+use reify_stdlib::dynamics::rnea::default_gravity;
+use reify_stdlib::dynamics::trampoline::{body_solid_hashes, InverseDynamicsCacheKey};
+
+use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
 /// Sentinel `StructureTypeId` for engine-assembled (registry-free) instances.
 /// Mirrors `modal_ops::degenerate_modal_result`: the nominal `type_name` is the
@@ -734,5 +741,557 @@ mod tests {
         assert_eq!(diags.len(), 1, "malformed arity must emit one diagnostic, got {diags:?}");
         assert_eq!(diags[0].severity, Severity::Error);
         assert_eq!(diags[0].code, Some(DiagnosticCode::DynamicsBodyMassPropsArity));
+    }
+}
+
+// ── inverse_dynamics ComputeNode trampoline (task RBD-ι) ─────────────────────
+
+/// Warm-state payload donated by the `inverse_dynamics` trampoline (task RBD-ι):
+/// the cache key the result was computed for, the per-body solid-content-hash
+/// invalidation record, and the cached `List<List<JointForce>>` result itself.
+///
+/// Recovered on the next invocation via [`OpaqueState::downcast_ref`] and reused
+/// only when the incoming request's [`InverseDynamicsCacheKey`] matches (a cache
+/// HIT, step-10). Mirrors `modal_ops::ModalAnalysisCache` (the modal-κ split),
+/// except the cached payload is the finished trajectory result: the dynamics
+/// solve has no separable "assembly" half, and the per-sample
+/// MassProperties-reuse optimisation is deferred (design_decision #4).
+#[derive(Clone)]
+pub(crate) struct InverseDynamicsCache {
+    /// The (mechanism, trajectory, gravity)-hash key the cached `result` certifies;
+    /// read by the cache-HIT lookup (`key.matches`) on the next invocation.
+    key: InverseDynamicsCacheKey,
+    /// Per-body `solid` content hashes (in `bodies` order), recorded so the warm
+    /// state observes "the MassProperties only changed when a body solid changed"
+    /// at body granularity (PRD §7.7). The HIT decision itself is the full-key
+    /// [`InverseDynamicsCacheKey::matches`]; this record is its body-granular
+    /// companion (and the input a future per-body MassProperties-reuse
+    /// optimisation would key on).
+    body_solid_hashes: Vec<ContentHash>,
+    /// The cached trajectory-level result (`List<List<JointForce>>`), held behind
+    /// an [`Arc`] so the mandatory cache-HIT re-donation (see
+    /// [`run_inverse_dynamics`]) is an O(1) refcount bump rather than a second
+    /// deep clone of the whole `List<List<JointForce>>` tree. Only the
+    /// output-value-cell copy pays an unavoidable deep clone (the engine cell
+    /// owns a plain `Value`); the re-donated warm-state copy shares this `Arc`.
+    result: Arc<Value>,
+}
+
+impl InverseDynamicsCache {
+    /// Coarse estimate of the retained size of this cache in bytes: the flat key,
+    /// the per-body solid-hash record, and the cached result `Value` tree. Drives
+    /// both the [`OpaqueState`] LRU size hint and the donated `cost_per_byte`
+    /// (mirrors `ModalAnalysisCache::estimated_size_bytes`). Always
+    /// ≥ `size_of::<InverseDynamicsCacheKey>() > 0`, so the `cost_per_byte`
+    /// reciprocal is well-defined.
+    fn estimated_size_bytes(&self) -> usize {
+        std::mem::size_of::<InverseDynamicsCacheKey>()
+            + self.body_solid_hashes.len() * std::mem::size_of::<ContentHash>()
+            + value_size_estimate(self.result.as_ref())
+    }
+
+    /// Wrap this cache in an [`OpaqueState`] for donation to the warm-state pool,
+    /// sized by [`estimated_size_bytes`](Self::estimated_size_bytes). Returns that
+    /// `size_bytes` alongside the state so the caller derives `cost_per_byte` from
+    /// the same single measurement. Mirrors `ModalAnalysisCache::into_opaque_state`.
+    fn into_opaque_state(self) -> (OpaqueState, usize) {
+        let size = self.estimated_size_bytes();
+        (OpaqueState::new(self, size), size)
+    }
+}
+
+/// Result of the in-crate core [`run_inverse_dynamics`]: the engine-facing
+/// [`ComputeOutcome`] plus a white-box `reused` flag the in-crate cache-HIT tests
+/// assert against (the public `ComputeFn` returns only the outcome). Mirrors
+/// `modal_ops::ModalTrampolineRun`.
+pub(crate) struct InverseDynamicsRun {
+    /// The compute outcome the public trampoline returns.
+    pub(crate) outcome: ComputeOutcome,
+    /// `true` iff this run reused a cached [`InverseDynamicsCache`] result rather
+    /// than recomputing the per-sample RNEA loop. Observable only in-crate (the
+    /// cache-HIT tests); the public `ComputeFn` discards it, hence `allow(dead_code)`.
+    #[allow(dead_code)]
+    pub(crate) reused: bool,
+}
+
+/// Coarse heap-size estimate of a `Value` tree: a per-node `size_of::<Value>()`
+/// plus the out-of-line payload of strings, lists, and structure-instance fields.
+/// Feeds [`InverseDynamicsCache::estimated_size_bytes`]; only a monotone proxy for
+/// "how expensive is this result to retain" is needed, not byte-exactness, so the
+/// catch-all covers the scalar leaves (`Real`/`Int`/`Scalar`/…) that carry no
+/// out-of-line heap payload. `List` + `StructureInstance` fully cover the
+/// `List<List<JointForce>>` result this cache holds.
+fn value_size_estimate(v: &Value) -> usize {
+    let base = std::mem::size_of::<Value>();
+    match v {
+        Value::String(s) => base + s.len(),
+        Value::List(items) => base + items.iter().map(value_size_estimate).sum::<usize>(),
+        Value::StructureInstance(d) => {
+            base + d.type_name.len()
+                + d.fields
+                    .iter()
+                    .map(|(k, val)| k.len() + value_size_estimate(val))
+                    .sum::<usize>()
+        }
+        _ => base,
+    }
+}
+
+/// The malformed / closed-chain short-circuit outcome: η's `Value::Undef`
+/// convention surfaced as a `Completed` with no donated warm state — keeping the
+/// trampoline result bit-identical to the unregistered `inverse_dynamics_lower`
+/// body-inline fallback, and donating no warm state for an input that produced no
+/// real computation (design_decision #6).
+fn undef_outcome() -> ComputeOutcome {
+    ComputeOutcome::Completed {
+        result: Value::Undef,
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: Vec::new(),
+    }
+}
+
+/// Build the `Completed` outcome that donates `cache` as the node's warm state:
+/// the cache's `result` is returned to the output value cell and the cache itself
+/// is donated to the warm-state pool, sized via
+/// [`InverseDynamicsCache::into_opaque_state`] with `cost_per_byte` the reciprocal
+/// of that size (a bigger cached result is pricier to retain). Shared by the
+/// cache-HIT and cache-MISS paths of [`run_inverse_dynamics`] so both donate
+/// identically (mirrors the modal trampoline's single donation tail).
+///
+/// Performs exactly ONE deep clone of the `List<List<JointForce>>` tree — the
+/// copy handed to the output value cell (the engine cell owns a plain `Value`).
+/// The warm-state copy re-uses the same `Arc<Value>` allocation (moved in via
+/// [`into_opaque_state`](InverseDynamicsCache::into_opaque_state)), so the
+/// mandatory re-donation costs an `Arc` refcount bump, not a second O(n) clone.
+fn completed_donating(cache: InverseDynamicsCache) -> ComputeOutcome {
+    let result = cache.result.as_ref().clone();
+    let (state, size_bytes) = cache.into_opaque_state();
+    let cost_per_byte = if size_bytes > 0 { Some(1.0 / size_bytes as f64) } else { None };
+    ComputeOutcome::Completed {
+        result,
+        new_warm_state: Some(state),
+        cost_per_byte,
+        diagnostics: Vec::new(),
+    }
+}
+
+/// In-crate core behind [`solve_inverse_dynamics_trampoline`]: run RNEA inverse
+/// dynamics over a whole `MotionTrajectory`, with the task-ι warm-state cache.
+/// Returns an [`InverseDynamicsRun`] so in-crate tests can observe whether the
+/// cached result was reused; the public trampoline takes only `.outcome`.
+///
+/// `@optimized("dynamics::inverse_dynamics")` core for `fn inverse_dynamics`.
+/// Receives the two flat `value_inputs` matching the fn signature:
+///
+/// ```text
+/// [0] mechanism  : Mechanism        (Value::Map — kind, bodies[].solid, joints)
+/// [1] trajectory : MotionTrajectory (StructureInstance — samples[] of q/q̇/q̈)
+/// ```
+///
+/// Drives the per-sample loop through the reify-stdlib seam
+/// ([`motion_trajectory_samples`] + [`inverse_dynamics_sample`]) so the result is
+/// bit-identical to the body-inline `inverse_dynamics_lower` fallback. A malformed
+/// trajectory, or a sample the seam rejects (a closed-chain mechanism, an
+/// arity/shape mismatch), yields [`undef_outcome`] — η's exact Undef convention —
+/// donating no warm state. Gravity is the constant [`default_gravity`] (PRD §12
+/// q1), folded into the cache key.
+///
+/// Honours cooperative cancellation (PRD §6/§9.1): polls `cancellation` on entry
+/// and at every per-sample boundary, returning [`ComputeOutcome::Cancelled`] (no
+/// result, no warm state) within one sample interval of a fired cancel.
+pub(crate) fn run_inverse_dynamics(
+    value_inputs: &[Value],
+    prior_warm_state: Option<&OpaqueState>,
+    cancellation: &CancellationHandle,
+) -> InverseDynamicsRun {
+    // ── (0) entry cancellation checkpoint ────────────────────────────────────
+    // Coarse cooperative cancellation (CN-contract §2 / PRD §6/§9.1): poll on
+    // entry, then again at every per-sample boundary (the MISS loop below). An
+    // entry poll alone cannot meet §9.1's "abort within one sample interval" — the
+    // per-sample poll is what bounds the abort latency. A fired cancel returns
+    // ComputeOutcome::Cancelled (reused = false), donating no warm state and
+    // discarding any partial per-sample output, mirroring run_modal_analysis.
+    if cancellation.is_cancelled() {
+        return InverseDynamicsRun { outcome: ComputeOutcome::Cancelled, reused: false };
+    }
+
+    // Arity guard, mirroring eval_inverse_dynamics: inverse_dynamics(mechanism,
+    // trajectory). The engine always supplies the two fn args, so this is defensive.
+    if value_inputs.len() != 2 {
+        return InverseDynamicsRun { outcome: undef_outcome(), reused: false };
+    }
+    let mechanism = &value_inputs[0];
+    let trajectory = &value_inputs[1];
+
+    // Cache key over the result-determining inputs (constant default gravity).
+    let key = InverseDynamicsCacheKey::from_inputs(mechanism, trajectory, default_gravity());
+
+    // ── cache HIT ──────────────────────────────────────────────────────────────
+    // A prior warm state whose key matches certifies its cached result for reuse:
+    // return it with reused=true WITHOUT re-running the per-sample RNEA loop. The
+    // cache must be re-donated so the node keeps its warm state and the next
+    // identical call can HIT again: the engine takes the prior warm state out of
+    // the pool at dispatch start (`get_warm_state`, take-semantics) and only
+    // restores it on Cancelled/Failed — a Completed outcome with new_warm_state=None
+    // would leave the node with no warm state at all. Re-donation is cheap here:
+    // `prior_warm_state` is borrowed, but `cache.clone()` only bumps the result's
+    // `Arc` refcount (+ copies the small body-solid-hash Vec), and the lone deep
+    // clone of the `List<List<JointForce>>` tree is the one `completed_donating`
+    // makes for the output value cell.
+    if let Some(cache) = prior_warm_state.and_then(|s| s.downcast_ref::<InverseDynamicsCache>())
+        && cache.key.matches(&key)
+    {
+        return InverseDynamicsRun { outcome: completed_donating(cache.clone()), reused: true };
+    }
+
+    // ── cache MISS ───────────────────────────────────────────────────────────────
+    // Record the body-granular solid-hash invalidation record, then drive the
+    // per-sample RNEA loop through the shared stdlib seam so the result is
+    // single-sourced with the body-inline fallback. Any `None` (malformed
+    // trajectory, closed-chain mechanism, or shape mismatch) collapses to η's Undef.
+    //
+    // NOTE (speculative-generality, kept per design_decision #4): `body_solid_hashes`
+    // is RECORDED but not yet CONSUMED by any HIT/MISS decision — that verdict is
+    // `InverseDynamicsCacheKey::matches`, and the key's `mech_hash`
+    // (`mechanism.content_hash()`) already folds in every body's `solid`, so a
+    // changed body solid already forces a MISS today. The per-body record exists
+    // for the deferred per-body MassProperties-reuse optimisation (design_decision
+    // #4; η's hoist note, dynamics/eval.rs), which will key on it. Until that lands
+    // its only runtime effect is its byte contribution to `estimated_size_bytes`;
+    // the O(bodies) walk is negligible beside the per-sample RNEA loop it precedes.
+    let body_solid_hashes = body_solid_hashes(mechanism);
+    let samples = match motion_trajectory_samples(trajectory) {
+        Some(s) => s,
+        None => return InverseDynamicsRun { outcome: undef_outcome(), reused: false },
+    };
+    let mut per_sample = Vec::with_capacity(samples.len());
+    for sample in samples {
+        // Per-sample cancellation checkpoint (PRD §9.1, "abort within one sample
+        // interval"): poll before each sample's RNEA solve so a cancel fired
+        // mid-trajectory is observed at the next sample boundary. The partial
+        // `per_sample` is dropped — a Cancelled outcome returns no result Value and
+        // donates no warm state.
+        if cancellation.is_cancelled() {
+            return InverseDynamicsRun { outcome: ComputeOutcome::Cancelled, reused: false };
+        }
+        match inverse_dynamics_sample(mechanism, sample) {
+            Some(forces) => per_sample.push(Value::List(forces)),
+            None => return InverseDynamicsRun { outcome: undef_outcome(), reused: false },
+        }
+    }
+    let result = Value::List(per_sample);
+
+    // Donate the freshly-computed result as warm state so a later identical call
+    // HITs. The result is wrapped in an `Arc` so the eventual HIT re-donation
+    // shares this allocation instead of deep-cloning the trajectory again; on this
+    // MISS path `completed_donating` still deep-clones it exactly once for the
+    // output value cell (the freshly-built `Value::List` would otherwise be moved
+    // whole into the cache, leaving nothing for the cell).
+    let cache = InverseDynamicsCache { key, body_solid_hashes, result: Arc::new(result) };
+    InverseDynamicsRun { outcome: completed_donating(cache), reused: false }
+}
+
+/// `@optimized("dynamics::inverse_dynamics")` public `ComputeFn` for `fn
+/// inverse_dynamics` (registered in `compute_targets::mod`, step-14). A thin
+/// wrapper over the in-crate core [`run_inverse_dynamics`]: it forwards the prior
+/// warm state and the cancellation handle and surfaces only the [`ComputeOutcome`].
+/// Warm-state donation/recovery (the cached result) and cooperative cancellation
+/// live in the core; the core's white-box `reused` flag is for in-crate
+/// amortization tests only. Mirrors `solve_modal_analysis_trampoline`.
+pub fn solve_inverse_dynamics_trampoline(
+    value_inputs: &[Value],
+    _realization_inputs: &[RealizationReadHandle],
+    _options: &Value,
+    prior_warm_state: Option<&OpaqueState>,
+    cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    run_inverse_dynamics(value_inputs, prior_warm_state, cancellation).outcome
+}
+
+#[cfg(test)]
+mod inverse_dynamics_trampoline_tests {
+    use reify_core::dimension::DimensionVector;
+    use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+    use reify_stdlib::eval_builtin;
+
+    use super::{run_inverse_dynamics, InverseDynamicsRun};
+    use crate::{CancellationHandle, ComputeOutcome};
+
+    /// Static single-pendulum ground truth: τ = m·g·L·sin(30°)
+    /// = 1·9.81·0.1·0.5 = 0.4905 N·m (validated at <1e-6 by `rnea.rs` and
+    /// `dynamics::eval.rs`).
+    const STATIC_TORQUE: f64 = 0.4905;
+
+    /// Mint a registry-free `Value::StructureInstance` (mirrors the eval-side
+    /// `mint_instance`).
+    fn instance(type_name: &str, fields: Vec<(String, Value)>) -> Value {
+        let fields: PersistentMap<String, Value> = fields.into_iter().collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: type_name.to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// Pull a named field from a `StructureInstance`, asserting `type_name`.
+    fn field<'a>(v: &'a Value, type_name: &str, member: &str) -> &'a Value {
+        match v {
+            Value::StructureInstance(d) if d.type_name == type_name => d
+                .fields
+                .get(member)
+                .unwrap_or_else(|| panic!("{type_name} missing field `{member}`")),
+            other => panic!("expected a {type_name} StructureInstance, got {other:?}"),
+        }
+    }
+
+    /// A `MassProperties` instance: mass (Mass-scalar), com (Point3<Length>),
+    /// inertia (3×3 Matrix<Real>), origin (Real) — the shape the η snapshot RNEA
+    /// core parses from `body.solid`.
+    fn mass_properties(mass: f64, com: [f64; 3], inertia: [[f64; 3]; 3]) -> Value {
+        let com_point = Value::Point(com.iter().map(|&c| Value::length(c)).collect());
+        let inertia_matrix = Value::Matrix(
+            inertia
+                .iter()
+                .map(|row| row.iter().map(|&x| Value::Real(x)).collect())
+                .collect(),
+        );
+        instance(
+            "MassProperties",
+            vec![
+                (
+                    "mass".to_string(),
+                    Value::Scalar { si_value: mass, dimension: DimensionVector::MASS },
+                ),
+                ("com".to_string(), com_point),
+                ("inertia".to_string(), inertia_matrix),
+                ("origin".to_string(), Value::Real(0.0)),
+            ],
+        )
+    }
+
+    /// The single-pendulum mechanism (1 kg point mass at com=[0,0,−0.1] on a
+    /// revolute joint about +y), built via the `eval_builtin` mechanism/body/
+    /// joint builders so the Map shape (kind, bodies.solid, joint_parents) is the
+    /// real one the trampoline reads.
+    fn pendulum_mechanism() -> Value {
+        use std::f64::consts::PI;
+        let mp = mass_properties(1.0, [0.0, 0.0, -0.1], [[0.0; 3]; 3]);
+        let axis_y = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let range = Value::Range {
+            lower: Some(Box::new(Value::angle(-PI))),
+            upper: Some(Box::new(Value::angle(PI))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        };
+        let joint = eval_builtin("revolute", &[axis_y, range]);
+        let mech = eval_builtin("mechanism", &[]);
+        eval_builtin("body", &[mech, mp, joint])
+    }
+
+    /// A motionless single-pendulum `MotionTrajectory` of `n` samples, all at
+    /// θ = −30° with q̇ = q̈ = 0, so every sample's RNEA torque is the
+    /// static-gravity 0.4905 N·m.
+    fn motionless_trajectory(n: usize) -> Value {
+        let theta = -std::f64::consts::PI / 6.0;
+        let samples: Vec<Value> = (0..n)
+            .map(|k| {
+                instance(
+                    "TrajectorySample",
+                    vec![
+                        (
+                            "t".to_string(),
+                            Value::Scalar { si_value: k as f64, dimension: DimensionVector::TIME },
+                        ),
+                        ("values".to_string(), Value::List(vec![Value::Real(theta)])),
+                        ("vels".to_string(), Value::List(vec![Value::Real(0.0)])),
+                        ("accels".to_string(), Value::List(vec![Value::Real(0.0)])),
+                    ],
+                )
+            })
+            .collect();
+        instance(
+            "MotionTrajectory",
+            vec![
+                ("mechanism".to_string(), Value::Real(0.0)),
+                ("samples".to_string(), Value::List(samples)),
+            ],
+        )
+    }
+
+    /// Assert `result` is a `List<List<JointForce>>` of `expected_samples` outer
+    /// entries, each a length-1 inner list whose `JointForce.value` is a
+    /// `ScalarTorque` of magnitude ≈ 0.4905 N·m (<1e-6).
+    fn assert_static_pendulum_result(result: &Value, expected_samples: usize) {
+        let per_sample = match result {
+            Value::List(s) => s,
+            other => panic!("expected List<List<JointForce>>, got {other:?}"),
+        };
+        assert_eq!(per_sample.len(), expected_samples, "one force list per sample");
+        for (i, sample_forces) in per_sample.iter().enumerate() {
+            let forces = match sample_forces {
+                Value::List(f) => f,
+                other => panic!("sample {i}: expected List<JointForce>, got {other:?}"),
+            };
+            assert_eq!(forces.len(), 1, "sample {i}: one joint ⇒ one JointForce");
+            let value = field(&forces[0], "JointForce", "value");
+            let magnitude = match field(value, "ScalarTorque", "magnitude") {
+                Value::Real(m) => *m,
+                other => panic!("magnitude must be a Real, got {other:?}"),
+            };
+            assert!(
+                (magnitude - STATIC_TORQUE).abs() < 1e-6,
+                "sample {i}: expected {STATIC_TORQUE} N·m, got {magnitude}"
+            );
+        }
+    }
+
+    // ── step-7 RED: run_inverse_dynamics MISS path ──────────────────────────────
+
+    /// A fresh run (prior_warm_state = None) on the motionless single-pendulum
+    /// trajectory completes with `reused = false`, donates a warm-state cache,
+    /// and returns every sample's static-gravity torque (0.4905 N·m).
+    #[test]
+    fn run_inverse_dynamics_miss_returns_static_torque_and_donates_warm_state() {
+        let mech = pendulum_mechanism();
+        let traj = motionless_trajectory(2);
+
+        let run: InverseDynamicsRun =
+            run_inverse_dynamics(&[mech, traj], None, &CancellationHandle::new());
+
+        assert!(!run.reused, "a fresh run (no prior warm state) must not be a cache reuse");
+        match &run.outcome {
+            ComputeOutcome::Completed { result, new_warm_state, .. } => {
+                assert!(
+                    new_warm_state.is_some(),
+                    "the MISS path must donate a warm-state cache"
+                );
+                assert_static_pendulum_result(result, 2);
+            }
+            other => panic!("expected ComputeOutcome::Completed, got {other:?}"),
+        }
+    }
+
+    // ── step-9 RED: run_inverse_dynamics cache HIT ──────────────────────────────
+
+    /// A second run with identical `[mechanism, trajectory]` inputs, fed the
+    /// warm-state cache the first (MISS) run donated, is a cache HIT: it reports
+    /// `reused = true` and returns a result equal to the first run's — without
+    /// recomputing the per-sample RNEA loop. RED until the step-10 HIT path reads
+    /// `prior_warm_state` (step-8 always recomputes, so `reused` stays false).
+    #[test]
+    fn run_inverse_dynamics_hit_reuses_donated_warm_state() {
+        let inputs = [pendulum_mechanism(), motionless_trajectory(2)];
+        let handle = CancellationHandle::new();
+
+        // First run: cache MISS, donates a warm-state cache.
+        let first = run_inverse_dynamics(&inputs, None, &handle);
+        assert!(!first.reused, "first run (no prior warm state) must be a MISS");
+        let (first_result, warm) = match first.outcome {
+            ComputeOutcome::Completed { result, new_warm_state, .. } => {
+                (result, new_warm_state.expect("the MISS path must donate a warm state"))
+            }
+            other => panic!("expected ComputeOutcome::Completed, got {other:?}"),
+        };
+
+        // Second run: identical inputs + the donated warm state ⇒ cache HIT.
+        let second = run_inverse_dynamics(&inputs, Some(&warm), &handle);
+        assert!(
+            second.reused,
+            "identical inputs + a matching warm state must be a cache HIT (reused=true)"
+        );
+        match second.outcome {
+            ComputeOutcome::Completed { result, .. } => assert_eq!(
+                result, first_result,
+                "the cache HIT must return the cached result unchanged"
+            ),
+            other => panic!("expected ComputeOutcome::Completed, got {other:?}"),
+        }
+    }
+
+    // ── step-11 RED: run_inverse_dynamics cooperative cancellation ──────────────
+
+    /// An already-cancelled handle short-circuits to `ComputeOutcome::Cancelled`
+    /// (no partial result `Value` is produced), even with a multi-sample
+    /// trajectory. RED until step-12 polls the handle: step-10 binds `cancellation`
+    /// with `let _` and always runs to Completed.
+    #[test]
+    fn run_inverse_dynamics_pre_cancelled_yields_cancelled() {
+        let inputs = [pendulum_mechanism(), motionless_trajectory(4)];
+        let handle = CancellationHandle::new();
+        handle.cancel();
+
+        let run = run_inverse_dynamics(&inputs, None, &handle);
+        assert!(!run.reused, "a cancelled run is not a cache reuse");
+        assert!(
+            matches!(run.outcome, ComputeOutcome::Cancelled),
+            "a pre-cancelled handle must yield Cancelled (no partial result), got {:?}",
+            run.outcome
+        );
+    }
+
+    /// A cancel fired while the per-sample loop is active is observed at a sample
+    /// boundary and yields `ComputeOutcome::Cancelled`. Together with
+    /// [`run_inverse_dynamics_pre_cancelled_yields_cancelled`] (which pins the
+    /// on-entry checkpoint) this exercises the per-sample polling granularity
+    /// (PRD §9.1, "abort within 1 sample interval") that an entry-only check could
+    /// not deliver.
+    ///
+    /// The observation is made robust instead of racing wall-clock time. Per-sample
+    /// RNEA for a 1-joint pendulum is so cheap that a fixed (sample-count, delay)
+    /// pair can let the loop finish before the canceller thread is even scheduled;
+    /// the old version asserted on that race and so could flake on a fast/loaded CI
+    /// box. Here a too-fast completion is NOT a failure — it means "this trajectory
+    /// was too short for this machine", so we retry with a 4× longer one. The
+    /// canceller sleeps ~1 ms so the main-thread solve is provably past its on-entry
+    /// poll and deep inside the loop when the cancel lands, and the length grows
+    /// until it outlasts that delay: a correct per-sample poll converges to
+    /// Cancelled (in practice on the first iteration), whereas an implementation
+    /// that dropped the per-sample poll would keep Completing and trip the
+    /// escalation ceiling. (`CancellationHandle` is a plain `Arc<AtomicBool>` with
+    /// no per-poll hook, so a single-threaded "flip after N samples" cannot be
+    /// injected; the escalating retry is the deterministic-failure, non-flaky
+    /// alternative the reviewer asked for.)
+    #[test]
+    fn run_inverse_dynamics_cancelled_mid_loop_yields_cancelled() {
+        // Start well above the ~1 ms cancel delay (cheap 1-joint RNEA × samples) and
+        // escalate only if the solve still beat the canceller. The ceiling is a
+        // safety net — a correct per-sample poll converges on the first iteration.
+        const MAX_SAMPLES: usize = 5_000_000;
+        let mut samples = 20_000usize;
+        loop {
+            let inputs = [pendulum_mechanism(), motionless_trajectory(samples)];
+            let handle = CancellationHandle::new();
+            let canceller_handle = handle.clone();
+            let canceller = std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                canceller_handle.cancel();
+            });
+
+            let run = run_inverse_dynamics(&inputs, None, &handle);
+            canceller.join().expect("canceller thread must not panic");
+
+            match run.outcome {
+                ComputeOutcome::Cancelled => {
+                    assert!(!run.reused, "a cancelled run is not a cache reuse");
+                    return;
+                }
+                // Loop finished before the cancel was observed: too short for this
+                // machine. Lengthen and retry — a too-fast completion is never a
+                // failure (that was the old flake).
+                ComputeOutcome::Completed { .. } => {
+                    let next = samples.saturating_mul(4);
+                    assert!(
+                        next <= MAX_SAMPLES,
+                        "cancellation was never observed even at {samples} samples \
+                         (next {next} > {MAX_SAMPLES} ceiling); the per-sample \
+                         cancellation poll may be missing",
+                    );
+                    samples = next;
+                }
+                other => panic!("expected Cancelled or Completed, got {other:?}"),
+            }
+        }
     }
 }

@@ -239,6 +239,15 @@ pub fn inverse_dynamics_at_snapshot(mechanism: Real, snapshot: Real, q_dot: List
 // Returns `List<List<JointForce>>` parallel to `trajectory.samples` (one inner
 // per-joint force list per sample). Closed-chain mechanisms route through the
 // Lagrange KKT solver (PRD §5.3); open chains use the bare RNEA.
+//
+// `@optimized("dynamics::inverse_dynamics")` (RBD-ι, task 3838) causes the engine
+// to insert a ComputeNode with target == "dynamics::inverse_dynamics" (warm-state
+// cache + cooperative cancellation, reify-eval/src/dynamics_ops.rs) rather than
+// body-inlining. The `{ inverse_dynamics_lower(...) }` body stays as the
+// unregistered fallback: with no trampoline registered the engine inlines it
+// (bit-identical result), exactly the modal_analysis_fns.ri:52 /
+// solver_buckling_fns.ri:49 pattern.
+@optimized("dynamics::inverse_dynamics")
 pub fn inverse_dynamics(mechanism: Real, trajectory: MotionTrajectory) -> List<List<JointForce>> { inverse_dynamics_lower(mechanism, trajectory) }
 
 // ramp_profile — rest-to-rest constant-acceleration trajectory (PRD §4.3).

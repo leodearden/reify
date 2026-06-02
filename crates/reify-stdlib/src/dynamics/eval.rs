@@ -637,33 +637,56 @@ fn eval_inverse_dynamics(args: &[Value]) -> Value {
         return Value::Undef;
     }
     let mechanism = &args[0];
-    let samples = match trajectory_samples(&args[1]) {
+    // Route through the pub per-sample seam (`motion_trajectory_samples` +
+    // `inverse_dynamics_sample`) so the body-inline fallback here and the
+    // reify-eval `inverse_dynamics` ComputeNode trampoline (task RBD-ι) drive
+    // identical per-sample logic — behaviour stays single-sourced.
+    let samples = match motion_trajectory_samples(&args[1]) {
         Some(s) => s,
         None => return Value::Undef,
     };
     let mut out = Vec::with_capacity(samples.len());
     for sample in samples {
-        let (values, vels, accels) = match sample_fields(sample) {
-            Some(t) => t,
+        match inverse_dynamics_sample(mechanism, sample) {
+            Some(forces) => out.push(Value::List(forces)),
             None => return Value::Undef,
-        };
-        // Bake the sample's joint positions into an FK snapshot, then run the
-        // shared snapshot core with the sample's q̇ / q̈. Mass properties are
-        // re-read per sample from `body.solid` inside the core; they are
-        // trajectory-invariant, so this is redundant work the small fixtures
-        // don't notice — a future optimisation can hoist the MassProperties
-        // extraction across samples.
-        let snapshot = match snapshot_for_sample(mechanism, values) {
-            Some(s) => s,
-            None => return Value::Undef,
-        };
-        let forces = match snapshot_inverse_dynamics(mechanism, &snapshot, vels, accels) {
-            Some(f) => f,
-            None => return Value::Undef,
-        };
-        out.push(Value::List(forces));
+        }
     }
     Value::List(out)
+}
+
+/// Read the `samples` list of a `MotionTrajectory` `Value::StructureInstance` as
+/// a slice, or `None` for a malformed / non-`MotionTrajectory` value.
+///
+/// Public per-sample seam (task RBD-ι) over the private [`trajectory_samples`]:
+/// the reify-eval `inverse_dynamics` ComputeNode trampoline iterates this slice
+/// and polls cooperative cancellation at each sample boundary (a whole-trajectory
+/// eval cannot meet the §9.1 "abort within 1 sample interval" signal).
+pub fn motion_trajectory_samples(traj: &Value) -> Option<&[Value]> {
+    trajectory_samples(traj)
+}
+
+/// Open-chain inverse dynamics for ONE trajectory sample: read the sample's
+/// `(values, vels, accels)`, bake the joint positions into an FK snapshot, then
+/// drive the shared open-chain snapshot RNEA core ([`snapshot_inverse_dynamics`])
+/// with the sample's q̇ / q̈. Returns the per-body `List<JointForce>` as a
+/// `Vec<Value>`, or `None` on any malformed input (the caller maps `None` →
+/// `Value::Undef`).
+///
+/// Public per-sample seam (task RBD-ι) wrapping the private `sample_fields` +
+/// `snapshot_for_sample` + `snapshot_inverse_dynamics`. Both the body-inline
+/// `eval_inverse_dynamics` fallback and the reify-eval trampoline call it, so the
+/// per-sample marshalling lives in exactly one place.
+///
+/// Mass properties are re-read per sample from `body.solid` inside the snapshot
+/// core; they are trajectory-invariant, so this is redundant work the small
+/// fixtures don't notice — a future optimisation can hoist the MassProperties
+/// extraction across samples (the same deferral the trampoline's warm-state
+/// cache documents).
+pub fn inverse_dynamics_sample(mechanism: &Value, sample: &Value) -> Option<Vec<Value>> {
+    let (values, vels, accels) = sample_fields(sample)?;
+    let snapshot = snapshot_for_sample(mechanism, values)?;
+    snapshot_inverse_dynamics(mechanism, &snapshot, vels, accels)
 }
 
 /// Read the `samples` list of a `MotionTrajectory` `Value::StructureInstance`.
@@ -1140,6 +1163,66 @@ mod tests {
                 "sample {i}: expected {expected} N·m, got {torque}"
             );
         }
+    }
+
+    // ── step-5 RED: pub per-sample seam (task RBD-ι) ──────────────────────────
+    //
+    // `motion_trajectory_samples` + `inverse_dynamics_sample` expose the private
+    // `trajectory_samples` / `sample_fields`+`snapshot_for_sample`+
+    // `snapshot_inverse_dynamics` so the reify-eval trampoline can drive the
+    // per-sample loop itself (polling cancellation at each sample boundary).
+    // `inverse_dynamics_sample` reproduces the same single-pendulum static-gravity
+    // torque (0.4905 N·m) the whole-trajectory variant produces, so routing
+    // `eval_inverse_dynamics` through the seam keeps behaviour single-sourced.
+
+    /// `motion_trajectory_samples` returns the samples slice for a well-formed
+    /// `MotionTrajectory` and `None` for a malformed (non-`MotionTrajectory`)
+    /// value.
+    #[test]
+    fn motion_trajectory_samples_reads_samples_slice() {
+        let theta = -std::f64::consts::PI / 6.0;
+        let traj = mint_instance(
+            "MotionTrajectory",
+            vec![
+                ("mechanism".to_string(), Value::Real(0.0)),
+                (
+                    "samples".to_string(),
+                    Value::List(vec![
+                        trajectory_sample(0.0, theta, 0.0, 0.0),
+                        trajectory_sample(1.0, theta, 0.0, 0.0),
+                    ]),
+                ),
+            ],
+        );
+        let samples = motion_trajectory_samples(&traj)
+            .expect("a well-formed trajectory must yield its samples slice");
+        assert_eq!(samples.len(), 2, "two samples in, two samples out");
+        assert!(
+            motion_trajectory_samples(&Value::Real(0.0)).is_none(),
+            "a non-MotionTrajectory value must yield None"
+        );
+    }
+
+    /// `inverse_dynamics_sample` drives the open-chain snapshot RNEA for one
+    /// motionless single-pendulum sample at θ = −30°, reproducing the validated
+    /// static-gravity torque τ = m·g·L·sin(30°) = 0.4905 N·m (<1e-6) — i.e. the
+    /// per-sample seam agrees with the whole-trajectory variant.
+    #[test]
+    fn inverse_dynamics_sample_single_pendulum_static_gravity() {
+        let mech = pendulum_mechanism();
+        let theta = -std::f64::consts::PI / 6.0;
+        let sample = trajectory_sample(0.0, theta, 0.0, 0.0);
+
+        let forces = inverse_dynamics_sample(&mech, &sample)
+            .expect("a motionless open-chain sample must solve");
+        assert_eq!(forces.len(), 1, "one joint ⇒ one JointForce");
+        let value = field(&forces[0], "JointForce", "value");
+        let torque = num(field(value, "ScalarTorque", "magnitude"));
+        let expected = 0.4905_f64;
+        assert!(
+            (torque - expected).abs() < 1e-6,
+            "expected {expected} N·m, got {torque}"
+        );
     }
 
     // ── Suggestion 1: closed-chain guard ─────────────────────────────────────
