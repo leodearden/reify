@@ -1972,4 +1972,48 @@ mod tests {
             assert_selection_on_name(source, child);
         }
     }
+
+    #[test]
+    fn compute_document_symbols_occurrence_and_trait() {
+        use tower_lsp::lsp_types::SymbolKind;
+
+        // --- occurrence → CLASS with param FIELD + let VARIABLE children ---
+        let occ_source =
+            "occurrence def Joint {\n    param diameter: Scalar = 10mm\n    let radius = diameter / 2\n}";
+        let occ_symbols = compute_document_symbols(occ_source, &test_uri());
+        assert_eq!(occ_symbols.len(), 1, "one occurrence → one top-level symbol");
+        let joint = &occ_symbols[0];
+        assert_eq!(joint.name, "Joint");
+        assert_eq!(joint.kind, SymbolKind::CLASS);
+        assert_selection_on_name(occ_source, joint);
+        let occ_children = joint
+            .children
+            .as_ref()
+            .expect("Joint should have children");
+        assert_eq!(occ_children.len(), 2, "Joint has diameter + radius");
+        assert_eq!(occ_children[0].name, "diameter");
+        assert_eq!(occ_children[0].kind, SymbolKind::FIELD);
+        assert_eq!(occ_children[1].name, "radius");
+        assert_eq!(occ_children[1].kind, SymbolKind::VARIABLE);
+        for c in occ_children {
+            assert_selection_on_name(occ_source, c);
+        }
+
+        // --- trait → INTERFACE with param FIELD child ---
+        let trait_source = "trait Rigid {\n    param mass: Scalar = 5mm\n}";
+        let trait_symbols = compute_document_symbols(trait_source, &test_uri());
+        assert_eq!(trait_symbols.len(), 1, "one trait → one top-level symbol");
+        let rigid = &trait_symbols[0];
+        assert_eq!(rigid.name, "Rigid");
+        assert_eq!(rigid.kind, SymbolKind::INTERFACE);
+        assert_selection_on_name(trait_source, rigid);
+        let trait_children = rigid
+            .children
+            .as_ref()
+            .expect("Rigid should have children");
+        assert_eq!(trait_children.len(), 1, "Rigid has mass");
+        assert_eq!(trait_children[0].name, "mass");
+        assert_eq!(trait_children[0].kind, SymbolKind::FIELD);
+        assert_selection_on_name(trait_source, &trait_children[0]);
+    }
 }
