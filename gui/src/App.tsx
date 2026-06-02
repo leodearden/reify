@@ -36,7 +36,7 @@ import { createDefPreviewStore } from './stores/defPreviewStore';
 import { createMechanismStore } from './stores/mechanismStore';
 import { createBucklingStore, subscribeModeShapeFrames } from './stores/bucklingStore';
 import { createDefPreviewActivation } from './hooks/useDefPreviewActivation';
-import { createEditorSelectionSync } from './hooks/useEditorSelectionSync';
+import { createEditorSelectionSync, createEditorHoverSync } from './hooks/useEditorSelectionSync';
 import {
   getInitialState,
   getEntityTree as bridgeGetEntityTree,
@@ -247,15 +247,43 @@ const App: Component = () => {
     debounceMs: 200,
   });
 
+  // Deduplicate concurrent in-flight getEntityAtSourceLocation calls for the same
+  // (line, col): both createEditorSelectionSync and createEditorHoverSync debounce at
+  // 200ms and fire back-to-back after each cursor change. Sharing the same in-flight
+  // Promise halves the IPC round-trips — the second hook joins the first Promise
+  // rather than issuing a redundant bridge call. Entries are cleared in .finally()
+  // so the cache never holds stale results across distinct cursor positions.
+  const _pendingEntityResolves = new Map<string, Promise<string | null>>();
+  function sharedGetEntityAtSourceLocation(line: number, col: number): Promise<string | null> {
+    const key = `${line}:${col}`;
+    const inflight = _pendingEntityResolves.get(key);
+    if (inflight !== undefined) return inflight;
+    const promise = bridgeGetEntityAtSourceLocation(line, col).finally(() => {
+      _pendingEntityResolves.delete(key);
+    });
+    _pendingEntityResolves.set(key, promise);
+    return promise;
+  }
+
   // Editor→entity sync: watches editor cursor → debounces 200ms → resolves entity
   // at cursor position → updates selectionStore + flies to entity in viewport.
   // Equality-check guard prevents viewport-click → editor-scroll → cursor-move bounce.
   createEditorSelectionSync({
     editorStore,
     selectionStore,
-    getEntityAtSourceLocation: bridgeGetEntityAtSourceLocation,
+    getEntityAtSourceLocation: sharedGetEntityAtSourceLocation,
     selectEntity: (ep) => selectionStore.selectEntity(ep),
     flyToEntity: (ep) => flyToEntityFn?.(ep),
+    debounceMs: 200,
+  });
+
+  // Editor→hover sync: watches editor cursor → debounces 200ms → resolves entity
+  // at cursor position → updates selectionStore.hoveredEntity (transient; clears on
+  // null cursor or null resolution, unlike the selection hook which preserves selection).
+  createEditorHoverSync({
+    editorStore,
+    getEntityAtSourceLocation: sharedGetEntityAtSourceLocation,
+    hoverEntity: (ep) => selectionStore.hoverEntity(ep),
     debounceMs: 200,
   });
 
@@ -1470,6 +1498,8 @@ const App: Component = () => {
                 onSelectAll={selectionStore.selectAll}
                 onOpenManage={() => setViewManageOpen(true)}
                 onSaveViews={handleSaveViews}
+                onHover={(path) => selectionStore.hoverEntity(path)}
+                hoveredEntity={selectionStore.state.hoveredEntity}
               />
               <Splitter orientation="horizontal" onResize={handleDesignTreeResize} data-testid="splitter-design-tree" />
               <PropertyEditor

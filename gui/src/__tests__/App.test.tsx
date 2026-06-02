@@ -5742,3 +5742,109 @@ describe('App SolverProgressOverlay integration', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// App hover sync wiring — Edge C (task-4209)
+// Edge C: editor cursor → createEditorHoverSync → store → DualViewport.hoveredEntity
+// ---------------------------------------------------------------------------
+
+describe('App hover sync wiring — Edge C', () => {
+  it('(a) editor cursor change routes hover through createEditorHoverSync to DualViewport.hoveredEntity', async () => {
+    // Bridge returns 'Bracket.width' for any source location lookup
+    vi.mocked((bridge as any).getEntityAtSourceLocation).mockResolvedValue('Bracket.width');
+
+    await renderAndWaitForReady();
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    vi.useFakeTimers();
+    try {
+      capturedEditorStore.setCursorPosition(2, 11);
+      await vi.advanceTimersByTimeAsync(250);
+      // Flush microtasks so Promise resolutions propagate
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // createEditorHoverSync must have resolved the position and called hoverEntity;
+      // do NOT constrain getEntityAtSourceLocation call count — both hover and selection
+      // sync hooks call it for the same cursor position.
+      await waitFor(() => {
+        expect(capturedDualViewportProps.hoveredEntity).toBe('Bracket.width');
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('(b) null cursor position clears DualViewport.hoveredEntity', async () => {
+    vi.mocked((bridge as any).getEntityAtSourceLocation).mockResolvedValue('Bracket.width');
+
+    await renderAndWaitForReady();
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    vi.useFakeTimers();
+    try {
+      // First set a cursor to establish hover
+      capturedEditorStore.setCursorPosition(2, 11);
+      await vi.advanceTimersByTimeAsync(250);
+      await Promise.resolve();
+      await Promise.resolve();
+      await waitFor(() => expect(capturedDualViewportProps.hoveredEntity).toBe('Bracket.width'));
+
+      // Then clear cursor — hook must immediately call hoverEntity(null)
+      capturedEditorStore.setCursorPosition(null);
+      await vi.advanceTimersByTimeAsync(0);
+      await Promise.resolve();
+      await waitFor(() => expect(capturedDualViewportProps.hoveredEntity).toBeNull());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// App hover sync wiring — Edges A & B (task-4209)
+// Edge A: DesignTree row mouseenter → store → DualViewport.hoveredEntity
+// Edge B: DualViewport.onHover → store → DesignTree row data-hovered
+// ---------------------------------------------------------------------------
+
+describe('App hover sync wiring — Edges A & B', () => {
+  function makeNode(entity_path: string, children: any[] = []) {
+    return { entity_path, kind: 'structure', type_name: null, has_mesh: false, trait_geometry: false, freshness: 'final', children };
+  }
+
+  it('(a) Edge A: DesignTree row mouseenter routes hover through store to DualViewport.hoveredEntity', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+    await renderAndWaitForReady();
+    await waitFor(() => expect(screen.getByTestId('tree-row-Root.A')).toBeTruthy());
+
+    fireEvent.mouseEnter(screen.getByTestId('tree-row-Root.A'));
+
+    // Outline hover → selectionStore.hoverEntity → DualViewport receives hoveredEntity prop
+    await waitFor(() => expect(capturedDualViewportProps.hoveredEntity).toBe('Root.A'));
+  });
+
+  it('(a-clear) Edge A mouseleave clears DualViewport.hoveredEntity', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+    await renderAndWaitForReady();
+    await waitFor(() => expect(screen.getByTestId('tree-row-Root.A')).toBeTruthy());
+
+    // Hover on, then off
+    fireEvent.mouseEnter(screen.getByTestId('tree-row-Root.A'));
+    await waitFor(() => expect(capturedDualViewportProps.hoveredEntity).toBe('Root.A'));
+    fireEvent.mouseLeave(screen.getByTestId('tree-row-Root.A'));
+    await waitFor(() => expect(capturedDualViewportProps.hoveredEntity).toBeNull());
+  });
+
+  it('(b) Edge B: DualViewport.onHover routes through store to DesignTree row data-hovered attribute', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A'), makeNode('Root.B')]);
+    await renderAndWaitForReady();
+    await waitFor(() => expect(screen.getByTestId('tree-row-Root.A')).toBeTruthy());
+
+    // Simulate viewport hover arriving via the existing onHover prop
+    capturedDualViewportProps.onHover('Root.A');
+
+    // The matching row should receive data-hovered='true'; the other should not
+    await waitFor(() => expect(screen.getByTestId('tree-row-Root.A').getAttribute('data-hovered')).toBe('true'));
+    expect(screen.getByTestId('tree-row-Root.B').getAttribute('data-hovered')).toBeNull();
+  });
+});

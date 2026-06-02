@@ -447,3 +447,211 @@ describe('createEditorSelectionSync', () => {
     });
   });
 });
+
+// ── createEditorHoverSync tests ──────────────────────────────────────────────
+
+function makeHoverEditorStore(initial: { line: number; column: number } | null = null) {
+  const [state, setState] = createStore({ cursorPosition: initial as { line: number; column: number } | null });
+  return {
+    state,
+    setCursorPosition: (pos: { line: number; column: number } | null) => setState('cursorPosition', pos),
+  };
+}
+
+describe('createEditorHoverSync', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.clearAllMocks();
+  });
+
+  it('(a) cursor set → after 200ms, getEntityAtSourceLocation called; hoverEntity called with result', async () => {
+    const { createEditorHoverSync } = await importHook();
+    const getEntityAtSourceLocation = vi.fn().mockResolvedValue('Bracket.width');
+    const hoverEntity = vi.fn();
+
+    await new Promise<void>((done) => {
+      createRoot(async (dispose) => {
+        const editorStore = makeHoverEditorStore(null);
+
+        createEditorHoverSync({
+          editorStore,
+          getEntityAtSourceLocation,
+          hoverEntity,
+          debounceMs: 200,
+        });
+
+        editorStore.setCursorPosition({ line: 2, column: 11 });
+
+        // Before timer fires: no call yet
+        expect(getEntityAtSourceLocation).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(250);
+
+        expect(getEntityAtSourceLocation).toHaveBeenCalledTimes(1);
+        expect(getEntityAtSourceLocation).toHaveBeenCalledWith(2, 11);
+        expect(hoverEntity).toHaveBeenCalledWith('Bracket.width');
+
+        dispose();
+        done();
+      });
+    });
+  });
+
+  it('(b) two rapid cursor changes → exactly one bridge call with the last position', async () => {
+    const { createEditorHoverSync } = await importHook();
+    const getEntityAtSourceLocation = vi.fn().mockResolvedValue('Bracket.width');
+    const hoverEntity = vi.fn();
+
+    await new Promise<void>((done) => {
+      createRoot(async (dispose) => {
+        const editorStore = makeHoverEditorStore(null);
+
+        createEditorHoverSync({
+          editorStore,
+          getEntityAtSourceLocation,
+          hoverEntity,
+          debounceMs: 200,
+        });
+
+        editorStore.setCursorPosition({ line: 1, column: 1 });
+        await vi.advanceTimersByTimeAsync(100); // within debounce window
+        editorStore.setCursorPosition({ line: 5, column: 8 });
+        await vi.advanceTimersByTimeAsync(250); // fire second debounce
+
+        expect(getEntityAtSourceLocation).toHaveBeenCalledTimes(1);
+        expect(getEntityAtSourceLocation).toHaveBeenCalledWith(5, 8);
+
+        dispose();
+        done();
+      });
+    });
+  });
+
+  it('(c) cursor set to null → hoverEntity called with null without waiting for debounce', async () => {
+    const { createEditorHoverSync } = await importHook();
+    const getEntityAtSourceLocation = vi.fn().mockResolvedValue('Bracket.width');
+    const hoverEntity = vi.fn();
+
+    await new Promise<void>((done) => {
+      createRoot(async (dispose) => {
+        const editorStore = makeHoverEditorStore({ line: 2, column: 5 });
+
+        createEditorHoverSync({
+          editorStore,
+          getEntityAtSourceLocation,
+          hoverEntity,
+          debounceMs: 200,
+        });
+
+        // Set cursor to null (hover-off)
+        editorStore.setCursorPosition(null);
+
+        // Flush SolidJS effects (they run as microtasks); no timer advance needed
+        await vi.advanceTimersByTimeAsync(0);
+
+        // hoverEntity should be called with null — no full debounce wait required
+        expect(hoverEntity).toHaveBeenCalledWith(null);
+        // No bridge call should be made for a null cursor
+        expect(getEntityAtSourceLocation).not.toHaveBeenCalled();
+
+        dispose();
+        done();
+      });
+    });
+  });
+
+  it('(d) bridge resolves null → hoverEntity called with null (cursor on whitespace)', async () => {
+    const { createEditorHoverSync } = await importHook();
+    const getEntityAtSourceLocation = vi.fn().mockResolvedValue(null);
+    const hoverEntity = vi.fn();
+
+    await new Promise<void>((done) => {
+      createRoot(async (dispose) => {
+        const editorStore = makeHoverEditorStore(null);
+
+        createEditorHoverSync({
+          editorStore,
+          getEntityAtSourceLocation,
+          hoverEntity,
+          debounceMs: 200,
+        });
+
+        editorStore.setCursorPosition({ line: 1, column: 1 });
+        await vi.advanceTimersByTimeAsync(250);
+
+        expect(getEntityAtSourceLocation).toHaveBeenCalledTimes(1);
+        // null resolution → hoverEntity must be called with null to clear hover
+        expect(hoverEntity).toHaveBeenCalledWith(null);
+
+        dispose();
+        done();
+      });
+    });
+  });
+
+  it('(e) stale-result race guard: slow request #1 result discarded when fast request #2 resolves first', async () => {
+    // Mirror of sibling hook test (h):
+    // Call #1 → slow promise; call #2 → fast promise.
+    // Fast (#2) resolves with 'Bracket.width' → hoverEntity called once.
+    // Slow (#1, stale) resolves with 'Bracket.thickness' → hoverEntity NOT called again.
+    const { createEditorHoverSync } = await importHook();
+
+    let resolveSlowPromise!: (v: string | null) => void;
+    let resolveFastPromise!: (v: string | null) => void;
+    const slowPromise = new Promise<string | null>(r => { resolveSlowPromise = r; });
+    const fastPromise = new Promise<string | null>(r => { resolveFastPromise = r; });
+
+    let callCount = 0;
+    const getEntityAtSourceLocation = vi.fn().mockImplementation(() => {
+      callCount++;
+      return callCount === 1 ? slowPromise : fastPromise;
+    });
+    const hoverEntity = vi.fn();
+
+    await new Promise<void>((done) => {
+      createRoot(async (dispose) => {
+        const editorStore = makeHoverEditorStore(null);
+
+        createEditorHoverSync({
+          editorStore,
+          getEntityAtSourceLocation,
+          hoverEntity,
+          debounceMs: 200,
+        });
+
+        // Change #1 → fires debounce #1 → awaits slowPromise
+        editorStore.setCursorPosition({ line: 1, column: 1 });
+        await vi.advanceTimersByTimeAsync(250);
+        expect(getEntityAtSourceLocation).toHaveBeenCalledTimes(1);
+
+        // Change #2 → fires debounce #2 → awaits fastPromise
+        editorStore.setCursorPosition({ line: 2, column: 2 });
+        await vi.advanceTimersByTimeAsync(250);
+        expect(getEntityAtSourceLocation).toHaveBeenCalledTimes(2);
+
+        // Resolve fast promise (call #2) first with 'Bracket.width'
+        resolveFastPromise('Bracket.width');
+        await Promise.resolve();
+        await Promise.resolve();
+
+        // Fresh (call #2) result should have been applied
+        expect(hoverEntity).toHaveBeenCalledWith('Bracket.width');
+        const callsBefore = hoverEntity.mock.calls.length;
+
+        // Now resolve slow (stale) promise with 'Bracket.thickness'
+        resolveSlowPromise('Bracket.thickness');
+        await Promise.resolve();
+        await Promise.resolve();
+
+        // Stale result MUST be discarded — hoverEntity must NOT be called again
+        expect(hoverEntity.mock.calls.length).toBe(callsBefore);
+
+        dispose();
+        done();
+      });
+    });
+  });
+});

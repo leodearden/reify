@@ -88,6 +88,15 @@
   font-style: italic;
 }
 
+/* JS-driven highlight for viewport-originated hover (Edge B reverse sync).
+   Distinct from CSS :hover (which only fires when the pointer is over the row).
+   Uses an accent-subtle token so it's visually distinct from .selected. */
+.hovered {
+  background: var(--reify-accent-hover-subtle, #1e3040);
+  outline: 1px solid var(--reify-accent-muted, #2a5a7c);
+  outline-offset: -1px;
+}
+
 /* Freshness badge — only rendered for non-Final variants (Final = no badge per arch §7.1). */
 .freshnessBadge {
   display: inline-block;

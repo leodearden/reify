@@ -19,6 +19,10 @@ interface Props {
   onOpenManage?: () => void;
   /** Optional callback for "Save views" action; forwarded to ViewSelector. */
   onSaveViews?: () => void;
+  /** Called with the entity path on mouseenter, null on mouseleave (Edge A hover sync). */
+  onHover?: (path: string | null) => void;
+  /** Viewport-originated hover: apply JS-driven .hovered highlight to the matching row (Edge B reverse). */
+  hoveredEntity?: string | null;
 }
 
 interface MenuState {
@@ -160,10 +164,13 @@ const DesignTree: Component<Props> = (props) => {
     return (
       <div class={styles.nodeWrapper} style={{ 'padding-left': `${depth * 16}px` }}>
         <div
-          classList={{ [styles.row]: true, [styles.selected]: effectiveSelected().has(node.entity_path), [styles.stale]: stalePaths().has(node.entity_path) }}
+          classList={{ [styles.row]: true, [styles.selected]: effectiveSelected().has(node.entity_path), [styles.stale]: stalePaths().has(node.entity_path), [styles.hovered]: props.hoveredEntity === node.entity_path }}
           data-testid={`tree-row-${node.entity_path}`}
           data-selected={effectiveSelected().has(node.entity_path) ? 'true' : undefined}
           data-stale={stalePaths().has(node.entity_path) ? 'true' : undefined}
+          data-hovered={props.hoveredEntity === node.entity_path ? 'true' : undefined}
+          onMouseEnter={() => props.onHover?.(node.entity_path)}
+          onMouseLeave={() => props.onHover?.(null)}
           onContextMenu={(e) => openMenu(node.entity_path, e)}
           onClick={(e) => {
             if (e.shiftKey && props.anchorEntity && props.onRangeSelect) {
