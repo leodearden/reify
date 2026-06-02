@@ -370,3 +370,105 @@ fn planck_constant_evaluates_to_6p62607015e_minus_34_si_with_action_dimension() 
         ),
     }
 }
+
+// ─── Test 9: STEFAN_BOLTZMANN_CONSTANT present and has correct signature ──────
+
+/// `STEFAN_BOLTZMANN_CONSTANT` must be present in `std/units`, be `pub`, take no
+/// parameters, and return `Scalar<POWER / AREA / T / T / T / T>` (= kg·s⁻³·K⁻⁴).
+///
+/// σ = 5.670374419×10⁻⁸ W·m⁻²·K⁻⁴ — CODATA 2018 value.
+#[test]
+fn stefan_boltzmann_constant_function_present_in_std_units() {
+    let module = common::units_module();
+
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "STEFAN_BOLTZMANN_CONSTANT")
+        .unwrap_or_else(|| {
+            panic!(
+                "STEFAN_BOLTZMANN_CONSTANT not found in std/units; found functions: {:?}",
+                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+            )
+        });
+
+    assert!(func.is_pub, "STEFAN_BOLTZMANN_CONSTANT should be pub");
+    assert!(
+        func.params.is_empty(),
+        "STEFAN_BOLTZMANN_CONSTANT should take no params, got: {:?}",
+        func.params
+    );
+
+    let expected_dim = DimensionVector::POWER
+        .div(&DimensionVector::AREA)
+        .div(&DimensionVector::TEMPERATURE)
+        .div(&DimensionVector::TEMPERATURE)
+        .div(&DimensionVector::TEMPERATURE)
+        .div(&DimensionVector::TEMPERATURE);
+    assert_eq!(
+        func.return_type,
+        Type::Scalar {
+            dimension: expected_dim
+        },
+        "STEFAN_BOLTZMANN_CONSTANT return type should be Scalar<POWER/AREA/T^4>, got {:?}",
+        func.return_type
+    );
+}
+
+// ─── Test 10: STEFAN_BOLTZMANN_CONSTANT evaluates to 5.670374419e-8 ───────────
+
+/// Evaluating `STEFAN_BOLTZMANN_CONSTANT()` via `eval_expr` must yield a
+/// `Value::Scalar` with `si_value ≈ 5.670374419e-8` and
+/// `dimension = POWER / AREA / T^4` (kg·s⁻³·K⁻⁴).
+///
+/// σ = 5.670374419×10⁻⁸ W·m⁻²·K⁻⁴ — CODATA 2018.
+#[test]
+fn stefan_boltzmann_constant_evaluates_to_5p670374419e_minus_8_si_with_stefan_boltzmann_dim() {
+    let module = common::units_module();
+
+    let expected_dim = DimensionVector::POWER
+        .div(&DimensionVector::AREA)
+        .div(&DimensionVector::TEMPERATURE)
+        .div(&DimensionVector::TEMPERATURE)
+        .div(&DimensionVector::TEMPERATURE)
+        .div(&DimensionVector::TEMPERATURE);
+    let call_expr = CompiledExpr::user_function_call(
+        "STEFAN_BOLTZMANN_CONSTANT".to_string(),
+        vec![],
+        Type::Scalar {
+            dimension: expected_dim,
+        },
+    );
+    let values = ValueMap::new();
+    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    let result = reify_expr::eval_expr(&call_expr, &ctx);
+
+    match result {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(
+                dimension,
+                DimensionVector::POWER
+                    .div(&DimensionVector::AREA)
+                    .div(&DimensionVector::TEMPERATURE)
+                    .div(&DimensionVector::TEMPERATURE)
+                    .div(&DimensionVector::TEMPERATURE)
+                    .div(&DimensionVector::TEMPERATURE),
+                "STEFAN_BOLTZMANN_CONSTANT() should have POWER/AREA/T^4 dimension, got {:?}",
+                dimension
+            );
+            common::assert_eq_rel(
+                si_value,
+                5.670374419e-8,
+                1e-12,
+                "STEFAN_BOLTZMANN_CONSTANT() si_value",
+            );
+        }
+        other => panic!(
+            "STEFAN_BOLTZMANN_CONSTANT() should return Value::Scalar, got {:?}",
+            other
+        ),
+    }
+}
