@@ -81,6 +81,13 @@ enum OcctRequest {
         right: GeometryHandleId,
         reply: oneshot::Sender<Result<(GeometryHandle, BooleanOpHistoryRecords), GeometryError>>,
     },
+    /// Run `BRepAlgoAPI_Common` (A ∩ B) with history. Part of v0.2
+    /// persistent-naming-v2 (task 2656, step-4).
+    BooleanCommonWithHistory {
+        left: GeometryHandleId,
+        right: GeometryHandleId,
+        reply: oneshot::Sender<Result<(GeometryHandle, BooleanOpHistoryRecords), GeometryError>>,
+    },
     /// v0.2 persistent-naming-v2 local-feature history: apply
     /// `BRepFilletAPI_MakeFillet` to every edge of `shape` with the given
     /// `radius`, capturing Modified/Generated/Deleted records. Mirrors the
@@ -411,6 +418,31 @@ impl OcctKernelHandle {
     ) -> Result<(GeometryHandleId, BooleanOpHistoryRecords), GeometryError> {
         let (handle, records) = self.send_request_blocking(
             |reply| OcctRequest::BooleanCutWithHistory { left, right, reply },
+            || GeometryError::OperationFailed("kernel thread died".into()),
+        )??;
+        Ok((handle.id, records))
+    }
+
+    /// Compute the intersection of `left` and `right` via `BRepAlgoAPI_Common`
+    /// (A ∩ B) and return the result handle id alongside the per-parent face/edge
+    /// history records (Modified / Generated / Deleted) emitted by the algorithm.
+    ///
+    /// Mirrors [`OcctKernel::boolean_common_with_history`] across the
+    /// kernel-thread channel. Result handle is registered with
+    /// `BRepKind::Solid`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async execution context.
+    ///
+    /// Part of v0.2 persistent-naming-v2 (task 2656, step-4).
+    pub fn boolean_common_with_history(
+        &self,
+        left: GeometryHandleId,
+        right: GeometryHandleId,
+    ) -> Result<(GeometryHandleId, BooleanOpHistoryRecords), GeometryError> {
+        let (handle, records) = self.send_request_blocking(
+            |reply| OcctRequest::BooleanCommonWithHistory { left, right, reply },
             || GeometryError::OperationFailed("kernel thread died".into()),
         )??;
         Ok((handle.id, records))
@@ -897,6 +929,10 @@ impl OcctKernelHandle {
                     }
                     OcctRequest::BooleanCutWithHistory { left, right, reply } => {
                         let result = kernel.boolean_cut_with_history(left, right);
+                        let _ = reply.send(result);
+                    }
+                    OcctRequest::BooleanCommonWithHistory { left, right, reply } => {
+                        let result = kernel.boolean_common_with_history(left, right);
                         let _ = reply.send(result);
                     }
                     OcctRequest::FilletWithHistory {

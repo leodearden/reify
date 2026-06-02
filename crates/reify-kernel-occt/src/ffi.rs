@@ -195,6 +195,15 @@ pub mod ffi {
             right: &OcctShape,
         ) -> Result<UniquePtr<BooleanOpHistory>>;
 
+        /// Run `BRepAlgoAPI_Common` on `left` and `right` (A ∩ B), eagerly
+        /// capturing the per-parent face/edge Modified/Generated/Deleted records
+        /// alongside the intersection result shape. Part of v0.2
+        /// persistent-naming-v2 (task 2656, step-4).
+        fn boolean_common_with_history(
+            left: &OcctShape,
+            right: &OcctShape,
+        ) -> Result<UniquePtr<BooleanOpHistory>>;
+
         /// Move the result shape out of the history wrapper for
         /// registration in the kernel's shape table. Subsequent
         /// `_take_result_shape` calls return an empty pointer.

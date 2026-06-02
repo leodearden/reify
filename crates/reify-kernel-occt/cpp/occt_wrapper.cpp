@@ -565,6 +565,17 @@ std::unique_ptr<BooleanOpHistory> boolean_cut_with_history(const OcctShape& left
     });
 }
 
+std::unique_ptr<BooleanOpHistory> boolean_common_with_history(const OcctShape& left, const OcctShape& right) {
+    return wrap_occt_call("boolean_common_with_history", [&]() {
+        BRepAlgoAPI_Common common(left.shape, right.shape);
+        common.Build();
+        if (!common.IsDone()) {
+            throw std::runtime_error("BRepAlgoAPI_Common failed");
+        }
+        return extract_boolean_history(common, left, right);
+    });
+}
+
 std::unique_ptr<OcctShape> boolean_op_history_take_result_shape(BooleanOpHistory& history) {
     return std::move(history.result);
 }

@@ -361,6 +361,18 @@ impl OcctKernelHandle {
         Err(GeometryError::OperationFailed(NOT_AVAILABLE.into()))
     }
 
+    /// Stub `boolean_common_with_history` — always errors because OCCT is
+    /// unavailable. Mirrors the real `OcctKernelHandle::boolean_common_with_history`
+    /// signature so call sites compile under both `has_occt` and `!has_occt`.
+    /// Part of v0.2 persistent-naming-v2 (task 2656, step-4).
+    pub fn boolean_common_with_history(
+        &self,
+        _left: GeometryHandleId,
+        _right: GeometryHandleId,
+    ) -> Result<(GeometryHandleId, BooleanOpHistoryRecords), GeometryError> {
+        Err(GeometryError::OperationFailed(NOT_AVAILABLE.into()))
+    }
+
     /// Stub `execute_with_history` — always errors because OCCT is
     /// unavailable. Mirrors the real `OcctKernelHandle::execute_with_history`
     /// signature so call sites compile under both `has_occt` and `!has_occt`.
