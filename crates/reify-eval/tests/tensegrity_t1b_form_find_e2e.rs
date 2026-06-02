@@ -17,9 +17,9 @@
 //!   step-5  — end-to-end over examples/tensegrity_t_prism.ri — RED
 
 use reify_core::{DimensionVector, Severity, ValueCellId};
-use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, RealizationReadHandle};
+use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
-use reify_test_support::{collect_errors, compile_source_with_stdlib, make_simple_engine};
+use reify_test_support::{compile_source_with_stdlib, make_simple_engine};
 
 // ── canonical triplex geometry ────────────────────────────────────────────────
 
@@ -209,12 +209,12 @@ fn trampoline_happy_path_solves_triplex_prism() {
         other => panic!("FormFindResult.member_forces must be a List, got {other:?}"),
     };
     assert_eq!(forces.len(), 12, "expected 12 member forces (3 struts + 9 cables)");
-    for i in 0..3 {
-        let f = force_val(&forces[i]);
+    for (i, v) in forces.iter().enumerate().take(3) {
+        let f = force_val(v);
         assert!(f < 0.0, "strut member_forces[{i}] must be compressive (< 0), got {f}");
     }
-    for i in 3..12 {
-        let f = force_val(&forces[i]);
+    for (i, v) in forces.iter().enumerate().skip(3) {
+        let f = force_val(v);
         assert!(f > 0.0, "cable member_forces[{i}] must be tensile (> 0), got {f}");
     }
 
@@ -225,22 +225,22 @@ fn trampoline_happy_path_solves_triplex_prism() {
     };
     assert_eq!(fds.len(), 12, "expected 12 force densities (3 struts + 9 cables)");
     let sqrt3 = 3.0_f64.sqrt();
-    for i in 0..3 {
-        let q = coord(&fds[i]);
+    for (i, v) in fds.iter().enumerate().take(3) {
+        let q = coord(v);
         assert!(
             (q - (-sqrt3)).abs() < 1e-6,
             "strut force_densities[{i}] must be ≈ −√3, got {q}"
         );
     }
-    for i in 3..9 {
-        let q = coord(&fds[i]);
+    for (i, v) in fds.iter().enumerate().skip(3).take(6) {
+        let q = coord(v);
         assert!(
             (q - 1.0).abs() < 1e-12,
             "horizontal force_densities[{i}] (reference group) must be = 1, got {q}"
         );
     }
-    for i in 9..12 {
-        let q = coord(&fds[i]);
+    for (i, v) in fds.iter().enumerate().skip(9) {
+        let q = coord(v);
         assert!(
             (q - sqrt3).abs() < 1e-6,
             "vertical force_densities[{i}] must be ≈ +√3, got {q}"
@@ -410,12 +410,12 @@ fn e2e_t_prism_lowers_to_compute_node_and_solves() {
         other => panic!("FormFindResult.member_forces must be a List, got {other:?}"),
     };
     assert_eq!(forces.len(), 12, "expected 12 member forces (3 struts + 9 cables)");
-    for i in 0..3 {
-        let f = force_val(&forces[i]);
+    for (i, v) in forces.iter().enumerate().take(3) {
+        let f = force_val(v);
         assert!(f < 0.0, "strut member_forces[{i}] must be compressive (< 0), got {f}");
     }
-    for i in 3..12 {
-        let f = force_val(&forces[i]);
+    for (i, v) in forces.iter().enumerate().skip(3) {
+        let f = force_val(v);
         assert!(f > 0.0, "cable member_forces[{i}] must be tensile (> 0), got {f}");
     }
 
@@ -426,22 +426,22 @@ fn e2e_t_prism_lowers_to_compute_node_and_solves() {
     };
     assert_eq!(fds.len(), 12, "expected 12 force densities");
     let sqrt3 = 3.0_f64.sqrt();
-    for i in 0..3 {
-        let q = coord(&fds[i]);
+    for (i, v) in fds.iter().enumerate().take(3) {
+        let q = coord(v);
         assert!(
             (q - (-sqrt3)).abs() < 1e-6,
             "strut force_densities[{i}] ≈ −√3, got {q}"
         );
     }
-    for i in 3..9 {
-        let q = coord(&fds[i]);
+    for (i, v) in fds.iter().enumerate().skip(3).take(6) {
+        let q = coord(v);
         assert!(
             (q - 1.0).abs() < 1e-12,
             "horizontal force_densities[{i}] (reference) = 1, got {q}"
         );
     }
-    for i in 9..12 {
-        let q = coord(&fds[i]);
+    for (i, v) in fds.iter().enumerate().skip(9) {
+        let q = coord(v);
         assert!(
             (q - sqrt3).abs() < 1e-6,
             "vertical force_densities[{i}] ≈ +√3, got {q}"
