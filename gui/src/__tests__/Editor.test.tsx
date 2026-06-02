@@ -1393,6 +1393,103 @@ describe('Editor Mod-s exhaustiveness for SaveBlockedReason', () => {
   });
 });
 
+describe('Editor navigation history', () => {
+  // file1: 'structure Bracket {\n  param width = 80mm\n}'
+  // Line 2 (1-based) starts at offset 20; char 8 → offset 28.
+  const ORIGIN_OFFSET = 5;
+  const DEF_OFFSET = 28; // line2.from(20) + lspChar(8) = 28
+
+  const sameFileDefForNav = {
+    uri: 'file:///project/src/bracket.ri',
+    range: { start: { line: 1, character: 8 }, end: { line: 1, character: 13 } },
+  };
+
+  function setupNavStore() {
+    const store = setupStore([file1]);
+    store.setActiveFile(file1.path);
+    mockInvoke.mockImplementation(async (_cmd: string, args: any) => {
+      const method = (args as any)?.method as string;
+      if (method === 'initialize') return JSON.stringify({ capabilities: {} });
+      if (method === 'textDocument/definition') return JSON.stringify(sameFileDefForNav);
+      return undefined as any;
+    });
+    return store;
+  }
+
+  it('(a) Alt+ArrowLeft after F12 same-file jump returns cursor to pre-jump origin', async () => {
+    const store = setupNavStore();
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Place cursor at origin
+    view.dispatch({ selection: { anchor: ORIGIN_OFFSET } });
+    expect(view.state.selection.main.head).toBe(ORIGIN_OFFSET);
+
+    // F12: jump to definition (async)
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'F12', code: 'F12', bubbles: true }),
+    );
+    await vi.waitFor(() => expect(view.state.selection.main.head).toBe(DEF_OFFSET));
+
+    // Alt+ArrowLeft: navigate back to origin
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowLeft', altKey: true, bubbles: true }),
+    );
+    await vi.waitFor(() => expect(view.state.selection.main.head).toBe(ORIGIN_OFFSET));
+  });
+
+  it('(b) Alt+ArrowRight after Alt+ArrowLeft re-advances cursor to definition offset', async () => {
+    const store = setupNavStore();
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    view.dispatch({ selection: { anchor: ORIGIN_OFFSET } });
+
+    // F12: jump to definition
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'F12', code: 'F12', bubbles: true }),
+    );
+    await vi.waitFor(() => expect(view.state.selection.main.head).toBe(DEF_OFFSET));
+
+    // Alt+ArrowLeft: back to origin
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowLeft', altKey: true, bubbles: true }),
+    );
+    await vi.waitFor(() => expect(view.state.selection.main.head).toBe(ORIGIN_OFFSET));
+
+    // Alt+ArrowRight: re-advance to definition
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowRight', altKey: true, bubbles: true }),
+    );
+    await vi.waitFor(() => expect(view.state.selection.main.head).toBe(DEF_OFFSET));
+  });
+
+  it('(c) scrollToLocation reveal pushes to nav history; Alt+ArrowLeft returns to origin', () => {
+    const store = setupStore([file1]);
+    store.setActiveFile(file1.path);
+    const [scrollTo, setScrollTo] = createSignal<SourceLocation | null>(null);
+    render(() => <Editor store={store} scrollToLocation={scrollTo} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Place cursor at origin
+    view.dispatch({ selection: { anchor: ORIGIN_OFFSET } });
+    expect(view.state.selection.main.head).toBe(ORIGIN_OFFSET);
+
+    // Cross-pane reveal: line 2, column 9 (1-based) → anchor = 20 + 8 = 28
+    setScrollTo({ file_path: file1.path, line: 2, column: 9, end_line: 2, end_column: 9 });
+    expect(view.state.selection.main.head).toBe(DEF_OFFSET);
+
+    // Alt+ArrowLeft: nav back to origin
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowLeft', altKey: true, bubbles: true }),
+    );
+    expect(view.state.selection.main.head).toBe(ORIGIN_OFFSET);
+  });
+});
+
 describe('Editor F12 go-to-definition', () => {
   it('F12 on cursor position dispatches cursor to same-file definition offset', async () => {
     const store = setupStore([file1]);
