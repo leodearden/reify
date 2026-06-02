@@ -186,6 +186,15 @@ pub mod ffi {
             right: &OcctShape,
         ) -> Result<UniquePtr<BooleanOpHistory>>;
 
+        /// Run `BRepAlgoAPI_Cut` on `left` and `right` (left − right), eagerly
+        /// capturing the per-parent face/edge Modified/Generated/Deleted records
+        /// alongside the cut result shape. Part of v0.2 persistent-naming-v2
+        /// (task 2656, step-2).
+        fn boolean_cut_with_history(
+            left: &OcctShape,
+            right: &OcctShape,
+        ) -> Result<UniquePtr<BooleanOpHistory>>;
+
         /// Move the result shape out of the history wrapper for
         /// registration in the kernel's shape table. Subsequent
         /// `_take_result_shape` calls return an empty pointer.
