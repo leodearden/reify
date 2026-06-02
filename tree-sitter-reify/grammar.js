@@ -1227,6 +1227,7 @@ module.exports = grammar({
       $.string_literal,
       $.interpolated_string,
       $.bool_literal,
+      $.undef_literal,
       $.function_call,
       $.member_access,
       $.list_literal,
@@ -1477,6 +1478,14 @@ module.exports = grammar({
     ),
 
     bool_literal: $ => choice('true', 'false'),
+
+    // Undef literal: first-class `undef` expression token (task γ, §5.12).
+    // Plain string token — beats same-length identifier by tree-sitter lexer
+    // rule #2 (string token wins over regex of equal length).  Only reserves
+    // `undef` where grammatically valid (expression positions via
+    // _primary_expression); `param undef : Length` still parses `undef` as an
+    // identifier NAME.
+    undef_literal: $ => 'undef',
 
     identifier: $ => /[a-zA-Z_][a-zA-Z0-9_]*/,
 
