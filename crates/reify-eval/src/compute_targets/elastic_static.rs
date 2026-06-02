@@ -124,12 +124,13 @@ use reify_ir::{
 
 use crate::persistent_cache::ShellChannels;
 use reify_solver_elastic::{
-    AnisotropicMaterial, AssemblyElement, AssemblyMode, CgSolverOptions, CgWarmState,
-    ConstantField, DirichletBc, ElementOrder, GridSpec, IsotropicElastic, OrthotropicMaterial,
-    SolverMode, StressElement, TransverseIsotropicMaterial, apply_dirichlet_row_elimination,
-    apply_point_load, assemble_global_stiffness, element_stiffness,
-    element_stiffness_p1_with_field, element_stress_p1, recover_nodal_stress_p1,
-    resample_multi_nodal_to_grid, solve_cg_with_warm_state, tet_volume_p1,
+    AnisotropicMaterial, AssemblyElement, AssemblyMode, CgIterationControl, CgSolverOptions,
+    CgWarmState, ConstantField, DirichletBc, ElementOrder, GridSpec, IsotropicElastic,
+    OrthotropicMaterial, SolverMode, StressElement, TransverseIsotropicMaterial,
+    apply_dirichlet_row_elimination, apply_point_load, assemble_global_stiffness,
+    element_stiffness, element_stiffness_p1_with_field, element_stress_p1,
+    recover_nodal_stress_p1, resample_multi_nodal_to_grid, solve_cg_with_warm_state,
+    solve_cg_with_warm_state_progress, tet_volume_p1,
 };
 
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
@@ -425,8 +426,49 @@ pub fn solve_elastic_static_trampoline(
     let prior_cg = prior_warm_state.and_then(|s| s.downcast_ref::<CgWarmState>().cloned());
 
     // ── (6) Delegate to shared FEA helper ────────────────────────────────────
+    //
+    // Read the thread-local dispatch context installed by `run_compute_dispatch`
+    // (task 4079). When a `SolverProgressSink` or cancel handle is present, build
+    // a per-iteration closure that: (a) emits a `SolverProgressUpdate` to the sink,
+    // THEN (b) returns `CgIterationControl::Cancel` if the handle is cancelled.
+    // Emit-before-cancel ordering matches the design decision: the cancel raised
+    // during emit terminates the SAME iteration.
+    let ctx = crate::solver_progress::current_solve_dispatch_context();
+    let (ctx_sink, ctx_cancel) = match ctx {
+        Some((s, c)) => (s, c),
+        None => (None, None),
+    };
+    let mut progress_closure = |iter: usize, residual: f64| -> CgIterationControl {
+        if let Some(ref sink) = ctx_sink {
+            sink.on_iteration(&crate::solver_progress::SolverProgressUpdate {
+                solver_kind: "cg",
+                iter: iter as u32,
+                residual,
+            });
+        }
+        if ctx_cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+            CgIterationControl::Cancel
+        } else {
+            CgIterationControl::Continue
+        }
+    };
+    let progress_opt: Option<&mut dyn FnMut(usize, f64) -> CgIterationControl> =
+        if ctx_sink.is_some() || ctx_cancel.is_some() {
+            Some(&mut progress_closure)
+        } else {
+            None
+        };
     let (fea, fresh_warm) =
-        solve_cantilever_fea(&model, length, width, height, tip_force, prior_cg);
+        solve_cantilever_fea(&model, length, width, height, tip_force, prior_cg, progress_opt);
+
+    // ── (6b) Cancel check ─────────────────────────────────────────────────────
+    //
+    // After the solve, if the cancel handle was triggered, return `Cancelled`
+    // so that `run_compute_dispatch` leaves the output VC `Freshness::Pending`
+    // (per compute-node-contract §2 — no bogus partial result cached).
+    if ctx_cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+        return ComputeOutcome::Cancelled;
+    }
 
     // ── (7) Build ElasticResult StructureInstance ────────────────────────────
     //
@@ -698,6 +740,7 @@ pub(crate) fn solve_cantilever_fea(
     height: f64,
     tip_force: f64,
     prior_cg: Option<CgWarmState>,
+    progress: Option<&mut dyn FnMut(usize, f64) -> CgIterationControl>,
 ) -> (CantileverFeaSolve, CgWarmState) {
     // ── Mesh ──────────────────────────────────────────────────────────────────
     //
@@ -868,8 +911,11 @@ pub(crate) fn solve_cantilever_fea(
         tolerance: 1e-6,
         max_iter: 2000,
     };
-    let (cg_result, fresh_warm) =
-        solve_cg_with_warm_state(&k, &f, prior_cg.as_ref(), opts, SolverMode::Deterministic);
+    let (cg_result, fresh_warm) = if let Some(cb) = progress {
+        solve_cg_with_warm_state_progress(&k, &f, prior_cg.as_ref(), opts, SolverMode::Deterministic, cb)
+    } else {
+        solve_cg_with_warm_state(&k, &f, prior_cg.as_ref(), opts, SolverMode::Deterministic)
+    };
 
     // ── Stress recovery: max von Mises across all elements ────────────────────
     //
@@ -1353,6 +1399,7 @@ mod tests {
             height,
             tip_force,
             None,
+            None,
         );
 
         // Tip deflection = max |u_z| over tip-face nodes.
@@ -1430,6 +1477,7 @@ mod tests {
             height,
             tip_force,
             None,
+            None,
         );
         // Solve with the anisotropic identity-frame lift path.
         let (aniso_result, _) = solve_cantilever_fea(
@@ -1438,6 +1486,7 @@ mod tests {
             width,
             height,
             tip_force,
+            None,
             None,
         );
 
@@ -1547,6 +1596,7 @@ mod tests {
             width,
             height,
             tip_force,
+            None,
             None,
         );
 
@@ -1704,6 +1754,7 @@ mod tests {
             width,
             height,
             1000.0,
+            None,
             None,
         );
 
