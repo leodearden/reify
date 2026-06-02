@@ -76,6 +76,9 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
             }
         }
         // `matrix(rows)` → rank-2 Tensor; n = column count from a depth-2 list.
+        // D5: an M×N matrix projects to `n = column count`; the row count M is
+        // intentionally DISCARDED (`Type::Tensor` carries a single `n`). Future
+        // consumers reading `Type::Tensor.n` must NOT assume a square N×N matrix.
         "matrix" => {
             let (n, quantity) = first.map_or((0, Type::Real), matrix_shape);
             Type::Tensor {
@@ -457,5 +460,35 @@ mod tests {
                 "identity degrade ({label}) must yield a rank-2 Type::Tensor variant, got {result:?}"
             );
         }
+    }
+
+    // ── Non-square projection (amendment: reviewer design_coherence) ─────────
+
+    /// NON-SQUARE `matrix` projects to `n = column count` (locks D5). A 2×3
+    /// matrix (`matrix([[1,2,3],[4,5,6]])`) types as `Tensor{rank:2, n:3}` — the
+    /// row count (M=2) is intentionally discarded. Pins the documented
+    /// projection so a future `Type::Tensor.n` consumer can't silently assume a
+    /// square N×N. Prior matrix tests only covered the square 2×2 case.
+    #[test]
+    fn matrix_result_type_non_square_projects_to_column_count() {
+        // 2 rows, 3 columns.
+        let row0 = list_lit(
+            vec![real_elem(1.0), real_elem(2.0), real_elem(3.0)],
+            Type::Real,
+        );
+        let row1 = list_lit(
+            vec![real_elem(4.0), real_elem(5.0), real_elem(6.0)],
+            Type::Real,
+        );
+        let arg = list_lit(vec![row0, row1], Type::List(Box::new(Type::Real)));
+        assert_eq!(
+            math_fn_result_type("matrix", &[arg]),
+            Type::Tensor {
+                rank: 2,
+                n: 3, // column count (3), NOT row count (2) — D5
+                quantity: Box::new(Type::Real)
+            },
+            "non-square 2x3 matrix must project to n = column count = 3 (D5)"
+        );
     }
 }
