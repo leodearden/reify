@@ -423,7 +423,18 @@ pub fn compute_document_symbols(source: &str, uri: &Url) -> Vec<DocumentSymbol> 
                     children_or_none(variants),
                 ));
             }
-            // All other top-level declarations are not navigable symbols.
+            Declaration::Function(f) => {
+                symbols.push(make_symbol(
+                    &f.name,
+                    SymbolKind::FUNCTION,
+                    span_to_range(source, f.span),
+                    name_selection_range(source, f.span, &f.name),
+                    None,
+                ));
+            }
+            // All other top-level declarations are not navigable symbols:
+            // Import, Unit, TypeAlias, Constraint (ConstraintDef), Field,
+            // Purpose, and Module have no stable jump target and are skipped.
             _ => {}
         }
     }
