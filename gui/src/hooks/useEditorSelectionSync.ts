@@ -148,7 +148,18 @@ export function createEditorSelectionSync(opts: EditorSelectionSyncOptions): voi
  * - non-null resolution → hoverEntity(entity)
  *
  * Uses a latestRequestToken race-guard to discard stale async results.
- * Clears hoverEntity on cleanup.
+ *
+ * Cleanup behaviour: cancels any pending debounce timer only. Does NOT call
+ * hoverEntity(null) on disposal — the hook is mounted at App root so teardown
+ * coincides with app exit; there is no live consumer left to clear. If you
+ * reuse this hook in a shorter-lived scope you should call hoverEntity(null)
+ * yourself on unmount.
+ *
+ * Cross-source race (intentional): mouse-originated hover writes
+ * (DualViewport.onHover / DesignTree.onHover → selectionStore.hoverEntity)
+ * and editor-resolved hover writes both target hoverEntity directly; the last
+ * writer wins. Hover is transient and low-stakes — the full cross-input
+ * snapshot guard from createEditorSelectionSync is not warranted here.
  */
 export function createEditorHoverSync(opts: EditorHoverSyncOptions): void {
   const {
