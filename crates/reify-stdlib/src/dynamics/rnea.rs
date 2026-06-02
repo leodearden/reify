@@ -270,6 +270,9 @@ pub fn inverse_dynamics_open_chain(links: &[RneaLink], gravity: [f64; 3]) -> Vec
                 if let Some(k) = c.spring_rate {
                     tau_i[0] += -k * (c.position - c.neutral);
                 }
+                if let Some(c_damp) = c.damping {
+                    tau_i[0] += -c_damp * link.q_dot[0];
+                }
             }
             tau_i
         })
