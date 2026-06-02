@@ -283,12 +283,24 @@ export function createEngineStore(options?: EngineStoreOptions) {
    * mesh is retained as long as its parent structure node is still live,
    * regardless of whether the specific realization node is present.
    *
-   * Guards: if the tree yields zero live paths, returns immediately without
-   * pruning. This conflates two cases — tree not yet loaded (do nothing) and
-   * a genuinely empty design (all parts deleted). In the genuinely-empty case
-   * stale meshes/values/constraints persist until the next non-empty refresh.
-   * This is a known limitation: a reliable "tree loaded" signal would let us
-   * distinguish the two cases and reconcile the empty-design path correctly.
+   * Guards:
+   *
+   * 1. Empty-tree guard: if the tree yields zero live paths, returns immediately
+   *    without pruning. This conflates two cases — tree not yet loaded (do
+   *    nothing) and a genuinely empty design (all parts deleted). In the
+   *    genuinely-empty case stale meshes/values/constraints persist until the
+   *    next non-empty refresh. This is a known limitation: a reliable "tree
+   *    loaded" signal would let us distinguish the two cases and reconcile the
+   *    empty-design path correctly.
+   *
+   * 2. Cross-root / disjoint-snapshot guard: if the store currently tracks
+   *    entities but NONE of them (mesh key/owner, value entity_path, or
+   *    constraint owner) appear in the snapshot's live paths, the snapshot is
+   *    from a different design root (stale/pre-switch) and pruning would wipe
+   *    the freshly-loaded design. Return without pruning in this case.
+   *    Extends the empty-tree known-limitation: a genuine full replacement to
+   *    a wholly-unrelated root will not prune until the next overlapping
+   *    refresh (which should arrive shortly after the new engine load).
    */
   function reconcileToTree(tree: EntityTreeNode[]): void {
     // Collect all live entity paths from the tree recursively.
@@ -301,10 +313,43 @@ export function createEngineStore(options?: EngineStoreOptions) {
     }
     collectPaths(tree);
 
-    // Guard: if no live paths collected, the tree is not loaded yet (or the
+    // Guard 1: if no live paths collected, the tree is not loaded yet (or the
     // design is genuinely empty — see known limitation in the JSDoc above).
     // Either way, return without pruning to avoid a stale-tree wipe.
     if (livePaths.size === 0) return;
+
+    // Guard 2: cross-root / disjoint-snapshot guard.  Check whether the store
+    // currently has ANY entities and, if so, whether at least one of them
+    // overlaps with the snapshot's live paths.  Checking across all entity
+    // kinds (meshes, values, constraints) avoids a false-positive when the
+    // store has only values or constraints (no meshes) — basing disjointness on
+    // meshes alone would wrongly skip pruning in value/constraint-only stores.
+    const hasMeshEntities = Object.keys(state.meshes).length > 0;
+    const hasValueEntities = Object.keys(state.values).length > 0;
+    const hasConstraintEntities = Object.keys(state.constraints).length > 0;
+    if (hasMeshEntities || hasValueEntities || hasConstraintEntities) {
+      let hasOverlap = false;
+      // Short-circuit scan: first hit wins.
+      meshScan:
+      for (const key of Object.keys(state.meshes)) {
+        const owner = key.includes('#') ? key.slice(0, key.indexOf('#')) : key;
+        if (livePaths.has(key) || livePaths.has(owner)) { hasOverlap = true; break meshScan; }
+      }
+      if (!hasOverlap) {
+        for (const cellId of Object.keys(state.values)) {
+          const ep = state.values[cellId]?.entity_path;
+          if (ep !== undefined && livePaths.has(ep)) { hasOverlap = true; break; }
+        }
+      }
+      if (!hasOverlap) {
+        for (const nodeId of Object.keys(state.constraints)) {
+          const owner = nodeId.includes('#') ? nodeId.slice(0, nodeId.indexOf('#')) : nodeId;
+          if (livePaths.has(owner)) { hasOverlap = true; break; }
+        }
+      }
+      // Snapshot is from a different design root (stale/pre-switch) — skip pruning.
+      if (!hasOverlap) return;
+    }
 
     // Prune orphan meshes.  Check the exact key first (realization nodes carry
     // it) and fall back to owner-path matching so a mesh whose parent structure
