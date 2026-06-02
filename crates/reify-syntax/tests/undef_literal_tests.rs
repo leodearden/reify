@@ -64,3 +64,68 @@ fn binary_right_operand_undef_produces_undef_literal_node() {
          got only an identifier (silent-degradation bug still present)"
     );
 }
+
+// ── Lowering section ─────────────────────────────────────────────────────────
+
+use reify_ast::*;
+use reify_core::ModulePath;
+
+/// `let a : Length = undef` must lower the value expression to `ExprKind::Undef`.
+///
+/// Fails to compile on base (variant `ExprKind::Undef` does not exist) — valid RED.
+/// After step-4 (AST variant + ts_parser lowering) this passes.
+#[test]
+fn let_value_undef_lowers_to_expr_kind_undef() {
+    let source = "structure S { let a : Length = undef }";
+    let module = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        module.errors.is_empty(),
+        "expected no parse errors: {:?}",
+        module.errors
+    );
+    let structure = match &module.declarations[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+    let let_decl = match &structure.members[0] {
+        MemberDecl::Let(l) => l,
+        other => panic!("expected Let, got {:?}", other),
+    };
+    assert!(
+        matches!(let_decl.value.kind, ExprKind::Undef),
+        "expected ExprKind::Undef for `let a = undef`, got {:?}",
+        let_decl.value.kind
+    );
+}
+
+/// `let a : Length = 5 * undef` — the right operand must lower to `ExprKind::Undef`.
+///
+/// Fails to compile on base (variant `ExprKind::Undef` does not exist) — valid RED.
+/// After step-4 this passes.
+#[test]
+fn binary_right_operand_undef_lowers_to_expr_kind_undef() {
+    let source = "structure S { let a : Length = 5 * undef }";
+    let module = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        module.errors.is_empty(),
+        "expected no parse errors: {:?}",
+        module.errors
+    );
+    let structure = match &module.declarations[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+    let let_decl = match &structure.members[0] {
+        MemberDecl::Let(l) => l,
+        other => panic!("expected Let, got {:?}", other),
+    };
+    let right = match &let_decl.value.kind {
+        ExprKind::BinOp { right, .. } => right.as_ref(),
+        other => panic!("expected BinOp, got {:?}", other),
+    };
+    assert!(
+        matches!(right.kind, ExprKind::Undef),
+        "expected ExprKind::Undef for the right operand of `5 * undef`, got {:?}",
+        right.kind
+    );
+}
