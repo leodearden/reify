@@ -1016,6 +1016,52 @@ describe('DesignTree — freshness badge', () => {
   });
 });
 
+describe('DesignTree — reverse hover highlight (Edge B)', () => {
+  it('hoveredEntity="Root.A" sets data-hovered="true" on Root.A row and not Root.B', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({ entity_path: 'Root.B' }),
+    ];
+    const store = makeStore(nodes);
+    render(() => (
+      <DesignTree tree={nodes} viewStateStore={store} hoveredEntity="Root.A" />
+    ));
+    expect(screen.getByTestId('tree-row-Root.A').getAttribute('data-hovered')).toBe('true');
+    expect(screen.getByTestId('tree-row-Root.B').getAttribute('data-hovered')).toBeNull();
+  });
+
+  it('hoveredEntity="Root.A" adds the hovered CSS class to the matching row', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    render(() => (
+      <DesignTree tree={nodes} viewStateStore={store} hoveredEntity="Root.A" />
+    ));
+    const row = screen.getByTestId('tree-row-Root.A');
+    // The .hovered class should be present (CSS module will mangle the name; check via data-hovered)
+    expect(row.getAttribute('data-hovered')).toBe('true');
+    // classList should contain some hovered class (the CSS module mangled name)
+    expect(Array.from(row.classList).some((c) => c.includes('hovered'))).toBe(true);
+  });
+
+  it('hoveredEntity={null} sets no data-hovered on any row', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    render(() => (
+      <DesignTree tree={nodes} viewStateStore={store} hoveredEntity={null} />
+    ));
+    expect(screen.getByTestId('tree-row-Root.A').getAttribute('data-hovered')).toBeNull();
+  });
+
+  it('hoveredEntity prop omitted sets no data-hovered on any row', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    render(() => (
+      <DesignTree tree={nodes} viewStateStore={store} />
+    ));
+    expect(screen.getByTestId('tree-row-Root.A').getAttribute('data-hovered')).toBeNull();
+  });
+});
+
 describe('DesignTree — hover sync', () => {
   it('mouseEnter on a row calls onHover with the entity path', () => {
     const nodes = [makeNode({ entity_path: 'Root.A' })];
