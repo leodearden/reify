@@ -211,6 +211,10 @@ describe('SHORTCUTS bind fields', () => {
         // literal binding — the actual dispatch is a special-case block in
         // useKeyboardShortcuts (mirroring how Escape is handled).
         if (s.id === 'switchViewByIndex') continue;
+        // fold/unfold/foldAll/unfoldAll are display-only: dispatch is handled by
+        // CodeMirror's foldKeymap inside the editor; useKeyboardShortcuts skips
+        // them because the CM contentDOM is contentEditable (bails before matching).
+        if (s.id === 'fold' || s.id === 'unfold' || s.id === 'foldAll' || s.id === 'unfoldAll') continue;
         expect(s.bind, `shortcut "${s.id}" has a display key but no bind field`).toBeDefined();
       }
     }
@@ -368,6 +372,72 @@ describe('shortcuts — new entry', () => {
     const entry = SHORTCUTS.find((s) => s.id === 'new');
     expect(entry?.bind).toBeDefined();
     expect(matchesEvent(entry!.bind!, new KeyboardEvent('keydown', { key: 'n', ctrlKey: false }))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fold shortcut entries (task-4205)
+// ---------------------------------------------------------------------------
+
+describe('shortcuts — fold entries', () => {
+  it('SHORTCUTS registry contains foldAll entry', () => {
+    expect(SHORTCUTS.find((s) => s.id === 'foldAll')).toBeDefined();
+  });
+
+  it('SHORTCUTS registry contains unfoldAll entry', () => {
+    expect(SHORTCUTS.find((s) => s.id === 'unfoldAll')).toBeDefined();
+  });
+
+  it('SHORTCUTS registry contains fold entry', () => {
+    expect(SHORTCUTS.find((s) => s.id === 'fold')).toBeDefined();
+  });
+
+  it('SHORTCUTS registry contains unfold entry', () => {
+    expect(SHORTCUTS.find((s) => s.id === 'unfold')).toBeDefined();
+  });
+
+  it('foldAll entry has key "Ctrl+Alt+[" and truthy description', () => {
+    const entry = SHORTCUTS.find((s) => s.id === 'foldAll');
+    expect(entry?.key).toBe('Ctrl+Alt+[');
+    expect(entry?.description).toBeTruthy();
+  });
+
+  it('unfoldAll entry has key "Ctrl+Alt+]" and truthy description', () => {
+    const entry = SHORTCUTS.find((s) => s.id === 'unfoldAll');
+    expect(entry?.key).toBe('Ctrl+Alt+]');
+    expect(entry?.description).toBeTruthy();
+  });
+
+  it('fold entry has key "Ctrl+Shift+[" and truthy description', () => {
+    const entry = SHORTCUTS.find((s) => s.id === 'fold');
+    expect(entry?.key).toBe('Ctrl+Shift+[');
+    expect(entry?.description).toBeTruthy();
+  });
+
+  it('unfold entry has key "Ctrl+Shift+]" and truthy description', () => {
+    const entry = SHORTCUTS.find((s) => s.id === 'unfold');
+    expect(entry?.key).toBe('Ctrl+Shift+]');
+    expect(entry?.description).toBeTruthy();
+  });
+
+  it('all four fold entries are not disabled', () => {
+    for (const id of ['fold', 'unfold', 'foldAll', 'unfoldAll'] as const) {
+      const entry = SHORTCUTS.find((s) => s.id === id);
+      expect(entry?.disabled, `${id} should not be disabled`).not.toBe(true);
+    }
+  });
+
+  it('all four fold entries have category "Editor"', () => {
+    for (const id of ['fold', 'unfold', 'foldAll', 'unfoldAll'] as const) {
+      const entry = SHORTCUTS.find((s) => s.id === id);
+      expect((entry as ShortcutDef & { category?: string })?.category, `${id} should have category Editor`).toBe('Editor');
+    }
+  });
+
+  it('getShortcut("foldAll") is defined (id flows into ShortcutId union)', () => {
+    // ShortcutId is derived from _SHORTCUTS_DEF literal ids; this line would fail
+    // to compile (ts-expect-error) if the id were not in the union.
+    expect(getShortcut('foldAll')).toBeDefined();
   });
 });
 
