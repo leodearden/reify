@@ -27,6 +27,15 @@ pub use stackup::diagnose as stackup_diagnose;
 /// (empty/unknown-case weights or incompatible meshes).
 pub use fea::diagnose as fea_diagnose;
 
+/// Public re-export of the affine-constructor diagnostic classifier (task β).
+///
+/// Called by `crates/reify-expr/src/lib.rs` at the builtin fallthrough arm to
+/// push a `Severity::Warning` into the `EvalContext` sink when `affine_scale`
+/// returns `Value::Undef` for a zero (degenerate, det=0) or dimensioned scale
+/// factor. Fires only on the `Value::Undef` path, like `stackup_diagnose` /
+/// `fea_diagnose`.
+pub use geometry::diagnose as geometry_diagnose;
+
 /// Public re-export of the PRB-flexure diagnostic classifier (task 3871).
 ///
 /// Called by `crates/reify-expr/src/lib.rs` at the builtin fallthrough arm to

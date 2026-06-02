@@ -1037,6 +1037,42 @@ fn make_axis(args: &[Value], direction: [f64; 3]) -> Value {
 // Quaternion helpers used by frame_to_frame — re-imported from orientation module.
 use crate::orientation::{normalize_quaternion, quat_conj, quat_mul, quat_rotate};
 
+/// Pure classifier (post-`Value::Undef` hook) for affine-constructor calls,
+/// mirroring `stackup::diagnose` / `fea::diagnose`. `reify-expr`'s `FunctionCall`
+/// arm calls this (re-exported as `geometry_diagnose`) when a stdlib builtin
+/// returns `Value::Undef`, and pushes any returned `Diagnostic` into the
+/// `EvalContext` runtime sink so `reify eval` can print it.
+///
+/// Only `affine_scale` with exactly 3 args is diagnosed, distinguishing its two
+/// user-correctable failure causes (the third — arity — stays silent, like the
+/// `transform3` convention):
+/// - **dimensioned factor** → violates the G6 dimensionless-linear-part contract;
+/// - **zero factor** → degenerate (det=0, non-invertible) map.
+///
+/// Severity is `Warning` with no `DiagnosticCode`, mirroring the existing
+/// degenerate-scale rejection in `reify_eval::geometry_ops` (TransformKind::Scale).
+/// Returns `None` for any other name, wrong arity, or valid input.
+pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
+    if name != "affine_scale" || args.len() != 3 {
+        return None;
+    }
+    // Check dimensioned factors first so a dimensioned-and-otherwise-fine factor
+    // reports the dimensionless requirement rather than a spurious zero message.
+    if args.iter().any(|a| !a.dimension().is_dimensionless()) {
+        return Some(reify_core::Diagnostic::warning(
+            "affine_scale: scale factors must be dimensionless (Real); a dimensioned \
+             factor was dropped (the linear part of an affine map is dimensionless)",
+        ));
+    }
+    if args.iter().any(|a| a.as_f64() == Some(0.0)) {
+        return Some(reify_core::Diagnostic::warning(
+            "affine_scale dropped: factor=0 produces a degenerate (det=0) \
+             non-invertible map (every scale factor must be non-zero)",
+        ));
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
