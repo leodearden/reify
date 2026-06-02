@@ -15,6 +15,30 @@ pub(crate) fn lossy_real_warning(span: SourceSpan) -> Diagnostic {
     .with_label(DiagnosticLabel::new(span, "precision lost"))
 }
 
+/// Build the `E_DUP_MEMBER_KEY` error for two members of the same `Keyed<T>`
+/// sub-collection that declare the same author-assigned String key.
+///
+/// Keys are author-assigned and must be unique within one keyed collection, so
+/// a duplicate is a compile-time identity collision (task 3930 β / PRD
+/// `docs/prds/keyed-collection-identity.md`). Mirrors the duplicate port-name
+/// and duplicate meta-key pre-pass diagnostics: two labels anchor the duplicate
+/// occurrence and the first occurrence. The `E_DUP_MEMBER_KEY` mnemonic is
+/// embedded in the message text; downstream tooling matches on
+/// [`DiagnosticCode::DuplicateMemberKey`].
+pub(crate) fn dup_member_key_error(
+    sub_name: &str,
+    key: &str,
+    first_span: SourceSpan,
+    dup_span: SourceSpan,
+) -> Diagnostic {
+    Diagnostic::error(format!(
+        "E_DUP_MEMBER_KEY: duplicate keyed member key '{key}' in keyed sub '{sub_name}'"
+    ))
+    .with_code(DiagnosticCode::DuplicateMemberKey)
+    .with_label(DiagnosticLabel::new(dup_span, "duplicate key defined here"))
+    .with_label(DiagnosticLabel::new(first_span, "first defined here"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
