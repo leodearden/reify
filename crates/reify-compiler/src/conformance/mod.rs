@@ -454,6 +454,13 @@ pub(crate) fn emit_geometry_unbounded(
 /// canonical message wording is documented on the variant declaration in
 /// `crates/reify-core/src/diagnostics.rs` — keep the two in sync.
 ///
+/// `arg_name` is the **consumer's parameter-slot label** (e.g. `"profile"` or
+/// `"path"`), shown to the user as the offending argument's name — callers pass
+/// the slot role, NOT the operand's own producer function name, so the message
+/// points at the role that is wrong (`geometry argument 'profile' must be …`).
+/// Callers should pass `span` as the offending operand's own span so the label
+/// pinpoints that argument.
+///
 /// Sibling of [`emit_geometry_unbounded`]: same shape (one Error diagnostic, one
 /// label at `span`) and the same non-fatal contract — the caller still lowers
 /// the op. See PRD `docs/prds/geometry-primitive-constructors.md` task α.

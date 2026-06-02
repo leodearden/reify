@@ -546,15 +546,39 @@ fn merge_branches(
 // evaluation). Opaque `param`/`let` operands compile to `ValueRef` and are
 // skipped, which is the load-bearing permissive back-compat pin.
 
-/// Requirement text for the Surface-profile consumers
-/// (extrude/extrude_symmetric/revolve/loft/loft_guided profiles). Kept in sync
-/// with the canonical wording documented on
-/// `DiagnosticCode::GeometryProfileRequired`.
-const PROFILE_REQUIREMENT: &str = "a 2D Surface profile (Closed, Planar)";
+/// One profile/path dimensionality precondition, bundling the three correlated
+/// values a check needs: the user-facing slot `role` (shown as the offending
+/// argument name), the human-readable `requirement` text, and the `violates`
+/// predicate over inferred traits. Bundling them keeps a slot's role, message,
+/// and predicate impossible to mismatch across the `check_profile_preconditions`
+/// call sites.
+struct ProfileSlot {
+    /// Parameter-slot label shown to the user (e.g. `profile` / `path`) — the
+    /// consumer's role for this argument, NOT the operand's producer function
+    /// name (a `box(...)` passed as a profile is still reported as the
+    /// `'profile'` slot, not as `'box'`).
+    role: &'static str,
+    /// Requirement wording, kept in sync with the canonical message documented
+    /// on `DiagnosticCode::GeometryProfileRequired`.
+    requirement: &'static str,
+    /// `true` iff the operand's inferred traits violate this slot's precondition.
+    violates: fn(&crate::geometry_traits_inference::InferredTraits) -> bool,
+}
 
-/// Requirement text for the Curve-path consumers
-/// (sweep/sweep_guided/pipe paths).
-const PATH_REQUIREMENT: &str = "a 1D Curve path";
+/// Surface-profile slot: extrude/extrude_symmetric/revolve/loft/loft_guided
+/// profiles and the sweep/sweep_guided profile argument.
+const PROFILE_SLOT: ProfileSlot = ProfileSlot {
+    role: "profile",
+    requirement: "a 2D Surface profile (Closed, Planar)",
+    violates: violates_profile_requirement,
+};
+
+/// Curve-path slot: sweep/sweep_guided/pipe path arguments.
+const PATH_SLOT: ProfileSlot = ProfileSlot {
+    role: "path",
+    requirement: "a 1D Curve path",
+    violates: violates_path_requirement,
+};
 
 /// `true` iff `t` violates the Surface-profile precondition: a profile must be a
 /// 2-D `Surface` that is both `Closed` and `Planar`.
@@ -576,7 +600,7 @@ fn violates_path_requirement(t: &crate::geometry_traits_inference::InferredTrait
     t.dimension != GeomDim::Curve
 }
 
-/// Check the argument at `idx` against a dimensionality `requirement`, emitting a
+/// Check the argument at `idx` against a dimensionality `slot`, emitting a
 /// non-fatal `GeometryProfileRequired` diagnostic on a statically-known mismatch.
 ///
 /// Permissive back-compat (PRD decision 5): only operands that are `FunctionCall`
@@ -586,15 +610,26 @@ fn violates_path_requirement(t: &crate::geometry_traits_inference::InferredTrait
 /// `ValueRef` and are skipped, so existing call sites whose profiles are opaque
 /// bindings (e.g. `examples/sweep_degenerate.ri`) keep compiling. An unknown
 /// producer name returns `None` and is likewise skipped.
+///
+/// The diagnostic reports `slot.role` (the consumer's parameter-slot name, e.g.
+/// `profile`/`path`) rather than the operand's producer function name, and is
+/// labelled at the offending operand's own span (`ast_args[idx].span`) — so for a
+/// multi-profile `loft` each bad operand is pinpointed individually instead of
+/// every diagnostic pointing at the whole call expression. `compiled_args` is
+/// built 1:1 from `ast_args` in [`compile_geometry_call`], so the indices align.
 fn check_profile_arg(
     compiled_args: &[CompiledExpr],
+    ast_args: &[reify_ast::Expr],
     idx: usize,
-    requirement: &str,
-    violates: fn(&crate::geometry_traits_inference::InferredTraits) -> bool,
-    span: reify_core::SourceSpan,
+    slot: &ProfileSlot,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let Some(arg) = compiled_args.get(idx) else {
+        return;
+    };
+    // `compiled_args[idx]` and `ast_args[idx]` are the same operand (built 1:1);
+    // the AST node carries the operand's source span for a pinpointed label.
+    let Some(ast_arg) = ast_args.get(idx) else {
         return;
     };
     let CompiledExprKind::FunctionCall { function, args } = &arg.kind else {
@@ -603,12 +638,12 @@ fn check_profile_arg(
     if let Some(traits) = crate::geometry_traits_inference::try_infer_traits_for_function_call(
         function.name.as_str(),
         args,
-    ) && violates(&traits)
+    ) && (slot.violates)(&traits)
     {
         crate::conformance::emit_geometry_profile_required(
-            function.name.as_str(),
-            requirement,
-            span,
+            slot.role,
+            slot.requirement,
+            ast_arg.span,
             diagnostics,
         );
     }
@@ -636,77 +671,41 @@ fn check_profile_arg(
 fn check_profile_preconditions(
     name: &str,
     compiled_args: &[CompiledExpr],
-    span: reify_core::SourceSpan,
+    ast_args: &[reify_ast::Expr],
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    // The positional slot→role mapping below MUST stay aligned with the lowering
+    // `match name` arms further down in `compile_geometry_call`, which consume the
+    // same positional `compiled_args`. Each arm names its companion lowering arm so
+    // an argument-order change there is caught here; if you reorder a lowering arm's
+    // positional args, update the matching arm below in lock-step.
     match name {
-        // Surface-profile consumers: arg0 is the profile.
+        // Lowering arms `"extrude"` / `"extrude_symmetric"` / `"revolve"`: arg0 is
+        // the Surface profile (followed by distance, or by revolve's axis+angle).
         "extrude" | "extrude_symmetric" | "revolve" => {
-            check_profile_arg(
-                compiled_args,
-                0,
-                PROFILE_REQUIREMENT,
-                violates_profile_requirement,
-                span,
-                diagnostics,
-            );
+            check_profile_arg(compiled_args, ast_args, 0, &PROFILE_SLOT, diagnostics);
         }
-        // sweep/sweep_guided: arg0 is the Surface profile, arg1 is the Curve
-        // path; any trailing guide is unchecked.
+        // Lowering arms `"sweep"` / `"sweep_guided"`: arg0 is the Surface profile,
+        // arg1 is the Curve path; sweep_guided's trailing guide (arg2) is unchecked.
         "sweep" | "sweep_guided" => {
-            check_profile_arg(
-                compiled_args,
-                0,
-                PROFILE_REQUIREMENT,
-                violates_profile_requirement,
-                span,
-                diagnostics,
-            );
-            check_profile_arg(
-                compiled_args,
-                1,
-                PATH_REQUIREMENT,
-                violates_path_requirement,
-                span,
-                diagnostics,
-            );
+            check_profile_arg(compiled_args, ast_args, 0, &PROFILE_SLOT, diagnostics);
+            check_profile_arg(compiled_args, ast_args, 1, &PATH_SLOT, diagnostics);
         }
-        // pipe: arg0 is the Curve path; arg1 is the radius (non-geometry).
+        // Lowering arm `"pipe"`: arg0 is the Curve path; arg1 is the radius (scalar).
         "pipe" => {
-            check_profile_arg(
-                compiled_args,
-                0,
-                PATH_REQUIREMENT,
-                violates_path_requirement,
-                span,
-                diagnostics,
-            );
+            check_profile_arg(compiled_args, ast_args, 0, &PATH_SLOT, diagnostics);
         }
-        // loft: every argument is a Surface profile.
+        // Lowering arm `"loft"`: every argument is a Surface profile.
         "loft" => {
             for idx in 0..compiled_args.len() {
-                check_profile_arg(
-                    compiled_args,
-                    idx,
-                    PROFILE_REQUIREMENT,
-                    violates_profile_requirement,
-                    span,
-                    diagnostics,
-                );
+                check_profile_arg(compiled_args, ast_args, idx, &PROFILE_SLOT, diagnostics);
             }
         }
-        // loft_guided: args[0..len-1] are Surface profiles; the trailing guide is
-        // unchecked.
+        // Lowering arm `"loft_guided"`: args[0..len-1] are Surface profiles; the
+        // trailing guide (last arg) is unchecked.
         "loft_guided" => {
             for idx in 0..compiled_args.len().saturating_sub(1) {
-                check_profile_arg(
-                    compiled_args,
-                    idx,
-                    PROFILE_REQUIREMENT,
-                    violates_profile_requirement,
-                    span,
-                    diagnostics,
-                );
+                check_profile_arg(compiled_args, ast_args, idx, &PROFILE_SLOT, diagnostics);
             }
         }
         // Not a profile-consumer (incl. revolve_full — out of scope). No-op.
@@ -940,8 +939,10 @@ pub(crate) fn compile_geometry_call(
     // Profile-precondition check (PRD task α): emit GeometryProfileRequired for a
     // statically-known wrong-dimension operand at a profile/path consumer slot.
     // Non-fatal and read-only over compiled_args, so the lowering arms below
-    // still consume compiled_args by value unchanged.
-    check_profile_preconditions(name, &compiled_args, expr.span, diagnostics);
+    // still consume compiled_args by value unchanged. `args` (the AST operands)
+    // are passed alongside so each diagnostic is labelled at the offending
+    // operand's own span rather than the whole call expression.
+    check_profile_preconditions(name, &compiled_args, args, diagnostics);
 
     match name {
         // --- Primitives ---
