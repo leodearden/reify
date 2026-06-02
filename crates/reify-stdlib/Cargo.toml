@@ -11,6 +11,7 @@ reify-gcode.workspace = true
 reify-ir.workspace = true
 tracing.workspace = true
 faer = { workspace = true }
+nalgebra = "0.34"
 
 [dev-dependencies]
 reify-core.workspace = true
