@@ -4,6 +4,7 @@ use reify_core::DimensionVector;
 use reify_ir::{Value, quaternion_is_finite};
 
 use crate::helpers::tensor_components_f64;
+use crate::matrix::matrix_components_f64;
 
 /// Inner validator shared by [`decompose_vec3`] and [`decompose_point3`].
 ///
@@ -339,6 +340,36 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             Value::AffineMap {
                 linear: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
                 translation: t,
+            }
+        }
+        // `affine_map(linear, translation)`: general construction from a 3×3
+        // dimensionless matrix (row-major) and a Vector3 translation (stored in SI
+        // meters). The linear part must be exactly 3×3 and dimensionless (G6
+        // dimensionless-linear-part contract); otherwise `Value::Undef`.
+        "affine_map" => {
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            let (nrows, ncols, data, dim) = match matrix_components_f64(&args[0]) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
+            };
+            if nrows != 3 || ncols != 3 || !dim.is_dimensionless() {
+                return Some(Value::Undef);
+            }
+            // data is row-major with exactly 9 entries (3×3).
+            let linear = [
+                [data[0], data[1], data[2]],
+                [data[3], data[4], data[5]],
+                [data[6], data[7], data[8]],
+            ];
+            let (translation, _t_dim) = match decompose_vec3(&args[1]) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
+            };
+            Value::AffineMap {
+                linear,
+                translation,
             }
         }
 
