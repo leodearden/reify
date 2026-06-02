@@ -1739,6 +1739,10 @@ pub enum AttributeHistory {
     /// `GeometryOp::Loft` (multi-parent profile-section loft; task 5b,
     /// #2619).
     Loft(LoftOpHistoryRecords),
+    /// Records produced by `BRepAlgoAPI_Fuse` / `BRepAlgoAPI_Cut` /
+    /// `BRepAlgoAPI_Common` for binary boolean ops
+    /// (`GeometryOp::Union` / `Difference` / `Intersection`; task 8, #2656).
+    Boolean(BooleanOpHistoryRecords),
 }
 
 /// Outcome of a [`KernelAttributeHook::propagate_attributes`] call (or of the

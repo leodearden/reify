@@ -994,6 +994,19 @@ impl OcctKernelHandle {
                             GeometryOp::Loft { profiles } => kernel
                                 .loft_with_history(profiles)
                                 .map(|(h, recs)| (h, AttributeHistory::Loft(recs))),
+                            // Task 8 (#2656): Binary boolean ops route to the
+                            // matching history-aware BRepAlgoAPI primitives.
+                            // All three share the same parent-index semantics:
+                            // parent_index 0 = left, 1 = right.
+                            GeometryOp::Union { left, right } => kernel
+                                .boolean_fuse_with_history(*left, *right)
+                                .map(|(h, recs)| (h, AttributeHistory::Boolean(recs))),
+                            GeometryOp::Difference { left, right } => kernel
+                                .boolean_cut_with_history(*left, *right)
+                                .map(|(h, recs)| (h, AttributeHistory::Boolean(recs))),
+                            GeometryOp::Intersection { left, right } => kernel
+                                .boolean_common_with_history(*left, *right)
+                                .map(|(h, recs)| (h, AttributeHistory::Boolean(recs))),
                             // Default arm: no history-aware primitive yet for
                             // this op. Forward to plain `execute` and emit
                             // `AttributeHistory::None`.
