@@ -1,0 +1,15 @@
+// Grammar-gate fixture for docs/prds/v0_6/determinacy-intrinsics-completion.md (G3).
+// `tree-sitter parse --quiet` from tree-sitter-reify/ must exit 0 with 0 ERROR nodes.
+// Proves the compiler-sugar intrinsic call shape parses inside a purpose body
+// (the intrinsics are recognized at compile time, not declared in .ri).
+
+purpose design_review(subject : Structure) {
+    constraint AllParamsDetermined(subject)
+}
+
+purpose simulation_ready(subject : Structure) {
+    constraint AllGeometryDetermined(subject)
+    where exists p in subject.material_params: constrained(p) {
+        constraint forall p in subject.material_params: determined(p)
+    }
+}
