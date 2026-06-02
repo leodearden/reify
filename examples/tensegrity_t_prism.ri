@@ -1,35 +1,48 @@
-// Tensegrity T-prism example — PRD v0_6/tensegrity-structures.md, T0a.
+// Tensegrity T-prism example — PRD v0_6/tensegrity-structures.md, T0a/T1b.
 //
-// A minimal 3-strut / 3-cable tensegrity triangular prism (T-prism) with:
+// A free-standing 3-strut / 9-cable tensegrity triangular prism (T-prism) with:
 //   - 6 nodes: top equilateral triangle (z=1m) + bottom triangle (z=0m, 30° twist)
-//   - 3 struts: cross-members [top A→bottom A', B→B', C→C']
-//   - 3 cables: top triangle perimeter [A→B, B→C, C→A]
+//   - 3 struts: long crossing diagonals [[0,4],[1,5],[2,3]] (compressive)
+//   - 9 cables: top perimeter + bottom perimeter + verticals (tensile)
+//
+// T1b free-standing form-find: form_find_free discovers the self-stressed
+// equilibrium geometry from topology + relative group-ratio force densities,
+// with no fixed anchors. Struts carry compression (q < 0), cables carry
+// tension (q > 0). Group assignment: struts→0, horizontals→1, verticals→2.
 //
 // Running:
 //
 //     reify eval examples/tensegrity_t_prism.ri
 //
-// prints the Tensegrity instance and 6 tagged TensegrityWire values
-// (3 struts then 3 cables) — the T0a user-observable signal.
-// The viewport member-type styling is T0b's job.
+// prints the Tensegrity instance, the form-found FormFindResult
+// (recovered nodes, member forces, force densities, converged flag),
+// and 12 tagged TensegrityWire values (3 struts then 9 cables).
 //
 // Node layout (top view, z axis up):
 //
-//   Top triangle (z=1m, unrotated):
-//     node 0: (1, 0, 1)        — top A
-//     node 1: (−0.5, 0.866, 1) — top B
-//     node 2: (−0.5, −0.866, 1)— top C
+//   Top triangle (z=1m, circumradius 1m at azimuth 0°/120°/240°):
+//     node 0: (1, 0, 1)            — top A
+//     node 1: (−0.5, 0.866, 1)     — top B
+//     node 2: (−0.5, −0.866, 1)    — top C
 //
 //   Bottom triangle (z=0m, 30° twist for canonical form):
-//     node 3: (0.866, 0.5, 0)  — bottom A'
-//     node 4: (−0.866, 0.5, 0) — bottom B'
-//     node 5: (0, −1, 0)       — bottom C'
+//     node 3: (0.866, 0.5, 0)      — bottom A'
+//     node 4: (−0.866, 0.5, 0)     — bottom B'
+//     node 5: (0, −1, 0)           — bottom C'
 //
-// Struts (compression, cross-members): [[0,3], [1,4], [2,5]]
-// Cables (tension, top perimeter):     [[0,1], [1,2], [2,0]]
+// Struts (compression, long diagonals): [[0,4],[1,5],[2,3]]
+// Cables (tension):
+//   top    [[0,1],[1,2],[2,0]]
+//   bottom [[3,4],[4,5],[5,3]]
+//   vert   [[0,3],[1,4],[2,5]]
 
 structure def TPrism {
     // ── Network topology ────────────────────────────────────────────────────
+    //
+    // Canonical symmetric prism: top nodes at azimuth 0°/120°/240° (z=1m),
+    // bottom nodes at azimuth 30°/150°/270° (z=0m). Struts are the long
+    // crossing diagonals (0→4, 1→5, 2→3); 9 cables form the top+bottom
+    // triangle perimeters and the three vertical edges.
     let prism = Tensegrity(
         nodes: [
             point3(1m, 0m, 1m),           // node 0: top A
@@ -39,9 +52,39 @@ structure def TPrism {
             point3(-0.866m, 0.5m, 0m),    // node 4: bottom B'
             point3(0m, -1m, 0m)           // node 5: bottom C'
         ],
-        struts: [[0, 3], [1, 4], [2, 5]],
-        cables: [[0, 1], [1, 2], [2, 0]]
+        struts: [[0, 4], [1, 5], [2, 3]],
+        cables: [
+            // top triangle perimeter
+            [0, 1], [1, 2], [2, 0],
+            // bottom triangle perimeter
+            [3, 4], [4, 5], [5, 3],
+            // vertical edges
+            [0, 3], [1, 4], [2, 5]
+        ]
     )
+
+    // ── Free-standing form-find (T1b) ───────────────────────────────────────
+    //
+    // Group assignment (struts-then-cables member order):
+    //   group 0 — 3 struts           (seed −1, compressive)
+    //   group 1 — 6 horizontals      (seed +1, reference gauge, tensile)
+    //   group 2 — 3 vertical cables  (seed +1, tensile)
+    //
+    // The adaptive GroupRatios search finds relative magnitudes that make the
+    // force-density matrix D rank-deficient by exactly 4 (the T-prism's
+    // self-stress nullity), recovering the closed-form ratios:
+    //   struts ≈ −√3, horizontals = +1, verticals ≈ +√3.
+    //
+    // All four arguments MUST be bare let-bound names so the @optimized
+    // shallow-walk capture (engine_eval.rs) records them as value_inputs.
+    let group_ids = [0, 0, 0, 1, 1, 1, 1, 1, 1, 2, 2, 2]
+    let seeds = [-1.0, 1.0, 1.0]
+    let reference_group = 1
+    let form = form_find_free(prism, group_ids, seeds, reference_group)
+
+    // ── Solved geometry ──────────────────────────────────────────────────────
+    let solved = form.nodes
+    let forces = form.member_forces
 
     // ── Wireframe view ──────────────────────────────────────────────────────
     //
@@ -49,5 +92,5 @@ structure def TPrism {
     // List<TensegrityWire> — one TensegrityWire per strut/cable, each
     // carrying kind ("strut"/"cable"), from/to_index, and inline endpoint
     // coordinates. Struts precede cables (declaration order).
-    let wires = tensegrity_wires(self.prism)
+    let wires = tensegrity_wires(prism)
 }

@@ -42,7 +42,10 @@
 
 use reify_core::{Diagnostic, DimensionVector};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
-use reify_solver_elastic::{FormFindError, FormFindSolve, MemberKind, form_find_anchored};
+use reify_solver_elastic::{
+    FormFindError, FormFindSolve, ForceDensitySpec, FreeFormError, MemberKind, form_find_anchored,
+    form_find_free,
+};
 
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
@@ -329,6 +332,172 @@ fn describe(e: FormFindError) -> &'static str {
         }
         FormFindError::DimensionMismatch => {
             "force_densities length does not match the member count (struts + cables)"
+        }
+    }
+}
+
+// ── Free-standing (T1b) trampoline ────────────────────────────────────────────
+//
+// Receives 4 value_inputs matching the `form_find_free` signature:
+//   [0] structure        : Tensegrity      (Value::StructureInstance)
+//   [1] group_ids        : List<Int>       (Value::List of Value::Int)
+//   [2] seed_ratios      : List<Real>      (Value::List of Value::Real)
+//   [3] reference_group  : Int             (Value::Int)
+//
+// Cracks the inputs into a ForceDensitySpec::GroupRatios and calls the
+// free-standing FD kernel (reify_solver_elastic::form_find_free). On success,
+// builds a FormFindResult (dropping the kernel's nullity field, which is not
+// part of the PRD §4 DSL-facing output). On failure, maps FreeFormError to an
+// E_FormFindInfeasible diagnostic.
+
+/// Trampoline for `solver::form_find_free` — free-standing (T1b) form-finding.
+pub fn solve_form_find_free_trampoline(
+    value_inputs: &[Value],
+    _realization_inputs: &[RealizationReadHandle],
+    _options: &Value,
+    _prior_warm_state: Option<&OpaqueState>,
+    _cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    match run_free(value_inputs) {
+        Ok(result) => ComputeOutcome::Completed {
+            result,
+            new_warm_state: None,
+            cost_per_byte: None,
+            diagnostics: vec![],
+        },
+        Err(message) => ComputeOutcome::Failed {
+            diagnostics: vec![Diagnostic::error(message)],
+        },
+    }
+}
+
+/// Crack the free-standing inputs, run the kernel, and build the result.
+fn run_free(value_inputs: &[Value]) -> Result<Value, String> {
+    if value_inputs.len() < 4 {
+        return Err(format!(
+            "E_FormFindInfeasible: form_find_free expects 4 inputs \
+             (structure, group_ids, seed_ratios, reference_group); got {}. \
+             Let-bind all four call arguments so the ComputeNode captures them.",
+            value_inputs.len()
+        ));
+    }
+
+    let (nodes, members, kinds) = crack_tensegrity(&value_inputs[0])?;
+    let raw_group_ids = crack_group_ids(&value_inputs[1])?;
+    let seed_ratios = crack_reals(&value_inputs[2], "seed_ratios")?;
+    let reference_group = crack_usize(&value_inputs[3], "reference_group")?;
+
+    let spec = ForceDensitySpec::GroupRatios {
+        group_ids: raw_group_ids,
+        seed_ratios,
+        reference_group,
+    };
+
+    let result =
+        form_find_free(&nodes, &members, &kinds, &spec).map_err(|e| {
+            format!("E_FormFindInfeasible: {}", describe_free(e))
+        })?;
+
+    Ok(build_result_free(&result.nodes, &result.member_forces, &result.force_densities, result.converged))
+}
+
+/// Crack a `List<Int>` of group ids into a `Vec<usize>` (all non-negative).
+fn crack_group_ids(v: &Value) -> Result<Vec<usize>, String> {
+    let list = match v {
+        Value::List(items) => items,
+        other => {
+            return Err(format!(
+                "E_FormFindInfeasible: group_ids must be a list of integer group ids, got {other:?}"
+            ));
+        }
+    };
+    let mut out = Vec::with_capacity(list.len());
+    for (i, item) in list.iter().enumerate() {
+        match item {
+            Value::Int(a) if *a >= 0 => out.push(*a as usize),
+            Value::Int(a) => {
+                return Err(format!(
+                    "E_FormFindInfeasible: group_ids[{i}] must be non-negative, got {a}"
+                ));
+            }
+            other => {
+                return Err(format!(
+                    "E_FormFindInfeasible: group_ids[{i}] must be an integer, got {other:?}"
+                ));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Crack an `Int` value into a `usize` (non-negative).
+fn crack_usize(v: &Value, what: &str) -> Result<usize, String> {
+    match v {
+        Value::Int(a) if *a >= 0 => Ok(*a as usize),
+        Value::Int(a) => Err(format!(
+            "E_FormFindInfeasible: {what} must be non-negative, got {a}"
+        )),
+        other => Err(format!(
+            "E_FormFindInfeasible: {what} must be an integer, got {other:?}"
+        )),
+    }
+}
+
+/// Build the `FormFindResult` `Value::StructureInstance` from the free solve.
+/// Mirrors `build_result` but takes pre-extracted fields (nullity is dropped —
+/// it is not part of the PRD §4 DSL-facing FormFindResult shape).
+fn build_result_free(
+    nodes: &[[f64; 3]],
+    member_forces: &[f64],
+    force_densities: &[f64],
+    converged: bool,
+) -> Value {
+    let nodes_val: Vec<Value> = nodes.iter().map(|&p| super::point3_length(p)).collect();
+    let forces_val = super::scalar_list(member_forces, DimensionVector::FORCE);
+    let fds_val: Vec<Value> = force_densities.iter().map(|&q| Value::Real(q)).collect();
+
+    let fields: PersistentMap<String, Value> = [
+        ("nodes".to_string(), Value::List(nodes_val)),
+        ("member_forces".to_string(), Value::List(forces_val)),
+        ("force_densities".to_string(), Value::List(fds_val)),
+        ("converged".to_string(), Value::Bool(converged)),
+    ]
+    .into_iter()
+    .collect();
+
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "FormFindResult".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
+/// Human-readable cause for a kernel [`FreeFormError`] (appended after the
+/// `E_FormFindInfeasible:` prefix).
+fn describe_free(e: FreeFormError) -> &'static str {
+    match e {
+        FreeFormError::SignViolation => {
+            "sign violation — cable groups require positive seed ratios (q > 0) \
+             and strut groups require negative seed ratios (q < 0)"
+        }
+        FreeFormError::NullityMismatch { .. } => {
+            "nullity mismatch — the force-density matrix D must be rank-deficient by \
+             exactly d+1 = 4 for a valid 3-D free-standing form; the supplied q does not \
+             achieve this"
+        }
+        FreeFormError::DimensionMismatch => {
+            "dimension mismatch — group_ids, seed_ratios, or reference_group length \
+             disagrees with the member count or contains out-of-range ids"
+        }
+        FreeFormError::SearchDidNotConverge => {
+            "search did not converge — the adaptive GroupRatios search exhausted its \
+             iteration budget without reaching a nullity-4 configuration; verify that \
+             the seed signs are consistent (struts compressive, cables tensile)"
+        }
+        FreeFormError::SingularRecovery => {
+            "singular recovery — null-space coordinate recovery failed to produce a \
+             3-D realisation; try a less degenerate initial node placement"
         }
     }
 }
