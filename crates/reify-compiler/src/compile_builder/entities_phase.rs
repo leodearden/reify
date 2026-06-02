@@ -406,6 +406,11 @@ pub(crate) fn phase_sub_override_autos(ctx: &mut CompilationCtx, prelude: &[&Com
     // collect diagnostics separately so we can mutably borrow ctx.templates below.
     let mut cells_to_push: Vec<(String, ValueCellId, reify_core::Type, bool, reify_core::SourceSpan)> = Vec::new();
 
+    // Track (sub_name, override_member) pairs already diagnosed for absent-member
+    // errors, so that a duplicate body like `{ nope = auto\n nope = auto }` (which
+    // produces two PendingSubOverrideAuto entries for the same member) emits exactly
+    // one "no such param" error (task 4123 amendment, suggestion 2).
+    let mut reported_absent: HashSet<(String, String)> = HashSet::new();
     for req in &pending {
         // Look up the child template.
         let child_tmpl = match template_registry.get(req.sub_structure_name.as_str()) {
@@ -430,16 +435,21 @@ pub(crate) fn phase_sub_override_autos(ctx: &mut CompilationCtx, prelude: &[&Com
                 // Genuinely absent member — emit the error (same wording as the
                 // inline path in entity.rs; the label span comes from req.span
                 // which points to the `auto` / `auto(free)` expression).
-                ctx.diagnostics.push(
-                    Diagnostic::error(format!(
-                        "sub `{}`: override for `{}` — no such param in `{}`",
-                        req.sub_name, req.override_member, req.sub_structure_name
-                    ))
-                    .with_label(DiagnosticLabel::new(
-                        req.span,
-                        "this member does not exist in the child structure",
-                    )),
-                );
+                // First occurrence per (sub_name, member) only; duplicates from
+                // a body like `{ nope = auto\n nope = auto }` are suppressed
+                // (task 4123 amendment, suggestion 2).
+                if reported_absent.insert((req.sub_name.clone(), req.override_member.clone())) {
+                    ctx.diagnostics.push(
+                        Diagnostic::error(format!(
+                            "sub `{}`: override for `{}` — no such param in `{}`",
+                            req.sub_name, req.override_member, req.sub_structure_name
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            req.span,
+                            "this member does not exist in the child structure",
+                        )),
+                    );
+                }
                 continue;
             }
         };
@@ -450,17 +460,31 @@ pub(crate) fn phase_sub_override_autos(ctx: &mut CompilationCtx, prelude: &[&Com
     }
 
     // Apply the collected cell pushes.  We look up the parent template by name
-    // and push into its `value_cells`.
+    // and push into its `value_cells`.  Accumulate duplicate-override warnings
+    // separately to avoid a borrow conflict between ctx.templates and ctx.diagnostics.
+    let mut dup_warnings: Vec<Diagnostic> = Vec::new();
     for (parent_name, scoped_id, cell_type, free, span) in cells_to_push {
         if let Some(parent_tmpl) = ctx.templates.iter_mut().find(|t| t.name == parent_name) {
-            // Dedup guard (task 4123 S6): the deferred post-pass (Case 1) and
-            // the inline push (Case 3 in entity.rs) are mutually exclusive by
-            // declaration order, so a duplicate can only arise when the
-            // specialization body has two param_assignment nodes for the same
+            // Dedup guard (task 4123 S6 + amendment suggestion 1): the deferred
+            // post-pass (Case 1) and the inline push (Case 3 in entity.rs) are
+            // mutually exclusive by declaration order, so a duplicate can only arise
+            // when the specialization body has two param_assignment nodes for the same
             // member (e.g. `{ bore = auto\n    bore = auto }`), producing two
-            // PendingSubOverrideAuto entries.  First-assignment-wins: skip if
+            // PendingSubOverrideAuto entries.  First-assignment-wins; warn and skip if
             // the scoped id is already present in the parent's value_cells.
-            if !parent_tmpl.value_cells.iter().any(|c| c.id == scoped_id) {
+            if parent_tmpl.value_cells.iter().any(|c| c.id == scoped_id) {
+                let member = &scoped_id.member;
+                let sub_name = scoped_id.entity.rsplit('.').next().unwrap_or(&scoped_id.entity);
+                dup_warnings.push(
+                    Diagnostic::warning(format!(
+                        "sub `{sub_name}`: duplicate override for member `{member}`; first assignment wins",
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        "this override is a duplicate; it will be ignored",
+                    )),
+                );
+            } else {
                 parent_tmpl.value_cells.push(ValueCellDecl {
                     id: scoped_id,
                     kind: ValueCellKind::Auto { free },
@@ -475,6 +499,7 @@ pub(crate) fn phase_sub_override_autos(ctx: &mut CompilationCtx, prelude: &[&Com
             }
         }
     }
+    ctx.diagnostics.extend(dup_warnings);
 }
 
 /// Post-compilation pass: walk compiled IR looking for `UserFunctionCall` nodes

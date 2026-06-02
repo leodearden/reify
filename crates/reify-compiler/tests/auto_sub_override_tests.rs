@@ -30,7 +30,7 @@
 //! error (member absent).  Makes Tests A and C GREEN; Test B stays GREEN.
 
 use reify_core::{Type, ValueCellId};
-use reify_test_support::{compile_source_with_stdlib, errors_only};
+use reify_test_support::{compile_source_with_stdlib, errors_only, warnings_only};
 use reify_compiler::{find_template, ValueCellKind};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -380,4 +380,136 @@ fn sub_override_auto_forward_declared_child_genuinely_missing_member_errors() {
             "no cell should be pushed for genuinely-absent member `nope`"
         );
     }
+}
+
+// ── Duplicate-override warning tests (task 4123 amendment, suggestion 1) ─────
+//
+// When a specialization body carries two valid auto assignments for the same
+// member (e.g. `{ bore = auto\n    bore = auto }`), the compiler:
+//   1. Emits exactly ONE auto cell for the member (first-assignment-wins, verified
+//      by the S6 dedup tests above).
+//   2. Emits a Severity::Warning naming the duplicate override so the author
+//      can see it rather than having it silently discarded.
+
+/// Duplicate `bore = auto` entries, child-before-parent (inline Case 3 path):
+/// expect exactly ONE warning mentioning the duplicate.
+#[test]
+fn sub_override_auto_duplicate_inline_path_emits_warning() {
+    // Child (Bearing) declared before parent (A) → compiler sees Bearing first,
+    // so when A is compiled the child template is already present → inline Case 3.
+    let source =
+        "structure Bearing { param bore : Length = 10mm }  \
+         structure A { sub b : Bearing {\n    bore = auto\n    bore = auto\n} }";
+    let module = compile_source_with_stdlib(source);
+
+    // No errors — duplicate is handled gracefully.
+    assert!(
+        errors_only(&module).is_empty(),
+        "duplicate override (inline path, warning test): unexpected errors: {:?}",
+        errors_only(&module)
+    );
+
+    // Exactly one warning naming the duplicate override.
+    let warnings = warnings_only(&module);
+    assert_eq!(
+        warnings.len(),
+        1,
+        "duplicate override (inline path): expected exactly 1 warning, got {}: {:?}",
+        warnings.len(),
+        warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
+    );
+    assert!(
+        warnings[0].message.contains("duplicate") || warnings[0].message.contains("bore"),
+        "warning should mention 'duplicate' or 'bore'; got: {:?}",
+        warnings[0].message
+    );
+}
+
+/// Duplicate `bore = auto` entries, parent-before-child (deferred post-pass path):
+/// expect exactly ONE warning mentioning the duplicate.
+#[test]
+fn sub_override_auto_duplicate_deferred_path_emits_warning() {
+    // Parent (A) declared before child (Bearing) → deferred post-pass resolves.
+    let source =
+        "structure A { sub b : Bearing {\n    bore = auto\n    bore = auto\n} }  \
+         structure Bearing { param bore : Length = 10mm }";
+    let module = compile_source_with_stdlib(source);
+
+    // No errors — duplicate is handled gracefully.
+    assert!(
+        errors_only(&module).is_empty(),
+        "duplicate override (deferred path, warning test): unexpected errors: {:?}",
+        errors_only(&module)
+    );
+
+    // Exactly one warning naming the duplicate override.
+    let warnings = warnings_only(&module);
+    assert_eq!(
+        warnings.len(),
+        1,
+        "duplicate override (deferred path): expected exactly 1 warning, got {}: {:?}",
+        warnings.len(),
+        warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
+    );
+    assert!(
+        warnings[0].message.contains("duplicate") || warnings[0].message.contains("bore"),
+        "warning should mention 'duplicate' or 'bore'; got: {:?}",
+        warnings[0].message
+    );
+}
+
+// ── Absent-member duplicate diagnostic dedup tests (task 4123 amendment, S2) ──
+//
+// When a specialization body carries two absent-member auto assignments for the
+// same non-existent member name (e.g. `{ nope = auto\n    nope = auto }`), the
+// compiler should emit exactly ONE "no such param" error, not two.
+
+/// Duplicate absent-member `nope = auto` entries, child-before-parent
+/// (inline Case 2 path): expect exactly ONE error.
+#[test]
+fn sub_override_auto_duplicate_absent_member_inline_path_emits_single_error() {
+    // Child (Bearing) declared before parent (A) → inline Case 2 fires for `nope`.
+    let source =
+        "structure Bearing { param bore : Length = 10mm }  \
+         structure A { sub b : Bearing {\n    nope = auto\n    nope = auto\n} }";
+    let module = compile_source_with_stdlib(source);
+
+    let errors = errors_only(&module);
+    assert_eq!(
+        errors.len(),
+        1,
+        "duplicate absent-member override (inline path): expected exactly 1 error, got {}: {:?}",
+        errors.len(),
+        errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+    assert!(
+        errors[0].message.contains("nope") || errors[0].message.contains("Bearing"),
+        "error should name the absent member or child structure; got: {:?}",
+        errors[0].message
+    );
+}
+
+/// Duplicate absent-member `nope = auto` entries, parent-before-child
+/// (deferred post-pass path): expect exactly ONE error.
+#[test]
+fn sub_override_auto_duplicate_absent_member_deferred_path_emits_single_error() {
+    // Parent (A) declared before child (Bearing) → deferred post-pass fires for `nope`.
+    let source =
+        "structure A { sub b : Bearing {\n    nope = auto\n    nope = auto\n} }  \
+         structure Bearing { param bore : Length = 10mm }";
+    let module = compile_source_with_stdlib(source);
+
+    let errors = errors_only(&module);
+    assert_eq!(
+        errors.len(),
+        1,
+        "duplicate absent-member override (deferred path): expected exactly 1 error, got {}: {:?}",
+        errors.len(),
+        errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+    assert!(
+        errors[0].message.contains("nope") || errors[0].message.contains("Bearing"),
+        "error should name the absent member or child structure; got: {:?}",
+        errors[0].message
+    );
 }
