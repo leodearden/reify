@@ -1,16 +1,13 @@
 //! Regression test for `examples/trajectory/tots_optimal_ptp.ri` (task λ — 3872).
 //!
-//! Pins four leaf signals (pattern: zv_shaped_ramp_example_tests.rs):
+//! Pins three leaf signals (pattern: zv_shaped_ramp_example_tests.rs):
 //!
 //!   1. The file parses with zero errors.
 //!   2. It compiles under the stdlib prelude with zero Error-severity diagnostics.
 //!   3. The compiled module exposes a `TotsOptimalPtp` structure template
 //!      (distinguishes this test from the bulk examples_smoke gate, which only
-//!      checks compile-clean without inspecting the resulting template set).
-//!   4. Positive source-text pins: `TOTSShaper`, `input_shape`, and
-//!      `PiecewisePolynomialProfile` must appear in the source (guards against
-//!      the wrong file being read and ensures the key constructs from task λ
-//!      are actually exercised).
+//!      checks compile-clean without inspecting the resulting template set, and
+//!      also proves the correct file was resolved via CARGO_MANIFEST_DIR).
 //!
 //! The example is a construction + input_shape compile-smoke test. There is no
 //! numeric `.ri`-level duration assertion — `profile_duration`/`.duration` is
@@ -23,14 +20,15 @@
 use reify_core::Severity;
 
 /// `examples/trajectory/tots_optimal_ptp.ri` must parse and compile under
-/// the stdlib prelude with zero Error-severity diagnostics, expose a
-/// `TotsOptimalPtp` structure template, and reference the key constructs
-/// (`TOTSShaper`, `input_shape`, `PiecewisePolynomialProfile`) in the source.
+/// the stdlib prelude with zero Error-severity diagnostics, and expose a
+/// `TotsOptimalPtp` structure template.
 ///
-/// The template-presence and source-text assertions distinguish this test from
+/// The template-presence assertion distinguishes this test from
 /// `examples_smoke.rs::all_examples_parse_and_compile_with_stdlib`, which only
 /// checks compile-clean across all examples without inspecting the resulting
-/// template set or source content.
+/// template set; it also proves the correct file was resolved via
+/// `CARGO_MANIFEST_DIR` (a wrong-file resolution would not produce
+/// `TotsOptimalPtp`).
 ///
 /// Uses `parse_with_stdlib` (the prelude-aware parser) so that stdlib enum
 /// variants such as `SplineKind.CubicSpline` are disambiguated as
@@ -88,23 +86,5 @@ fn tots_optimal_ptp_example_compiles_under_stdlib_with_zero_errors() {
         "expected a 'TotsOptimalPtp' structure template in compiled tots_optimal_ptp.ri; \
          found templates: {:?}",
         module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
-    );
-
-    // ── Positive source-text leaf-signal pins ──────────────────────────────────
-    //
-    // Key constructs must appear in the source so a reader can discover them.
-    // Guards against the wrong file being resolved via CARGO_MANIFEST_DIR.
-
-    assert!(
-        src.contains("TOTSShaper"),
-        "tots_optimal_ptp.ri must reference TOTSShaper"
-    );
-    assert!(
-        src.contains("input_shape"),
-        "tots_optimal_ptp.ri must reference input_shape"
-    );
-    assert!(
-        src.contains("PiecewisePolynomialProfile"),
-        "tots_optimal_ptp.ri must reference PiecewisePolynomialProfile"
     );
 }

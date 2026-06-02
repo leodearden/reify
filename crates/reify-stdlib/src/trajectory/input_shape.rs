@@ -506,10 +506,11 @@ mod tests {
 
     // ── TOTSShaper arm ────────────────────────────────────────────────────────
 
-    /// A feasible TOTSShaper should cause `eval_input_shape` to echo the profile.
-    /// Fails today because `build_train_for_shaper` returns None for TOTSShaper
-    /// → `eval_input_shape` returns `Value::Undef` (the TOTS arm is not yet
-    /// wired).
+    /// A feasible TOTSShaper causes `eval_input_shape` to take the λ arm:
+    /// `run_tots` → `solve_tots` → `Converged` or `NonConvergence` → echo the
+    /// input profile's `StructureInstanceData` as a shaped-profile stand-in.
+    /// (Command re-waypointing is θ-deferred; the echo is the type-correct
+    /// stand-in at this phase, mirroring the impulse-shaper arms.)
     #[test]
     fn tots_shaper_feasible_echoes_profile() {
         let p = profile();
@@ -532,22 +533,19 @@ mod tests {
             }
             other => panic!(
                 "expected Value::StructureInstance(PiecewisePolynomialProfile) for feasible \
-                 TOTSShaper, got {other:?} — TOTS arm not yet wired in eval_input_shape"
+                 TOTSShaper, got {other:?}"
             ),
         }
     }
 
-    /// An infeasible TOTSShaper (velocity_limit = 0 on a nonzero P2P) must cause
-    /// `eval_input_shape` to return `Value::Undef`.
+    /// `velocity_limit = 0` on the canonical nonzero P2P model causes `solve_tots`
+    /// to return `ConstraintInfeasible` (early-exit; see
+    /// `tots.rs::sqp_infeasible_zero_velocity_limit`), which the λ arm maps to
+    /// `Value::Undef` — there is no feasible shaped profile to return.
     ///
     /// `velocity_limit = 0` is constructible directly as a `StructureInstance`
     /// (bypassing the `.ri` `velocity_limit > 0` ctor constraint), making it a
-    /// valid test vector. `solve_tots` detects this as `ConstraintInfeasible` at
-    /// iteration 1 (early-exit, per `tots.rs::sqp_infeasible_zero_velocity_limit`).
-    ///
-    /// Fails after step-2 because the step-2 arm returns the profile echo for
-    /// ALL outcomes, including `ConstraintInfeasible`. Outcome-mapping is wired
-    /// in step-4.
+    /// valid test vector for the infeasible path.
     #[test]
     fn tots_shaper_infeasible_returns_undef() {
         let p = profile();
@@ -564,7 +562,7 @@ mod tests {
             eval_input_shape(&[p, s]),
             Value::Undef,
             "eval_input_shape with velocity_limit=0 TOTSShaper should return Value::Undef \
-             (ConstraintInfeasible → Undef), but outcome mapping is not yet wired"
+             (ConstraintInfeasible → Undef)"
         );
     }
 
