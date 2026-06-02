@@ -111,6 +111,44 @@ vi.mock('three', () => {
     }
   }
 
+  class MockGroup {
+    type = 'Group';
+    children: any[] = [];
+    visible = true;
+    add(obj: any) { this.children.push(obj); }
+  }
+
+  class MockSpriteMaterial {
+    map: any;
+    color: any;
+    depthTest: boolean;
+    depthWrite: boolean;
+    transparent: boolean;
+    constructor(opts: any = {}) {
+      this.map = opts.map;
+      this.color = opts.color;
+      this.depthTest = opts.depthTest ?? true;
+      this.depthWrite = opts.depthWrite ?? true;
+      this.transparent = opts.transparent ?? false;
+    }
+  }
+
+  class MockSprite {
+    type = 'Sprite';
+    material: any;
+    name = '';
+    userData: Record<string, any> = {};
+    renderOrder = 0;
+    scale = { x: 1, y: 1, z: 1, set: vi.fn() };
+    position = { x: 0, y: 0, z: 0, set: vi.fn() };
+    constructor(mat: any) { this.material = mat; }
+  }
+
+  class MockCanvasTexture {
+    canvas: any;
+    constructor(canvas: any) { this.canvas = canvas; }
+  }
+
   return {
     Scene: MockScene,
     PerspectiveCamera: MockPerspectiveCamera,
@@ -121,6 +159,10 @@ vi.mock('three', () => {
     AxesHelper: MockAxesHelper,
     Color: MockColor,
     Vector3: MockVector3,
+    Group: MockGroup,
+    Sprite: MockSprite,
+    SpriteMaterial: MockSpriteMaterial,
+    CanvasTexture: MockCanvasTexture,
   };
 });
 
@@ -344,5 +386,25 @@ describe('createScene', () => {
     const gr = result.grid as any;
     expect(gr.material.depthTest).toBe(true);
     expect(gr.material.depthWrite).toBe(true);
+  });
+
+  it('returns axisLabels property that is a Group', () => {
+    const result = setup();
+    expect(result).toHaveProperty('axisLabels');
+    expect((result as any).axisLabels.type).toBe('Group');
+  });
+
+  it('axisLabels group is added to the scene', () => {
+    const result = setup();
+    const axisLabels = (result as any).axisLabels;
+    const addedObjects = mockSceneAdd.mock.calls.map((c: any) => c[0]);
+    const found = addedObjects.find((obj: any) => obj === axisLabels);
+    expect(found).toBeDefined();
+  });
+
+  it('axisLabels group has 3 children (X, Y, Z sprites)', () => {
+    const result = setup();
+    const axisLabels = (result as any).axisLabels;
+    expect(axisLabels.children).toHaveLength(3);
   });
 });
