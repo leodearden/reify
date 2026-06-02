@@ -765,6 +765,107 @@ describe('DualViewport', () => {
     });
   });
 
+  // ── Mesh-gate tests (task #4213) ─────────────────────────────────────────
+
+  it('(n-A) NO-MESH -> STRIP: defPreviewActive true but empty meshes does not mount blank viewport', async () => {
+    const { DualViewport } = await importDualViewport();
+    const engineStore = makeEngineStore(['design/A']);
+    // Empty def-preview store — meshes: {}
+    const defPreviewStore = makeDefPreviewStore([], 'BoltFlange');
+    const viewportStore = makeViewportStore();
+
+    render(() => (
+      <DualViewport
+        engineStore={engineStore}
+        defPreviewStore={defPreviewStore}
+        viewportStore={viewportStore}
+        defPreviewActive={() => true}
+        designViewportActive={() => true}
+        defName={() => 'BoltFlange'}
+        onForceExpand={vi.fn()}
+      />
+    ));
+
+    // def-preview viewport must NOT mount when meshes is empty (avoids blank grid)
+    expect(screen.queryByTestId('viewport-def-preview')).toBeNull();
+    // Minimized strip shown instead
+    expect(screen.getByTestId('strip-def-preview')).toBeTruthy();
+    // Design pane still renders normally
+    expect(screen.getByTestId('viewport-design-main')).toBeTruthy();
+    // Splitter absent — only one effective pane
+    expect(screen.queryByTestId('splitter-dual')).toBeNull();
+  });
+
+  it('(n-B) REACTIVE TRANSITION: def-preview pane expands once meshes arrive', async () => {
+    const { DualViewport } = await importDualViewport();
+
+    // Build a mutable store (expose the setter) so we can reactively add meshes
+    const [dpState, setDpState] = createStore({
+      defName: 'BoltFlange',
+      meshes: {} as Record<string, MeshData>,
+      isLoading: false,
+      error: null as string | null,
+    });
+    const defPreviewStore = {
+      state: dpState,
+      applyPreview: vi.fn(),
+      clearPreview: vi.fn(),
+      setError: vi.fn(),
+      setLoading: vi.fn(),
+      loadPreview: vi.fn(),
+    };
+
+    const engineStore = makeEngineStore(['design/A']);
+    const viewportStore = makeViewportStore();
+
+    render(() => (
+      <DualViewport
+        engineStore={engineStore}
+        defPreviewStore={defPreviewStore}
+        viewportStore={viewportStore}
+        defPreviewActive={() => true}
+        designViewportActive={() => true}
+        defName={() => 'BoltFlange'}
+        onForceExpand={vi.fn()}
+      />
+    ));
+
+    // Phase 1: meshes empty → strip shown, viewport NOT mounted
+    expect(screen.getByTestId('strip-def-preview')).toBeTruthy();
+    expect(screen.queryByTestId('viewport-def-preview')).toBeNull();
+
+    // Simulate applyPreview resolving: add a mesh
+    setDpState('meshes', { 'preview/B': makeMesh('preview/B') });
+
+    // Phase 2: mesh present → viewport mounts, strip gone, splitter appears
+    expect(screen.getByTestId('viewport-def-preview')).toBeTruthy();
+    expect(screen.queryByTestId('strip-def-preview')).toBeNull();
+    expect(screen.getByTestId('splitter-dual')).toBeTruthy();
+  });
+
+  it('(n-C) FORCEEXPANDED GUARD: forceExpanded unconditionally mounts viewport even with empty meshes', async () => {
+    const { DualViewport } = await importDualViewport();
+    const engineStore = makeEngineStore(['design/A']);
+    // Empty meshes — forceExpanded must override the mesh gate
+    const defPreviewStore = makeDefPreviewStore([], 'BoltFlange');
+    const viewportStore = makeViewportStore({ 'def-preview': { forceExpanded: true } });
+
+    render(() => (
+      <DualViewport
+        engineStore={engineStore}
+        defPreviewStore={defPreviewStore}
+        viewportStore={viewportStore}
+        defPreviewActive={() => false}
+        designViewportActive={() => true}
+        defName={() => 'BoltFlange'}
+        onForceExpand={vi.fn()}
+      />
+    ));
+
+    // Manual override must bypass the mesh gate
+    expect(screen.getByTestId('viewport-def-preview')).toBeTruthy();
+  });
+
   it('(m) makeViewportStore wraps the real createViewportStore — spies delegate to real impl', () => {
     // Characterisation test: verifies that every mock method delegates to the real store
     // rather than being a no-op stub. Covers all seven methods so any re-hand-rolled
