@@ -105,4 +105,82 @@ fn constants_example_compiles_under_stdlib_with_zero_errors_and_pins_constant_re
         "constants.ri must NOT contain the magic number '1380649' inline — \
          use BOLTZMANN_CONSTANT() instead"
     );
+
+    // ── Positive name pins: new dimensionful constants (task 4176) ────────────
+    //
+    // Each of the 7 new constants added in task δ must appear by name so a
+    // reader of the example can discover them. The compile-clean assertion above
+    // already proves the names resolved; source-text pins additionally confirm
+    // they are not hidden inside dead or removed code.
+
+    assert!(
+        src.contains("tau"),
+        "constants.ri must reference the built-in constant 'tau'"
+    );
+    assert!(
+        src.contains("AVOGADRO_CONSTANT"),
+        "constants.ri must reference AVOGADRO_CONSTANT"
+    );
+    assert!(
+        src.contains("PLANCK_CONSTANT"),
+        "constants.ri must reference PLANCK_CONSTANT"
+    );
+    assert!(
+        src.contains("STEFAN_BOLTZMANN_CONSTANT"),
+        "constants.ri must reference STEFAN_BOLTZMANN_CONSTANT"
+    );
+    assert!(
+        src.contains("VACUUM_PERMITTIVITY"),
+        "constants.ri must reference VACUUM_PERMITTIVITY"
+    );
+    assert!(
+        src.contains("VACUUM_PERMEABILITY"),
+        "constants.ri must reference VACUUM_PERMEABILITY"
+    );
+    assert!(
+        src.contains("MOLAR_GAS_CONSTANT"),
+        "constants.ri must reference MOLAR_GAS_CONSTANT"
+    );
+    assert!(
+        src.contains("ELEMENTARY_CHARGE"),
+        "constants.ri must reference ELEMENTARY_CHARGE"
+    );
+
+    // ── Negative magic-number pins: no inline SI values for new constants ─────
+    //
+    // Same policy as the existing 299792458/1380649 pins: comments must
+    // describe a constant's role, not echo its SI numeric value. The digit
+    // sequences below are distinctive substrings of each constant's exact
+    // 2019-SI definition value; a match (in any base-10 representation)
+    // betrays an inline reconstruction.
+
+    assert!(
+        !src.contains("60221"),
+        "constants.ri must NOT contain '60221' inline — use AVOGADRO_CONSTANT() instead"
+    );
+    assert!(
+        !src.contains("662607015"),
+        "constants.ri must NOT contain '662607015' inline — use PLANCK_CONSTANT() instead"
+    );
+    assert!(
+        !src.contains("5670374419"),
+        "constants.ri must NOT contain '5670374419' inline — \
+         use STEFAN_BOLTZMANN_CONSTANT() instead"
+    );
+    assert!(
+        !src.contains("88541878128"),
+        "constants.ri must NOT contain '88541878128' inline — use VACUUM_PERMITTIVITY() instead"
+    );
+    assert!(
+        !src.contains("125663706212"),
+        "constants.ri must NOT contain '125663706212' inline — use VACUUM_PERMEABILITY() instead"
+    );
+    assert!(
+        !src.contains("8314462618"),
+        "constants.ri must NOT contain '8314462618' inline — use MOLAR_GAS_CONSTANT() instead"
+    );
+    assert!(
+        !src.contains("1602176634"),
+        "constants.ri must NOT contain '1602176634' inline — use ELEMENTARY_CHARGE() instead"
+    );
 }
