@@ -1376,6 +1376,17 @@ pub(crate) fn resolve_parameterized_builtin_type(
             )?;
             Some(Type::Map(Box::new(key), Box::new(val)))
         }
+        "Keyed" if type_args.len() == 1 => {
+            let inner = resolve_type_expr_with_aliases(
+                &type_args[0],
+                &empty_type_params,
+                alias_registry,
+                diagnostics,
+                structure_names,
+                trait_names,
+            )?;
+            Some(Type::Keyed(Box::new(inner)))
+        }
         "Option" if type_args.len() == 1 => {
             let inner = resolve_type_expr_with_aliases(
                 &type_args[0],
@@ -1565,6 +1576,16 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 depth,
             )?;
             Some(Type::Map(Box::new(key), Box::new(val)))
+        }
+        "Keyed" if type_args.len() == 1 => {
+            let inner = resolve_type_alias_expr_with_subst(
+                &type_args[0],
+                alias_registry,
+                subst,
+                diagnostics,
+                depth,
+            )?;
+            Some(Type::Keyed(Box::new(inner)))
         }
         "Option" if type_args.len() == 1 => {
             let inner = resolve_type_alias_expr_with_subst(
@@ -2317,8 +2338,14 @@ mod tests {
     #[test]
     fn resolve_parameterized_builtin_type_with_subst_resolves_keyed_distinct_from_list() {
         let reg = TypeAliasRegistry::new();
-        let subst = HashMap::new();
-        let args = [named_type_expr("Vent")];
+        // The subst path is structure-name-blind by design (alias DFS runs before
+        // structures are compiled — see the hardcoded empty `structure_names` in
+        // `resolve_type_alias_expr_with_subst`). The inner type arg is therefore
+        // supplied through the substitution map, which is exactly what this
+        // resolver variant exists to exercise: `Keyed<T>` with `T := Vent`.
+        let mut subst = HashMap::new();
+        subst.insert("T".to_string(), Type::StructureRef("Vent".into()));
+        let args = [named_type_expr("T")];
 
         let mut diags = Vec::new();
         let keyed = resolve_parameterized_builtin_type_with_subst(
@@ -2332,7 +2359,7 @@ mod tests {
         assert_eq!(
             keyed,
             Some(Type::Keyed(Box::new(Type::StructureRef("Vent".into())))),
-            "Keyed<Vent> (subst path) should resolve to the keyed-collection kind",
+            "Keyed<T>[T:=Vent] (subst path) should resolve to the keyed-collection kind",
         );
         assert!(diags.is_empty(), "no diagnostics expected; got {:?}", diags);
 
