@@ -4379,4 +4379,115 @@ mod tests {
             "4 args"
         );
     }
+
+    // ── affine_map tests (step-7) ─────────────────────────────────────────────
+
+    /// Build a `Value::Matrix` of `Value::Real` rows from a row-major `[[f64;3];3]`.
+    fn matrix3x3(data: [[f64; 3]; 3]) -> Value {
+        Value::Matrix(
+            data.iter()
+                .map(|row| row.iter().map(|&x| Value::Real(x)).collect())
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn affine_map_builds_from_matrix_and_vector() {
+        let m = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
+        let translation_arg = Value::Vector(vec![
+            Value::length(0.005),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        let (linear, translation) =
+            expect_affine(eval_builtin("affine_map", &[matrix3x3(m), translation_arg]));
+        assert_eq!(
+            linear, m,
+            "affine_map linear must match the input matrix row-major"
+        );
+        assert_eq!(
+            translation,
+            [0.005, 0.0, 0.0],
+            "affine_map translation must be SI meters"
+        );
+    }
+
+    #[test]
+    fn affine_map_non_3x3_matrix_returns_undef() {
+        let translation_arg = Value::Vector(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        // 2×2 matrix
+        let m2x2 = Value::Matrix(vec![
+            vec![Value::Real(1.0), Value::Real(0.0)],
+            vec![Value::Real(0.0), Value::Real(1.0)],
+        ]);
+        assert!(
+            eval_builtin("affine_map", &[m2x2, translation_arg.clone()]).is_undef(),
+            "2x2 matrix must be Undef"
+        );
+        // 3×2 matrix
+        let m3x2 = Value::Matrix(vec![
+            vec![Value::Real(1.0), Value::Real(0.0)],
+            vec![Value::Real(0.0), Value::Real(1.0)],
+            vec![Value::Real(0.0), Value::Real(0.0)],
+        ]);
+        assert!(
+            eval_builtin("affine_map", &[m3x2, translation_arg]).is_undef(),
+            "3x2 matrix must be Undef"
+        );
+    }
+
+    #[test]
+    fn affine_map_dimensioned_linear_returns_undef() {
+        // Linear part with Length elements violates the dimensionless contract.
+        let m = Value::Matrix(vec![
+            vec![Value::length(1.0), Value::length(0.0), Value::length(0.0)],
+            vec![Value::length(0.0), Value::length(1.0), Value::length(0.0)],
+            vec![Value::length(0.0), Value::length(0.0), Value::length(1.0)],
+        ]);
+        let translation_arg = Value::Vector(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        assert!(
+            eval_builtin("affine_map", &[m, translation_arg]).is_undef(),
+            "dimensioned linear part must be Undef"
+        );
+    }
+
+    #[test]
+    fn affine_map_translation_not_vec3_returns_undef() {
+        let m = matrix3x3(IDENTITY_3X3);
+        // Vector2 translation
+        let v2 = Value::Vector(vec![Value::length(0.0), Value::length(0.0)]);
+        assert!(
+            eval_builtin("affine_map", &[m.clone(), v2]).is_undef(),
+            "non-3 Vector translation must be Undef"
+        );
+        // Non-vector translation
+        assert!(
+            eval_builtin("affine_map", &[m, Value::Real(0.0)]).is_undef(),
+            "non-Vector translation must be Undef"
+        );
+    }
+
+    #[test]
+    fn affine_map_wrong_arity_returns_undef() {
+        let m = matrix3x3(IDENTITY_3X3);
+        assert!(eval_builtin("affine_map", &[]).is_undef(), "0 args");
+        assert!(eval_builtin("affine_map", &[m.clone()]).is_undef(), "1 arg");
+        let translation_arg = Value::Vector(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        assert!(
+            eval_builtin("affine_map", &[m, translation_arg, Value::Real(0.0)]).is_undef(),
+            "3 args"
+        );
+    }
 }
