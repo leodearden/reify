@@ -184,7 +184,6 @@ impl ImpulseTrain {
     ///
     /// Algebraically equivalent to `cascade([zv(ω,ζ), zv(ω,ζ)])` — used as a
     /// cross-check in the unit tests.
-    // G-allow: impulse-shaping producer (ZVD shaper), task #3866 (ε, DONE); consumer is task #3867 (ζ — input_shape dispatcher + reify-eval/src/trajectory_ops.rs eval wiring), PENDING, so no in-tree caller yet.
     pub fn zvd(omega_n: f64, zeta: f64) -> ImpulseTrain {
         let (omega_d, k) = damped_freq_and_k(omega_n, zeta);
         let norm = (1.0 + k) * (1.0 + k);
@@ -262,7 +261,6 @@ impl ImpulseTrain {
     /// - **Multiple trains** → pairwise convolution fold; coincident-time
     ///   impulses (within a tolerance of 1e-10 s) are merged by summing their
     ///   amplitudes.
-    // G-allow: impulse-shaping producer (train cascade/convolution), task #3866 (ε, DONE); consumer is task #3867 (ζ — input_shape dispatcher), PENDING, so no in-tree caller yet.
     pub fn cascade(trains: &[ImpulseTrain]) -> ImpulseTrain {
         // Empty → identity unit impulse at t=0.
         if trains.is_empty() {
@@ -313,7 +311,6 @@ impl ImpulseTrain {
     ///
     /// A single unit impulse `{(0, 1)}` produces `V = 1` (the baseline used for
     /// the ≥ 40 dB suppression check).
-    // G-allow: impulse-shaping producer (residual-vibration metric), task #3866 (ε, DONE); consumer is task #3867 (ζ — input_shape dispatcher), PENDING, so no in-tree caller yet.
     pub fn residual_vibration(&self, omega_n: f64, zeta: f64) -> f64 {
         if self.impulses.is_empty() {
             return 0.0;
