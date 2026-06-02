@@ -87,4 +87,25 @@ describe('KeyboardHelp', () => {
     expect(overlay.textContent).toContain('Ctrl+Shift+[');
     expect(overlay.textContent).toContain('Ctrl+Shift+]');
   });
+
+  it('navigation shortcuts surface in the ? overlay (acceptance criterion)', () => {
+    render(() => <KeyboardHelp onClose={() => {}} />);
+    const overlay = screen.getByTestId('keyboard-help');
+    // F12 go-to-definition
+    expect(overlay.textContent).toContain('F12');
+    // Alt+← back, Alt+→ forward
+    expect(overlay.textContent).toContain('Alt+←');
+    expect(overlay.textContent).toContain('Alt+→');
+    // Descriptions must also be present — assert entries exist first so the test
+    // fails loud (rather than passing vacuously) if an entry is removed or renamed.
+    const gotoEntry = SHORTCUTS.find((s) => s.id === 'gotoDefinition');
+    const backEntry = SHORTCUTS.find((s) => s.id === 'navBack');
+    const fwdEntry = SHORTCUTS.find((s) => s.id === 'navForward');
+    expect(gotoEntry).toBeDefined();
+    expect(backEntry).toBeDefined();
+    expect(fwdEntry).toBeDefined();
+    expect(overlay.textContent).toContain(gotoEntry!.description);
+    expect(overlay.textContent).toContain(backEntry!.description);
+    expect(overlay.textContent).toContain(fwdEntry!.description);
+  });
 });

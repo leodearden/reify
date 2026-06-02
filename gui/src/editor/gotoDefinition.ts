@@ -3,11 +3,16 @@
  *
  * Provides a keymap/event handler that on Ctrl+Click (or Cmd+Click on Mac)
  * sends a textDocument/definition request and navigates to the result.
+ *
+ * Also exports gotoDefinitionCommand — a CodeMirror Command factory that reads
+ * the cursor from view.state.selection.main.head and runs the same logic,
+ * suitable for use with keymap.of in Editor.tsx.
  */
 import { type Extension, type Text, type Line } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { invoke } from '@tauri-apps/api/core';
 import { isSameFile } from '../utils/pathUtils';
+import type { NavEntry } from '../hooks/useNavHistory';
 
 interface LspLocation {
   uri: string;
@@ -102,6 +107,81 @@ function isValidLspPosition(
 }
 
 /**
+ * Shared resolve-then-navigate core used by both the mousedown handler and
+ * gotoDefinitionCommand.
+ *
+ * @param currentUri    The URI of the document being navigated from.
+ * @param lspLine       0-based LSP line number of the cursor position.
+ * @param lspChar       0-based LSP character offset of the cursor position.
+ * @param view          The CodeMirror EditorView.
+ * @param uriGetter     Getter for the URI at call time (re-resolved after async).
+ * @param onNavigate    Called for cross-file results.
+ * @param onRecordJump  Optional hook called on successful same-file navigation
+ *                      with (origin, dest).  origin is captured synchronously
+ *                      before the async request; dest is computed on success.
+ * @param originOffset  CodeMirror offset of the originating cursor position,
+ *                      used to build the origin NavEntry for onRecordJump.
+ */
+function resolveAndNavigate(
+  currentUri: string,
+  lspLine: number,
+  lspChar: number,
+  view: EditorView,
+  uriGetter: string | (() => string),
+  onNavigate?: (targetUri: string, line: number, character: number) => void,
+  onRecordJump?: (origin: NavEntry, dest: NavEntry) => void,
+  originOffset?: number,
+): void {
+  // Capture origin synchronously before the async request, only when needed.
+  const capturedOriginUri = currentUri;
+  const capturedOriginOffset = originOffset;
+
+  requestDefinition(currentUri, lspLine, lspChar).then((location) => {
+    if (!location) return;
+    if (!view.dom.isConnected) return;
+
+    const resolvedNow = resolveUri(uriGetter);
+    const sameFile = isSameFile(location.uri, resolvedNow);
+
+    if (sameFile) {
+      // Same document: navigate to definition in current view.
+      const valid = isValidLspPosition(
+        view.state.doc,
+        location.range.start.line,
+        location.range.start.character,
+      );
+      if (!valid) return;
+      const targetPos = valid.targetLine.from + location.range.start.character;
+      view.dispatch({
+        selection: { anchor: targetPos },
+        scrollIntoView: true,
+      });
+      // Record jump for nav history if both hook and origin are provided.
+      if (onRecordJump && capturedOriginOffset !== undefined) {
+        onRecordJump(
+          { uri: capturedOriginUri, offset: capturedOriginOffset },
+          { uri: resolvedNow, offset: targetPos },
+        );
+      }
+    } else if (onNavigate) {
+      // Different file: delegate to the onNavigate callback.
+      // Minimum guard: reject non-integer/negative positions before delegating.
+      // Full doc-aware validation (character vs. line length) happens in the
+      // consumer (Editor.tsx) against the target file once it is opened.
+      if (
+        !isValidPositionShape(location.range.start.line) ||
+        !isValidPositionShape(location.range.start.character)
+      ) return;
+      onNavigate(
+        location.uri,
+        location.range.start.line,
+        location.range.start.character,
+      );
+    }
+  }).catch((err) => console.warn('gotoDefinition: failed to apply result', err));
+}
+
+/**
  * Create a CodeMirror extension that handles Ctrl+Click for go-to-definition.
  *
  * Accepts either a static URI string or a `() => string` getter for dynamic
@@ -112,10 +192,13 @@ function isValidLspPosition(
  * if it's in the same document.
  *
  * @param uri - The document URI or getter to use for LSP requests.
+ * @param onNavigate - Called for cross-file navigation results.
+ * @param onRecordJump - Optional hook for recording same-file jumps in nav history.
  */
 export function reifyGotoDefinition(
   uri: string | (() => string),
   onNavigate?: (targetUri: string, line: number, character: number) => void,
+  onRecordJump?: (origin: NavEntry, dest: NavEntry) => void,
 ): Extension {
   return EditorView.domEventHandlers({
     mousedown(event: MouseEvent, view: EditorView) {
@@ -132,44 +215,41 @@ export function reifyGotoDefinition(
 
       // Unlike hoverTooltip/completions, this promise is detached from
       // CodeMirror's lifecycle — guard against dispatch after view destruction.
-      requestDefinition(currentUri, lspLine, lspChar).then((location) => {
-        if (!location) return;
-        if (!view.dom.isConnected) return;
-
-        const resolvedNow = resolveUri(uri);
-        const sameFile = isSameFile(location.uri, resolvedNow);
-
-        if (sameFile) {
-          // Same document: navigate to definition in current view.
-          const valid = isValidLspPosition(
-            view.state.doc,
-            location.range.start.line,
-            location.range.start.character,
-          );
-          if (!valid) return;
-          const targetPos = valid.targetLine.from + location.range.start.character;
-          view.dispatch({
-            selection: { anchor: targetPos },
-            scrollIntoView: true,
-          });
-        } else if (onNavigate) {
-          // Different file: delegate to the onNavigate callback.
-          // Minimum guard: reject non-integer/negative positions before delegating.
-          // Full doc-aware validation (character vs. line length) happens in the
-          // consumer (Editor.tsx) against the target file once it is opened.
-          if (
-            !isValidPositionShape(location.range.start.line) ||
-            !isValidPositionShape(location.range.start.character)
-          ) return;
-          onNavigate(
-            location.uri,
-            location.range.start.line,
-            location.range.start.character,
-          );
-        }
-      }).catch((err) => console.warn('gotoDefinition: failed to apply result', err));
+      resolveAndNavigate(currentUri, lspLine, lspChar, view, uri, onNavigate, onRecordJump, pos);
 
       return true; // Consume the event
     },
   });
+}
+
+/**
+ * Create a CodeMirror Command for F12 go-to-definition.
+ *
+ * Returns a `(view: EditorView) => boolean` function suitable for use in
+ * keymap.of. Reads the cursor position from view.state.selection.main.head
+ * and runs the same resolve-then-navigate logic as reifyGotoDefinition.
+ *
+ * No @codemirror/view or @codemirror/state runtime imports are added here;
+ * the keymap.of wrapping remains in Editor.tsx.
+ *
+ * @param uriGetter  Getter for the current document URI.
+ * @param onNavigate Called for cross-file navigation results.
+ * @param onRecordJump Optional hook for recording same-file jumps in nav history.
+ */
+export function gotoDefinitionCommand(
+  uriGetter: () => string,
+  onNavigate?: (targetUri: string, line: number, character: number) => void,
+  onRecordJump?: (origin: NavEntry, dest: NavEntry) => void,
+): (view: EditorView) => boolean {
+  return (view: EditorView): boolean => {
+    const head = view.state.selection.main.head;
+    const line = view.state.doc.lineAt(head);
+    const lspLine = line.number - 1;
+    const lspChar = head - line.from;
+    const currentUri = uriGetter();
+
+    resolveAndNavigate(currentUri, lspLine, lspChar, view, uriGetter, onNavigate, onRecordJump, head);
+
+    return true; // Always consume the key
+  };
 }
