@@ -80,6 +80,41 @@ impl InverseDynamicsCacheKey {
     }
 }
 
+/// Per-body solid content hashes for a mechanism `Value`, in `bodies` order:
+/// one `ContentHash` per body equal to `body.solid.content_hash()`.
+///
+/// This is the body-granular invalidation record the `reify-eval` warm-state
+/// cache stores alongside the [`InverseDynamicsCacheKey`], delivering the
+/// observable "MassProperties refreshed only when body-solid hashes change"
+/// (PRD §7.7). It reads the mechanism `Value::Map`'s `bodies` list and hashes
+/// each body `Map`'s `solid` field.
+///
+/// Returns an empty `Vec` for any non-mechanism / malformed input — a
+/// non-`Map`, a missing or non-`List` `bodies` field, a non-`Map` body, or a
+/// body carrying no `solid` field. A genuinely body-less mechanism also yields
+/// an empty `Vec` (no solids to track); the `InverseDynamicsCacheKey.mech_hash`
+/// still distinguishes those cases, so "empty" is safely read as "no body
+/// solids to track".
+pub fn body_solid_hashes(mech: &Value) -> Vec<ContentHash> {
+    let Value::Map(map) = mech else {
+        return Vec::new();
+    };
+    let Some(Value::List(bodies)) = map.get(&Value::String("bodies".to_string())) else {
+        return Vec::new();
+    };
+    let mut hashes = Vec::with_capacity(bodies.len());
+    for body in bodies {
+        let Value::Map(body_map) = body else {
+            return Vec::new();
+        };
+        let Some(solid) = body_map.get(&Value::String("solid".to_string())) else {
+            return Vec::new();
+        };
+        hashes.push(solid.content_hash());
+    }
+    hashes
+}
+
 #[cfg(test)]
 mod tests {
     use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
