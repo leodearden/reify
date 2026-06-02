@@ -62,6 +62,15 @@ fn shell_gui_mesh_data_returns_one_entry_with_valid_fields() {
     // Call the accessor under test.
     let views: Vec<reify_eval::ShellGuiMeshData> = engine.shell_gui_mesh_data();
 
+    // Debug output to understand what we got.
+    eprintln!("DEBUG: shell_gui_mesh_data returned {} entries", views.len());
+    for (i, v) in views.iter().enumerate() {
+        eprintln!("  [{}] entity_path={:?} vertices={} indices={} element_kind={} region_tags={} von_mises_top={} von_mises_mid={} von_mises_bottom={} shell_normals_per_face={}",
+            i, v.entity_path, v.vertices.len(), v.indices.len(), v.element_kind.len(),
+            v.region_tags.len(), v.von_mises_top.len(), v.von_mises_mid.len(),
+            v.von_mises_bottom.len(), v.shell_normals_per_face.len());
+    }
+
     // Exactly one shell body.
     assert_eq!(
         views.len(),

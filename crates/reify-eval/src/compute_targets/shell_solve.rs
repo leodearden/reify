@@ -285,18 +285,18 @@ pub(crate) fn build_mid_stress_field(mid: Vec<f64>) -> Value {
 // `shell-extract::extract` node's `value_inputs[1]`.
 pub(crate) fn build_slab_sdf(length: f64, width: f64, height: f64) -> Value {
     let half_t = 0.5 * height;
-    // A modest fixed grid: the field only has to satisfy the shell-extract
-    // contract (Regular3D, non-empty axis grids, finite data), not resolve the
-    // stress solve.
+    // NZ=6 (even) is the minimum that lets compute_medial_mask produce non-empty
+    // medial voxels. With NZ=3 (odd), the sole interior z-point is exactly at
+    // z=0 where the slab SDF gradient is zero → GRADIENT_EPSILON rejects it →
+    // empty medial mask → empty extraction mesh → empty ShellGuiMeshData.vertices
+    // (failing the accessor test). With NZ=6 the interior voxels at k=2,3
+    // (z=±half_t/5) have gradient≈0.5 in z and satisfy the distance-equality
+    // criterion, so the mask is non-empty and the mid-surface is triangulated.
     const NX: usize = 5;
     const NY: usize = 5;
-    const NZ: usize = 3;
-    let x_grid: Vec<f64> = (0..NX)
-        .map(|i| length * i as f64 / (NX - 1) as f64)
-        .collect();
-    let y_grid: Vec<f64> = (0..NY)
-        .map(|i| width * i as f64 / (NY - 1) as f64)
-        .collect();
+    const NZ: usize = 6;
+    let x_grid: Vec<f64> = (0..NX).map(|i| length * i as f64 / (NX - 1) as f64).collect();
+    let y_grid: Vec<f64> = (0..NY).map(|i| width * i as f64 / (NY - 1) as f64).collect();
     let z_grid: Vec<f64> = (0..NZ)
         .map(|i| -half_t + height * i as f64 / (NZ - 1) as f64)
         .collect();
