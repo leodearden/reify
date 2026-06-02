@@ -4289,4 +4289,93 @@ mod tests {
             );
         }
     }
+
+    // ── Keyed<T> sub-collection: dup-key diagnostic + keyed_members (task 3930 β) ──
+
+    /// Two members of one `Keyed<Vent>` sub declaring the same key `"intake"`
+    /// must surface the `E_DUP_MEMBER_KEY` (`DiagnosticCode::DuplicateMemberKey`)
+    /// compile error.
+    #[test]
+    fn keyed_sub_duplicate_keys_emit_dup_member_key_error() {
+        use reify_test_support::compile_source;
+
+        let source = r#"
+structure def Vent {
+    param area : Length = 1mm
+}
+structure def Manifold {
+    sub vents : Keyed<Vent> {
+        "intake" => { area = 5mm }
+        "intake" => { area = 8mm }
+    }
+}
+"#;
+        let module = compile_source(source);
+        assert!(
+            module
+                .diagnostics
+                .iter()
+                .any(|d| d.code == Some(DiagnosticCode::DuplicateMemberKey)),
+            "expected an E_DUP_MEMBER_KEY (DuplicateMemberKey) diagnostic for the \
+             duplicate keyed member key, got: {:?}",
+            module
+                .diagnostics
+                .iter()
+                .map(|d| (d.code, d.message.as_str()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// A `Keyed<Vent>` sub with distinct keys compiles without a duplicate-key
+    /// error and records the author-assigned keys, in order, on the compiled
+    /// `SubComponentDecl.keyed_members`.
+    #[test]
+    fn keyed_sub_unique_keys_populate_keyed_members() {
+        use reify_test_support::compile_source;
+
+        let source = r#"
+structure def Vent {
+    param area : Length = 1mm
+}
+structure def Manifold {
+    sub vents : Keyed<Vent> {
+        "intake" => { area = 5mm }
+        "exhaust" => { area = 8mm }
+    }
+}
+"#;
+        let module = compile_source(source);
+
+        assert!(
+            !module
+                .diagnostics
+                .iter()
+                .any(|d| d.code == Some(DiagnosticCode::DuplicateMemberKey)),
+            "unexpected DuplicateMemberKey diagnostic for distinct keys: {:?}",
+            module
+                .diagnostics
+                .iter()
+                .map(|d| (d.code, d.message.as_str()))
+                .collect::<Vec<_>>()
+        );
+
+        let manifold = module
+            .templates
+            .iter()
+            .find(|t| t.name == "Manifold")
+            .expect("Manifold template should compile");
+        let vents = manifold
+            .sub_components
+            .iter()
+            .find(|s| s.name == "vents")
+            .expect("vents sub-component should be present");
+        assert_eq!(
+            vents.keyed_members,
+            vec![
+                reify_ir::MemberKey::new("intake"),
+                reify_ir::MemberKey::new("exhaust"),
+            ],
+            "vents keyed_members must carry the author-assigned keys in declaration order",
+        );
+    }
 }
