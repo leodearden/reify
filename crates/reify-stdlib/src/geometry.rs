@@ -327,6 +327,20 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                 translation: [0.0, 0.0, 0.0],
             }
         }
+        // `affine_translate(dx, dy, dz)`: identity linear part with the three
+        // components stored as the translation in SI units (meters for Length).
+        // Requires exactly three numeric, finite components sharing one dimension
+        // (decompose_xyz3 contract); otherwise `Value::Undef`.
+        "affine_translate" => {
+            let (t, _dim) = match decompose_xyz3(args) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
+            };
+            Value::AffineMap {
+                linear: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                translation: t,
+            }
+        }
 
         // --- Transform operations ---
         "frame_to_frame" => {
