@@ -209,6 +209,24 @@ pub enum DiagnosticCode {
     /// at the same call-site shape reuse [`TypeNotConformingToTrait`] per the
     /// task's design decision §2.
     GeometryUnbounded,
+    /// Origin: `crates/reify-compiler/src/conformance/mod.rs::emit_geometry_profile_required`,
+    /// called by the profile-consumer arms in `crates/reify-compiler/src/geometry.rs`
+    /// (`extrude`/`extrude_symmetric`/`revolve`/`loft`/`loft_guided`/`sweep`/
+    /// `sweep_guided`/`pipe`).
+    /// Canonical message form:
+    /// `"geometry argument '<name>' must be <requirement>"`.
+    ///
+    /// Emitted when a profile-consuming geometry op receives a statically-known
+    /// operand whose inferred dimensionality refinement violates the op's
+    /// precondition: a profile slot requires a 2-D `Surface` (Closed ∧ Planar),
+    /// a sweep/pipe path slot requires a 1-D `Curve` (see
+    /// [`GeomDim`](../../reify_compiler/geometry_traits_inference/enum.GeomDim.html)).
+    /// Permissive (PRD decision 5): the check fires only for operands that are
+    /// nested geometry constructors (FunctionCall `CompiledExpr`s resolved via
+    /// `try_infer_traits_for_function_call`); `param`/`let` value-refs are
+    /// accepted. Non-fatal — the op is still lowered (mirrors [`GeometryUnbounded`]).
+    /// See `docs/prds/geometry-primitive-constructors.md` task α.
+    GeometryProfileRequired,
     /// Origin: `crates/reify-constraints/src/lib.rs::SimpleConstraintChecker::check`.
     /// Replaces canonical messages:
     /// - `"constraint <id> violated"` (Bool(false) branch, Severity::Error)
