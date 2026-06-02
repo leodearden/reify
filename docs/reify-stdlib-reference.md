@@ -187,7 +187,7 @@ The spec names for `abs` and `arg` are *modulus* and *argument* respectively.
 
 ### 2.2 `std.units.si`
 
-Complete SI base units (`m`, `kg`, `s`, `A`, `K`, `rad`, `mol`, `cd`) with all SI prefixes (quecto through quetta). Derived units include: `N`, `J`, `W`, `Pa`, `V`, `ohm`, `S`, `F`, `H`, `Wb`, `T`, `Hz`, `rpm`, `rad_per_s`, `Pa_s`, `lm`, `lx`, `Bq`, `Gy`, `Sv`, `eV`, `bar`, `mbar`, with all common prefixes.
+Complete SI base units (`m`, `kg`, `s`, `A`, `K`, `rad`, `mol`, `cd`) with all SI prefixes (quecto through quetta). Derived units include: `N`, `J`, `W`, `Pa`, `V`, `ohm`, `S`, `F`, `H`, `Wb`, `T`, `Hz`, `rpm`, `rad_per_s`, `Pa_s`, `lm`, `lx`, `Bq`, `Gy`, `Sv`, `eV`, `bar`, `mbar`, with all common prefixes. The bare, un-prefixed `A`, `mol`, and `cd` resolve as unit literals (e.g. `1A`, `1mol`, `1cd`); previously only their prefixed forms (`mA`/`kA`, `mmol`, `mcd`) were available.
 
 Temperature offset: `degC : Temperature offset 273.15K`
 
@@ -197,20 +197,30 @@ Minimal set: `in` (= 25.4mm), `ft`, `thou`, `yd`, `lb`, `oz`, `lbf`, `psi`, `ksi
 
 ### 2.4 `std.units.constants`
 
+**Dimensionless math constants** — compiler builtins, bare identifiers of type `Real` (usable directly in expressions, e.g. `2 * pi`, `tau`, `e`):
+
 ```
-let pi : Real = 3.14159265358979...
-let e : Real = 2.71828182845904...
-let g : Acceleration = 9.80665m/s^2
-let c : Velocity = 299792458m/s
-let boltzmann : Energy / Temperature = 1.380649e-23J/K
-let avogadro : Real / Amount = 6.02214076e23/mol
-let planck : Energy * Time = 6.62607015e-34J*s
-let stefan_boltzmann : Power / (Area * Temperature^4) = 5.670374419e-8W/(m^2*K^4)
-let vacuum_permittivity : Capacitance / Length = 8.8541878128e-12F/m
-let vacuum_permeability : Inductance / Length = 1.25663706212e-6H/m
-let gas_constant : Energy / (Amount * Temperature) = 8.314462618J/(mol*K)
-let elementary_charge : Charge = 1.602176634e-19A*s
+pi  : Real  -- ≈ 3.141592653589793  (std::f64::consts::PI)
+tau : Real  -- ≈ 6.283185307179586  (std::f64::consts::TAU; 2·π)
+e   : Real  -- ≈ 2.718281828459045  (std::f64::consts::E; Euler's number)
 ```
+
+**Dimensionful physical constants** — zero-arg functions; the return type carries the dimension:
+
+```
+fn STANDARD_GRAVITY()          -> Acceleration       -- 9.80665 m/s²             (BIPM/CGPM 1901)
+fn SPEED_OF_LIGHT()            -> Velocity           -- 299792458 m/s             (SI exact, 1983)
+fn BOLTZMANN_CONSTANT()        -> HeatCapacity       -- 1.380649e-23 J/K          (2019 SI exact)
+fn AVOGADRO_CONSTANT()         -> InverseAmount      -- 6.02214076e23 mol⁻¹       (2019 SI exact)
+fn PLANCK_CONSTANT()           -> Action             -- 6.62607015e-34 J·s        (2019 SI exact)
+fn STEFAN_BOLTZMANN_CONSTANT() -> StefanBoltzmannDim -- 5.670374419e-8 W·m⁻²·K⁻⁴ (CODATA 2018)
+fn VACUUM_PERMITTIVITY()       -> Permittivity       -- 8.8541878128e-12 F/m      (CODATA 2018)
+fn VACUUM_PERMEABILITY()       -> Permeability       -- 1.25663706212e-6 H/m      (CODATA 2018)
+fn MOLAR_GAS_CONSTANT()        -> MolarGasConstant   -- 8.314462618 J·mol⁻¹·K⁻¹  (2019 SI exact; R = N_A·k_B)
+fn ELEMENTARY_CHARGE()         -> Charge             -- 1.602176634e-19 C         (2019 SI exact)
+```
+
+Reify has no top-level `const`; dimensionful values carry their dimension via the zero-arg function's return type, while dimensionless math constants (`pi`, `tau`, `e`) are bare compiler builtins.
 
 ---
 
