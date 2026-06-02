@@ -19,15 +19,15 @@
 
 use std::collections::{HashMap, HashSet};
 
+use reify_ast::ConnectOp;
 use reify_compiler::CompiledModule;
+use reify_core::{ConstraintNodeId, ValueCellId};
 use reify_eval::Engine;
 use reify_eval::cache::NodeId;
 use reify_eval::snapshot::Snapshot;
-use reify_ast::ConnectOp;
+use reify_ir::{CompiledExprKind, Value};
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::parse_and_compile;
-use reify_core::{ConstraintNodeId, ValueCellId};
-use reify_ir::{CompiledExprKind, Value};
 
 /// Convenience: parse + compile a single-source string via the shared
 /// test-support helper. Mirrors the `compile_source` helper in
@@ -320,9 +320,9 @@ fn collect_forall_ids(snap: &Snapshot, variable: &str) -> Vec<ConstraintNodeId> 
 /// change that DOES populate them must still invalidate.
 #[test]
 fn edit_param_count_change_invalidates_prior_forall_constraint_cache() {
+    use reify_core::VersionId;
     use reify_eval::cache::{CachedResult, NodeCache};
     use reify_eval::deps::DependencyTrace;
-    use reify_core::VersionId;
     use reify_ir::{DeterminacyState, Freshness};
 
     let module = compile_source(FORALL_FIXTURE_SRC);
@@ -353,7 +353,10 @@ fn edit_param_count_change_invalidates_prior_forall_constraint_cache() {
         let entry = NodeCache::new(
             CachedResult::Value(Value::Bool(true), DeterminacyState::Determined),
             Freshness::Final,
-            DependencyTrace { realization_reads: Vec::new(), reads: Vec::new() },
+            DependencyTrace {
+                realization_reads: Vec::new(),
+                reads: Vec::new(),
+            },
             VersionId(0),
         );
         engine
@@ -1102,9 +1105,9 @@ fn collect_forall_connect_ids(snap: &Snapshot, variable: &str) -> Vec<Constraint
 ///    removed ids are gone.
 #[test]
 fn edit_param_count_change_invalidates_prior_forall_connect_constraint_cache() {
+    use reify_core::VersionId;
     use reify_eval::cache::{CachedResult, NodeCache};
     use reify_eval::deps::DependencyTrace;
-    use reify_core::VersionId;
     use reify_ir::{DeterminacyState, Freshness};
 
     let module = compile_source(FORALL_CONNECT_FIXTURE_SRC);
@@ -1134,7 +1137,10 @@ fn edit_param_count_change_invalidates_prior_forall_connect_constraint_cache() {
         let entry = NodeCache::new(
             CachedResult::Value(Value::Bool(true), DeterminacyState::Determined),
             Freshness::Final,
-            DependencyTrace { realization_reads: Vec::new(), reads: Vec::new() },
+            DependencyTrace {
+                realization_reads: Vec::new(),
+                reads: Vec::new(),
+            },
             VersionId(0),
         );
         engine

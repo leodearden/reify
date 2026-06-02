@@ -12,12 +12,12 @@
 //! `Engine::check_imported_tolerance_promise`'s strict-tighter-than-promise
 //! warning emission and the four no-op rows of its truth table.
 
+use reify_core::{DiagnosticCode, ModulePath, Severity};
 use reify_test_support::builders::CompiledModuleBuilder;
 use reify_test_support::{
     make_engine, manufacturing_purpose, my_design_template, step_input_template,
     step_output_template,
 };
-use reify_core::{DiagnosticCode, ModulePath, Severity};
 
 /// Pinned by the imported-geometry-promise contract: after `eval()`, the
 /// `STEPInput` template's `param tolerance : Length = X m` declaration

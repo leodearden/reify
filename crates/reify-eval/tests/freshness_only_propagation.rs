@@ -8,14 +8,14 @@
 //! by snapshotting the downstream entry's `result_hash` and inner `Value`
 //! before/after the walk and asserting byte-identical equality.
 
+use reify_core::{ContentHash, ModulePath, Type, ValueCellId};
 use reify_eval::Engine;
 use reify_eval::cache::{CachedResult, NodeId};
 use reify_eval::freshness_walk;
+use reify_ir::{BinOp, ErrorRef, Freshness, ResultRef, Value};
 use reify_test_support::builders::{binop, literal, value_ref_typed};
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
-use reify_core::{ContentHash, ModulePath, Type, ValueCellId};
-use reify_ir::{BinOp, ErrorRef, Freshness, ResultRef, Value};
 use std::collections::HashSet;
 
 /// Build the 2-cell synthetic module: param `a` + let `b = a * 2.0`.

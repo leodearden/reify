@@ -13,9 +13,9 @@
 //! collect target) would break this test even though each crate's own
 //! unit / integration tests stay green.
 
-use reify_test_support::CountingSubscriberBuilder;
 use reify_core::ModulePath;
 use reify_ir::{ExportFormat, Operation, ReprKind};
+use reify_test_support::CountingSubscriberBuilder;
 use std::sync::atomic::Ordering;
 
 /// `collect_registry()` must surface the OCCT submission with a descriptor

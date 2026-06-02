@@ -111,9 +111,7 @@ pub(crate) const CONTRIBUTORS_RELATIVE: &[&str] = &[
 /// test the same set — a future addition to one cannot silently diverge from
 /// the other.
 #[allow(dead_code)]
-const DEBRIS_SUFFIXES: &[&str] = &[
-    "swp", "swo", "swn", "bk", "bak", "orig", "rej", "tmp",
-];
+const DEBRIS_SUFFIXES: &[&str] = &["swp", "swo", "swn", "bk", "bak", "orig", "rej", "tmp"];
 
 /// Returns true when `file_name` matches a known editor or OS debris pattern.
 ///

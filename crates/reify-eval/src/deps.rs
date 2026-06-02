@@ -34,7 +34,8 @@ pub struct DependencyTrace {
 
 /// Extract a dependency trace from a compiled expression by collecting all ValueRef ids.
 pub fn extract_dependency_trace(expr: &CompiledExpr) -> DependencyTrace {
-    DependencyTrace { realization_reads: Vec::new(),
+    DependencyTrace {
+        realization_reads: Vec::new(),
         reads: expr.collect_value_refs(),
     }
 }
@@ -339,7 +340,8 @@ pub fn build_trace_map_and_fields(
     }
 
     for (_, res_node) in graph.resolutions.iter() {
-        let trace = DependencyTrace { realization_reads: Vec::new(),
+        let trace = DependencyTrace {
+            realization_reads: Vec::new(),
             reads: res_node.auto_params.clone(),
         };
         traces.insert(NodeId::Resolution(res_node.id.clone()), trace);
@@ -394,7 +396,10 @@ pub fn extract_realization_dependencies(
             reads.extend(expr.collect_value_refs());
         }
     }
-    DependencyTrace { realization_reads: Vec::new(), reads }
+    DependencyTrace {
+        realization_reads: Vec::new(),
+        reads,
+    }
 }
 
 #[cfg(test)]
@@ -471,7 +476,8 @@ mod tests {
         let r0_id = RealizationNodeId::new(e, 0);
         graph.realizations.insert(
             r0_id.clone(),
-            RealizationNodeData { geometry_cell: None,
+            RealizationNodeData {
+                geometry_cell: None,
                 id: r0_id.clone(),
                 operations: vec![],
                 content_hash: ContentHash::of_str("r0"),
@@ -1016,10 +1022,12 @@ mod tests {
         let cell_x = ValueCellId::new("E", "x");
         let cell_y = ValueCellId::new("E", "y");
 
-        let trace_a = DependencyTrace { realization_reads: Vec::new(),
+        let trace_a = DependencyTrace {
+            realization_reads: Vec::new(),
             reads: vec![cell_x.clone()],
         };
-        let trace_b = DependencyTrace { realization_reads: Vec::new(),
+        let trace_b = DependencyTrace {
+            realization_reads: Vec::new(),
             reads: vec![cell_y.clone()],
         };
 
@@ -1060,8 +1068,8 @@ mod tests {
     #[test]
     fn reverse_index_includes_composed_field_dependencies() {
         use crate::graph::EvaluationGraph;
-        use reify_test_support::parse_and_compile;
         use reify_core::FIELD_ENTITY_PREFIX;
+        use reify_test_support::parse_and_compile;
 
         let module = parse_and_compile(
             r#"

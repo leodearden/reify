@@ -19,10 +19,10 @@
 //! and the kernel is pre-configured with `with_query_result(GeometryHandleId(1), …)`.
 
 use reify_compiler::compile_with_stdlib;
-use reify_eval::Engine;
-use reify_test_support::{CountingMockKernel, MockGeometryKernel};
 use reify_core::{ModulePath, Severity, ValueCellId};
+use reify_eval::Engine;
 use reify_ir::{ExportFormat, GeometryHandleId, Value};
+use reify_test_support::{CountingMockKernel, MockGeometryKernel};
 
 /// Parse and compile a source string with the stdlib prelude.
 /// Asserts the parse and compile pipelines produce no errors.

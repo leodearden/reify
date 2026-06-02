@@ -31,10 +31,10 @@
 //! tessellate-path parity test, and an OCCT-gated end-to-end smoke test.
 
 use reify_compiler::compile_with_stdlib;
-use reify_eval::Engine;
-use reify_test_support::MockGeometryKernel;
 use reify_core::{DimensionVector, ModulePath, Severity, ValueCellId};
+use reify_eval::Engine;
 use reify_ir::{ExportFormat, GeometryHandleId, Value};
+use reify_test_support::MockGeometryKernel;
 
 /// Parse and compile a source string with the stdlib prelude.
 /// Asserts the parse and compile pipelines produce no errors.
@@ -315,7 +315,11 @@ fn edges_let_resolves_to_list_of_int_via_extract_edges() {
     let mut engine = engine_with_mock_kernel(|k| {
         k.with_extracted_edges(
             GeometryHandleId(1),
-            vec![GeometryHandleId(2), GeometryHandleId(3), GeometryHandleId(4)],
+            vec![
+                GeometryHandleId(2),
+                GeometryHandleId(3),
+                GeometryHandleId(4),
+            ],
         )
     });
 
@@ -330,11 +334,19 @@ fn edges_let_resolves_to_list_of_int_via_extract_edges() {
         ),
     };
     assert_eq!(list.len(), 3, "expected 3 edge sub-handles");
-    let expected_ids = [GeometryHandleId(2), GeometryHandleId(3), GeometryHandleId(4)];
+    let expected_ids = [
+        GeometryHandleId(2),
+        GeometryHandleId(3),
+        GeometryHandleId(4),
+    ];
     let mut hashes: Vec<[u8; 32]> = Vec::new();
     for (i, (elem, expected_id)) in list.iter().zip(&expected_ids).enumerate() {
         match elem {
-            Value::GeometryHandle { kernel_handle, upstream_values_hash, .. } => {
+            Value::GeometryHandle {
+                kernel_handle,
+                upstream_values_hash,
+                ..
+            } => {
                 assert_eq!(
                     kernel_handle, expected_id,
                     "es[{i}] kernel_handle must be {expected_id:?}"
@@ -344,9 +356,18 @@ fn edges_let_resolves_to_list_of_int_via_extract_edges() {
             other => panic!("es[{i}] must be Value::GeometryHandle, got {:?}", other),
         }
     }
-    assert_ne!(hashes[0], hashes[1], "edge 0 and 1 upstream hashes must differ");
-    assert_ne!(hashes[1], hashes[2], "edge 1 and 2 upstream hashes must differ");
-    assert_ne!(hashes[0], hashes[2], "edge 0 and 2 upstream hashes must differ");
+    assert_ne!(
+        hashes[0], hashes[1],
+        "edge 0 and 1 upstream hashes must differ"
+    );
+    assert_ne!(
+        hashes[1], hashes[2],
+        "edge 1 and 2 upstream hashes must differ"
+    );
+    assert_ne!(
+        hashes[0], hashes[2],
+        "edge 0 and 2 upstream hashes must differ"
+    );
 }
 
 /// `let fs = faces(body)` on a structure containing `let body = box(10mm, 10mm, 10mm)`
@@ -396,7 +417,11 @@ fn faces_let_resolves_to_list_of_int_via_extract_faces() {
     let mut hashes: Vec<[u8; 32]> = Vec::new();
     for (i, (elem, expected_id)) in list.iter().zip(&expected_ids).enumerate() {
         match elem {
-            Value::GeometryHandle { kernel_handle, upstream_values_hash, .. } => {
+            Value::GeometryHandle {
+                kernel_handle,
+                upstream_values_hash,
+                ..
+            } => {
                 assert_eq!(
                     kernel_handle, expected_id,
                     "fs[{i}] kernel_handle must be {expected_id:?}"
@@ -535,19 +560,29 @@ fn edges_by_length_let_resolves_to_filtered_list_via_helper() {
             other
         ),
     };
-    assert_eq!(list.len(), 2, "expected 2 edge sub-handles (both within [0,50]mm)");
+    assert_eq!(
+        list.len(),
+        2,
+        "expected 2 edge sub-handles (both within [0,50]mm)"
+    );
     let mut hashes: Vec<[u8; 32]> = Vec::new();
-    for (i, (elem, expected_kh)) in list.iter().zip([GeometryHandleId(2), GeometryHandleId(3)].iter()).enumerate() {
+    for (i, (elem, expected_kh)) in list
+        .iter()
+        .zip([GeometryHandleId(2), GeometryHandleId(3)].iter())
+        .enumerate()
+    {
         match elem {
-            Value::GeometryHandle { kernel_handle, upstream_values_hash, .. } => {
+            Value::GeometryHandle {
+                kernel_handle,
+                upstream_values_hash,
+                ..
+            } => {
                 assert_eq!(
-                    kernel_handle,
-                    expected_kh,
+                    kernel_handle, expected_kh,
                     "es[{i}] kernel_handle must be {expected_kh:?}"
                 );
                 assert_ne!(
-                    upstream_values_hash,
-                    &[0u8; 32],
+                    upstream_values_hash, &[0u8; 32],
                     "es[{i}] upstream_values_hash must be non-zero (PRD §4)"
                 );
                 hashes.push(*upstream_values_hash);
@@ -555,7 +590,10 @@ fn edges_by_length_let_resolves_to_filtered_list_via_helper() {
             other => panic!("es[{i}] must be Value::GeometryHandle, got {:?}", other),
         }
     }
-    assert_ne!(hashes[0], hashes[1], "es[0] and es[1] upstream_values_hash must be pairwise-distinct (PRD §4 iii)");
+    assert_ne!(
+        hashes[0], hashes[1],
+        "es[0] and es[1] upstream_values_hash must be pairwise-distinct (PRD §4 iii)"
+    );
 }
 
 /// `let fs = faces_by_area(body, r)` with `let r = 0mm*0mm..1m*1m` must
@@ -589,15 +627,18 @@ fn faces_by_area_let_resolves_to_filtered_list_via_helper() {
     };
     assert_eq!(list.len(), 1, "expected 1 face sub-handle (within [0,1]m²)");
     match &list[0] {
-        Value::GeometryHandle { kernel_handle, upstream_values_hash, .. } => {
+        Value::GeometryHandle {
+            kernel_handle,
+            upstream_values_hash,
+            ..
+        } => {
             assert_eq!(
                 kernel_handle,
                 &GeometryHandleId(2),
                 "fs[0] kernel_handle must be GHId(2)"
             );
             assert_ne!(
-                upstream_values_hash,
-                &[0u8; 32],
+                upstream_values_hash, &[0u8; 32],
                 "fs[0] upstream_values_hash must be non-zero (PRD §4)"
             );
         }
@@ -640,15 +681,18 @@ fn faces_by_normal_let_resolves_to_filtered_list_via_helper() {
     };
     assert_eq!(list.len(), 1, "expected 1 face sub-handle");
     match &list[0] {
-        Value::GeometryHandle { kernel_handle, upstream_values_hash, .. } => {
+        Value::GeometryHandle {
+            kernel_handle,
+            upstream_values_hash,
+            ..
+        } => {
             assert_eq!(
                 kernel_handle,
                 &GeometryHandleId(2),
                 "fs[0] kernel_handle must be GHId(2)"
             );
             assert_ne!(
-                upstream_values_hash,
-                &[0u8; 32],
+                upstream_values_hash, &[0u8; 32],
                 "fs[0] upstream_values_hash must be non-zero (PRD §4)"
             );
         }
@@ -692,15 +736,18 @@ fn edges_parallel_to_let_resolves_to_filtered_list_via_helper() {
     };
     assert_eq!(list.len(), 1, "expected 1 edge sub-handle");
     match &list[0] {
-        Value::GeometryHandle { kernel_handle, upstream_values_hash, .. } => {
+        Value::GeometryHandle {
+            kernel_handle,
+            upstream_values_hash,
+            ..
+        } => {
             assert_eq!(
                 kernel_handle,
                 &GeometryHandleId(2),
                 "es[0] kernel_handle must be GHId(2)"
             );
             assert_ne!(
-                upstream_values_hash,
-                &[0u8; 32],
+                upstream_values_hash, &[0u8; 32],
                 "es[0] upstream_values_hash must be non-zero (PRD §4)"
             );
         }
@@ -748,15 +795,18 @@ fn edges_at_height_let_resolves_to_filtered_list_via_helper() {
     };
     assert_eq!(list.len(), 1, "expected 1 edge sub-handle (z-plane filter)");
     match &list[0] {
-        Value::GeometryHandle { kernel_handle, upstream_values_hash, .. } => {
+        Value::GeometryHandle {
+            kernel_handle,
+            upstream_values_hash,
+            ..
+        } => {
             assert_eq!(
                 kernel_handle,
                 &GeometryHandleId(2),
                 "es[0] kernel_handle must be GHId(2)"
             );
             assert_ne!(
-                upstream_values_hash,
-                &[0u8; 32],
+                upstream_values_hash, &[0u8; 32],
                 "es[0] upstream_values_hash must be non-zero (PRD §4)"
             );
         }
@@ -786,11 +836,7 @@ fn adjacent_faces_let_resolves_via_selector_vocabulary_v2() {
     let compiled = compile_no_errors(source);
     let mut engine = engine_with_mock_kernel(|k| {
         k.with_extracted_faces(GeometryHandleId(1), vec![GeometryHandleId(1)])
-            .with_adjacent_faces_result(
-                GeometryHandleId(1),
-                0,
-                Value::List(vec![Value::Int(0)]),
-            )
+            .with_adjacent_faces_result(GeometryHandleId(1), 0, Value::List(vec![Value::Int(0)]))
     });
 
     let result = engine.build(&compiled, ExportFormat::Step);
@@ -842,12 +888,7 @@ fn shared_edges_let_resolves_to_list_via_owner_body_derivation() {
         k.with_owner_body_result(GeometryHandleId(1), GeometryHandleId(1))
             .with_extracted_faces(GeometryHandleId(1), vec![GeometryHandleId(1)])
             .with_extracted_edges(GeometryHandleId(1), vec![GeometryHandleId(2)])
-            .with_shared_edges_result(
-                GeometryHandleId(1),
-                0,
-                0,
-                Value::List(vec![Value::Int(0)]),
-            )
+            .with_shared_edges_result(GeometryHandleId(1), 0, 0, Value::List(vec![Value::Int(0)]))
     });
 
     let result = engine.build(&compiled, ExportFormat::Step);
@@ -870,10 +911,7 @@ fn shared_edges_let_resolves_to_list_via_owner_body_derivation() {
                 "es[0] kernel_handle must be GHId(2) (SharedEdges index 0 → edge handle 2)"
             );
         }
-        other => panic!(
-            "es[0] must be Value::GeometryHandle, got {:?}",
-            other
-        ),
+        other => panic!("es[0] must be Value::GeometryHandle, got {:?}", other),
     }
 }
 
@@ -986,7 +1024,11 @@ fn tessellate_realizations_post_processes_new_topology_selectors() {
     let mut engine = engine_with_mock_kernel(|k| {
         k.with_extracted_edges(
             GeometryHandleId(1),
-            vec![GeometryHandleId(2), GeometryHandleId(3), GeometryHandleId(4)],
+            vec![
+                GeometryHandleId(2),
+                GeometryHandleId(3),
+                GeometryHandleId(4),
+            ],
         )
     });
 
@@ -1001,24 +1043,48 @@ fn tessellate_realizations_post_processes_new_topology_selectors() {
             other
         ),
     };
-    assert_eq!(list.len(), 3, "expected 3 edge sub-handles on tessellate path");
-    let expected_ids = [GeometryHandleId(2), GeometryHandleId(3), GeometryHandleId(4)];
+    assert_eq!(
+        list.len(),
+        3,
+        "expected 3 edge sub-handles on tessellate path"
+    );
+    let expected_ids = [
+        GeometryHandleId(2),
+        GeometryHandleId(3),
+        GeometryHandleId(4),
+    ];
     let mut hashes: Vec<[u8; 32]> = Vec::new();
     for (i, (elem, expected_id)) in list.iter().zip(&expected_ids).enumerate() {
         match elem {
-            Value::GeometryHandle { kernel_handle, upstream_values_hash, .. } => {
+            Value::GeometryHandle {
+                kernel_handle,
+                upstream_values_hash,
+                ..
+            } => {
                 assert_eq!(
                     kernel_handle, expected_id,
                     "es[{i}] kernel_handle must be {expected_id:?} on tessellate path"
                 );
                 hashes.push(*upstream_values_hash);
             }
-            other => panic!("es[{i}] must be Value::GeometryHandle on tessellate path, got {:?}", other),
+            other => panic!(
+                "es[{i}] must be Value::GeometryHandle on tessellate path, got {:?}",
+                other
+            ),
         }
     }
-    assert_ne!(hashes[0], hashes[1], "tessellate edge 0 and 1 upstream hashes must differ");
-    assert_ne!(hashes[1], hashes[2], "tessellate edge 1 and 2 upstream hashes must differ");
-    assert_ne!(hashes[0], hashes[2], "tessellate edge 0 and 2 upstream hashes must differ");
+    assert_ne!(
+        hashes[0], hashes[1],
+        "tessellate edge 0 and 1 upstream hashes must differ"
+    );
+    assert_ne!(
+        hashes[1], hashes[2],
+        "tessellate edge 1 and 2 upstream hashes must differ"
+    );
+    assert_ne!(
+        hashes[0], hashes[2],
+        "tessellate edge 0 and 2 upstream hashes must differ"
+    );
 }
 
 // ── OCCT-gated end-to-end smoke test ────────────────────────────────────────
@@ -1178,7 +1244,10 @@ fn edges_and_faces_of_box_via_occt_return_canonical_counts() {
     let mut edge_hashes: Vec<[u8; 32]> = Vec::new();
     for (i, item) in edges.iter().enumerate() {
         match item {
-            Value::GeometryHandle { upstream_values_hash, .. } => {
+            Value::GeometryHandle {
+                upstream_values_hash,
+                ..
+            } => {
                 edge_hashes.push(*upstream_values_hash);
             }
             other => panic!(

@@ -3,12 +3,12 @@
 //! Exercises the full parse→compile→eval pipeline for `meta.key` expressions,
 //! ensuring integration across the parser, compiler, and evaluator boundaries.
 
+use reify_core::{Severity, ValueCellId};
+use reify_ir::{Satisfaction, Value};
 use reify_test_support::{
     assert_no_diagnostic, assert_no_error_diagnostics, make_engine, parse_and_compile,
     parse_compile_expect_err,
 };
-use reify_core::{Severity, ValueCellId};
-use reify_ir::{Satisfaction, Value};
 
 // ---------------------------------------------------------------------------
 // --- let binding uses meta.key ---

@@ -120,7 +120,11 @@ structure Note3IfSolid {
     );
 
     let (min_a, max_a) = mesh_aabb(mesh_a);
-    let extents_a = [max_a[0] - min_a[0], max_a[1] - min_a[1], max_a[2] - min_a[2]];
+    let extents_a = [
+        max_a[0] - min_a[0],
+        max_a[1] - min_a[1],
+        max_a[2] - min_a[2],
+    ];
     for (axis, &ext) in extents_a.iter().enumerate() {
         assert!(
             (ext - 0.04_f32).abs() < 1e-4_f32,
@@ -166,7 +170,11 @@ structure Note3IfSolid {
     );
 
     let (min_b, max_b) = mesh_aabb(mesh_b);
-    let mut extents_b = [max_b[0] - min_b[0], max_b[1] - min_b[1], max_b[2] - min_b[2]];
+    let mut extents_b = [
+        max_b[0] - min_b[0],
+        max_b[1] - min_b[1],
+        max_b[2] - min_b[2],
+    ];
     // Sort so we compare against [0.02, 0.02, 0.08] regardless of axis mapping.
     extents_b.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let expected_b = [0.02_f32, 0.02_f32, 0.08_f32];

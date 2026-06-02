@@ -51,9 +51,8 @@ const MOMENT_OF_INERTIA_BOX_PATH: &str = concat!(
 fn moment_of_inertia_box_evals_to_analytic_tensor() {
     // Read the fixture unconditionally so a missing file is caught even on
     // OCCT-less runners — fixture presence is a CI contract independent of OCCT.
-    let source = std::fs::read_to_string(MOMENT_OF_INERTIA_BOX_PATH).expect(
-        "examples/kernel_queries/moment_of_inertia_box.ri should exist (task 3620 step-4)",
-    );
+    let source = std::fs::read_to_string(MOMENT_OF_INERTIA_BOX_PATH)
+        .expect("examples/kernel_queries/moment_of_inertia_box.ri should exist (task 3620 step-4)");
 
     // Validate fixture compilation unconditionally — a grammar/compile regression
     // (e.g. moment_of_inertia signature change) should fail on every runner,

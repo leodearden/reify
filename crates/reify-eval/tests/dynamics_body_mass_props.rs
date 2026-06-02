@@ -29,7 +29,7 @@
 
 use reify_core::{DiagnosticCode, Severity, ValueCellId};
 use reify_ir::{ExportFormat, Value};
-use reify_test_support::{errors_only, parse_and_compile_with_stdlib, MockGeometryKernel};
+use reify_test_support::{MockGeometryKernel, errors_only, parse_and_compile_with_stdlib};
 
 /// A body with no `Material` (hence no `Material.density`) is passed to
 /// `body_mass_props`, so the fn-level density ladder falls through to the

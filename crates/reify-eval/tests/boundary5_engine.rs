@@ -2,8 +2,8 @@
 //!
 //! These tests verify the Engine API works correctly with mock implementations.
 
-use reify_test_support::*;
 use reify_ir::Satisfaction;
+use reify_test_support::*;
 
 /// Full pipeline with mocks: compile → evaluate → expected ValueMap.
 #[test]
@@ -880,9 +880,9 @@ structure Parent {
 /// tested by `cyclic_let_bindings_emit_diagnostic` in recursive_unfold.rs.
 #[test]
 fn root_level_cyclic_let_bindings_emit_diagnostic() {
-    use reify_test_support::builders::{binop, literal, value_ref_typed};
     use reify_core::{ModulePath, Severity, Type, ValueCellId};
     use reify_ir::{BinOp, Value};
+    use reify_test_support::builders::{binop, literal, value_ref_typed};
 
     // Template S with cyclic lets: let a = b + 1, let b = a + 1
     // No sub-components, not recursive — exercises the root-level path.
@@ -945,9 +945,9 @@ fn root_level_cyclic_let_bindings_emit_diagnostic() {
 /// Expected: b = 3, a = 4, no error diagnostics.
 #[test]
 fn root_level_non_cyclic_lets_no_false_positive() {
-    use reify_test_support::builders::{binop, literal, value_ref_typed};
     use reify_core::{ModulePath, Severity, Type, ValueCellId};
     use reify_ir::{BinOp, CompiledExpr, Value};
+    use reify_test_support::builders::{binop, literal, value_ref_typed};
 
     let a_expr = binop(
         BinOp::Add,
@@ -1079,10 +1079,10 @@ fn evaluate_let_bindings_skips_let_cell_without_default_expr() {
 /// default value is used — making this stronger than a flat fan-in alone.
 #[test]
 fn evaluate_let_bindings_cache_records_dependency_trace() {
-    use reify_eval::cache::NodeId;
-    use reify_test_support::builders::{binop, literal};
     use reify_core::{ModulePath, Type, ValueCellId};
+    use reify_eval::cache::NodeId;
     use reify_ir::{BinOp, Value};
+    use reify_test_support::builders::{binop, literal};
 
     // let a = 1        (no reads — literal)
     // let b = 2        (no reads — literal)
@@ -1179,10 +1179,10 @@ fn evaluate_let_bindings_cache_records_dependency_trace() {
 /// exercises the full evaluate_let_bindings → cache handoff path.
 #[test]
 fn evaluate_let_bindings_cache_preserves_duplicate_reads_for_same_cell() {
-    use reify_eval::cache::NodeId;
-    use reify_test_support::builders::{binop, literal, value_ref_typed};
     use reify_core::{ModulePath, Type, ValueCellId};
+    use reify_eval::cache::NodeId;
     use reify_ir::{BinOp, Value};
+    use reify_test_support::builders::{binop, literal, value_ref_typed};
 
     // let a = 1        (no reads — literal)
     // let c = a + a    (two reads of S.a — same cell referenced twice)

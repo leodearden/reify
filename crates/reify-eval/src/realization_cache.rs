@@ -587,7 +587,13 @@ mod tests {
         let mut cache = RealizationCache::<KernelHandle>::new();
         // Primary slot + two siblings differing only in options_hash / repr_kind.
         cache.insert("Bracket", ReprKind::Mesh, 0.01, NO_OPTIONS, primary);
-        cache.insert("Bracket", ReprKind::Mesh, 0.01, ContentHash(7), sibling_opts);
+        cache.insert(
+            "Bracket",
+            ReprKind::Mesh,
+            0.01,
+            ContentHash(7),
+            sibling_opts,
+        );
         cache.insert("Bracket", ReprKind::BRep, 0.01, NO_OPTIONS, sibling_repr);
 
         // All three are independently retrievable up front.

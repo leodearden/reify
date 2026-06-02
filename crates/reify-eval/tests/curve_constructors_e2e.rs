@@ -4,9 +4,9 @@
 //! using MockGeometryKernel to capture executed operations without OCCT.
 
 use reify_compiler::{CompiledGeometryOp, CurveKind};
-use reify_test_support::*;
 use reify_core::Type;
 use reify_ir::{ExportFormat, GeometryOp};
+use reify_test_support::*;
 
 // ---------------------------------------------------------------------------
 // Compiler: line_segment recognized and produces correct Curve op

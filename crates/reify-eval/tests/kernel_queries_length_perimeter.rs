@@ -60,9 +60,8 @@ const LENGTH_PERIMETER_PATH: &str = concat!(
 fn length_perimeter_compiles_and_occt_queries_match_expected() {
     // ── assertion 1: fixture exists and compiles with no ERROR diagnostics ────
 
-    let source = std::fs::read_to_string(LENGTH_PERIMETER_PATH).expect(
-        "examples/kernel_queries/length_perimeter.ri should exist (task 3622 step-6)",
-    );
+    let source = std::fs::read_to_string(LENGTH_PERIMETER_PATH)
+        .expect("examples/kernel_queries/length_perimeter.ri should exist (task 3622 step-6)");
 
     let compiled = parse_and_compile_with_stdlib(&source);
     assert!(

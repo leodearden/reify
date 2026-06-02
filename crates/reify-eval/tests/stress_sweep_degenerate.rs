@@ -12,9 +12,9 @@
 use std::f64::consts::PI;
 
 use reify_compiler::{CompiledGeometryOp, GeomRef, PrimitiveKind, SweepKind};
-use reify_test_support::*;
 use reify_core::{ModulePath, Severity, Type};
 use reify_ir::{ExportFormat, GeometryOp, Value};
+use reify_test_support::*;
 
 // ---------------------------------------------------------------------------
 // step-13: zero_extrude_distance — failing test

@@ -2,8 +2,8 @@
 //!
 //! Tests the complete pipeline: parse → compile → Engine.eval() → check values.
 
-use reify_test_support::mocks::MockConstraintChecker;
 use reify_core::{ModulePath, Severity, ValueCellId};
+use reify_test_support::mocks::MockConstraintChecker;
 
 /// Parse source with a user function, compile, eval via Engine,
 /// and verify the function result is accessible.

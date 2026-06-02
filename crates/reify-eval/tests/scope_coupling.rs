@@ -11,7 +11,7 @@
 
 use reify_core::{DiagnosticCode, ModulePath, Type};
 use reify_eval::Engine;
-use reify_ir::{ObjectiveSet, ObjectiveSense};
+use reify_ir::{ObjectiveSense, ObjectiveSet};
 use reify_test_support::{
     CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder, gt, literal, mm,
     value_ref,
@@ -37,7 +37,12 @@ fn eval_emits_scope_coupling_for_constraint_crossing() {
     let leaf = TopologyTemplateBuilder::new("Leaf")
         .auto_param("Leaf", "k", Type::length())
         // self-constraint: Leaf.k > 1mm
-        .constraint("Leaf", 0, None, gt(value_ref("Leaf", "k"), literal(mm(1.0))))
+        .constraint(
+            "Leaf",
+            0,
+            None,
+            gt(value_ref("Leaf", "k"), literal(mm(1.0))),
+        )
         .build();
 
     let later = TopologyTemplateBuilder::new("Later")
@@ -100,7 +105,12 @@ fn eval_emits_scope_coupling_for_constraint_crossing() {
 fn check_propagates_scope_coupling_diagnostic() {
     let leaf = TopologyTemplateBuilder::new("Leaf")
         .auto_param("Leaf", "k", Type::length())
-        .constraint("Leaf", 0, None, gt(value_ref("Leaf", "k"), literal(mm(1.0))))
+        .constraint(
+            "Leaf",
+            0,
+            None,
+            gt(value_ref("Leaf", "k"), literal(mm(1.0))),
+        )
         .build();
 
     let later = TopologyTemplateBuilder::new("Later")
@@ -148,13 +158,23 @@ fn eval_emits_scope_coupling_for_objective_crossing() {
     let leaf = TopologyTemplateBuilder::new("Leaf")
         .auto_param("Leaf", "k", Type::length())
         // self-constraint keeps the template non-trivial
-        .constraint("Leaf", 0, None, gt(value_ref("Leaf", "k"), literal(mm(1.0))))
+        .constraint(
+            "Leaf",
+            0,
+            None,
+            gt(value_ref("Leaf", "k"), literal(mm(1.0))),
+        )
         .build();
 
     let later = TopologyTemplateBuilder::new("Later")
         .auto_param("Later", "y", Type::length())
         // self-constraint on Later.y (no crossing here)
-        .constraint("Later", 1, None, gt(value_ref("Later", "y"), literal(mm(0.5))))
+        .constraint(
+            "Later",
+            1,
+            None,
+            gt(value_ref("Later", "y"), literal(mm(0.5))),
+        )
         // objective reads frozen Leaf.k — the coupling source
         .objective(ObjectiveSet::single(
             ObjectiveSense::Minimize,
@@ -225,7 +245,11 @@ fn no_coupling_for_same_scope_self_read() {
         .iter()
         .filter(|d| d.code == Some(DiagnosticCode::ScopeCoupling))
         .count();
-    assert_eq!(count, 0, "self-read must not trigger W_SCOPE_COUPLING; got: {:?}", result.diagnostics);
+    assert_eq!(
+        count, 0,
+        "self-read must not trigger W_SCOPE_COUPLING; got: {:?}",
+        result.diagnostics
+    );
 }
 
 /// (2) Reversed walk order: [Later, Leaf] where Later (resolves FIRST) reads
@@ -246,7 +270,12 @@ fn no_coupling_when_reader_resolves_before_owner() {
 
     let leaf = TopologyTemplateBuilder::new("Leaf")
         .auto_param("Leaf", "k", Type::length())
-        .constraint("Leaf", 1, None, gt(value_ref("Leaf", "k"), literal(mm(1.0))))
+        .constraint(
+            "Leaf",
+            1,
+            None,
+            gt(value_ref("Leaf", "k"), literal(mm(1.0))),
+        )
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -262,7 +291,11 @@ fn no_coupling_when_reader_resolves_before_owner() {
         .iter()
         .filter(|d| d.code == Some(DiagnosticCode::ScopeCoupling))
         .count();
-    assert_eq!(count, 0, "reader resolves before owner — must not trigger W_SCOPE_COUPLING; got: {:?}", result.diagnostics);
+    assert_eq!(
+        count, 0,
+        "reader resolves before owner — must not trigger W_SCOPE_COUPLING; got: {:?}",
+        result.diagnostics
+    );
 }
 
 /// (3) Non-auto crossing: "Leaf" exposes a non-auto Param `Leaf.p`, "Later"
@@ -271,7 +304,7 @@ fn no_coupling_when_reader_resolves_before_owner() {
 #[test]
 fn no_coupling_for_non_auto_crossing() {
     let leaf = TopologyTemplateBuilder::new("Leaf")
-        .param("Leaf", "p", Type::length(), None)   // non-auto Param
+        .param("Leaf", "p", Type::length(), None) // non-auto Param
         .build();
 
     let later = TopologyTemplateBuilder::new("Later")
@@ -297,7 +330,11 @@ fn no_coupling_for_non_auto_crossing() {
         .iter()
         .filter(|d| d.code == Some(DiagnosticCode::ScopeCoupling))
         .count();
-    assert_eq!(count, 0, "non-auto crossing must not trigger W_SCOPE_COUPLING; got: {:?}", result.diagnostics);
+    assert_eq!(
+        count, 0,
+        "non-auto crossing must not trigger W_SCOPE_COUPLING; got: {:?}",
+        result.diagnostics
+    );
 }
 
 /// (4) Dedup: "Later" has TWO constraints both reading `Leaf.k`.  Must emit

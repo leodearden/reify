@@ -125,13 +125,11 @@ use reify_ir::{
 use crate::persistent_cache::ShellChannels;
 use reify_solver_elastic::{
     AnisotropicMaterial, AssemblyElement, AssemblyMode, CgSolverOptions, CgWarmState,
-    ConstantField, DirichletBc, ElementOrder, IsotropicElastic, OrthotropicMaterial,
-    SolverMode, TransverseIsotropicMaterial,
-    apply_dirichlet_row_elimination, apply_point_load, assemble_global_stiffness,
-    element_stiffness, element_stiffness_p1_with_field, element_stress_p1,
-    recover_nodal_stress_p1, StressElement, tet_volume_p1,
-    solve_cg_with_warm_state,
-    GridSpec, resample_multi_nodal_to_grid,
+    ConstantField, DirichletBc, ElementOrder, GridSpec, IsotropicElastic, OrthotropicMaterial,
+    SolverMode, StressElement, TransverseIsotropicMaterial, apply_dirichlet_row_elimination,
+    apply_point_load, assemble_global_stiffness, element_stiffness,
+    element_stiffness_p1_with_field, element_stress_p1, recover_nodal_stress_p1,
+    resample_multi_nodal_to_grid, solve_cg_with_warm_state, tet_volume_p1,
 };
 
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
@@ -249,7 +247,7 @@ pub fn solve_elastic_static_trampoline(
 
     // ── (2) Extract geometry scalars (SI: metres) ─────────────────────────────
     let length = extract_scalar_si(&value_inputs[1]);
-    let width  = extract_scalar_si(&value_inputs[2]);
+    let width = extract_scalar_si(&value_inputs[2]);
     let height = extract_scalar_si(&value_inputs[3]);
 
     // ── (3) Sum tip-force magnitudes from PointLoad list ─────────────────────
@@ -290,8 +288,7 @@ pub fn solve_elastic_static_trampoline(
             match policy {
                 FailurePolicy::HardError =>
                     "aborting with no tet fallback (ShellForce::On hard-error)",
-                FailurePolicy::TetFallbackWithWarning =>
-                    "falling back to the tet/solid path",
+                FailurePolicy::TetFallbackWithWarning => "falling back to the tet/solid path",
             },
         );
         match policy {
@@ -382,27 +379,30 @@ pub fn solve_elastic_static_trampoline(
         let fields: PersistentMap<String, Value> = [
             // Per-element shell displacement resampling is out of scope (task θ);
             // Undef is the accepted sentinel against the Field-typed DSL param.
-            ("displacement".to_string(),   Value::Undef),
-            ("stress".to_string(),         mid_field),
+            ("displacement".to_string(), Value::Undef),
+            ("stress".to_string(), mid_field),
             // Per-element local→global frames are carried inside
             // `ShellChannels.frame` for the GUI populator (task θ); the top-level
             // `frame` field stays Undef.
-            ("frame".to_string(),          Value::Undef),
+            ("frame".to_string(), Value::Undef),
             ("shell_channels".to_string(), shell_channels),
-            ("max_von_mises".to_string(),  Value::Scalar {
-                si_value:  max_von_mises,
-                dimension: DimensionVector::PRESSURE,
-            }),
-            ("converged".to_string(),      Value::Bool(converged)),
-            ("iterations".to_string(),     Value::Int(iterations as i64)),
+            (
+                "max_von_mises".to_string(),
+                Value::Scalar {
+                    si_value: max_von_mises,
+                    dimension: DimensionVector::PRESSURE,
+                },
+            ),
+            ("converged".to_string(), Value::Bool(converged)),
+            ("iterations".to_string(), Value::Int(iterations as i64)),
         ]
         .into_iter()
         .collect();
 
         let result = Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id:   StructureTypeId(u32::MAX),
+            type_id: StructureTypeId(u32::MAX),
             type_name: "ElasticResult".to_string(),
-            version:   1,
+            version: 1,
             fields,
         }));
 
@@ -411,8 +411,8 @@ pub fn solve_elastic_static_trampoline(
         return ComputeOutcome::Completed {
             result,
             new_warm_state: None,
-            cost_per_byte:  None,
-            diagnostics:    vec![],
+            cost_per_byte: None,
+            diagnostics: vec![],
         };
     }
 
@@ -425,7 +425,8 @@ pub fn solve_elastic_static_trampoline(
     let prior_cg = prior_warm_state.and_then(|s| s.downcast_ref::<CgWarmState>().cloned());
 
     // ── (6) Delegate to shared FEA helper ────────────────────────────────────
-    let (fea, fresh_warm) = solve_cantilever_fea(&model, length, width, height, tip_force, prior_cg);
+    let (fea, fresh_warm) =
+        solve_cantilever_fea(&model, length, width, height, tip_force, prior_cg);
 
     // ── (7) Build ElasticResult StructureInstance ────────────────────────────
     //
@@ -438,8 +439,8 @@ pub fn solve_elastic_static_trampoline(
     //                    path emits a real ShellStress here instead, via the §3b
     //                    early return above (task 3594/δ).
     // `cost_per_byte` is derived as 1/(warm-state size in bytes).
-    let n_iters    = fea.iterations as i64;
-    let converged  = fea.converged;
+    let n_iters = fea.iterations as i64;
+    let converged = fea.converged;
     let size_bytes = fresh_warm.estimated_size_bytes();
     // cost_per_byte: reciprocal of warm-state size — a bigger state is pricier
     // to keep. Tuners should replace this with a profiling-derived estimate.
@@ -474,42 +475,49 @@ pub fn solve_elastic_static_trampoline(
         &fea.coords,
         &fea.tet_connectivity,
         &[
-            (&fea.u, 3, "displacement"),   // Arc<Vec<f64>> → &[f64] via Deref
+            (&fea.u, 3, "displacement"), // Arc<Vec<f64>> → &[f64] via Deref
             (&nodal_stress_flat, 9, "stress"),
         ],
         &grid,
         1e-9,
     );
-    debug_assert_eq!(sampled.len(), 2, "expected 2 sampled fields (displacement + stress)");
-    let stress_sf = sampled.pop().unwrap();  // index 1
-    let disp_sf   = sampled.pop().unwrap();  // index 0
+    debug_assert_eq!(
+        sampled.len(),
+        2,
+        "expected 2 sampled fields (displacement + stress)"
+    );
+    let stress_sf = sampled.pop().unwrap(); // index 1
+    let disp_sf = sampled.pop().unwrap(); // index 0
 
-    let disp_field   = super::sampled_disp_field(disp_sf);
+    let disp_field = super::sampled_disp_field(disp_sf);
     let stress_field = super::sampled_stress_field(stress_sf);
 
     let fields: PersistentMap<String, Value> = [
-        ("displacement".to_string(),   disp_field),
-        ("stress".to_string(),         stress_field),
-        ("frame".to_string(),          Value::Undef),
+        ("displacement".to_string(), disp_field),
+        ("stress".to_string(), stress_field),
+        ("frame".to_string(), Value::Undef),
         // task #4067 (PRD S1 / DR-3 / I-3): tet/solid results always emit
         // shell_channels=Undef (through-thickness data is undefined for solid
         // elements). The shell path emits a real ShellStress via
         // shell_channels_to_value(Some(_), mid) in the §3b early return (task 3594/δ).
         ("shell_channels".to_string(), Value::Undef),
-        ("max_von_mises".to_string(),  Value::Scalar {
-            si_value:  fea.max_von_mises,
-            dimension: DimensionVector::PRESSURE,
-        }),
-        ("converged".to_string(),      Value::Bool(converged)),
-        ("iterations".to_string(),     Value::Int(n_iters)),
+        (
+            "max_von_mises".to_string(),
+            Value::Scalar {
+                si_value: fea.max_von_mises,
+                dimension: DimensionVector::PRESSURE,
+            },
+        ),
+        ("converged".to_string(), Value::Bool(converged)),
+        ("iterations".to_string(), Value::Int(n_iters)),
     ]
     .into_iter()
     .collect();
 
     let result = Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id:   StructureTypeId(u32::MAX),
+        type_id: StructureTypeId(u32::MAX),
         type_name: "ElasticResult".to_string(),
-        version:   1,
+        version: 1,
         fields,
     }));
 
@@ -721,17 +729,15 @@ pub(crate) fn solve_cantilever_fea(
     let nx: usize = ((length / height * nz as f64).round() as usize).max(1);
     let ny: usize = 1;
     let nx1 = nx + 1;
-    let ny1 = ny + 1;  // 2 nodes along Y
+    let ny1 = ny + 1; // 2 nodes along Y
     let nz1 = nz + 1;
     let n_nodes = nx1 * ny1 * nz1;
 
-    let node_idx = |ix: usize, iy: usize, iz: usize| -> usize {
-        iz * ny1 * nx1 + iy * nx1 + ix
-    };
+    let node_idx = |ix: usize, iy: usize, iz: usize| -> usize { iz * ny1 * nx1 + iy * nx1 + ix };
     let node_coord = |ix: usize, iy: usize, iz: usize| -> [f64; 3] {
         [
             ix as f64 * length / nx as f64,
-            iy as f64 * width  / ny as f64,
+            iy as f64 * width / ny as f64,
             iz as f64 * height / nz as f64,
         ]
     };
@@ -752,7 +758,7 @@ pub(crate) fn solve_cantilever_fea(
     // determinant (right-handed orientation).
     let n_tets = nx * ny * nz * 6;
     let mut tet_connectivity: Vec<[usize; 4]> = Vec::with_capacity(n_tets);
-    let mut elem_stiffness_mats: Vec<_>        = Vec::with_capacity(n_tets);
+    let mut elem_stiffness_mats: Vec<_> = Vec::with_capacity(n_tets);
 
     // Hoist per-element-constant anisotropic quantities out of the element loops.
     //
@@ -773,23 +779,23 @@ pub(crate) fn solve_cantilever_fea(
         for hy in 0..ny {
             for hx in 0..nx {
                 let c = [
-                    node_idx(hx,   hy,   hz  ),  // c[0]: local (0,0,0)
-                    node_idx(hx+1, hy,   hz  ),  // c[1]: local (1,0,0)
-                    node_idx(hx+1, hy+1, hz  ),  // c[2]: local (1,1,0)
-                    node_idx(hx,   hy+1, hz  ),  // c[3]: local (0,1,0)
-                    node_idx(hx,   hy,   hz+1),  // c[4]: local (0,0,1)
-                    node_idx(hx+1, hy,   hz+1),  // c[5]: local (1,0,1)
-                    node_idx(hx+1, hy+1, hz+1),  // c[6]: local (1,1,1)
-                    node_idx(hx,   hy+1, hz+1),  // c[7]: local (0,1,1)
+                    node_idx(hx, hy, hz),             // c[0]: local (0,0,0)
+                    node_idx(hx + 1, hy, hz),         // c[1]: local (1,0,0)
+                    node_idx(hx + 1, hy + 1, hz),     // c[2]: local (1,1,0)
+                    node_idx(hx, hy + 1, hz),         // c[3]: local (0,1,0)
+                    node_idx(hx, hy, hz + 1),         // c[4]: local (0,0,1)
+                    node_idx(hx + 1, hy, hz + 1),     // c[5]: local (1,0,1)
+                    node_idx(hx + 1, hy + 1, hz + 1), // c[6]: local (1,1,1)
+                    node_idx(hx, hy + 1, hz + 1),     // c[7]: local (0,1,1)
                 ];
                 // Six tets sharing diagonal c[0]→c[6]:
                 let tets: [[usize; 4]; 6] = [
-                    [c[0], c[1], c[2], c[6]],  // T0: det = +dx·dy·dz
-                    [c[0], c[2], c[3], c[6]],  // T1: det = +dx·dy·dz
-                    [c[0], c[5], c[1], c[6]],  // T2: det = +dx·dy·dz (c[5]↔c[1] swap)
-                    [c[0], c[3], c[7], c[6]],  // T3: det = +dx·dy·dz
-                    [c[0], c[4], c[5], c[6]],  // T4: det = +dx·dy·dz
-                    [c[0], c[7], c[4], c[6]],  // T5: det = +dx·dy·dz (c[7]↔c[4] swap)
+                    [c[0], c[1], c[2], c[6]], // T0: det = +dx·dy·dz
+                    [c[0], c[2], c[3], c[6]], // T1: det = +dx·dy·dz
+                    [c[0], c[5], c[1], c[6]], // T2: det = +dx·dy·dz (c[5]↔c[1] swap)
+                    [c[0], c[3], c[7], c[6]], // T3: det = +dx·dy·dz
+                    [c[0], c[4], c[5], c[6]], // T4: det = +dx·dy·dz
+                    [c[0], c[7], c[4], c[6]], // T5: det = +dx·dy·dz (c[7]↔c[4] swap)
                 ];
                 for conn in tets {
                     let phys: Vec<[f64; 3]> = conn.iter().map(|&n| coords[n]).collect();
@@ -825,11 +831,7 @@ pub(crate) fn solve_cantilever_fea(
         })
         .collect();
 
-    let mut k = assemble_global_stiffness(
-        n_nodes,
-        &assembly_elements,
-        AssemblyMode::Deterministic,
-    );
+    let mut k = assemble_global_stiffness(n_nodes, &assembly_elements, AssemblyMode::Deterministic);
 
     // ── Build load vector; distribute tip load to tip-face nodes ─────────────
     //
@@ -853,20 +855,21 @@ pub(crate) fn solve_cantilever_fea(
     let mut bcs: Vec<DirichletBc> = Vec::new();
     for &rn in &root_nodes {
         for axis in 0..3usize {
-            bcs.push(DirichletBc { dof: 3 * rn + axis, value: 0.0 });
+            bcs.push(DirichletBc {
+                dof: 3 * rn + axis,
+                value: 0.0,
+            });
         }
     }
     apply_dirichlet_row_elimination(&mut k, &mut f, &bcs);
 
     // ── Solve ─────────────────────────────────────────────────────────────────
-    let opts = CgSolverOptions { tolerance: 1e-6, max_iter: 2000 };
-    let (cg_result, fresh_warm) = solve_cg_with_warm_state(
-        &k,
-        &f,
-        prior_cg.as_ref(),
-        opts,
-        SolverMode::Deterministic,
-    );
+    let opts = CgSolverOptions {
+        tolerance: 1e-6,
+        max_iter: 2000,
+    };
+    let (cg_result, fresh_warm) =
+        solve_cg_with_warm_state(&k, &f, prior_cg.as_ref(), opts, SolverMode::Deterministic);
 
     // ── Stress recovery: max von Mises across all elements ────────────────────
     //
@@ -896,34 +899,36 @@ pub(crate) fn solve_cantilever_fea(
             coords[conn[3]],
         ];
         let u_e: [f64; 12] = [
-            u_disp[3 * conn[0]],     u_disp[3 * conn[0] + 1], u_disp[3 * conn[0] + 2],
-            u_disp[3 * conn[1]],     u_disp[3 * conn[1] + 1], u_disp[3 * conn[1] + 2],
-            u_disp[3 * conn[2]],     u_disp[3 * conn[2] + 1], u_disp[3 * conn[2] + 2],
-            u_disp[3 * conn[3]],     u_disp[3 * conn[3] + 1], u_disp[3 * conn[3] + 2],
+            u_disp[3 * conn[0]],
+            u_disp[3 * conn[0] + 1],
+            u_disp[3 * conn[0] + 2],
+            u_disp[3 * conn[1]],
+            u_disp[3 * conn[1] + 1],
+            u_disp[3 * conn[1] + 2],
+            u_disp[3 * conn[2]],
+            u_disp[3 * conn[2] + 1],
+            u_disp[3 * conn[2] + 2],
+            u_disp[3 * conn[3]],
+            u_disp[3 * conn[3] + 1],
+            u_disp[3 * conn[3] + 2],
         ];
         let sigma: [[f64; 3]; 3] = match model {
-            MaterialModel::Isotropic(iso) => {
-                element_stress_p1(&phys, iso, &u_e)
-            }
+            MaterialModel::Isotropic(iso) => element_stress_p1(&phys, iso, &u_e),
             MaterialModel::Anisotropic(_) => {
                 // Use the hoisted d_global (computed once above).
-                element_stress_anisotropic(
-                    &phys,
-                    &aniso_precomp.as_ref().unwrap().1,
-                    &u_e,
-                )
+                element_stress_anisotropic(&phys, &aniso_precomp.as_ref().unwrap().1, &u_e)
             }
         };
 
         // vM from the tensor (byte-identical to the pre-α scalar calculation).
         let (sxx, syy, szz) = (sigma[0][0], sigma[1][1], sigma[2][2]);
         let (sxy, syz, szx) = (sigma[0][1], sigma[1][2], sigma[0][2]);
-        let vm = f64::sqrt(0.5 * (
-            (sxx - syy).powi(2)
-            + (syy - szz).powi(2)
-            + (szz - sxx).powi(2)
-            + 6.0 * (sxy * sxy + syz * syz + szx * szx)
-        ));
+        let vm = f64::sqrt(
+            0.5 * ((sxx - syy).powi(2)
+                + (syy - szz).powi(2)
+                + (szz - sxx).powi(2)
+                + 6.0 * (sxy * sxy + syz * syz + szx * szx)),
+        );
 
         stress_elements.push(sigma);
         if vm > max_von_mises {
@@ -941,7 +946,10 @@ pub(crate) fn solve_cantilever_fea(
         .zip(stress_elements.iter())
         .map(|(conn, sigma)| {
             let phys4: [[f64; 3]; 4] = [
-                coords[conn[0]], coords[conn[1]], coords[conn[2]], coords[conn[3]],
+                coords[conn[0]],
+                coords[conn[1]],
+                coords[conn[2]],
+                coords[conn[3]],
             ];
             StressElement {
                 connectivity: conn.as_slice(),
@@ -996,9 +1004,9 @@ fn element_stress_anisotropic(
     // Jacobian (same as element_stress_p1 / element_von_mises_anisotropic).
     let grads_ref: [[f64; 3]; 4] = [
         [-1.0, -1.0, -1.0],
-        [ 1.0,  0.0,  0.0],
-        [ 0.0,  1.0,  0.0],
-        [ 0.0,  0.0,  1.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
     ];
 
     let mut j_mat = [[0.0_f64; 3]; 3];
@@ -1024,19 +1032,19 @@ fn element_stress_anisotropic(
 
     let j_inv_t = [
         [
-            (j_mat[1][1]*j_mat[2][2] - j_mat[1][2]*j_mat[2][1]) / det,
-            (j_mat[1][2]*j_mat[2][0] - j_mat[1][0]*j_mat[2][2]) / det,
-            (j_mat[1][0]*j_mat[2][1] - j_mat[1][1]*j_mat[2][0]) / det,
+            (j_mat[1][1] * j_mat[2][2] - j_mat[1][2] * j_mat[2][1]) / det,
+            (j_mat[1][2] * j_mat[2][0] - j_mat[1][0] * j_mat[2][2]) / det,
+            (j_mat[1][0] * j_mat[2][1] - j_mat[1][1] * j_mat[2][0]) / det,
         ],
         [
-            (j_mat[0][2]*j_mat[2][1] - j_mat[0][1]*j_mat[2][2]) / det,
-            (j_mat[0][0]*j_mat[2][2] - j_mat[0][2]*j_mat[2][0]) / det,
-            (j_mat[0][1]*j_mat[2][0] - j_mat[0][0]*j_mat[2][1]) / det,
+            (j_mat[0][2] * j_mat[2][1] - j_mat[0][1] * j_mat[2][2]) / det,
+            (j_mat[0][0] * j_mat[2][2] - j_mat[0][2] * j_mat[2][0]) / det,
+            (j_mat[0][1] * j_mat[2][0] - j_mat[0][0] * j_mat[2][1]) / det,
         ],
         [
-            (j_mat[0][1]*j_mat[1][2] - j_mat[0][2]*j_mat[1][1]) / det,
-            (j_mat[0][2]*j_mat[1][0] - j_mat[0][0]*j_mat[1][2]) / det,
-            (j_mat[0][0]*j_mat[1][1] - j_mat[0][1]*j_mat[1][0]) / det,
+            (j_mat[0][1] * j_mat[1][2] - j_mat[0][2] * j_mat[1][1]) / det,
+            (j_mat[0][2] * j_mat[1][0] - j_mat[0][0] * j_mat[1][2]) / det,
+            (j_mat[0][0] * j_mat[1][1] - j_mat[0][1] * j_mat[1][0]) / det,
         ],
     ];
 
@@ -1082,8 +1090,6 @@ fn element_stress_anisotropic(
     ]
 }
 
-
-
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 /// Classify a material `Value::StructureInstance` as `MaterialModel::Isotropic`
@@ -1112,27 +1118,41 @@ fn classify_material(val: &Value) -> MaterialModel {
 
     match data.type_name.as_str() {
         "OrthotropicMaterial" => {
-            let e1   = scalar_si_field(data, "e1");
-            let e2   = scalar_si_field(data, "e2");
-            let e3   = scalar_si_field(data, "e3");
-            let g12  = scalar_si_field(data, "g12");
-            let g13  = scalar_si_field(data, "g13");
-            let g23  = scalar_si_field(data, "g23");
+            let e1 = scalar_si_field(data, "e1");
+            let e2 = scalar_si_field(data, "e2");
+            let e3 = scalar_si_field(data, "e3");
+            let g12 = scalar_si_field(data, "g12");
+            let g13 = scalar_si_field(data, "g13");
+            let g23 = scalar_si_field(data, "g23");
             let nu12 = real_field(data, "nu12");
             let nu13 = real_field(data, "nu13");
             let nu23 = real_field(data, "nu23");
-            let law  = OrthotropicMaterial { e1, e2, e3, g12, g13, g23, nu12, nu13, nu23 };
+            let law = OrthotropicMaterial {
+                e1,
+                e2,
+                e3,
+                g12,
+                g13,
+                g23,
+                nu12,
+                nu13,
+                nu23,
+            };
             let aniso = AnisotropicMaterial::from_law(&law, IDENTITY);
             MaterialModel::Anisotropic(aniso)
         }
         "TransverseIsotropicMaterial" => {
-            let e_in_plane  = scalar_si_field(data, "e_in_plane");
-            let e_axial     = scalar_si_field(data, "e_axial");
+            let e_in_plane = scalar_si_field(data, "e_in_plane");
+            let e_axial = scalar_si_field(data, "e_axial");
             let nu_in_plane = real_field(data, "nu_in_plane");
-            let nu_axial    = real_field(data, "nu_axial");
-            let g_axial     = scalar_si_field(data, "g_axial");
+            let nu_axial = real_field(data, "nu_axial");
+            let g_axial = scalar_si_field(data, "g_axial");
             let law = TransverseIsotropicMaterial {
-                e_in_plane, e_axial, nu_in_plane, nu_axial, g_axial,
+                e_in_plane,
+                e_axial,
+                nu_in_plane,
+                nu_axial,
+                g_axial,
             };
             let aniso = AnisotropicMaterial::from_law(&law, IDENTITY);
             MaterialModel::Anisotropic(aniso)
@@ -1196,7 +1216,10 @@ fn extract_material(val: &Value) -> IsotropicElastic {
             other
         ),
     };
-    IsotropicElastic { youngs_modulus, poisson_ratio }
+    IsotropicElastic {
+        youngs_modulus,
+        poisson_ratio,
+    }
 }
 
 /// Extract SI scalar value from `Value::Scalar { si_value, .. }`.
@@ -1269,9 +1292,10 @@ pub(crate) fn extract_shell_route_params(options: &Value) -> (ShellForce, f64) {
             // real dimension (e.g. PRESSURE) is an upstream type error — ignore
             // it and keep the default rather than silently consuming a
             // mis-dimensioned magnitude as the ratio (esc-3594 suggestion 2).
-            Some(Value::Scalar { si_value, dimension }) if dimension.is_dimensionless() => {
-                shell_threshold = *si_value
-            }
+            Some(Value::Scalar {
+                si_value,
+                dimension,
+            }) if dimension.is_dimensionless() => shell_threshold = *si_value,
             _ => {}
         }
     }
@@ -1301,12 +1325,12 @@ mod tests {
     fn orthotropic_cantilever_tip_deflection_within_euler_bernoulli_band() {
         // Build Rust OrthotropicMaterial: E1 >> E2 = E3 (strongly transverse-stiff)
         let law = OrthotropicMaterial {
-            e1: 200e9_f64,  // 200 GPa — beam-axis Young's modulus (governs bending)
-            e2: 10e9_f64,   // 10 GPa  — transverse
-            e3: 10e9_f64,   // 10 GPa  — transverse
-            g12: 4e9_f64,   // 4 GPa
-            g13: 4e9_f64,   // 4 GPa
-            g23: 4e9_f64,   // 4 GPa
+            e1: 200e9_f64, // 200 GPa — beam-axis Young's modulus (governs bending)
+            e2: 10e9_f64,  // 10 GPa  — transverse
+            e3: 10e9_f64,  // 10 GPa  — transverse
+            g12: 4e9_f64,  // 4 GPa
+            g13: 4e9_f64,  // 4 GPa
+            g23: 4e9_f64,  // 4 GPa
             nu12: 0.3_f64,
             nu13: 0.3_f64,
             nu23: 0.3_f64,
@@ -1316,9 +1340,9 @@ mod tests {
         let aniso_mat = AnisotropicMaterial::from_law(&law, identity);
 
         // Cantilever geometry at L/h = 8 (keeps fixture off slender bending-lock wall).
-        let length = 0.8_f64;   // m — beam length (x-axis)
-        let width  = 0.1_f64;   // m — cross-section width (y-axis)
-        let height = 0.1_f64;   // m — cross-section height (z-axis, bending direction)
+        let length = 0.8_f64; // m — beam length (x-axis)
+        let width = 0.1_f64; // m — cross-section width (y-axis)
+        let height = 0.1_f64; // m — cross-section height (z-axis, bending direction)
         let tip_force = 1000.0_f64; // N (distributed to tip-face nodes by trampoline)
 
         // Call the new pub(crate) helper (doesn't exist yet → compile-fail RED).
@@ -1335,7 +1359,7 @@ mod tests {
         let tip_deflection = result
             .tip_nodes
             .iter()
-            .map(|&n| result.u[3 * n + 2].abs())  // z-component
+            .map(|&n| result.u[3 * n + 2].abs()) // z-component
             .fold(0.0f64, f64::max);
 
         // Euler–Bernoulli reference: δ = P·L³ / (3·E1·I), I = b·h³/12.
@@ -1386,14 +1410,14 @@ mod tests {
     #[test]
     fn constant_field_lift_matches_isotropic_elastic_result() {
         // Same geometry/load as the sibling orthotropic tests.
-        let length    = 0.8_f64;
-        let width     = 0.1_f64;
-        let height    = 0.1_f64;
+        let length = 0.8_f64;
+        let width = 0.1_f64;
+        let height = 0.1_f64;
         let tip_force = 1000.0_f64;
 
         let iso = IsotropicElastic {
             youngs_modulus: 200e9,
-            poisson_ratio:  0.3,
+            poisson_ratio: 0.3,
         };
         let identity: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         let aniso = AnisotropicMaterial::from_law(&iso, identity);
@@ -1401,16 +1425,24 @@ mod tests {
         // Solve with the native isotropic path.
         let (iso_result, _) = solve_cantilever_fea(
             &MaterialModel::Isotropic(iso),
-            length, width, height, tip_force, None,
+            length,
+            width,
+            height,
+            tip_force,
+            None,
         );
         // Solve with the anisotropic identity-frame lift path.
         let (aniso_result, _) = solve_cantilever_fea(
             &MaterialModel::Anisotropic(aniso),
-            length, width, height, tip_force, None,
+            length,
+            width,
+            height,
+            tip_force,
+            None,
         );
 
         // Both must converge.
-        assert!(iso_result.converged,   "isotropic solve must converge");
+        assert!(iso_result.converged, "isotropic solve must converge");
         assert!(aniso_result.converged, "anisotropic solve must converge");
 
         // CG iteration count must be identical: same K (bit-identical per β/3778
@@ -1423,8 +1455,7 @@ mod tests {
         // solves may converge in a different number of steps and this assertion
         // must be relaxed to a tolerance-based comparison.
         assert_eq!(
-            iso_result.iterations,
-            aniso_result.iterations,
+            iso_result.iterations, aniso_result.iterations,
             "iso and identity-frame aniso must require identical CG iterations \
              (same K + same f + deterministic CG ⇒ identical convergence path; \
              contingent on β/3778 C4 bitwise-identity guarantee)",
@@ -1446,20 +1477,21 @@ mod tests {
             "displacement vectors must have the same length",
         );
         for i in 0..iso_result.u.len() {
-            let tol  = 1e-12 * iso_result.u[i].abs().max(1.0);
+            let tol = 1e-12 * iso_result.u[i].abs().max(1.0);
             let diff = (aniso_result.u[i] - iso_result.u[i]).abs();
             assert!(
                 diff < tol,
                 "displacement at i={i}: |u_aniso−u_iso|={diff:.3e} ≥ tol={tol:.3e} \
                  (u_iso={:.3e}, u_aniso={:.3e})",
-                iso_result.u[i], aniso_result.u[i],
+                iso_result.u[i],
+                aniso_result.u[i],
             );
         }
 
         // max_von_mises must agree to 1e-9 relative: the two stress-recovery
         // code paths (element_stress_p1 vs element_von_mises_anisotropic)
         // compute the same physical quantity for an identity-frame isotropic lift.
-        let vm_iso   = iso_result.max_von_mises;
+        let vm_iso = iso_result.max_von_mises;
         let vm_aniso = aniso_result.max_von_mises;
         assert!(
             vm_iso > 0.0,
@@ -1491,21 +1523,31 @@ mod tests {
     fn orthotropic_cantilever_max_von_mises_within_stress_band() {
         // Same orthotropic fixture as the deflection test.
         let law = OrthotropicMaterial {
-            e1: 200e9_f64, e2: 10e9_f64, e3: 10e9_f64,
-            g12: 4e9_f64,  g13: 4e9_f64, g23: 4e9_f64,
-            nu12: 0.3_f64, nu13: 0.3_f64, nu23: 0.3_f64,
+            e1: 200e9_f64,
+            e2: 10e9_f64,
+            e3: 10e9_f64,
+            g12: 4e9_f64,
+            g13: 4e9_f64,
+            g23: 4e9_f64,
+            nu12: 0.3_f64,
+            nu13: 0.3_f64,
+            nu23: 0.3_f64,
         };
         let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         let aniso_mat = AnisotropicMaterial::from_law(&law, identity);
 
-        let length    = 0.8_f64;
-        let width     = 0.1_f64;
-        let height    = 0.1_f64;
+        let length = 0.8_f64;
+        let width = 0.1_f64;
+        let height = 0.1_f64;
         let tip_force = 1000.0_f64;
 
         let (result, _) = solve_cantilever_fea(
             &MaterialModel::Anisotropic(aniso_mat),
-            length, width, height, tip_force, None,
+            length,
+            width,
+            height,
+            tip_force,
+            None,
         );
 
         // Analytic σ_max = 6·P·L / (b·h²) — independent of material stiffness.
@@ -1539,9 +1581,15 @@ mod tests {
     #[test]
     fn element_stress_anisotropic_vm_matches_anisotropic() {
         let law = OrthotropicMaterial {
-            e1: 200e9_f64, e2: 10e9_f64, e3: 10e9_f64,
-            g12: 4e9_f64,  g13: 4e9_f64, g23: 4e9_f64,
-            nu12: 0.3_f64, nu13: 0.3_f64, nu23: 0.3_f64,
+            e1: 200e9_f64,
+            e2: 10e9_f64,
+            e3: 10e9_f64,
+            g12: 4e9_f64,
+            g13: 4e9_f64,
+            g23: 4e9_f64,
+            nu12: 0.3_f64,
+            nu13: 0.3_f64,
+            nu23: 0.3_f64,
         };
         let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         let aniso_mat = AnisotropicMaterial::from_law(&law, identity);
@@ -1557,10 +1605,7 @@ mod tests {
 
         // Non-zero displacement vector (non-degenerate stress state)
         let u_e: [f64; 12] = [
-            0.0,    0.0,    0.0,
-            1e-4,   0.0,    0.0,
-            0.0,    1e-4,   0.0,
-            0.0,    0.0,    1e-4,
+            0.0, 0.0, 0.0, 1e-4, 0.0, 0.0, 0.0, 1e-4, 0.0, 0.0, 0.0, 1e-4,
         ];
 
         // ── Part A: non-degeneracy guard (orthotropic fixture) ───────────────────
@@ -1573,12 +1618,12 @@ mod tests {
         let sigma = element_stress_anisotropic(&phys, &d_global, &u_e);
         let (sxx, syy, szz) = (sigma[0][0], sigma[1][1], sigma[2][2]);
         let (sxy, syz, szx) = (sigma[0][1], sigma[1][2], sigma[0][2]);
-        let vm_from_tensor = f64::sqrt(0.5 * (
-            (sxx - syy).powi(2)
-            + (syy - szz).powi(2)
-            + (szz - sxx).powi(2)
-            + 6.0 * (sxy * sxy + syz * syz + szx * szx)
-        ));
+        let vm_from_tensor = f64::sqrt(
+            0.5 * ((sxx - syy).powi(2)
+                + (syy - szz).powi(2)
+                + (szz - sxx).powi(2)
+                + 6.0 * (sxy * sxy + syz * syz + szx * szx)),
+        );
         assert!(
             vm_from_tensor.is_finite() && vm_from_tensor > 0.0,
             "vM from tensor must be finite and positive (orthotropic fixture); got {vm_from_tensor}"
@@ -1589,25 +1634,34 @@ mod tests {
         // element_stress_p1 (independent implementation using Lamé parameters) must
         // produce bit-identical 3×3 tensors.  This is a genuine inter-implementation
         // consistency check — not a comparison of the same code path to itself.
-        let e_iso  = 200e9_f64;
+        let e_iso = 200e9_f64;
         let nu_iso = 0.3_f64;
-        let g_iso  = e_iso / (2.0 * (1.0 + nu_iso));
+        let g_iso = e_iso / (2.0 * (1.0 + nu_iso));
         let iso_orth = OrthotropicMaterial {
-            e1: e_iso, e2: e_iso, e3: e_iso,
-            g12: g_iso, g13: g_iso, g23: g_iso,
-            nu12: nu_iso, nu13: nu_iso, nu23: nu_iso,
+            e1: e_iso,
+            e2: e_iso,
+            e3: e_iso,
+            g12: g_iso,
+            g13: g_iso,
+            g23: g_iso,
+            nu12: nu_iso,
+            nu13: nu_iso,
+            nu23: nu_iso,
         };
-        let iso_aniso  = AnisotropicMaterial::from_law(&iso_orth, identity);
-        let d_iso      = iso_aniso.d_matrix_global();
-        let iso_mat    = IsotropicElastic { youngs_modulus: e_iso, poisson_ratio: nu_iso };
+        let iso_aniso = AnisotropicMaterial::from_law(&iso_orth, identity);
+        let d_iso = iso_aniso.d_matrix_global();
+        let iso_mat = IsotropicElastic {
+            youngs_modulus: e_iso,
+            poisson_ratio: nu_iso,
+        };
 
         let sigma_aniso = element_stress_anisotropic(&phys, &d_iso, &u_e);
-        let sigma_p1    = element_stress_p1(&phys, &iso_mat, &u_e);
+        let sigma_p1 = element_stress_p1(&phys, &iso_mat, &u_e);
 
         for r in 0..3 {
             for c in 0..3 {
-                let a   = sigma_aniso[r][c];
-                let b   = sigma_p1[r][c];
+                let a = sigma_aniso[r][c];
+                let b = sigma_p1[r][c];
                 let tol = 1e-9 * b.abs().max(1.0);
                 assert!(
                     (a - b).abs() <= tol,
@@ -1627,20 +1681,30 @@ mod tests {
     #[test]
     fn cantilever_fea_solve_extended_fields() {
         let law = OrthotropicMaterial {
-            e1: 200e9_f64, e2: 10e9_f64, e3: 10e9_f64,
-            g12: 4e9_f64,  g13: 4e9_f64, g23: 4e9_f64,
-            nu12: 0.3_f64, nu13: 0.3_f64, nu23: 0.3_f64,
+            e1: 200e9_f64,
+            e2: 10e9_f64,
+            e3: 10e9_f64,
+            g12: 4e9_f64,
+            g13: 4e9_f64,
+            g23: 4e9_f64,
+            nu12: 0.3_f64,
+            nu13: 0.3_f64,
+            nu23: 0.3_f64,
         };
         let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         let aniso_mat = AnisotropicMaterial::from_law(&law, identity);
 
         let length = 0.8_f64;
-        let width  = 0.1_f64;
+        let width = 0.1_f64;
         let height = 0.1_f64;
 
         let (fea, _) = solve_cantilever_fea(
             &MaterialModel::Anisotropic(aniso_mat),
-            length, width, height, 1000.0, None,
+            length,
+            width,
+            height,
+            1000.0,
+            None,
         );
 
         // Expected mesh counts: nz=6, nx=round(0.8/0.1*6)=48, ny=1
@@ -1701,7 +1765,10 @@ mod tests {
         let fields: PersistentMap<String, Value> = [
             (
                 "youngs_modulus".to_string(),
-                Value::Scalar { si_value: youngs, dimension: DimensionVector::PRESSURE },
+                Value::Scalar {
+                    si_value: youngs,
+                    dimension: DimensionVector::PRESSURE,
+                },
             ),
             ("poisson_ratio".to_string(), Value::Real(poisson)),
         ]
@@ -1717,29 +1784,37 @@ mod tests {
 
     /// `Value::Scalar` geometry length (SI metres).
     fn shell9_make_len(m: f64) -> Value {
-        Value::Scalar { si_value: m, dimension: DimensionVector::LENGTH }
+        Value::Scalar {
+            si_value: m,
+            dimension: DimensionVector::LENGTH,
+        }
     }
 
     /// `Value::List` with one `PointLoad { force: Real }` (trampoline sums force).
     fn shell9_make_point_loads(force_n: f64) -> Value {
-        let fields: PersistentMap<String, Value> =
-            [("force".to_string(), Value::Real(force_n))].into_iter().collect();
-        Value::List(vec![Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: StructureTypeId(u32::MAX),
-            type_name: "PointLoad".to_string(),
-            version: 1,
-            fields,
-        }))])
+        let fields: PersistentMap<String, Value> = [("force".to_string(), Value::Real(force_n))]
+            .into_iter()
+            .collect();
+        Value::List(vec![Value::StructureInstance(Box::new(
+            StructureInstanceData {
+                type_id: StructureTypeId(u32::MAX),
+                type_name: "PointLoad".to_string(),
+                version: 1,
+                fields,
+            },
+        ))])
     }
 
     /// `Value::List` with one `FixedSupport` (fields not inspected; presence clamps).
     fn shell9_make_supports() -> Value {
-        Value::List(vec![Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: StructureTypeId(u32::MAX),
-            type_name: "FixedSupport".to_string(),
-            version: 1,
-            fields: [].into_iter().collect(),
-        }))])
+        Value::List(vec![Value::StructureInstance(Box::new(
+            StructureInstanceData {
+                type_id: StructureTypeId(u32::MAX),
+                type_name: "FixedSupport".to_string(),
+                version: 1,
+                fields: [].into_iter().collect(),
+            },
+        ))])
     }
 
     /// `ElasticOptions` with the given `ShellForce` variant + default
@@ -1781,12 +1856,11 @@ mod tests {
     fn shell9_vm9(w: &[f64]) -> f64 {
         let (sxx, syy, szz) = (w[0], w[4], w[8]);
         let (sxy, syz, szx) = (w[1], w[5], w[6]);
-        (0.5
-            * ((sxx - syy).powi(2)
-                + (syy - szz).powi(2)
-                + (szz - sxx).powi(2)
-                + 6.0 * (sxy * sxy + syz * syz + szx * szx)))
-        .sqrt()
+        (0.5 * ((sxx - syy).powi(2)
+            + (syy - szz).powi(2)
+            + (szz - sxx).powi(2)
+            + 6.0 * (sxy * sxy + syz * syz + szx * szx)))
+            .sqrt()
     }
 
     /// Unwrap a `ComputeOutcome::Completed` into the ElasticResult field map.
@@ -1825,13 +1899,8 @@ mod tests {
         ];
 
         let cancellation = CancellationHandle::new();
-        let outcome = solve_elastic_static_trampoline(
-            &value_inputs,
-            &[],
-            &Value::Undef,
-            None,
-            &cancellation,
-        );
+        let outcome =
+            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
         let fields = shell9_result_fields(outcome);
 
         // shell_channels must be a "ShellStress" StructureInstance (NOT Undef).
@@ -1854,13 +1923,22 @@ mod tests {
         };
 
         let top = shell9_field_data(
-            sc_data.fields.get(&"top".to_string()).expect("ShellStress.top"),
+            sc_data
+                .fields
+                .get(&"top".to_string())
+                .expect("ShellStress.top"),
         );
         let mid = shell9_field_data(
-            sc_data.fields.get(&"mid".to_string()).expect("ShellStress.mid"),
+            sc_data
+                .fields
+                .get(&"mid".to_string())
+                .expect("ShellStress.mid"),
         );
         let bottom = shell9_field_data(
-            sc_data.fields.get(&"bottom".to_string()).expect("ShellStress.bottom"),
+            sc_data
+                .fields
+                .get(&"bottom".to_string())
+                .expect("ShellStress.bottom"),
         );
         assert!(
             !top.is_empty() && top.iter().all(|x| x.is_finite()),
@@ -1890,7 +1968,11 @@ mod tests {
         );
 
         // max-over-elements top-channel von Mises within the one-OOM band.
-        assert_eq!(top.len() % 9, 0, "top must hold a row-major 3×3 per element (len % 9 == 0)");
+        assert_eq!(
+            top.len() % 9,
+            0,
+            "top must hold a row-major 3×3 per element (len % 9 == 0)"
+        );
         let max_vm = top.chunks_exact(9).map(shell9_vm9).fold(0.0_f64, f64::max);
         assert!(
             max_vm.is_finite() && max_vm > 0.0,
@@ -1921,18 +2003,16 @@ mod tests {
         ];
 
         let cancellation = CancellationHandle::new();
-        let outcome = solve_elastic_static_trampoline(
-            &value_inputs,
-            &[],
-            &Value::Undef,
-            None,
-            &cancellation,
-        );
+        let outcome =
+            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
         let fields = shell9_result_fields(outcome);
 
         // 4084/α tet baseline: shell_channels + frame remain Undef.
         assert!(
-            matches!(fields.get(&"shell_channels".to_string()), Some(Value::Undef)),
+            matches!(
+                fields.get(&"shell_channels".to_string()),
+                Some(Value::Undef)
+            ),
             "tet path must keep shell_channels=Undef (4084/α baseline)"
         );
         assert!(

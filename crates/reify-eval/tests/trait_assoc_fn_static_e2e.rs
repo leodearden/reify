@@ -53,10 +53,7 @@ fn trait_static_fn_dispatch_end_to_end() {
                 "Spacer.gap: expected {expected} m (10mm), got {si_value} m"
             );
         }
-        other => panic!(
-            "Spacer.gap: expected Value::Scalar (10mm), got {:?}",
-            other
-        ),
+        other => panic!("Spacer.gap: expected Value::Scalar (10mm), got {:?}", other),
     }
 
     // Spacer.wide = Defaultable::scaled(3) → 10mm * 3 = 30mm = 0.03 m in SI.

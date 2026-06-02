@@ -90,10 +90,11 @@ pub use dispatcher::{
     DispatchPlan, LONG_CHAIN_DEFAULT_THRESHOLD_MS, LONG_CHAIN_MIN_STAGES,
     LONG_CHAIN_THRESHOLD_ENV_VAR, dispatch, is_long_chain_realization,
     kernel_pragma_unsatisfiable_diagnostic, kernel_version_mismatch_diagnostic,
-    long_chain_diagnostic, long_chain_threshold_from_env,
-    long_chain_threshold_from_env_value, no_kernel_chain_diagnostic, per_stage_tolerance_for_plan,
-    pinned_kernel_missing_diagnostic, unpinned_kernel_loaded_diagnostic,
+    long_chain_diagnostic, long_chain_threshold_from_env, long_chain_threshold_from_env_value,
+    no_kernel_chain_diagnostic, per_stage_tolerance_for_plan, pinned_kernel_missing_diagnostic,
+    unpinned_kernel_loaded_diagnostic,
 };
+pub use geometry_ops::try_eval_ad_hoc_selector;
 pub use kernel_attribute_hook::propagate_via_kernel_attribute_hook;
 pub use kernel_registry::{
     collect_registry, pick_lexmin_brep_kernel, pick_lexmin_kernel, registry,
@@ -111,14 +112,17 @@ pub use topology_attribute_propagation::{
 pub use topology_attribute_resolver::{
     AttributeQuery, AttributeResolution, resolve_unique_by_attribute,
 };
-pub use geometry_ops::try_eval_ad_hoc_selector;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use reify_compiler::{CompiledModule, CompiledPurpose};
 use reify_core::{ConstraintNodeId, ContentHash, Diagnostic, ValueCellId};
-use reify_ir::{CompiledFunction, ConstraintChecker, ConstraintSolver, FeatureTagTable, GeometryKernel, KernelHandle, Mesh, ObjectiveSet, OptimizedImpl, Satisfaction, TopologyAttributeTable, ValueMap};
+use reify_ir::{
+    CompiledFunction, ConstraintChecker, ConstraintSolver, FeatureTagTable, GeometryKernel,
+    KernelHandle, Mesh, ObjectiveSet, OptimizedImpl, Satisfaction, TopologyAttributeTable,
+    ValueMap,
+};
 
 use crate::cache::{CacheStore, NodeId};
 use crate::demand::DemandRegistry;
@@ -1641,8 +1645,8 @@ mod tests {
     /// `crates/reify-eval/tests/stdlib_prelude_tests.rs`.
     #[test]
     fn eval_does_not_accumulate_functions() {
-        use reify_test_support::mocks::MockConstraintChecker;
         use reify_core::ModulePath;
+        use reify_test_support::mocks::MockConstraintChecker;
 
         let source = r#"
 fn symmetric_tolerance(nominal: Length, deviation: Length) -> Length {
@@ -1727,10 +1731,10 @@ structure S {
     /// `Arc::ptr_eq(&engine.meta_map, ...)` is a type error.
     #[test]
     fn meta_map_arc_shared_with_concurrent_setup() {
-        use reify_test_support::mocks::MockConstraintChecker;
-        use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, literal};
         use reify_core::{ModulePath, Type, ValueCellId};
         use reify_ir::Value;
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, literal};
         use std::sync::Arc;
 
         let meta_entries = {
@@ -1776,8 +1780,8 @@ structure S {
 
     #[test]
     fn build_meta_map_filters_empty_and_preserves_non_empty_meta() {
-        use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
         use reify_core::ModulePath;
+        use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
 
         let meta_entries = {
             let mut m = std::collections::HashMap::new();
@@ -1868,11 +1872,11 @@ structure S {
     where
         F: FnOnce(&mut Engine, reify_core::ValueCellId),
     {
+        use reify_core::{ModulePath, Type, ValueCellId};
         use reify_test_support::mocks::{MockConstraintChecker, SpyConstraintSolver};
         use reify_test_support::{
             CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref,
         };
-        use reify_core::{ModulePath, Type, ValueCellId};
         use std::collections::HashMap;
         use std::sync::Arc;
 
@@ -2134,9 +2138,13 @@ structure S {
         let node_b = crate::cache::NodeId::Value(reify_core::ValueCellId::new("Plate", "width"));
 
         // Donate node_a (fits in budget = 1 byte) — size_bytes=1
-        engine.warm_pool_mut().donate(node_a.clone(), OpaqueState::new(1i32, 1));
+        engine
+            .warm_pool_mut()
+            .donate(node_a.clone(), OpaqueState::new(1i32, 1));
         // Donate node_b — triggers eviction of node_a (LRU) because budget=1 byte
-        engine.warm_pool_mut().donate(node_b.clone(), OpaqueState::new(2i32, 1));
+        engine
+            .warm_pool_mut()
+            .donate(node_b.clone(), OpaqueState::new(2i32, 1));
 
         // At least two events are buffered (Donated(a), Evicted(a), Donated(b))
         let count_before = engine.journal_event_count();

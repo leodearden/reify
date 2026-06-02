@@ -32,14 +32,14 @@
 //!   snapshot throughout all four walks — no value evaluator ran during any of the
 //!   freshness-only propagation rounds (arch §3.5 line 432).
 
+use reify_core::{ModulePath, Type, ValueCellId};
 use reify_eval::Engine;
 use reify_eval::cache::{CachedResult, NodeId};
 use reify_eval::freshness_walk;
+use reify_ir::{BinOp, Freshness, NodeTraits, Value};
 use reify_test_support::builders::{binop, literal, value_ref_typed};
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
-use reify_core::{ModulePath, Type, ValueCellId};
-use reify_ir::{BinOp, Freshness, NodeTraits, Value};
 use std::collections::HashSet;
 
 /// Build the 2-cell synthetic module: param `a` + let `b = a * 2.0`.

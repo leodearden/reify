@@ -123,7 +123,13 @@ fn shell_extract_dispatch_on_synthetic_slab_materializes_shell_extraction_result
     );
 
     // (2) Five top-level keys must be present
-    for key in &["mid_surface", "segmentation", "naming", "solve_time_ms", "diagnostics"] {
+    for key in &[
+        "mid_surface",
+        "segmentation",
+        "naming",
+        "solve_time_ms",
+        "diagnostics",
+    ] {
         assert!(
             data.fields.contains_key(&key.to_string()),
             "ShellExtractionResult field map missing key {:?}",
@@ -170,10 +176,7 @@ fn shell_extract_invalid_threshold_returns_failed_with_e_shell_bad_threshold_cod
         type_id: StructureTypeId(0),
         type_name: "ElasticOptions".to_string(),
         version: 1,
-        fields: PersistentMap::from_iter([(
-            "shell_threshold".to_string(),
-            Value::Real(0.0),
-        )]),
+        fields: PersistentMap::from_iter([("shell_threshold".to_string(), Value::Real(0.0))]),
     }));
 
     let field = synthetic_slab_field();
@@ -188,14 +191,12 @@ fn shell_extract_invalid_threshold_returns_failed_with_e_shell_bad_threshold_cod
     );
 
     // (1) Must return Err on invalid threshold
-    let diagnostics = result.expect_err(
-        "dispatch_compute_node returned Ok; expected Err for shell_threshold=0.0",
-    );
+    let diagnostics = result
+        .expect_err("dispatch_compute_node returned Ok; expected Err for shell_threshold=0.0");
 
     // (2) At least one diagnostic with Severity::Error and ShellBadThreshold code
     let typed = diagnostics.iter().find(|d| {
-        d.severity == Severity::Error
-            && d.code == Some(DiagnosticCode::ShellBadThreshold)
+        d.severity == Severity::Error && d.code == Some(DiagnosticCode::ShellBadThreshold)
     });
     assert!(
         typed.is_some(),
@@ -390,8 +391,7 @@ fn shell_extract_cache_entry_is_byte_stable_across_redispatches() {
     // so the content hash is byte-stable across re-dispatches.
     let hash2 = result2.content_hash();
     assert_eq!(
-        hash2,
-        hash1,
+        hash2, hash1,
         "content hash must be identical across re-dispatches on the same inputs; \
          `shell_extraction_result_to_value` must project a byte-stable Value \
          (solve_time_ms must not perturb the content hash)"
@@ -543,15 +543,15 @@ fn shell_extract_empty_axis_grid_returns_failed_with_shell_no_voxel_grid_code() 
     // (1) Must return Failed on empty axis grid
     let diagnostics = match outcome {
         ComputeOutcome::Failed { diagnostics } => diagnostics,
-        other => panic!(
-            "expected ComputeOutcome::Failed for empty-axis-grid input, got: {other:?}"
-        ),
+        other => {
+            panic!("expected ComputeOutcome::Failed for empty-axis-grid input, got: {other:?}")
+        }
     };
 
     // (2) At least one diagnostic must carry ShellNoVoxelGrid code
-    let coded = diagnostics.iter().find(|d| {
-        d.code == Some(DiagnosticCode::ShellNoVoxelGrid)
-    });
+    let coded = diagnostics
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::ShellNoVoxelGrid));
     assert!(
         coded.is_some(),
         "expected at least one diagnostic with code=DiagnosticCode::ShellNoVoxelGrid; \

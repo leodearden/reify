@@ -80,8 +80,7 @@ fn solid_param_evaluates_to_geometry_handle() {
                 "realization_ref must be Widget#realization[0]"
             );
             assert_ne!(
-                *upstream_values_hash,
-                [0u8; 32],
+                *upstream_values_hash, [0u8; 32],
                 "upstream_values_hash must be non-zero (blake3 of scalar args)"
             );
             assert_ne!(

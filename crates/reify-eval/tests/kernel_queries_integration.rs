@@ -80,9 +80,8 @@ const ALL_QUERIES_WALK_PATH: &str = concat!(
 /// `examples/kernel_queries/all_queries_walk.ri` is created (step-2).
 #[test]
 fn all_queries_walk_compiles_with_stdlib_no_errors() {
-    let source = std::fs::read_to_string(ALL_QUERIES_WALK_PATH).expect(
-        "examples/kernel_queries/all_queries_walk.ri should exist (task 3626 step-2)",
-    );
+    let source = std::fs::read_to_string(ALL_QUERIES_WALK_PATH)
+        .expect("examples/kernel_queries/all_queries_walk.ri should exist (task 3626 step-2)");
 
     let compiled = parse_and_compile_with_stdlib(&source);
     assert!(
@@ -115,9 +114,8 @@ fn all_queries_walk_evals_top_level_helpers_to_non_undef() {
     // in the separate compile test. Do NOT remove this block in the name of DRY —
     // `all_queries_walk_compiles_with_stdlib_no_errors` is the canonical always-on
     // gate; this copy is a local self-containment guard.
-    let source = std::fs::read_to_string(ALL_QUERIES_WALK_PATH).expect(
-        "examples/kernel_queries/all_queries_walk.ri should exist (task 3626 step-2)",
-    );
+    let source = std::fs::read_to_string(ALL_QUERIES_WALK_PATH)
+        .expect("examples/kernel_queries/all_queries_walk.ri should exist (task 3626 step-2)");
     let compiled = parse_and_compile_with_stdlib(&source);
     assert!(
         errors_only(&compiled).is_empty(),
@@ -171,28 +169,13 @@ fn all_queries_walk_evals_top_level_helpers_to_non_undef() {
     );
 
     // 2. contains → Value::Bool
-    assert_non_undef!(
-        "AllQueriesWalk",
-        "inside",
-        Value::Bool(_),
-        "Value::Bool"
-    );
+    assert_non_undef!("AllQueriesWalk", "inside", Value::Bool(_), "Value::Bool");
 
     // 3. intersects → Value::Bool
-    assert_non_undef!(
-        "AllQueriesWalk",
-        "overlap",
-        Value::Bool(_),
-        "Value::Bool"
-    );
+    assert_non_undef!("AllQueriesWalk", "overlap", Value::Bool(_), "Value::Bool");
 
     // 4. geo_equiv → Value::Bool
-    assert_non_undef!(
-        "AllQueriesWalk",
-        "equiv",
-        Value::Bool(_),
-        "Value::Bool"
-    );
+    assert_non_undef!("AllQueriesWalk", "equiv", Value::Bool(_), "Value::Bool");
 
     // 5. angle → Value::Scalar (ANGLE)
     assert_non_undef!(
@@ -203,20 +186,10 @@ fn all_queries_walk_evals_top_level_helpers_to_non_undef() {
     );
 
     // 6. edges → Value::List (of GeometryHandle)
-    assert_non_undef!(
-        "AllQueriesWalk",
-        "all_edges",
-        Value::List(_),
-        "Value::List"
-    );
+    assert_non_undef!("AllQueriesWalk", "all_edges", Value::List(_), "Value::List");
 
     // 7. faces → Value::List (of GeometryHandle)
-    assert_non_undef!(
-        "AllQueriesWalk",
-        "all_faces",
-        Value::List(_),
-        "Value::List"
-    );
+    assert_non_undef!("AllQueriesWalk", "all_faces", Value::List(_), "Value::List");
 
     // 8. edges_by_length → Value::List
     assert_non_undef!(
@@ -227,20 +200,10 @@ fn all_queries_walk_evals_top_level_helpers_to_non_undef() {
     );
 
     // 9. faces_by_area → Value::List
-    assert_non_undef!(
-        "AllQueriesWalk",
-        "big_faces",
-        Value::List(_),
-        "Value::List"
-    );
+    assert_non_undef!("AllQueriesWalk", "big_faces", Value::List(_), "Value::List");
 
     // 10. faces_by_normal → Value::List
-    assert_non_undef!(
-        "AllQueriesWalk",
-        "top_faces",
-        Value::List(_),
-        "Value::List"
-    );
+    assert_non_undef!("AllQueriesWalk", "top_faces", Value::List(_), "Value::List");
 
     // 11. edges_parallel_to → Value::List
     assert_non_undef!(
@@ -271,15 +234,14 @@ fn all_queries_walk_evals_top_level_helpers_to_non_undef() {
     // in the module-doc.
     {
         let com_cell = ValueCellId::new("AllQueriesWalk", "com");
-        let com_val = result
-            .values
-            .get(&com_cell)
-            .expect("AllQueriesWalk.com absent from result.values; \
-                     check cell name matches the .ri binding name");
+        let com_val = result.values.get(&com_cell).expect(
+            "AllQueriesWalk.com absent from result.values; \
+                     check cell name matches the .ri binding name",
+        );
         match com_val {
-            Value::Undef => panic!(
-                "AllQueriesWalk.com should be non-Undef Value::Point, got Value::Undef"
-            ),
+            Value::Undef => {
+                panic!("AllQueriesWalk.com should be non-Undef Value::Point, got Value::Undef")
+            }
             Value::Point(components) => {
                 assert_eq!(
                     components.len(),
@@ -295,7 +257,8 @@ fn all_queries_walk_evals_top_level_helpers_to_non_undef() {
                                 "center_of_mass component [{}] = {} m \
                                  (expected ≈0 for axis-aligned box centred at origin; \
                                  tolerance 1 µm = 1e-6 m)",
-                                i, si_value
+                                i,
+                                si_value
                             );
                         }
                         other => panic!(
@@ -306,19 +269,12 @@ fn all_queries_walk_evals_top_level_helpers_to_non_undef() {
                     }
                 }
             }
-            other => panic!(
-                "AllQueriesWalk.com should be Value::Point but got: {other:?}"
-            ),
+            other => panic!("AllQueriesWalk.com should be Value::Point but got: {other:?}"),
         }
     }
 
     // 14. moment_of_inertia → Value::Tensor
-    assert_non_undef!(
-        "AllQueriesWalk",
-        "moi",
-        Value::Tensor(_),
-        "Value::Tensor"
-    );
+    assert_non_undef!("AllQueriesWalk", "moi", Value::Tensor(_), "Value::Tensor");
 }
 
 /// OCCT-gated: pins the 7 sub-handle-arg helpers (normal, curvature surface,
@@ -336,9 +292,7 @@ fn all_queries_walk_evals_top_level_helpers_to_non_undef() {
 #[test]
 fn multi_feature_part_sub_handle_queries_return_non_undef() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!(
-            "skipping sub-handle OCCT assertions: OCCT not available"
-        );
+        eprintln!("skipping sub-handle OCCT assertions: OCCT not available");
         return;
     }
 
@@ -378,7 +332,10 @@ fn multi_feature_part_sub_handle_queries_return_non_undef() {
     let sphere_faces = kernel
         .extract_faces(sphere_handle.id)
         .expect("extract_faces(sphere) should succeed");
-    assert!(!sphere_faces.is_empty(), "sphere should have at least 1 face");
+    assert!(
+        !sphere_faces.is_empty(),
+        "sphere should have at least 1 face"
+    );
 
     // ── 1. length — EdgeLength on a box edge ─────────────────────────────────
 
@@ -387,10 +344,7 @@ fn multi_feature_part_sub_handle_queries_return_non_undef() {
         .expect("EdgeLength on box edge[0] should succeed");
     match edge_len_reply {
         Value::Real(v) => {
-            assert!(
-                v > 0.0,
-                "EdgeLength of box edge must be positive, got {v}"
-            );
+            assert!(v > 0.0, "EdgeLength of box edge must be positive, got {v}");
         }
         other => panic!("EdgeLength should return Value::Real, got: {other:?}"),
     }
@@ -563,9 +517,7 @@ fn multi_feature_part_sub_handle_queries_return_non_undef() {
 #[ignore]
 fn profile_topology_selectors_and_sub_handle_memory() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!(
-            "[profile] OCCT not available — skipping §10.3/§10.4 profiling"
-        );
+        eprintln!("[profile] OCCT not available — skipping §10.3/§10.4 profiling");
         return;
     }
 

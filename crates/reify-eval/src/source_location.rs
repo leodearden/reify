@@ -204,7 +204,6 @@ pub fn resolve_entity_at_source_position(
     Some(narrow_to_member(best_template?, offset))
 }
 
-
 /// Resolve source location for `entity_path` against `compiled`.
 ///
 /// Accepts two forms:
@@ -456,7 +455,8 @@ mod tests {
         let (parsed, compiled) = bracket_parsed_and_compiled();
         let source = reify_test_support::bracket_source();
         let line_offsets = reify_core::build_line_offsets(source);
-        let result = resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 2, 11);
+        let result =
+            resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 2, 11);
         assert_eq!(
             result,
             Some("Bracket.width".to_string()),
@@ -472,7 +472,8 @@ mod tests {
         let (parsed, compiled) = bracket_parsed_and_compiled();
         let source = reify_test_support::bracket_source();
         let line_offsets = reify_core::build_line_offsets(source);
-        let result = resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 4, 11);
+        let result =
+            resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 4, 11);
         assert_eq!(
             result,
             Some("Bracket.thickness".to_string()),
@@ -490,7 +491,8 @@ mod tests {
         let (parsed, compiled) = bracket_parsed_and_compiled();
         let source = reify_test_support::bracket_source();
         let line_offsets = reify_core::build_line_offsets(source);
-        let result = resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 10, 5);
+        let result =
+            resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 10, 5);
         assert_eq!(
             result,
             Some("Bracket".to_string()),
@@ -507,7 +509,8 @@ mod tests {
         let (parsed, compiled) = bracket_parsed_and_compiled();
         let source = reify_test_support::bracket_source();
         let line_offsets = reify_core::build_line_offsets(source);
-        let result = resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 16, 1);
+        let result =
+            resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 16, 1);
         assert!(
             result.is_none(),
             "cursor past end of source at (16, 1) should return None, got {:?}",
@@ -523,15 +526,18 @@ mod tests {
         let source = reify_test_support::bracket_source();
         let line_offsets = reify_core::build_line_offsets(source);
         assert!(
-            resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 0, 1).is_none(),
+            resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 0, 1)
+                .is_none(),
             "zero line should return None"
         );
         assert!(
-            resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 1, 0).is_none(),
+            resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 1, 0)
+                .is_none(),
             "zero col should return None"
         );
         assert!(
-            resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 0, 0).is_none(),
+            resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 0, 0)
+                .is_none(),
             "zero line and col should return None"
         );
     }
@@ -547,8 +553,14 @@ mod tests {
         let loc = resolve_entity_source_location(&compiled, source, "bracket.ri", "Bracket.width")
             .expect("forward lookup for Bracket.width must succeed");
         // loc.line and loc.column are 1-based and map to span.start of width cell.
-        let result =
-            resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, loc.line, loc.column);
+        let result = resolve_entity_at_source_position(
+            &compiled,
+            &parsed,
+            source,
+            &line_offsets,
+            loc.line,
+            loc.column,
+        );
         assert_eq!(
             result,
             Some("Bracket.width".to_string()),
@@ -604,7 +616,8 @@ mod tests {
         let source = reify_test_support::bracket_source();
         let line_offsets = reify_core::build_line_offsets(source);
         // line 14, col 9 = 'b' of "body" in "    let body = box(width, height, thickness)"
-        let result = resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 14, 9);
+        let result =
+            resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 14, 9);
         assert_eq!(
             result,
             Some("Bracket.body".to_string()),
@@ -636,7 +649,8 @@ mod tests {
         // line 2 = "    param width: Scalar = 80mm" (30 chars).
         // col=99 is well past the end; new helper clamps to the trailing '\n' of line 2,
         // which falls outside any value cell → enclosing template name.
-        let result = resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 2, 99);
+        let result =
+            resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 2, 99);
         assert_eq!(
             result,
             Some("Bracket".to_string()),
@@ -669,8 +683,8 @@ mod tests {
     //     After step-2 (parsed-span outer check), it returns Some("Middle").
     //     This test is RED at step-1, GREEN at step-2.
     #[test]
-    fn entity_at_source_position_multi_structure_header_line_in_second_structure_returns_second_template_name(
-    ) {
+    fn entity_at_source_position_multi_structure_header_line_in_second_structure_returns_second_template_name()
+     {
         const THREE_STRUCT_SOURCE: &str = r#"pub structure First {
     param a: Scalar = 1mm
 }
@@ -685,7 +699,11 @@ pub structure Last {
 "#;
         let parsed =
             reify_compiler::parse_with_stdlib(THREE_STRUCT_SOURCE, ModulePath::single("multi"));
-        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
         let compiled = reify_compiler::compile_with_stdlib(&parsed);
         let line_offsets = reify_core::build_line_offsets(THREE_STRUCT_SOURCE);
 

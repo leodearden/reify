@@ -22,9 +22,9 @@
 use std::sync::OnceLock;
 
 use reify_compiler::CompiledModule;
-use reify_test_support::{assert_no_eval_errors, make_engine, parse_and_compile_with_stdlib};
 use reify_core::ValueCellId;
 use reify_ir::Value;
+use reify_test_support::{assert_no_eval_errors, make_engine, parse_and_compile_with_stdlib};
 
 // ── Path constant ─────────────────────────────────────────────────────────────
 

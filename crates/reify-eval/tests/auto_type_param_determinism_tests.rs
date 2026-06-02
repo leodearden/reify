@@ -35,11 +35,11 @@ use reify_compiler::auto_type_param::{
     filter_feasible_candidates, select_candidate,
 };
 use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
+use reify_core::{DiagnosticCode, Severity, SourceSpan};
+use reify_ir::Satisfaction;
 use reify_test_support::{
     MockConstraintChecker, check_source_with_stdlib, parse_and_compile_with_stdlib,
 };
-use reify_core::{DiagnosticCode, Severity, SourceSpan};
-use reify_ir::Satisfaction;
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 

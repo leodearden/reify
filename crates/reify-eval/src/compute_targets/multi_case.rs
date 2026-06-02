@@ -87,11 +87,11 @@ pub fn solve_multi_case_trampoline(
         };
     }
 
-    let material       = &value_inputs[0];
-    let length         = &value_inputs[1];
-    let width          = &value_inputs[2];
-    let height         = &value_inputs[3];
-    let cases_val      = &value_inputs[4];
+    let material = &value_inputs[0];
+    let length = &value_inputs[1];
+    let width = &value_inputs[2];
+    let height = &value_inputs[3];
+    let cases_val = &value_inputs[4];
     let shared_options = &value_inputs[5];
 
     // ── (2) Unwrap cases list ─────────────────────────────────────────────────
@@ -211,7 +211,11 @@ pub fn solve_multi_case_trampoline(
         );
 
         match outcome {
-            ComputeOutcome::Completed { result, diagnostics: case_diags, .. } => {
+            ComputeOutcome::Completed {
+                result,
+                diagnostics: case_diags,
+                ..
+            } => {
                 accumulated_diagnostics.extend(case_diags);
                 let key = Value::String(name.clone());
                 if inner.contains_key(&key) {
@@ -227,12 +231,16 @@ pub fn solve_multi_case_trampoline(
                 inner.insert(key, result);
             }
             ComputeOutcome::Cancelled => return ComputeOutcome::Cancelled,
-            ComputeOutcome::Failed { diagnostics: fail_diags } => {
+            ComputeOutcome::Failed {
+                diagnostics: fail_diags,
+            } => {
                 // Prepend any warnings collected from earlier completed cases so
                 // they are not silently discarded along with the failure.
                 let mut all_diags = accumulated_diagnostics;
                 all_diags.extend(fail_diags);
-                return ComputeOutcome::Failed { diagnostics: all_diags };
+                return ComputeOutcome::Failed {
+                    diagnostics: all_diags,
+                };
             }
         }
     }

@@ -43,7 +43,10 @@
 //!    never dispatched, and that `QueryError` from the hook surfaces as a
 //!    `Diagnostic::warning` without regressing `geometry_output` to `None`.
 
-use reify_ir::{FeatureId, GeometryHandleId, GeometryKernel, GeometryOp, KernelAttributeOutcome, QueryError, TopologyAttributeTable};
+use reify_ir::{
+    FeatureId, GeometryHandleId, GeometryKernel, GeometryOp, KernelAttributeOutcome, QueryError,
+    TopologyAttributeTable,
+};
 
 /// Engine-side dispatcher for [`reify_types::KernelAttributeHook`].
 ///
@@ -105,8 +108,11 @@ pub fn propagate_via_kernel_attribute_hook(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_ir::{
+        ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryQuery,
+        KernelAttributeHook, Mesh, TessError, Value,
+    };
     use reify_test_support::{CountingSubscriberBuilder, FailingMockGeometryKernel};
-    use reify_ir::{ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryQuery, KernelAttributeHook, Mesh, TessError, Value};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// In-test hook impl that records every `propagate_attributes` call into

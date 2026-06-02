@@ -5,12 +5,12 @@
 //! wires meta_map into EvalContext.
 
 use reify_compiler::{ValueCellDecl, ValueCellKind, Visibility};
+use reify_core::*;
 use reify_eval::Engine;
+use reify_ir::*;
 use reify_test_support::builders::value_ref_typed;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
-use reify_core::*;
-use reify_ir::*;
 
 /// step-3: Parent can access child template meta via meta_access("Child", key).
 ///

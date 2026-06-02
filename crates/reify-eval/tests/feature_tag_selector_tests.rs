@@ -16,10 +16,10 @@
 //! Handle id convention: id=1 is the parent solid, id=2..N are sub-shape handles
 //! returned by extraction.
 
-use reify_eval::topology_selectors;
-use reify_test_support::MockGeometryKernel;
 use reify_core::SourceSpan;
+use reify_eval::topology_selectors;
 use reify_ir::{FeatureTag, FeatureTagTable, GeometryHandleId, QueryError, StepKind, Value};
+use reify_test_support::MockGeometryKernel;
 
 // ─── edges_by_length_with_tags ────────────────────────────────────────────────
 

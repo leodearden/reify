@@ -10,12 +10,12 @@
 //! relevant diagnostic substring appears in `result.eval_result.diagnostics`.
 //! The tests are grouped with TDD step numbers in comments for traceability.
 
+use reify_core::{Diagnostic, DimensionVector, ModulePath, Severity, Type, ValueCellId, VersionId};
 use reify_eval::cache::{CachedResult, NodeId};
 use reify_eval::{CachedEvalResult, Engine};
+use reify_ir::{BinOp, CompiledExpr, DeterminacyState, Value};
 use reify_test_support::mocks::{MockConstraintChecker, MockConstraintSolver};
 use reify_test_support::*;
-use reify_core::{Diagnostic, DimensionVector, ModulePath, Severity, Type, ValueCellId, VersionId};
-use reify_ir::{BinOp, CompiledExpr, DeterminacyState, Value};
 
 // ── step-1: circular let-binding ────────────────────────────────────────────
 

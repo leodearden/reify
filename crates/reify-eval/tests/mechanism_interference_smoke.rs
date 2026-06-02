@@ -31,9 +31,9 @@
 #![allow(clippy::mutable_key_type)]
 
 use reify_compiler::compile_with_stdlib;
-use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 use reify_core::{ModulePath, Severity, ValueCellId};
 use reify_ir::{ExportFormat, Value};
+use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 

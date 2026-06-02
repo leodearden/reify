@@ -9,8 +9,8 @@
 //! RED until step-4 implements
 //! `reify_eval::compute_targets::elastic_static::shell_channels_to_value`.
 
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use reify_core::Type;
 use reify_eval::persistent_cache::ShellChannels;
@@ -127,12 +127,16 @@ fn shell_channels_to_value_some_yields_shell_stress_instance() {
         data.type_name
     );
 
-    let mid_val = data
-        .fields
-        .get(&"mid".to_string())
-        .unwrap_or_else(|| panic!("ShellStress missing 'mid' field; keys: {:?}",
-            data.fields.keys().collect::<Vec<_>>()));
-    assert_eq!(mid_val, &mid_stress, "ShellStress.mid must equal mid_stress (I-2)");
+    let mid_val = data.fields.get(&"mid".to_string()).unwrap_or_else(|| {
+        panic!(
+            "ShellStress missing 'mid' field; keys: {:?}",
+            data.fields.keys().collect::<Vec<_>>()
+        )
+    });
+    assert_eq!(
+        mid_val, &mid_stress,
+        "ShellStress.mid must equal mid_stress (I-2)"
+    );
 
     let top_val = data
         .fields
@@ -162,11 +166,13 @@ fn shell_channels_to_value_some_yields_shell_stress_instance() {
 #[test]
 fn shell_channels_to_value_none_yields_undef() {
     let mid_stress = make_sampled_field("mid_stress", vec![0.0; 9]);
-    let result = reify_eval::compute_targets::elastic_static::shell_channels_to_value(
-        &None,
-        &mid_stress,
+    let result =
+        reify_eval::compute_targets::elastic_static::shell_channels_to_value(&None, &mid_stress);
+    assert_eq!(
+        result,
+        Value::Undef,
+        "shell_channels_to_value(None, ..) must return Undef (I-3)"
     );
-    assert_eq!(result, Value::Undef, "shell_channels_to_value(None, ..) must return Undef (I-3)");
 }
 
 /// Covers the `build_channel_field` defensive fallback: when `mid_stress` is
@@ -202,7 +208,9 @@ fn shell_channels_to_value_non_sampled_mid_uses_fallback() {
     assert_eq!(data.type_name, "ShellStress");
 
     // top / bottom must be 1D Sampled Real fields carrying the raw channel data.
-    let top_val = data.fields.get(&"top".to_string())
+    let top_val = data
+        .fields
+        .get(&"top".to_string())
         .expect("ShellStress missing 'top' field");
     assert_eq!(
         sampled_field_data(top_val),
@@ -210,7 +218,9 @@ fn shell_channels_to_value_non_sampled_mid_uses_fallback() {
         "fallback top data must equal channels.top"
     );
 
-    let bot_val = data.fields.get(&"bottom".to_string())
+    let bot_val = data
+        .fields
+        .get(&"bottom".to_string())
         .expect("ShellStress missing 'bottom' field");
     assert_eq!(
         sampled_field_data(bot_val),
@@ -219,7 +229,13 @@ fn shell_channels_to_value_non_sampled_mid_uses_fallback() {
     );
 
     // mid must equal mid_stress (Value::Undef) unchanged.
-    let mid_val = data.fields.get(&"mid".to_string())
+    let mid_val = data
+        .fields
+        .get(&"mid".to_string())
         .expect("ShellStress missing 'mid' field");
-    assert_eq!(mid_val, &Value::Undef, "mid must equal mid_stress unchanged");
+    assert_eq!(
+        mid_val,
+        &Value::Undef,
+        "mid must equal mid_stress unchanged"
+    );
 }

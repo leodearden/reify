@@ -4,9 +4,9 @@
 //! parse → compile → eval/check → verify.
 //! Uses examples/m9_constraint_def.ri as the source file.
 
-use reify_test_support::{check_source, make_simple_engine, parse_and_compile};
 use reify_core::{ModulePath, ValueCellId};
 use reify_ir::Satisfaction;
+use reify_test_support::{check_source, make_simple_engine, parse_and_compile};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(

@@ -1,9 +1,9 @@
 //! Integration test: Snapshot + EvaluationGraph with bracket fixture.
 
-use reify_eval::snapshot::Snapshot;
-use reify_test_support::bracket_compiled_module;
 use reify_core::{ContentHash, RealizationNodeId, SnapshotId, ValueCellId, VersionId};
+use reify_eval::snapshot::Snapshot;
 use reify_ir::{DeterminacyState, SnapshotProvenance, Value};
+use reify_test_support::bracket_compiled_module;
 
 #[test]
 fn snapshot_from_bracket_compiled_module() {
@@ -104,11 +104,11 @@ fn snapshot_clone_and_modify_independence() {
 #[test]
 fn snapshot_from_template_with_realizations() {
     use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+    use reify_core::{ModulePath, Type};
+    use reify_ir::CompiledExpr;
     use reify_test_support::{
         CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, value_ref,
     };
-    use reify_core::{ModulePath, Type};
-    use reify_ir::CompiledExpr;
     use std::collections::HashSet;
 
     let ops = vec![CompiledGeometryOp::Primitive {

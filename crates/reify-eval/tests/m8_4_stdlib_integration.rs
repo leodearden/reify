@@ -14,9 +14,9 @@
 //!   io_export.ri       — Physical+Elastic+Strong trait conformance, tolerancing
 //!                        subs, and geometry (box) for export-ready parts
 
-use reify_test_support::make_simple_engine;
 use reify_core::{DimensionVector, Severity, ValueCellId};
 use reify_ir::Value;
+use reify_test_support::make_simple_engine;
 
 // ── File paths (resolved at compile time from this crate's root) ─────────────
 

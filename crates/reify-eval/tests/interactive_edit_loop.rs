@@ -7,9 +7,9 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_eval::Engine;
 use reify_eval::cache::NodeId;
 use reify_eval::journal::EventKind;
+use reify_ir::{ExportFormat, Satisfaction, Value};
 use reify_test_support::mocks::{MockConstraintChecker, MockGeometryKernel};
 use reify_test_support::{bracket_compiled_module, cnid, vcid};
-use reify_ir::{ExportFormat, Satisfaction, Value};
 
 #[test]
 fn check_snapshot_returns_constraint_results_from_current_values() {

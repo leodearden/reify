@@ -10,10 +10,10 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, RealizationReadHandle};
-use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 use reify_core::{DimensionVector, Severity, Type, ValueCellId};
+use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, RealizationReadHandle};
 use reify_ir::{FieldSourceKind, OpaqueState, SampledGridKind, Value};
+use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -41,8 +41,7 @@ fn extract_field(result: &Value, field: &str) -> Option<Value> {
 
 #[allow(dead_code)]
 fn _seam_pin() {
-    let _f: ComputeFn =
-        reify_eval::compute_targets::buckling::solve_buckling_trampoline;
+    let _f: ComputeFn = reify_eval::compute_targets::buckling::solve_buckling_trampoline;
 }
 
 /// Step-1: `register_compute_fns` installs the buckling trampoline under the correct key.
@@ -179,7 +178,10 @@ fn e2e_buckling_critical_load_within_ten_percent() {
         .unwrap_or_else(|| panic!("cell BucklingColumnSmoke.crit not found in eval result"));
 
     let (crit_si, crit_dim) = match crit_val {
-        Value::Scalar { si_value, dimension } => (*si_value, *dimension),
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => (*si_value, *dimension),
         other => panic!("expected crit to be Value::Scalar, got: {:?}", other),
     };
     assert_eq!(
@@ -188,7 +190,11 @@ fn e2e_buckling_critical_load_within_ten_percent() {
         "expected crit dimension == FORCE, got: {:?}",
         crit_dim
     );
-    assert!(crit_si.is_finite() && crit_si > 0.0, "crit must be finite and positive, got: {}", crit_si);
+    assert!(
+        crit_si.is_finite() && crit_si > 0.0,
+        "crit must be finite and positive, got: {}",
+        crit_si
+    );
 
     // Analytical P_cr = π²·E·I / L²  (pin-pin, k=1)
     // E = 205e9 Pa, I = lx·ly³/12 = 0.02·0.02³/12, L = 0.8 m
@@ -200,7 +206,9 @@ fn e2e_buckling_critical_load_within_ten_percent() {
     assert!(
         rel_err < 0.10,
         "critical_load = {:.3e} N, P_cr = {:.3e} N, rel_err = {:.2}% > 10%",
-        crit_si, p_cr, rel_err * 100.0
+        crit_si,
+        p_cr,
+        rel_err * 100.0
     );
 
     // (c) Consistency: crit ≈ modes[0].eigenvalue × 1000 N.
@@ -210,27 +218,26 @@ fn e2e_buckling_critical_load_within_ten_percent() {
         .values
         .get(&result_cell)
         .expect("BucklingColumnSmoke.result not found");
-    let modes = extract_field(result_val, "modes")
-        .expect("result.modes not found");
+    let modes = extract_field(result_val, "modes").expect("result.modes not found");
     let lambda0 = match &modes {
-        Value::List(items) if !items.is_empty() => {
-            match &items[0] {
-                Value::StructureInstance(data) => match data.fields.get(&"eigenvalue".to_string()) {
-                    Some(Value::Real(r)) => *r,
-                    other => panic!("modes[0].eigenvalue not Real, got: {:?}", other),
-                },
-                other => panic!("modes[0] not StructureInstance, got: {:?}", other),
-            }
-        }
+        Value::List(items) if !items.is_empty() => match &items[0] {
+            Value::StructureInstance(data) => match data.fields.get(&"eigenvalue".to_string()) {
+                Some(Value::Real(r)) => *r,
+                other => panic!("modes[0].eigenvalue not Real, got: {:?}", other),
+            },
+            other => panic!("modes[0] not StructureInstance, got: {:?}", other),
+        },
         other => panic!("result.modes not List or empty, got: {:?}", other),
     };
     // crit = lambda0 * 1000N (SI: 1000 N)
     let crit_from_eigenvalue = lambda0 * 1000.0;
-    let consistency_err = (crit_si - crit_from_eigenvalue).abs() / crit_from_eigenvalue.abs().max(1.0);
+    let consistency_err =
+        (crit_si - crit_from_eigenvalue).abs() / crit_from_eigenvalue.abs().max(1.0);
     assert!(
         consistency_err < 1e-9,
         "crit = {:.6e} N but lambda0 × 1000 N = {:.6e} N (consistency check failed)",
-        crit_si, crit_from_eigenvalue
+        crit_si,
+        crit_from_eigenvalue
     );
 
     // (d) `sf` cell: dimensionless Real == modes[0].eigenvalue (> 0).
@@ -241,12 +248,17 @@ fn e2e_buckling_critical_load_within_ten_percent() {
         .unwrap_or_else(|| panic!("cell BucklingColumnSmoke.sf not found"));
     match sf_val {
         Value::Real(sf) => {
-            assert!(*sf > 0.0, "safety_factor_buckling must be positive, got: {}", sf);
+            assert!(
+                *sf > 0.0,
+                "safety_factor_buckling must be positive, got: {}",
+                sf
+            );
             let sf_err = (*sf - lambda0).abs() / lambda0.abs().max(1e-30);
             assert!(
                 sf_err < 1e-9,
                 "sf = {} but modes[0].eigenvalue = {} (sf must equal eigenvalue)",
-                sf, lambda0
+                sf,
+                lambda0
             );
         }
         other => panic!("expected sf to be Value::Real, got: {:?}", other),
@@ -354,30 +366,26 @@ fn e2e_buckling_second_eval_hits_cache() {
 
     let lambda1 = match &result1 {
         Value::StructureInstance(data) => match data.fields.get(&"modes".to_string()) {
-            Some(Value::List(items)) if !items.is_empty() => {
-                match &items[0] {
-                    Value::StructureInstance(d) => match d.fields.get(&"eigenvalue".to_string()) {
-                        Some(Value::Real(r)) => *r,
-                        _ => panic!("first eval: modes[0].eigenvalue not Real"),
-                    },
-                    _ => panic!("first eval: modes[0] not StructureInstance"),
-                }
-            }
+            Some(Value::List(items)) if !items.is_empty() => match &items[0] {
+                Value::StructureInstance(d) => match d.fields.get(&"eigenvalue".to_string()) {
+                    Some(Value::Real(r)) => *r,
+                    _ => panic!("first eval: modes[0].eigenvalue not Real"),
+                },
+                _ => panic!("first eval: modes[0] not StructureInstance"),
+            },
             _ => panic!("first eval: result.modes not List or empty"),
         },
         _ => panic!("first eval: result not StructureInstance"),
     };
     let lambda2 = match &result2 {
         Value::StructureInstance(data) => match data.fields.get(&"modes".to_string()) {
-            Some(Value::List(items)) if !items.is_empty() => {
-                match &items[0] {
-                    Value::StructureInstance(d) => match d.fields.get(&"eigenvalue".to_string()) {
-                        Some(Value::Real(r)) => *r,
-                        _ => panic!("second eval: modes[0].eigenvalue not Real"),
-                    },
-                    _ => panic!("second eval: modes[0] not StructureInstance"),
-                }
-            }
+            Some(Value::List(items)) if !items.is_empty() => match &items[0] {
+                Value::StructureInstance(d) => match d.fields.get(&"eigenvalue".to_string()) {
+                    Some(Value::Real(r)) => *r,
+                    _ => panic!("second eval: modes[0].eigenvalue not Real"),
+                },
+                _ => panic!("second eval: modes[0] not StructureInstance"),
+            },
             _ => panic!("second eval: result.modes not List or empty"),
         },
         _ => panic!("second eval: result not StructureInstance"),
@@ -430,7 +438,11 @@ fn e2e_buckling_pre_stress_displacement_stress_fields() {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "expected no Error diagnostics, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics, got: {:?}",
+        errors
+    );
 
     let result_cell = ValueCellId::new("BucklingColumnSmoke", "result");
     let result_val = eval_result
@@ -449,61 +461,95 @@ fn e2e_buckling_pre_stress_displacement_stress_fields() {
                 .get(&field.to_string())
                 .cloned()
                 .unwrap_or_else(|| panic!("pre_stress.{} not found", field)),
-            other => panic!("expected pre_stress to be StructureInstance, got: {:?}", other),
+            other => panic!(
+                "expected pre_stress to be StructureInstance, got: {:?}",
+                other
+            ),
         }
     };
 
-    let ps_disp   = get_ps_field("displacement");
+    let ps_disp = get_ps_field("displacement");
     let ps_stress = get_ps_field("stress");
 
     // ── B1: displacement must be Sampled Regular3D Field ─────────────────────
     let (disp_codomain, disp_sf) = match &ps_disp {
-        Value::Field { codomain_type, source, lambda, .. } => {
+        Value::Field {
+            codomain_type,
+            source,
+            lambda,
+            ..
+        } => {
             assert!(
                 matches!(source, FieldSourceKind::Sampled),
-                "pre_stress.displacement source must be Sampled, got: {:?}", source
+                "pre_stress.displacement source must be Sampled, got: {:?}",
+                source
             );
             let sf = match lambda.as_ref() {
                 Value::SampledField(sf) => sf.clone(),
                 other => panic!(
-                    "pre_stress.displacement lambda must be SampledField, got: {:?}", other
+                    "pre_stress.displacement lambda must be SampledField, got: {:?}",
+                    other
                 ),
             };
-            assert_eq!(sf.kind, SampledGridKind::Regular3D,
-                "pre_stress.displacement SampledField.kind must be Regular3D");
+            assert_eq!(
+                sf.kind,
+                SampledGridKind::Regular3D,
+                "pre_stress.displacement SampledField.kind must be Regular3D"
+            );
             (codomain_type.clone(), sf)
         }
         other => panic!(
-            "expected pre_stress.displacement to be Value::Field{{Sampled}}, got: {:?}", other
+            "expected pre_stress.displacement to be Value::Field{{Sampled}}, got: {:?}",
+            other
         ),
     };
-    assert_eq!(disp_codomain, Type::vec3(Type::length()),
-        "pre_stress.displacement codomain_type mismatch");
+    assert_eq!(
+        disp_codomain,
+        Type::vec3(Type::length()),
+        "pre_stress.displacement codomain_type mismatch"
+    );
 
     // ── B1: stress must be Sampled Regular3D Field ────────────────────────────
     let (stress_codomain, stress_sf) = match &ps_stress {
-        Value::Field { codomain_type, source, lambda, .. } => {
+        Value::Field {
+            codomain_type,
+            source,
+            lambda,
+            ..
+        } => {
             assert!(
                 matches!(source, FieldSourceKind::Sampled),
-                "pre_stress.stress source must be Sampled, got: {:?}", source
+                "pre_stress.stress source must be Sampled, got: {:?}",
+                source
             );
             let sf = match lambda.as_ref() {
                 Value::SampledField(sf) => sf.clone(),
                 other => panic!(
-                    "pre_stress.stress lambda must be SampledField, got: {:?}", other
+                    "pre_stress.stress lambda must be SampledField, got: {:?}",
+                    other
                 ),
             };
-            assert_eq!(sf.kind, SampledGridKind::Regular3D,
-                "pre_stress.stress SampledField.kind must be Regular3D");
+            assert_eq!(
+                sf.kind,
+                SampledGridKind::Regular3D,
+                "pre_stress.stress SampledField.kind must be Regular3D"
+            );
             (codomain_type.clone(), sf)
         }
         other => panic!(
-            "expected pre_stress.stress to be Value::Field{{Sampled}}, got: {:?}", other
+            "expected pre_stress.stress to be Value::Field{{Sampled}}, got: {:?}",
+            other
         ),
     };
     assert_eq!(
         stress_codomain,
-        Type::tensor(2, 3, Type::Scalar { dimension: DimensionVector::PRESSURE }),
+        Type::tensor(
+            2,
+            3,
+            Type::Scalar {
+                dimension: DimensionVector::PRESSURE
+            }
+        ),
         "pre_stress.stress codomain_type mismatch"
     );
 
@@ -512,7 +558,7 @@ fn e2e_buckling_pre_stress_displacement_stress_fields() {
     // Trampoline uses: nx=ny=8; cross_elem_size=min(lx,ly)/(nx/2)=0.005m; nz=160.
     let lx_m: f64 = 0.02; // width in SI
     let ly_m: f64 = 0.02; // height in SI
-    let lz_m: f64 = 0.8;  // length in SI
+    let lz_m: f64 = 0.8; // length in SI
     let nx: usize = 8;
     let ny: usize = 8;
     let cross_elem_size = lx_m.min(ly_m) / (nx / 2) as f64; // 0.005 m
@@ -523,24 +569,43 @@ fn e2e_buckling_pre_stress_displacement_stress_fields() {
         disp_sf.data.len(),
         grid_count * 3,
         "pre_stress.displacement data.len() must be grid_count({})×3={}, got {}",
-        grid_count, grid_count * 3, disp_sf.data.len()
+        grid_count,
+        grid_count * 3,
+        disp_sf.data.len()
     );
     assert_eq!(
         stress_sf.data.len(),
         grid_count * 9,
         "pre_stress.stress data.len() must be grid_count({})×9={}, got {}",
-        grid_count, grid_count * 9, stress_sf.data.len()
+        grid_count,
+        grid_count * 9,
+        stress_sf.data.len()
     );
 
     // ── B1: disp + stress share identical grid metadata ───────────────────────
-    assert_eq!(disp_sf.bounds_min, stress_sf.bounds_min,
-        "grid bounds_min mismatch between pre_stress disp and stress");
-    assert_eq!(disp_sf.bounds_max, stress_sf.bounds_max,
-        "grid bounds_max mismatch between pre_stress disp and stress");
-    assert_eq!(disp_sf.spacing, stress_sf.spacing,
-        "grid spacing mismatch between pre_stress disp and stress");
-    for (i, (ag_d, ag_s)) in disp_sf.axis_grids.iter().zip(stress_sf.axis_grids.iter()).enumerate() {
-        assert_eq!(ag_d, ag_s, "axis_grids[{}] mismatch between pre_stress disp and stress", i);
+    assert_eq!(
+        disp_sf.bounds_min, stress_sf.bounds_min,
+        "grid bounds_min mismatch between pre_stress disp and stress"
+    );
+    assert_eq!(
+        disp_sf.bounds_max, stress_sf.bounds_max,
+        "grid bounds_max mismatch between pre_stress disp and stress"
+    );
+    assert_eq!(
+        disp_sf.spacing, stress_sf.spacing,
+        "grid spacing mismatch between pre_stress disp and stress"
+    );
+    for (i, (ag_d, ag_s)) in disp_sf
+        .axis_grids
+        .iter()
+        .zip(stress_sf.axis_grids.iter())
+        .enumerate()
+    {
+        assert_eq!(
+            ag_d, ag_s,
+            "axis_grids[{}] mismatch between pre_stress disp and stress",
+            i
+        );
     }
 
     // ── B1: at least some interior samples finite ──────────────────────────────
@@ -556,7 +621,8 @@ fn e2e_buckling_pre_stress_displacement_stress_fields() {
 
     // ── B1: frame remains Undef (tet/solid: no per-element local frame) ────────
     assert_eq!(
-        get_ps_field("frame"), Value::Undef,
+        get_ps_field("frame"),
+        Value::Undef,
         "pre_stress.frame must remain Undef"
     );
 
@@ -564,11 +630,15 @@ fn e2e_buckling_pre_stress_displacement_stress_fields() {
     let ps_mvm = get_ps_field("max_von_mises");
     match &ps_mvm {
         Value::Scalar { dimension, .. } => {
-            assert_eq!(*dimension, DimensionVector::PRESSURE,
-                "pre_stress.max_von_mises dimension must be PRESSURE (unchanged by α)");
+            assert_eq!(
+                *dimension,
+                DimensionVector::PRESSURE,
+                "pre_stress.max_von_mises dimension must be PRESSURE (unchanged by α)"
+            );
         }
         other => panic!(
-            "expected pre_stress.max_von_mises to be Scalar, got: {:?}", other
+            "expected pre_stress.max_von_mises to be Scalar, got: {:?}",
+            other
         ),
     }
 }

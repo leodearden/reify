@@ -137,8 +137,8 @@ fn spec_shape_physical_build_golden() {
         render_cell(&result, "centroid"),
     );
 
-    let golden_path =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/spec_shape_physical.txt");
+    let golden_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/golden/spec_shape_physical.txt");
 
     if std::env::var("REIFY_REGENERATE_GOLDEN").is_ok() {
         std::fs::write(&golden_path, &rendered).expect("failed to write golden file");

@@ -43,7 +43,11 @@
 use std::collections::HashMap;
 
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
-use reify_ir::{AxisSign, BooleanOpHistoryRecords, BooleanOpParents, CapKind, FeatureId, GeometryHandleId, HistoryRecord, LoftOpHistoryRecords, ModEntry, QueryError, Role, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable};
+use reify_ir::{
+    AxisSign, BooleanOpHistoryRecords, BooleanOpParents, CapKind, FeatureId, GeometryHandleId,
+    HistoryRecord, LoftOpHistoryRecords, ModEntry, QueryError, Role, SweepOpHistoryRecords,
+    TopologyAttribute, TopologyAttributeTable,
+};
 
 /// Propagate parent topology attributes onto the result of a `BRepAlgoAPI`
 /// boolean operation, using the Modified / Generated / Deleted records the
@@ -1249,7 +1253,11 @@ mod tests {
     //! These error branches are pure given inputs, so they need no OCCT
     //! kernel — we hand-build a malformed `BooleanOpHistoryRecords` and
     //! check that each variant surfaces as `QueryFailed`.
-    use reify_ir::{BooleanOpHistoryRecords, BooleanOpParents, CapKind, FeatureId, GeometryHandleId, HistoryRecord, LoftOpHistoryRecords, ModEntry, QueryError, Role, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable};
+    use reify_ir::{
+        BooleanOpHistoryRecords, BooleanOpParents, CapKind, FeatureId, GeometryHandleId,
+        HistoryRecord, LoftOpHistoryRecords, ModEntry, QueryError, Role, SweepOpHistoryRecords,
+        TopologyAttribute, TopologyAttributeTable,
+    };
 
     use super::{
         populate_extrude_attributes, populate_loft_attributes, populate_revolve_attributes,
@@ -3500,9 +3508,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("start-cap vertex #{i} must have an entry"));
             assert_eq!(
                 attr.role,
-                Role::CapCornerVertex {
-                    face: CapKind::Top
-                },
+                Role::CapCornerVertex { face: CapKind::Top },
                 "start-cap vertex #{i} must be CapCornerVertex{{Top}}"
             );
             assert_eq!(
@@ -3589,10 +3595,7 @@ mod tests {
             let attr = table
                 .lookup(GeometryHandleId(5304 + i as u64))
                 .unwrap_or_else(|| panic!("end-cap vertex #{i} must have an entry"));
-            assert_eq!(
-                attr.role,
-                Role::CapCornerVertex { face: CapKind::End }
-            );
+            assert_eq!(attr.role, Role::CapCornerVertex { face: CapKind::End });
             assert_eq!(attr.local_index, i);
         }
     }
@@ -3649,10 +3652,7 @@ mod tests {
             let attr = table
                 .lookup(GeometryHandleId(6304 + i as u64))
                 .unwrap_or_else(|| panic!("end-cap vertex #{i} must have an entry"));
-            assert_eq!(
-                attr.role,
-                Role::CapCornerVertex { face: CapKind::End }
-            );
+            assert_eq!(attr.role, Role::CapCornerVertex { face: CapKind::End });
             assert_eq!(attr.local_index, i);
         }
     }
@@ -3714,10 +3714,7 @@ mod tests {
             let attr = table
                 .lookup(GeometryHandleId(7504 + i as u64))
                 .unwrap_or_else(|| panic!("end-cap vertex #{i} must have an entry"));
-            assert_eq!(
-                attr.role,
-                Role::CapCornerVertex { face: CapKind::End }
-            );
+            assert_eq!(attr.role, Role::CapCornerVertex { face: CapKind::End });
             assert_eq!(attr.local_index, i);
         }
     }

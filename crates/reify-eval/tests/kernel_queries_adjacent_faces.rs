@@ -67,9 +67,8 @@ const FIXTURE_PATH: &str = concat!(
 fn adjacent_faces_and_shared_edges_compile_and_return_correct_semantics() {
     // ── assertion 1: fixture exists and compiles cleanly (unconditional) ──────
 
-    let source = std::fs::read_to_string(FIXTURE_PATH).expect(
-        "examples/kernel_queries/adjacent_faces.ri should exist (task 3619 pre-1)",
-    );
+    let source = std::fs::read_to_string(FIXTURE_PATH)
+        .expect("examples/kernel_queries/adjacent_faces.ri should exist (task 3619 pre-1)");
     let compiled = parse_and_compile_with_stdlib(&source);
     assert!(
         errors_only(&compiled).is_empty(),
@@ -109,9 +108,8 @@ fn adjacent_faces_and_shared_edges_compile_and_return_correct_semantics() {
     // ── adjacent_to_face: chosen face must have exactly 4 neighbours ─────────
 
     let chosen_face = face_handles[0];
-    let neighbours =
-        reify_eval::adjacent_to_face(&mut kernel, box_id, chosen_face)
-            .expect("adjacent_to_face(box, face[0]) should succeed");
+    let neighbours = reify_eval::adjacent_to_face(&mut kernel, box_id, chosen_face)
+        .expect("adjacent_to_face(box, face[0]) should succeed");
     assert_eq!(
         neighbours.len(),
         4,
@@ -155,9 +153,7 @@ fn adjacent_faces_and_shared_edges_compile_and_return_correct_semantics() {
 
     let shared_indices = match shared_reply {
         Value::List(items) => items,
-        other => panic!(
-            "SharedEdges must return Value::List, got: {other:?}"
-        ),
+        other => panic!("SharedEdges must return Value::List, got: {other:?}"),
     };
     assert_eq!(
         shared_indices.len(),

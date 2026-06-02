@@ -212,10 +212,16 @@ fn shell_fixture_surfaces_shell_channels_with_in_band_von_mises() {
 
     // top / mid / bottom present and all-finite.
     let top = field_data(
-        sc_data.fields.get(&"top".to_string()).expect("ShellStress.top"),
+        sc_data
+            .fields
+            .get(&"top".to_string())
+            .expect("ShellStress.top"),
     );
     let mid = field_data(
-        sc_data.fields.get(&"mid".to_string()).expect("ShellStress.mid"),
+        sc_data
+            .fields
+            .get(&"mid".to_string())
+            .expect("ShellStress.mid"),
     );
     let bottom = field_data(
         sc_data
@@ -231,8 +237,8 @@ fn shell_fixture_surfaces_shell_channels_with_in_band_von_mises() {
     }
 
     // I-2 alias: result.stress (Field) bit-equals shell_channels.mid.
-    let stress = struct_field(result_val, "stress")
-        .expect("ElasticResult must carry a stress field");
+    let stress =
+        struct_field(result_val, "stress").expect("ElasticResult must carry a stress field");
     assert!(
         !matches!(&stress, Value::Undef),
         "stress must be a populated field on the shell route (the I-2 alias source)"

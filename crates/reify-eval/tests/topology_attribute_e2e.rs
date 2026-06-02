@@ -32,14 +32,17 @@
 use std::collections::{HashMap, HashSet};
 
 use reify_compiler::compile_with_stdlib;
+use reify_core::{Diagnostic, DiagnosticCode, ModulePath, RealizationNodeId, Severity, SourceSpan};
 use reify_eval::{
     AttributeQuery, AttributeResolution, LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M,
     detect_local_index_reassignment_diagnostics, propagate_attributes_via_brepalgoapi_history,
     resolve_unique_by_attribute,
 };
+use reify_ir::{
+    BooleanOpHistoryRecords, BooleanOpParents, ExportFormat, FeatureId, GeometryHandleId,
+    GeometryOp, ModEntry, Role, TopologyAttribute, TopologyAttributeTable, Value,
+};
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
-use reify_core::{Diagnostic, DiagnosticCode, ModulePath, RealizationNodeId, Severity, SourceSpan};
-use reify_ir::{BooleanOpHistoryRecords, BooleanOpParents, ExportFormat, FeatureId, GeometryHandleId, GeometryOp, ModEntry, Role, TopologyAttribute, TopologyAttributeTable, Value};
 
 /// 10×10×10 mm box, expressed in SI metres at the kernel boundary.
 /// Same convention as `feature_tag_e2e.rs` and the other OCCT tests.

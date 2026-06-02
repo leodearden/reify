@@ -301,7 +301,11 @@ mod tests {
         let row = |a: f64, b: f64, c: f64| {
             Value::List(vec![Value::Real(a), Value::Real(b), Value::Real(c)])
         };
-        let v = Value::List(vec![row(1.0, 0.0, 0.0), row(0.0, 2.0, 0.0), row(0.0, 0.0, 3.0)]);
+        let v = Value::List(vec![
+            row(1.0, 0.0, 0.0),
+            row(0.0, 2.0, 0.0),
+            row(0.0, 0.0, 3.0),
+        ]);
         let m = inertia_3x3_from_value(&v).expect("should extract from nested Value::List");
         assert_eq!(m, [[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]]);
     }
@@ -320,7 +324,11 @@ mod tests {
         ];
         let v = Value::Matrix(rows);
         let m = inertia_3x3_from_value(&v).expect("should extract Scalar si_value");
-        assert!((m[0][0] - 5.0).abs() < 1e-12, "expected si_value 5.0, got {}", m[0][0]);
+        assert!(
+            (m[0][0] - 5.0).abs() < 1e-12,
+            "expected si_value 5.0, got {}",
+            m[0][0]
+        );
     }
 
     #[test]

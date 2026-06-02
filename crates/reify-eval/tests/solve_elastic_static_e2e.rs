@@ -10,10 +10,10 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, RealizationReadHandle};
-use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 use reify_core::{DimensionVector, Severity, Type, ValueCellId};
+use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, RealizationReadHandle};
 use reify_ir::{FieldSourceKind, OpaqueState, SampledGridKind, Value};
+use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -34,9 +34,7 @@ fn cantilever_source() -> &'static str {
 fn extract_max_von_mises(result: &Value) -> Option<Value> {
     match result {
         // PersistentMap::get takes &K (= &String), not &str — use owned key.
-        Value::StructureInstance(data) => {
-            data.fields.get(&"max_von_mises".to_string()).cloned()
-        }
+        Value::StructureInstance(data) => data.fields.get(&"max_von_mises".to_string()).cloned(),
         Value::Map(m) => m.get(&Value::String("max_von_mises".to_string())).cloned(),
         _ => None,
     }
@@ -63,12 +61,15 @@ fn extract_sampled_field_data(result: &Value, field: &str) -> Vec<f64> {
         Value::Field { source, lambda, .. } => {
             assert!(
                 matches!(source, FieldSourceKind::Sampled),
-                "field '{}' source must be Sampled, got: {:?}", field, source
+                "field '{}' source must be Sampled, got: {:?}",
+                field,
+                source
             );
             match lambda.as_ref() {
                 Value::SampledField(sf) => sf.data.clone(),
                 other => panic!(
-                    "field '{}' lambda must be Value::SampledField, got: {:?}", field, other
+                    "field '{}' lambda must be Value::SampledField, got: {:?}",
+                    field, other
                 ),
             }
         }
@@ -237,7 +238,10 @@ fn e2e_cantilever_max_von_mises_within_tolerance() {
 
     // The value must be Scalar with dimension == PRESSURE.
     let (si_value, dimension) = match &mvm {
-        Value::Scalar { si_value, dimension } => (*si_value, *dimension),
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => (*si_value, *dimension),
         other => panic!(
             "expected max_von_mises to be Value::Scalar {{ ... }}, got: {:?}",
             other
@@ -252,9 +256,9 @@ fn e2e_cantilever_max_von_mises_within_tolerance() {
 
     // Analytical reference σ_max = 6PL/(bh²) = 6×1000×1.0/(0.1×0.01) = 6e6 Pa.
     // Tolerance: ±50% of analytical (3 MPa ≤ σ ≤ 9 MPa).
-    let analytical_sigma: f64 = 6.0 * 1000.0 * 1.0 / (0.1 * 0.1 * 0.1);  // 6e6 Pa
-    let lo = analytical_sigma * 0.5;   // 3e6 Pa  (P1 stiffness underestimate floor)
-    let hi = analytical_sigma * 1.5;   // 9e6 Pa  (stress concentration head-room)
+    let analytical_sigma: f64 = 6.0 * 1000.0 * 1.0 / (0.1 * 0.1 * 0.1); // 6e6 Pa
+    let lo = analytical_sigma * 0.5; // 3e6 Pa  (P1 stiffness underestimate floor)
+    let hi = analytical_sigma * 1.5; // 9e6 Pa  (stress concentration head-room)
     assert!(
         si_value.is_finite(),
         "max_von_mises must be finite, got: {}",
@@ -277,7 +281,10 @@ fn e2e_cantilever_max_von_mises_within_tolerance() {
 
     // ── (b) converged ────────────────────────────────────────────────────────
     let converged = extract_field(result_val, "converged").unwrap_or_else(|| {
-        panic!("could not extract 'converged' field from result: {:?}", result_val)
+        panic!(
+            "could not extract 'converged' field from result: {:?}",
+            result_val
+        )
     });
     assert_eq!(
         converged,
@@ -288,15 +295,14 @@ fn e2e_cantilever_max_von_mises_within_tolerance() {
 
     // ── (c) iterations ───────────────────────────────────────────────────────
     let iterations = extract_field(result_val, "iterations").unwrap_or_else(|| {
-        panic!("could not extract 'iterations' field from result: {:?}", result_val)
+        panic!(
+            "could not extract 'iterations' field from result: {:?}",
+            result_val
+        )
     });
     match &iterations {
         Value::Int(n) => {
-            assert!(
-                *n >= 0,
-                "expected iterations >= 0, got: {}",
-                n
-            );
+            assert!(*n >= 0, "expected iterations >= 0, got: {}", n);
         }
         other => panic!("expected iterations to be Value::Int, got: {:?}", other),
     }
@@ -432,15 +438,20 @@ fn e2e_cantilever_second_eval_hits_cache() {
     let disp1_data = extract_sampled_field_data(&result1, "displacement");
     let disp2_data = extract_sampled_field_data(&result2, "displacement");
     assert_eq!(
-        disp1_data.len(), disp2_data.len(),
+        disp1_data.len(),
+        disp2_data.len(),
         "displacement data length differs between eval1 ({}) and eval2 ({})",
-        disp1_data.len(), disp2_data.len()
+        disp1_data.len(),
+        disp2_data.len()
     );
     for (i, (v1, v2)) in disp1_data.iter().zip(disp2_data.iter()).enumerate() {
         assert_eq!(
-            v1.to_bits(), v2.to_bits(),
+            v1.to_bits(),
+            v2.to_bits(),
             "displacement data[{}] not bit-identical across evals: {:e} vs {:e}",
-            i, v1, v2
+            i,
+            v1,
+            v2
         );
     }
 
@@ -448,15 +459,20 @@ fn e2e_cantilever_second_eval_hits_cache() {
     let stress1_data = extract_sampled_field_data(&result1, "stress");
     let stress2_data = extract_sampled_field_data(&result2, "stress");
     assert_eq!(
-        stress1_data.len(), stress2_data.len(),
+        stress1_data.len(),
+        stress2_data.len(),
         "stress data length differs between eval1 ({}) and eval2 ({})",
-        stress1_data.len(), stress2_data.len()
+        stress1_data.len(),
+        stress2_data.len()
     );
     for (i, (v1, v2)) in stress1_data.iter().zip(stress2_data.iter()).enumerate() {
         assert_eq!(
-            v1.to_bits(), v2.to_bits(),
+            v1.to_bits(),
+            v2.to_bits(),
             "stress data[{}] not bit-identical across evals: {:e} vs {:e}",
-            i, v1, v2
+            i,
+            v1,
+            v2
         );
     }
 }
@@ -545,7 +561,11 @@ fn e2e_cantilever_b1_b2_displacement_stress_fields() {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "expected no Error diagnostics, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics, got: {:?}",
+        errors
+    );
 
     let result_cell = ValueCellId::new("FeaCantileverSmoke", "result");
     let result_val = eval_result
@@ -558,10 +578,16 @@ fn e2e_cantilever_b1_b2_displacement_stress_fields() {
         .unwrap_or_else(|| panic!("displacement field missing from result"));
 
     let (disp_domain, disp_codomain, disp_sf) = match &disp_val {
-        Value::Field { domain_type, codomain_type, source, lambda } => {
+        Value::Field {
+            domain_type,
+            codomain_type,
+            source,
+            lambda,
+        } => {
             assert!(
                 matches!(source, FieldSourceKind::Sampled),
-                "displacement source must be Sampled, got: {:?}", source
+                "displacement source must be Sampled, got: {:?}",
+                source
             );
             let sf = match lambda.as_ref() {
                 Value::SampledField(sf) => sf.clone(),
@@ -571,25 +597,43 @@ fn e2e_cantilever_b1_b2_displacement_stress_fields() {
         }
         other => panic!("expected displacement to be Value::Field, got: {:?}", other),
     };
-    assert_eq!(disp_sf.kind, SampledGridKind::Regular3D,
-        "displacement SampledField.kind must be Regular3D");
-    assert_eq!(disp_domain, Type::point3(Type::length()),
-        "displacement domain_type mismatch");
-    assert_eq!(disp_codomain, Type::vec3(Type::length()),
-        "displacement codomain_type mismatch");
+    assert_eq!(
+        disp_sf.kind,
+        SampledGridKind::Regular3D,
+        "displacement SampledField.kind must be Regular3D"
+    );
+    assert_eq!(
+        disp_domain,
+        Type::point3(Type::length()),
+        "displacement domain_type mismatch"
+    );
+    assert_eq!(
+        disp_codomain,
+        Type::vec3(Type::length()),
+        "displacement codomain_type mismatch"
+    );
 
     // ── B1: stress ────────────────────────────────────────────────────────────
     let stress_val = extract_field(result_val, "stress")
         .unwrap_or_else(|| panic!("stress field missing from result"));
 
     let (stress_codomain, stress_sf) = match &stress_val {
-        Value::Field { domain_type, codomain_type, source, lambda } => {
+        Value::Field {
+            domain_type,
+            codomain_type,
+            source,
+            lambda,
+        } => {
             assert!(
                 matches!(source, FieldSourceKind::Sampled),
-                "stress source must be Sampled, got: {:?}", source
+                "stress source must be Sampled, got: {:?}",
+                source
             );
-            assert_eq!(*domain_type, Type::point3(Type::length()),
-                "stress domain_type mismatch");
+            assert_eq!(
+                *domain_type,
+                Type::point3(Type::length()),
+                "stress domain_type mismatch"
+            );
             let sf = match lambda.as_ref() {
                 Value::SampledField(sf) => sf.clone(),
                 other => panic!("stress lambda must be SampledField, got: {:?}", other),
@@ -598,11 +642,20 @@ fn e2e_cantilever_b1_b2_displacement_stress_fields() {
         }
         other => panic!("expected stress to be Value::Field, got: {:?}", other),
     };
-    assert_eq!(stress_sf.kind, SampledGridKind::Regular3D,
-        "stress SampledField.kind must be Regular3D");
+    assert_eq!(
+        stress_sf.kind,
+        SampledGridKind::Regular3D,
+        "stress SampledField.kind must be Regular3D"
+    );
     assert_eq!(
         stress_codomain,
-        Type::tensor(2, 3, Type::Scalar { dimension: DimensionVector::PRESSURE }),
+        Type::tensor(
+            2,
+            3,
+            Type::Scalar {
+                dimension: DimensionVector::PRESSURE
+            }
+        ),
         "stress codomain_type mismatch"
     );
 
@@ -620,23 +673,48 @@ fn e2e_cantilever_b1_b2_displacement_stress_fields() {
         disp_sf.data.len(),
         grid_count * 3,
         "displacement data.len() must be grid_count({})×3={}, got {}",
-        grid_count, grid_count * 3, disp_sf.data.len()
+        grid_count,
+        grid_count * 3,
+        disp_sf.data.len()
     );
     assert_eq!(
         stress_sf.data.len(),
         grid_count * 9,
         "stress data.len() must be grid_count({})×9={}, got {}",
-        grid_count, grid_count * 9, stress_sf.data.len()
+        grid_count,
+        grid_count * 9,
+        stress_sf.data.len()
     );
 
     // ── B1: disp + stress share identical grid metadata ───────────────────────
-    assert_eq!(disp_sf.bounds_min, stress_sf.bounds_min, "grid bounds_min mismatch between disp and stress");
-    assert_eq!(disp_sf.bounds_max, stress_sf.bounds_max, "grid bounds_max mismatch between disp and stress");
-    assert_eq!(disp_sf.spacing, stress_sf.spacing, "grid spacing mismatch between disp and stress");
-    assert_eq!(disp_sf.axis_grids.len(), stress_sf.axis_grids.len(),
-        "axis_grids count mismatch between disp and stress");
-    for (i, (ag_d, ag_s)) in disp_sf.axis_grids.iter().zip(stress_sf.axis_grids.iter()).enumerate() {
-        assert_eq!(ag_d, ag_s, "axis_grids[{}] mismatch between disp and stress", i);
+    assert_eq!(
+        disp_sf.bounds_min, stress_sf.bounds_min,
+        "grid bounds_min mismatch between disp and stress"
+    );
+    assert_eq!(
+        disp_sf.bounds_max, stress_sf.bounds_max,
+        "grid bounds_max mismatch between disp and stress"
+    );
+    assert_eq!(
+        disp_sf.spacing, stress_sf.spacing,
+        "grid spacing mismatch between disp and stress"
+    );
+    assert_eq!(
+        disp_sf.axis_grids.len(),
+        stress_sf.axis_grids.len(),
+        "axis_grids count mismatch between disp and stress"
+    );
+    for (i, (ag_d, ag_s)) in disp_sf
+        .axis_grids
+        .iter()
+        .zip(stress_sf.axis_grids.iter())
+        .enumerate()
+    {
+        assert_eq!(
+            ag_d, ag_s,
+            "axis_grids[{}] mismatch between disp and stress",
+            i
+        );
     }
 
     // ── B1: ALL grid samples finite (prismatic box → every point inside solid) ──

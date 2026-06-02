@@ -191,14 +191,18 @@ pub(crate) fn is_too_thick_for_shell(
     // Delegate to classify_shell for the binary decision.  Structural
     // delegation (not a re-implementation of the criterion) guarantees that
     // the route and the too-thick gate are always consistent.
-    let too_thick = classify_shell(ShellForce::Auto, length, width, height, shell_threshold)
-        == ShellRoute::Tet;
+    let too_thick =
+        classify_shell(ShellForce::Auto, length, width, height, shell_threshold) == ShellRoute::Tet;
     if too_thick {
         // Compute the ratio for the error/warning message using the same
         // formula as classify_shell's Auto branch so the displayed value
         // matches the routing decision.
         let in_plane = length.min(width);
-        let ratio = if in_plane > 0.0 { height / in_plane } else { f64::INFINITY };
+        let ratio = if in_plane > 0.0 {
+            height / in_plane
+        } else {
+            f64::INFINITY
+        };
         Some(ratio)
     } else {
         None
@@ -222,7 +226,11 @@ pub(crate) fn is_too_thick_for_shell(
 /// the I-2 alias `result.stress == result.shell_channels.mid` holds (PRD §3).
 /// `top` / `bottom` / `frame` are each `9 * n_elem` long (row-major 3×3 per
 /// element, element-major), per [`reify_solver_elastic::flatten_shell_channels`].
-pub(crate) fn build_shell_channels(top: Vec<f64>, bottom: Vec<f64>, frame: Vec<f64>) -> ShellChannels {
+pub(crate) fn build_shell_channels(
+    top: Vec<f64>,
+    bottom: Vec<f64>,
+    frame: Vec<f64>,
+) -> ShellChannels {
     ShellChannels { top, bottom, frame }
 }
 
@@ -283,8 +291,12 @@ pub(crate) fn build_slab_sdf(length: f64, width: f64, height: f64) -> Value {
     const NX: usize = 5;
     const NY: usize = 5;
     const NZ: usize = 3;
-    let x_grid: Vec<f64> = (0..NX).map(|i| length * i as f64 / (NX - 1) as f64).collect();
-    let y_grid: Vec<f64> = (0..NY).map(|i| width * i as f64 / (NY - 1) as f64).collect();
+    let x_grid: Vec<f64> = (0..NX)
+        .map(|i| length * i as f64 / (NX - 1) as f64)
+        .collect();
+    let y_grid: Vec<f64> = (0..NY)
+        .map(|i| width * i as f64 / (NY - 1) as f64)
+        .collect();
     let z_grid: Vec<f64> = (0..NZ)
         .map(|i| -half_t + height * i as f64 / (NZ - 1) as f64)
         .collect();
@@ -365,7 +377,8 @@ pub(crate) fn solve_shell_static(
     material: &IsotropicElastic,
     tip_force: f64,
 ) -> (ShellChannels, Value, f64, bool, u32) {
-    let solve = reify_solver_elastic::solve_flat_plate_shell(length, width, height, material, tip_force);
+    let solve =
+        reify_solver_elastic::solve_flat_plate_shell(length, width, height, material, tip_force);
 
     // True peak von Mises over ALL THREE through-thickness channels
     // (top/mid/bottom), so `result.max_von_mises` is the body's actual peak
@@ -389,7 +402,13 @@ pub(crate) fn solve_shell_static(
     let channels = build_shell_channels(top, bottom, frame);
     let mid_field = build_mid_stress_field(mid);
 
-    (channels, mid_field, max_von_mises, solve.converged, solve.iterations as u32)
+    (
+        channels,
+        mid_field,
+        max_von_mises,
+        solve.converged,
+        solve.iterations as u32,
+    )
 }
 
 #[cfg(test)]
@@ -567,7 +586,10 @@ mod tests {
         let ch: ShellChannels = build_shell_channels(top.clone(), bottom.clone(), frame.clone());
 
         assert_eq!(ch.top, top, "top buffer must pass through unchanged");
-        assert_eq!(ch.bottom, bottom, "bottom buffer must pass through unchanged");
+        assert_eq!(
+            ch.bottom, bottom,
+            "bottom buffer must pass through unchanged"
+        );
         assert_eq!(ch.frame, frame, "frame buffer must pass through unchanged");
     }
 
@@ -631,7 +653,9 @@ mod tests {
 
         let data = match &value {
             Value::StructureInstance(d) => d,
-            other => panic!("shell_channels_to_value must return a StructureInstance, got {other:?}"),
+            other => {
+                panic!("shell_channels_to_value must return a StructureInstance, got {other:?}")
+            }
         };
         assert_eq!(
             data.type_name.as_str(),
@@ -664,7 +688,11 @@ mod tests {
                 .expect("ShellStress must carry a `bottom` field"),
         );
         assert_eq!(top_data.len(), 9 * n, "top channel data length must be 9*n");
-        assert_eq!(bottom_data.len(), 9 * n, "bottom channel data length must be 9*n");
+        assert_eq!(
+            bottom_data.len(),
+            9 * n,
+            "bottom channel data length must be 9*n"
+        );
         assert!(
             top_data.iter().all(|x| x.is_finite()),
             "top channel must be all-finite"
@@ -694,12 +722,19 @@ mod tests {
                     "slab SDF must be a Regular3D field, got {:?}",
                     sf.kind
                 );
-                assert_eq!(sf.axis_grids.len(), 3, "Regular3D field has three axis grids");
+                assert_eq!(
+                    sf.axis_grids.len(),
+                    3,
+                    "Regular3D field has three axis grids"
+                );
                 assert!(
                     sf.axis_grids.iter().all(|g| !g.is_empty()),
                     "every axis grid must be non-empty (shell-extract contract)"
                 );
-                assert!(!sf.data.is_empty(), "signed-distance data must be non-empty");
+                assert!(
+                    !sf.data.is_empty(),
+                    "signed-distance data must be non-empty"
+                );
                 assert!(
                     sf.data.iter().all(|d| d.is_finite()),
                     "all signed-distance samples must be finite"

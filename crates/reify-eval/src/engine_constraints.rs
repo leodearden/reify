@@ -5,7 +5,10 @@ use std::collections::{BTreeMap, HashMap};
 
 use reify_compiler::{CompiledConstraint, CompiledModule, TopologyTemplate};
 use reify_core::{ConstraintNodeId, Diagnostic, Severity, ValueCellId};
-use reify_ir::{CompiledExpr, CompiledFunction, ConstraintInput, ConstraintResult, DeterminacyState, OptimizedImplInput, PersistentMap, Value, ValueMap};
+use reify_ir::{
+    CompiledExpr, CompiledFunction, ConstraintInput, ConstraintResult, DeterminacyState,
+    OptimizedImplInput, PersistentMap, Value, ValueMap,
+};
 
 use crate::{CheckResult, ConstraintCheckEntry, Engine, EngineError};
 
@@ -333,7 +336,10 @@ impl Engine {
             v
         };
 
-        let active_ids = state.snapshot.graph.active_constraint_ids(&effective_values);
+        let active_ids = state
+            .snapshot
+            .graph
+            .active_constraint_ids(&effective_values);
         let constraint_nodes: Vec<_> = state
             .snapshot
             .graph

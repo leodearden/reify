@@ -535,14 +535,12 @@ pub(crate) fn compile_geometry_op(
                     })
             };
             match kind {
-                reify_compiler::TransformKind::Translate => {
-                    Ok(reify_ir::GeometryOp::Translate {
-                        target: target_id,
-                        dx: f64_arg("dx")?,
-                        dy: f64_arg("dy")?,
-                        dz: f64_arg("dz")?,
-                    })
-                }
+                reify_compiler::TransformKind::Translate => Ok(reify_ir::GeometryOp::Translate {
+                    target: target_id,
+                    dx: f64_arg("dx")?,
+                    dy: f64_arg("dy")?,
+                    dz: f64_arg("dz")?,
+                }),
                 reify_compiler::TransformKind::Rotate => Ok(reify_ir::GeometryOp::Rotate {
                     target: target_id,
                     axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
@@ -1905,7 +1903,8 @@ pub(crate) fn try_eval_kinematic_query(
         // snapshot calling min_clearance(s, a, b) would otherwise pose 48
         // irrelevant bodies). The unary `interferes` helper needs all bodies.
         if let Some((qid_a, qid_b)) = body_id_args
-            && id != qid_a && id != qid_b
+            && id != qid_a
+            && id != qid_b
         {
             continue;
         }
@@ -1922,13 +1921,12 @@ pub(crate) fn try_eval_kinematic_query(
             // via the shared ApplyTransform primitive so the distance probe
             // operates on FK-posed geometry. Identity/missing world_transform
             // falls back to the raw handle (no kernel op).
-            let posed_id = if let Some(wt) = body_map
-                .get(&reify_ir::Value::String("world_transform".to_string()))
+            let posed_id = if let Some(wt) =
+                body_map.get(&reify_ir::Value::String("world_transform".to_string()))
             {
                 match decompose_transform_to_arrays(wt) {
                     Some((rotation, translation))
-                        if rotation != [1.0, 0.0, 0.0, 0.0]
-                            || translation != [0.0, 0.0, 0.0] =>
+                        if rotation != [1.0, 0.0, 0.0, 0.0] || translation != [0.0, 0.0, 0.0] =>
                     {
                         // Cache posed handles for the duration of the build
                         // pass: a typical structure calls interferes(s),
@@ -2388,7 +2386,11 @@ pub(crate) fn try_eval_topology_selector(
             let left = resolve_geometry_handle_arg(&args[0], named_steps)?;
             let right = resolve_geometry_handle_arg(&args[1], named_steps)?;
             let tolerance = resolve_length_scalar_arg(&args[2], values)?;
-            let query = reify_ir::GeometryQuery::GeoEquiv { left, right, tolerance };
+            let query = reify_ir::GeometryQuery::GeoEquiv {
+                left,
+                right,
+                tolerance,
+            };
             // Reuse the Bool-unwrap helper: dispatches kernel.query(&query) and
             // unwraps Value::Bool, downgrading non-Bool / Err replies to
             // Some(Value::Undef) + Warning (function.name = "geo_equiv").
@@ -2464,8 +2466,7 @@ pub(crate) fn try_eval_topology_selector(
             // arg[0]: edge sub-handle ValueRef → values → kernel_handle.
             // Falls through (None) when arg is not a hydrated Value::GeometryHandle
             // (PRD invariant #2).
-            let (_, _, kernel_handle) =
-                resolve_parent_geometry_handle_arg(&args[0], values)?;
+            let (_, _, kernel_handle) = resolve_parent_geometry_handle_arg(&args[0], values)?;
             dispatch_edge_length(kernel, kernel_handle, &function.name, diagnostics)
         }
         TopologySelectorHelper::Perimeter => {
@@ -2473,8 +2474,7 @@ pub(crate) fn try_eval_topology_selector(
             // arg[0]: face sub-handle ValueRef → values → kernel_handle.
             // Falls through (None) when arg is not a hydrated Value::GeometryHandle
             // (PRD invariant #2).
-            let (_, _, face_kh) =
-                resolve_parent_geometry_handle_arg(&args[0], values)?;
+            let (_, _, face_kh) = resolve_parent_geometry_handle_arg(&args[0], values)?;
             dispatch_perimeter(kernel, face_kh, &function.name, diagnostics)
         }
         TopologySelectorHelper::Distance => {
@@ -2555,9 +2555,9 @@ pub(crate) fn try_eval_topology_selector(
                         let cy = extract_si(&comps[1]);
                         let cz = extract_si(&comps[2]);
                         match (cx, cy, cz) {
-                            (Some(cx), Some(cy), Some(cz)) => Some(reify_ir::Value::length(
-                                euclidean_3d(point, [cx, cy, cz]),
-                            )),
+                            (Some(cx), Some(cy), Some(cz)) => {
+                                Some(reify_ir::Value::length(euclidean_3d(point, [cx, cy, cz])))
+                            }
                             // Non-numeric component — unexpected but guarded;
                             // downgrade visibly rather than silently emitting NaN
                             // (invariant #3, reviewer note on robustness).
@@ -2688,8 +2688,7 @@ pub(crate) fn try_eval_topology_selector(
             // density arg emits a Severity::Warning instead of silently resolving
             // to undefined — consistent diagnostic experience for both density-taking
             // queries.
-            let density =
-                resolve_density_arg(&args[1], values, &function.name, diagnostics)?;
+            let density = resolve_density_arg(&args[1], values, &function.name, diagnostics)?;
             let query = reify_ir::GeometryQuery::CenterOfMass { handle, density };
             dispatch_point3_length_reply(kernel, &query, &function.name, diagnostics)
         }
@@ -2701,8 +2700,7 @@ pub(crate) fn try_eval_topology_selector(
             // Severity::Warning when the caller passes a dimensioned value
             // (e.g. kg/m³ literal) — the v0.3 grammar does not yet support
             // compound-unit density literals, so bare-numeric Real is required.
-            let density =
-                resolve_density_arg(&args[1], values, &function.name, diagnostics)?;
+            let density = resolve_density_arg(&args[1], values, &function.name, diagnostics)?;
             let query = reify_ir::GeometryQuery::InertiaTensor { handle, density };
             dispatch_inertia_tensor(kernel, &query, &function.name, diagnostics)
         }
@@ -3117,8 +3115,11 @@ fn dispatch_filtered_subhandles(
         }
     };
 
-    let canonical_index_map: std::collections::HashMap<GeometryHandleId, usize> =
-        canonical.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+    let canonical_index_map: std::collections::HashMap<GeometryHandleId, usize> = canonical
+        .iter()
+        .enumerate()
+        .map(|(i, &id)| (id, i))
+        .collect();
     let mut elements: Vec<reify_ir::Value> = Vec::with_capacity(retained.len());
     for retained_id in retained {
         match canonical_index_map.get(&retained_id) {
@@ -3567,7 +3568,10 @@ fn resolve_length_scalar_arg(
 
 /// Read a `Value::Scalar` whose `dimension` is `expected_dim` and return its
 /// SI value. `None` for any other shape (wrong dimension, non-Scalar).
-fn scalar_si_with_dim(value: &reify_ir::Value, expected_dim: reify_core::DimensionVector) -> Option<f64> {
+fn scalar_si_with_dim(
+    value: &reify_ir::Value,
+    expected_dim: reify_core::DimensionVector,
+) -> Option<f64> {
     match value {
         reify_ir::Value::Scalar {
             si_value,
@@ -3706,7 +3710,11 @@ fn resolve_geometry_handle_arg(
 fn resolve_parent_geometry_handle_arg(
     expr: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,
-) -> Option<(reify_core::identity::RealizationNodeId, [u8; 32], GeometryHandleId)> {
+) -> Option<(
+    reify_core::identity::RealizationNodeId,
+    [u8; 32],
+    GeometryHandleId,
+)> {
     let cell_id = match &expr.kind {
         reify_ir::CompiledExprKind::ValueRef(id) => id,
         _ => return None,
@@ -3716,7 +3724,11 @@ fn resolve_parent_geometry_handle_arg(
             realization_ref,
             upstream_values_hash,
             kernel_handle,
-        } => Some((realization_ref.clone(), *upstream_values_hash, *kernel_handle)),
+        } => Some((
+            realization_ref.clone(),
+            *upstream_values_hash,
+            *kernel_handle,
+        )),
         _ => None,
     }
 }
@@ -3926,7 +3938,11 @@ fn dispatch_curvature(
         v: point[1],
     };
     if let Ok(value) = kernel.query(&surface_query) {
-        return Some(parse_curvature_matrix_reply(&value, helper_name, diagnostics));
+        return Some(parse_curvature_matrix_reply(
+            &value,
+            helper_name,
+            diagnostics,
+        ));
     }
     // Err(_): fall through to curve form
 
@@ -4051,7 +4067,12 @@ fn dispatch_inertia_tensor(
     };
     let rows = match &reply {
         reify_ir::Value::List(rows) => rows,
-        other => return malformed(diagnostics, format!("expected Value::List, got {:?}", other)),
+        other => {
+            return malformed(
+                diagnostics,
+                format!("expected Value::List, got {:?}", other),
+            );
+        }
     };
     let mut tensor_rows = Vec::with_capacity(rows.len());
     for row in rows {
@@ -4417,21 +4438,19 @@ fn construct_frame_from_kernel(
     // ── Origin via Centroid ───────────────────────────────────────────────
     // `GeometryQuery::Centroid` is unified — works for faces, edges, AND solids.
     let origin = match kernel.query(&reify_ir::GeometryQuery::Centroid(target_id)) {
-        Ok(value) => {
-            match crate::topology_selectors::parse_xyz_value(&value, "Centroid") {
-                Ok([x, y, z]) => reify_ir::Value::Point(vec![
-                    reify_ir::Value::length(x),
-                    reify_ir::Value::length(y),
-                    reify_ir::Value::length(z),
-                ]),
-                Err(err) => {
-                    diagnostics.push(Diagnostic::warning(format!(
-                        "@face/@edge centroid parse failed: {err}; cell left as Undef"
-                    )));
-                    return Some(reify_ir::Value::Undef);
-                }
+        Ok(value) => match crate::topology_selectors::parse_xyz_value(&value, "Centroid") {
+            Ok([x, y, z]) => reify_ir::Value::Point(vec![
+                reify_ir::Value::length(x),
+                reify_ir::Value::length(y),
+                reify_ir::Value::length(z),
+            ]),
+            Err(err) => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "@face/@edge centroid parse failed: {err}; cell left as Undef"
+                )));
+                return Some(reify_ir::Value::Undef);
             }
-        }
+        },
         Err(err) => {
             diagnostics.push(Diagnostic::warning(format!(
                 "@face/@edge centroid query failed: {err}; cell left as Undef"
@@ -4605,7 +4624,11 @@ pub(crate) fn eval_sub_pose(
             };
             if components.len() != 3
                 || !components.iter().all(|c| {
-                    if let reify_ir::Value::Scalar { si_value, dimension } = c {
+                    if let reify_ir::Value::Scalar {
+                        si_value,
+                        dimension,
+                    } = c
+                    {
                         *dimension == reify_core::DimensionVector::LENGTH && si_value.is_finite()
                     } else {
                         false
@@ -4880,6 +4903,17 @@ pub(crate) fn walk_placed_realizations<V>(
     composed_world: &reify_ir::Value,
     depth: usize,
     terminal_handles: &[Vec<Option<KernelHandle>>],
+    // task-4147: per-instance handle-row override for constructor-arg subs.
+    //
+    // When `Some(row)`, the realization loop reads handles from `row[r_idx]`
+    // instead of `terminal_handles[t_idx][r_idx]`.  `row` is aligned with
+    // `terminal_handles[t_idx]` (same length, same r_idx semantics), produced
+    // by `crate::engine_build::realize_sub_override_handles` for each sub
+    // with `!sub.args.is_empty()`.
+    //
+    // Pass `None` at roots (roots are never overridden subs) and for arg-free
+    // subs (which reuse the Phase-A shared handle, no re-realization needed).
+    handle_row_override: Option<&[Option<KernelHandle>]>,
     geometry_kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
     default_kernel_name: &str,
     values: &ValueMap,
@@ -4927,8 +4961,13 @@ pub(crate) fn walk_placed_realizations<V>(
             _ => None,
         };
 
+    // task-4147: use per-instance override row when present; fall back to the
+    // Phase-A shared row for arg-free subs (or at roots).
+    let handles_row: &[Option<KernelHandle>] =
+        handle_row_override.unwrap_or(&terminal_handles[t_idx]);
+
     for (r_idx, realization) in template.realizations.iter().enumerate() {
-        let Some(handle) = terminal_handles[t_idx][r_idx] else {
+        let Some(handle) = handles_row[r_idx] else {
             continue;
         };
         // Compute entity_path BEFORE ApplyTransform so `pre_filter` can gate the
@@ -4993,6 +5032,26 @@ pub(crate) fn walk_placed_realizations<V>(
         let child_prefix = format!("{}.{}", path_prefix, sub.name);
         let sub_pose = eval_sub_pose(sub.pose.as_ref(), values, functions, meta_map, diagnostics);
         let child_world = compose_pose_chain(&[composed_world.clone(), sub_pose]);
+
+        // task-4147: for constructor-arg subs, re-realize the child's handles
+        // against the per-instance override value scope BEFORE the recursive
+        // call (sequencing avoids overlapping `&mut geometry_kernels` borrows).
+        let child_override_row: Option<Vec<Option<KernelHandle>>> = if !sub.args.is_empty() {
+            Some(crate::engine_build::realize_sub_override_handles(
+                &template.name,
+                sub,
+                &module.templates[child_idx],
+                geometry_kernels,
+                default_kernel_name,
+                values,
+                functions,
+                meta_map,
+                diagnostics,
+            ))
+        } else {
+            None
+        };
+
         walk_placed_realizations(
             module,
             child_idx,
@@ -5001,6 +5060,7 @@ pub(crate) fn walk_placed_realizations<V>(
             &child_world,
             depth + 1,
             terminal_handles,
+            child_override_row.as_deref(),
             geometry_kernels,
             default_kernel_name,
             values,
@@ -5049,15 +5109,13 @@ pub(crate) fn non_final_realization_indices(
         .map(|(t_idx, template)| {
             // Index of the final geometry-producing realization (highest r_idx
             // with a recorded terminal handle) — equals `step_handles.last()`.
-            let final_idx = terminal_handles
-                .get(t_idx)
-                .and_then(|handles| {
-                    handles
-                        .iter()
-                        .enumerate()
-                        .rev()
-                        .find_map(|(r_idx, h)| h.is_some().then_some(r_idx))
-                });
+            let final_idx = terminal_handles.get(t_idx).and_then(|handles| {
+                handles
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .find_map(|(r_idx, h)| h.is_some().then_some(r_idx))
+            });
             // Skip every realization that is not the final one.
             (0..template.realizations.len())
                 .filter(|r_idx| Some(*r_idx) != final_idx)
@@ -5115,11 +5173,9 @@ pub(crate) fn surface_export_bodies(
     // the walk) with the intra-template skip set (excludes boolean operand lets).
     // The combined closure is used as the walk's pre_filter so that BOTH checks happen
     // BEFORE the kernel operation is issued, saving a transient handle per skipped body.
-    let combined_filter: &dyn Fn(usize, usize, &str) -> bool =
-        &|t: usize, r: usize, path: &str| {
-            !skip.get(t).is_some_and(|set| set.contains(&r))
-                && pre_filter.is_none_or(|f| f(t, r, path))
-        };
+    let combined_filter: &dyn Fn(usize, usize, &str) -> bool = &|t: usize, r: usize, path: &str| {
+        !skip.get(t).is_some_and(|set| set.contains(&r)) && pre_filter.is_none_or(|f| f(t, r, path))
+    };
     walk_placed_realizations(
         module,
         t_idx,
@@ -5128,6 +5184,7 @@ pub(crate) fn surface_export_bodies(
         composed_world,
         depth,
         terminal_handles,
+        None, // handle_row_override: roots are never overridden subs
         geometry_kernels,
         default_kernel_name,
         values,
@@ -5218,6 +5275,7 @@ pub(crate) fn surface_subtree(
         composed_world,
         depth,
         terminal_handles,
+        None, // handle_row_override: roots are never overridden subs
         geometry_kernels,
         default_kernel_name,
         values,
@@ -6488,10 +6546,8 @@ mod tests {
         let values = ValueMap::new();
 
         // Bare integer 360 — should be interpreted as 360° and converted to 2π rad.
-        let angle_int_expr = reify_ir::CompiledExpr::literal(
-            reify_ir::Value::Int(360),
-            reify_core::Type::Int,
-        );
+        let angle_int_expr =
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Int(360), reify_core::Type::Int);
 
         let op = reify_compiler::CompiledGeometryOp::Pattern {
             kind: reify_compiler::PatternKind::Circular,
@@ -8683,8 +8739,8 @@ mod tests {
             &mut diagnostics,
         );
 
-        let geom_op = result
-            .expect("Sub refs with known KernelHandle values should resolve successfully");
+        let geom_op =
+            result.expect("Sub refs with known KernelHandle values should resolve successfully");
         match geom_op {
             reify_ir::GeometryOp::Difference { left, right } => {
                 assert_eq!(
@@ -8719,11 +8775,7 @@ mod tests {
     // kernel and the per-realization name → handle map (`named_steps`).
 
     /// Build a `CompiledExpr` for `is_watertight(<entity>.<member>)`.
-    fn conformance_call(
-        helper_name: &str,
-        entity: &str,
-        member: &str,
-    ) -> reify_ir::CompiledExpr {
+    fn conformance_call(helper_name: &str, entity: &str, member: &str) -> reify_ir::CompiledExpr {
         let arg = reify_ir::CompiledExpr::value_ref(
             reify_core::ValueCellId::new(entity, member),
             reify_core::Type::Geometry,
@@ -8769,10 +8821,8 @@ mod tests {
 
     /// Build a `CompiledExpr` for `is_watertight(<literal_real>)`.
     fn conformance_call_literal_arg(helper_name: &str) -> reify_ir::CompiledExpr {
-        let arg = reify_ir::CompiledExpr::literal(
-            reify_ir::Value::Real(1.0),
-            reify_core::Type::Real,
-        );
+        let arg =
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(1.0), reify_core::Type::Real);
         let mut content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
             .combine(reify_core::ContentHash::of_str(helper_name));
         content_hash = content_hash.combine(arg.content_hash);
@@ -9178,15 +9228,18 @@ mod tests {
     /// update to assert per-kernel dispatch rather than treating `.kernel` as ignored.
     #[test]
     fn try_eval_kinematic_query_resolves_via_kernel_handle_id() {
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let base_id = reify_ir::GeometryHandleId(10);
         let hole_id = reify_ir::GeometryHandleId(20);
 
         // Distance <= 0.0 → interference.
-        let mut kernel = MockGeometryKernel::new()
-            .with_distance_result(base_id, hole_id, reify_ir::Value::Real(-1.0));
+        let mut kernel = MockGeometryKernel::new().with_distance_result(
+            base_id,
+            hole_id,
+            reify_ir::Value::Real(-1.0),
+        );
 
         // Map solid names to KernelHandle with deliberately non-default kernels.
         let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
@@ -9242,7 +9295,10 @@ mod tests {
                 },
                 args: vec![snap_arg],
             },
-            result_type: Type::List(Box::new(Type::Map(Box::new(Type::String), Box::new(Type::Int)))),
+            result_type: Type::List(Box::new(Type::Map(
+                Box::new(Type::String),
+                Box::new(Type::Int),
+            ))),
             content_hash,
         };
 
@@ -9301,9 +9357,9 @@ mod tests {
     /// → distance 5.0 > 0 → empty list; both (a) and (b) fail.
     #[test]
     fn try_eval_kinematic_query_applies_world_transform_before_distance() {
-        use reify_test_support::mocks::MockGeometryKernel;
-        use reify_ir::GeometryOp;
         use reify_core::{Type, ValueCellId};
+        use reify_ir::GeometryOp;
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let src_a = reify_ir::GeometryHandleId(10);
         let src_b = reify_ir::GeometryHandleId(20);
@@ -9329,7 +9385,12 @@ mod tests {
 
         let make_transform = |tx: f64| -> reify_ir::Value {
             reify_ir::Value::Transform {
-                rotation: Box::new(reify_ir::Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }),
+                rotation: Box::new(reify_ir::Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                }),
                 translation: Box::new(reify_ir::Value::Vector(vec![
                     reify_ir::Value::length(tx),
                     reify_ir::Value::length(0.0),
@@ -9342,17 +9403,26 @@ mod tests {
         let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         named_steps.insert(
             "body_a".to_string(),
-            reify_ir::KernelHandle { kernel: reify_ir::KernelId::Occt, id: src_a },
+            reify_ir::KernelHandle {
+                kernel: reify_ir::KernelId::Occt,
+                id: src_a,
+            },
         );
         named_steps.insert(
             "body_b".to_string(),
-            reify_ir::KernelHandle { kernel: reify_ir::KernelId::Occt, id: src_b },
+            reify_ir::KernelHandle {
+                kernel: reify_ir::KernelId::Occt,
+                id: src_b,
+            },
         );
 
         // Snapshot with body records that carry a `world_transform` key.
         let make_body = |id: i64, solid: &str, wt: reify_ir::Value| -> reify_ir::Value {
             let mut m = std::collections::BTreeMap::new();
-            m.insert(reify_ir::Value::String("id".to_string()), reify_ir::Value::Int(id));
+            m.insert(
+                reify_ir::Value::String("id".to_string()),
+                reify_ir::Value::Int(id),
+            );
             m.insert(
                 reify_ir::Value::String("solid".to_string()),
                 reify_ir::Value::String(solid.to_string()),
@@ -9388,7 +9458,10 @@ mod tests {
                 },
                 args: vec![snap_arg],
             },
-            result_type: Type::List(Box::new(Type::Map(Box::new(Type::String), Box::new(Type::Int)))),
+            result_type: Type::List(Box::new(Type::Map(
+                Box::new(Type::String),
+                Box::new(Type::Int),
+            ))),
             content_hash,
         };
 
@@ -9421,7 +9494,11 @@ mod tests {
             list.len(),
             list
         );
-        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics
+        );
 
         // (b) Exactly two ApplyTransform ops (one per non-identity body).
         let ops = kernel.operations();
@@ -9438,15 +9515,24 @@ mod tests {
         );
         // body_a: first op targets src_a with its decomposed transform.
         match &apply_ops[0].op {
-            GeometryOp::ApplyTransform { target, rotation, translation } => {
-                assert_eq!(*target, src_a, "first ApplyTransform must target body_a source handle");
+            GeometryOp::ApplyTransform {
+                target,
+                rotation,
+                translation,
+            } => {
                 assert_eq!(
-                    *rotation, [1.0_f64, 0.0, 0.0, 0.0],
+                    *target, src_a,
+                    "first ApplyTransform must target body_a source handle"
+                );
+                assert_eq!(
+                    *rotation,
+                    [1.0_f64, 0.0, 0.0, 0.0],
                     "body_a rotation must be identity quaternion"
                 );
                 assert!(
                     (translation[0] - tx_a).abs() < 1e-12,
-                    "body_a tx[0]: expected {tx_a}, got {}", translation[0]
+                    "body_a tx[0]: expected {tx_a}, got {}",
+                    translation[0]
                 );
                 assert_eq!(translation[1], 0.0, "body_a tx[1] must be zero");
                 assert_eq!(translation[2], 0.0, "body_a tx[2] must be zero");
@@ -9455,15 +9541,24 @@ mod tests {
         }
         // body_b: second op targets src_b with its decomposed transform.
         match &apply_ops[1].op {
-            GeometryOp::ApplyTransform { target, rotation, translation } => {
-                assert_eq!(*target, src_b, "second ApplyTransform must target body_b source handle");
+            GeometryOp::ApplyTransform {
+                target,
+                rotation,
+                translation,
+            } => {
                 assert_eq!(
-                    *rotation, [1.0_f64, 0.0, 0.0, 0.0],
+                    *target, src_b,
+                    "second ApplyTransform must target body_b source handle"
+                );
+                assert_eq!(
+                    *rotation,
+                    [1.0_f64, 0.0, 0.0, 0.0],
                     "body_b rotation must be identity quaternion"
                 );
                 assert!(
                     (translation[0] - tx_b).abs() < 1e-12,
-                    "body_b tx[0]: expected {tx_b}, got {}", translation[0]
+                    "body_b tx[0]: expected {tx_b}, got {}",
+                    translation[0]
                 );
                 assert_eq!(translation[1], 0.0, "body_b tx[1] must be zero");
                 assert_eq!(translation[2], 0.0, "body_b tx[2] must be zero");
@@ -9486,9 +9581,9 @@ mod tests {
     /// Either way "exactly one" fails until the short-circuit lands in step-4.
     #[test]
     fn try_eval_kinematic_query_skips_identity_world_transform() {
-        use reify_test_support::mocks::MockGeometryKernel;
-        use reify_ir::GeometryOp;
         use reify_core::{Type, ValueCellId};
+        use reify_ir::GeometryOp;
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let src_a = reify_ir::GeometryHandleId(100);
         let src_b = reify_ir::GeometryHandleId(200);
@@ -9500,12 +9595,20 @@ mod tests {
         let posed_b = reify_ir::GeometryHandleId(1);
 
         // Probe (src_a=100, posed_b=1) interferes; body A stays at raw handle.
-        let mut kernel = MockGeometryKernel::new()
-            .with_distance_result(src_a, posed_b, reify_ir::Value::Real(-1.0));
+        let mut kernel = MockGeometryKernel::new().with_distance_result(
+            src_a,
+            posed_b,
+            reify_ir::Value::Real(-1.0),
+        );
 
         let make_transform = |tx: f64, ty: f64, tz: f64| -> reify_ir::Value {
             reify_ir::Value::Transform {
-                rotation: Box::new(reify_ir::Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }),
+                rotation: Box::new(reify_ir::Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                }),
                 translation: Box::new(reify_ir::Value::Vector(vec![
                     reify_ir::Value::length(tx),
                     reify_ir::Value::length(ty),
@@ -9517,16 +9620,25 @@ mod tests {
         let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         named_steps.insert(
             "body_a".to_string(),
-            reify_ir::KernelHandle { kernel: reify_ir::KernelId::Occt, id: src_a },
+            reify_ir::KernelHandle {
+                kernel: reify_ir::KernelId::Occt,
+                id: src_a,
+            },
         );
         named_steps.insert(
             "body_b".to_string(),
-            reify_ir::KernelHandle { kernel: reify_ir::KernelId::Occt, id: src_b },
+            reify_ir::KernelHandle {
+                kernel: reify_ir::KernelId::Occt,
+                id: src_b,
+            },
         );
 
         let make_body = |id: i64, solid: &str, wt: reify_ir::Value| -> reify_ir::Value {
             let mut m = std::collections::BTreeMap::new();
-            m.insert(reify_ir::Value::String("id".to_string()), reify_ir::Value::Int(id));
+            m.insert(
+                reify_ir::Value::String("id".to_string()),
+                reify_ir::Value::Int(id),
+            );
             m.insert(
                 reify_ir::Value::String("solid".to_string()),
                 reify_ir::Value::String(solid.to_string()),
@@ -9563,7 +9675,10 @@ mod tests {
                 },
                 args: vec![snap_arg],
             },
-            result_type: Type::List(Box::new(Type::Map(Box::new(Type::String), Box::new(Type::Int)))),
+            result_type: Type::List(Box::new(Type::Map(
+                Box::new(Type::String),
+                Box::new(Type::Int),
+            ))),
             content_hash,
         };
 
@@ -9597,11 +9712,19 @@ mod tests {
         );
         // Verify the single op targets body B's source handle.
         match &apply_ops[0].op {
-            GeometryOp::ApplyTransform { target, translation, .. } => {
-                assert_eq!(*target, src_b, "ApplyTransform must target body_b (non-identity)");
+            GeometryOp::ApplyTransform {
+                target,
+                translation,
+                ..
+            } => {
+                assert_eq!(
+                    *target, src_b,
+                    "ApplyTransform must target body_b (non-identity)"
+                );
                 assert!(
                     (translation[0] - 0.020).abs() < 1e-12,
-                    "body_b tx[0]: expected 0.020, got {}", translation[0]
+                    "body_b tx[0]: expected 0.020, got {}",
+                    translation[0]
                 );
             }
             other => panic!("expected ApplyTransform, got {:?}", other),
@@ -9625,9 +9748,9 @@ mod tests {
     /// update to assert per-kernel dispatch rather than treating `.kernel` as ignored.
     #[test]
     fn try_eval_topology_selector_resolves_via_kernel_handle_id() {
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::identity::RealizationNodeId;
         use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let parent_id = reify_ir::GeometryHandleId(1);
         let edge_a = reify_ir::GeometryHandleId(2);
@@ -9635,8 +9758,8 @@ mod tests {
         let parent_rr = RealizationNodeId::new("EdgeBody", 0);
         let parent_hash: [u8; 32] = [0x42; 32];
 
-        let mut kernel = MockGeometryKernel::new()
-            .with_extracted_edges(parent_id, vec![edge_a, edge_b]);
+        let mut kernel =
+            MockGeometryKernel::new().with_extracted_edges(parent_id, vec![edge_a, edge_b]);
 
         // Map "s" to a KernelHandle with deliberately non-default kernel.
         let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
@@ -9683,7 +9806,12 @@ mod tests {
                 other, diagnostics
             ),
         };
-        assert_eq!(list.len(), 2, "expected 2 edge sub-handles, got {}", list.len());
+        assert_eq!(
+            list.len(),
+            2,
+            "expected 2 edge sub-handles, got {}",
+            list.len()
+        );
         assert!(
             diagnostics.is_empty(),
             "no diagnostics expected for successful edge resolution, got: {:?}",
@@ -9743,9 +9871,9 @@ mod tests {
     /// `upstream_values_hash` fields must be pairwise distinct (PRD §4 iii).
     #[test]
     fn edges_dispatch_returns_geometry_handle_list() {
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::identity::RealizationNodeId;
         use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let parent_handle = GeometryHandleId(1);
         let parent_rr = RealizationNodeId::new("BoxEdges", 0);
@@ -9753,7 +9881,11 @@ mod tests {
 
         let mut kernel = MockGeometryKernel::new().with_extracted_edges(
             parent_handle,
-            vec![GeometryHandleId(2), GeometryHandleId(3), GeometryHandleId(4)],
+            vec![
+                GeometryHandleId(2),
+                GeometryHandleId(3),
+                GeometryHandleId(4),
+            ],
         );
 
         let mut named_steps = HashMap::new();
@@ -9795,11 +9927,19 @@ mod tests {
         };
         assert_eq!(list.len(), 3, "expected 3 edge sub-handles");
 
-        let expected_ids = [GeometryHandleId(2), GeometryHandleId(3), GeometryHandleId(4)];
+        let expected_ids = [
+            GeometryHandleId(2),
+            GeometryHandleId(3),
+            GeometryHandleId(4),
+        ];
         let mut hashes: Vec<[u8; 32]> = Vec::new();
         for (i, (elem, expected_id)) in list.iter().zip(&expected_ids).enumerate() {
             match elem {
-                reify_ir::Value::GeometryHandle { realization_ref, upstream_values_hash, kernel_handle } => {
+                reify_ir::Value::GeometryHandle {
+                    realization_ref,
+                    upstream_values_hash,
+                    kernel_handle,
+                } => {
                     assert_eq!(
                         realization_ref.entity, parent_rr.entity,
                         "elem[{i}] realization_ref.entity must match parent"
@@ -9830,8 +9970,8 @@ mod tests {
     /// returns `Some(Value::List(Value::Int))`.
     #[test]
     fn edges_dispatch_falls_through_to_none_when_parent_not_hydrated() {
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::Type;
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let parent_handle = GeometryHandleId(1);
         let mut kernel = MockGeometryKernel::new().with_extracted_edges(
@@ -9912,14 +10052,10 @@ mod tests {
     /// used for the literal-arg fall-through defensive tests. Mirrors
     /// `conformance_call_literal_arg` above.
     fn topology_selector_call_literal_args(helper_name: &str) -> reify_ir::CompiledExpr {
-        let arg_a = reify_ir::CompiledExpr::literal(
-            reify_ir::Value::Real(1.0),
-            reify_core::Type::Real,
-        );
-        let arg_b = reify_ir::CompiledExpr::literal(
-            reify_ir::Value::Real(2.0),
-            reify_core::Type::Real,
-        );
+        let arg_a =
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(1.0), reify_core::Type::Real);
+        let arg_b =
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(2.0), reify_core::Type::Real);
         let mut content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
             .combine(reify_core::ContentHash::of_str(helper_name));
         content_hash = content_hash.combine(arg_a.content_hash);
@@ -10513,7 +10649,13 @@ mod tests {
         // The debug_assert! in dispatch_surface_angle's Scalar arm must panic
         // with a message containing "expected ANGLE". No assert_eq! after this
         // call — the #[should_panic] attribute drives the assertion.
-        super::try_eval_topology_selector(&expr, &named_steps, &values, &mut kernel, &mut diagnostics);
+        super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
     }
 
     #[test]
@@ -10891,9 +11033,8 @@ mod tests {
             vec3_value(0.0, 1.0, 0.0),
             reify_core::Type::vec3(reify_core::Type::Real),
         );
-        let mut ch =
-            reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
-                .combine(reify_core::ContentHash::of_str("angle"));
+        let mut ch = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str("angle"));
         ch = ch.combine(arg_a.content_hash).combine(arg_b.content_hash);
         let expr = reify_ir::CompiledExpr {
             kind: reify_ir::CompiledExprKind::FunctionCall {
@@ -11170,8 +11311,7 @@ mod tests {
     }
 
     #[test]
-    fn try_eval_topology_selector_contains_non_bool_kernel_reply_emits_warning_and_returns_undef()
-    {
+    fn try_eval_topology_selector_contains_non_bool_kernel_reply_emits_warning_and_returns_undef() {
         use reify_test_support::mocks::MockGeometryKernel;
         // Pin the `Ok(other)` warning arm of `dispatch_point_on_shape` (reused for
         // `contains`): a kernel reply that is not `Value::Bool(_)` must produce
@@ -11376,9 +11516,10 @@ mod tests {
 
         // Expected: Some(Value::Scalar{ dimension: LENGTH, si_value ≈ 0.015 })
         match result {
-            Some(reify_ir::Value::Scalar { si_value, dimension })
-                if dimension == reify_core::DimensionVector::LENGTH =>
-            {
+            Some(reify_ir::Value::Scalar {
+                si_value,
+                dimension,
+            }) if dimension == reify_core::DimensionVector::LENGTH => {
                 let expected = 0.015_f64;
                 let epsilon = 1e-12;
                 assert!(
@@ -11530,8 +11671,8 @@ mod tests {
         let handle_b = reify_ir::GeometryHandleId(11);
         // kernel_distance reads GeometryQuery::Distance{from, to} and accepts
         // Real or Scalar{LENGTH} reply. Use meters(0.04) (Value::Scalar{LENGTH}).
-        let mut kernel = MockGeometryKernel::new()
-            .with_distance_result(handle_a, handle_b, meters(0.04));
+        let mut kernel =
+            MockGeometryKernel::new().with_distance_result(handle_a, handle_b, meters(0.04));
 
         let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         named_steps.insert("a".to_string(), kh(handle_a));
@@ -11560,9 +11701,10 @@ mod tests {
         );
 
         match result {
-            Some(reify_ir::Value::Scalar { si_value, dimension })
-                if dimension == reify_core::DimensionVector::LENGTH =>
-            {
+            Some(reify_ir::Value::Scalar {
+                si_value,
+                dimension,
+            }) if dimension == reify_core::DimensionVector::LENGTH => {
                 let expected = 0.04_f64;
                 let epsilon = 1e-12;
                 assert!(
@@ -11625,9 +11767,10 @@ mod tests {
         );
 
         match result {
-            Some(reify_ir::Value::Scalar { si_value, dimension })
-                if dimension == reify_core::DimensionVector::LENGTH =>
-            {
+            Some(reify_ir::Value::Scalar {
+                si_value,
+                dimension,
+            }) if dimension == reify_core::DimensionVector::LENGTH => {
                 let expected = 0.05_f64; // |(0.03, 0.04, 0)| = 0.05 exactly
                 let epsilon = 1e-12;
                 assert!(
@@ -11711,9 +11854,10 @@ mod tests {
         );
 
         match result {
-            Some(reify_ir::Value::Scalar { si_value, dimension })
-                if dimension == reify_core::DimensionVector::LENGTH =>
-            {
+            Some(reify_ir::Value::Scalar {
+                si_value,
+                dimension,
+            }) if dimension == reify_core::DimensionVector::LENGTH => {
                 let expected = 0.015_f64;
                 let epsilon = 1e-12;
                 assert!(
@@ -11940,12 +12084,8 @@ mod tests {
             to: GeometryHandleId(2),
         };
         let mut diags: Vec<Diagnostic> = Vec::new();
-        let route = super::gate_query_capability(
-            &query,
-            reify_ir::ReprKind::BRep,
-            "distance",
-            &mut diags,
-        );
+        let route =
+            super::gate_query_capability(&query, reify_ir::ReprKind::BRep, "distance", &mut diags);
         assert_eq!(
             route,
             super::CapabilityRoute::Occt,
@@ -11966,12 +12106,8 @@ mod tests {
             to: GeometryHandleId(2),
         };
         let mut diags: Vec<Diagnostic> = Vec::new();
-        let route = super::gate_query_capability(
-            &query,
-            reify_ir::ReprKind::Mesh,
-            "distance",
-            &mut diags,
-        );
+        let route =
+            super::gate_query_capability(&query, reify_ir::ReprKind::Mesh, "distance", &mut diags);
         assert_eq!(
             route,
             super::CapabilityRoute::Manifold,
@@ -11989,12 +12125,8 @@ mod tests {
         // branch-d: BRepOnly + Mesh → Unsupported + exactly-one Error diag
         let query = reify_ir::GeometryQuery::EdgeLength(GeometryHandleId(1));
         let mut diags: Vec<Diagnostic> = Vec::new();
-        let route = super::gate_query_capability(
-            &query,
-            reify_ir::ReprKind::Mesh,
-            "curvature",
-            &mut diags,
-        );
+        let route =
+            super::gate_query_capability(&query, reify_ir::ReprKind::Mesh, "curvature", &mut diags);
         assert_eq!(
             route,
             super::CapabilityRoute::Unsupported,
@@ -12041,12 +12173,8 @@ mod tests {
             to: GeometryHandleId(2),
         };
         let mut diags: Vec<Diagnostic> = Vec::new();
-        let route = super::gate_query_capability(
-            &query,
-            reify_ir::ReprKind::Voxel,
-            "distance",
-            &mut diags,
-        );
+        let route =
+            super::gate_query_capability(&query, reify_ir::ReprKind::Voxel, "distance", &mut diags);
         assert_eq!(route, super::CapabilityRoute::Unsupported);
         assert_eq!(diags.len(), 1, "Voxel repr must emit one diag: {:?}", diags);
         assert_eq!(
@@ -12072,12 +12200,8 @@ mod tests {
         // Message must say "BRep or Mesh" because Volume is BRepAndMesh.
         let query = reify_ir::GeometryQuery::Volume(GeometryHandleId(1));
         let mut diags: Vec<Diagnostic> = Vec::new();
-        let route = super::gate_query_capability(
-            &query,
-            reify_ir::ReprKind::Sdf,
-            "volume",
-            &mut diags,
-        );
+        let route =
+            super::gate_query_capability(&query, reify_ir::ReprKind::Sdf, "volume", &mut diags);
         assert_eq!(route, super::CapabilityRoute::Unsupported);
         assert_eq!(diags.len(), 1, "Sdf repr must emit one diag: {:?}", diags);
         assert_eq!(
@@ -12252,7 +12376,9 @@ mod tests {
         let (w, x, y, z) = orientation_components(q);
         let rotated = quat_rotate(w, x, y, z, 0.0, 0.0, 1.0);
         assert!(
-            rotated[0].abs() < 1e-12 && rotated[1].abs() < 1e-12 && (rotated[2] + 1.0).abs() < 1e-12,
+            rotated[0].abs() < 1e-12
+                && rotated[1].abs() < 1e-12
+                && (rotated[2] + 1.0).abs() < 1e-12,
             "180°/+X applied to +Z should give -Z, got {rotated:?}"
         );
     }
@@ -12269,14 +12395,22 @@ mod tests {
             "+X axis: quaternion should be unit-norm; norm={norm}"
         );
         let sqrt2_inv = std::f64::consts::FRAC_1_SQRT_2;
-        assert!((w - sqrt2_inv).abs() < 1e-12, "+X axis: w should be 1/√2; got {w}");
+        assert!(
+            (w - sqrt2_inv).abs() < 1e-12,
+            "+X axis: w should be 1/√2; got {w}"
+        );
         assert!(x.abs() < 1e-12, "+X axis: x should be 0; got {x}");
-        assert!((y - sqrt2_inv).abs() < 1e-12, "+X axis: y should be 1/√2; got {y}");
+        assert!(
+            (y - sqrt2_inv).abs() < 1e-12,
+            "+X axis: y should be 1/√2; got {y}"
+        );
         assert!(z.abs() < 1e-12, "+X axis: z should be 0; got {z}");
         // Round-trip: q applied to (0,0,1) should give (1,0,0).
         let rotated = quat_rotate(w, x, y, z, 0.0, 0.0, 1.0);
         assert!(
-            (rotated[0] - 1.0).abs() < 1e-12 && rotated[1].abs() < 1e-12 && rotated[2].abs() < 1e-12,
+            (rotated[0] - 1.0).abs() < 1e-12
+                && rotated[1].abs() < 1e-12
+                && rotated[2].abs() < 1e-12,
             "+X round-trip: expected (1,0,0), got {rotated:?}"
         );
     }
@@ -12293,14 +12427,22 @@ mod tests {
             "+Y axis: quaternion should be unit-norm; norm={norm}"
         );
         let sqrt2_inv = std::f64::consts::FRAC_1_SQRT_2;
-        assert!((w - sqrt2_inv).abs() < 1e-12, "+Y axis: w should be 1/√2; got {w}");
-        assert!((x + sqrt2_inv).abs() < 1e-12, "+Y axis: x should be -1/√2; got {x}");
+        assert!(
+            (w - sqrt2_inv).abs() < 1e-12,
+            "+Y axis: w should be 1/√2; got {w}"
+        );
+        assert!(
+            (x + sqrt2_inv).abs() < 1e-12,
+            "+Y axis: x should be -1/√2; got {x}"
+        );
         assert!(y.abs() < 1e-12, "+Y axis: y should be 0; got {y}");
         assert!(z.abs() < 1e-12, "+Y axis: z should be 0; got {z}");
         // Round-trip: q applied to (0,0,1) should give (0,1,0).
         let rotated = quat_rotate(w, x, y, z, 0.0, 0.0, 1.0);
         assert!(
-            rotated[0].abs() < 1e-12 && (rotated[1] - 1.0).abs() < 1e-12 && rotated[2].abs() < 1e-12,
+            rotated[0].abs() < 1e-12
+                && (rotated[1] - 1.0).abs() < 1e-12
+                && rotated[2].abs() < 1e-12,
             "+Y round-trip: expected (0,1,0), got {rotated:?}"
         );
     }
@@ -12362,10 +12504,8 @@ mod tests {
         use reify_test_support::mocks::MockGeometryKernel;
 
         let target = reify_ir::GeometryHandleId(10);
-        let centroid_json =
-            reify_ir::Value::String(r#"{"x":0.0,"y":0.0,"z":0.01}"#.to_string());
-        let normal_json =
-            reify_ir::Value::String(r#"{"x":0.0,"y":0.0,"z":1.0}"#.to_string());
+        let centroid_json = reify_ir::Value::String(r#"{"x":0.0,"y":0.0,"z":0.01}"#.to_string());
+        let normal_json = reify_ir::Value::String(r#"{"x":0.0,"y":0.0,"z":1.0}"#.to_string());
         let mut kernel = MockGeometryKernel::new()
             .with_centroid_result(target, centroid_json)
             .with_face_normal_result(target, normal_json);
@@ -12378,7 +12518,11 @@ mod tests {
             &mut diagnostics,
         );
 
-        let Some(reify_ir::Value::Frame { ref origin, ref basis }) = result else {
+        let Some(reify_ir::Value::Frame {
+            ref origin,
+            ref basis,
+        }) = result
+        else {
             panic!(
                 "construct_frame_from_kernel(Face) should return Some(Value::Frame {{ .. }}); got {:?}",
                 result
@@ -12395,7 +12539,12 @@ mod tests {
         );
         assert_eq!(
             **basis,
-            reify_ir::Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+            reify_ir::Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0
+            },
             "Face: basis should be identity (FaceNormal +Z → +Z = zero rotation)"
         );
         assert!(
@@ -12418,10 +12567,8 @@ mod tests {
         use reify_test_support::mocks::MockGeometryKernel;
 
         let target = reify_ir::GeometryHandleId(20);
-        let centroid_json =
-            reify_ir::Value::String(r#"{"x":0.0,"y":0.0,"z":0.005}"#.to_string());
-        let tangent_json =
-            reify_ir::Value::String(r#"{"x":0.0,"y":0.0,"z":1.0}"#.to_string());
+        let centroid_json = reify_ir::Value::String(r#"{"x":0.0,"y":0.0,"z":0.005}"#.to_string());
+        let tangent_json = reify_ir::Value::String(r#"{"x":0.0,"y":0.0,"z":1.0}"#.to_string());
         let mut kernel = MockGeometryKernel::new()
             .with_centroid_result(target, centroid_json)
             .with_edge_tangent_result(target, tangent_json);
@@ -12434,7 +12581,11 @@ mod tests {
             &mut diagnostics,
         );
 
-        let Some(reify_ir::Value::Frame { ref origin, ref basis }) = result else {
+        let Some(reify_ir::Value::Frame {
+            ref origin,
+            ref basis,
+        }) = result
+        else {
             panic!(
                 "construct_frame_from_kernel(Edge) should return Some(Value::Frame {{ .. }}); got {:?}",
                 result
@@ -12451,7 +12602,12 @@ mod tests {
         );
         assert_eq!(
             **basis,
-            reify_ir::Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+            reify_ir::Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0
+            },
             "Edge: basis should be identity (EdgeTangent +Z → +Z = zero rotation)"
         );
         assert!(
@@ -12465,11 +12621,11 @@ mod tests {
     fn cap_kind_translation_maps_all_canonical_labels_and_returns_none_for_unknown() {
         use reify_ir::{CapKind, Role};
         let cases: &[(&str, Option<(Role, u32)>)] = &[
-            ("top",         Some((Role::Cap(CapKind::Top), 0))),
-            ("bottom",      Some((Role::Cap(CapKind::Bottom), 0))),
-            ("start",       Some((Role::Cap(CapKind::Start), 0))),
-            ("end",         Some((Role::Cap(CapKind::End), 0))),
-            ("side",        Some((Role::Side, 0))),
+            ("top", Some((Role::Cap(CapKind::Top), 0))),
+            ("bottom", Some((Role::Cap(CapKind::Bottom), 0))),
+            ("start", Some((Role::Cap(CapKind::Start), 0))),
+            ("end", Some((Role::Cap(CapKind::End), 0))),
+            ("side", Some((Role::Side, 0))),
             ("nonexistent", None),
         ];
         for (label, expected) in cases {
@@ -12552,18 +12708,12 @@ mod tests {
     /// `topology_selector_call_literal_args` but with three args so the arity
     /// gate for arity-3 helpers (like `geo_equiv`) passes.
     fn topology_selector_call_three_literal_args(helper_name: &str) -> reify_ir::CompiledExpr {
-        let arg_a = reify_ir::CompiledExpr::literal(
-            reify_ir::Value::Real(1.0),
-            reify_core::Type::Real,
-        );
-        let arg_b = reify_ir::CompiledExpr::literal(
-            reify_ir::Value::Real(2.0),
-            reify_core::Type::Real,
-        );
-        let arg_c = reify_ir::CompiledExpr::literal(
-            reify_ir::Value::Real(3.0),
-            reify_core::Type::Real,
-        );
+        let arg_a =
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(1.0), reify_core::Type::Real);
+        let arg_b =
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(2.0), reify_core::Type::Real);
+        let arg_c =
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(3.0), reify_core::Type::Real);
         let mut content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
             .combine(reify_core::ContentHash::of_str(helper_name));
         content_hash = content_hash.combine(arg_a.content_hash);
@@ -13192,9 +13342,9 @@ mod tests {
     /// are rejected. The result must carry canonical index 1, not position 0.
     #[test]
     fn faces_by_normal_dispatch_returns_geometry_handle_sub_handles() {
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::identity::RealizationNodeId;
         use reify_core::{DimensionVector, Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let parent_handle = GeometryHandleId(1);
         let parent_rr = RealizationNodeId::new("Directional", 0);
@@ -13203,7 +13353,11 @@ mod tests {
         let mut kernel = MockGeometryKernel::new()
             .with_extracted_faces(
                 parent_handle,
-                vec![GeometryHandleId(2), GeometryHandleId(3), GeometryHandleId(4)],
+                vec![
+                    GeometryHandleId(2),
+                    GeometryHandleId(3),
+                    GeometryHandleId(4),
+                ],
             )
             .with_face_normal_result(
                 GeometryHandleId(2),
@@ -13329,8 +13483,8 @@ mod tests {
     /// hydrated `Value::GeometryHandle` in `values` (PRD §4 invariant #2).
     #[test]
     fn faces_by_normal_dispatch_falls_through_when_parent_not_hydrated() {
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::{DimensionVector, Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let mut kernel = MockGeometryKernel::new();
         let named_steps = HashMap::new();
@@ -13391,9 +13545,9 @@ mod tests {
     /// carry canonical index 2, not position 0.
     #[test]
     fn edges_parallel_to_dispatch_returns_geometry_handle_sub_handles() {
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::identity::RealizationNodeId;
         use reify_core::{DimensionVector, Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let parent_handle = GeometryHandleId(1);
         let parent_rr = RealizationNodeId::new("Directional", 0);
@@ -13402,7 +13556,11 @@ mod tests {
         let mut kernel = MockGeometryKernel::new()
             .with_extracted_edges(
                 parent_handle,
-                vec![GeometryHandleId(2), GeometryHandleId(3), GeometryHandleId(4)],
+                vec![
+                    GeometryHandleId(2),
+                    GeometryHandleId(3),
+                    GeometryHandleId(4),
+                ],
             )
             .with_edge_tangent_result(
                 GeometryHandleId(2),
@@ -13528,8 +13686,8 @@ mod tests {
     /// Branch (a): filter_result is Err → dispatch emits a Warning and returns Value::Undef.
     #[test]
     fn dispatch_filtered_subhandles_filter_error_yields_undef_and_warning() {
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::identity::RealizationNodeId;
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let parent_rr = RealizationNodeId::new("Def", 0);
         let parent_hash: [u8; 32] = [0x01; 32];
@@ -13566,8 +13724,8 @@ mod tests {
     /// Branch (b): filter_result is Ok but canonical re-extract fails → Warning + Value::Undef.
     #[test]
     fn dispatch_filtered_subhandles_canonical_reextract_error_yields_undef_and_warning() {
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::identity::RealizationNodeId;
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let parent_rr = RealizationNodeId::new("Def", 0);
         let parent_hash: [u8; 32] = [0x02; 32];
@@ -13605,8 +13763,8 @@ mod tests {
     /// skipped (list is shorter than retained), and a Warning is emitted for the missing id.
     #[test]
     fn dispatch_filtered_subhandles_absent_retained_id_is_skipped_with_warning() {
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::identity::RealizationNodeId;
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let parent_rr = RealizationNodeId::new("Def", 0);
         let parent_hash: [u8; 32] = [0x03; 32];
@@ -13645,7 +13803,11 @@ mod tests {
             list.len(),
             diagnostics
         );
-        assert_eq!(diagnostics.len(), 1, "must emit one warning for the absent id");
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "must emit one warning for the absent id"
+        );
         assert_eq!(
             diagnostics[0].severity,
             reify_core::Severity::Warning,
@@ -13653,7 +13815,9 @@ mod tests {
             diagnostics[0]
         );
         assert!(
-            diagnostics[0].message.contains("absent from canonical list"),
+            diagnostics[0]
+                .message
+                .contains("absent from canonical list"),
             "warning must mention 'absent from canonical list'; got: {}",
             diagnostics[0].message
         );
@@ -13872,9 +14036,9 @@ mod tests {
     /// `compose_sub_handle_hash(parent_hash, SubKind::Face, 0)`.
     #[test]
     fn adjacent_faces_dispatch_returns_geometry_handle_list() {
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::identity::RealizationNodeId;
         use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let parent_handle = GeometryHandleId(1);
         let parent_rr = RealizationNodeId::new("Solid", 0);
@@ -13938,7 +14102,12 @@ mod tests {
                 other, diagnostics
             ),
         };
-        assert_eq!(list.len(), 1, "expected 1 adjacent face sub-handle; diags: {:?}", diagnostics);
+        assert_eq!(
+            list.len(),
+            1,
+            "expected 1 adjacent face sub-handle; diags: {:?}",
+            diagnostics
+        );
 
         let expected_hash = crate::topology_selectors::compose_sub_handle_hash(
             &parent_hash,
@@ -13946,11 +14115,28 @@ mod tests {
             0,
         );
         match &list[0] {
-            reify_ir::Value::GeometryHandle { realization_ref, upstream_values_hash, kernel_handle } => {
-                assert_eq!(realization_ref.entity, parent_rr.entity, "realization_ref.entity must match parent");
-                assert_eq!(realization_ref.index, parent_rr.index, "realization_ref.index must match parent");
-                assert_eq!(*kernel_handle, GeometryHandleId(1), "kernel_handle must be GHId(1)");
-                assert_eq!(*upstream_values_hash, expected_hash, "upstream_values_hash must be compose_sub_handle_hash(parent_hash, Face, 0)");
+            reify_ir::Value::GeometryHandle {
+                realization_ref,
+                upstream_values_hash,
+                kernel_handle,
+            } => {
+                assert_eq!(
+                    realization_ref.entity, parent_rr.entity,
+                    "realization_ref.entity must match parent"
+                );
+                assert_eq!(
+                    realization_ref.index, parent_rr.index,
+                    "realization_ref.index must match parent"
+                );
+                assert_eq!(
+                    *kernel_handle,
+                    GeometryHandleId(1),
+                    "kernel_handle must be GHId(1)"
+                );
+                assert_eq!(
+                    *upstream_values_hash, expected_hash,
+                    "upstream_values_hash must be compose_sub_handle_hash(parent_hash, Face, 0)"
+                );
             }
             other => panic!("elem[0] is not Value::GeometryHandle: {:?}", other),
         }
@@ -13960,9 +14146,9 @@ mod tests {
     /// must fall through to `None` (PRD invariant #2: never partial-construct).
     #[test]
     fn adjacent_faces_dispatch_falls_through_when_face_arg_not_hydrated() {
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::identity::RealizationNodeId;
         use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let parent_handle = GeometryHandleId(1);
         let parent_rr = RealizationNodeId::new("Solid", 0);
@@ -14026,9 +14212,9 @@ mod tests {
     /// `compose_sub_handle_hash(parent_hash, SubKind::Edge, 0)`.
     #[test]
     fn shared_edges_dispatch_returns_geometry_handle_list() {
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::identity::RealizationNodeId;
         use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let parent_handle = GeometryHandleId(1);
         let face_a_handle = GeometryHandleId(2);
@@ -14107,7 +14293,12 @@ mod tests {
                 other, diagnostics
             ),
         };
-        assert_eq!(list.len(), 1, "expected 1 shared edge sub-handle; diags: {:?}", diagnostics);
+        assert_eq!(
+            list.len(),
+            1,
+            "expected 1 shared edge sub-handle; diags: {:?}",
+            diagnostics
+        );
 
         let expected_hash = crate::topology_selectors::compose_sub_handle_hash(
             &parent_hash,
@@ -14115,11 +14306,27 @@ mod tests {
             0,
         );
         match &list[0] {
-            reify_ir::Value::GeometryHandle { realization_ref, upstream_values_hash, kernel_handle } => {
-                assert_eq!(realization_ref.entity, parent_rr.entity, "realization_ref.entity must match parent solid");
-                assert_eq!(realization_ref.index, parent_rr.index, "realization_ref.index must match parent solid");
-                assert_eq!(*kernel_handle, edge_handle, "kernel_handle must be the edge GHId(4)");
-                assert_eq!(*upstream_values_hash, expected_hash, "upstream_values_hash must be compose_sub_handle_hash(parent_hash, Edge, 0)");
+            reify_ir::Value::GeometryHandle {
+                realization_ref,
+                upstream_values_hash,
+                kernel_handle,
+            } => {
+                assert_eq!(
+                    realization_ref.entity, parent_rr.entity,
+                    "realization_ref.entity must match parent solid"
+                );
+                assert_eq!(
+                    realization_ref.index, parent_rr.index,
+                    "realization_ref.index must match parent solid"
+                );
+                assert_eq!(
+                    *kernel_handle, edge_handle,
+                    "kernel_handle must be the edge GHId(4)"
+                );
+                assert_eq!(
+                    *upstream_values_hash, expected_hash,
+                    "upstream_values_hash must be compose_sub_handle_hash(parent_hash, Edge, 0)"
+                );
             }
             other => panic!("elem[0] is not Value::GeometryHandle: {:?}", other),
         }
@@ -14129,9 +14336,9 @@ mod tests {
     /// arm must fall through to `None` (PRD invariant #2: never partial-construct).
     #[test]
     fn shared_edges_dispatch_falls_through_when_parent_not_hydrated() {
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::identity::RealizationNodeId;
         use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let parent_handle = GeometryHandleId(1);
         let face_a_handle = GeometryHandleId(2);
@@ -14210,9 +14417,9 @@ mod tests {
     /// and must return `Some(Value::Undef)` with a Warning diagnostic.
     #[test]
     fn adjacent_faces_dispatch_emits_warning_and_undef_on_kernel_query_failure() {
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::identity::RealizationNodeId;
         use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let parent_handle = GeometryHandleId(1);
         let face_handle = GeometryHandleId(1);
@@ -14223,8 +14430,8 @@ mod tests {
         // but omit the AdjacentFaces query result → kernel.query(...) returns Err
         // → adjacent_to_face propagates Err → filter_result = Err in
         // dispatch_filtered_subhandles → Warning + Value::Undef.
-        let mut kernel = MockGeometryKernel::new()
-            .with_extracted_faces(parent_handle, vec![face_handle]);
+        let mut kernel =
+            MockGeometryKernel::new().with_extracted_faces(parent_handle, vec![face_handle]);
 
         let mut named_steps = HashMap::new();
         named_steps.insert("b".to_string(), kh(parent_handle));
@@ -14284,9 +14491,9 @@ mod tests {
     /// `Some(Value::Undef)` with a Warning diagnostic.
     #[test]
     fn shared_edges_dispatch_emits_warning_and_undef_on_shared_edges_query_failure() {
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::identity::RealizationNodeId;
         use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let parent_handle = GeometryHandleId(1);
         let face_a_handle = GeometryHandleId(2);
@@ -14398,8 +14605,11 @@ mod tests {
             reify_ir::Value::Real(kappa),
         ]);
         // u = px = 0.005 m, v = py = 0.0 m  (eval maps DSL point3 coords → (u,v))
-        let mut kernel = MockGeometryKernel::new()
-            .with_surface_curvature_at_result(face_handle, [0.005, 0.0], reify_ir::Value::List(vec![row0, row1]));
+        let mut kernel = MockGeometryKernel::new().with_surface_curvature_at_result(
+            face_handle,
+            [0.005, 0.0],
+            reify_ir::Value::List(vec![row0, row1]),
+        );
 
         let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         named_steps.insert("face".to_string(), kh(face_handle));
@@ -14462,8 +14672,11 @@ mod tests {
         let edge_handle = reify_ir::GeometryHandleId(77);
         let kappa = 100.0_f64; // 1/(0.01 m) — circle radius 10 mm
         // Kernel wire: Value::Real(κ).  Staged for CurveCurvatureAt at point (0.01, 0.0, 0.0).
-        let mut kernel = MockGeometryKernel::new()
-            .with_curve_curvature_at_result(edge_handle, [0.01, 0.0, 0.0], reify_ir::Value::Real(kappa));
+        let mut kernel = MockGeometryKernel::new().with_curve_curvature_at_result(
+            edge_handle,
+            [0.01, 0.0, 0.0],
+            reify_ir::Value::Real(kappa),
+        );
 
         let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         named_steps.insert("edge".to_string(), kh(edge_handle));
@@ -14623,10 +14836,8 @@ mod tests {
     /// Build a `CompiledExpr` for `helper(<literal_real>)` with a single
     /// literal arg. Used for 1-arg literal fall-through tests.
     fn topology_selector_call_one_literal_arg(helper_name: &str) -> reify_ir::CompiledExpr {
-        let arg = reify_ir::CompiledExpr::literal(
-            reify_ir::Value::Real(1.0),
-            reify_core::Type::Real,
-        );
+        let arg =
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(1.0), reify_core::Type::Real);
         let content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
             .combine(reify_core::ContentHash::of_str(helper_name))
             .combine(arg.content_hash);
@@ -14649,15 +14860,15 @@ mod tests {
     /// PRIMARY RED assertion — pre-impl `length` hits the `_ => return None` arm.
     #[test]
     fn try_eval_topology_selector_length_edge_subhandle_returns_scalar_length() {
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::identity::RealizationNodeId;
         use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let edge_kh = reify_ir::GeometryHandleId(10);
         let parent_rr = RealizationNodeId::new("LengthTest", 0);
         let parent_hash: [u8; 32] = [0x42; 32];
-        let mut kernel = MockGeometryKernel::new()
-            .with_edge_length_result(edge_kh, reify_ir::Value::Real(0.02));
+        let mut kernel =
+            MockGeometryKernel::new().with_edge_length_result(edge_kh, reify_ir::Value::Real(0.02));
 
         let mut values = reify_ir::ValueMap::new();
         values.insert(
@@ -14739,9 +14950,9 @@ mod tests {
     /// "length".
     #[test]
     fn try_eval_topology_selector_length_kernel_err_returns_undef_with_warning() {
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::identity::RealizationNodeId;
         use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let edge_kh = reify_ir::GeometryHandleId(11);
         let parent_rr = RealizationNodeId::new("LengthTest", 0);
@@ -14817,9 +15028,9 @@ mod tests {
     /// PRIMARY RED assertion — pre-impl `perimeter` hits the `_ => return None` arm.
     #[test]
     fn try_eval_topology_selector_perimeter_face_subhandle_sums_edge_lengths() {
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::identity::RealizationNodeId;
         use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let face_kh = reify_ir::GeometryHandleId(20);
         let e1 = reify_ir::GeometryHandleId(21);
@@ -14915,9 +15126,9 @@ mod tests {
     /// yield `Some(Value::Undef)` + exactly one Warning mentioning "perimeter".
     #[test]
     fn try_eval_topology_selector_perimeter_extract_edges_error_returns_undef_with_warning() {
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::identity::RealizationNodeId;
         use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let face_kh = reify_ir::GeometryHandleId(25);
         let parent_rr = RealizationNodeId::new("PerimTest", 0);
@@ -14984,9 +15195,9 @@ mod tests {
     /// query returns a non-Real value must yield `Some(Value::Undef)` + one Warning.
     #[test]
     fn try_eval_topology_selector_perimeter_non_real_edge_length_returns_undef_with_warning() {
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::identity::RealizationNodeId;
         use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let face_kh = reify_ir::GeometryHandleId(26);
         let e1 = reify_ir::GeometryHandleId(27);
@@ -15060,9 +15271,9 @@ mod tests {
     /// return `Some(Value::length(0.03))`.
     #[test]
     fn try_eval_topology_selector_length_scalar_reply_accepted_as_length() {
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::identity::RealizationNodeId;
         use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let edge_kh = reify_ir::GeometryHandleId(30);
         let parent_rr = RealizationNodeId::new("LengthScalarTest", 0);
@@ -15072,8 +15283,7 @@ mod tests {
             si_value: 0.03,
             dimension: reify_core::DimensionVector::LENGTH,
         };
-        let mut kernel = MockGeometryKernel::new()
-            .with_edge_length_result(edge_kh, scalar_reply);
+        let mut kernel = MockGeometryKernel::new().with_edge_length_result(edge_kh, scalar_reply);
 
         let mut values = reify_ir::ValueMap::new();
         values.insert(
@@ -15123,9 +15333,9 @@ mod tests {
     /// `Some(Value::length(total))` with zero diagnostics.
     #[test]
     fn try_eval_topology_selector_perimeter_scalar_edge_length_accepted_in_sum() {
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::identity::RealizationNodeId;
         use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let face_kh = reify_ir::GeometryHandleId(31);
         let e1 = reify_ir::GeometryHandleId(32);
@@ -15193,16 +15403,15 @@ mod tests {
     /// guard, task 3622 amend).
     #[test]
     fn try_eval_topology_selector_perimeter_empty_edges_returns_undef_with_warning() {
-        use reify_test_support::mocks::MockGeometryKernel;
         use reify_core::identity::RealizationNodeId;
         use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let face_kh = reify_ir::GeometryHandleId(34);
         let parent_rr = RealizationNodeId::new("PerimEmptyTest", 0);
         let parent_hash: [u8; 32] = [0x62; 32];
         // Stage an empty edge list.
-        let mut kernel = MockGeometryKernel::new()
-            .with_extracted_edges(face_kh, vec![]);
+        let mut kernel = MockGeometryKernel::new().with_extracted_edges(face_kh, vec![]);
 
         let mut values = reify_ir::ValueMap::new();
         values.insert(
@@ -15287,10 +15496,18 @@ mod tests {
         );
 
         match result {
-            reify_ir::Value::Transform { rotation, translation } => {
+            reify_ir::Value::Transform {
+                rotation,
+                translation,
+            } => {
                 assert_eq!(
                     *rotation,
-                    reify_ir::Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+                    reify_ir::Value::Orientation {
+                        w: 1.0,
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0
+                    },
                     "identity rotation must be Orientation(1,0,0,0); got {:?}",
                     rotation
                 );
@@ -15312,10 +15529,7 @@ mod tests {
                             );
                         }
                     }
-                    ref other => panic!(
-                        "identity translation must be a Vector; got {:?}",
-                        other
-                    ),
+                    ref other => panic!("identity translation must be a Vector; got {:?}", other),
                 }
             }
             other => panic!("expected Value::Transform for None pose; got {:?}", other),
@@ -15389,10 +15603,7 @@ mod tests {
                 z: s,
             }),
         };
-        let expr = reify_ir::CompiledExpr::literal(
-            input_frame,
-            reify_core::Type::frame(3),
-        );
+        let expr = reify_ir::CompiledExpr::literal(input_frame, reify_core::Type::frame(3));
 
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let result = super::eval_sub_pose(
@@ -15410,11 +15621,19 @@ mod tests {
         );
 
         match result {
-            reify_ir::Value::Transform { rotation, translation } => {
+            reify_ir::Value::Transform {
+                rotation,
+                translation,
+            } => {
                 // Convention: rotation == Frame.basis (exact copy, no normalization)
                 assert_eq!(
                     *rotation,
-                    reify_ir::Value::Orientation { w: s, x: 0.0, y: 0.0, z: s },
+                    reify_ir::Value::Orientation {
+                        w: s,
+                        x: 0.0,
+                        y: 0.0,
+                        z: s
+                    },
                     "lowered rotation must equal Frame basis; got {:?}",
                     rotation
                 );
@@ -15426,13 +15645,13 @@ mod tests {
                         assert_eq!(components[1], reify_ir::Value::length(2.0));
                         assert_eq!(components[2], reify_ir::Value::length(3.0));
                     }
-                    ref other => panic!(
-                        "lowered translation must be a Vector; got {:?}",
-                        other
-                    ),
+                    ref other => panic!("lowered translation must be a Vector; got {:?}", other),
                 }
             }
-            other => panic!("expected Value::Transform after Frame lowering; got {:?}", other),
+            other => panic!(
+                "expected Value::Transform after Frame lowering; got {:?}",
+                other
+            ),
         }
     }
 
@@ -15442,10 +15661,8 @@ mod tests {
     /// T4 owns pose type-validation (T2 deferred it). Pins the step-7/8 contract.
     #[test]
     fn eval_sub_pose_non_pose_value_returns_undef_with_diagnostic() {
-        let expr = reify_ir::CompiledExpr::literal(
-            reify_ir::Value::Real(5.0),
-            reify_core::Type::Real,
-        );
+        let expr =
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(5.0), reify_core::Type::Real);
 
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let result = super::eval_sub_pose(
@@ -15484,7 +15701,12 @@ mod tests {
 
     /// Helper: a valid unit Orientation (identity).
     fn identity_orientation() -> reify_ir::Value {
-        reify_ir::Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }
+        reify_ir::Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }
     }
 
     /// Helper: a valid 3-component LENGTH Point.
@@ -15515,7 +15737,11 @@ mod tests {
             &HashMap::new(),
             &mut diagnostics,
         );
-        assert!(result.is_undef(), "non-Point origin must return Undef; got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "non-Point origin must return Undef; got {:?}",
+            result
+        );
         assert_eq!(
             diagnostics.len(),
             1,
@@ -15554,7 +15780,11 @@ mod tests {
             &HashMap::new(),
             &mut diagnostics,
         );
-        assert!(result.is_undef(), "2-component origin must return Undef; got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "2-component origin must return Undef; got {:?}",
+            result
+        );
         assert_eq!(
             diagnostics.len(),
             1,
@@ -15643,7 +15873,11 @@ mod tests {
             &HashMap::new(),
             &mut diagnostics,
         );
-        assert!(result.is_undef(), "NaN coordinate must return Undef; got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "NaN coordinate must return Undef; got {:?}",
+            result
+        );
         assert_eq!(
             diagnostics.len(),
             1,

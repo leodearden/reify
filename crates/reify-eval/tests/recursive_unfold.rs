@@ -4,12 +4,12 @@
 //! Recursive subs (template.is_recursive && sub.guard_state.compiled().is_some()) are unfolded
 //! depth-first until the guard evaluates to false or the depth limit is reached.
 
+use reify_core::*;
 use reify_eval::Engine;
+use reify_ir::*;
 use reify_test_support::builders::{binop, conditional_expr, gt, literal, value_ref_typed};
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, assert_eval_clean};
-use reify_core::*;
-use reify_ir::*;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 

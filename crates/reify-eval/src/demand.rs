@@ -164,9 +164,9 @@ mod tests {
     #[test]
     fn demand_registry_add_demand() {
         use crate::graph::EvaluationGraph;
-        use reify_test_support::TopologyTemplateBuilder;
         use reify_core::Type;
         use reify_ir::{CompiledExpr, Value};
+        use reify_test_support::TopologyTemplateBuilder;
 
         let e = "M";
         // Build minimal graph: one standalone constraint with literal expr (no deps)
@@ -195,9 +195,9 @@ mod tests {
     #[test]
     fn demand_registry_remove_demand() {
         use crate::graph::EvaluationGraph;
-        use reify_test_support::TopologyTemplateBuilder;
         use reify_core::Type;
         use reify_ir::{CompiledExpr, Value};
+        use reify_test_support::TopologyTemplateBuilder;
 
         let e = "M";
         let template = TopologyTemplateBuilder::new(e)
@@ -239,9 +239,9 @@ mod tests {
     #[test]
     fn demand_registry_add_demand_idempotent() {
         use crate::graph::EvaluationGraph;
-        use reify_test_support::TopologyTemplateBuilder;
         use reify_core::Type;
         use reify_ir::{CompiledExpr, Value};
+        use reify_test_support::TopologyTemplateBuilder;
 
         let e = "M";
         let template = TopologyTemplateBuilder::new(e)
@@ -443,9 +443,9 @@ mod tests {
         // Build graph: param a, param b, let c = a + b, constraint C0: c > 0
         // Demanding C0 → cone should include: C0, c, a, b (depth-2 transitive)
         use crate::graph::EvaluationGraph;
-        use reify_test_support::{TopologyTemplateBuilder, gt};
         use reify_core::Type;
         use reify_ir::{BinOp, CompiledExpr, Value};
+        use reify_test_support::{TopologyTemplateBuilder, gt};
 
         let e = "T";
 
@@ -538,7 +538,8 @@ mod tests {
         }];
         graph.realizations.insert(
             r0_id.clone(),
-            RealizationNodeData { geometry_cell: None,
+            RealizationNodeData {
+                geometry_cell: None,
                 id: r0_id.clone(),
                 operations: r0_ops,
                 content_hash: ContentHash::of_str("r0"),

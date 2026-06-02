@@ -7,13 +7,13 @@
 //! tests in `crates/reify-cli/src/mcp_context.rs` lock the outward behavior.
 
 use reify_compiler::CompiledModule;
+use reify_core::{DimensionVector, Severity, ValueCellId};
 use reify_eval::Engine;
 use reify_eval::cache::{CachedResult, NodeId};
 use reify_eval::journal::EventKind;
+use reify_ir::{DeterminacyState, Value};
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::parse_and_compile;
-use reify_core::{DimensionVector, Severity, ValueCellId};
-use reify_ir::{DeterminacyState, Value};
 
 /// Build an Engine with an empty prelude for self-contained param-override tests.
 /// Uses `Engine::with_prelude(…, &[])` so the tests do not depend on stdlib state.

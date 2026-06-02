@@ -135,7 +135,10 @@ mod tests {
             NodeCache::new(
                 CachedResult::Value(Value::Real(0.0), DeterminacyState::Determined),
                 freshness,
-                DependencyTrace { realization_reads: Vec::new(), reads },
+                DependencyTrace {
+                    realization_reads: Vec::new(),
+                    reads,
+                },
                 VersionId(1),
             ),
         );

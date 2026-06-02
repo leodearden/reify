@@ -6,10 +6,12 @@
 
 use std::collections::{HashMap, HashSet};
 
+use reify_core::{ConstraintNodeId, ModulePath, Type, ValueCellId};
 use reify_eval::cache::{EvalOutcome, NodeId};
 use reify_eval::deps::DependencyTrace;
 use reify_eval::journal::{EventKind, EventPayload};
 use reify_eval::{ConcurrentEditResult, ConcurrentEditSetup, ConcurrentNodeResult, Engine};
+use reify_ir::{BinOp, DeterminacyState, Freshness, SnapshotProvenance, SolveResult, Value};
 use reify_test_support::mocks::{
     MockConstraintChecker, MultiCallSpyConstraintSolver, SequencedMockConstraintSolver,
 };
@@ -17,8 +19,6 @@ use reify_test_support::{
     CompiledModuleBuilder, TopologyTemplateBuilder, binop, bracket_compiled_module, gt, literal,
     mm, value_ref,
 };
-use reify_core::{ConstraintNodeId, ModulePath, Type, ValueCellId};
-use reify_ir::{BinOp, DeterminacyState, Freshness, SnapshotProvenance, SolveResult, Value};
 
 /// Test that prepare_concurrent_edit returns ConcurrentEditSetup with correct state.
 #[test]
@@ -144,7 +144,8 @@ fn apply_concurrent_edit_updates_engine_state() {
         node: volume_node.clone(),
         value: new_volume.clone(),
         determinacy: DeterminacyState::Determined,
-        trace: DependencyTrace { realization_reads: Vec::new(),
+        trace: DependencyTrace {
+            realization_reads: Vec::new(),
             reads: vec![
                 ValueCellId::new(e, "width"),
                 ValueCellId::new(e, "height"),

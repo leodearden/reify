@@ -6,16 +6,20 @@
 
 use std::collections::HashMap;
 
+use reify_core::{
+    ConstraintNodeId, ContentHash, ModulePath, SnapshotId, Type, ValueCellId, VersionId,
+};
 use reify_eval::Engine;
 use reify_eval::cache::{CachedResult, NodeId};
+use reify_ir::{
+    BinOp, CompiledExpr, CompiledExprKind, DeterminacyState, Freshness, SnapshotProvenance, Value,
+};
 use reify_test_support::bracket_compiled_module;
 use reify_test_support::builders::{binop, gt, literal, value_ref, value_ref_typed};
 use reify_test_support::mocks::{
     MockConstraintChecker, MockConstraintSolver, SequencedMockConstraintSolver,
 };
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, mm};
-use reify_core::{ConstraintNodeId, ContentHash, ModulePath, SnapshotId, Type, ValueCellId, VersionId};
-use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, DeterminacyState, Freshness, SnapshotProvenance, Value};
 
 /// Canary backward-compatibility test: verifies that cold-start eval()
 /// produces the correct values for the bracket fixture.
@@ -1561,8 +1565,8 @@ fn edit_param_no_re_resolution_when_auto_constraints_not_dirty() {
 /// `label: None`, so the labeled constraint loses its label.
 #[test]
 fn edit_check_preserves_constraint_labels() {
-    use reify_test_support::builders::lt;
     use reify_ir::Satisfaction;
+    use reify_test_support::builders::lt;
 
     let width_id = ValueCellId::new("S", "width");
 

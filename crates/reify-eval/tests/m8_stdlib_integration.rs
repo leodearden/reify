@@ -9,9 +9,9 @@
 
 use std::fs;
 
-use reify_test_support::mocks::MockConstraintChecker;
 use reify_core::{DimensionVector, ModulePath, Severity, ValueCellId};
 use reify_ir::Value;
+use reify_test_support::mocks::MockConstraintChecker;
 
 // ── Helper ───────────────────────────────────────────────────────────────────
 

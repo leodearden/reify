@@ -22,7 +22,7 @@
 //! exist (the `read_to_string` panics). Step-12 authors the fixture → GREEN.
 
 use reify_ir::{ExportFormat, Value};
-use reify_test_support::{errors_only, parse_and_compile_with_stdlib, MockGeometryKernel};
+use reify_test_support::{MockGeometryKernel, errors_only, parse_and_compile_with_stdlib};
 
 /// Absolute path to the pendulum inverse-dynamics example fixture.
 /// Mirrors the CARGO_MANIFEST_DIR pattern from

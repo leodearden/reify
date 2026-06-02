@@ -38,17 +38,59 @@ use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 /// `Value::Real`.
 #[allow(clippy::too_many_arguments)]
 fn make_orthotropic_material(
-    e1: f64, e2: f64, e3: f64,
-    g12: f64, g13: f64, g23: f64,
-    nu12: f64, nu13: f64, nu23: f64,
+    e1: f64,
+    e2: f64,
+    e3: f64,
+    g12: f64,
+    g13: f64,
+    g23: f64,
+    nu12: f64,
+    nu13: f64,
+    nu23: f64,
 ) -> Value {
     let fields: PersistentMap<String, Value> = [
-        ("e1".to_string(),   Value::Scalar { si_value: e1,  dimension: DimensionVector::PRESSURE }),
-        ("e2".to_string(),   Value::Scalar { si_value: e2,  dimension: DimensionVector::PRESSURE }),
-        ("e3".to_string(),   Value::Scalar { si_value: e3,  dimension: DimensionVector::PRESSURE }),
-        ("g12".to_string(),  Value::Scalar { si_value: g12, dimension: DimensionVector::PRESSURE }),
-        ("g13".to_string(),  Value::Scalar { si_value: g13, dimension: DimensionVector::PRESSURE }),
-        ("g23".to_string(),  Value::Scalar { si_value: g23, dimension: DimensionVector::PRESSURE }),
+        (
+            "e1".to_string(),
+            Value::Scalar {
+                si_value: e1,
+                dimension: DimensionVector::PRESSURE,
+            },
+        ),
+        (
+            "e2".to_string(),
+            Value::Scalar {
+                si_value: e2,
+                dimension: DimensionVector::PRESSURE,
+            },
+        ),
+        (
+            "e3".to_string(),
+            Value::Scalar {
+                si_value: e3,
+                dimension: DimensionVector::PRESSURE,
+            },
+        ),
+        (
+            "g12".to_string(),
+            Value::Scalar {
+                si_value: g12,
+                dimension: DimensionVector::PRESSURE,
+            },
+        ),
+        (
+            "g13".to_string(),
+            Value::Scalar {
+                si_value: g13,
+                dimension: DimensionVector::PRESSURE,
+            },
+        ),
+        (
+            "g23".to_string(),
+            Value::Scalar {
+                si_value: g23,
+                dimension: DimensionVector::PRESSURE,
+            },
+        ),
         ("nu12".to_string(), Value::Real(nu12)),
         ("nu13".to_string(), Value::Real(nu13)),
         ("nu23".to_string(), Value::Real(nu23)),
@@ -56,27 +98,31 @@ fn make_orthotropic_material(
     .into_iter()
     .collect();
     Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id:   StructureTypeId(u32::MAX),
+        type_id: StructureTypeId(u32::MAX),
         type_name: "OrthotropicMaterial".to_string(),
-        version:   1,
+        version: 1,
         fields,
     }))
 }
 
 /// Build a `Value::Scalar` for a geometry length (SI: metres).
 fn make_length_scalar(metres: f64) -> Value {
-    Value::Scalar { si_value: metres, dimension: DimensionVector::LENGTH }
+    Value::Scalar {
+        si_value: metres,
+        dimension: DimensionVector::LENGTH,
+    }
 }
 
 /// Build a `Value::List` containing one `PointLoad` with the given force (N).
 /// The trampoline's `extract_tip_force` reads the `force: Value::Real` field.
 fn make_point_load_list(force_n: f64) -> Value {
-    let fields: PersistentMap<String, Value> =
-        [("force".to_string(), Value::Real(force_n))].into_iter().collect();
+    let fields: PersistentMap<String, Value> = [("force".to_string(), Value::Real(force_n))]
+        .into_iter()
+        .collect();
     let point_load = Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id:   StructureTypeId(u32::MAX),
+        type_id: StructureTypeId(u32::MAX),
         type_name: "PointLoad".to_string(),
-        version:   1,
+        version: 1,
         fields,
     }));
     Value::List(vec![point_load])
@@ -87,9 +133,9 @@ fn make_point_load_list(force_n: f64) -> Value {
 fn make_support_list() -> Value {
     let fields: PersistentMap<String, Value> = [].into_iter().collect();
     let support = Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id:   StructureTypeId(u32::MAX),
+        type_id: StructureTypeId(u32::MAX),
         type_name: "FixedSupport".to_string(),
-        version:   1,
+        version: 1,
         fields,
     }));
     Value::List(vec![support])
@@ -100,9 +146,9 @@ fn make_support_list() -> Value {
 fn make_elastic_options() -> Value {
     let fields: PersistentMap<String, Value> = [].into_iter().collect();
     Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id:   StructureTypeId(u32::MAX),
+        type_id: StructureTypeId(u32::MAX),
         type_name: "ElasticOptions".to_string(),
-        version:   1,
+        version: 1,
         fields,
     }))
 }
@@ -142,14 +188,14 @@ fn orthotropic_trampoline_e2e_returns_elastic_result() {
     );
 
     // ── geometry (L=0.8 m, b=h=0.1 m → L/h = 8) ─────────────────────────────
-    let length  = make_length_scalar(0.8);
-    let width   = make_length_scalar(0.1);
-    let height  = make_length_scalar(0.1);
+    let length = make_length_scalar(0.8);
+    let width = make_length_scalar(0.1);
+    let height = make_length_scalar(0.1);
 
     // ── loads and supports ────────────────────────────────────────────────────
-    let loads    = make_point_load_list(1000.0);  // 1 kN tip load
+    let loads = make_point_load_list(1000.0); // 1 kN tip load
     let supports = make_support_list();
-    let options  = make_elastic_options();
+    let options = make_elastic_options();
 
     let value_inputs = [material, length, width, height, loads, supports, options];
 
@@ -162,19 +208,16 @@ fn orthotropic_trampoline_e2e_returns_elastic_result() {
     let cancellation = CancellationHandle::new();
     let outcome = reify_eval::compute_targets::elastic_static::solve_elastic_static_trampoline(
         &value_inputs,
-        &[],         // no realization inputs
+        &[], // no realization inputs
         &Value::Undef,
-        None,        // no prior warm state
+        None, // no prior warm state
         &cancellation,
     );
 
     // ── assert ComputeOutcome::Completed ─────────────────────────────────────
     let result = match outcome {
         ComputeOutcome::Completed { result, .. } => result,
-        other => panic!(
-            "expected ComputeOutcome::Completed, got: {:?}",
-            other
-        ),
+        other => panic!("expected ComputeOutcome::Completed, got: {:?}", other),
     };
 
     // ── assert ElasticResult StructureInstance ────────────────────────────────
@@ -193,7 +236,8 @@ fn orthotropic_trampoline_e2e_returns_elastic_result() {
 
     // Helper to fetch a named field.
     let get = |key: &str| -> &Value {
-        data.fields.get(&key.to_string())
+        data.fields
+            .get(&key.to_string())
             .unwrap_or_else(|| panic!("ElasticResult missing field {:?}", key))
     };
 
@@ -213,29 +257,30 @@ fn orthotropic_trampoline_e2e_returns_elastic_result() {
     );
     // ── frame → Undef (tet convention, unchanged) ─────────────────────────────
     assert_eq!(
-        get("frame"), &Value::Undef,
+        get("frame"),
+        &Value::Undef,
         "frame must remain Undef (tet/solid: no per-element local frame)"
     );
 
     // ── converged → Bool(true) ────────────────────────────────────────────────
     assert_eq!(
-        get("converged"), &Value::Bool(true),
+        get("converged"),
+        &Value::Bool(true),
         "expected converged == Bool(true)"
     );
 
     // ── iterations → Int(n ≥ 0) ──────────────────────────────────────────────
     match get("iterations") {
-        Value::Int(n) => assert!(
-            *n >= 0,
-            "expected iterations ≥ 0, got: {}",
-            n
-        ),
+        Value::Int(n) => assert!(*n >= 0, "expected iterations ≥ 0, got: {}", n),
         other => panic!("expected iterations to be Value::Int, got: {:?}", other),
     }
 
     // ── max_von_mises → Scalar[PRESSURE], finite, > 0 ────────────────────────
     match get("max_von_mises") {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(
                 *dimension,
                 DimensionVector::PRESSURE,

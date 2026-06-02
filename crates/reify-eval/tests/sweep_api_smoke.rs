@@ -17,11 +17,11 @@
 // (AtomicBool) trips clippy::mutable_key_type, but Ord/Hash on Value are by-design.
 #![allow(clippy::mutable_key_type)]
 
+use reify_core::ValueCellId;
+use reify_ir::{Value, ValueMap};
 use reify_test_support::{
     collect_errors, make_simple_engine, parse_and_compile_with_stdlib, read_f64,
 };
-use reify_core::ValueCellId;
-use reify_ir::{Value, ValueMap};
 
 /// Resolve a binding by name from the eval result.
 fn get_value<'a>(values: &'a ValueMap, name: &str) -> &'a Value {

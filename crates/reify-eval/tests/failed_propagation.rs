@@ -17,14 +17,19 @@
 
 use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
 use reify_constraints::SimpleConstraintChecker;
+use reify_core::{
+    ConstraintNodeId, DiagnosticCode, ModulePath, RealizationNodeId, Severity, Type, ValueCellId,
+    VersionId,
+};
 use reify_eval::Engine;
 use reify_eval::cache::{CachedResult, FAILED_REALIZATION_STUB_HANDLE, NodeId};
 use reify_eval::journal::EventKind;
+use reify_ir::{
+    BinOp, CompiledExpr, ExportFormat, Freshness, GeometryHandleId, Satisfaction, Value,
+};
 use reify_test_support::builders::{binop, gt, literal, value_ref_typed};
 use reify_test_support::mocks::{FailingMockGeometryKernel, MockConstraintChecker};
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, mm};
-use reify_core::{ConstraintNodeId, DiagnosticCode, ModulePath, RealizationNodeId, Severity, Type, ValueCellId, VersionId};
-use reify_ir::{BinOp, CompiledExpr, ExportFormat, Freshness, GeometryHandleId, Satisfaction, Value};
 
 /// Build a 1-cell synthetic module: `let b = 1.0` inside a single template.
 fn one_cell_module() -> reify_compiler::CompiledModule {

@@ -136,10 +136,7 @@ fn base_node_positions_is_a_flat_xyz_real_list() {
 
     let items = match base {
         Value::List(v) => v,
-        other => panic!(
-            "base_node_positions must be Value::List, got: {:?}",
-            other
-        ),
+        other => panic!("base_node_positions must be Value::List, got: {:?}", other),
     };
     assert_eq!(
         items.len(),
@@ -153,9 +150,7 @@ fn base_node_positions_is_a_flat_xyz_real_list() {
                 r.is_finite(),
                 "base_node_positions[{i}] = {r} is not finite"
             ),
-            other => panic!(
-                "base_node_positions[{i}] must be Value::Real, got: {other:?}"
-            ),
+            other => panic!("base_node_positions[{i}] must be Value::Real, got: {other:?}"),
         }
     }
 }

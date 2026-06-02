@@ -5,9 +5,9 @@
 //! with self-references works correctly, and constraints using self compile
 //! and evaluate without violations.
 
-use reify_test_support::{check_source, eval_source};
 use reify_core::ValueCellId;
 use reify_ir::{Satisfaction, Value};
+use reify_test_support::{check_source, eval_source};
 
 // ─── step-9: self.param eval produces correct value ───
 

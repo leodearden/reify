@@ -29,9 +29,9 @@
 
 #![allow(clippy::mutable_key_type)]
 
-use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_with_stdlib};
 use reify_core::ValueCellId;
 use reify_ir::{Value, ValueMap};
+use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_with_stdlib};
 
 /// Reify source: a `SmokeFixture` structure that exercises `case_names` and
 /// `result_for` through the full compile+eval pipeline.
@@ -700,9 +700,9 @@ fn solve_load_cases_two_cases_returns_mcr_shape() {
                         "per-case ElasticResult for \"overload\" must be non-Undef; got: {ov_val:?}"
                     );
                 }
-                other => panic!(
-                    "solve_load_cases result[\"cases\"] must be Value::Map, got: {other:?}"
-                ),
+                other => {
+                    panic!("solve_load_cases result[\"cases\"] must be Value::Map, got: {other:?}")
+                }
             }
         }
         other => panic!(
@@ -848,29 +848,35 @@ fn solve_load_cases_per_case_options_both_cases_appear() {
                         cases.keys().collect::<Vec<_>>()
                     );
                     // "high_res" (per-case options: some) must be present and non-Undef
-                    let high = cases.get(&Value::String("high_res".to_string())).unwrap_or_else(|| {
-                        panic!("cases map must contain \"high_res\" key; got: {:?}",
-                               cases.keys().collect::<Vec<_>>())
-                    });
+                    let high = cases
+                        .get(&Value::String("high_res".to_string()))
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "cases map must contain \"high_res\" key; got: {:?}",
+                                cases.keys().collect::<Vec<_>>()
+                            )
+                        });
                     assert!(
                         !high.is_undef(),
                         "per-case result for \"high_res\" (options: some) must be non-Undef; \
                          got: {high:?}"
                     );
                     // "low_res" (per-case options: none → uses shared) must be present and non-Undef
-                    let low = cases.get(&Value::String("low_res".to_string())).unwrap_or_else(|| {
-                        panic!("cases map must contain \"low_res\" key; got: {:?}",
-                               cases.keys().collect::<Vec<_>>())
-                    });
+                    let low = cases
+                        .get(&Value::String("low_res".to_string()))
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "cases map must contain \"low_res\" key; got: {:?}",
+                                cases.keys().collect::<Vec<_>>()
+                            )
+                        });
                     assert!(
                         !low.is_undef(),
                         "per-case result for \"low_res\" (options: none → shared) must be non-Undef; \
                          got: {low:?}"
                     );
                 }
-                other => panic!(
-                    "result[\"cases\"] must be Value::Map, got: {other:?}"
-                ),
+                other => panic!("result[\"cases\"] must be Value::Map, got: {other:?}"),
             }
         }
         other => panic!(
@@ -1014,7 +1020,9 @@ fn solve_load_cases_one_vs_two_cases_entry_count() {
         "1-case solve must contain key \"only\"; got: {:?}",
         single_cases.keys().collect::<Vec<_>>()
     );
-    let only_val = single_cases.get(&Value::String("only".to_string())).unwrap();
+    let only_val = single_cases
+        .get(&Value::String("only".to_string()))
+        .unwrap();
     assert!(
         !only_val.is_undef(),
         "1-case \"only\" result must be non-Undef; got: {only_val:?}"

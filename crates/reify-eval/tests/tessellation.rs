@@ -1,8 +1,8 @@
 //! Tests for Engine::tessellate_realizations() — tessellation API for GUI mesh generation.
 
 use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
-use reify_test_support::*;
 use reify_core::ModulePath;
+use reify_test_support::*;
 
 /// When the module has no realizations and no geometry kernel,
 /// tessellate_realizations() should return empty meshes and populated values.

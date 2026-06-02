@@ -27,12 +27,12 @@
 //!   (geometry + material + element_order unchanged), and returns a valid
 //!   `ModalResult` — the warm-state round-trip drives no error.
 
+use reify_core::{ComputeNodeId, DimensionVector, ValueCellId, VersionId};
 use reify_eval::cache::{CachedResult, NodeCache, NodeId};
 use reify_eval::deps::DependencyTrace;
 use reify_eval::{CancellationHandle, ComputeFn, DispatchError};
-use reify_test_support::make_simple_engine;
-use reify_core::{ComputeNodeId, DimensionVector, ValueCellId, VersionId};
 use reify_ir::{DeterminacyState, Freshness, StructureInstanceData, StructureTypeId, Value};
+use reify_test_support::make_simple_engine;
 
 /// Steel density (kg/m³), mirroring the modal_ops `cfg(test)` fixture.
 const STEEL_DENSITY: f64 = 7850.0;
@@ -47,12 +47,18 @@ fn material(density: f64) -> Value {
         vec![
             (
                 "youngs_modulus".to_string(),
-                Value::Scalar { si_value: 205e9, dimension: DimensionVector::PRESSURE },
+                Value::Scalar {
+                    si_value: 205e9,
+                    dimension: DimensionVector::PRESSURE,
+                },
             ),
             ("poisson_ratio".to_string(), Value::Real(0.29)),
             (
                 "density".to_string(),
-                Value::Scalar { si_value: density, dimension: DimensionVector::MASS_DENSITY },
+                Value::Scalar {
+                    si_value: density,
+                    dimension: DimensionVector::MASS_DENSITY,
+                },
             ),
         ],
     )
@@ -60,7 +66,10 @@ fn material(density: f64) -> Value {
 
 /// A `Length` scalar (SI metres), as the trampoline reads geometry inputs.
 fn length_scalar(m: f64) -> Value {
-    Value::Scalar { si_value: m, dimension: DimensionVector::LENGTH }
+    Value::Scalar {
+        si_value: m,
+        dimension: DimensionVector::LENGTH,
+    }
 }
 
 /// A `FixedSupport { target }` instance — the runtime support shape the

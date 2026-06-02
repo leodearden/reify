@@ -3,11 +3,11 @@
 //! These tests exercise the full parse → compile → eval pipeline to confirm
 //! that `pi` and `tau` evaluate to the expected Real values.
 
+use reify_core::ValueCellId;
+use reify_ir::Value;
 use reify_test_support::{
     assert_no_eval_errors, eval_source, make_engine, parse_and_compile_with_stdlib,
 };
-use reify_core::ValueCellId;
-use reify_ir::Value;
 
 // ─── step-9: pi and tau evaluate to correct Real values ─────────────────────
 

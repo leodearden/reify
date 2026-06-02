@@ -3,9 +3,9 @@
 //! These tests verify that the evaluator can accept well-formed CompiledModules
 //! and evaluate them correctly.
 
-use reify_test_support::*;
 use reify_core::Type;
 use reify_ir::{Satisfaction, ValueMap};
+use reify_test_support::*;
 
 /// Accept well-formed CompiledModule → evaluate to values.
 #[test]

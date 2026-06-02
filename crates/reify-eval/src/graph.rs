@@ -8,7 +8,10 @@ use reify_compiler::{
     CompiledConnection, CompiledForallTemplate, CompiledGeometryOp, TopologyTemplate,
     ValueCellKind, find_template,
 };
-use reify_core::{ComputeNodeId, ConstraintNodeId, ContentHash, RealizationNodeId, ResolutionNodeId, Type, ValueCellId};
+use reify_core::{
+    ComputeNodeId, ConstraintNodeId, ContentHash, RealizationNodeId, ResolutionNodeId, Type,
+    ValueCellId,
+};
 use reify_ir::{CompiledExpr, OpaqueState, PersistentMap, ReprKind, Value, ValueMap};
 
 /// A value cell node in the evaluation graph.
@@ -381,8 +384,7 @@ impl EvaluationGraph {
                                     Some(*n)
                                 } else {
                                     // For ValueRef expressions, look up the referenced cell's default
-                                    if let reify_ir::CompiledExprKind::ValueRef(ref_id) =
-                                        &expr.kind
+                                    if let reify_ir::CompiledExprKind::ValueRef(ref_id) = &expr.kind
                                     {
                                         template
                                             .value_cells
@@ -975,7 +977,8 @@ mod tests {
         }];
         let hash = ContentHash::of_str("realization0");
 
-        let node = RealizationNodeData { geometry_cell: None,
+        let node = RealizationNodeData {
+            geometry_cell: None,
             id: id.clone(),
             operations: ops,
             content_hash: hash,
@@ -996,8 +999,8 @@ mod tests {
 
     #[test]
     fn realization_node_data_carries_produced_repr_brep_default() {
-        use reify_test_support::TopologyTemplateBuilder;
         use reify_ir::ReprKind;
+        use reify_test_support::TopologyTemplateBuilder;
 
         // from_templates must initialize produced_repr to ReprKind::BRep (v0.2 OCCT default).
         let template = TopologyTemplateBuilder::new("A")
@@ -1441,7 +1444,8 @@ mod tests {
         assert_eq!(graph.constraints.len(), 1);
 
         let rnid = RealizationNodeId::new("Bracket", 0);
-        let rnode = RealizationNodeData { geometry_cell: None,
+        let rnode = RealizationNodeData {
+            geometry_cell: None,
             id: rnid.clone(),
             operations: vec![],
             content_hash: ContentHash::of_str("r0"),
@@ -1902,7 +1906,8 @@ mod tests {
         let mut graph_c = EvaluationGraph::default();
         graph_c.realizations.insert(
             RealizationNodeId::new("X", 0),
-            RealizationNodeData { geometry_cell: None,
+            RealizationNodeData {
+                geometry_cell: None,
                 id: RealizationNodeId::new("X", 0),
                 operations: vec![],
                 content_hash: hash_h,
@@ -1971,9 +1976,9 @@ mod tests {
 
     #[test]
     fn topology_fingerprint_includes_resolutions() {
-        use reify_test_support::TopologyTemplateBuilder;
         use reify_core::{ResolutionNodeId, Type};
         use reify_ir::{CompiledExpr, Value};
+        use reify_test_support::TopologyTemplateBuilder;
 
         // Build two identical graphs from same template
         let template1 = TopologyTemplateBuilder::new("A")
@@ -2073,9 +2078,9 @@ mod tests {
 
     #[test]
     fn sub_component_nodes_in_evaluation_graph() {
-        use reify_test_support::TopologyTemplateBuilder;
         use reify_core::Type;
         use reify_ir::{BinOp, CompiledExpr, Value};
+        use reify_test_support::TopologyTemplateBuilder;
 
         // Child: param height, let half_h = height / 2
         let height_ref =
@@ -2284,8 +2289,8 @@ mod tests {
     #[test]
     fn evaluation_graph_carries_forall_templates() {
         use reify_compiler::{CompiledForallBody, CompiledForallTemplate};
-        use reify_test_support::TopologyTemplateBuilder;
         use reify_core::SourceSpan;
+        use reify_test_support::TopologyTemplateBuilder;
 
         let body_expr = CompiledExpr::value_ref(
             ValueCellId::new("S.vents[0]", "mass"),
@@ -2340,10 +2345,10 @@ mod tests {
     /// not yet exist).
     #[test]
     fn evaluation_graph_carries_connections() {
-        use reify_compiler::CompiledConnection;
         use reify_ast::ConnectOp;
-        use reify_test_support::TopologyTemplateBuilder;
+        use reify_compiler::CompiledConnection;
         use reify_core::SourceSpan;
+        use reify_test_support::TopologyTemplateBuilder;
 
         let conn = CompiledConnection {
             left_port: "vents[0].inlet".to_string(),

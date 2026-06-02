@@ -5,9 +5,9 @@
 //! recursive structures, custom unit declarations, meta block access, and doc comments.
 //! Uses examples/m9_combined.ri as the source file.
 
-use reify_test_support::{check_source, eval_source, parse_and_compile};
 use reify_core::{ModulePath, ValueCellId};
 use reify_ir::Satisfaction;
+use reify_test_support::{check_source, eval_source, parse_and_compile};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/m9_combined.ri");

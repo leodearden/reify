@@ -89,7 +89,10 @@ fn e2e_buckling_p2_critical_load_within_five_percent() {
         .unwrap_or_else(|| panic!("cell BucklingColumnP2.crit not found in eval result"));
 
     let (crit_si, crit_dim) = match crit_val {
-        Value::Scalar { si_value, dimension } => (*si_value, *dimension),
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => (*si_value, *dimension),
         other => panic!(
             "expected BucklingColumnP2.crit to be Value::Scalar, got: {:?}",
             other

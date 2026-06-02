@@ -14,9 +14,9 @@
 
 use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
 use reify_constraints::SimpleConstraintChecker;
-use reify_test_support::*;
 use reify_core::{ModulePath, Severity, Type};
 use reify_ir::{ExportFormat, Satisfaction};
+use reify_test_support::*;
 
 // ---------------------------------------------------------------------------
 // step-25/26: parse_error_malformed_syntax

@@ -46,9 +46,9 @@
 //! sweep (`e2e_meta.rs`), which forbids `Severity::Error`.
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_test_support::{compile_source_with_stdlib, errors_only};
-use reify_core::{DiagnosticCode, Severity, FIELD_ENTITY_PREFIX, ValueCellId};
+use reify_core::{DiagnosticCode, FIELD_ENTITY_PREFIX, Severity, ValueCellId};
 use reify_ir::{FieldSourceKind, Value};
+use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 // ── Test 1: Compile smoke ─────────────────────────────────────────────────────
 
@@ -70,18 +70,27 @@ field def pressure_map : Point3 -> Scalar {
     // No FieldImportedV02 and no Severity::Error.
     let errors = errors_only(&compiled);
     assert!(
-        errors.iter().all(|d| d.code != Some(DiagnosticCode::FieldImportedV02)),
+        errors
+            .iter()
+            .all(|d| d.code != Some(DiagnosticCode::FieldImportedV02)),
         "unexpected FieldImportedV02, got: {:?}",
         errors.iter().map(|d| d.code).collect::<Vec<_>>()
     );
     assert!(
         errors.is_empty(),
         "expected no Severity::Error diagnostics, got: {:?}",
-        errors.iter().map(|d| (d.code, &d.message)).collect::<Vec<_>>()
+        errors
+            .iter()
+            .map(|d| (d.code, &d.message))
+            .collect::<Vec<_>>()
     );
 
     // Exactly one compiled field with the struct-variant Imported source.
-    assert_eq!(compiled.fields.len(), 1, "expected exactly 1 compiled field");
+    assert_eq!(
+        compiled.fields.len(),
+        1,
+        "expected exactly 1 compiled field"
+    );
     let field = &compiled.fields[0];
     assert!(
         matches!(
@@ -157,10 +166,7 @@ field def phantom : Point3 -> Scalar {
                 **lambda
             );
         }
-        other => panic!(
-            "expected Value::Field on error path, got: {:?}",
-            other
-        ),
+        other => panic!("expected Value::Field on error path, got: {:?}", other),
     }
 
     // EvalResult.diagnostics must contain a FieldImportFailed Severity::Error.
@@ -198,11 +204,11 @@ field def phantom : Point3 -> Scalar {
 #[cfg(has_openvdb)]
 #[test]
 fn imported_field_e2e_vdb_cube_sdf() {
-    use reify_kernel_openvdb::{OpenVdbKernel, read_vdb_file};
     use reify_core::Type;
-    use reify_ir::SampledField;
     use reify_expr::{EvalContext, sampled};
+    use reify_ir::SampledField;
     use reify_ir::ValueMap;
+    use reify_kernel_openvdb::{OpenVdbKernel, read_vdb_file};
 
     // ---------------------------------------------------------------------------
     // Fixture: unit cube mesh (8 verts, 12 tris, half-extent = 1.0).
@@ -212,14 +218,14 @@ fn imported_field_e2e_vdb_cube_sdf() {
     let verts: Vec<[f32; 3]> = vec![
         // Bottom face (z = -1)
         [-1.0, -1.0, -1.0], // 0
-        [ 1.0, -1.0, -1.0], // 1
-        [ 1.0,  1.0, -1.0], // 2
-        [-1.0,  1.0, -1.0], // 3
+        [1.0, -1.0, -1.0],  // 1
+        [1.0, 1.0, -1.0],   // 2
+        [-1.0, 1.0, -1.0],  // 3
         // Top face (z = +1)
-        [-1.0, -1.0,  1.0], // 4
-        [ 1.0, -1.0,  1.0], // 5
-        [ 1.0,  1.0,  1.0], // 6
-        [-1.0,  1.0,  1.0], // 7
+        [-1.0, -1.0, 1.0], // 4
+        [1.0, -1.0, 1.0],  // 5
+        [1.0, 1.0, 1.0],   // 6
+        [-1.0, 1.0, 1.0],  // 7
     ];
     #[rustfmt::skip]
     let tris: Vec<[u32; 3]> = vec![
@@ -318,11 +324,7 @@ field def cube_sdf : Point3 -> Scalar {{
     // G2#2: lambda is Value::SampledField (not Undef).
     // ---------------------------------------------------------------------------
     let sf_from_e2e = match val {
-        Value::Field {
-            source,
-            lambda,
-            ..
-        } => {
+        Value::Field { source, lambda, .. } => {
             assert_eq!(
                 *source,
                 FieldSourceKind::Imported,
@@ -347,16 +349,8 @@ field def cube_sdf : Point3 -> Scalar {{
     // outside_probe (x=1.15) is 0.15 outside the surface → SDF > 0.
     // Both are within the active bbox (bounds ≈ [-1.3, 1.3] on each axis).
     // ---------------------------------------------------------------------------
-    let inside_probe = Value::Point(vec![
-        Value::Real(0.85),
-        Value::Real(0.0),
-        Value::Real(0.0),
-    ]);
-    let outside_probe = Value::Point(vec![
-        Value::Real(1.15),
-        Value::Real(0.0),
-        Value::Real(0.0),
-    ]);
+    let inside_probe = Value::Point(vec![Value::Real(0.85), Value::Real(0.0), Value::Real(0.0)]);
+    let outside_probe = Value::Point(vec![Value::Real(1.15), Value::Real(0.0), Value::Real(0.0)]);
 
     let empty_values = ValueMap::new();
     let sample_ctx = EvalContext::simple(&empty_values);
@@ -406,8 +400,7 @@ field def cube_sdf : Point3 -> Scalar {{
         ("inside_probe", &inside_probe),
         ("outside_probe", &outside_probe),
     ] {
-        let e2e_sample =
-            sampled::sample_at_point(&sf_from_e2e, probe, &codomain_type, &sample_ctx);
+        let e2e_sample = sampled::sample_at_point(&sf_from_e2e, probe, &codomain_type, &sample_ctx);
         let ref_sample = sampled::sample_at_point(sf_ref, probe, &codomain_type, &sample_ctx);
 
         let e2e_f = match &e2e_sample {
@@ -499,8 +492,7 @@ field def hash_test : Point3 -> Scalar {{
         engine.imported_file_content_hash(&path_str)
     );
     assert_ne!(
-        expected_x,
-        expected_y,
+        expected_x, expected_y,
         "sanity: bytes_x and bytes_y must have different hashes (bytes differ)"
     );
 }
@@ -524,8 +516,14 @@ fn imported_field_cache_hash_triggers_reingest_on_content_change() {
     fn cube_mesh(half: f32) -> (Vec<[f32; 3]>, Vec<[u32; 3]>) {
         let h = half;
         let verts = vec![
-            [-h, -h, -h], [ h, -h, -h], [ h,  h, -h], [-h,  h, -h],
-            [-h, -h,  h], [ h, -h,  h], [ h,  h,  h], [-h,  h,  h],
+            [-h, -h, -h],
+            [h, -h, -h],
+            [h, h, -h],
+            [-h, h, -h],
+            [-h, -h, h],
+            [h, -h, h],
+            [h, h, h],
+            [-h, h, h],
         ];
         #[rustfmt::skip]
         let tris: Vec<[u32; 3]> = vec![
@@ -587,7 +585,11 @@ field def cache_test : Point3 -> Scalar {{
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(errors_a.is_empty(), "eval A: unexpected runtime errors: {:?}", errors_a);
+    assert!(
+        errors_a.is_empty(),
+        "eval A: unexpected runtime errors: {:?}",
+        errors_a
+    );
 
     // Capture SampledField and content-hash from eval A.
     let field_def = &compiled.fields[0];
@@ -623,7 +625,11 @@ field def cache_test : Point3 -> Scalar {{
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(errors_b.is_empty(), "eval B: unexpected runtime errors: {:?}", errors_b);
+    assert!(
+        errors_b.is_empty(),
+        "eval B: unexpected runtime errors: {:?}",
+        errors_b
+    );
 
     // Capture SampledField and content-hash from eval B.
     let sf_b = match result_b.values.get(&cell_id) {
@@ -639,20 +645,17 @@ field def cache_test : Point3 -> Scalar {{
 
     // Content-hash must change: cubes A and B have different byte content.
     assert_ne!(
-        hash_a,
-        hash_b,
+        hash_a, hash_b,
         "content-hash must change after overwriting with a different cube (A half=0.5 → B half=1.0)"
     );
 
     // SampledField must change: cube B is larger so bounds_min/max differ.
     // Comparing bounds_min is sufficient (cube A has smaller active bbox than cube B).
     assert_ne!(
-        sf_a.bounds_min,
-        sf_b.bounds_min,
+        sf_a.bounds_min, sf_b.bounds_min,
         "SampledField bounds_min must differ: cube A (half=0.5) vs cube B (half=1.0) \
          have different active bboxes; got sf_a.bounds_min={:?}, sf_b.bounds_min={:?}",
-        sf_a.bounds_min,
-        sf_b.bounds_min
+        sf_a.bounds_min, sf_b.bounds_min
     );
 }
 

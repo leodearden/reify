@@ -377,9 +377,9 @@ impl crate::Engine {
             Some(ComputeOutcome::Cancelled) => {
                 if let Some(prior) = prior_warm_state.take() {
                     self.cache.seed_compute_entry_if_absent(c_id, version);
-                    let donated = self
-                        .cache
-                        .donate_warm_state_with_cost(&compute_node, prior, prior_cost);
+                    let donated =
+                        self.cache
+                            .donate_warm_state_with_cost(&compute_node, prior, prior_cost);
                     debug_assert!(
                         donated,
                         "seed-then-donate is atomic: auto-seed guarantees the entry exists",
@@ -394,9 +394,9 @@ impl crate::Engine {
             Some(ComputeOutcome::Failed { diagnostics }) => {
                 if let Some(prior) = prior_warm_state.take() {
                     self.cache.seed_compute_entry_if_absent(c_id, version);
-                    let donated = self
-                        .cache
-                        .donate_warm_state_with_cost(&compute_node, prior, prior_cost);
+                    let donated =
+                        self.cache
+                            .donate_warm_state_with_cost(&compute_node, prior, prior_cost);
                     debug_assert!(
                         donated,
                         "seed-then-donate is atomic: auto-seed guarantees the entry exists",
@@ -423,9 +423,9 @@ impl crate::Engine {
             None => {
                 if let Some(prior) = prior_warm_state.take() {
                     self.cache.seed_compute_entry_if_absent(c_id, version);
-                    let donated = self
-                        .cache
-                        .donate_warm_state_with_cost(&compute_node, prior, prior_cost);
+                    let donated =
+                        self.cache
+                            .donate_warm_state_with_cost(&compute_node, prior, prior_cost);
                     debug_assert!(
                         donated,
                         "seed-then-donate is atomic: auto-seed guarantees the entry exists",
@@ -442,14 +442,12 @@ impl crate::Engine {
 
 #[cfg(test)]
 mod tests {
-    use reify_test_support::mocks::MockConstraintChecker;
     use reify_core::RealizationNodeId;
     use reify_ir::{OpaqueState, Value};
+    use reify_test_support::mocks::MockConstraintChecker;
 
     use crate::Engine;
-    use crate::engine_compute::{
-        ComputeFn, ComputeOutcome, RealizationReadHandle,
-    };
+    use crate::engine_compute::{ComputeFn, ComputeOutcome, RealizationReadHandle};
     use crate::graph::CancellationHandle;
 
     /// A minimal identity trampoline: returns the first entry of `value_inputs`
@@ -482,7 +480,10 @@ mod tests {
     fn identity_fn_empty_value_inputs_returns_undef_without_panic() {
         let result = identity_fn(&[], &[], &Value::Undef, None, &CancellationHandle::new());
         match result {
-            ComputeOutcome::Completed { result: Value::Undef, .. } => {}
+            ComputeOutcome::Completed {
+                result: Value::Undef,
+                ..
+            } => {}
             other => panic!(
                 "expected ComputeOutcome::Completed {{ result: Value::Undef }}, got {:?}",
                 other
@@ -671,7 +672,10 @@ mod tests {
         // Must return Err(DispatchError::Failed) with the trampoline's diagnostics.
         match result {
             Err(DispatchError::Failed(diags)) => {
-                assert!(!diags.is_empty(), "Failed must carry diagnostics from the trampoline");
+                assert!(
+                    !diags.is_empty(),
+                    "Failed must carry diagnostics from the trampoline"
+                );
             }
             other => panic!("expected Err(DispatchError::Failed(…)), got {other:?}"),
         }
@@ -719,7 +723,11 @@ mod tests {
 
         // Happy path: Ok with the trampoline's identity result.
         let (value, diags) = result.expect("completed dispatch must return Ok");
-        assert_eq!(value, Value::Int(5), "identity must return the input unchanged");
+        assert_eq!(
+            value,
+            Value::Int(5),
+            "identity must return the input unchanged"
+        );
         assert!(diags.is_empty(), "identity emits no diagnostics");
 
         // VC flipped to Final by complete_compute_dispatch_atomically.
@@ -1028,10 +1036,7 @@ mod tests {
         // No warm state reported → no Compute entry must exist
         // (auto-seed only fires when new_warm_state is Some).
         assert!(
-            engine
-                .cache_store()
-                .get(&NodeId::Compute(c_id))
-                .is_none(),
+            engine.cache_store().get(&NodeId::Compute(c_id)).is_none(),
             "no Compute entry must exist when trampoline returned new_warm_state=None",
         );
     }
@@ -1061,10 +1066,7 @@ mod tests {
         use crate::engine_compute::DispatchError;
 
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
-        engine.register_compute_fn(
-            "test::zeta_cancelled_restore",
-            cancellable_fn as ComputeFn,
-        );
+        engine.register_compute_fn("test::zeta_cancelled_restore", cancellable_fn as ComputeFn);
 
         let cell = ValueCellId::new("T", "crc");
         let c_id = ComputeNodeId::new("T", 0);
@@ -1149,10 +1151,7 @@ mod tests {
         use crate::engine_compute::DispatchError;
 
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
-        engine.register_compute_fn(
-            "test::zeta_failed_restore",
-            always_failed_fn as ComputeFn,
-        );
+        engine.register_compute_fn("test::zeta_failed_restore", always_failed_fn as ComputeFn);
 
         let cell = ValueCellId::new("T", "frc");
         let c_id = ComputeNodeId::new("T", 0);
@@ -1232,10 +1231,7 @@ mod tests {
         use crate::engine_compute::DispatchError;
 
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
-        engine.register_compute_fn(
-            "test::zeta_cancelled_no_prior",
-            cancellable_fn as ComputeFn,
-        );
+        engine.register_compute_fn("test::zeta_cancelled_no_prior", cancellable_fn as ComputeFn);
 
         let cell = ValueCellId::new("T", "cnp");
         let c_id = ComputeNodeId::new("T", 0);
@@ -1274,10 +1270,7 @@ mod tests {
         // No Compute entry must exist — there was no prior to restore, so the
         // restore-prior arm must be a true no-op (no phantom entries).
         assert!(
-            engine
-                .cache_store()
-                .get(&NodeId::Compute(c_id))
-                .is_none(),
+            engine.cache_store().get(&NodeId::Compute(c_id)).is_none(),
             "no Compute entry must exist when no prior was seeded and trampoline cancelled",
         );
     }
@@ -1529,8 +1522,7 @@ mod tests {
     /// PRD §5 "Idempotent under any number of cancel-and-redispatch cycles"
     /// must hold for the post-edit path too, not only the cache-pre-seeded
     /// path covered by step-9.
-    static ZETA_POOL_ONLY_IDEM_OBSERVED_PRIOR: OnceLock<Mutex<Option<i32>>> =
-        OnceLock::new();
+    static ZETA_POOL_ONLY_IDEM_OBSERVED_PRIOR: OnceLock<Mutex<Option<i32>>> = OnceLock::new();
 
     fn zeta_pool_only_idem_tracer_fn(
         _value_inputs: &[Value],

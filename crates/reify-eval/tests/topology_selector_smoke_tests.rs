@@ -24,10 +24,10 @@
 //! `#[ignore]` string for the precise blocker and pointer into the code.
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_eval::Engine;
-use reify_test_support::{MockGeometryKernel, errors_only, parse_and_compile_with_stdlib};
 use reify_core::{ModulePath, ValueCellId};
+use reify_eval::Engine;
 use reify_ir::{ExportFormat, GeometryOp, Value};
+use reify_test_support::{MockGeometryKernel, errors_only, parse_and_compile_with_stdlib};
 
 const BLOCK_INERTIA_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -133,8 +133,11 @@ fn block_inertia_evals_moment_of_inertia_to_tensor() {
         Value::List(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(i_zz)]),
     ]);
 
-    let kernel = MockGeometryKernel::new()
-        .with_inertia_tensor_result(GeometryHandleId(1), 7850.0, inertia_reply);
+    let kernel = MockGeometryKernel::new().with_inertia_tensor_result(
+        GeometryHandleId(1),
+        7850.0,
+        inertia_reply,
+    );
     let checker = SimpleConstraintChecker;
     let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);

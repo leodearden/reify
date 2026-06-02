@@ -109,9 +109,7 @@ fn gcode_import_smoke_imported_is_nonempty_list() {
                  gcode_import is still returning the stub {{ [] }} body"
             );
         }
-        other => panic!(
-            "expected Value::List for GcodeImportSmoke.imported, got {other:?}"
-        ),
+        other => panic!("expected Value::List for GcodeImportSmoke.imported, got {other:?}"),
     }
 }
 
@@ -140,9 +138,7 @@ fn gcode_import_smoke_profile_count_is_at_least_one() {
                  gcode_import is still returning the stub {{ [] }} empty list"
             );
         }
-        other => panic!(
-            "expected Value::Int for GcodeImportSmoke.profile_count, got {other:?}"
-        ),
+        other => panic!("expected Value::Int for GcodeImportSmoke.profile_count, got {other:?}"),
     }
 }
 

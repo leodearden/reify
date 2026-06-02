@@ -12,8 +12,13 @@
 #[allow(unused_imports)]
 use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
 #[allow(unused_imports)]
+use reify_core::{ContentHash, DiagnosticCode, ModulePath, Severity, Type, ValueCellId};
+#[allow(unused_imports)]
 use reify_eval::{
     DispatchPlan, dispatch, per_stage_tolerance_for_plan, tolerance_budget::per_stage_tolerance,
+};
+use reify_ir::{
+    CapabilityDescriptor, CompiledExpr, ExportFormat, KernelId, Operation, ReprKind, Value,
 };
 #[allow(unused_imports)]
 use reify_test_support::builders::{CompiledModuleBuilder, TopologyTemplateBuilder};
@@ -21,11 +26,6 @@ use reify_test_support::builders::{CompiledModuleBuilder, TopologyTemplateBuilde
 use reify_test_support::{
     MockConstraintChecker, MockGeometryKernel, make_engine, manufacturing_purpose, mm,
     my_design_template, step_input_template, step_output_template,
-};
-#[allow(unused_imports)]
-use reify_core::{ContentHash, DiagnosticCode, ModulePath, Severity, Type, ValueCellId};
-use reify_ir::{
-    CapabilityDescriptor, CompiledExpr, ExportFormat, KernelId, Operation, ReprKind, Value,
 };
 #[allow(unused_imports)]
 use std::collections::{BTreeMap, HashSet};
@@ -1485,7 +1485,10 @@ fn cache_hit_short_circuit_leaves_feature_tag_table_empty_for_cached_handle() {
     // table were already empty after build #1, asserting it is empty after
     // build #2 would prove nothing.
     assert!(
-        engine.feature_tag_table().lookup(cached_handle.id).is_some(),
+        engine
+            .feature_tag_table()
+            .lookup(cached_handle.id)
+            .is_some(),
         "sanity: expected feature_tag_table to contain an entry for \
          cached_handle {:?} after build #1 — the op-loop at \
          engine_build.rs:1547 must record the parent-solid handle. If this \
@@ -1551,7 +1554,10 @@ fn cache_hit_short_circuit_leaves_feature_tag_table_empty_for_cached_handle() {
     // and the per-build reset at the top of build() clears the table before the
     // short-circuit fires. Net effect: the cached handle has no entry.
     assert!(
-        engine.feature_tag_table().lookup(cached_handle.id).is_none(),
+        engine
+            .feature_tag_table()
+            .lookup(cached_handle.id)
+            .is_none(),
         "regression PIN: expected feature_tag_table to have NO entry for \
          cached_handle {:?} on the second build — the cache-hit short-circuit \
          at engine_build.rs::execute_realization_ops deliberately skips per-op \

@@ -59,14 +59,18 @@ fn weighted_objective_resolves_to_corner() {
         wo_template.objective.is_some(),
         "WeightedObjective template must have an objective after compiling 'minimize' decl; \
          templates found: {:?}",
-        compiled.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+        compiled
+            .templates
+            .iter()
+            .map(|t| &t.name)
+            .collect::<Vec<_>>()
     );
 
     let mass_id = ValueCellId::new("WeightedObjective", "mass");
     let stiffness_id = ValueCellId::new("WeightedObjective", "stiffness");
 
-    let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(DimensionalSolver));
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(DimensionalSolver));
 
     let result = engine.eval(&compiled);
 
@@ -78,7 +82,10 @@ fn weighted_objective_resolves_to_corner() {
 
     let mass_si = match result.values.get(&mass_id) {
         Some(Value::Scalar { si_value, .. }) => *si_value,
-        other => panic!("expected Scalar for WeightedObjective.mass, got {:?}", other),
+        other => panic!(
+            "expected Scalar for WeightedObjective.mass, got {:?}",
+            other
+        ),
     };
     let stiffness_si = match result.values.get(&stiffness_id) {
         Some(Value::Scalar { si_value, .. }) => *si_value,

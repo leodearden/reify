@@ -3,8 +3,8 @@
 //! These tests verify the eval side can correctly call the GeometryKernel trait.
 //! Actual OCCT tests go in reify-kernel-occt; here we test with MockGeometryKernel.
 
-use reify_test_support::*;
 use reify_ir::{ExportFormat, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Value};
+use reify_test_support::*;
 
 #[test]
 fn mock_kernel_create_box() {
@@ -133,9 +133,11 @@ fn mock_kernel_translate() {
 
 /// Tests that will run against the real OCCT kernel — ignored until implemented.
 mod occt_tests {
+    use reify_ir::{
+        ExportFormat, GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value,
+    };
     use reify_kernel_occt::OcctKernel;
     use reify_test_support::*;
-    use reify_ir::{ExportFormat, GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value};
     #[test]
     fn create_box_export_step() {
         if !reify_kernel_occt::OCCT_AVAILABLE {

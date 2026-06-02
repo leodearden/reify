@@ -6,9 +6,9 @@
 //! compatibility (returns Undef on mismatch), and And uses Kleene three-valued
 //! logic (false ∧ Undef = false, true ∧ Undef = Undef).
 
-use reify_test_support::eval_source;
 use reify_core::{ModulePath, Severity, ValueCellId};
 use reify_ir::Value;
+use reify_test_support::eval_source;
 
 // ── step-1: chain_range_satisfied ─────────────────────────────────────────
 

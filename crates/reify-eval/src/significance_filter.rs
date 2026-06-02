@@ -319,7 +319,7 @@ mod tests {
 
     // ── geometry_handle_significance tests (step-1 RED) ──────────────────────
     mod geometry_handle {
-        use super::super::{geometry_handle_significance, FilterOutcome};
+        use super::super::{FilterOutcome, geometry_handle_significance};
         use reify_core::identity::RealizationNodeId;
         use reify_ir::{GeometryHandleId, Value};
 

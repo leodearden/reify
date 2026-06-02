@@ -11,11 +11,11 @@
 //!
 //! Tests will FAIL until step-10 lands `examples/drivebelt_trait_bounds.ri`.
 
+use reify_core::{DimensionVector, Severity, ValueCellId};
+use reify_ir::{CompiledExprKind, Satisfaction, Value};
 use reify_test_support::{
     assert_no_eval_errors, make_simple_engine, parse_and_compile_with_stdlib,
 };
-use reify_core::{DimensionVector, Severity, ValueCellId};
-use reify_ir::{CompiledExprKind, Satisfaction, Value};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(
@@ -85,15 +85,18 @@ fn assert_param_folds_to_scalar(
         .find(|vc| vc.id.member == member)
         .unwrap_or_else(|| panic!("{} should have a {} value cell", template_name, member));
 
-    let default_expr = vc
-        .default_expr
-        .as_ref()
-        .unwrap_or_else(|| {
-            panic!("{}.{} must have a default expression", template_name, member)
-        });
+    let default_expr = vc.default_expr.as_ref().unwrap_or_else(|| {
+        panic!(
+            "{}.{} must have a default expression",
+            template_name, member
+        )
+    });
 
     match &default_expr.kind {
-        CompiledExprKind::Literal(Value::Scalar { si_value, dimension }) => {
+        CompiledExprKind::Literal(Value::Scalar {
+            si_value,
+            dimension,
+        }) => {
             if expected_si == 0.0 {
                 assert_eq!(
                     *si_value, 0.0f64,
@@ -104,12 +107,14 @@ fn assert_param_folds_to_scalar(
                 assert!(
                     (si_value - expected_si).abs() < expected_si.abs() * 1e-6,
                     "{}.{} si_value should be ≈{} (within 1 ppm), got {}",
-                    template_name, member, expected_si, si_value
+                    template_name,
+                    member,
+                    expected_si,
+                    si_value
                 );
             }
             assert_eq!(
-                *dimension,
-                expected_dim,
+                *dimension, expected_dim,
                 "{}.{} dimension should be {:?}, got {:?}",
                 template_name, member, expected_dim, dimension
             );
@@ -351,7 +356,13 @@ fn copper_resistivity_si_value_is_1_7e_minus_8() {
 #[test]
 fn ceramicliner_thermal_conductivity_folds_to_scalar_30() {
     let (compiled, _engine, _eval) = compile_and_eval();
-    assert_param_folds_to_scalar(&compiled, "CeramicLiner", "thermal_conductivity", 30.0, DimensionVector::THERMAL_CONDUCTIVITY);
+    assert_param_folds_to_scalar(
+        &compiled,
+        "CeramicLiner",
+        "thermal_conductivity",
+        30.0,
+        DimensionVector::THERMAL_CONDUCTIVITY,
+    );
 }
 
 // ── (g) CeramicLiner.specific_heat compile-time fold pin ─────────────────────
@@ -366,7 +377,13 @@ fn ceramicliner_thermal_conductivity_folds_to_scalar_30() {
 #[test]
 fn ceramicliner_specific_heat_folds_to_scalar_880() {
     let (compiled, _engine, _eval) = compile_and_eval();
-    assert_param_folds_to_scalar(&compiled, "CeramicLiner", "specific_heat", 880.0, DimensionVector::SPECIFIC_HEAT);
+    assert_param_folds_to_scalar(
+        &compiled,
+        "CeramicLiner",
+        "specific_heat",
+        880.0,
+        DimensionVector::SPECIFIC_HEAT,
+    );
 }
 
 // ── (h) Copper.dielectric_strength compile-time fold pin ─────────────────────
@@ -381,5 +398,11 @@ fn ceramicliner_specific_heat_folds_to_scalar_880() {
 #[test]
 fn copper_dielectric_strength_folds_to_scalar_zero() {
     let (compiled, _engine, _eval) = compile_and_eval();
-    assert_param_folds_to_scalar(&compiled, "Copper", "dielectric_strength", 0.0, DimensionVector::DIELECTRIC_STRENGTH);
+    assert_param_folds_to_scalar(
+        &compiled,
+        "Copper",
+        "dielectric_strength",
+        0.0,
+        DimensionVector::DIELECTRIC_STRENGTH,
+    );
 }

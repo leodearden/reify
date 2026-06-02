@@ -30,9 +30,9 @@
 //! would leave the table empty).
 
 use reify_compiler::compile_with_stdlib;
-use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 use reify_core::{ModulePath, Severity};
 use reify_ir::ExportFormat;
+use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 

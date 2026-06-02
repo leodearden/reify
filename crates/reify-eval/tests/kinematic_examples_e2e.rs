@@ -15,12 +15,12 @@
 use std::sync::OnceLock;
 
 use reify_compiler::CompiledModule;
+use reify_core::ValueCellId;
+use reify_ir::{ExportFormat, Satisfaction, Value};
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 use reify_test_support::{
     collect_errors, decompose_point3, make_simple_engine, parse_and_compile_with_stdlib, read_f64,
 };
-use reify_core::ValueCellId;
-use reify_ir::{ExportFormat, Satisfaction, Value};
 
 // ── Path constants ────────────────────────────────────────────────────────────
 

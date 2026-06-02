@@ -102,7 +102,10 @@ structure def F {
 
 /// A Length-typed coordinate Scalar (SI metres) — how `point3(..m, ..)` lowers.
 fn length(m: f64) -> Value {
-    Value::Scalar { si_value: m, dimension: DimensionVector::LENGTH }
+    Value::Scalar {
+        si_value: m,
+        dimension: DimensionVector::LENGTH,
+    }
 }
 
 /// A 3-component `Value::Point` node.
@@ -116,10 +119,10 @@ fn node(x: f64, y: f64, z: f64) -> Value {
 /// (0, 0, 0.5).
 fn cable_net_tensegrity() -> Value {
     let nodes = Value::List(vec![
-        node(0.3, 0.2, 0.4), // free node 0 — deliberately off-solution
-        node(1.0, 0.0, 0.0), // anchor 1
+        node(0.3, 0.2, 0.4),  // free node 0 — deliberately off-solution
+        node(1.0, 0.0, 0.0),  // anchor 1
         node(-1.0, 0.0, 0.0), // anchor 2
-        node(0.0, 1.0, 1.0), // anchor 3
+        node(0.0, 1.0, 1.0),  // anchor 3
         node(0.0, -1.0, 1.0), // anchor 4
     ]);
     let struts = Value::List(vec![]);
@@ -207,7 +210,11 @@ fn trampoline_happy_path_solves_to_anchor_centroid() {
         Some(Value::List(ns)) => ns,
         other => panic!("FormFindResult.nodes must be a List, got {other:?}"),
     };
-    assert_eq!(nodes.len(), 5, "expected 5 solved nodes (1 free + 4 anchors)");
+    assert_eq!(
+        nodes.len(),
+        5,
+        "expected 5 solved nodes (1 free + 4 anchors)"
+    );
 
     let n0 = match &nodes[0] {
         Value::Point(c) if c.len() == 3 => [coord(&c[0]), coord(&c[1]), coord(&c[2])],
@@ -453,7 +460,10 @@ fn e2e_cable_net_lowers_to_compute_node_and_solves() {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "expected no Error diagnostics, got: {errors:#?}");
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics, got: {errors:#?}"
+    );
 
     // A ComputeNode with target == "solver::form_find" must be in the graph —
     // proof the @optimized call lowered to a ComputeNode and was NOT inlined.
@@ -479,7 +489,11 @@ fn e2e_cable_net_lowers_to_compute_node_and_solves() {
         .get(&ValueCellId::new("CableNet", "form"))
         .unwrap_or_else(|| panic!("CableNet.form cell missing from eval result"));
     let (nodes, converged) = form_nodes_and_converged(form);
-    assert_eq!(nodes.len(), 5, "expected 5 solved nodes (1 free + 4 anchors)");
+    assert_eq!(
+        nodes.len(),
+        5,
+        "expected 5 solved nodes (1 free + 4 anchors)"
+    );
     let expected = [0.0, 0.0, 0.5];
     for (i, (got, exp)) in nodes[0].iter().zip(expected.iter()).enumerate() {
         assert!(
@@ -487,7 +501,10 @@ fn e2e_cable_net_lowers_to_compute_node_and_solves() {
             "nodes[0][{i}] = {got}, expected anchor-centroid component {exp}"
         );
     }
-    assert!(converged, "a well-posed solve must report converged == true");
+    assert!(
+        converged,
+        "a well-posed solve must report converged == true"
+    );
 }
 
 /// Dispatch counter for the cache-hit counting wrapper.
@@ -530,7 +547,10 @@ fn e2e_cable_net_second_eval_hits_cache() {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(errors1.is_empty(), "first eval must have no Error diagnostics, got: {errors1:#?}");
+    assert!(
+        errors1.is_empty(),
+        "first eval must have no Error diagnostics, got: {errors1:#?}"
+    );
     assert_eq!(
         DISPATCH_COUNT.load(Ordering::SeqCst),
         1,
@@ -544,7 +564,10 @@ fn e2e_cable_net_second_eval_hits_cache() {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(errors2.is_empty(), "second eval must have no Error diagnostics, got: {errors2:#?}");
+    assert!(
+        errors2.is_empty(),
+        "second eval must have no Error diagnostics, got: {errors2:#?}"
+    );
     assert_eq!(
         DISPATCH_COUNT.load(Ordering::SeqCst),
         1,
@@ -566,7 +589,16 @@ fn cli_cable_net_prints_solved_z() {
 
     let output = std::process::Command::new(env!("CARGO"))
         .current_dir(&workspace_root)
-        .args(["run", "-q", "-p", "reify-cli", "--bin", "reify", "--", "eval"])
+        .args([
+            "run",
+            "-q",
+            "-p",
+            "reify-cli",
+            "--bin",
+            "reify",
+            "--",
+            "eval",
+        ])
         .arg(&example)
         .output()
         .expect("failed to spawn `cargo run -p reify-cli -- eval`");

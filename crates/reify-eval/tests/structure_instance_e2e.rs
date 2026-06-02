@@ -16,11 +16,11 @@
 
 #![allow(clippy::mutable_key_type)]
 
+use reify_core::{DiagnosticCode, ValueCellId};
+use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_test_support::{
     collect_errors, compile_source_with_stdlib, make_simple_engine, parse_and_compile_with_stdlib,
 };
-use reify_core::{DiagnosticCode, ValueCellId};
-use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 
 /// `PersistentMap<String, Value>::get` is keyed by `&String`; this lets the
 /// scenarios index `StructureInstance.fields` with a string literal.
@@ -172,7 +172,9 @@ structure def NestedAssembly {
                 ),
             }
         }
-        other => panic!("expected Value::StructureInstance for NestedAssembly.primary, got {other:?}"),
+        other => {
+            panic!("expected Value::StructureInstance for NestedAssembly.primary, got {other:?}")
+        }
     }
 
     // The source-level member-access chain must resolve to the same scalar.
@@ -432,7 +434,16 @@ fn cli_reify_eval_prints_inspectable_structure_values() {
 
     let output = std::process::Command::new(env!("CARGO"))
         .current_dir(&workspace_root)
-        .args(["run", "-q", "-p", "reify-cli", "--bin", "reify", "--", "eval"])
+        .args([
+            "run",
+            "-q",
+            "-p",
+            "reify-cli",
+            "--bin",
+            "reify",
+            "--",
+            "eval",
+        ])
         .arg(&example)
         .output()
         .expect("failed to spawn `cargo run -p reify-cli -- eval`");

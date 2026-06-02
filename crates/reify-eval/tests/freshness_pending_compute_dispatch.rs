@@ -10,12 +10,12 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use reify_core::{ComputeNodeId, ValueCellId, VersionId};
 use reify_eval::cache::{CachedResult, NodeCache, NodeId};
 use reify_eval::deps::DependencyTrace;
 use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, RealizationReadHandle};
-use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
-use reify_core::{ComputeNodeId, ValueCellId, VersionId};
 use reify_ir::{DeterminacyState, Freshness, OpaqueState, Value};
+use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 // ── step-8: RED — run_compute_dispatch begin→trampoline→complete pipeline ─────
 

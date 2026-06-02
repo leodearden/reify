@@ -44,9 +44,8 @@ const GEO_EQUIV_SMOKE_PATH: &str = concat!(
 fn geo_equiv_smoke_evals_expected_booleans() {
     // Read the fixture unconditionally so a missing file is caught even on
     // OCCT-less runners — fixture presence is a CI contract independent of OCCT.
-    let source = std::fs::read_to_string(GEO_EQUIV_SMOKE_PATH).expect(
-        "examples/kernel_queries/geo_equiv_smoke.ri should exist (task 3613 step-8)",
-    );
+    let source = std::fs::read_to_string(GEO_EQUIV_SMOKE_PATH)
+        .expect("examples/kernel_queries/geo_equiv_smoke.ri should exist (task 3613 step-8)");
 
     // Validate fixture compilation unconditionally — a grammar/compile regression
     // (e.g. `geo_equiv` arity change) should fail on every runner.

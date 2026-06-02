@@ -32,8 +32,11 @@ use reify_eval::{
     Axis, ExtremalSense, created_by_feature, extremal_by_centroid, faces_by_surface_kind,
     has_user_label, intersect, siblings_of_face, user_label_eq,
 };
+use reify_ir::{
+    CapKind, FaceSurfaceKind, FeatureId, GeometryHandleId, GeometryOp, GeometryQuery, Role,
+    TopologyAttribute, TopologyAttributeTable, Value,
+};
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
-use reify_ir::{CapKind, FaceSurfaceKind, FeatureId, GeometryHandleId, GeometryOp, GeometryQuery, Role, TopologyAttribute, TopologyAttributeTable, Value};
 
 /// 10×10×10 mm box, expressed in SI metres at the kernel boundary.
 const BOX_SIDE_M: f64 = 10.0e-3;

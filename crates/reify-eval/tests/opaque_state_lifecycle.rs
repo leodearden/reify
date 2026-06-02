@@ -11,12 +11,12 @@
 //!   the cache via `cache.cost_per_byte_of(&NodeId::Compute(c_id))` after
 //!   each dispatch.
 
+use reify_core::{ComputeNodeId, ValueCellId, VersionId};
 use reify_eval::cache::{CachedResult, NodeCache, NodeId};
 use reify_eval::deps::DependencyTrace;
 use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, RealizationReadHandle};
-use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
-use reify_core::{ComputeNodeId, ValueCellId, VersionId};
 use reify_ir::{DeterminacyState, Freshness, OpaqueState, Value};
+use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 /// Counter trampoline (ζ §8): on each call, returns `Int(prior_count)` and
 /// donates `OpaqueState::new(prior_count + 1, 4)` so the next call sees
@@ -271,7 +271,10 @@ fn remove_and_reinsert_via_edit_source_preserves_counter() {
         engine
             .cache_store()
             .get(&NodeId::Compute(c_id_v1.clone()))
-            .and_then(|e| e.warm_state.as_ref().and_then(|s| s.downcast_ref::<i32>().copied())),
+            .and_then(|e| e
+                .warm_state
+                .as_ref()
+                .and_then(|s| s.downcast_ref::<i32>().copied())),
         Some(0i32),
         "cache must hold counter=0 under Compute(c_id) after eval(v1)",
     );
@@ -311,7 +314,9 @@ fn remove_and_reinsert_via_edit_source_preserves_counter() {
     // entry intact so the run_compute_dispatch cache-miss → pool fallback
     // (step-6) can find it on the v3 re-eval below.
     assert!(
-        engine.warm_pool().contains(&NodeId::Compute(c_id_v1.clone())),
+        engine
+            .warm_pool()
+            .contains(&NodeId::Compute(c_id_v1.clone())),
         "warm_pool must hold the counter for the removed ComputeNode after \
          edit_source(v2) — step-12 must donate cache.warm_state → pool",
     );
@@ -360,7 +365,10 @@ fn remove_and_reinsert_via_edit_source_preserves_counter() {
         engine
             .cache_store()
             .get(&NodeId::Compute(c_id_v1.clone()))
-            .and_then(|e| e.warm_state.as_ref().and_then(|s| s.downcast_ref::<i32>().copied())),
+            .and_then(|e| e
+                .warm_state
+                .as_ref()
+                .and_then(|s| s.downcast_ref::<i32>().copied())),
         Some(1i32),
         "cache must hold counter=1 after the v3 dispatch",
     );
@@ -446,7 +454,10 @@ structure CostMarkerFixture {
 #[test]
 fn edit_source_donates_old_compute_node_warm_state_to_warm_pool_with_cost() {
     let mut engine = make_simple_engine();
-    engine.register_compute_fn("test::cost_marker_zeta_e", cost_marker_trampoline as ComputeFn);
+    engine.register_compute_fn(
+        "test::cost_marker_zeta_e",
+        cost_marker_trampoline as ComputeFn,
+    );
 
     // eval(v1): @optimized lowering creates a ComputeNode; the trampoline
     // donates warm state + cost 0.4 to the cache.
@@ -495,10 +506,7 @@ fn edit_source_donates_old_compute_node_warm_state_to_warm_pool_with_cost() {
     // The cache entry for the dropped ComputeNode must be invalidated by the
     // tail of step-(9b) — pool is now the sole holder of warm state + cost.
     assert!(
-        engine
-            .cache_store()
-            .get(&NodeId::Compute(c_id))
-            .is_none(),
+        engine.cache_store().get(&NodeId::Compute(c_id)).is_none(),
         "cache entry for the removed ComputeNode must be invalidated by step-(9b) \
          after the cost+state were donated to the pool",
     );

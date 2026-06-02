@@ -34,9 +34,14 @@
 use std::sync::{Arc, Mutex};
 
 use reify_compiler::{CompiledGeometryOp, CurveKind, GeomRef, SweepKind};
-use reify_test_support::*;
 use reify_core::{ModulePath, Type};
-use reify_ir::{AttributeHistory, CapKind, CompiledExpr, ExportFormat, FeatureId, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, HistoryRecord, LoftOpHistoryRecords, Mesh, QueryError, Role, SweepOpHistoryRecords, TessError, TopologyAttribute, Value};
+use reify_ir::{
+    AttributeHistory, CapKind, CompiledExpr, ExportFormat, FeatureId, GeometryError,
+    GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, HistoryRecord,
+    LoftOpHistoryRecords, Mesh, QueryError, Role, SweepOpHistoryRecords, TessError,
+    TopologyAttribute, Value,
+};
+use reify_test_support::*;
 
 // ─── HistoryMockKernel ────────────────────────────────────────────────────────
 

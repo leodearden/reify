@@ -15,7 +15,10 @@ use reify_eval::EvalResult;
 use reify_ir::Value;
 use reify_test_support::{collect_errors, make_engine, parse_and_compile_with_stdlib};
 
-const FILE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/unit_expressions.ri");
+const FILE_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/unit_expressions.ri"
+);
 
 const EPSILON: f64 = 1e-9;
 
@@ -72,7 +75,10 @@ fn assert_scalar(member: &str, expected_si: f64, expected_dim: DimensionVector) 
         .get(&id)
         .unwrap_or_else(|| panic!("'{}' not found in eval result", member));
     match val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert!(
                 (*si_value - expected_si).abs() < EPSILON,
                 "'{}': expected si_value {}, got {}",
@@ -177,7 +183,10 @@ fn stress_sq_evaluates_to_dimensionless_25() {
         .get(&id)
         .unwrap_or_else(|| panic!("'stress_sq' not found in eval result"));
     match val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert!(
                 dimension.is_dimensionless(),
                 "expected dimensionless dimension for stress_sq, got {:?}",

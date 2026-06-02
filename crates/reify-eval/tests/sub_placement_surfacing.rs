@@ -1193,8 +1193,7 @@ structure ControlAsm {
         "ControlAsm.a#realization[0]",
         "ControlAsm.b#realization[0]",
     );
-    let dist = dist
-        .expect("distance_between_placed must return Some for coincident product subs");
+    let dist = dist.expect("distance_between_placed must return Some for coincident product subs");
     // Coincident/overlapping boxes: distance is 0.
     let tol = 1e-6_f64;
     assert!(
@@ -1379,9 +1378,7 @@ structure HolderAt {
     // Find the Box op whose result_handle is the ApplyTransform target.
     let box_rec = recorded
         .iter()
-        .find(|rec| {
-            matches!(rec.op, GeometryOp::Box { .. }) && rec.result_handle == apply_target
-        })
+        .find(|rec| matches!(rec.op, GeometryOp::Box { .. }) && rec.result_handle == apply_target)
         .expect(
             "a Box op whose result_handle equals the ApplyTransform target must exist \
              (child body realized with the override)",

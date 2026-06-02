@@ -53,9 +53,8 @@ const CONTAINS_BOX_PATH: &str = concat!(
 fn contains_box_evals_expected_booleans() {
     // Read the fixture unconditionally so a missing file is caught even on
     // OCCT-less runners — fixture presence is a CI contract independent of OCCT.
-    let source = std::fs::read_to_string(CONTAINS_BOX_PATH).expect(
-        "examples/kernel_queries/contains_box.ri should exist (task 3611 step-8)",
-    );
+    let source = std::fs::read_to_string(CONTAINS_BOX_PATH)
+        .expect("examples/kernel_queries/contains_box.ri should exist (task 3611 step-8)");
 
     // Validate fixture compilation unconditionally — a grammar/compile regression
     // (e.g. `contains` signature change) should fail on every runner.

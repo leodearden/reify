@@ -3,15 +3,15 @@
 use std::collections::HashMap;
 
 use reify_constraints::DimensionalSolver;
+use reify_core::{ModulePath, SnapshotId, Type, ValueCellId};
 use reify_eval::cache::NodeId;
 use reify_eval::{ConcurrentEditResult, Engine};
+use reify_ir::{DeterminacyState, ObjectiveSense, ObjectiveSet, SnapshotProvenance, Value};
 use reify_test_support::{
     CompiledModuleBuilder, MockConstraintChecker, MockConstraintSolver,
     MultiCallSpyConstraintSolver, SpyConstraintSolver, TopologyTemplateBuilder, binop, gt, literal,
     lt, make_simple_engine, mm, value_ref,
 };
-use reify_core::{ModulePath, SnapshotId, Type, ValueCellId};
-use reify_ir::{DeterminacyState, ObjectiveSet, ObjectiveSense, SnapshotProvenance, Value};
 
 #[test]
 fn engine_with_solver_accepts_solver() {
@@ -413,8 +413,8 @@ fn no_solver_backward_compatible() {
 
 #[test]
 fn eval_result_tracks_resolved_params() {
-    use reify_test_support::MockGeometryKernel;
     use reify_ir::ExportFormat;
+    use reify_test_support::MockGeometryKernel;
 
     let thickness_id = ValueCellId::new("S", "thickness");
 
@@ -662,7 +662,10 @@ fn objective_forwarded_to_solver_in_eval() {
             None,
             gt(value_ref("S", "thickness"), literal(mm(2.0))),
         )
-        .objective(ObjectiveSet::single(ObjectiveSense::Minimize, value_ref("S", "thickness")))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            value_ref("S", "thickness"),
+        ))
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -679,7 +682,12 @@ fn objective_forwarded_to_solver_in_eval() {
         .as_ref()
         .expect("solver should have been called during eval");
     assert!(
-        problem.objective.as_ref().and_then(|o| o.terms.first()).map(|t| t.sense) == Some(ObjectiveSense::Minimize),
+        problem
+            .objective
+            .as_ref()
+            .and_then(|o| o.terms.first())
+            .map(|t| t.sense)
+            == Some(ObjectiveSense::Minimize),
         "expected Minimize objective forwarded to solver, got {:?}",
         problem.objective
     );
@@ -712,7 +720,10 @@ fn objective_forwarded_in_edit_param() {
             None,
             gt(value_ref("S", "thickness"), value_ref("S", "limit")),
         )
-        .objective(ObjectiveSet::single(ObjectiveSense::Minimize, value_ref("S", "thickness")))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            value_ref("S", "thickness"),
+        ))
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -735,7 +746,12 @@ fn objective_forwarded_in_edit_param() {
         .as_ref()
         .expect("solver should have been called during edit_param");
     assert!(
-        problem.objective.as_ref().and_then(|o| o.terms.first()).map(|t| t.sense) == Some(ObjectiveSense::Minimize),
+        problem
+            .objective
+            .as_ref()
+            .and_then(|o| o.terms.first())
+            .map(|t| t.sense)
+            == Some(ObjectiveSense::Minimize),
         "expected Minimize objective forwarded to solver in edit_param, got {:?}",
         problem.objective
     );
@@ -768,7 +784,10 @@ fn objective_forwarded_in_concurrent_edit() {
             None,
             gt(value_ref("S", "thickness"), value_ref("S", "limit")),
         )
-        .objective(ObjectiveSet::single(ObjectiveSense::Minimize, value_ref("S", "thickness")))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            value_ref("S", "thickness"),
+        ))
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -806,7 +825,12 @@ fn objective_forwarded_in_concurrent_edit() {
         .as_ref()
         .expect("solver should have been called during resolve_concurrent_edit");
     assert!(
-        problem.objective.as_ref().and_then(|o| o.terms.first()).map(|t| t.sense) == Some(ObjectiveSense::Minimize),
+        problem
+            .objective
+            .as_ref()
+            .and_then(|o| o.terms.first())
+            .map(|t| t.sense)
+            == Some(ObjectiveSense::Minimize),
         "expected Minimize objective forwarded to solver in resolve_concurrent_edit, got {:?}",
         problem.objective
     );
@@ -896,7 +920,10 @@ fn e2e_minimize_through_real_solver() {
             None,
             lt(value_ref("S", "thickness"), literal(mm(20.0))),
         )
-        .objective(ObjectiveSet::single(ObjectiveSense::Minimize, value_ref("S", "thickness")))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            value_ref("S", "thickness"),
+        ))
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -973,10 +1000,10 @@ fn eval_resolves_per_template_independently() {
             None,
             gt(value_ref("Bracket", "thickness"), literal(mm(2.0))),
         )
-        .objective(ObjectiveSet::single(ObjectiveSense::Minimize, value_ref(
-            "Bracket",
-            "thickness",
-        )))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            value_ref("Bracket", "thickness"),
+        ))
         .build();
 
     // Bolt: auto diameter, constraint diameter > 5mm, Maximize
@@ -988,9 +1015,10 @@ fn eval_resolves_per_template_independently() {
             None,
             gt(value_ref("Bolt", "diameter"), literal(mm(5.0))),
         )
-        .objective(ObjectiveSet::single(ObjectiveSense::Maximize, value_ref(
-            "Bolt", "diameter",
-        )))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Maximize,
+            value_ref("Bolt", "diameter"),
+        ))
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -1052,12 +1080,22 @@ fn eval_resolves_per_template_independently() {
         let entity = problem.auto_params[0].id.entity.as_str();
         match entity {
             "Bracket" => assert!(
-                problem.objective.as_ref().and_then(|o| o.terms.first()).map(|t| t.sense) == Some(ObjectiveSense::Minimize),
+                problem
+                    .objective
+                    .as_ref()
+                    .and_then(|o| o.terms.first())
+                    .map(|t| t.sense)
+                    == Some(ObjectiveSense::Minimize),
                 "Bracket should have Minimize objective, got {:?}",
                 problem.objective
             ),
             "Bolt" => assert!(
-                problem.objective.as_ref().and_then(|o| o.terms.first()).map(|t| t.sense) == Some(ObjectiveSense::Maximize),
+                problem
+                    .objective
+                    .as_ref()
+                    .and_then(|o| o.terms.first())
+                    .map(|t| t.sense)
+                    == Some(ObjectiveSense::Maximize),
                 "Bolt should have Maximize objective, got {:?}",
                 problem.objective
             ),
@@ -1118,10 +1156,10 @@ fn edit_param_resolves_per_template_not_cross_template() {
                 value_ref("Bracket", "limit"),
             ),
         )
-        .objective(ObjectiveSet::single(ObjectiveSense::Minimize, value_ref(
-            "Bracket",
-            "thickness",
-        )))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            value_ref("Bracket", "thickness"),
+        ))
         .build();
 
     // Bolt: auto diameter, constraint diameter > 5mm, Maximize
@@ -1133,9 +1171,10 @@ fn edit_param_resolves_per_template_not_cross_template() {
             None,
             gt(value_ref("Bolt", "diameter"), literal(mm(5.0))),
         )
-        .objective(ObjectiveSet::single(ObjectiveSense::Maximize, value_ref(
-            "Bolt", "diameter",
-        )))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Maximize,
+            value_ref("Bolt", "diameter"),
+        ))
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -1177,7 +1216,12 @@ fn edit_param_resolves_per_template_not_cross_template() {
 
     // (3) The edit_param call should have Bracket's Minimize objective
     assert!(
-        edit_call.objective.as_ref().and_then(|o| o.terms.first()).map(|t| t.sense) == Some(ObjectiveSense::Minimize),
+        edit_call
+            .objective
+            .as_ref()
+            .and_then(|o| o.terms.first())
+            .map(|t| t.sense)
+            == Some(ObjectiveSense::Minimize),
         "edit_param should forward Bracket's Minimize objective, got {:?}",
         edit_call.objective
     );
@@ -1241,10 +1285,10 @@ fn concurrent_edit_resolves_per_template_not_cross_template() {
                 value_ref("Bracket", "limit"),
             ),
         )
-        .objective(ObjectiveSet::single(ObjectiveSense::Minimize, value_ref(
-            "Bracket",
-            "thickness",
-        )))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            value_ref("Bracket", "thickness"),
+        ))
         .build();
 
     let bolt = TopologyTemplateBuilder::new("Bolt")
@@ -1255,9 +1299,10 @@ fn concurrent_edit_resolves_per_template_not_cross_template() {
             None,
             gt(value_ref("Bolt", "diameter"), literal(mm(5.0))),
         )
-        .objective(ObjectiveSet::single(ObjectiveSense::Maximize, value_ref(
-            "Bolt", "diameter",
-        )))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Maximize,
+            value_ref("Bolt", "diameter"),
+        ))
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -1312,7 +1357,12 @@ fn concurrent_edit_resolves_per_template_not_cross_template() {
 
     // (3) Correct objective
     assert!(
-        edit_call.objective.as_ref().and_then(|o| o.terms.first()).map(|t| t.sense) == Some(ObjectiveSense::Minimize),
+        edit_call
+            .objective
+            .as_ref()
+            .and_then(|o| o.terms.first())
+            .map(|t| t.sense)
+            == Some(ObjectiveSense::Minimize),
         "resolve_concurrent_edit should forward Bracket's Minimize objective, got {:?}",
         edit_call.objective
     );
@@ -1322,8 +1372,8 @@ fn concurrent_edit_resolves_per_template_not_cross_template() {
 fn edit_param_matches_eval_for_multi_template_module() {
     // Prove cold/hot path equivalence: the resolved params from edit_param
     // should match what eval() produces for a multi-template module.
-    use reify_test_support::SequencedMockConstraintSolver;
     use reify_ir::SolveResult;
+    use reify_test_support::SequencedMockConstraintSolver;
 
     let bracket_thickness = ValueCellId::new("Bracket", "thickness");
     let bracket_limit = ValueCellId::new("Bracket", "limit");
@@ -1359,10 +1409,10 @@ fn edit_param_matches_eval_for_multi_template_module() {
                 value_ref("Bracket", "limit"),
             ),
         )
-        .objective(ObjectiveSet::single(ObjectiveSense::Minimize, value_ref(
-            "Bracket",
-            "thickness",
-        )))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            value_ref("Bracket", "thickness"),
+        ))
         .build();
 
     let bolt = TopologyTemplateBuilder::new("Bolt")
@@ -1373,9 +1423,10 @@ fn edit_param_matches_eval_for_multi_template_module() {
             None,
             gt(value_ref("Bolt", "diameter"), literal(mm(5.0))),
         )
-        .objective(ObjectiveSet::single(ObjectiveSense::Maximize, value_ref(
-            "Bolt", "diameter",
-        )))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Maximize,
+            value_ref("Bolt", "diameter"),
+        ))
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -1514,10 +1565,10 @@ fn scope_name_deterministic_for_multi_template() {
                 value_ref("Bracket", "limit"),
             ),
         )
-        .objective(ObjectiveSet::single(ObjectiveSense::Minimize, value_ref(
-            "Bracket",
-            "thickness",
-        )))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            value_ref("Bracket", "thickness"),
+        ))
         .build();
 
     // Bolt: auto diameter, param clearance, constraint diameter > clearance, Maximize
@@ -1533,9 +1584,10 @@ fn scope_name_deterministic_for_multi_template() {
                 value_ref("Bolt", "clearance"),
             ),
         )
-        .objective(ObjectiveSet::single(ObjectiveSense::Maximize, value_ref(
-            "Bolt", "diameter",
-        )))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Maximize,
+            value_ref("Bolt", "diameter"),
+        ))
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -1577,7 +1629,12 @@ fn scope_name_deterministic_for_multi_template() {
         bracket_entities
     );
     assert!(
-        bracket_edit.objective.as_ref().and_then(|o| o.terms.first()).map(|t| t.sense) == Some(ObjectiveSense::Minimize),
+        bracket_edit
+            .objective
+            .as_ref()
+            .and_then(|o| o.terms.first())
+            .map(|t| t.sense)
+            == Some(ObjectiveSense::Minimize),
         "Bracket edit should have Minimize objective, got {:?}",
         bracket_edit.objective
     );
@@ -1596,7 +1653,12 @@ fn scope_name_deterministic_for_multi_template() {
         bolt_entities
     );
     assert!(
-        bolt_edit.objective.as_ref().and_then(|o| o.terms.first()).map(|t| t.sense) == Some(ObjectiveSense::Maximize),
+        bolt_edit
+            .objective
+            .as_ref()
+            .and_then(|o| o.terms.first())
+            .map(|t| t.sense)
+            == Some(ObjectiveSense::Maximize),
         "Bolt edit should have Maximize objective, got {:?}",
         bolt_edit.objective
     );
@@ -1668,10 +1730,10 @@ fn edit_param_no_cross_group_value_contamination() {
                 value_ref("Bracket", "clearance"),
             ),
         )
-        .objective(ObjectiveSet::single(ObjectiveSense::Minimize, value_ref(
-            "Bracket",
-            "thickness",
-        )))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            value_ref("Bracket", "thickness"),
+        ))
         .build();
 
     // Bolt: auto diameter, constraint diameter > Bracket.clearance (cross-entity ref).
@@ -1688,9 +1750,10 @@ fn edit_param_no_cross_group_value_contamination() {
                 value_ref("Bracket", "clearance"),
             ),
         )
-        .objective(ObjectiveSet::single(ObjectiveSense::Maximize, value_ref(
-            "Bolt", "diameter",
-        )))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Maximize,
+            value_ref("Bolt", "diameter"),
+        ))
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -1820,10 +1883,10 @@ fn resolve_concurrent_edit_no_cross_group_contamination() {
                 value_ref("Bracket", "clearance"),
             ),
         )
-        .objective(ObjectiveSet::single(ObjectiveSense::Minimize, value_ref(
-            "Bracket",
-            "thickness",
-        )))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            value_ref("Bracket", "thickness"),
+        ))
         .build();
 
     // Bolt: auto diameter, constraint diameter > Bracket.clearance (cross-entity ref)
@@ -1838,9 +1901,10 @@ fn resolve_concurrent_edit_no_cross_group_contamination() {
                 value_ref("Bracket", "clearance"),
             ),
         )
-        .objective(ObjectiveSet::single(ObjectiveSense::Maximize, value_ref(
-            "Bolt", "diameter",
-        )))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Maximize,
+            value_ref("Bolt", "diameter"),
+        ))
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))

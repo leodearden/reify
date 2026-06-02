@@ -30,12 +30,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use reify_core::{ComputeNodeId, ValueCellId, VersionId};
 use reify_eval::cache::{CachedResult, NodeCache, NodeId};
 use reify_eval::deps::DependencyTrace;
-use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, DispatchError, RealizationReadHandle};
-use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
-use reify_core::{ComputeNodeId, ValueCellId, VersionId};
+use reify_eval::{
+    CancellationHandle, ComputeFn, ComputeOutcome, DispatchError, RealizationReadHandle,
+};
 use reify_ir::{DeterminacyState, Freshness, OpaqueState, Value};
+use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Test A — EVAL-PATH CANCELLED→PENDING

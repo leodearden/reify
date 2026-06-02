@@ -3,13 +3,13 @@
 //! Verifies that `CacheStore::derive_output_freshness_for_node` implements the
 //! §7.2 truth table over real Engine state with synthetic input-freshness injection.
 
+use reify_core::{ModulePath, Type, ValueCellId};
 use reify_eval::Engine;
 use reify_eval::cache::NodeId;
+use reify_ir::{BinOp, ErrorRef, Freshness, ResultRef, Value};
 use reify_test_support::builders::{binop, literal, value_ref_typed};
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
-use reify_core::{ModulePath, Type, ValueCellId};
-use reify_ir::{BinOp, ErrorRef, Freshness, ResultRef, Value};
 
 /// Build the 2-cell synthetic module: param `a` + let `b = a * 2.0`.
 fn two_cell_module() -> reify_compiler::CompiledModule {

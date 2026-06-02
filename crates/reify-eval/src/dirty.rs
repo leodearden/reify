@@ -588,7 +588,8 @@ mod tests {
         let r0_id = RealizationNodeId::new(e, 0);
         graph.realizations.insert(
             r0_id.clone(),
-            RealizationNodeData { geometry_cell: None,
+            RealizationNodeData {
+                geometry_cell: None,
                 id: r0_id.clone(),
                 operations: vec![],
                 content_hash: ContentHash::of_str("r0"),
@@ -681,7 +682,8 @@ mod tests {
         let r0_id = RealizationNodeId::new(e, 0);
         graph.realizations.insert(
             r0_id.clone(),
-            RealizationNodeData { geometry_cell: None,
+            RealizationNodeData {
+                geometry_cell: None,
                 id: r0_id.clone(),
                 operations: vec![],
                 content_hash: ContentHash::of_str("r0"),
@@ -770,7 +772,8 @@ mod tests {
         let r0_id = RealizationNodeId::new(e, 0);
         graph.realizations.insert(
             r0_id.clone(),
-            RealizationNodeData { geometry_cell: None,
+            RealizationNodeData {
+                geometry_cell: None,
                 id: r0_id.clone(),
                 operations: vec![],
                 content_hash: ContentHash::of_str("r0"),
@@ -957,7 +960,8 @@ mod tests {
         traces.insert(thickness.clone(), DependencyTrace::default());
         traces.insert(
             volume.clone(),
-            DependencyTrace { realization_reads: Vec::new(),
+            DependencyTrace {
+                realization_reads: Vec::new(),
                 reads: vec![
                     ValueCellId::new(e, "width"),
                     ValueCellId::new(e, "height"),
@@ -1000,7 +1004,8 @@ mod tests {
         traces.insert(thickness.clone(), DependencyTrace::default());
         traces.insert(
             c1.clone(),
-            DependencyTrace { realization_reads: Vec::new(),
+            DependencyTrace {
+                realization_reads: Vec::new(),
                 reads: vec![
                     ValueCellId::new(e, "width"),
                     ValueCellId::new(e, "thickness"),
@@ -1042,7 +1047,8 @@ mod tests {
         traces.insert(thickness.clone(), DependencyTrace::default());
         traces.insert(
             volume.clone(),
-            DependencyTrace { realization_reads: Vec::new(),
+            DependencyTrace {
+                realization_reads: Vec::new(),
                 reads: vec![
                     ValueCellId::new(e, "width"),
                     ValueCellId::new(e, "thickness"),
@@ -1051,7 +1057,8 @@ mod tests {
         );
         traces.insert(
             c1.clone(),
-            DependencyTrace { realization_reads: Vec::new(),
+            DependencyTrace {
+                realization_reads: Vec::new(),
                 reads: vec![
                     ValueCellId::new(e, "width"),
                     ValueCellId::new(e, "thickness"),
@@ -1094,7 +1101,8 @@ mod tests {
         // sq reads 'a' twice (simulating expression `a * a`)
         traces.insert(
             sq.clone(),
-            DependencyTrace { realization_reads: Vec::new(),
+            DependencyTrace {
+                realization_reads: Vec::new(),
                 reads: vec![ValueCellId::new(e, "a"), ValueCellId::new(e, "a")],
             },
         );
@@ -1259,9 +1267,9 @@ mod tests {
         use crate::dirty::compute_eval_set;
         use crate::graph::EvaluationGraph;
         use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
-        use reify_test_support::TopologyTemplateBuilder;
         use reify_core::{RealizationNodeId, Type};
         use reify_ir::{BinOp, CompiledExpr, Value};
+        use reify_test_support::TopologyTemplateBuilder;
 
         let e = "B";
         let width_ref = || CompiledExpr::value_ref(ValueCellId::new(e, "width"), Type::length());
@@ -1362,13 +1370,15 @@ mod tests {
         traces.insert(a.clone(), DependencyTrace::default());
         traces.insert(
             b.clone(),
-            DependencyTrace { realization_reads: Vec::new(),
+            DependencyTrace {
+                realization_reads: Vec::new(),
                 reads: vec![ValueCellId::new("X", "a")],
             },
         );
         traces.insert(
             c.clone(),
-            DependencyTrace { realization_reads: Vec::new(),
+            DependencyTrace {
+                realization_reads: Vec::new(),
                 reads: vec![ValueCellId::new("X", "a")],
             },
         );
@@ -1402,13 +1412,15 @@ mod tests {
         traces.insert(a.clone(), DependencyTrace::default());
         traces.insert(
             b.clone(),
-            DependencyTrace { realization_reads: Vec::new(),
+            DependencyTrace {
+                realization_reads: Vec::new(),
                 reads: vec![ValueCellId::new("X", "a")],
             },
         );
         traces.insert(
             c.clone(),
-            DependencyTrace { realization_reads: Vec::new(),
+            DependencyTrace {
+                realization_reads: Vec::new(),
                 reads: vec![ValueCellId::new("X", "b")],
             },
         );

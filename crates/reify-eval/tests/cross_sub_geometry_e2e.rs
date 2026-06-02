@@ -8,9 +8,9 @@
 //! See task 3441 — eval-side `GeomRef::Sub` plumbing for cross-template handles.
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_test_support::{FailingMockGeometryKernel, MockGeometryKernel, compile_source};
 use reify_core::{DimensionVector, Severity};
 use reify_ir::{ExportFormat, GeometryOp, Value};
+use reify_test_support::{FailingMockGeometryKernel, MockGeometryKernel, compile_source};
 
 /// Inner has `body = box(...)`; Outer has `sub inner = Inner()` and
 /// `placed = translate(self.inner.body, 10mm, 0mm, 0mm)`.
@@ -979,9 +979,11 @@ pub structure Outer {
         dimension: DimensionVector::LENGTH,
     };
     let per_instance_box = recorded.iter().find(|rec| match &rec.op {
-        GeometryOp::Box { width, height, depth } => {
-            width == &override_size && height == &override_size && depth == &override_size
-        }
+        GeometryOp::Box {
+            width,
+            height,
+            depth,
+        } => width == &override_size && height == &override_size && depth == &override_size,
         _ => false,
     });
     let per_instance_box = per_instance_box.expect(
@@ -1147,9 +1149,11 @@ pub structure Outer {
         dimension: DimensionVector::LENGTH,
     };
     let per_instance_box = recorded.iter().find(|rec| match &rec.op {
-        GeometryOp::Box { width, height, depth } => {
-            width == &default_w && height == &override_h && depth == &default_w
-        }
+        GeometryOp::Box {
+            width,
+            height,
+            depth,
+        } => width == &default_w && height == &override_h && depth == &default_w,
         _ => false,
     });
     let per_instance_box = per_instance_box.expect(
@@ -1347,13 +1351,15 @@ pub structure Outer {
         targets_set.contains(&h_a),
         "expected one Translate targeting h_a ({:?}, the 50mm Box); \
          translate targets were {:?}",
-        h_a, translate_targets
+        h_a,
+        translate_targets
     );
     assert!(
         targets_set.contains(&h_b),
         "expected one Translate targeting h_b ({:?}, the 80mm Box); \
          translate targets were {:?}",
-        h_b, translate_targets
+        h_b,
+        translate_targets
     );
 }
 
@@ -1446,9 +1452,11 @@ pub structure Outer {
         dimension: DimensionVector::LENGTH,
     };
     let box_70 = recorded.iter().find(|rec| match &rec.op {
-        GeometryOp::Box { width, height, depth } => {
-            width == &size_70 && height == &size_70 && depth == &size_70
-        }
+        GeometryOp::Box {
+            width,
+            height,
+            depth,
+        } => width == &size_70 && height == &size_70 && depth == &size_70,
         _ => false,
     });
     let h_box = box_70
@@ -1488,7 +1496,10 @@ pub structure Outer {
          re-realization (the translate result), not the intermediate Box handle; \
          recorded ops: {:?}",
         h_inner_translate,
-        recorded.iter().map(|r| format!("{:?}", r.op)).collect::<Vec<_>>()
+        recorded
+            .iter()
+            .map(|r| format!("{:?}", r.op))
+            .collect::<Vec<_>>()
     );
 
     // (e) Build produces a geometry output.
@@ -1560,7 +1571,10 @@ pub structure Outer {
     let per_instance_errors: Vec<_> = result
         .diagnostics
         .iter()
-        .filter(|d| d.message.contains("per-instance re-realization kernel error"))
+        .filter(|d| {
+            d.message
+                .contains("per-instance re-realization kernel error")
+        })
         .collect();
     assert!(
         !per_instance_errors.is_empty(),
@@ -1654,7 +1668,8 @@ pub structure Outer {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.message.contains("per-instance re-realization compile error")
+            d.message
+                .contains("per-instance re-realization compile error")
                 && d.message.contains("Outer.mid.body")
         })
         .collect();

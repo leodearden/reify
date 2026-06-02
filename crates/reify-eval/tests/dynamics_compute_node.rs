@@ -22,11 +22,11 @@
 //! via that inline fallback (the result is bit-identical either way). step-14
 //! flips (b) to GREEN.
 
+use reify_core::ValueCellId;
 use reify_eval::cache::NodeId;
 use reify_eval::compute_targets::register_compute_fns;
-use reify_test_support::{errors_only, make_simple_engine, parse_and_compile_with_stdlib};
-use reify_core::ValueCellId;
 use reify_ir::{Freshness, Value};
+use reify_test_support::{errors_only, make_simple_engine, parse_and_compile_with_stdlib};
 
 /// Static single-pendulum ground truth: `τ = m·g·L·sin(30°) = 1·9.81·0.1·0.5`.
 const STATIC_TORQUE: f64 = 0.4905;

@@ -19,13 +19,13 @@
 //! 3. `set_panic_on_eval` registration on `b` and `c` — any accidental
 //!    `evaluate_let_bindings` invocation would panic loudly.
 
+use reify_core::{ModulePath, Type, ValueCellId};
 use reify_eval::Engine;
 use reify_eval::cache::{CachedResult, NodeId};
+use reify_ir::{BinOp, Freshness, Value};
 use reify_test_support::builders::{binop, literal, value_ref_typed};
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
-use reify_core::{ModulePath, Type, ValueCellId};
-use reify_ir::{BinOp, Freshness, Value};
 use std::collections::HashSet;
 
 /// Build the 3-cell synthetic module: param `a` + let `b = a * 2.0` +

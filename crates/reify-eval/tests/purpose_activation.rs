@@ -27,12 +27,12 @@
 //! Compile-time `subject.<param>` member-access wiring (task-2181) is now complete;
 //! see §5 below for the remap_entity integration test.
 
+use reify_core::{ContentHash, ModulePath, Severity, Type, ValueCellId, VersionId};
 use reify_eval::Engine;
+use reify_ir::{CompiledExprKind, ObjectiveSense, Satisfaction};
 use reify_test_support::{
     make_engine, make_simple_engine, mm, parse_and_compile, parse_and_compile_with_stdlib,
 };
-use reify_core::{ContentHash, ModulePath, Severity, Type, ValueCellId, VersionId};
-use reify_ir::{CompiledExprKind, ObjectiveSense, Satisfaction};
 
 const EXAMPLE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -472,9 +472,7 @@ purpose check_params(subject : Widget) {
         .resolved_queries
         .iter()
         .find(|q| q.query_kind == "params" && q.param_name == "subject")
-        .expect(
-            "expected a ResolvedSchemaQuery with query_kind='params' and param_name='subject'"
-        );
+        .expect("expected a ResolvedSchemaQuery with query_kind='params' and param_name='subject'");
     assert_eq!(query.param_name, "subject");
     assert_eq!(query.query_kind, "params");
 }
@@ -1112,8 +1110,16 @@ purpose weight_target(subject : Structure) {
         .objective
         .as_ref()
         .expect("weight_target must have a minimize objective");
-    assert_eq!(pre_obj.terms.len(), 1, "pre-activation: expected 1 term in minimize objective");
-    assert_eq!(pre_obj.terms[0].sense, ObjectiveSense::Minimize, "pre-activation: expected Minimize sense");
+    assert_eq!(
+        pre_obj.terms.len(),
+        1,
+        "pre-activation: expected 1 term in minimize objective"
+    );
+    assert_eq!(
+        pre_obj.terms[0].sense,
+        ObjectiveSense::Minimize,
+        "pre-activation: expected Minimize sense"
+    );
     let pre_obj_entity = match &pre_obj.terms[0].expr.kind {
         CompiledExprKind::ValueRef(id) => id.entity.clone(),
         other => panic!(
@@ -1134,11 +1140,23 @@ purpose weight_target(subject : Structure) {
     engine.activate_purpose("weight_target", "Bracket");
 
     let objectives = engine.active_objectives();
-    assert_eq!(objectives.len(), 1, "should have 1 active objective after activation");
+    assert_eq!(
+        objectives.len(),
+        1,
+        "should have 1 active objective after activation"
+    );
 
     // Post-activation: the active objective's ValueRef entity must be remapped to "Bracket".
-    assert_eq!(objectives[0].terms.len(), 1, "post-activation: expected 1 term in objective");
-    assert_eq!(objectives[0].terms[0].sense, ObjectiveSense::Minimize, "post-activation: expected Minimize sense");
+    assert_eq!(
+        objectives[0].terms.len(),
+        1,
+        "post-activation: expected 1 term in objective"
+    );
+    assert_eq!(
+        objectives[0].terms[0].sense,
+        ObjectiveSense::Minimize,
+        "post-activation: expected Minimize sense"
+    );
     let post_obj_entity = match &objectives[0].terms[0].expr.kind {
         CompiledExprKind::ValueRef(id) => id.entity.clone(),
         other => panic!(
@@ -1668,8 +1686,8 @@ purpose check(subject : Structure) {
 /// AND the trace_map's `Value(__field.f3)` entry still records f1 as a read.
 #[test]
 fn purpose_activation_preserves_composed_field_reverse_index() {
-    use reify_eval::cache::NodeId;
     use reify_core::FIELD_ENTITY_PREFIX;
+    use reify_eval::cache::NodeId;
 
     let source = r#"
 field def f1 : Real -> Real { source = analytical { |p| p * 2.0 } }
@@ -1838,7 +1856,10 @@ purpose fits_within(part : Structure, envelope : Structure) {
             };
             (left_ent, right_ent)
         }
-        other => panic!("expected BinOp in injected constraint expr, got {:?}", other),
+        other => panic!(
+            "expected BinOp in injected constraint expr, got {:?}",
+            other
+        ),
     };
     assert_eq!(
         left_entity, "PartA",
@@ -1892,9 +1913,7 @@ purpose fits_within(part : Structure, envelope : Structure) {
     );
 
     // C3: must return Err naming the unknown param.
-    let err_msg = result.expect_err(
-        "expected Err for an unknown binding param, got Ok"
-    );
+    let err_msg = result.expect_err("expected Err for an unknown binding param, got Ok");
     assert!(
         err_msg.contains("bogus"),
         "error message must name the unknown param 'bogus', got: {err_msg}"
@@ -1940,9 +1959,7 @@ purpose fits_within(part : Structure, envelope : Structure) {
     );
 
     // C2: must return Err naming the unbound param.
-    let err_msg = result.expect_err(
-        "expected Err for an unbound purpose param, got Ok"
-    );
+    let err_msg = result.expect_err("expected Err for an unbound purpose param, got Ok");
     assert!(
         err_msg.contains("envelope"),
         "error message must name the unbound param 'envelope', got: {err_msg}"
@@ -1998,8 +2015,7 @@ purpose fits_within(part : Structure, envelope : Structure) {
     );
 
     // Must return Err naming the duplicated param.
-    let err_msg =
-        result.expect_err("expected Err for a param bound more than once, got Ok");
+    let err_msg = result.expect_err("expected Err for a param bound more than once, got Ok");
     assert!(
         err_msg.contains("part"),
         "error message must name the duplicated param 'part', got: {err_msg}"
@@ -2136,7 +2152,10 @@ fn activate_with_bindings_single_param_keeps_entity_prefix() {
         "expected Ok from activate_purpose_with_bindings, got {:?}",
         result
     );
-    assert!(engine.is_purpose_active("mfg_ready"), "purpose should be active");
+    assert!(
+        engine.is_purpose_active("mfg_ready"),
+        "purpose should be active"
+    );
 
     let snapshot = engine.snapshot().expect("snapshot after activate");
 
@@ -2150,8 +2169,7 @@ fn activate_with_bindings_single_param_keeps_entity_prefix() {
         .expect("expected injected constraint with purpose:mfg_ready@ prefix");
 
     assert_eq!(
-        injected_entity,
-        "purpose:mfg_ready@Bracket",
+        injected_entity, "purpose:mfg_ready@Bracket",
         "single-binding activation must use '@{{entity}}' (C6 parity, no digest)"
     );
 }
@@ -2222,7 +2240,9 @@ purpose marg(subject : Structure) {
     );
 
     // Also verify the injected let-cell is present in the graph.
-    let snapshot = engine.snapshot().expect("snapshot must exist after activation");
+    let snapshot = engine
+        .snapshot()
+        .expect("snapshot must exist after activation");
     let let_cell_found = snapshot
         .graph
         .value_cells
@@ -2313,8 +2333,7 @@ purpose marg(subject : Structure) {
             .graph
             .value_cells
             .iter()
-            .any(|(id, _)| id.entity.starts_with("purpose:marg@Bracket")
-                && id.member == "__let_m"),
+            .any(|(id, _)| id.entity.starts_with("purpose:marg@Bracket") && id.member == "__let_m"),
         "after activation: expected '__let_m' cell in graph.value_cells"
     );
 
@@ -2432,7 +2451,10 @@ purpose marg(subject : Structure) {
 "#;
     let compiled = parse_and_compile(source);
     assert!(
-        compiled.diagnostics.iter().all(|d| d.severity != Severity::Error),
+        compiled
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != Severity::Error),
         "fixture must compile without errors: {:?}",
         compiled.diagnostics
     );
@@ -2503,7 +2525,10 @@ purpose min_margin(subject : Structure) {
 "#;
     let compiled = parse_and_compile(source);
     assert!(
-        compiled.diagnostics.iter().all(|d| d.severity != Severity::Error),
+        compiled
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != Severity::Error),
         "fixture must compile without errors: {:?}",
         compiled.diagnostics
     );
@@ -2523,7 +2548,9 @@ purpose min_margin(subject : Structure) {
     // The injected let-cell value must be in snapshot.values so the optimizer
     // can resolve it directly (snapshot.values is the optimizer's value source,
     // no separate overlay is applied on that path).
-    let snapshot = engine.snapshot().expect("snapshot must exist after activation");
+    let snapshot = engine
+        .snapshot()
+        .expect("snapshot must exist after activation");
     let let_in_values = snapshot.values.iter().any(|(id, _)| {
         id.entity.starts_with("purpose:min_margin@Widget") && id.member == "__let_m"
     });
@@ -2568,7 +2595,10 @@ purpose analysis(subject : Structure) {
 "#;
     let compiled = parse_and_compile(source);
     assert!(
-        compiled.diagnostics.iter().all(|d| d.severity != Severity::Error),
+        compiled
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != Severity::Error),
         "fixture must compile without errors: {:?}",
         compiled.diagnostics
     );
@@ -2597,7 +2627,9 @@ purpose analysis(subject : Structure) {
     );
 
     // Both let-cells must be present in graph.value_cells.
-    let snapshot = engine.snapshot().expect("snapshot must exist after activation");
+    let snapshot = engine
+        .snapshot()
+        .expect("snapshot must exist after activation");
     assert!(
         snapshot.graph.value_cells.iter().any(|(id, _)| {
             id.entity.starts_with("purpose:analysis@Widget") && id.member == "__let_m"
@@ -2882,7 +2914,9 @@ purpose marg(subject : Structure) {
     );
 
     // Verify the injected let cell is present in the graph.
-    let snapshot = engine.snapshot().expect("snapshot must exist after activation");
+    let snapshot = engine
+        .snapshot()
+        .expect("snapshot must exist after activation");
     let let_cell_found = snapshot
         .graph
         .value_cells

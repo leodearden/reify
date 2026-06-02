@@ -17,10 +17,10 @@
 
 use std::collections::HashSet;
 
-use reify_eval::{seed_primitive_attributes, seed_primitive_attributes_for_handle};
-use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 use reify_core::RealizationNodeId;
+use reify_eval::{seed_primitive_attributes, seed_primitive_attributes_for_handle};
 use reify_ir::{AxisSign, CapKind, FeatureId, GeometryOp, Role, TopologyAttributeTable, Value};
+use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 
 /// 10×10×10 mm box, expressed in SI metres at the kernel boundary.
 const BOX_SIDE_M: f64 = 10.0e-3;

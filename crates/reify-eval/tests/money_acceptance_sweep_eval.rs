@@ -1,8 +1,8 @@
 //! Acceptance tests for the Money dimension (slot 9) and Angle/Torque-vs-Energy regression guard.
 
-use reify_test_support::eval_source;
 use reify_core::{DimensionVector, Rational, ValueCellId};
 use reify_ir::Value;
+use reify_test_support::eval_source;
 
 /// Fetch the cell at `entity.member` from `result`, assert it is a
 /// `Value::Scalar`, and return its `DimensionVector`. Panics with a

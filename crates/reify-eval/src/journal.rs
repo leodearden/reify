@@ -208,7 +208,10 @@ pub fn translate_warm_pool_event_to_eval_event(
     timestamp: std::time::Instant,
 ) -> EvalEvent {
     match ev {
-        crate::warm_pool::WarmPoolEvent::Evicted { node_id, size_bytes } => EvalEvent {
+        crate::warm_pool::WarmPoolEvent::Evicted {
+            node_id,
+            size_bytes,
+        } => EvalEvent {
             timestamp,
             node_id: node_id.clone(),
             kind: EventKind::Evicted {
@@ -217,7 +220,10 @@ pub fn translate_warm_pool_event_to_eval_event(
             version,
             payload: None,
         },
-        crate::warm_pool::WarmPoolEvent::Donated { node_id, size_bytes } => EvalEvent {
+        crate::warm_pool::WarmPoolEvent::Donated {
+            node_id,
+            size_bytes,
+        } => EvalEvent {
             timestamp,
             node_id: node_id.clone(),
             kind: EventKind::Donated {
@@ -786,7 +792,10 @@ mod tests {
 
         let result = translate_warm_pool_event_to_eval_event(&ev, version, ts);
 
-        assert_eq!(result.node_id, victim, "Evicted: node_id must be the victim");
+        assert_eq!(
+            result.node_id, victim,
+            "Evicted: node_id must be the victim"
+        );
         assert_eq!(result.version, version);
         assert_eq!(result.timestamp, ts);
         assert!(result.payload.is_none(), "payload must be None");
@@ -840,8 +849,7 @@ mod tests {
             node_id: victim.clone(),
             size_bytes: 512,
         };
-        let result =
-            translate_warm_pool_event_to_eval_event(&ev, VersionId(0), Instant::now());
+        let result = translate_warm_pool_event_to_eval_event(&ev, VersionId(0), Instant::now());
         // The node_id must be the victim, not any other node
         assert_eq!(result.node_id, victim);
         // And the kind must be Evicted (not Donated)

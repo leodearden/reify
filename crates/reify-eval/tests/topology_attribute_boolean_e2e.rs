@@ -61,11 +61,7 @@ fn build_boolean_source(source: &str) -> Option<reify_eval::Engine> {
         .iter()
         .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
-    assert!(
-        build_errors.is_empty(),
-        "build errors: {:?}",
-        build_errors
-    );
+    assert!(build_errors.is_empty(), "build errors: {:?}", build_errors);
 
     // Geometry output should be present
     let output = result

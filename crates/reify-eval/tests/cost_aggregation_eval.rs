@@ -14,9 +14,9 @@
 //! pattern from `crates/reify-eval/tests/purpose_activation.rs:560+`)
 //! because the source depends on stdlib-defined `Costed`, `USD`, and `h`.
 
-use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 use reify_core::{DimensionVector, Severity, ValueCellId};
 use reify_ir::Value;
+use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 /// Absolute path to the canonical cost-aggregation example fixture.
 /// Mirrors the CARGO_MANIFEST_DIR pattern from

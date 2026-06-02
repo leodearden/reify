@@ -34,9 +34,8 @@
 //! margins matching the `shell_benchmarks.rs` convention.
 
 use reify_solver_elastic::{
-    DirichletBc, IsotropicElastic, MpcRow, ShellElementStress,
-    apply_dirichlet_row_elimination, apply_mpc_row_elimination,
-    shell_element_stiffness_mitc3_plus,
+    DirichletBc, IsotropicElastic, MpcRow, ShellElementStress, apply_dirichlet_row_elimination,
+    apply_mpc_row_elimination, shell_element_stiffness_mitc3_plus,
 };
 
 // ─── geometry / material constants ───────────────────────────────────────────
@@ -128,8 +127,7 @@ fn build_flexure_on_block_mesh() -> CoupledMesh {
     let n_bz = NZ_B + 1; // 3 z-nodes in block
 
     // Flat closure: block node index (i,j,k)
-    let block_node =
-        |i: usize, j: usize, k: usize| -> usize { k * n_bx * n_by + j * n_bx + i };
+    let block_node = |i: usize, j: usize, k: usize| -> usize { k * n_bx * n_by + j * n_bx + i };
 
     // ── Block nodes ──────────────────────────────────────────────────────────
     let mut nodes: Vec<[f64; 3]> = Vec::with_capacity(n_bx * n_by * n_bz);
@@ -159,19 +157,18 @@ fn build_flexure_on_block_mesh() -> CoupledMesh {
     //
     // `element_stiffness_p1` uses |det J| so negative-volume (left-handed)
     // tets still produce correct stiffness; the decomposition is consistent.
-    let mut tet_conn: Vec<[usize; 4]> =
-        Vec::with_capacity(NX_B * NY_B * NZ_B * 6);
+    let mut tet_conn: Vec<[usize; 4]> = Vec::with_capacity(NX_B * NY_B * NZ_B * 6);
     for ki in 0..NZ_B {
         for ji in 0..NY_B {
             for ii in 0..NX_B {
                 let c = [
-                    block_node(ii,     ji,     ki),     // c[0]
-                    block_node(ii + 1, ji,     ki),     // c[1]
-                    block_node(ii,     ji + 1, ki),     // c[2]
+                    block_node(ii, ji, ki),             // c[0]
+                    block_node(ii + 1, ji, ki),         // c[1]
+                    block_node(ii, ji + 1, ki),         // c[2]
                     block_node(ii + 1, ji + 1, ki),     // c[3]
-                    block_node(ii,     ji,     ki + 1), // c[4]
-                    block_node(ii + 1, ji,     ki + 1), // c[5]
-                    block_node(ii,     ji + 1, ki + 1), // c[6]
+                    block_node(ii, ji, ki + 1),         // c[4]
+                    block_node(ii + 1, ji, ki + 1),     // c[5]
+                    block_node(ii, ji + 1, ki + 1),     // c[6]
                     block_node(ii + 1, ji + 1, ki + 1), // c[7]
                 ];
                 tet_conn.push([c[0], c[1], c[3], c[7]]);
@@ -205,9 +202,9 @@ fn build_flexure_on_block_mesh() -> CoupledMesh {
     let mut shell_conn: Vec<[usize; 3]> = Vec::with_capacity(NX_F * NY_F * 2);
     for js in 0..NY_F {
         for is in 0..NX_F {
-            let a = shell_node(is,     js);
+            let a = shell_node(is, js);
             let b = shell_node(is + 1, js);
-            let c = shell_node(is,     js + 1);
+            let c = shell_node(is, js + 1);
             let d = shell_node(is + 1, js + 1);
             // [a,b,d]: (b-a)×(d-a) = (+x)×(+x+y) = +z ✓
             shell_conn.push([a, b, d]);
@@ -229,9 +226,9 @@ fn build_flexure_on_block_mesh() -> CoupledMesh {
     for j in 0..n_sy {
         interface_nodes.push(InterfaceNode {
             shell_node: shell_node(0, j),
-            block_bot:  block_node(NX_B, j, 0),
-            block_mid:  block_node(NX_B, j, NZ_B / 2),
-            block_top:  block_node(NX_B, j, NZ_B),
+            block_bot: block_node(NX_B, j, 0),
+            block_mid: block_node(NX_B, j, NZ_B / 2),
+            block_top: block_node(NX_B, j, NZ_B),
         });
     }
 
@@ -281,21 +278,34 @@ fn solve_flexure_on_block(
     // ── 1. Per-element stiffnesses ────────────────────────────────────────────
 
     // Tet: 12-DOF P1 elements (d_e = 3, n_local = 4)
-    let tet_ke: Vec<_> = mesh.tet_conn.iter().map(|c| {
-        element_stiffness_p1(
-            &[mesh.nodes[c[0]], mesh.nodes[c[1]], mesh.nodes[c[2]], mesh.nodes[c[3]]],
-            mat,
-        )
-    }).collect();
+    let tet_ke: Vec<_> = mesh
+        .tet_conn
+        .iter()
+        .map(|c| {
+            element_stiffness_p1(
+                &[
+                    mesh.nodes[c[0]],
+                    mesh.nodes[c[1]],
+                    mesh.nodes[c[2]],
+                    mesh.nodes[c[3]],
+                ],
+                mat,
+            )
+        })
+        .collect();
 
     // Shell: 18-DOF MITC3+ elements (d_e = 6, n_local = 3)
-    let shell_ke: Vec<_> = mesh.shell_conn.iter().map(|c| {
-        shell_element_stiffness_mitc3_plus(
-            &[mesh.nodes[c[0]], mesh.nodes[c[1]], mesh.nodes[c[2]]],
-            T,
-            mat,
-        )
-    }).collect();
+    let shell_ke: Vec<_> = mesh
+        .shell_conn
+        .iter()
+        .map(|c| {
+            shell_element_stiffness_mitc3_plus(
+                &[mesh.nodes[c[0]], mesh.nodes[c[1]], mesh.nodes[c[2]]],
+                T,
+                mat,
+            )
+        })
+        .collect();
 
     // ── 2. Assemble fully-dense K ─────────────────────────────────────────────
     //
@@ -348,8 +358,7 @@ fn solve_flexure_on_block(
             triplets.push(Triplet::new(i, j, dk[i * ndof + j]));
         }
     }
-    let mut k =
-        faer::sparse::SparseRowMat::try_new_from_triplets(ndof, ndof, &triplets).unwrap();
+    let mut k = faer::sparse::SparseRowMat::try_new_from_triplets(ndof, ndof, &triplets).unwrap();
 
     // ── 3. Load vector ────────────────────────────────────────────────────────
 
@@ -380,8 +389,8 @@ fn solve_flexure_on_block(
             [6 * t + 0, 6 * t + 1, 6 * t + 2], // tet_top_dofs
             [6 * m + 0, 6 * m + 1, 6 * m + 2], // tet_mid_dofs
             [6 * b + 0, 6 * b + 1, 6 * b + 2], // tet_bot_dofs
-            [0.0, 0.0, 1.0],                    // z-normal
-            H,                                  // through-thickness separation
+            [0.0, 0.0, 1.0],                   // z-normal
+            H,                                 // through-thickness separation
         );
         mpc_rows.extend(rows);
     }
@@ -400,7 +409,10 @@ fn solve_flexure_on_block(
     let mut all_bcs: Vec<DirichletBc> = Vec::new();
     for n in 0..mesh.n_block_nodes {
         for axis in 3..6_usize {
-            all_bcs.push(DirichletBc { dof: 6 * n + axis, value: 0.0 });
+            all_bcs.push(DirichletBc {
+                dof: 6 * n + axis,
+                value: 0.0,
+            });
         }
     }
     all_bcs.extend_from_slice(caller_bcs);
@@ -448,8 +460,7 @@ fn cantilever_config(
 
     let block_node =
         |i: usize, j: usize, k: usize| -> usize { k * n_bx * (NY_B + 1) + j * n_bx + i };
-    let shell_node =
-        |is: usize, js: usize| -> usize { mesh.n_block_nodes + js * n_sx + is };
+    let shell_node = |is: usize, js: usize| -> usize { mesh.n_block_nodes + js * n_sx + is };
 
     let mut bcs: Vec<DirichletBc> = Vec::new();
 
@@ -460,7 +471,10 @@ fn cantilever_config(
         for j in 0..(NY_B + 1) {
             let n = block_node(0, j, k);
             for axis in 0..3_usize {
-                bcs.push(DirichletBc { dof: 6 * n + axis, value: 0.0 });
+                bcs.push(DirichletBc {
+                    dof: 6 * n + axis,
+                    value: 0.0,
+                });
             }
         }
     }
@@ -472,7 +486,10 @@ fn cantilever_config(
     for js in 0..(NY_F + 1) {
         for is in 0..(NX_F + 1) {
             let s = shell_node(is, js);
-            bcs.push(DirichletBc { dof: 6 * s + 5, value: 0.0 });
+            bcs.push(DirichletBc {
+                dof: 6 * s + 5,
+                value: 0.0,
+            });
         }
     }
 
@@ -509,7 +526,12 @@ fn tet_element_stresses(
     mesh.tet_conn
         .iter()
         .map(|c| {
-            let phys = [mesh.nodes[c[0]], mesh.nodes[c[1]], mesh.nodes[c[2]], mesh.nodes[c[3]]];
+            let phys = [
+                mesh.nodes[c[0]],
+                mesh.nodes[c[1]],
+                mesh.nodes[c[2]],
+                mesh.nodes[c[3]],
+            ];
             let mut u_e = [0.0_f64; 12];
             for (a, &na) in c.iter().enumerate() {
                 u_e[3 * a + 0] = u[6 * na + 0];
@@ -617,8 +639,7 @@ fn rigid_translation_config(
 
     let block_node =
         |i: usize, j: usize, k: usize| -> usize { k * n_bx * (NY_B + 1) + j * n_bx + i };
-    let shell_node =
-        |is: usize, js: usize| -> usize { mesh.n_block_nodes + js * n_sx + is };
+    let shell_node = |is: usize, js: usize| -> usize { mesh.n_block_nodes + js * n_sx + is };
 
     let mut bcs: Vec<DirichletBc> = Vec::new();
 
@@ -630,7 +651,10 @@ fn rigid_translation_config(
         for j in 0..(NY_B + 1) {
             let n = block_node(0, j, k);
             for (a, &t_a) in t_vec.iter().enumerate() {
-                bcs.push(DirichletBc { dof: 6 * n + a, value: t_a });
+                bcs.push(DirichletBc {
+                    dof: 6 * n + a,
+                    value: t_a,
+                });
             }
         }
     }
@@ -641,7 +665,10 @@ fn rigid_translation_config(
     for js in 0..(NY_F + 1) {
         for is in 0..(NX_F + 1) {
             let s = shell_node(is, js);
-            bcs.push(DirichletBc { dof: 6 * s + 5, value: 0.0 });
+            bcs.push(DirichletBc {
+                dof: 6 * s + 5,
+                value: 0.0,
+            });
         }
     }
 
@@ -1007,10 +1034,7 @@ fn interface_stress_magnitudes(
         .tet_conn
         .iter()
         .zip(tet_stresses.iter())
-        .filter(|(conn, _)| {
-            conn.iter()
-                .any(|&n| (mesh.nodes[n][0] - LB).abs() < x_tol)
-        })
+        .filter(|(conn, _)| conn.iter().any(|&n| (mesh.nodes[n][0] - LB).abs() < x_tol))
         .flat_map(|(_, sigma)| sigma.iter().flat_map(|row| row.iter().copied()))
         .fold(0.0_f64, |acc, s| acc.max(s.abs()));
 
@@ -1020,10 +1044,7 @@ fn interface_stress_magnitudes(
         .shell_conn
         .iter()
         .zip(shell_stresses.iter())
-        .filter(|(conn, _)| {
-            conn.iter()
-                .any(|&n| (mesh.nodes[n][0] - LB).abs() < x_tol)
-        })
+        .filter(|(conn, _)| conn.iter().any(|&n| (mesh.nodes[n][0] - LB).abs() < x_tol))
         .flat_map(|(_, ss)| ss.mid.iter().flat_map(|row| row.iter().copied()))
         .fold(0.0_f64, |acc, s| acc.max(s.abs()));
 

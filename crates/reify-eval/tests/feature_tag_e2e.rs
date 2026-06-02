@@ -10,10 +10,10 @@
 //!         and records per-edge FeatureTags in the supplied table.
 
 use reify_compiler::compile_with_stdlib;
-use reify_eval::topology_selectors;
-use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 use reify_core::{ModulePath, Severity, SourceSpan};
+use reify_eval::topology_selectors;
 use reify_ir::{ExportFormat, FeatureTag, FeatureTagTable, GeometryOp, StepKind, Value};
+use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 

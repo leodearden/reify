@@ -45,9 +45,9 @@ use reify_compiler::auto_type_param::{
     resolve_auto_type_params_with_backtracking,
 };
 use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
-use reify_test_support::{MockConstraintChecker, TopologyTemplateBuilder, parse_and_compile};
 use reify_core::{DiagnosticCode, SourceSpan, Type, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledFunction, Satisfaction, Value};
+use reify_test_support::{MockConstraintChecker, TopologyTemplateBuilder, parse_and_compile};
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
