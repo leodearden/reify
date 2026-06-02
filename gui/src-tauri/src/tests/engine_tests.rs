@@ -10922,3 +10922,150 @@ structure Top {
          (aux_ancestor propagates through non-aux intermediate sub)"
     );
 }
+
+// ── task 4079: solver-progress emit + cancel-wiring tests ────────────────────
+//
+// Depends on:
+//   (step-10) `EngineSession::set_solver_progress_sink` — public setter forwarding
+//             to `self.core.engine_mut().set_solver_progress_sink(sink)`.
+//   (step-10) `EngineSession::engine_active_solve_cancel_for_test` — `#[cfg(test)]
+//             pub(crate)` accessor exposing the engine's `active_solve_cancel()`.
+//   (step-10) `with_solve_slot` installs the published handle onto the engine via
+//             `engine_mut().set_active_solve_cancel(Some(handle.clone()))`.
+//
+// Both tests FAIL TO COMPILE on the base branch (RED):
+//   - `set_solver_progress_sink` does not yet exist on `EngineSession`.
+//   - `engine_active_solve_cancel_for_test` does not yet exist on `EngineSession`.
+
+/// Test double for `reify_eval::SolverProgressSink`.
+///
+/// Records every `(solver_kind, iter, residual)` triple received from the
+/// engine dispatch path.
+struct RecordingSolverProgressSink {
+    updates: std::sync::Arc<std::sync::Mutex<Vec<(String, u32, f64)>>>,
+}
+
+impl RecordingSolverProgressSink {
+    fn new() -> (
+        Self,
+        std::sync::Arc<std::sync::Mutex<Vec<(String, u32, f64)>>>,
+    ) {
+        let updates = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        (
+            Self {
+                updates: std::sync::Arc::clone(&updates),
+            },
+            updates,
+        )
+    }
+}
+
+impl reify_eval::SolverProgressSink for RecordingSolverProgressSink {
+    fn on_iteration(&self, update: &reify_eval::SolverProgressUpdate) {
+        self.updates
+            .lock()
+            .unwrap()
+            .push((update.solver_kind.to_string(), update.iter, update.residual));
+    }
+}
+
+/// Installing a `RecordingSolverProgressSink` via `set_solver_progress_sink`
+/// and loading `fea_cantilever_smoke.ri` must emit ≥1 progress update with
+/// `iter ≥ 1`, a finite residual, and `solver_kind == "cg"`.
+///
+/// Proves that `EngineSession::set_solver_progress_sink` forwards the sink to
+/// the reify-eval `Engine` and that `run_compute_dispatch` installs it in the
+/// thread-local context visible to the trampoline.
+///
+/// RED: `set_solver_progress_sink` does not yet exist on `EngineSession`.
+#[test]
+fn set_solver_progress_sink_forwards_to_engine_and_emits_on_cantilever() {
+    use std::sync::Arc;
+
+    let source = include_str!("../../../../examples/fea_cantilever_smoke.ri");
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let (sink, captured_updates) = RecordingSolverProgressSink::new();
+    session.set_solver_progress_sink(Arc::new(sink));
+
+    session
+        .load_from_source(source, "FeaCantileverSmoke")
+        .expect("load_from_source must succeed for fea_cantilever_smoke.ri");
+
+    let updates = captured_updates.lock().unwrap();
+
+    assert!(
+        !updates.is_empty(),
+        "expected ≥1 SolverProgressUpdate after load_from_source; got 0"
+    );
+    for (kind, iter, residual) in updates.iter() {
+        assert!(*iter >= 1, "iter must be ≥ 1 (1-indexed), got {}", iter);
+        assert!(
+            residual.is_finite(),
+            "residual must be finite, got {}",
+            residual
+        );
+        assert_eq!(
+            kind.as_str(),
+            "cg",
+            "solver_kind must be \"cg\", got {:?}",
+            kind
+        );
+    }
+}
+
+/// Installing a `RecordingSolveCancelSink`, loading `fea_cantilever_smoke.ri`,
+/// extracting the published handle H from the `Started(H)` event, then calling
+/// `H.cancel()` must cause `session.engine_active_solve_cancel_for_test()` to
+/// report cancelled — proving that `with_solve_slot` installs the same
+/// `Arc<AtomicBool>` on the engine's `active_solve_cancel` field so that
+/// `cancel_solve_impl` can reach the trampoline.
+///
+/// RED: `engine_active_solve_cancel_for_test` does not yet exist on `EngineSession`.
+#[test]
+fn with_solve_slot_wires_published_handle_to_engine() {
+    use std::sync::Arc;
+
+    let source = include_str!("../../../../examples/fea_cantilever_smoke.ri");
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let sink = RecordingSolveCancelSink::new();
+    let captured_events = Arc::clone(&sink.events);
+    session.set_solve_cancel_sink(Arc::new(sink));
+
+    session
+        .load_from_source(source, "FeaCantileverSmoke")
+        .expect("load_from_source must succeed for fea_cantilever_smoke.ri");
+
+    // Extract the published handle from the Started event.
+    let events = captured_events.lock().unwrap();
+    assert!(
+        !events.is_empty(),
+        "expected at least one lifecycle event; got 0"
+    );
+    let handle = match &events[0] {
+        SolveLifecycleEvent::Started(h) => h.clone(),
+        SolveLifecycleEvent::Finished => {
+            panic!("expected first event to be Started, got Finished")
+        }
+    };
+    drop(events); // release the Mutex before calling session again
+
+    // Cancel the handle — should propagate to the engine via the shared Arc.
+    handle.cancel();
+
+    let engine_cancel = session
+        .engine_active_solve_cancel_for_test()
+        .expect("engine must hold an active_solve_cancel handle after load_from_source");
+    assert!(
+        engine_cancel.is_cancelled(),
+        "engine's active_solve_cancel must be cancelled when the published handle is \
+         cancelled — both must share the same Arc<AtomicBool>"
+    );
+}
