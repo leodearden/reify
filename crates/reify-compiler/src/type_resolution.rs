@@ -2260,6 +2260,101 @@ mod tests {
         );
     }
 
+    // ── Keyed<T> parameterized resolution (step-3 RED / task 3930 β) ──────────
+    // `Keyed<Vent>` must resolve to the keyed-collection kind, distinct from the
+    // `Map`/`List` resolutions of the same arg. Mirrors the List/Map resolver arms.
+
+    #[test]
+    fn resolve_parameterized_builtin_type_resolves_keyed_distinct_from_map_list() {
+        let reg = TypeAliasRegistry::new();
+        let structure_names: HashSet<String> = ["Vent".to_string()].into_iter().collect();
+        let trait_names = HashSet::new();
+        let args = [named_type_expr("Vent")];
+
+        // Keyed<Vent> → Type::Keyed(StructureRef(Vent)), no diagnostics.
+        let mut diags = Vec::new();
+        let keyed = resolve_parameterized_builtin_type(
+            "Keyed",
+            &args,
+            &reg,
+            &mut diags,
+            &structure_names,
+            &trait_names,
+        );
+        assert_eq!(
+            keyed,
+            Some(Type::Keyed(Box::new(Type::StructureRef("Vent".into())))),
+            "Keyed<Vent> should resolve to the keyed-collection kind",
+        );
+        assert!(diags.is_empty(), "no diagnostics expected; got {:?}", diags);
+
+        // List<Vent> resolves to the list kind — distinct from Keyed.
+        let mut list_diags = Vec::new();
+        let list = resolve_parameterized_builtin_type(
+            "List",
+            &args,
+            &reg,
+            &mut list_diags,
+            &structure_names,
+            &trait_names,
+        );
+        assert_eq!(
+            list,
+            Some(Type::List(Box::new(Type::StructureRef("Vent".into())))),
+        );
+        assert_ne!(keyed, list, "Keyed<Vent> must be distinct from List<Vent>");
+
+        // Distinct from a Map kind as well.
+        assert_ne!(
+            keyed,
+            Some(Type::Map(
+                Box::new(Type::String),
+                Box::new(Type::StructureRef("Vent".into())),
+            )),
+        );
+    }
+
+    #[test]
+    fn resolve_parameterized_builtin_type_with_subst_resolves_keyed_distinct_from_list() {
+        let reg = TypeAliasRegistry::new();
+        let subst = HashMap::new();
+        let args = [named_type_expr("Vent")];
+
+        let mut diags = Vec::new();
+        let keyed = resolve_parameterized_builtin_type_with_subst(
+            "Keyed",
+            &args,
+            &reg,
+            &subst,
+            &mut diags,
+            0,
+        );
+        assert_eq!(
+            keyed,
+            Some(Type::Keyed(Box::new(Type::StructureRef("Vent".into())))),
+            "Keyed<Vent> (subst path) should resolve to the keyed-collection kind",
+        );
+        assert!(diags.is_empty(), "no diagnostics expected; got {:?}", diags);
+
+        let mut list_diags = Vec::new();
+        let list = resolve_parameterized_builtin_type_with_subst(
+            "List",
+            &args,
+            &reg,
+            &subst,
+            &mut list_diags,
+            0,
+        );
+        assert_eq!(
+            list,
+            Some(Type::List(Box::new(Type::StructureRef("Vent".into())))),
+        );
+        assert_ne!(
+            keyed, list,
+            "Keyed<Vent> must be distinct from List<Vent> (subst path)",
+        );
+    }
+
     #[test]
     fn should_emit_skipped_parametric_prelude_info_dedups_per_span() {
         let mut reg = TypeAliasRegistry::new();
