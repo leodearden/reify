@@ -45,7 +45,7 @@
 //! 25 mm correctly.
 
 use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
-use reify_core::{Severity, ValueCellId};
+use reify_core::{DiagnosticCode, Severity, ValueCellId};
 use reify_eval::Engine;
 use reify_ir::{DeterminacyState, Value};
 use reify_test_support::parse_and_compile_with_stdlib;
@@ -304,22 +304,25 @@ fn sub_override_auto_free_non_unique_emits_warning() {
     );
 
     // The cell should have a resolved (Scalar) value — any feasible value.
+    // Use .expect() (mirroring tests a/e) so an absent cell fails loudly
+    // rather than silently skipping the determinacy and scalar assertions.
+    // With DimensionalSolver the cell is always present; the expect() fires
+    // only if a future change breaks the solver wiring.
     let snap = engine.snapshot().expect("snapshot should exist");
     let id = ValueCellId::new("A.b", "bore");
-    if let Some((val, det)) = snap.values.get(&id) {
-        assert_eq!(
-            *det,
-            DeterminacyState::Determined,
-            "A.b.bore should be Determined even with auto(free)"
-        );
-        assert!(
-            matches!(val, Value::Scalar { .. }),
-            "A.b.bore should be a Scalar value; got {:?}",
-            val
-        );
-    }
-    // If the key is absent the solver may not have run (no solver wired),
-    // but with DimensionalSolver it should always be present.
+    let (val, det) = snap.values.get(&id).expect(
+        "A.b.bore should be present after auto(free) resolution with DimensionalSolver",
+    );
+    assert_eq!(
+        *det,
+        DeterminacyState::Determined,
+        "A.b.bore should be Determined even with auto(free)"
+    );
+    assert!(
+        matches!(val, Value::Scalar { .. }),
+        "A.b.bore should be a Scalar value; got {:?}",
+        val
+    );
 }
 
 // ── Test (step-7 / step-8): example smoke test ────────────────────────────────
@@ -475,5 +478,175 @@ structure Bearing { param bore : Length = 5mm }
         matches!(val, Value::Scalar { si_value, .. } if (*si_value - 0.010).abs() < 1e-6),
         "forward-declared child: A.b.bore should equal 10mm (0.010 SI); got {:?}",
         val
+    );
+}
+
+// ── Test (f): S1 — DimensionalSolver type-agnosticism regression (task 4123) ──
+
+/// (f) Forward-declared child, DIMENSIONAL/arithmetic constraint.
+///
+/// When the parent structure is declared before the child (forward-declared),
+/// `try_resolve_cross_sub_geometry_value_ref` emits a `ValueCellRef` with a
+/// placeholder `Type::Geometry` (the real type is unknown until the post-pass).
+/// This test proves that the `DimensionalSolver` resolves the constraint
+/// `2 * self.b.bore == 20mm` to `bore == 10mm` regardless of that placeholder
+/// type, because the solver evaluates constraint operands numerically via
+/// `reify_expr::eval_expr(...).as_f64()` and is completely type-agnostic on the
+/// operand's static `Type`.
+///
+/// Source order: `structure A { … }  structure Bearing { … }` — Bearing is
+/// forward-declared.  The child default is intentionally 5mm (≠ 10mm) so the
+/// test discriminates "solver did real work (10mm)" from "child default leaked
+/// (5mm)".
+///
+/// Expected GREEN on arrival: the DimensionalSolver is provably type-agnostic
+/// (same numeric residuals regardless of declaration order).  Regression guard
+/// against any future change that would make the solver inspect static types.
+///
+/// See also: `crates/reify-compiler/src/expr.rs`
+/// `try_resolve_cross_sub_geometry_value_ref` — the forward-declared branch
+/// cross-references this test.
+#[test]
+fn sub_override_auto_forward_declared_dimensional_constraint_type_agnostic() {
+    // Parent before child; arithmetic constraint 2 * bore == 20mm → bore == 10mm.
+    // Child default is 5mm (different) so the result discriminates solver work
+    // from a silent "use the default" path.
+    let source = r#"
+structure A {
+    sub b : Bearing { bore = auto }
+    constraint 2 * self.b.bore == 20mm
+}
+structure Bearing { param bore : Length = 5mm }
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let compile_errors = errors_only(&compiled.diagnostics);
+    assert!(
+        compile_errors.is_empty(),
+        "S1/type-agnostic: unexpected compile errors: {:?}",
+        compile_errors
+    );
+
+    let mut engine = engine_with_solver();
+    let result = engine.eval(&compiled);
+
+    let eval_errors = errors_only(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "S1/type-agnostic: expected no error-severity eval diagnostics; got: {:?}",
+        eval_errors
+    );
+
+    let snap = engine.snapshot().expect("snapshot should exist");
+    let id = ValueCellId::new("A.b", "bore");
+    let (val, det) = snap.values.get(&id).unwrap_or_else(|| {
+        panic!(
+            "S1/type-agnostic: A.b.bore should be in snapshot; keys: {:?}",
+            snap.values
+                .iter()
+                .map(|(k, _)| format!("{}", k))
+                .collect::<Vec<_>>()
+        )
+    });
+
+    assert_eq!(
+        *det,
+        DeterminacyState::Determined,
+        "S1/type-agnostic: A.b.bore should be Determined; got {:?}",
+        det
+    );
+
+    // 2 * bore == 20mm  →  bore == 10mm == 0.010 SI.
+    // Must NOT be 5mm (child default), proving the solver used the constraint.
+    assert!(
+        matches!(val, Value::Scalar { si_value, .. } if (*si_value - 0.010).abs() < 1e-6),
+        "S1/type-agnostic: A.b.bore should equal 10mm (0.010 SI) via \
+         arithmetic constraint; got {:?}",
+        val
+    );
+}
+
+// ── Test (g): S2 — dangling forward-declared member emits ConstraintIndeterminate ─
+
+/// (g) A constraint referencing a non-existent member of a forward-declared child
+/// (member NOT in param_overrides) must surface a `ConstraintIndeterminate`
+/// warning rather than failing silently.
+///
+/// When `b` is forward-declared, `try_resolve_cross_sub_geometry_value_ref`
+/// emits a `ValueCellRef` for any member access on `b` — including members that
+/// do not exist in the child (there is no member-existence check at compile time
+/// for the forward-declared branch).  At check time the backing cell is absent,
+/// so `reify_expr::eval_expr` returns `Value::Undef` via `get_or_undef`, and
+/// `SimpleConstraintChecker` emits a `ConstraintIndeterminate` warning
+/// (`"constraint <id> indeterminate: undefined inputs"`).
+///
+/// Note: `engine.check()` is used instead of `engine.eval()` because
+/// `ConstraintIndeterminate` is emitted by `SimpleConstraintChecker` during the
+/// post-solve constraint-check pass (`check_constraints_against_templates`),
+/// which `eval()` alone does not invoke.  `check()` calls `eval()` + the
+/// post-solve pass, so it surfaces the diagnostic correctly.
+///
+/// Note: this is a deliberate downgrade from the legacy hard
+/// `"unresolvable GeomRef::Sub"` error.  A future design follow-up could
+/// promote the warning to an error after the post-pass can distinguish
+/// forward-declared members vs genuinely absent ones.
+///
+/// Expected GREEN on arrival — `check()` already emits the diagnostic via
+/// `SimpleConstraintChecker`; this test closes the reviewer's "verify eval
+/// emits a diagnostic" item (task 4123 S2) and guards against future silent
+/// regressions.
+#[test]
+fn sub_override_auto_forward_declared_nonexistent_member_emits_indeterminate_warning() {
+    // Parent before child; `nonexistent` is NOT a member of Bearing and is NOT
+    // in param_overrides (empty body `{ }`).
+    let source = r#"
+structure A {
+    sub b : Bearing { }
+    constraint self.b.nonexistent == 10mm
+}
+structure Bearing { param bore : Length = 10mm }
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    // No compile-time errors expected: the forward-declared branch emits a
+    // ValueCellRef for any member access, deferring the "does it exist?"
+    // check to the post-pass (and the post-pass only processes param_overrides,
+    // not constraint refs, so no error is produced there either).
+    let compile_errors = errors_only(&compiled.diagnostics);
+    assert!(
+        compile_errors.is_empty(),
+        "S2/dangling-ref: unexpected compile errors: {:?}",
+        compile_errors
+    );
+
+    // Use engine.check() (eval + post-solve constraint pass) so that
+    // SimpleConstraintChecker.check() fires and emits ConstraintIndeterminate
+    // for the dangling `A.b.nonexistent` ref.  eval() alone only produces
+    // solver diagnostics (non-unique / infeasible), not ConstraintIndeterminate.
+    let mut engine = engine_with_solver();
+    let result = engine.check(&compiled);
+
+    // Must produce at least one diagnostic.
+    assert!(
+        !result.diagnostics.is_empty(),
+        "S2/dangling-ref: expected at least one check diagnostic for dangling \
+         member reference; got none"
+    );
+
+    // Must contain a ConstraintIndeterminate warning (not a hard error).
+    let indeterminate_warnings: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.code == Some(DiagnosticCode::ConstraintIndeterminate)
+        })
+        .collect();
+
+    assert!(
+        !indeterminate_warnings.is_empty(),
+        "S2/dangling-ref: expected a ConstraintIndeterminate warning for \
+         undefined inputs; diagnostics: {:?}",
+        result.diagnostics
     );
 }

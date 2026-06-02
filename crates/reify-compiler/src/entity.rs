@@ -1713,16 +1713,22 @@ pub(crate) fn compile_entity(
                 });
 
                 // Sub-instance auto overrides (task 3806, γ-slice):
-                // For each `(name, expr)` in param_overrides where the value is `auto` /
-                // `auto(free)`, push a scoped `ValueCellDecl { kind: Auto { free }, … }` into
-                // the PARENT template's `value_cells` under id
-                // `ValueCellId("<entity>.<sub>", "<member>")`.  This places the Auto cell in
-                // the same per-template resolution problem as the parent's constraints, so the
-                // existing M3 solver resolves it identically to a param-default `auto` cell
-                // (the §4.4 invariant).  Non-auto overrides are carried in `param_overrides`
-                // for future slices; the no-op here preserves the previous silent-discard
-                // behaviour so there is no regression.
-                for (override_name, override_expr) in &sub.param_overrides {
+                // For each `(name, expr)` in spec_param_overrides where the value is
+                // `auto` / `auto(free)`, push a scoped
+                // `ValueCellDecl { kind: Auto { free }, … }` into the PARENT template's
+                // `value_cells` under id `ValueCellId("<entity>.<sub>", "<member>")`.
+                // This places the Auto cell in the same per-template resolution problem
+                // as the parent's constraints, so the existing M3 solver resolves it
+                // identically to a param-default `auto` cell (the §4.4 invariant).
+                // Non-auto overrides are carried in `spec_param_overrides` for future
+                // slices; the no-op here preserves the previous silent-discard behaviour
+                // so there is no regression.
+                // Track absent-member names already diagnosed for this sub, so that
+                // a duplicate assignment like `{ nope = auto\n nope = auto }` emits
+                // exactly one "no such param" error per distinct member name (task 4123
+                // amendment, suggestion 2).
+                let mut reported_absent: HashSet<&str> = HashSet::new();
+                for (override_name, override_expr) in &sub.spec_param_overrides {
                     let Some(free) = extract_auto_free(override_expr) else {
                         continue;
                     };
@@ -1737,7 +1743,8 @@ pub(crate) fn compile_entity(
                     //
                     // Case 2 — child present but member absent: `sub_member_types`
                     //   has the child's map but the member name is not in it.  This is
-                    //   a genuine "no such param" error — emit it now.
+                    //   a genuine "no such param" error — emit it now (once per distinct
+                    //   absent member name; duplicates suppressed via `reported_absent`).
                     //
                     // Case 3 — child present and member found: push the scoped Auto
                     //   `ValueCellDecl` inline (original behavior from step 4).
@@ -1756,33 +1763,57 @@ pub(crate) fn compile_entity(
                         Some(member_map) => match member_map.get(override_name) {
                             None => {
                                 // Case 2: child compiled but member genuinely absent.
-                                diagnostics.push(
-                                    Diagnostic::error(format!(
-                                        "sub `{}`: override for `{}` — no such param in `{}`",
-                                        sub.name, override_name, sub.structure_name
-                                    ))
-                                    .with_label(DiagnosticLabel::new(
-                                        override_expr.span,
-                                        "this member does not exist in the child structure",
-                                    )),
-                                );
+                                // First occurrence only — suppress duplicates from a body
+                                // like `{ nope = auto\n nope = auto }` (task 4123 amendment).
+                                if reported_absent.insert(override_name.as_str()) {
+                                    diagnostics.push(
+                                        Diagnostic::error(format!(
+                                            "sub `{}`: override for `{}` — no such param in `{}`",
+                                            sub.name, override_name, sub.structure_name
+                                        ))
+                                        .with_label(DiagnosticLabel::new(
+                                            override_expr.span,
+                                            "this member does not exist in the child structure",
+                                        )),
+                                    );
+                                }
                             }
                             Some(ty) => {
                                 // Case 3: child compiled, member found — push inline.
                                 let scoped_entity = format!("{}.{}", entity_name, sub.name);
                                 let scoped_id =
                                     ValueCellId::new(&scoped_entity, override_name.as_str());
-                                value_cells.push(ValueCellDecl {
-                                    id: scoped_id,
-                                    kind: ValueCellKind::Auto { free },
-                                    visibility: Visibility::Public,
-                                    cell_type: ty.clone(),
-                                    default_expr: None,
-                                    solver_hints: vec![],
-                                    span: sub.span,
-                                    // Auto sub-override cells are never aux declarations.
-                                    is_aux: false,
-                                });
+                                // Dedup guard (task 4123 S6 + amendment suggestion 1): Cases 1
+                                // and 3 are mutually exclusive by declaration order (Case 1
+                                // defers, Case 3 pushes inline), so a duplicate scoped id can
+                                // only arise when the specialization body contains two
+                                // param_assignment nodes for the same member (e.g.
+                                // `{ bore = auto\n    bore = auto }`).
+                                // First-assignment-wins; warn and skip if already present.
+                                if value_cells.iter().any(|c| c.id == scoped_id) {
+                                    diagnostics.push(
+                                        Diagnostic::warning(format!(
+                                            "sub `{}`: duplicate override for member `{}`; first assignment wins",
+                                            sub.name, override_name,
+                                        ))
+                                        .with_label(DiagnosticLabel::new(
+                                            override_expr.span,
+                                            "this override is a duplicate; it will be ignored",
+                                        )),
+                                    );
+                                } else {
+                                    value_cells.push(ValueCellDecl {
+                                        id: scoped_id,
+                                        kind: ValueCellKind::Auto { free },
+                                        visibility: Visibility::Public,
+                                        cell_type: ty.clone(),
+                                        default_expr: None,
+                                        solver_hints: vec![],
+                                        span: sub.span,
+                                        // Auto sub-override cells are never aux declarations.
+                                        is_aux: false,
+                                    });
+                                }
                             }
                         },
                     }

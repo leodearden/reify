@@ -350,7 +350,7 @@ fn match_arm_sub_pose_is_lowered() {
             is_collection: false,
             where_clause: None,
             body: None,
-            param_overrides: vec![],
+            spec_param_overrides: vec![],
             keyed_members: vec![],
             is_aux: false,
             pose_expr: Some(ident_expr("kind")),
