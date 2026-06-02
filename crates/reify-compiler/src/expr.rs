@@ -1646,6 +1646,18 @@ pub(crate) fn compile_expr_guarded(
                         // `Solid` / structure), not a `MassProperties`. Mirrors
                         // the `is_geometry_query_helper => Type::Bool` arm.
                         Type::StructureRef("MassProperties".to_string())
+                    } else if is_affine_map_constructor(name) {
+                        // affine_scale / affine_shear_* / affine_translate /
+                        // affine_identity / affine_map / affine_from_transform:
+                        // PRD §4.2 (task β) AffineMap constructor free-functions,
+                        // dispatched at eval time by
+                        // `reify_stdlib::geometry::eval_geometry`. All resolve to
+                        // `Type::AffineMap(3)`; setting it up-front replaces the
+                        // wrong first-arg fallback (e.g. `affine_scale(...)` → Real)
+                        // and silences the zero-arg "cannot infer return type"
+                        // warning for `affine_identity()`.
+                        affine_map_constructor_result_type(name)
+                            .expect("is_affine_map_constructor implies result type")
                     } else {
                         compiled_args
                             .first()

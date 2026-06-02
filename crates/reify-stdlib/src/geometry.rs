@@ -4,6 +4,7 @@ use reify_core::DimensionVector;
 use reify_ir::{Value, quaternion_is_finite};
 
 use crate::helpers::tensor_components_f64;
+use crate::matrix::matrix_components_f64;
 
 /// Inner validator shared by [`decompose_vec3`] and [`decompose_point3`].
 ///
@@ -249,6 +250,150 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                 }
             } else {
                 Value::Undef
+            }
+        }
+
+        // --- Affine map constructors ---
+        // `Value::AffineMap` is a general 3D affine map x ↦ linear·x + translation,
+        // where `linear` is a dimensionless row-major 3×3 and `translation` carries
+        // Length (SI meters). All arms follow the transform3 convention: bad arity /
+        // types / dimensions return `Value::Undef`.
+        "affine_identity" => {
+            if args.is_empty() {
+                Value::AffineMap {
+                    linear: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                    translation: [0.0, 0.0, 0.0],
+                }
+            } else {
+                Value::Undef
+            }
+        }
+        "affine_scale" => {
+            if args.len() != 3 {
+                return Some(Value::Undef);
+            }
+            // Each factor must be dimensionless (G6 dimensionless-linear-part
+            // contract), numeric, finite, and non-zero. Negative factors are valid
+            // orientation-reversing reflections (det<0); a zero factor is degenerate
+            // (det=0, non-invertible) and rejected.
+            let mut factors = [0.0_f64; 3];
+            for (i, arg) in args.iter().enumerate() {
+                if !arg.dimension().is_dimensionless() {
+                    return Some(Value::Undef);
+                }
+                match arg.as_f64() {
+                    Some(v) if v.is_finite() && v != 0.0 => factors[i] = v,
+                    _ => return Some(Value::Undef),
+                }
+            }
+            Value::AffineMap {
+                linear: [
+                    [factors[0], 0.0, 0.0],
+                    [0.0, factors[1], 0.0],
+                    [0.0, 0.0, factors[2]],
+                ],
+                translation: [0.0, 0.0, 0.0],
+            }
+        }
+        // `affine_shear_AB(k)` sets the single off-diagonal cell `linear[A][B] = k`
+        // (output axis A receives += k·input axis B), e.g. `affine_shear_xy` →
+        // `linear[0][1] = k` (x' = x + k·y). The diagonal stays 1, so det = 1
+        // (volume-preserving). Exactly one dimensionless, finite scalar argument;
+        // otherwise `Value::Undef`.
+        "affine_shear_xy" | "affine_shear_xz" | "affine_shear_yx" | "affine_shear_yz"
+        | "affine_shear_zx" | "affine_shear_zy" => {
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            if !args[0].dimension().is_dimensionless() {
+                return Some(Value::Undef);
+            }
+            let k = match args[0].as_f64() {
+                Some(v) if v.is_finite() => v,
+                _ => return Some(Value::Undef),
+            };
+            let (row, col) = match name {
+                "affine_shear_xy" => (0, 1),
+                "affine_shear_xz" => (0, 2),
+                "affine_shear_yx" => (1, 0),
+                "affine_shear_yz" => (1, 2),
+                "affine_shear_zx" => (2, 0),
+                "affine_shear_zy" => (2, 1),
+                _ => unreachable!(),
+            };
+            let mut linear = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+            linear[row][col] = k;
+            Value::AffineMap {
+                linear,
+                translation: [0.0, 0.0, 0.0],
+            }
+        }
+        // `affine_translate(dx, dy, dz)`: identity linear part with the three
+        // components stored as the translation in SI units (meters for Length).
+        // Requires exactly three numeric, finite components sharing one dimension
+        // (decompose_xyz3 contract); otherwise `Value::Undef`.
+        "affine_translate" => {
+            let (t, _dim) = match decompose_xyz3(args) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
+            };
+            Value::AffineMap {
+                linear: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                translation: t,
+            }
+        }
+        // `affine_map(linear, translation)`: general construction from a 3×3
+        // dimensionless matrix (row-major) and a Vector3 translation (stored in SI
+        // meters). The linear part must be exactly 3×3 and dimensionless (G6
+        // dimensionless-linear-part contract); otherwise `Value::Undef`.
+        "affine_map" => {
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            let (nrows, ncols, data, dim) = match matrix_components_f64(&args[0]) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
+            };
+            if nrows != 3 || ncols != 3 || !dim.is_dimensionless() {
+                return Some(Value::Undef);
+            }
+            // data is row-major with exactly 9 entries (3×3).
+            let linear = [
+                [data[0], data[1], data[2]],
+                [data[3], data[4], data[5]],
+                [data[6], data[7], data[8]],
+            ];
+            let (translation, _t_dim) = match decompose_vec3(&args[1]) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
+            };
+            Value::AffineMap {
+                linear,
+                translation,
+            }
+        }
+        // `affine_from_transform(t)`: widen a rigid Transform to a general affine
+        // map. The rotation quaternion becomes an orthogonal 3×3 (det=+1) whose
+        // columns are R·x̂, R·ŷ, R·ẑ (built via quat_rotate on the basis vectors),
+        // and the translation passes through in SI meters. The identity quaternion
+        // yields the identity matrix exactly. Non-Transform / bad arity → Undef.
+        "affine_from_transform" => {
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            let (q, translation, _dim) = match decompose_transform(&args[0]) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
+            };
+            // Rotation-matrix columns = R applied to each basis vector.
+            let (c0x, c0y, c0z) = quat_rotate(q, 1.0, 0.0, 0.0);
+            let (c1x, c1y, c1z) = quat_rotate(q, 0.0, 1.0, 0.0);
+            let (c2x, c2y, c2z) = quat_rotate(q, 0.0, 0.0, 1.0);
+            // Store row-major: linear[row][col], where col_i is the i-th column.
+            let linear = [[c0x, c1x, c2x], [c0y, c1y, c2y], [c0z, c1z, c2z]];
+            Value::AffineMap {
+                linear,
+                translation,
             }
         }
 
@@ -891,6 +1036,42 @@ fn make_axis(args: &[Value], direction: [f64; 3]) -> Value {
 
 // Quaternion helpers used by frame_to_frame — re-imported from orientation module.
 use crate::orientation::{normalize_quaternion, quat_conj, quat_mul, quat_rotate};
+
+/// Pure classifier (post-`Value::Undef` hook) for affine-constructor calls,
+/// mirroring `stackup::diagnose` / `fea::diagnose`. `reify-expr`'s `FunctionCall`
+/// arm calls this (re-exported as `geometry_diagnose`) when a stdlib builtin
+/// returns `Value::Undef`, and pushes any returned `Diagnostic` into the
+/// `EvalContext` runtime sink so `reify eval` can print it.
+///
+/// Only `affine_scale` with exactly 3 args is diagnosed, distinguishing its two
+/// user-correctable failure causes (the third — arity — stays silent, like the
+/// `transform3` convention):
+/// - **dimensioned factor** → violates the G6 dimensionless-linear-part contract;
+/// - **zero factor** → degenerate (det=0, non-invertible) map.
+///
+/// Severity is `Warning` with no `DiagnosticCode`, mirroring the existing
+/// degenerate-scale rejection in `reify_eval::geometry_ops` (TransformKind::Scale).
+/// Returns `None` for any other name, wrong arity, or valid input.
+pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
+    if name != "affine_scale" || args.len() != 3 {
+        return None;
+    }
+    // Check dimensioned factors first so a dimensioned-and-otherwise-fine factor
+    // reports the dimensionless requirement rather than a spurious zero message.
+    if args.iter().any(|a| !a.dimension().is_dimensionless()) {
+        return Some(reify_core::Diagnostic::warning(
+            "affine_scale: scale factors must be dimensionless (Real); a dimensioned \
+             factor was dropped (the linear part of an affine map is dimensionless)",
+        ));
+    }
+    if args.iter().any(|a| a.as_f64() == Some(0.0)) {
+        return Some(reify_core::Diagnostic::warning(
+            "affine_scale dropped: factor=0 produces a degenerate (det=0) \
+             non-invertible map (every scale factor must be non-zero)",
+        ));
+    }
+    None
+}
 
 #[cfg(test)]
 mod tests {
@@ -4041,6 +4222,507 @@ mod tests {
         assert!(
             eval_builtin("project", &[pt, dimensionless_frame]).is_undef(),
             "point/origin dimension mismatch should be Undef"
+        );
+    }
+
+    // ── affine_identity / affine_scale tests (step-1) ─────────────────────────
+
+    /// Identity 3×3 matrix used as the expected `linear` part for several
+    /// affine-constructor tests.
+    const IDENTITY_3X3: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+    /// Extract `(linear, translation)` from a `Value::AffineMap`, or panic.
+    fn expect_affine(v: Value) -> ([[f64; 3]; 3], [f64; 3]) {
+        match v {
+            Value::AffineMap {
+                linear,
+                translation,
+            } => (linear, translation),
+            other => panic!("expected Value::AffineMap, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn affine_identity_no_args_returns_identity_map() {
+        let (linear, translation) = expect_affine(eval_builtin("affine_identity", &[]));
+        assert_eq!(linear, IDENTITY_3X3, "affine_identity linear must be I");
+        assert_eq!(
+            translation,
+            [0.0, 0.0, 0.0],
+            "affine_identity translation must be 0"
+        );
+    }
+
+    #[test]
+    fn affine_identity_with_any_args_returns_undef() {
+        assert!(eval_builtin("affine_identity", &[Value::Real(1.0)]).is_undef());
+        assert!(eval_builtin("affine_identity", &[Value::Real(1.0), Value::Real(2.0)]).is_undef());
+    }
+
+    #[test]
+    fn affine_scale_diagonal_factors() {
+        let args = [Value::Real(2.0), Value::Real(3.0), Value::Real(4.0)];
+        let (linear, translation) = expect_affine(eval_builtin("affine_scale", &args));
+        assert_eq!(
+            linear,
+            [[2.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 4.0]],
+            "affine_scale must place factors on the diagonal"
+        );
+        assert_eq!(
+            translation,
+            [0.0, 0.0, 0.0],
+            "affine_scale translation must be 0"
+        );
+    }
+
+    #[test]
+    fn affine_scale_negative_factor_accepted() {
+        // A negative factor is a valid orientation-reversing reflection (det<0).
+        let args = [Value::Real(-1.0), Value::Real(1.0), Value::Real(1.0)];
+        let (linear, _) = expect_affine(eval_builtin("affine_scale", &args));
+        assert_eq!(linear[0][0], -1.0, "negative scale factor must be accepted");
+    }
+
+    #[test]
+    fn affine_scale_wrong_arity_returns_undef() {
+        assert!(eval_builtin("affine_scale", &[]).is_undef(), "0 args");
+        assert!(
+            eval_builtin("affine_scale", &[Value::Real(2.0)]).is_undef(),
+            "1 arg"
+        );
+        assert!(
+            eval_builtin("affine_scale", &[Value::Real(2.0), Value::Real(3.0)]).is_undef(),
+            "2 args"
+        );
+        assert!(
+            eval_builtin(
+                "affine_scale",
+                &[
+                    Value::Real(2.0),
+                    Value::Real(3.0),
+                    Value::Real(4.0),
+                    Value::Real(5.0)
+                ]
+            )
+            .is_undef(),
+            "4 args"
+        );
+    }
+
+    #[test]
+    fn affine_scale_zero_factor_returns_undef() {
+        // A zero factor is degenerate (det=0, non-invertible) and must be rejected.
+        assert!(
+            eval_builtin(
+                "affine_scale",
+                &[Value::Real(0.0), Value::Real(1.0), Value::Real(1.0)]
+            )
+            .is_undef(),
+            "zero scale factor must be Undef"
+        );
+    }
+
+    #[test]
+    fn affine_scale_dimensioned_factor_returns_undef() {
+        // A dimensioned factor violates the G6 dimensionless-linear-part contract.
+        assert!(
+            eval_builtin(
+                "affine_scale",
+                &[Value::length(2.0), Value::Real(1.0), Value::Real(1.0)]
+            )
+            .is_undef(),
+            "dimensioned scale factor must be Undef"
+        );
+    }
+
+    // ── affine_shear_* tests (step-3) ─────────────────────────────────────────
+
+    /// The six shear constructors paired with their documented target cell per
+    /// the `affine_shear_AB(k)` → `linear[A][B]` convention.
+    const SHEAR_CASES: [(&str, usize, usize); 6] = [
+        ("affine_shear_xy", 0, 1),
+        ("affine_shear_xz", 0, 2),
+        ("affine_shear_yx", 1, 0),
+        ("affine_shear_yz", 1, 2),
+        ("affine_shear_zx", 2, 0),
+        ("affine_shear_zy", 2, 1),
+    ];
+
+    /// Build the expected shear `linear` matrix: identity with `k` at `[row][col]`.
+    fn shear_linear(row: usize, col: usize, k: f64) -> [[f64; 3]; 3] {
+        let mut m = IDENTITY_3X3;
+        m[row][col] = k;
+        m
+    }
+
+    #[test]
+    fn affine_shear_places_k_at_documented_cell() {
+        let k = 0.5;
+        for (name, row, col) in SHEAR_CASES {
+            let (linear, translation) = expect_affine(eval_builtin(name, &[Value::Real(k)]));
+            assert_eq!(
+                linear,
+                shear_linear(row, col, k),
+                "{name} must place k at linear[{row}][{col}], identity elsewhere"
+            );
+            assert_eq!(translation, [0.0, 0.0, 0.0], "{name} translation must be 0");
+        }
+    }
+
+    #[test]
+    fn affine_shear_dimensioned_k_returns_undef() {
+        for (name, _, _) in SHEAR_CASES {
+            assert!(
+                eval_builtin(name, &[Value::length(0.5)]).is_undef(),
+                "{name} with dimensioned k must be Undef"
+            );
+        }
+    }
+
+    #[test]
+    fn affine_shear_wrong_arity_returns_undef() {
+        for (name, _, _) in SHEAR_CASES {
+            assert!(eval_builtin(name, &[]).is_undef(), "{name} 0 args");
+            assert!(
+                eval_builtin(name, &[Value::Real(1.0), Value::Real(2.0)]).is_undef(),
+                "{name} 2 args"
+            );
+        }
+    }
+
+    // ── affine_translate tests (step-5) ───────────────────────────────────────
+
+    #[test]
+    fn affine_translate_length_components_stored_si_meters() {
+        // affine_translate(5mm, 0, 0) → identity linear, translation [0.005, 0, 0] m.
+        let args = [
+            Value::length(0.005),
+            Value::length(0.0),
+            Value::length(0.0),
+        ];
+        let (linear, translation) = expect_affine(eval_builtin("affine_translate", &args));
+        assert_eq!(linear, IDENTITY_3X3, "affine_translate linear must be I");
+        assert_eq!(
+            translation,
+            [0.005, 0.0, 0.0],
+            "affine_translate translation must be SI meters"
+        );
+    }
+
+    #[test]
+    fn affine_translate_mixed_dimensions_returns_undef() {
+        let args = [
+            Value::length(1.0),
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::MASS,
+            },
+            Value::length(3.0),
+        ];
+        assert!(
+            eval_builtin("affine_translate", &args).is_undef(),
+            "mixed-dimension components must be Undef"
+        );
+    }
+
+    #[test]
+    fn affine_translate_non_numeric_or_non_finite_returns_undef() {
+        // Non-numeric component.
+        let bad = [
+            Value::String("x".to_string()),
+            Value::length(0.0),
+            Value::length(0.0),
+        ];
+        assert!(
+            eval_builtin("affine_translate", &bad).is_undef(),
+            "non-numeric component must be Undef"
+        );
+        // Non-finite component.
+        let nan = [Value::Real(f64::NAN), Value::Real(0.0), Value::Real(0.0)];
+        assert!(
+            eval_builtin("affine_translate", &nan).is_undef(),
+            "non-finite component must be Undef"
+        );
+    }
+
+    #[test]
+    fn affine_translate_wrong_arity_returns_undef() {
+        assert!(eval_builtin("affine_translate", &[]).is_undef(), "0 args");
+        assert!(
+            eval_builtin("affine_translate", &[Value::length(1.0)]).is_undef(),
+            "1 arg"
+        );
+        assert!(
+            eval_builtin("affine_translate", &[Value::length(1.0), Value::length(2.0)]).is_undef(),
+            "2 args"
+        );
+        assert!(
+            eval_builtin(
+                "affine_translate",
+                &[
+                    Value::length(1.0),
+                    Value::length(2.0),
+                    Value::length(3.0),
+                    Value::length(4.0)
+                ]
+            )
+            .is_undef(),
+            "4 args"
+        );
+    }
+
+    // ── affine_map tests (step-7) ─────────────────────────────────────────────
+
+    /// Build a `Value::Matrix` of `Value::Real` rows from a row-major `[[f64;3];3]`.
+    fn matrix3x3(data: [[f64; 3]; 3]) -> Value {
+        Value::Matrix(
+            data.iter()
+                .map(|row| row.iter().map(|&x| Value::Real(x)).collect())
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn affine_map_builds_from_matrix_and_vector() {
+        let m = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
+        let translation_arg = Value::Vector(vec![
+            Value::length(0.005),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        let (linear, translation) =
+            expect_affine(eval_builtin("affine_map", &[matrix3x3(m), translation_arg]));
+        assert_eq!(
+            linear, m,
+            "affine_map linear must match the input matrix row-major"
+        );
+        assert_eq!(
+            translation,
+            [0.005, 0.0, 0.0],
+            "affine_map translation must be SI meters"
+        );
+    }
+
+    #[test]
+    fn affine_map_non_3x3_matrix_returns_undef() {
+        let translation_arg = Value::Vector(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        // 2×2 matrix
+        let m2x2 = Value::Matrix(vec![
+            vec![Value::Real(1.0), Value::Real(0.0)],
+            vec![Value::Real(0.0), Value::Real(1.0)],
+        ]);
+        assert!(
+            eval_builtin("affine_map", &[m2x2, translation_arg.clone()]).is_undef(),
+            "2x2 matrix must be Undef"
+        );
+        // 3×2 matrix
+        let m3x2 = Value::Matrix(vec![
+            vec![Value::Real(1.0), Value::Real(0.0)],
+            vec![Value::Real(0.0), Value::Real(1.0)],
+            vec![Value::Real(0.0), Value::Real(0.0)],
+        ]);
+        assert!(
+            eval_builtin("affine_map", &[m3x2, translation_arg]).is_undef(),
+            "3x2 matrix must be Undef"
+        );
+    }
+
+    #[test]
+    fn affine_map_dimensioned_linear_returns_undef() {
+        // Linear part with Length elements violates the dimensionless contract.
+        let m = Value::Matrix(vec![
+            vec![Value::length(1.0), Value::length(0.0), Value::length(0.0)],
+            vec![Value::length(0.0), Value::length(1.0), Value::length(0.0)],
+            vec![Value::length(0.0), Value::length(0.0), Value::length(1.0)],
+        ]);
+        let translation_arg = Value::Vector(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        assert!(
+            eval_builtin("affine_map", &[m, translation_arg]).is_undef(),
+            "dimensioned linear part must be Undef"
+        );
+    }
+
+    #[test]
+    fn affine_map_translation_not_vec3_returns_undef() {
+        let m = matrix3x3(IDENTITY_3X3);
+        // Vector2 translation
+        let v2 = Value::Vector(vec![Value::length(0.0), Value::length(0.0)]);
+        assert!(
+            eval_builtin("affine_map", &[m.clone(), v2]).is_undef(),
+            "non-3 Vector translation must be Undef"
+        );
+        // Non-vector translation
+        assert!(
+            eval_builtin("affine_map", &[m, Value::Real(0.0)]).is_undef(),
+            "non-Vector translation must be Undef"
+        );
+    }
+
+    #[test]
+    fn affine_map_wrong_arity_returns_undef() {
+        let m = matrix3x3(IDENTITY_3X3);
+        assert!(eval_builtin("affine_map", &[]).is_undef(), "0 args");
+        assert!(
+            eval_builtin("affine_map", std::slice::from_ref(&m)).is_undef(),
+            "1 arg"
+        );
+        let translation_arg = Value::Vector(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        assert!(
+            eval_builtin("affine_map", &[m, translation_arg, Value::Real(0.0)]).is_undef(),
+            "3 args"
+        );
+    }
+
+    // ── affine_from_transform tests (step-9) ──────────────────────────────────
+
+    /// Assert two 3×3 matrices are elementwise equal within `tol`.
+    fn assert_matrix_approx(actual: [[f64; 3]; 3], expected: [[f64; 3]; 3], tol: f64) {
+        for (r, (arow, erow)) in actual.iter().zip(expected.iter()).enumerate() {
+            for (c, (a, e)) in arow.iter().zip(erow.iter()).enumerate() {
+                assert!(
+                    (a - e).abs() < tol,
+                    "linear[{r}][{c}]: expected {e}, got {a} (tol {tol})",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn affine_from_transform_identity_yields_identity_map() {
+        let t = eval_builtin("transform3_identity", &[]);
+        let (linear, translation) = expect_affine(eval_builtin("affine_from_transform", &[t]));
+        assert_eq!(
+            linear, IDENTITY_3X3,
+            "identity transform must widen to identity linear EXACTLY"
+        );
+        assert_eq!(
+            translation,
+            [0.0, 0.0, 0.0],
+            "identity transform translation must be 0"
+        );
+    }
+
+    #[test]
+    fn affine_from_transform_z90_yields_rotation_matrix() {
+        // 90°-Z quaternion (√2/2, 0, 0, √2/2), translation (5mm, 0, 0).
+        let q = Value::Orientation {
+            w: std::f64::consts::FRAC_1_SQRT_2,
+            x: 0.0,
+            y: 0.0,
+            z: std::f64::consts::FRAC_1_SQRT_2,
+        };
+        let trans = Value::Vector(vec![
+            Value::length(0.005),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        let t = eval_builtin("transform3", &[q, trans]);
+        let (linear, translation) = expect_affine(eval_builtin("affine_from_transform", &[t]));
+        assert_matrix_approx(
+            linear,
+            [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+            1e-12,
+        );
+        assert!((translation[0] - 0.005).abs() < 1e-12, "tx");
+        assert!(translation[1].abs() < 1e-12, "ty");
+        assert!(translation[2].abs() < 1e-12, "tz");
+    }
+
+    #[test]
+    fn affine_from_transform_non_transform_returns_undef() {
+        assert!(
+            eval_builtin("affine_from_transform", &[Value::Real(1.0)]).is_undef(),
+            "non-Transform arg must be Undef"
+        );
+    }
+
+    #[test]
+    fn affine_from_transform_wrong_arity_returns_undef() {
+        assert!(
+            eval_builtin("affine_from_transform", &[]).is_undef(),
+            "0 args"
+        );
+        let t = eval_builtin("transform3_identity", &[]);
+        assert!(
+            eval_builtin("affine_from_transform", &[t.clone(), t]).is_undef(),
+            "2 args"
+        );
+    }
+
+    // ── diagnose classifier tests (step-15) ───────────────────────────────────
+    // The post-Undef diagnose hook (mirrors stackup_diagnose/fea_diagnose) lets a
+    // pure value constructor surface a CLI warning for the two distinguishable
+    // affine_scale failure causes: a zero (degenerate) factor and a dimensioned
+    // factor. Arity errors stay silent (None); only these two cases warn.
+
+    #[test]
+    fn diagnose_affine_scale_zero_factor_warns_degenerate() {
+        let diag = super::diagnose(
+            "affine_scale",
+            &[Value::Real(0.0), Value::Real(1.0), Value::Real(1.0)],
+        )
+        .expect("zero scale factor must produce a diagnostic");
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Warning,
+            "zero-factor diagnostic must be a warning"
+        );
+        assert!(
+            diag.message.contains("degenerate"),
+            "zero-factor message must mention the degenerate (det=0) cause, got: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn diagnose_affine_scale_dimensioned_factor_warns_dimensionless() {
+        let diag = super::diagnose(
+            "affine_scale",
+            &[Value::length(2.0), Value::Real(1.0), Value::Real(1.0)],
+        )
+        .expect("dimensioned scale factor must produce a diagnostic");
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Warning,
+            "dimensioned-factor diagnostic must be a warning"
+        );
+        assert!(
+            diag.message.contains("dimensionless"),
+            "dimensioned-factor message must mention the dimensionless requirement, got: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn diagnose_affine_scale_valid_factors_returns_none() {
+        assert!(
+            super::diagnose(
+                "affine_scale",
+                &[Value::Real(2.0), Value::Real(1.0), Value::Real(0.5)],
+            )
+            .is_none(),
+            "valid scale factors must not produce a diagnostic"
+        );
+    }
+
+    #[test]
+    fn diagnose_non_affine_name_returns_none() {
+        assert!(
+            super::diagnose("box", &[Value::Real(0.0), Value::Real(1.0), Value::Real(1.0)])
+                .is_none(),
+            "a non-affine_scale name must not produce a diagnostic"
         );
     }
 }

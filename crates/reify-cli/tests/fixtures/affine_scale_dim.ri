@@ -1,0 +1,14 @@
+// affine_scale_dim.ri — CLI eval fixture: a dimensioned scale factor is rejected.
+//
+// affine_scale(2mm, 1.0, 1.0) returns Value::Undef (the linear part of an affine
+// map is dimensionless — G6), and the post-Undef geometry diagnose hook must emit
+// on stderr:
+//   warning: affine_scale: scale factors must be dimensionless (Real) ...
+// `reify eval` still exits 0 (the diagnostic is a Warning, not an Error).
+//
+// Lives in tests/fixtures/ (NOT examples/) since it intentionally triggers a
+// runtime Warning diagnostic.
+
+structure def AffineScaleDim {
+    let m = affine_scale(2mm, 1.0, 1.0)
+}

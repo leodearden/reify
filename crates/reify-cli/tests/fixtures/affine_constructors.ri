@@ -1,0 +1,16 @@
+// affine_constructors.ri — CLI eval fixture for AffineMap constructors (PRD §4.2, task β).
+//
+// `reify eval` must print the constructed AffineMap values on stdout, e.g.
+//   m  = affine_map(linear=[[2, 0, 0], [0, 1, 0], [0, 0, 0.5]], translation=[0, 0, 0])
+//   id = affine_map(linear=[[1, 0, 0], [0, 1, 0], [0, 0, 1]], translation=[0, 0, 0])
+// and exit 0 with no Error diagnostic (both inputs are valid).
+//
+// Lives in tests/fixtures/ (NOT examples/) so it is exercised only by
+// cli_affine_eval.rs.
+
+structure def AffineConstructors {
+    // affine_scale: dimensionless diagonal factors, zero translation.
+    let m = affine_scale(2.0, 1.0, 0.5)
+    // affine_from_transform: widen the identity transform to the identity AffineMap.
+    let id = affine_from_transform(transform3_identity())
+}
