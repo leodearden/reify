@@ -380,57 +380,21 @@ describe('shortcuts — new entry', () => {
 // ---------------------------------------------------------------------------
 
 describe('shortcuts — fold entries', () => {
-  it('SHORTCUTS registry contains foldAll entry', () => {
-    expect(SHORTCUTS.find((s) => s.id === 'foldAll')).toBeDefined();
-  });
+  const FOLD_ENTRIES = [
+    { id: 'fold',      key: 'Ctrl+Shift+[' },
+    { id: 'unfold',    key: 'Ctrl+Shift+]' },
+    { id: 'foldAll',   key: 'Ctrl+Alt+['   },
+    { id: 'unfoldAll', key: 'Ctrl+Alt+]'   },
+  ] as const;
 
-  it('SHORTCUTS registry contains unfoldAll entry', () => {
-    expect(SHORTCUTS.find((s) => s.id === 'unfoldAll')).toBeDefined();
-  });
-
-  it('SHORTCUTS registry contains fold entry', () => {
-    expect(SHORTCUTS.find((s) => s.id === 'fold')).toBeDefined();
-  });
-
-  it('SHORTCUTS registry contains unfold entry', () => {
-    expect(SHORTCUTS.find((s) => s.id === 'unfold')).toBeDefined();
-  });
-
-  it('foldAll entry has key "Ctrl+Alt+[" and truthy description', () => {
-    const entry = SHORTCUTS.find((s) => s.id === 'foldAll');
-    expect(entry?.key).toBe('Ctrl+Alt+[');
-    expect(entry?.description).toBeTruthy();
-  });
-
-  it('unfoldAll entry has key "Ctrl+Alt+]" and truthy description', () => {
-    const entry = SHORTCUTS.find((s) => s.id === 'unfoldAll');
-    expect(entry?.key).toBe('Ctrl+Alt+]');
-    expect(entry?.description).toBeTruthy();
-  });
-
-  it('fold entry has key "Ctrl+Shift+[" and truthy description', () => {
-    const entry = SHORTCUTS.find((s) => s.id === 'fold');
-    expect(entry?.key).toBe('Ctrl+Shift+[');
-    expect(entry?.description).toBeTruthy();
-  });
-
-  it('unfold entry has key "Ctrl+Shift+]" and truthy description', () => {
-    const entry = SHORTCUTS.find((s) => s.id === 'unfold');
-    expect(entry?.key).toBe('Ctrl+Shift+]');
-    expect(entry?.description).toBeTruthy();
-  });
-
-  it('all four fold entries are not disabled', () => {
-    for (const id of ['fold', 'unfold', 'foldAll', 'unfoldAll'] as const) {
+  it('each fold entry is present in SHORTCUTS with correct key, truthy description, not disabled, and category "Editor"', () => {
+    for (const { id, key } of FOLD_ENTRIES) {
       const entry = SHORTCUTS.find((s) => s.id === id);
+      expect(entry, `${id} missing from SHORTCUTS`).toBeDefined();
+      expect(entry?.key, `${id} key`).toBe(key);
+      expect(entry?.description, `${id} description`).toBeTruthy();
       expect(entry?.disabled, `${id} should not be disabled`).not.toBe(true);
-    }
-  });
-
-  it('all four fold entries have category "Editor"', () => {
-    for (const id of ['fold', 'unfold', 'foldAll', 'unfoldAll'] as const) {
-      const entry = SHORTCUTS.find((s) => s.id === id);
-      expect((entry as ShortcutDef & { category?: string })?.category, `${id} should have category Editor`).toBe('Editor');
+      expect((entry as ShortcutDef & { category?: string })?.category, `${id} category`).toBe('Editor');
     }
   });
 
