@@ -4196,4 +4196,59 @@ mod tests {
             "dimensioned scale factor must be Undef"
         );
     }
+
+    // ── affine_shear_* tests (step-3) ─────────────────────────────────────────
+
+    /// The six shear constructors paired with their documented target cell per
+    /// the `affine_shear_AB(k)` → `linear[A][B]` convention.
+    const SHEAR_CASES: [(&str, usize, usize); 6] = [
+        ("affine_shear_xy", 0, 1),
+        ("affine_shear_xz", 0, 2),
+        ("affine_shear_yx", 1, 0),
+        ("affine_shear_yz", 1, 2),
+        ("affine_shear_zx", 2, 0),
+        ("affine_shear_zy", 2, 1),
+    ];
+
+    /// Build the expected shear `linear` matrix: identity with `k` at `[row][col]`.
+    fn shear_linear(row: usize, col: usize, k: f64) -> [[f64; 3]; 3] {
+        let mut m = IDENTITY_3X3;
+        m[row][col] = k;
+        m
+    }
+
+    #[test]
+    fn affine_shear_places_k_at_documented_cell() {
+        let k = 0.5;
+        for (name, row, col) in SHEAR_CASES {
+            let (linear, translation) = expect_affine(eval_builtin(name, &[Value::Real(k)]));
+            assert_eq!(
+                linear,
+                shear_linear(row, col, k),
+                "{name} must place k at linear[{row}][{col}], identity elsewhere"
+            );
+            assert_eq!(translation, [0.0, 0.0, 0.0], "{name} translation must be 0");
+        }
+    }
+
+    #[test]
+    fn affine_shear_dimensioned_k_returns_undef() {
+        for (name, _, _) in SHEAR_CASES {
+            assert!(
+                eval_builtin(name, &[Value::length(0.5)]).is_undef(),
+                "{name} with dimensioned k must be Undef"
+            );
+        }
+    }
+
+    #[test]
+    fn affine_shear_wrong_arity_returns_undef() {
+        for (name, _, _) in SHEAR_CASES {
+            assert!(eval_builtin(name, &[]).is_undef(), "{name} 0 args");
+            assert!(
+                eval_builtin(name, &[Value::Real(1.0), Value::Real(2.0)]).is_undef(),
+                "{name} 2 args"
+            );
+        }
+    }
 }
