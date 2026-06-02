@@ -1400,4 +1400,99 @@ mod tests {
             ),
         }
     }
+
+    /// Proves that `Manifold::to_meshgl64()` (added in manifold3d 0.3) exposes
+    /// non-trivial provenance data after a boolean union.
+    ///
+    /// Empirical probe (manifold3d 0.3.0 / manifold-csg-sys 3.5.101):
+    /// two overlapping unit cubes → union → to_meshgl64():
+    ///   run_original_id = [1, 2]        — 2 runs, both parents tracked
+    ///   run_index       = [0, 42, 84]   — len == num_run + 1
+    ///   face_id len     = 28            — one entry per triangle (== num_tri)
+    ///   merge_from_vert = []            — EMPTY for a 2-cube union; only the
+    ///   merge_to_vert   = []            —   structural pairing invariant asserted
+    ///
+    /// Deviation from literal "all four populated/non-trivial": merge vectors
+    /// are empirically empty for this geometry — asserting non-empty would be a
+    /// doomed RED. Flagged via esc-4247-56. The pairing invariant still proves
+    /// every merge egress accessor is reachable and returns consistent C++ data,
+    /// which is exactly what task 3525's attribute-map walk consumes.
+    ///
+    /// RED for task 4247 step-1: `to_meshgl64()` does not exist on manifold3d
+    /// 0.2 (compile error). GREEN (step-2) is the dependency bump 0.2→0.3.
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn union_meshgl64_exposes_nontrivial_provenance() {
+        use crate::test_fixtures::unit_cube_manifold;
+        use std::collections::HashSet;
+
+        let a = unit_cube_manifold([0.0, 0.0, 0.0]);
+        let b = unit_cube_manifold([0.5, 0.0, 0.0]);
+        let result = a.union(&b);
+
+        // to_meshgl64() is absent on manifold3d 0.2 — this is the RED
+        // compile-error; the dep bump in step-2 makes it GREEN.
+        let m = result.to_meshgl64();
+
+        let num_run = m.num_run();
+        let num_tri = m.num_tri();
+
+        // Basic structural sanity.
+        assert!(
+            num_tri > 0,
+            "union of two overlapping cubes must have > 0 triangles; got {num_tri}"
+        );
+        assert!(
+            num_run >= 2,
+            "union of two parent cubes must track >= 2 runs (one per parent); got {num_run}"
+        );
+
+        // run_original_id: non-empty, len == num_run, exactly 2 distinct parent ids.
+        let run_original_id = m.run_original_id();
+        assert!(
+            !run_original_id.is_empty(),
+            "run_original_id must be non-empty — C++ provenance vector missing"
+        );
+        assert_eq!(
+            run_original_id.len(),
+            num_run as usize,
+            "run_original_id.len() must equal num_run ({num_run})"
+        );
+        let distinct: HashSet<_> = run_original_id.iter().copied().collect();
+        assert_eq!(
+            distinct.len(),
+            2,
+            "union of two cubes must carry exactly 2 distinct run_original_id values \
+             (one per parent input); got {distinct:?}"
+        );
+
+        // run_index: len == num_run + 1 (start offsets + sentinel).
+        let run_index = m.run_index();
+        assert_eq!(
+            run_index.len(),
+            num_run as usize + 1,
+            "run_index.len() must equal num_run + 1 (start offsets + sentinel); \
+             got {}, expected {}",
+            run_index.len(),
+            num_run as usize + 1
+        );
+
+        // face_id: one entry per triangle.
+        let face_id = m.face_id();
+        assert_eq!(
+            face_id.len(),
+            num_tri as usize,
+            "face_id.len() must equal num_tri ({num_tri}); got {}",
+            face_id.len()
+        );
+
+        // merge vectors: structural pairing invariant only — empirically empty
+        // for a 2-cube union; asserting non-empty would be a doomed RED test.
+        assert_eq!(
+            m.merge_from_vert().len(),
+            m.merge_to_vert().len(),
+            "merge_from_vert and merge_to_vert must have equal length (structural \
+             pairing invariant — vectors may be empty for simple boolean results)"
+        );
+    }
 }
