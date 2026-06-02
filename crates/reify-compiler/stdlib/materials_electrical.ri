@@ -19,37 +19,40 @@
 // traits use `: MaterialSpec` so parent edges resolve correctly; the convention
 // is established by the four §6.2 traits in materials_mechanical.ri.
 //
-// ── Decision #3: determined(dielectric_strength) and the positivity bound ──────
-// The spec's `constraint determined(dielectric_strength)` on Insulating is
-// dropped. The Reify grammar has no `undef` keyword (see io.ri lines 11-12),
-// so `dielectric_strength : Real` is always required at every conforming
-// structure. The `determined(...)` call is therefore trivially true and
-// provides no signal. The spec's intent — "an Insulating material has a known
-// dielectric strength" — is preserved structurally by the required param.
-// The `resistivity > 1e6` numeric constraint is retained as specified.
+// ── Decision #3: optional §6.4 params and Insulating constraint-degradation ────
+// Task #3918 landed `undef` as a first-class literal (ExprKind::Undef,
+// CompiledExprKind::Literal(Value::Undef)). The earlier claim that "the Reify
+// grammar has no `undef` keyword" is therefore stale and has been removed.
 //
-// Update (task 2484): A `dielectric_strength > 0.0` constraint is added as a
-// physical-validity bound: strictly positive breakdown field rules out the
-// degenerate zero case (a material with zero breakdown voltage provides no
-// insulation). Note: this is a weaker claim than `determined(...)` — e.g.,
-// 1e-300 V/m still passes — but it rejects the obvious placeholder pattern
-// and enforces physical non-degeneracy. The `determined(...)` form remains
-// unavailable in the grammar (see io.ri lines 11-12).
+// Task δ (this file): `dielectric_constant`, `dielectric_strength`, and
+// `magnetic_permeability` are made optional on `ElectricallyCharacterized` via
+// `= undef` defaults (task #3918 unblocked this). `resistivity` stays required
+// — Conductive/Insulating resistivity bounds must always have a determinate
+// input.
+//
+// Kleene degradation for Insulating conformers that omit `dielectric_strength`:
+// The injected `constraint dielectric_strength > 0.0V/m` evaluates
+// `Undef > 0.0V/m → Undef` (Kleene undef-does-not-falsify, arch §2.5), which
+// produces `Satisfaction::Indeterminate` + a user-visible
+// `ConstraintIndeterminate` Warning ("constraint … indeterminate: undefined
+// inputs") rather than a hard error. This is consistent with task #2484's
+// accepted weakening of `determined(...)` to a `> 0` positivity bound: the
+// bound now either confirms a known-positive value or degrades gracefully to
+// Indeterminate when the value is absent.
 
 // ── ElectricallyCharacterized ────────────────────────────────────────────────
 
-// Root electrical-material trait. Every electrically characterised material
-// must supply the four scalar electrical properties below (all Real pending
-// dimensional type wiring):
-//   resistivity          — Ω·m (electrical resistivity)
-//   dielectric_constant  — dimensionless (relative permittivity)
-//   dielectric_strength  — V/m (breakdown field, using Real)
-//   magnetic_permeability — dimensionless (relative permeability)
+// Root electrical-material trait. `resistivity` is required at every conforming
+// structure; the three §6.4 params are optional (default `undef`, task δ):
+//   resistivity           — Ω·m (electrical resistivity) — REQUIRED
+//   dielectric_constant   — dimensionless (relative permittivity) — optional
+//   dielectric_strength   — V/m (breakdown field) — optional
+//   magnetic_permeability — dimensionless (relative permeability) — optional
 trait ElectricallyCharacterized : MaterialSpec {
     param resistivity : ElectricResistivity
-    param dielectric_constant : Real // dimensionless
-    param dielectric_strength : DielectricStrength
-    param magnetic_permeability : Real // dimensionless
+    param dielectric_constant : Real = undef // dimensionless
+    param dielectric_strength : DielectricStrength = undef
+    param magnetic_permeability : Real = undef // dimensionless
 }
 
 // ── Conductive ───────────────────────────────────────────────────────────────
@@ -68,8 +71,10 @@ trait Conductive : ElectricallyCharacterized {
 // resistivity exceeds 1e6 Ω·m (well above semiconductor range), and whose
 // dielectric_strength is strictly positive (> 0.0 V/m). The positivity
 // bound enforces physical non-degeneracy (zero breakdown field is contradictory
-// for an insulator) rather than attempting to fully recapture the spec's
-// unavailable `determined(...)` predicate — see Decision #3 in the header.
+// for an insulator) — see Decision #3 in the header.
+// When an Insulating conformer omits `dielectric_strength` (now optional),
+// the `> 0.0V/m` constraint degrades to Satisfaction::Indeterminate + a
+// ConstraintIndeterminate Warning (Kleene, arch §2.5) rather than a hard error.
 // RHS values dimensioned to match LHS aliases (Ω·m, V/m) — see Conductive above
 // for rationale (esc-3115-112).
 trait Insulating : ElectricallyCharacterized {
