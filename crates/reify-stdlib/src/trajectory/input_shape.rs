@@ -50,6 +50,22 @@ fn field_f64(data: &StructureInstanceData, name: &str, default: f64) -> f64 {
         .unwrap_or(default)
 }
 
+/// The design damping ratio ζ of a `Shaper` `Value` — its `damping_ratio` field
+/// (default 0 when absent / non-numeric / not a `StructureInstance`).
+///
+/// This is the **single source of truth** for a shaper's ζ. `build_train_for_shaper`
+/// constructs each impulse train with it, and `reify-eval`'s band-sweep robustness
+/// metric (`worst_case_residual_fraction`) evaluates the residual with the same
+/// value (via the `reify_stdlib::shaper_damping_ratio` re-export) — so the train is
+/// always swept at the very ζ it was built from, and the numeric-coercion contract
+/// (`Scalar`/`Real`/`Int` → `f64`) cannot drift between the two call sites.
+pub fn shaper_damping_ratio(shaper: &Value) -> f64 {
+    match shaper {
+        Value::StructureInstance(data) => field_f64(data, "damping_ratio", 0.0),
+        _ => 0.0,
+    }
+}
+
 /// Build the [`ImpulseTrain`] for a `Shaper` `Value::StructureInstance`.
 ///
 /// Dispatches on the structure `type_name` (the eval path has no
@@ -79,17 +95,17 @@ pub fn build_train_for_shaper(shaper: &Value) -> Option<ImpulseTrain> {
     match data.type_name.as_str() {
         "ZVShaper" => {
             let omega_n = 2.0 * PI * field_f64(data, "target_frequency", 0.0);
-            let zeta = field_f64(data, "damping_ratio", 0.0);
+            let zeta = shaper_damping_ratio(shaper);
             Some(ImpulseTrain::zv(omega_n, zeta))
         }
         "ZVDShaper" => {
             let omega_n = 2.0 * PI * field_f64(data, "target_frequency", 0.0);
-            let zeta = field_f64(data, "damping_ratio", 0.0);
+            let zeta = shaper_damping_ratio(shaper);
             Some(ImpulseTrain::zvd(omega_n, zeta))
         }
         "EIShaper" => {
             let omega_n = 2.0 * PI * field_f64(data, "target_frequency", 0.0);
-            let zeta = field_f64(data, "damping_ratio", 0.0);
+            let zeta = shaper_damping_ratio(shaper);
             let v_tol = field_f64(data, "vibration_tolerance", 0.0);
             Some(ImpulseTrain::ei(omega_n, zeta, v_tol))
         }

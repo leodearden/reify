@@ -31,10 +31,16 @@
 /// [`reify_stdlib::build_train_for_shaper`] cannot resolve to an
 /// [`ImpulseTrain`](reify_stdlib::impulse_shaper::ImpulseTrain) — returns
 /// [`f64::INFINITY`]: a shaper that does not build a valid train must never read
-/// as "robust" (a small residual). The damping ratio ζ used in the residual
-/// evaluation is read from the shaper's `damping_ratio` field (default 0); the
-/// Hz→rad/s conversion (`ω = 2π·f`) matches `build_train_for_shaper`'s
-/// marshalling boundary, so the sweep evaluates the very train the shaper builds.
+/// as "robust" (a small residual). An empty sweep (`n_samples == 0`) likewise
+/// returns [`f64::INFINITY`] rather than `0.0`, so a degenerate band can never
+/// masquerade as perfect robustness for this *worst-case* metric.
+///
+/// The damping ratio ζ used in the residual evaluation is read via
+/// [`reify_stdlib::shaper_damping_ratio`] — the *same* single-source reader
+/// `build_train_for_shaper` builds the train with — so the sweep evaluates the
+/// train at exactly the ζ it was constructed from (no parallel default/parsing
+/// path that could drift). The Hz→rad/s conversion (`ω = 2π·f`) matches
+/// `build_train_for_shaper`'s marshalling boundary.
 ///
 /// `#[allow(dead_code)]`: this is an engine-side seam exposed ahead of its
 /// consumers (`simulate_trajectory` θ/ι, TOTS κ) and is meanwhile exercised only
@@ -54,25 +60,24 @@ pub fn worst_case_residual_fraction(
         return f64::INFINITY;
     };
 
-    // ζ for the residual evaluation: read the shaper's `damping_ratio` field
-    // (default 0 when absent / non-numeric / not a StructureInstance), mirroring
-    // the numeric-field reading idiom in reify-stdlib's `input_shape` marshalling.
-    let zeta = match shaper {
-        reify_ir::Value::StructureInstance(data) => {
-            match data.fields.get(&"damping_ratio".to_string()) {
-                Some(reify_ir::Value::Scalar { si_value, .. }) => *si_value,
-                Some(reify_ir::Value::Real(r)) => *r,
-                Some(reify_ir::Value::Int(n)) => *n as f64,
-                _ => 0.0,
-            }
-        }
-        _ => 0.0,
-    };
+    // An empty sweep has no worst case to report; returning 0.0 would read as
+    // "perfectly robust", so a degenerate band returns +∞ (same fail-closed
+    // sentinel as an unresolved shaper) for this worst-case metric.
+    if n_samples == 0 {
+        return f64::INFINITY;
+    }
+
+    // ζ for the residual evaluation comes from the SAME single-source reader that
+    // built the train (`reify_stdlib::shaper_damping_ratio`), so the sweep
+    // evaluates the train at exactly the ζ it was constructed from — the default
+    // and numeric-coercion contract cannot drift between the two.
+    let zeta = reify_stdlib::shaper_damping_ratio(shaper);
 
     // Sweep [f_lo_hz, f_hi_hz] uniformly at n_samples points, convert each Hz to
     // rad/s (ω = 2π·f), evaluate the Singer–Seering residual, and keep the worst
     // (largest) fraction — the quantity a robust shaper must hold small across
-    // its insensitivity band. (n_samples ≤ 1 samples only the low edge.)
+    // its insensitivity band. (n_samples == 1 samples only the low edge; the
+    // n_samples == 0 empty-sweep case is handled above.)
     let mut worst = 0.0_f64;
     for i in 0..n_samples {
         let frac = if n_samples > 1 {
@@ -181,6 +186,22 @@ mod tests {
             zv_worst > ei_worst,
             "ZV worst-case ({zv_worst:.6}) should exceed EI worst-case \
              ({ei_worst:.6}) over ±15%"
+        );
+    }
+
+    /// An empty sweep (`n_samples == 0`) must report +∞, not 0.0 — a worst-case
+    /// metric over no samples has no worst case, and reading as "perfectly
+    /// robust" would let a degenerate band mask an unevaluated shaper.
+    #[test]
+    fn empty_sweep_is_infinity_not_zero() {
+        let zvd = shaper(
+            "ZVDShaper",
+            vec![freq(10.0), ("damping_ratio", Value::Real(0.05))],
+        );
+        let worst = worst_case_residual_fraction(&zvd, 9.0, 11.0, 0);
+        assert!(
+            worst.is_infinite() && worst > 0.0,
+            "empty sweep (n_samples=0) should be +∞, got {worst}"
         );
     }
 }

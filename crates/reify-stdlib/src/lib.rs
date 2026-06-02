@@ -62,9 +62,12 @@ pub use analysis::compute_von_mises_3x3;
 /// `reify-eval/src/trajectory_ops.rs` calls [`build_train_for_shaper`] to turn a
 /// `Shaper` `Value` into an [`impulse_shaper::ImpulseTrain`] and then sweeps
 /// [`impulse_shaper::ImpulseTrain::residual_vibration`] across a frequency band
-/// for the engine-side robustness metric (task ζ).
+/// for the engine-side robustness metric (task ζ). It reads the swept damping
+/// ratio ζ via [`shaper_damping_ratio`] — the same single-source reader
+/// `build_train_for_shaper` builds the train with — so the sweep evaluates the
+/// train at exactly the ζ it was constructed from.
 pub use trajectory::impulse_shaper;
-pub use trajectory::input_shape::build_train_for_shaper;
+pub use trajectory::input_shape::{build_train_for_shaper, shaper_damping_ratio};
 
 #[cfg(test)]
 #[macro_use]
