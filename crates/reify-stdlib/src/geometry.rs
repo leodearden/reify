@@ -4570,7 +4570,10 @@ mod tests {
     fn affine_map_wrong_arity_returns_undef() {
         let m = matrix3x3(IDENTITY_3X3);
         assert!(eval_builtin("affine_map", &[]).is_undef(), "0 args");
-        assert!(eval_builtin("affine_map", &[m.clone()]).is_undef(), "1 arg");
+        assert!(
+            eval_builtin("affine_map", std::slice::from_ref(&m)).is_undef(),
+            "1 arg"
+        );
         let translation_arg = Value::Vector(vec![
             Value::length(0.0),
             Value::length(0.0),
