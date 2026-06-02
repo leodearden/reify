@@ -17,44 +17,145 @@
 //! (the `is_math_typed_fn` arm) in step-14. The family is pinned disjoint from
 //! the geometry / dynamics families by the `units.rs` disjointness tests.
 
+// Until step-14 wires the `expr.rs::resolve_function_overload` arm, none of this
+// module's items are reachable from a non-test build, so `dead_code` would fire
+// on every one (the name slice, the predicate, the result-type resolver, and its
+// private shape helpers). A single module-level allow covers them uniformly; it
+// is removed in step-14 once the arm makes the family production-live.
+#![allow(dead_code)]
+
 use reify_core::Type;
-use reify_ir::CompiledExpr;
+use reify_ir::{CompiledExpr, CompiledExprKind, Value};
 
 /// The complete set of math-linalg **construction** builtin names recognised
 /// by the compiler. Single source of truth — imported into the `units.rs` test
 /// module to pin disjointness from the geometry / dynamics families.
 ///
-/// Case-sensitive: Reify function names are snake_case.
-//
-// `#[allow(dead_code)]` until step-14: the units.rs test module references this
-// slice (`#[cfg(test)]`), and `is_math_typed_fn` reads it, but neither is
-// reachable from a non-test build until the `expr.rs` arm is wired in step-14 —
-// the allow is removed there once the family is production-live. (β extends this
-// slice with the linear-algebra operation names later.)
-#[allow(dead_code)]
+/// Case-sensitive: Reify function names are snake_case. (β extends this slice
+/// with the linear-algebra operation names later.)
 pub const MATH_CONSTRUCTION_NAMES: &[&str] = &["vec", "matrix", "diag", "identity"];
 
 /// Is `name` a math-linalg construction builtin? Name-only classification,
 /// mirroring `units::is_geometry_query` (a `.contains` over the single-source-of-
 /// truth [`MATH_CONSTRUCTION_NAMES`] slice). Case-sensitive.
-//
-// `#[allow(dead_code)]` until step-14: the only production caller is the
-// `expr.rs::resolve_function_overload` arm wired in step-14 (test code aside);
-// the allow is removed there.
-#[allow(dead_code)]
 pub(crate) fn is_math_typed_fn(name: &str) -> bool {
     MATH_CONSTRUCTION_NAMES.contains(&name)
 }
 
 /// Result type for a math-linalg construction builtin, derived from the
 /// compiled argument structure.
-//
-// STUB (pre-2): always `Type::Real` until step-12. `#[allow(dead_code)]`
-// because it is not yet referenced from production code — the `expr.rs` arm
-// that calls it is wired in step-14, where this allow is removed.
-#[allow(dead_code)]
-pub(crate) fn math_fn_result_type(_name: &str, _args: &[CompiledExpr]) -> Type {
-    Type::Real
+///
+/// The return *shape* (`n`) is recovered from the COMPILED ARGUMENT STRUCTURE,
+/// not from the arg's `result_type` (which, being a `Type::List`, carries no
+/// length): list length from a `CompiledExprKind::ListLiteral`, the literal
+/// value from `CompiledExprKind::Literal(Value::Int)`. The quantity slot is the
+/// element's `result_type` (or `Type::Real` for the dimensionless `identity`).
+///
+/// **CRITICAL (D7)**: when the shape is not statically determinable (a
+/// non-literal arg — e.g. a `ValueRef`), this degrades to the correct `Vector`
+/// / `Tensor` *variant* with a best-effort `n`, recovering the quantity from a
+/// `Type::List` element where possible. It NEVER returns the first-arg
+/// `Type::List` / `Type::Int`: the eval'd value is a `Value::Vector` /
+/// `Value::Tensor`, and `value_type_kind_matches(Value::Vector, Type::List)` is
+/// false, so a List fallback would raise a runtime `TypeKindMismatch`.
+///
+/// Only reached for the four construction names (the caller gates on
+/// [`is_math_typed_fn`]); the `_` arm is therefore unreachable in practice and
+/// returns a harmless `Type::Real`.
+pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
+    let first = args.first();
+    match name {
+        // `vec(list)` → Vector{n, quantity}.
+        "vec" => {
+            let (n, quantity) = first.map_or((0, Type::Real), list_shape);
+            Type::Vector {
+                n,
+                quantity: Box::new(quantity),
+            }
+        }
+        // `diag(list)` → N×N Tensor (same N/quantity recovery as `vec`).
+        "diag" => {
+            let (n, quantity) = first.map_or((0, Type::Real), list_shape);
+            Type::Tensor {
+                rank: 2,
+                n,
+                quantity: Box::new(quantity),
+            }
+        }
+        // `matrix(rows)` → rank-2 Tensor; n = column count from a depth-2 list.
+        "matrix" => {
+            let (n, quantity) = first.map_or((0, Type::Real), matrix_shape);
+            Type::Tensor {
+                rank: 2,
+                n,
+                quantity: Box::new(quantity),
+            }
+        }
+        // `identity(n: Int)` → N×N dimensionless Tensor (quantity = Real).
+        "identity" => {
+            let n = match first.map(|a| &a.kind) {
+                Some(CompiledExprKind::Literal(Value::Int(v))) if *v >= 1 => *v as usize,
+                // Non-literal / non-Int / non-positive: best-effort n, but STILL
+                // a Tensor variant (never the first-arg Int) — D7.
+                _ => 0,
+            };
+            Type::Tensor {
+                rank: 2,
+                n,
+                quantity: Box::new(Type::Real),
+            }
+        }
+        _ => Type::Real,
+    }
+}
+
+/// Recover `(n, element_quantity)` from a single list argument (`vec` / `diag`).
+///
+/// - `ListLiteral(elems)` → `(elems.len(), elems[0].result_type)` — exact.
+/// - otherwise → `(0, <innermost List element>)` — the DEGRADE path (D7):
+///   length unknown, quantity recovered from the arg's `Type::List` where
+///   possible, defaulting to `Type::Real`.
+fn list_shape(arg: &CompiledExpr) -> (usize, Type) {
+    if let CompiledExprKind::ListLiteral(elems) = &arg.kind {
+        let quantity = elems
+            .first()
+            .map(|e| e.result_type.clone())
+            .unwrap_or(Type::Real);
+        (elems.len(), quantity)
+    } else {
+        (0, innermost_list_element(&arg.result_type))
+    }
+}
+
+/// Recover `(ncols, cell_quantity)` from a depth-2 list argument (`matrix`).
+///
+/// - outer `ListLiteral` whose first row is itself a `ListLiteral(cells)` →
+///   `(cells.len(), cells[0].result_type)` — exact column count (an M×N matrix
+///   projects to `n = N`, per design decision D5).
+/// - otherwise → `(0, <innermost List element>)` — DEGRADE (D7).
+fn matrix_shape(arg: &CompiledExpr) -> (usize, Type) {
+    if let CompiledExprKind::ListLiteral(rows) = &arg.kind {
+        if let Some(CompiledExprKind::ListLiteral(cells)) = rows.first().map(|r| &r.kind) {
+            let quantity = cells
+                .first()
+                .map(|c| c.result_type.clone())
+                .unwrap_or(Type::Real);
+            return (cells.len(), quantity);
+        }
+    }
+    (0, innermost_list_element(&arg.result_type))
+}
+
+/// Strip all leading `Type::List` wrappers, returning the innermost element
+/// type (the scalar quantity). `List(List(Real))` / `List(Real)` / `Real` all
+/// → `Real`. Used by the DEGRADE path so a non-literal arg still yields a
+/// quantity rather than the bare `List`.
+fn innermost_list_element(t: &Type) -> Type {
+    let mut cur = t;
+    while let Type::List(elem) = cur {
+        cur = elem;
+    }
+    cur.clone()
 }
 
 #[cfg(test)]
