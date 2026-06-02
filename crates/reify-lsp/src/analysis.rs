@@ -2090,4 +2090,26 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn compute_document_symbols_fn_and_excludes_non_symbol_decls() {
+        use tower_lsp::lsp_types::SymbolKind;
+        let source = "import std.math\nunit meter : Length\nfn area(w: Scalar) -> Scalar { w }";
+        let symbols = compute_document_symbols(source, &test_uri());
+        // import + unit are NOT navigable symbols; only the fn is.
+        assert_eq!(
+            symbols.len(),
+            1,
+            "only the fn should be a symbol (import + unit excluded), got: {:?}",
+            symbols.iter().map(|s| s.name.as_str()).collect::<Vec<_>>()
+        );
+        let area = &symbols[0];
+        assert_eq!(area.name, "area");
+        assert_eq!(area.kind, SymbolKind::FUNCTION);
+        assert!(
+            area.children.is_none() || area.children.as_ref().unwrap().is_empty(),
+            "fn is a leaf symbol (params are not surfaced as children)"
+        );
+        assert_selection_on_name(source, area);
+    }
 }
