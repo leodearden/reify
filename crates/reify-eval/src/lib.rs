@@ -818,6 +818,22 @@ pub struct Engine {
     /// but the test hook will be silently absent there too.
     #[cfg(any(test, feature = "test-instrumentation"))]
     panic_on_eval_cells: std::collections::HashSet<ValueCellId>,
+    /// Per-iteration solver-progress sink (task #4079).
+    ///
+    /// When `Some`, `run_compute_dispatch` installs this sink into the
+    /// thread-local `SolveDispatchContext` before invoking the trampoline, so
+    /// the elastic-static trampoline can emit `SolverProgressUpdate` events
+    /// without changing the fixed `ComputeFn` fn-pointer signature.
+    ///
+    /// Set by `set_solver_progress_sink`; cleared by setting to `None`.
+    solver_progress_sink: Option<std::sync::Arc<dyn crate::solver_progress::SolverProgressSink>>,
+    /// In-flight cancellation handle for the current solve (task #4079).
+    ///
+    /// Published by the GUI `with_solve_slot` before each `engine.check()` call
+    /// (same `Arc<AtomicBool>` as `pending_solve_cancel`) so that
+    /// `cancel_solve_impl`'s `.cancel()` propagates into the trampoline's
+    /// per-iteration poll via the thread-local context.
+    active_solve_cancel: Option<crate::graph::CancellationHandle>,
 }
 
 /// Statistics about cache behavior during a cached evaluation.

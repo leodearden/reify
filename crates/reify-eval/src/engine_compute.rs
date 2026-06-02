@@ -294,8 +294,14 @@ impl crate::Engine {
         // (PRD §2 / design decision recorded in task ε/3424).
         self.cache.begin_compute_dispatch(c_id, outputs);
 
-        // Step 2: invoke the trampoline via the new helper (ε: threads the
-        // PASSED handle rather than creating a fresh throwaway one).
+        // Step 2: install the solver-progress dispatch context (task #4079),
+        // then invoke the trampoline.  The RAII guard clears the thread-local
+        // slot on drop — even on panic or early return.
+        let _ctx_guard = crate::solver_progress::install_solve_dispatch_context(
+            self.solver_progress_sink.clone(),
+            self.active_solve_cancel.clone(),
+        );
+
         match self.invoke_compute_trampoline(
             target,
             value_inputs,
