@@ -2123,4 +2123,51 @@ mod tests {
         );
         assert_selection_on_name(source, area);
     }
+
+    #[test]
+    fn compute_document_symbols_sub_port_and_guarded() {
+        use tower_lsp::lsp_types::SymbolKind;
+        let source = r#"structure Assembly {
+    param cond : Bool = true
+    sub motor = Motor()
+    port intake : MechPort { param d : Length = 5mm }
+    where cond {
+        param guarded_x : Scalar = 1mm
+    }
+}"#;
+        let symbols = compute_document_symbols(source, &test_uri());
+        assert_eq!(symbols.len(), 1, "one structure → one top-level symbol");
+        let assembly = &symbols[0];
+        assert_eq!(assembly.name, "Assembly");
+        let children = assembly
+            .children
+            .as_ref()
+            .expect("Assembly should have children");
+        let find = |name: &str| children.iter().find(|c| c.name == name);
+
+        // sub motor → OBJECT
+        let motor = find("motor").expect("motor sub should be a child symbol");
+        assert_eq!(motor.kind, SymbolKind::OBJECT);
+        assert_selection_on_name(source, motor);
+
+        // port intake → INTERFACE, with port-internal param d → FIELD grandchild
+        let intake = find("intake").expect("intake port should be a child symbol");
+        assert_eq!(intake.kind, SymbolKind::INTERFACE);
+        assert_selection_on_name(source, intake);
+        let intake_children = intake
+            .children
+            .as_ref()
+            .expect("intake port should have internal members");
+        let d = intake_children
+            .iter()
+            .find(|c| c.name == "d")
+            .expect("port-internal param d should be a grandchild");
+        assert_eq!(d.kind, SymbolKind::FIELD);
+        assert_selection_on_name(source, d);
+
+        // where-block param guarded_x flattened as a direct child of the structure
+        let guarded = find("guarded_x").expect("guarded_x should be flattened as a direct child");
+        assert_eq!(guarded.kind, SymbolKind::FIELD);
+        assert_selection_on_name(source, guarded);
+    }
 }
