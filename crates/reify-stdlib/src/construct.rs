@@ -506,4 +506,89 @@ mod tests {
             "diag containing a String should be Undef"
         );
     }
+
+    // ── `identity(n: Int)` → N×N dimensionless Tensor (step-7 RED / step-8 GREEN)
+
+    /// Build the expected N×N dimensionless identity `Tensor` (`Real(1.0)` on
+    /// the diagonal, `Real(0.0)` elsewhere).
+    fn expected_identity(n: usize) -> Value {
+        Value::Tensor(
+            (0..n)
+                .map(|i| {
+                    Value::Tensor(
+                        (0..n)
+                            .map(|j| Value::Real(if i == j { 1.0 } else { 0.0 }))
+                            .collect(),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    /// (a) `identity(4)` is a 4×4 dimensionless Tensor (diagonal 1.0, else 0.0).
+    #[test]
+    fn identity_4_builds_dimensionless_identity() {
+        let out = eval_builtin("identity", &[Value::Int(4)]);
+        assert_eq!(
+            out,
+            expected_identity(4),
+            "identity(4) should be a 4×4 dimensionless identity Tensor"
+        );
+    }
+
+    /// (b) `identity(1)` is the 1×1 Tensor `[[1.0]]`.
+    #[test]
+    fn identity_1_builds_1x1() {
+        let out = eval_builtin("identity", &[Value::Int(1)]);
+        assert_eq!(
+            out,
+            expected_identity(1),
+            "identity(1) should be the 1×1 Tensor [[1.0]]"
+        );
+    }
+
+    /// (c) `identity(0)` and a negative argument are malformed → `Undef`.
+    #[test]
+    fn identity_zero_or_negative_is_undef() {
+        assert_eq!(
+            eval_builtin("identity", &[Value::Int(0)]),
+            Value::Undef,
+            "identity(0) should be Undef"
+        );
+        assert_eq!(
+            eval_builtin("identity", &[Value::Int(-3)]),
+            Value::Undef,
+            "identity(-3) should be Undef"
+        );
+    }
+
+    /// (d) A non-`Int` argument (Real / String) is malformed → `Undef`.
+    #[test]
+    fn identity_non_int_arg_is_undef() {
+        assert_eq!(
+            eval_builtin("identity", &[Value::Real(4.0)]),
+            Value::Undef,
+            "identity(Real 4.0) should be Undef — only Int is accepted"
+        );
+        assert_eq!(
+            eval_builtin("identity", &[Value::String("4".to_string())]),
+            Value::Undef,
+            "identity(String) should be Undef"
+        );
+    }
+
+    /// (e) Wrong argument count → `Undef`.
+    #[test]
+    fn identity_wrong_arity_is_undef() {
+        assert_eq!(
+            eval_builtin("identity", &[]),
+            Value::Undef,
+            "identity() with no args should be Undef"
+        );
+        assert_eq!(
+            eval_builtin("identity", &[Value::Int(2), Value::Int(2)]),
+            Value::Undef,
+            "identity(2, 2) with two args should be Undef"
+        );
+    }
 }
