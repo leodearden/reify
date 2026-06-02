@@ -79,10 +79,13 @@ structure def Material {
 
 // Young's modulus (Pa), Poisson's ratio (dimensionless), shear modulus (Pa).
 // All use Real pending Pressure type introduction.
+// Physical range: poissons_ratio is strictly between 0 and 0.5 for conventional
+// isotropic materials (excludes auxetic ν<0 and incompressible ν=0.5 limits).
 trait Elastic {
     param youngs_modulus : Real
     param poissons_ratio : Real // dimensionless
     param shear_modulus : Real
+    constraint 0 < poissons_ratio < 0.5
 }
 
 // ── Strength ─────────────────────────────────────────────────────────────────
