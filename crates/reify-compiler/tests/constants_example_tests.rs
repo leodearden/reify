@@ -19,7 +19,7 @@
 //! PRD references: `docs/prds/v0_6/stdlib-reconstruction.md` task ζ,
 //!                 `docs/prds/v0_6/units-physical-constants.md` §7 task δ.
 
-use reify_core::{DimensionVector, ModulePath, Severity, ValueCellId};
+use reify_core::{ModulePath, Severity, ValueCellId};
 use reify_ir::Value;
 use reify_test_support::make_simple_engine;
 
