@@ -77,6 +77,31 @@ export function createScene(
   scene.add(grid);
 
   const axes = new AxesHelper(2);
+  // The AxesHelper is coplanar with the XY GridHelper (both lie in the Z=0 plane). Without
+  // intervention, floating-point depth jitter at some zoom levels causes the grey grid lines
+  // to win the LESS_EQUAL depth test and occlude the red (X) / green (Y) axis vectors.
+  //
+  // Fix: make the axes a deliberate always-on-top origin gizmo — a conventional CAD affordance.
+  // INTENTIONAL SIDE-EFFECT: depthTest=false means the axes render on top of ALL scene
+  // objects, including solid model geometry that encloses or sits in front of the origin, not
+  // just the coplanar grid. This is by design: always-visible origin axis gizmos are standard
+  // in CAD viewports and the helper is only 2 units long, so the cosmetic trade-off is
+  // acceptable and desirable (the gizmo is never accidentally hidden behind a model).
+  //   renderOrder = 1  — draw axes AFTER the grid (grid keeps the default renderOrder 0)
+  //   depthTest = false — axes fragments are never discarded; the gizmo is always on top
+  //   depthWrite = false — axes do not pollute the depth buffer for subsequent draws
+  // AxesHelper currently always constructs a single LineBasicMaterial. Guard against a future
+  // three.js version returning a material array, which would silently mutate the array object
+  // rather than the material and restore z-fighting without any test failure (the unit test mock
+  // uses a plain object, not an array, so it cannot catch that regression).
+  if (Array.isArray(axes.material)) {
+    throw new Error(
+      'AxesHelper.material is unexpectedly an array — three.js API changed; update overlay logic in scene.ts.',
+    );
+  }
+  axes.renderOrder = 1;
+  axes.material.depthTest = false;
+  axes.material.depthWrite = false;
   scene.add(axes);
 
   function resize(w: number, h: number) {

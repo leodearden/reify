@@ -82,12 +82,16 @@ vi.mock('three', () => {
     type = 'GridHelper';
     visible = true;
     rotation = { x: 0, y: 0, z: 0 };
+    renderOrder = 0;
+    material = { depthTest: true, depthWrite: true };
     constructor(public size?: number, public divisions?: number) {}
   }
 
   class MockAxesHelper {
     type = 'AxesHelper';
     visible = true;
+    renderOrder = 0;
+    material = { depthTest: true, depthWrite: true };
     constructor(public size?: number) {}
   }
 
@@ -319,5 +323,26 @@ describe('createScene', () => {
     expect(camera.near).toBe(origNear);
     expect(camera.far).toBe(origFar);
     expect(camera.updateProjectionMatrix).not.toHaveBeenCalled();
+  });
+
+  it('axes draw after the grid (renderOrder) so the grid cannot occlude them', () => {
+    const result = setup();
+    expect(result.axes.renderOrder).toBe(1);
+    expect(result.axes.renderOrder).toBeGreaterThan(result.grid.renderOrder);
+    // Pin the grid's own renderOrder at the default so a regression that also
+    // mutated the grid would be caught (the fix relies on the grid staying at 0).
+    expect(result.grid.renderOrder).toBe(0);
+  });
+
+  it('axes ignore the depth buffer so coplanar grid lines never z-fight over them', () => {
+    const result = setup();
+    const ax = result.axes as any;
+    expect(ax.material.depthTest).toBe(false);
+    expect(ax.material.depthWrite).toBe(false);
+    // Pin the grid's depth flags at defaults — the fix depends on the grid keeping
+    // normal depthTest/depthWrite so real 3D meshes still occlude it correctly.
+    const gr = result.grid as any;
+    expect(gr.material.depthTest).toBe(true);
+    expect(gr.material.depthWrite).toBe(true);
   });
 });
