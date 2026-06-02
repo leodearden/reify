@@ -299,7 +299,12 @@ const App: Component = () => {
 
   function refreshEntityTree(): void {
     bridgeGetEntityTree()
-      .then((t) => { if (alive) setEntityTree(t); })
+      .then((t) => {
+        if (alive) {
+          setEntityTree(t);
+          engineStore.reconcileToTree(t);
+        }
+      })
       .catch((err) => console.error('[entity-tree] refresh failed:', err));
   }
 
