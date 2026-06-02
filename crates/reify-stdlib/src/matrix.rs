@@ -835,4 +835,136 @@ mod tests {
             result
         );
     }
+
+    // --- N≥4 determinant tests (step-1 RED / step-2 GREEN) ---
+
+    /// Build the well-conditioned tridiagonal 4×4 [[2,1,0,0],[1,2,1,0],[0,1,2,1],[0,0,1,2]]
+    /// via the REAL `matrix()` constructor (anti-fake-done: no synthetic Value::Tensor).
+    /// Exact determinant = 5; condition number κ ≈ 9.47.
+    fn make_4x4_tridiagonal_dimensionless() -> Value {
+        eval_builtin(
+            "matrix",
+            &[Value::List(vec![
+                Value::List(vec![
+                    Value::Real(2.0),
+                    Value::Real(1.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(1.0),
+                    Value::Real(2.0),
+                    Value::Real(1.0),
+                    Value::Real(0.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(1.0),
+                    Value::Real(2.0),
+                    Value::Real(1.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(1.0),
+                    Value::Real(2.0),
+                ]),
+            ])],
+        )
+    }
+
+    /// Build the tridiagonal 4×4 with LENGTH-dimensioned cells via the real `matrix()` constructor.
+    fn make_4x4_tridiagonal_length() -> Value {
+        let l = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::LENGTH,
+        };
+        eval_builtin(
+            "matrix",
+            &[Value::List(vec![
+                Value::List(vec![l(2.0), l(1.0), l(0.0), l(0.0)]),
+                Value::List(vec![l(1.0), l(2.0), l(1.0), l(0.0)]),
+                Value::List(vec![l(0.0), l(1.0), l(2.0), l(1.0)]),
+                Value::List(vec![l(0.0), l(0.0), l(1.0), l(2.0)]),
+            ])],
+        )
+    }
+
+    /// (a) Happy path: det of well-conditioned 4×4 tridiagonal = 5 exactly.
+    /// G6 1e-9 floor (κ≈9.47; LU residual ~2e-15; 1e-9 clears by 6 orders).
+    #[test]
+    fn det_4x4_tridiagonal_is_5() {
+        let m = make_4x4_tridiagonal_dimensionless();
+        let result = eval_builtin("determinant", &[m]);
+        match result {
+            Value::Real(v) => assert!(
+                (v - 5.0).abs() < 1e-9,
+                "det of 4×4 tridiagonal expected 5.0, got {v}"
+            ),
+            other => panic!("expected Real(5.0), got {:?}", other),
+        }
+    }
+
+    /// (b) Singular 4×4 (zero last row): det ≈ 0 as Real, NOT Undef.
+    /// Matches 2×2/3×3 semantics: singular det → ~0 value, not Undef.
+    #[test]
+    fn det_4x4_singular_returns_zero_real_not_undef() {
+        let m = eval_builtin(
+            "matrix",
+            &[Value::List(vec![
+                Value::List(vec![
+                    Value::Real(1.0),
+                    Value::Real(2.0),
+                    Value::Real(3.0),
+                    Value::Real(4.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(5.0),
+                    Value::Real(6.0),
+                    Value::Real(7.0),
+                    Value::Real(8.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(9.0),
+                    Value::Real(10.0),
+                    Value::Real(11.0),
+                    Value::Real(12.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]),
+            ])],
+        );
+        match eval_builtin("determinant", &[m]) {
+            Value::Real(v) => assert!(
+                v.abs() < 1e-9,
+                "det of singular 4×4 expected ≈0, got {v}"
+            ),
+            other => panic!("expected Real(≈0.0), got {:?}", other),
+        }
+    }
+
+    /// (c) Dimensioned 4×4 tridiagonal (LENGTH cells) → det dim = LENGTH^4, si ≈ 5.0.
+    #[test]
+    fn det_4x4_dimensioned_length_cells() {
+        let m = make_4x4_tridiagonal_length();
+        let result = eval_builtin("determinant", &[m]);
+        let expected_dim = DimensionVector::LENGTH.pow(4);
+        match result {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!(
+                    (si_value - 5.0).abs() < 1e-9,
+                    "det si_value expected 5.0, got {si_value}"
+                );
+                assert_eq!(dimension, expected_dim, "det dimension mismatch");
+            }
+            other => panic!("expected Scalar{{si≈5.0, dim=LENGTH^4}}, got {:?}", other),
+        }
+    }
 }
