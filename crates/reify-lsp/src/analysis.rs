@@ -582,9 +582,17 @@ fn make_symbol(
 /// located (defensive; should not happen for well-formed declarations).
 fn name_selection_range(source: &str, span: SourceSpan, name: &str) -> Range {
     let name_offset = find_name_offset_in_span(source, span, name);
+    // Clamp the selection end to the declaration span's end so the LSP
+    // `selection_range ⊆ range` invariant holds even for degenerate or
+    // error-recovery spans shorter than the name. When the name is located
+    // the match already fits inside the span (`name_offset + name.len() ≤
+    // span.end`), so this clamp is a no-op there; it only constrains the
+    // `span.start` fallback, where `span.start + name.len()` could otherwise
+    // push the selection end past `span.end` (and thus past `range.end`).
+    let name_end = (name_offset + name.len() as u32).min(span.end);
     Range {
         start: offset_to_position(source, name_offset),
-        end: offset_to_position(source, name_offset + name.len() as u32),
+        end: offset_to_position(source, name_end),
     }
 }
 
@@ -1979,6 +1987,32 @@ mod tests {
         assert_eq!(bracket.selection_range.start.character, 10);
         assert_eq!(bracket.selection_range.end.line, 0);
         assert_eq!(bracket.selection_range.end.character, 17);
+    }
+
+    /// Regression (task 4207 η amendment): `name_selection_range` must preserve
+    /// the LSP `selection_range ⊆ range` invariant even for a degenerate span
+    /// shorter than the name. Here the span is 2 bytes wide but the name is 7
+    /// bytes, so the word-boundary search fails and the `span.start` fallback
+    /// runs; without the end-clamp the selection end would be `0 + 7 = 7`,
+    /// pushing `selection_range.end` past `range.end`.
+    #[test]
+    fn name_selection_range_clamps_end_to_span_for_degenerate_span() {
+        let source = "Bracket";
+        let span = SourceSpan::new(0, 2);
+        let sel = name_selection_range(source, span, "Bracket");
+        let range = span_to_range(source, span);
+        assert!(
+            (sel.start.line, sel.start.character) >= (range.start.line, range.start.character),
+            "selection_range.start {:?} must be >= range.start {:?}",
+            sel.start,
+            range.start,
+        );
+        assert!(
+            (sel.end.line, sel.end.character) <= (range.end.line, range.end.character),
+            "selection_range.end {:?} must be clamped within range.end {:?}",
+            sel.end,
+            range.end,
+        );
     }
 
     /// Assert `sym.selection_range` lies within `sym.range` and covers exactly
