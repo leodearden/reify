@@ -3880,6 +3880,108 @@ mod execute_with_config_tests {
             "node_b should NOT be in changed set"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // T3: derived priority integration test (step-5 RED / step-6 GREEN)
+    // -----------------------------------------------------------------------
+
+    /// T3 (GR-038 γ / G2 signal): an unset NodeId::Compute is scheduled at
+    /// P1Slow after `default_populate_priorities` is wired into
+    /// `execute_with_config`.
+    ///
+    /// Three level-0 nodes (DependencyTrace::default, so all dirty):
+    ///   anchor_fast   = NodeId::Value(ValueCellId::new("T3","fast"))   → explicit P1Fast
+    ///   anchor_p3     = NodeId::Compute(ComputeNodeId::new("T3", 0))  → explicit P3Speculative
+    ///   compute       = NodeId::Compute(ComputeNodeId::new("T3", 1))  → NO entry (must derive)
+    ///
+    /// Tie-break determinism:
+    ///   PRE-wiring  : `compute` falls to unwrap_or(P3Speculative) and ties
+    ///     with anchor_p3.  BTreeSet<DebugOrd> in compute_levels + stable
+    ///     sort_by_key order idx-0 anchor_p3 before idx-1 compute, so
+    ///     `compute_pos < anchor_p3_pos` is deterministically FALSE.
+    ///   POST-wiring : `compute` derives P1Slow (WARM_STARTABLE|COMMITTABLE),
+    ///     sits between anchor_fast (P1Fast) and anchor_p3 (explicit P3).
+    ///     anchor_fast_pos < compute_pos < anchor_p3_pos is TRUE.
+    ///
+    /// The single assertion proves:
+    ///   (a) The unset Compute derives P1Slow (not P3Speculative).
+    ///   (b) The P1Slow value specifically (between P1Fast and P3).
+    ///   (c) External-priority precedence: anchor_p3 is a Compute node yet
+    ///       keeps its explicit P3 rather than deriving P1Slow.
+    #[tokio::test]
+    async fn t3_unset_compute_derives_p1slow_between_p1fast_and_p3() {
+        use reify_core::{ComputeNodeId, ValueCellId};
+
+        /// Tracks evaluation order by recording NodeId on spawn.
+        struct OrderTrackingEvaluator {
+            eval_order: Arc<Mutex<Vec<NodeId>>>,
+        }
+        impl AsyncNodeEvaluator for OrderTrackingEvaluator {
+            async fn evaluate(&self, node: NodeId) -> EvalOutcome {
+                self.eval_order.lock().unwrap().push(node);
+                EvalOutcome::Changed
+            }
+        }
+
+        let eval_order = Arc::new(Mutex::new(Vec::<NodeId>::new()));
+        let evaluator = Arc::new(OrderTrackingEvaluator {
+            eval_order: Arc::clone(&eval_order),
+        });
+
+        let anchor_fast = NodeId::Value(ValueCellId::new("T3", "fast"));
+        // idx 0 < idx 1 → anchor_p3 sorts before compute in BTreeSet tie-break
+        let anchor_p3 = NodeId::Compute(ComputeNodeId::new("T3", 0));
+        let compute = NodeId::Compute(ComputeNodeId::new("T3", 1));
+
+        // All three at level 0 (empty reads → dirty by default).
+        let mut traces = HashMap::new();
+        traces.insert(anchor_fast.clone(), DependencyTrace::default());
+        traces.insert(anchor_p3.clone(), DependencyTrace::default());
+        traces.insert(compute.clone(), DependencyTrace::default());
+
+        // Only two explicit entries: anchor_fast=P1Fast, anchor_p3=P3Speculative.
+        // `compute` has NO entry — must be derived by default_populate_priorities.
+        let mut node_priorities = HashMap::new();
+        node_priorities.insert(anchor_fast.clone(), Priority::P1Fast);
+        node_priorities.insert(anchor_p3.clone(), Priority::P3Speculative);
+
+        let promoter = Arc::new(SharedPriorityPromoter::new());
+        let config = SchedulerConfig {
+            priority_promoter: Some(Arc::clone(&promoter)),
+            node_priorities,
+            // node_traits left as default-empty; resolve() returns kind defaults.
+            ..SchedulerConfig::default()
+        };
+
+        let cancel = CancellationToken::new();
+        let scheduler = ConcurrentScheduler;
+        // Scramble the eval_set order to prove sorting, not input order, matters.
+        let eval_set = vec![compute.clone(), anchor_p3.clone(), anchor_fast.clone()];
+        let changed_cells = HashSet::new();
+
+        let result = scheduler
+            .execute_with_config(eval_set, evaluator, &traces, &cancel, &changed_cells, config)
+            .await
+            .unwrap();
+
+        assert_eq!(result.changed.len(), 3);
+
+        let order = eval_order.lock().unwrap();
+        let anchor_fast_pos = order.iter().position(|n| *n == anchor_fast).unwrap();
+        let compute_pos = order.iter().position(|n| *n == compute).unwrap();
+        let anchor_p3_pos = order.iter().position(|n| *n == anchor_p3).unwrap();
+
+        assert!(
+            anchor_fast_pos < compute_pos,
+            "anchor_fast (explicit P1Fast) must be spawned before compute (derived P1Slow), \
+             but anchor_fast_pos={anchor_fast_pos} compute_pos={compute_pos}"
+        );
+        assert!(
+            compute_pos < anchor_p3_pos,
+            "compute (derived P1Slow) must be spawned before anchor_p3 (explicit P3Speculative), \
+             but compute_pos={compute_pos} anchor_p3_pos={anchor_p3_pos}"
+        );
+    }
 } // mod execute_with_config_tests
 
 /// Characterization: ConcurrentEvalAdapter returns Unchanged for a Value cell
