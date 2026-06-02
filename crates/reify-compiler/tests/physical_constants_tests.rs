@@ -646,3 +646,97 @@ fn vacuum_permeability_evaluates_to_1p25663706212e_minus_6_si_with_permeability_
         ),
     }
 }
+
+// ─── Test 15: MOLAR_GAS_CONSTANT present and has correct signature ────────────
+
+/// `MOLAR_GAS_CONSTANT` must be present in `std/units`, be `pub`, take no
+/// parameters, and return `Scalar<ENERGY / AMOUNT_OF_SUBSTANCE / TEMPERATURE>`
+/// (= kg·m²·s⁻²·mol⁻¹·K⁻¹).
+///
+/// R = N_A × k_B = 8.314462618 J·mol⁻¹·K⁻¹ — exact by 2019 SI redefinition.
+#[test]
+fn molar_gas_constant_function_present_in_std_units() {
+    let module = common::units_module();
+
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "MOLAR_GAS_CONSTANT")
+        .unwrap_or_else(|| {
+            panic!(
+                "MOLAR_GAS_CONSTANT not found in std/units; found functions: {:?}",
+                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+            )
+        });
+
+    assert!(func.is_pub, "MOLAR_GAS_CONSTANT should be pub");
+    assert!(
+        func.params.is_empty(),
+        "MOLAR_GAS_CONSTANT should take no params, got: {:?}",
+        func.params
+    );
+
+    let expected_dim = DimensionVector::ENERGY
+        .div(&DimensionVector::AMOUNT_OF_SUBSTANCE)
+        .div(&DimensionVector::TEMPERATURE);
+    assert_eq!(
+        func.return_type,
+        Type::Scalar {
+            dimension: expected_dim
+        },
+        "MOLAR_GAS_CONSTANT return type should be Scalar<ENERGY/AMOUNT_OF_SUBSTANCE/TEMPERATURE>, got {:?}",
+        func.return_type
+    );
+}
+
+// ─── Test 16: MOLAR_GAS_CONSTANT evaluates to 8.314462618 ────────────────────
+
+/// Evaluating `MOLAR_GAS_CONSTANT()` via `eval_expr` must yield a
+/// `Value::Scalar` with `si_value ≈ 8.314462618` and
+/// `dimension = ENERGY / AMOUNT_OF_SUBSTANCE / TEMPERATURE`.
+///
+/// R = 8.314462618 J·mol⁻¹·K⁻¹ — exact (2019 SI: R = N_A × k_B).
+#[test]
+fn molar_gas_constant_evaluates_to_8p314462618_si_with_molar_gas_dim() {
+    let module = common::units_module();
+
+    let expected_dim = DimensionVector::ENERGY
+        .div(&DimensionVector::AMOUNT_OF_SUBSTANCE)
+        .div(&DimensionVector::TEMPERATURE);
+    let call_expr = CompiledExpr::user_function_call(
+        "MOLAR_GAS_CONSTANT".to_string(),
+        vec![],
+        Type::Scalar {
+            dimension: expected_dim,
+        },
+    );
+    let values = ValueMap::new();
+    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    let result = reify_expr::eval_expr(&call_expr, &ctx);
+
+    match result {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(
+                dimension,
+                DimensionVector::ENERGY
+                    .div(&DimensionVector::AMOUNT_OF_SUBSTANCE)
+                    .div(&DimensionVector::TEMPERATURE),
+                "MOLAR_GAS_CONSTANT() should have ENERGY/AMOUNT/TEMPERATURE dimension, got {:?}",
+                dimension
+            );
+            common::assert_eq_rel(
+                si_value,
+                8.314462618,
+                1e-12,
+                "MOLAR_GAS_CONSTANT() si_value",
+            );
+        }
+        other => panic!(
+            "MOLAR_GAS_CONSTANT() should return Value::Scalar, got {:?}",
+            other
+        ),
+    }
+}
