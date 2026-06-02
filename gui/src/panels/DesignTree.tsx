@@ -19,6 +19,8 @@ interface Props {
   onOpenManage?: () => void;
   /** Optional callback for "Save views" action; forwarded to ViewSelector. */
   onSaveViews?: () => void;
+  /** Called with the entity path on mouseenter, null on mouseleave (Edge A hover sync). */
+  onHover?: (path: string | null) => void;
 }
 
 interface MenuState {
@@ -164,6 +166,8 @@ const DesignTree: Component<Props> = (props) => {
           data-testid={`tree-row-${node.entity_path}`}
           data-selected={effectiveSelected().has(node.entity_path) ? 'true' : undefined}
           data-stale={stalePaths().has(node.entity_path) ? 'true' : undefined}
+          onMouseEnter={() => props.onHover?.(node.entity_path)}
+          onMouseLeave={() => props.onHover?.(null)}
           onContextMenu={(e) => openMenu(node.entity_path, e)}
           onClick={(e) => {
             if (e.shiftKey && props.anchorEntity && props.onRangeSelect) {
