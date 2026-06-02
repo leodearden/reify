@@ -40,13 +40,16 @@ mod tots;
 /// name is kept so that the Rust eval-boundary tests in `mod.rs::tests` that call
 /// `eval_builtin("gcode_import", …)` directly remain green with zero churn.
 ///
-/// `input_shape` (task ζ) follows the identical delegate pattern: the stdlib
-/// `.ri` `input_shape` declaration delegates to the undeclared `input_shape_apply`
-/// name, so both route here to [`input_shape::eval_input_shape`], which builds the
-/// shaper's `ImpulseTrain` (the impulse arms ZV/ZVD/EI/Cascaded) and returns the
-/// shaped `Profile` as a `Value::StructureInstance` (or `Value::Undef` on bad args
-/// / an unrecognised shaper). See [`input_shape::eval_input_shape`] for the
-/// argument contract.
+/// `input_shape` (task ζ, extended by task λ) follows the identical delegate
+/// pattern: the stdlib `.ri` `input_shape` declaration delegates to the undeclared
+/// `input_shape_apply` name, so both route here to
+/// [`input_shape::eval_input_shape`]. The dispatcher first checks for
+/// `TOTSShaper` (λ arm) and runs the real SQP loop
+/// ([`input_shape::run_tots`] → [`super::tots::solve_tots`]); only then falls
+/// through to the impulse-train arms (ZV/ZVD/EI/Cascaded, ζ). Returns the
+/// shaped `Profile` as a `Value::StructureInstance` (or `Value::Undef` on bad
+/// args / infeasible TOTS / unrecognised shaper). See
+/// [`input_shape::eval_input_shape`] for the full argument contract.
 ///
 /// The Phase β spline intrinsics still unconditionally return `Some(Value::Undef)`:
 /// the pure-Rust spline math is implemented in the `spline` submodule but is
