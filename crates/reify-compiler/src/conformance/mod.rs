@@ -4698,6 +4698,52 @@ mod tests {
         assert_eq!(d.labels[0].span, span);
     }
 
+    /// `emit_geometry_profile_required` pushes exactly one `Diagnostic` with
+    /// severity `Error`, code `Some(DiagnosticCode::GeometryProfileRequired)`, a
+    /// message naming both the arg and the `requirement`, and a single
+    /// `DiagnosticLabel` at the supplied span. Pins the diagnostic-shape contract
+    /// independent of the geometry.rs consumer wiring (which is exercised
+    /// end-to-end in `geometry_profile_precondition_tests.rs`). Mirrors
+    /// `emit_geometry_unbounded_helper_produces_error_with_code_and_label`; the
+    /// `requirement` is parameterized so the one helper serves both the Surface
+    /// profile and Curve path consumers.
+    #[test]
+    fn emit_geometry_profile_required_helper_produces_error_with_code_and_label() {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let span = SourceSpan::new(7, 19);
+        emit_geometry_profile_required(
+            "g",
+            "a 2D Surface profile (Closed, Planar)",
+            span,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "emit_geometry_profile_required should push exactly one diagnostic"
+        );
+        let d = &diagnostics[0];
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::GeometryProfileRequired));
+        assert!(
+            d.message.contains("Surface"),
+            "message should mention the requirement text, got: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("'g'"),
+            "message should mention the arg name 'g', got: {}",
+            d.message
+        );
+        assert_eq!(
+            d.labels.len(),
+            1,
+            "expected exactly one label attached at the supplied span"
+        );
+        assert_eq!(d.labels[0].span, span);
+    }
+
     /// `emit_geometry_trait_violation` pushes exactly one `Diagnostic` with severity
     /// `Error`, code `Some(DiagnosticCode::TypeNotConformingToTrait)`, the exact message
     /// `"geometry argument 'g' does not conform to trait 'Connected'"`, and a
