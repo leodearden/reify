@@ -2231,6 +2231,7 @@ impl Engine {
                     &self.functions,
                     &self.meta_map,
                     &mut diagnostics,
+                    None, // build() collects all product bodies; no path filter needed
                 );
 
                 // Keep only product (non-aux) bodies for export.
@@ -2460,17 +2461,14 @@ impl Engine {
             snapshot_named_steps(template, named_steps, &mut module_named_steps);
         }
 
-        // Performance note (task-3905 amendment, suggestion 5): surface_export_bodies
-        // calls ApplyTransform for every non-identity placed realization, minting one
-        // new kernel handle per call.  Repeated invocations of distance_between_placed
-        // on the same module therefore accumulate transient placed handles in the kernel
-        // store across calls (handles are engine-scoped, not call-scoped).  This mirrors
-        // the pre-existing surface_subtree / tessellate pattern and is not a new regression,
-        // but the distance query's likely repeated-call frequency makes the accumulation
-        // more impactful.  Future mitigations: short-circuit the walk once both path_a and
-        // path_b are resolved, or maintain a placed-handle cache keyed by entity_path.
-        //
         // Phase-B: collect placed product handles via the T7 surfacing walk.
+        //
+        // Short-circuit (T7 amendment, suggestion 3): pass the two target paths as
+        // `path_filter` so `collect_export_bodies_walk` → `surface_export_bodies` →
+        // `walk_placed_realizations` only calls `ApplyTransform` for realizations
+        // at `path_a` or `path_b`.  All other bodies skip the kernel call entirely,
+        // preventing transient handle accumulation on repeated distance queries over
+        // the same module.
         let export_bodies = Self::collect_export_bodies_walk(
             module,
             &terminal_handles,
@@ -2480,6 +2478,7 @@ impl Engine {
             &self.functions,
             &self.meta_map,
             &mut diagnostics,
+            Some((path_a, path_b)),
         );
 
         // Resolve the two product (default_visible == true) handles by entity_path.
@@ -2531,6 +2530,12 @@ impl Engine {
         functions: &[CompiledFunction],
         meta_map: &HashMap<String, HashMap<String, String>>,
         diagnostics: &mut Vec<Diagnostic>,
+        // T7 amendment (suggestion 3): when `Some((path_a, path_b))`, the export
+        // walk short-circuits ApplyTransform for every entity path that does NOT match
+        // either target — avoiding transient-handle accumulation on repeated
+        // `distance_between_placed` calls.  Pass `None` for the full-collection
+        // `build()` path (all product bodies are needed for the STEP compound).
+        path_filter: Option<(&str, &str)>,
     ) -> Vec<crate::geometry_ops::ExportBody> {
         use crate::geometry_ops::{
             compose_pose_chain, non_final_realization_indices, reachable_template_indices,
@@ -2545,6 +2550,20 @@ impl Engine {
         // standalone solids. Restores the pre-T7 "final realization per template"
         // export semantics while keeping T7's multi-body-via-subs behavior.
         let skip = non_final_realization_indices(module, terminal_handles);
+        // Construct the path-level pre-filter for the distance case.
+        // Box the closure so `pre_filter` can hold a stable reference that outlives
+        // the `.map()` call site.  `as_deref()` converts `Option<Box<dyn Fn(...)>>`
+        // to `Option<&dyn Fn(...)>` by borrowing from the box for its lifetime.
+        let boxed_filter: Option<Box<dyn Fn(usize, usize, &str) -> bool>> =
+            path_filter.map(|(pa, pb)| {
+                let pa = pa.to_owned();
+                let pb = pb.to_owned();
+                let f: Box<dyn Fn(usize, usize, &str) -> bool> =
+                    Box::new(move |_t: usize, _r: usize, path: &str| path == pa || path == pb);
+                f
+            });
+        let pre_filter: Option<&dyn Fn(usize, usize, &str) -> bool> =
+            boxed_filter.as_deref();
         let mut export_bodies = Vec::new();
         for &root_idx in &roots {
             let root_prefix = module.templates[root_idx].name.clone();
@@ -2562,6 +2581,7 @@ impl Engine {
                 functions,
                 meta_map,
                 &skip,
+                pre_filter,
                 &mut export_bodies,
                 diagnostics,
             );
@@ -2588,6 +2608,7 @@ impl Engine {
                 functions,
                 meta_map,
                 &skip,
+                pre_filter,
                 &mut export_bodies,
                 diagnostics,
             );

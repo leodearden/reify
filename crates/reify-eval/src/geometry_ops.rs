@@ -4879,6 +4879,17 @@ pub(crate) fn walk_placed_realizations<V>(
     functions: &[CompiledFunction],
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
+    // Optional short-circuit filter (T7 amendment, suggestion 3).
+    //
+    // Called BEFORE `ApplyTransform` with `(t_idx, r_idx, entity_path)`.
+    // If the filter returns `false`, BOTH the transform and the visitor call are
+    // skipped for that realization — no new kernel handle is minted.
+    //
+    // Pass `None` for the default "include all" behavior (zero overhead on the
+    // tessellation hot path).  Pass `Some(f)` in `distance_between_placed` to
+    // skip transforms for realizations not matching the two target paths, avoiding
+    // accumulation of transient placed handles in the kernel store on repeated calls.
+    pre_filter: Option<&dyn Fn(usize, usize, &str) -> bool>,
     visit_realization: &mut V,
 ) where
     V: FnMut(
@@ -4913,6 +4924,14 @@ pub(crate) fn walk_placed_realizations<V>(
         let Some(handle) = terminal_handles[t_idx][r_idx] else {
             continue;
         };
+        // Compute entity_path BEFORE ApplyTransform so `pre_filter` can gate the
+        // transform on the path (avoids minting transient handles for unwanted bodies).
+        let entity_path = format!("{}#realization[{}]", path_prefix, realization.id.index);
+        // Short-circuit: if the caller supplied a pre-filter and this realization is
+        // not wanted, skip both the transform and the visitor — no kernel op issued.
+        if pre_filter.is_some_and(|f| !f(t_idx, r_idx, &entity_path)) {
+            continue;
+        }
         let default_kernel = geometry_kernels
             .get_mut(default_kernel_name)
             .expect("default kernel must remain in the map across the surfacing walk");
@@ -4936,7 +4955,6 @@ pub(crate) fn walk_placed_realizations<V>(
             None => handle.id,
         };
         let default_visible = !(aux_ancestor || realization_is_aux(realization));
-        let entity_path = format!("{}#realization[{}]", path_prefix, realization.id.index);
         // Pass a mutable borrow of the kernel to the visitor; the borrow is
         // released when visit_realization returns, before the sub-component
         // loop re-borrows geometry_kernels for the recursive call.
@@ -4982,6 +5000,7 @@ pub(crate) fn walk_placed_realizations<V>(
             functions,
             meta_map,
             diagnostics,
+            pre_filter,
             visit_realization,
         );
     }
@@ -5076,9 +5095,24 @@ pub(crate) fn surface_export_bodies(
     // intra-template intermediate let (its geometry is inlined into the template's
     // final realization) and is excluded from export.
     skip: &[HashSet<usize>],
+    // Optional entity-path pre-filter (T7 amendment, suggestion 3).
+    // Passed through to `walk_placed_realizations`; checked BEFORE `ApplyTransform`.
+    // `None` = include all non-skipped bodies (default for `build()`).
+    // `Some(f)` = also skip bodies whose path doesn't satisfy `f` (used by
+    // `distance_between_placed` to avoid minting transient handles for non-target paths).
+    pre_filter: Option<&dyn Fn(usize, usize, &str) -> bool>,
     export_bodies: &mut Vec<ExportBody>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    // Combine the caller-supplied path pre-filter (gates ApplyTransform before calling
+    // the walk) with the intra-template skip set (excludes boolean operand lets).
+    // The combined closure is used as the walk's pre_filter so that BOTH checks happen
+    // BEFORE the kernel operation is issued, saving a transient handle per skipped body.
+    let combined_filter: &dyn Fn(usize, usize, &str) -> bool =
+        &|t: usize, r: usize, path: &str| {
+            !skip.get(t).is_some_and(|set| set.contains(&r))
+                && pre_filter.map_or(true, |f| f(t, r, path))
+        };
     walk_placed_realizations(
         module,
         t_idx,
@@ -5093,13 +5127,11 @@ pub(crate) fn surface_export_bodies(
         functions,
         meta_map,
         diagnostics,
-        &mut |_kernel, placed_id, entity_path, default_visible, t, r, _diag| {
-            // Skip non-final intra-template realizations — their geometry is
-            // inlined into the template's final realization, so exporting them
-            // would ship duplicate / consumed-operand solids.
-            if skip.get(t).is_some_and(|set| set.contains(&r)) {
-                return;
-            }
+        Some(combined_filter),
+        &mut |_kernel, placed_id, entity_path, default_visible, _t, _r, _diag| {
+            // The combined pre_filter already excluded non-final / non-target
+            // realizations before the transform, so every body reaching this
+            // visitor should be collected unconditionally.
             export_bodies.push(ExportBody {
                 entity_path,
                 handle_id: placed_id,
@@ -5185,6 +5217,9 @@ pub(crate) fn surface_subtree(
         functions,
         meta_map,
         diagnostics,
+        // Tessellation surfaces all bodies (no path filter needed); pass None to
+        // avoid any pre-filter overhead on the hot path.
+        None,
         &mut |kernel, placed_id, entity_path, default_visible, t, r, diag| {
             let budget = tessellation_budgets[t][r];
             match kernel.tessellate(placed_id, budget) {
