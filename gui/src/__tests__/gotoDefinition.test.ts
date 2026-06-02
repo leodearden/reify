@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { EditorView } from '@codemirror/view';
 import { flushMacrotasks, withSuppressedRejectionsAndWarnSpy, expectNoUnhandledRejections } from './test-utils';
 
 // Mock Tauri API modules
@@ -72,7 +73,7 @@ function makeMockView(overrides?: {
     dom: {
       isConnected: overrides?.dom?.isConnected ?? true,
     },
-  };
+  } as unknown as EditorView;
 }
 
 function makeMouseEvent(overrides?: Partial<MouseEvent>): MouseEvent {
