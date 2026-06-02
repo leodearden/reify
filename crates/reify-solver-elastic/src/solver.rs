@@ -1208,10 +1208,10 @@ mod tests {
         );
         for i in 0..3 {
             assert_eq!(
-                result.u[i].to_bits(),
+                result.u()[i].to_bits(),
                 f[i].to_bits(),
                 "u[{i}] = {} should be bit-equal to f[{i}] = {}",
-                result.u[i],
+                result.u()[i],
                 f[i]
             );
         }
@@ -1253,11 +1253,11 @@ mod tests {
 
         let u_expected = [1.0_f64 / 11.0, 7.0_f64 / 11.0];
         for i in 0..2 {
-            let diff = (result.u[i] - u_expected[i]).abs();
+            let diff = (result.u()[i] - u_expected[i]).abs();
             assert!(
                 diff < 1e-9,
                 "u[{i}] = {} but expected {} (diff = {})",
-                result.u[i],
+                result.u()[i],
                 u_expected[i],
                 diff
             );
@@ -1357,12 +1357,12 @@ mod tests {
             "must not converge with max_iter=1 and tol=1e-15"
         );
         assert_eq!(result.iterations, 1, "exactly the cap was consumed");
-        assert_eq!(result.u.len(), 2, "u has the correct length");
+        assert_eq!(result.u().len(), 2, "u has the correct length");
         // At least one entry of u is non-zero (one CG step took effect).
         assert!(
-            result.u.iter().any(|&v| v != 0.0),
+            result.u().iter().any(|&v| v != 0.0),
             "u must be non-zero after one CG step: {:?}",
-            result.u
+            result.u()
         );
     }
 
@@ -1390,7 +1390,7 @@ mod tests {
 
         // Verify residual r = f − Ku using spmv_seq.
         let mut ku = vec![0.0_f64; n];
-        spmv_seq(&k, &result.u, &mut ku);
+        spmv_seq(&k, result.u(), &mut ku);
         let mut residual = vec![0.0_f64; n];
         for i in 0..n {
             residual[i] = f[i] - ku[i];
@@ -1536,14 +1536,14 @@ mod tests {
         );
 
         for i in 0..f.len() {
-            let tol = 1e-9 * det.u[i].abs().max(1.0);
-            let diff = (par4.u[i] - det.u[i]).abs();
+            let tol = 1e-9 * det.u()[i].abs().max(1.0);
+            let diff = (par4.u()[i] - det.u()[i]).abs();
             assert!(
                 diff < tol,
                 "Tolerance-equivalence failure at i={i}: \
                  u_par={}, u_det={}, |diff|={diff} ≥ tol={tol}",
-                par4.u[i],
-                det.u[i],
+                par4.u()[i],
+                det.u()[i],
             );
         }
 
@@ -1559,11 +1559,11 @@ mod tests {
         );
         for i in 0..f.len() {
             assert_eq!(
-                par4.u[i].to_bits(),
-                par4b.u[i].to_bits(),
+                par4.u()[i].to_bits(),
+                par4b.u()[i].to_bits(),
                 "parallel back-to-back u[{i}] not bit-stable: a={} b={}",
-                par4.u[i],
-                par4b.u[i],
+                par4.u()[i],
+                par4b.u()[i],
             );
         }
     }
@@ -1640,11 +1640,11 @@ mod tests {
             );
             for i in 0..16 {
                 assert_eq!(
-                    par.u[i].to_bits(),
-                    det.u[i].to_bits(),
+                    par.u()[i].to_bits(),
+                    det.u()[i].to_bits(),
                     "Parallel {{ threads: {t} }} u[{i}] = {} ≠ Deterministic u[{i}] = {}",
-                    par.u[i],
-                    det.u[i]
+                    par.u()[i],
+                    det.u()[i]
                 );
             }
         }
@@ -1878,7 +1878,7 @@ mod tests {
             result.converged,
             "zero-RHS short-circuit must report converged",
         );
-        assert_eq!(*result.u, vec![0.0_f64; 2], "u must be the zero vector");
+        assert_eq!(result.u(), &[0.0_f64, 0.0_f64], "u must be the zero vector");
     }
 
     // -----------------------------------------------------------------------
