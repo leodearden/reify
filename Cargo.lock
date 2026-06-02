@@ -4260,6 +4260,7 @@ dependencies = [
  "reify-compiler",
  "reify-config",
  "reify-core",
+ "reify-eval",
  "reify-expr",
  "reify-ir",
  "reify-syntax",
