@@ -377,10 +377,88 @@ pub fn compute_document_symbols(source: &str, uri: &Url) -> Vec<DocumentSymbol> 
                     SymbolKind::STRUCT,
                     span_to_range(source, s.span),
                     name_selection_range(source, s.span, &s.name),
-                    None,
+                    children_or_none(members_to_symbols(source, &s.members)),
                 ));
             }
             // All other top-level declarations are not navigable symbols.
+            _ => {}
+        }
+    }
+    symbols
+}
+
+/// Convert a possibly-empty child list into the `children` field of a
+/// [`DocumentSymbol`]: `None` when there are no navigable members, `Some(_)`
+/// otherwise. Keeps leaf declarations as `children: None` rather than
+/// `Some(vec![])`.
+fn children_or_none(children: Vec<DocumentSymbol>) -> Option<Vec<DocumentSymbol>> {
+    if children.is_empty() {
+        None
+    } else {
+        Some(children)
+    }
+}
+
+/// Recursively convert a member list into child [`DocumentSymbol`]s (task 4207 η).
+///
+/// Mirrors the recursion shape of [`count_members_recursive`] /
+/// [`find_named_member_span`]: `where`/`else` ([`reify_ast::MemberDecl::GuardedGroup`])
+/// and match-arm ([`reify_ast::MemberDecl::MatchArmDeclGroup`]) members are
+/// FLATTENED up to the owning declaration's children — no synthetic guard nodes —
+/// so guarded and match-arm params/lets stay discoverable for symbol-jump. Named
+/// members map as: param→FIELD, let→VARIABLE. Unlabeled constraints, connects,
+/// chains, minimize/maximize, and meta blocks have no stable identifier to jump
+/// to and are skipped (sub/port nesting is added in a later step).
+///
+/// Recursion is bounded by [`reify_ast::MAX_MEMBER_NESTING_DEPTH`] to prevent
+/// stack overflow on pathological input, matching the AST member-walk helpers.
+fn members_to_symbols(source: &str, members: &[reify_ast::MemberDecl]) -> Vec<DocumentSymbol> {
+    members_to_symbols_depth(source, members, 0)
+}
+
+fn members_to_symbols_depth(
+    source: &str,
+    members: &[reify_ast::MemberDecl],
+    depth: usize,
+) -> Vec<DocumentSymbol> {
+    use reify_ast::MemberDecl;
+    if depth > reify_ast::MAX_MEMBER_NESTING_DEPTH {
+        return Vec::new();
+    }
+    let mut symbols = Vec::new();
+    for member in members {
+        match member {
+            MemberDecl::Param(p) => symbols.push(make_symbol(
+                &p.name,
+                SymbolKind::FIELD,
+                span_to_range(source, p.span),
+                name_selection_range(source, p.span, &p.name),
+                None,
+            )),
+            MemberDecl::Let(l) => symbols.push(make_symbol(
+                &l.name,
+                SymbolKind::VARIABLE,
+                span_to_range(source, l.span),
+                name_selection_range(source, l.span, &l.name),
+                None,
+            )),
+            // where/else members flatten up to the owning declaration.
+            MemberDecl::GuardedGroup(g) => {
+                symbols.extend(members_to_symbols_depth(source, &g.members, depth + 1));
+                symbols.extend(members_to_symbols_depth(source, &g.else_members, depth + 1));
+            }
+            // match-arm members flatten up to the owning declaration.
+            MemberDecl::MatchArmDeclGroup(g) => {
+                for arm in &g.arms {
+                    symbols.extend(members_to_symbols_depth(
+                        source,
+                        std::slice::from_ref(&*arm.member),
+                        depth + 1,
+                    ));
+                }
+            }
+            // Constraints/connects/chains/minimize/maximize/meta (and sub/port,
+            // handled in a later step) are not emitted here.
             _ => {}
         }
     }
