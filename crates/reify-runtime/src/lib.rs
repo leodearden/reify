@@ -88,6 +88,69 @@ impl SequentialScheduler {
 mod tests {
     use super::*;
 
+    // ---------------------------------------------------------------------------
+    // traits_to_priority unit tests (step-1 RED / step-2 GREEN)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn traits_to_priority_immediate_maps_to_p1fast() {
+        use reify_ir::NodeTraits;
+        assert_eq!(traits_to_priority(NodeTraits::IMMEDIATE), Priority::P1Fast);
+    }
+
+    #[test]
+    fn traits_to_priority_committable_maps_to_p1slow() {
+        use reify_ir::NodeTraits;
+        assert_eq!(
+            traits_to_priority(NodeTraits::COMMITTABLE),
+            Priority::P1Slow
+        );
+    }
+
+    #[test]
+    fn traits_to_priority_warm_startable_and_committable_maps_to_p1slow() {
+        // NodeKind::Compute / Realization / Resolution default: WARM_STARTABLE | COMMITTABLE
+        use reify_ir::NodeTraits;
+        let traits = NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE);
+        assert_eq!(traits_to_priority(traits), Priority::P1Slow);
+    }
+
+    #[test]
+    fn traits_to_priority_empty_maps_to_p3speculative() {
+        // NodeKind::Constraint default: empty
+        use reify_ir::NodeTraits;
+        assert_eq!(
+            traits_to_priority(NodeTraits::empty()),
+            Priority::P3Speculative
+        );
+    }
+
+    #[test]
+    fn traits_to_priority_warm_startable_alone_maps_to_p3speculative() {
+        use reify_ir::NodeTraits;
+        assert_eq!(
+            traits_to_priority(NodeTraits::WARM_STARTABLE),
+            Priority::P3Speculative
+        );
+    }
+
+    #[test]
+    fn traits_to_priority_progressive_alone_maps_to_p3speculative() {
+        use reify_ir::NodeTraits;
+        assert_eq!(
+            traits_to_priority(NodeTraits::PROGRESSIVE),
+            Priority::P3Speculative
+        );
+    }
+
+    #[test]
+    fn traits_to_priority_immediate_takes_precedence_over_committable() {
+        // IMMEDIATE | COMMITTABLE → P1Fast (IMMEDIATE checked first, per Q-2)
+        use reify_ir::NodeTraits;
+        let traits = NodeTraits::IMMEDIATE.union(NodeTraits::COMMITTABLE);
+        assert_eq!(traits_to_priority(traits), Priority::P1Fast);
+    }
+
     #[test]
     fn test_task_creation() {
         let id = reify_core::ValueCellId::new("Bracket", "width");
