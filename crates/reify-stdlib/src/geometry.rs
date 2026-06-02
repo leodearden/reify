@@ -5028,6 +5028,64 @@ mod tests {
         assert!(eval_builtin("affine_inverse", &[Value::Real(1.0)]).is_undef());
     }
 
+    // ── δ step-3: inverse round-trip on non-diagonal composed map ─────────────
+    // Richer than γ's diagonal example (4973): uses a = compose(scale(2,1,1),
+    // shear_xy(1)) with linear [[2,2,0],[0,1,0],[0,0,1]], det=2 (invertible).
+    // Checks both orders of round-trip AND a point-level round-trip.
+
+    #[test]
+    fn affine_inverse_round_trip_composed_nondiagoal_both_orders() {
+        // a = compose(scale(2,1,1), shear_xy(1)): det=2, non-diagonal, invertible.
+        let scale = eval_builtin(
+            "affine_scale",
+            &[Value::Real(2.0), Value::Real(1.0), Value::Real(1.0)],
+        );
+        let shear = eval_builtin("affine_shear_xy", &[Value::Real(1.0)]);
+        let a = eval_builtin("affine_compose", &[scale, shear]);
+
+        let inv_result = eval_builtin("affine_inverse", std::slice::from_ref(&a));
+        let inv = match inv_result {
+            Value::Option(Some(inner)) => *inner,
+            other => panic!("expected Option(Some(AffineMap)), got {:?}", other),
+        };
+
+        // (1) compose(a, inv) ≈ identity
+        let (fwd_linear, fwd_trans) = expect_affine(eval_builtin(
+            "affine_compose",
+            &[a.clone(), inv.clone()],
+        ));
+        assert_matrix_approx(fwd_linear, IDENTITY_3X3, 1e-12);
+        for (k, &v) in fwd_trans.iter().enumerate() {
+            assert!(
+                v.abs() < 1e-12,
+                "compose(a,inv) translation[{k}] = {v}, expected 0"
+            );
+        }
+
+        // (2) compose(inv, a) ≈ identity  [two-sided inverse]
+        let (bwd_linear, bwd_trans) = expect_affine(eval_builtin(
+            "affine_compose",
+            &[inv.clone(), a.clone()],
+        ));
+        assert_matrix_approx(bwd_linear, IDENTITY_3X3, 1e-12);
+        for (k, &v) in bwd_trans.iter().enumerate() {
+            assert!(
+                v.abs() < 1e-12,
+                "compose(inv,a) translation[{k}] = {v}, expected 0"
+            );
+        }
+
+        // (3) point-level round-trip: apply_affine_to_point(compose(a,inv), p) ≈ p
+        let p = [1.0, 1.0, 0.0];
+        let round_trip = apply_affine_to_point(fwd_linear, fwd_trans, p);
+        for (i, (&got, &expected)) in round_trip.iter().zip(p.iter()).enumerate() {
+            assert!(
+                (got - expected).abs() < 1e-12,
+                "point round-trip[{i}]: expected {expected}, got {got}"
+            );
+        }
+    }
+
     // ── δ step-2: transform-widening structural-invariant pin ─────────────────
     // Goes beyond γ's bare matrix-equality by asserting det=+1 (orientation-
     // preserving) and orthonormality (linear·linearᵀ=I) on the widened rotation.
