@@ -172,3 +172,84 @@ fn elastic_poissons_ratio_valid_is_clean() {
         errors
     );
 }
+
+// ── §6.2 Optional params — conformance (compile-time) ───────────────────────
+
+/// Conforming structure that omits shear_modulus from Elastic.
+/// Once shear_modulus gains `= undef`, this should compile cleanly.
+/// poissons_ratio = 0.3 keeps the (0, 0.5) constraint satisfied.
+///
+/// RED: shear_modulus is still required (no default) → MissingRequiredMember error.
+#[test]
+fn elastic_omits_shear_modulus_is_clean() {
+    let src = r#"
+        structure def ElasticNoShear : Elastic {
+            param youngs_modulus : Real = 200.0
+            param poissons_ratio : Real = 0.3
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(src);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Severity::Error diagnostics when omitting shear_modulus \
+         (should default to undef), got: {:?}",
+        errors
+    );
+}
+
+/// Conforming structure that omits compressive_strength from Strong.
+/// Once compressive_strength gains `= undef`, this should compile cleanly.
+/// uts=400.0 >= yield_strength=250.0 keeps the uts>=yield_strength constraint satisfied.
+///
+/// RED: compressive_strength is still required (no default) → MissingRequiredMember error.
+#[test]
+fn strong_omits_compressive_strength_is_clean() {
+    let src = r#"
+        structure def StrongNoCompr : Strong {
+            param yield_strength : Real = 250.0
+            param uts            : Real = 400.0
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(src);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Severity::Error diagnostics when omitting compressive_strength \
+         (should default to undef), got: {:?}",
+        errors
+    );
+}
+
+/// Conforming structure that omits reduction_of_area from Ductile.
+/// Once reduction_of_area gains `= undef`, this should compile cleanly.
+///
+/// RED: reduction_of_area is still required (no default) → MissingRequiredMember error.
+#[test]
+fn ductile_omits_reduction_of_area_is_clean() {
+    let src = r#"
+        structure def DuctileNoROA : Ductile {
+            param elongation : Real = 0.2
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(src);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Severity::Error diagnostics when omitting reduction_of_area \
+         (should default to undef), got: {:?}",
+        errors
+    );
+}
