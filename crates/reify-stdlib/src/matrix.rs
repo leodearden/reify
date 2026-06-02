@@ -40,6 +40,16 @@ pub(crate) fn eval_matrix(name: &str, args: &[Value]) -> Option<Value> {
                     let (g, h, i) = (data[6], data[7], data[8]);
                     a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
                 }
+                // N≥4: LU-based determinant. Two subtle differences from the
+                // closed forms above:
+                //   1. Singular inputs yield ~0 (e.g. 1e-14) rather than exact 0.0,
+                //      because LU pivoting accumulates floating-point error.
+                //   2. The inverse arm uses try_inverse()'s exact-pivot test, which
+                //      has a different (unrelated) threshold. For ill-conditioned
+                //      matrices near singularity the two ops can disagree: det may
+                //      be nonzero while try_inverse returns None (→ Undef), or vice
+                //      versa. This is consistent with the existing 2×2/3×3 contract
+                //      (singular→det≈0 value; singular→Undef for inverse).
                 _ => DMatrix::from_row_slice(n, n, &data).determinant(),
             };
             let result_dim = dim.pow(n as i8);
@@ -1116,5 +1126,106 @@ mod tests {
             "inverse dim expected DIMENSIONLESS/LENGTH, got {:?}",
             inv_dim
         );
+    }
+
+    // --- N>4 (5×5) tests: confirm the general dense path beyond the 4×4 boundary ---
+
+    /// Non-symmetric upper-triangular 5×5 used for both det and inverse:
+    ///   [[2,1,0,0,0],[0,3,1,0,0],[0,0,4,1,0],[0,0,0,5,1],[0,0,0,0,6]]
+    ///   det = 2·3·4·5·6 = 720, κ ≈ product-of-ratio ≈ small.
+    ///
+    /// Non-symmetry matters: for a symmetric matrix A=A^T the nalgebra inverse
+    /// extraction `inv[(i,j)]` gives correct A·A⁻¹≈I even if i/j are swapped
+    /// (because (A⁻¹)^T=(A^T)⁻¹=A⁻¹).  For a non-symmetric matrix a transposed
+    /// read-back produces A·(A⁻¹)^T≠I, so the residual check is layout-sensitive.
+    fn make_5x5_upper_triangular() -> Value {
+        eval_builtin(
+            "matrix",
+            &[Value::List(vec![
+                Value::List(vec![
+                    Value::Real(2.0),
+                    Value::Real(1.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(3.0),
+                    Value::Real(1.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(4.0),
+                    Value::Real(1.0),
+                    Value::Real(0.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(5.0),
+                    Value::Real(1.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(6.0),
+                ]),
+            ])],
+        )
+    }
+
+    /// 5×5 determinant: upper-triangular matrix det = product of diagonal = 720.
+    /// G6 1e-9 floor; LU residual on a near-diagonal 5×5 is ~1e-13.
+    #[test]
+    fn det_5x5_upper_triangular_is_720() {
+        let m = make_5x5_upper_triangular();
+        let result = eval_builtin("determinant", &[m]);
+        match result {
+            Value::Real(v) => assert!(
+                (v - 720.0).abs() < 1e-9,
+                "det of 5×5 upper triangular expected 720.0, got {v}"
+            ),
+            other => panic!("expected Real(720.0), got {:?}", other),
+        }
+    }
+
+    /// 5×5 inverse: A·A⁻¹ ≈ I₅ — max residual < 1e-9.
+    /// Non-symmetric matrix so a transposed read-back in the nalgebra extraction
+    /// is caught by the identity residual (see make_5x5_upper_triangular).
+    #[test]
+    fn inverse_5x5_times_original_approx_identity() {
+        let m = make_5x5_upper_triangular();
+        let inv = eval_builtin("inverse", std::slice::from_ref(&m));
+
+        assert!(
+            !inv.is_undef(),
+            "inverse of well-conditioned 5×5 should not be Undef, got {:?}",
+            inv
+        );
+
+        let (n_a, _, a_data, _) = matrix_components_f64(&m).expect("A must parse");
+        let (n_inv, _, inv_data, _) = matrix_components_f64(&inv).expect("inv must parse");
+        assert_eq!(n_a, 5);
+        assert_eq!(n_inv, 5);
+
+        // Compute A · A⁻¹ and assert ‖ · − I‖∞ < 1e-9
+        for r in 0..5 {
+            for c in 0..5 {
+                let product: f64 =
+                    (0..5).map(|k| a_data[r * 5 + k] * inv_data[k * 5 + c]).sum();
+                let expected = if r == c { 1.0 } else { 0.0 };
+                assert!(
+                    (product - expected).abs() < 1e-9,
+                    "A·A⁻¹[{r}][{c}] = {product}, expected {expected}"
+                );
+            }
+        }
     }
 }
