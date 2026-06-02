@@ -5996,9 +5996,13 @@ describe('App epoch/staleness guard for refreshEntityTree (task 4251)', () => {
     // is the epoch/staleness guard implemented in step-4.
     staleDeferred.resolve([makeNode('CapstanDrive.capstan')]);
 
-    // Flush the microtask queue so the stale .then callback runs (if not guarded).
-    await Promise.resolve();
-    await Promise.resolve();
+    // Flush the macrotask queue so the stale .then callback (and any further
+    // microtask hops it spawns) is guaranteed to have run before we assert.
+    // Using flushMacrotasks() rather than bare await Promise.resolve() ticks
+    // is more durable: a setTimeout barrier drains all pending microtasks
+    // first, so if the resolve path ever gains an extra microtask hop the
+    // assertion ordering remains correct.
+    await flushMacrotasks();
 
     // Epoch guard (step-4) must have dropped the stale snapshot.
     // Both B meshes must survive — shuttle.plate must NOT have been pruned.

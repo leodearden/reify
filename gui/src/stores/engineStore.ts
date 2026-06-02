@@ -348,6 +348,12 @@ export function createEngineStore(options?: EngineStoreOptions) {
         }
       }
       // Snapshot is from a different design root (stale/pre-switch) — skip pruning.
+      // Note: this guard is defense-in-depth. The primary staleness defense is the
+      // App-layer epoch guard in App.tsx (refreshEntityTree), which drops any tree
+      // snapshot fetched before the latest engine (re)init regardless of overlap.
+      // This guard complements it by catching fully-disjoint snapshots that reach
+      // reconcileToTree through any path; it cannot handle partial-overlap staleness
+      // (same-root partial snapshot), which the epoch guard handles exclusively.
       if (!hasOverlap) return;
     }
 
