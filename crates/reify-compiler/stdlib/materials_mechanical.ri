@@ -39,6 +39,15 @@
 
 // ── Base material trait ──────────────────────────────────────────────────────
 
+// TemperatureDependent marks structures that carry a reference temperature for
+// thermal analysis. The param is optional: conformers that do not supply it
+// inherit the standard ambient-temperature default (293.15 K ≈ 20 °C).
+// Temperature is the one deviation from the module's all-Real convention for
+// this new trait (PRD D3); K resolves via stdlib/units.ri under #no_prelude.
+trait TemperatureDependent {
+    param reference_temperature : Temperature = 293.15K
+}
+
 // MaterialSpec is the trait-level contract every material-like structure
 // must satisfy. The canonical first-class `Material` struct (below) provides
 // a concrete value type for callers that want to supply a material by
