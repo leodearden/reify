@@ -148,6 +148,180 @@ fn curve_constructor_is_one_dimensional_preserving_all_flags() {
     assert!(!c.closed, "curve() must be closed=false");
 }
 
+// ─── dimension assignment across both inference paths (task α) ───────────────
+//
+// Solid cases already pass after step-4 (named constructors default to Solid);
+// the Curve cases are RED until step-6 routes the curve arms to
+// `InferredTraits::curve()`.
+
+/// Name-dispatch: primitives and every combinator family (boolean / modify /
+/// pattern / sweep) infer `GeomDim::Solid`.
+#[test]
+fn name_dispatch_assigns_solid_to_primitives_and_combinators() {
+    use reify_compiler::geometry_traits_inference::try_infer_traits_for_function_call;
+    let g = || CompiledExpr::literal(Value::Real(10.0), Type::length());
+    let box_g = || make_function_call("box", vec![g(), g(), g()], Type::Geometry);
+
+    for name in ["box", "cylinder", "sphere", "tube"] {
+        let t = try_infer_traits_for_function_call(name, &[g(), g(), g()]).unwrap();
+        assert_eq!(t.dimension, GeomDim::Solid, "{name} must infer Solid");
+    }
+    for name in ["union", "difference", "intersection", "union_all", "intersection_all"] {
+        let t = try_infer_traits_for_function_call(name, &[box_g(), box_g()]).unwrap();
+        assert_eq!(t.dimension, GeomDim::Solid, "{name} must infer Solid");
+    }
+    for name in ["fillet", "shell"] {
+        let t = try_infer_traits_for_function_call(name, &[box_g()]).unwrap();
+        assert_eq!(t.dimension, GeomDim::Solid, "{name} must infer Solid");
+    }
+    for name in ["linear_pattern", "circular_pattern", "mirror"] {
+        let t = try_infer_traits_for_function_call(name, &[box_g()]).unwrap();
+        assert_eq!(t.dimension, GeomDim::Solid, "{name} must infer Solid");
+    }
+    for name in ["extrude", "revolve", "sweep", "loft"] {
+        let t = try_infer_traits_for_function_call(name, &[box_g()]).unwrap();
+        assert_eq!(t.dimension, GeomDim::Solid, "{name} must infer Solid");
+    }
+}
+
+/// Name-dispatch: every curve constructor infers `GeomDim::Curve`.
+/// RED until step-6 (currently the curve arm returns `all()` → Solid).
+#[test]
+fn name_dispatch_assigns_curve_to_curve_constructors() {
+    use reify_compiler::geometry_traits_inference::try_infer_traits_for_function_call;
+    let g = || CompiledExpr::literal(Value::Real(10.0), Type::length());
+    for name in ["line_segment", "arc", "helix", "interp", "bezier", "nurbs"] {
+        let t = try_infer_traits_for_function_call(name, &[g(), g()]).unwrap();
+        assert_eq!(t.dimension, GeomDim::Curve, "{name} must infer Curve");
+    }
+}
+
+/// Name-dispatch: a transform of a curve PRESERVES Curve (combine_transform is
+/// identity), while a transform of a box stays Solid. The Curve half is RED
+/// until step-6.
+#[test]
+fn name_dispatch_transform_preserves_operand_dimension() {
+    use reify_compiler::geometry_traits_inference::try_infer_traits_for_function_call;
+    let g = || CompiledExpr::literal(Value::Real(10.0), Type::length());
+
+    let arc = make_function_call("arc", vec![g(), g(), g()], Type::Geometry);
+    let translate_arc_args = vec![arc, g(), g(), g()];
+    let t = try_infer_traits_for_function_call("translate", &translate_arc_args).unwrap();
+    assert_eq!(
+        t.dimension,
+        GeomDim::Curve,
+        "translate(arc(...)) must preserve Curve"
+    );
+
+    let box_g = make_function_call("box", vec![g(), g(), g()], Type::Geometry);
+    let translate_box_args = vec![box_g, g(), g(), g()];
+    let t2 = try_infer_traits_for_function_call("translate", &translate_box_args).unwrap();
+    assert_eq!(
+        t2.dimension,
+        GeomDim::Solid,
+        "translate(box(...)) must stay Solid"
+    );
+}
+
+/// Op-array: Primitive / Boolean / Modify / Pattern / Sweep roots infer Solid.
+/// These already pass after step-4.
+#[test]
+fn op_array_assigns_solid_to_primitive_and_combinator_ops() {
+    let prim = vec![CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![],
+    }];
+    assert_eq!(infer_traits_for_op(&prim).dimension, GeomDim::Solid);
+
+    let sweep = vec![
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        },
+        CompiledGeometryOp::Sweep {
+            kind: SweepKind::Extrude,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![],
+        },
+    ];
+    assert_eq!(infer_traits_for_op(&sweep).dimension, GeomDim::Solid);
+
+    let boolean = vec![
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        },
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        },
+        CompiledGeometryOp::Boolean {
+            op: BooleanOp::Union,
+            left: GeomRef::Step(0),
+            right: GeomRef::Step(1),
+        },
+    ];
+    assert_eq!(infer_traits_for_op(&boolean).dimension, GeomDim::Solid);
+
+    let modify = vec![
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        },
+        CompiledGeometryOp::Modify {
+            kind: ModifyKind::Fillet,
+            target: GeomRef::Step(0),
+            args: vec![],
+        },
+    ];
+    assert_eq!(infer_traits_for_op(&modify).dimension, GeomDim::Solid);
+
+    let pattern = vec![
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        },
+        CompiledGeometryOp::Pattern {
+            kind: PatternKind::Linear,
+            target: GeomRef::Step(0),
+            args: vec![],
+        },
+    ];
+    assert_eq!(infer_traits_for_op(&pattern).dimension, GeomDim::Solid);
+}
+
+/// Op-array: a `Curve` op infers Curve, and a Transform of a Curve op preserves
+/// Curve. RED until step-6 (currently the `Curve` arm returns `all()` → Solid).
+#[test]
+fn op_array_assigns_curve_to_curve_op_and_preserves_through_transform() {
+    let curve_ops = vec![CompiledGeometryOp::Curve {
+        kind: CurveKind::Arc,
+        args: vec![],
+    }];
+    assert_eq!(
+        infer_traits_for_op(&curve_ops).dimension,
+        GeomDim::Curve,
+        "a Curve op must infer GeomDim::Curve"
+    );
+
+    let transform_curve = vec![
+        CompiledGeometryOp::Curve {
+            kind: CurveKind::Arc,
+            args: vec![],
+        },
+        CompiledGeometryOp::Transform {
+            kind: TransformKind::Translate,
+            target: GeomRef::Step(0),
+            args: vec![],
+        },
+    ];
+    assert_eq!(
+        infer_traits_for_op(&transform_curve).dimension,
+        GeomDim::Curve,
+        "a Transform of a Curve op must preserve GeomDim::Curve"
+    );
+}
+
 // ─── infer_primitive — per-PrimitiveKind lookup ─────────────────────────────
 
 /// Every current `PrimitiveKind` (Box/Cylinder/Sphere/Tube) is fully
