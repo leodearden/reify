@@ -107,9 +107,19 @@ let toastIdCounter = 0;
 const App: Component = () => {
   const editorStore = createEditorStore();
   const selectionStore = createSelectionStore();
+  // Epoch counter: incremented once per engine (re)initialization so that any
+  // in-flight bridgeGetEntityTree() fetch that was issued before the latest
+  // engine load is recognized as stale when its .then resolves and dropped.
+  // This is the epoch/staleness guard described in the refreshEntityTree comment.
+  let engineLoadEpoch = 0;
+
   const engineStore = createEngineStore({
     onEntityRemoved: (id) => selectionStore.clearIfRemoved(id),
     onEngineReinitialized: () => {
+      // Bump the epoch BEFORE calling refreshEntityTree so the fresh fetch
+      // captures the new epoch value; any still-pending pre-reinit fetch
+      // will see a mismatch and be dropped.
+      engineLoadEpoch += 1;
       refreshEntityTree();
       mechanismStore.refresh().catch((err) =>
         console.error('[mechanism] refresh failed:', err),
@@ -298,21 +308,28 @@ const App: Component = () => {
   const [entityTree, setEntityTree] = createSignal<EntityTreeNode[]>([]);
 
   function refreshEntityTree(): void {
-    // Ordering note: reconcileToTree runs against the tree snapshot fetched
-    // here.  Mesh/value deltas that arrive via subscriptions between the
-    // bridgeGetEntityTree() call and this .then() callback will be reconciled
-    // against a slightly-stale snapshot — a freshly-created entity whose delta
-    // lands in that window could theoretically be pruned.  In practice the
-    // window is small and refreshEntityTree only fires at quiescent points
-    // (eval→idle settle and engine reinit), so flicker from this race has not
-    // been observed.  If it ever is, gating the prune on entity age relative
-    // to the snapshot would address it.
+    // Epoch/staleness guard: capture the current epoch before the async fetch.
+    // If engineLoadEpoch advances while this fetch is in flight (because a
+    // newer engine load began — e.g. File→Open during the fetch window), the
+    // snapshot we receive predates the current design.  Applying it via
+    // reconcileToTree would prune the freshly-loaded design's meshes, blanking
+    // the viewport.  Dropping the stale result is safe because the reinit that
+    // advanced the epoch already kicked off a fresh refreshEntityTree that will
+    // reconcile against the correct tree.
+    //
+    // The cross-root guard in engineStore.reconcileToTree is a complementary
+    // defence-in-depth layer (catches wholly-disjoint snapshots at the store
+    // level), but it does not cover partial-overlap snapshots where some entities
+    // happen to share paths across designs.  The epoch guard is the surgical fix.
+    const epochAtFetch = engineLoadEpoch;
     bridgeGetEntityTree()
       .then((t) => {
-        if (alive) {
-          setEntityTree(t);
-          engineStore.reconcileToTree(t);
-        }
+        if (!alive) return;
+        // Staleness guard: if the epoch advanced since this fetch was issued,
+        // the snapshot predates the current design — drop it.
+        if (epochAtFetch !== engineLoadEpoch) return;
+        setEntityTree(t);
+        engineStore.reconcileToTree(t);
       })
       .catch((err) => console.error('[entity-tree] refresh failed:', err));
   }
