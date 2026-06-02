@@ -53,6 +53,27 @@ fn eval_affine_scale_zero_warns_degenerate() {
     );
 }
 
+/// `reify eval` on a structure that composes a scale and shear, then computes
+/// `determinant(composed)`, prints the volume factor 24 on stdout and exits 0.
+///
+/// det(affine_scale(2,3,4)) · det(affine_shear_xy(0.5)) = 24 · 1 = 24 (exact).
+/// This is the §9 γ user-observable signal: algebra free-functions integrate
+/// end-to-end through eval.
+#[test]
+fn eval_affine_algebra_determinant_prints_24() {
+    let path = common::fixture_path("affine_algebra.ri");
+    let (status, stdout, stderr) = common::run_subcommand("eval", &path);
+
+    assert!(
+        status.success(),
+        "reify eval affine_algebra.ri should exit 0;\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("24"),
+        "stdout should contain determinant value 24; got:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
 /// `reify eval` on a dimensioned scale factor emits the dimensionless-requirement
 /// Warning on stderr via the post-Undef geometry diagnose hook, and still exits 0.
 #[test]

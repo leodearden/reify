@@ -1,0 +1,15 @@
+// affine_algebra.ri — CLI eval fixture for AffineMap algebra functions (PRD §4.3, task γ).
+//
+// `reify eval` must compute determinant(scale ∘ shear) = 24 (the signed volume
+// factor: det(affine_scale(2,3,4)) · det(affine_shear_xy(0.5)) = 24 · 1 = 24) and
+// print the result on stdout, exiting 0.
+//
+// Lives in tests/fixtures/ (NOT examples/) so it is exercised only by
+// cli_affine_eval.rs.
+
+structure def AffineAlgebra {
+    // compose a scale and a shear; the resulting AffineMap is evaluated.
+    let composed = affine_compose(affine_scale(2.0, 3.0, 4.0), affine_shear_xy(0.5))
+    // determinant of composed should be det(scale) · det(shear) = 24 · 1 = 24.
+    let d = determinant(composed)
+}
