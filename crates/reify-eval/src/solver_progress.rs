@@ -36,6 +36,11 @@ pub trait SolverProgressSink: Send + Sync {
     fn on_iteration(&self, update: &SolverProgressUpdate);
 }
 
+/// Snapshot returned by [`current_solve_dispatch_context`]:
+/// `(progress_sink, cancellation_handle)`, either of which may be absent.
+pub type SolveDispatchSnapshot =
+    Option<(Option<Arc<dyn SolverProgressSink>>, Option<CancellationHandle>)>;
+
 // ── Thread-local context ─────────────────────────────────────────────────────
 
 struct SolveDispatchContext {
@@ -83,8 +88,7 @@ pub fn install_solve_dispatch_context(
 /// Returns `None` when no context is installed (outside a dispatch window).
 /// Inside a dispatch window returns `Some((sink, cancel))` where either
 /// component may itself be `None` if not set.
-pub fn current_solve_dispatch_context(
-) -> Option<(Option<Arc<dyn SolverProgressSink>>, Option<CancellationHandle>)> {
+pub fn current_solve_dispatch_context() -> SolveDispatchSnapshot {
     SOLVE_DISPATCH_CONTEXT.with(|cell| {
         cell.borrow().as_ref().map(|ctx| {
             (
