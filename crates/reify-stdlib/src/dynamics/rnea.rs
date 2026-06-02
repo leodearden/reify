@@ -679,6 +679,46 @@ mod tests {
         );
     }
 
+    // ── multi-DOF compliance guard (PRD §11.2) ────────────────────────────────
+    //
+    // A 2-DOF joint with compliance set must panic with a message containing
+    // "1-DOF" (always-on assert, not debug_assert!).  This mirrors the
+    // module's existing always-on-assert convention (topological-order check)
+    // that prefers a panic over silently-wrong torques in release builds.
+    //
+    // Without the guard the code silently applies the spring term to tau_i[0]
+    // and returns; therefore the #[should_panic] test fails (did not panic)
+    // until step-6 adds the assert.
+    #[test]
+    #[should_panic(expected = "1-DOF")]
+    fn multi_dof_compliance_panics() {
+        use super::JointCompliance;
+
+        // 2-DOF joint: revolute about +y and prismatic along +z.
+        let link = RneaLink {
+            parent: None,
+            parent_to_child: SpatialTransform6::from_frame3(&Frame3::identity()),
+            subspace: vec![
+                SpatialVector6::from_angular_linear([0.0, 1.0, 0.0], [0.0, 0.0, 0.0]),
+                SpatialVector6::from_angular_linear([0.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+            ],
+            mass: 1.0,
+            com: [0.0, 0.0, 0.0],
+            inertia_about_com: [[0.1, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.3]],
+            q_dot: vec![0.5, 0.0],
+            q_ddot: vec![0.0, 0.0],
+            compliance: Some(JointCompliance {
+                spring_rate: Some(1.0),
+                damping: None,
+                neutral: 0.0,
+                position: 0.1,
+            }),
+        };
+
+        // Must panic with "1-DOF" in the message.
+        let _ = inverse_dynamics_open_chain(&[link], default_gravity());
+    }
+
     // ── multi-DOF joint subspace accumulation ─────────────────────────────────
     //
     // Exercises the multi-column vJ/aJ accumulation loops and the per-DOF
