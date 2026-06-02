@@ -2070,6 +2070,33 @@ mod tests {
         assert_eq!(s, "\"GeometryUnbounded\"");
     }
 
+    // --- GeometryProfileRequired tests (geometry-primitive-constructors task α) ---
+    // Pairs with the `emit_geometry_profile_required` producer in
+    // `crates/reify-compiler/src/conformance/mod.rs`, called by the profile-consumer
+    // arms in `crates/reify-compiler/src/geometry.rs` (extrude/revolve/loft/sweep/pipe…).
+
+    /// `DiagnosticCode::GeometryProfileRequired` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` (mirrors the GeometryUnbounded
+    /// shape so a future enum reorganisation that drops it is caught here).
+    #[test]
+    fn diagnostic_code_geometry_profile_required_with_code_round_trips() {
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::GeometryProfileRequired);
+        assert_eq!(d.code, Some(DiagnosticCode::GeometryProfileRequired));
+        assert_eq!(
+            format!("{:?}", DiagnosticCode::GeometryProfileRequired),
+            "GeometryProfileRequired"
+        );
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::GeometryProfileRequired` serializes
+    /// as `"GeometryProfileRequired"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_geometry_profile_required_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::GeometryProfileRequired).unwrap();
+        assert_eq!(s, "\"GeometryProfileRequired\"");
+    }
+
     // --- Shadowing tests (task 2310 — spec §8.5) ---
     // Pairs with the lint pass in
     // `crates/reify-compiler/src/compile_builder/shadow_lint.rs`.
