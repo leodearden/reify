@@ -364,6 +364,68 @@ mod tests {
         );
     }
 
+    // ── TOTSShaper builders ───────────────────────────────────────────────────
+
+    /// Build a minimal `PiecewisePolynomialProfile` `Value::StructureInstance`.
+    /// Registry-free sentinel type_id; `type_name` is what `eval_input_shape`
+    /// echoes back. Fields omitted — the dispatcher only reads type_name/type_id.
+    fn profile() -> Value {
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX - 1),
+            type_name: "PiecewisePolynomialProfile".to_string(),
+            version: 1,
+            fields: PersistentMap::default(),
+        }))
+    }
+
+    /// Build a `TOTSShaper` `Value::StructureInstance` with the given fields,
+    /// exactly as the eval path receives it from the compiled `.ri` output.
+    fn tots_shaper(fields: Vec<(&str, Value)>) -> Value {
+        let fields: PersistentMap<String, Value> = fields
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "TOTSShaper".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    // ── TOTSShaper arm ────────────────────────────────────────────────────────
+
+    /// A feasible TOTSShaper should cause `eval_input_shape` to echo the profile.
+    /// Fails today because `build_train_for_shaper` returns None for TOTSShaper
+    /// → `eval_input_shape` returns `Value::Undef` (the TOTS arm is not yet
+    /// wired).
+    #[test]
+    fn tots_shaper_feasible_echoes_profile() {
+        let p = profile();
+        let s = tots_shaper(vec![
+            ("velocity_limit", Value::Real(300.0)),
+            ("acceleration_limit", Value::Real(5000.0)),
+            ("vibration_tolerance", Value::Real(0.02)),
+            ("max_iters", Value::Int(100)),
+            ("tol", Value::Real(1e-6)),
+        ]);
+        let result = eval_input_shape(&[p, s]);
+        match result {
+            Value::StructureInstance(data) => {
+                assert_eq!(
+                    data.type_name, "PiecewisePolynomialProfile",
+                    "eval_input_shape with feasible TOTSShaper should echo the profile \
+                     (type_name = PiecewisePolynomialProfile), got: {:?}",
+                    data.type_name
+                );
+            }
+            other => panic!(
+                "expected Value::StructureInstance(PiecewisePolynomialProfile) for feasible \
+                 TOTSShaper, got {other:?} — TOTS arm not yet wired in eval_input_shape"
+            ),
+        }
+    }
+
     // ── bad inputs → None ─────────────────────────────────────────────────────
 
     /// A non-`StructureInstance` argument is not a shaper → `None`.
