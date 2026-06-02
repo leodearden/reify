@@ -591,4 +591,67 @@ describe('createEditorHoverSync', () => {
       });
     });
   });
+
+  it('(e) stale-result race guard: slow request #1 result discarded when fast request #2 resolves first', async () => {
+    // Mirror of sibling hook test (h):
+    // Call #1 → slow promise; call #2 → fast promise.
+    // Fast (#2) resolves with 'Bracket.width' → hoverEntity called once.
+    // Slow (#1, stale) resolves with 'Bracket.thickness' → hoverEntity NOT called again.
+    const { createEditorHoverSync } = await importHook();
+
+    let resolveSlowPromise!: (v: string | null) => void;
+    let resolveFastPromise!: (v: string | null) => void;
+    const slowPromise = new Promise<string | null>(r => { resolveSlowPromise = r; });
+    const fastPromise = new Promise<string | null>(r => { resolveFastPromise = r; });
+
+    let callCount = 0;
+    const getEntityAtSourceLocation = vi.fn().mockImplementation(() => {
+      callCount++;
+      return callCount === 1 ? slowPromise : fastPromise;
+    });
+    const hoverEntity = vi.fn();
+
+    await new Promise<void>((done) => {
+      createRoot(async (dispose) => {
+        const editorStore = makeHoverEditorStore(null);
+
+        createEditorHoverSync({
+          editorStore,
+          getEntityAtSourceLocation,
+          hoverEntity,
+          debounceMs: 200,
+        });
+
+        // Change #1 → fires debounce #1 → awaits slowPromise
+        editorStore.setCursorPosition({ line: 1, column: 1 });
+        await vi.advanceTimersByTimeAsync(250);
+        expect(getEntityAtSourceLocation).toHaveBeenCalledTimes(1);
+
+        // Change #2 → fires debounce #2 → awaits fastPromise
+        editorStore.setCursorPosition({ line: 2, column: 2 });
+        await vi.advanceTimersByTimeAsync(250);
+        expect(getEntityAtSourceLocation).toHaveBeenCalledTimes(2);
+
+        // Resolve fast promise (call #2) first with 'Bracket.width'
+        resolveFastPromise('Bracket.width');
+        await Promise.resolve();
+        await Promise.resolve();
+
+        // Fresh (call #2) result should have been applied
+        expect(hoverEntity).toHaveBeenCalledWith('Bracket.width');
+        const callsBefore = hoverEntity.mock.calls.length;
+
+        // Now resolve slow (stale) promise with 'Bracket.thickness'
+        resolveSlowPromise('Bracket.thickness');
+        await Promise.resolve();
+        await Promise.resolve();
+
+        // Stale result MUST be discarded — hoverEntity must NOT be called again
+        expect(hoverEntity.mock.calls.length).toBe(callsBefore);
+
+        dispose();
+        done();
+      });
+    });
+  });
 });
