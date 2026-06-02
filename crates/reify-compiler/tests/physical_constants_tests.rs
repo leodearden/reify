@@ -12,7 +12,7 @@
 
 mod common;
 
-use reify_core::{DimensionVector, Type};
+use reify_core::{DimensionVector, Severity, Type};
 use reify_ir::{CompiledExpr, Value, ValueMap};
 
 // ─── Test 1: SPEED_OF_LIGHT present and has correct signature ─────────────────
@@ -827,4 +827,40 @@ fn elementary_charge_evaluates_to_1p602176634e_minus_19_si_with_charge_dimension
             other
         ),
     }
+}
+
+// ─── Test 19: all 7 new constants accessible from user code (probe) ────────────
+
+/// A consumer-facing probe: a `.ri` structure referencing all 7 new physical
+/// constant functions compiled via the prelude-seeded path must produce ZERO
+/// `Severity::Error` diagnostics.
+///
+/// This exercises the prelude-seeded user-compilation path (distinct from the
+/// internal `units_module()` path used by Tests 5–18), confirming that all 7
+/// fns and their composite-dimension aliases are callable from user code and
+/// coexist without resolution errors.
+#[test]
+fn all_seven_new_constants_probe_compiles_with_zero_errors() {
+    let source = r#"
+structure def ProbeAllConstants {
+    param na : InverseAmount = AVOGADRO_CONSTANT()
+    param h  : Action = PLANCK_CONSTANT()
+    param sigma : StefanBoltzmannDim = STEFAN_BOLTZMANN_CONSTANT()
+    param eps0 : Permittivity = VACUUM_PERMITTIVITY()
+    param mu0  : Permeability = VACUUM_PERMEABILITY()
+    param R    : MolarGasConstant = MOLAR_GAS_CONSTANT()
+    param e    : Charge = ELEMENTARY_CHARGE()
+}
+"#;
+    let module = common::compile_with_stdlib_helper(source);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "probe .ri referencing all 7 new constants should compile with zero Error diagnostics; got:\n{:#?}",
+        errors
+    );
 }
