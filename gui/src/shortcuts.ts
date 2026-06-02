@@ -99,6 +99,13 @@ const _SHORTCUTS_DEF = [
   { id: 'unfold',    key: 'Ctrl+Shift+]', description: 'Unfold block at cursor', category: 'Editor' },
   { id: 'foldAll',   key: 'Ctrl+Alt+[',   description: 'Fold all', category: 'Editor' },
   { id: 'unfoldAll', key: 'Ctrl+Alt+]',   description: 'Unfold all', category: 'Editor' },
+  // Display-only entries for CodeMirror go-to-definition and navigation history.
+  // No `bind` field: dispatch is owned by the CM keymap in Editor.tsx (same
+  // pattern as fold entries above).  These exist solely to surface the
+  // keybindings in the ? overlay.
+  { id: 'gotoDefinition', key: 'F12',   description: 'Go to definition', category: 'Editor' },
+  { id: 'navBack',        key: 'Alt+←', description: 'Navigate back',    category: 'Editor' },
+  { id: 'navForward',     key: 'Alt+→', description: 'Navigate forward', category: 'Editor' },
 ] as const satisfies readonly ShortcutDef[];
 
 /**
