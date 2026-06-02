@@ -22,6 +22,64 @@
 //! the warm state can observe "the MassProperties only changed when a body
 //! solid changed" at body granularity.
 
+use reify_core::ContentHash;
+use reify_ir::Value;
+
+/// The result-determining inputs of a trajectory-level `inverse_dynamics`
+/// solve, used to decide whether a cached `InverseDynamicsCache`
+/// (`reify-eval`'s `dynamics_ops`) can be reused for a new call.
+///
+/// Three [`ContentHash`]es:
+/// - `mech_hash` — the mechanism `Value` (`Value::content_hash`), which folds
+///   in geometry, topology, and every body's `solid` mass source.
+/// - `traj_hash` — the trajectory `Value`, which folds in every sample's
+///   `q` / `q̇` / `q̈`.
+/// - `gravity_hash` — the SI gravity vector (`combine_all` of `of_u64` over each
+///   component's [`f64::to_bits`]), so a future per-mechanism gravity override
+///   invalidates the cache without a key-shape change.
+///
+/// A full per-field match certifies the cached `List<List<JointForce>>` for
+/// reuse (a cache HIT). Compared via [`matches`](InverseDynamicsCacheKey::matches)
+/// — per-field `ContentHash` equality. `Copy`/`Debug` but deliberately NOT
+/// `PartialEq` (the single comparison path is `matches`, mirroring
+/// `ModalCacheKey`); the underlying `Value::content_hash` canonicalizes `NaN`
+/// and preserves `-0.0`, so comparison is collision-free and deterministic.
+#[derive(Clone, Copy, Debug)]
+pub struct InverseDynamicsCacheKey {
+    /// Content hash of the mechanism `Value` (`mech.content_hash()`).
+    pub mech_hash: ContentHash,
+    /// Content hash of the trajectory `Value` (`traj.content_hash()`).
+    pub traj_hash: ContentHash,
+    /// Content hash of the SI gravity vector (bitwise, per component).
+    pub gravity_hash: ContentHash,
+}
+
+impl InverseDynamicsCacheKey {
+    /// Build a key from the trajectory-solve inputs: the mechanism and
+    /// trajectory `Value`s (hashed via [`Value::content_hash`]) and the SI
+    /// gravity vector (each component hashed bitwise via [`ContentHash::of_u64`]
+    /// over [`f64::to_bits`], combined order-dependently with
+    /// [`ContentHash::combine_all`]).
+    pub fn from_inputs(mech: &Value, traj: &Value, gravity: [f64; 3]) -> Self {
+        let gravity_hash =
+            ContentHash::combine_all(gravity.iter().map(|g| ContentHash::of_u64(g.to_bits())));
+        Self {
+            mech_hash: mech.content_hash(),
+            traj_hash: traj.content_hash(),
+            gravity_hash,
+        }
+    }
+
+    /// `true` iff every field hash equals `other`'s — i.e. a cached result
+    /// built for `other` may be reused for `self` (a cache HIT). Per-field
+    /// `ContentHash` equality is symmetric and collision-free.
+    pub fn matches(&self, other: &InverseDynamicsCacheKey) -> bool {
+        self.mech_hash == other.mech_hash
+            && self.traj_hash == other.traj_hash
+            && self.gravity_hash == other.gravity_hash
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
