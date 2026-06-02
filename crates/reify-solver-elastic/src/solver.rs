@@ -134,6 +134,18 @@ pub struct CgResult {
     pub converged: bool,
 }
 
+impl CgResult {
+    /// Read the solution vector as a slice.
+    ///
+    /// Returns a `&[f64]` view over the solution, coercing via `Arc<Vec<f64>>`'s
+    /// `Deref` chain. This is the representation-agnostic read path: callers
+    /// should prefer `u()` over direct field access so the internal storage type
+    /// can later change without breaking external consumers.
+    pub fn u(&self) -> &[f64] {
+        &self.u
+    }
+}
+
 /// Return value of the per-iteration progress callback passed to
 /// [`solve_cg_with_progress`].
 ///
