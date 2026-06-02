@@ -16,8 +16,13 @@
 //!      inspecting the resulting template set.
 //!   4. Positive source-text pins: the shaper construct + `input_shape` must
 //!      appear in the source (`ZVDShaper` for the first, `EIShaper` for the
-//!      second), guarding against the wrong file being resolved and ensuring
-//!      the ζ `input_shape` call is actually exercised.
+//!      second). This is a cheap guard that the EXPECTED file was resolved — NOT
+//!      proof the call is compiled: a bare `src.contains` would also be satisfied
+//!      by the token appearing only inside a comment. The compiled exercise is
+//!      established by signals 1–3 (parse / zero-Error compile / template
+//!      presence) here, and the `input_shape` call itself is pinned at the IR
+//!      level by `reify-eval`'s `input_shape_eval_e2e.rs` (a `UserFunctionCall`
+//!      to `input_shape` in the compiled module).
 //!
 //! The examples are construction + `input_shape` compile-smoke fixtures: the
 //! ±10 % / ±15 % robustness property is verified at the Rust eval layer (the
