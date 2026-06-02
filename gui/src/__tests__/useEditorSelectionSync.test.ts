@@ -447,3 +447,86 @@ describe('createEditorSelectionSync', () => {
     });
   });
 });
+
+// ── createEditorHoverSync tests ──────────────────────────────────────────────
+
+function makeHoverEditorStore(initial: { line: number; column: number } | null = null) {
+  const [state, setState] = createStore({ cursorPosition: initial as { line: number; column: number } | null });
+  return {
+    state,
+    setCursorPosition: (pos: { line: number; column: number } | null) => setState('cursorPosition', pos),
+  };
+}
+
+describe('createEditorHoverSync', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.clearAllMocks();
+  });
+
+  it('(a) cursor set → after 200ms, getEntityAtSourceLocation called; hoverEntity called with result', async () => {
+    const { createEditorHoverSync } = await importHook();
+    const getEntityAtSourceLocation = vi.fn().mockResolvedValue('Bracket.width');
+    const hoverEntity = vi.fn();
+
+    await new Promise<void>((done) => {
+      createRoot(async (dispose) => {
+        const editorStore = makeHoverEditorStore(null);
+
+        createEditorHoverSync({
+          editorStore,
+          getEntityAtSourceLocation,
+          hoverEntity,
+          debounceMs: 200,
+        });
+
+        editorStore.setCursorPosition({ line: 2, column: 11 });
+
+        // Before timer fires: no call yet
+        expect(getEntityAtSourceLocation).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(250);
+
+        expect(getEntityAtSourceLocation).toHaveBeenCalledTimes(1);
+        expect(getEntityAtSourceLocation).toHaveBeenCalledWith(2, 11);
+        expect(hoverEntity).toHaveBeenCalledWith('Bracket.width');
+
+        dispose();
+        done();
+      });
+    });
+  });
+
+  it('(b) two rapid cursor changes → exactly one bridge call with the last position', async () => {
+    const { createEditorHoverSync } = await importHook();
+    const getEntityAtSourceLocation = vi.fn().mockResolvedValue('Bracket.width');
+    const hoverEntity = vi.fn();
+
+    await new Promise<void>((done) => {
+      createRoot(async (dispose) => {
+        const editorStore = makeHoverEditorStore(null);
+
+        createEditorHoverSync({
+          editorStore,
+          getEntityAtSourceLocation,
+          hoverEntity,
+          debounceMs: 200,
+        });
+
+        editorStore.setCursorPosition({ line: 1, column: 1 });
+        await vi.advanceTimersByTimeAsync(100); // within debounce window
+        editorStore.setCursorPosition({ line: 5, column: 8 });
+        await vi.advanceTimersByTimeAsync(250); // fire second debounce
+
+        expect(getEntityAtSourceLocation).toHaveBeenCalledTimes(1);
+        expect(getEntityAtSourceLocation).toHaveBeenCalledWith(5, 8);
+
+        dispose();
+        done();
+      });
+    });
+  });
+});
