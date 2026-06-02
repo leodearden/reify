@@ -9,7 +9,7 @@ import {
   Color,
   Vector3,
 } from 'three';
-import type { Box3, Material } from 'three';
+import type { Box3 } from 'three';
 import { THEME_TOKENS } from '../theme';
 
 export interface SceneContext {
@@ -90,10 +90,18 @@ export function createScene(
   //   renderOrder = 1  — draw axes AFTER the grid (grid keeps the default renderOrder 0)
   //   depthTest = false — axes fragments are never discarded; the gizmo is always on top
   //   depthWrite = false — axes do not pollute the depth buffer for subsequent draws
-  // The cast to Material is safe: AxesHelper always constructs a single LineBasicMaterial.
+  // AxesHelper currently always constructs a single LineBasicMaterial. Guard against a future
+  // three.js version returning a material array, which would silently mutate the array object
+  // rather than the material and restore z-fighting without any test failure (the unit test mock
+  // uses a plain object, not an array, so it cannot catch that regression).
+  if (Array.isArray(axes.material)) {
+    throw new Error(
+      'AxesHelper.material is unexpectedly an array — three.js API changed; update overlay logic in scene.ts.',
+    );
+  }
   axes.renderOrder = 1;
-  (axes.material as Material).depthTest = false;
-  (axes.material as Material).depthWrite = false;
+  axes.material.depthTest = false;
+  axes.material.depthWrite = false;
   scene.add(axes);
 
   function resize(w: number, h: number) {
