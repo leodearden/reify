@@ -2194,23 +2194,23 @@ impl EngineSession {
         // path both `compile_failure` (structured diags) and `last_reload_error`
         // (joined message) are set; the structured diags already reach the frontend
         // via the LiveEdit append above, so adding the message again would duplicate.
-        if self.compile_failure.is_none() {
-            if let Some(msg) = &self.last_reload_error {
-                let file_path = self
-                    .resolve_source()
-                    .map(|(k, _)| k)
-                    .unwrap_or("<unknown>");
-                compile_diagnostics.push(DiagnosticInfo {
-                    file_path: file_path.to_owned(),
-                    line: 1,
-                    column: 1,
-                    end_line: 1,
-                    end_column: 1,
-                    severity: "Error".to_owned(),
-                    message: msg.clone(),
-                    code: Some("hot-reload-error".to_owned()),
-                });
-            }
+        if self.compile_failure.is_none()
+            && let Some(msg) = &self.last_reload_error
+        {
+            let file_path = self
+                .resolve_source()
+                .map(|(k, _)| k)
+                .unwrap_or("<unknown>");
+            compile_diagnostics.push(DiagnosticInfo {
+                file_path: file_path.to_owned(),
+                line: 1,
+                column: 1,
+                end_line: 1,
+                end_column: 1,
+                severity: "Error".to_owned(),
+                message: msg.clone(),
+                code: Some("hot-reload-error".to_owned()),
+            });
         }
 
         // Extract tensegrity wire descriptors from value cells.
