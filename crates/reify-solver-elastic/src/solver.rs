@@ -2289,4 +2289,45 @@ mod tests {
             );
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Accessor API tests (task-3366: encapsulate CgResult.u)
+    // -----------------------------------------------------------------------
+
+    /// `CgResult::u()` returns a slice identical to the solution.
+    ///
+    /// Uses the 3×3 identity-K fixture where u == f bit-exactly (same fixture
+    /// as `identity_k_converges_in_one_iter_deterministic`).
+    #[test]
+    fn cg_result_u_accessor_returns_solution_slice() {
+        let k = SparseRowMat::try_new_from_triplets(
+            3,
+            3,
+            &[
+                Triplet::new(0_usize, 0_usize, 1.0_f64),
+                Triplet::new(1_usize, 1_usize, 1.0_f64),
+                Triplet::new(2_usize, 2_usize, 1.0_f64),
+            ],
+        )
+        .unwrap();
+        let f = [1.0_f64, 2.0, 3.0];
+        let opts = CgSolverOptions {
+            tolerance: 1e-12,
+            max_iter: 100,
+        };
+        let result = solve_cg(&k, &f, opts, SolverMode::Deterministic);
+
+        assert!(result.converged, "identity K must converge");
+        // u() must return a slice with the same length and bit-identical values.
+        assert_eq!(
+            result.u().len(),
+            f.len(),
+            "u() slice length must equal f.len()"
+        );
+        assert_eq!(
+            result.u(),
+            f.as_slice(),
+            "identity-K solution u() must equal f bit-exactly"
+        );
+    }
 }
