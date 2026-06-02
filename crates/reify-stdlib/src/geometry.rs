@@ -5150,9 +5150,11 @@ mod tests {
         let mut product = [[0.0f64; 3]; 3];
         for i in 0..3 {
             for j in 0..3 {
-                for k in 0..3 {
-                    product[i][j] += linear[i][k] * linear[j][k]; // linearᵀ[k][j] = linear[j][k]
-                }
+                product[i][j] = linear[i]
+                    .iter()
+                    .zip(linear[j].iter())
+                    .map(|(&a, &b)| a * b)
+                    .sum::<f64>(); // linearᵀ[k][j] = linear[j][k]
             }
         }
         assert_matrix_approx(product, IDENTITY_3X3, 1e-12);
