@@ -91,6 +91,10 @@ const _SHORTCUTS_DEF = [
   // target is contentEditable (the CM editor contentDOM), so fold keys in the editor
   // never reach the global handler.  These entries exist solely to surface the
   // keybindings in the ? overlay.
+  // Platform note: key labels below reflect CM6 foldKeymap defaults for Linux/Windows.
+  // On macOS CM6 overrides fold/unfold to Cmd-Alt-[ / Cmd-Alt-] (foldAll/unfoldAll
+  // remain Ctrl-Alt-[ / Ctrl-Alt-] on all platforms).  If macOS support is added,
+  // these display strings should be made platform-aware (Cmd vs Ctrl for fold/unfold).
   { id: 'fold',      key: 'Ctrl+Shift+[', description: 'Fold block at cursor', category: 'Editor' },
   { id: 'unfold',    key: 'Ctrl+Shift+]', description: 'Unfold block at cursor', category: 'Editor' },
   { id: 'foldAll',   key: 'Ctrl+Alt+[',   description: 'Fold all', category: 'Editor' },
