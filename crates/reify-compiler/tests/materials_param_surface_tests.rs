@@ -6,10 +6,40 @@
 //! - `check_source_with_stdlib`   → constraint Satisfied/Violated for the
 //!   Elastic poissons_ratio constraint (§6.2).
 
-use reify_core::Severity;
+use reify_compiler::{CompiledModule, DefaultKind};
+use reify_core::{DiagnosticCode, DimensionVector, ModulePath, Severity, Type};
 use reify_eval::CheckResult;
 use reify_ir::Satisfaction;
 use reify_test_support::{check_source_with_stdlib, compile_source_with_stdlib};
+use std::path::PathBuf;
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+/// Load and compile `stdlib/materials_mechanical.ri` without prelude context.
+///
+/// `Temperature` is a named dimension (resolved by the compiler regardless of
+/// prelude), and the `K` unit literal has a hardcoded bootstrap entry in
+/// `units.rs` so `293.15K` resolves without a seeded unit registry. Used
+/// for trait-shape introspection tests that need the raw `CompiledTrait`
+/// structure (required_members / defaults).
+fn load_stdlib_module() -> CompiledModule {
+    let path: PathBuf = [
+        env!("CARGO_MANIFEST_DIR"),
+        "stdlib",
+        "materials_mechanical.ri",
+    ]
+    .iter()
+    .collect();
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {}", path.display(), e));
+    let parsed = reify_syntax::parse(&source, ModulePath::single("stdlib"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors in materials_mechanical.ri: {:?}",
+        parsed.errors
+    );
+    reify_compiler::compile(&parsed)
+}
 
 // ── §6.1 TemperatureDependent — conformance (compile-time) ───────────────────
 
@@ -64,6 +94,66 @@ fn temperature_dependent_supplies_350k_is_clean() {
     );
 }
 
+/// Pin the trait shape of TemperatureDependent: `reference_temperature` must
+/// live in `defaults` (not `required_members`) with type `Temperature`.
+///
+/// This catches regressions that either:
+/// (a) accidentally promote the param to required (removing the default), or
+/// (b) change the dimension type (e.g. back to `Real`).
+/// Conformance-only tests cannot catch (b) because they only check that no
+/// Error diagnostics appear — they don't inspect the compiled trait structure.
+#[test]
+fn temperature_dependent_has_reference_temperature_default_with_temperature_type() {
+    let module = load_stdlib_module();
+
+    let td = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "TemperatureDependent")
+        .expect("expected 'TemperatureDependent' trait in compiled module");
+
+    // Must NOT appear in required_members — the param is optional.
+    assert!(
+        !td.required_members
+            .iter()
+            .any(|r| r.name == "reference_temperature"),
+        "reference_temperature should not be a required member (it has a default), \
+         got required_members: {:?}",
+        td.required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
+    );
+
+    // Must appear in defaults with Temperature type.
+    let default_entry = td
+        .defaults
+        .iter()
+        .find(|d| d.name.as_deref() == Some("reference_temperature"))
+        .expect(
+            "expected 'reference_temperature' in TemperatureDependent.defaults \
+             (param with default 293.15K must live here)",
+        );
+
+    match &default_entry.kind {
+        DefaultKind::Param { cell_type, .. } => {
+            assert_eq!(
+                *cell_type,
+                Type::Scalar {
+                    dimension: DimensionVector::TEMPERATURE
+                },
+                "reference_temperature should have the Temperature dimension type \
+                 (Type::Scalar {{ dimension: DimensionVector::TEMPERATURE }}), got {:?}",
+                cell_type
+            );
+        }
+        other => panic!(
+            "expected DefaultKind::Param for reference_temperature, got {:?}",
+            other
+        ),
+    }
+}
+
 // ── §6.2 Elastic poissons_ratio constraint — eval-time ───────────────────────
 
 /// poissons_ratio = 0.7 violates the (0, 0.5) physical bound.
@@ -90,15 +180,21 @@ fn elastic_poissons_ratio_high_is_violated() {
          got: {:?}",
         result.constraint_results
     );
-    let errors: Vec<_> = result
+    // Tightened: require the error to carry DiagnosticCode::ConstraintViolated so that
+    // an unrelated error doesn't accidentally satisfy this check.
+    let constraint_errors: Vec<_> = result
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.code == Some(DiagnosticCode::ConstraintViolated)
+        })
         .collect();
     assert!(
-        !errors.is_empty(),
-        "expected at least one Severity::Error diagnostic alongside the Violated constraint, \
-         got none"
+        !constraint_errors.is_empty(),
+        "expected at least one Severity::Error with code ConstraintViolated for \
+         poissons_ratio=0.7, got diagnostics: {:?}",
+        result.diagnostics
     );
 }
 
@@ -126,15 +222,21 @@ fn elastic_poissons_ratio_negative_is_violated() {
          got: {:?}",
         result.constraint_results
     );
-    let errors: Vec<_> = result
+    // Tightened: require the error to carry DiagnosticCode::ConstraintViolated so that
+    // an unrelated error doesn't accidentally satisfy this check.
+    let constraint_errors: Vec<_> = result
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.code == Some(DiagnosticCode::ConstraintViolated)
+        })
         .collect();
     assert!(
-        !errors.is_empty(),
-        "expected at least one Severity::Error diagnostic alongside the Violated constraint, \
-         got none"
+        !constraint_errors.is_empty(),
+        "expected at least one Severity::Error with code ConstraintViolated for \
+         poissons_ratio=-0.1, got diagnostics: {:?}",
+        result.diagnostics
     );
 }
 
