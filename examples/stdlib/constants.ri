@@ -1,22 +1,37 @@
-// Physical-constants smoke test for std.units.
+// Physical-constants integration gate for std.units (task δ).
 //
-// Exercises the three dimensioned constants in `std.units`:
-//   - STANDARD_GRAVITY()   (Acceleration, exact BIPM/CGPM 1901 reference)
-//   - SPEED_OF_LIGHT()     (Velocity = Length/Time, exact SI definition)
-//   - BOLTZMANN_CONSTANT() (HeatCapacity = Energy/Temperature, exact 2019 SI)
+// Exercises all named constants available via the std.units prelude:
+//   Built-in dimensionless (math):
+//     pi, tau, e
+//   Dimensioned — mechanics & thermodynamics:
+//     STANDARD_GRAVITY()          (Acceleration, exact BIPM/CGPM 1901)
+//     SPEED_OF_LIGHT()            (Velocity = Length/Time, exact 2019 SI)
+//     BOLTZMANN_CONSTANT()        (HeatCapacity = Energy/Temperature, exact 2019 SI)
+//     AVOGADRO_CONSTANT()         (InverseAmount = mol⁻¹, exact 2019 SI)
+//     PLANCK_CONSTANT()           (Action = Energy·Time, exact 2019 SI)
+//     STEFAN_BOLTZMANN_CONSTANT() (StefanBoltzmannDim, exact 2019 SI)
+//     MOLAR_GAS_CONSTANT()        (MolarGasConstant = J·mol⁻¹·K⁻¹, exact 2019 SI)
+//   Dimensioned — electromagnetism:
+//     VACUUM_PERMITTIVITY()       (Permittivity = F/m, exact 2019 SI)
+//     VACUUM_PERMEABILITY()       (Permeability = H/m, exact 2019 SI)
+//     ELEMENTARY_CHARGE()         (Charge = A·s, exact 2019 SI)
 //
-// PRD: docs/prds/v0_6/stdlib-reconstruction.md task ζ.
-//
-// Both new constants are accessible via the implicit std.units prelude —
-// no explicit `import std.units` is needed, same as STANDARD_GRAVITY()
-// usage in examples/multi_load_bracket.ri.
-//
-// Comments deliberately do NOT echo the literal SI numeric values; the
-// dedicated regression test asserts the source contains the constant NAMES
-// but NOT inline magic numbers (see
-// crates/reify-compiler/tests/constants_example_tests.rs).
+// All constants are accessed by NAME only — no inline SI numeric values appear
+// anywhere in this file. The regression test
+// crates/reify-compiler/tests/constants_example_tests.rs asserts:
+//   (a) each name is present in source;
+//   (b) no inline magic-number digit sequences appear;
+//   (c) two physics-identity cross-checks (r_check, em_check) evaluate within
+//       tolerance of their exact identities (R = N_A·k_B; ε₀μ₀ = 1/c²).
 
 structure def PhysicalConstants {
+    // ── Built-in dimensionless math constants ─────────────────────────────────
+
+    // tau = 2π (one full turn in radians).
+    let full_turn = tau
+
+    // ── Mechanics & thermodynamics ────────────────────────────────────────────
+
     // Gravity — standard acceleration of free fall.
     let g = STANDARD_GRAVITY()
 
@@ -26,9 +41,34 @@ structure def PhysicalConstants {
     // Boltzmann constant — exact by the 2019 SI redefinition.
     let k_B = BOLTZMANN_CONSTANT()
 
+    // Avogadro constant — exact count of entities per mole (2019 SI).
+    let n_a = AVOGADRO_CONSTANT()
+
+    // Planck constant — quantum of action (2019 SI).
+    let h = PLANCK_CONSTANT()
+
+    // Stefan-Boltzmann constant — radiated power per unit area per T⁴ (2019 SI).
+    let sigma = STEFAN_BOLTZMANN_CONSTANT()
+
+    // Molar gas constant — energy per mole per kelvin (2019 SI, R = N_A · k_B).
+    let r_gas = MOLAR_GAS_CONSTANT()
+
+    // ── Electromagnetism ──────────────────────────────────────────────────────
+
+    // Vacuum permittivity — electric constant (2019 SI, ε₀ = 1/(μ₀c²)).
+    let eps0 = VACUUM_PERMITTIVITY()
+
+    // Vacuum permeability — magnetic constant (2019 SI).
+    let mu0 = VACUUM_PERMEABILITY()
+
+    // Elementary charge — exact charge of one proton (2019 SI).
+    let q_e = ELEMENTARY_CHARGE()
+
+    // ── Derived quantities ────────────────────────────────────────────────────
+
     // Thermal energy at room temperature (300 K).
-    // k_B * 300 K exercises BOLTZMANN_CONSTANT in a dimensioned expression
-    // and confirms the HeatCapacity × Temperature → Energy reduction works.
+    // Exercises BOLTZMANN_CONSTANT in a dimensioned expression and confirms
+    // HeatCapacity × Temperature → Energy reduction works.
     let thermal_energy = k_B * 300K
 
     // Relativistic rest energy of one kilogram of mass (E = m c²).
