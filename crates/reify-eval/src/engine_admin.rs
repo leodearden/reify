@@ -1906,7 +1906,7 @@ fn recover_von_mises_channel(
     use reify_solver_elastic::{StressElement, recover_nodal_stress_p1};
     use reify_stdlib::compute_von_mises_3x3;
 
-    if channel_data.is_empty() || channel_data.len() % 9 != 0 || triangles.is_empty() {
+    if channel_data.is_empty() || !channel_data.len().is_multiple_of(9) || triangles.is_empty() {
         return vec![0.0_f32; n_vertices];
     }
 
