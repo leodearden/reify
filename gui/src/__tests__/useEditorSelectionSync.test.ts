@@ -529,4 +529,66 @@ describe('createEditorHoverSync', () => {
       });
     });
   });
+
+  it('(c) cursor set to null → hoverEntity called with null without waiting for debounce', async () => {
+    const { createEditorHoverSync } = await importHook();
+    const getEntityAtSourceLocation = vi.fn().mockResolvedValue('Bracket.width');
+    const hoverEntity = vi.fn();
+
+    await new Promise<void>((done) => {
+      createRoot(async (dispose) => {
+        const editorStore = makeHoverEditorStore({ line: 2, column: 5 });
+
+        createEditorHoverSync({
+          editorStore,
+          getEntityAtSourceLocation,
+          hoverEntity,
+          debounceMs: 200,
+        });
+
+        // Set cursor to null (hover-off)
+        editorStore.setCursorPosition(null);
+
+        // Flush SolidJS effects (they run as microtasks); no timer advance needed
+        await vi.advanceTimersByTimeAsync(0);
+
+        // hoverEntity should be called with null — no full debounce wait required
+        expect(hoverEntity).toHaveBeenCalledWith(null);
+        // No bridge call should be made for a null cursor
+        expect(getEntityAtSourceLocation).not.toHaveBeenCalled();
+
+        dispose();
+        done();
+      });
+    });
+  });
+
+  it('(d) bridge resolves null → hoverEntity called with null (cursor on whitespace)', async () => {
+    const { createEditorHoverSync } = await importHook();
+    const getEntityAtSourceLocation = vi.fn().mockResolvedValue(null);
+    const hoverEntity = vi.fn();
+
+    await new Promise<void>((done) => {
+      createRoot(async (dispose) => {
+        const editorStore = makeHoverEditorStore(null);
+
+        createEditorHoverSync({
+          editorStore,
+          getEntityAtSourceLocation,
+          hoverEntity,
+          debounceMs: 200,
+        });
+
+        editorStore.setCursorPosition({ line: 1, column: 1 });
+        await vi.advanceTimersByTimeAsync(250);
+
+        expect(getEntityAtSourceLocation).toHaveBeenCalledTimes(1);
+        // null resolution → hoverEntity must be called with null to clear hover
+        expect(hoverEntity).toHaveBeenCalledWith(null);
+
+        dispose();
+        done();
+      });
+    });
+  });
 });
