@@ -35,6 +35,7 @@ use crate::helpers::sanitize_value;
 pub(crate) fn eval_construct(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
         "vec" => eval_vec(args),
+        "matrix" => eval_matrix(args),
         _ => return None,
     })
 }
@@ -59,6 +60,24 @@ fn eval_vec(args: &[Value]) -> Value {
         .map(|x| sanitize_value(Value::from_real_scalar(x, dim)))
         .collect();
     Value::Vector(cells)
+}
+
+/// `matrix(rows)` → rank-2 nested [`Value::Tensor`] (RANK-2 ONLY).
+///
+/// Validates a depth-2 `Value::List` of `Value::List` (non-empty outer, every
+/// row a non-empty `List`, uniform column count, uniform dimension, all
+/// numeric) and builds the nested `Tensor`. Wrong arity, a non-`List` arg, or
+/// any shape / dimension violation (ragged / empty / non-list row / mixed
+/// dimension / non-numeric) collapses to [`Value::Undef`].
+fn eval_matrix(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::Undef;
+    }
+    let (nrows, ncols, data, dim) = match list_matrix_components_f64(&args[0]) {
+        Some(c) => c,
+        None => return Value::Undef,
+    };
+    build_tensor_rank2(nrows, ncols, &data, dim)
 }
 
 /// Extract uniform numeric components from a `Value::List` into
@@ -88,6 +107,67 @@ fn list_components_f64(v: &Value) -> Option<(Vec<f64>, DimensionVector)> {
         }
     }
     Some((vals, first_dim))
+}
+
+/// Extract a depth-2 `Value::List` of `Value::List` into
+/// `(nrows, ncols, row_major_data, element_dim)`.
+///
+/// Mirrors `matrix::matrix_components_f64`'s shape guards (non-empty outer,
+/// every row a `List` with the same non-zero column count, uniform dimension,
+/// all numeric) but accepts the `Value::List`-of-`Value::List` that
+/// `matrix(rows)` receives (that helper accepts only Matrix/Tensor). Returns
+/// `None` (→ `Undef`) on any shape / dimension / numeric violation.
+fn list_matrix_components_f64(
+    v: &Value,
+) -> Option<(usize, usize, Vec<f64>, DimensionVector)> {
+    let rows = match v {
+        Value::List(rows) if !rows.is_empty() => rows,
+        _ => return None,
+    };
+    // Column count and element dimension are fixed by the first row, which
+    // must itself be a non-empty `List`.
+    let (ncols, first_dim) = match &rows[0] {
+        Value::List(first) if !first.is_empty() => (first.len(), first[0].dimension()),
+        _ => return None,
+    };
+    let mut data = Vec::with_capacity(rows.len() * ncols);
+    for row in rows {
+        // Reject non-list rows AND ragged rows (a row whose length differs
+        // from ncols — including an empty row, since ncols >= 1).
+        let cells = match row {
+            Value::List(cells) if cells.len() == ncols => cells,
+            _ => return None,
+        };
+        for elem in cells {
+            if elem.dimension() != first_dim {
+                return None; // mixed dimension across cells
+            }
+            match elem.as_f64() {
+                Some(x) => data.push(x),
+                None => return None, // non-numeric cell
+            }
+        }
+    }
+    Some((rows.len(), ncols, data, first_dim))
+}
+
+/// Build a rank-2 nested [`Value::Tensor`] (rows of `Tensor` cells) from flat
+/// row-major `data`. Each cell is built via [`Value::from_real_scalar`] (Real
+/// if dimensionless, else Scalar) and wrapped in [`sanitize_value`].
+///
+/// Shared by `matrix` (step-4), `diag` (step-6) and `identity` (step-8): each
+/// produces its own row-major `data` (dense for `matrix`; diagonal-plus-zeros
+/// for `diag` / `identity`) and delegates assembly here.
+fn build_tensor_rank2(nrows: usize, ncols: usize, data: &[f64], dim: DimensionVector) -> Value {
+    let rows = (0..nrows)
+        .map(|i| {
+            let cells = (0..ncols)
+                .map(|j| sanitize_value(Value::from_real_scalar(data[i * ncols + j], dim)))
+                .collect();
+            Value::Tensor(cells)
+        })
+        .collect();
+    Value::Tensor(rows)
 }
 
 #[cfg(test)]
