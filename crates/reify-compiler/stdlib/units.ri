@@ -104,6 +104,13 @@ pub type InverseAmount = Dimensionless / AmountOfSubstance
 /// Named "Action" after the physical quantity (integral of energy over time).
 pub type Action = Energy * Time
 
+/// Stefan-Boltzmann dimension (W·m⁻²·K⁻⁴ = kg·s⁻³·K⁻⁴) — dimension of the
+/// Stefan-Boltzmann constant. No standard quantity name exists for this
+/// dimension; the alias name is descriptive. T⁴ is written as four repeated
+/// `/ Temperature` factors because the grammar forbids `^` and parens in
+/// type-alias RHS (PRD §3.6).
+pub type StefanBoltzmannDim = Power / Area / Temperature / Temperature / Temperature / Temperature
+
 /// Standard acceleration of gravity (g_n), 9.80665 m/s² — BIPM/CGPM 1901 §70
 /// reference value. Use in body-force loads: `gravity(5 * STANDARD_GRAVITY())`.
 /// Body uses the compositional `1m / (1s * 1s)` form rather than the compound
@@ -142,3 +149,10 @@ pub fn AVOGADRO_CONSTANT() -> InverseAmount { 6.02214076e23 * 1mol / 1mol / 1mol
 /// redefinition (26th CGPM, Resolution 1). Dimension: Action = kg·m²·s⁻¹.
 /// Body uses base units (J = kg·m²·s⁻² from std.si_units, unavailable here).
 pub fn PLANCK_CONSTANT() -> Action { 6.62607015e-34 * 1kg * 1m * 1m / 1s }
+
+/// Stefan-Boltzmann constant (σ), 5.670374419×10⁻⁸ W·m⁻²·K⁻⁴ — CODATA 2018.
+/// Relates radiated power density to T⁴: P/A = σ·T⁴. Dimension: kg·s⁻³·K⁻⁴.
+/// Body uses base units; W and m² from std.si_units are unavailable here.
+pub fn STEFAN_BOLTZMANN_CONSTANT() -> StefanBoltzmannDim {
+    5.670374419e-8 * 1kg / 1s / 1s / 1s / 1K / 1K / 1K / 1K
+}
