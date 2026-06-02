@@ -19,6 +19,8 @@
 //!     assembles a `MassProperties` whose geometric fields stay the deferred
 //!     `Value::Undef` sentinel until the KGQ kernel seam (task 3620) is wired.
 
+use std::sync::Arc;
+
 use reify_core::dimension::DimensionVector;
 use reify_core::{ContentHash, Diagnostic, DiagnosticCode};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
@@ -766,8 +768,13 @@ pub(crate) struct InverseDynamicsCache {
     /// companion (and the input a future per-body MassProperties-reuse
     /// optimisation would key on).
     body_solid_hashes: Vec<ContentHash>,
-    /// The cached trajectory-level result (`List<List<JointForce>>`).
-    result: Value,
+    /// The cached trajectory-level result (`List<List<JointForce>>`), held behind
+    /// an [`Arc`] so the mandatory cache-HIT re-donation (see
+    /// [`run_inverse_dynamics`]) is an O(1) refcount bump rather than a second
+    /// deep clone of the whole `List<List<JointForce>>` tree. Only the
+    /// output-value-cell copy pays an unavoidable deep clone (the engine cell
+    /// owns a plain `Value`); the re-donated warm-state copy shares this `Arc`.
+    result: Arc<Value>,
 }
 
 impl InverseDynamicsCache {
@@ -780,7 +787,7 @@ impl InverseDynamicsCache {
     fn estimated_size_bytes(&self) -> usize {
         std::mem::size_of::<InverseDynamicsCacheKey>()
             + self.body_solid_hashes.len() * std::mem::size_of::<ContentHash>()
-            + value_size_estimate(&self.result)
+            + value_size_estimate(self.result.as_ref())
     }
 
     /// Wrap this cache in an [`OpaqueState`] for donation to the warm-state pool,
@@ -851,8 +858,14 @@ fn undef_outcome() -> ComputeOutcome {
 /// of that size (a bigger cached result is pricier to retain). Shared by the
 /// cache-HIT and cache-MISS paths of [`run_inverse_dynamics`] so both donate
 /// identically (mirrors the modal trampoline's single donation tail).
+///
+/// Performs exactly ONE deep clone of the `List<List<JointForce>>` tree — the
+/// copy handed to the output value cell (the engine cell owns a plain `Value`).
+/// The warm-state copy re-uses the same `Arc<Value>` allocation (moved in via
+/// [`into_opaque_state`](InverseDynamicsCache::into_opaque_state)), so the
+/// mandatory re-donation costs an `Arc` refcount bump, not a second O(n) clone.
 fn completed_donating(cache: InverseDynamicsCache) -> ComputeOutcome {
-    let result = cache.result.clone();
+    let result = cache.result.as_ref().clone();
     let (state, size_bytes) = cache.into_opaque_state();
     let cost_per_byte = if size_bytes > 0 { Some(1.0 / size_bytes as f64) } else { None };
     ComputeOutcome::Completed {
@@ -917,9 +930,15 @@ pub(crate) fn run_inverse_dynamics(
     // ── cache HIT ──────────────────────────────────────────────────────────────
     // A prior warm state whose key matches certifies its cached result for reuse:
     // return it with reused=true WITHOUT re-running the per-sample RNEA loop. The
-    // cache is re-donated (cloned, since `prior_warm_state` is borrowed) so the node
-    // keeps its warm state and the next identical call can HIT again — a Completed
-    // outcome with new_warm_state=None would otherwise clear it.
+    // cache must be re-donated so the node keeps its warm state and the next
+    // identical call can HIT again: the engine takes the prior warm state out of
+    // the pool at dispatch start (`get_warm_state`, take-semantics) and only
+    // restores it on Cancelled/Failed — a Completed outcome with new_warm_state=None
+    // would leave the node with no warm state at all. Re-donation is cheap here:
+    // `prior_warm_state` is borrowed, but `cache.clone()` only bumps the result's
+    // `Arc` refcount (+ copies the small body-solid-hash Vec), and the lone deep
+    // clone of the `List<List<JointForce>>` tree is the one `completed_donating`
+    // makes for the output value cell.
     if let Some(cache) = prior_warm_state.and_then(|s| s.downcast_ref::<InverseDynamicsCache>())
         && cache.key.matches(&key)
     {
@@ -931,6 +950,16 @@ pub(crate) fn run_inverse_dynamics(
     // per-sample RNEA loop through the shared stdlib seam so the result is
     // single-sourced with the body-inline fallback. Any `None` (malformed
     // trajectory, closed-chain mechanism, or shape mismatch) collapses to η's Undef.
+    //
+    // NOTE (speculative-generality, kept per design_decision #4): `body_solid_hashes`
+    // is RECORDED but not yet CONSUMED by any HIT/MISS decision — that verdict is
+    // `InverseDynamicsCacheKey::matches`, and the key's `mech_hash`
+    // (`mechanism.content_hash()`) already folds in every body's `solid`, so a
+    // changed body solid already forces a MISS today. The per-body record exists
+    // for the deferred per-body MassProperties-reuse optimisation (design_decision
+    // #4; η's hoist note, dynamics/eval.rs), which will key on it. Until that lands
+    // its only runtime effect is its byte contribution to `estimated_size_bytes`;
+    // the O(bodies) walk is negligible beside the per-sample RNEA loop it precedes.
     let body_solid_hashes = body_solid_hashes(mechanism);
     let samples = match motion_trajectory_samples(trajectory) {
         Some(s) => s,
@@ -953,8 +982,13 @@ pub(crate) fn run_inverse_dynamics(
     }
     let result = Value::List(per_sample);
 
-    // Donate the freshly-computed result as warm state so a later identical call HITs.
-    let cache = InverseDynamicsCache { key, body_solid_hashes, result };
+    // Donate the freshly-computed result as warm state so a later identical call
+    // HITs. The result is wrapped in an `Arc` so the eventual HIT re-donation
+    // shares this allocation instead of deep-cloning the trajectory again; on this
+    // MISS path `completed_donating` still deep-clones it exactly once for the
+    // output value cell (the freshly-built `Value::List` would otherwise be moved
+    // whole into the cache, leaving nothing for the cell).
+    let cache = InverseDynamicsCache { key, body_solid_hashes, result: Arc::new(result) };
     InverseDynamicsRun { outcome: completed_donating(cache), reused: false }
 }
 
@@ -1197,30 +1231,67 @@ mod inverse_dynamics_trampoline_tests {
         );
     }
 
-    /// A cancel fired *after* the per-sample loop has started — the canceller
-    /// thread sleeps briefly so the on-entry poll passes — is observed at the next
-    /// sample boundary and yields `ComputeOutcome::Cancelled`. This pins the
-    /// per-sample polling granularity (PRD §9.1 "abort within 1 sample interval")
-    /// that an entry-only check could not deliver. The 10k-sample trajectory runs
-    /// far longer than the 1 ms delay, so the loop is still going when the cancel
-    /// fires. RED until step-12 (step-10 ignores the handle and runs to Completed).
+    /// A cancel fired while the per-sample loop is active is observed at a sample
+    /// boundary and yields `ComputeOutcome::Cancelled`. Together with
+    /// [`run_inverse_dynamics_pre_cancelled_yields_cancelled`] (which pins the
+    /// on-entry checkpoint) this exercises the per-sample polling granularity
+    /// (PRD §9.1, "abort within 1 sample interval") that an entry-only check could
+    /// not deliver.
+    ///
+    /// The observation is made robust instead of racing wall-clock time. Per-sample
+    /// RNEA for a 1-joint pendulum is so cheap that a fixed (sample-count, delay)
+    /// pair can let the loop finish before the canceller thread is even scheduled;
+    /// the old version asserted on that race and so could flake on a fast/loaded CI
+    /// box. Here a too-fast completion is NOT a failure — it means "this trajectory
+    /// was too short for this machine", so we retry with a 4× longer one. The
+    /// canceller sleeps ~1 ms so the main-thread solve is provably past its on-entry
+    /// poll and deep inside the loop when the cancel lands, and the length grows
+    /// until it outlasts that delay: a correct per-sample poll converges to
+    /// Cancelled (in practice on the first iteration), whereas an implementation
+    /// that dropped the per-sample poll would keep Completing and trip the
+    /// escalation ceiling. (`CancellationHandle` is a plain `Arc<AtomicBool>` with
+    /// no per-poll hook, so a single-threaded "flip after N samples" cannot be
+    /// injected; the escalating retry is the deterministic-failure, non-flaky
+    /// alternative the reviewer asked for.)
     #[test]
     fn run_inverse_dynamics_cancelled_mid_loop_yields_cancelled() {
-        let inputs = [pendulum_mechanism(), motionless_trajectory(10_000)];
-        let handle = CancellationHandle::new();
-        let canceller_handle = handle.clone();
-        let canceller = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(1));
-            canceller_handle.cancel();
-        });
+        // Start well above the ~1 ms cancel delay (cheap 1-joint RNEA × samples) and
+        // escalate only if the solve still beat the canceller. The ceiling is a
+        // safety net — a correct per-sample poll converges on the first iteration.
+        const MAX_SAMPLES: usize = 5_000_000;
+        let mut samples = 20_000usize;
+        loop {
+            let inputs = [pendulum_mechanism(), motionless_trajectory(samples)];
+            let handle = CancellationHandle::new();
+            let canceller_handle = handle.clone();
+            let canceller = std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                canceller_handle.cancel();
+            });
 
-        let run = run_inverse_dynamics(&inputs, None, &handle);
-        canceller.join().expect("canceller thread must not panic");
+            let run = run_inverse_dynamics(&inputs, None, &handle);
+            canceller.join().expect("canceller thread must not panic");
 
-        assert!(
-            matches!(run.outcome, ComputeOutcome::Cancelled),
-            "a cancel fired during the per-sample loop must yield Cancelled, got {:?}",
-            run.outcome
-        );
+            match run.outcome {
+                ComputeOutcome::Cancelled => {
+                    assert!(!run.reused, "a cancelled run is not a cache reuse");
+                    return;
+                }
+                // Loop finished before the cancel was observed: too short for this
+                // machine. Lengthen and retry — a too-fast completion is never a
+                // failure (that was the old flake).
+                ComputeOutcome::Completed { .. } => {
+                    let next = samples.saturating_mul(4);
+                    assert!(
+                        next <= MAX_SAMPLES,
+                        "cancellation was never observed even at {samples} samples \
+                         (next {next} > {MAX_SAMPLES} ceiling); the per-sample \
+                         cancellation poll may be missing",
+                    );
+                    samples = next;
+                }
+                other => panic!("expected Cancelled or Completed, got {other:?}"),
+            }
+        }
     }
 }
