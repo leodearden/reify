@@ -279,4 +279,138 @@ mod tests {
             error_prefix::INITIALIZE_PARAMS
         );
     }
+
+    // --- task 4207 η: SIGNAL TEST — documentSymbol through the bridge ---
+
+    /// Recursively assert every symbol's `selection_range` lies within its
+    /// `range` (LSP requires `selection_range ⊆ range`).
+    fn assert_selection_within_range(syms: &[DocumentSymbol]) {
+        for s in syms {
+            let r = &s.range;
+            let sr = &s.selection_range;
+            assert!(
+                (sr.start.line, sr.start.character) >= (r.start.line, r.start.character)
+                    && (sr.end.line, sr.end.character) <= (r.end.line, r.end.character),
+                "selection_range {sr:?} not within range {r:?} for symbol {}",
+                s.name
+            );
+            if let Some(children) = &s.children {
+                assert_selection_within_range(children);
+            }
+        }
+    }
+
+    /// End-to-end signal for task 4207 η: the GUI `lsp_request` Tauri command
+    /// dispatches through `InProcessLsp::handle_request`, so the consumer
+    /// θ/4208 (command-palette symbol-jump) can only reach the provider if the
+    /// bridge has a `textDocument/documentSymbol` arm. This drives a
+    /// comprehensive fixture through that exact path and asserts the full
+    /// hierarchical symbol tree.
+    #[tokio::test]
+    async fn handle_request_document_symbol_returns_hierarchical_symbols() {
+        let lsp = InProcessLsp::new();
+        let uri = "file:///signal.ri";
+        let source = "\
+import std.math
+structure Bracket {
+    param width : Scalar = 80mm
+    let footprint = width * width
+}
+occurrence def Joint {
+    param diameter : Scalar = 10mm
+}
+trait Rigid {
+    param mass : Scalar = 5mm
+}
+enum Shape {
+    Point,
+    Circle
+}
+fn area(w : Scalar) -> Scalar { w }
+";
+
+        lsp.handle_request(
+            "textDocument/didOpen",
+            json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "reify",
+                    "version": 1,
+                    "text": source
+                }
+            }),
+        )
+        .await
+        .expect("didOpen should succeed");
+
+        let value = lsp
+            .handle_request(
+                "textDocument/documentSymbol",
+                json!({ "textDocument": { "uri": uri } }),
+            )
+            .await
+            .expect("documentSymbol request should reach the provider via the bridge");
+
+        let response: DocumentSymbolResponse = serde_json::from_value(value)
+            .expect("response should deserialize as DocumentSymbolResponse");
+        let symbols = match response {
+            DocumentSymbolResponse::Nested(s) => s,
+            DocumentSymbolResponse::Flat(_) => panic!("expected Nested document symbols"),
+        };
+
+        // `import std.math` is excluded; the 5 navigable top-level declarations
+        // remain in source order with their mapped kinds.
+        let top: Vec<(&str, SymbolKind)> =
+            symbols.iter().map(|s| (s.name.as_str(), s.kind)).collect();
+        assert_eq!(
+            top,
+            vec![
+                ("Bracket", SymbolKind::STRUCT),
+                ("Joint", SymbolKind::CLASS),
+                ("Rigid", SymbolKind::INTERFACE),
+                ("Shape", SymbolKind::ENUM),
+                ("area", SymbolKind::FUNCTION),
+            ],
+            "top-level symbols (import excluded) in source order"
+        );
+
+        // Structure children: param → FIELD, let → VARIABLE.
+        let bracket_children = symbols[0]
+            .children
+            .as_ref()
+            .expect("Bracket should have member children");
+        let bc: Vec<(&str, SymbolKind)> = bracket_children
+            .iter()
+            .map(|s| (s.name.as_str(), s.kind))
+            .collect();
+        assert_eq!(
+            bc,
+            vec![
+                ("width", SymbolKind::FIELD),
+                ("footprint", SymbolKind::VARIABLE),
+            ],
+            "Bracket children: width FIELD then footprint VARIABLE"
+        );
+
+        // Enum children: the two variants as ENUM_MEMBER in source order.
+        let shape_children = symbols[3]
+            .children
+            .as_ref()
+            .expect("Shape should have variant children");
+        let sc: Vec<(&str, SymbolKind)> = shape_children
+            .iter()
+            .map(|s| (s.name.as_str(), s.kind))
+            .collect();
+        assert_eq!(
+            sc,
+            vec![
+                ("Point", SymbolKind::ENUM_MEMBER),
+                ("Circle", SymbolKind::ENUM_MEMBER),
+            ],
+            "Shape variants: Point then Circle as ENUM_MEMBER"
+        );
+
+        // LSP invariant across the whole tree: selection_range ⊆ range.
+        assert_selection_within_range(&symbols);
+    }
 }
