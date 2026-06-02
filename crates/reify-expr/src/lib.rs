@@ -500,28 +500,18 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                         return apply_lambda_with_point_unpacking(lambda, &evaluated_args[0], ctx);
                     }
                     let result = reify_stdlib::eval_builtin(&function.name, &evaluated_args);
-                    // When a stackup builtin returns Undef, classify and emit
-                    // the specific §4.4 error diagnostic into the ctx sink.
-                    // Non-stackup builtins and valid stackup calls are untouched.
-                    if matches!(result, Value::Undef)
-                        && let Some(sink) = ctx.diagnostics
-                        && let Some(diag) =
-                            reify_stdlib::stackup_diagnose(&function.name, &evaluated_args)
-                    {
-                        sink.borrow_mut().push(diag);
-                    }
-                    // Same post-Undef classification for multi-load-case
-                    // (task #10) failures: when `linear_combine` returns Undef,
-                    // emit the specific diagnostic via `fea_diagnose`. stackup
-                    // names and "linear_combine" are disjoint, so at most one of
-                    // the two diagnose helpers ever fires for a single Undef.
-                    if matches!(result, Value::Undef)
-                        && let Some(sink) = ctx.diagnostics
-                        && let Some(diag) =
-                            reify_stdlib::fea_diagnose(&function.name, &evaluated_args)
-                    {
-                        sink.borrow_mut().push(diag);
-                    }
+                    // Post-Undef builtin diagnostics: when a stackup / multi-load-
+                    // case (`linear_combine`) / AffineMap-constructor builtin returns
+                    // `Value::Undef`, classify and emit its specific diagnostic into
+                    // the ctx sink. The three name families are disjoint, so at most
+                    // one diagnose helper fires for a single Undef. Consolidated into
+                    // one `#[inline(never)]` helper so the owned `Diagnostic` locals
+                    // live in that helper's frame, NOT on every recursive `eval_expr`
+                    // frame — keeping the 2 MiB test-thread stack under
+                    // `MAX_RECURSION_DEPTH` (pinned by
+                    // `eval_user_fn_recursion_depth_exceeded`), the same stack-
+                    // shrinking rationale as `emit_flexure_diagnostics`.
+                    emit_undef_builtin_diagnostics(&function.name, &evaluated_args, &result, ctx);
                     // Flexure PRB constructors (task 3871) surface their §5.3 / §1
                     // diagnostics on BOTH the success and Undef paths — unlike the
                     // post-Undef-only stackup/fea hooks above, W_FlexureYielding /
@@ -1249,6 +1239,46 @@ fn eval_quantifier(
                 Value::Bool(false)
             }
         }
+    }
+}
+
+/// Emit the post-`Undef` builtin diagnostics — stackup (§4.4), multi-load-case
+/// FEA (`linear_combine`, task #10), and AffineMap constructors (PRD §4.2,
+/// task β) — for a builtin call whose `result` is `Value::Undef`.
+///
+/// Extracted from `eval_expr`'s `FunctionCall` arm — and marked
+/// `#[inline(never)]` — for the same stack-frame-shrinking reason as
+/// `emit_flexure_diagnostics` / `eval_worst_case_dispatch`: each `let Some(diag)`
+/// binds an owned `Diagnostic`, and in unoptimized builds those by-value locals
+/// would otherwise sit on every recursive `eval_expr` frame (regardless of which
+/// match arm runs) and blow the 2 MiB test-thread stack at `MAX_RECURSION_DEPTH`
+/// levels of recursive user-fn evaluation (pinned by
+/// `eval_user_fn_recursion_depth_exceeded`).
+///
+/// The three name families (stackup math builtins / `"linear_combine"` /
+/// `affine_*` constructors) are disjoint, so at most one of the three classifiers
+/// returns `Some` for any single `Undef`; each returns `None` for every other
+/// name or for valid input, making this a cheap no-op for ordinary builtins.
+#[inline(never)]
+fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &EvalContext) {
+    if !matches!(result, Value::Undef) {
+        return;
+    }
+    let Some(sink) = ctx.diagnostics else {
+        return;
+    };
+    // §4.4 stackup error diagnostics (empty/invalid chain, bad samples).
+    if let Some(diag) = reify_stdlib::stackup_diagnose(name, args) {
+        sink.borrow_mut().push(diag);
+    }
+    // Multi-load-case FEA failures (empty/unknown-case weights, incompatible meshes).
+    if let Some(diag) = reify_stdlib::fea_diagnose(name, args) {
+        sink.borrow_mut().push(diag);
+    }
+    // AffineMap-constructor warnings: `affine_scale` zero (degenerate, det=0) or
+    // dimensioned scale factor (the linear part of an affine map is dimensionless).
+    if let Some(diag) = reify_stdlib::geometry_diagnose(name, args) {
+        sink.borrow_mut().push(diag);
     }
 }
 
