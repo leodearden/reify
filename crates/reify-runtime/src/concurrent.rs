@@ -265,7 +265,7 @@ impl ConcurrentScheduler {
         traces: &HashMap<NodeId, DependencyTrace>,
         cancel: &CancellationToken,
         changed_cells: &HashSet<ValueCellId>,
-        config: SchedulerConfig<'_>,
+        mut config: SchedulerConfig<'_>,
     ) -> Result<SchedulerResult, SchedulerError> {
         // PRD §5 B5 / I-3 (M-013 fix): when a `WarmStartableRegistry` fixture
         // is attached to the config, fire the bidirectional coextension
@@ -305,6 +305,16 @@ impl ConcurrentScheduler {
         }
 
         let node_set: HashSet<NodeId> = eval_set.into_iter().collect();
+
+        // PRD §5 B2 / I-1: default-populate config.node_priorities for every
+        // eval-set node that has no explicit entry, using the kind-derived trait
+        // default (via node_traits.resolve). Explicit entries take precedence
+        // (level 1 > level 2 in the §6 priority-resolution chain).
+        // The existing `.unwrap_or(Priority::P3Speculative)` reads in the
+        // promoter/sort block below are kept as a defensive backstop but are now
+        // unreachable for eval-set nodes.
+        default_populate_priorities(&mut config.node_priorities, &node_set, &config.node_traits);
+
         let levels = reify_eval::dirty::compute_levels(&node_set, traces);
         let mut changed = HashSet::new();
         let mut skipped = HashSet::new();
