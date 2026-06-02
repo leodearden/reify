@@ -91,6 +91,37 @@ pub enum GeometryTrait {
     Convex,
 }
 
+/// The computed, **mutually-exclusive** dimensionality of a geometry
+/// expression: a shape is exactly one of 1-D / 2-D / 3-D.
+///
+/// Unlike the orthogonal [`GeometryTrait`] flags (a body may be both Bounded
+/// and Convex), `dimension` is a single enum value per expression. The three
+/// variants are surfaced to user `.ri` sources as the marker trait names
+/// `Curve` / `Surface` / `Solid` (declared in
+/// `crates/reify-compiler/stdlib/geometry_traits.ri`) and consumed by the
+/// profile-precondition check in `crates/reify-compiler/src/geometry.rs`.
+///
+/// # Producer → dimension table (task α)
+///
+/// | Producer family                                              | `dimension` |
+/// |--------------------------------------------------------------|-------------|
+/// | curves (`line_segment`/`arc`/`helix`/`interp`/`bezier`/`nurbs`) | `Curve`  |
+/// | primitives (`box`/`box_centered`/`cylinder`/`cylinder_centered`/`sphere`/`tube`) | `Solid` |
+/// | boolean / sweep / pattern / modify results                   | `Solid`     |
+/// | transform (`translate`/`rotate`/`scale`/`rotate_around`)      | preserves operand |
+///
+/// `Surface` is reserved for the 2-D profile constructors that land in sibling
+/// tasks ζ/η (`rectangle`/`circle`/…); no task-α producer is a `Surface`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GeomDim {
+    /// A 1-D curve (a sweep/pipe *path*).
+    Curve,
+    /// A 2-D surface (a sweep *profile*).
+    Surface,
+    /// A 3-D solid — the default dimension for every non-curve producer.
+    Solid,
+}
+
 /// Compile-inferred trait set for a geometry expression.
 ///
 /// The three flags are independent — any subset is reachable. Use the named
@@ -104,6 +135,19 @@ pub struct InferredTraits {
     pub connected: bool,
     /// Whether the geometry is convex.
     pub convex: bool,
+    /// The computed, mutually-exclusive dimensionality (1-D/2-D/3-D). Defaults
+    /// to [`GeomDim::Solid`] for every producer except the curve constructors
+    /// (which use [`InferredTraits::curve`]). See [`GeomDim`].
+    pub dimension: GeomDim,
+    /// Whether the geometry lies entirely within a single plane. `false` for
+    /// every task-α producer (no profile/Surface constructor exists yet); set
+    /// `true` by the ζ/η Surface producers. Consumed by the profile-precondition
+    /// check (`extrude`/`revolve`/`loft` require a `Planar` profile).
+    pub planar: bool,
+    /// Whether the geometry's boundary is closed. `false` for every task-α
+    /// producer; set `true` by the ζ/η Surface producers. Part of the
+    /// `Surface ∧ Closed ∧ Planar` profile conjunction.
+    pub closed: bool,
 }
 
 impl InferredTraits {
@@ -115,6 +159,9 @@ impl InferredTraits {
             bounded: true,
             connected: true,
             convex: true,
+            dimension: GeomDim::Solid,
+            planar: false,
+            closed: false,
         }
     }
 
@@ -125,6 +172,9 @@ impl InferredTraits {
             bounded: false,
             connected: false,
             convex: false,
+            dimension: GeomDim::Solid,
+            planar: false,
+            closed: false,
         }
     }
 
@@ -136,6 +186,9 @@ impl InferredTraits {
             bounded: true,
             connected: false,
             convex: false,
+            dimension: GeomDim::Solid,
+            planar: false,
+            closed: false,
         }
     }
 
@@ -147,6 +200,27 @@ impl InferredTraits {
             bounded: true,
             connected: true,
             convex: false,
+            dimension: GeomDim::Solid,
+            planar: false,
+            closed: false,
+        }
+    }
+
+    /// A 1-D curve primitive (`line_segment`/`arc`/`helix`/`interp`/`bezier`/
+    /// `nurbs`). Preserves the prior `all()`-equivalent flags
+    /// (bounded/connected/convex all true — a curve is finite, single-component,
+    /// and trivially convex as a point-set) but carries `dimension ==
+    /// GeomDim::Curve` so the profile-precondition check accepts it as a
+    /// sweep/pipe *path* and rejects it as an extrude/revolve/loft *profile*.
+    /// `planar`/`closed` are `false` (not part of the curve contract).
+    pub const fn curve() -> Self {
+        Self {
+            bounded: true,
+            connected: true,
+            convex: true,
+            dimension: GeomDim::Curve,
+            planar: false,
+            closed: false,
         }
     }
 
@@ -195,6 +269,10 @@ pub const fn combine_union(a: InferredTraits, b: InferredTraits) -> InferredTrai
         bounded: a.bounded && b.bounded,
         connected: false,
         convex: false,
+        // A boolean result is a 3-D solid.
+        dimension: GeomDim::Solid,
+        planar: false,
+        closed: false,
     }
 }
 
@@ -208,6 +286,10 @@ pub const fn combine_difference(left: InferredTraits, _right: InferredTraits) ->
         bounded: left.bounded,
         connected: false,
         convex: false,
+        // A boolean result is a 3-D solid.
+        dimension: GeomDim::Solid,
+        planar: false,
+        closed: false,
     }
 }
 
@@ -223,6 +305,10 @@ pub const fn combine_intersection(a: InferredTraits, b: InferredTraits) -> Infer
         bounded: a.bounded || b.bounded,
         connected: false,
         convex: a.convex && b.convex,
+        // A boolean result is a 3-D solid.
+        dimension: GeomDim::Solid,
+        planar: false,
+        closed: false,
     }
 }
 
@@ -247,6 +333,10 @@ pub const fn combine_modify(input: InferredTraits) -> InferredTraits {
         bounded: input.bounded,
         connected: input.connected,
         convex: false,
+        // A modify result is a 3-D solid.
+        dimension: GeomDim::Solid,
+        planar: false,
+        closed: false,
     }
 }
 
@@ -260,6 +350,10 @@ pub const fn combine_pattern(input: InferredTraits) -> InferredTraits {
         bounded: input.bounded,
         connected: false,
         convex: false,
+        // A pattern result is a 3-D solid.
+        dimension: GeomDim::Solid,
+        planar: false,
+        closed: false,
     }
 }
 
@@ -275,6 +369,10 @@ pub const fn combine_sweep(profile: InferredTraits) -> InferredTraits {
         bounded: profile.bounded,
         connected: profile.connected,
         convex: false,
+        // A sweep result is a 3-D solid.
+        dimension: GeomDim::Solid,
+        planar: false,
+        closed: false,
     }
 }
 

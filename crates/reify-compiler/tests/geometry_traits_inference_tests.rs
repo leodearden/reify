@@ -246,6 +246,9 @@ fn combine_intersection_of_two_full_inputs_preserves_bounded_and_convex() {
             bounded: true,
             connected: false,
             convex: true,
+            dimension: GeomDim::Solid,
+            planar: false,
+            closed: false,
         }
     );
 }
@@ -452,6 +455,9 @@ fn infer_traits_for_expr_handles_variadic_intersection_all() {
             bounded: true,
             connected: false,
             convex: true,
+            dimension: GeomDim::Solid,
+            planar: false,
+            closed: false,
         },
         "intersection_all of two Bounded+Convex boxes must fold combine_intersection \
          (bounded preserved, convex preserved, connected dropped)"
@@ -593,6 +599,9 @@ fn infer_traits_for_expr_pins_intersection_dispatch_via_connected_drop() {
             bounded: true,
             connected: false,
             convex: true,
+            dimension: GeomDim::Solid,
+            planar: false,
+            closed: false,
         },
         "intersection dispatch must fold combine_intersection — bounded+convex \
          preserved, connected dropped (regressing to the `_ => all()` fallback \
@@ -819,7 +828,10 @@ fn infer_traits_for_op_handles_boolean_intersection_root() {
         InferredTraits {
             bounded: true,
             connected: false,
-            convex: true
+            convex: true,
+            dimension: GeomDim::Solid,
+            planar: false,
+            closed: false,
         },
         "intersection of two all-trait ops must be bounded+convex (connected dropped)"
     );
