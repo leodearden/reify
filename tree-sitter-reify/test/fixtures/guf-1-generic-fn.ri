@@ -1,0 +1,3 @@
+pub fn constant_field<D, C>(value: C) -> Field<D, C> {
+    fn_field(|p| value)
+}

@@ -1,0 +1,3 @@
+pub fn compose<A, B, C>(f: Field<B, C>, g: Field<A, B>) -> Field<A, C> {
+    fn_field(|p| sample(f, sample(g, p)))
+}
