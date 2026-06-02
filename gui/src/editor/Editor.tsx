@@ -13,7 +13,7 @@ import { createLspClient } from './lspClient';
 import { reifyCompletionSource } from './completions';
 import { createDiagnosticsListener, lspDiagnosticToCodeMirror, type CmDiagnostic } from './diagnostics';
 import { reifyHoverTooltip } from './hover';
-import { reifyGotoDefinition } from './gotoDefinition';
+import { reifyGotoDefinition, gotoDefinitionCommand } from './gotoDefinition';
 import type { createEditorStore } from '../stores/editorStore';
 import type { FileData, SourceLocation } from '../types';
 import { errorMessage } from '../utils/errorClassifier';
@@ -78,6 +78,34 @@ export function Editor(props: EditorProps) {
     const doc = file?.content ?? '';
     currentUri = activeFile ? pathToUri(activeFile) : 'file:///untitled.ri';
 
+    // Named cross-file navigate callback shared by reifyGotoDefinition (Ctrl+Click)
+    // and gotoDefinitionCommand (F12). Extracted so both handlers use identical
+    // open-and-place logic and cannot diverge.
+    const onCrossFileNavigate = (targetUri: string, line: number, character: number): void => {
+      const path = normalizePath(targetUri);
+      bridgeOpenFile(path)
+        .then((fileData) => {
+          if (destroyed) return;
+          props.store.openFile(fileData);
+          // Defer cursor navigation until after SolidJS reactive file-switch
+          // effect has run and the EditorView has the new document.
+          setTimeout(() => {
+            if (view && !destroyed) {
+              const lineNum = line + 1;
+              if (lineNum >= 1 && lineNum <= view.state.doc.lines) {
+                const targetLine = view.state.doc.line(lineNum);
+                const targetPos = Math.min(targetLine.from + character, targetLine.to);
+                view.dispatch({
+                  selection: { anchor: targetPos },
+                  scrollIntoView: true,
+                });
+              }
+            }
+          }, 0);
+        })
+        .catch((err: unknown) => console.error('Cross-file goto-definition error:', err));
+    };
+
     // Extract extensions into a shared variable for reuse when creating
     // fresh EditorState instances for newly opened files
     extensions = [
@@ -95,34 +123,20 @@ export function Editor(props: EditorProps) {
       // LSP-powered hover tooltips — dynamic URI getter
       reifyHoverTooltip(() => currentUri),
       // LSP-powered go-to-definition (Ctrl+Click) — dynamic URI getter
-      reifyGotoDefinition(() => currentUri, (targetUri, line, character) => {
-        const path = normalizePath(targetUri);
-        bridgeOpenFile(path)
-          .then((fileData) => {
-            if (destroyed) return;
-            props.store.openFile(fileData);
-            // Defer cursor navigation until after SolidJS reactive file-switch
-            // effect has run and the EditorView has the new document
-            setTimeout(() => {
-              if (view && !destroyed) {
-                const lineNum = line + 1;
-                if (lineNum >= 1 && lineNum <= view.state.doc.lines) {
-                  const targetLine = view.state.doc.line(lineNum);
-                  const targetPos = Math.min(targetLine.from + character, targetLine.to);
-                  view.dispatch({
-                    selection: { anchor: targetPos },
-                    scrollIntoView: true,
-                  });
-                }
-              }
-            }, 0);
-          })
-          .catch((err: unknown) => console.error('Cross-file goto-definition error:', err));
-      }),
+      reifyGotoDefinition(() => currentUri, onCrossFileNavigate),
       // Find/replace (Ctrl+F, Ctrl+H)
       search(),
       // Diagnostic linter (diagnostics are pushed from LSP via Tauri events)
       linter(() => [] as Diagnostic[]),
+      // Navigation keymap — registered BEFORE the defaultKeymap so F12 and
+      // Alt-Arrow bindings take higher precedence over word-group motion.
+      keymap.of([
+        {
+          key: 'F12',
+          run: gotoDefinitionCommand(() => currentUri, onCrossFileNavigate),
+          preventDefault: true,
+        },
+      ]),
       keymap.of([
         {
           key: 'Mod-o',
