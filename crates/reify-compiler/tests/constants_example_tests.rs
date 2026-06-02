@@ -263,9 +263,15 @@ fn constants_example_cross_checks_eval_within_tolerance() {
         eval_errors
     );
 
-    // ── Helper: get a Scalar cell's (si_value, dimension) ─────────────────────
+    // ── Helpers ───────────────────────────────────────────────────────────────
+    //
+    // `Value::Real(v)` is the canonical representation for dimensionless scalars
+    // (see `Value::from_real_scalar`): dimensionless arithmetic (pi, e, 2.0 * pi,
+    // ε₀μ₀c²) produces `Value::Real`, while dimensioned arithmetic (R − N_A·k_B)
+    // produces `Value::Scalar { si_value, dimension }`.
 
-    let get_scalar = |field: &str| -> (f64, DimensionVector) {
+    // Extract the numeric payload from Real or Scalar; panic on other variants.
+    let get_numeric = |field: &str| -> f64 {
         let id = ValueCellId::new("PhysicalConstants", field);
         let val = result
             .values
@@ -279,9 +285,36 @@ fn constants_example_cross_checks_eval_within_tolerance() {
                 )
             });
         match val {
-            Value::Scalar { si_value, dimension } => (*si_value, *dimension),
+            Value::Real(v) => *v,
+            Value::Scalar { si_value, .. } => *si_value,
             other => panic!(
-                "PhysicalConstants.{} expected Value::Scalar, got {:?}",
+                "PhysicalConstants.{} expected Value::Real or Value::Scalar, got {:?}",
+                field, other
+            ),
+        }
+    };
+
+    // Assert a field's value is dimensionless: it must be `Value::Real` (the
+    // canonical dimensionless representation) or `Value::Scalar` with a
+    // dimensionless dimension vector.
+    let assert_dimensionless = |field: &str| {
+        let id = ValueCellId::new("PhysicalConstants", field);
+        let val = result
+            .values
+            .get(&id)
+            .unwrap_or_else(|| panic!("PhysicalConstants.{} not found in eval result", field));
+        match val {
+            Value::Real(_) => {} // Real is always dimensionless — OK
+            Value::Scalar { dimension, .. } => {
+                assert!(
+                    dimension.is_dimensionless(),
+                    "PhysicalConstants.{} must be dimensionless (ε₀μ₀c² = 1); \
+                     got dimension {:?}",
+                    field, dimension
+                );
+            }
+            other => panic!(
+                "PhysicalConstants.{} expected Real or Scalar, got {:?}",
                 field, other
             ),
         }
@@ -289,47 +322,43 @@ fn constants_example_cross_checks_eval_within_tolerance() {
 
     // ── circ = 2.0 * pi  — proves pi resolves and is correct ─────────────────
 
-    let (circ_si, _circ_dim) = get_scalar("circ");
+    let circ_val = get_numeric("circ");
     assert!(
-        (circ_si - std::f64::consts::TAU).abs() < 1e-9,
+        (circ_val - std::f64::consts::TAU).abs() < 1e-9,
         "PhysicalConstants.circ: expected ≈ 2π ({:.17}), got {:.17}",
         std::f64::consts::TAU,
-        circ_si
+        circ_val
     );
 
     // ── euler = e  — proves e resolves and is correct ─────────────────────────
 
-    let (euler_si, _euler_dim) = get_scalar("euler");
+    let euler_val = get_numeric("euler");
     assert!(
-        (euler_si - std::f64::consts::E).abs() < 1e-9,
+        (euler_val - std::f64::consts::E).abs() < 1e-9,
         "PhysicalConstants.euler: expected ≈ e ({:.17}), got {:.17}",
         std::f64::consts::E,
-        euler_si
+        euler_val
     );
 
     // ── r_check = R − N_A·k_B ≈ 0  (gas-constant identity) ──────────────────
-    // Residual is ≈ −1.53e-10 (exact 2019-SI: R = N_A·k_B to machine precision).
+    // Residual ≈ −1.53e-10 (exact 2019-SI: R = N_A·k_B to machine precision).
 
-    let (r_si, _r_dim) = get_scalar("r_check");
+    let r_val = get_numeric("r_check");
     assert!(
-        r_si.abs() < 1e-6,
+        r_val.abs() < 1e-6,
         "PhysicalConstants.r_check: |R − N_A·k_B| expected < 1e-6, got {}",
-        r_si
+        r_val
     );
 
-    // ── em_check = ε₀·μ₀·c² ≈ 1  (dimensionless)  ───────────────────────────
-    // Residual is ≈ −4.34e-14 (exact identity ε₀μ₀ = 1/c²).
+    // ── em_check = ε₀·μ₀·c² ≈ 1  (dimensionless) ────────────────────────────
+    // Residual ≈ −4.34e-14 (exact identity ε₀μ₀ = 1/c²). Dimensionless result
+    // is stored as Value::Real by the evaluator.
 
-    let (em_si, em_dim) = get_scalar("em_check");
+    assert_dimensionless("em_check");
+    let em_val = get_numeric("em_check");
     assert!(
-        em_dim.is_dimensionless(),
-        "PhysicalConstants.em_check must be dimensionless (ε₀μ₀c² = 1); \
-         got dimension {:?}",
-        em_dim
-    );
-    assert!(
-        (em_si - 1.0_f64).abs() < 1e-6,
+        (em_val - 1.0_f64).abs() < 1e-6,
         "PhysicalConstants.em_check: |ε₀μ₀c² − 1| expected < 1e-6, got {}",
-        em_si
+        em_val
     );
 }

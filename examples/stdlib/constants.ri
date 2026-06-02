@@ -64,6 +64,33 @@ structure def PhysicalConstants {
     // Elementary charge — exact charge of one proton (2019 SI).
     let q_e = ELEMENTARY_CHARGE()
 
+    // ── Dimensionless math exercises ──────────────────────────────────────────
+
+    // Circumference ratio: 2π in radians. Exercises `pi` (built-in).
+    let circ = 2.0 * pi
+
+    // Euler's number. Exercises `e` (built-in).
+    let euler = e
+
+    // ── Physics-identity cross-checks ─────────────────────────────────────────
+    //
+    // These bindings verify both the numeric value and the physical dimension
+    // of each constant by combining them in ways that must satisfy an exact
+    // analytical identity. A wrong-dimension constant in std.units would cause
+    // the subtraction or multiplication below to emit a `dimension mismatch`
+    // diagnostic (compile-time error). A wrong-value constant would be caught
+    // by the regression test's tolerance assertion.
+
+    // Gas-constant identity: R = N_A · k_B
+    // MOLAR_GAS_CONSTANT (J·mol⁻¹·K⁻¹) − AVOGADRO_CONSTANT (mol⁻¹) ·
+    // BOLTZMANN_CONSTANT (J·K⁻¹) ≈ 0 (small floating-point residual).
+    let r_check = MOLAR_GAS_CONSTANT() - AVOGADRO_CONSTANT() * BOLTZMANN_CONSTANT()
+
+    // EM identity: ε₀·μ₀ = 1/c²  →  ε₀·μ₀·c² = 1 (dimensionless)
+    // VACUUM_PERMITTIVITY (F/m) × VACUUM_PERMEABILITY (H/m) ×
+    // SPEED_OF_LIGHT² (m²/s²) = dimensionless ≈ 1.
+    let em_check = VACUUM_PERMITTIVITY() * VACUUM_PERMEABILITY() * SPEED_OF_LIGHT() * SPEED_OF_LIGHT()
+
     // ── Derived quantities ────────────────────────────────────────────────────
 
     // Thermal energy at room temperature (300 K).
