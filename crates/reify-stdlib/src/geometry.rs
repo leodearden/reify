@@ -167,6 +167,58 @@ fn make_dimensioned_component(dim: DimensionVector, value: f64) -> Value {
     }
 }
 
+// --- 3×3 linear algebra helpers for affine algebra (task γ) ---
+
+/// Multiply two 3×3 row-major matrices.
+fn mat3_mul(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    let mut r = [[0.0f64; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            for k in 0..3 {
+                r[i][j] += a[i][k] * b[k][j];
+            }
+        }
+    }
+    r
+}
+
+/// Apply a 3×3 row-major matrix to a column vector (matrix · vector).
+fn mat3_apply(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
+    [
+        m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+        m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+        m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
+    ]
+}
+
+/// 3×3 matrix inverse via adjugate / cofactor method.
+/// Returns `None` when the determinant is zero or non-finite.
+fn mat3_inverse(m: [[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
+    let [[a, b, c], [d, e, f], [g, h, i]] = m;
+    let det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+    if det == 0.0 || !det.is_finite() {
+        return None;
+    }
+    let inv_det = 1.0 / det;
+    Some([
+        [
+            (e * i - f * h) * inv_det,
+            (c * h - b * i) * inv_det,
+            (b * f - c * e) * inv_det,
+        ],
+        [
+            (f * g - d * i) * inv_det,
+            (a * i - c * g) * inv_det,
+            (c * d - a * f) * inv_det,
+        ],
+        [
+            (d * h - e * g) * inv_det,
+            (b * g - a * h) * inv_det,
+            (a * e - b * d) * inv_det,
+        ],
+    ])
+}
+
 pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
         // --- Determinacy predicates (stubs) ---
@@ -945,6 +997,67 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                     ])
                 }
                 _ => Value::Undef,
+            }
+        }
+
+        // --- Affine algebra free-functions (task γ) ---
+        // `affine_compose(a, b) -> AffineMap`: a∘b, apply b first then a.
+        // linear = a.linear · b.linear; translation = a.linear · b.translation + a.translation.
+        // Left-applied convention (matches OCCT gp_GTrsf::Multiply).
+        "affine_compose" => {
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            let (a_linear, a_trans) = match &args[0] {
+                Value::AffineMap { linear, translation } => (*linear, *translation),
+                _ => return Some(Value::Undef),
+            };
+            let (b_linear, b_trans) = match &args[1] {
+                Value::AffineMap { linear, translation } => (*linear, *translation),
+                _ => return Some(Value::Undef),
+            };
+            let linear = mat3_mul(a_linear, b_linear);
+            let applied = mat3_apply(a_linear, b_trans);
+            let translation = [
+                applied[0] + a_trans[0],
+                applied[1] + a_trans[1],
+                applied[2] + a_trans[2],
+            ];
+            // Guard: reject any non-finite component.
+            if linear.iter().any(|row| row.iter().any(|&v| !v.is_finite()))
+                || translation.iter().any(|&v| !v.is_finite())
+            {
+                return Some(Value::Undef);
+            }
+            Value::AffineMap { linear, translation }
+        }
+
+        // `affine_inverse(a) -> Option<AffineMap>`:
+        // Invertible (det ≠ 0) → Some(AffineMap{ linear=a.linear⁻¹, translation=−a.linear⁻¹·a.trans }).
+        // Singular (det = 0) → Value::Option(None) — NOT Undef, so authors can branch.
+        "affine_inverse" => {
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            let (a_linear, a_trans) = match &args[0] {
+                Value::AffineMap { linear, translation } => (*linear, *translation),
+                _ => return Some(Value::Undef),
+            };
+            match mat3_inverse(a_linear) {
+                None => Value::Option(None),
+                Some(inv) => {
+                    let applied = mat3_apply(inv, a_trans);
+                    let translation = [-applied[0], -applied[1], -applied[2]];
+                    if inv.iter().any(|row| row.iter().any(|&v| !v.is_finite()))
+                        || translation.iter().any(|&v| !v.is_finite())
+                    {
+                        return Some(Value::Option(None));
+                    }
+                    Value::Option(Some(Box::new(Value::AffineMap {
+                        linear: inv,
+                        translation,
+                    })))
+                }
             }
         }
 
