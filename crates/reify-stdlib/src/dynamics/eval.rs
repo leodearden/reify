@@ -637,33 +637,56 @@ fn eval_inverse_dynamics(args: &[Value]) -> Value {
         return Value::Undef;
     }
     let mechanism = &args[0];
-    let samples = match trajectory_samples(&args[1]) {
+    // Route through the pub per-sample seam (`motion_trajectory_samples` +
+    // `inverse_dynamics_sample`) so the body-inline fallback here and the
+    // reify-eval `inverse_dynamics` ComputeNode trampoline (task RBD-ι) drive
+    // identical per-sample logic — behaviour stays single-sourced.
+    let samples = match motion_trajectory_samples(&args[1]) {
         Some(s) => s,
         None => return Value::Undef,
     };
     let mut out = Vec::with_capacity(samples.len());
     for sample in samples {
-        let (values, vels, accels) = match sample_fields(sample) {
-            Some(t) => t,
+        match inverse_dynamics_sample(mechanism, sample) {
+            Some(forces) => out.push(Value::List(forces)),
             None => return Value::Undef,
-        };
-        // Bake the sample's joint positions into an FK snapshot, then run the
-        // shared snapshot core with the sample's q̇ / q̈. Mass properties are
-        // re-read per sample from `body.solid` inside the core; they are
-        // trajectory-invariant, so this is redundant work the small fixtures
-        // don't notice — a future optimisation can hoist the MassProperties
-        // extraction across samples.
-        let snapshot = match snapshot_for_sample(mechanism, values) {
-            Some(s) => s,
-            None => return Value::Undef,
-        };
-        let forces = match snapshot_inverse_dynamics(mechanism, &snapshot, vels, accels) {
-            Some(f) => f,
-            None => return Value::Undef,
-        };
-        out.push(Value::List(forces));
+        }
     }
     Value::List(out)
+}
+
+/// Read the `samples` list of a `MotionTrajectory` `Value::StructureInstance` as
+/// a slice, or `None` for a malformed / non-`MotionTrajectory` value.
+///
+/// Public per-sample seam (task RBD-ι) over the private [`trajectory_samples`]:
+/// the reify-eval `inverse_dynamics` ComputeNode trampoline iterates this slice
+/// and polls cooperative cancellation at each sample boundary (a whole-trajectory
+/// eval cannot meet the §9.1 "abort within 1 sample interval" signal).
+pub fn motion_trajectory_samples(traj: &Value) -> Option<&[Value]> {
+    trajectory_samples(traj)
+}
+
+/// Open-chain inverse dynamics for ONE trajectory sample: read the sample's
+/// `(values, vels, accels)`, bake the joint positions into an FK snapshot, then
+/// drive the shared open-chain snapshot RNEA core ([`snapshot_inverse_dynamics`])
+/// with the sample's q̇ / q̈. Returns the per-body `List<JointForce>` as a
+/// `Vec<Value>`, or `None` on any malformed input (the caller maps `None` →
+/// `Value::Undef`).
+///
+/// Public per-sample seam (task RBD-ι) wrapping the private `sample_fields` +
+/// `snapshot_for_sample` + `snapshot_inverse_dynamics`. Both the body-inline
+/// `eval_inverse_dynamics` fallback and the reify-eval trampoline call it, so the
+/// per-sample marshalling lives in exactly one place.
+///
+/// Mass properties are re-read per sample from `body.solid` inside the snapshot
+/// core; they are trajectory-invariant, so this is redundant work the small
+/// fixtures don't notice — a future optimisation can hoist the MassProperties
+/// extraction across samples (the same deferral the trampoline's warm-state
+/// cache documents).
+pub fn inverse_dynamics_sample(mechanism: &Value, sample: &Value) -> Option<Vec<Value>> {
+    let (values, vels, accels) = sample_fields(sample)?;
+    let snapshot = snapshot_for_sample(mechanism, values)?;
+    snapshot_inverse_dynamics(mechanism, &snapshot, vels, accels)
 }
 
 /// Read the `samples` list of a `MotionTrajectory` `Value::StructureInstance`.
