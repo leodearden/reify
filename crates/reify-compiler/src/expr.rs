@@ -3564,6 +3564,19 @@ pub(crate) fn compile_expr_guarded(
                 }
             }
         }
+        // STUB (task-3918 step-4): will be replaced with real lowering in step-6.
+        // Mirrors VariantConstruct/InterpolatedString stubs so the compiler-behavior
+        // test can be genuinely RED before the real arm lands.
+        reify_ast::ExprKind::Undef => make_poison_literal(
+            diagnostics,
+            Diagnostic::error(
+                "undef literal lowering not yet wired (task-3918 step-6)".to_string(),
+            )
+            .with_label(DiagnosticLabel::new(
+                expr.span,
+                "not yet supported",
+            )),
+        ),
         reify_ast::ExprKind::VariantConstruct { .. } => make_poison_literal(
             diagnostics,
             Diagnostic::error(

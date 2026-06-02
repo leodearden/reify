@@ -95,6 +95,7 @@ pub(crate) fn substitute_expr(
         ExprKind::StringLiteral(s) => ExprKind::StringLiteral(s.clone()),
         ExprKind::BoolLiteral(b) => ExprKind::BoolLiteral(*b),
         ExprKind::Auto { free } => ExprKind::Auto { free: *free },
+        ExprKind::Undef => ExprKind::Undef,
         ExprKind::EnumAccess { type_name, variant } => ExprKind::EnumAccess {
             type_name: type_name.clone(),
             variant: variant.clone(),

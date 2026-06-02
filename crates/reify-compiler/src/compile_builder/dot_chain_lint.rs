@@ -497,7 +497,8 @@ fn walk_expr_depth(expr: &Expr, diagnostics: &mut Vec<Diagnostic>, depth: usize)
         | ExprKind::BoolLiteral(_)
         | ExprKind::Ident(_)
         | ExprKind::EnumAccess { .. }
-        | ExprKind::Auto { .. } => {}
+        | ExprKind::Auto { .. }
+        | ExprKind::Undef => {}
     }
 }
 

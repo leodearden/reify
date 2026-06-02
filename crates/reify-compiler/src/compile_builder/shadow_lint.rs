@@ -667,7 +667,8 @@ fn walk_expr_depth(
         | ExprKind::BoolLiteral(_)
         | ExprKind::Ident(_)
         | ExprKind::EnumAccess { .. }
-        | ExprKind::Auto { .. } => {}
+        | ExprKind::Auto { .. }
+        | ExprKind::Undef => {}
     }
 }
 

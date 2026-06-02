@@ -2726,6 +2726,10 @@ impl<'a> Lowering<'a> {
             "string_literal" => self.lower_string_literal(node),
             "interpolated_string" => self.lower_interpolated_string(node),
             "bool_literal" => self.lower_bool_literal(node),
+            "undef_literal" => Some(Expr {
+                kind: ExprKind::Undef,
+                span: self.span(node),
+            }),
             "identifier" => self.lower_identifier(node),
             "function_call" => self.lower_function_call(node),
             "list_literal" => self.lower_list_literal(node),
