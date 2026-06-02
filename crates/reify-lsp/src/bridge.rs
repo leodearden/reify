@@ -93,7 +93,7 @@ impl InProcessLsp {
     ///
     /// - **`Ok(Value)`** — A JSON-serialized response payload for successful *requests*:
     ///   `initialize`, `textDocument/completion`, `textDocument/hover`,
-    ///   `textDocument/definition`.
+    ///   `textDocument/definition`, `textDocument/documentSymbol`.
     /// - **`Ok(Value::Null)`** — For successfully processed *notifications* and `shutdown`:
     ///   `initialized`, `textDocument/didOpen`, `textDocument/didChange`,
     ///   `textDocument/didClose`, `shutdown`.
@@ -193,6 +193,17 @@ impl InProcessLsp {
                     .map_err(|e| format!("definition error: {e}"))?;
                 serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
             }
+            "textDocument/documentSymbol" => {
+                let p = parse_params::<DocumentSymbolParams>(
+                    params,
+                    error_prefix::DOCUMENT_SYMBOL_PARAMS,
+                )?;
+                let result = server
+                    .document_symbol(p)
+                    .await
+                    .map_err(|e| format!("documentSymbol error: {e}"))?;
+                serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
+            }
             "shutdown" => {
                 server
                     .shutdown()
@@ -224,7 +235,7 @@ impl Default for InProcessLsp {
 /// import reflects the change automatically, turning any stale assertion into
 /// a compile error or immediate test failure.
 ///
-/// All eight deserializing arms of `handle_request` thread their error prefix
+/// All nine deserializing arms of `handle_request` thread their error prefix
 /// through a constant defined here. There are no remaining hardcoded strings
 /// in the implementation.
 pub mod error_prefix {
@@ -251,6 +262,9 @@ pub mod error_prefix {
 
     /// Prefix for deserialization failures on `textDocument/definition` params.
     pub const DEFINITION_PARAMS: &str = "definition params error";
+
+    /// Prefix for deserialization failures on `textDocument/documentSymbol` params.
+    pub const DOCUMENT_SYMBOL_PARAMS: &str = "documentSymbol params error";
 
     /// Prefix used when an unrecognised LSP method name is requested.
     ///
