@@ -511,6 +511,95 @@ mod tests {
         }
     }
 
+    // ── spring-pendulum additive term (PRD §10.1 row 7) ───────────────────────
+    //
+    // Reuses the single_pendulum_static_gravity_torque geometry: 1 kg point
+    // mass at com=[0,0,−0.1], revolute about +y, −30° joint angle.
+    //
+    // Run inverse_dynamics_open_chain twice on otherwise-identical links:
+    //   (a) compliance: None  →  baseline τ ≈ 0.4905 N·m
+    //   (b) compliance: Some(JointCompliance { spring_rate: Some(k=2.0),
+    //                        damping: None, neutral: π/12 (15°),
+    //                        position: π/6 (30°) })
+    //
+    // The spring displacement is (π/6 − π/12) = π/12.
+    // Expected additive term: −k·(position − neutral) = −2.0·(π/12) = −π/6.
+    //
+    // Assert: baseline ≈ 0.4905  AND  (spring_tau − baseline_tau) == −k·(pos − neutral)
+    // within 1e-12 (exact float arithmetic — additive, no transcendentals).
+    #[test]
+    fn spring_pendulum_additive_term() {
+        use std::f64::consts::PI;
+        use super::JointCompliance;
+
+        let theta = PI / 6.0; // −30° joint angle (same as single-pendulum test)
+        let (half_sin, half_cos) = ((theta / 2.0).sin(), (theta / 2.0).cos());
+        let q = [half_cos, 0.0, -half_sin, 0.0]; // (w,x,y,z) — −30° about y
+
+        let base_link = RneaLink {
+            parent: None,
+            parent_to_child: SpatialTransform6::from_frame3(&Frame3::new(q, [0.0, 0.0, 0.0])),
+            subspace: vec![SpatialVector6::from_angular_linear([0.0, 1.0, 0.0], [0.0, 0.0, 0.0])],
+            mass: 1.0,
+            com: [0.0, 0.0, -0.1],
+            inertia_about_com: [[0.0; 3]; 3],
+            q_dot: vec![0.0],
+            q_ddot: vec![0.0],
+            compliance: None,
+        };
+
+        let k = 2.0_f64;
+        let neutral = PI / 12.0; // 15°
+        let position = PI / 6.0;  // 30°
+
+        let spring_link = RneaLink {
+            compliance: Some(JointCompliance {
+                spring_rate: Some(k),
+                damping: None,
+                neutral,
+                position,
+            }),
+            ..base_link // re-use all other fields
+        };
+
+        // Re-build base_link for the baseline call (moved into spring_link above).
+        let baseline_link = RneaLink {
+            parent: None,
+            parent_to_child: SpatialTransform6::from_frame3(&Frame3::new(q, [0.0, 0.0, 0.0])),
+            subspace: vec![SpatialVector6::from_angular_linear([0.0, 1.0, 0.0], [0.0, 0.0, 0.0])],
+            mass: 1.0,
+            com: [0.0, 0.0, -0.1],
+            inertia_about_com: [[0.0; 3]; 3],
+            q_dot: vec![0.0],
+            q_ddot: vec![0.0],
+            compliance: None,
+        };
+
+        let gravity = default_gravity();
+        let tau_baseline = inverse_dynamics_open_chain(&[baseline_link], gravity);
+        let tau_spring   = inverse_dynamics_open_chain(&[spring_link], gravity);
+
+        assert_eq!(tau_baseline.len(), 1);
+        assert_eq!(tau_spring.len(), 1);
+
+        // Sanity: baseline ≈ 0.4905 N·m
+        let expected_baseline = 0.4905_f64;
+        assert!(
+            (tau_baseline[0][0] - expected_baseline).abs() < 1e-6,
+            "baseline: expected {expected_baseline}, got {}",
+            tau_baseline[0][0]
+        );
+
+        // Exact additive check: Δτ must equal −k·(position − neutral).
+        let expected_delta = -k * (position - neutral);
+        let actual_delta = tau_spring[0][0] - tau_baseline[0][0];
+        assert!(
+            (actual_delta - expected_delta).abs() < 1e-12,
+            "spring Δτ: expected {expected_delta:.15}, got {actual_delta:.15}, err={:.2e}",
+            (actual_delta - expected_delta).abs()
+        );
+    }
+
     // ── multi-DOF joint subspace accumulation ─────────────────────────────────
     //
     // Exercises the multi-column vJ/aJ accumulation loops and the per-DOF
