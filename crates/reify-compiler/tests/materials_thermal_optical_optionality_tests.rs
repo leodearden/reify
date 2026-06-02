@@ -125,3 +125,38 @@ structure RefractoryOmit : Refractory {
         violated
     );
 }
+
+// ─── §6.5 optical: omit optional params ──────────────────────────────────────
+
+/// A `structure def` conforming to OpticallyCharacterized may omit the three
+/// optional optical params (absorption_coefficient, transmittance,
+/// reference_thickness) when they carry `= undef` defaults, as long as the
+/// required refractive_index and the parent MaterialSpec params are supplied.
+///
+/// RED: omitting these params yields "missing required member" diagnostics until
+/// the `= undef` defaults are applied in step-4.
+#[test]
+fn optical_omit_optional_params_compiles_cleanly() {
+    let source = r#"
+structure def OpticalOmit : OpticallyCharacterized {
+    param density : Real = 2500.0
+    param name : String = "glass_partial"
+    param refractive_index : Real = 1.52
+}
+"#;
+
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        errors.is_empty(),
+        "OpticalOmit omitting optional optical params should compile with no errors, \
+         got: {:?}",
+        errors
+    );
+}
