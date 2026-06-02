@@ -20,9 +20,14 @@
 //!     `Value::Undef` sentinel until the KGQ kernel seam (task 3620) is wired.
 
 use reify_core::dimension::DimensionVector;
-use reify_core::{Diagnostic, DiagnosticCode};
-use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use reify_core::{ContentHash, Diagnostic, DiagnosticCode};
+use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use reify_stdlib::dynamics::eval::{inverse_dynamics_sample, motion_trajectory_samples};
 use reify_stdlib::dynamics::mass_props::{DensitySource, resolve_density};
+use reify_stdlib::dynamics::rnea::default_gravity;
+use reify_stdlib::dynamics::trampoline::{body_solid_hashes, InverseDynamicsCacheKey};
+
+use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
 /// Sentinel `StructureTypeId` for engine-assembled (registry-free) instances.
 /// Mirrors `modal_ops::degenerate_modal_result`: the nominal `type_name` is the
@@ -738,6 +743,202 @@ mod tests {
 }
 
 // ── inverse_dynamics ComputeNode trampoline (task RBD-ι) ─────────────────────
+
+/// Warm-state payload donated by the `inverse_dynamics` trampoline (task RBD-ι):
+/// the cache key the result was computed for, the per-body solid-content-hash
+/// invalidation record, and the cached `List<List<JointForce>>` result itself.
+///
+/// Recovered on the next invocation via [`OpaqueState::downcast_ref`] and reused
+/// only when the incoming request's [`InverseDynamicsCacheKey`] matches (a cache
+/// HIT, step-10). Mirrors `modal_ops::ModalAnalysisCache` (the modal-κ split),
+/// except the cached payload is the finished trajectory result: the dynamics
+/// solve has no separable "assembly" half, and the per-sample
+/// MassProperties-reuse optimisation is deferred (design_decision #4).
+#[derive(Clone)]
+pub(crate) struct InverseDynamicsCache {
+    /// The (mechanism, trajectory, gravity)-hash key the cached `result` certifies.
+    // step-8: written by the cache-MISS path but first *read* by the step-10
+    // cache-HIT lookup (`key.matches`), which removes this allow.
+    #[allow(dead_code)]
+    key: InverseDynamicsCacheKey,
+    /// Per-body `solid` content hashes (in `bodies` order), recorded so the warm
+    /// state observes "the MassProperties only changed when a body solid changed"
+    /// at body granularity (PRD §7.7). The HIT decision itself is the full-key
+    /// [`InverseDynamicsCacheKey::matches`]; this record is its body-granular
+    /// companion (and the input a future per-body MassProperties-reuse
+    /// optimisation would key on).
+    body_solid_hashes: Vec<ContentHash>,
+    /// The cached trajectory-level result (`List<List<JointForce>>`).
+    result: Value,
+}
+
+impl InverseDynamicsCache {
+    /// Coarse estimate of the retained size of this cache in bytes: the flat key,
+    /// the per-body solid-hash record, and the cached result `Value` tree. Drives
+    /// both the [`OpaqueState`] LRU size hint and the donated `cost_per_byte`
+    /// (mirrors `ModalAnalysisCache::estimated_size_bytes`). Always
+    /// ≥ `size_of::<InverseDynamicsCacheKey>() > 0`, so the `cost_per_byte`
+    /// reciprocal is well-defined.
+    fn estimated_size_bytes(&self) -> usize {
+        std::mem::size_of::<InverseDynamicsCacheKey>()
+            + self.body_solid_hashes.len() * std::mem::size_of::<ContentHash>()
+            + value_size_estimate(&self.result)
+    }
+
+    /// Wrap this cache in an [`OpaqueState`] for donation to the warm-state pool,
+    /// sized by [`estimated_size_bytes`](Self::estimated_size_bytes). Returns that
+    /// `size_bytes` alongside the state so the caller derives `cost_per_byte` from
+    /// the same single measurement. Mirrors `ModalAnalysisCache::into_opaque_state`.
+    fn into_opaque_state(self) -> (OpaqueState, usize) {
+        let size = self.estimated_size_bytes();
+        (OpaqueState::new(self, size), size)
+    }
+}
+
+/// Result of the in-crate core [`run_inverse_dynamics`]: the engine-facing
+/// [`ComputeOutcome`] plus a white-box `reused` flag the in-crate cache-HIT tests
+/// assert against (the public `ComputeFn` returns only the outcome). Mirrors
+/// `modal_ops::ModalTrampolineRun`.
+pub(crate) struct InverseDynamicsRun {
+    /// The compute outcome the public trampoline returns.
+    pub(crate) outcome: ComputeOutcome,
+    /// `true` iff this run reused a cached [`InverseDynamicsCache`] result rather
+    /// than recomputing the per-sample RNEA loop. Observable only in-crate (the
+    /// cache-HIT tests); the public `ComputeFn` discards it, hence `allow(dead_code)`.
+    #[allow(dead_code)]
+    pub(crate) reused: bool,
+}
+
+/// Coarse heap-size estimate of a `Value` tree: a per-node `size_of::<Value>()`
+/// plus the out-of-line payload of strings, lists, and structure-instance fields.
+/// Feeds [`InverseDynamicsCache::estimated_size_bytes`]; only a monotone proxy for
+/// "how expensive is this result to retain" is needed, not byte-exactness, so the
+/// catch-all covers the scalar leaves (`Real`/`Int`/`Scalar`/…) that carry no
+/// out-of-line heap payload. `List` + `StructureInstance` fully cover the
+/// `List<List<JointForce>>` result this cache holds.
+fn value_size_estimate(v: &Value) -> usize {
+    let base = std::mem::size_of::<Value>();
+    match v {
+        Value::String(s) => base + s.len(),
+        Value::List(items) => base + items.iter().map(value_size_estimate).sum::<usize>(),
+        Value::StructureInstance(d) => {
+            base + d.type_name.len()
+                + d.fields
+                    .iter()
+                    .map(|(k, val)| k.len() + value_size_estimate(val))
+                    .sum::<usize>()
+        }
+        _ => base,
+    }
+}
+
+/// The malformed / closed-chain short-circuit outcome: η's `Value::Undef`
+/// convention surfaced as a `Completed` with no donated warm state — keeping the
+/// trampoline result bit-identical to the unregistered `inverse_dynamics_lower`
+/// body-inline fallback, and donating no warm state for an input that produced no
+/// real computation (design_decision #6).
+fn undef_outcome() -> ComputeOutcome {
+    ComputeOutcome::Completed {
+        result: Value::Undef,
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: Vec::new(),
+    }
+}
+
+/// In-crate core behind [`solve_inverse_dynamics_trampoline`]: run RNEA inverse
+/// dynamics over a whole `MotionTrajectory`, with the task-ι warm-state cache.
+/// Returns an [`InverseDynamicsRun`] so in-crate tests can observe whether the
+/// cached result was reused; the public trampoline takes only `.outcome`.
+///
+/// `@optimized("dynamics::inverse_dynamics")` core for `fn inverse_dynamics`.
+/// Receives the two flat `value_inputs` matching the fn signature:
+///
+/// ```text
+/// [0] mechanism  : Mechanism        (Value::Map — kind, bodies[].solid, joints)
+/// [1] trajectory : MotionTrajectory (StructureInstance — samples[] of q/q̇/q̈)
+/// ```
+///
+/// Drives the per-sample loop through the reify-stdlib seam
+/// ([`motion_trajectory_samples`] + [`inverse_dynamics_sample`]) so the result is
+/// bit-identical to the body-inline `inverse_dynamics_lower` fallback. A malformed
+/// trajectory, or a sample the seam rejects (a closed-chain mechanism, an
+/// arity/shape mismatch), yields [`undef_outcome`] — η's exact Undef convention —
+/// donating no warm state. Gravity is the constant [`default_gravity`] (PRD §12
+/// q1), folded into the cache key.
+pub(crate) fn run_inverse_dynamics(
+    value_inputs: &[Value],
+    prior_warm_state: Option<&OpaqueState>,
+    cancellation: &CancellationHandle,
+) -> InverseDynamicsRun {
+    // step-8 (cache-MISS path) only: the warm-state HIT lookup (step-10) and the
+    // cooperative per-sample cancellation polling (step-12) are not wired yet —
+    // bind the still-unused params so this staged GREEN compiles warning-clean.
+    let _ = (prior_warm_state, cancellation);
+
+    // Arity guard, mirroring eval_inverse_dynamics: inverse_dynamics(mechanism,
+    // trajectory). The engine always supplies the two fn args, so this is defensive.
+    if value_inputs.len() != 2 {
+        return InverseDynamicsRun { outcome: undef_outcome(), reused: false };
+    }
+    let mechanism = &value_inputs[0];
+    let trajectory = &value_inputs[1];
+
+    // Cache key (constant default gravity) + the body-granular solid-hash
+    // invalidation record, built up front so the donated warm state carries both.
+    let key = InverseDynamicsCacheKey::from_inputs(mechanism, trajectory, default_gravity());
+    let body_solid_hashes = body_solid_hashes(mechanism);
+
+    // Drive the per-sample RNEA loop through the shared stdlib seam so the result
+    // is single-sourced with the body-inline fallback. Any `None` (malformed
+    // trajectory, closed-chain mechanism, or shape mismatch) collapses to η's Undef.
+    let samples = match motion_trajectory_samples(trajectory) {
+        Some(s) => s,
+        None => return InverseDynamicsRun { outcome: undef_outcome(), reused: false },
+    };
+    let mut per_sample = Vec::with_capacity(samples.len());
+    for sample in samples {
+        match inverse_dynamics_sample(mechanism, sample) {
+            Some(forces) => per_sample.push(Value::List(forces)),
+            None => return InverseDynamicsRun { outcome: undef_outcome(), reused: false },
+        }
+    }
+    let result = Value::List(per_sample);
+
+    // Donate the finished result as warm state (cache MISS): the next call with a
+    // matching key reuses it (step-10). `cost_per_byte` is the reciprocal of the
+    // estimated retained size (a bigger cached result is pricier to keep), and
+    // `into_opaque_state` walks the result once to hand back that `size_bytes`.
+    let cache = InverseDynamicsCache { key, body_solid_hashes, result: result.clone() };
+    let (state, size_bytes) = cache.into_opaque_state();
+    let cost_per_byte = if size_bytes > 0 { Some(1.0 / size_bytes as f64) } else { None };
+    InverseDynamicsRun {
+        outcome: ComputeOutcome::Completed {
+            result,
+            new_warm_state: Some(state),
+            cost_per_byte,
+            diagnostics: Vec::new(),
+        },
+        reused: false,
+    }
+}
+
+/// `@optimized("dynamics::inverse_dynamics")` public `ComputeFn` for `fn
+/// inverse_dynamics` (registered in `compute_targets::mod`, step-14). A thin
+/// wrapper over the in-crate core [`run_inverse_dynamics`]: it forwards the prior
+/// warm state and the cancellation handle and surfaces only the [`ComputeOutcome`].
+/// Warm-state donation/recovery (the cached result) and cooperative cancellation
+/// live in the core; the core's white-box `reused` flag is for in-crate
+/// amortization tests only. Mirrors `solve_modal_analysis_trampoline`.
+pub fn solve_inverse_dynamics_trampoline(
+    value_inputs: &[Value],
+    _realization_inputs: &[RealizationReadHandle],
+    _options: &Value,
+    prior_warm_state: Option<&OpaqueState>,
+    cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    run_inverse_dynamics(value_inputs, prior_warm_state, cancellation).outcome
+}
 
 #[cfg(test)]
 mod inverse_dynamics_trampoline_tests {
