@@ -193,7 +193,7 @@ fn mat3_apply(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
 
 /// 3×3 matrix inverse via adjugate / cofactor method.
 /// Returns `None` when the determinant is zero or non-finite.
-fn mat3_inverse(m: [[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
+fn affine_mat3_inv(m: [[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
     let [[a, b, c], [d, e, f], [g, h, i]] = m;
     let det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
     if det == 0.0 || !det.is_finite() {
@@ -1043,7 +1043,7 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                 Value::AffineMap { linear, translation } => (*linear, *translation),
                 _ => return Some(Value::Undef),
             };
-            match mat3_inverse(a_linear) {
+            match affine_mat3_inv(a_linear) {
                 None => Value::Option(None),
                 Some(inv) => {
                     let applied = mat3_apply(inv, a_trans);
@@ -4849,9 +4849,6 @@ mod tests {
         }
     }
 
-    const IDENTITY_LINEAR: [[f64; 3]; 3] =
-        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-
     #[test]
     fn affine_compose_right_identity() {
         // compose(a, identity) == a
@@ -4937,7 +4934,7 @@ mod tests {
     fn affine_compose_wrong_arity_returns_undef() {
         let a = eval_builtin("affine_identity", &[]);
         assert!(eval_builtin("affine_compose", &[]).is_undef(), "0 args");
-        assert!(eval_builtin("affine_compose", &[a.clone()]).is_undef(), "1 arg");
+        assert!(eval_builtin("affine_compose", std::slice::from_ref(&a)).is_undef(), "1 arg");
         assert!(eval_builtin("affine_compose", &[a.clone(), a.clone(), a.clone()]).is_undef(), "3 args");
     }
 
@@ -4979,28 +4976,26 @@ mod tests {
             [[2.0, 0.0, 0.0], [0.0, 3.0, 0.0], [1.0, 0.0, 4.0]],
             [0.1, 0.2, 0.3],
         );
-        let inv_result = eval_builtin("affine_inverse", &[a.clone()]);
+        let inv_result = eval_builtin("affine_inverse", std::slice::from_ref(&a));
         let inv = match inv_result {
             Value::Option(Some(inner)) => *inner,
             other => panic!("expected Option(Some(AffineMap)), got {:?}", other),
         };
         let composed = eval_builtin("affine_compose", &[a, inv]);
         let (composed_linear, composed_trans) = expect_affine(composed);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in composed_linear.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
                 assert!(
-                    (composed_linear[i][j] - expected).abs() < 1e-12,
-                    "round-trip linear[{i}][{j}]: expected {expected}, got {}",
-                    composed_linear[i][j]
+                    (val - expected).abs() < 1e-12,
+                    "round-trip linear[{i}][{j}]: expected {expected}, got {val}",
                 );
             }
         }
-        for k in 0..3 {
+        for (k, &val) in composed_trans.iter().enumerate() {
             assert!(
-                composed_trans[k].abs() < 1e-12,
-                "round-trip translation[{k}]: expected 0, got {}",
-                composed_trans[k]
+                val.abs() < 1e-12,
+                "round-trip translation[{k}]: expected 0, got {val}",
             );
         }
     }
