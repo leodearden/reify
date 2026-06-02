@@ -1723,4 +1723,63 @@ mod tests {
             }
         }
     }
+
+    // ── AffineMap constructor registration tests (step-11, task 3960 β) ────────
+
+    /// All 11 AffineMap constructor names (PRD §4.2, task β). Single source of
+    /// truth for the registration tests below.
+    const AFFINE_CONSTRUCTOR_NAMES_FIXTURE: [&str; 11] = [
+        "affine_scale",
+        "affine_shear_xy",
+        "affine_shear_xz",
+        "affine_shear_yx",
+        "affine_shear_yz",
+        "affine_shear_zx",
+        "affine_shear_zy",
+        "affine_translate",
+        "affine_identity",
+        "affine_map",
+        "affine_from_transform",
+    ];
+
+    #[test]
+    fn is_affine_map_constructor_recognises_all_constructor_names() {
+        for name in AFFINE_CONSTRUCTOR_NAMES_FIXTURE {
+            assert!(
+                is_affine_map_constructor(name),
+                "{name} must be recognised as an AffineMap constructor"
+            );
+        }
+    }
+
+    #[test]
+    fn is_affine_map_constructor_rejects_unrelated_names() {
+        // Transform constructors are a distinct family (rigid vs general affine).
+        assert!(!is_affine_map_constructor("box"));
+        assert!(!is_affine_map_constructor("transform3"));
+        assert!(!is_affine_map_constructor("transform3_identity"));
+        // affine_apply / affine_compose are out of scope (tasks γ/ζ).
+        assert!(!is_affine_map_constructor("affine_apply"));
+        assert!(!is_affine_map_constructor(""));
+        // Case-sensitive: PascalCase must not match snake_case names.
+        assert!(!is_affine_map_constructor("AffineScale"));
+    }
+
+    #[test]
+    fn affine_map_constructor_result_type_is_affine_map_3_for_all() {
+        for name in AFFINE_CONSTRUCTOR_NAMES_FIXTURE {
+            assert_eq!(
+                affine_map_constructor_result_type(name),
+                Some(reify_core::Type::AffineMap(3)),
+                "{name} must resolve to Type::AffineMap(3)"
+            );
+        }
+    }
+
+    #[test]
+    fn affine_map_constructor_result_type_returns_none_for_unknown() {
+        assert_eq!(affine_map_constructor_result_type("box"), None);
+        assert_eq!(affine_map_constructor_result_type("transform3"), None);
+        assert_eq!(affine_map_constructor_result_type(""), None);
+    }
 }
