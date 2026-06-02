@@ -139,6 +139,10 @@ pub fn register_compute_fns(engine: &mut crate::Engine) {
         form_find::solve_form_find_trampoline as crate::ComputeFn,
     );
     engine.register_compute_fn(
+        "solver::form_find_free",
+        form_find::solve_form_find_free_trampoline as crate::ComputeFn,
+    );
+    engine.register_compute_fn(
         "solver::multi_case",
         multi_case::solve_multi_case_trampoline as crate::ComputeFn,
     );
