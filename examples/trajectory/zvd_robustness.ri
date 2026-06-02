@@ -1,0 +1,80 @@
+// ZVD-shaped ramp robustness example  (task ζ — 3867)
+//
+// Demonstrates ZVDShaper + input_shape(profile, shaper) construction
+// (PRD docs/prds/v0_3/trajectory-input-shaping.md §5.1 / §5.3).
+//
+// The ZVD (Zero-Vibration-Derivative) shaper zeroes both the residual vibration
+// and its first derivative w.r.t. frequency at the design point, giving a flat
+// (quadratically-small) residual that stays ≤ 5 % across a ±10 % band around the
+// 10 Hz target — the robustness signal this fixture represents.
+//
+// This is a construction + input_shape compile-smoke test: it exercises the
+// landed authoring surface — ZVDShaper, the ProfileInput / ShaperInput trait-
+// coercion shims, and the input_shape dispatcher — on a two-waypoint cubic ramp
+// profile (PiecewisePolynomialProfile, NaturalSpline, CubicSpline).
+//
+// ── robustness verification is at the Rust eval layer (design decision D3) ─────
+// The ±10 % (ZVD) / ±15 % (EI) residual-vibration robustness property is
+// intrinsic to the impulse train and is verified at the Rust eval layer by the
+// band-sweep metric
+//   crates/reify-eval/src/trajectory_ops.rs::worst_case_residual_fraction
+// (sweeping ε's validated residual_vibration across the band).  It is NOT
+// asserted here: end-to-end vibration verification lands with simulate_trajectory
+// (tasks θ / ι), which is not yet a stdlib signature — invoking it would emit an
+// Error diagnostic that breaks this compile gate (the same deferral documented
+// in zv_shaped_ramp.ri / gcode_import_smoke.ri).  This .ri fixture therefore
+// carries NO numeric robustness assertion.
+//
+// Verification: the reify-compiler examples_smoke gate
+// (`all_examples_parse_and_compile_with_stdlib`) auto-discovers this file and
+// requires it to compile with ZERO Error-severity diagnostics.  The dedicated
+// regression test at
+//   crates/reify-compiler/tests/robustness_examples_tests.rs
+// pins the same compile-clean contract plus the ZVDShaper / input_shape source
+// pins.
+// ─────────────────────────────────────────────────────────────────────────────
+structure def ZvdRobustness {
+    // ZVD impulse shaper: suppress 10 Hz resonance with 5 % critical damping.
+    // ZVD's robustness guarantee depends explicitly on ζ, so damping_ratio is a
+    // required param. target_frequency > 0Hz (ctor constraint, trajectory.ri:688).
+    let shaper = ZVDShaper(target_frequency: 10Hz, damping_ratio: 0.05)
+
+    // Two-waypoint linear ramp over [0 s, 1 s], one joint (scalar Real).
+    // CubicSpline interpolation needs only positions, so vels / accels are none.
+    let wp0 = Waypoint(
+        t: 0.0s,
+        values: [0.0],
+        vels: none,
+        accels: none
+    )
+    let wp1 = Waypoint(
+        t: 1.0s,
+        values: [1.0],
+        vels: none,
+        accels: none
+    )
+
+    // Piecewise-polynomial profile: natural boundary, cubic degree.
+    let profile = PiecewisePolynomialProfile(
+        mechanism: 1.0,
+        waypoints: [wp0, wp1],
+        boundary: NaturalSpline(),
+        spline_kind: SplineKind.CubicSpline
+    )
+
+    // Pass the concrete profile / shaper through the ProfileInput / ShaperInput
+    // trait-coercion shims: the overload resolver uses exact type equality, so a
+    // bare PiecewisePolynomialProfile() / ZVDShaper() does NOT match input_shape's
+    // `Profile` / `Shaper` trait params — member access on the shim carries the
+    // declared trait type (same workaround as GcodeDialectInput).
+    let pi = ProfileInput(profile: profile)
+    let si = ShaperInput(shaper: shaper)
+
+    // Apply the ZVD shaper to the profile (ζ dispatcher).  At ζ the shaped result
+    // echoes the input profile; command-waveform resampling is deferred to θ.
+    let shaped = input_shape(pi.profile, si.shaper)
+
+    // Trivially satisfiable leaf constraint — confirms shaper construction
+    // satisfies its ctor constraints at the design point.
+    constraint shaper.damping_ratio >= 0.0
+}
