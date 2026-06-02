@@ -3,7 +3,7 @@
 // Free functions with no Engine coupling — they take values, functions, meta_map
 // as plain arguments.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use reify_core::Diagnostic;
 use reify_ir::{CompiledFunction, GeometryHandleId, GeometryKernel, KernelHandle, ValueMap};
@@ -2127,7 +2127,10 @@ fn make_pair_map(id_a: i64, id_b: i64) -> reify_ir::Value {
 /// SI metres f64. Returns `None` (and emits a Warning diagnostic) on kernel
 /// error or when the kernel returns a non-numeric `Value` — caller maps
 /// `None` to a defensive `Value::Undef`.
-fn kernel_distance(
+///
+/// `pub(crate)` so `Engine::distance_between_placed` (engine_build.rs) can
+/// reuse the same error-handling convention (T7 task 3905).
+pub(crate) fn kernel_distance(
     kernel: &dyn reify_ir::GeometryKernel,
     from: GeometryHandleId,
     to: GeometryHandleId,
@@ -4824,7 +4827,331 @@ pub(crate) fn reachable_template_indices(
     reached
 }
 
+/// Pre-filter callback type for the placed-realization walk.
+///
+/// Called before `ApplyTransform` with `(t_idx, r_idx, entity_path)`.
+/// Returns `false` to skip both the transform and visitor call for that realization.
+/// Use `None` for the default "include all" behavior.
+pub(crate) type PlacedPreFilter<'a> = Option<&'a dyn Fn(usize, usize, &str) -> bool>;
+
+/// Placed-product body collected by the T7 export walk (`surface_export_bodies`).
+///
+/// The `entity_path` is the composed PRD §11.2 path; `handle_id` is the
+/// `GeometryHandleId` of the placed BRep (world transform already baked in via
+/// `ApplyTransform`); `default_visible` follows the same OR-of-aux rule as
+/// `surface_subtree` (`false` iff aux or under-aux-sub).
+#[derive(Debug)]
+pub(crate) struct ExportBody {
+    pub entity_path: String,
+    pub handle_id: GeometryHandleId,
+    pub default_visible: bool,
+}
+
+/// Shared inner walk for T5 (tessellate) and T7 (export) containment-tree surfacing.
+///
+/// Implements the common cycle guard, placement decomposition, `ApplyTransform`
+/// application, `default_visible` derivation, and `entity_path` formatting shared
+/// by `surface_subtree` and `surface_export_bodies`.  The terminal action per
+/// realization is delegated to `visit_realization`.
+///
+/// # Visitor
+///
+/// `visit_realization(kernel, placed_id, entity_path, default_visible, t_idx, r_idx, diagnostics)`
+/// — called once per realization that produced a handle, after the composed world
+/// transform is applied:
+/// - `kernel`: mutable borrow of the default kernel (over the visit call; released before
+///   recursion so the sub loop can re-borrow).
+/// - `placed_id`: the `GeometryHandleId` after `ApplyTransform` (or the source handle for
+///   identity/undecomposable poses — no extra kernel op).
+/// - `entity_path`: PRD §11.2 composed path (owned `String`).
+/// - `default_visible`: `false` iff aux or under-aux-sub (same OR rule as the callers).
+/// - `t_idx`, `r_idx`: template and realization indices (for budget lookup in the
+///   tessellate visitor).
+/// - `diagnostics`: the walk's diagnostic accumulator; the visitor may push to it.
+///
+/// Callers (`surface_subtree`, `surface_export_bodies`) preserve their public signatures
+/// unchanged — they are thin wrappers that capture their output collection in the closure.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn walk_placed_realizations<V>(
+    module: &reify_compiler::CompiledModule,
+    t_idx: usize,
+    path_prefix: &str,
+    aux_ancestor: bool,
+    composed_world: &reify_ir::Value,
+    depth: usize,
+    terminal_handles: &[Vec<Option<KernelHandle>>],
+    geometry_kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
+    default_kernel_name: &str,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+    // Optional short-circuit filter (T7 amendment, suggestion 3).
+    //
+    // Called BEFORE `ApplyTransform` with `(t_idx, r_idx, entity_path)`.
+    // If the filter returns `false`, BOTH the transform and the visitor call are
+    // skipped for that realization — no new kernel handle is minted.
+    //
+    // Pass `None` for the default "include all" behavior (zero overhead on the
+    // tessellation hot path).  Pass `Some(f)` in `distance_between_placed` to
+    // skip transforms for realizations not matching the two target paths, avoiding
+    // accumulation of transient placed handles in the kernel store on repeated calls.
+    pre_filter: PlacedPreFilter<'_>,
+    visit_realization: &mut V,
+) where
+    V: FnMut(
+        &mut dyn GeometryKernel,
+        GeometryHandleId,
+        String,
+        bool,
+        usize,
+        usize,
+        &mut Vec<Diagnostic>,
+    ),
+{
+    if depth > module.templates.len() {
+        return;
+    }
+    let template = &module.templates[t_idx];
+
+    // Decompose the inherited world transform once for this template.
+    // `Some(non-identity)` → apply via ApplyTransform before visiting;
+    // identity / non-decomposable short-circuits to the source handle (no kernel op).
+    let placement: Option<([f64; 4], [f64; 3])> =
+        match decompose_transform_to_arrays(composed_world) {
+            Some((rotation, translation))
+                if rotation != [1.0, 0.0, 0.0, 0.0] || translation != [0.0, 0.0, 0.0] =>
+            {
+                Some((rotation, translation))
+            }
+            _ => None,
+        };
+
+    for (r_idx, realization) in template.realizations.iter().enumerate() {
+        let Some(handle) = terminal_handles[t_idx][r_idx] else {
+            continue;
+        };
+        // Compute entity_path BEFORE ApplyTransform so `pre_filter` can gate the
+        // transform on the path (avoids minting transient handles for unwanted bodies).
+        let entity_path = format!("{}#realization[{}]", path_prefix, realization.id.index);
+        // Short-circuit: if the caller supplied a pre-filter and this realization is
+        // not wanted, skip both the transform and the visitor — no kernel op issued.
+        if pre_filter.is_some_and(|f| !f(t_idx, r_idx, &entity_path)) {
+            continue;
+        }
+        let default_kernel = geometry_kernels
+            .get_mut(default_kernel_name)
+            .expect("default kernel must remain in the map across the surfacing walk");
+        let placed_id = match placement {
+            Some((rotation, translation)) => {
+                match default_kernel.execute(&reify_ir::GeometryOp::ApplyTransform {
+                    target: handle.id,
+                    rotation,
+                    translation,
+                }) {
+                    Ok(transformed) => transformed.id,
+                    Err(e) => {
+                        diagnostics.push(Diagnostic::error(format!(
+                            "transform application error: {}",
+                            e
+                        )));
+                        continue;
+                    }
+                }
+            }
+            None => handle.id,
+        };
+        let default_visible = !(aux_ancestor || realization_is_aux(realization));
+        // Pass a mutable borrow of the kernel to the visitor; the borrow is
+        // released when visit_realization returns, before the sub-component
+        // loop re-borrows geometry_kernels for the recursive call.
+        // Explicit deref-coercion: `default_kernel` is `&mut Box<dyn GeometryKernel>`;
+        // `&mut **default_kernel` gives the `&mut dyn GeometryKernel` the visitor expects.
+        visit_realization(
+            &mut **default_kernel,
+            placed_id,
+            entity_path,
+            default_visible,
+            t_idx,
+            r_idx,
+            diagnostics,
+        );
+    }
+
+    // Recurse into each non-collection sub, composing the sub's `at` pose.
+    for sub in &template.sub_components {
+        if sub.is_collection {
+            continue;
+        }
+        let Some(child_idx) = module
+            .templates
+            .iter()
+            .position(|t| t.name == sub.structure_name)
+        else {
+            continue;
+        };
+        let child_prefix = format!("{}.{}", path_prefix, sub.name);
+        let sub_pose = eval_sub_pose(sub.pose.as_ref(), values, functions, meta_map, diagnostics);
+        let child_world = compose_pose_chain(&[composed_world.clone(), sub_pose]);
+        walk_placed_realizations(
+            module,
+            child_idx,
+            &child_prefix,
+            aux_ancestor || sub.is_aux,
+            &child_world,
+            depth + 1,
+            terminal_handles,
+            geometry_kernels,
+            default_kernel_name,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+            pre_filter,
+            visit_realization,
+        );
+    }
+}
+
+/// T7 (task 3905, robustness fix esc-3905-277): for each template, the set of
+/// realization indices to **exclude** from the export walk — every
+/// geometry-producing realization except the template's *final* one.
+///
+/// Rationale: a boolean (or modify / sweep / …) whose operands are bound to named
+/// lets — e.g. `let a = box(...); let b = box(...); let r = union(a, b)` — compiles
+/// to one realization per let, BUT the compiler *inlines* each operand's
+/// construction into the consuming realization (`r`'s ops are `[Box, Box,
+/// Boolean(Step0, Step1)]`, referencing its operands by intra-realization
+/// `GeomRef::Step`, not by cross-realization `GeomRef::Sub`). The `a`/`b`
+/// realizations are therefore standalone duplicates of geometry already contained
+/// in `r`. Surfacing all three (the pre-fix behavior, filtered only by `aux`)
+/// shipped a STEP file with the two consumed input boxes PLUS their union — three
+/// overlapping solids.
+///
+/// The pre-T7 export took `*step_handles.last()` — the terminal handle of the LAST
+/// geometry-producing realization in declaration order, i.e. the un-consumed
+/// result. This restores that "final realization per template" semantics while
+/// preserving T7's multi-body-via-sub-components behavior: each *sub-component* is a
+/// distinct template surfaced by the containment walk, so two product subs still
+/// yield two bodies — only redundant *intra-template* intermediate lets are pruned.
+///
+/// `final` is the highest `r_idx` for which `terminal_handles[t][r]` is `Some`
+/// (matching `step_handles.last()`); realizations that produced no handle are
+/// already skipped by the walk, so including them in the skip set is harmless.
+pub(crate) fn non_final_realization_indices(
+    module: &reify_compiler::CompiledModule,
+    terminal_handles: &[Vec<Option<KernelHandle>>],
+) -> Vec<HashSet<usize>> {
+    module
+        .templates
+        .iter()
+        .enumerate()
+        .map(|(t_idx, template)| {
+            // Index of the final geometry-producing realization (highest r_idx
+            // with a recorded terminal handle) — equals `step_handles.last()`.
+            let final_idx = terminal_handles
+                .get(t_idx)
+                .and_then(|handles| {
+                    handles
+                        .iter()
+                        .enumerate()
+                        .rev()
+                        .find_map(|(r_idx, h)| h.is_some().then_some(r_idx))
+                });
+            // Skip every realization that is not the final one.
+            (0..template.realizations.len())
+                .filter(|r_idx| Some(*r_idx) != final_idx)
+                .collect()
+        })
+        .collect()
+}
+
+/// T7 export walk (task 3905): collect placed-product BRep handles for STEP export.
+///
+/// Thin wrapper over `walk_placed_realizations` that pushes each placed realization
+/// as an `ExportBody` (handle_id + entity_path + default_visible) without tessellating.
+///
+/// `skip` (indexed by `t_idx`) lists realization indices to exclude — every
+/// non-final intra-template realization (see [`non_final_realization_indices`]) —
+/// so only the un-consumed final product body of each template is exported.
+///
+/// The `default_visible` flag uses the same OR-of-aux derivation as `surface_subtree` —
+/// `default_visible == false` ⟺ aux or under-aux-sub ⟺ excluded from export by the
+/// caller.  Source handles remain valid after `ApplyTransform` (T3 non-destructive).
+/// Identity/undecomposable world transforms short-circuit to the source handle (no kernel op).
+///
+/// Cycle guard: same `depth > module.templates.len()` bound as `walk_placed_realizations`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn surface_export_bodies(
+    module: &reify_compiler::CompiledModule,
+    t_idx: usize,
+    path_prefix: &str,
+    // True when any ancestor sub was declared `aux` (inherited down the walk).
+    aux_ancestor: bool,
+    // Composed world transform inherited from root, accrued down the walk.
+    composed_world: &reify_ir::Value,
+    depth: usize,
+    terminal_handles: &[Vec<Option<KernelHandle>>],
+    geometry_kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
+    default_kernel_name: &str,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    // T7 robustness fix (esc-3905-277): per-template non-final realization
+    // indices. A realization at (t, r) with `skip[t].contains(&r)` is a redundant
+    // intra-template intermediate let (its geometry is inlined into the template's
+    // final realization) and is excluded from export.
+    skip: &[HashSet<usize>],
+    // Optional entity-path pre-filter (T7 amendment, suggestion 3).
+    // Passed through to `walk_placed_realizations`; checked BEFORE `ApplyTransform`.
+    // `None` = include all non-skipped bodies (default for `build()`).
+    // `Some(f)` = also skip bodies whose path doesn't satisfy `f` (used by
+    // `distance_between_placed` to avoid minting transient handles for non-target paths).
+    pre_filter: PlacedPreFilter<'_>,
+    export_bodies: &mut Vec<ExportBody>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // Combine the caller-supplied path pre-filter (gates ApplyTransform before calling
+    // the walk) with the intra-template skip set (excludes boolean operand lets).
+    // The combined closure is used as the walk's pre_filter so that BOTH checks happen
+    // BEFORE the kernel operation is issued, saving a transient handle per skipped body.
+    let combined_filter: &dyn Fn(usize, usize, &str) -> bool =
+        &|t: usize, r: usize, path: &str| {
+            !skip.get(t).is_some_and(|set| set.contains(&r))
+                && pre_filter.is_none_or(|f| f(t, r, path))
+        };
+    walk_placed_realizations(
+        module,
+        t_idx,
+        path_prefix,
+        aux_ancestor,
+        composed_world,
+        depth,
+        terminal_handles,
+        geometry_kernels,
+        default_kernel_name,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+        Some(combined_filter),
+        &mut |_kernel, placed_id, entity_path, default_visible, _t, _r, _diag| {
+            // The combined pre_filter already excluded non-final / non-target
+            // realizations before the transform, so every body reaching this
+            // visitor should be collected unconditionally.
+            export_bodies.push(ExportBody {
+                entity_path,
+                handle_id: placed_id,
+                default_visible,
+            });
+        },
+    );
+}
+
 /// Phase-B containment-tree surfacing (T5 steps 4/6/10).
+///
+/// Thin wrapper over `walk_placed_realizations` that tessellates each placed
+/// realization into a `MeshSurface`.
 ///
 /// Depth-first walk from a root template: surface the current template's
 /// realizations under `path_prefix` (the dotted entity-path prefix that precedes
@@ -4883,118 +5210,42 @@ pub(crate) fn surface_subtree(
     meshes: &mut Vec<crate::MeshSurface>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    // Cycle guard (see docstring): bail once we have descended more levels than
-    // there are templates, which is only reachable via a non-collection sub
-    // cycle.
-    if depth > module.templates.len() {
-        return;
-    }
-    let template = &module.templates[t_idx];
-
-    // step-10: decompose the inherited world transform once for this template.
-    // `Some(non-identity)` → apply via `ApplyTransform` before tessellating;
-    // identity, or a non-decomposable pose (e.g. an `eval_sub_pose` Undef already
-    // diagnosed upstream), short-circuits to tessellating the recorded handle
-    // directly — surfacing at the parent frame, bit-identical to the pre-step-10
-    // (root / identity-containment) path so no extra kernel op or handle is made.
-    let placement: Option<([f64; 4], [f64; 3])> =
-        match decompose_transform_to_arrays(composed_world) {
-            Some((rotation, translation))
-                if rotation != [1.0, 0.0, 0.0, 0.0] || translation != [0.0, 0.0, 0.0] =>
-            {
-                Some((rotation, translation))
-            }
-            _ => None,
-        };
-
-    // Surface this template's own realizations at `path_prefix`.
-    for (r_idx, realization) in template.realizations.iter().enumerate() {
-        let Some(handle) = terminal_handles[t_idx][r_idx] else {
-            continue;
-        };
-        let budget = tessellation_budgets[t_idx][r_idx];
-        // ApplyTransform + tessellate both route through the DEFAULT kernel,
-        // consistent with the pre-step-10 tessellate path. A single `&mut` borrow
-        // covers the `execute` (`&mut self`) then `tessellate` (`&self`) sequence.
-        let default_kernel = geometry_kernels
-            .get_mut(default_kernel_name)
-            .expect("default kernel must remain in the map across the surfacing walk");
-        let tess_id = match placement {
-            Some((rotation, translation)) => {
-                match default_kernel.execute(&reify_ir::GeometryOp::ApplyTransform {
-                    target: handle.id,
-                    rotation,
-                    translation,
-                }) {
-                    Ok(transformed) => transformed.id,
-                    Err(e) => {
-                        diagnostics.push(Diagnostic::error(format!(
-                            "transform application error: {}",
-                            e
-                        )));
-                        continue;
-                    }
+    walk_placed_realizations(
+        module,
+        t_idx,
+        path_prefix,
+        aux_ancestor,
+        composed_world,
+        depth,
+        terminal_handles,
+        geometry_kernels,
+        default_kernel_name,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+        // Tessellation surfaces all bodies (no path filter needed); pass None to
+        // avoid any pre-filter overhead on the hot path.
+        None,
+        &mut |kernel, placed_id, entity_path, default_visible, t, r, diag| {
+            let budget = tessellation_budgets[t][r];
+            match kernel.tessellate(placed_id, budget) {
+                Ok(mesh) => {
+                    // step-6: hide iff any `aux` ancestor sub OR this realization's
+                    // own `aux` let. aux bodies are still tessellated and shipped —
+                    // only hidden by default.
+                    meshes.push(crate::MeshSurface {
+                        entity_path,
+                        mesh,
+                        default_visible,
+                    });
+                }
+                Err(e) => {
+                    diag.push(Diagnostic::error(format!("tessellation error: {}", e)));
                 }
             }
-            None => handle.id,
-        };
-        match default_kernel.tessellate(tess_id, budget) {
-            Ok(mesh) => {
-                // step-6: hide iff any `aux` ancestor sub OR this realization's
-                // own `aux` let. aux bodies are still tessellated and shipped —
-                // only hidden by default.
-                let default_visible = !(aux_ancestor || realization_is_aux(realization));
-                let entity_path = format!("{}#realization[{}]", path_prefix, realization.id.index);
-                meshes.push(crate::MeshSurface {
-                    entity_path,
-                    mesh,
-                    default_visible,
-                });
-            }
-            Err(e) => {
-                diagnostics.push(Diagnostic::error(format!("tessellation error: {}", e)));
-            }
-        }
-    }
-
-    // Recurse into each non-collection sub at the composed dotted path,
-    // accumulating its `at` pose onto the inherited world transform.
-    for sub in &template.sub_components {
-        if sub.is_collection {
-            continue;
-        }
-        let Some(child_idx) = module
-            .templates
-            .iter()
-            .position(|t| t.name == sub.structure_name)
-        else {
-            continue;
-        };
-        let child_prefix = format!("{}.{}", path_prefix, sub.name);
-        // step-10: evaluate this sub's `at` pose in the parent context and
-        // compose it onto the inherited world transform. A poseless sub
-        // (`pose == None`) yields the identity Transform, so an un-placed
-        // containment chain stays identity and short-circuits in the child.
-        let sub_pose = eval_sub_pose(sub.pose.as_ref(), values, functions, meta_map, diagnostics);
-        let child_world = compose_pose_chain(&[composed_world.clone(), sub_pose]);
-        surface_subtree(
-            module,
-            child_idx,
-            &child_prefix,
-            aux_ancestor || sub.is_aux,
-            &child_world,
-            depth + 1,
-            terminal_handles,
-            geometry_kernels,
-            default_kernel_name,
-            tessellation_budgets,
-            values,
-            functions,
-            meta_map,
-            meshes,
-            diagnostics,
-        );
-    }
+        },
+    );
 }
 
 #[cfg(test)]

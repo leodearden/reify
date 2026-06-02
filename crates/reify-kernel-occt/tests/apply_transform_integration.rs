@@ -474,3 +474,86 @@ fn apply_transform_to_handle_non_unit_quaternion_returns_err() {
         ),
     }
 }
+
+// ---------------------------------------------------------------------------
+// (g) apply_transform_to_shape stays on the location-only (Standard_False) path
+// ---------------------------------------------------------------------------
+
+/// A non-identity rigid transform applied to `source` produces a `placed` shape
+/// that **shares** the underlying `TShape` with `source` via `TopLoc_Location`
+/// (the `Standard_False` / location-only path).
+///
+/// **Why this matters**: `TopoDS_Shape::IsPartner` is a tolerance-free TShape
+/// identity predicate (ignores location/orientation).
+/// `BRepBuilderAPI_Transform(..., Standard_False)` leaves the source TShape
+/// intact and encodes the isometry solely in `TopLoc_Location`, so `IsPartner`
+/// is necessarily `true`.  A regression to `Standard_True` (geometry bake)
+/// produces a fresh TShape from the transformed geometry → `IsPartner` `false`.
+/// The existing AABB round-trip test (section d) cannot distinguish the two
+/// paths — a single Standard_True application is close enough to stay within
+/// 1e-4 m — so this TShape-identity predicate is the decisive lock.
+///
+/// **Negative control**: an independently-built box `other` shares no TShape
+/// with `source` → `shapes_share_tshape(other, source)` must be `false`.
+///
+/// RED on base:
+/// - (a) `shapes_share_tshape` is not yet declared in `OcctKernel` → compile
+///   error.
+/// - (b) Even if it existed, the current `Standard_True` bake produces a
+///   distinct TShape for `placed` → `shapes_share_tshape(placed, source)` would
+///   be `false`, failing the assertion.
+#[test]
+fn apply_transform_to_handle_location_only_shares_tshape() {
+    let mut kernel = OcctKernel::new();
+
+    // Build the source box.
+    let source = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(0.02),
+            height: Value::Real(0.02),
+            depth: Value::Real(0.02),
+        })
+        .expect("source box must succeed");
+
+    // Apply a NON-identity rigid transform (translate 0.05 m along X) to get a
+    // placed shape.  Standard_False (location-only) preserves the source TShape.
+    let t = Transform3 {
+        qw: 1.0,
+        qx: 0.0,
+        qy: 0.0,
+        qz: 0.0,
+        tx: 0.05,
+        ty: 0.0,
+        tz: 0.0,
+    };
+    // `apply_transform_to_handle` returns a GeometryHandleId directly (not a
+    // GeometryHandle struct); `source` is a GeometryHandle with an `.id` field.
+    let placed = kernel
+        .apply_transform_to_handle(source.id, &t)
+        .expect("apply_transform_to_handle must succeed");
+
+    // The placed shape must share TShape with source (IsPartner == true).
+    assert!(
+        kernel
+            .shapes_share_tshape(placed, source.id)
+            .expect("shapes_share_tshape must not fail"),
+        "apply_transform_to_handle (Standard_False / location-only) must preserve \
+         the source TShape — IsPartner(placed, source) must be true"
+    );
+
+    // Negative control: an independently-built box shares no TShape with source.
+    let other = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(0.02),
+            height: Value::Real(0.02),
+            depth: Value::Real(0.02),
+        })
+        .expect("other box must succeed");
+    assert!(
+        !kernel
+            .shapes_share_tshape(other.id, source.id)
+            .expect("shapes_share_tshape must not fail"),
+        "independently-built box must NOT share TShape with source — \
+         IsPartner(other, source) must be false"
+    );
+}

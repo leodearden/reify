@@ -80,6 +80,7 @@
 // OCCT transforms
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepBuilderAPI_GTransform.hxx>
+#include <BRepBuilderAPI_Copy.hxx>
 #include <gp_Trsf.hxx>
 #include <gp_GTrsf.hxx>
 #include <gp_Vec.hxx>
@@ -334,6 +335,38 @@ std::unique_ptr<OcctShape> make_sphere(double radius) {
         }
         auto result = std::make_unique<OcctShape>();
         result->shape = maker.Shape();
+        return result;
+    });
+}
+
+// --- Compound assembly ---
+
+std::unique_ptr<OcctShape> make_compound(const OcctShapeVec& shapes) {
+    return wrap_occt_call("make_compound", [&]() {
+        if (shapes.shapes.empty()) {
+            throw std::runtime_error("make_compound: input shape list must not be empty");
+        }
+        TopoDS_Compound compound;
+        BRep_Builder builder;
+        builder.MakeCompound(compound);
+        for (const auto& shape : shapes.shapes) {
+            // Deep-copy each input via BRepBuilderAPI_Copy to produce an
+            // independent TShape for every compound member.  This is required
+            // when multiple inputs share the same source TShape (e.g. two
+            // placed instances of the same sub-structure): without the copy,
+            // BRep_Builder::Add would add two references to one TShape and the
+            // STEP writer would deduplicate, emitting only 1 MANIFOLD_SOLID_BREP
+            // instead of the expected 2.  The copy preserves the shape's
+            // TopLoc_Location so the world placement encoded in any prior
+            // ApplyTransform (Standard_False) is retained.
+            BRepBuilderAPI_Copy copier(shape);
+            if (!copier.IsDone()) {
+                throw std::runtime_error("make_compound: BRepBuilderAPI_Copy failed");
+            }
+            builder.Add(compound, copier.Shape());
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = compound;
         return result;
     });
 }
@@ -3109,10 +3142,16 @@ static gp_Trsf build_trsf(const Transform3Props& t) {
 
 /// Apply `trsf` to `shape` via `BRepBuilderAPI_Transform(…, Standard_False)`.
 ///
-/// Copy=Standard_False encodes the transform as a `TopLoc_Location` rather than
-/// baking it into the underlying geometry. The returned shape shares topology
-/// pointers with the original and is transient — it is dropped before any
-/// naming bookkeeping runs, so no PNv2 concerns arise.
+/// Standard_False = location-only path: the result shares the source TShape and
+/// encodes the rigid isometry solely via TopLoc_Location — a lightweight,
+/// non-destructive operation that preserves the round-trip invariant
+/// (T ∘ T⁻¹ = identity, no float-drift accumulation across repeated applications).
+/// The returned shape shares topology pointers with the original.
+///
+/// Multi-instance deduplication (when multiple placed bodies sharing one source
+/// TShape are emitted into one STEP compound) is handled by `make_compound` via
+/// BRepBuilderAPI_Copy — NOT here.  This keeps all callers (apply_transform_to_shape,
+/// dist_with_pre_compose) on the lightweight location-only path.
 static TopoDS_Shape apply_location_trsf(const TopoDS_Shape& shape, const gp_Trsf& trsf) {
     BRepBuilderAPI_Transform xform(shape, trsf, Standard_False);
     xform.Build();
@@ -3186,18 +3225,28 @@ std::unique_ptr<OcctShape> apply_transform_to_shape(
     const Transform3Props& t)
 {
     return wrap_occt_call("apply_transform_to_shape", [&]() {
-        // Re-use the existing static helpers verbatim — no new OCCT math.
         // build_trsf validates the unit-quaternion invariant (|q|² ∈ [1±1e-6])
         // and throws std::runtime_error on violation; that error is caught by
         // wrap_occt_call and surfaced as a cxx::Exception with the same message.
-        // apply_location_trsf wraps BRepBuilderAPI_Transform(..., Standard_False)
-        // → TopLoc_Location encoding, no geometry bake, no PNv2 concerns.
+        //
+        // Delegates to apply_location_trsf (Standard_False / location-only).
+        // See apply_location_trsf for the full rationale: shared TShape,
+        // round-trip invariant, and multi-instance bake deferred to make_compound.
         const gp_Trsf trsf = build_trsf(t);
-        TopoDS_Shape placed = apply_location_trsf(shape.shape, trsf);
         auto result = std::make_unique<OcctShape>();
-        result->shape = placed;
+        result->shape = apply_location_trsf(shape.shape, trsf);
         return result;
     });
+}
+
+bool shapes_share_tshape(const OcctShape& a, const OcctShape& b) {
+    // TopoDS_Shape::IsPartner returns true iff the two shapes share the same
+    // underlying TShape (ignoring location and orientation).  This is the
+    // tolerance-free TShape-identity predicate — distinct from IsSame (which
+    // also checks location) and IsEqual (which also checks orientation).
+    // Used by apply_transform_integration.rs section (g) to assert that
+    // Standard_False (location-only) leaves the source TShape intact.
+    return a.shape.IsPartner(b.shape);
 }
 
 Point3 closest_point_on_shape(const OcctShape& shape, double px, double py, double pz) {

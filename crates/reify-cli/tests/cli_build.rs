@@ -221,3 +221,45 @@ fn build_all_indeterminate_exits_success() {
         "geometry file should be written when constraints are only indeterminate"
     );
 }
+
+/// step-3 (T7, RED) — CLI `reify build sub_placement_export.ri` must produce a
+/// STEP file containing exactly **2** product solids (placed product children at
+/// their composed world coordinates) and ZERO aux solids.
+///
+/// The fixture `sub_placement_export.ri` has 2 product subs + 1 aux sub; the
+/// aux body must be absent from the exported STEP.  Fails on base because
+/// `Engine::build` exports only `*step_handles.last()` — one un-placed solid —
+/// not the two placed product bodies.
+#[test]
+fn build_sub_placement_export_has_two_product_solids() {
+    let result = common::run_build("sub_placement_export.ri");
+
+    assert!(
+        result.status.success(),
+        "reify build should exit 0 for sub_placement_export.ri.\nstdout: {}\nstderr: {}",
+        result.stdout,
+        result.stderr
+    );
+    assert!(
+        result.stdout.contains("Wrote"),
+        "stdout should contain 'Wrote', got: {}",
+        result.stdout
+    );
+    assert!(
+        result.output_path.exists(),
+        "geometry file should be written for sub_placement_export.ri"
+    );
+
+    // Read the exported STEP and count manifold solid B-Reps.
+    let step_bytes =
+        std::fs::read(&result.output_path).expect("failed to read exported STEP file");
+    let step_str = String::from_utf8(step_bytes).expect("STEP output must be valid UTF-8");
+
+    let solid_count = step_str.matches("MANIFOLD_SOLID_BREP(").count();
+    assert_eq!(
+        solid_count, 2,
+        "exported STEP must contain exactly 2 product solids (aux excluded); \
+         got {solid_count} MANIFOLD_SOLID_BREP entities.\n\
+         (1 → old last-handle bug; 3 → aux not excluded)"
+    );
+}

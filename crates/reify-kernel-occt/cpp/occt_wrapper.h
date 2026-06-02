@@ -109,6 +109,26 @@ std::unique_ptr<OcctShape> make_cylinder(double radius, double height);
 /// Create a sphere centered at origin (in meters).
 std::unique_ptr<OcctShape> make_sphere(double radius);
 
+// --- Compound assembly ---
+
+/// Assemble N solid shapes into a single TopoDS_Compound for multi-body STEP
+/// export (T7 `make_compound`).
+///
+/// Each shape in `shapes` is **deep-copied** via `BRepBuilderAPI_Copy` before
+/// being added to the compound.  This ensures that every compound member is
+/// an independent `TShape`, even when multiple inputs reference the same
+/// source `TShape` (e.g. two placed instances of the same sub-structure).
+/// Without the copy, `BRep_Builder::Add` with a shared `TShape` would cause
+/// the STEP writer to deduplicate and emit only one `MANIFOLD_SOLID_BREP`
+/// instead of one per member.  The copy preserves `TopLoc_Location` so any
+/// world placement already encoded in the shape is retained.
+///
+/// Source handles in the `OcctShapeVec` remain valid after the call.
+///
+/// Throws `std::runtime_error` if the input vector is empty or if any
+/// `BRepBuilderAPI_Copy` fails.
+std::unique_ptr<OcctShape> make_compound(const OcctShapeVec& shapes);
+
 // --- Boolean operations ---
 
 std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& right);
@@ -828,6 +848,21 @@ double distance_with_transform(
 std::unique_ptr<OcctShape> apply_transform_to_shape(
     const OcctShape& shape,
     const Transform3Props& t);
+
+/// Test whether `a` and `b` share the same underlying `TShape`.
+///
+/// Returns `TopoDS_Shape::IsPartner(a, b)`, which is `true` iff the two shapes
+/// reference the exact same `TShape` handle (ignoring `TopLoc_Location` and
+/// orientation).  This is the tolerance-free TShape-identity predicate —
+/// `IsSame` also checks location; `IsEqual` also checks orientation.
+///
+/// Used by `apply_transform_integration.rs` section (g) to decisively lock the
+/// `Standard_False` (location-only) contract: a shape produced by
+/// `apply_transform_to_shape(..., Standard_False)` must be `IsPartner` with the
+/// source (they share one `TShape`), whereas a fresh independently-built shape
+/// must not.  The AABB round-trip test (section d) alone cannot distinguish the
+/// two paths at the 1e-4 m level; TShape identity can.
+bool shapes_share_tshape(const OcctShape& a, const OcctShape& b);
 
 /// Return the closest point on `shape` to the query point (px, py, pz).
 ///

@@ -764,6 +764,50 @@ impl OcctKernel {
         Ok(ids)
     }
 
+    /// Assemble N placed product solids into a single `TopoDS_Compound` handle
+    /// for multi-body STEP export (T7).
+    ///
+    /// Resolves each `GeometryHandleId` to its `OcctShape`, builds an
+    /// `OcctShapeVec`, and calls `ffi::ffi::make_compound` which uses
+    /// `BRep_Builder::MakeCompound` + `Add`.  Each input shape is
+    /// **deep-copied** (via `BRepBuilderAPI_Copy`) inside `make_compound`
+    /// before it is added to the compound, so every compound member gets an
+    /// independent `TShape` — preventing the STEP writer from deduplicating
+    /// multiple instances of the same source solid into a single
+    /// `MANIFOLD_SOLID_BREP`.  Source handles remain valid after the call.
+    ///
+    /// Returns `Err(GeometryError::OperationFailed)` when:
+    /// - `handles` is empty, or
+    /// - any handle is unknown.
+    pub fn make_compound(
+        &mut self,
+        handles: &[GeometryHandleId],
+    ) -> Result<GeometryHandle, GeometryError> {
+        if handles.is_empty() {
+            return Err(GeometryError::OperationFailed(
+                "make_compound: handles slice must not be empty".into(),
+            ));
+        }
+        // Build the OcctShapeVec while holding the immutable borrow on
+        // self.shapes (via get_shape).  shape_vec_push copies each
+        // TopoDS_Shape into the vec — the copy is a thin handle increment.
+        // The vec itself is a fresh allocation separate from self.shapes,
+        // so there is no aliasing conflict.
+        let compound_result = {
+            let mut vec = ffi::ffi::new_shape_vec();
+            for &id in handles {
+                let shape = self.get_shape(id)?;
+                ffi::ffi::shape_vec_push(vec.pin_mut(), shape);
+            }
+            // All shapes pushed; the immutable borrow on self.shapes ends here.
+            ffi::ffi::make_compound(&vec)
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+        };
+        // Immutable borrow on self.shapes is released; now safe to call
+        // store_with_repr (which takes &mut self).
+        Ok(self.store_with_repr(compound_result, BRepKind::Compound))
+    }
+
     /// Test whether two shapes are intersecting (non-positive minimum distance).
     ///
     /// Uses `BRepExtrema_DistShapeShape` — same primitive as `min_clearance` —
@@ -867,11 +911,12 @@ impl OcctKernel {
     /// source handle is preserved unmodified so the same child shape can be
     /// placed under several different frames (sub-placement PRD §5, task 3901).
     ///
-    /// The transform is encoded via `BRepBuilderAPI_Transform(…, Standard_False)`
-    /// (TopLoc_Location) — no geometry bake, exact-isometry preserved at
-    /// machine precision. The result inherits the source's [`BRepKind`] because
-    /// a rigid isometry preserves topology (a Solid stays a Solid, a Face stays
-    /// a Face, …).
+    /// The transform is encoded via `BRepBuilderAPI_Transform(…, Standard_True)`
+    /// (geometry bake) — each placed copy is a topologically independent
+    /// `TopoDS_Shape` so that the STEP writer emits a distinct
+    /// `MANIFOLD_SOLID_BREP` for every placed body.  The result inherits the
+    /// source's [`BRepKind`] because a rigid isometry preserves topology
+    /// (a Solid stays a Solid, a Face stays a Face, …).
     ///
     /// # Errors
     /// - `GeometryError::InvalidReference(handle)` if `handle` is unknown to
@@ -895,6 +940,27 @@ impl OcctKernel {
             .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
         let new_handle = self.store_with_repr(new_shape, source_repr);
         Ok(new_handle.id)
+    }
+
+    /// Test whether two stored shapes share the same underlying `TShape`
+    /// (`TopoDS_Shape::IsPartner` — TShape identity ignoring location and
+    /// orientation).
+    ///
+    /// Returns `true` iff both handles resolve to shapes whose `TShape` handle
+    /// is identical (they were produced from the same source without a
+    /// geometry-baking copy).  A `BRepBuilderAPI_Transform(…, Standard_False)`
+    /// result is `IsPartner` with its source; a `Standard_True` (geometry bake)
+    /// or independently-built shape is not.
+    ///
+    /// Returns `Err(GeometryError::InvalidHandle)` if either handle is unknown.
+    pub fn shapes_share_tshape(
+        &self,
+        a: GeometryHandleId,
+        b: GeometryHandleId,
+    ) -> Result<bool, GeometryError> {
+        let shape_a = self.get_shape(a)?;
+        let shape_b = self.get_shape(b)?;
+        Ok(ffi::ffi::shapes_share_tshape(shape_a, shape_b))
     }
 
     /// Return the closest point on the shape identified by `handle` to the
@@ -8439,6 +8505,137 @@ mod tests {
         assert_ne!(
             handle.id, source.id,
             "ApplyTransform must produce a fresh handle, not reuse the source's"
+        );
+    }
+
+    /// step-1 (RED) — `make_compound` primitive.
+    ///
+    /// Gated on `OCCT_AVAILABLE` because compound assembly and STEP export
+    /// require the real OCCT kernel.
+    ///
+    /// Asserts:
+    /// (a) `make_compound(&[id_a, id_b])` returns `Ok` with a handle whose
+    ///     `repr` field is `Some(BRepKind::Compound)`.
+    /// (b) Exporting that compound handle to `ExportFormat::Step` yields bytes
+    ///     that contain exactly 2 `MANIFOLD_SOLID_BREP` occurrences — the two
+    ///     input box solids appear as independent solid manifolds inside the
+    ///     compound STEP document.
+    /// (c) `make_compound(&[])` returns `Err` (empty input is nonsensical).
+    ///
+    /// Fails to compile until step-2 adds `GeometryKernel::make_compound` and
+    /// the OCCT override.
+    #[cfg(has_occt)]
+    #[test]
+    fn make_compound_two_boxes_and_empty_err() {
+        if !OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+
+        let mut kernel = OcctKernel::new();
+
+        // Build two distinct box handles.
+        let ha = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::length(0.02),
+                height: Value::length(0.02),
+                depth: Value::length(0.02),
+            })
+            .expect("Box A must succeed");
+        let hb = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::length(0.02),
+                height: Value::length(0.02),
+                depth: Value::length(0.02),
+            })
+            .expect("Box B must succeed");
+
+        // (a) make_compound returns Ok and the result repr is Compound.
+        let compound = kernel
+            .make_compound(&[ha.id, hb.id])
+            .expect("make_compound of two boxes must succeed");
+        assert_eq!(
+            compound.repr,
+            Some(BRepKind::Compound),
+            "make_compound result must have BRepKind::Compound"
+        );
+
+        // (b) Exporting the compound to STEP must contain exactly 2 MANIFOLD_SOLID_BREPs.
+        let mut step_bytes: Vec<u8> = Vec::new();
+        kernel
+            .export(compound.id, ExportFormat::Step, &mut step_bytes)
+            .expect("STEP export of compound must succeed");
+        let step_text = String::from_utf8_lossy(&step_bytes);
+        let solid_count = step_text.matches("MANIFOLD_SOLID_BREP").count();
+        assert_eq!(
+            solid_count,
+            2,
+            "STEP compound must contain exactly 2 MANIFOLD_SOLID_BREP entities, got {}; \
+             STEP snippet: {:.200}",
+            solid_count,
+            &step_text
+        );
+
+        // (c) make_compound(&[]) must return Err.
+        let empty_result = kernel.make_compound(&[]);
+        assert!(
+            empty_result.is_err(),
+            "make_compound with empty input must return Err"
+        );
+    }
+
+    /// step-7 (RED) — `make_compound` with the SAME handle twice yields 2 solids.
+    ///
+    /// Pins `make_compound` as the owner of the distinct-TShape requirement,
+    /// independent of the `apply_transform_to_shape` path.
+    ///
+    /// When the same box handle is added to a compound twice via bare
+    /// `builder.Add`, the two members share one underlying `TShape`.  The STEP
+    /// writer deduplicates by `TShape` and emits only **1** `MANIFOLD_SOLID_BREP`
+    /// for the entire compound.  After step-8's per-input `BRepBuilderAPI_Copy`
+    /// the two copies are distinct `TShape`s → **2** `MANIFOLD_SOLID_BREP`.
+    ///
+    /// RED on base: `builder.Add(compound, shape)` twice with the same shape →
+    /// STEP deduplication → 1 `MANIFOLD_SOLID_BREP`, not 2.
+    #[cfg(has_occt)]
+    #[test]
+    fn make_compound_same_handle_twice_yields_two_solids() {
+        if !OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+
+        let mut kernel = OcctKernel::new();
+
+        // Build ONE box handle — used as BOTH inputs to make_compound.
+        let h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::length(0.02),
+                height: Value::length(0.02),
+                depth: Value::length(0.02),
+            })
+            .expect("Box must succeed");
+
+        // Pass the same handle id twice — both compound members share one TShape.
+        let compound = kernel
+            .make_compound(&[h.id, h.id])
+            .expect("make_compound of same handle twice must succeed");
+
+        // Export to STEP and assert exactly 2 distinct solid entities.
+        let mut step_bytes: Vec<u8> = Vec::new();
+        kernel
+            .export(compound.id, ExportFormat::Step, &mut step_bytes)
+            .expect("STEP export of same-handle compound must succeed");
+        let step_text = String::from_utf8_lossy(&step_bytes);
+        let solid_count = step_text.matches("MANIFOLD_SOLID_BREP").count();
+        assert_eq!(
+            solid_count,
+            2,
+            "STEP compound of the same handle twice must contain exactly 2 \
+             MANIFOLD_SOLID_BREP entities (per-input deep-copy prevents TShape \
+             deduplication); got {};\nSTEP snippet: {:.400}",
+            solid_count,
+            &step_text
         );
     }
 }

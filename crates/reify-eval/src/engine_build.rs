@@ -1998,6 +1998,16 @@ impl Engine {
                 .flat_map(|t| &t.realizations)
                 .any(|r| !r.operations.is_empty());
 
+            // T7 (task 3905): record each realization's terminal handle
+            // positionally by (t_idx, r_idx) — mirrors the tessellate_from_values
+            // Phase-A bookkeeping.  The Phase-B export walk (surface_export_bodies)
+            // uses these handles to collect placed product bodies for STEP export.
+            let mut terminal_handles: Vec<Vec<Option<KernelHandle>>> = module
+                .templates
+                .iter()
+                .map(|t| vec![None; t.realizations.len()])
+                .collect();
+
             self.feature_tag_table = FeatureTagTable::default();
             self.topology_attribute_table = TopologyAttributeTable::default();
             self.swept_kind_table = SweptKindTable::default();
@@ -2056,6 +2066,9 @@ impl Engine {
                     // terminal produced [`ReprKind`]; written into the
                     // snapshot graph node below via disjoint-field borrows.
                     let mut produced_repr_out: Option<ReprKind> = None;
+                    // T7 (task 3905): capture step_handles length before this
+                    // realization so we can identify its terminal handle below.
+                    let handle_start = step_handles.len();
                     Engine::execute_realization_ops(
                         &mut self.geometry_kernels,
                         &registry_borrowed,
@@ -2091,6 +2104,12 @@ impl Engine {
                             .unwrap_or(ReprKind::BRep),
                         &mut self.last_dispatch_count,
                     );
+                    // T7 (task 3905): record this realization's terminal handle
+                    // by (t_idx, r_idx) for the Phase-B export walk.  Mirrors
+                    // the tessellate_from_values Phase-A bookkeeping.
+                    if step_handles.len() > handle_start {
+                        terminal_handles[t_idx][r_idx] = step_handles.last().copied();
+                    }
                     // Step-10 (task ε / 3436): persist the executor's terminal
                     // [`ReprKind`] into the snapshot graph node. See the
                     // `build_snapshot` mirror for the full rationale; both
@@ -2197,19 +2216,96 @@ impl Engine {
                 }
                 None
             } else {
-                // Safety: step_handles is non-empty (guarded by the is_empty() check above),
-                // so last() is always Some and unwrap() cannot panic.
-                let export_handle = *step_handles.last().unwrap();
-                let mut output = Vec::new();
-                let default_kernel = self
-                    .geometry_kernels
-                    .get(name)
-                    .expect("default kernel must remain in the map for export");
-                match default_kernel.export(export_handle.id, format, &mut output) {
-                    Ok(()) => Some(output),
-                    Err(e) => {
-                        diagnostics.push(Diagnostic::error(format!("export error: {}", e)));
+                // T7 (task 3905) Phase-B export walk: collect placed-product
+                // BRep handles via the containment-tree surfacing walk, then
+                // export only the product (default_visible == true) bodies.
+                // This replaces the old *step_handles.last() single-handle
+                // export that did not honor surfacing, composed transforms, or
+                // aux exclusion.
+                let export_bodies = Self::collect_export_bodies_walk(
+                    module,
+                    &terminal_handles,
+                    &mut self.geometry_kernels,
+                    name,
+                    &values,
+                    &self.functions,
+                    &self.meta_map,
+                    &mut diagnostics,
+                    None, // build() collects all product bodies; no path filter needed
+                );
+
+                // Keep only product (non-aux) bodies for export.
+                let product_bodies: Vec<_> = export_bodies
+                    .into_iter()
+                    .filter(|b| b.default_visible)
+                    .collect();
+
+                match product_bodies.len() {
+                    0 => {
+                        // All bodies were aux — no product geometry to export.
+                        if had_realization_ops {
+                            diagnostics.push(Diagnostic::error(
+                                "all realized bodies are aux; no product geometry to export",
+                            ));
+                        }
                         None
+                    }
+                    1 => {
+                        // Single product body — export directly (preserves
+                        // single-solid STEP byte-compatibility for bracket.ri etc.).
+                        let mut output = Vec::new();
+                        let default_kernel = self
+                            .geometry_kernels
+                            .get(name)
+                            .expect("default kernel must remain in the map for export");
+                        match default_kernel.export(product_bodies[0].handle_id, format, &mut output) {
+                            Ok(()) => Some(output),
+                            Err(e) => {
+                                diagnostics.push(Diagnostic::error(format!("export error: {}", e)));
+                                None
+                            }
+                        }
+                    }
+                    _ => {
+                        // Multiple product bodies — assemble a compound then export.
+                        let ids: Vec<GeometryHandleId> =
+                            product_bodies.iter().map(|b| b.handle_id).collect();
+                        let default_kernel = self
+                            .geometry_kernels
+                            .get_mut(name)
+                            .expect("default kernel must remain in the map for compound export");
+                        // On compound-assembly error, push the diagnostic and
+                        // fall through with no geometry output.  The canonical
+                        // BuildResult construction at the end of build() handles
+                        // all remaining fields — avoids a duplicate struct literal
+                        // that would silently drift on future field additions
+                        // (reviewer_comprehensive / robustness suggestion).
+                        match default_kernel.make_compound(&ids) {
+                            Err(e) => {
+                                diagnostics.push(Diagnostic::error(format!(
+                                    "compound assembly error: {}",
+                                    e
+                                )));
+                                None
+                            }
+                            Ok(compound) => {
+                                let mut output = Vec::new();
+                                let default_kernel = self
+                                    .geometry_kernels
+                                    .get(name)
+                                    .expect("default kernel must remain in the map for export");
+                                match default_kernel.export(compound.id, format, &mut output) {
+                                    Ok(()) => Some(output),
+                                    Err(e) => {
+                                        diagnostics.push(Diagnostic::error(format!(
+                                            "export error: {}",
+                                            e
+                                        )));
+                                        None
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -2224,6 +2320,301 @@ impl Engine {
             diagnostics,
             resolved_params: check_result.resolved_params,
         }
+    }
+
+    /// T7 (task 3905): compute the minimum distance (SI metres) between two
+    /// placed product bodies identified by their composed `entity_path` strings
+    /// (e.g. `"Assembly.a#realization[0]"`).
+    ///
+    /// Runs the same Phase-A realization execution and Phase-B
+    /// `surface_export_bodies` walk as [`Self::build`], resolves the two placed
+    /// handles by `entity_path` (product bodies only: `default_visible == true`),
+    /// and issues `GeometryQuery::Distance{from, to}` via the default kernel.
+    ///
+    /// Returns `Some(d)` where `d` is the BRepExtrema minimum distance in metres,
+    /// or `None` if either path is unresolvable, no geometry kernel is configured,
+    /// or the distance query fails (with a warning diagnostic). Consistent with the
+    /// `kernel_distance` error-handling convention.
+    ///
+    /// Uses the engine's `RealizationCache` — if `build()` was called first on the
+    /// same module the Phase-A kernel ops are served from cache and this method
+    /// incurs only the surfacing + Distance query overhead.
+    pub fn distance_between_placed(
+        &mut self,
+        module: &CompiledModule,
+        path_a: &str,
+        path_b: &str,
+    ) -> Option<f64> {
+        let name = self.default_kernel_name.as_deref()?;
+        if !self.geometry_kernels.contains_key(name) {
+            return None;
+        }
+        let name = name.to_owned();
+
+        // Phase-A: evaluate the module and execute geometry ops to populate
+        // terminal_handles, mirroring the build() realization loop.
+        //
+        // NOTE (task-3905 amendment, suggestion 1): This loop (~130 lines below)
+        // mirrors build()'s Phase-A realization loop.  A full extraction into a
+        // shared collect_placed_export_bodies helper would require restructuring
+        // build()'s post-processing (conformance/kinematic queries, GHR, journal
+        // writes) to run AFTER all templates complete — currently the
+        // post-processing is interleaved per-template using a local `named_steps`
+        // that is moved into module_named_steps before the next template.  This
+        // carries semantic risk for cross-template geometry references (task 3441),
+        // so Phase-A extraction is deferred; any changes to the realization
+        // execution or terminal_handles bookkeeping in build() must be mirrored here.
+        let check_result = self.check(module);
+        let mut diagnostics = check_result.diagnostics;
+        let values = check_result.values;
+
+        let demanded_tols = self.compute_demanded_tols(module);
+        let demanded_reprs = self.compute_demanded_reprs(module, ExportFormat::Step);
+
+        #[cfg(any(test, feature = "test-instrumentation"))]
+        let registry_owned = self
+            .test_registry_override
+            .clone()
+            .unwrap_or_else(crate::kernel_registry::collect_registry);
+        #[cfg(not(any(test, feature = "test-instrumentation")))]
+        let registry_owned = crate::kernel_registry::collect_registry();
+        let registry_borrowed: BTreeMap<String, &CapabilityDescriptor> =
+            registry_owned.iter().map(|(k, v)| (k.clone(), v)).collect();
+
+        let mut step_handles: Vec<KernelHandle> = Vec::new();
+        let mut terminal_handles: Vec<Vec<Option<KernelHandle>>> = module
+            .templates
+            .iter()
+            .map(|t| vec![None; t.realizations.len()])
+            .collect();
+
+        // Scratch tables required by execute_realization_ops signature;
+        // not used by the distance query (no post-process conformance/kinematic
+        // queries needed — only raw geometry handles are needed).
+        let mut scratch_feature_tags = FeatureTagTable::default();
+        let mut scratch_topo_attrs = TopologyAttributeTable::default();
+        let mut scratch_swept_kinds = SweptKindTable::default();
+        let mut module_named_steps: HashMap<String, HashMap<String, KernelHandle>> =
+            HashMap::new();
+
+        for (t_idx, template) in module.templates.iter().enumerate() {
+            let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
+            seed_cross_sub_named_steps(
+                template,
+                &module_named_steps,
+                &mut named_steps,
+                &mut self.geometry_kernels,
+                &name,
+                &values,
+                &self.functions,
+                &self.meta_map,
+                &mut diagnostics,
+                &module.templates,
+            );
+            for (r_idx, realization) in template.realizations.iter().enumerate() {
+                let demanded_tol = demanded_tols
+                    .get(t_idx)
+                    .and_then(|v| v.get(r_idx))
+                    .copied()
+                    .unwrap_or(None);
+                let mut kernel_error: Option<ErrorRef> = None;
+                let mut produced_repr_out: Option<ReprKind> = None;
+                let handle_start = step_handles.len();
+                Engine::execute_realization_ops(
+                    &mut self.geometry_kernels,
+                    &registry_borrowed,
+                    &name,
+                    &realization.operations,
+                    &realization.feature_tags,
+                    &values,
+                    &self.functions,
+                    &self.meta_map,
+                    RealizationOutputs::new(
+                        &mut step_handles,
+                        &mut named_steps,
+                        &mut scratch_feature_tags,
+                        &mut scratch_topo_attrs,
+                        &mut scratch_swept_kinds,
+                        &mut produced_repr_out,
+                    ),
+                    &mut diagnostics,
+                    &realization.id,
+                    realization.name.as_deref(),
+                    realization.span,
+                    &mut kernel_error,
+                    &mut self.realization_cache,
+                    demanded_tol,
+                    demanded_reprs
+                        .get(t_idx)
+                        .and_then(|v| v.get(r_idx))
+                        .copied()
+                        .unwrap_or(ReprKind::BRep),
+                    &mut self.last_dispatch_count,
+                );
+                if step_handles.len() > handle_start {
+                    terminal_handles[t_idx][r_idx] = step_handles.last().copied();
+                }
+                // Kernel errors are recorded in diagnostics by execute_realization_ops;
+                // the distance query will simply find no handle for failed realizations.
+                let _ = kernel_error;
+            }
+            snapshot_named_steps(template, named_steps, &mut module_named_steps);
+        }
+
+        // Phase-B: collect placed product handles via the T7 surfacing walk.
+        //
+        // Short-circuit (T7 amendment, suggestion 3): pass the two target paths as
+        // `path_filter` so `collect_export_bodies_walk` → `surface_export_bodies` →
+        // `walk_placed_realizations` only calls `ApplyTransform` for realizations
+        // at `path_a` or `path_b`.  All other bodies skip the kernel call entirely,
+        // preventing transient handle accumulation on repeated distance queries over
+        // the same module.
+        let export_bodies = Self::collect_export_bodies_walk(
+            module,
+            &terminal_handles,
+            &mut self.geometry_kernels,
+            &name,
+            &values,
+            &self.functions,
+            &self.meta_map,
+            &mut diagnostics,
+            Some((path_a, path_b)),
+        );
+
+        // Resolve the two product (default_visible == true) handles by entity_path.
+        let find_handle = |path: &str| -> Option<GeometryHandleId> {
+            export_bodies
+                .iter()
+                .find(|b| b.default_visible && b.entity_path == path)
+                .map(|b| b.handle_id)
+        };
+        let handle_a = find_handle(path_a);
+        let handle_b = find_handle(path_b);
+        let (Some(from), Some(to)) = (handle_a, handle_b) else {
+            diagnostics.push(Diagnostic::warning(format!(
+                "distance_between_placed: could not resolve product handle(s) \
+                 (path_a={path_a:?} → {handle_a:?}, path_b={path_b:?} → {handle_b:?})"
+            )));
+            return None;
+        };
+
+        // Issue GeometryQuery::Distance on the placed handles.
+        let kernel = self
+            .geometry_kernels
+            .get(name.as_str())
+            .expect("default kernel must remain in the map");
+        crate::geometry_ops::kernel_distance(
+            kernel.as_ref(),
+            from,
+            to,
+            &mut diagnostics,
+            "distance_between_placed",
+        )
+    }
+
+    /// Phase-B helper: run the root + fallback `surface_export_bodies` walk and
+    /// return all collected `ExportBody` entries.
+    ///
+    /// Factored out of both `build()` and `distance_between_placed()` to eliminate
+    /// the ~50-line duplicated root/fallback traversal pattern.  Phase-A realization
+    /// execution remains per-caller due to differing post-processing requirements:
+    /// `build()` populates engine state (conformance/kinematic queries, GHR, journal)
+    /// interleaved within the template loop; `distance_between_placed()` skips it.
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    fn collect_export_bodies_walk(
+        module: &CompiledModule,
+        terminal_handles: &[Vec<Option<KernelHandle>>],
+        geometry_kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
+        name: &str,
+        values: &ValueMap,
+        functions: &[CompiledFunction],
+        meta_map: &HashMap<String, HashMap<String, String>>,
+        diagnostics: &mut Vec<Diagnostic>,
+        // T7 amendment (suggestion 3): when `Some((path_a, path_b))`, the export
+        // walk short-circuits ApplyTransform for every entity path that does NOT match
+        // either target — avoiding transient-handle accumulation on repeated
+        // `distance_between_placed` calls.  Pass `None` for the full-collection
+        // `build()` path (all product bodies are needed for the STEP compound).
+        path_filter: Option<(&str, &str)>,
+    ) -> Vec<crate::geometry_ops::ExportBody> {
+        use crate::geometry_ops::{
+            compose_pose_chain, non_final_realization_indices, reachable_template_indices,
+            root_template_indices, surface_export_bodies,
+        };
+        let identity_world = compose_pose_chain(&[]);
+        let roots = root_template_indices(module);
+        // T7 robustness fix (esc-3905-277): a template's non-final realizations
+        // are redundant intermediate lets whose geometry is inlined into the
+        // final realization (the compiler inlines boolean/etc. operands rather
+        // than cross-referencing them), so they must NOT be exported as
+        // standalone solids. Restores the pre-T7 "final realization per template"
+        // export semantics while keeping T7's multi-body-via-subs behavior.
+        let skip = non_final_realization_indices(module, terminal_handles);
+        // Construct the path-level pre-filter for the distance case.
+        // Box the closure so `pre_filter` can hold a stable reference that outlives
+        // the `.map()` call site.  `as_deref()` converts `Option<Box<dyn Fn(...)>>`
+        // to `Option<&dyn Fn(...)>` by borrowing from the box for its lifetime.
+        let boxed_filter: Option<Box<dyn Fn(usize, usize, &str) -> bool>> =
+            path_filter.map(|(pa, pb)| {
+                let pa = pa.to_owned();
+                let pb = pb.to_owned();
+                let f: Box<dyn Fn(usize, usize, &str) -> bool> =
+                    Box::new(move |_t: usize, _r: usize, path: &str| path == pa || path == pb);
+                f
+            });
+        let pre_filter: Option<&dyn Fn(usize, usize, &str) -> bool> =
+            boxed_filter.as_deref();
+        let mut export_bodies = Vec::new();
+        for &root_idx in &roots {
+            let root_prefix = module.templates[root_idx].name.clone();
+            surface_export_bodies(
+                module,
+                root_idx,
+                &root_prefix,
+                false,
+                &identity_world,
+                0,
+                terminal_handles,
+                geometry_kernels,
+                name,
+                values,
+                functions,
+                meta_map,
+                &skip,
+                pre_filter,
+                &mut export_bodies,
+                diagnostics,
+            );
+        }
+        // Fallback: surface any template unreachable from roots
+        // (cycle/orphan guard — mirrors tessellate_from_values).
+        let mut covered = reachable_template_indices(module, &roots);
+        for t_idx in 0..module.templates.len() {
+            if covered.contains(&t_idx) {
+                continue;
+            }
+            let fallback_prefix = module.templates[t_idx].name.clone();
+            surface_export_bodies(
+                module,
+                t_idx,
+                &fallback_prefix,
+                false,
+                &identity_world,
+                0,
+                terminal_handles,
+                geometry_kernels,
+                name,
+                values,
+                functions,
+                meta_map,
+                &skip,
+                pre_filter,
+                &mut export_bodies,
+                diagnostics,
+            );
+            covered.extend(reachable_template_indices(module, &[t_idx]));
+        }
+        export_bodies
     }
 
     /// Tessellate all realizations in the module for GUI mesh rendering.

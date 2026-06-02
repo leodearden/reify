@@ -16,6 +16,7 @@
 //! not model `at` / `aux`).
 
 use reify_core::Severity;
+use reify_ir::ExportFormat;
 use reify_test_support::{MockConstraintChecker, MockGeometryKernel, compile_source_with_stdlib};
 
 /// Build a Mock-kernel engine for structural surfacing assertions.
@@ -863,5 +864,515 @@ structure B {
         "cycle guard must bound the mutual-recursion walk; got {} surfaces: {:?}",
         result.meshes.len(),
         paths
+    );
+}
+
+/// step-3 (T7, real OCCT, `OCCT_AVAILABLE`-gated) — RED: `engine.build()` on
+/// a 2-product + 1-aux assembly must export exactly **2** solids in the STEP
+/// output (one per product sub, with composed world transforms baked in); the
+/// `aux` body must be ABSENT (excluded → not 3), and the un-wired single-last-
+/// handle export must NOT produce only 1 un-placed solid.
+///
+/// Golden geometry (box(20mm) centered at origin, half-extent 0.01 m):
+///   Assembly.a  placed at +10 mm X  → world centre (0.01, 0, 0)
+///   Assembly.b  placed at +50 mm X  → world centre (0.05, 0, 0)
+///   Assembly.marker (aux)  placed at +100 mm Y  — excluded from export
+///
+/// Fails on base because `Engine::build` exports only `*step_handles.last()`
+/// — a single un-placed solid — not the two placed product bodies.
+#[test]
+fn multi_body_export_has_two_product_solids_not_three_not_one() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let source = r#"structure Child {
+    let body = box(20mm, 20mm, 20mm)
+}
+structure AuxPart {
+    let body = box(5mm, 5mm, 5mm)
+}
+structure Assembly {
+    sub a : Child at transform3(orient_identity(), vec3(10mm, 0mm, 0mm))
+    sub b : Child at transform3(orient_identity(), vec3(50mm, 0mm, 0mm))
+    aux sub marker : AuxPart at transform3(orient_identity(), vec3(0mm, 100mm, 0mm))
+}"#;
+    let compiled = compile_source_with_stdlib(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "unexpected compile errors: {:?}",
+        compile_errors
+    );
+
+    // Use OcctKernelHandle directly (not through SingleKernelHolder).
+    // NOTE: SingleKernelHolder::make_compound DOES delegate to the inner kernel
+    // (see reify-geometry/src/lib.rs:88-98), so the production holder/registry
+    // compound path is exercised by the CLI test
+    // `build_sub_placement_export_has_two_product_solids` in cli_build.rs.
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(
+        Box::new(checker),
+        Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
+    );
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+    let geom_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        geom_errors.is_empty(),
+        "unexpected geometry errors: {:?}",
+        geom_errors
+    );
+
+    let step_bytes = result
+        .geometry_output
+        .expect("build must produce geometry output for an assembly with product subs");
+    let step_str = String::from_utf8(step_bytes).expect("STEP output must be valid UTF-8");
+
+    // Count manifold solid B-Reps: each solid body appears as one
+    // MANIFOLD_SOLID_BREP entity in the STEP data section.
+    let solid_count = step_str.matches("MANIFOLD_SOLID_BREP(").count();
+    assert_eq!(
+        solid_count, 2,
+        "exported STEP must contain exactly 2 product solids (aux excluded); \
+         got {solid_count} MANIFOLD_SOLID_BREP entities.\n\
+         (1 → old last-handle bug; 3 → aux not excluded)"
+    );
+}
+
+/// Regression lock (T7): a single-body structure still exports exactly 1
+/// solid after the placed-product export path is wired in — the single-body
+/// path (0 sub children) must not be wrapped in a compound or otherwise
+/// regressed.
+///
+/// This test is GREEN on base (the old `*step_handles.last()` export produces
+/// 1 solid for single-body structures) and must remain GREEN after step-4.
+#[test]
+fn single_body_export_regression_one_solid() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let source = r#"structure Bracket {
+    let body = box(30mm, 20mm, 10mm)
+}"#;
+    let compiled = compile_source_with_stdlib(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "unexpected compile errors: {:?}",
+        compile_errors
+    );
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut planner = reify_geometry::SingleKernelHolder::new();
+    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+    let geom_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        geom_errors.is_empty(),
+        "unexpected geometry errors: {:?}",
+        geom_errors
+    );
+
+    let step_bytes = result
+        .geometry_output
+        .expect("single-body build must produce geometry output");
+    let step_str = String::from_utf8(step_bytes).expect("STEP output must be valid UTF-8");
+
+    let solid_count = step_str.matches("MANIFOLD_SOLID_BREP(").count();
+    assert_eq!(
+        solid_count, 1,
+        "single-body structure must export exactly 1 solid; got {solid_count}"
+    );
+}
+
+/// Robustness regression (T7, esc-3905-277, real OCCT, `OCCT_AVAILABLE`-gated):
+/// named boolean operands bound to `let`s must NOT be exported as standalone
+/// solids. The common CAD idiom `let a = box; let b = box; let r = union(a, b)`
+/// compiles to THREE realizations (two `Box`, one `Union`); `a` and `b` are
+/// consumed as operands of the union and are contained in its result. The export
+/// body set must therefore be exactly the single un-consumed `union` result.
+///
+/// Pre-fix the export walk surfaced every realization (filtered only by `aux`),
+/// so it collected all 3 → `make_compound` → a STEP file with 3 overlapping
+/// MANIFOLD_SOLID_BREP (the two input boxes PLUS their union). This test locks
+/// exactly **1** solid.
+#[test]
+fn boolean_operand_lets_are_not_exported_as_separate_solids() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let source = r#"structure S {
+    let a = box(10mm, 10mm, 10mm)
+    let b = box(5mm, 5mm, 5mm)
+    let r = union(a, b)
+}"#;
+    let compiled = compile_source_with_stdlib(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "unexpected compile errors: {:?}",
+        compile_errors
+    );
+
+    // Pin the realization shape so the assertion below is unambiguous about
+    // WHICH bodies the export walk must filter (mirrors
+    // multi_handle_engine_dispatch::with_registered_kernels_end_to_end_two_boxes_plus_union).
+    assert_eq!(
+        compiled.templates[0].realizations.len(),
+        3,
+        "expected three realizations (two Box, one Union); got {}",
+        compiled.templates[0].realizations.len()
+    );
+
+    // Use OcctKernelHandle directly so make_compound is reachable — if the
+    // regression returns (it would collect 3 bodies), the export takes the
+    // compound path rather than the single-body path.
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(
+        Box::new(checker),
+        Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
+    );
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+    let geom_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        geom_errors.is_empty(),
+        "unexpected geometry errors: {:?}",
+        geom_errors
+    );
+
+    let step_bytes = result
+        .geometry_output
+        .expect("build must produce geometry output for the union result");
+    let step_str = String::from_utf8(step_bytes).expect("STEP output must be valid UTF-8");
+
+    let solid_count = step_str.matches("MANIFOLD_SOLID_BREP(").count();
+    assert_eq!(
+        solid_count, 1,
+        "exported STEP must contain exactly 1 solid (the union result); \
+         got {solid_count} MANIFOLD_SOLID_BREP entities \
+         (3 → consumed boolean operands `a`/`b` leaked into the export)"
+    );
+}
+
+/// step-5 (T7, real OCCT, `OCCT_AVAILABLE`-gated) — RED: distance between two
+/// placed product children equals the composed-transform value.
+///
+/// `Assembly` contains two `sub`s of `Child{ let body = box(20mm,20mm,20mm) }`:
+///   sub a placed at +10mm X  → box centre at (0.01, 0, 0), X-faces at [0, 0.02]
+///   sub b placed at +50mm X  → box centre at (0.05, 0, 0), X-faces at [0.04, 0.06]
+///
+/// Face gap between the inner X-faces: 0.04 − 0.02 = **0.02 m** exactly
+/// (BRepExtrema on planar faces is exact).
+///
+/// `engine.distance_between_placed(&compiled, "Assembly.a#realization[0]",
+/// "Assembly.b#realization[0]")` must return `Some(d)` where `d ≈ 0.02`.
+///
+/// RED on base: `distance_between_placed` does not exist on `Engine`.
+#[test]
+fn distance_between_placed_children_equals_composed_transform_value() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let source = r#"structure Child {
+    let body = box(20mm, 20mm, 20mm)
+}
+structure Assembly {
+    sub a : Child at transform3(orient_identity(), vec3(10mm, 0mm, 0mm))
+    sub b : Child at transform3(orient_identity(), vec3(50mm, 0mm, 0mm))
+}"#;
+    let compiled = compile_source_with_stdlib(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "unexpected compile errors: {:?}",
+        compile_errors
+    );
+
+    // Use OcctKernelHandle directly so make_compound is reachable.
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(
+        Box::new(checker),
+        Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
+    );
+
+    let dist = engine.distance_between_placed(
+        &compiled,
+        "Assembly.a#realization[0]",
+        "Assembly.b#realization[0]",
+    );
+    let dist = dist.expect(
+        "distance_between_placed must return Some for two product subs with valid geometry",
+    );
+    // Centers 40mm apart, minus two 10mm half-extents → face gap = 0.02 m exactly.
+    let expected = 0.02_f64;
+    let tol = 1e-6_f64;
+    assert!(
+        (dist - expected).abs() < tol,
+        "distance between placed children expected {expected} m, got {dist} m \
+         (composed placement not applied?)"
+    );
+}
+
+/// step-5 control (T7, real OCCT, `OCCT_AVAILABLE`-gated) — identity-pose
+/// control: both subs at vec3(0,0,0) → coincident/overlapping boxes →
+/// `distance_between_placed` returns ≈ 0.0, proving the query operates on
+/// PLACED (world-coordinate) geometry rather than source-let positions.
+#[test]
+fn distance_between_coincident_placed_children_is_zero() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let source = r#"structure Child {
+    let body = box(20mm, 20mm, 20mm)
+}
+structure ControlAsm {
+    sub a : Child at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+    sub b : Child at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+}"#;
+    let compiled = compile_source_with_stdlib(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "unexpected compile errors: {:?}",
+        compile_errors
+    );
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(
+        Box::new(checker),
+        Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
+    );
+
+    let dist = engine.distance_between_placed(
+        &compiled,
+        "ControlAsm.a#realization[0]",
+        "ControlAsm.b#realization[0]",
+    );
+    let dist = dist
+        .expect("distance_between_placed must return Some for coincident product subs");
+    // Coincident/overlapping boxes: distance is 0.
+    let tol = 1e-6_f64;
+    assert!(
+        dist < tol,
+        "coincident placed children distance expected ≈ 0.0, got {dist} m \
+         (query not using placed geometry?)"
+    );
+}
+
+/// Amendment (T7 suggestion 1): document the intra-template single-final-body
+/// export heuristic (`non_final_realization_indices`).
+///
+/// When a template has TWO independent product `let`s that are NOT operands of
+/// each other, ONLY the **last** one (in declaration order) is exported.  The
+/// earlier let has no consuming realization, but the walk still filters it out
+/// via `non_final_realization_indices` — this is the same "final realization
+/// per template" rule used to exclude boolean operand lets, applied by
+/// realization index rather than semantic analysis.
+///
+/// This test locks the current behavior as a regression guard so that any
+/// future change to `non_final_realization_indices` that exports BOTH bodies
+/// (which may be desirable but is a semantic change) must be an explicit
+/// decision rather than an accidental side-effect.
+///
+/// Golden assertion: `structure S { let a = box(10mm); let b = box(5mm) }`
+/// compiles to TWO independent realizations; exported STEP has exactly 1 solid
+/// (`b`'s geometry — the final one).
+///
+/// Note: this is a known, load-bearing limitation.  A template with two
+/// truly-independent non-consumed bodies is uncommon in practice (the typical
+/// idiom uses boolean union or sub-components rather than multiple top-level
+/// lets), but users who write it will silently get only the last let exported.
+/// A future diagnostic should warn when a template has >1 non-consumed,
+/// non-aux terminal realization so that silent geometry dropping is visible.
+#[test]
+fn intra_template_two_independent_lets_exports_only_final_body() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let source = r#"structure S {
+    let a = box(10mm, 10mm, 10mm)
+    let b = box(5mm, 5mm, 5mm)
+}"#;
+    let compiled = compile_source_with_stdlib(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "unexpected compile errors: {:?}",
+        compile_errors
+    );
+
+    // Pin the realization count: two independent lets → two realizations.
+    assert_eq!(
+        compiled.templates[0].realizations.len(),
+        2,
+        "expected two realizations (two independent lets); got {}",
+        compiled.templates[0].realizations.len()
+    );
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(
+        Box::new(checker),
+        Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
+    );
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+    let geom_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        geom_errors.is_empty(),
+        "unexpected geometry errors: {:?}",
+        geom_errors
+    );
+
+    let step_bytes = result
+        .geometry_output
+        .expect("build must produce geometry output for a structure with a product let");
+    let step_str = String::from_utf8(step_bytes).expect("STEP output must be valid UTF-8");
+
+    let solid_count = step_str.matches("MANIFOLD_SOLID_BREP(").count();
+    assert_eq!(
+        solid_count, 1,
+        "intra-template single-final-body heuristic: only the LAST non-consumed let \
+         is exported (got {solid_count} solids; expected 1). \
+         If this changes, it must be an intentional semantic decision."
+    );
+}
+
+/// Amendment (T7 suggestion 2): cross-path consistency test — `build()` and
+/// `distance_between_placed()` operate on the SAME Phase-A realization loop.
+///
+/// Compiles a two-sub assembly and exercises both methods on the same engine.
+/// Verifies that:
+/// 1. `build()` → 2 product solids (same assembly as the step-3 export test)
+/// 2. `distance_between_placed()` → 0.02 m gap (same geometry as step-5)
+///
+/// If the two Phase-A loops diverge (e.g. one loop changes terminal-handle
+/// bookkeeping or executor arguments while the other is not updated), one of
+/// the two assertions will fail, catching the divergence automatically.
+#[test]
+fn build_and_distance_between_placed_are_consistent() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let source = r#"structure Child {
+    let body = box(20mm, 20mm, 20mm)
+}
+structure Assembly {
+    sub a : Child at transform3(orient_identity(), vec3(10mm, 0mm, 0mm))
+    sub b : Child at transform3(orient_identity(), vec3(50mm, 0mm, 0mm))
+}"#;
+    let compiled = compile_source_with_stdlib(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "unexpected compile errors: {:?}",
+        compile_errors
+    );
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(
+        Box::new(checker),
+        Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
+    );
+
+    // Assert 1: build() produces exactly 2 product solids.
+    let build_result = engine.build(&compiled, ExportFormat::Step);
+    let build_errors: Vec<_> = build_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        build_errors.is_empty(),
+        "unexpected geometry errors from build(): {:?}",
+        build_errors
+    );
+    let step_bytes = build_result
+        .geometry_output
+        .expect("build() must produce geometry output for an assembly with product subs");
+    let step_str = String::from_utf8(step_bytes).expect("STEP output must be valid UTF-8");
+    let solid_count = step_str.matches("MANIFOLD_SOLID_BREP(").count();
+    assert_eq!(
+        solid_count, 2,
+        "build(): expected 2 product solids; got {solid_count}"
+    );
+
+    // Assert 2: distance_between_placed() returns the expected 0.02 m gap.
+    // Child box(20mm) half-extent = 0.01 m.  Centres at +10mm and +50mm X →
+    // 40mm apart.  Face gap = 0.04 − 0.02 = 0.02 m.
+    let dist = engine.distance_between_placed(
+        &compiled,
+        "Assembly.a#realization[0]",
+        "Assembly.b#realization[0]",
+    );
+    let dist = dist.expect(
+        "distance_between_placed() must return Some — divergence from build() Phase-A loop?",
+    );
+    let expected = 0.02_f64;
+    let tol = 1e-6_f64;
+    assert!(
+        (dist - expected).abs() < tol,
+        "distance_between_placed(): expected {expected} m, got {dist} m \
+         (divergence from build() Phase-A loop?)"
     );
 }
