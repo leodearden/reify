@@ -1,10 +1,8 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Self-contained vi.mock('three') for axisLabels unit tests.
 // Captures ctor args so tests can assert color/position/flags without a real WebGL context.
-
-const mockGroupAdd = vi.fn();
 
 vi.mock('three', () => {
   class MockGroup {
@@ -14,7 +12,6 @@ vi.mock('three', () => {
     renderOrder = 0;
     add(obj: any) {
       this.children.push(obj);
-      mockGroupAdd(obj);
     }
   }
 
@@ -24,7 +21,11 @@ vi.mock('three', () => {
     depthTest: boolean;
     depthWrite: boolean;
     transparent: boolean;
+    /** Raw options passed to the constructor — use for assertions about what value
+     *  was supplied; avoids coupling tests to the mock's pass-through behavior. */
+    ctorOpts: any;
     constructor(opts: any = {}) {
+      this.ctorOpts = { ...opts };
       this.map = opts.map;
       this.color = opts.color;
       this.depthTest = opts.depthTest ?? true;
@@ -39,7 +40,7 @@ vi.mock('three', () => {
     name = '';
     userData: Record<string, any> = {};
     renderOrder = 0;
-    scale = { x: 1, y: 1, z: 1, set: vi.fn((x: number, y: number, z: number) => { /* recorded */ }) };
+    scale = { x: 1, y: 1, z: 1, set: vi.fn((_x: number, _y: number, _z: number) => { /* recorded per instance */ }) };
     position = {
       x: 0, y: 0, z: 0,
       set: vi.fn(function(this: any, x: number, y: number, z: number) {
@@ -76,7 +77,6 @@ import { createAxisLabels } from '../../viewport/axisLabels';
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockGroupAdd.mockClear();
 });
 
 describe('createAxisLabels', () => {
@@ -97,53 +97,48 @@ describe('createAxisLabels', () => {
     }
   });
 
-  it('labels are identified as X, Y, Z via sprite.name', () => {
+  it('labels identified by exact sprite.name AND sprite.userData.axis — both must be present', () => {
     const group = createAxisLabels();
-    const names = group.children.map((s: any) => {
-      // Accept either 'axis-label-X' or just 'X', or userData.axis
-      if (s.name && s.name.includes('X')) return 'X';
-      if (s.name && s.name.includes('Y')) return 'Y';
-      if (s.name && s.name.includes('Z')) return 'Z';
-      if (s.userData?.axis) return s.userData.axis;
-      return null;
-    });
-    expect(names).toContain('X');
-    expect(names).toContain('Y');
-    expect(names).toContain('Z');
-  });
+    const xSprite = group.children.find((s: any) => s.name === 'axis-label-X') as any;
+    const ySprite = group.children.find((s: any) => s.name === 'axis-label-Y') as any;
+    const zSprite = group.children.find((s: any) => s.name === 'axis-label-Z') as any;
 
-  it('X label color is red (0xff0000)', () => {
-    const group = createAxisLabels();
-    const xSprite = group.children.find(
-      (s: any) => s.name?.includes('X') || s.userData?.axis === 'X',
-    ) as any;
     expect(xSprite).toBeDefined();
-    expect(xSprite.material.color).toBe(0xff0000);
-  });
+    expect(xSprite.userData.axis).toBe('X');
 
-  it('Y label color is green (0x00ff00)', () => {
-    const group = createAxisLabels();
-    const ySprite = group.children.find(
-      (s: any) => s.name?.includes('Y') || s.userData?.axis === 'Y',
-    ) as any;
     expect(ySprite).toBeDefined();
-    expect(ySprite.material.color).toBe(0x00ff00);
+    expect(ySprite.userData.axis).toBe('Y');
+
+    expect(zSprite).toBeDefined();
+    expect(zSprite.userData.axis).toBe('Z');
   });
 
-  it('Z label color is blue (0x0000ff)', () => {
+  it('X label color is red — value 0xff0000 passed to SpriteMaterial ctor', () => {
     const group = createAxisLabels();
-    const zSprite = group.children.find(
-      (s: any) => s.name?.includes('Z') || s.userData?.axis === 'Z',
-    ) as any;
+    const xSprite = group.children.find((s: any) => s.name === 'axis-label-X') as any;
+    expect(xSprite).toBeDefined();
+    // Assert on ctorOpts.color (the value passed to the constructor) rather than
+    // material.color, which would only reflect the mock's pass-through behavior.
+    expect(xSprite.material.ctorOpts.color).toBe(0xff0000);
+  });
+
+  it('Y label color is green — value 0x00ff00 passed to SpriteMaterial ctor', () => {
+    const group = createAxisLabels();
+    const ySprite = group.children.find((s: any) => s.name === 'axis-label-Y') as any;
+    expect(ySprite).toBeDefined();
+    expect(ySprite.material.ctorOpts.color).toBe(0x00ff00);
+  });
+
+  it('Z label color is blue — value 0x0000ff passed to SpriteMaterial ctor', () => {
+    const group = createAxisLabels();
+    const zSprite = group.children.find((s: any) => s.name === 'axis-label-Z') as any;
     expect(zSprite).toBeDefined();
-    expect(zSprite.material.color).toBe(0x0000ff);
+    expect(zSprite.material.ctorOpts.color).toBe(0x0000ff);
   });
 
   it('X label is positioned beyond the X axis tip (x > 2, y === 0, z === 0)', () => {
     const group = createAxisLabels();
-    const xSprite = group.children.find(
-      (s: any) => s.name?.includes('X') || s.userData?.axis === 'X',
-    ) as any;
+    const xSprite = group.children.find((s: any) => s.name === 'axis-label-X') as any;
     expect(xSprite.position.x).toBeGreaterThan(2);
     expect(xSprite.position.y).toBe(0);
     expect(xSprite.position.z).toBe(0);
@@ -151,9 +146,7 @@ describe('createAxisLabels', () => {
 
   it('Y label is positioned beyond the Y axis tip (y > 2, x === 0, z === 0)', () => {
     const group = createAxisLabels();
-    const ySprite = group.children.find(
-      (s: any) => s.name?.includes('Y') || s.userData?.axis === 'Y',
-    ) as any;
+    const ySprite = group.children.find((s: any) => s.name === 'axis-label-Y') as any;
     expect(ySprite.position.y).toBeGreaterThan(2);
     expect(ySprite.position.x).toBe(0);
     expect(ySprite.position.z).toBe(0);
@@ -161,9 +154,7 @@ describe('createAxisLabels', () => {
 
   it('Z label is positioned beyond the Z axis tip (z > 2, x === 0, y === 0)', () => {
     const group = createAxisLabels();
-    const zSprite = group.children.find(
-      (s: any) => s.name?.includes('Z') || s.userData?.axis === 'Z',
-    ) as any;
+    const zSprite = group.children.find((s: any) => s.name === 'axis-label-Z') as any;
     expect(zSprite.position.z).toBeGreaterThan(2);
     expect(zSprite.position.x).toBe(0);
     expect(zSprite.position.y).toBe(0);
@@ -199,5 +190,45 @@ describe('createAxisLabels', () => {
       expect(setArgs[0]).toBeGreaterThan(0);
       expect(setArgs[1]).toBeGreaterThan(0);
     }
+  });
+});
+
+// ── Glyph drawing tests ──────────────────────────────────────────────────────
+// jsdom returns null for getContext('2d') by default, which causes makeTextSprite
+// to skip the drawing path. These tests stub getContext to verify that fillText
+// IS called with each axis letter when a real 2D context is available.
+//
+// Follows the vi.spyOn(HTMLCanvasElement.prototype, 'getContext') precedent from
+// BucklingPanel.test.tsx. Scoped to this describe so the structural tests above
+// still exercise the null-context guard path without interference.
+
+describe('createAxisLabels — glyph drawing (getContext truthy)', () => {
+  let mockFillText: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    mockFillText = vi.fn();
+    const mockCtx = {
+      clearRect: vi.fn(),
+      fillText: mockFillText,
+      fillStyle: '',
+      font: '',
+      textAlign: '',
+      textBaseline: '',
+    };
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(
+      (contextId: string) => (contextId === '2d' ? (mockCtx as any) : null),
+    );
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('calls fillText with each axis letter when getContext returns a truthy 2D context', () => {
+    createAxisLabels();
+    const lettersDrawn = mockFillText.mock.calls.map((c: any[]) => c[0]);
+    expect(lettersDrawn).toContain('X');
+    expect(lettersDrawn).toContain('Y');
+    expect(lettersDrawn).toContain('Z');
   });
 });
