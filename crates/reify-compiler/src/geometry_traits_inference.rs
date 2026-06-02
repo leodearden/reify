@@ -549,8 +549,9 @@ fn infer_op(
             combine_sweep(profile)
         }
 
-        // Curve constructors are 1-D primitives; return safe all() default.
-        CompiledGeometryOp::Curve { .. } => InferredTraits::all(),
+        // Curve constructors are 1-D primitives → GeomDim::Curve (preserving
+        // the all()-equivalent bounded/connected/convex flags).
+        CompiledGeometryOp::Curve { .. } => InferredTraits::curve(),
     }
 }
 
@@ -699,9 +700,9 @@ pub fn try_infer_traits_for_function_call_in_env(
             Some(combine_sweep(t))
         }
 
-        // ─── Curve constructors → all() (1-D primitives) ────────────────
+        // ─── Curve constructors → curve() (1-D primitives) ──────────────
         "line_segment" | "arc" | "helix" | "interp" | "bezier" | "nurbs" => {
-            Some(InferredTraits::all())
+            Some(InferredTraits::curve())
         }
 
         // Unknown function name → None. The private wrapper maps this to

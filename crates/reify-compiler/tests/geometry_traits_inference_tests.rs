@@ -1110,15 +1110,18 @@ fn infer_traits_for_op_handles_sweep_root() {
     );
 }
 
-/// `Curve` root → safe default `InferredTraits::all()` (1-D primitives,
-/// not a solid geometry — inferred as fully safe).
+/// `Curve` root → `InferredTraits::curve()` (1-D primitive: preserves the
+/// all()-equivalent bounded/connected/convex flags but carries
+/// `dimension == GeomDim::Curve`). The dedicated dimension assertion lives in
+/// `op_array_assigns_curve_to_curve_op_and_preserves_through_transform`; this
+/// full-struct pin guards the complete record.
 #[test]
 fn infer_traits_for_op_handles_curve_root() {
     let ops = vec![CompiledGeometryOp::Curve {
         kind: CurveKind::Arc,
         args: vec![],
     }];
-    assert_eq!(infer_traits_for_op(&ops), InferredTraits::all());
+    assert_eq!(infer_traits_for_op(&ops), InferredTraits::curve());
 }
 
 /// `GeomRef::Sub(_)` in a boolean op returns the safe default `all()` —
