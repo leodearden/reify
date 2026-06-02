@@ -110,7 +110,21 @@ pub(crate) fn eval_matrix(name: &str, args: &[Value]) -> Option<Value> {
                     ];
                     build_matrix_value(3, 3, &inv_data, inv_dim)
                 }
-                _ => Value::Undef,
+                _ => {
+                    let m = DMatrix::from_row_slice(n, n, &data);
+                    match m.try_inverse() {
+                        Some(inv) => {
+                            let mut inv_data = Vec::with_capacity(n * n);
+                            for i in 0..n {
+                                for j in 0..n {
+                                    inv_data.push(inv[(i, j)]);
+                                }
+                            }
+                            build_matrix_value(n, n, &inv_data, inv_dim)
+                        }
+                        None => Value::Undef,
+                    }
+                }
             }
         }),
 
