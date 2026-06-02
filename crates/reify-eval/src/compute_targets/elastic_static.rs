@@ -887,7 +887,7 @@ pub(crate) fn solve_cantilever_fea(
     // Per-element tensors are collected into `stress_elements` to feed
     // recover_nodal_stress_p1 (task 4084/α). The element-max max_von_mises
     // loop is byte-identical to the pre-α code (same formula, same ordering).
-    let u_disp = &cg_result.u;
+    let u_disp = cg_result.u();
     let mut max_von_mises = 0.0f64;
     let mut stress_elements: Vec<[[f64; 3]; 3]> = Vec::with_capacity(tet_connectivity.len());
 
@@ -961,13 +961,18 @@ pub(crate) fn solve_cantilever_fea(
 
     let nodal_stress = recover_nodal_stress_p1(n_nodes, &se_refs);
 
+    // Hoist the Copy scalars before into_shared_u() consumes cg_result.
+    // Struct-literal fields evaluate top-to-bottom; moving cg_result at `u:`
+    // would invalidate the later converged/iterations reads without this hoist.
+    let converged = cg_result.converged;
+    let iterations = cg_result.iterations;
     let fea = CantileverFeaSolve {
-        u: cg_result.u,
+        u: cg_result.into_shared_u(),
         coords,
         tip_nodes,
         max_von_mises,
-        converged: cg_result.converged,
-        iterations: cg_result.iterations,
+        converged,
+        iterations,
         tet_connectivity,
         nodal_stress,
         nx,

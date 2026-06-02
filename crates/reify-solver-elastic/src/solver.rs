@@ -117,21 +117,62 @@ impl Default for CgSolverOptions {
 /// The `max_iter_exhaustion_returns_unconverged` test pins the cap-out path.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CgResult {
-    /// Solution vector `u` of length `k.nrows()`.
+    /// Solution displacement vector (private backing store).
     ///
-    /// Wrapped in `Arc<Vec<f64>>` so [`solve_cg_with_warm_state`] (PRD task
-    /// #14) can share this allocation with the [`crate::CgWarmState`] it
-    /// emits — avoiding a 10⁴–10⁶-DOF `Vec<f64>` copy on every solve. All
-    /// read paths work transparently through `Deref`: `result.u[i]`,
-    /// `result.u.len()`, `result.u.iter()`, `&result.u[..]`. Cloning a
-    /// `CgResult` now bumps the refcount instead of deep-copying `u`,
-    /// which is the desired behaviour given `u` is logically immutable
-    /// after the solve completes.
-    pub u: Arc<Vec<f64>>,
+    /// Access via the stable public accessors:
+    /// - `u(&self) -> &[f64]` — representation-agnostic read path; prefer
+    ///   this over any direct field access.
+    /// - `into_shared_u(self) -> Arc<Vec<f64>>` — consuming zero-copy
+    ///   donation; use when you need an `Arc<Vec<f64>>` handle (e.g. to
+    ///   populate a struct field) without copying the 10⁴–10⁶-DOF buffer.
+    ///
+    /// The field is private so the internal representation (`Arc<Vec<f64>>`,
+    /// `Arc<[f64]>`, or a plain `Vec<f64>`) can be changed in a future
+    /// refactor without breaking any external consumer that goes through
+    /// the accessors.
+    u: Arc<Vec<f64>>,
     /// Number of CG iterations executed.
     pub iterations: usize,
     /// `true` if the residual met the tolerance criterion before `max_iter`.
     pub converged: bool,
+}
+
+impl CgResult {
+    /// Read the solution vector as a slice.
+    ///
+    /// Returns a `&[f64]` view over the solution, coercing via `Arc<Vec<f64>>`'s
+    /// `Deref` chain. This is the representation-agnostic read path: callers
+    /// should prefer `u()` over direct field access so the internal storage type
+    /// can later change without breaking external consumers.
+    pub fn u(&self) -> &[f64] {
+        &self.u
+    }
+
+    /// Donate the solution allocation to the caller without copying.
+    ///
+    /// Consumes `self` and returns the `Arc<Vec<f64>>` directly. The caller
+    /// receives sole ownership of this handle; if no other `Arc` clones exist,
+    /// the allocation is uniquely owned by the returned `Arc`.
+    ///
+    /// Use this when you need to pass the solution into a struct field typed
+    /// `Arc<Vec<f64>>` (e.g. `CantileverFeaSolve.u`) without a 10⁴–10⁶-DOF copy.
+    /// For the representation-agnostic read path, use [`u()`](Self::u) instead.
+    pub fn into_shared_u(self) -> Arc<Vec<f64>> {
+        self.u
+    }
+
+    /// Clone the internal `Arc` without consuming `self`.
+    ///
+    /// Bumps the reference count and returns a new handle to the same allocation.
+    /// Required by [`solve_cg_with_warm_state`] which must return both the
+    /// `CgResult` and a [`crate::CgWarmState`] sharing one allocation — the
+    /// consuming [`into_shared_u`](Self::into_shared_u) cannot serve a dual-return.
+    ///
+    /// Kept `pub(crate)` so the public surface is exactly the two accessors the
+    /// task specifies ([`u()`](Self::u) and [`into_shared_u`](Self::into_shared_u)).
+    pub(crate) fn shared_u(&self) -> Arc<Vec<f64>> {
+        Arc::clone(&self.u)
+    }
 }
 
 /// Return value of the per-iteration progress callback passed to
@@ -1167,10 +1208,10 @@ mod tests {
         );
         for i in 0..3 {
             assert_eq!(
-                result.u[i].to_bits(),
+                result.u()[i].to_bits(),
                 f[i].to_bits(),
                 "u[{i}] = {} should be bit-equal to f[{i}] = {}",
-                result.u[i],
+                result.u()[i],
                 f[i]
             );
         }
@@ -1212,11 +1253,11 @@ mod tests {
 
         let u_expected = [1.0_f64 / 11.0, 7.0_f64 / 11.0];
         for i in 0..2 {
-            let diff = (result.u[i] - u_expected[i]).abs();
+            let diff = (result.u()[i] - u_expected[i]).abs();
             assert!(
                 diff < 1e-9,
                 "u[{i}] = {} but expected {} (diff = {})",
-                result.u[i],
+                result.u()[i],
                 u_expected[i],
                 diff
             );
@@ -1316,12 +1357,12 @@ mod tests {
             "must not converge with max_iter=1 and tol=1e-15"
         );
         assert_eq!(result.iterations, 1, "exactly the cap was consumed");
-        assert_eq!(result.u.len(), 2, "u has the correct length");
+        assert_eq!(result.u().len(), 2, "u has the correct length");
         // At least one entry of u is non-zero (one CG step took effect).
         assert!(
-            result.u.iter().any(|&v| v != 0.0),
+            result.u().iter().any(|&v| v != 0.0),
             "u must be non-zero after one CG step: {:?}",
-            result.u
+            result.u()
         );
     }
 
@@ -1349,7 +1390,7 @@ mod tests {
 
         // Verify residual r = f − Ku using spmv_seq.
         let mut ku = vec![0.0_f64; n];
-        spmv_seq(&k, &result.u, &mut ku);
+        spmv_seq(&k, result.u(), &mut ku);
         let mut residual = vec![0.0_f64; n];
         for i in 0..n {
             residual[i] = f[i] - ku[i];
@@ -1495,14 +1536,14 @@ mod tests {
         );
 
         for i in 0..f.len() {
-            let tol = 1e-9 * det.u[i].abs().max(1.0);
-            let diff = (par4.u[i] - det.u[i]).abs();
+            let tol = 1e-9 * det.u()[i].abs().max(1.0);
+            let diff = (par4.u()[i] - det.u()[i]).abs();
             assert!(
                 diff < tol,
                 "Tolerance-equivalence failure at i={i}: \
                  u_par={}, u_det={}, |diff|={diff} ≥ tol={tol}",
-                par4.u[i],
-                det.u[i],
+                par4.u()[i],
+                det.u()[i],
             );
         }
 
@@ -1518,11 +1559,11 @@ mod tests {
         );
         for i in 0..f.len() {
             assert_eq!(
-                par4.u[i].to_bits(),
-                par4b.u[i].to_bits(),
+                par4.u()[i].to_bits(),
+                par4b.u()[i].to_bits(),
                 "parallel back-to-back u[{i}] not bit-stable: a={} b={}",
-                par4.u[i],
-                par4b.u[i],
+                par4.u()[i],
+                par4b.u()[i],
             );
         }
     }
@@ -1599,11 +1640,11 @@ mod tests {
             );
             for i in 0..16 {
                 assert_eq!(
-                    par.u[i].to_bits(),
-                    det.u[i].to_bits(),
+                    par.u()[i].to_bits(),
+                    det.u()[i].to_bits(),
                     "Parallel {{ threads: {t} }} u[{i}] = {} ≠ Deterministic u[{i}] = {}",
-                    par.u[i],
-                    det.u[i]
+                    par.u()[i],
+                    det.u()[i]
                 );
             }
         }
@@ -1837,7 +1878,7 @@ mod tests {
             result.converged,
             "zero-RHS short-circuit must report converged",
         );
-        assert_eq!(*result.u, vec![0.0_f64; 2], "u must be the zero vector");
+        assert_eq!(result.u(), &[0.0_f64, 0.0_f64], "u must be the zero vector");
     }
 
     // -----------------------------------------------------------------------
@@ -2288,5 +2329,104 @@ mod tests {
                 "residual at iter={iter} must be finite and non-negative, got {residual}"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Accessor API tests (task-3366: encapsulate CgResult.u)
+    // -----------------------------------------------------------------------
+
+    /// `CgResult::u()` returns a slice identical to the solution.
+    ///
+    /// Uses the 3×3 identity-K fixture where u == f bit-exactly (same fixture
+    /// as `identity_k_converges_in_one_iter_deterministic`).
+    #[test]
+    fn cg_result_u_accessor_returns_solution_slice() {
+        let k = SparseRowMat::try_new_from_triplets(
+            3,
+            3,
+            &[
+                Triplet::new(0_usize, 0_usize, 1.0_f64),
+                Triplet::new(1_usize, 1_usize, 1.0_f64),
+                Triplet::new(2_usize, 2_usize, 1.0_f64),
+            ],
+        )
+        .unwrap();
+        let f = [1.0_f64, 2.0, 3.0];
+        let opts = CgSolverOptions {
+            tolerance: 1e-12,
+            max_iter: 100,
+        };
+        let result = solve_cg(&k, &f, opts, SolverMode::Deterministic);
+
+        assert!(result.converged, "identity K must converge");
+        // u() must return a slice with the same length and bit-identical values.
+        assert_eq!(
+            result.u().len(),
+            f.len(),
+            "u() slice length must equal f.len()"
+        );
+        assert_eq!(
+            result.u(),
+            f.as_slice(),
+            "identity-K solution u() must equal f bit-exactly"
+        );
+    }
+
+    /// `CgResult::shared_u()` and `into_shared_u()` both hand back the SAME
+    /// underlying allocation without copying.
+    ///
+    /// Uses the 2×2 SPD fixture (K=[[4,1],[1,3]], f=[1,2]) — same matrix as
+    /// `hand_computed_2x2_spd_within_tolerance`.
+    ///
+    /// Assertions:
+    /// (a) Two `shared_u()` calls produce `Arc` handles that `ptr_eq` each other
+    ///     — they both point at the same allocation.
+    /// (b) `h1.as_slice() == result.u()` — the shared handle's data matches the
+    ///     read accessor.
+    /// (c) `into_shared_u()` (consuming) also returns the SAME underlying
+    ///     allocation as the earlier `shared_u()` handles (zero-copy donation).
+    #[test]
+    fn cg_result_donation_accessors_share_allocation_without_copy() {
+        use std::sync::Arc;
+        let k = SparseRowMat::try_new_from_triplets(
+            2,
+            2,
+            &[
+                Triplet::new(0_usize, 0_usize, 4.0_f64),
+                Triplet::new(0_usize, 1_usize, 1.0_f64),
+                Triplet::new(1_usize, 0_usize, 1.0_f64),
+                Triplet::new(1_usize, 1_usize, 3.0_f64),
+            ],
+        )
+        .unwrap();
+        let f = [1.0_f64, 2.0];
+        let opts = CgSolverOptions {
+            tolerance: 1e-10,
+            max_iter: 100,
+        };
+        let result = solve_cg(&k, &f, opts, SolverMode::Deterministic);
+        assert!(result.converged, "2×2 SPD must converge");
+
+        // (a) Two shared_u() calls must return Arc handles to the SAME allocation.
+        let h1 = result.shared_u();
+        let h2 = result.shared_u();
+        assert!(
+            Arc::ptr_eq(&h1, &h2),
+            "shared_u() must return handles to the same Arc allocation"
+        );
+
+        // (b) Shared handle content matches the read accessor.
+        assert_eq!(
+            h1.as_slice(),
+            result.u(),
+            "shared_u() content must equal u() slice"
+        );
+
+        // (c) into_shared_u() (consuming) also hands back the SAME allocation.
+        let owned = result.into_shared_u();
+        assert!(
+            Arc::ptr_eq(&h1, &owned),
+            "into_shared_u() must return the same underlying Arc (zero-copy donation)"
+        );
     }
 }
