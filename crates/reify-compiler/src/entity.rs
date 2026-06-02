@@ -1709,6 +1709,22 @@ pub(crate) fn compile_entity(
                         .map(|e| compile_expr(e, &scope, enum_defs, functions, diagnostics))
                 };
 
+                // Keep-first dedupe of the keyed-member keys. A duplicate key is
+                // always accompanied by a blocking `E_DUP_MEMBER_KEY` error (emitted
+                // in the member pre-pass above), so a duplicate-keyed template is
+                // never consumed downstream. We still dedupe defensively so that,
+                // even on that error path, no two `MemberKey`s collapse onto the same
+                // key-addressed `ValueCellId` (e.g. two `…vents["intake"]` cells) —
+                // colliding cells would be a latent trap for any future stage that
+                // consumes an error-carrying template.
+                let mut seen_keyed = HashSet::new();
+                let keyed_members: Vec<reify_ir::MemberKey> = sub
+                    .keyed_members
+                    .iter()
+                    .filter(|e| seen_keyed.insert(e.key.as_str()))
+                    .map(|e| reify_ir::MemberKey::new(&e.key))
+                    .collect();
+
                 sub_components.push(SubComponentDecl {
                     name: sub.name.clone(),
                     structure_name: sub.structure_name.clone(),
@@ -1716,11 +1732,7 @@ pub(crate) fn compile_entity(
                     args: compiled_args,
                     type_args: resolved_type_args,
                     is_collection: sub.is_collection,
-                    keyed_members: sub
-                        .keyed_members
-                        .iter()
-                        .map(|e| reify_ir::MemberKey::new(&e.key))
-                        .collect(),
+                    keyed_members,
                     count_cell: None,
                     guard_state,
                     pose,
@@ -4340,6 +4352,27 @@ structure def Manifold {
                 .iter()
                 .map(|d| (d.code, d.message.as_str()))
                 .collect::<Vec<_>>()
+        );
+
+        // Amendment (task 3930 β, robustness): even on the duplicate-key error
+        // path the compiled template must NOT carry two `MemberKey`s that collapse
+        // onto the same key-addressed `ValueCellId`. Lowering keep-first dedupes the
+        // keys, so `vents.keyed_members` holds `"intake"` exactly once.
+        let manifold = module
+            .templates
+            .iter()
+            .find(|t| t.name == "Manifold")
+            .expect("Manifold template should still compile alongside the error");
+        let vents = manifold
+            .sub_components
+            .iter()
+            .find(|s| s.name == "vents")
+            .expect("vents sub-component should be present");
+        assert_eq!(
+            vents.keyed_members,
+            vec![reify_ir::MemberKey::new("intake")],
+            "duplicate keys must be keep-first deduped so no two MemberKeys collide \
+             onto the same key-addressed ValueCellId",
         );
     }
 
