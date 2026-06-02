@@ -4521,4 +4521,80 @@ mod tests {
             "3 args"
         );
     }
+
+    // ── affine_from_transform tests (step-9) ──────────────────────────────────
+
+    /// Assert two 3×3 matrices are elementwise equal within `tol`.
+    fn assert_matrix_approx(actual: [[f64; 3]; 3], expected: [[f64; 3]; 3], tol: f64) {
+        for (r, (arow, erow)) in actual.iter().zip(expected.iter()).enumerate() {
+            for (c, (a, e)) in arow.iter().zip(erow.iter()).enumerate() {
+                assert!(
+                    (a - e).abs() < tol,
+                    "linear[{r}][{c}]: expected {e}, got {a} (tol {tol})",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn affine_from_transform_identity_yields_identity_map() {
+        let t = eval_builtin("transform3_identity", &[]);
+        let (linear, translation) = expect_affine(eval_builtin("affine_from_transform", &[t]));
+        assert_eq!(
+            linear, IDENTITY_3X3,
+            "identity transform must widen to identity linear EXACTLY"
+        );
+        assert_eq!(
+            translation,
+            [0.0, 0.0, 0.0],
+            "identity transform translation must be 0"
+        );
+    }
+
+    #[test]
+    fn affine_from_transform_z90_yields_rotation_matrix() {
+        // 90°-Z quaternion (√2/2, 0, 0, √2/2), translation (5mm, 0, 0).
+        let q = Value::Orientation {
+            w: std::f64::consts::FRAC_1_SQRT_2,
+            x: 0.0,
+            y: 0.0,
+            z: std::f64::consts::FRAC_1_SQRT_2,
+        };
+        let trans = Value::Vector(vec![
+            Value::length(0.005),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        let t = eval_builtin("transform3", &[q, trans]);
+        let (linear, translation) = expect_affine(eval_builtin("affine_from_transform", &[t]));
+        assert_matrix_approx(
+            linear,
+            [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+            1e-12,
+        );
+        assert!((translation[0] - 0.005).abs() < 1e-12, "tx");
+        assert!(translation[1].abs() < 1e-12, "ty");
+        assert!(translation[2].abs() < 1e-12, "tz");
+    }
+
+    #[test]
+    fn affine_from_transform_non_transform_returns_undef() {
+        assert!(
+            eval_builtin("affine_from_transform", &[Value::Real(1.0)]).is_undef(),
+            "non-Transform arg must be Undef"
+        );
+    }
+
+    #[test]
+    fn affine_from_transform_wrong_arity_returns_undef() {
+        assert!(
+            eval_builtin("affine_from_transform", &[]).is_undef(),
+            "0 args"
+        );
+        let t = eval_builtin("transform3_identity", &[]);
+        assert!(
+            eval_builtin("affine_from_transform", &[t.clone(), t]).is_undef(),
+            "2 args"
+        );
+    }
 }
