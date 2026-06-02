@@ -110,11 +110,15 @@ fn toolhead_motor_sizing_peak_force_is_2_5_n() {
         ),
     };
 
-    // A non-zero ramp_profile (from=0 m, to=0.5 m) emits multiple samples —
-    // at minimum the accel, (possibly cruise), and decel phases (≥ 3).
-    assert!(
-        per_sample.len() >= 3,
-        "ramp_profile 0→0.5 m should emit at least 3 samples, got {}",
+    // ramp_profile uses RAMP_PROFILE_SEGMENTS=100 (eval.rs), producing 101
+    // equally-spaced time samples (0..=100 inclusive).  Pin this exactly so a
+    // silent segment-count regression fails loudly rather than passing the
+    // looser peak-force assertion by accident.
+    assert_eq!(
+        per_sample.len(),
+        101,
+        "ramp_profile 0→0.5 m should emit exactly 101 samples \
+         (RAMP_PROFILE_SEGMENTS=100, 0..=100 inclusive), got {}",
         per_sample.len()
     );
 

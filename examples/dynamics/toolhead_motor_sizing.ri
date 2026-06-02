@@ -19,7 +19,7 @@
 //   • `ramp_profile` emits length-1-per-sample values/vels/accels (one DOF).
 //   • `snapshot_for_sample` requires `values.len() == bodies.len()`.
 //   • `slice_generalized` requires total mechanism DOF == vels length.
-// A 3-body X/Y/extruder composite would mismatcha and return `Value::Undef`.
+// A 3-body X/Y/extruder composite would mismatch and return `Value::Undef`.
 // Multi-axis motor sizing requires a richer multi-DOF trajectory builder not
 // yet in the surface; that is deferred to a future task.
 //
