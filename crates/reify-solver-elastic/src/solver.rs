@@ -2342,4 +2342,62 @@ mod tests {
             "identity-K solution u() must equal f bit-exactly"
         );
     }
+
+    /// `CgResult::shared_u()` and `into_shared_u()` both hand back the SAME
+    /// underlying allocation without copying.
+    ///
+    /// Uses the 2×2 SPD fixture (K=[[4,1],[1,3]], f=[1,2]) — same matrix as
+    /// `hand_computed_2x2_spd_within_tolerance`.
+    ///
+    /// Assertions:
+    /// (a) Two `shared_u()` calls produce `Arc` handles that `ptr_eq` each other
+    ///     — they both point at the same allocation.
+    /// (b) `h1.as_slice() == result.u()` — the shared handle's data matches the
+    ///     read accessor.
+    /// (c) `into_shared_u()` (consuming) also returns the SAME underlying
+    ///     allocation as the earlier `shared_u()` handles (zero-copy donation).
+    #[test]
+    fn cg_result_donation_accessors_share_allocation_without_copy() {
+        use std::sync::Arc;
+        let k = SparseRowMat::try_new_from_triplets(
+            2,
+            2,
+            &[
+                Triplet::new(0_usize, 0_usize, 4.0_f64),
+                Triplet::new(0_usize, 1_usize, 1.0_f64),
+                Triplet::new(1_usize, 0_usize, 1.0_f64),
+                Triplet::new(1_usize, 1_usize, 3.0_f64),
+            ],
+        )
+        .unwrap();
+        let f = [1.0_f64, 2.0];
+        let opts = CgSolverOptions {
+            tolerance: 1e-10,
+            max_iter: 100,
+        };
+        let result = solve_cg(&k, &f, opts, SolverMode::Deterministic);
+        assert!(result.converged, "2×2 SPD must converge");
+
+        // (a) Two shared_u() calls must return Arc handles to the SAME allocation.
+        let h1 = result.shared_u();
+        let h2 = result.shared_u();
+        assert!(
+            Arc::ptr_eq(&h1, &h2),
+            "shared_u() must return handles to the same Arc allocation"
+        );
+
+        // (b) Shared handle content matches the read accessor.
+        assert_eq!(
+            h1.as_slice(),
+            result.u(),
+            "shared_u() content must equal u() slice"
+        );
+
+        // (c) into_shared_u() (consuming) also hands back the SAME allocation.
+        let owned = result.into_shared_u();
+        assert!(
+            Arc::ptr_eq(&h1, &owned),
+            "into_shared_u() must return the same underlying Arc (zero-copy donation)"
+        );
+    }
 }
