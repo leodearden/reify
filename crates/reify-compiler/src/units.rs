@@ -839,6 +839,10 @@ pub fn resolve_unit_expr(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Math-linalg construction family (task 4179) — single source of truth in
+    // `crate::math_signatures`, imported here to pin disjointness from the five
+    // geometry families and the dynamics-query family (both directions).
+    use crate::math_signatures::MATH_CONSTRUCTION_NAMES;
 
     // --- Step 21: Verify new geometry function names are recognized ---
 
@@ -1340,6 +1344,11 @@ mod tests {
                 "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
                  DYNAMICS_QUERY_NAMES (dynamics-query family, RBD-β task 3829)"
             );
+            assert!(
+                !MATH_CONSTRUCTION_NAMES.contains(name),
+                "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
+                 MATH_CONSTRUCTION_NAMES (math-linalg construction family, task 4179)"
+            );
         }
     }
 
@@ -1377,6 +1386,57 @@ mod tests {
                 !GEOMETRY_QUERY_NAMES.contains(name),
                 "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
                  GEOMETRY_QUERY_NAMES (geometry-query family)"
+            );
+            assert!(
+                !MATH_CONSTRUCTION_NAMES.contains(name),
+                "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
+                 MATH_CONSTRUCTION_NAMES (math-linalg construction family, task 4179)"
+            );
+        }
+    }
+
+    /// Disjointness invariant for the math-linalg construction family (task
+    /// 4179). Every `MATH_CONSTRUCTION_NAMES` entry (`vec` / `matrix` / `diag`
+    /// / `identity`) must be absent from all five geometry families AND the
+    /// dynamics-query family, so a name can satisfy at most one classification
+    /// predicate in `expr.rs::resolve_function_overload`'s `NoUserFunctions`
+    /// ladder. Forward sibling to `is_math_typed_fn_rejects_other_family_…`
+    /// (the predicate-level reverse direction lives in `math_signatures.rs`);
+    /// the converse asserts in the geometry / dynamics disjointness tests above
+    /// pin the other direction. Because the names are pinned disjoint from
+    /// every other family, the new arm's position in the ladder is unobservable.
+    #[test]
+    fn math_typed_fn_names_are_disjoint_from_other_families() {
+        for name in MATH_CONSTRUCTION_NAMES {
+            assert!(
+                !GEOMETRY_FUNCTION_NAMES.contains(name),
+                "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_FUNCTION_NAMES (constructor family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_HELPER_NAMES.contains(name),
+                "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_HELPER_NAMES (conformance-query family)"
+            );
+            assert!(
+                !GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name),
+                "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_KINEMATIC_QUERY_NAMES (kinematic-query family)"
+            );
+            assert!(
+                !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
+                "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_TOPOLOGY_SELECTOR_NAMES (topology-selector family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_NAMES.contains(name),
+                "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_NAMES (geometry-query family)"
+            );
+            assert!(
+                !DYNAMICS_QUERY_NAMES.contains(name),
+                "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_QUERY_NAMES (dynamics-query family, RBD-β task 3829)"
             );
         }
     }
