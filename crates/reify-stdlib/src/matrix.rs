@@ -985,11 +985,53 @@ mod tests {
 
     // --- N≥4 inverse tests (step-3 RED / step-4 GREEN) ---
 
+    /// Build a non-symmetric, well-conditioned upper-triangular 4×4:
+    ///   [[2,1,0,0],[0,3,1,0],[0,0,4,1],[0,0,0,5]]  det=120, κ≈2.5
+    ///
+    /// Non-symmetry is deliberate: for a symmetric matrix A=A^T the identity
+    /// A·A⁻¹≈I still holds even if the nalgebra extraction loop has i/j swapped
+    /// (because (A⁻¹)^T = (A^T)⁻¹ = A⁻¹).  For a non-symmetric matrix an
+    /// incorrect transpose in the read-back would give A·(A⁻¹)^T ≠ I, so the
+    /// A·A⁻¹≈I assertion actually catches row-major vs column-major layout bugs.
+    fn make_4x4_upper_triangular_dimensionless() -> Value {
+        eval_builtin(
+            "matrix",
+            &[Value::List(vec![
+                Value::List(vec![
+                    Value::Real(2.0),
+                    Value::Real(1.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(3.0),
+                    Value::Real(1.0),
+                    Value::Real(0.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(4.0),
+                    Value::Real(1.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(5.0),
+                ]),
+            ])],
+        )
+    }
+
     /// (a) Happy path: inv(A)·A ≈ I₄ — max residual < 1e-9.
-    /// Uses the tridiagonal 4×4 (κ≈9.47; measured ‖A·A⁻¹−I‖∞ ≈ 2.2e-16).
+    /// Uses the upper-triangular 4×4 (non-symmetric, det=120, κ≈2.5).
+    /// Non-symmetric so a transposed extraction in the nalgebra read-back is
+    /// actually caught by the A·A⁻¹≈I assertion (see make_4x4_upper_triangular_dimensionless).
     #[test]
     fn inverse_4x4_times_original_approx_identity() {
-        let m = make_4x4_tridiagonal_dimensionless();
+        let m = make_4x4_upper_triangular_dimensionless();
         let inv = eval_builtin("inverse", std::slice::from_ref(&m));
 
         // Must not be Undef
