@@ -3564,6 +3564,7 @@ pub(crate) fn compile_expr_guarded(
                 }
             }
         }
+        reify_ast::ExprKind::Undef => CompiledExpr::literal(Value::Undef, Type::Error),
         reify_ast::ExprKind::VariantConstruct { .. } => make_poison_literal(
             diagnostics,
             Diagnostic::error(

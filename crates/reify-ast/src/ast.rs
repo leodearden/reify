@@ -69,6 +69,9 @@ pub enum ExprKind {
     /// Auto keyword: solver-determined parameter value.
     /// `free: false` = bare `auto` (strict), `free: true` = `auto(free)`.
     Auto { free: bool },
+    /// Undef literal: explicit undefined value (task γ, spec §5.12).
+    /// Lowers to `Value::Undef`; absorbs type cascade via `Type::Error`.
+    Undef,
     /// Lambda expression: `|x, y| x + y`
     Lambda {
         params: Vec<LambdaParam>,

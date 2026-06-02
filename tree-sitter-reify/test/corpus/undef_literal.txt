@@ -1,0 +1,86 @@
+================================================================================
+param_declaration default = undef — undef_literal node at default site
+================================================================================
+
+structure S { param t : Length = undef }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier))
+      default: (undef_literal))))
+
+================================================================================
+let_declaration value = thickness * undef — undef_literal at binary right operand
+================================================================================
+
+structure S { let a : Length = thickness * undef }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier))
+      value: (binary_expression
+        left: (identifier)
+        right: (undef_literal)))))
+
+================================================================================
+let_declaration value = undef — bare undef_literal at let value site
+================================================================================
+
+structure S { let a : Length = undef }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier))
+      value: (undef_literal))))
+
+================================================================================
+undef-prefix identifiers still lex as identifier — no ERROR node (tokenization boundary guard)
+================================================================================
+
+structure S { let undefined : Length = undefined }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier))
+      value: (identifier))))
+
+================================================================================
+undef in param name position parses as identifier — not globally reserved (NAME-position guard)
+================================================================================
+
+structure S { param undef : Length = 1 }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier))
+      default: (number_literal))))
