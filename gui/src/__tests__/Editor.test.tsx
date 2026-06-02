@@ -1392,3 +1392,42 @@ describe('Editor Mod-s exhaustiveness for SaveBlockedReason', () => {
     }
   });
 });
+
+describe('Editor F12 go-to-definition', () => {
+  it('F12 on cursor position dispatches cursor to same-file definition offset', async () => {
+    const store = setupStore([file1]);
+    store.setActiveFile(file1.path);
+
+    // file1: 'structure Bracket {\n  param width = 80mm\n}'
+    // Same-file def at LSP line 1 (0-based = CM line 2), char 8 → CM offset 28
+    // Line 2 starts at offset 20 (line 1 = 19 chars + '\n'); 20 + 8 = 28
+    const sameFileDef = {
+      uri: 'file:///project/src/bracket.ri',
+      range: { start: { line: 1, character: 8 }, end: { line: 1, character: 13 } },
+    };
+    mockInvoke.mockImplementation(async (_cmd: string, args: any) => {
+      const method = (args as any)?.method as string;
+      if (method === 'initialize') return JSON.stringify({ capabilities: {} });
+      if (method === 'textDocument/definition') return JSON.stringify(sameFileDef);
+      return undefined as any;
+    });
+
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Place cursor at origin offset 5 (within "structure")
+    view.dispatch({ selection: { anchor: 5 } });
+    expect(view.state.selection.main.head).toBe(5);
+
+    // Dispatch F12 keydown on contentDOM
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'F12', code: 'F12', bubbles: true }),
+    );
+
+    // Wait for async goto-definition to resolve and cursor to land at target offset 28
+    await vi.waitFor(() => {
+      expect(view.state.selection.main.head).toBe(28);
+    });
+  });
+});
