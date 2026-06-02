@@ -267,6 +267,19 @@ pub fn inverse_dynamics_open_chain(links: &[RneaLink], gravity: [f64; 3]) -> Vec
         .map(|(i, link)| {
             let mut tau_i: Vec<f64> = link.subspace.iter().map(|s| sv_dot(s, &f[i])).collect();
             if let Some(c) = &link.compliance {
+                // Guard: spring/damping is 1-DOF only in v0.3 (PRD §11.2).
+                // An always-on assert (not debug_assert!) matches the module's
+                // existing topological-order convention (rnea.rs:166) — a panic
+                // is better than silently-wrong torques in release builds.
+                if c.spring_rate.is_some() || c.damping.is_some() {
+                    assert_eq!(
+                        link.subspace.len(),
+                        1,
+                        "spring/damping compliance is 1-DOF only in v0.3 \
+                         (PRD §11.2); joint {i} has {} DOF",
+                        link.subspace.len()
+                    );
+                }
                 if let Some(k) = c.spring_rate {
                     tau_i[0] += -k * (c.position - c.neutral);
                 }
