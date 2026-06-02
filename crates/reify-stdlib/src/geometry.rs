@@ -4043,4 +4043,114 @@ mod tests {
             "point/origin dimension mismatch should be Undef"
         );
     }
+
+    // ── affine_identity / affine_scale tests (step-1) ─────────────────────────
+
+    /// Identity 3×3 matrix used as the expected `linear` part for several
+    /// affine-constructor tests.
+    const IDENTITY_3X3: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+    /// Extract `(linear, translation)` from a `Value::AffineMap`, or panic.
+    fn expect_affine(v: Value) -> ([[f64; 3]; 3], [f64; 3]) {
+        match v {
+            Value::AffineMap {
+                linear,
+                translation,
+            } => (linear, translation),
+            other => panic!("expected Value::AffineMap, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn affine_identity_no_args_returns_identity_map() {
+        let (linear, translation) = expect_affine(eval_builtin("affine_identity", &[]));
+        assert_eq!(linear, IDENTITY_3X3, "affine_identity linear must be I");
+        assert_eq!(
+            translation,
+            [0.0, 0.0, 0.0],
+            "affine_identity translation must be 0"
+        );
+    }
+
+    #[test]
+    fn affine_identity_with_any_args_returns_undef() {
+        assert!(eval_builtin("affine_identity", &[Value::Real(1.0)]).is_undef());
+        assert!(eval_builtin("affine_identity", &[Value::Real(1.0), Value::Real(2.0)]).is_undef());
+    }
+
+    #[test]
+    fn affine_scale_diagonal_factors() {
+        let args = [Value::Real(2.0), Value::Real(3.0), Value::Real(4.0)];
+        let (linear, translation) = expect_affine(eval_builtin("affine_scale", &args));
+        assert_eq!(
+            linear,
+            [[2.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 4.0]],
+            "affine_scale must place factors on the diagonal"
+        );
+        assert_eq!(
+            translation,
+            [0.0, 0.0, 0.0],
+            "affine_scale translation must be 0"
+        );
+    }
+
+    #[test]
+    fn affine_scale_negative_factor_accepted() {
+        // A negative factor is a valid orientation-reversing reflection (det<0).
+        let args = [Value::Real(-1.0), Value::Real(1.0), Value::Real(1.0)];
+        let (linear, _) = expect_affine(eval_builtin("affine_scale", &args));
+        assert_eq!(linear[0][0], -1.0, "negative scale factor must be accepted");
+    }
+
+    #[test]
+    fn affine_scale_wrong_arity_returns_undef() {
+        assert!(eval_builtin("affine_scale", &[]).is_undef(), "0 args");
+        assert!(
+            eval_builtin("affine_scale", &[Value::Real(2.0)]).is_undef(),
+            "1 arg"
+        );
+        assert!(
+            eval_builtin("affine_scale", &[Value::Real(2.0), Value::Real(3.0)]).is_undef(),
+            "2 args"
+        );
+        assert!(
+            eval_builtin(
+                "affine_scale",
+                &[
+                    Value::Real(2.0),
+                    Value::Real(3.0),
+                    Value::Real(4.0),
+                    Value::Real(5.0)
+                ]
+            )
+            .is_undef(),
+            "4 args"
+        );
+    }
+
+    #[test]
+    fn affine_scale_zero_factor_returns_undef() {
+        // A zero factor is degenerate (det=0, non-invertible) and must be rejected.
+        assert!(
+            eval_builtin(
+                "affine_scale",
+                &[Value::Real(0.0), Value::Real(1.0), Value::Real(1.0)]
+            )
+            .is_undef(),
+            "zero scale factor must be Undef"
+        );
+    }
+
+    #[test]
+    fn affine_scale_dimensioned_factor_returns_undef() {
+        // A dimensioned factor violates the G6 dimensionless-linear-part contract.
+        assert!(
+            eval_builtin(
+                "affine_scale",
+                &[Value::length(2.0), Value::Real(1.0), Value::Real(1.0)]
+            )
+            .is_undef(),
+            "dimensioned scale factor must be Undef"
+        );
+    }
 }
