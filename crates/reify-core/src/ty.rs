@@ -1694,4 +1694,63 @@ mod tests {
         assert_ne!(Type::Selector(SelectorKind::Face), Type::Geometry);
         assert_ne!(Type::Selector(SelectorKind::Body), Type::Real);
     }
+
+    // ── Keyed tests (step-1 RED / task 3930 β) ───────────────────────────────
+    // `Type::Keyed(Box<Type>)` is the keyed sub-collection kind — members
+    // addressed by an author-assigned String key. Distinct from `Map` (value
+    // collection) and `List` (positional). See PRD keyed-collection-identity.md.
+
+    #[test]
+    fn type_keyed_display() {
+        // (a) Display: Keyed<{inner}>
+        assert_eq!(
+            format!(
+                "{}",
+                Type::Keyed(Box::new(Type::StructureRef("Vent".into())))
+            ),
+            "Keyed<Vent>"
+        );
+        assert_eq!(format!("{}", Type::Keyed(Box::new(Type::Int))), "Keyed<Int>");
+    }
+
+    #[test]
+    fn type_keyed_distinct_from_map_list_set() {
+        // (b) Keyed<Int> is a distinct kind from List<Int>, Map<String,Int>, Set<Int>
+        let keyed_int = Type::Keyed(Box::new(Type::Int));
+        assert_ne!(keyed_int, Type::List(Box::new(Type::Int)));
+        assert_ne!(
+            keyed_int,
+            Type::Map(Box::new(Type::String), Box::new(Type::Int))
+        );
+        assert_ne!(keyed_int, Type::Set(Box::new(Type::Int)));
+    }
+
+    #[test]
+    fn type_keyed_fall_through_predicates() {
+        // (c) Falls through is_numeric (false), is_error (false), as_name (None)
+        assert!(!Type::Keyed(Box::new(Type::Int)).is_numeric());
+        assert!(!Type::Keyed(Box::new(Type::Error)).is_error());
+        assert_eq!(Type::Keyed(Box::new(Type::Int)).as_name(), None);
+    }
+
+    #[test]
+    fn type_keyed_eq_and_hash() {
+        use std::collections::HashMap;
+
+        let k_int_a = Type::Keyed(Box::new(Type::Int));
+        let k_int_b = Type::Keyed(Box::new(Type::Int));
+        let k_real = Type::Keyed(Box::new(Type::Real));
+
+        // Same inner type equal; different inner not equal
+        assert_eq!(k_int_a, k_int_b);
+        assert_ne!(k_int_a, k_real);
+        // Keyed(Int) != Int
+        assert_ne!(k_int_a, Type::Int);
+
+        // Hash consistency via HashMap insert+lookup (mirrors type_list / point tests)
+        let mut map: HashMap<Type, &str> = HashMap::new();
+        map.insert(k_int_a.clone(), "k_int");
+        assert_eq!(map.get(&k_int_b), Some(&"k_int"));
+        assert_eq!(map.get(&k_real), None);
+    }
 }
