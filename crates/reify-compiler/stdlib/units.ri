@@ -193,3 +193,9 @@ pub fn VACUUM_PERMEABILITY() -> Permeability {
 pub fn MOLAR_GAS_CONSTANT() -> MolarGasConstant {
     8.314462618 * 1kg * 1m * 1m / 1s / 1s / 1mol / 1K
 }
+
+/// Elementary charge (e), 1.602176634×10⁻¹⁹ C — exact by the 2019 SI
+/// redefinition (26th CGPM, Resolution 1). This equals the eV factor in
+/// si_units.rs. Uses the pre-existing `Charge` named dimension (no new alias).
+/// Dimension: s·A. Requires dependency α bare `1A` arm in unit_to_scalar.
+pub fn ELEMENTARY_CHARGE() -> Charge { 1.602176634e-19 * 1A * 1s }
