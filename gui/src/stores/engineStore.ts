@@ -290,6 +290,11 @@ export function createEngineStore(options?: EngineStoreOptions) {
     }
     collectPaths(tree);
 
+    // Guard: if no live paths collected, the tree is not loaded yet.
+    // Pruning here would wipe the entire scene and reproduce the
+    // empty-viewport failure mode — return without touching any entities.
+    if (livePaths.size === 0) return;
+
     // Prune orphan meshes whose owner (path before the first '#') is not live.
     for (const key of Object.keys(state.meshes)) {
       const owner = key.includes('#') ? key.slice(0, key.indexOf('#')) : key;
