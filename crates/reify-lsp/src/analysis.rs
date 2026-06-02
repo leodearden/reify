@@ -380,6 +380,24 @@ pub fn compute_document_symbols(source: &str, uri: &Url) -> Vec<DocumentSymbol> 
                     children_or_none(members_to_symbols(source, &s.members)),
                 ));
             }
+            Declaration::Occurrence(o) => {
+                symbols.push(make_symbol(
+                    &o.name,
+                    SymbolKind::CLASS,
+                    span_to_range(source, o.span),
+                    name_selection_range(source, o.span, &o.name),
+                    children_or_none(members_to_symbols(source, &o.members)),
+                ));
+            }
+            Declaration::Trait(t) => {
+                symbols.push(make_symbol(
+                    &t.name,
+                    SymbolKind::INTERFACE,
+                    span_to_range(source, t.span),
+                    name_selection_range(source, t.span, &t.name),
+                    children_or_none(members_to_symbols(source, &t.members)),
+                ));
+            }
             // All other top-level declarations are not navigable symbols.
             _ => {}
         }
