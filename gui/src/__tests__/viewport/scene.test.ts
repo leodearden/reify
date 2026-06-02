@@ -28,7 +28,17 @@ function makeMockVector3() {
   return v;
 }
 
-vi.mock('three', () => {
+vi.mock('three', async () => {
+  // Axis-label sprite mocks are shared with axisLabels.test.ts via threeAxisMocks.ts
+  // to prevent silent drift between the two suites.
+  const {
+    MockGroup,
+    MockSprite,
+    MockSpriteMaterial,
+    MockCanvasTexture,
+    MockColor: MockColorShared,
+  } = await import('./threeAxisMocks');
+
   class MockScene {
     children = mockSceneChildren;
     add = mockSceneAdd;
@@ -95,10 +105,6 @@ vi.mock('three', () => {
     constructor(public size?: number) {}
   }
 
-  class MockColor {
-    constructor(public color?: any) {}
-  }
-
   class MockVector3 {
     x: number;
     y: number;
@@ -119,8 +125,12 @@ vi.mock('three', () => {
     DirectionalLight: MockDirectionalLight,
     GridHelper: MockGridHelper,
     AxesHelper: MockAxesHelper,
-    Color: MockColor,
+    Color: MockColorShared,
     Vector3: MockVector3,
+    Group: MockGroup,
+    Sprite: MockSprite,
+    SpriteMaterial: MockSpriteMaterial,
+    CanvasTexture: MockCanvasTexture,
   };
 });
 
@@ -344,5 +354,30 @@ describe('createScene', () => {
     const gr = result.grid as any;
     expect(gr.material.depthTest).toBe(true);
     expect(gr.material.depthWrite).toBe(true);
+  });
+
+  it('returns axisLabels property that is a Group', () => {
+    const result = setup();
+    expect(result).toHaveProperty('axisLabels');
+    expect((result as any).axisLabels.type).toBe('Group');
+  });
+
+  it('axisLabels group is added to the scene', () => {
+    const result = setup();
+    const axisLabels = (result as any).axisLabels;
+    const addedObjects = mockSceneAdd.mock.calls.map((c: any) => c[0]);
+    const found = addedObjects.find((obj: any) => obj === axisLabels);
+    expect(found).toBeDefined();
+  });
+
+  it('axisLabels group has 3 children (X, Y, Z sprites)', () => {
+    const result = setup();
+    const axisLabels = (result as any).axisLabels;
+    expect(axisLabels.children).toHaveLength(3);
+  });
+
+  it('exposes disposeAxisLabels function for GPU resource cleanup on unmount', () => {
+    const result = setup();
+    expect(typeof result.disposeAxisLabels).toBe('function');
   });
 });

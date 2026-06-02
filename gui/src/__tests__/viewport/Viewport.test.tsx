@@ -63,6 +63,8 @@ const mockMeshGetDeformedOverlays = vi.fn(() => new Map());
 
 const mockGrid = { type: 'GridHelper', visible: true };
 const mockAxes = { type: 'AxesHelper', visible: true };
+const mockAxisLabels = { type: 'Group', visible: true };
+const mockDisposeAxisLabels = vi.fn();
 
 // Camera stub with position/up set-spies and mutable zoom — shared across tests
 const mockCameraPositionSet = vi.fn();
@@ -90,6 +92,8 @@ vi.mock('../../viewport/scene', () => ({
     adjustClipping: vi.fn(),
     grid: mockGrid,
     axes: mockAxes,
+    axisLabels: mockAxisLabels,
+    disposeAxisLabels: mockDisposeAxisLabels,
   })),
 }));
 
@@ -172,6 +176,7 @@ beforeEach(() => {
   controlsListeners = {};
   mockGrid.visible = true;
   mockAxes.visible = true;
+  mockAxisLabels.visible = true;
   // Reset camera mutable state
   mockCamera.zoom = 1;
   mockControlsTarget.x = 0;
@@ -455,6 +460,21 @@ describe('Viewport', () => {
 
     expect(mockGrid.visible).toBe(true);
     expect(mockAxes.visible).toBe(true);
+  });
+
+  it('clicking toggle-grid button toggles axisLabels visible in lockstep with grid and axes', () => {
+    render(() => <Viewport meshes={{}} viewportId="test-vp" />);
+    const btn = screen.getByTestId('toggle-grid');
+
+    expect(mockAxisLabels.visible).toBe(true);
+
+    fireEvent.click(btn);
+
+    expect(mockAxisLabels.visible).toBe(false);
+
+    fireEvent.click(btn);
+
+    expect(mockAxisLabels.visible).toBe(true);
   });
 
   it('tooltip style top/left update on mousemove within container', () => {
