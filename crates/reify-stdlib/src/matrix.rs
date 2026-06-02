@@ -968,4 +968,97 @@ mod tests {
             other => panic!("expected Scalar{{si≈5.0, dim=LENGTH^4}}, got {:?}", other),
         }
     }
+
+    // --- N≥4 inverse tests (step-3 RED / step-4 GREEN) ---
+
+    /// (a) Happy path: inv(A)·A ≈ I₄ — max residual < 1e-9.
+    /// Uses the tridiagonal 4×4 (κ≈9.47; measured ‖A·A⁻¹−I‖∞ ≈ 2.2e-16).
+    #[test]
+    fn inverse_4x4_times_original_approx_identity() {
+        let m = make_4x4_tridiagonal_dimensionless();
+        let inv = eval_builtin("inverse", &[m.clone()]);
+
+        // Must not be Undef
+        assert!(
+            !inv.is_undef(),
+            "inverse of well-conditioned 4×4 should not be Undef, got {:?}",
+            inv
+        );
+
+        // Extract flat data for both A and A⁻¹
+        let (n_a, _, a_data, _) = matrix_components_f64(&m).expect("A must parse");
+        let (n_inv, _, inv_data, _) = matrix_components_f64(&inv).expect("inv must parse");
+        assert_eq!(n_a, 4);
+        assert_eq!(n_inv, 4);
+
+        // Compute A · A⁻¹ and assert ‖ · − I‖∞ < 1e-9
+        for r in 0..4 {
+            for c in 0..4 {
+                let product: f64 = (0..4).map(|k| a_data[r * 4 + k] * inv_data[k * 4 + c]).sum();
+                let expected = if r == c { 1.0 } else { 0.0 };
+                assert!(
+                    (product - expected).abs() < 1e-9,
+                    "A·A⁻¹[{r}][{c}] = {product}, expected {expected}"
+                );
+            }
+        }
+    }
+
+    /// (b) Singular 4×4 (zero last row) → inverse returns Undef.
+    #[test]
+    fn inverse_4x4_singular_returns_undef() {
+        let m = eval_builtin(
+            "matrix",
+            &[Value::List(vec![
+                Value::List(vec![
+                    Value::Real(1.0),
+                    Value::Real(2.0),
+                    Value::Real(3.0),
+                    Value::Real(4.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(5.0),
+                    Value::Real(6.0),
+                    Value::Real(7.0),
+                    Value::Real(8.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(9.0),
+                    Value::Real(10.0),
+                    Value::Real(11.0),
+                    Value::Real(12.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]),
+            ])],
+        );
+        assert!(
+            eval_builtin("inverse", &[m]).is_undef(),
+            "inverse of singular 4×4 should be Undef"
+        );
+    }
+
+    /// (c) Dimensioned 4×4 (LENGTH cells) → inverse dim = DIMENSIONLESS / LENGTH.
+    #[test]
+    fn inverse_4x4_dimensioned_length_cells() {
+        let m = make_4x4_tridiagonal_length();
+        let inv = eval_builtin("inverse", &[m]);
+
+        assert!(
+            !inv.is_undef(),
+            "inverse of dimensioned 4×4 should not be Undef"
+        );
+
+        let (_, _, _, inv_dim) = matrix_components_f64(&inv).expect("inv must parse");
+        let expected_dim = DimensionVector::DIMENSIONLESS.div(&DimensionVector::LENGTH);
+        assert_eq!(
+            inv_dim, expected_dim,
+            "inverse dim expected DIMENSIONLESS/LENGTH, got {:?}",
+            inv_dim
+        );
+    }
 }
