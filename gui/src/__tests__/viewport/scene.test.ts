@@ -329,6 +329,9 @@ describe('createScene', () => {
     const result = setup();
     expect(result.axes.renderOrder).toBe(1);
     expect(result.axes.renderOrder).toBeGreaterThan(result.grid.renderOrder);
+    // Pin the grid's own renderOrder at the default so a regression that also
+    // mutated the grid would be caught (the fix relies on the grid staying at 0).
+    expect(result.grid.renderOrder).toBe(0);
   });
 
   it('axes ignore the depth buffer so coplanar grid lines never z-fight over them', () => {
@@ -336,5 +339,10 @@ describe('createScene', () => {
     const ax = result.axes as any;
     expect(ax.material.depthTest).toBe(false);
     expect(ax.material.depthWrite).toBe(false);
+    // Pin the grid's depth flags at defaults — the fix depends on the grid keeping
+    // normal depthTest/depthWrite so real 3D meshes still occlude it correctly.
+    const gr = result.grid as any;
+    expect(gr.material.depthTest).toBe(true);
+    expect(gr.material.depthWrite).toBe(true);
   });
 });
