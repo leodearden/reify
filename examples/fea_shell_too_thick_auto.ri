@@ -1,0 +1,64 @@
+// Shell-route auto-fallback fixture: thick body with Auto (`ElasticOptions()`).
+//
+// PRD reference: docs/prds/v0_4/shell-extract-engine-bridge.md task ε (§9 Phase 4).
+//
+// This fixture demonstrates the `W_SHELL_TOO_THICK` auto-fallback path (PRD §7 row 2):
+// a body whose thickness/extent ratio EXCEEDS `shell_threshold` (0.2) is solved with
+// the default `ElasticOptions()` (`shell_force` defaults to `Auto`).  The trampoline
+// detects the thick body, emits a `Severity::Warning` diagnostic with
+// `DiagnosticCode::ShellTooThick`, and falls back to the tet/solid path.  The solve
+// succeeds with `shell_channels: None` (tet path, no ShellStress).
+//
+// Geometry:
+//   length = 50 mm,  width = 20 mm,  height = 20 mm
+//   height / min(length, width) = 20 / 20 = 1.0  ≥  shell_threshold 0.2
+//   → too thick for shell; `classify_shell` routes Tet under Auto.
+//
+// Expected observable signals (integration test
+// `crates/reify-eval/tests/shell_too_thick_at_auto_falls_back.rs`):
+//   - `eval_result.diagnostics` contains a `Severity::Warning` diagnostic
+//     with `code == Some(DiagnosticCode::ShellTooThick)`.
+//   - No `Severity::Error` diagnostics (the solve succeeds via tet fallback).
+//   - `result.shell_channels` is `Value::Undef` (tet path, no ShellStress).
+//   - `result.stress` is a populated (non-Undef) `Value::Field`.
+//
+// Opt-out of the warning: use `ElasticOptions(shell_force: ShellForce.Off)`
+// (@solid) — the `@solid` route is silent regardless of body thickness.
+
+structure FeaShellTooThickAuto {
+    // Geometry: 50 mm × 20 mm × 20 mm chunky block.
+    // height/min(length,width) = 20/20 = 1.0 ≥ shell_threshold 0.2 → too thick.
+    param length : Length = 50mm
+    param width  : Length = 20mm
+    param height : Length = 20mm
+
+    // Material: AISI 1045 hot-rolled medium-carbon steel (E = 205 GPa, ν = 0.29).
+    let material = Steel_AISI_1045()
+
+    // Loads: 10 N point load applied at the block tip.
+    let tip_load = PointLoad(point: "tip", force: 10.0)
+
+    // Supports: fully clamped (fixed) at the block root.
+    let mount = FixedSupport(target: "root")
+
+    // Bundle loads + supports via LoadCase so that member-access .loads / .supports
+    // has compile-time type `List<Real>` (matching the fn param type).
+    let lc = LoadCase(name: "thick_block_auto", loads: [tip_load], supports: [mount])
+
+    // Wrap material in ConstitutiveLawInput so that member-access .law has
+    // compile-time type ConstitutiveLaw (matching the fn param type, task δ/3780).
+    let ci = ConstitutiveLawInput(law: material)
+
+    // FEA solve: bare `ElasticOptions()` — `shell_force` defaults to `Auto`.
+    // The trampoline detects height/min(L,W) = 1.0 ≥ 0.2 (too thick), pushes a
+    // `Warning` with `DiagnosticCode::ShellTooThick` into route_diagnostics, and
+    // falls through to the tet/solid path.  The solve succeeds; `shell_channels`
+    // stays `Value::Undef` (no ShellStress on the tet route).
+    let result = solve_elastic_static(
+        ci.law, length, width, height, lc.loads, lc.supports, ElasticOptions()
+    )
+
+    // Geometry realization: box for GUI visualization (deferred GHR-β, no
+    // kernel call at eval time).
+    let body = box(length, width, height)
+}

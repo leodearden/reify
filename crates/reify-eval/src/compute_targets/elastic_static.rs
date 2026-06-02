@@ -116,7 +116,7 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use reify_core::{Diagnostic, DimensionVector};
+use reify_core::{Diagnostic, DiagnosticCode, DimensionVector};
 use reify_ir::{
     FieldSourceKind, InterpolationKind, OpaqueState, PersistentMap, SampledField, SampledGridKind,
     StructureInstanceData, StructureTypeId, Value,
@@ -140,7 +140,8 @@ use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 // (task 3594/δ). `solve_shell_static` is referenced via its full path at the
 // call site to keep the shell branch visually self-contained.
 use super::shell_solve::{
-    FailurePolicy, ShellForce, ShellRoute, classify_shell, resolve_extraction_failure,
+    FailurePolicy, ShellForce, ShellRoute, classify_shell, is_too_thick_for_shell,
+    resolve_extraction_failure,
 };
 
 // ── MaterialModel ────────────────────────────────────────────────────────────
@@ -301,6 +302,68 @@ pub fn solve_elastic_static_trampoline(
             }
             FailurePolicy::TetFallbackWithWarning => {
                 route_diagnostics.push(Diagnostic::warning(msg));
+            }
+        }
+    }
+
+    // ── Too-thick dispatch-site policy (task ε #3837, PRD §7 rows 1–2) ─────────
+    //
+    // Gate placed AFTER `classify_shell` and BEFORE the shell-kernel branch.
+    // Mirrors the non-isotropic-material policy block above (same `resolve_
+    // extraction_failure` dispatch, same `route_diagnostics` vehicle).
+    //
+    // `is_too_thick_for_shell` shares `classify_shell`'s exact metric so the
+    // route (Shell/Tet) and the too-thick flag can never contradict each other:
+    //   - `On` + thin-enough  → Shell  + not-too-thick → shell solve runs.
+    //   - `On` + too-thick    → Shell  + too-thick     → Hard Error (abort).
+    //   - `Auto` + too-thick  → Tet    + too-thick     → Warning + tet fallback
+    //     (step-8; classify_shell already routed Tet for this body, so the
+    //      shell branch below is skipped even without an early return here).
+    //   - `Off`               → Tet    (regardless of thickness; silent).
+    // `is_too_thick_for_shell` returns `Some(ratio)` when too thick so the
+    // decision and the message value come from one source — no local
+    // re-derivation of `in_plane` / ratio needed (esc-3837 suggestion 4).
+    if let Some(ratio) = is_too_thick_for_shell(length, width, height, shell_threshold) {
+        let policy = resolve_extraction_failure(shell_force);
+        match policy {
+            FailurePolicy::HardError => {
+                // ShellForce::On (@shell): hard-error — no tet fallback.
+                // §7 message names ShellForce.Off / @solid as the opt-out.
+                return ComputeOutcome::Failed {
+                    diagnostics: vec![
+                        Diagnostic::error(format!(
+                            "body thickness/extent ratio {ratio:.2} ≥ shell_threshold {shell_threshold:.2}: \
+                             body is too thick for shell solve (ratio must be < {shell_threshold:.2}). \
+                             Use ElasticOptions(shell_force: ShellForce.Off) / @solid to suppress this error."
+                        ))
+                        .with_code(DiagnosticCode::ShellTooThick),
+                    ],
+                };
+            }
+            FailurePolicy::TetFallbackWithWarning => {
+                // `ShellForce::Auto`: warn and fall through to the tet path.
+                // `classify_shell` already routed Tet for Auto+too-thick (ratio ≥
+                // threshold), so the shell branch below is skipped and
+                // shell_channels stays Undef→None.  The warning surfaces via the
+                // existing `route_diagnostics` vehicle.
+                //
+                // `ShellForce::Off` (@solid): SILENT — the §7 message names
+                // `ShellForce.Off` / @solid as the explicit opt-out, so a body
+                // solved with @solid never receives a ShellTooThick warning
+                // regardless of its thickness.
+                if shell_force == ShellForce::Auto {
+                    route_diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "body thickness/extent ratio {ratio:.2} ≥ shell_threshold \
+                             {shell_threshold:.2}: body is too thick for shell solve \
+                             (ratio must be < {shell_threshold:.2}); falling back to the \
+                             tet/solid path. Use ElasticOptions(shell_force: ShellForce.Off) \
+                             / @solid to suppress this warning."
+                        ))
+                        .with_code(DiagnosticCode::ShellTooThick),
+                    );
+                }
+                // ShellForce::Off: no diagnostic (silent opt-out).
             }
         }
     }

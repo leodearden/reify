@@ -31,9 +31,10 @@ use reify_ir::{
     StructureTypeId, TopologyAttribute, TopologyAttributeTable, Value,
 };
 use reify_shell_extract::{
-    MedialOptions, MesherOptions, MidSurfaceOptions, PruneOptions, SegmentationError,
-    SegmentationOptions, SingleBodyMask, compute_medial_mask, extract_mid_surface,
-    mesh_mid_surface, populate_mid_surface_attributes, prune_branches, segment_regions,
+    GridValidationError, MedialError, MedialOptions, MesherError, MesherOptions, MidSurfaceError,
+    MidSurfaceOptions, PruneOptions, SegmentationError, SegmentationOptions, SingleBodyMask,
+    compute_medial_mask, extract_mid_surface, mesh_mid_surface, populate_mid_surface_attributes,
+    prune_branches, segment_regions,
 };
 
 use crate::engine_compute::{ComputeFn, ComputeOutcome, RealizationReadHandle};
@@ -378,6 +379,20 @@ pub fn shell_extract_compute_fn(
     }
     let medial_mask = match compute_medial_mask(sdf, &medial_opts) {
         Ok(m) => m,
+        // PRD §7 row 1 — E_SHELL_NO_VOXEL_GRID: empty axis grid in medial-mask
+        // phase. Maps the GridValidationError::EmptyAxisGrid variant with the
+        // §7 canonical message template. Other MedialError variants fall through
+        // to the generic coded-less arm.
+        Err(MedialError::GridValidation(GridValidationError::EmptyAxisGrid { axis })) => {
+            return ComputeOutcome::Failed {
+                diagnostics: vec![Diagnostic::error(format!(
+                    "shell-extract::extract: voxel grid is empty on axis {axis}; \
+                     cannot compute medial mask. Verify the body geometry produces \
+                     a valid voxel grid."
+                ))
+                .with_code(reify_core::DiagnosticCode::ShellNoVoxelGrid)],
+            };
+        }
         Err(e) => {
             return ComputeOutcome::Failed {
                 diagnostics: vec![Diagnostic::error(format!(
@@ -393,6 +408,31 @@ pub fn shell_extract_compute_fn(
     }
     let raw_mesh = match extract_mid_surface(sdf, &medial_mask, &mid_surf_opts) {
         Ok(m) => m,
+        // PRD §7 row 1 — E_SHELL_NO_VOXEL_GRID: empty axis grid in mid-surface
+        // phase (same root cause as medial-mask EmptyAxisGrid).
+        Err(MidSurfaceError::GridValidation(GridValidationError::EmptyAxisGrid { axis })) => {
+            return ComputeOutcome::Failed {
+                diagnostics: vec![Diagnostic::error(format!(
+                    "shell-extract::extract: voxel grid is empty on axis {axis}; \
+                     cannot extract mid-surface. Verify the body geometry produces \
+                     a valid voxel grid."
+                ))
+                .with_code(reify_core::DiagnosticCode::ShellNoVoxelGrid)],
+            };
+        }
+        // PRD §7 row 2 — E_SHELL_MEDIAL_MASK_OOB: a medial-mask voxel lies
+        // outside the SDF grid extent.
+        Err(MidSurfaceError::MaskVoxelOutOfBounds { voxel, grid_extent }) => {
+            return ComputeOutcome::Failed {
+                diagnostics: vec![Diagnostic::error(format!(
+                    "shell-extract::extract: medial-mask voxel [{}, {}, {}] is \
+                     outside the SDF grid extent [{}, {}, {}].",
+                    voxel[0], voxel[1], voxel[2],
+                    grid_extent[0], grid_extent[1], grid_extent[2],
+                ))
+                .with_code(reify_core::DiagnosticCode::ShellMedialMaskOob)],
+            };
+        }
         Err(e) => {
             return ComputeOutcome::Failed {
                 diagnostics: vec![Diagnostic::error(format!(
@@ -408,11 +448,16 @@ pub fn shell_extract_compute_fn(
     }
     let pruned_mesh = match prune_branches(&raw_mesh, &prune_opts) {
         Ok(pr) => pr.mesh,
+        // PRD §7 row 4 — E_SHELL_PRUNE_FAILED: any branch-pruning failure
+        // (invalid ratio, invalid max-iterations, invalid alignment tolerance)
+        // maps to ShellPruneFailed. All PruneError variants indicate a
+        // configuration or geometry constraint violation.
         Err(e) => {
             return ComputeOutcome::Failed {
                 diagnostics: vec![Diagnostic::error(format!(
-                    "shell-extract::extract: prune phase: {e}"
-                ))],
+                    "shell-extract::extract: branch-pruning failed: {e}"
+                ))
+                .with_code(reify_core::DiagnosticCode::ShellPruneFailed)],
             };
         }
     };
@@ -423,6 +468,21 @@ pub fn shell_extract_compute_fn(
     }
     let meshed = match mesh_mid_surface(&pruned_mesh, &mesher_opts) {
         Ok(m) => m.mesh,
+        // PRD §7 row 5 — E_SHELL_MESH_QUALITY: quality gate fails after all
+        // remesh iterations. Maps MesherError::QualityBelowThreshold with the
+        // §7 canonical message template. Other MesherError variants (invalid
+        // parameters) fall through to the generic coded-less arm.
+        Err(MesherError::QualityBelowThreshold { metrics, .. }) => {
+            return ComputeOutcome::Failed {
+                diagnostics: vec![Diagnostic::error(format!(
+                    "shell-extract::extract: mid-surface mesh quality is below threshold \
+                     (worst aspect ratio: {:.4}, worst min angle: {:.2}°). \
+                     The shell geometry may be too complex or degenerate for meshing.",
+                    metrics.min_aspect_ratio, metrics.min_angle_degrees,
+                ))
+                .with_code(reify_core::DiagnosticCode::ShellMeshQuality)],
+            };
+        }
         Err(e) => {
             return ComputeOutcome::Failed {
                 diagnostics: vec![Diagnostic::error(format!(

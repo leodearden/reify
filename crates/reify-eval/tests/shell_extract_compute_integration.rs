@@ -446,3 +446,115 @@ fn shell_extract_double_registration_panics_naming_target() {
     // Second registration — must panic with a message containing the target name.
     register_shell_extract_compute_fns(&mut engine);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Step-9 test (empty-axis-grid → E_SHELL_NO_VOXEL_GRID)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Coverage note (esc-3837 reviewer suggestion 2)
+// ──────────────────────────────────────────────
+// Four of the seven §7 error-code arms are tested by integration tests in this
+// file or the e2e fixture tests:
+//
+//   ShellBadThreshold   — step-5 test above (invalid threshold = 0.0)
+//   ShellNoVoxelGrid    — step-9 test below (empty axis grid → Phase 1 fails)
+//   ShellTooThick       — shell_too_thick_at_shell_annotation_errors.rs (e2e)
+//                         and shell_too_thick_at_auto_falls_back.rs (e2e)
+//
+// Three arms are intentionally NOT driven by integration tests because no clean
+// synthetic SDF input reliably reaches those producer states in the current
+// pipeline (as documented in the task ε design decisions, §"All six §7 codes"):
+//
+//   ShellMedialMaskOob  — requires `medial_mask` to contain indices outside the
+//     (MidSurface::       SDF grid bounds, which indicates an internal
+//      MaskVoxelOut       mask/grid size mismatch — not triggerable by a
+//      OfBounds)          caller-supplied SDF alone; the medial-mask and grid
+//                         are both derived from the same SDF, so they share
+//                         extent by construction.
+//
+//   ShellPruneFailed    — requires the branch-pruning step to fail on the
+//     (any PruneError)    raw mid-surface mesh.  Pruning validates configuration
+//                         parameters (ratio, max-iterations, alignment tolerance)
+//                         AFTER phases 1 and 2 succeed, but passing invalid
+//                         prune options via ElasticOptions currently propagates
+//                         no PruneError (the default options are always valid
+//                         and the parser clamps/ignores out-of-range values).
+//
+//   ShellMeshQuality    — requires the mesher to produce a mesh whose worst
+//     (Mesher::Quality    element quality is below threshold.  This is a property
+//      BelowThreshold)    of the SDF geometry, not of the caller-supplied options;
+//                         a synthetically well-behaved slab always produces a
+//                         quality mesh within the default threshold.
+//
+// These three arms are wired by inspection and rely on the `with_code(...)` call
+// being visually verifiable in the source.  A future task that adds shell-extract
+// fuzz/property-based testing may be able to drive them.  The serde/constructible
+// tests in diagnostics.rs confirm the variants exist and serialize correctly.
+
+/// Build a `SampledField` whose first axis grid is empty, which triggers
+/// `GridValidationError::EmptyAxisGrid { axis: 0 }` in Phase 1 (medial-mask).
+///
+/// All other fields are structurally valid for `Regular3D` (3-element
+/// `bounds_min`/`bounds_max`/`spacing`/`axis_grids`), but the empty x-grid
+/// fails the "no axis grid is empty" invariant in `validate_regular3d` before
+/// any computation begins.
+fn empty_axis_grid_field() -> SampledField {
+    SampledField {
+        name: "empty_axis_grid".to_string(),
+        kind: SampledGridKind::Regular3D,
+        bounds_min: vec![0.0, 0.0, 0.0],
+        bounds_max: vec![1.0, 1.0, 1.0],
+        spacing: vec![1.0, 1.0, 1.0],
+        // axis_grids[0] is intentionally empty → EmptyAxisGrid { axis: 0 }
+        axis_grids: vec![vec![], vec![0.0, 1.0], vec![0.0, 1.0]],
+        interpolation: InterpolationKind::Linear,
+        data: vec![],
+        oob_emitted: std::sync::atomic::AtomicBool::new(false),
+    }
+}
+
+/// Dispatch `shell_extract_compute_fn` with an empty-axis-grid `SampledField`
+/// and verify that the failure is mapped to `DiagnosticCode::ShellNoVoxelGrid`
+/// per PRD §7 row 1 (E_SHELL_NO_VOXEL_GRID).
+///
+/// Asserts:
+/// 1. The outcome is `ComputeOutcome::Failed { diagnostics }`.
+/// 2. At least one diagnostic has `code == Some(DiagnosticCode::ShellNoVoxelGrid)`.
+///
+/// RED in step-9: the Phase 1 (medial-mask) error arm currently emits an
+/// un-coded `Diagnostic::error(format!(...))`, so no diagnostic carries
+/// `ShellNoVoxelGrid` → assertion (2) fails. GREEN after step-10 wires the
+/// `MedialError::GridValidation(GridValidationError::EmptyAxisGrid { .. })`
+/// arm with `.with_code(DiagnosticCode::ShellNoVoxelGrid)`.
+#[test]
+fn shell_extract_empty_axis_grid_returns_failed_with_shell_no_voxel_grid_code() {
+    let field = empty_axis_grid_field();
+    let options_value = Value::Undef;
+    let sdf_value = Value::SampledField(field);
+
+    let outcome = shell_extract_compute_fn(
+        &[options_value, sdf_value],
+        &[],
+        &Value::Undef,
+        None,
+        &CancellationHandle::new(),
+    );
+
+    // (1) Must return Failed on empty axis grid
+    let diagnostics = match outcome {
+        ComputeOutcome::Failed { diagnostics } => diagnostics,
+        other => panic!(
+            "expected ComputeOutcome::Failed for empty-axis-grid input, got: {other:?}"
+        ),
+    };
+
+    // (2) At least one diagnostic must carry ShellNoVoxelGrid code
+    let coded = diagnostics.iter().find(|d| {
+        d.code == Some(DiagnosticCode::ShellNoVoxelGrid)
+    });
+    assert!(
+        coded.is_some(),
+        "expected at least one diagnostic with code=DiagnosticCode::ShellNoVoxelGrid; \
+         got: {diagnostics:?}"
+    );
+}

@@ -1,0 +1,71 @@
+// Shell-route hard-error fixture: thick body with `@shell` (`ShellForce.On`).
+//
+// PRD reference: docs/prds/v0_4/shell-extract-engine-bridge.md task ε (§9 Phase 4).
+//
+// This fixture demonstrates the `E_SHELL_TOO_THICK` hard-error path (PRD §7 row 1):
+// a body whose thickness/extent ratio EXCEEDS `shell_threshold` (0.2) is annotated
+// with `@shell` (`ElasticOptions(shell_force: ShellForce.On)`), which forces the
+// shell route with NO tet fallback.  The trampoline detects the thick body and
+// returns `ComputeOutcome::Failed` with `DiagnosticCode::ShellTooThick` before
+// running any shell solve.
+//
+// Geometry:
+//   length = 50 mm,  width = 20 mm,  height = 20 mm
+//   height / min(length, width) = 20 / 20 = 1.0  ≥  shell_threshold 0.2
+//   → too thick for shell; ratio 1.0 exceeds the 0.2 threshold.
+//
+// Expected observable signals (integration test
+// `crates/reify-eval/tests/shell_too_thick_at_shell_annotation_errors.rs`):
+//   - `eval_result.diagnostics` contains a `Severity::Error` diagnostic
+//     with `code == Some(DiagnosticCode::ShellTooThick)`.
+//   - No successful shell solve result (no `ShellStress` shell_channels).
+//
+// Opt-out: use `ElasticOptions()` (Auto, no annotation) or
+// `ElasticOptions(shell_force: ShellForce.Off)` (@solid) to avoid this error.
+
+structure FeaShellTooThickAnnotated {
+    // Geometry: 50 mm × 20 mm × 20 mm chunky block.
+    // height/min(length,width) = 20/20 = 1.0 ≥ shell_threshold 0.2 → too thick.
+    param length : Length = 50mm
+    param width  : Length = 20mm
+    param height : Length = 20mm
+
+    // Material: AISI 1045 hot-rolled medium-carbon steel (E = 205 GPa, ν = 0.29).
+    let material = Steel_AISI_1045()
+
+    // Loads: 10 N point load applied at the block tip.
+    let tip_load = PointLoad(point: "tip", force: 10.0)
+
+    // Supports: fully clamped (fixed) at the block root.
+    let mount = FixedSupport(target: "root")
+
+    // Bundle loads + supports via LoadCase so that member-access .loads / .supports
+    // has compile-time type `List<Real>` (matching the fn param type).
+    let lc = LoadCase(name: "thick_block", loads: [tip_load], supports: [mount])
+
+    // Wrap material in ConstitutiveLawInput so that member-access .law has
+    // compile-time type ConstitutiveLaw (matching the fn param type, task δ/3780).
+    let ci = ConstitutiveLawInput(law: material)
+
+    // FEA solve: force the shell route (proxy for `@shell`) via positional args.
+    // The Reify DSL uses positional-call form exclusively — field labels like
+    // `shell_force: ShellForce.On` are stripped by the parser and treated as
+    // positional args (see crates/reify-syntax/src/ts_parser.rs).  To set
+    // `shell_force` (position 8) we must supply all preceding defaults explicitly:
+    //   ElementOrder.P1, none, 1000, 0.000001, none, 0.2, none, 1.0, ShellForce.On
+    //   (element_order, mesh_size, max_iter, cg_tolerance, threads,
+    //    shell_threshold, shell_voxel_size, shell_branch_prune_ratio, shell_force)
+    // Trailing `force_tet` and `require_hex_wedge` use struct defaults (false).
+    //
+    // The trampoline detects height/min(L,W) = 1.0 ≥ 0.2 (too thick) and returns
+    // `ComputeOutcome::Failed` with `DiagnosticCode::ShellTooThick` before running
+    // any shell solve (no tet fallback on `ShellForce::On`).
+    let result = solve_elastic_static(
+        ci.law, length, width, height, lc.loads, lc.supports,
+        ElasticOptions(ElementOrder.P1, none, 1000, 0.000001, none, 0.2, none, 1.0, ShellForce.On)
+    )
+
+    // Geometry realization: box for GUI visualization (deferred GHR-β, no
+    // kernel call at eval time).
+    let body = box(length, width, height)
+}
