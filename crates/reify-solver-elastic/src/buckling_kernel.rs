@@ -427,7 +427,7 @@ pub fn solve_buckling_kernel(
     );
 
     // ---- Expand u_red → u_full (0.0 at constrained DOFs) ------------------
-    let u_red: &[f64] = &cg_result.u;
+    let u_red: &[f64] = cg_result.u();
     let mut u_full = vec![0.0_f64; 3 * n_nodes];
     for g in 0..u_full.len() {
         for &(r, w) in &expansion[g] {
@@ -646,7 +646,7 @@ pub fn solve_buckling_kernel_p2(
     );
 
     // ---- Expand u_red → u_full -----------------------------------------------
-    let u_red: &[f64] = &cg_result.u;
+    let u_red: &[f64] = cg_result.u();
     let mut u_full = vec![0.0_f64; 3 * n_nodes];
     for g in 0..u_full.len() {
         for &(r, w) in &expansion[g] {

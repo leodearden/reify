@@ -224,7 +224,7 @@ pub fn solve_flat_plate_shell(
         max_iter: 5000,
     };
     let cg = solve_cg(&k, &f, opts, SolverMode::Deterministic);
-    let u = &cg.u;
+    let u = cg.u();
 
     // ── Per-element stress + frame recovery ──────────────────────────────────
     let mut stresses: Vec<ShellElementStress> = Vec::with_capacity(connectivity.len());

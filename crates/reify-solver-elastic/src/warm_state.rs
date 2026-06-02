@@ -108,7 +108,7 @@ pub fn solve_cg_with_warm_state(
     // Share `u` between the result and the warm state via Arc::clone —
     // refcount bump only, no Vec copy. Both pointers refer to the same
     // 10⁴–10⁶-DOF `Vec<f64>` allocation.
-    let fresh = CgWarmState::from_arc(Arc::clone(&result.u));
+    let fresh = CgWarmState::from_arc(result.shared_u());
     (result, fresh)
 }
 
@@ -193,8 +193,12 @@ mod tests {
             "cold solve_cg_with_warm_state must converge"
         );
         assert_eq!(
-            fresh.u, result.u,
+            result.u(), fresh.u.as_slice(),
             "fresh warm state must wrap the result's displacement"
+        );
+        assert!(
+            Arc::ptr_eq(&result.shared_u(), &fresh.u),
+            "fresh warm state must share the same Arc allocation as result (zero-copy)"
         );
 
         // Re-solve with prior = Some(&fresh) on the same (k, f) — already at

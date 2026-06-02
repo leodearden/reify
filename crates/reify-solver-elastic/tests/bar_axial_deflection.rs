@@ -62,7 +62,7 @@ fn solve_single_bar(force: [f64; 3]) -> Vec<f64> {
     let opts = CgSolverOptions { tolerance: 1.0e-12, max_iter: 1000 };
     let result = solve_cg(&k_global, &f, opts, SolverMode::Deterministic);
     assert!(result.converged, "CG did not converge: {} iters", result.iterations);
-    result.u.to_vec()
+    result.u().to_vec()
 }
 
 /// (1) Axial load P along x: analytic δ = PL/(EA).
