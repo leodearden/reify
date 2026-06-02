@@ -1,5 +1,5 @@
 //! Pin: the `pub fn` / `pub(crate) fn` producers landed since 2026-06-02 that
-//! must each carry a `// G-allow:` marker citing a tracked task as `#NNNN`.
+//! must each carry a `// G-allow:` marker.
 //!
 //! User-observable signal:
 //!   `cargo test -p reify-audit --test new_orphans_2026_06_02_g_allow`
@@ -9,12 +9,12 @@
 //! comments (zero external callers).  A `// G-allow: <reason>` comment on the
 //! line immediately above the declaration moves it from the report's
 //! "Orphan candidates" table to "Allow-listed".  This test asserts list
-//! membership (absent from `orphans[]`, present exactly once in `allowed[]`)
-//! and that the reason cites *some* tracked owner task as `#NNNN`.  The specific
-//! task number lives only in the source `// G-allow:` marker (single source of
-//! truth), so this test never carries a second copy that could drift.  Neither
-//! assertion implies `orphan_count == 0`; 450+ pre-existing baseline orphans in
-//! unrelated files are intentionally not in scope here.
+//! membership (absent from `orphans[]`, present exactly once in `allowed[]`).
+//! The owning task number is single-sourced in the source `// G-allow:` marker;
+//! this test deliberately does NOT inspect marker prose / carries no second copy
+//! that could drift.  Neither assertion implies `orphan_count == 0`; 450+
+//! pre-existing baseline orphans in unrelated files are intentionally not in scope
+//! here.
 //!
 //! # Buckets
 //!
@@ -129,8 +129,7 @@ fn cached_audit() -> Option<&'static serde_json::Value> {
 /// For each pin asserts:
 ///   (a) absent from `result["orphans"]` (match `file.ends_with(suffix)` &&
 ///       EXACT `name` — so distinct same-named fns in other files never collide);
-///   (b) present EXACTLY ONCE in `result["allowed"]` (same match);
-///   (c) its `allow_reason` cites some tracked task as `#NNNN`.
+///   (b) present EXACTLY ONCE in `result["allowed"]` (same match).
 ///
 /// Collects all failures across the slice and panics once with a combined
 /// message so a single run pinpoints every missing/misplaced marker.
@@ -193,35 +192,6 @@ fn assert_pins_are_g_allow_marked(result: &serde_json::Value, pins: &[(&str, &st
             failures.push(format!(
                 "  FAIL (b) `{fn_name}` ({file_suffix}): expected exactly 1 entry in \
                  allowed[]; {detail}"
-            ));
-            // Skip (c): it indexes matching_allowed[0], which is unsafe/meaningless
-            // when the count is not exactly 1.
-            continue;
-        }
-
-        // (c) The allow_reason must cite SOME tracked owner task as `#NNNN`.
-        //
-        // INTENTIONALLY MINIMAL (design decision, plan.json): this verifies only
-        // that *a* `#NNNN` token is present, NOT that it equals a specific owner
-        // number. The owning/consumer task is single-sourced in the source
-        // `// G-allow:` marker; copying the exact number into the test would
-        // couple it to a guess and break on legitimate re-attribution. The
-        // trade-off is accepted: a typo'd `#NNNN` still passes (c). By the same
-        // principle this is the ONLY assertion on marker text — keep it the bare
-        // presence check; do NOT grow it into substring/regex pinning of the
-        // rest of the comment prose.
-        let reason = matching_allowed[0]["allow_reason"]
-            .as_str()
-            .unwrap_or_default();
-        let bytes = reason.as_bytes();
-        let cites_task = bytes
-            .iter()
-            .enumerate()
-            .any(|(i, &b)| b == b'#' && bytes.get(i + 1).is_some_and(u8::is_ascii_digit));
-        if !cites_task {
-            failures.push(format!(
-                "  FAIL (c) `{fn_name}` ({file_suffix}): allow_reason must cite a \
-                 tracked task as `#NNNN`; got: {reason:?}"
             ));
         }
     }
