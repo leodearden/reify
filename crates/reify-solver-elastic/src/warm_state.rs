@@ -74,6 +74,32 @@ impl CgWarmState {
     }
 }
 
+/// High-level Jacobi-CG producer wrapper with per-iteration progress callback
+/// (task #4079).
+///
+/// Identical to [`solve_cg_with_warm_state`] but forwards a `progress`
+/// callback to [`crate::solver::solve_cg_with_progress`], enabling
+/// per-iteration emit and `CgIterationControl::Cancel` interruption.
+///
+/// # Allocation sharing
+///
+/// Same zero-copy Arc-share contract as [`solve_cg_with_warm_state`]:
+/// `CgResult.u` and `CgWarmState.u` are the same `Arc<Vec<f64>>`
+/// (refcount bump only, no Vec copy).
+pub fn solve_cg_with_warm_state_progress(
+    k: &faer::sparse::SparseRowMat<usize, f64>,
+    f: &[f64],
+    prior: Option<&CgWarmState>,
+    opts: crate::solver::CgSolverOptions,
+    mode: crate::solver::SolverMode,
+    progress: &mut dyn FnMut(usize, f64) -> crate::solver::CgIterationControl,
+) -> (crate::solver::CgResult, CgWarmState) {
+    let prior_slice = prior.map(|p| p.u.as_slice());
+    let result = crate::solver::solve_cg_with_progress(k, f, prior_slice, opts, mode, progress);
+    let fresh = CgWarmState::from_arc(Arc::clone(&result.u));
+    (result, fresh)
+}
+
 /// High-level Jacobi-CG producer wrapper for engine wiring (PRD task #14).
 ///
 /// Solves `K·u = f` with optional prior warm state, and emits both the

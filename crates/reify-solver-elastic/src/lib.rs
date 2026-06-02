@@ -588,7 +588,7 @@ pub use solver::{
     CgIterationControl, CgResult, CgSolverOptions, SolverMode, solve_cg, solve_cg_warm,
     solve_cg_with_progress,
 };
-pub use warm_state::{CgWarmState, solve_cg_with_warm_state};
+pub use warm_state::{CgWarmState, solve_cg_with_warm_state, solve_cg_with_warm_state_progress};
 // Task 2987: 2D cross-section meshing surface for the hex/wedge swept-body
 // pipeline. Re-export the typed orchestrator (`mesh_swept_profile_2d`), its
 // input/output types, and the pure quality + auto-size helpers so callers
