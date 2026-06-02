@@ -1516,4 +1516,85 @@ mod tests {
             "In-flight tasks should have been aborted, not detached"
         );
     }
+
+    // ---------------------------------------------------------------------------
+    // default_populate_priorities unit tests (step-3 RED / step-4 GREEN)
+    // ---------------------------------------------------------------------------
+
+    /// Verifies that `default_populate_priorities`:
+    /// 1. Does NOT overwrite an explicitly-set entry (precedence invariant).
+    /// 2. Derives P1Fast for an unset NodeId::Value (IMMEDIATE trait).
+    /// 3. Derives P1Slow for an unset NodeId::Compute (WARM_STARTABLE|COMMITTABLE).
+    /// 4. Derives P3Speculative for an unset NodeId::Constraint (empty traits).
+    /// 5. Invariant I-1: every eval-set node has an entry after the call.
+    #[test]
+    fn default_populate_priorities_derives_per_kind_and_preserves_explicit() {
+        use reify_eval::cache::NodeId;
+        use reify_core::{ComputeNodeId, ConstraintNodeId, ValueCellId};
+        use reify_ir::NodeTraitsMap;
+        use std::collections::{HashMap, HashSet};
+
+        // One pinned Compute at P0Interactive — simulates an external/GUI assignment.
+        let pinned_compute = NodeId::Compute(ComputeNodeId::new("T4", 0));
+        let unset_value = NodeId::Value(ValueCellId::new("T4", "v"));
+        let unset_compute = NodeId::Compute(ComputeNodeId::new("T4", 1));
+        let unset_constraint = NodeId::Constraint(ConstraintNodeId::new("T4", 0));
+
+        let mut node_priorities: HashMap<NodeId, crate::Priority> = HashMap::new();
+        node_priorities.insert(pinned_compute.clone(), crate::Priority::P0Interactive);
+
+        let eval_nodes: HashSet<NodeId> = [
+            pinned_compute.clone(),
+            unset_value.clone(),
+            unset_compute.clone(),
+            unset_constraint.clone(),
+        ]
+        .into_iter()
+        .collect();
+
+        let node_traits: NodeTraitsMap<NodeId> = NodeTraitsMap::default();
+
+        default_populate_priorities(&mut node_priorities, &eval_nodes, &node_traits);
+
+        // Explicit entry preserved — must NOT be overwritten to P1Slow.
+        assert_eq!(
+            node_priorities[&pinned_compute],
+            crate::Priority::P0Interactive,
+            "explicit P0Interactive entry must not be overwritten"
+        );
+
+        // Unset Value → IMMEDIATE → P1Fast.
+        assert_eq!(
+            node_priorities[&unset_value],
+            crate::Priority::P1Fast,
+            "unset Value node must derive P1Fast"
+        );
+
+        // Unset Compute → WARM_STARTABLE|COMMITTABLE → P1Slow.
+        assert_eq!(
+            node_priorities[&unset_compute],
+            crate::Priority::P1Slow,
+            "unset Compute node must derive P1Slow"
+        );
+
+        // Unset Constraint → empty traits → P3Speculative.
+        assert_eq!(
+            node_priorities[&unset_constraint],
+            crate::Priority::P3Speculative,
+            "unset Constraint node must derive P3Speculative"
+        );
+
+        // Invariant I-1: every eval-set node must have an entry.
+        assert_eq!(
+            node_priorities.len(),
+            4,
+            "every eval-set node must have an entry after default_populate_priorities"
+        );
+        for node in &eval_nodes {
+            assert!(
+                node_priorities.contains_key(node),
+                "eval-set node {node:?} must have an entry"
+            );
+        }
+    }
 }
