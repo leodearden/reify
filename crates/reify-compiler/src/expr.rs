@@ -1658,6 +1658,15 @@ pub(crate) fn compile_expr_guarded(
                         // warning for `affine_identity()`.
                         affine_map_constructor_result_type(name)
                             .expect("is_affine_map_constructor implies result type")
+                    } else if let Some(t) = affine_map_algebra_result_type(
+                        name,
+                        compiled_args.first().map(|a| &a.result_type),
+                    ) {
+                        // affine_compose → AffineMap(3)
+                        // affine_inverse → Option(AffineMap(3))
+                        // determinant(AffineMap) → Real   (else falls through to first-arg)
+                        // PRD §4.3 (task γ) algebra free-functions.
+                        t
                     } else {
                         compiled_args
                             .first()

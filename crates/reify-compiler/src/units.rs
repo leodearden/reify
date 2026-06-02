@@ -289,6 +289,40 @@ pub(crate) fn affine_map_constructor_result_type(name: &str) -> Option<reify_cor
     }
 }
 
+/// Return-type inference for the AffineMap **algebra** free-functions (task γ,
+/// PRD §4.3).  Separate from [`affine_map_constructor_result_type`] because
+/// (a) `affine_inverse` returns `Option<AffineMap(3)>` and `determinant`
+/// returns `Real` — three different result types across three names — and
+/// (b) an existing test pins `!is_affine_map_constructor("affine_compose")`.
+///
+/// `first_arg_type` is used to disambiguate `determinant`: when the first arg
+/// is an `AffineMap(3)` the result is `Real`; when it is something else
+/// (e.g. a Matrix) we return `None` and let the caller fall through to the
+/// existing first-arg fallback, preserving the matrix-determinant behaviour.
+///
+/// Returns `None` for any name / arg-type combination not in scope here.
+pub(crate) fn affine_map_algebra_result_type(
+    name: &str,
+    first_arg_type: Option<&reify_core::Type>,
+) -> Option<reify_core::Type> {
+    match name {
+        "affine_compose" => Some(reify_core::Type::AffineMap(3)),
+        "affine_inverse" => {
+            Some(reify_core::Type::Option(Box::new(reify_core::Type::AffineMap(3))))
+        }
+        "determinant" => {
+            // Only override when the first arg is an AffineMap; otherwise fall
+            // through to the existing matrix-determinant first-arg fallback.
+            if matches!(first_arg_type, Some(reify_core::Type::AffineMap(_))) {
+                Some(reify_core::Type::Real)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 /// The complete set of stdlib **geometry-query** helper names recognised by
 /// the compiler. Fifth geometry-name family, structurally parallel to the
 /// existing four ([`GEOMETRY_FUNCTION_NAMES`],
@@ -1819,5 +1853,71 @@ mod tests {
         assert_eq!(affine_map_constructor_result_type("box"), None);
         assert_eq!(affine_map_constructor_result_type("transform3"), None);
         assert_eq!(affine_map_constructor_result_type(""), None);
+    }
+
+    // --- affine_map_algebra_result_type tests (step-8) ---
+
+    #[test]
+    fn algebra_affine_compose_returns_affine_map_3() {
+        assert_eq!(
+            affine_map_algebra_result_type("affine_compose", None),
+            Some(reify_core::Type::AffineMap(3))
+        );
+        // First arg type does not change the result for affine_compose.
+        assert_eq!(
+            affine_map_algebra_result_type(
+                "affine_compose",
+                Some(&reify_core::Type::AffineMap(3))
+            ),
+            Some(reify_core::Type::AffineMap(3))
+        );
+    }
+
+    #[test]
+    fn algebra_affine_inverse_returns_option_affine_map_3() {
+        assert_eq!(
+            affine_map_algebra_result_type("affine_inverse", None),
+            Some(reify_core::Type::Option(Box::new(reify_core::Type::AffineMap(3))))
+        );
+        assert_eq!(
+            affine_map_algebra_result_type(
+                "affine_inverse",
+                Some(&reify_core::Type::AffineMap(3))
+            ),
+            Some(reify_core::Type::Option(Box::new(reify_core::Type::AffineMap(3))))
+        );
+    }
+
+    #[test]
+    fn algebra_determinant_with_affine_map_arg_returns_real() {
+        assert_eq!(
+            affine_map_algebra_result_type(
+                "determinant",
+                Some(&reify_core::Type::AffineMap(3))
+            ),
+            Some(reify_core::Type::Real)
+        );
+    }
+
+    #[test]
+    fn algebra_determinant_with_non_affine_arg_returns_none() {
+        // When first arg is not AffineMap, fall through to the existing
+        // matrix-determinant first-arg behaviour (return None here).
+        assert_eq!(
+            affine_map_algebra_result_type("determinant", None),
+            None
+        );
+        assert_eq!(
+            affine_map_algebra_result_type("determinant", Some(&reify_core::Type::Real)),
+            None
+        );
+    }
+
+    #[test]
+    fn algebra_unknown_names_return_none() {
+        assert_eq!(affine_map_algebra_result_type("affine_scale", None), None);
+        assert_eq!(affine_map_algebra_result_type("affine_apply", None), None);
+        assert_eq!(affine_map_algebra_result_type("box", None), None);
+        assert_eq!(affine_map_algebra_result_type("", None), None);
     }
 }

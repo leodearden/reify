@@ -4,7 +4,7 @@ use reify_core::DimensionVector;
 use reify_ir::{Value, quaternion_is_finite};
 
 use crate::helpers::tensor_components_f64;
-use crate::matrix::matrix_components_f64;
+use crate::matrix::{mat3_det, matrix_components_f64};
 
 /// Inner validator shared by [`decompose_vec3`] and [`decompose_point3`].
 ///
@@ -165,6 +165,58 @@ fn make_dimensioned_component(dim: DimensionVector, value: f64) -> Value {
             dimension: dim,
         }
     }
+}
+
+// --- 3×3 linear algebra helpers for affine algebra (task γ) ---
+
+/// Multiply two 3×3 row-major matrices.
+fn mat3_mul(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    let mut r = [[0.0f64; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            for k in 0..3 {
+                r[i][j] += a[i][k] * b[k][j];
+            }
+        }
+    }
+    r
+}
+
+/// Apply a 3×3 row-major matrix to a column vector (matrix · vector).
+fn mat3_apply(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
+    [
+        m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+        m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+        m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
+    ]
+}
+
+/// 3×3 matrix inverse via adjugate / cofactor method.
+/// Returns `None` when the determinant is zero or non-finite.
+fn affine_mat3_inv(m: [[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
+    let [[a, b, c], [d, e, f], [g, h, i]] = m;
+    let det = mat3_det(m);
+    if det == 0.0 || !det.is_finite() {
+        return None;
+    }
+    let inv_det = 1.0 / det;
+    Some([
+        [
+            (e * i - f * h) * inv_det,
+            (c * h - b * i) * inv_det,
+            (b * f - c * e) * inv_det,
+        ],
+        [
+            (f * g - d * i) * inv_det,
+            (a * i - c * g) * inv_det,
+            (c * d - a * f) * inv_det,
+        ],
+        [
+            (d * h - e * g) * inv_det,
+            (b * g - a * h) * inv_det,
+            (a * e - b * d) * inv_det,
+        ],
+    ])
 }
 
 pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
@@ -945,6 +997,67 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                     ])
                 }
                 _ => Value::Undef,
+            }
+        }
+
+        // --- Affine algebra free-functions (task γ) ---
+        // `affine_compose(a, b) -> AffineMap`: a∘b, apply b first then a.
+        // linear = a.linear · b.linear; translation = a.linear · b.translation + a.translation.
+        // Left-applied convention (matches OCCT gp_GTrsf::Multiply).
+        "affine_compose" => {
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            let (a_linear, a_trans) = match &args[0] {
+                Value::AffineMap { linear, translation } => (*linear, *translation),
+                _ => return Some(Value::Undef),
+            };
+            let (b_linear, b_trans) = match &args[1] {
+                Value::AffineMap { linear, translation } => (*linear, *translation),
+                _ => return Some(Value::Undef),
+            };
+            let linear = mat3_mul(a_linear, b_linear);
+            let applied = mat3_apply(a_linear, b_trans);
+            let translation = [
+                applied[0] + a_trans[0],
+                applied[1] + a_trans[1],
+                applied[2] + a_trans[2],
+            ];
+            // Guard: reject any non-finite component.
+            if linear.iter().any(|row| row.iter().any(|&v| !v.is_finite()))
+                || translation.iter().any(|&v| !v.is_finite())
+            {
+                return Some(Value::Undef);
+            }
+            Value::AffineMap { linear, translation }
+        }
+
+        // `affine_inverse(a) -> Option<AffineMap>`:
+        // Invertible (det ≠ 0) → Some(AffineMap{ linear=a.linear⁻¹, translation=−a.linear⁻¹·a.trans }).
+        // Singular (det = 0) → Value::Option(None) — NOT Undef, so authors can branch.
+        "affine_inverse" => {
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            let (a_linear, a_trans) = match &args[0] {
+                Value::AffineMap { linear, translation } => (*linear, *translation),
+                _ => return Some(Value::Undef),
+            };
+            match affine_mat3_inv(a_linear) {
+                None => Value::Option(None),
+                Some(inv) => {
+                    let applied = mat3_apply(inv, a_trans);
+                    let translation = [-applied[0], -applied[1], -applied[2]];
+                    if inv.iter().any(|row| row.iter().any(|&v| !v.is_finite()))
+                        || translation.iter().any(|&v| !v.is_finite())
+                    {
+                        return Some(Value::Option(None));
+                    }
+                    Value::Option(Some(Box::new(Value::AffineMap {
+                        linear: inv,
+                        translation,
+                    })))
+                }
             }
         }
 
@@ -4724,5 +4837,194 @@ mod tests {
                 .is_none(),
             "a non-affine_scale name must not produce a diagnostic"
         );
+    }
+
+    // ── affine_compose tests (step-3 RED / step-4 GREEN) ──────────────────────
+
+    /// Build a `Value::AffineMap` directly for test purposes.
+    fn make_test_affine(linear: [[f64; 3]; 3], translation: [f64; 3]) -> Value {
+        Value::AffineMap {
+            linear,
+            translation,
+        }
+    }
+
+    #[test]
+    fn affine_compose_right_identity() {
+        // compose(a, identity) == a
+        let a = eval_builtin("affine_scale", &[Value::Real(2.0), Value::Real(3.0), Value::Real(4.0)]);
+        let id = eval_builtin("affine_identity", &[]);
+        let result = eval_builtin("affine_compose", &[a.clone(), id]);
+        let (a_linear, a_trans) = expect_affine(a);
+        let (r_linear, r_trans) = expect_affine(result);
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!((r_linear[i][j] - a_linear[i][j]).abs() < 1e-12,
+                    "compose(a, id) linear[{i}][{j}]: expected {}, got {}", a_linear[i][j], r_linear[i][j]);
+            }
+        }
+        for k in 0..3 {
+            assert!((r_trans[k] - a_trans[k]).abs() < 1e-12,
+                "compose(a, id) translation[{k}]: expected {}, got {}", a_trans[k], r_trans[k]);
+        }
+    }
+
+    #[test]
+    fn affine_compose_left_identity() {
+        // compose(identity, a) == a
+        let a = eval_builtin("affine_scale", &[Value::Real(2.0), Value::Real(3.0), Value::Real(4.0)]);
+        let id = eval_builtin("affine_identity", &[]);
+        let result = eval_builtin("affine_compose", &[id, a.clone()]);
+        let (a_linear, a_trans) = expect_affine(a);
+        let (r_linear, r_trans) = expect_affine(result);
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!((r_linear[i][j] - a_linear[i][j]).abs() < 1e-12,
+                    "compose(id, a) linear[{i}][{j}]");
+            }
+        }
+        for k in 0..3 {
+            assert!((r_trans[k] - a_trans[k]).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn affine_compose_scale_then_shear() {
+        // compose(scale(2,1,1), shear_xy(1)) → linear [[2,2,0],[0,1,0],[0,0,1]]
+        // a.linear = diag(2,1,1), b.linear = I + shear[0][1]=1
+        // result.linear[0] = a.linear[0] · b.linear = [2*1, 2*1, 2*0] = [2, 2, 0]
+        let scale = eval_builtin("affine_scale", &[Value::Real(2.0), Value::Real(1.0), Value::Real(1.0)]);
+        let shear = eval_builtin("affine_shear_xy", &[Value::Real(1.0)]);
+        let (r_linear, r_trans) = expect_affine(eval_builtin("affine_compose", &[scale, shear]));
+        let expected_linear = [[2.0, 2.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!((r_linear[i][j] - expected_linear[i][j]).abs() < 1e-12,
+                    "linear[{i}][{j}]: expected {}, got {}", expected_linear[i][j], r_linear[i][j]);
+            }
+        }
+        assert_eq!(r_trans, [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn affine_compose_translation_formula() {
+        // compose(scale(2,2,2), translate(1m, 0, 0)):
+        //   a = scale(2,2,2): linear=diag(2,2,2), trans=[0,0,0]
+        //   b = translate(1m,0,0): linear=I, trans=[1,0,0]
+        //   result.linear = a.linear · b.linear = diag(2,2,2)
+        //   result.trans = a.linear · b.trans + a.trans = [2*1,2*0,2*0] + [0,0,0] = [2,0,0]
+        let scale = eval_builtin("affine_scale", &[Value::Real(2.0), Value::Real(2.0), Value::Real(2.0)]);
+        let translate = eval_builtin("affine_translate", &[Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH }, Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH }, Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH }]);
+        let (r_linear, r_trans) = expect_affine(eval_builtin("affine_compose", &[scale, translate]));
+        // linear should be diag(2,2,2)
+        let expected_linear = [[2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 2.0]];
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!((r_linear[i][j] - expected_linear[i][j]).abs() < 1e-12,
+                    "linear[{i}][{j}]");
+            }
+        }
+        // translation = a.linear · b.trans + a.trans = [2,0,0] + [0,0,0] = [2,0,0]
+        assert!((r_trans[0] - 2.0).abs() < 1e-12, "trans[0]: expected 2.0, got {}", r_trans[0]);
+        assert!(r_trans[1].abs() < 1e-12);
+        assert!(r_trans[2].abs() < 1e-12);
+    }
+
+    #[test]
+    fn affine_compose_wrong_arity_returns_undef() {
+        let a = eval_builtin("affine_identity", &[]);
+        assert!(eval_builtin("affine_compose", &[]).is_undef(), "0 args");
+        assert!(eval_builtin("affine_compose", std::slice::from_ref(&a)).is_undef(), "1 arg");
+        assert!(eval_builtin("affine_compose", &[a.clone(), a.clone(), a.clone()]).is_undef(), "3 args");
+    }
+
+    #[test]
+    fn affine_compose_non_affine_args_return_undef() {
+        let a = eval_builtin("affine_identity", &[]);
+        // first arg is not AffineMap
+        assert!(eval_builtin("affine_compose", &[Value::Real(1.0), a.clone()]).is_undef());
+        // second arg is not AffineMap
+        assert!(eval_builtin("affine_compose", &[a, Value::Real(1.0)]).is_undef());
+    }
+
+    // ── affine_inverse tests (step-5 RED / step-6 GREEN) ──────────────────────
+
+    #[test]
+    fn affine_inverse_invertible_map_returns_option_some() {
+        // Well-conditioned map: linear=[[2,0,0],[0,3,0],[1,0,4]], det=24, + translation.
+        let a = make_test_affine(
+            [[2.0, 0.0, 0.0], [0.0, 3.0, 0.0], [1.0, 0.0, 4.0]],
+            [0.1, 0.2, 0.3],
+        );
+        let result = eval_builtin("affine_inverse", &[a]);
+        match result {
+            Value::Option(Some(inner)) => {
+                // Just verify it is AffineMap — detailed numeric check below.
+                assert!(
+                    matches!(*inner, Value::AffineMap { .. }),
+                    "affine_inverse should return Some(AffineMap), got {:?}", inner
+                );
+            }
+            other => panic!("expected Value::Option(Some(AffineMap)), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn affine_inverse_round_trip_approx_identity() {
+        // compose(a, inverse(a)) ≈ affine_identity() within 1e-12.
+        let a = make_test_affine(
+            [[2.0, 0.0, 0.0], [0.0, 3.0, 0.0], [1.0, 0.0, 4.0]],
+            [0.1, 0.2, 0.3],
+        );
+        let inv_result = eval_builtin("affine_inverse", std::slice::from_ref(&a));
+        let inv = match inv_result {
+            Value::Option(Some(inner)) => *inner,
+            other => panic!("expected Option(Some(AffineMap)), got {:?}", other),
+        };
+        let composed = eval_builtin("affine_compose", &[a, inv]);
+        let (composed_linear, composed_trans) = expect_affine(composed);
+        for (i, row) in composed_linear.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!(
+                    (val - expected).abs() < 1e-12,
+                    "round-trip linear[{i}][{j}]: expected {expected}, got {val}",
+                );
+            }
+        }
+        for (k, &val) in composed_trans.iter().enumerate() {
+            assert!(
+                val.abs() < 1e-12,
+                "round-trip translation[{k}]: expected 0, got {val}",
+            );
+        }
+    }
+
+    #[test]
+    fn affine_inverse_singular_returns_option_none() {
+        // A zero row ⇒ det=0 ⇒ affine_inverse returns Value::Option(None).
+        let singular = make_test_affine(
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.0]],
+            [0.0, 0.0, 0.0],
+        );
+        let result = eval_builtin("affine_inverse", &[singular]);
+        assert!(
+            matches!(result, Value::Option(None)),
+            "singular affine_inverse must return Value::Option(None), got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn affine_inverse_wrong_arity_returns_undef() {
+        assert!(eval_builtin("affine_inverse", &[]).is_undef(), "0 args");
+        let a = eval_builtin("affine_identity", &[]);
+        let b = eval_builtin("affine_identity", &[]);
+        assert!(eval_builtin("affine_inverse", &[a, b]).is_undef(), "2 args");
+    }
+
+    #[test]
+    fn affine_inverse_non_affine_arg_returns_undef() {
+        assert!(eval_builtin("affine_inverse", &[Value::Real(1.0)]).is_undef());
     }
 }
