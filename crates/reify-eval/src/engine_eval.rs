@@ -73,6 +73,10 @@ pub fn is_representable_cell_type(ty: &reify_core::Type) -> bool {
         // Compile-time-only union — value cells must hold a single concrete
         // arm type post-narrowing (task 2373).
         Type::Union(_) => false,
+        // Keyed sub-collection kind (task 3930 / β): structural — a `Keyed<T>`
+        // sub lowers to a `SubComponentDecl` and is never held in a value cell;
+        // no `Value::Keyed` exists. γ may revisit if it introduces a Value form.
+        Type::Keyed(_) => false,
         // Representable: every other variant that has (or may have) a
         // corresponding `Value`. Listed explicitly so that adding a new
         // `Type` variant to `reify_types` requires a conscious decision here
@@ -3994,6 +3998,27 @@ mod invariant_tests {
         assert!(!super::is_representable_cell_type(&Type::Union(vec![
             Type::StructureRef("X".to_string())
         ])));
+    }
+
+    /// Task 3930 / β: `Type::Keyed` is the keyed sub-collection kind. It is
+    /// structural — a `Keyed<T>` sub lowers to a `SubComponentDecl` and is never
+    /// held in a value cell, and no `Value::Keyed` variant exists — so the
+    /// `is_representable_cell_type` predicate must reject it alongside `TypeParam`
+    /// and `Union`. This pins the eval-layer backstop for the case where a
+    /// `Keyed<T>` is (mis)used in a value position such as `param x : Keyed<Vent>`:
+    /// the compile-time value-position guard is deferred to γ/δ, and until then
+    /// this predicate (and the runtime/CI invariants it backs) is what keeps such a
+    /// cell from silently slipping through. γ may revisit if it introduces a
+    /// `Value::Keyed` form.
+    #[test]
+    fn is_representable_cell_type_rejects_keyed() {
+        assert!(
+            !super::is_representable_cell_type(&Type::Keyed(Box::new(Type::StructureRef(
+                "Vent".to_string()
+            )))),
+            "Type::Keyed must be non-representable as a value cell_type (β: no Value::Keyed; \
+             keyed subs lower to SubComponentDecl)"
+        );
     }
 }
 

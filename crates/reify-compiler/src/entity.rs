@@ -1172,6 +1172,17 @@ pub(crate) fn compile_entity(
                         &mut clusters_with_outside_collision,
                     );
                 }
+
+                // Duplicate keyed-member key detection (task 3930 β): each member
+                // of a `Keyed<T>` sub-collection carries an author-assigned String
+                // key that must be unique within the collection. Gated on a
+                // non-empty keyed block so plain/positional subs are unaffected.
+                if !sub.keyed_members.is_empty() {
+                    diagnostics.extend(crate::diagnostics::check_duplicate_member_keys(
+                        &sub.name,
+                        &sub.keyed_members,
+                    ));
+                }
             }
             reify_ast::MemberDecl::MetaBlock(meta) => {
                 if let Some(first_span) = first_meta_span {
@@ -1698,6 +1709,22 @@ pub(crate) fn compile_entity(
                         .map(|e| compile_expr(e, &scope, enum_defs, functions, diagnostics))
                 };
 
+                // Keep-first dedupe of the keyed-member keys. A duplicate key is
+                // always accompanied by a blocking `E_DUP_MEMBER_KEY` error (emitted
+                // in the member pre-pass above), so a duplicate-keyed template is
+                // never consumed downstream. We still dedupe defensively so that,
+                // even on that error path, no two `MemberKey`s collapse onto the same
+                // key-addressed `ValueCellId` (e.g. two `…vents["intake"]` cells) —
+                // colliding cells would be a latent trap for any future stage that
+                // consumes an error-carrying template.
+                let mut seen_keyed = HashSet::new();
+                let keyed_members: Vec<reify_ir::MemberKey> = sub
+                    .keyed_members
+                    .iter()
+                    .filter(|e| seen_keyed.insert(e.key.as_str()))
+                    .map(|e| reify_ir::MemberKey::new(&e.key))
+                    .collect();
+
                 sub_components.push(SubComponentDecl {
                     name: sub.name.clone(),
                     structure_name: sub.structure_name.clone(),
@@ -1705,6 +1732,7 @@ pub(crate) fn compile_entity(
                     args: compiled_args,
                     type_args: resolved_type_args,
                     is_collection: sub.is_collection,
+                    keyed_members,
                     count_cell: None,
                     guard_state,
                     pose,
@@ -3182,6 +3210,7 @@ fn compile_match_arm_decl_group(
                 args: compiled_args,
                 type_args: resolved_type_args,
                 is_collection: false,
+                keyed_members: Vec::new(),
                 count_cell: None,
                 guard_state: GuardState::Compiled(Box::new(arm_guard_expr.clone())),
                 pose,
@@ -4288,5 +4317,115 @@ mod tests {
                 diagnostics[0].message,
             );
         }
+    }
+
+    // ── Keyed<T> sub-collection: dup-key diagnostic + keyed_members (task 3930 β) ──
+
+    /// Two members of one `Keyed<Vent>` sub declaring the same key `"intake"`
+    /// must surface the `E_DUP_MEMBER_KEY` (`DiagnosticCode::DuplicateMemberKey`)
+    /// compile error.
+    #[test]
+    fn keyed_sub_duplicate_keys_emit_dup_member_key_error() {
+        use reify_test_support::compile_source;
+
+        let source = r#"
+structure def Vent {
+    param area : Length = 1mm
+}
+structure def Manifold {
+    sub vents : Keyed<Vent> {
+        "intake" => { area = 5mm }
+        "intake" => { area = 8mm }
+    }
+}
+"#;
+        let module = compile_source(source);
+        assert!(
+            module
+                .diagnostics
+                .iter()
+                .any(|d| d.code == Some(DiagnosticCode::DuplicateMemberKey)),
+            "expected an E_DUP_MEMBER_KEY (DuplicateMemberKey) diagnostic for the \
+             duplicate keyed member key, got: {:?}",
+            module
+                .diagnostics
+                .iter()
+                .map(|d| (d.code, d.message.as_str()))
+                .collect::<Vec<_>>()
+        );
+
+        // Amendment (task 3930 β, robustness): even on the duplicate-key error
+        // path the compiled template must NOT carry two `MemberKey`s that collapse
+        // onto the same key-addressed `ValueCellId`. Lowering keep-first dedupes the
+        // keys, so `vents.keyed_members` holds `"intake"` exactly once.
+        let manifold = module
+            .templates
+            .iter()
+            .find(|t| t.name == "Manifold")
+            .expect("Manifold template should still compile alongside the error");
+        let vents = manifold
+            .sub_components
+            .iter()
+            .find(|s| s.name == "vents")
+            .expect("vents sub-component should be present");
+        assert_eq!(
+            vents.keyed_members,
+            vec![reify_ir::MemberKey::new("intake")],
+            "duplicate keys must be keep-first deduped so no two MemberKeys collide \
+             onto the same key-addressed ValueCellId",
+        );
+    }
+
+    /// A `Keyed<Vent>` sub with distinct keys compiles without a duplicate-key
+    /// error and records the author-assigned keys, in order, on the compiled
+    /// `SubComponentDecl.keyed_members`.
+    #[test]
+    fn keyed_sub_unique_keys_populate_keyed_members() {
+        use reify_test_support::compile_source;
+
+        let source = r#"
+structure def Vent {
+    param area : Length = 1mm
+}
+structure def Manifold {
+    sub vents : Keyed<Vent> {
+        "intake" => { area = 5mm }
+        "exhaust" => { area = 8mm }
+    }
+}
+"#;
+        let module = compile_source(source);
+
+        assert!(
+            !module
+                .diagnostics
+                .iter()
+                .any(|d| d.code == Some(DiagnosticCode::DuplicateMemberKey)),
+            "unexpected DuplicateMemberKey diagnostic for distinct keys: {:?}",
+            module
+                .diagnostics
+                .iter()
+                .map(|d| (d.code, d.message.as_str()))
+                .collect::<Vec<_>>()
+        );
+
+        let manifold = module
+            .templates
+            .iter()
+            .find(|t| t.name == "Manifold")
+            .expect("Manifold template should compile");
+        let vents = manifold
+            .sub_components
+            .iter()
+            .find(|s| s.name == "vents")
+            .expect("vents sub-component should be present");
+        assert_eq!(
+            vents.keyed_members,
+            vec![
+                reify_ir::MemberKey::new("intake"),
+                reify_ir::MemberKey::new("exhaust"),
+            ],
+            "vents keyed_members must carry the author-assigned keys in declaration order",
+        );
     }
 }

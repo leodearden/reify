@@ -1376,6 +1376,17 @@ pub(crate) fn resolve_parameterized_builtin_type(
             )?;
             Some(Type::Map(Box::new(key), Box::new(val)))
         }
+        "Keyed" if type_args.len() == 1 => {
+            let inner = resolve_type_expr_with_aliases(
+                &type_args[0],
+                &empty_type_params,
+                alias_registry,
+                diagnostics,
+                structure_names,
+                trait_names,
+            )?;
+            Some(Type::Keyed(Box::new(inner)))
+        }
         "Option" if type_args.len() == 1 => {
             let inner = resolve_type_expr_with_aliases(
                 &type_args[0],
@@ -1565,6 +1576,16 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 depth,
             )?;
             Some(Type::Map(Box::new(key), Box::new(val)))
+        }
+        "Keyed" if type_args.len() == 1 => {
+            let inner = resolve_type_alias_expr_with_subst(
+                &type_args[0],
+                alias_registry,
+                subst,
+                diagnostics,
+                depth,
+            )?;
+            Some(Type::Keyed(Box::new(inner)))
         }
         "Option" if type_args.len() == 1 => {
             let inner = resolve_type_alias_expr_with_subst(
@@ -2257,6 +2278,146 @@ mod tests {
             result,
             Some(Type::Selector(reify_core::ty::SelectorKind::Body)),
             "resolve_type_with_aliases(\"BodySelector\", …) should return Type::Selector(Body)"
+        );
+    }
+
+    // ── Keyed<T> parameterized resolution (step-3 RED / task 3930 β) ──────────
+    // `Keyed<Vent>` must resolve to the keyed-collection kind, distinct from the
+    // `Map`/`List` resolutions of the same arg. Mirrors the List/Map resolver arms.
+
+    #[test]
+    fn resolve_parameterized_builtin_type_resolves_keyed_distinct_from_map_list() {
+        let reg = TypeAliasRegistry::new();
+        let structure_names: HashSet<String> = ["Vent".to_string()].into_iter().collect();
+        let trait_names = HashSet::new();
+        let args = [named_type_expr("Vent")];
+
+        // Keyed<Vent> → Type::Keyed(StructureRef(Vent)), no diagnostics.
+        let mut diags = Vec::new();
+        let keyed = resolve_parameterized_builtin_type(
+            "Keyed",
+            &args,
+            &reg,
+            &mut diags,
+            &structure_names,
+            &trait_names,
+        );
+        assert_eq!(
+            keyed,
+            Some(Type::Keyed(Box::new(Type::StructureRef("Vent".into())))),
+            "Keyed<Vent> should resolve to the keyed-collection kind",
+        );
+        assert!(diags.is_empty(), "no diagnostics expected; got {:?}", diags);
+
+        // List<Vent> resolves to the list kind — distinct from Keyed.
+        let mut list_diags = Vec::new();
+        let list = resolve_parameterized_builtin_type(
+            "List",
+            &args,
+            &reg,
+            &mut list_diags,
+            &structure_names,
+            &trait_names,
+        );
+        assert_eq!(
+            list,
+            Some(Type::List(Box::new(Type::StructureRef("Vent".into())))),
+        );
+        assert_ne!(keyed, list, "Keyed<Vent> must be distinct from List<Vent>");
+
+        // Distinct from a Map kind as well.
+        assert_ne!(
+            keyed,
+            Some(Type::Map(
+                Box::new(Type::String),
+                Box::new(Type::StructureRef("Vent".into())),
+            )),
+        );
+    }
+
+    #[test]
+    fn resolve_parameterized_builtin_type_with_subst_resolves_keyed_distinct_from_list() {
+        let reg = TypeAliasRegistry::new();
+        // The subst path is structure-name-blind by design (alias DFS runs before
+        // structures are compiled — see the hardcoded empty `structure_names` in
+        // `resolve_type_alias_expr_with_subst`). The inner type arg is therefore
+        // supplied through the substitution map, which is exactly what this
+        // resolver variant exists to exercise: `Keyed<T>` with `T := Vent`.
+        let mut subst = HashMap::new();
+        subst.insert("T".to_string(), Type::StructureRef("Vent".into()));
+        let args = [named_type_expr("T")];
+
+        let mut diags = Vec::new();
+        let keyed = resolve_parameterized_builtin_type_with_subst(
+            "Keyed",
+            &args,
+            &reg,
+            &subst,
+            &mut diags,
+            0,
+        );
+        assert_eq!(
+            keyed,
+            Some(Type::Keyed(Box::new(Type::StructureRef("Vent".into())))),
+            "Keyed<T>[T:=Vent] (subst path) should resolve to the keyed-collection kind",
+        );
+        assert!(diags.is_empty(), "no diagnostics expected; got {:?}", diags);
+
+        let mut list_diags = Vec::new();
+        let list = resolve_parameterized_builtin_type_with_subst(
+            "List",
+            &args,
+            &reg,
+            &subst,
+            &mut list_diags,
+            0,
+        );
+        assert_eq!(
+            list,
+            Some(Type::List(Box::new(Type::StructureRef("Vent".into())))),
+        );
+        assert_ne!(
+            keyed, list,
+            "Keyed<Vent> must be distinct from List<Vent> (subst path)",
+        );
+    }
+
+    // Type resolution is position-blind: `Keyed<T>` resolves to a well-formed
+    // `Type::Keyed` regardless of whether it appears in a `sub` position (its only
+    // intended use) or a value position such as `param x : Keyed<Vent>`. The
+    // resolver therefore emits NO diagnostic for the latter — rejecting a
+    // value-position `Keyed<T>` with a clear compile error is deferred to γ/δ
+    // (access-by-key resolution + structural classification own that guard).
+    // Until then, `reify_eval::is_representable_cell_type` returning `false` for
+    // `Type::Keyed` (engine_eval.rs, test `is_representable_cell_type_rejects_keyed`)
+    // is the eval-layer backstop. This test pins the position-blindness so the
+    // deferral is explicit and a future γ/δ guard has a documented anchor.
+    #[test]
+    fn resolve_parameterized_keyed_is_position_blind_value_guard_deferred() {
+        let reg = TypeAliasRegistry::new();
+        let structure_names: HashSet<String> = ["Vent".to_string()].into_iter().collect();
+        let trait_names = HashSet::new();
+        let args = [named_type_expr("Vent")];
+
+        let mut diags = Vec::new();
+        let keyed = resolve_parameterized_builtin_type(
+            "Keyed",
+            &args,
+            &reg,
+            &mut diags,
+            &structure_names,
+            &trait_names,
+        );
+        assert_eq!(
+            keyed,
+            Some(Type::Keyed(Box::new(Type::StructureRef("Vent".into())))),
+            "Keyed<Vent> resolves structurally even in a value position",
+        );
+        assert!(
+            diags.is_empty(),
+            "type resolution is position-blind: no value-position diagnostic is emitted \
+             here (the guard is deferred to γ/δ); got {:?}",
+            diags,
         );
     }
 

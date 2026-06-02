@@ -1760,6 +1760,24 @@ pub enum DiagnosticCode {
     /// has no effect.  The solve continues with kernel defaults (this is advisory,
     /// not an error).
     BucklingOptionUnsupported,
+    /// Origin: `crates/reify-compiler/src/diagnostics.rs::dup_member_key_error`,
+    /// wired into the keyed-sub pre-pass in
+    /// `crates/reify-compiler/src/entity.rs` (`MemberDecl::Sub` arm).
+    ///
+    /// Canonical message form:
+    /// `"E_DUP_MEMBER_KEY: duplicate keyed member key '<key>' in keyed sub '<sub>'"`.
+    ///
+    /// Emitted as an `Error` when two members of the same `Keyed<T>`
+    /// sub-collection declare the same author-assigned String key. Keys must be
+    /// unique within one keyed collection (keys are author-assigned; no
+    /// auto-keys), so a duplicate is a compile-time identity collision. Carries
+    /// two labels: the duplicate occurrence ("duplicate key defined here") and
+    /// the first occurrence ("first defined here"), mirroring the duplicate
+    /// port-name / duplicate meta-key pre-pass diagnostics.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_DUP_MEMBER_KEY`
+    /// (see `docs/prds/keyed-collection-identity.md` task β).
+    DuplicateMemberKey,
 }
 
 /// A diagnostic message with location and optional labels.
