@@ -756,10 +756,8 @@ mod tests {
 /// MassProperties-reuse optimisation is deferred (design_decision #4).
 #[derive(Clone)]
 pub(crate) struct InverseDynamicsCache {
-    /// The (mechanism, trajectory, gravity)-hash key the cached `result` certifies.
-    // step-8: written by the cache-MISS path but first *read* by the step-10
-    // cache-HIT lookup (`key.matches`), which removes this allow.
-    #[allow(dead_code)]
+    /// The (mechanism, trajectory, gravity)-hash key the cached `result` certifies;
+    /// read by the cache-HIT lookup (`key.matches`) on the next invocation.
     key: InverseDynamicsCacheKey,
     /// Per-body `solid` content hashes (in `bodies` order), recorded so the warm
     /// state observes "the MassProperties only changed when a body solid changed"
@@ -846,6 +844,25 @@ fn undef_outcome() -> ComputeOutcome {
     }
 }
 
+/// Build the `Completed` outcome that donates `cache` as the node's warm state:
+/// the cache's `result` is returned to the output value cell and the cache itself
+/// is donated to the warm-state pool, sized via
+/// [`InverseDynamicsCache::into_opaque_state`] with `cost_per_byte` the reciprocal
+/// of that size (a bigger cached result is pricier to retain). Shared by the
+/// cache-HIT and cache-MISS paths of [`run_inverse_dynamics`] so both donate
+/// identically (mirrors the modal trampoline's single donation tail).
+fn completed_donating(cache: InverseDynamicsCache) -> ComputeOutcome {
+    let result = cache.result.clone();
+    let (state, size_bytes) = cache.into_opaque_state();
+    let cost_per_byte = if size_bytes > 0 { Some(1.0 / size_bytes as f64) } else { None };
+    ComputeOutcome::Completed {
+        result,
+        new_warm_state: Some(state),
+        cost_per_byte,
+        diagnostics: Vec::new(),
+    }
+}
+
 /// In-crate core behind [`solve_inverse_dynamics_trampoline`]: run RNEA inverse
 /// dynamics over a whole `MotionTrajectory`, with the task-ι warm-state cache.
 /// Returns an [`InverseDynamicsRun`] so in-crate tests can observe whether the
@@ -871,10 +888,10 @@ pub(crate) fn run_inverse_dynamics(
     prior_warm_state: Option<&OpaqueState>,
     cancellation: &CancellationHandle,
 ) -> InverseDynamicsRun {
-    // step-8 (cache-MISS path) only: the warm-state HIT lookup (step-10) and the
-    // cooperative per-sample cancellation polling (step-12) are not wired yet —
-    // bind the still-unused params so this staged GREEN compiles warning-clean.
-    let _ = (prior_warm_state, cancellation);
+    // step-10 wires the cache-HIT lookup below; cooperative per-sample
+    // cancellation polling is still deferred to step-12 — bind the unused handle
+    // so this staged GREEN compiles warning-clean.
+    let _ = cancellation;
 
     // Arity guard, mirroring eval_inverse_dynamics: inverse_dynamics(mechanism,
     // trajectory). The engine always supplies the two fn args, so this is defensive.
@@ -884,14 +901,27 @@ pub(crate) fn run_inverse_dynamics(
     let mechanism = &value_inputs[0];
     let trajectory = &value_inputs[1];
 
-    // Cache key (constant default gravity) + the body-granular solid-hash
-    // invalidation record, built up front so the donated warm state carries both.
+    // Cache key over the result-determining inputs (constant default gravity).
     let key = InverseDynamicsCacheKey::from_inputs(mechanism, trajectory, default_gravity());
-    let body_solid_hashes = body_solid_hashes(mechanism);
 
-    // Drive the per-sample RNEA loop through the shared stdlib seam so the result
-    // is single-sourced with the body-inline fallback. Any `None` (malformed
+    // ── cache HIT ──────────────────────────────────────────────────────────────
+    // A prior warm state whose key matches certifies its cached result for reuse:
+    // return it with reused=true WITHOUT re-running the per-sample RNEA loop. The
+    // cache is re-donated (cloned, since `prior_warm_state` is borrowed) so the node
+    // keeps its warm state and the next identical call can HIT again — a Completed
+    // outcome with new_warm_state=None would otherwise clear it.
+    if let Some(cache) = prior_warm_state.and_then(|s| s.downcast_ref::<InverseDynamicsCache>())
+        && cache.key.matches(&key)
+    {
+        return InverseDynamicsRun { outcome: completed_donating(cache.clone()), reused: true };
+    }
+
+    // ── cache MISS ───────────────────────────────────────────────────────────────
+    // Record the body-granular solid-hash invalidation record, then drive the
+    // per-sample RNEA loop through the shared stdlib seam so the result is
+    // single-sourced with the body-inline fallback. Any `None` (malformed
     // trajectory, closed-chain mechanism, or shape mismatch) collapses to η's Undef.
+    let body_solid_hashes = body_solid_hashes(mechanism);
     let samples = match motion_trajectory_samples(trajectory) {
         Some(s) => s,
         None => return InverseDynamicsRun { outcome: undef_outcome(), reused: false },
@@ -905,22 +935,9 @@ pub(crate) fn run_inverse_dynamics(
     }
     let result = Value::List(per_sample);
 
-    // Donate the finished result as warm state (cache MISS): the next call with a
-    // matching key reuses it (step-10). `cost_per_byte` is the reciprocal of the
-    // estimated retained size (a bigger cached result is pricier to keep), and
-    // `into_opaque_state` walks the result once to hand back that `size_bytes`.
-    let cache = InverseDynamicsCache { key, body_solid_hashes, result: result.clone() };
-    let (state, size_bytes) = cache.into_opaque_state();
-    let cost_per_byte = if size_bytes > 0 { Some(1.0 / size_bytes as f64) } else { None };
-    InverseDynamicsRun {
-        outcome: ComputeOutcome::Completed {
-            result,
-            new_warm_state: Some(state),
-            cost_per_byte,
-            diagnostics: Vec::new(),
-        },
-        reused: false,
-    }
+    // Donate the freshly-computed result as warm state so a later identical call HITs.
+    let cache = InverseDynamicsCache { key, body_solid_hashes, result };
+    InverseDynamicsRun { outcome: completed_donating(cache), reused: false }
 }
 
 /// `@optimized("dynamics::inverse_dynamics")` public `ComputeFn` for `fn
