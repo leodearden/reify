@@ -33,8 +33,11 @@
 //! **Bucket 2 — tracked producer-before-consumer.** The producer task has
 //! landed (DONE) but its consumer task is still PENDING, so no in-tree caller
 //! exists yet.  These pins carry an AUTO-RETIREMENT contract (see below).
-//!   - `crates/reify-stdlib/src/trajectory/impulse_shaper.rs` (consumer #3867)
 //!   - `crates/reify-stdlib/src/trajectory/sampling.rs` (consumer #3869)
+//!
+//! (The impulse-shaper pins — consumer #3867 (ζ) — were RETIRED once that task
+//! wired the `input_shape` dispatcher + `reify-eval` `worst_case_residual_fraction`
+//! consumer, per the auto-retirement contract below.)
 //!
 //! # Wide-scope trade-off
 //!
@@ -62,7 +65,8 @@
 //! non-test caller, leaves `allowed[]`, and assertion (b) auto-trips.  The
 //! owning consumer task MUST delete the corresponding per-file `#[test]` fn (or
 //! its rows) as part of the consumer-wiring commit:
-//!   - `impulse_shaper_producers_*` — owned by consumer task #3867 (ζ).
+//!   - `impulse_shaper_producers_*` — RETIRED by consumer task #3867 (ζ) once it
+//!     wired the `input_shape` dispatcher + `reify-eval` consumer.
 //!   - `sampling_producers_*`       — owned by consumer task #3869 (θ).
 //!
 //! The failure message lists every failing (file_suffix, fn_name) pair — search
@@ -345,49 +349,6 @@ fn shell_assembly_producers_are_g_allow_marked() {
         (
             "crates/reify-solver-elastic/src/shell_assembly.rs",
             "shell_element_stiffness_degenerate_ans",
-        ),
-    ];
-    assert_pins_are_g_allow_marked(result, PINS);
-}
-
-/// Bucket 2 — input-shaping (impulse-shaper) producers
-/// (`crates/reify-stdlib/src/trajectory/impulse_shaper.rs`).
-///
-/// Tracked producer-before-consumer: producer task #3866 (ε) has landed; the
-/// consumer task #3867 (ζ — `input_shape` dispatcher +
-/// `reify-eval/src/trajectory_ops.rs` eval wiring) is PENDING, so no in-tree
-/// caller exists yet.
-///
-/// **Removal contract**: consumer task #3867 MUST delete this entire `#[test]`
-/// fn as part of its consumer-wiring commit.  Auto-retirement: once #3867 wires
-/// the dispatcher these fns gain callers and leave `allowed[]`, tripping
-/// assertion (b) at the wide `crates/reify-*/src` scope.
-#[test]
-fn impulse_shaper_producers_are_g_allow_marked() {
-    let Some(result) = cached_audit() else {
-        return;
-    };
-    const PINS: &[(&str, &str)] = &[
-        ("crates/reify-stdlib/src/trajectory/impulse_shaper.rs", "zvd"),
-        (
-            "crates/reify-stdlib/src/trajectory/impulse_shaper.rs",
-            "cascade",
-        ),
-        (
-            "crates/reify-stdlib/src/trajectory/impulse_shaper.rs",
-            "amplitude_sum",
-        ),
-        (
-            "crates/reify-stdlib/src/trajectory/impulse_shaper.rs",
-            "trailing_time",
-        ),
-        (
-            "crates/reify-stdlib/src/trajectory/impulse_shaper.rs",
-            "residual_vibration",
-        ),
-        (
-            "crates/reify-stdlib/src/trajectory/impulse_shaper.rs",
-            "convolve_at",
         ),
     ];
     assert_pins_are_g_allow_marked(result, PINS);
