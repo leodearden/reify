@@ -80,6 +80,39 @@ fn xt_apply_force(x: &SpatialTransform6, f: &SpatialVector6) -> SpatialVector6 {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+/// Joint compliance parameters for spring-loaded and damped joints.
+///
+/// Used in the RNEA backward pass to compute additive spring and damping
+/// force contributions per PRD §7.1 (task ι).
+///
+/// * `spring_rate` — spring stiffness k (N·m/rad for revolute, N/m for
+///   prismatic); `None` means no spring force.
+/// * `damping` — viscous damping coefficient c (N·m·s/rad or N·s/m);
+///   `None` means no damping force.
+/// * `neutral` — rest joint coordinate (same units as `position`);
+///   unused when `spring_rate` is `None`.
+/// * `position` — current joint coordinate (`snap.value` at call time);
+///   unused when `spring_rate` is `None`.
+///
+/// **1-DOF only.** Multi-DOF spring/damping is deferred to a later v0.3
+/// follow-up (PRD §11.2).  A multi-DOF joint with compliance set will
+/// panic in release via an always-on assert in
+/// [`inverse_dynamics_open_chain`].
+pub struct JointCompliance {
+    /// Spring stiffness k: N·m/rad (revolute) or N/m (prismatic).
+    /// `None` → no spring contribution.
+    pub spring_rate: Option<f64>,
+    /// Viscous damping coefficient c: N·m·s/rad or N·s/m.
+    /// `None` → no damping contribution.
+    pub damping: Option<f64>,
+    /// Rest joint coordinate (same units as `position`).
+    /// Unused when `spring_rate` is `None`.
+    pub neutral: f64,
+    /// Current joint coordinate (`snap.value` at call time).
+    /// Unused when `spring_rate` is `None`.
+    pub position: f64,
+}
+
 /// Per-link descriptor supplied to [`inverse_dynamics_open_chain`].
 ///
 /// Links must be ordered in spanning-tree topological order so that every
@@ -119,6 +152,14 @@ pub struct RneaLink {
     pub q_dot: Vec<f64>,
     /// Generalized acceleration (one entry per subspace column / DOF).
     pub q_ddot: Vec<f64>,
+    /// Optional spring/damping compliance for this joint.
+    ///
+    /// `None` → no compliance contribution (identical τ output to pre-ι).
+    /// `Some(c)` → additive spring and/or damping terms are applied in the
+    /// τ-reshape step: `τ += −k·(position − neutral) − c_damp·q̇[0]`.
+    ///
+    /// **1-DOF only** — see [`JointCompliance`] and PRD §11.2.
+    pub compliance: Option<JointCompliance>,
 }
 
 /// Returns `[0.0, 0.0, -9.81]` — the PRD §12 Q1 default gravity vector (m/s²).
@@ -309,6 +350,7 @@ mod tests {
             inertia_about_com: [[0.0; 3]; 3], // point mass
             q_dot: vec![0.0],
             q_ddot: vec![0.0],
+            compliance: None,
         };
 
         let gravity = default_gravity(); // [0, 0, −9.81]
@@ -436,6 +478,7 @@ mod tests {
                 inertia_about_com: [[0.0, 0.0, 0.0], [0.0, 1.0 / 12.0, 0.0], [0.0, 0.0, 0.0]],
                 q_dot: vec![qd1],
                 q_ddot: vec![qdd1],
+                compliance: None,
             };
 
             // Link 1: revolute about +y at the tip of link 0 ([l1, 0, 0] = [1, 0, 0]
@@ -454,6 +497,7 @@ mod tests {
                 inertia_about_com: [[0.0, 0.0, 0.0], [0.0, 1.0 / 12.0, 0.0], [0.0, 0.0, 0.0]],
                 q_dot: vec![qd2],
                 q_ddot: vec![qdd2],
+                compliance: None,
             };
 
             let tau = inverse_dynamics_open_chain(&[link0, link1], default_gravity());
@@ -513,6 +557,7 @@ mod tests {
             inertia_about_com: [[0.1, 0.0, 0.0], [0.0, i_y, 0.0], [0.0, 0.0, 0.3]],
             q_dot: vec![0.0, 0.0],
             q_ddot: vec![alpha, a_z],
+            compliance: None,
         };
 
         let tau = inverse_dynamics_open_chain(&[link], default_gravity());
