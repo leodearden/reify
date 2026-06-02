@@ -9,6 +9,25 @@ use reify_compiler::{
     BooleanOp, CompiledGeometryOp, EntityKind, GeomRef, ModifyKind, PatternKind, PrimitiveKind,
     SweepKind, TransformKind, compile,
 };
+use reify_core::DiagnosticCode;
+
+/// Diagnostics excluding the task-4155 profile-precondition seam.
+///
+/// The sweep/sweep_guided op-lowering structural tests below intentionally use
+/// inline Solid operands (`sphere(...)`) as sweep profiles/paths purely to
+/// create Steps 0/1 and exercise GeomRef resolution. They predate the
+/// `GeometryProfileRequired` precondition (which correctly flags a Solid used
+/// where a Surface profile / Curve path is required) and assert only on op
+/// *structure*, not on profile validity. Filtering that one code preserves
+/// each test's lowering intent while letting the seam stay enabled.
+fn diagnostics_excluding_profile_required(
+    diags: &[reify_core::Diagnostic],
+) -> Vec<&reify_core::Diagnostic> {
+    diags
+        .iter()
+        .filter(|d| d.code != Some(DiagnosticCode::GeometryProfileRequired))
+        .collect()
+}
 
 #[test]
 fn entity_kind_display() {
@@ -837,10 +856,14 @@ fn compile_sweep_produces_sweep_kind() {
         parsed.errors
     );
     let compiled = compile(&parsed);
+    // Filter the task-4155 profile seam: this test sweeps a Solid `sphere`
+    // profile to exercise op lowering, which legitimately trips
+    // GeometryProfileRequired. Assert only on the remaining diagnostics.
+    let diags = diagnostics_excluding_profile_required(&compiled.diagnostics);
     assert!(
-        compiled.diagnostics.is_empty(),
+        diags.is_empty(),
         "expected no diagnostics, got: {:?}",
-        compiled.diagnostics
+        diags
     );
     let template = &compiled.templates[0];
     assert_eq!(
@@ -974,10 +997,11 @@ fn compile_sweep_emits_empty_args() {
         parsed.errors
     );
     let compiled = compile(&parsed);
+    let diags = diagnostics_excluding_profile_required(&compiled.diagnostics);
     assert!(
-        compiled.diagnostics.is_empty(),
+        diags.is_empty(),
         "expected no diagnostics, got: {:?}",
-        compiled.diagnostics
+        diags
     );
     let ops = &compiled.templates[0].realizations[0].operations;
     // ops[2] is Sweep(Sweep)
@@ -1201,10 +1225,11 @@ fn compile_sweep_guided_emits_empty_args() {
         parsed.errors
     );
     let compiled = compile(&parsed);
+    let diags = diagnostics_excluding_profile_required(&compiled.diagnostics);
     assert!(
-        compiled.diagnostics.is_empty(),
+        diags.is_empty(),
         "expected no diagnostics, got: {:?}",
-        compiled.diagnostics
+        diags
     );
     let ops = &compiled.templates[0].realizations[0].operations;
     // ops[3] is Sweep(SweepGuided)
