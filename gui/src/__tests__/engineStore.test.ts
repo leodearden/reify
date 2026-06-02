@@ -1825,4 +1825,86 @@ describe('engineStore reconcileToTree — mesh pruning (step-1)', () => {
       dispose();
     });
   });
+
+  it('reconcileToTree retains a mesh/value whose owner is a deep child in the tree', () => {
+    // Exercises the recursive collectPaths branch — previously all test trees
+    // were flat (no children), so a regression that stopped recursing would
+    // silently prune all nested-entity meshes/values/constraints.
+    createRoot((dispose) => {
+      const spy = vi.fn();
+      const store = createEngineStore({ onEntityRemoved: spy });
+
+      // Live mesh: owner = 'CapstanDrive.shuttle.plate', a DEEP child in tree
+      const liveMeshKey = 'CapstanDrive.shuttle.plate#realization0';
+      const liveMesh: MeshData = {
+        entity_path: liveMeshKey,
+        vertices: new Float32Array([0, 1, 2]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: null,
+      };
+
+      // Orphan mesh: owner = 'ShuttlePlates', NOT present anywhere in tree
+      const orphanMeshKey = 'ShuttlePlates#realization0';
+      const orphanMesh: MeshData = {
+        entity_path: orphanMeshKey,
+        vertices: new Float32Array([3, 4, 5]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: null,
+      };
+
+      // Live value: entity_path = 'CapstanDrive.shuttle.plate', same deep child
+      const liveValue: ValueData = {
+        cell_id: 'cell_nested',
+        name: 'thickness',
+        value: '3.0',
+        unit: 'mm',
+        determinacy: 'determined',
+        entity_path: 'CapstanDrive.shuttle.plate',
+        kind: 'Param',
+        freshness: 'final',
+      };
+
+      store.applyMeshUpdate(liveMesh);
+      store.applyMeshUpdate(orphanMesh);
+      store.applyValueUpdates([liveValue]);
+
+      // Nested tree: CapstanDrive → CapstanDrive.shuttle → CapstanDrive.shuttle.plate
+      const tree: EntityTreeNode[] = [
+        {
+          entity_path: 'CapstanDrive',
+          kind: 'structure',
+          type_name: null,
+          has_mesh: false,
+          trait_geometry: false,
+          freshness: 'final',
+          children: [
+            {
+              entity_path: 'CapstanDrive.shuttle',
+              kind: 'structure',
+              type_name: null,
+              has_mesh: false,
+              trait_geometry: false,
+              freshness: 'final',
+              children: [
+                makeTreeNode('CapstanDrive.shuttle.plate'),
+              ],
+            },
+          ],
+        },
+      ];
+
+      store.reconcileToTree(tree);
+
+      // Live entities retained (deep child path was collected via recursion)
+      expect(store.state.meshes[liveMeshKey]).toBeDefined();
+      expect(store.state.values['cell_nested']).toBeDefined();
+
+      // Orphan mesh pruned
+      expect(store.state.meshes[orphanMeshKey]).toBeUndefined();
+      expect(spy).toHaveBeenCalledWith(orphanMeshKey);
+      expect(spy).toHaveBeenCalledTimes(1);
+
+      dispose();
+    });
+  });
 });

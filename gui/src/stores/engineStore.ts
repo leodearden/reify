@@ -270,14 +270,25 @@ export function createEngineStore(options?: EngineStoreOptions) {
   /**
    * Reconcile engineStore entity set against the authoritative entity tree.
    *
-   * After collecting the set of live entity paths from the tree, prunes any
-   * mesh whose owner path (entity_path up to the first `#` separator) is absent
-   * from the live set. Reuses removeMesh so onEntityRemoved fires and selection
-   * clears identically to delta-driven removals.
+   * Collects all live entity paths from the tree (including children at every
+   * depth), then prunes stale meshes, values, and constraints.
    *
-   * Guards: if the tree yields zero live paths (not loaded yet), returns
-   * immediately without pruning so the whole mesh set is never wiped before
-   * the first tree arrives.
+   * Mesh pruning uses a dual check: prune a mesh key if the key itself is not
+   * in livePaths AND its owner path (entity_path up to the first `#`) is not
+   * in livePaths either. The direct-key check is needed because realization
+   * nodes carry the full mesh key (e.g. `"Bracket#realization0"`) as their
+   * entity_path (types.ts:357-360), so a mesh that is directly present in the
+   * tree is never pruned even if owner-path matching would otherwise remove it.
+   * Pruning is intentionally owner-granular for the cross-structure case: a
+   * mesh is retained as long as its parent structure node is still live,
+   * regardless of whether the specific realization node is present.
+   *
+   * Guards: if the tree yields zero live paths, returns immediately without
+   * pruning. This conflates two cases — tree not yet loaded (do nothing) and
+   * a genuinely empty design (all parts deleted). In the genuinely-empty case
+   * stale meshes/values/constraints persist until the next non-empty refresh.
+   * This is a known limitation: a reliable "tree loaded" signal would let us
+   * distinguish the two cases and reconcile the empty-design path correctly.
    */
   function reconcileToTree(tree: EntityTreeNode[]): void {
     // Collect all live entity paths from the tree recursively.
@@ -290,15 +301,17 @@ export function createEngineStore(options?: EngineStoreOptions) {
     }
     collectPaths(tree);
 
-    // Guard: if no live paths collected, the tree is not loaded yet.
-    // Pruning here would wipe the entire scene and reproduce the
-    // empty-viewport failure mode — return without touching any entities.
+    // Guard: if no live paths collected, the tree is not loaded yet (or the
+    // design is genuinely empty — see known limitation in the JSDoc above).
+    // Either way, return without pruning to avoid a stale-tree wipe.
     if (livePaths.size === 0) return;
 
-    // Prune orphan meshes whose owner (path before the first '#') is not live.
+    // Prune orphan meshes.  Check the exact key first (realization nodes carry
+    // it) and fall back to owner-path matching so a mesh whose parent structure
+    // is still live is never incorrectly pruned.
     for (const key of Object.keys(state.meshes)) {
       const owner = key.includes('#') ? key.slice(0, key.indexOf('#')) : key;
-      if (!livePaths.has(owner)) {
+      if (!livePaths.has(key) && !livePaths.has(owner)) {
         removeMesh(key);
       }
     }

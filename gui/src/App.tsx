@@ -298,6 +298,15 @@ const App: Component = () => {
   const [entityTree, setEntityTree] = createSignal<EntityTreeNode[]>([]);
 
   function refreshEntityTree(): void {
+    // Ordering note: reconcileToTree runs against the tree snapshot fetched
+    // here.  Mesh/value deltas that arrive via subscriptions between the
+    // bridgeGetEntityTree() call and this .then() callback will be reconciled
+    // against a slightly-stale snapshot — a freshly-created entity whose delta
+    // lands in that window could theoretically be pruned.  In practice the
+    // window is small and refreshEntityTree only fires at quiescent points
+    // (eval→idle settle and engine reinit), so flicker from this race has not
+    // been observed.  If it ever is, gating the prune on entity age relative
+    // to the snapshot would address it.
     bridgeGetEntityTree()
       .then((t) => {
         if (alive) {
