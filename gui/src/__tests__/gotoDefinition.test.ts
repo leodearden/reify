@@ -21,6 +21,7 @@ vi.mock('@codemirror/state', () => ({
   // Minimal mock
 }));
 
+import type { EditorView } from '@codemirror/view';
 import { invoke } from '@tauri-apps/api/core';
 import { reifyGotoDefinition, gotoDefinitionCommand } from '../editor/gotoDefinition';
 
@@ -798,7 +799,7 @@ describe('gotoDefinitionCommand', () => {
       },
     });
 
-    const result = command(mockView);
+    const result = command(mockView as unknown as EditorView);
     expect(result).toBe(true); // (d) returns true
 
     await flushMacrotasks();
@@ -836,7 +837,7 @@ describe('gotoDefinitionCommand', () => {
       state: { selection: { main: { head: 10 } } },
     });
 
-    command(mockView);
+    command(mockView as unknown as EditorView);
     await flushMacrotasks();
 
     expect(onNavigate).toHaveBeenCalledWith('file:///other.ri', 5, 2);
@@ -848,7 +849,7 @@ describe('gotoDefinitionCommand', () => {
 
     const command = gotoDefinitionCommand(() => 'file:///test.ri', vi.fn());
     const mockView = makeMockView();
-    const result = command(mockView);
+    const result = command(mockView as unknown as EditorView);
     expect(result).toBe(true);
 
     await flushMacrotasks();
