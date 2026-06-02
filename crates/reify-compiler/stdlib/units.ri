@@ -100,6 +100,10 @@ pub type HeatCapacity = Energy / Temperature
 /// dimension vector resolved by the compiler.
 pub type InverseAmount = Dimensionless / AmountOfSubstance
 
+/// Action dimension (J·s = kg·m²·s⁻¹) — dimension of the Planck constant.
+/// Named "Action" after the physical quantity (integral of energy over time).
+pub type Action = Energy * Time
+
 /// Standard acceleration of gravity (g_n), 9.80665 m/s² — BIPM/CGPM 1901 §70
 /// reference value. Use in body-force loads: `gravity(5 * STANDARD_GRAVITY())`.
 /// Body uses the compositional `1m / (1s * 1s)` form rather than the compound
@@ -133,3 +137,8 @@ pub fn BOLTZMANN_CONSTANT() -> HeatCapacity {
 /// first `*` (eval_div requires Scalar in the numerator; Real / Scalar is
 /// unhandled). Net dimension: mol¹ / mol¹ / mol¹ = mol⁻¹ = InverseAmount.
 pub fn AVOGADRO_CONSTANT() -> InverseAmount { 6.02214076e23 * 1mol / 1mol / 1mol }
+
+/// Planck constant (h), 6.62607015×10⁻³⁴ J·s — exact by the 2019 SI
+/// redefinition (26th CGPM, Resolution 1). Dimension: Action = kg·m²·s⁻¹.
+/// Body uses base units (J = kg·m²·s⁻² from std.si_units, unavailable here).
+pub fn PLANCK_CONSTANT() -> Action { 6.62607015e-34 * 1kg * 1m * 1m / 1s }
