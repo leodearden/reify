@@ -7,7 +7,9 @@
 //!   Elastic poissons_ratio constraint (§6.2).
 
 use reify_core::Severity;
-use reify_test_support::compile_source_with_stdlib;
+use reify_eval::CheckResult;
+use reify_ir::Satisfaction;
+use reify_test_support::{check_source_with_stdlib, compile_source_with_stdlib};
 
 // ── §6.1 TemperatureDependent — conformance (compile-time) ───────────────────
 
@@ -58,6 +60,115 @@ fn temperature_dependent_supplies_350k_is_clean() {
         errors.is_empty(),
         "expected no Severity::Error diagnostics when supplying reference_temperature = 350.0K, \
          got: {:?}",
+        errors
+    );
+}
+
+// ── §6.2 Elastic poissons_ratio constraint — eval-time ───────────────────────
+
+/// poissons_ratio = 0.7 violates the (0, 0.5) physical bound.
+/// All three Elastic params supplied to isolate the constraint variable.
+///
+/// RED: Elastic has no poissons_ratio constraint yet → no Violated entry.
+#[test]
+fn elastic_poissons_ratio_high_is_violated() {
+    let src = r#"
+        structure def StiffMat : Elastic {
+            param youngs_modulus : Real = 200.0
+            param poissons_ratio : Real = 0.7
+            param shear_modulus  : Real = 77.0
+        }
+    "#;
+    let result: CheckResult = check_source_with_stdlib(src);
+    let has_violated = result
+        .constraint_results
+        .iter()
+        .any(|e| e.satisfaction == Satisfaction::Violated);
+    assert!(
+        has_violated,
+        "expected at least one Violated constraint for poissons_ratio=0.7 (outside (0,0.5)), \
+         got: {:?}",
+        result.constraint_results
+    );
+    let errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected at least one Severity::Error diagnostic alongside the Violated constraint, \
+         got none"
+    );
+}
+
+/// poissons_ratio = -0.1 violates the lower bound (must be > 0, auxetic excluded).
+/// All three Elastic params supplied.
+///
+/// RED: Elastic has no poissons_ratio constraint yet → no Violated entry.
+#[test]
+fn elastic_poissons_ratio_negative_is_violated() {
+    let src = r#"
+        structure def AuxeticMat : Elastic {
+            param youngs_modulus : Real = 100.0
+            param poissons_ratio : Real = -0.1
+            param shear_modulus  : Real = 40.0
+        }
+    "#;
+    let result: CheckResult = check_source_with_stdlib(src);
+    let has_violated = result
+        .constraint_results
+        .iter()
+        .any(|e| e.satisfaction == Satisfaction::Violated);
+    assert!(
+        has_violated,
+        "expected at least one Violated constraint for poissons_ratio=-0.1 (below 0), \
+         got: {:?}",
+        result.constraint_results
+    );
+    let errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected at least one Severity::Error diagnostic alongside the Violated constraint, \
+         got none"
+    );
+}
+
+/// poissons_ratio = 0.3 is inside (0, 0.5) — constraint should be Satisfied.
+/// Expects: no Violated entry and no Severity::Error diagnostics.
+#[test]
+fn elastic_poissons_ratio_valid_is_clean() {
+    let src = r#"
+        structure def NormalMat : Elastic {
+            param youngs_modulus : Real = 200.0
+            param poissons_ratio : Real = 0.3
+            param shear_modulus  : Real = 77.0
+        }
+    "#;
+    let result: CheckResult = check_source_with_stdlib(src);
+    let violated: Vec<_> = result
+        .constraint_results
+        .iter()
+        .filter(|e| e.satisfaction == Satisfaction::Violated)
+        .collect();
+    assert!(
+        violated.is_empty(),
+        "expected no Violated constraint for poissons_ratio=0.3 (inside (0,0.5)), \
+         got: {:?}",
+        violated
+    );
+    let errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Severity::Error diagnostics for valid poissons_ratio=0.3, got: {:?}",
         errors
     );
 }
