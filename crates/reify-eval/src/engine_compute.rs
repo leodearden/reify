@@ -1632,4 +1632,163 @@ mod tests {
              by step-14's auto-seed-then-donate",
         );
     }
+
+    // ── task-4079 step-5: run_compute_dispatch installs solver-progress context ──
+    //
+    // Proves that run_compute_dispatch threads the Engine's solver_progress_sink
+    // and active_solve_cancel into the thread-local SolveDispatchContext visible
+    // to the trampoline.
+    //
+    // Fails to COMPILE until step-6 adds Engine::set_solver_progress_sink,
+    // Engine::set_active_solve_cancel, and the context-install wiring inside
+    // run_compute_dispatch → RED.
+
+    /// Observed state: (sink_present, cancel_present, cancel_was_cancelled).
+    static CTX_OBSERVER_RESULT: OnceLock<Mutex<Option<(bool, bool, bool)>>> = OnceLock::new();
+
+    fn ctx_observer_fn(
+        _value_inputs: &[Value],
+        _realization_inputs: &[RealizationReadHandle],
+        _options: &Value,
+        _prior_warm_state: Option<&OpaqueState>,
+        _cancellation: &CancellationHandle,
+    ) -> ComputeOutcome {
+        use crate::solver_progress::current_solve_dispatch_context;
+        let observation = current_solve_dispatch_context().map(|(sink, cancel)| {
+            let sink_present = sink.is_some();
+            let cancel_present = cancel.is_some();
+            let cancel_cancelled = cancel.as_ref().is_some_and(|c| c.is_cancelled());
+            (sink_present, cancel_present, cancel_cancelled)
+        });
+        *CTX_OBSERVER_RESULT
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap() = observation;
+        ComputeOutcome::Completed {
+            result: Value::Int(0),
+            new_warm_state: None,
+            cost_per_byte: None,
+            diagnostics: vec![],
+        }
+    }
+
+    #[test]
+    fn run_compute_dispatch_installs_solver_progress_context_for_trampoline() {
+        use std::sync::Arc;
+
+        use crate::solver_progress::{SolverProgressSink, SolverProgressUpdate};
+
+        // Reset static.
+        if let Some(m) = CTX_OBSERVER_RESULT.get() {
+            *m.lock().unwrap() = None;
+        }
+
+        // Minimal no-op recording sink.
+        struct NoopSink;
+        impl SolverProgressSink for NoopSink {
+            fn on_iteration(&self, _update: &SolverProgressUpdate) {}
+        }
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn("test::ctx_observer", ctx_observer_fn as ComputeFn);
+
+        // Install sink and a NON-cancelled handle.
+        engine.set_solver_progress_sink(Arc::new(NoopSink));
+        let handle = CancellationHandle::new();
+        engine.set_active_solve_cancel(Some(handle));
+
+        let cell = ValueCellId::new("T", "ctx_obs");
+        let c_id = ComputeNodeId::new("T", 0);
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Int(0), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        engine.run_compute_dispatch(
+            &c_id,
+            std::slice::from_ref(&cell),
+            "test::ctx_observer",
+            &[Value::Int(0)],
+            &[],
+            &Value::Undef,
+            &CancellationHandle::new(),
+            VersionId(2),
+        ).expect("dispatch must Ok");
+
+        let observed = CTX_OBSERVER_RESULT
+            .get()
+            .expect("trampoline must have set the static")
+            .lock()
+            .unwrap()
+            .expect("trampoline must observe Some context");
+        assert!(observed.0, "sink must be visible to the trampoline");
+        assert!(observed.1, "cancel handle must be visible to the trampoline");
+        assert!(!observed.2, "cancel handle must NOT be cancelled yet");
+    }
+
+    #[test]
+    fn run_compute_dispatch_installs_pre_cancelled_handle_in_context() {
+        use std::sync::Arc;
+
+        use crate::solver_progress::{SolverProgressSink, SolverProgressUpdate};
+
+        // Reset static (reuse CTX_OBSERVER_RESULT — runs serially in a
+        // different test but share the reset guard).
+        if let Some(m) = CTX_OBSERVER_RESULT.get() {
+            *m.lock().unwrap() = None;
+        }
+
+        struct NoopSink2;
+        impl SolverProgressSink for NoopSink2 {
+            fn on_iteration(&self, _update: &SolverProgressUpdate) {}
+        }
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn("test::ctx_observer_cancelled", ctx_observer_fn as ComputeFn);
+
+        engine.set_solver_progress_sink(Arc::new(NoopSink2));
+        let cancelled_handle = CancellationHandle::new();
+        cancelled_handle.cancel();
+        engine.set_active_solve_cancel(Some(cancelled_handle));
+
+        let cell = ValueCellId::new("T", "ctx_can");
+        let c_id = ComputeNodeId::new("T", 0);
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Int(0), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        // run_compute_dispatch passes a fresh uncancelled handle as the
+        // `cancellation` arg — the pre-cancelled state lives in the context.
+        engine.run_compute_dispatch(
+            &c_id,
+            std::slice::from_ref(&cell),
+            "test::ctx_observer_cancelled",
+            &[Value::Int(0)],
+            &[],
+            &Value::Undef,
+            &CancellationHandle::new(),
+            VersionId(2),
+        ).expect("dispatch must Ok");
+
+        let observed = CTX_OBSERVER_RESULT
+            .get()
+            .expect("trampoline must have set the static")
+            .lock()
+            .unwrap()
+            .expect("trampoline must observe Some context");
+        assert!(observed.0, "sink must be visible");
+        assert!(observed.1, "cancel handle must be visible");
+        assert!(observed.2, "pre-cancelled handle must show is_cancelled==true in context");
+    }
 }
