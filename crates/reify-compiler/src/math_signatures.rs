@@ -26,22 +26,24 @@ use reify_ir::CompiledExpr;
 ///
 /// Case-sensitive: Reify function names are snake_case.
 //
-// STUB (pre-2): empty until populated in step-10. `#[allow(dead_code)]`
-// because `mod math_signatures` is private and nothing references this yet —
-// the first reference (`is_math_typed_fn` + the units.rs test module) lands in
-// steps 9/10, where this allow is removed.
+// `#[allow(dead_code)]` until step-14: the units.rs test module references this
+// slice (`#[cfg(test)]`), and `is_math_typed_fn` reads it, but neither is
+// reachable from a non-test build until the `expr.rs` arm is wired in step-14 —
+// the allow is removed there once the family is production-live. (β extends this
+// slice with the linear-algebra operation names later.)
 #[allow(dead_code)]
-pub const MATH_CONSTRUCTION_NAMES: &[&str] = &[];
+pub const MATH_CONSTRUCTION_NAMES: &[&str] = &["vec", "matrix", "diag", "identity"];
 
 /// Is `name` a math-linalg construction builtin? Name-only classification,
-/// mirroring `units::is_geometry_query`.
+/// mirroring `units::is_geometry_query` (a `.contains` over the single-source-of-
+/// truth [`MATH_CONSTRUCTION_NAMES`] slice). Case-sensitive.
 //
-// STUB (pre-2): always `false` until step-10. `#[allow(dead_code)]` because it
-// is not yet referenced from production code — the `expr.rs` arm that calls it
-// is wired in step-14, where this allow is removed.
+// `#[allow(dead_code)]` until step-14: the only production caller is the
+// `expr.rs::resolve_function_overload` arm wired in step-14 (test code aside);
+// the allow is removed there.
 #[allow(dead_code)]
-pub(crate) fn is_math_typed_fn(_name: &str) -> bool {
-    false
+pub(crate) fn is_math_typed_fn(name: &str) -> bool {
+    MATH_CONSTRUCTION_NAMES.contains(&name)
 }
 
 /// Result type for a math-linalg construction builtin, derived from the
