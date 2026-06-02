@@ -39,6 +39,41 @@ pub(crate) fn dup_member_key_error(
     .with_label(DiagnosticLabel::new(first_span, "first defined here"))
 }
 
+/// Detect duplicate author-assigned keys within one `Keyed<T>` sub-collection.
+///
+/// Mirrors the duplicate-meta-key / duplicate-port-name pre-pass loop in
+/// `crate::entity`: walk the entries keeping a map of first-seen `key → span`,
+/// and emit one [`dup_member_key_error`] per *later* occurrence of an
+/// already-seen key (the first occurrence's span is retained as the
+/// "first defined here" anchor). Returns an empty vec when all keys are
+/// distinct. Keys are author-assigned literals known at compile time, so this
+/// is a compile-time check (PRD §9.3).
+pub(crate) fn check_duplicate_member_keys(
+    sub_name: &str,
+    entries: &[reify_ast::KeyedSubMemberEntry],
+) -> Vec<Diagnostic> {
+    use std::collections::HashMap;
+
+    let mut first_seen: HashMap<&str, SourceSpan> = HashMap::new();
+    let mut diagnostics = Vec::new();
+    for entry in entries {
+        match first_seen.get(entry.key.as_str()) {
+            Some(&first_span) => {
+                diagnostics.push(dup_member_key_error(
+                    sub_name,
+                    &entry.key,
+                    first_span,
+                    entry.span,
+                ));
+            }
+            None => {
+                first_seen.insert(entry.key.as_str(), entry.span);
+            }
+        }
+    }
+    diagnostics
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
