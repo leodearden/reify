@@ -294,6 +294,39 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                 translation: [0.0, 0.0, 0.0],
             }
         }
+        // `affine_shear_AB(k)` sets the single off-diagonal cell `linear[A][B] = k`
+        // (output axis A receives += k·input axis B), e.g. `affine_shear_xy` →
+        // `linear[0][1] = k` (x' = x + k·y). The diagonal stays 1, so det = 1
+        // (volume-preserving). Exactly one dimensionless, finite scalar argument;
+        // otherwise `Value::Undef`.
+        "affine_shear_xy" | "affine_shear_xz" | "affine_shear_yx" | "affine_shear_yz"
+        | "affine_shear_zx" | "affine_shear_zy" => {
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            if !args[0].dimension().is_dimensionless() {
+                return Some(Value::Undef);
+            }
+            let k = match args[0].as_f64() {
+                Some(v) if v.is_finite() => v,
+                _ => return Some(Value::Undef),
+            };
+            let (row, col) = match name {
+                "affine_shear_xy" => (0, 1),
+                "affine_shear_xz" => (0, 2),
+                "affine_shear_yx" => (1, 0),
+                "affine_shear_yz" => (1, 2),
+                "affine_shear_zx" => (2, 0),
+                "affine_shear_zy" => (2, 1),
+                _ => unreachable!(),
+            };
+            let mut linear = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+            linear[row][col] = k;
+            Value::AffineMap {
+                linear,
+                translation: [0.0, 0.0, 0.0],
+            }
+        }
 
         // --- Transform operations ---
         "frame_to_frame" => {
