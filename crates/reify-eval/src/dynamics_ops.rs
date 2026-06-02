@@ -883,15 +883,25 @@ fn completed_donating(cache: InverseDynamicsCache) -> ComputeOutcome {
 /// arity/shape mismatch), yields [`undef_outcome`] — η's exact Undef convention —
 /// donating no warm state. Gravity is the constant [`default_gravity`] (PRD §12
 /// q1), folded into the cache key.
+///
+/// Honours cooperative cancellation (PRD §6/§9.1): polls `cancellation` on entry
+/// and at every per-sample boundary, returning [`ComputeOutcome::Cancelled`] (no
+/// result, no warm state) within one sample interval of a fired cancel.
 pub(crate) fn run_inverse_dynamics(
     value_inputs: &[Value],
     prior_warm_state: Option<&OpaqueState>,
     cancellation: &CancellationHandle,
 ) -> InverseDynamicsRun {
-    // step-10 wires the cache-HIT lookup below; cooperative per-sample
-    // cancellation polling is still deferred to step-12 — bind the unused handle
-    // so this staged GREEN compiles warning-clean.
-    let _ = cancellation;
+    // ── (0) entry cancellation checkpoint ────────────────────────────────────
+    // Coarse cooperative cancellation (CN-contract §2 / PRD §6/§9.1): poll on
+    // entry, then again at every per-sample boundary (the MISS loop below). An
+    // entry poll alone cannot meet §9.1's "abort within one sample interval" — the
+    // per-sample poll is what bounds the abort latency. A fired cancel returns
+    // ComputeOutcome::Cancelled (reused = false), donating no warm state and
+    // discarding any partial per-sample output, mirroring run_modal_analysis.
+    if cancellation.is_cancelled() {
+        return InverseDynamicsRun { outcome: ComputeOutcome::Cancelled, reused: false };
+    }
 
     // Arity guard, mirroring eval_inverse_dynamics: inverse_dynamics(mechanism,
     // trajectory). The engine always supplies the two fn args, so this is defensive.
@@ -928,6 +938,14 @@ pub(crate) fn run_inverse_dynamics(
     };
     let mut per_sample = Vec::with_capacity(samples.len());
     for sample in samples {
+        // Per-sample cancellation checkpoint (PRD §9.1, "abort within one sample
+        // interval"): poll before each sample's RNEA solve so a cancel fired
+        // mid-trajectory is observed at the next sample boundary. The partial
+        // `per_sample` is dropped — a Cancelled outcome returns no result Value and
+        // donates no warm state.
+        if cancellation.is_cancelled() {
+            return InverseDynamicsRun { outcome: ComputeOutcome::Cancelled, reused: false };
+        }
         match inverse_dynamics_sample(mechanism, sample) {
             Some(forces) => per_sample.push(Value::List(forces)),
             None => return InverseDynamicsRun { outcome: undef_outcome(), reused: false },
