@@ -283,3 +283,90 @@ fn avogadro_constant_evaluates_to_6p02214076e23_si_with_inverse_amount_dimension
         ),
     }
 }
+
+// ─── Test 7: PLANCK_CONSTANT present and has correct signature ────────────────
+
+/// `PLANCK_CONSTANT` must be present in `std/units`, be `pub`, take no
+/// parameters, and return `Scalar<ENERGY * TIME>` (= kg·m²·s⁻¹).
+///
+/// h = 6.62607015×10⁻³⁴ J·s exactly — 2019 SI redefinition (CGPM 26th meeting).
+#[test]
+fn planck_constant_function_present_in_std_units() {
+    let module = common::units_module();
+
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "PLANCK_CONSTANT")
+        .unwrap_or_else(|| {
+            panic!(
+                "PLANCK_CONSTANT not found in std/units; found functions: {:?}",
+                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+            )
+        });
+
+    assert!(func.is_pub, "PLANCK_CONSTANT should be pub");
+    assert!(
+        func.params.is_empty(),
+        "PLANCK_CONSTANT should take no params, got: {:?}",
+        func.params
+    );
+
+    let expected_dim = DimensionVector::ENERGY.mul(&DimensionVector::TIME);
+    assert_eq!(
+        func.return_type,
+        Type::Scalar {
+            dimension: expected_dim
+        },
+        "PLANCK_CONSTANT return type should be Scalar<ENERGY * TIME>, got {:?}",
+        func.return_type
+    );
+}
+
+// ─── Test 8: PLANCK_CONSTANT evaluates to 6.62607015e-34 J·s ─────────────────
+
+/// Evaluating `PLANCK_CONSTANT()` via `eval_expr` must yield a
+/// `Value::Scalar` with `si_value ≈ 6.62607015e-34` and
+/// `dimension = ENERGY * TIME` (kg·m²·s⁻¹).
+///
+/// h = 6.62607015×10⁻³⁴ J·s exactly (2019 SI redefinition).
+#[test]
+fn planck_constant_evaluates_to_6p62607015e_minus_34_si_with_action_dimension() {
+    let module = common::units_module();
+
+    let expected_dim = DimensionVector::ENERGY.mul(&DimensionVector::TIME);
+    let call_expr = CompiledExpr::user_function_call(
+        "PLANCK_CONSTANT".to_string(),
+        vec![],
+        Type::Scalar {
+            dimension: expected_dim,
+        },
+    );
+    let values = ValueMap::new();
+    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    let result = reify_expr::eval_expr(&call_expr, &ctx);
+
+    match result {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(
+                dimension,
+                DimensionVector::ENERGY.mul(&DimensionVector::TIME),
+                "PLANCK_CONSTANT() should have ENERGY * TIME dimension, got {:?}",
+                dimension
+            );
+            common::assert_eq_rel(
+                si_value,
+                6.62607015e-34,
+                1e-12,
+                "PLANCK_CONSTANT() si_value",
+            );
+        }
+        other => panic!(
+            "PLANCK_CONSTANT() should return Value::Scalar, got {:?}",
+            other
+        ),
+    }
+}
