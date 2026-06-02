@@ -36,6 +36,7 @@ pub(crate) fn eval_construct(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
         "vec" => eval_vec(args),
         "matrix" => eval_matrix(args),
+        "diag" => eval_diag(args),
         _ => return None,
     })
 }
@@ -78,6 +79,32 @@ fn eval_matrix(args: &[Value]) -> Value {
         None => return Value::Undef,
     };
     build_tensor_rank2(nrows, ncols, &data, dim)
+}
+
+/// `diag(list)` → N×N nested [`Value::Tensor`] with the list on the diagonal
+/// and dimension-sharing zeros off-diagonal.
+///
+/// Extracts a uniform `(values, dim)` from the single `Value::List` argument,
+/// then assembles a dense row-major N×N array with element `i` at `(i, i)` and
+/// `0.0` elsewhere. `build_tensor_rank2` turns the off-diagonal `0.0`s into
+/// `from_real_scalar(0.0, dim)` cells, so they share the element dimension
+/// (Real when dimensionless, dimensioned `Scalar` otherwise). Wrong arity, a
+/// non-`List` arg, or a malformed list (empty / mixed-dimension / non-numeric)
+/// collapses to [`Value::Undef`].
+fn eval_diag(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::Undef;
+    }
+    let (vals, dim) = match list_components_f64(&args[0]) {
+        Some(c) => c,
+        None => return Value::Undef,
+    };
+    let n = vals.len();
+    let mut data = vec![0.0_f64; n * n];
+    for (i, &v) in vals.iter().enumerate() {
+        data[i * n + i] = v;
+    }
+    build_tensor_rank2(n, n, &data, dim)
 }
 
 /// Extract uniform numeric components from a `Value::List` into
