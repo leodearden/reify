@@ -2520,7 +2520,7 @@ impl Engine {
     /// execution remains per-caller due to differing post-processing requirements:
     /// `build()` populates engine state (conformance/kinematic queries, GHR, journal)
     /// interleaved within the template loop; `distance_between_placed()` skips it.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     fn collect_export_bodies_walk(
         module: &CompiledModule,
         terminal_handles: &[Vec<Option<KernelHandle>>],

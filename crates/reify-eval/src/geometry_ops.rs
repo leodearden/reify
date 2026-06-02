@@ -4827,6 +4827,13 @@ pub(crate) fn reachable_template_indices(
     reached
 }
 
+/// Pre-filter callback type for the placed-realization walk.
+///
+/// Called before `ApplyTransform` with `(t_idx, r_idx, entity_path)`.
+/// Returns `false` to skip both the transform and visitor call for that realization.
+/// Use `None` for the default "include all" behavior.
+pub(crate) type PlacedPreFilter<'a> = Option<&'a dyn Fn(usize, usize, &str) -> bool>;
+
 /// Placed-product body collected by the T7 export walk (`surface_export_bodies`).
 ///
 /// The `entity_path` is the composed PRD §11.2 path; `handle_id` is the
@@ -4889,7 +4896,7 @@ pub(crate) fn walk_placed_realizations<V>(
     // tessellation hot path).  Pass `Some(f)` in `distance_between_placed` to
     // skip transforms for realizations not matching the two target paths, avoiding
     // accumulation of transient placed handles in the kernel store on repeated calls.
-    pre_filter: Option<&dyn Fn(usize, usize, &str) -> bool>,
+    pre_filter: PlacedPreFilter<'_>,
     visit_realization: &mut V,
 ) where
     V: FnMut(
@@ -5100,7 +5107,7 @@ pub(crate) fn surface_export_bodies(
     // `None` = include all non-skipped bodies (default for `build()`).
     // `Some(f)` = also skip bodies whose path doesn't satisfy `f` (used by
     // `distance_between_placed` to avoid minting transient handles for non-target paths).
-    pre_filter: Option<&dyn Fn(usize, usize, &str) -> bool>,
+    pre_filter: PlacedPreFilter<'_>,
     export_bodies: &mut Vec<ExportBody>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -5111,7 +5118,7 @@ pub(crate) fn surface_export_bodies(
     let combined_filter: &dyn Fn(usize, usize, &str) -> bool =
         &|t: usize, r: usize, path: &str| {
             !skip.get(t).is_some_and(|set| set.contains(&r))
-                && pre_filter.map_or(true, |f| f(t, r, path))
+                && pre_filter.is_none_or(|f| f(t, r, path))
         };
     walk_placed_realizations(
         module,
