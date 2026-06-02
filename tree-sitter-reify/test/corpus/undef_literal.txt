@@ -50,3 +50,37 @@ structure S { let a : Length = undef }
       type: (type_expr
         (identifier))
       value: (undef_literal))))
+
+================================================================================
+undef-prefix identifiers still lex as identifier — no ERROR node (tokenization boundary guard)
+================================================================================
+
+structure S { let undefined : Length = undefined }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier))
+      value: (identifier))))
+
+================================================================================
+undef in param name position parses as identifier — not globally reserved (NAME-position guard)
+================================================================================
+
+structure S { param undef : Length = 1 }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier))
+      default: (number_literal))))

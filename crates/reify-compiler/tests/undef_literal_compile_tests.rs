@@ -18,7 +18,8 @@
 //! User-observable signal:
 //!   `cargo test -p reify-compiler --test undef_literal_compile_tests`
 
-use reify_ir::{CompiledExprKind, Value};
+use reify_core::Type;
+use reify_ir::{BinOp, CompiledExprKind, Value};
 use reify_test_support::{compile_source, get_let_expr};
 
 /// `let a = undef` must compile to `Literal(Value::Undef)` with no spurious
@@ -68,7 +69,10 @@ structure S {
     );
 }
 
-/// `let a = 5 * undef` must emit no "unresolved name: undef" diagnostic.
+/// `let a = 5 * undef` must emit no "unresolved name: undef" diagnostic, and must
+/// compile to a `BinOp { op: Mul, right: Literal(Value::Undef) }` with result type
+/// `Type::Error` — documenting the `Type::Error` absorption contract for binary ops
+/// that touch `undef`.
 ///
 /// Regression guard: before the grammar fix `undef` parsed as `identifier("undef")`
 /// and the compiler emitted an "unresolved name" error. After the fix `undef` is a
@@ -94,5 +98,35 @@ structure S {
         !has_unresolved_name,
         "expected no 'unresolved name' diagnostic for `undef` in `5 * undef`, got: {:?}",
         module.diagnostics,
+    );
+
+    // The compiled shape must be BinOp(Mul, _, Literal(Value::Undef)).
+    // This guards that `undef` was lowered to the literal, not swallowed
+    // silently into a different form (e.g. a poison ValueRef).
+    let expr = get_let_expr(&module, "a");
+    let CompiledExprKind::BinOp { op, right, .. } = &expr.kind else {
+        panic!(
+            "expected BinOp for `5 * undef`, got {:?}",
+            expr.kind
+        );
+    };
+    assert_eq!(
+        *op, BinOp::Mul,
+        "expected BinOp::Mul for `5 * undef`",
+    );
+    assert!(
+        matches!(&right.kind, CompiledExprKind::Literal(Value::Undef)),
+        "expected right operand Literal(Value::Undef) for `5 * undef`, got {:?}",
+        right.kind,
+    );
+
+    // Result type must be Type::Error — `Type::Error` is the established
+    // absorbing/anti-cascade type; `infer_binop_type` short-circuits on it so
+    // `5 * undef` produces no spurious type-mismatch cascade.
+    assert_eq!(
+        expr.result_type,
+        Type::Error,
+        "expected result_type Type::Error for `5 * undef` (anti-cascade absorption contract), got {:?}",
+        expr.result_type,
     );
 }
