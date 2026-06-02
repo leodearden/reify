@@ -2034,4 +2034,35 @@ mod tests {
         assert_eq!(trait_children[0].kind, SymbolKind::FIELD);
         assert_selection_on_name(trait_source, &trait_children[0]);
     }
+
+    #[test]
+    fn compute_document_symbols_enum_variants() {
+        use tower_lsp::lsp_types::SymbolKind;
+        let source = "enum Shape { Point, Circle { radius: Length } }";
+        let symbols = compute_document_symbols(source, &test_uri());
+        assert_eq!(symbols.len(), 1, "one enum → one top-level symbol");
+        let shape = &symbols[0];
+        assert_eq!(shape.name, "Shape");
+        assert_eq!(shape.kind, SymbolKind::ENUM);
+        assert_selection_on_name(source, shape);
+
+        let variants = shape
+            .children
+            .as_ref()
+            .expect("Shape should have variant children");
+        assert_eq!(variants.len(), 2, "Shape has Point + Circle in source order");
+        assert_eq!(variants[0].name, "Point");
+        assert_eq!(variants[0].kind, SymbolKind::ENUM_MEMBER);
+        assert_eq!(variants[1].name, "Circle");
+        assert_eq!(variants[1].kind, SymbolKind::ENUM_MEMBER);
+        for v in variants {
+            // range covers the variant span; selection_range sits on the name.
+            assert_selection_on_name(source, v);
+            assert!(
+                v.children.is_none() || v.children.as_ref().unwrap().is_empty(),
+                "variant {} should have no grandchildren in this task",
+                v.name
+            );
+        }
+    }
 }
