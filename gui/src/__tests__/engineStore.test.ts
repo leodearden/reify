@@ -1661,6 +1661,56 @@ function makeTreeNode(entity_path: string, kind = 'structure'): EntityTreeNode {
   };
 }
 
+describe('engineStore reconcileToTree — empty-tree no-op (step-5)', () => {
+  it('reconcileToTree([]) is a strict no-op: nothing pruned, onEntityRemoved never called', () => {
+    createRoot((dispose) => {
+      const spy = vi.fn();
+      const store = createEngineStore({ onEntityRemoved: spy });
+
+      // Seed meshes, values, and constraints
+      const mesh: MeshData = {
+        entity_path: 'Bracket#realization0',
+        vertices: new Float32Array([0, 1, 2]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: null,
+      };
+      const value: ValueData = {
+        cell_id: 'cell_a',
+        name: 'width',
+        value: '50.0',
+        unit: 'mm',
+        determinacy: 'determined',
+        entity_path: 'Bracket',
+        kind: 'Param',
+        freshness: 'final',
+      };
+      const constraint: ConstraintData = {
+        node_id: 'Bracket#constraint0',
+        expression: 'width > 0',
+        status: 'satisfied',
+        label: null,
+        parameter_ids: ['cell_a'],
+      };
+
+      store.applyMeshUpdate(mesh);
+      store.applyValueUpdates([value]);
+      store.applyConstraintUpdates([constraint]);
+
+      // Call with empty tree — should be a strict no-op
+      store.reconcileToTree([]);
+
+      // Nothing pruned
+      expect(store.state.meshes['Bracket#realization0']).toBeDefined();
+      expect(store.state.values['cell_a']).toBeDefined();
+      expect(store.state.constraints['Bracket#constraint0']).toBeDefined();
+      // onEntityRemoved never called
+      expect(spy).not.toHaveBeenCalled();
+
+      dispose();
+    });
+  });
+});
+
 describe('engineStore reconcileToTree — value and constraint pruning (step-3)', () => {
   it('reconcileToTree prunes orphan value and orphan constraint while keeping live ones', () => {
     createRoot((dispose) => {
