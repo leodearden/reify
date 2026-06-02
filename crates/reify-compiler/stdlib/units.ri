@@ -119,6 +119,10 @@ pub type Permittivity = Capacitance / Length
 /// magnetic permeability. Equals Inductance per unit length.
 pub type Permeability = Inductance / Length
 
+/// Molar gas constant dimension (J·mol⁻¹·K⁻¹ = kg·m²·s⁻²·mol⁻¹·K⁻¹) —
+/// dimension of the molar gas constant R = N_A·k_B.
+pub type MolarGasConstant = Energy / AmountOfSubstance / Temperature
+
 /// Standard acceleration of gravity (g_n), 9.80665 m/s² — BIPM/CGPM 1901 §70
 /// reference value. Use in body-force loads: `gravity(5 * STANDARD_GRAVITY())`.
 /// Body uses the compositional `1m / (1s * 1s)` form rather than the compound
@@ -179,4 +183,13 @@ pub fn VACUUM_PERMITTIVITY() -> Permittivity {
 /// dependency α bare `1A` arm in unit_to_scalar.
 pub fn VACUUM_PERMEABILITY() -> Permeability {
     1.25663706212e-6 * 1kg * 1m / 1s / 1s / 1A / 1A
+}
+
+/// Molar gas constant (R), 8.314462618 J·mol⁻¹·K⁻¹ — exact by the 2019 SI
+/// redefinition (R = N_A·k_B; 26th CGPM, Resolution 1). Used in ideal-gas
+/// computations: `let pV = MOLAR_GAS_CONSTANT() * n * T`. Dimension: kg·m²·s⁻²·mol⁻¹·K⁻¹.
+/// Body uses base units; J from std.si_units is unavailable here. Requires
+/// dependency α bare `1mol` arm in unit_to_scalar.
+pub fn MOLAR_GAS_CONSTANT() -> MolarGasConstant {
+    8.314462618 * 1kg * 1m * 1m / 1s / 1s / 1mol / 1K
 }
