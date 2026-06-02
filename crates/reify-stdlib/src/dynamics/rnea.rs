@@ -608,6 +608,74 @@ mod tests {
         );
     }
 
+    // ── damping additive term (PRD §7.1) ──────────────────────────────────────
+    //
+    // 1-DOF revolute joint with nonzero q_dot, testing the damping path only.
+    // Uses the single-pendulum geometry (−30°, 1 kg point mass at −0.1 m) but
+    // with q_dot = [omega] nonzero so the −c·q̇[0] term is non-trivial.
+    //
+    // Run twice:
+    //   (a) compliance: None  →  baseline τ
+    //   (b) compliance: Some(JointCompliance { spring_rate: None, damping: Some(c=3.5),
+    //                        neutral: 0.0, position: 0.0 })
+    //
+    // Assert (damp_tau − baseline_tau) == −c·q_dot[0] within 1e-12.
+    #[test]
+    fn damping_additive_term() {
+        use super::JointCompliance;
+
+        let theta = std::f64::consts::PI / 6.0;
+        let (half_sin, half_cos) = ((theta / 2.0).sin(), (theta / 2.0).cos());
+        let q = [half_cos, 0.0, -half_sin, 0.0];
+
+        let omega = 1.7_f64; // nonzero velocity so damping term is active
+
+        let baseline_link = RneaLink {
+            parent: None,
+            parent_to_child: SpatialTransform6::from_frame3(&Frame3::new(q, [0.0, 0.0, 0.0])),
+            subspace: vec![SpatialVector6::from_angular_linear([0.0, 1.0, 0.0], [0.0, 0.0, 0.0])],
+            mass: 1.0,
+            com: [0.0, 0.0, -0.1],
+            inertia_about_com: [[0.0; 3]; 3],
+            q_dot: vec![omega],
+            q_ddot: vec![0.0],
+            compliance: None,
+        };
+
+        let c_damp = 3.5_f64;
+        let damp_link = RneaLink {
+            compliance: Some(JointCompliance {
+                spring_rate: None,
+                damping: Some(c_damp),
+                neutral: 0.0,
+                position: 0.0,
+            }),
+            q_dot: vec![omega],
+            parent: None,
+            parent_to_child: SpatialTransform6::from_frame3(&Frame3::new(q, [0.0, 0.0, 0.0])),
+            subspace: vec![SpatialVector6::from_angular_linear([0.0, 1.0, 0.0], [0.0, 0.0, 0.0])],
+            mass: 1.0,
+            com: [0.0, 0.0, -0.1],
+            inertia_about_com: [[0.0; 3]; 3],
+            q_ddot: vec![0.0],
+        };
+
+        let gravity = default_gravity();
+        let tau_baseline = inverse_dynamics_open_chain(&[baseline_link], gravity);
+        let tau_damp     = inverse_dynamics_open_chain(&[damp_link], gravity);
+
+        assert_eq!(tau_baseline.len(), 1);
+        assert_eq!(tau_damp.len(), 1);
+
+        let expected_delta = -c_damp * omega; // −c·q̇[0]
+        let actual_delta = tau_damp[0][0] - tau_baseline[0][0];
+        assert!(
+            (actual_delta - expected_delta).abs() < 1e-12,
+            "damping Δτ: expected {expected_delta:.15}, got {actual_delta:.15}, err={:.2e}",
+            (actual_delta - expected_delta).abs()
+        );
+    }
+
     // ── multi-DOF joint subspace accumulation ─────────────────────────────────
     //
     // Exercises the multi-column vJ/aJ accumulation loops and the per-DOF
