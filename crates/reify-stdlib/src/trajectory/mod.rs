@@ -6,7 +6,14 @@
 use reify_ir::Value;
 
 mod gcode_import;
-mod impulse_shaper;
+// `pub` so `reify-eval/src/trajectory_ops.rs` can reach the impulse-shaper API
+// (ImpulseTrain + residual_vibration) for the engine-side band-sweep robustness
+// metric — re-exported at the crate root in `lib.rs` (task ζ, prereq-1).
+pub mod impulse_shaper;
+// `pub(crate)` (not private) so the crate-root re-export
+// `pub use trajectory::input_shape::build_train_for_shaper;` in `lib.rs` can
+// name the `input_shape` path segment (task ζ, prereq-1).
+pub(crate) mod input_shape;
 mod sampling;
 mod simulate;
 mod spline;
@@ -33,6 +40,14 @@ mod tots;
 /// name is kept so that the Rust eval-boundary tests in `mod.rs::tests` that call
 /// `eval_builtin("gcode_import", …)` directly remain green with zero churn.
 ///
+/// `input_shape` (task ζ) follows the identical delegate pattern: the stdlib
+/// `.ri` `input_shape` declaration delegates to the undeclared `input_shape_apply`
+/// name, so both route here to [`input_shape::eval_input_shape`], which builds the
+/// shaper's `ImpulseTrain` (the impulse arms ZV/ZVD/EI/Cascaded) and returns the
+/// shaped `Profile` as a `Value::StructureInstance` (or `Value::Undef` on bad args
+/// / an unrecognised shaper). See [`input_shape::eval_input_shape`] for the
+/// argument contract.
+///
 /// The Phase β spline intrinsics still unconditionally return `Some(Value::Undef)`:
 /// the pure-Rust spline math is implemented in the `spline` submodule but is
 /// not yet wired to the Value API.  Full marshalling (parsing a
@@ -44,6 +59,7 @@ mod tots;
 pub(crate) fn eval_trajectory(name: &str, args: &[Value]) -> Option<Value> {
     match name {
         "gcode_import" | "gcode_import_lower" => Some(gcode_import::eval_gcode_import(args)),
+        "input_shape" | "input_shape_apply" => Some(input_shape::eval_input_shape(args)),
         "piecewise_polynomial"
         | "evaluate_profile"
         | "evaluate_profile_dot"
@@ -91,6 +107,7 @@ pub(crate) mod test_polynomials {
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
+    use reify_core::DimensionVector;
     use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 
     /// Build a 100-line Marlin g-code fixture: 100 contiguous `G1` moves with
@@ -154,5 +171,145 @@ mod tests {
 
         // Non-StructureInstance dialect.
         assert!(eval_builtin("gcode_import", &[src.clone(), Value::Int(7)]).is_undef());
+    }
+
+    // ── ζ step-5: input_shape eval-boundary (registrar) ──────────────────────
+
+    /// Build a `PiecewisePolynomialProfile` `Value::StructureInstance` as the
+    /// eval path receives it (mechanism / waypoints / boundary / spline_kind
+    /// fields per trajectory.ri). `boundary` is a `NaturalSpline` instance and
+    /// `spline_kind` a `SplineKind::CubicSpline` enum so the echo assertions can
+    /// confirm they survive the shaping.
+    fn sample_profile() -> Value {
+        let boundary = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "NaturalSpline".to_string(),
+            version: 0,
+            fields: PersistentMap::default(),
+        }));
+        let fields: PersistentMap<String, Value> = [
+            ("mechanism".to_string(), Value::Real(0.0)),
+            ("waypoints".to_string(), Value::List(Vec::new())),
+            ("boundary".to_string(), boundary),
+            (
+                "spline_kind".to_string(),
+                Value::Enum {
+                    type_name: "SplineKind".to_string(),
+                    variant: "CubicSpline".to_string(),
+                },
+            ),
+        ]
+        .into_iter()
+        .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(7),
+            type_name: "PiecewisePolynomialProfile".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// Build a `ZVShaper(10Hz, ζ=0)` `Value::StructureInstance` as the eval path
+    /// receives it (target_frequency a Frequency scalar; damping_ratio a Real).
+    fn zv_shaper_value() -> Value {
+        let fields: PersistentMap<String, Value> = [
+            (
+                "target_frequency".to_string(),
+                Value::Scalar {
+                    si_value: 10.0,
+                    dimension: DimensionVector::FREQUENCY,
+                },
+            ),
+            ("damping_ratio".to_string(), Value::Real(0.0)),
+        ]
+        .into_iter()
+        .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "ZVShaper".to_string(),
+            version: 0,
+            fields,
+        }))
+    }
+
+    /// `input_shape(profile, ZVShaper)` and the `input_shape_apply` delegate
+    /// both return a `Value::StructureInstance` typed `PiecewisePolynomialProfile`
+    /// that echoes the input profile's mechanism / boundary / spline_kind. (Both
+    /// names route to the single `eval_input_shape` impl, so the direct
+    /// `eval_builtin` boundary test pins both.)
+    #[test]
+    fn input_shape_zv_echoes_profile_structure() {
+        let profile = sample_profile();
+        let shaper = zv_shaper_value();
+
+        for name in ["input_shape", "input_shape_apply"] {
+            let result = eval_builtin(name, &[profile.clone(), shaper.clone()]);
+            let Value::StructureInstance(data) = result else {
+                panic!("{name} should return a Value::StructureInstance, got {result:?}");
+            };
+            assert_eq!(
+                data.type_name, "PiecewisePolynomialProfile",
+                "{name} should echo the profile's type_name"
+            );
+
+            // mechanism echoed verbatim.
+            assert_eq!(
+                data.fields.get(&"mechanism".to_string()),
+                Some(&Value::Real(0.0)),
+                "{name} should echo the profile's mechanism field"
+            );
+            // boundary StructureInstance echoed (NaturalSpline).
+            match data.fields.get(&"boundary".to_string()) {
+                Some(Value::StructureInstance(b)) => assert_eq!(
+                    b.type_name, "NaturalSpline",
+                    "{name} should echo the boundary NaturalSpline"
+                ),
+                other => panic!("{name} should echo boundary as NaturalSpline, got {other:?}"),
+            }
+            // spline_kind enum echoed (CubicSpline).
+            match data.fields.get(&"spline_kind".to_string()) {
+                Some(Value::Enum { type_name, variant }) => {
+                    assert_eq!(type_name, "SplineKind", "{name} spline_kind enum type");
+                    assert_eq!(variant, "CubicSpline", "{name} spline_kind variant");
+                }
+                other => panic!("{name} should echo spline_kind CubicSpline, got {other:?}"),
+            }
+        }
+    }
+
+    /// Bad args → `Value::Undef` (the stdlib convention, mirroring
+    /// `gcode_import_bad_args_return_undef`): wrong arity (0/1/3), a
+    /// non-`StructureInstance` profile or shaper, or a shaper whose `type_name`
+    /// is not a recognised shaper (so `build_train_for_shaper` returns `None`).
+    #[test]
+    fn input_shape_bad_args_return_undef() {
+        let profile = sample_profile();
+        let shaper = zv_shaper_value();
+
+        // Wrong arity: 0, 1, and 3 args.
+        assert!(eval_builtin("input_shape", &[]).is_undef());
+        assert!(eval_builtin("input_shape", std::slice::from_ref(&profile)).is_undef());
+        assert!(
+            eval_builtin(
+                "input_shape",
+                &[profile.clone(), shaper.clone(), Value::Int(0)]
+            )
+            .is_undef()
+        );
+
+        // Non-StructureInstance profile.
+        assert!(eval_builtin("input_shape", &[Value::Int(5), shaper.clone()]).is_undef());
+
+        // Non-StructureInstance shaper.
+        assert!(eval_builtin("input_shape", &[profile.clone(), Value::Int(7)]).is_undef());
+
+        // Unknown shaper type_name → build_train_for_shaper returns None → Undef.
+        let bogus_shaper = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "FooShaper".to_string(),
+            version: 0,
+            fields: PersistentMap::default(),
+        }));
+        assert!(eval_builtin("input_shape", &[profile.clone(), bogus_shaper]).is_undef());
     }
 }

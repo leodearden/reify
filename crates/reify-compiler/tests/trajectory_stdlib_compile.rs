@@ -2493,3 +2493,156 @@ fn klipper_dialect_refines_gcode_dialect_with_no_params() {
             .collect::<Vec<_>>()
     );
 }
+
+// ─── ζ step-1: input_shape(profile, shaper) surface + coercion shims ──────────
+
+/// Assert a one-field trait-coercion shim
+/// `pub structure def <name> { param <field> : <Trait> }` exists with the
+/// `GcodeDialectInput` shape (trajectory.ri): refines no trait, declares
+/// exactly one caller-supplied param whose type is `TraitObject(<Trait>)`, and
+/// declares no constraints. Centralises the shim shape so `ProfileInput` /
+/// `ShaperInput` stay in lock-step with the `GcodeDialectInput` /
+/// `FEAMaterialInput` precedent.
+fn assert_trait_input_shim(name: &str, field: &str, trait_name: &str) {
+    let template = find_structure(name);
+
+    // Pure coercion shim — refines no trait (it is NOT a Profile / Shaper).
+    assert_eq!(
+        template.trait_bounds,
+        Vec::<String>::new(),
+        "{} should refine no trait (input-coercion shim, mirrors \
+         GcodeDialectInput); got trait_bounds: {:?}",
+        name,
+        template.trait_bounds
+    );
+
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+    assert_eq!(
+        params.len(),
+        1,
+        "{} should declare exactly 1 param ({}); got: {:?}",
+        name,
+        field,
+        names
+    );
+
+    let cell = params[0];
+    assert_eq!(
+        cell.id.member, field,
+        "{} param should be named `{}`; got: {:?}",
+        name, field, names
+    );
+    assert_eq!(
+        cell.cell_type,
+        Type::TraitObject(trait_name.to_string()),
+        "{}.{} should be TraitObject(\"{}\"); got: {:?}",
+        name,
+        field,
+        trait_name,
+        cell.cell_type
+    );
+    assert!(
+        cell.default_expr.is_none(),
+        "{}.{} should have no default_expr (caller-supplied shim field); \
+         got: {:?}",
+        name,
+        field,
+        cell.default_expr
+    );
+    assert!(
+        template.constraints.is_empty(),
+        "{} should declare no constraints (pure coercion shim); got: {:?}",
+        name,
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// `input_shape` is the impulse-/TOTS-shaper dispatcher (PRD §5.3, §11 Phase 2
+/// ζ). It is declared with the `gcode_import` delegate-body pattern so the call
+/// site resolves as a typed `UserFunctionCall` (`-> Profile`) while the body
+/// reaches `eval_builtin` via the undeclared `input_shape_apply` name.
+///
+/// Signature: `pub fn input_shape(profile: Profile, shaper: Shaper) -> Profile`
+///
+/// `profile : Profile` / `shaper : Shaper` resolve to `Type::TraitObject(..)`
+/// (the same trait-typed param resolution `evaluate_profile`'s `p : Profile`
+/// uses); the return type is `Type::TraitObject("Profile")` (the shaped
+/// profile). Param declaration order is part of the contract — pinned here in
+/// the same way step-21 pins `evaluate_profile`'s (p, t) order.
+#[test]
+fn input_shape_fn_signature() {
+    let module = load_stdlib_module();
+
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "input_shape")
+        .unwrap_or_else(|| {
+            panic!(
+                "input_shape not found in std/trajectory; found functions: {:?}",
+                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+            )
+        });
+
+    assert!(func.is_pub, "input_shape should be pub");
+
+    assert_eq!(
+        func.params.len(),
+        2,
+        "input_shape should take exactly 2 params (profile, shaper); got: {:?}",
+        func.params
+    );
+
+    // Param order is part of the contract — profile first, then shaper.
+    assert_eq!(
+        func.params[0],
+        (
+            "profile".to_string(),
+            Type::TraitObject("Profile".to_string())
+        ),
+        "input_shape param[0] should be (\"profile\", TraitObject(\"Profile\")); \
+         got: {:?}",
+        func.params[0]
+    );
+    assert_eq!(
+        func.params[1],
+        (
+            "shaper".to_string(),
+            Type::TraitObject("Shaper".to_string())
+        ),
+        "input_shape param[1] should be (\"shaper\", TraitObject(\"Shaper\")); \
+         got: {:?}",
+        func.params[1]
+    );
+
+    assert_eq!(
+        func.return_type,
+        Type::TraitObject("Profile".to_string()),
+        "input_shape return type should be TraitObject(\"Profile\") (the shaped \
+         profile); got: {:?}",
+        func.return_type
+    );
+}
+
+/// `ProfileInput` is the trait-coercion shim that lets a concrete
+/// `PiecewisePolynomialProfile` reach `input_shape`'s `profile : Profile` param
+/// (the overload resolver uses exact type equality — a bare
+/// `StructureRef("PiecewisePolynomialProfile")` does not match the `Profile`
+/// trait param). Mirrors `GcodeDialectInput` / `FEAMaterialInput`.
+#[test]
+fn profile_input_shim_exists() {
+    assert_trait_input_shim("ProfileInput", "profile", "Profile");
+}
+
+/// `ShaperInput` is the trait-coercion shim that lets a concrete shaper
+/// (`ZVDShaper` / `EIShaper` / …) reach `input_shape`'s `shaper : Shaper`
+/// param. Mirrors `GcodeDialectInput` / `FEAMaterialInput`.
+#[test]
+fn shaper_input_shim_exists() {
+    assert_trait_input_shim("ShaperInput", "shaper", "Shaper");
+}
