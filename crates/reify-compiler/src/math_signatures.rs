@@ -136,4 +136,137 @@ mod tests {
             );
         }
     }
+
+    // ── Result-type resolution (step-11 RED / step-12 GREEN) ─────────────────
+
+    use reify_core::DimensionVector;
+    use reify_core::identity::ValueCellId;
+    use reify_ir::Value;
+
+    /// A dimensionless `Real` element expression (`result_type = Type::Real`).
+    fn real_elem(v: f64) -> CompiledExpr {
+        CompiledExpr::literal(Value::Real(v), Type::Real)
+    }
+
+    /// A `Scalar<Length>` element expression.
+    fn length_elem(v: f64) -> CompiledExpr {
+        CompiledExpr::literal(
+            Value::Scalar {
+                si_value: v,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+        )
+    }
+
+    /// A `ListLiteral` of `elems` whose own `result_type` is `List(elem_ty)`.
+    /// `math_fn_result_type` reads N + quantity from the ELEMENT structure, not
+    /// from this outer result_type, so its exact value is immaterial — set
+    /// realistically anyway.
+    fn list_lit(elems: Vec<CompiledExpr>, elem_ty: Type) -> CompiledExpr {
+        CompiledExpr::list_literal(elems, Type::List(Box::new(elem_ty)))
+    }
+
+    /// (a) `vec` over a 3-element dimensionless `ListLiteral` →
+    /// `Vector{n:3, quantity:Real}`.
+    #[test]
+    fn vec_result_type_dimensionless_is_vector_n3_real() {
+        let arg = list_lit(vec![real_elem(1.0), real_elem(2.0), real_elem(3.0)], Type::Real);
+        assert_eq!(
+            math_fn_result_type("vec", &[arg]),
+            Type::Vector {
+                n: 3,
+                quantity: Box::new(Type::Real)
+            }
+        );
+    }
+
+    /// (b) `vec` over `Scalar<Length>` elements → `Vector{n:2, quantity:Scalar<Length>}`.
+    #[test]
+    fn vec_result_type_length_preserves_quantity() {
+        let len_ty = Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        };
+        let arg = list_lit(vec![length_elem(1.0), length_elem(2.0)], len_ty.clone());
+        assert_eq!(
+            math_fn_result_type("vec", &[arg]),
+            Type::Vector {
+                n: 2,
+                quantity: Box::new(len_ty)
+            }
+        );
+    }
+
+    /// (c) `matrix` over a depth-2 2×2 `ListLiteral` → `Tensor{rank:2, n:2, quantity:Real}`.
+    #[test]
+    fn matrix_result_type_2x2_is_tensor_rank2_n2_real() {
+        let row0 = list_lit(vec![real_elem(1.0), real_elem(2.0)], Type::Real);
+        let row1 = list_lit(vec![real_elem(3.0), real_elem(4.0)], Type::Real);
+        let arg = list_lit(vec![row0, row1], Type::List(Box::new(Type::Real)));
+        assert_eq!(
+            math_fn_result_type("matrix", &[arg]),
+            Type::Tensor {
+                rank: 2,
+                n: 2,
+                quantity: Box::new(Type::Real)
+            }
+        );
+    }
+
+    /// (d) `diag` over a 3-element `ListLiteral` → `Tensor{rank:2, n:3, quantity:Real}`.
+    #[test]
+    fn diag_result_type_is_tensor_rank2_n3_real() {
+        let arg = list_lit(vec![real_elem(3.0), real_elem(5.0), real_elem(7.0)], Type::Real);
+        assert_eq!(
+            math_fn_result_type("diag", &[arg]),
+            Type::Tensor {
+                rank: 2,
+                n: 3,
+                quantity: Box::new(Type::Real)
+            }
+        );
+    }
+
+    /// (e) `identity` over `Literal(Value::Int(4))` → `Tensor{rank:2, n:4, quantity:Real}`
+    /// (dimensionless).
+    #[test]
+    fn identity_result_type_is_tensor_rank2_n4_real() {
+        let arg = CompiledExpr::literal(Value::Int(4), Type::Int);
+        assert_eq!(
+            math_fn_result_type("identity", &[arg]),
+            Type::Tensor {
+                rank: 2,
+                n: 4,
+                quantity: Box::new(Type::Real)
+            }
+        );
+    }
+
+    /// (f) DEGRADE (locks D7): a non-literal `vec` arg — a `ValueRef` typed
+    /// `List(Real)` whose length is NOT statically known — must STILL resolve to
+    /// a `Type::Vector{..}` variant (quantity recovered from the `List` element),
+    /// NEVER the first-arg `Type::List`. Falling through to `List` would make the
+    /// eval'd `Value::Vector` fail `value_type_kind_matches` at runtime.
+    #[test]
+    fn vec_result_type_non_literal_arg_degrades_to_vector_not_list() {
+        let arg = CompiledExpr::value_ref(
+            ValueCellId::new("S", "x"),
+            Type::List(Box::new(Type::Real)),
+        );
+        let result = math_fn_result_type("vec", &[arg]);
+        assert!(
+            !matches!(result, Type::List(_)),
+            "non-literal vec arg must NOT degrade to Type::List (D7), got {result:?}"
+        );
+        match result {
+            Type::Vector { quantity, .. } => assert_eq!(
+                *quantity,
+                Type::Real,
+                "degraded Vector quantity should be recovered from the List element"
+            ),
+            other => panic!("expected a Type::Vector variant, got {other:?}"),
+        }
+    }
 }
