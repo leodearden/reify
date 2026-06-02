@@ -1142,6 +1142,66 @@ mod tests {
         }
     }
 
+    // ── step-5 RED: pub per-sample seam (task RBD-ι) ──────────────────────────
+    //
+    // `motion_trajectory_samples` + `inverse_dynamics_sample` expose the private
+    // `trajectory_samples` / `sample_fields`+`snapshot_for_sample`+
+    // `snapshot_inverse_dynamics` so the reify-eval trampoline can drive the
+    // per-sample loop itself (polling cancellation at each sample boundary).
+    // `inverse_dynamics_sample` reproduces the same single-pendulum static-gravity
+    // torque (0.4905 N·m) the whole-trajectory variant produces, so routing
+    // `eval_inverse_dynamics` through the seam keeps behaviour single-sourced.
+
+    /// `motion_trajectory_samples` returns the samples slice for a well-formed
+    /// `MotionTrajectory` and `None` for a malformed (non-`MotionTrajectory`)
+    /// value.
+    #[test]
+    fn motion_trajectory_samples_reads_samples_slice() {
+        let theta = -std::f64::consts::PI / 6.0;
+        let traj = mint_instance(
+            "MotionTrajectory",
+            vec![
+                ("mechanism".to_string(), Value::Real(0.0)),
+                (
+                    "samples".to_string(),
+                    Value::List(vec![
+                        trajectory_sample(0.0, theta, 0.0, 0.0),
+                        trajectory_sample(1.0, theta, 0.0, 0.0),
+                    ]),
+                ),
+            ],
+        );
+        let samples = motion_trajectory_samples(&traj)
+            .expect("a well-formed trajectory must yield its samples slice");
+        assert_eq!(samples.len(), 2, "two samples in, two samples out");
+        assert!(
+            motion_trajectory_samples(&Value::Real(0.0)).is_none(),
+            "a non-MotionTrajectory value must yield None"
+        );
+    }
+
+    /// `inverse_dynamics_sample` drives the open-chain snapshot RNEA for one
+    /// motionless single-pendulum sample at θ = −30°, reproducing the validated
+    /// static-gravity torque τ = m·g·L·sin(30°) = 0.4905 N·m (<1e-6) — i.e. the
+    /// per-sample seam agrees with the whole-trajectory variant.
+    #[test]
+    fn inverse_dynamics_sample_single_pendulum_static_gravity() {
+        let mech = pendulum_mechanism();
+        let theta = -std::f64::consts::PI / 6.0;
+        let sample = trajectory_sample(0.0, theta, 0.0, 0.0);
+
+        let forces = inverse_dynamics_sample(&mech, &sample)
+            .expect("a motionless open-chain sample must solve");
+        assert_eq!(forces.len(), 1, "one joint ⇒ one JointForce");
+        let value = field(&forces[0], "JointForce", "value");
+        let torque = num(field(value, "ScalarTorque", "magnitude"));
+        let expected = 0.4905_f64;
+        assert!(
+            (torque - expected).abs() < 1e-6,
+            "expected {expected} N·m, got {torque}"
+        );
+    }
+
     // ── Suggestion 1: closed-chain guard ─────────────────────────────────────
 
     /// `snapshot_inverse_dynamics` must return `Value::Undef` for a mechanism
