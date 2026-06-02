@@ -260,11 +260,19 @@ pub fn inverse_dynamics_open_chain(links: &[RneaLink], gravity: [f64; 3]) -> Vec
         }
     }
 
-    // τ_i[c] = S_i[c] · f_i
+    // τ_i[c] = S_i[c] · f_i  +  spring/damping additive terms (PRD §7.1)
     links
         .iter()
         .enumerate()
-        .map(|(i, link)| link.subspace.iter().map(|s| sv_dot(s, &f[i])).collect())
+        .map(|(i, link)| {
+            let mut tau_i: Vec<f64> = link.subspace.iter().map(|s| sv_dot(s, &f[i])).collect();
+            if let Some(c) = &link.compliance {
+                if let Some(k) = c.spring_rate {
+                    tau_i[0] += -k * (c.position - c.neutral);
+                }
+            }
+            tau_i
+        })
         .collect()
 }
 
