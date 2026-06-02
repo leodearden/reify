@@ -372,6 +372,30 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                 translation,
             }
         }
+        // `affine_from_transform(t)`: widen a rigid Transform to a general affine
+        // map. The rotation quaternion becomes an orthogonal 3×3 (det=+1) whose
+        // columns are R·x̂, R·ŷ, R·ẑ (built via quat_rotate on the basis vectors),
+        // and the translation passes through in SI meters. The identity quaternion
+        // yields the identity matrix exactly. Non-Transform / bad arity → Undef.
+        "affine_from_transform" => {
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            let (q, translation, _dim) = match decompose_transform(&args[0]) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
+            };
+            // Rotation-matrix columns = R applied to each basis vector.
+            let (c0x, c0y, c0z) = quat_rotate(q, 1.0, 0.0, 0.0);
+            let (c1x, c1y, c1z) = quat_rotate(q, 0.0, 1.0, 0.0);
+            let (c2x, c2y, c2z) = quat_rotate(q, 0.0, 0.0, 1.0);
+            // Store row-major: linear[row][col], where col_i is the i-th column.
+            let linear = [[c0x, c1x, c2x], [c0y, c1y, c2y], [c0z, c1z, c2z]];
+            Value::AffineMap {
+                linear,
+                translation,
+            }
+        }
 
         // --- Transform operations ---
         "frame_to_frame" => {
