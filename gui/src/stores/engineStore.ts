@@ -10,6 +10,7 @@ import type {
   AutoResolveIteration,
   TensegrityWireData,
   SolverProgress,
+  EntityTreeNode,
 } from '../types';
 import {
   onMeshUpdate,
@@ -266,6 +267,38 @@ export function createEngineStore(options?: EngineStoreOptions) {
     }
   }
 
+  /**
+   * Reconcile engineStore entity set against the authoritative entity tree.
+   *
+   * After collecting the set of live entity paths from the tree, prunes any
+   * mesh whose owner path (entity_path up to the first `#` separator) is absent
+   * from the live set. Reuses removeMesh so onEntityRemoved fires and selection
+   * clears identically to delta-driven removals.
+   *
+   * Guards: if the tree yields zero live paths (not loaded yet), returns
+   * immediately without pruning so the whole mesh set is never wiped before
+   * the first tree arrives.
+   */
+  function reconcileToTree(tree: EntityTreeNode[]): void {
+    // Collect all live entity paths from the tree recursively.
+    const livePaths = new Set<string>();
+    function collectPaths(nodes: EntityTreeNode[]): void {
+      for (const node of nodes) {
+        livePaths.add(node.entity_path);
+        if (node.children.length > 0) collectPaths(node.children);
+      }
+    }
+    collectPaths(tree);
+
+    // Prune orphan meshes whose owner (path before the first '#') is not live.
+    for (const key of Object.keys(state.meshes)) {
+      const owner = key.includes('#') ? key.slice(0, key.indexOf('#')) : key;
+      if (!livePaths.has(owner)) {
+        removeMesh(key);
+      }
+    }
+  }
+
   async function subscribeToEvents(): Promise<() => void> {
     const results = await Promise.allSettled([
       onMeshUpdate(applyMeshUpdate),
@@ -311,6 +344,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
     removeMesh,
     removeValue,
     removeConstraint,
+    reconcileToTree,
     setEvalStatus,
     setTessellationDiagnostics,
     setCompileDiagnostics,
