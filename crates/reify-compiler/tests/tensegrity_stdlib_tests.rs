@@ -296,6 +296,103 @@ fn tensegrity_structure_has_nodes_struts_cables_params() {
 
 // ─── TensegrityWire structure ─────────────────────────────────────────────────
 
+// ─── step-1 (task-4151): form_find_free stdlib declaration ───────────────────
+
+/// Look up `form_find_free` in the `std/tensegrity` module's `functions` vec.
+///
+/// Panics if not found — the expected RED failure until step-2 adds the
+/// declaration to tensegrity.ri.
+fn find_form_find_free_fn() -> &'static CompiledFunction {
+    let module = load_stdlib_module();
+    module
+        .functions
+        .iter()
+        .find(|f| f.name == "form_find_free")
+        .unwrap_or_else(|| {
+            panic!(
+                "fn form_find_free not found in std/tensegrity; \
+                 available functions: {:?}",
+                module
+                    .functions
+                    .iter()
+                    .map(|f| f.name.as_str())
+                    .collect::<Vec<_>>()
+            )
+        })
+}
+
+/// Pin: `fn form_find_free` must carry `@optimized("solver::form_find_free")`.
+/// The @optimized → ComputeNode lowering fires only when this target is set;
+/// without it the function body is inlined and no trampoline is dispatched.
+#[test]
+fn form_find_free_has_optimized_target() {
+    let f = find_form_find_free_fn();
+    assert_eq!(
+        f.optimized_target,
+        Some("solver::form_find_free".to_string()),
+        "fn form_find_free must be annotated @optimized(\"solver::form_find_free\")"
+    );
+}
+
+/// Pin: `fn form_find_free` must have exactly 4 parameters.
+///
+/// Expected signature:
+///   (structure: Tensegrity, group_ids: List<Int>,
+///    seed_ratios: List<Real>, reference_group: Int)
+///
+/// A param-count change here means the trampoline's `value_inputs` indexing
+/// needs to be updated in lock-step with this test.
+#[test]
+fn form_find_free_has_four_params() {
+    let f = find_form_find_free_fn();
+    assert_eq!(
+        f.params.len(),
+        4,
+        "expected 4 params (structure, group_ids, seed_ratios, reference_group), got {:?}",
+        f.params.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>()
+    );
+}
+
+/// Pin: `fn form_find_free` param types and names match the T1b contract.
+#[test]
+fn form_find_free_param_types_match_contract() {
+    let f = find_form_find_free_fn();
+
+    let expected: &[(&str, Type)] = &[
+        ("structure", Type::StructureRef("Tensegrity".to_string())),
+        ("group_ids", Type::List(Box::new(Type::Int))),
+        ("seed_ratios", Type::List(Box::new(Type::Real))),
+        ("reference_group", Type::Int),
+    ];
+
+    for (i, (exp_name, exp_type)) in expected.iter().enumerate() {
+        let (got_name, got_type) = &f.params[i];
+        assert_eq!(
+            got_name.as_str(),
+            *exp_name,
+            "form_find_free params[{i}] name: expected {exp_name:?}, got {got_name:?}"
+        );
+        assert_eq!(
+            got_type, exp_type,
+            "form_find_free params[{i}] ({exp_name}) type: expected {exp_type:?}, got {got_type:?}"
+        );
+    }
+}
+
+/// Pin: `fn form_find_free` return type is `FormFindResult`.
+#[test]
+fn form_find_free_return_type_is_form_find_result() {
+    let f = find_form_find_free_fn();
+    assert_eq!(
+        f.return_type,
+        Type::StructureRef("FormFindResult".to_string()),
+        "fn form_find_free must return FormFindResult, got {:?}",
+        f.return_type
+    );
+}
+
+// ─── TensegrityWire structure ─────────────────────────────────────────────────
+
 /// `TensegrityWire` has 9 params: `kind : String`, `from_index : Int`,
 /// `to_index : Int`, and `x1/y1/z1/x2/y2/z2 : Length`.
 /// This structure is Rust-side constructed; the .ri declaration exists so
