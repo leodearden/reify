@@ -215,6 +215,9 @@ describe('SHORTCUTS bind fields', () => {
         // CodeMirror's foldKeymap inside the editor; useKeyboardShortcuts skips
         // them because the CM contentDOM is contentEditable (bails before matching).
         if (s.id === 'fold' || s.id === 'unfold' || s.id === 'foldAll' || s.id === 'unfoldAll') continue;
+        // gotoDefinition/navBack/navForward are display-only: dispatch is handled by
+        // the CM keymap in Editor.tsx; same rationale as fold entries above.
+        if (s.id === 'gotoDefinition' || s.id === 'navBack' || s.id === 'navForward') continue;
         expect(s.bind, `shortcut "${s.id}" has a display key but no bind field`).toBeDefined();
       }
     }
@@ -402,6 +405,49 @@ describe('shortcuts — fold entries', () => {
     // ShortcutId is derived from _SHORTCUTS_DEF literal ids; this line would fail
     // to compile (ts-expect-error) if the id were not in the union.
     expect(getShortcut('foldAll')).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Navigation shortcut entries (task-4206)
+// ---------------------------------------------------------------------------
+
+describe('shortcuts — navigation entries', () => {
+  const NAV_ENTRIES = [
+    { id: 'gotoDefinition', key: 'F12',    description: /go.to.def/i },
+    { id: 'navBack',        key: 'Alt+←',  description: /back/i },
+    { id: 'navForward',     key: 'Alt+→',  description: /forward/i },
+  ] as const;
+
+  it('each nav entry is present in SHORTCUTS with correct key, truthy description, not disabled, and category "Editor"', () => {
+    for (const { id, key, description: descPattern } of NAV_ENTRIES) {
+      const entry = SHORTCUTS.find((s) => s.id === id);
+      expect(entry, `${id} missing from SHORTCUTS`).toBeDefined();
+      expect(entry?.key, `${id} key`).toBe(key);
+      expect(entry?.description, `${id} description`).toBeTruthy();
+      expect(entry?.description, `${id} description`).toMatch(descPattern);
+      expect(entry?.disabled, `${id} should not be disabled`).not.toBe(true);
+      expect((entry as ShortcutDef & { category?: string })?.category, `${id} category`).toBe('Editor');
+    }
+  });
+
+  it('getShortcut("gotoDefinition") is defined (id flows into ShortcutId union)', () => {
+    expect(getShortcut('gotoDefinition')).toBeDefined();
+  });
+
+  it('getShortcut("navBack") is defined (id flows into ShortcutId union)', () => {
+    expect(getShortcut('navBack')).toBeDefined();
+  });
+
+  it('getShortcut("navForward") is defined (id flows into ShortcutId union)', () => {
+    expect(getShortcut('navForward')).toBeDefined();
+  });
+
+  it('nav entries have no bind field (display-only, dispatched by CM keymap)', () => {
+    for (const { id } of NAV_ENTRIES) {
+      const entry = SHORTCUTS.find((s) => s.id === id);
+      expect(entry?.bind, `${id} must not have a bind field`).toBeUndefined();
+    }
   });
 });
 

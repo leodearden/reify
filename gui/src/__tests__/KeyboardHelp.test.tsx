@@ -87,4 +87,21 @@ describe('KeyboardHelp', () => {
     expect(overlay.textContent).toContain('Ctrl+Shift+[');
     expect(overlay.textContent).toContain('Ctrl+Shift+]');
   });
+
+  it('navigation shortcuts surface in the ? overlay (acceptance criterion)', () => {
+    render(() => <KeyboardHelp onClose={() => {}} />);
+    const overlay = screen.getByTestId('keyboard-help');
+    // F12 go-to-definition
+    expect(overlay.textContent).toContain('F12');
+    // Alt+← back, Alt+→ forward
+    expect(overlay.textContent).toContain('Alt+←');
+    expect(overlay.textContent).toContain('Alt+→');
+    // Descriptions must also be present
+    const gotoEntry = SHORTCUTS.find((s) => s.id === 'gotoDefinition');
+    const backEntry = SHORTCUTS.find((s) => s.id === 'navBack');
+    const fwdEntry = SHORTCUTS.find((s) => s.id === 'navForward');
+    if (gotoEntry) expect(overlay.textContent).toContain(gotoEntry.description);
+    if (backEntry) expect(overlay.textContent).toContain(backEntry.description);
+    if (fwdEntry) expect(overlay.textContent).toContain(fwdEntry.description);
+  });
 });
