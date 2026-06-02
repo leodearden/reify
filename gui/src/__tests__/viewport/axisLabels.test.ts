@@ -116,7 +116,7 @@ describe('createAxisLabels', () => {
     const group = createAxisLabels();
     const xSprite = group.children.find(
       (s: any) => s.name?.includes('X') || s.userData?.axis === 'X',
-    );
+    ) as any;
     expect(xSprite).toBeDefined();
     expect(xSprite.material.color).toBe(0xff0000);
   });
@@ -125,7 +125,7 @@ describe('createAxisLabels', () => {
     const group = createAxisLabels();
     const ySprite = group.children.find(
       (s: any) => s.name?.includes('Y') || s.userData?.axis === 'Y',
-    );
+    ) as any;
     expect(ySprite).toBeDefined();
     expect(ySprite.material.color).toBe(0x00ff00);
   });
@@ -134,7 +134,7 @@ describe('createAxisLabels', () => {
     const group = createAxisLabels();
     const zSprite = group.children.find(
       (s: any) => s.name?.includes('Z') || s.userData?.axis === 'Z',
-    );
+    ) as any;
     expect(zSprite).toBeDefined();
     expect(zSprite.material.color).toBe(0x0000ff);
   });
@@ -143,7 +143,7 @@ describe('createAxisLabels', () => {
     const group = createAxisLabels();
     const xSprite = group.children.find(
       (s: any) => s.name?.includes('X') || s.userData?.axis === 'X',
-    );
+    ) as any;
     expect(xSprite.position.x).toBeGreaterThan(2);
     expect(xSprite.position.y).toBe(0);
     expect(xSprite.position.z).toBe(0);
@@ -153,7 +153,7 @@ describe('createAxisLabels', () => {
     const group = createAxisLabels();
     const ySprite = group.children.find(
       (s: any) => s.name?.includes('Y') || s.userData?.axis === 'Y',
-    );
+    ) as any;
     expect(ySprite.position.y).toBeGreaterThan(2);
     expect(ySprite.position.x).toBe(0);
     expect(ySprite.position.z).toBe(0);
@@ -163,7 +163,7 @@ describe('createAxisLabels', () => {
     const group = createAxisLabels();
     const zSprite = group.children.find(
       (s: any) => s.name?.includes('Z') || s.userData?.axis === 'Z',
-    );
+    ) as any;
     expect(zSprite.position.z).toBeGreaterThan(2);
     expect(zSprite.position.x).toBe(0);
     expect(zSprite.position.y).toBe(0);
@@ -171,31 +171,31 @@ describe('createAxisLabels', () => {
 
   it('all sprites have depthTest === false (always-on-top)', () => {
     const group = createAxisLabels();
-    for (const child of group.children) {
+    for (const child of group.children as any[]) {
       expect(child.material.depthTest).toBe(false);
     }
   });
 
   it('all sprites have depthWrite === false (always-on-top)', () => {
     const group = createAxisLabels();
-    for (const child of group.children) {
+    for (const child of group.children as any[]) {
       expect(child.material.depthWrite).toBe(false);
     }
   });
 
   it('all sprites have renderOrder > 0', () => {
     const group = createAxisLabels();
-    for (const child of group.children) {
+    for (const child of group.children as any[]) {
       expect(child.renderOrder).toBeGreaterThan(0);
     }
   });
 
   it('all sprites have a non-degenerate positive scale', () => {
     const group = createAxisLabels();
-    for (const child of group.children) {
+    for (const child of group.children as any[]) {
       // scale is set via set() — check that scale.set was called with positive values
       expect(child.scale.set).toHaveBeenCalled();
-      const setArgs = child.scale.set.mock.calls[0];
+      const setArgs = (child.scale.set as any).mock.calls[0];
       expect(setArgs[0]).toBeGreaterThan(0);
       expect(setArgs[1]).toBeGreaterThan(0);
     }
