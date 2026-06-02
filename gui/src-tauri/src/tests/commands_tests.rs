@@ -1094,3 +1094,288 @@ fn pending_solve_cancel_cancelled_by_consumer_during_solve() {
         "slot must be cleared after cancel_solve_impl"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Hot-reload staleness recording at the update_source_impl chokepoint (task 4153)
+// ---------------------------------------------------------------------------
+
+/// Make a fresh engine with bracket source pre-loaded.
+fn make_test_engine_for_commands() -> Arc<Mutex<EngineSession>> {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load should succeed");
+    Arc::new(Mutex::new(session))
+}
+
+/// (step-4 GREEN-a) update_source_impl must record staleness when update_source
+/// returns Err (here: compile error from invalid source syntax).
+///
+/// NOTE: The original step-3 plan used `set_panic_on_eval_for_test`, but that
+/// mechanism injects panics caught *inside* the eval loop (engine_eval.rs:3677
+/// catches per-cell panics via catch_unwind), so `update_source` still returns Ok.
+/// A compile error via invalid source is the correct proxy for triggering
+/// `update_source → Err` at the commands layer.  This test therefore covers the
+/// **compile-error** staleness path, not the check()-panic path.
+///
+/// The check()-panic path (compile_failure=None, last_reload_error=Some, synthetic
+/// DiagnosticInfo emitted) is exercised at the unit level via
+/// `record_reload_error` in `engine_tests.rs` (e.g.
+/// `build_gui_state_appends_synth_diagnostic_when_stale`).  An end-to-end
+/// integration test that triggers a true check()-panic through `update_source`
+/// would require a language-level construct that causes a panic after successful
+/// compilation — none exists today, so unit-level coverage is the accepted approach.
+///
+/// RED until step-4 adds the `record_reload_error` call inside `update_source_impl`.
+#[test]
+fn update_source_impl_records_staleness_on_compile_error() {
+    let engine = make_test_engine_for_commands();
+
+    // Use invalid source to trigger a compile error — the reliable path for
+    // update_source to return Err at the commands layer.
+    let result = crate::commands::update_source_impl(&engine, "bracket.ri", "invalid syntax $$$");
+    assert!(
+        result.is_err(),
+        "update_source_impl must return Err for invalid source; got Ok"
+    );
+
+    // The session must now be stale — is_stale() is true and reload_error() is Some.
+    // This assertion is RED until step-4 adds `record_reload_error` inside update_source_impl.
+    let is_stale = crate::engine_lock::with_engine_lock(&engine, |s| s.is_stale())
+        .expect("with_engine_lock should not panic");
+    assert!(
+        is_stale,
+        "session must be stale after update_source_impl returns Err; \
+         this assertion is RED in step-3 and turns GREEN in step-4"
+    );
+    let has_reload_error =
+        crate::engine_lock::with_engine_lock(&engine, |s| s.reload_error().is_some())
+            .expect("with_engine_lock should not panic");
+    assert!(
+        has_reload_error,
+        "reload_error() must be Some after update_source_impl returns Err; \
+         this assertion is RED in step-3 and turns GREEN in step-4"
+    );
+}
+
+/// (step-4 GREEN-b) After a previously-recorded staleness, a successful
+/// update_source_impl must clear the stale flag (commit_state already clears it).
+///
+/// Depends on step-4a passing (staleness recorded via compile-error) and
+/// commit_state clearing last_reload_error on the subsequent successful reload.
+#[test]
+fn update_source_impl_clears_staleness_on_successful_reload() {
+    let engine = make_test_engine_for_commands();
+
+    // Trigger compile error to set staleness.
+    let _ = crate::commands::update_source_impl(&engine, "bracket.ri", "invalid syntax $$$");
+
+    // Second call: valid source — update_source_impl should succeed and clear staleness.
+    let result = crate::commands::update_source_impl(&engine, "bracket.ri", bracket_source());
+    assert!(
+        result.is_ok(),
+        "second update_source_impl (valid source) must return Ok; got: {:?}",
+        result.err()
+    );
+
+    let is_stale = crate::engine_lock::with_engine_lock(&engine, |s| s.is_stale())
+        .expect("with_engine_lock should not panic");
+    assert!(
+        !is_stale,
+        "staleness must be cleared after a successful update_source_impl; \
+         commit_state clears last_reload_error next to compile_failure"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Hot-reload watch helper tests (task 4153, step-5 RED)
+// ---------------------------------------------------------------------------
+
+/// (step-5 RED-a) reload_for_watch_impl on success must return Ok(GuiState) with
+/// non-empty meshes and empty compile_diagnostics.
+///
+/// RED until step-6 adds `reload_for_watch_impl` to commands.rs.
+#[test]
+fn reload_for_watch_impl_success_returns_ok_with_fresh_state() {
+    let engine = make_test_engine_for_commands();
+
+    // Successful reload with valid source.
+    let result = crate::commands::reload_for_watch_impl(&engine, "bracket.ri", bracket_source());
+    assert!(
+        result.is_ok(),
+        "reload_for_watch_impl must return Ok on valid source; got: {:?}",
+        result.err()
+    );
+    let gui_state = result.unwrap();
+    assert!(
+        !gui_state.meshes.is_empty(),
+        "GuiState.meshes must be non-empty after a successful reload"
+    );
+    assert!(
+        gui_state.compile_diagnostics.is_empty(),
+        "GuiState.compile_diagnostics must be empty after a successful reload; \
+         got: {:?}",
+        gui_state.compile_diagnostics
+    );
+}
+
+/// (step-5 RED-b) reload_for_watch_impl on failure must return Ok(GuiState) — NOT Err —
+/// whose meshes are the LAST-GOOD non-empty set and whose compile_diagnostics
+/// contains at least one Error-severity entry.  After the call, is_stale() is true.
+///
+/// This validates that the watcher always has a state to emit (never silent).
+///
+/// RED until step-6 adds `reload_for_watch_impl` to commands.rs.
+#[test]
+fn reload_for_watch_impl_failure_returns_ok_with_diagnostic_and_staleness() {
+    let engine = make_test_engine_for_commands();
+
+    // Record the mesh count from the pre-failure good state.
+    let good_mesh_count = crate::engine_lock::with_engine_lock(&engine, |s| {
+        s.build_gui_state()
+            .map(|gs| gs.meshes.len())
+            .unwrap_or(0)
+    })
+    .expect("with_engine_lock should not panic");
+    assert!(good_mesh_count > 0, "test fixture must have non-empty meshes");
+
+    // Force a failure with invalid source (compile error — reliable Err path).
+    let result =
+        crate::commands::reload_for_watch_impl(&engine, "bracket.ri", "invalid syntax $$$");
+
+    // Must return Ok, NOT Err — the watcher must always have a state to emit.
+    assert!(
+        result.is_ok(),
+        "reload_for_watch_impl must return Ok even on failure (watcher needs state to emit); \
+         got Err: {:?}",
+        result.err()
+    );
+    let gui_state = result.unwrap();
+
+    // Meshes must be the last-good (pre-failure) set.
+    assert_eq!(
+        gui_state.meshes.len(),
+        good_mesh_count,
+        "GuiState.meshes count must equal the pre-failure count (last-good retained)"
+    );
+
+    // compile_diagnostics must contain at least one Error-severity entry.
+    let has_error_diag = gui_state
+        .compile_diagnostics
+        .iter()
+        .any(|d| d.severity == "Error");
+    assert!(
+        has_error_diag,
+        "GuiState.compile_diagnostics must contain at least one Error-severity entry \
+         after a failed reload; got: {:?}",
+        gui_state.compile_diagnostics
+    );
+
+    // Assert the no-dup contract: the compile-error path sets compile_failure
+    // (LiveEdit) so build_gui_state gates the synthetic reload-error diagnostic
+    // on compile_failure.is_none() and must NOT produce a `hot-reload-error`
+    // code entry.  The structured LiveEdit diags are the only Error entries here.
+    // A regression that removed the is_none() gate would cause double-reporting
+    // and this assertion would catch it (engine.rs:2190-2196).
+    let has_hot_reload_error_synthetic = gui_state
+        .compile_diagnostics
+        .iter()
+        .any(|d| d.code.as_deref() == Some("hot-reload-error"));
+    assert!(
+        !has_hot_reload_error_synthetic,
+        "compile-error path must NOT produce a 'hot-reload-error' synthetic diagnostic \
+         (compile_failure is Some(LiveEdit) so build_gui_state skips the synthesis); \
+         got: {:?}",
+        gui_state.compile_diagnostics
+    );
+
+    // The session must be stale.
+    let is_stale = crate::engine_lock::with_engine_lock(&engine, |s| s.is_stale())
+        .expect("with_engine_lock should not panic");
+    assert!(
+        is_stale,
+        "session must be stale after reload_for_watch_impl returns a failure state"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Watcher delta surfacing test (task 4153, step-9 RED)
+// ---------------------------------------------------------------------------
+
+/// (step-9 RED) Prove that the watcher's failure path surfaces the Error-severity
+/// diagnostic to the frontend via the `compile-diagnostics` Tauri event.
+///
+/// Drive a forced compile-error reload, take the GuiState from
+/// `reload_for_watch_impl` (failure path → last-good + reload-error diagnostic),
+/// run it through `diff::compute_delta` then `diff::delta_to_events`, and assert
+/// the resulting events contain a `("compile-diagnostics", payload)` tuple whose
+/// payload array includes at least one Error-severity entry.
+///
+/// This validates the full chain: failure → last-good state with diagnostic →
+/// delta computation → Tauri event the frontend already listens for.
+///
+/// The plan says "RED until reload_for_watch_impl returns the diagnostic-bearing
+/// last-good state (step-6) and build_gui_state synthesis (step-2) are both in
+/// place."  Both are done, so this test should pass immediately after being written.
+#[test]
+fn watcher_failure_surfaces_compile_diagnostics_event() {
+    let engine = make_test_engine_for_commands();
+
+    // Capture the clean GuiState before the failed reload.
+    let prev_good_state = crate::commands::get_initial_state_impl(&engine)
+        .expect("get_initial_state_impl should succeed on clean engine");
+    assert!(
+        !prev_good_state.meshes.is_empty(),
+        "prev_good_state must have non-empty meshes (test fixture)"
+    );
+    assert!(
+        prev_good_state.compile_diagnostics.is_empty(),
+        "prev_good_state must have no compile_diagnostics before the reload"
+    );
+
+    // Drive a failed reload.
+    let failure_state =
+        crate::commands::reload_for_watch_impl(&engine, "bracket.ri", "invalid syntax $$$")
+            .expect("reload_for_watch_impl must return Ok even on failure");
+
+    // The failure state must carry at least one Error-severity diagnostic.
+    assert!(
+        failure_state
+            .compile_diagnostics
+            .iter()
+            .any(|d| d.severity == "Error"),
+        "failure GuiState.compile_diagnostics must contain an Error-severity entry"
+    );
+
+    // Run the state through the watcher's delta pipeline.
+    let last_state_mutex = Mutex::new(Some(prev_good_state));
+    let delta = crate::diff::compute_delta(&last_state_mutex, &failure_state);
+    let events = crate::diff::delta_to_events(&delta);
+
+    // Assert there is a "compile-diagnostics" event with an Error-severity entry.
+    let compile_diag_event = events
+        .iter()
+        .find(|(name, _)| name == "compile-diagnostics");
+    assert!(
+        compile_diag_event.is_some(),
+        "delta_to_events must produce a 'compile-diagnostics' event after a failed reload; \
+         got events: {:?}",
+        events.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+
+    let payload = &compile_diag_event.unwrap().1;
+    let diags = payload
+        .as_array()
+        .expect("compile-diagnostics payload must be an array");
+    let has_error = diags
+        .iter()
+        .any(|d| d["severity"].as_str() == Some("Error"));
+    assert!(
+        has_error,
+        "compile-diagnostics payload must contain an Error-severity entry; \
+         got: {:?}",
+        diags
+    );
+}

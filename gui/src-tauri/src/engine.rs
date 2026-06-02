@@ -510,6 +510,21 @@ pub struct EngineSession {
     /// `AppState.pending_solve_cancel` so `cancel_solve_impl` can read it.
     /// When `None` (the default), all lifecycle calls are no-ops.
     solve_cancel_sink: Option<Arc<dyn SolveCancellationSink>>,
+    /// Error message from the most recent failed hot-reload attempt, or `None`
+    /// when no failure is recorded (after construction, after a successful
+    /// `commit_state` cycle, or before any reload has been attempted).
+    ///
+    /// Set by `record_reload_error` at the `commands::update_source_impl`
+    /// chokepoint — AFTER `with_engine_lock` has caught and converted any
+    /// `check()` panic to `Err` — so recording is panic-safe.  Covers both
+    /// the compile-error path and the check-panic path uniformly.
+    ///
+    /// Cleared in `commit_state` (alongside `compile_failure`) so any
+    /// successful reeval auto-resets staleness.
+    ///
+    /// Surfaced via `is_stale()` / `reload_error()` for the debug API and
+    /// via `build_gui_state`'s synthetic DiagnosticInfo for the GUI channel.
+    last_reload_error: Option<String>,
 }
 
 /// Trait for sinking auto-resolve loop events to the GUI transport layer.
@@ -969,6 +984,7 @@ impl EngineSession {
             fea_case_emitter: None,
             mode_shape_frame_emitter: None,
             solve_cancel_sink: None,
+            last_reload_error: None,
         }
     }
 
@@ -1784,6 +1800,31 @@ impl EngineSession {
         self.compile_failure = Some(CompileFailure { diags, kind });
     }
 
+    /// Record a hot-reload failure message as the authoritative staleness signal.
+    ///
+    /// Called from `commands::update_source_impl` AFTER `with_engine_lock` has
+    /// caught and converted any `check()` panic to `Err` — so this call is always
+    /// panic-safe.  Covers both the compile-error path and the check-panic path
+    /// uniformly: any `Err` return from `update_source` triggers this recording.
+    ///
+    /// Cleared in `commit_state` so a subsequent successful reeval auto-resets
+    /// the staleness flag.
+    pub fn record_reload_error(&mut self, message: String) {
+        self.last_reload_error = Some(message);
+    }
+
+    /// Return `true` when a hot-reload failure has been recorded and not yet
+    /// cleared by a successful `commit_state` cycle.
+    pub fn is_stale(&self) -> bool {
+        self.last_reload_error.is_some()
+    }
+
+    /// Return the most recently recorded hot-reload error message, or `None`
+    /// when the session is not stale.
+    pub fn reload_error(&self) -> Option<&str> {
+        self.last_reload_error.as_deref()
+    }
+
     /// Atomically commit all session state after a successful parse+compile+check cycle.
     ///
     /// This wrapper first delegates the five-field core commit to
@@ -1843,6 +1884,10 @@ impl EngineSession {
         // both the cold-start and live-edit cases; setting it to `None` atomically
         // satisfies the invariant that all fields listed in the doc comment move together.
         self.compile_failure = None;
+        // Clear hot-reload staleness signal — a successful commit means the user's
+        // source was fully evaluated, so any prior reload-error banner is now stale.
+        // Mirrors the compile_failure clear immediately above.
+        self.last_reload_error = None;
     }
 
     /// Export geometry to a file.
@@ -1994,28 +2039,60 @@ impl EngineSession {
         // current `commit_state` atomic-commit (both fields are assigned together),
         // so this branch is reached only when `compiled` has never been set.
         if self.core.compiled().is_none() || self.core.last_check().is_none() {
+            // Build compile_diagnostics for the cold-start / never-committed path.
+            // Factor out the construction so we can append the last_reload_error
+            // synthetic diagnostic on this branch too — matching the main-branch
+            // synthesis at the bottom of this function.  Without this, a
+            // cold-start session where compile() succeeded but check() panicked
+            // (compile_failure is None, last_reload_error is Some) would return
+            // empty compile_diagnostics from this early-return, silently dropping
+            // the staleness signal from the GUI channel.
+            let mut compile_diagnostics_early = match &self.compile_failure {
+                Some(f) => {
+                    // `compiled` is `None` on this branch, so only `ColdStart`
+                    // failures are expected.  A `LiveEdit` failure here means
+                    // `self.compiled` was set back to `None` without clearing
+                    // `compile_failure`, which is an invariant violation.
+                    debug_assert!(
+                        matches!(f.kind, CompileFailureKind::ColdStart),
+                        "LiveEdit failure stored while compiled is None — invariant broken; kind = {:?}",
+                        f.kind
+                    );
+                    f.diags.clone()
+                }
+                None => Vec::new(),
+            };
+            // Mirror the main-branch reload-error synthesis: when no structured
+            // compile_failure exists but last_reload_error is set (e.g. a
+            // cold-start check()-panic), surface the Error diagnostic so a stale
+            // cold-start session still shows the diagnostic regardless of path.
+            // Gating on compile_failure.is_none() avoids double-reporting just
+            // as on the main branch.
+            if self.compile_failure.is_none()
+                && let Some(msg) = &self.last_reload_error
+            {
+                let file_path = self
+                    .resolve_source()
+                    .map(|(k, _)| k)
+                    .unwrap_or("<unknown>");
+                compile_diagnostics_early.push(DiagnosticInfo {
+                    file_path: file_path.to_owned(),
+                    line: 1,
+                    column: 1,
+                    end_line: 1,
+                    end_column: 1,
+                    severity: "Error".to_owned(),
+                    message: msg.clone(),
+                    code: Some("hot-reload-error".to_owned()),
+                });
+            }
             return Ok(GuiState {
                 meshes: Vec::new(),
                 values: Vec::new(),
                 constraints: Vec::new(),
                 files: Vec::new(),
                 tessellation_diagnostics: Vec::new(),
-                compile_diagnostics: match &self.compile_failure {
-                    Some(f) if f.kind == CompileFailureKind::ColdStart => f.diags.clone(),
-                    Some(f) => {
-                        // `compiled` is `None` on this branch, so only `ColdStart`
-                        // failures are expected.  A `LiveEdit` failure here means
-                        // `self.compiled` was set back to `None` without clearing
-                        // `compile_failure`, which is an invariant violation.
-                        debug_assert!(
-                            matches!(f.kind, CompileFailureKind::ColdStart),
-                            "LiveEdit failure stored while compiled is None — invariant broken; kind = {:?}",
-                            f.kind
-                        );
-                        f.diags.clone()
-                    }
-                    None => Vec::new(),
-                },
+                compile_diagnostics: compile_diagnostics_early,
                 tensegrity_wires: Vec::new(),
             });
         }
@@ -2141,6 +2218,31 @@ impl EngineSession {
             && f.kind == CompileFailureKind::LiveEdit
         {
             compile_diagnostics.extend(f.diags.iter().cloned());
+        }
+        // Synthesize a reload-error DiagnosticInfo when the session is stale due
+        // to a hot-reload failure that did NOT produce a structured compile_failure
+        // (i.e. the check()-panic path where compile_failure is None).  Gating on
+        // `compile_failure.is_none()` avoids double-reporting: in the compile-error
+        // path both `compile_failure` (structured diags) and `last_reload_error`
+        // (joined message) are set; the structured diags already reach the frontend
+        // via the LiveEdit append above, so adding the message again would duplicate.
+        if self.compile_failure.is_none()
+            && let Some(msg) = &self.last_reload_error
+        {
+            let file_path = self
+                .resolve_source()
+                .map(|(k, _)| k)
+                .unwrap_or("<unknown>");
+            compile_diagnostics.push(DiagnosticInfo {
+                file_path: file_path.to_owned(),
+                line: 1,
+                column: 1,
+                end_line: 1,
+                end_column: 1,
+                severity: "Error".to_owned(),
+                message: msg.clone(),
+                code: Some("hot-reload-error".to_owned()),
+            });
         }
 
         // Extract tensegrity wire descriptors from value cells.

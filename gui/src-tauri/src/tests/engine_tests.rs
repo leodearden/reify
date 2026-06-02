@@ -10922,3 +10922,143 @@ structure Top {
          (aux_ancestor propagates through non-aux intermediate sub)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Hot-reload staleness API (task 4153)
+// ---------------------------------------------------------------------------
+
+/// (a) After a successful load the session must not be stale, reload_error() must
+/// be None, and build_gui_state().compile_diagnostics must be empty.
+///
+/// RED until step-2 adds the is_stale / reload_error / record_reload_error methods.
+#[test]
+fn staleness_api_clean_after_successful_load() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load should succeed");
+
+    assert!(!session.is_stale(), "newly-loaded session must not be stale");
+    assert!(
+        session.reload_error().is_none(),
+        "newly-loaded session must have no reload error"
+    );
+    let state = session.build_gui_state().expect("build_gui_state should succeed");
+    assert!(
+        state.compile_diagnostics.is_empty(),
+        "clean load must have no compile_diagnostics; got {:?}",
+        state.compile_diagnostics
+    );
+}
+
+/// (b) After record_reload_error("boom") the session is stale, reload_error() returns
+/// Some("boom"), and build_gui_state() retains the last-good meshes/values while
+/// appending exactly one Error-severity DiagnosticInfo whose message contains "boom"
+/// and whose code is Some("hot-reload-error").
+///
+/// RED until step-2 adds the staleness field and synthesises the diagnostic.
+#[test]
+fn staleness_api_record_reload_error_appends_diagnostic() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load should succeed");
+
+    // Capture the last-good counts for regression.
+    let good_state = session.build_gui_state().expect("build_gui_state pre-error should succeed");
+    assert!(
+        !good_state.meshes.is_empty(),
+        "bracket source must produce non-empty meshes"
+    );
+    let good_mesh_count = good_state.meshes.len();
+    let good_value_count = good_state.values.len();
+
+    // Inject a reload error (simulates what commands::update_source_impl will do on Err).
+    session.record_reload_error("boom".to_string());
+
+    assert!(session.is_stale(), "session must be stale after record_reload_error");
+    assert_eq!(
+        session.reload_error(),
+        Some("boom"),
+        "reload_error() must return the recorded message verbatim"
+    );
+
+    // build_gui_state must retain last-good geometry AND append the error diagnostic.
+    let stale_state = session
+        .build_gui_state()
+        .expect("build_gui_state must succeed even when stale");
+    assert_eq!(
+        stale_state.meshes.len(),
+        good_mesh_count,
+        "stale state must retain the last-good mesh count"
+    );
+    assert_eq!(
+        stale_state.values.len(),
+        good_value_count,
+        "stale state must retain the last-good value count"
+    );
+
+    // Exactly one Error-severity diagnostic with the "boom" message.
+    let error_diags: Vec<_> = stale_state
+        .compile_diagnostics
+        .iter()
+        .filter(|d| d.severity == "Error" && d.message.contains("boom"))
+        .collect();
+    assert_eq!(
+        error_diags.len(),
+        1,
+        "expected exactly one Error diagnostic for the reload error; got {:?}",
+        stale_state.compile_diagnostics
+    );
+    assert_eq!(
+        error_diags[0].code,
+        Some("hot-reload-error".to_string()),
+        "reload-error diagnostic must carry code 'hot-reload-error'"
+    );
+}
+
+/// (c) A successful update_source / load after record_reload_error must clear
+/// staleness and remove the synthetic diagnostic.
+///
+/// RED until step-2 wires the clear in commit_state.
+#[test]
+fn staleness_api_cleared_after_successful_reload() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load should succeed");
+
+    // Make stale.
+    session.record_reload_error("transient error".to_string());
+    assert!(session.is_stale(), "session must be stale before the test assertion");
+
+    // Successful reload should clear staleness (commit_state clears last_reload_error).
+    session
+        .update_source("bracket.ri", bracket_source())
+        .expect("update_source with valid source must succeed");
+
+    assert!(
+        !session.is_stale(),
+        "staleness must be cleared after a successful reload"
+    );
+    assert!(
+        session.reload_error().is_none(),
+        "reload_error must be None after a successful reload"
+    );
+
+    let state = session.build_gui_state().expect("build_gui_state should succeed");
+    let has_reload_error_diag = state
+        .compile_diagnostics
+        .iter()
+        .any(|d| d.code == Some("hot-reload-error".to_string()));
+    assert!(
+        !has_reload_error_diag,
+        "no 'hot-reload-error' diagnostic must appear after a successful reload"
+    );
+}
