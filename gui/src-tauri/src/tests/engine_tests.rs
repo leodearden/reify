@@ -10937,19 +10937,20 @@ structure Top {
 //   - `set_solver_progress_sink` does not yet exist on `EngineSession`.
 //   - `engine_active_solve_cancel_for_test` does not yet exist on `EngineSession`.
 
+/// Shared log of `(solver_kind, iter, residual)` triples recorded by
+/// [`RecordingSolverProgressSink`].
+type SolverProgressLog = std::sync::Arc<std::sync::Mutex<Vec<(String, u32, f64)>>>;
+
 /// Test double for `reify_eval::SolverProgressSink`.
 ///
 /// Records every `(solver_kind, iter, residual)` triple received from the
 /// engine dispatch path.
 struct RecordingSolverProgressSink {
-    updates: std::sync::Arc<std::sync::Mutex<Vec<(String, u32, f64)>>>,
+    updates: SolverProgressLog,
 }
 
 impl RecordingSolverProgressSink {
-    fn new() -> (
-        Self,
-        std::sync::Arc<std::sync::Mutex<Vec<(String, u32, f64)>>>,
-    ) {
+    fn new() -> (Self, SolverProgressLog) {
         let updates = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         (
             Self {
