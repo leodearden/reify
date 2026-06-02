@@ -40,7 +40,132 @@ pub(crate) fn eval_construct(_name: &str, _args: &[Value]) -> Option<Value> {
 
 #[cfg(test)]
 mod tests {
-    // Inline RED/GREEN eval tests for the four constructors land in steps
-    // 1/3/5/7 (tests) and go GREEN in steps 2/4/6/8 (impl). Placeholder module
-    // so the crate compiles with the construct.rs scaffold in place.
+    use crate::eval_builtin;
+    use reify_core::DimensionVector;
+    use reify_ir::Value;
+
+    /// Build a `Scalar` with the given dimension (test fixture).
+    fn scalar(v: f64, dim: DimensionVector) -> Value {
+        Value::Scalar {
+            si_value: v,
+            dimension: dim,
+        }
+    }
+
+    // ── `vec(list)` → Value::Vector (step-1 RED / step-2 GREEN) ──────────────
+
+    /// (a) A list of dimensionless `Real`s builds a `Vector` of `Real` cells.
+    #[test]
+    fn vec_of_reals_builds_vector() {
+        let out = eval_builtin(
+            "vec",
+            &[Value::List(vec![
+                Value::Real(1.0),
+                Value::Real(2.0),
+                Value::Real(3.0),
+            ])],
+        );
+        assert_eq!(
+            out,
+            Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]),
+            "vec([1,2,3]) should build a 3-element Vector of Reals"
+        );
+    }
+
+    /// (b) A dimensioned list preserves the element dimension as `Scalar` cells.
+    #[test]
+    fn vec_of_length_scalars_preserves_dimension() {
+        let out = eval_builtin(
+            "vec",
+            &[Value::List(vec![
+                scalar(1.0, DimensionVector::LENGTH),
+                scalar(2.0, DimensionVector::LENGTH),
+            ])],
+        );
+        assert_eq!(
+            out,
+            Value::Vector(vec![
+                scalar(1.0, DimensionVector::LENGTH),
+                scalar(2.0, DimensionVector::LENGTH),
+            ]),
+            "vec of LENGTH Scalars should build a Vector of LENGTH Scalars"
+        );
+    }
+
+    /// (c) Integer elements coerce to dimensionless `Real` cells.
+    #[test]
+    fn vec_of_ints_builds_dimensionless_vector() {
+        let out = eval_builtin("vec", &[Value::List(vec![Value::Int(1), Value::Int(2)])]);
+        assert_eq!(
+            out,
+            Value::Vector(vec![Value::Real(1.0), Value::Real(2.0)]),
+            "vec([Int 1, Int 2]) should build a Vector of dimensionless Reals"
+        );
+    }
+
+    /// (d) An empty list is malformed → `Undef`.
+    #[test]
+    fn vec_empty_list_is_undef() {
+        assert_eq!(
+            eval_builtin("vec", &[Value::List(vec![])]),
+            Value::Undef,
+            "vec([]) should be Undef"
+        );
+    }
+
+    /// (e) A mixed-dimension list is malformed → `Undef`.
+    #[test]
+    fn vec_mixed_dimension_is_undef() {
+        let out = eval_builtin(
+            "vec",
+            &[Value::List(vec![
+                Value::Real(1.0),
+                scalar(2.0, DimensionVector::LENGTH),
+            ])],
+        );
+        assert_eq!(out, Value::Undef, "vec of mixed dimensions should be Undef");
+    }
+
+    /// (f) A non-numeric element (String) is malformed → `Undef`.
+    #[test]
+    fn vec_non_numeric_element_is_undef() {
+        let out = eval_builtin(
+            "vec",
+            &[Value::List(vec![
+                Value::Real(1.0),
+                Value::String("x".to_string()),
+            ])],
+        );
+        assert_eq!(
+            out,
+            Value::Undef,
+            "vec containing a String element should be Undef"
+        );
+    }
+
+    /// (g) Wrong argument count, or a non-`List` argument → `Undef`.
+    #[test]
+    fn vec_wrong_arity_or_non_list_is_undef() {
+        assert_eq!(
+            eval_builtin("vec", &[]),
+            Value::Undef,
+            "vec() with no args should be Undef"
+        );
+        assert_eq!(
+            eval_builtin(
+                "vec",
+                &[
+                    Value::List(vec![Value::Real(1.0)]),
+                    Value::List(vec![Value::Real(2.0)]),
+                ],
+            ),
+            Value::Undef,
+            "vec(.., ..) with two args should be Undef"
+        );
+        assert_eq!(
+            eval_builtin("vec", &[Value::Real(1.0)]),
+            Value::Undef,
+            "vec(Real) with a non-List arg should be Undef"
+        );
+    }
 }
