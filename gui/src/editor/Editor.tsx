@@ -2,7 +2,7 @@ import { onMount, onCleanup, createEffect } from 'solid-js';
 import { EditorState, Transaction, type Extension } from '@codemirror/state';
 import { EditorView, keymap, lineNumbers } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
-import { bracketMatching } from '@codemirror/language';
+import { bracketMatching, codeFolding, foldGutter, foldKeymap } from '@codemirror/language';
 import { autocompletion, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { search, searchKeymap } from '@codemirror/search';
 import { linter, setDiagnostics, type Diagnostic } from '@codemirror/lint';
@@ -83,6 +83,8 @@ export function Editor(props: EditorProps) {
     extensions = [
       reifyLanguage(),
       lineNumbers(),
+      codeFolding(),
+      foldGutter(),
       bracketMatching(),
       closeBrackets(),
       reifyEditorTheme,
@@ -186,6 +188,7 @@ export function Editor(props: EditorProps) {
         ...defaultKeymap,
         ...historyKeymap,
       ]),
+      keymap.of(foldKeymap),
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
           // Bail out for sync-external transactions — these originate from the

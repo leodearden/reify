@@ -75,4 +75,16 @@ describe('KeyboardHelp', () => {
     const overlay = screen.getByTestId('keyboard-help');
     expect(overlay.textContent).toContain('Ctrl+J');
   });
+
+  it('fold shortcuts surface in the ? overlay (acceptance criterion)', () => {
+    render(() => <KeyboardHelp onClose={() => {}} />);
+    const overlay = screen.getByTestId('keyboard-help');
+    // Key chips are the primary acceptance signal — they prove the entries are
+    // not disabled and have a non-empty key string.  Description-prose coverage
+    // is handled by the 'renders all active entries' test above via the registry.
+    expect(overlay.textContent).toContain('Ctrl+Alt+[');
+    expect(overlay.textContent).toContain('Ctrl+Alt+]');
+    expect(overlay.textContent).toContain('Ctrl+Shift+[');
+    expect(overlay.textContent).toContain('Ctrl+Shift+]');
+  });
 });

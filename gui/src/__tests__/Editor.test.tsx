@@ -2,8 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { deferred } from './test-utils';
 import { render, screen } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
-import { EditorView } from '@codemirror/view';
+import { EditorView, keymap } from '@codemirror/view';
 import { undo } from '@codemirror/commands';
+import { foldAll, unfoldAll, foldedRanges } from '@codemirror/language';
 import { diagnosticCount } from '@codemirror/lint';
 import { createEditorStore } from '../stores/editorStore';
 import * as bridge from '../bridge';
@@ -1314,6 +1315,56 @@ describe('Editor sync dispatch excluded from undo history', () => {
     // After undo, doc must not be the intermediate 'XOLD' state (which would
     // mean the sync transaction was undoable and the user just reverted the reload).
     expect(view.state.doc.toString()).not.toBe('XOLD');
+  });
+});
+
+describe('Editor structural folding', () => {
+  const foldFile: FileData = {
+    path: '/fold.ri',
+    content: 'structure S {\n  param a = 1\n  param b = 2\n}',
+  };
+
+  it('foldGutter is wired (.cm-foldGutter present in DOM)', () => {
+    const store = setupStore([foldFile]);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const foldGutter = container.querySelector('.cm-foldGutter');
+    expect(foldGutter).not.toBeNull();
+  });
+
+  it('foldAll produces non-empty foldedRanges; unfoldAll clears them', () => {
+    const store = setupStore([foldFile]);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Initially no folded ranges
+    let count = 0;
+    foldedRanges(view.state).between(0, view.state.doc.length, () => { count++; });
+    expect(count).toBe(0);
+
+    // After foldAll, at least one range should be folded
+    foldAll(view);
+    count = 0;
+    foldedRanges(view.state).between(0, view.state.doc.length, () => { count++; });
+    expect(count).toBeGreaterThan(0);
+
+    // After unfoldAll, no folded ranges remain
+    unfoldAll(view);
+    count = 0;
+    foldedRanges(view.state).between(0, view.state.doc.length, () => { count++; });
+    expect(count).toBe(0);
+  });
+
+  it('foldKeymap bindings Ctrl-Shift-[ and Ctrl-Alt-[ are registered in keymap facet', () => {
+    const store = setupStore([foldFile]);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    const bindings = view.state.facet(keymap).flat();
+    expect(bindings.some((b) => b.key === 'Ctrl-Shift-[')).toBe(true);
+    expect(bindings.some((b) => b.key === 'Ctrl-Alt-[')).toBe(true);
   });
 });
 

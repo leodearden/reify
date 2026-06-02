@@ -85,6 +85,20 @@ const _SHORTCUTS_DEF = [
   // matchesEvent.  Actual dispatch is a special-case block in useKeyboardShortcuts
   // (mirroring the Escape handler pattern).
   { id: 'switchViewByIndex', key: '1-9', description: 'Switch to view N in the view selector', category: 'View' },
+  // Display-only entries for CodeMirror structural folding.  No `bind` field: dispatch
+  // is owned by the editor's foldKeymap (keymap.of(foldKeymap) in Editor.tsx).
+  // useKeyboardShortcuts skips entries without a bind, and also bails when the event
+  // target is contentEditable (the CM editor contentDOM), so fold keys in the editor
+  // never reach the global handler.  These entries exist solely to surface the
+  // keybindings in the ? overlay.
+  // Platform note: key labels below reflect CM6 foldKeymap defaults for Linux/Windows.
+  // On macOS CM6 overrides fold/unfold to Cmd-Alt-[ / Cmd-Alt-] (foldAll/unfoldAll
+  // remain Ctrl-Alt-[ / Ctrl-Alt-] on all platforms).  If macOS support is added,
+  // these display strings should be made platform-aware (Cmd vs Ctrl for fold/unfold).
+  { id: 'fold',      key: 'Ctrl+Shift+[', description: 'Fold block at cursor', category: 'Editor' },
+  { id: 'unfold',    key: 'Ctrl+Shift+]', description: 'Unfold block at cursor', category: 'Editor' },
+  { id: 'foldAll',   key: 'Ctrl+Alt+[',   description: 'Fold all', category: 'Editor' },
+  { id: 'unfoldAll', key: 'Ctrl+Alt+]',   description: 'Unfold all', category: 'Editor' },
 ] as const satisfies readonly ShortcutDef[];
 
 /**
