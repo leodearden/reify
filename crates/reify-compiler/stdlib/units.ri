@@ -94,6 +94,35 @@ pub type Velocity = Length / Time
 /// Boltzmann constant. Local alias because no J/K named dimension exists.
 pub type HeatCapacity = Energy / Temperature
 
+/// Inverse amount of substance — dimension of Avogadro constant (mol⁻¹).
+/// Written as `Dimensionless / AmountOfSubstance` because `Real` is a scalar
+/// type, not a dimension identifier; `Dimensionless` is the special-cased zero
+/// dimension vector resolved by the compiler.
+pub type InverseAmount = Dimensionless / AmountOfSubstance
+
+/// Action dimension (J·s = kg·m²·s⁻¹) — dimension of the Planck constant.
+/// Named "Action" after the physical quantity (integral of energy over time).
+pub type Action = Energy * Time
+
+/// Stefan-Boltzmann dimension (W·m⁻²·K⁻⁴ = kg·s⁻³·K⁻⁴) — dimension of the
+/// Stefan-Boltzmann constant. No standard quantity name exists for this
+/// dimension; the alias name is descriptive. T⁴ is written as four repeated
+/// `/ Temperature` factors because the grammar forbids `^` and parens in
+/// type-alias RHS (PRD §3.6).
+pub type StefanBoltzmannDim = Power / Area / Temperature / Temperature / Temperature / Temperature
+
+/// Permittivity dimension (F/m = kg⁻¹·m⁻³·s⁴·A²) — dimension of the vacuum
+/// electric permittivity. Equals Capacitance per unit length.
+pub type Permittivity = Capacitance / Length
+
+/// Permeability dimension (H/m = kg·m·s⁻²·A⁻²) — dimension of the vacuum
+/// magnetic permeability. Equals Inductance per unit length.
+pub type Permeability = Inductance / Length
+
+/// Molar gas constant dimension (J·mol⁻¹·K⁻¹ = kg·m²·s⁻²·mol⁻¹·K⁻¹) —
+/// dimension of the molar gas constant R = N_A·k_B.
+pub type MolarGasConstant = Energy / AmountOfSubstance / Temperature
+
 /// Standard acceleration of gravity (g_n), 9.80665 m/s² — BIPM/CGPM 1901 §70
 /// reference value. Use in body-force loads: `gravity(5 * STANDARD_GRAVITY())`.
 /// Body uses the compositional `1m / (1s * 1s)` form rather than the compound
@@ -114,9 +143,56 @@ pub fn SPEED_OF_LIGHT() -> Velocity { 299792458.0 * 1m / 1s }
 /// Body uses `1m * 1m * 1kg / (1s * 1s * 1K)` because `J` is generated in
 /// std.si_units, which compiles AFTER std.units; the resulting SI value is
 /// identical (J = kg·m²·s⁻²).
-/// Value is written in decimal form because Reify's number-literal grammar
-/// does not accept scientific notation in value position (see
-/// `modal_analysis.ri:32-33` for the same convention).
 pub fn BOLTZMANN_CONSTANT() -> HeatCapacity {
-    0.00000000000000000000001380649 * 1kg * 1m * 1m / (1s * 1s * 1K)
+    1.380649e-23 * 1kg * 1m * 1m / (1s * 1s * 1K)
 }
+
+/// Avogadro constant (N_A), 6.02214076×10²³ mol⁻¹ — exact by the 2019 SI
+/// redefinition (26th CGPM, Resolution 1). Body: `coefficient * 1mol / 1mol / 1mol`
+/// anchors a mol in the numerator so the expression is Scalar-valued from the
+/// first `*` (eval_div requires Scalar in the numerator; Real / Scalar is
+/// unhandled). Net dimension: mol¹ / mol¹ / mol¹ = mol⁻¹ = InverseAmount.
+pub fn AVOGADRO_CONSTANT() -> InverseAmount { 6.02214076e23 * 1mol / 1mol / 1mol }
+
+/// Planck constant (h), 6.62607015×10⁻³⁴ J·s — exact by the 2019 SI
+/// redefinition (26th CGPM, Resolution 1). Dimension: Action = kg·m²·s⁻¹.
+/// Body uses base units (J = kg·m²·s⁻² from std.si_units, unavailable here).
+pub fn PLANCK_CONSTANT() -> Action { 6.62607015e-34 * 1kg * 1m * 1m / 1s }
+
+/// Stefan-Boltzmann constant (σ), 5.670374419×10⁻⁸ W·m⁻²·K⁻⁴ — CODATA 2018.
+/// Relates radiated power density to T⁴: P/A = σ·T⁴. Dimension: kg·s⁻³·K⁻⁴.
+/// Body uses base units; W and m² from std.si_units are unavailable here.
+pub fn STEFAN_BOLTZMANN_CONSTANT() -> StefanBoltzmannDim {
+    5.670374419e-8 * 1kg / 1s / 1s / 1s / 1K / 1K / 1K / 1K
+}
+
+/// Vacuum electric permittivity (ε₀), 8.8541878128×10⁻¹² F/m — CODATA 2018.
+/// Fundamental constant in electrostatics: F = ε₀·E²/2. Dimension: kg⁻¹·m⁻³·s⁴·A².
+/// Body uses base units; F from std.si_units is unavailable here. Requires
+/// dependency α bare `1A` arm in unit_to_scalar.
+pub fn VACUUM_PERMITTIVITY() -> Permittivity {
+    8.8541878128e-12 * 1s * 1s * 1s * 1s * 1A * 1A / 1kg / 1m / 1m / 1m
+}
+
+/// Vacuum magnetic permeability (μ₀), 1.25663706212×10⁻⁶ H/m — CODATA 2018.
+/// Fundamental constant in magnetostatics: B = μ₀·H. Dimension: kg·m·s⁻²·A⁻².
+/// Body uses base units; H from std.si_units is unavailable here. Requires
+/// dependency α bare `1A` arm in unit_to_scalar.
+pub fn VACUUM_PERMEABILITY() -> Permeability {
+    1.25663706212e-6 * 1kg * 1m / 1s / 1s / 1A / 1A
+}
+
+/// Molar gas constant (R), 8.314462618 J·mol⁻¹·K⁻¹ — exact by the 2019 SI
+/// redefinition (R = N_A·k_B; 26th CGPM, Resolution 1). Used in ideal-gas
+/// computations: `let pV = MOLAR_GAS_CONSTANT() * n * T`. Dimension: kg·m²·s⁻²·mol⁻¹·K⁻¹.
+/// Body uses base units; J from std.si_units is unavailable here. Requires
+/// dependency α bare `1mol` arm in unit_to_scalar.
+pub fn MOLAR_GAS_CONSTANT() -> MolarGasConstant {
+    8.314462618 * 1kg * 1m * 1m / 1s / 1s / 1mol / 1K
+}
+
+/// Elementary charge (e), 1.602176634×10⁻¹⁹ C — exact by the 2019 SI
+/// redefinition (26th CGPM, Resolution 1). This equals the eV factor in
+/// si_units.rs. Uses the pre-existing `Charge` named dimension (no new alias).
+/// Dimension: s·A. Requires dependency α bare `1A` arm in unit_to_scalar.
+pub fn ELEMENTARY_CHARGE() -> Charge { 1.602176634e-19 * 1A * 1s }
