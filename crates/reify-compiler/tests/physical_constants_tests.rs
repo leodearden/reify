@@ -740,3 +740,91 @@ fn molar_gas_constant_evaluates_to_8p314462618_si_with_molar_gas_dim() {
         ),
     }
 }
+
+// ─── Test 17: ELEMENTARY_CHARGE present and has correct signature ──────────────
+
+/// `ELEMENTARY_CHARGE` must be present in `std/units`, be `pub`, take no
+/// parameters, and return `Scalar<CHARGE>` (= s·A, [T:1,Current:1]).
+///
+/// e = 1.602176634×10⁻¹⁹ C — exact by the 2019 SI redefinition (CGPM 26th meeting).
+/// Uses the pre-existing `Charge` named dimension (no new alias).
+#[test]
+fn elementary_charge_function_present_in_std_units() {
+    let module = common::units_module();
+
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "ELEMENTARY_CHARGE")
+        .unwrap_or_else(|| {
+            panic!(
+                "ELEMENTARY_CHARGE not found in std/units; found functions: {:?}",
+                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+            )
+        });
+
+    assert!(func.is_pub, "ELEMENTARY_CHARGE should be pub");
+    assert!(
+        func.params.is_empty(),
+        "ELEMENTARY_CHARGE should take no params, got: {:?}",
+        func.params
+    );
+
+    let expected_dim = DimensionVector::CHARGE;
+    assert_eq!(
+        func.return_type,
+        Type::Scalar {
+            dimension: expected_dim
+        },
+        "ELEMENTARY_CHARGE return type should be Scalar<CHARGE>, got {:?}",
+        func.return_type
+    );
+}
+
+// ─── Test 18: ELEMENTARY_CHARGE evaluates to 1.602176634e-19 C ───────────────
+
+/// Evaluating `ELEMENTARY_CHARGE()` via `eval_expr` must yield a
+/// `Value::Scalar` with `si_value ≈ 1.602176634e-19` and
+/// `dimension = CHARGE` (= s·A).
+///
+/// e = 1.602176634×10⁻¹⁹ C — exact (2019 SI redefinition).
+#[test]
+fn elementary_charge_evaluates_to_1p602176634e_minus_19_si_with_charge_dimension() {
+    let module = common::units_module();
+
+    let expected_dim = DimensionVector::CHARGE;
+    let call_expr = CompiledExpr::user_function_call(
+        "ELEMENTARY_CHARGE".to_string(),
+        vec![],
+        Type::Scalar {
+            dimension: expected_dim,
+        },
+    );
+    let values = ValueMap::new();
+    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    let result = reify_expr::eval_expr(&call_expr, &ctx);
+
+    match result {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(
+                dimension,
+                DimensionVector::CHARGE,
+                "ELEMENTARY_CHARGE() should have CHARGE dimension, got {:?}",
+                dimension
+            );
+            common::assert_eq_rel(
+                si_value,
+                1.602176634e-19,
+                1e-12,
+                "ELEMENTARY_CHARGE() si_value",
+            );
+        }
+        other => panic!(
+            "ELEMENTARY_CHARGE() should return Value::Scalar, got {:?}",
+            other
+        ),
+    }
+}
