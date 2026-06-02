@@ -81,8 +81,8 @@ pub use structure_registry::{StructureMeta, StructureRegistry, StructureTypeId};
 pub use traits::{EnumDef, TraitBound, TraitDef, TraitMember, TraitRef, TypeParam};
 pub use value::{
     DeterminacyState, ErrorRef, EvalError, FieldSourceKind, Freshness, InterpolationKind,
-    ResultRef, SampledField, SampledGridKind, Satisfaction, StructureInstanceData, Value, ValueMap,
-    quaternion_is_finite,
+    KeyedMember, MemberKey, ResultRef, SampledField, SampledGridKind, Satisfaction,
+    StructureInstanceData, Value, ValueMap, keyed_member_cell, quaternion_is_finite,
 };
 pub use warm::{OpaqueState, WarmStartable};
 pub use warm_registry::{WarmStartableRegistration, WarmStartableRegistry};

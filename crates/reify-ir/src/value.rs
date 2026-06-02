@@ -3321,6 +3321,62 @@ impl ValueMap {
     }
 }
 
+// ── Keyed-member identity (task 3930 β) ──────────────────────────────────────
+//
+// A `Keyed<T>` sub-collection addresses its members by an author-assigned
+// String key rather than by position. `MemberKey` is the first-class key tag at
+// the schema/eval-graph layer (PRD §2.4 — deliberately decoupled from
+// geometry-topology / persistent-naming-v2), and `keyed_member_cell` stamps the
+// key into the member's `ValueCellId` path so the resolved NodeId reads
+// `Widget.vents["intake"]` — the stable, key-addressed replacement for the
+// positional `[N]` member identity.
+
+/// An author-assigned key tagging one member of a `Keyed<T>` sub-collection.
+///
+/// This is a schema/eval-graph-layer String tag (PRD §2.4), kept separate from
+/// the geometry-topology persistent-naming subsystem.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MemberKey(pub String);
+
+impl MemberKey {
+    pub fn new(key: impl Into<String>) -> Self {
+        Self(key.into())
+    }
+
+    /// The bracketed path segment for this key under `sub_name`.
+    ///
+    /// Rust's `{:?}` Debug-formats a plain `String` as a double-quoted literal,
+    /// so the segment is provably `vents["intake"]` (and quote-containing keys
+    /// are safely escaped) — matching the PRD's key-addressed NodeId rendering.
+    pub fn path_segment(&self, sub_name: &str) -> String {
+        format!("{sub_name}[{:?}]", self.0)
+    }
+}
+
+/// Build the key-addressed [`ValueCellId`] for a keyed member.
+///
+/// The cell's `member` slot carries the bracketed key segment, so its Display
+/// (`entity.member`) yields the full key-addressed NodeId path, e.g.
+/// `Widget.vents["intake"]`.
+pub fn keyed_member_cell(parent_entity: &str, sub_name: &str, key: &MemberKey) -> ValueCellId {
+    ValueCellId::new(parent_entity, key.path_segment(sub_name))
+}
+
+/// A single member of a `Keyed<T>` sub-collection: its author-assigned key
+/// together with the key-addressed value cell that identifies it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyedMember {
+    pub key: MemberKey,
+    pub cell: ValueCellId,
+}
+
+impl KeyedMember {
+    pub fn new(parent_entity: &str, sub_name: &str, key: MemberKey) -> Self {
+        let cell = keyed_member_cell(parent_entity, sub_name, &key);
+        Self { key, cell }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
