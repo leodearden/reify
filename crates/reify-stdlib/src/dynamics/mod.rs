@@ -10,3 +10,4 @@ pub mod eval;
 pub mod mass_props;
 pub mod rnea;
 pub mod spatial;
+pub mod trampoline;
