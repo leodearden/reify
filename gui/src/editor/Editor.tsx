@@ -121,39 +121,23 @@ export function Editor(props: EditorProps) {
       navHistory.push(dest);
     };
 
-    // Apply a NavEntry by placing the cursor at entry.offset.
-    // Same-file: direct dispatch clamped to doc length.
-    // Cross-file: open the target file (if not already open), then defer the
-    //             cursor dispatch until after the file-switch effect has run.
+    // Apply a NavEntry by placing the cursor at entry.offset (same-file only).
+    //
+    // Navigation history is intentionally scoped to same-file positions in this
+    // task (phase ζ): all push sites use `currentUri` — onRecordJump records
+    // same-file goto-def jumps, and the scrollToLocation effect records same-file
+    // cross-pane reveals.  Cross-file jumps (Ctrl+Click / F12 to another file)
+    // are NOT yet tracked; when cross-file push support lands it will wire origin
+    // and destination through onCrossFileNavigate and add the cross-file branch
+    // here.  Until then, every entry.uri is guaranteed to equal currentUri, so
+    // the else branch would be dead code and is intentionally omitted.
+    //
     // Pushes never happen here — only goto-def and scrollToLocation push.
     const applyNavEntry = (entry: NavEntry): void => {
-      if (isSameFile(entry.uri, currentUri)) {
-        if (!view) return;
-        const docLen = view.state.doc.length;
-        const offset = Math.min(Math.max(0, entry.offset), docLen);
-        view.dispatch({ selection: { anchor: offset }, scrollIntoView: true });
-      } else {
-        // Cross-file: ensure the target file is open, then defer cursor placement.
-        const path = normalizePath(entry.uri);
-        const existingFile = props.store.state.openFiles.find((f) => isSameFile(f.path, path));
-        if (existingFile) {
-          props.store.setActiveFile(existingFile.path);
-        } else {
-          bridgeOpenFile(path)
-            .then((fileData) => {
-              if (destroyed) return;
-              props.store.openFile(fileData);
-            })
-            .catch((err: unknown) => console.error('Nav history cross-file error:', err));
-        }
-        setTimeout(() => {
-          if (view && !destroyed) {
-            const docLen = view.state.doc.length;
-            const offset = Math.min(Math.max(0, entry.offset), docLen);
-            view.dispatch({ selection: { anchor: offset }, scrollIntoView: true });
-          }
-        }, 0);
-      }
+      if (!view) return;
+      const docLen = view.state.doc.length;
+      const offset = Math.min(Math.max(0, entry.offset), docLen);
+      view.dispatch({ selection: { anchor: offset }, scrollIntoView: true });
     };
 
     // Extract extensions into a shared variable for reuse when creating

@@ -74,10 +74,6 @@ export function createNavHistory(maxDepth = 50): NavHistory {
     // Clamp to maxDepth by dropping the oldest entry from the front.
     if (entries.length > maxDepth) {
       entries.shift();
-      // index stays at entries.length - 1 because we removed one from the front
-      // and added one at the back: net offset is zero.
-    } else {
-      index = entries.length - 1;
     }
 
     // After a possible shift, index must always point to the last element.
