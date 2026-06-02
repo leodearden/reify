@@ -154,6 +154,23 @@ impl Default for ManifoldKernel {
     }
 }
 
+/// Convert a [`Mesh`] into a [`Manifold`] by flattening vertices f32→f64 and
+/// indices u32→u64, then calling [`Manifold::from_mesh_f64`].
+///
+/// This is the canonical ingestion conversion used by both
+/// [`GeometryKernel::ingest_mesh`] (production path) and the
+/// `unit_cube_manifold` test fixture (test-only path). Keeping it in one place
+/// prevents the two callers from drifting if the ingestion contract changes.
+///
+/// Returns `Err(String)` (the `Debug` representation of the underlying
+/// manifold3d error) if the mesh is not a valid closed orientable manifold.
+pub(crate) fn manifold_from_reify_mesh(mesh: &Mesh) -> Result<Manifold, String> {
+    let vert_props_f64: Vec<f64> = mesh.vertices.iter().map(|&v| v as f64).collect();
+    let tri_indices_u64: Vec<u64> = mesh.indices.iter().map(|&i| i as u64).collect();
+    Manifold::from_mesh_f64(&vert_props_f64, 3, &tri_indices_u64)
+        .map_err(|e| format!("{e:?}"))
+}
+
 impl GeometryKernel for ManifoldKernel {
     fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
         match op {
@@ -657,15 +674,12 @@ impl GeometryKernel for ManifoldKernel {
                 mesh.indices.len()
             )));
         }
-        let vert_props_f64: Vec<f64> = mesh.vertices.iter().map(|&v| v as f64).collect();
-        let tri_indices_u64: Vec<u64> = mesh.indices.iter().map(|&i| i as u64).collect();
-        let manifold =
-            Manifold::from_mesh_f64(&vert_props_f64, 3, &tri_indices_u64).map_err(|e| {
-                GeometryError::OperationFailed(format!(
-                    "ingest_mesh: input Mesh must be a valid manifold; \
-                     manifold3d::from_mesh_f64 reported: {e:?}"
-                ))
-            })?;
+        let manifold = manifold_from_reify_mesh(mesh).map_err(|e| {
+            GeometryError::OperationFailed(format!(
+                "ingest_mesh: input Mesh must be a valid manifold; \
+                 manifold3d::from_mesh_f64 reported: {e}"
+            ))
+        })?;
         Ok(self.store(manifold))
     }
 
@@ -1402,7 +1416,8 @@ mod tests {
     }
 
     /// Proves that `Manifold::to_meshgl64()` (added in manifold3d 0.3) exposes
-    /// non-trivial provenance data after a boolean union.
+    /// provenance data after a boolean union (run/face vectors non-trivial;
+    /// merge vectors validated structurally — see note below).
     ///
     /// Empirical probe (manifold3d 0.3.0 / manifold-csg-sys 3.5.101):
     /// two overlapping unit cubes → union → to_meshgl64():
@@ -1422,7 +1437,7 @@ mod tests {
     /// 0.2 (compile error). GREEN (step-2) is the dependency bump 0.2→0.3.
     #[cfg(feature = "test-fixtures")]
     #[test]
-    fn union_meshgl64_exposes_nontrivial_provenance() {
+    fn union_meshgl64_exposes_provenance_and_merge_pairing_invariant() {
         use crate::test_fixtures::unit_cube_manifold;
         use std::collections::HashSet;
 
