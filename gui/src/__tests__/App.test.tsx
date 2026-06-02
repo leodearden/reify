@@ -5848,3 +5848,46 @@ describe('App hover sync wiring — Edges A & B', () => {
     expect(screen.getByTestId('tree-row-Root.B').getAttribute('data-hovered')).toBeNull();
   });
 });
+
+// ── App reconcileToTree wiring (step-7) ─────────────────────────────────────
+describe('App refreshEntityTree wires reconcileToTree (step-7)', () => {
+  it('orphan mesh absent from getEntityTree tree is pruned after refreshEntityTree', async () => {
+    // Live mesh owner is in the tree; orphan mesh owner is NOT
+    const liveMeshKey = 'CapstanDrive.shuttle.plate#realization0';
+    const orphanMeshKey = 'ShuttlePlates#realization0';
+
+    const initialState: GuiState = {
+      meshes: [
+        { entity_path: liveMeshKey, vertices: new Float32Array([0, 1, 2]), indices: new Uint32Array([0, 1, 2]), normals: null },
+        { entity_path: orphanMeshKey, vertices: new Float32Array([3, 4, 5]), indices: new Uint32Array([0, 1, 2]), normals: null },
+      ],
+      values: [],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+      tensegrity_wires: [],
+    };
+
+    // Seed both meshes via getInitialState
+    vi.mocked(bridge.getInitialState).mockResolvedValue(initialState);
+    // Only the live structure is in the tree
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([
+      { entity_path: 'CapstanDrive.shuttle.plate', kind: 'structure', type_name: null, has_mesh: true, trait_geometry: false, freshness: 'final', children: [] },
+    ]);
+
+    await renderAndWaitForReady();
+    // Wait for the entity tree to be fetched (triggers reconcileToTree if wired up)
+    await waitFor(() => expect(bridge.getEntityTree).toHaveBeenCalledTimes(1));
+
+    // DualViewport receives engineStore as a prop; read meshes through it
+    const meshesRef = () => capturedDualViewportProps?.engineStore?.state?.meshes ?? {};
+
+    // After refreshEntityTree resolves, reconcileToTree should have pruned the orphan
+    await waitFor(() => {
+      const meshKeys = Object.keys(meshesRef());
+      expect(meshKeys).not.toContain(orphanMeshKey);
+      expect(meshKeys).toContain(liveMeshKey);
+    });
+  });
+});
