@@ -810,6 +810,38 @@ export function createViewStateStore() {
     };
   }
 
+  /**
+   * Restore the "post-restart visibility baseline" — the state the store has
+   * when the process starts fresh: `activeViewId='auto:default'` and an empty
+   * `explicit` map.
+   *
+   * Called by the debug `open_file` handler immediately after
+   * `engine.initFromState(guiState)` so that a full programmatic reload cannot
+   * leave stale explicit overrides (e.g. a `'hidden'` on a `user:*` view that
+   * COW'd from `auto:default`) suppressing freshly-loaded meshes in the
+   * viewport.
+   *
+   * With `explicit={}` the `getAllEffective()` / `getEffectiveVisibility()`
+   * walk-up falls back to `defaultRuleFor`, which returns `'show'` for every
+   * `trait_geometry` / realization node, so the viewport repopulates without a
+   * restart.  The async `regenerateAutoViews` that fires afterwards
+   * (`onEngineReinitialized → refreshEntityTree → regenerateAutoViews`) then
+   * re-seeds `auto:default` from the fresh entity tree consistently.
+   *
+   * User-view *definitions* (`state.views`, `state.userViewOrder`) are
+   * deliberately NOT touched — only the active-view pointer and the live
+   * explicit overrides return to the clean baseline.  Saved view objects remain
+   * selectable from the ViewSelector without data loss.
+   */
+  function resetToDefaultView(): void {
+    setState(
+      produce((s) => {
+        s.activeViewId = 'auto:default';
+        s.explicit = {};
+      }),
+    );
+  }
+
   return {
     state,
     // Tree
@@ -839,6 +871,8 @@ export function createViewStateStore() {
     // Persistence
     applyPersistedState,
     serializePersistedState,
+    // Debug reload
+    resetToDefaultView,
   };
 }
 

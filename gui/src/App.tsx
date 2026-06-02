@@ -1080,6 +1080,7 @@ const App: Component = () => {
           editor: editorStore,
           selection: selectionStore,
           claude: claudeStore,
+          viewState: viewStateStore,
         });
         if (!alive) {
           unsub();

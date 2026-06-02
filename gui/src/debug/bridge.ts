@@ -395,14 +395,16 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       const content = params.content as string;
       if (!path || content === undefined) return { error: 'path and content are required' };
 
-      const { editor, engine } = ctx.stores;
+      const { editor, engine, viewState } = ctx.stores;
       editor.openFile({ path, content });
 
       // If guiState was provided, init the engine store (meshes, values, constraints)
+      // then reset visibility to the post-restart baseline so freshly-loaded meshes render.
       const rawGuiState = params.guiState as RawGuiState | undefined;
       if (rawGuiState) {
         const guiState = convertRawGuiState(rawGuiState);
         engine.initFromState(guiState);
+        viewState.resetToDefaultView();
       }
 
       return { ok: true, path };

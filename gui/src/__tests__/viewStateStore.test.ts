@@ -2630,3 +2630,164 @@ describe('viewStateStore — T6 default-hidden aux realization + toggle', () => 
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// resetToDefaultView — step-1 tests (fail until step-2 adds the method)
+// ---------------------------------------------------------------------------
+
+describe('viewStateStore — resetToDefaultView (step-1)', () => {
+  /**
+   * Build a minimal tree that reproduces the stale-visibility bug scenario:
+   *   CapstanDrive (structure)
+   *     ├─ CapstanDrive.capstan (structure)
+   *     │    └─ CapstanDrive.capstan#realization[0]  (realization, trait_geometry=true)
+   *     └─ CapstanDrive.jig (structure)
+   *          └─ CapstanDrive.jig#realization[0]  (realization, default_visible=false — aux/hidden-by-default)
+   *
+   * The aux sibling exercises that resetToDefaultView preserves default-hidden
+   * semantics: with explicit={}, getEffectiveVisibility falls back to
+   * defaultVisibilityFor which returns 'hidden' for default_visible===false.
+   */
+  function makeRealizationTree() {
+    return [
+      makeNode({
+        entity_path: 'CapstanDrive',
+        kind: 'structure',
+        children: [
+          makeNode({
+            entity_path: 'CapstanDrive.capstan',
+            kind: 'structure',
+            children: [
+              makeNode({
+                entity_path: 'CapstanDrive.capstan#realization[0]',
+                kind: 'realization',
+                trait_geometry: true,
+              }),
+            ],
+          }),
+          makeNode({
+            entity_path: 'CapstanDrive.jig',
+            kind: 'structure',
+            children: [
+              makeNode({
+                entity_path: 'CapstanDrive.jig#realization[0]',
+                kind: 'realization',
+                default_visible: false,
+              }),
+            ],
+          }),
+        ],
+      }),
+    ];
+  }
+
+  const REALIZATION_PATH = 'CapstanDrive.capstan#realization[0]';
+  const AUX_PATH = 'CapstanDrive.jig#realization[0]';
+
+  it('(pre-condition) after setVisibility("hidden") the mesh is hidden and activeViewId is a user:* view', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeRealizationTree());
+
+      // Confirm baseline: mesh is visible on a clean store.
+      expect(store.getEffectiveVisibility(REALIZATION_PATH)).toBe('show');
+      expect(store.state.activeViewId).toBe('auto:default');
+
+      // COW: setVisibility hides the mesh, auto:default gets COW'd into a user view.
+      store.setVisibility(REALIZATION_PATH, 'hidden');
+
+      expect(store.getEffectiveVisibility(REALIZATION_PATH)).toBe('hidden');
+      expect(store.state.activeViewId).toMatch(/^user:/);
+
+      dispose();
+    });
+  });
+
+  it('(a) resetToDefaultView sets activeViewId back to "auto:default"', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeRealizationTree());
+      store.setVisibility(REALIZATION_PATH, 'hidden'); // drives into user:* view
+
+      store.resetToDefaultView();
+
+      expect(store.state.activeViewId).toBe('auto:default');
+      dispose();
+    });
+  });
+
+  it('(b) resetToDefaultView clears all explicit overrides', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeRealizationTree());
+      store.setVisibility(REALIZATION_PATH, 'hidden');
+      expect(Object.keys(store.state.explicit).length).toBeGreaterThan(0);
+
+      store.resetToDefaultView();
+
+      expect(Object.keys(store.state.explicit).length).toBe(0);
+      dispose();
+    });
+  });
+
+  it('(c) resetToDefaultView makes the previously-hidden live mesh visible again via defaultVisibilityFor walk-up', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeRealizationTree());
+      store.setVisibility(REALIZATION_PATH, 'hidden');
+      expect(store.getEffectiveVisibility(REALIZATION_PATH)).toBe('hidden');
+
+      store.resetToDefaultView();
+
+      expect(store.getEffectiveVisibility(REALIZATION_PATH)).toBe('show');
+      dispose();
+    });
+  });
+
+  it('(d) resetToDefaultView preserves user-view definitions in state.views and getOrderedViewIds', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeRealizationTree());
+      store.setVisibility(REALIZATION_PATH, 'hidden'); // creates a user:* view definition
+
+      // Capture the user view id that was created by COW.
+      const userViewId = store.state.activeViewId;
+      expect(userViewId).toMatch(/^user:/);
+      expect(store.state.views[userViewId]).toBeDefined();
+
+      store.resetToDefaultView();
+
+      // User-view definition must still exist after reset.
+      expect(store.state.views[userViewId]).toBeDefined();
+      expect(store.getOrderedViewIds()).toContain(userViewId);
+      dispose();
+    });
+  });
+
+  it('(e) resetToDefaultView preserves default-hidden semantics for aux realization node', () => {
+    // Pins the invariant that reset relies on the defaultRuleFor walk-up, NOT on
+    // restoring the stored auto:default visibility map.  With explicit={}, a node
+    // that has default_visible===false must still resolve to 'hidden' via
+    // defaultVisibilityFor — so aux geometry (jig fixtures, construction helpers)
+    // cannot accidentally become visible after a programmatic reload.
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeRealizationTree());
+
+      // Pre-condition: aux node is hidden by default even before any user action.
+      expect(store.getEffectiveVisibility(AUX_PATH)).toBe('hidden');
+
+      // Drive into user:* view (COW via the main realization path), simulating the
+      // stale-state that the debug reload reset must clear.
+      store.setVisibility(REALIZATION_PATH, 'hidden');
+
+      store.resetToDefaultView();
+
+      // After reset, the aux node must STILL be hidden — the defaultRuleFor
+      // walk-up (defaultVisibilityFor → 'hidden' for default_visible===false) takes
+      // effect because explicit={} leaves no ancestor override.
+      expect(store.getEffectiveVisibility(AUX_PATH)).toBe('hidden');
+      dispose();
+    });
+  });
+});

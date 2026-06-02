@@ -45,6 +45,9 @@ export interface DebugStores {
       currentMessageId: string | null;
     };
   };
+  viewState: {
+    resetToDefaultView: () => void;
+  };
 }
 
 /** Three.js viewport references set by Viewport.tsx onMount. */

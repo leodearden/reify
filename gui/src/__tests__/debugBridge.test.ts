@@ -67,6 +67,7 @@ function makeStores(selectedEntities: string[] = [], anchorEntity: string | null
         currentMessageId: null,
       },
     },
+    viewState: { resetToDefaultView: vi.fn() },
   };
 }
 
@@ -563,6 +564,88 @@ describe('debug bridge open_file', () => {
     expect(result).toHaveProperty('error');
     expect(stores.editor.openFile).not.toHaveBeenCalled();
     expect(stores.engine.initFromState).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // step-3 tests: resetToDefaultView reset contract (RED until step-4 wires it)
+  // -------------------------------------------------------------------------
+
+  it('resetToDefaultView is called exactly once when guiState is provided', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    const rawGuiState = {
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+    };
+
+    await dispatch(capturedHandler!, 510, {
+      path: '/tmp/reload.ri',
+      content: 'def Reload() {}',
+      guiState: rawGuiState,
+    });
+
+    expect(stores.viewState.resetToDefaultView).toHaveBeenCalledTimes(1);
+  });
+
+  it('resetToDefaultView is called AFTER initFromState (engine rebuilt first, then visibility baseline reset)', async () => {
+    const stores = makeStores();
+    const callOrder: string[] = [];
+    vi.mocked(stores.engine.initFromState).mockImplementation(() => { callOrder.push('initFromState'); });
+    vi.mocked(stores.viewState.resetToDefaultView).mockImplementation(() => { callOrder.push('resetToDefaultView'); });
+
+    await initDebugBridge(stores);
+
+    const rawGuiState = {
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+    };
+
+    await dispatch(capturedHandler!, 511, {
+      path: '/tmp/reload.ri',
+      content: 'def Reload() {}',
+      guiState: rawGuiState,
+    });
+
+    expect(callOrder).toEqual(['initFromState', 'resetToDefaultView']);
+  });
+
+  it('resetToDefaultView is NOT called when guiState is omitted', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    await dispatch(capturedHandler!, 512, {
+      path: '/tmp/open.ri',
+      content: 'def Open() {}',
+    });
+
+    expect(stores.viewState.resetToDefaultView).not.toHaveBeenCalled();
+  });
+
+  it('resetToDefaultView is NOT called when path is missing (error path)', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    await dispatch(capturedHandler!, 513, { content: 'def X() {}' });
+
+    expect(stores.viewState.resetToDefaultView).not.toHaveBeenCalled();
+  });
+
+  it('resetToDefaultView is NOT called when content is missing (error path)', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    await dispatch(capturedHandler!, 514, { path: '/tmp/x.ri' });
+
+    expect(stores.viewState.resetToDefaultView).not.toHaveBeenCalled();
   });
 });
 
