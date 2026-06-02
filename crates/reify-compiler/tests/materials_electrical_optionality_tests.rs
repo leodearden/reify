@@ -154,25 +154,41 @@ structure def GlassLike : Insulating {
         indeterminate_warnings
     );
 
-    // (c) At least one constraint_results entry is Indeterminate (dielectric_strength).
-    assert!(
-        result
-            .constraint_results
-            .iter()
-            .any(|r| r.satisfaction == Satisfaction::Indeterminate),
-        "at least one constraint must be Indeterminate for GlassLike : Insulating \
-         omitting dielectric_strength; constraint_results: {:?}",
+    // (c) Exactly one constraint_results entry is Indeterminate (the
+    //     dielectric_strength > 0.0V/m constraint).  Asserting the exact count
+    //     pins *which* constraint degraded; an "at least one" check would pass
+    //     silently if a future constraint addition made the wrong one go
+    //     Indeterminate while the real one did not.
+    let indeterminate_count = result
+        .constraint_results
+        .iter()
+        .filter(|r| r.satisfaction == Satisfaction::Indeterminate)
+        .count();
+    assert_eq!(
+        indeterminate_count,
+        1,
+        "expected exactly 1 Indeterminate constraint (dielectric_strength > 0.0V/m) \
+         for GlassLike : Insulating omitting dielectric_strength, got {}; \
+         constraint_results: {:?}",
+        indeterminate_count,
         result.constraint_results
     );
 
-    // (d) At least one constraint_results entry is Satisfied (resistivity > 1e6).
-    assert!(
-        result
-            .constraint_results
-            .iter()
-            .any(|r| r.satisfaction == Satisfaction::Satisfied),
-        "the resistivity constraint must be Satisfied for GlassLike : Insulating; \
+    // (d) Exactly one constraint_results entry is Satisfied (resistivity > 1e6 Ω·m).
+    //     Same rationale: exact count guards against a future second Satisfied entry
+    //     masking a regression where the resistivity constraint silently changes.
+    let satisfied_count = result
+        .constraint_results
+        .iter()
+        .filter(|r| r.satisfaction == Satisfaction::Satisfied)
+        .count();
+    assert_eq!(
+        satisfied_count,
+        1,
+        "expected exactly 1 Satisfied constraint (resistivity > 1000000ohm*m) \
+         for GlassLike : Insulating omitting dielectric_strength, got {}; \
          constraint_results: {:?}",
+        satisfied_count,
         result.constraint_results
     );
 }

@@ -80,7 +80,7 @@ fn electrical_module_loads_with_no_errors_and_three_traits() {
 ///     dielectric_strength   → DefaultKind::Param { cell_type: Type::Scalar { DIELECTRIC_STRENGTH } }
 ///     magnetic_permeability → DefaultKind::Param { cell_type: Type::Real }
 #[test]
-fn electrically_characterized_refines_material_spec_with_four_members() {
+fn electrically_characterized_one_required_three_optional_params() {
     let module = load_stdlib_module();
 
     let ec = module
