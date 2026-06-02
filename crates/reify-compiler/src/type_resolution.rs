@@ -2382,6 +2382,45 @@ mod tests {
         );
     }
 
+    // Type resolution is position-blind: `Keyed<T>` resolves to a well-formed
+    // `Type::Keyed` regardless of whether it appears in a `sub` position (its only
+    // intended use) or a value position such as `param x : Keyed<Vent>`. The
+    // resolver therefore emits NO diagnostic for the latter — rejecting a
+    // value-position `Keyed<T>` with a clear compile error is deferred to γ/δ
+    // (access-by-key resolution + structural classification own that guard).
+    // Until then, `reify_eval::is_representable_cell_type` returning `false` for
+    // `Type::Keyed` (engine_eval.rs, test `is_representable_cell_type_rejects_keyed`)
+    // is the eval-layer backstop. This test pins the position-blindness so the
+    // deferral is explicit and a future γ/δ guard has a documented anchor.
+    #[test]
+    fn resolve_parameterized_keyed_is_position_blind_value_guard_deferred() {
+        let reg = TypeAliasRegistry::new();
+        let structure_names: HashSet<String> = ["Vent".to_string()].into_iter().collect();
+        let trait_names = HashSet::new();
+        let args = [named_type_expr("Vent")];
+
+        let mut diags = Vec::new();
+        let keyed = resolve_parameterized_builtin_type(
+            "Keyed",
+            &args,
+            &reg,
+            &mut diags,
+            &structure_names,
+            &trait_names,
+        );
+        assert_eq!(
+            keyed,
+            Some(Type::Keyed(Box::new(Type::StructureRef("Vent".into())))),
+            "Keyed<Vent> resolves structurally even in a value position",
+        );
+        assert!(
+            diags.is_empty(),
+            "type resolution is position-blind: no value-position diagnostic is emitted \
+             here (the guard is deferred to γ/δ); got {:?}",
+            diags,
+        );
+    }
+
     #[test]
     fn should_emit_skipped_parametric_prelude_info_dedups_per_span() {
         let mut reg = TypeAliasRegistry::new();
