@@ -18,7 +18,7 @@
 //! for the inference pipeline.
 
 use reify_compiler::geometry_traits_inference::{
-    EmptyLetEnv, GeometryTrait, InferredTraits, LetBindingEnv, combine_difference,
+    EmptyLetEnv, GeomDim, GeometryTrait, InferredTraits, LetBindingEnv, combine_difference,
     combine_intersection, combine_modify, combine_pattern, combine_sweep, combine_transform,
     combine_union, infer_primitive, infer_traits_for_expr, infer_traits_for_expr_in_env,
     infer_traits_for_op,
@@ -96,6 +96,56 @@ fn inferred_traits_has_returns_corresponding_flag() {
     assert!(b_only.has(GeometryTrait::Bounded));
     assert!(!b_only.has(GeometryTrait::Connected));
     assert!(!b_only.has(GeometryTrait::Convex));
+}
+
+// ─── GeomDim + dimension/planar/closed fields (task α data model) ────────────
+//
+// These tests pin the extended record introduced in step-4. They are RED until
+// `GeomDim`, the `dimension`/`planar`/`closed` fields, and the `curve()`
+// constructor exist in `geometry_traits_inference.rs`.
+
+/// The three dimensionality variants exist and are pairwise distinct (a shape
+/// is exactly one of 1-D / 2-D / 3-D).
+#[test]
+fn geom_dim_has_three_distinct_variants() {
+    assert_ne!(GeomDim::Curve, GeomDim::Surface);
+    assert_ne!(GeomDim::Surface, GeomDim::Solid);
+    assert_ne!(GeomDim::Curve, GeomDim::Solid);
+}
+
+/// Every named constructor (`all`/`none`/`bounded_only`/`bounded_connected`)
+/// carries `dimension == GeomDim::Solid` with `planar == false` and
+/// `closed == false` — the Solid default that assigns box/cylinder/sphere/tube
+/// and all boolean/modify/pattern/sweep results to Solid for free.
+#[test]
+fn named_constructors_carry_solid_dimension_non_planar_non_closed() {
+    assert_eq!(InferredTraits::all().dimension, GeomDim::Solid);
+    assert_eq!(InferredTraits::none().dimension, GeomDim::Solid);
+    assert_eq!(InferredTraits::bounded_only().dimension, GeomDim::Solid);
+    assert_eq!(InferredTraits::bounded_connected().dimension, GeomDim::Solid);
+
+    assert!(!InferredTraits::all().planar, "all() must be planar=false");
+    assert!(!InferredTraits::all().closed, "all() must be closed=false");
+    assert!(!InferredTraits::none().planar);
+    assert!(!InferredTraits::none().closed);
+    assert!(!InferredTraits::bounded_only().planar);
+    assert!(!InferredTraits::bounded_only().closed);
+    assert!(!InferredTraits::bounded_connected().planar);
+    assert!(!InferredTraits::bounded_connected().closed);
+}
+
+/// `curve()` yields `dimension == GeomDim::Curve` while preserving the prior
+/// `all()`-equivalent flags (bounded/connected/convex all true) and keeping
+/// planar/closed false — the dedicated constructor for 1-D primitives.
+#[test]
+fn curve_constructor_is_one_dimensional_preserving_all_flags() {
+    let c = InferredTraits::curve();
+    assert_eq!(c.dimension, GeomDim::Curve);
+    assert!(c.bounded, "curve() must keep bounded=true");
+    assert!(c.connected, "curve() must keep connected=true");
+    assert!(c.convex, "curve() must keep convex=true");
+    assert!(!c.planar, "curve() must be planar=false");
+    assert!(!c.closed, "curve() must be closed=false");
 }
 
 // ─── infer_primitive — per-PrimitiveKind lookup ─────────────────────────────
