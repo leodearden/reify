@@ -59,8 +59,9 @@ fn stdlib_file_parses_and_compiles_without_errors() {
 
 // ─── step-3: Elastic trait ───────────────────────────────────────────────────
 
-/// Step 3: Elastic trait exists with 3 required members: youngs_modulus,
-/// poissons_ratio, shear_modulus — all typed as Real.
+/// Step 3: Elastic trait exists with 2 required members: youngs_modulus and
+/// poissons_ratio — both typed as Real. (task α #4239: shear_modulus is now
+/// `= undef` optional, so it lives in `defaults`, not `required_members`.)
 #[test]
 fn elastic_trait_has_three_real_members() {
     let module = load_stdlib_module();
@@ -73,8 +74,8 @@ fn elastic_trait_has_three_real_members() {
 
     assert_eq!(
         elastic.required_members.len(),
-        3,
-        "Elastic should have exactly 3 required members, got: {:?}",
+        2,
+        "Elastic should have exactly 2 required members, got: {:?}",
         elastic
             .required_members
             .iter()
@@ -97,9 +98,11 @@ fn elastic_trait_has_three_real_members() {
         "expected 'poissons_ratio' in Elastic, got: {:?}",
         member_names
     );
+    // shear_modulus is now optional (`= undef`, task α #4239) → it lives in
+    // `defaults`, not `required_members`.
     assert!(
-        member_names.contains(&"shear_modulus"),
-        "expected 'shear_modulus' in Elastic, got: {:?}",
+        !member_names.contains(&"shear_modulus"),
+        "shear_modulus is now optional and should NOT be a required member, got: {:?}",
         member_names
     );
 
@@ -124,8 +127,9 @@ fn elastic_trait_has_three_real_members() {
 
 // ─── step-5: Strong trait ────────────────────────────────────────────────────
 
-/// Step 5: Strong trait has 3 required members and at least 1 constraint
-/// default (the `uts >= yield_strength` constraint).
+/// Step 5: Strong trait has 2 required members and at least 1 constraint
+/// default (the `uts >= yield_strength` constraint). (task α #4239:
+/// compressive_strength is now `= undef` optional → in `defaults`.)
 #[test]
 fn strong_trait_has_members_and_constraint_default() {
     let module = load_stdlib_module();
@@ -138,8 +142,8 @@ fn strong_trait_has_members_and_constraint_default() {
 
     assert_eq!(
         strong.required_members.len(),
-        3,
-        "Strong should have exactly 3 required members, got: {:?}",
+        2,
+        "Strong should have exactly 2 required members, got: {:?}",
         strong
             .required_members
             .iter()
@@ -157,9 +161,11 @@ fn strong_trait_has_members_and_constraint_default() {
         "expected 'yield_strength' in Strong"
     );
     assert!(member_names.contains(&"uts"), "expected 'uts' in Strong");
+    // compressive_strength is now optional (`= undef`, task α #4239) → it lives
+    // in `defaults`, not `required_members`.
     assert!(
-        member_names.contains(&"compressive_strength"),
-        "expected 'compressive_strength' in Strong"
+        !member_names.contains(&"compressive_strength"),
+        "compressive_strength is now optional and should NOT be a required member"
     );
 
     let constraint_defaults: Vec<_> = strong
@@ -435,7 +441,8 @@ fn remaining_five_traits_exist() {
         "FractureTough should have 'fracture_toughness' member"
     );
 
-    // Ductile: 2 members (elongation, reduction_of_area)
+    // Ductile: 1 required member (elongation). (task α #4239:
+    // reduction_of_area is now `= undef` optional → in `defaults`.)
     let ductile = module
         .trait_defs
         .iter()
@@ -443,8 +450,8 @@ fn remaining_five_traits_exist() {
         .expect("expected 'Ductile' trait");
     assert_eq!(
         ductile.required_members.len(),
-        2,
-        "Ductile should have 2 required members"
+        1,
+        "Ductile should have 1 required member"
     );
     assert!(
         ductile
@@ -454,11 +461,11 @@ fn remaining_five_traits_exist() {
         "Ductile should have 'elongation' member"
     );
     assert!(
-        ductile
+        !ductile
             .required_members
             .iter()
             .any(|r| r.name == "reduction_of_area"),
-        "Ductile should have 'reduction_of_area' member"
+        "reduction_of_area is now optional and should NOT be a required member"
     );
 
     // ImpactResistant: 1 member (impact_energy)
@@ -708,8 +715,9 @@ fn four_refining_traits_with_all_material_members_conform_cleanly() {
 
 // ─── step-17: full integration ────────────────────────────────────────────────
 
-/// Step 17: The complete .ri file compiles to exactly 9 traits and 1 enum,
-/// with zero error-severity diagnostics.
+/// Step 17: The complete .ri file compiles to exactly 10 traits and 1 enum,
+/// with zero error-severity diagnostics. (task α #4239 added the
+/// free-standing `TemperatureDependent` base trait, §6.1.)
 #[test]
 fn full_module_has_nine_traits_and_one_enum() {
     let module = load_stdlib_module();
@@ -727,8 +735,8 @@ fn full_module_has_nine_traits_and_one_enum() {
 
     assert_eq!(
         module.trait_defs.len(),
-        9,
-        "expected exactly 9 traits, got: {:?}",
+        10,
+        "expected exactly 10 traits, got: {:?}",
         module
             .trait_defs
             .iter()
@@ -746,6 +754,7 @@ fn full_module_has_nine_traits_and_one_enum() {
     // Verify all expected trait names are present
     let expected_traits = [
         "MaterialSpec",
+        "TemperatureDependent",
         "Elastic",
         "Strong",
         "Hard",
