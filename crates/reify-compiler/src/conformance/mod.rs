@@ -441,6 +441,41 @@ pub(crate) fn emit_geometry_unbounded(
     );
 }
 
+/// Emit `DiagnosticCode::GeometryProfileRequired` for a geometry-typed argument
+/// at a profile-consuming op (`extrude`/`extrude_symmetric`/`revolve`/`loft`/
+/// `loft_guided`/`sweep`/`sweep_guided`/`pipe`) whose statically-known operand
+/// violates the op's dimensionality precondition.
+///
+/// Pushes exactly one `Diagnostic::error(...)` with code
+/// [`DiagnosticCode::GeometryProfileRequired`] and a single label at `span`. The
+/// `requirement` is parameterized so the one helper serves both the Surface
+/// profile consumers (`requirement` e.g. `"a 2D Surface profile (Closed, Planar)"`)
+/// and the Curve path consumers (`requirement` e.g. `"a 1D Curve path"`). The
+/// canonical message wording is documented on the variant declaration in
+/// `crates/reify-core/src/diagnostics.rs` — keep the two in sync.
+///
+/// Sibling of [`emit_geometry_unbounded`]: same shape (one Error diagnostic, one
+/// label at `span`) and the same non-fatal contract — the caller still lowers
+/// the op. See PRD `docs/prds/geometry-primitive-constructors.md` task α.
+pub(crate) fn emit_geometry_profile_required(
+    arg_name: &str,
+    requirement: &str,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    diagnostics.push(
+        Diagnostic::error(format!(
+            "geometry argument '{}' must be {}",
+            arg_name, requirement
+        ))
+        .with_code(DiagnosticCode::GeometryProfileRequired)
+        .with_label(DiagnosticLabel::new(
+            span,
+            format!("'{}' is not {}", arg_name, requirement),
+        )),
+    );
+}
+
 /// Emit a "does not conform to trait" geometry diagnostic for the `Connected`/`Convex`
 /// cases — the symmetric sibling of [`emit_geometry_unbounded`] for the `Bounded` case.
 ///
