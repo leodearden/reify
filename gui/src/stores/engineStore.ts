@@ -297,6 +297,22 @@ export function createEngineStore(options?: EngineStoreOptions) {
         removeMesh(key);
       }
     }
+
+    // Prune orphan values whose entity_path is not live.
+    for (const cellId of Object.keys(state.values)) {
+      const entityPath = state.values[cellId]?.entity_path;
+      if (entityPath !== undefined && !livePaths.has(entityPath)) {
+        removeValue(cellId);
+      }
+    }
+
+    // Prune orphan constraints whose owner (node_id before the first '#') is not live.
+    for (const nodeId of Object.keys(state.constraints)) {
+      const owner = nodeId.includes('#') ? nodeId.slice(0, nodeId.indexOf('#')) : nodeId;
+      if (!livePaths.has(owner)) {
+        removeConstraint(nodeId);
+      }
+    }
   }
 
   async function subscribeToEvents(): Promise<() => void> {
