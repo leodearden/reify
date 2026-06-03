@@ -139,14 +139,14 @@ Source: `crates/reify-compiler/stdlib/materials_optical.ri`
 | 25 | `OpticallyCharacterized` trait | `refractive_index` | `Real` | `Real` | genuine-dimensionless | — |
 | 26 | `OpticallyCharacterized` trait | `absorption_coefficient` | `AbsorptionCoeff` ✓ | 1/m (per-length) | tightened-by-#3115 | task-E ✓ |
 | 27 | `OpticallyCharacterized` trait | `transmittance` | `Real` | `Real` | genuine-dimensionless | — |
-| 28 | `OpticallyCharacterized` trait | `reference_thickness` | `Real` | `Length` | tightenable-now | task-C |
+| 28 | `OpticallyCharacterized` trait | `reference_thickness` | `Length` ✓ | `Length` | tightened-by-#3113 | task-C ✓ |
 
 **Notes:**
 - `refractive_index` (c/v_phase) and `transmittance` (optical power ratio) are
   dimensionless; `Real` is correct.
 - `absorption_coefficient` (Beer-Lambert α, units m⁻¹ = Length⁻¹) tightened to the
   named-dimension alias `AbsorptionCoeff` by task #3115.
-- `reference_thickness` is a length measurement → tightenable-now.
+- `reference_thickness` tightened to `Length` by task #3113.
 
 ---
 
@@ -383,7 +383,7 @@ rejected by the dimension checker. **No follow-up task is filed for this module.
 |-------|-------|-------|---------|
 | task-A | Tighten `materials_mechanical.ri` dimensioned params | density→Density, youngs_modulus/shear_modulus→Pressure, yield_strength/uts/compressive_strength→Pressure, endurance_limit→Pressure, impact_energy→Energy; update conforming structures in examples/ and tests/ | #3111 |
 | task-B | Tighten `materials_thermal.ri` Temperature params | melting_point / max_service_temperature / glass_transition → Temperature; update call sites | #3112 |
-| task-C | Tighten `materials_optical.ri` `reference_thickness` | reference_thickness → Length; update call sites | #3113 |
+| task-C ✓ | Tighten `materials_optical.ri` `reference_thickness` | reference_thickness → Length; update call sites | #3113 (resolved) |
 | task-D | Tighten `structural_physical.ri` dimensioned params | volume→Volume, centroid_x/y/z→Length, moment_of_inertia→MomentOfInertia, max_deflection→Length, hardening_modulus→Pressure, max_service_temp→Temperature, seal_pressure_rating→Pressure; update call sites | #3114 |
 | task-E ✓ | Add named-dimension aliases for composite quantities | Introduced 9 aliases (ThermalConductivity, SpecificHeat, ThermalExpansion, ElectricResistivity, ElectricalConductivity, DielectricStrength, Stiffness, AbsorptionCoeff, FractureToughness — last needs fractional Length exponent, supported via new `from_rational_exps` helper) to NAMED_DIMENSIONS; resolver table-driven so no resolver changes needed. All 11 audit-identified blocked-composite sites tightened. Trait-level constraints (`stiffness > 0`, `resistivity < 0.0001`, etc.) rewritten to use dimensioned RHS literals (e.g. `> 0.0 * 1N / 1m`) — bare numeric RHS evaluated to Indeterminate at runtime because `eval_cmp` compares dimensions; see esc-3115-112 design note. | #3115 (resolved 2026-05-15) |
 | task-F | Introduce `Geometry` / `DatumRef` resolver capability | Add a `Geometry` opaque type and `DatumRef` type to the resolver so `tolerancing.ri::feature` (16 sites) and `datum_refs` (8 sites) can be tightened away from `Real` | #3116 |
