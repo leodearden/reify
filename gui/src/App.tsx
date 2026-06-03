@@ -599,6 +599,12 @@ const App: Component = () => {
     if (toasts().some((t) => t.message === EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG)) {
       return;
     }
+    // Snapshot the live buffer at prompt-CREATION time.  The conflict prompt is
+    // an async toast; if the user switches tabs between seeing it and clicking
+    // Overwrite, a click-time live read would return the now-active file's
+    // content (wrong file).  Snapshotting here captures the buffer as of the
+    // Ctrl+S keypress, which is exactly what the user intended to save.
+    const liveContent = getLiveEditorContent?.() ?? file.content;
     showToast(EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG, 'error', [
       {
         label: SAVE_CONFLICT_RELOAD_LABEL,
@@ -606,7 +612,7 @@ const App: Component = () => {
       },
       {
         label: SAVE_CONFLICT_OVERWRITE_LABEL,
-        onClick: () => overwriteFile(file),
+        onClick: () => overwriteFile(file.path, liveContent),
       },
     ]);
   }
@@ -630,15 +636,16 @@ const App: Component = () => {
   }
 
   /**
-   * Save the buffer as-is, overwriting the newer on-disk content.
-   * Called by the Overwrite action in the save conflict prompt.
+   * Save the supplied content as-is, overwriting the newer on-disk content.
+   * Called by the Overwrite action in the save conflict prompt with the live
+   * buffer content snapshotted at prompt-creation time.
    */
-  async function overwriteFile(file: FileData) {
+  async function overwriteFile(path: string, content: string) {
     try {
-      await bridgeSaveFile(file.path, file.content);
-      editorStore.markClean(file.path);
+      await bridgeSaveFile(path, content);
+      editorStore.markClean(path);
       // Remove from changedFiles so the "N files changed" banner disappears.
-      removeFromChangedFiles(file.path);
+      removeFromChangedFiles(path);
     } catch (err) {
       showToast(`Save failed: ${errorMessage(err)}`, 'error');
     }
