@@ -157,4 +157,73 @@ describe('createLspClient', () => {
       params: expect.stringContaining('"uri":"file:///project/main.ri"'),
     });
   });
+
+  it('createLspClient() exposes a documentSymbol function', () => {
+    const client = createLspClient();
+    expect(typeof client.documentSymbol).toBe('function');
+  });
+
+  it('documentSymbol sends textDocument/documentSymbol with textDocument wrapper', async () => {
+    mockInvoke.mockResolvedValue('[]');
+
+    const client = createLspClient();
+    await client.documentSymbol('file:///test.ri');
+
+    expect(mockInvoke).toHaveBeenCalledWith('lsp_request', {
+      method: 'textDocument/documentSymbol',
+      params: expect.any(String),
+    });
+    const callArgs = mockInvoke.mock.calls[0];
+    const params = JSON.parse((callArgs[1] as { params: string }).params);
+    expect(params).toHaveProperty('textDocument');
+    expect(params.textDocument).toHaveProperty('uri', 'file:///test.ri');
+  });
+
+  it('documentSymbol returns an array of DocumentSymbol objects from a nested response', async () => {
+    const mockSymbols = [
+      {
+        name: 'Bracket',
+        kind: 5,
+        range: { start: { line: 0, character: 0 }, end: { line: 10, character: 1 } },
+        selectionRange: { start: { line: 0, character: 10 }, end: { line: 0, character: 17 } },
+        children: [
+          {
+            name: 'width',
+            kind: 13,
+            range: { start: { line: 1, character: 2 }, end: { line: 1, character: 14 } },
+            selectionRange: { start: { line: 1, character: 2 }, end: { line: 1, character: 7 } },
+          },
+        ],
+      },
+    ];
+    mockInvoke.mockResolvedValue(JSON.stringify(mockSymbols));
+
+    const client = createLspClient();
+    const result = await client.documentSymbol('file:///test.ri');
+
+    expect(result).toHaveLength(1);
+    expect(result[0].name).toBe('Bracket');
+    expect(result[0].children).toHaveLength(1);
+    expect(result[0].children![0].name).toBe('width');
+    expect(result[0].selectionRange).toBeDefined();
+  });
+
+  it('documentSymbol returns [] when the response is null (unknown URI -> Ok(None))', async () => {
+    mockInvoke.mockResolvedValue('null');
+
+    const client = createLspClient();
+    const result = await client.documentSymbol('file:///unknown.ri');
+
+    expect(result).toEqual([]);
+  });
+
+  it('documentSymbol returns [] when the response is not an array', async () => {
+    // DocumentSymbolResponse::Flat would be an object; treat non-array as empty
+    mockInvoke.mockResolvedValue(JSON.stringify({ items: [] }));
+
+    const client = createLspClient();
+    const result = await client.documentSymbol('file:///test.ri');
+
+    expect(result).toEqual([]);
+  });
 });
