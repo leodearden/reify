@@ -381,6 +381,17 @@ export function Editor(props: EditorProps) {
     clearTimeout(debounceTimer);
     clearTimeout(lspDebounceTimer);
 
+    // Discard previous-file LSP CmDiagnostics.  Their from/to offsets were computed
+    // against the old document; re-using them in applyMergedDiagnostics() after the
+    // view switches to the new (possibly shorter) document would either inject phantom
+    // squiggles (FLASH) or crash the CodeMirror RangeSet build (CRASH).
+    // The compile-diagnostics effect below runs immediately after this effect (SolidJS
+    // runs effects in creation order) and calls applyMergedDiagnostics(), so clearing
+    // here guarantees the dispatch carries only valid entries for the new doc.
+    // The URI-guarded LSP listener repopulates lspCmDiagnostics when the server
+    // re-publishes diagnostics for the new file.
+    lspCmDiagnostics = [];
+
     const oldUri = currentUri;
     previousActiveFile = activeFile;
 
