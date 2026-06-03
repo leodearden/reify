@@ -1510,4 +1510,110 @@ mod tests {
              pairing invariant — vectors may be empty for simple boolean results)"
         );
     }
+
+    /// Builds a deliberately un-welded unit cube mirroring OCCT's per-face vertex
+    /// emission: iterates `unit_cube_mesh([0.0, 0.0, 0.0])`'s `indices` in
+    /// `chunks_exact(6)` (each 6-index chunk = one face's 2 triangles), deduplicates
+    /// the 4 distinct corners of each face into fresh per-face vertices (xyz copied
+    /// from the welded fixture, winding order preserved) → 24 vertices / 12 triangles.
+    ///
+    /// The ONLY defect vs `unit_cube_mesh` is bit-identical shared corner positions
+    /// not shared by index (open boundary edges on every face-to-face seam).
+    /// Bit-exact welding collapses 24 → 8 canonical corners, reconstructing the
+    /// topology of the original closed cube.
+    #[cfg(feature = "test-fixtures")]
+    fn unwelded_unit_cube_mesh() -> Mesh {
+        let welded = unit_cube_mesh([0.0, 0.0, 0.0]);
+        let src_verts = &welded.vertices;
+        let src_idx = &welded.indices;
+
+        let mut new_verts: Vec<f32> = Vec::with_capacity(24 * 3);
+        let mut new_idx: Vec<u32> = Vec::with_capacity(36);
+
+        for face_chunk in src_idx.chunks_exact(6) {
+            // Collect the 4 distinct corner indices in first-seen order.
+            let mut corner_old: Vec<u32> = Vec::with_capacity(4);
+            for &old_i in face_chunk {
+                if !corner_old.contains(&old_i) {
+                    corner_old.push(old_i);
+                }
+            }
+            // Global base for this face's vertices in new_verts.
+            let base = (new_verts.len() / 3) as u32;
+            // Push 4 per-face vertices (xyz copied from welded fixture).
+            for &old_vi in &corner_old {
+                let off = old_vi as usize * 3;
+                new_verts.push(src_verts[off]);
+                new_verts.push(src_verts[off + 1]);
+                new_verts.push(src_verts[off + 2]);
+            }
+            // Remap 6 face indices to per-face local index + global base.
+            for &old_i in face_chunk {
+                let local =
+                    corner_old.iter().position(|&c| c == old_i).unwrap() as u32;
+                new_idx.push(base + local);
+            }
+        }
+
+        Mesh { vertices: new_verts, indices: new_idx, normals: None }
+    }
+
+    /// Pins that bit-exact vertex welding inside `manifold_from_reify_mesh` lets
+    /// an OCCT-style un-welded cube (6 faces × 4 per-face vertices = 24 vertices
+    /// total, bit-identical shared corners NOT joined by index) ingest as a valid
+    /// closed `Manifold`.
+    ///
+    /// # RED → GREEN contract
+    ///
+    /// **RED (before step-2):** `manifold_from_reify_mesh` passes the 24-vertex
+    /// mesh directly to `Manifold::from_mesh_f64` with no dedup; per-face
+    /// disconnected quads create open boundary edges so `manifold_status` returns
+    /// `NotManifold` → `Err(...)` → `.expect` panics.
+    ///
+    /// **GREEN (after step-2):** the bit-exact dedup collapses 24 → 8 canonical
+    /// corners (identical topology to `unit_cube_mesh`) → closed mesh → accepted
+    /// by `from_mesh_f64` → `Ok(non-degenerate Manifold)`.
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn weld_collapses_unwelded_occt_style_cube_for_manifold_ingest() {
+        let mesh = unwelded_unit_cube_mesh();
+
+        // Fixture structural invariants.
+        assert_eq!(
+            mesh.vertices.len(),
+            72, // 24 vertices × 3 floats
+            "unwelded fixture must have 24 vertices (6 faces × 4 corners × 3 floats); \
+             got {} floats",
+            mesh.vertices.len()
+        );
+        assert_eq!(
+            mesh.indices.len(),
+            36, // 12 triangles × 3 indices
+            "unwelded fixture must have 12 triangles (6 faces × 2 tris × 3 indices); \
+             got {}",
+            mesh.indices.len()
+        );
+
+        // RED → GREEN pivot: the weld in step-2 makes this succeed.
+        let m = manifold_from_reify_mesh(&mesh)
+            .expect("weld must let an un-welded OCCT-style cube ingest as a closed manifold");
+
+        // Non-degeneracy probe (mirrors union_meshgl64_exposes_provenance_and_merge_pairing_invariant).
+        assert!(
+            !m.is_empty() && m.num_tri() > 0 && m.volume() > 0.0 && m.bounding_box().is_some(),
+            "welded cube must be a real non-degenerate solid: \
+             is_empty={is_empty}, num_tri={num_tri}, volume={volume}, has_bbox={has_bbox}",
+            is_empty = m.is_empty(),
+            num_tri = m.num_tri(),
+            volume = m.volume(),
+            has_bbox = m.bounding_box().is_some(),
+        );
+
+        // Production seam: the un-welded mesh must also ingest via the public API.
+        assert!(
+            ManifoldKernel::new().ingest_mesh(&mesh).is_ok(),
+            "ManifoldKernel::ingest_mesh must accept an un-welded OCCT-style cube \
+             once the weld is in place"
+        );
+    }
 }
