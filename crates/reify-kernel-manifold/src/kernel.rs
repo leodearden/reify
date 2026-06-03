@@ -175,6 +175,17 @@ impl Default for ManifoldKernel {
 /// the indices are passed through unchanged, so existing well-formed meshes
 /// are unaffected.
 ///
+/// # Signed-zero and NaN caveat
+///
+/// Keying on bit patterns means `+0.0` and `-0.0` are treated as **distinct**
+/// vertices (they have different bit representations despite being geometrically
+/// equal). To prevent this, each coordinate is normalised with `x + 0.0` before
+/// keying; IEEE 754 guarantees `-0.0 + 0.0 == +0.0` under default rounding, so
+/// the resulting bit pattern is always canonical `+0.0`. NaN coordinates produce
+/// a stable (per-bit-pattern) key and will weld with other NaN vertices sharing
+/// the same bit pattern; such inputs are geometrically degenerate and will be
+/// rejected by `Manifold::from_mesh_f64` regardless.
+///
 /// # Callers
 ///
 /// This is the canonical ingestion helper called by both
@@ -183,7 +194,8 @@ impl Default for ManifoldKernel {
 /// callers benefit automatically.
 ///
 /// Returns `Err(String)` (the `Debug` repr of the underlying manifold3d error)
-/// if the mesh is not a valid closed orientable manifold after welding.
+/// if the mesh is not a valid closed orientable manifold after welding, or if
+/// any triangle index references a vertex beyond the vertex array.
 pub(crate) fn manifold_from_reify_mesh(mesh: &Mesh) -> Result<Manifold, String> {
     // --- bit-exact vertex weld ---
     // Map (x.to_bits(), y.to_bits(), z.to_bits()) → canonical vertex index.
@@ -193,7 +205,10 @@ pub(crate) fn manifold_from_reify_mesh(mesh: &Mesh) -> Result<Manifold, String> 
     let mut old_to_new: Vec<u64> = Vec::with_capacity(mesh.vertices.len() / 3);
 
     for xyz in mesh.vertices.chunks_exact(3) {
-        let (x, y, z) = (xyz[0], xyz[1], xyz[2]);
+        // Normalise -0.0 → +0.0 before keying so that shared geometric corners
+        // on the origin plane weld correctly even when different per-face paths
+        // produce -0.0 vs +0.0. All other finite values are unchanged by + 0.0.
+        let (x, y, z) = (xyz[0] + 0.0, xyz[1] + 0.0, xyz[2] + 0.0);
         let key = (x.to_bits(), y.to_bits(), z.to_bits());
         let next = canonical_f64.len() as u64 / 3;
         let canonical_idx = *seen.entry(key).or_insert_with(|| {
@@ -206,8 +221,22 @@ pub(crate) fn manifold_from_reify_mesh(mesh: &Mesh) -> Result<Manifold, String> 
     }
 
     // Remap triangle indices through the weld map.
-    let tri_indices_u64: Vec<u64> =
-        mesh.indices.iter().map(|&i| old_to_new[i as usize]).collect();
+    // Use bounds-checked access so a malformed mesh with an out-of-range index
+    // returns Err instead of panicking — preserving the Result<_, String> contract
+    // that callers rely on (previously from_mesh_f64 would return Err for such
+    // inputs; the weld must not introduce a new panic path).
+    let tri_indices_u64: Vec<u64> = mesh
+        .indices
+        .iter()
+        .map(|&i| {
+            old_to_new.get(i as usize).copied().ok_or_else(|| {
+                format!(
+                    "triangle index {i} out of range for {} vertices",
+                    old_to_new.len()
+                )
+            })
+        })
+        .collect::<Result<_, String>>()?;
 
     Manifold::from_mesh_f64(&canonical_f64, 3, &tri_indices_u64)
         .map_err(|e| format!("{e:?}"))
@@ -1563,6 +1592,20 @@ mod tests {
     /// not shared by index (open boundary edges on every face-to-face seam).
     /// Bit-exact welding collapses 24 → 8 canonical corners, reconstructing the
     /// topology of the original closed cube.
+    ///
+    /// # Coverage note
+    ///
+    /// This fixture **only exercises the bit-identical-corner case**: shared corners
+    /// are copied byte-for-byte from a Rust literal (`0.0` / `1.0`), so they are
+    /// guaranteed to be bit-for-bit equal. It does **not** validate the production
+    /// assumption that OCCT's per-face tessellator emits bit-identical positions for
+    /// geometrically shared corners. Real OCCT tessellation computes each face
+    /// independently and may produce values that differ in the low bits (e.g. one
+    /// face yields `+0.0` and the adjacent face yields `-0.0` at the origin, or
+    /// floating-point rounding diverges on a curved surface), which a bit-exact weld
+    /// would **not** collapse. An integration test ingesting a real OCCT-tessellated
+    /// solid through `manifold_from_reify_mesh` is needed to verify that assumption
+    /// empirically for production meshes.
     #[cfg(feature = "test-fixtures")]
     fn unwelded_unit_cube_mesh() -> Mesh {
         let welded = unit_cube_mesh([0.0, 0.0, 0.0]);
