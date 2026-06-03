@@ -526,11 +526,18 @@ add_test_passes() {
     add "./scripts/verify.sh psi-gate"
 
     local profile rel gated_timeout outer_timeout ungated
+    # Timeout budgets sized to absorb a COLD merge-worktree workspace compile.
+    # Bumped 2026-06-03 (Leo) after recurring exit-124 cold-compile timeouts on the
+    # merge gate (esc-4178 / esc-4180 cluster killed the debug nextest mid-compile at
+    # the old 30m; the OCCT gate hit the old 2700s). sccache shares rustc output
+    # across worktrees, so warm runs finish well inside these — the larger caps only
+    # bite a genuinely cold cache. NOTE: the gated values are asserted in
+    # tests/infra/test_occt_flock_gate.sh (Test 17) — keep them in sync.
     for profile in "${PROFILES[@]}"; do
         if [ "$profile" = "release" ]; then
-            rel=" --release"; gated_timeout=3600; outer_timeout="45m"
+            rel=" --release"; gated_timeout=4800; outer_timeout="75m"
         else
-            rel=""; gated_timeout=2700; outer_timeout="30m"
+            rel=""; gated_timeout=3600; outer_timeout="60m"
         fi
 
         # Gated pass: OCCT-touching crates, bounded via the semaphore wrapper,
@@ -567,12 +574,12 @@ build_plan() {
     # typecheck (cargo check) only when NOT also linting — clippy --all-targets
     # is a strict superset of `cargo check`, so running both would be redundant.
     if [ "$DO_TYPECHECK" -eq 1 ] && [ "$DO_LINT" -eq 0 ] && [ "$RUN_RUST" -eq 1 ]; then
-        add "timeout --kill-after=60 20m ${CARGO_PRIO}cargo check --workspace --tests"
+        add "timeout --kill-after=60 30m ${CARGO_PRIO}cargo check --workspace --tests"
     fi
 
     # lint: clippy over all targets, warnings-as-errors.
     if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
-        add "timeout --kill-after=60 30m ${CARGO_PRIO}cargo clippy --workspace --all-targets -- -D warnings"
+        add "timeout --kill-after=60 45m ${CARGO_PRIO}cargo clippy --workspace --all-targets -- -D warnings"
     fi
 
     # test: gated + ungated cargo passes, per profile.
