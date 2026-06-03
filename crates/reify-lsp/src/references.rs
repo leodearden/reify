@@ -96,7 +96,22 @@ pub fn collect_references(
 ) -> Option<ReferenceSet> {
     let offset = position_to_offset(source, pos);
     let (_word_start, word) = find_word_at_offset(source, offset)?;
+    collect_references_at(source, parsed, offset, word, include_declaration)
+}
 
+/// Reference collection from an **already-resolved** cursor (`offset` + the
+/// identifier `word` under it).
+///
+/// Factored out of [`collect_references`] so [`prepare_rename`] can reuse the
+/// `position_to_offset` + `find_word_at_offset` lookup it has already performed,
+/// instead of recomputing the cursor word a second time per request.
+fn collect_references_at(
+    source: &str,
+    parsed: &ParsedModule,
+    offset: usize,
+    word: &str,
+    include_declaration: bool,
+) -> Option<ReferenceSet> {
     // Confine the entire query to a single entity body — the declaration whose
     // span contains the cursor. `members` is the ONLY member list handed to both
     // `collect_bindings` (declaration resolution) and `collect_uses` (the
@@ -218,6 +233,14 @@ fn collect_bindings_in_scope(
     depth: u32,
     out: &mut Vec<Binding>,
 ) {
+    // Mirror collect_uses' recursion bound so binding registration and use
+    // collection share the same depth limit: a binding must never be registered
+    // deeper than the use walker will descend, and this is the same
+    // stack-overflow backstop collect_uses has. (`depth` is u32 here;
+    // MAX_MEMBER_NESTING_DEPTH is a usize, hence the cast.)
+    if depth as usize > MAX_MEMBER_NESTING_DEPTH {
+        return;
+    }
     for member in members {
         if let MemberDecl::Param(p) = member
             && p.name == name
@@ -668,12 +691,19 @@ fn classify_auto(init: Option<&Expr>, base: RefSymbolKind) -> RefSymbolKind {
 /// otherwise (keywords, literals, builtins, type names, structure names, and
 /// imported/cross-module symbols).
 pub fn prepare_rename(source: &str, parsed: &ParsedModule, pos: Position) -> Option<RenameTarget> {
+    // Resolve the cursor word ONCE and reuse it for both the renameability gate
+    // and the returned range. Going through `collect_references_at` (rather than
+    // the public `collect_references`) avoids mapping the position to an
+    // offset/word a second time per request.
+    let offset = position_to_offset(source, pos);
+    let (word_start, word) = find_word_at_offset(source, offset)?;
+
     // collect_references is the renameability gate. It returns None for anything
     // that does not resolve to a local value-member binding — keywords, numeric/
     // quantity literals, builtins/function names, type names, structure/
     // declaration names, and imported/cross-module symbols all fail to resolve —
     // which yields every Invariant-4 refusal for free.
-    let refset = collect_references(source, parsed, pos, true)?;
+    let refset = collect_references_at(source, parsed, offset, word, true)?;
     if !is_renameable(refset.kind) {
         return None;
     }
@@ -682,8 +712,6 @@ pub fn prepare_rename(source: &str, parsed: &ParsedModule, pos: Position) -> Opt
     // the declaration name-token when the cursor is on the declaration). Both are
     // name-token spans, so span_to_range over the cursor word gives the range the
     // editor should highlight and pre-fill.
-    let offset = position_to_offset(source, pos);
-    let (word_start, word) = find_word_at_offset(source, offset)?;
     let range = span_to_range(
         source,
         SourceSpan::new(word_start as u32, (word_start + word.len()) as u32),
@@ -1150,6 +1178,40 @@ structure S {
             collect_references(source, &parsed, mount_pos, false).expect("port mount resolves");
         assert_eq!(mount_set.kind, RefSymbolKind::Port);
         assert_eq!(mount_set.references, vec![span_of(mount[1], "mount")]);
+    }
+
+    // --- amend: Port reference reached through a MemberAccess base ---
+
+    #[test]
+    fn collect_references_port_member_access_base() {
+        // Complements the Sub MemberAccess-base coverage above (`widget.diameter`)
+        // with the Port case: a port reference reached through a MemberAccess base
+        // (`mount` in `mount.d`) must be collected, alongside a bare port use.
+        let source = "\
+structure S {
+    port mount : Flange { param d: Length = 5mm }
+    let viabase = mount.d
+    let bare = mount
+}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("portbase"));
+
+        let mount = occurrences(source, "mount");
+        assert_eq!(
+            mount.len(),
+            3,
+            "port decl + MemberAccess base + bare use of mount"
+        );
+
+        // Cursor on the port declaration token.
+        let pos = offset_to_position(source, mount[0] as u32);
+        let set = collect_references(source, &parsed, pos, false)
+            .expect("port mount resolves to a ReferenceSet");
+        assert_eq!(set.kind, RefSymbolKind::Port);
+        assert_eq!(
+            set.references,
+            vec![span_of(mount[1], "mount"), span_of(mount[2], "mount")],
+            "the MemberAccess base (`mount` in `mount.d`) and the bare use are both collected"
+        );
     }
 
     // --- step-15: prepare_rename happy-path + refusals (Boundary row 4, Invariant 4) ---
