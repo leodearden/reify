@@ -12,6 +12,8 @@ export interface KeyboardShortcutCallbacks {
   onDismissReload?: () => void;
   onToggleChatPanel?: () => void;
   onClearSelection?: () => void;
+  onCommandPalette?: () => void;
+  onSymbolJump?: () => void;
   /**
    * Called when the user presses a bare digit key 1–9 (no modifiers, not in a
    * text input context). The `index` argument is 0-based: key "1" → 0, "9" → 8.
@@ -33,16 +35,25 @@ export interface KeyboardShortcutCallbacks {
  *
  * Use `hasCallbackWiring(id)` to check membership from outside this module.
  */
-const ID_TO_CALLBACK: Partial<Record<ShortcutId, keyof KeyboardShortcutCallbacks>> = {
-  new:         'onNew',
-  open:        'onOpen',
-  save:        'onSave',
-  export:      'onExportDialog',
-  reEvaluate:  'onReEvaluate',
-  toggleChat:  'onToggleChatPanel',
-  reload:      'onReloadShortcut',
-  help:        'onHelp',
+export const ID_TO_CALLBACK: Partial<Record<ShortcutId, keyof KeyboardShortcutCallbacks>> = {
+  new:            'onNew',
+  open:           'onOpen',
+  save:           'onSave',
+  export:         'onExportDialog',
+  reEvaluate:     'onReEvaluate',
+  toggleChat:     'onToggleChatPanel',
+  reload:         'onReloadShortcut',
+  help:           'onHelp',
+  commandPalette: 'onCommandPalette',
+  symbolJump:     'onSymbolJump',
 };
+
+/**
+ * Shortcut ids that are exempt from the typing-context guard (input/textarea/
+ * contentEditable). These are global palette-open actions that must fire from
+ * any focus state, including while the CodeMirror editor is focused.
+ */
+const PALETTE_GLOBAL_IDS = new Set<ShortcutId>(['commandPalette', 'symbolJump']);
 
 /**
  * Returns true when `id` has a callback wiring entry in ID_TO_CALLBACK, i.e.
@@ -54,22 +65,48 @@ export function hasCallbackWiring(id: ShortcutId): boolean {
   return ID_TO_CALLBACK[id] !== undefined;
 }
 
+export interface PaletteCommand {
+  id: ShortcutId;
+  title: string;
+  key: string;
+}
+
+/**
+ * Returns the list of commands available in the command palette.
+ * Derived from SHORTCUTS entries that have callback wiring, excluding the two
+ * palette-control ids themselves (commandPalette, symbolJump) to prevent a
+ * recursive "open command palette" entry appearing inside the palette.
+ */
+export function paletteCommands(): PaletteCommand[] {
+  return SHORTCUTS.filter(
+    (s) => hasCallbackWiring(s.id) && !PALETTE_GLOBAL_IDS.has(s.id),
+  ).map((s) => ({ id: s.id, title: s.description, key: s.key }));
+}
+
+/**
+ * Invoke the callback for a given shortcut id against the provided callbacks
+ * object. If the id has no wiring, this is a no-op.
+ */
+export function runCommand(id: ShortcutId, callbacks: KeyboardShortcutCallbacks): void {
+  const callbackKey = ID_TO_CALLBACK[id];
+  if (!callbackKey) return;
+  (callbacks[callbackKey] as (() => void) | undefined)?.();
+}
+
 /**
  * Registers global keyboard shortcuts on mount and removes them on cleanup.
- * Skips when the event target is an input, textarea, or contenteditable element.
+ * Skips when the event target is an input, textarea, or contenteditable element,
+ * EXCEPT for palette-global shortcuts (commandPalette, symbolJump) which are
+ * exempt from the typing-context guard.
  */
 export function useKeyboardShortcuts(callbacks: KeyboardShortcutCallbacks): void {
   function handleKeyDown(e: KeyboardEvent) {
-    // Skip when typing in form elements
     const target = e.target as HTMLElement;
     const tagName = target.tagName?.toLowerCase();
-    if (
+    const inTypingContext =
       tagName === 'input' ||
       tagName === 'textarea' ||
-      target.isContentEditable
-    ) {
-      return;
-    }
+      target.isContentEditable;
 
     // Registry-driven matching.
     // Array order in SHORTCUTS determines priority: if two bindings could
@@ -79,6 +116,11 @@ export function useKeyboardShortcuts(callbacks: KeyboardShortcutCallbacks): void
       if (!matchesEvent(shortcut.bind, e)) continue;
       const callbackKey = ID_TO_CALLBACK[shortcut.id];
       if (!callbackKey) continue;
+
+      // Palette-global shortcuts bypass the typing-context guard.
+      // All other shortcuts respect the guard (do not fire in inputs/editors).
+      if (inTypingContext && !PALETTE_GLOBAL_IDS.has(shortcut.id)) continue;
+
       e.preventDefault();
       // All entries in ID_TO_CALLBACK map to zero-argument callbacks.
       // Cast to silence TypeScript's union-type inference for the parameterised
@@ -87,6 +129,9 @@ export function useKeyboardShortcuts(callbacks: KeyboardShortcutCallbacks): void
       (callbacks[callbackKey] as (() => void) | undefined)?.();
       return;
     }
+
+    // Skip remaining special-case handlers when typing in form elements.
+    if (inTypingContext) return;
 
     // Escape — Dismiss reload prompt, then clear selection.
     // Handled separately: Escape is a UI-dismiss action, not a formal application
