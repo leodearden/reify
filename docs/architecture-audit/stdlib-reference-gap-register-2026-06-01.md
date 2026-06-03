@@ -217,6 +217,15 @@ Ground-truth corroboration from source: `PrimitiveKind = {Box, Cylinder, Sphere,
 
 ## Bucket B — Doc-reconciliation (code diverged intentionally; update the doc, not the code)
 
+> **STATUS 2026-06-03 — full Bucket-B disposition pass (run LAST, after the implement-PRDs).**
+> Re-verified all 22 rows against *current* main; the jun1 "reality" column was stale for
+> most (the implement-PRDs reconciled their own doc sections). Disposition:
+> - **Already reconciled in-doc:** §2 `g`/`c`/`boltzmann` fn-form — done by **#4177** (commit `01210ea966`).
+> - **Owned by sibling implement-PRD doc tasks (pending; no new task):** §4 Flexible→**#4227** (structural-traits β); §6 Material→MaterialSpec / Elastic-Strong-Hard-Ductile free-standing / Insulating `determined()`→**#4243** (materials ε); §8 DFMRule params→**#4275** (process-DFM δ); §11 InterpolationMethod (internal Rust enum→Reify enum) + `compose` callable→**#4225** (fields η; code via #4221/#4224); §13 E_KINEMATIC_CLOSED_CHAIN dead + joint/snapshot type-tags→Map→**#4313** (mechanism θ).
+> - **§5 std.ports (6 rows) — code-converging via P11** (`ports-breadth-expansion.md`, batch #4254/#4255/#4256/#4257/#4259/#4260): the doc already shows the rich form and P11 brings the *code* up to it, BUT P11 filed no doc-reconcile leaf and made deliberate residual deviations (Frame<3>→Frame3, SignalType→SignalKind, FluidPort Range→scalar+medium, Bore/Shaft/MatingFace/FitType not shipped). **New doc leaf #4314 filed**, gated on the whole P11 batch, to reconcile §5 + close these 6 rows.
+> - **Reconciled directly this pass (commit `ec851cd86c`):** §10 `Analysis` (mesh_resolution/convergence_target→`yield_strength`), §10 `AnalysisResult` (source/mesh→von_mises/principal/max_shear/safety_factor scalars), §11 differential-operators `@optimized` fiction removed. These 3 were genuinely unowned pure doc edits (code shipped, no dependency).
+> - **Reclassified — NOT a doc gap:** §3.7-3.10 curvature(surface)→Matrix<2,2>: the doc is already correct and eval/FFI ships (#3621); the residual is an unowned *compiler-signature* code gap (`units.rs:510` types it Scalar unconditionally) → **new Bucket-A task #4315** (arg-type-aware geometry-query return typing).
+
 | section | doc claim | reality |
 |---------|-----------|---------|
 | §2 std.units | `g` constant exposed only as fn STANDARD_GRAVITY() | g is covered by done tasks 3647/4026 which deliberately implement it as the zero-arg fn STANDARD_GRAVITY() (Reify lacks top-level const), so the underlying value is tracked-and-done, but the doc-vs-impl FORM/NAME mismatch (doc shows `let g : Acceleration`) is itself not tracked as a defect to reconcile. |
