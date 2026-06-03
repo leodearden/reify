@@ -80,17 +80,18 @@ export function Editor(props: EditorProps) {
   function applyMergedDiagnostics() {
     if (!view) return;
     const docLength = view.state.doc.length;
-    // Guard against stale compile offsets: the compile-diagnostics effect only
-    // re-runs when compileDiagnostics / activeFile change, not on every keystroke.
-    // If the doc shrinks (user typing) before fresh diagnostics arrive, stored
+    // Guard against stale offsets from BOTH channels: neither the compile-diagnostics
+    // effect nor the LSP listener re-runs on every keystroke.  Typing mutates the view
+    // doc directly, so if the doc shrinks before fresh diagnostics arrive, stored
     // from/to values may exceed the new doc length and cause setDiagnostics'
-    // RangeSet build to throw.  Filter them out here against the live doc.
-    const validCompileDiags = compileCmDiagnostics.filter(
+    // RangeSet build to throw.  The LSP/compile debounces share EDITOR_DEBOUNCE_MS,
+    // so the compile effect can re-dispatch a now-stale lspCmDiagnostics set whose
+    // offsets the LSP listener computed against a longer doc.  Filter the merged
+    // union against the live doc so neither channel can dispatch stale ranges.
+    const validDiags = [...lspCmDiagnostics, ...compileCmDiagnostics].filter(
       (d) => d.from <= docLength && d.to <= docLength,
     );
-    view.dispatch(
-      setDiagnostics(view.state, [...lspCmDiagnostics, ...validCompileDiags]),
-    );
+    view.dispatch(setDiagnostics(view.state, validDiags));
   }
 
   // Bounded back/forward navigation-history stack (max 50 entries).

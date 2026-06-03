@@ -1631,6 +1631,53 @@ describe('Editor compile diagnostics', () => {
 
     expect(diagnosticCount(view.state)).toBe(0);
   });
+
+  it('(e) CRASH (same-file) — stale LSP offset beyond a shrunk doc must not throw when the compile effect re-dispatches', () => {
+    // Regression for esc-4252-74: applyMergedDiagnostics filtered only
+    // compileCmDiagnostics against the live doc length and spread lspCmDiagnostics
+    // unguarded. Same-file race: the LSP listener stores offsets against the long
+    // doc → the user types/deletes so the view doc shrinks (typing mutates the view
+    // directly; neither diagnostic effect re-runs on keystrokes) → a compileDiagnostics
+    // update fires the compile effect → applyMergedDiagnostics re-dispatches the now
+    // out-of-range lspCmDiagnostics into the shrunk doc → CodeMirror RangeSet build
+    // throws. The fix filters the merged union, so neither channel can dispatch stale
+    // ranges.
+    const getHandler = setupListenCapture();
+    const store = setupStore([file1]);
+    const [diags, setDiags] = createSignal<DiagnosticInfo[]>([]);
+    render(() => <Editor store={store} compileDiagnostics={diags()} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    const handler = getHandler();
+    expect(handler).toBeDefined();
+
+    // LSP diagnostic for file1 at LSP line 1 (0-based) chars 0-5 → CM offsets [20, 25],
+    // valid in file1's 42-char doc.
+    handler!({
+      payload: {
+        uri: 'file:///project/src/bracket.ri',
+        diagnostics: [{
+          range: { start: { line: 1, character: 0 }, end: { line: 1, character: 5 } },
+          severity: 1,
+          message: 'file1 deep error',
+        }],
+      },
+    });
+    expect(diagnosticCount(view.state)).toBe(1);
+
+    // Shrink the doc directly (simulates the user deleting text). The diagnostic
+    // effects do NOT re-run, so lspCmDiagnostics still holds the stale [20, 25].
+    view.dispatch({ changes: { from: 5, to: view.state.doc.length } });
+    expect(view.state.doc.length).toBe(5);
+
+    // A compileDiagnostics update (fresh empty array → new reference) re-runs the
+    // compile effect → applyMergedDiagnostics. Under the bug the stale LSP [20, 25] is
+    // dispatched into the 5-char doc and throws. After the fix the merged union is
+    // filtered, so this is a no-op (no crash) and the stale LSP squiggle is dropped.
+    expect(() => setDiags([])).not.toThrow();
+    expect(diagnosticCount(getEditorView(container).state)).toBe(0);
+  });
 });
 
 describe('Editor compile diagnostics: stale LSP cleared on file switch', () => {
