@@ -1,4 +1,4 @@
-import { type Component, createSignal, createMemo, For, Show, onCleanup } from 'solid-js';
+import { type Component, createSignal, createMemo, For, Show, onMount, onCleanup } from 'solid-js';
 import type { ConstraintData, ValueData } from '../types';
 import styles from './ConstraintPanel.module.css';
 
@@ -114,8 +114,17 @@ export const ConstraintPanel: Component<ConstraintPanelProps> = (props) => {
     setContextMenu(null);
   }
 
+  onMount(() => {
+    if (window.__REIFY_DEBUG__) {
+      window.__REIFY_DEBUG__.constraintPanel = { expandedNodes };
+    }
+  });
+
   onCleanup(() => {
     document.removeEventListener('click', handleDismissMenu);
+    if (window.__REIFY_DEBUG__) {
+      delete window.__REIFY_DEBUG__.constraintPanel;
+    }
   });
 
   return (
