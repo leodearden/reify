@@ -478,4 +478,65 @@ mod tests {
             "size exactly 500mm should return finite LENGTH scalar (inclusive bound)"
         );
     }
+
+    // ─── step-7: RED tests for diagnose classifier ────────────────────────────
+
+    #[test]
+    fn diagnose_iso_it_grade4_out_of_envelope_returns_error() {
+        // IT4: grade below IT5 but well-typed → Some(Error)
+        use reify_core::Severity;
+        let d = super::diagnose(
+            "iso_it_tolerance",
+            &[Value::Int(4), len(0.018), len(0.030)],
+        );
+        let diag = d.expect("IT4 grade out-of-envelope should return Some(Diagnostic)");
+        assert_eq!(
+            diag.severity,
+            Severity::Error,
+            "out-of-envelope diagnostic should be Error severity"
+        );
+    }
+
+    #[test]
+    fn diagnose_iso_it_size_over_500mm_returns_error() {
+        // size > 500mm: well-typed but out of envelope → Some(Error)
+        use reify_core::Severity;
+        let d = super::diagnose(
+            "iso_it_tolerance",
+            &[Value::Int(7), len(0.5), len(0.6)],
+        );
+        let diag = d.expect("size > 500mm should return Some(Diagnostic)");
+        assert_eq!(
+            diag.severity,
+            Severity::Error,
+            "size-out-of-envelope diagnostic should be Error severity"
+        );
+    }
+
+    #[test]
+    fn diagnose_iso_it_valid_call_returns_none() {
+        // Valid in-envelope call → None
+        let d = super::diagnose(
+            "iso_it_tolerance",
+            &[Value::Int(6), len(0.018), len(0.030)],
+        );
+        assert!(d.is_none(), "valid in-envelope call should return None");
+    }
+
+    #[test]
+    fn diagnose_efz_returns_none() {
+        // effective_tolerance_zone → None (not diagnosed by this classifier)
+        let d = super::diagnose(
+            "effective_tolerance_zone",
+            &[len(1e-4), mc("MMC"), len(2e-5)],
+        );
+        assert!(d.is_none(), "effective_tolerance_zone should always return None from diagnose");
+    }
+
+    #[test]
+    fn diagnose_unknown_name_returns_none() {
+        // Unrecognised function → None
+        let d = super::diagnose("totally_unknown", &[]);
+        assert!(d.is_none(), "unknown function should return None from diagnose");
+    }
 }
