@@ -12,7 +12,6 @@
 import {
   Raycaster,
   Vector2,
-  Vector3,
   Box3,
   Color,
   EdgesGeometry,
@@ -23,6 +22,7 @@ import {
 import type { Scene, PerspectiveCamera, MeshStandardMaterial } from 'three';
 import { acceleratedRaycast } from 'three-mesh-bvh';
 import { THEME_TOKENS } from '../theme';
+import { fitCameraToBox } from './fitCamera';
 
 // Patch Mesh prototype for BVH-accelerated raycasting
 Mesh.prototype.raycast = acceleratedRaycast;
@@ -260,24 +260,7 @@ export function createSelection(options: SelectionOptions): SelectionContext {
 
     if (box.isEmpty()) return;
 
-    const center = new Vector3();
-    const size = new Vector3();
-    box.getCenter(center);
-    box.getSize(size);
-
-    const maxDim = Math.max(size.x, size.y, size.z);
-    const fovRad = (camera.fov / 2) * (Math.PI / 180);
-    const distance = maxDim / (2 * Math.tan(fovRad));
-
-    const viewDir = new Vector3();
-    camera.getWorldDirection(viewDir);
-    // Position camera at center - viewDir * distance (backing away from center along view direction)
-    camera.position.copy(center).sub(viewDir.multiplyScalar(distance));
-    camera.lookAt(center);
-    camera.updateProjectionMatrix();
-    if (controls) {
-      controls.target.copy(center);
-    }
+    fitCameraToBox(camera, box, controls ? { controls } : undefined);
   }
 
   function flyToEntity(entityPath: string): void {
@@ -289,23 +272,7 @@ export function createSelection(options: SelectionOptions): SelectionContext {
 
     if (box.isEmpty()) return;
 
-    const center = new Vector3();
-    const size = new Vector3();
-    box.getCenter(center);
-    box.getSize(size);
-
-    const maxDim = Math.max(size.x, size.y, size.z);
-    const fovRad = (camera.fov / 2) * (Math.PI / 180);
-    const distance = maxDim / (2 * Math.tan(fovRad));
-
-    const viewDir = new Vector3();
-    camera.getWorldDirection(viewDir);
-    camera.position.copy(center).sub(viewDir.multiplyScalar(distance));
-    camera.lookAt(center);
-    camera.updateProjectionMatrix();
-    if (controls) {
-      controls.target.copy(center);
-    }
+    fitCameraToBox(camera, box, controls ? { controls } : undefined);
   }
 
   function dispose(): void {
