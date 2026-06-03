@@ -32,6 +32,11 @@ const CYL_HEIGHT_M: f64 = 10.0e-3;
 /// 5mm-radius sphere for the sphere-side tests.
 const SPHERE_RADIUS_M: f64 = 5.0e-3;
 
+/// Cone frustum: 10mm bottom radius, 5mm top radius, 20mm height.
+const CONE_BOTTOM_R_M: f64 = 10.0e-3;
+const CONE_TOP_R_M: f64 = 5.0e-3;
+const CONE_HEIGHT_M: f64 = 20.0e-3;
+
 fn box_op() -> GeometryOp {
     GeometryOp::Box {
         width: Value::Real(BOX_SIDE_M),
@@ -50,6 +55,22 @@ fn cylinder_op() -> GeometryOp {
 fn sphere_op() -> GeometryOp {
     GeometryOp::Sphere {
         radius: Value::Real(SPHERE_RADIUS_M),
+    }
+}
+
+fn cone_frustum_op() -> GeometryOp {
+    GeometryOp::Cone {
+        bottom_radius: Value::Real(CONE_BOTTOM_R_M),
+        top_radius: Value::Real(CONE_TOP_R_M),
+        height: Value::Real(CONE_HEIGHT_M),
+    }
+}
+
+fn cone_pointed_op() -> GeometryOp {
+    GeometryOp::Cone {
+        bottom_radius: Value::Real(CONE_BOTTOM_R_M),
+        top_radius: Value::Real(0.0),
+        height: Value::Real(CONE_HEIGHT_M),
     }
 }
 
@@ -898,6 +919,200 @@ fn seed_primitive_attributes_for_handle_box_extracts_and_seeds_vertices_too() {
         assert!(
             attr.mod_history.is_empty(),
             "box vertex #{idx} mod_history must be empty"
+        );
+    }
+}
+
+// ─── step-3 (task-4156): Cone frustum → 1×Cap(Top) + 1×Cap(Bottom) + ≥1×Side ─
+
+/// Frustum cone (bottom_r=10mm, top_r=5mm, height=20mm) should produce
+/// exactly 1 Cap(Top), 1 Cap(Bottom), and ≥1 Side face; all edges NewEdge.
+///
+/// RED until step-4 wires GeometryOp::Cone into the seeder's Cylinder arm.
+#[test]
+fn seed_primitive_attributes_cone_frustum_classifies_cap_top_cap_bottom_and_side() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let mut kernel = OcctKernelHandle::spawn();
+    let cone_id = kernel
+        .execute(&cone_frustum_op())
+        .expect("frustum cone should build")
+        .id;
+
+    let face_handles = kernel
+        .extract_faces(cone_id)
+        .expect("extract_faces(cone_frustum) should succeed");
+    let edge_handles = kernel
+        .extract_edges(cone_id)
+        .expect("extract_edges(cone_frustum) should succeed");
+
+    // A frustum (BRepPrimAPI_MakeCone with top_r > 0) emits 3 faces:
+    // slanted side + top cap + bottom cap.
+    assert_eq!(
+        face_handles.len(),
+        3,
+        "a cone frustum (10mm/5mm/20mm) should have exactly 3 faces"
+    );
+
+    let feature_id = body_realization_feature_id();
+    let mut table = TopologyAttributeTable::default();
+    seed_primitive_attributes(
+        &mut table,
+        &mut kernel,
+        &face_handles,
+        &edge_handles,
+        &[],
+        &feature_id,
+        &cone_frustum_op(),
+    )
+    .expect("seed_primitive_attributes for a cone frustum should succeed");
+
+    // Every face must have an entry.
+    assert_eq!(
+        table.len(),
+        face_handles.len() + edge_handles.len(),
+        "cone frustum: 3 face entries + edge entries expected"
+    );
+
+    let mut cap_top_count = 0usize;
+    let mut cap_bottom_count = 0usize;
+    let mut side_count = 0usize;
+    for (idx, &face_id) in face_handles.iter().enumerate() {
+        let attr = table.lookup(face_id).unwrap_or_else(|| {
+            panic!(
+                "cone frustum face #{} (handle {:?}) must have a TopologyAttribute entry",
+                idx, face_id
+            )
+        });
+        assert_eq!(
+            attr.feature_id, feature_id,
+            "cone frustum face #{idx} feature_id should equal Body#realization[0]"
+        );
+        match attr.role {
+            Role::Cap(CapKind::Top) => cap_top_count += 1,
+            Role::Cap(CapKind::Bottom) => cap_bottom_count += 1,
+            Role::Side => side_count += 1,
+            other => panic!(
+                "cone frustum face #{idx} unexpected role {:?}; expected Cap(Top/Bottom) or Side",
+                other
+            ),
+        }
+    }
+    assert_eq!(cap_top_count, 1, "cone frustum must have exactly 1 Cap(Top) face");
+    assert_eq!(cap_bottom_count, 1, "cone frustum must have exactly 1 Cap(Bottom) face");
+    assert!(side_count >= 1, "cone frustum must have at least 1 Side face");
+
+    // All edges must be NewEdge.
+    for (idx, &edge_id) in edge_handles.iter().enumerate() {
+        let attr = table.lookup(edge_id).unwrap_or_else(|| {
+            panic!(
+                "cone frustum edge #{} (handle {:?}) must have a TopologyAttribute entry",
+                idx, edge_id
+            )
+        });
+        assert_eq!(
+            attr.role,
+            Role::NewEdge,
+            "cone frustum edge #{idx} must be Role::NewEdge"
+        );
+    }
+}
+
+// ─── step-3 (task-4156): Pointed cone → 0×Cap(Top) + 1×Cap(Bottom) + ≥1×Side ─
+
+/// Pointed cone (bottom_r=10mm, top_r=0mm, height=20mm) has no top planar face.
+/// Expects: 0 Cap(Top), 1 Cap(Bottom), ≥1 Side; all edges NewEdge.
+///
+/// RED until step-4 wires GeometryOp::Cone into the seeder's Cylinder arm.
+#[test]
+fn seed_primitive_attributes_cone_pointed_has_no_top_cap() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let mut kernel = OcctKernelHandle::spawn();
+    let cone_id = kernel
+        .execute(&cone_pointed_op())
+        .expect("pointed cone should build")
+        .id;
+
+    let face_handles = kernel
+        .extract_faces(cone_id)
+        .expect("extract_faces(cone_pointed) should succeed");
+    let edge_handles = kernel
+        .extract_edges(cone_id)
+        .expect("extract_edges(cone_pointed) should succeed");
+
+    // A pointed cone (top_r == 0) has 2 faces: slanted side + bottom cap.
+    assert_eq!(
+        face_handles.len(),
+        2,
+        "a pointed cone (10mm/0mm/20mm) should have exactly 2 faces"
+    );
+
+    let feature_id = body_realization_feature_id();
+    let mut table = TopologyAttributeTable::default();
+    seed_primitive_attributes(
+        &mut table,
+        &mut kernel,
+        &face_handles,
+        &edge_handles,
+        &[],
+        &feature_id,
+        &cone_pointed_op(),
+    )
+    .expect("seed_primitive_attributes for a pointed cone should succeed");
+
+    assert_eq!(
+        table.len(),
+        face_handles.len() + edge_handles.len(),
+        "pointed cone: 2 face entries + edge entries expected"
+    );
+
+    let mut cap_top_count = 0usize;
+    let mut cap_bottom_count = 0usize;
+    let mut side_count = 0usize;
+    for (idx, &face_id) in face_handles.iter().enumerate() {
+        let attr = table.lookup(face_id).unwrap_or_else(|| {
+            panic!(
+                "pointed cone face #{} (handle {:?}) must have a TopologyAttribute entry",
+                idx, face_id
+            )
+        });
+        assert_eq!(
+            attr.feature_id, feature_id,
+            "pointed cone face #{idx} feature_id should equal Body#realization[0]"
+        );
+        match attr.role {
+            Role::Cap(CapKind::Top) => cap_top_count += 1,
+            Role::Cap(CapKind::Bottom) => cap_bottom_count += 1,
+            Role::Side => side_count += 1,
+            other => panic!(
+                "pointed cone face #{idx} unexpected role {:?}; expected Cap(Bottom) or Side",
+                other
+            ),
+        }
+    }
+    assert_eq!(cap_top_count, 0, "pointed cone must have 0 Cap(Top) faces");
+    assert_eq!(cap_bottom_count, 1, "pointed cone must have exactly 1 Cap(Bottom) face");
+    assert!(side_count >= 1, "pointed cone must have at least 1 Side face");
+
+    // All edges must be NewEdge.
+    for (idx, &edge_id) in edge_handles.iter().enumerate() {
+        let attr = table.lookup(edge_id).unwrap_or_else(|| {
+            panic!(
+                "pointed cone edge #{} (handle {:?}) must have a TopologyAttribute entry",
+                idx, edge_id
+            )
+        });
+        assert_eq!(
+            attr.role,
+            Role::NewEdge,
+            "pointed cone edge #{idx} must be Role::NewEdge"
         );
     }
 }
