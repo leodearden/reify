@@ -493,4 +493,13 @@ describe('ChatPanel', () => {
       expect(contextChips.compareDocumentPosition(chatInput) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
   });
+
+  describe('composer input accessibility', () => {
+    it('chat-input textarea has an aria-label of "Ask Claude"', () => {
+      const store = makeStore();
+      render(() => <ChatPanel store={store} />);
+      const textarea = screen.getByTestId('chat-input');
+      expect(textarea.getAttribute('aria-label')).toBe('Ask Claude');
+    });
+  });
 });
