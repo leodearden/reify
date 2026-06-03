@@ -198,9 +198,17 @@ const DesignTree: Component<Props> = (props) => {
     // bubbled click before it reaches the document listener.
     document.addEventListener('click', handleDocumentClick, { capture: true });
     document.addEventListener('keydown', handleDocumentKeyDown);
+
+    if (window.__REIFY_DEBUG__) {
+      window.__REIFY_DEBUG__.designTree = { expanded };
+    }
+
     onCleanup(() => {
       document.removeEventListener('click', handleDocumentClick, { capture: true });
       document.removeEventListener('keydown', handleDocumentKeyDown);
+      if (window.__REIFY_DEBUG__) {
+        delete window.__REIFY_DEBUG__.designTree;
+      }
     });
   });
 
