@@ -13,7 +13,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { PerspectiveCamera, Box3, Vector3 } from 'three';
-import { fitCameraToBox } from '../../viewport/fitCamera';
+import { fitCameraToBox, type FitCameraOptions } from '../../viewport/fitCamera';
 
 // ---------------------------------------------------------------------------
 // Helper utilities
@@ -54,7 +54,7 @@ function setupAndFit(
   fov: number,
   aspect: number,
   box: Box3,
-  controls?: { target: Vector3 },
+  fitOptions?: FitCameraOptions,
 ): PerspectiveCamera {
   const camera = new PerspectiveCamera(fov, aspect, 0.1, 1e5);
   camera.up.set(0, 0, 1); // Z-up, matching scene.ts
@@ -69,7 +69,7 @@ function setupAndFit(
   camera.lookAt(center);
   camera.updateMatrixWorld(true);
 
-  fitCameraToBox(camera, box, controls ? { controls } : undefined);
+  fitCameraToBox(camera, box, fitOptions);
 
   camera.updateMatrixWorld(true);
   return camera;
@@ -90,26 +90,18 @@ const PRINTER_BOX = new Box3(
 // ---------------------------------------------------------------------------
 
 describe('fitCameraToBox', () => {
-  // (1) REGRESSION: narrow-aspect (portrait) viewport framing
-  it('frames the full printer-scale assembly on a tall/narrow viewport (aspect ≈ 0.4)', () => {
+  // (1) REGRESSION + PADDING: on a tall/narrow pane (aspect ≈ 0.4) the old
+  //     vertical-only formula clips the printer assembly horizontally.  After
+  //     the fix all 8 corners must be inside the frustum AND the assembly must
+  //     span a meaningful fraction of the frame (predictable padding margin).
+  it('frames the printer-scale assembly with margin on a tall/narrow viewport (aspect ≈ 0.4)', () => {
     const aspect = 0.4; // tall/narrow design pane
     const camera = setupAndFit(60, aspect, PRINTER_BOX);
 
     const worst = maxNdcExtent(camera, PRINTER_BOX);
     // All 8 corners must be inside the frustum — no horizontal/vertical clipping.
     expect(worst).toBeLessThan(1.0);
-  });
-
-  // (2) PADDING: the assembly is framed with a margin — not touching the edges
-  //     and not shrunk to a speck.
-  it('leaves a visible margin around the assembly (not cropped, not a speck)', () => {
-    const aspect = 0.4;
-    const camera = setupAndFit(60, aspect, PRINTER_BOX);
-
-    const worst = maxNdcExtent(camera, PRINTER_BOX);
-    // Strict inside-frame margin (not touching edges)
-    expect(worst).toBeLessThan(1.0);
-    // Assembly spans a meaningful fraction of the frame (padding is not absurd)
+    // Assembly spans a meaningful fraction of the frame (padding is not absurd).
     expect(worst).toBeGreaterThan(0.3);
   });
 
@@ -172,5 +164,49 @@ describe('fitCameraToBox', () => {
     expect(controls.target.x).toBeCloseTo(boxCenter.x, 3);
     expect(controls.target.y).toBeCloseTo(boxCenter.y, 3);
     expect(controls.target.z).toBeCloseTo(boxCenter.z, 3);
+  });
+
+  // (6) DEGENERATE BOX: zero-volume box (min === max) must not move the camera
+  //     or mutate controls.target — guard against NaN positions.
+  it('no-ops on a zero-volume (degenerate) box', () => {
+    const camera = new PerspectiveCamera(60, 1, 0.1, 1e5);
+    const initialPos = camera.position.clone();
+    const controls = { target: new Vector3(99, 99, 99) };
+
+    // Box with zero extent (min === max → radius = 0 → guard should fire)
+    const degenBox = new Box3(new Vector3(5, 5, 5), new Vector3(5, 5, 5));
+
+    fitCameraToBox(camera, degenBox, { controls });
+
+    // Camera position must be unchanged
+    expect(camera.position.x).toBe(initialPos.x);
+    expect(camera.position.y).toBe(initialPos.y);
+    expect(camera.position.z).toBe(initialPos.z);
+    // controls.target must also be unchanged
+    expect(controls.target.x).toBe(99);
+    expect(controls.target.y).toBe(99);
+    expect(controls.target.z).toBe(99);
+  });
+
+  // (7) CUSTOM PADDING: caller-supplied `padding` must scale camera distance
+  //     linearly — ratio of padded distance to default-padded distance must
+  //     equal the ratio of the padding values (2.2 / 1.1 = 2.0).
+  it('scales camera distance proportionally with a custom padding option', () => {
+    const center = new Vector3();
+    PRINTER_BOX.getCenter(center);
+    const aspect = 1.0;
+
+    // Default padding (1.1)
+    const cameraDefault = setupAndFit(60, aspect, PRINTER_BOX);
+    const distDefault = cameraDefault.position.distanceTo(center);
+
+    // Explicit padding = 2.2 (exactly 2× the default)
+    const cameraPadded = setupAndFit(60, aspect, PRINTER_BOX, { padding: 2.2 });
+    const distPadded = cameraPadded.position.distanceTo(center);
+
+    // Distance must scale linearly: ratio ≈ 2.2 / 1.1 = 2.0
+    expect(distPadded / distDefault).toBeCloseTo(2.0, 3);
+    // Sanity-check: larger padding → strictly larger distance
+    expect(distPadded).toBeGreaterThan(distDefault);
   });
 });

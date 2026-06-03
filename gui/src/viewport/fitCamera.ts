@@ -98,6 +98,11 @@ export function fitCameraToBox(
   const distance = padding * Math.max(fitH, fitW);
 
   // Reposition along the current view direction, preserving orientation.
+  // Refresh world matrix first so getWorldDirection reads current state — callers
+  // may have mutated position/rotation without calling updateMatrixWorld().
+  // Optional chaining keeps the helper compatible with hand-rolled test mocks
+  // that don't stub every camera method.
+  camera.updateMatrixWorld?.();
   const viewDir = new Vector3();
   camera.getWorldDirection(viewDir);
   camera.position.copy(center).sub(viewDir.multiplyScalar(distance));
