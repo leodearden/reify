@@ -329,4 +329,138 @@ mod tests {
         assert_rel_close(result_um, 22.453, 5e-3, "IT8@6-10 µm within 0.5%");
         assert_eq!(result_um.round(), 22.0, "IT8@6-10 rounds to published cell 22 µm");
     }
+
+    // ─── step-5: RED tests for iso_it_tolerance envelope edges ───────────────
+
+    // Helper: returns true if v is a finite LENGTH-dimensioned Scalar.
+    fn is_finite_length_scalar(v: &Value) -> bool {
+        match v {
+            Value::Scalar { si_value, dimension }
+                if *dimension == DimensionVector::LENGTH && si_value.is_finite() =>
+            {
+                true
+            }
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn iso_it_envelope_grade4_is_undef() {
+        // IT4: below IT5 — already Undef after step-4 (it_grade_factor returns None)
+        assert!(
+            crate::eval_builtin(
+                "iso_it_tolerance",
+                &[Value::Int(4), len(0.018), len(0.030)]
+            )
+            .is_undef(),
+            "IT4 should return Undef (below IT5)"
+        );
+    }
+
+    #[test]
+    fn iso_it_envelope_grade19_is_undef() {
+        // IT19: above IT18 — already Undef after step-4
+        assert!(
+            crate::eval_builtin(
+                "iso_it_tolerance",
+                &[Value::Int(19), len(0.018), len(0.030)]
+            )
+            .is_undef(),
+            "IT19 should return Undef (above IT18)"
+        );
+    }
+
+    #[test]
+    fn iso_it_envelope_size_over_500mm_is_undef() {
+        // max_mm = 600 > 500 → RED: no size gate yet in step-4
+        assert!(
+            crate::eval_builtin(
+                "iso_it_tolerance",
+                &[Value::Int(7), len(0.5), len(0.6)]
+            )
+            .is_undef(),
+            "nominal size > 500mm should return Undef"
+        );
+    }
+
+    #[test]
+    fn iso_it_envelope_inverted_range_is_undef() {
+        // min_mm (50) > max_mm (30) → RED: no inversion gate yet
+        assert!(
+            crate::eval_builtin(
+                "iso_it_tolerance",
+                &[Value::Int(7), len(0.050), len(0.030)]
+            )
+            .is_undef(),
+            "inverted range min>max should return Undef"
+        );
+    }
+
+    #[test]
+    fn iso_it_envelope_zero_size_is_undef() {
+        // min_mm = 0 → non-positive: D=0 currently gives 0 scalar, not Undef → RED
+        assert!(
+            crate::eval_builtin(
+                "iso_it_tolerance",
+                &[Value::Int(7), len(0.0), len(0.010)]
+            )
+            .is_undef(),
+            "zero nominal size should return Undef"
+        );
+    }
+
+    #[test]
+    fn iso_it_envelope_invalid_arg_types_are_undef() {
+        // grade as Value::Real → Undef
+        assert!(
+            crate::eval_builtin(
+                "iso_it_tolerance",
+                &[Value::Real(7.0), len(0.018), len(0.030)]
+            )
+            .is_undef(),
+            "grade as Real should return Undef"
+        );
+        // nominal_min as Value::Int → Undef (not a LENGTH scalar)
+        assert!(
+            crate::eval_builtin(
+                "iso_it_tolerance",
+                &[Value::Int(7), Value::Int(18), len(0.030)]
+            )
+            .is_undef(),
+            "nominal_min as Int should return Undef"
+        );
+    }
+
+    #[test]
+    fn iso_it_envelope_inclusive_it5_is_finite() {
+        // IT5 is the lowest supported grade → must return a finite LENGTH scalar
+        let r = crate::eval_builtin(
+            "iso_it_tolerance",
+            &[Value::Int(5), len(0.018), len(0.030)],
+        );
+        assert!(is_finite_length_scalar(&r), "IT5 should return finite LENGTH scalar");
+    }
+
+    #[test]
+    fn iso_it_envelope_inclusive_it18_is_finite() {
+        // IT18 is the highest supported grade → must return a finite LENGTH scalar
+        let r = crate::eval_builtin(
+            "iso_it_tolerance",
+            &[Value::Int(18), len(0.018), len(0.030)],
+        );
+        assert!(is_finite_length_scalar(&r), "IT18 should return finite LENGTH scalar");
+    }
+
+    #[test]
+    fn iso_it_envelope_inclusive_500mm_is_finite() {
+        // max_mm = 500mm exactly → within envelope, must return a finite LENGTH scalar
+        let r = crate::eval_builtin(
+            "iso_it_tolerance",
+            &[Value::Int(7), len(0.4), len(0.5)],
+        );
+        assert!(
+            is_finite_length_scalar(&r),
+            "size exactly 500mm should return finite LENGTH scalar (inclusive bound)"
+        );
+    }
 }
