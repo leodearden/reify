@@ -5456,11 +5456,18 @@ describe('App handleSave conflict prompt: Overwrite uses live buffer', () => {
       expect(conflictToast).toBeTruthy();
     });
 
+    // Simulate a tab-switch after the prompt appears: mutate the getter so any
+    // click-time read would return the wrong file's content.  The snapshot must
+    // have been taken at prompt-CREATION time (when Ctrl+S fired), so Overwrite
+    // should still save 'LIVE-OVERWRITE', not 'WRONG-FILE-AFTER-SWITCH'.
+    capturedEditorLiveContentRef!(() => 'WRONG-FILE-AFTER-SWITCH');
+
     // Click the Overwrite action button
     const overwriteBtn = within(conflictToast!).getByRole('button', { name: SAVE_CONFLICT_OVERWRITE_LABEL });
     fireEvent.click(overwriteBtn);
 
     // bridgeSaveFile must be called with the LIVE buffer content, not 'STALE'
+    // and not the post-switch 'WRONG-FILE-AFTER-SWITCH'.
     await waitFor(() => {
       expect(vi.mocked(bridge.saveFile)).toHaveBeenCalledWith(
         '/project/bracket.ri',

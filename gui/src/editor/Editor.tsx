@@ -604,6 +604,7 @@ export function Editor(props: EditorProps) {
       delete window.__REIFY_DEBUG__.editorView;
     }
     view?.destroy();
+    view = undefined;
   });
 
   return <div ref={containerRef} class={styles.container} data-testid="editor-container" />;
