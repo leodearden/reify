@@ -1632,3 +1632,113 @@ describe('Editor compile diagnostics', () => {
     expect(diagnosticCount(view.state)).toBe(0);
   });
 });
+
+describe('Editor compile diagnostics: stale LSP cleared on file switch', () => {
+  /** Capture the Tauri diagnostics event handler (same pattern as other describe blocks). */
+  function setupListenCapture() {
+    let capturedHandler: ((event: { payload: any }) => void) | undefined;
+    mockListen.mockImplementation(async (_event: any, handler: any) => {
+      capturedHandler = handler;
+      return vi.fn();
+    });
+    return () => capturedHandler;
+  }
+
+  it('(a) FLASH — file2 LSP squiggle does NOT leak into file1 after switch', () => {
+    const getHandler = setupListenCapture();
+    const store = setupStore([file2, file1]);
+    store.setActiveFile(file2.path);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    const handler = getHandler();
+    expect(handler).toBeDefined();
+
+    // Fire LSP diagnostics for file2 URI at range [0, 5]
+    handler!({
+      payload: {
+        uri: 'file:///project/src/mount.ri',
+        diagnostics: [{
+          range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
+          severity: 1,
+          message: 'stale diagnostic from file2',
+        }],
+      },
+    });
+    expect(diagnosticCount(view.state)).toBe(1);
+
+    // Switch to file1 — stale lspCmDiagnostics [0,5] must NOT be re-dispatched.
+    // Under the bug the compile effect calls applyMergedDiagnostics() with the un-cleared
+    // lspCmDiagnostics, so count stays 1 instead of going to 0.
+    store.setActiveFile(file1.path);
+
+    expect(diagnosticCount(getEditorView(container).state)).toBe(0);
+  });
+
+  it('(b) CRASH — stale LSP offset beyond new doc length must not throw or leave squiggle', () => {
+    const getHandler = setupListenCapture();
+    const store = setupStore([file1, file2]);
+    store.setActiveFile(file1.path);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    const handler = getHandler();
+    expect(handler).toBeDefined();
+
+    // LSP diagnostic for file1 at LSP line 1 (0-based), chars 0-5.
+    // lspDiagnosticToCodeMirror maps this to CM offsets from=20, to=25
+    // (file1 line-2 starts at offset 20 in the 42-char doc).
+    // [20, 25] is valid in file1 but exceeds file2's 18-char doc.
+    handler!({
+      payload: {
+        uri: 'file:///project/src/bracket.ri',
+        diagnostics: [{
+          range: { start: { line: 1, character: 0 }, end: { line: 1, character: 5 } },
+          severity: 1,
+          message: 'file1 deep error',
+        }],
+      },
+    });
+    expect(diagnosticCount(view.state)).toBe(1);
+
+    // Under the bug: the compile effect re-dispatches the stale [20, 25] into file2's
+    // 18-char doc → CodeMirror RangeSet build throws a RangeError.
+    // After the fix: lspCmDiagnostics is cleared in the file-switch effect before the
+    // compile effect runs, so applyMergedDiagnostics dispatches [] — no crash.
+    expect(() => store.setActiveFile(file2.path)).not.toThrow();
+
+    // Stale squiggle must be absent in file2 view
+    expect(diagnosticCount(getEditorView(container).state)).toBe(0);
+  });
+
+  it('(c) ROBUSTNESS — after file switch the LSP channel still applies new-file diagnostics', () => {
+    const getHandler = setupListenCapture();
+    const store = setupStore([file1, file2]);
+    store.setActiveFile(file1.path);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+
+    // Switch to file2 (lspCmDiagnostics must be cleared, not permanently disabled)
+    store.setActiveFile(file2.path);
+
+    const handler = getHandler();
+    expect(handler).toBeDefined();
+
+    // Fire LSP event for file2 at a valid range [0, 5] (file2 is 18 chars)
+    handler!({
+      payload: {
+        uri: 'file:///project/src/mount.ri',
+        diagnostics: [{
+          range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
+          severity: 2,
+          message: 'file2 warning',
+        }],
+      },
+    });
+
+    // The LSP slot was cleared (not disabled) so the new-file event produces exactly 1 squiggle.
+    expect(diagnosticCount(getEditorView(container).state)).toBe(1);
+  });
+});
