@@ -243,6 +243,7 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
                               data-freshness={val.freshness}
                               data-testid={`freshness-badge-${val.cell_id}`}
                               aria-label={`freshness ${val.freshness}`}
+                              title={`freshness ${val.freshness}`}
                             >
                               {freshnessGlyph(val.freshness)}
                             </span>
