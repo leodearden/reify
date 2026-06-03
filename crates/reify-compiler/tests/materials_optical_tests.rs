@@ -72,7 +72,8 @@ fn optical_module_loads_with_no_errors_and_one_trait() {
 ///   absorption_coefficient  → Type::Scalar { dimension: ABSORPTION_COEFF }
 ///                             (= undef; type tightened by task #3115)
 ///   transmittance           → Type::Real (= undef; genuine-dimensionless)
-///   reference_thickness     → Type::Real (= undef; sibling task #3113)
+///   reference_thickness     → Type::Scalar { dimension: LENGTH }
+///                             (= undef; tightened by task #3113)
 #[test]
 fn optically_characterized_has_one_required_and_three_optional_members() {
     let module = load_stdlib_module();
@@ -128,7 +129,12 @@ fn optically_characterized_has_one_required_and_three_optional_members() {
             },
         ),
         ("transmittance", Type::Real),
-        ("reference_thickness", Type::Real),
+        (
+            "reference_thickness",
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+        ),
     ];
     for (param_name, expected_ty) in &expected_optional {
         let default = oc
@@ -174,7 +180,7 @@ structure def BorosilicateGlass : OpticallyCharacterized {
     param refractive_index : Real = 1.52
     param absorption_coefficient : AbsorptionCoeff = 0.001 / 1m
     param transmittance : Real = 0.92
-    param reference_thickness : Real = 0.001
+    param reference_thickness : Length = 1mm
 }
 "#;
 

@@ -127,11 +127,12 @@ structure def BorosilicateGlass : OpticallyCharacterized {
     param name : String = "borosilicate_glass"
 
     // OpticallyCharacterized — absorption_coefficient uses the AbsorptionCoeff
-    // alias introduced by #3115; the other three remain Real.
+    // alias introduced by #3115; reference_thickness tightened to Length by #3113;
+    // refractive_index and transmittance remain Real (genuine-dimensionless).
     param refractive_index : Real = 1.52        // dimensionless (BK7 / N-BK7)
     param absorption_coefficient : AbsorptionCoeff = 0.001 / 1m  // very low for optical glass
     param transmittance : Real = 0.92           // 92% at reference thickness
-    param reference_thickness : Real = 0.01    // 1cm reference sample thickness
+    param reference_thickness : Length = 1cm   // 1cm reference sample thickness
 }
 
 // ── (2d) §6.6 gap-fill sample: TitaniumImplant : Biocompatible + CorrosionResistant
