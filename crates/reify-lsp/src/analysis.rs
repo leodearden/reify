@@ -650,10 +650,13 @@ fn find_name_offset_in_span(source: &str, span: SourceSpan, name: &str) -> u32 {
 /// Narrow a member-statement span down to the span of just its NAME identifier
 /// token.
 ///
-/// Searches forward from `member_span.start` for the first **whole-word**
-/// occurrence of `name` (a match whose neighbouring bytes are not identifier
-/// characters), returning `SourceSpan::new(name_start, name_start + name.len())`.
-/// Falls back to an empty span at `member_span.start` when `name` is not found.
+/// Searches forward from `member_span.start`, **bounded by `member_span.end`**,
+/// for the first **whole-word** occurrence of `name` (a match whose neighbouring
+/// bytes are not identifier characters), returning
+/// `SourceSpan::new(name_start, name_start + name.len())`. Falls back to an empty
+/// span at `member_span.start` when `name` is not found *within the member span*
+/// — so a member whose own name token is unexpectedly absent never borrows a
+/// same-named token from a sibling member.
 ///
 /// The declaration name always follows its leading keyword
 /// (`param`/`let`/`sub`/`port`), so the first whole-word match is the declaration
@@ -670,11 +673,23 @@ pub fn name_token_span(source: &str, member_span: SourceSpan, name: &str) -> Sou
     while start < source.len() && !source.is_char_boundary(start) {
         start += 1;
     }
+    // Bound the search to the member's OWN span. Without this, a member whose
+    // name token is unexpectedly absent (e.g. a malformed/recovered AST node
+    // whose span does not actually contain the declared name) would match the
+    // first same-named whole word anywhere later in the source — silently
+    // borrowing a token from a sibling member. Clamping to `member_span.end`
+    // makes such a case fall through to the empty-span fallback instead.
+    let end = (member_span.end as usize).min(source.len()).max(start);
 
     let bytes = source.as_bytes();
     let name_len = name.len();
     for (rel, _) in source[start..].match_indices(name) {
         let abs = start + rel;
+        // Past the member span: `match_indices` yields ascending offsets, so once
+        // a match would extend beyond `end` every later match does too — stop.
+        if abs + name_len > end {
+            break;
+        }
         // Whole-word check: neither the byte before nor the byte after the match
         // may be an identifier character.
         let prev_ok = abs == 0 || !is_ident_byte(bytes[abs - 1]);
@@ -2318,5 +2333,28 @@ mod tests {
             &source[span.start as usize..span.end as usize],
             "guarded_x"
         );
+    }
+
+    #[test]
+    fn name_token_span_absent_name_falls_back_within_member_not_sibling() {
+        // The member span covers ONLY the first statement (`param alpha …`), which
+        // does NOT contain the name `beta`. `beta` appears only in the LATER
+        // sibling statement. name_token_span must fall back to an empty span at the
+        // member start rather than borrowing the sibling's `beta` token — a
+        // malformed/recovered node whose span lacks its own name must not match a
+        // same-named token elsewhere in the source.
+        let source = "param alpha: Scalar = 1mm\nlet beta = alpha";
+        let member_end = source.find('\n').unwrap() as u32; // end of `param alpha …`
+        let member_span = SourceSpan::new(0, member_end);
+
+        let span = name_token_span(source, member_span, "beta");
+        assert_eq!(
+            span,
+            SourceSpan::empty(0),
+            "name absent from the member span must fall back to empty, not borrow \
+             the sibling `beta` token at {:?}",
+            source.find("beta"),
+        );
+        assert!(span.is_empty(), "fallback span must be empty");
     }
 }
