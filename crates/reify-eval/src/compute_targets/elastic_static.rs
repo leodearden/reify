@@ -1259,6 +1259,54 @@ fn extract_tip_force(val: &Value) -> f64 {
     total
 }
 
+/// A single pressure load parsed from a `PressureLoad` StructureInstance.
+///
+/// Fields mirror `PressureLoad` in `solver_elastic.ri`:
+/// - `magnitude` — surface pressure magnitude in Pa (SI)
+/// - `face`      — face identifier: "x_min", "x_max", "y_min", "y_max", "z_min", "z_max"
+/// - `direction` — "normal" (only supported value in v0.4)
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PressureSpec {
+    pub(crate) magnitude: f64,
+    pub(crate) face: String,
+    pub(crate) direction: String,
+}
+
+/// Extract all `PressureLoad` StructureInstances from a `Value::List`.
+///
+/// Items that are not `PressureLoad` (e.g. `PointLoad`, `FixedSupport`) are
+/// silently skipped — the caller is responsible for handling them separately.
+///
+/// Returns an empty Vec if the list contains no `PressureLoad` items.
+pub(crate) fn extract_pressure_loads(val: &Value) -> Vec<PressureSpec> {
+    let items = match val {
+        Value::List(v) => v,
+        _ => return vec![],
+    };
+    let mut result = Vec::new();
+    for item in items.iter() {
+        if let Value::StructureInstance(data) = item
+            && data.type_name == "PressureLoad"
+        {
+            let magnitude = match data.fields.get(&"magnitude".to_string()) {
+                Some(Value::Real(m)) => *m,
+                Some(Value::Scalar { si_value, .. }) => *si_value,
+                _ => continue,
+            };
+            let face = match data.fields.get(&"face".to_string()) {
+                Some(Value::String(s)) => s.clone(),
+                _ => continue,
+            };
+            let direction = match data.fields.get(&"direction".to_string()) {
+                Some(Value::String(s)) => s.clone(),
+                _ => "normal".to_string(),
+            };
+            result.push(PressureSpec { magnitude, face, direction });
+        }
+    }
+    result
+}
+
 /// Extract `(ShellForce, shell_threshold)` from the `ElasticOptions`
 /// `Value::StructureInstance` at `value_inputs[6]` for shell-route classification
 /// (task 3594/δ).
@@ -1329,32 +1377,31 @@ mod tests {
         use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
 
         // Build a PressureLoad StructureInstance
-        let mut pressure_fields = PersistentMap::new();
-        pressure_fields = pressure_fields.insert("magnitude".to_string(), Value::Real(1.0e6));
-        pressure_fields = pressure_fields.insert(
-            "face".to_string(),
-            Value::String("x_max".to_string()),
-        );
-        pressure_fields = pressure_fields.insert(
-            "direction".to_string(),
-            Value::String("normal".to_string()),
-        );
-        let pressure_load = Value::StructureInstance(Arc::new(StructureInstanceData {
+        let pressure_fields: PersistentMap<String, Value> = [
+            ("magnitude".to_string(), Value::Real(1.0e6)),
+            ("face".to_string(), Value::String("x_max".to_string())),
+            ("direction".to_string(), Value::String("normal".to_string())),
+        ]
+        .into_iter()
+        .collect();
+        let pressure_load = Value::StructureInstance(Box::new(StructureInstanceData {
             type_name: "PressureLoad".to_string(),
             type_id: StructureTypeId(u32::MAX),
+            version: 0,
             fields: pressure_fields,
         }));
 
         // Build a PointLoad StructureInstance (should be ignored)
-        let mut point_fields = PersistentMap::new();
-        point_fields = point_fields.insert("force".to_string(), Value::Real(500.0));
-        let point_load = Value::StructureInstance(Arc::new(StructureInstanceData {
+        let point_fields: PersistentMap<String, Value> =
+            [("force".to_string(), Value::Real(500.0))].into_iter().collect();
+        let point_load = Value::StructureInstance(Box::new(StructureInstanceData {
             type_name: "PointLoad".to_string(),
             type_id: StructureTypeId(u32::MAX),
+            version: 0,
             fields: point_fields,
         }));
 
-        let loads = Value::List(Arc::new(vec![pressure_load, point_load]));
+        let loads = Value::List(vec![pressure_load, point_load]);
 
         let specs = extract_pressure_loads(&loads);
 
