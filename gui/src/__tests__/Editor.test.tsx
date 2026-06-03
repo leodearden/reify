@@ -253,6 +253,41 @@ describe('Editor save (Ctrl+S)', () => {
       expect(store.state.dirtyFiles).not.toContain(file1.path);
     });
   });
+
+  it('Ctrl+S saves the live buffer content, not the stale store snapshot', () => {
+    // Uses the anti-loop invariant: typing changes the view doc but NOT the store snapshot.
+    // Ctrl+S must read the live CodeMirror doc, not the stale store content.
+    const fileA: FileData = { path: '/a.ri', content: 'INITIAL' };
+    const store = setupStore([fileA]);
+    const saveSpy = vi.spyOn(bridge, 'saveFile').mockResolvedValue(undefined);
+    vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined as any);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Type 'X' at position 0 — view.doc becomes 'XINITIAL'
+    // but the store snapshot stays 'INITIAL' (anti-loop invariant: updateListener
+    // calls markDirty + debounced updateSource, never updateFileContent).
+    view.dispatch({ changes: { from: 0, insert: 'X' } });
+
+    // DO NOT advance fake timers — debounced updateSource must not fire.
+    // Confirm the divergence: live doc differs from store snapshot.
+    expect(view.state.doc.toString()).toBe('XINITIAL');
+    const storeFile = store.state.openFiles.find((f) => f.path === fileA.path);
+    expect(storeFile!.content).toBe('INITIAL'); // store unchanged
+
+    // Dispatch Ctrl+S on the CM contentDOM
+    const event = new KeyboardEvent('keydown', {
+      key: 's',
+      code: 'KeyS',
+      ctrlKey: true,
+      bubbles: true,
+    });
+    view.contentDOM.dispatchEvent(event);
+
+    // Assert live buffer content was saved, NOT the stale store snapshot
+    expect(saveSpy).toHaveBeenCalledWith(fileA.path, 'XINITIAL');
+  });
 });
 
 describe('Editor cursor tracking', () => {
