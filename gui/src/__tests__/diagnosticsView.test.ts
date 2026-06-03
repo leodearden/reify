@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { DiagnosticEntry } from '../panels/DiagnosticsPanel';
-import { diagnosticKey, groupDiagnostics } from '../panels/diagnosticsView';
+import { diagnosticKey, groupDiagnostics, filterDiagnostics } from '../panels/diagnosticsView';
+import type { DiagnosticSource } from '../panels/diagnosticsView';
 
 // ────────────────────────────────────────────────────────────
 // Helpers
@@ -125,7 +126,7 @@ describe('groupDiagnostics', () => {
     expect(groups[0].diagnostic).toBe(entry);
   });
 
-  it('groups by all key fields: source+severity+file+line+column+message', () => {
+  it('groups across source+severity+file+line+column+message', () => {
     // Same message + severity + file + line + column but different source → two groups
     const compile = makeEntry({ source: 'compile', message: 'dup' });
     const tess = makeEntry({ source: 'tessellation', message: 'dup' });
@@ -135,5 +136,81 @@ describe('groupDiagnostics', () => {
     const tessGroup = groups.find((g) => g.diagnostic.source === 'tessellation')!;
     expect(compileGroup.count).toBe(2);
     expect(tessGroup.count).toBe(1);
+  });
+});
+
+// ────────────────────────────────────────────────────────────
+// filterDiagnostics
+// ────────────────────────────────────────────────────────────
+
+describe('filterDiagnostics', () => {
+  const compileError = makeEntry({ source: 'compile', severity: 'Error', message: 'compileError' });
+  const compileWarning = makeEntry({ source: 'compile', severity: 'Warning', message: 'compileWarning' });
+  const tessError = makeEntry({ source: 'tessellation', severity: 'Error', message: 'tessError' });
+  const tessWarning = makeEntry({ source: 'tessellation', severity: 'Warning', message: 'tessWarning' });
+  const allEntries = [compileError, compileWarning, tessError, tessWarning];
+
+  const ALL_SOURCES = new Set<DiagnosticSource>(['compile', 'tessellation']);
+  const ALL_SEVERITIES = new Set(['Error', 'Warning']);
+
+  it('all-selected filter returns every entry unchanged and in original order', () => {
+    const result = filterDiagnostics(allEntries, {
+      sources: ALL_SOURCES,
+      severities: ALL_SEVERITIES,
+    });
+    expect(result).toEqual(allEntries);
+  });
+
+  it('an entry is included iff source AND severity are in the filter', () => {
+    const result = filterDiagnostics(allEntries, {
+      sources: new Set<DiagnosticSource>(['compile']),
+      severities: new Set(['Error']),
+    });
+    expect(result).toHaveLength(1);
+    expect(result[0]).toBe(compileError);
+  });
+
+  it('removing tessellation source hides only tessellation entries', () => {
+    const result = filterDiagnostics(allEntries, {
+      sources: new Set<DiagnosticSource>(['compile']),
+      severities: ALL_SEVERITIES,
+    });
+    expect(result).toHaveLength(2);
+    expect(result.every((d) => d.source === 'compile')).toBe(true);
+  });
+
+  it('removing Warning severity hides only Warning entries', () => {
+    const result = filterDiagnostics(allEntries, {
+      sources: ALL_SOURCES,
+      severities: new Set(['Error']),
+    });
+    expect(result).toHaveLength(2);
+    expect(result.every((d) => d.severity === 'Error')).toBe(true);
+  });
+
+  it('empty sources set yields empty result', () => {
+    const result = filterDiagnostics(allEntries, {
+      sources: new Set<DiagnosticSource>(),
+      severities: ALL_SEVERITIES,
+    });
+    expect(result).toHaveLength(0);
+  });
+
+  it('empty severities set yields empty result', () => {
+    const result = filterDiagnostics(allEntries, {
+      sources: ALL_SOURCES,
+      severities: new Set<string>(),
+    });
+    expect(result).toHaveLength(0);
+  });
+
+  it('preserves original order in filtered output', () => {
+    const result = filterDiagnostics(allEntries, {
+      sources: ALL_SOURCES,
+      severities: new Set(['Warning']),
+    });
+    expect(result).toHaveLength(2);
+    expect(result[0]).toBe(compileWarning);
+    expect(result[1]).toBe(tessWarning);
   });
 });
