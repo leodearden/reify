@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
 import { ConstraintPanel } from '../panels/ConstraintPanel';
 import type { ConstraintData, ValueData } from '../types';
@@ -584,5 +584,50 @@ describe('ConstraintPanel — visible actions affordance', () => {
       <ConstraintPanel constraints={{ n1: constraint }} values={values} />
     ));
     expect(screen.queryByTestId('constraint-actions-n1')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// task-4295: ConstraintPanel expandedNodes ctx exposure
+// ---------------------------------------------------------------------------
+
+describe('ConstraintPanel — expandedNodes ctx exposure', () => {
+  beforeEach(() => {
+    (window as any).__REIFY_DEBUG__ = { stores: {} as any };
+  });
+  afterEach(() => {
+    delete (window as any).__REIFY_DEBUG__;
+  });
+
+  it('registers constraintPanel.expandedNodes as a function on __REIFY_DEBUG__ after render', () => {
+    render(() => <ConstraintPanel constraints={{}} values={{}} />);
+    expect(typeof (window as any).__REIFY_DEBUG__.constraintPanel?.expandedNodes).toBe('function');
+  });
+
+  it('expandedNodes() returns an empty Set initially', () => {
+    render(() => <ConstraintPanel constraints={{}} values={{}} />);
+    const nodes = (window as any).__REIFY_DEBUG__.constraintPanel.expandedNodes();
+    expect(nodes instanceof Set).toBe(true);
+    expect(nodes.size).toBe(0);
+  });
+
+  it('expandedNodes() reflects click on a violated constraint row', () => {
+    const constraint = makeConstraint({ node_id: 'n1', status: 'violated' });
+    render(() => <ConstraintPanel constraints={{ n1: constraint }} values={{}} />);
+    fireEvent.click(screen.getByTestId('constraint-row-n1'));
+    expect((window as any).__REIFY_DEBUG__.constraintPanel.expandedNodes().has('n1')).toBe(true);
+  });
+
+  it('deletes constraintPanel on unmount', () => {
+    const { unmount } = render(() => <ConstraintPanel constraints={{}} values={{}} />);
+    unmount();
+    expect((window as any).__REIFY_DEBUG__.constraintPanel).toBeUndefined();
+  });
+});
+
+describe('ConstraintPanel — no-ctx guard', () => {
+  it('renders without throwing when __REIFY_DEBUG__ is absent', () => {
+    delete (window as any).__REIFY_DEBUG__;
+    expect(() => render(() => <ConstraintPanel constraints={{}} values={{}} />)).not.toThrow();
   });
 });
