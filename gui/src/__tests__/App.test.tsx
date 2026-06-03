@@ -54,15 +54,17 @@ vi.mock('../viewport', () => ({
   },
 }));
 
-// Mock Editor (requires CodeMirror DOM APIs) — capture store, onOpen, and scrollToLocation for tests
+// Mock Editor (requires CodeMirror DOM APIs) — capture store, onOpen, scrollToLocation, and compileDiagnostics for tests
 let capturedEditorStore: any = null;
 let capturedEditorOnOpen: (() => void) | undefined = undefined;
 let capturedEditorScrollToLocation: (() => any) | undefined = undefined;
+let capturedEditorCompileDiagnostics: any = undefined;
 vi.mock('../editor/Editor', () => ({
   Editor: (props: any) => {
     capturedEditorStore = props.store;
     capturedEditorOnOpen = props.onOpen;
     capturedEditorScrollToLocation = props.scrollToLocation;
+    capturedEditorCompileDiagnostics = props.compileDiagnostics;
     const el = document.createElement('div');
     el.setAttribute('data-testid', 'editor-container');
     el.textContent = 'Editor Mock';
@@ -164,6 +166,7 @@ beforeEach(() => {
   capturedEditorStore = null;
   capturedEditorOnOpen = undefined;
   capturedEditorScrollToLocation = undefined;
+  capturedEditorCompileDiagnostics = undefined;
   mockFlyToEntity.mockClear();
   // Reset bridge mocks to defaults (clearAllMocks only clears call history, not implementations)
   vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [] });
@@ -6010,5 +6013,39 @@ describe('App epoch/staleness guard for refreshEntityTree (task 4251)', () => {
     expect(Object.keys(engine.state.meshes)).toContain('CapstanDrive.shuttle.plate#r0');
     // The viewport must stay active (not collapse to 'No active viewport')
     expect(capturedDualViewportProps.designViewportActive()).toBe(true);
+  });
+});
+
+describe('App forwards compileDiagnostics to Editor (task-4252)', () => {
+  it('passes engineStore.state.compileDiagnostics to the Editor compileDiagnostics prop', async () => {
+    const errorDiag = {
+      file_path: '/project/src/bracket.ri',
+      line: 3,
+      column: 5,
+      end_line: 3,
+      end_column: 14,
+      severity: 'Error',
+      message: 'unresolved name: rot_to_z',
+      code: null,
+    };
+
+    // Seed getInitialState with an Error compile diagnostic
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [errorDiag],
+      tensegrity_wires: [],
+    } as any);
+
+    await renderAndWaitForReady();
+
+    // App should forward the compile_diagnostics from the engine store to <Editor>
+    expect(capturedEditorCompileDiagnostics).toBeDefined();
+    expect(capturedEditorCompileDiagnostics).toContainEqual(
+      expect.objectContaining({ severity: 'Error', message: 'unresolved name: rot_to_z' }),
+    );
   });
 });
