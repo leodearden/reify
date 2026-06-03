@@ -79,8 +79,17 @@ export function Editor(props: EditorProps) {
 
   function applyMergedDiagnostics() {
     if (!view) return;
+    const docLength = view.state.doc.length;
+    // Guard against stale compile offsets: the compile-diagnostics effect only
+    // re-runs when compileDiagnostics / activeFile change, not on every keystroke.
+    // If the doc shrinks (user typing) before fresh diagnostics arrive, stored
+    // from/to values may exceed the new doc length and cause setDiagnostics'
+    // RangeSet build to throw.  Filter them out here against the live doc.
+    const validCompileDiags = compileCmDiagnostics.filter(
+      (d) => d.from <= docLength && d.to <= docLength,
+    );
     view.dispatch(
-      setDiagnostics(view.state, [...lspCmDiagnostics, ...compileCmDiagnostics]),
+      setDiagnostics(view.state, [...lspCmDiagnostics, ...validCompileDiags]),
     );
   }
 
@@ -381,16 +390,16 @@ export function Editor(props: EditorProps) {
     clearTimeout(debounceTimer);
     clearTimeout(lspDebounceTimer);
 
-    // Discard previous-file LSP CmDiagnostics.  Their from/to offsets were computed
-    // against the old document; re-using them in applyMergedDiagnostics() after the
-    // view switches to the new (possibly shorter) document would either inject phantom
-    // squiggles (FLASH) or crash the CodeMirror RangeSet build (CRASH).
-    // The compile-diagnostics effect below runs immediately after this effect (SolidJS
-    // runs effects in creation order) and calls applyMergedDiagnostics(), so clearing
-    // here guarantees the dispatch carries only valid entries for the new doc.
-    // The URI-guarded LSP listener repopulates lspCmDiagnostics when the server
-    // re-publishes diagnostics for the new file.
+    // Discard previous-file CmDiagnostics from both channels.  Their from/to
+    // offsets were computed against the old document; re-using them after the view
+    // switches to the new (possibly shorter) document would inject phantom squiggles
+    // (FLASH) or crash the CodeMirror RangeSet build (CRASH).  Both slots are reset
+    // here so the clearing is self-contained — correctness does not depend on the
+    // compile-diagnostics effect running after this one.  The URI-guarded LSP listener
+    // repopulates lspCmDiagnostics when the server re-publishes for the new file; the
+    // compile-diagnostics effect recomputes compileCmDiagnostics on the activeFile change.
     lspCmDiagnostics = [];
+    compileCmDiagnostics = [];
 
     const oldUri = currentUri;
     previousActiveFile = activeFile;
@@ -412,6 +421,10 @@ export function Editor(props: EditorProps) {
     } else {
       view.setState(EditorState.create({ doc: newContent, extensions }));
     }
+
+    // Dispatch the now-empty merged set so no stale squiggle persists after the
+    // document replacement above.  Self-contained — no cross-effect ordering needed.
+    applyMergedDiagnostics();
 
     // Close old document and open new one in the LSP server.
     // Chain off fileOpsPromise to serialize rapid file switches.
