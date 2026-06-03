@@ -13,6 +13,7 @@ use reify_core::{
 };
 use reify_eval::cache::NodeId;
 use reify_ir::{NodeKind, NodeTraits, NodeTraitsMap};
+use reify_runtime::commitment::{default_overrides, NodeCommitmentOverride};
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
@@ -94,38 +95,24 @@ fn node_traits_map_with_node_id_instance_wins_over_kind() {
 // short-circuit Value cancellation at the scheduler before resolve_with_traits
 // is wired into scheduler dispatch.
 
-use reify_runtime::commitment::{default_overrides, NodeCommitmentOverride};
-
 #[test]
 fn t2_default_overrides_matches_arch_kind_defaults() {
-    // COMMITTABLE kinds → CommitIfSlow
-    assert_eq!(
-        default_overrides(NodeKind::Compute, NodeKind::Compute.default_traits()),
-        NodeCommitmentOverride::CommitIfSlow,
-        "Compute: WARM_STARTABLE|COMMITTABLE → CommitIfSlow"
-    );
-    assert_eq!(
-        default_overrides(NodeKind::Realization, NodeKind::Realization.default_traits()),
-        NodeCommitmentOverride::CommitIfSlow,
-        "Realization: WARM_STARTABLE|COMMITTABLE → CommitIfSlow"
-    );
-    assert_eq!(
-        default_overrides(NodeKind::Resolution, NodeKind::Resolution.default_traits()),
-        NodeCommitmentOverride::CommitIfSlow,
-        "Resolution: WARM_STARTABLE|COMMITTABLE → CommitIfSlow"
-    );
-
-    // Non-COMMITTABLE kinds → AlwaysCancelWhenStale
-    assert_eq!(
-        default_overrides(NodeKind::Constraint, NodeKind::Constraint.default_traits()),
-        NodeCommitmentOverride::AlwaysCancelWhenStale,
-        "Constraint: empty traits → AlwaysCancelWhenStale"
-    );
-    assert_eq!(
-        default_overrides(NodeKind::Value, NodeKind::Value.default_traits()),
-        NodeCommitmentOverride::AlwaysCancelWhenStale,
-        "Value: IMMEDIATE (no COMMITTABLE) → AlwaysCancelWhenStale (Q-3)"
-    );
+    // Loop form mirrors the sibling `node_traits_map_with_node_id_resolves_all_kind_defaults`
+    // to avoid per-kind literal blocks that must be updated in lockstep with the §7.6 table.
+    let cases = [
+        (NodeKind::Compute,      NodeCommitmentOverride::CommitIfSlow),       // WARM_STARTABLE|COMMITTABLE
+        (NodeKind::Realization,  NodeCommitmentOverride::CommitIfSlow),       // WARM_STARTABLE|COMMITTABLE
+        (NodeKind::Resolution,   NodeCommitmentOverride::CommitIfSlow),       // WARM_STARTABLE|COMMITTABLE
+        (NodeKind::Constraint,   NodeCommitmentOverride::AlwaysCancelWhenStale), // empty traits
+        (NodeKind::Value,        NodeCommitmentOverride::AlwaysCancelWhenStale), // IMMEDIATE, no COMMITTABLE (Q-3)
+    ];
+    for (kind, expected) in cases {
+        assert_eq!(
+            default_overrides(kind, kind.default_traits()),
+            expected,
+            "{kind:?}: default_overrides(kind, kind.default_traits()) mismatch (PRD §5 B3)"
+        );
+    }
 }
 
 // ── T5 (PRD §9 / §5 B5): bidirectional default_traits ↔ WarmStartableRegistry ──

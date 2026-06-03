@@ -793,6 +793,36 @@ mod tests {
 
     // --- resolve_with_traits tests (PRD §6 levels 1, 2, 4) ---
 
+    /// Documents that `_kind` is currently inert: every NodeKind variant paired
+    /// with identical traits produces the same result, confirming `default_overrides`
+    /// is a pure COMMITTABLE-presence test (PRD §5 B3 verbatim).
+    ///
+    /// `_kind` is retained in the signature for forward-compatibility with the
+    /// B4/η Value short-circuit; this test makes that inertness explicit so
+    /// readers and callers aren't misled into thinking kind affects the result.
+    #[test]
+    fn default_overrides_kind_arg_is_inert() {
+        let committable = NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE);
+        for kind in [
+            NodeKind::Value,
+            NodeKind::Constraint,
+            NodeKind::Compute,
+            NodeKind::Realization,
+            NodeKind::Resolution,
+        ] {
+            assert_eq!(
+                default_overrides(kind, committable),
+                NodeCommitmentOverride::CommitIfSlow,
+                "{kind:?}: same COMMITTABLE traits → CommitIfSlow regardless of kind"
+            );
+            assert_eq!(
+                default_overrides(kind, NodeTraits::empty()),
+                NodeCommitmentOverride::AlwaysCancelWhenStale,
+                "{kind:?}: same empty traits → AlwaysCancelWhenStale regardless of kind"
+            );
+        }
+    }
+
     #[test]
     fn resolve_with_traits_consults_default_overrides_at_level_4() {
         let overrides = NodePolicyOverrides::new();
@@ -860,6 +890,18 @@ mod tests {
             overrides.resolve_with_traits(&node_b, NodeTraits::empty()),
             NodeCommitmentOverride::AlwaysCancelWhenStale,
             "level-2: type override wins over level-4 regardless of traits"
+        );
+
+        // Confirm level-1 > level-2 when BOTH apply to the same node:
+        // node_a is Compute (type override = AlwaysCancelWhenStale is now active)
+        // AND has an instance override (OnlyRunOnFinalInputs). Level-1 must win.
+        assert_eq!(
+            overrides.resolve_with_traits(
+                &node_a,
+                NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE),
+            ),
+            NodeCommitmentOverride::OnlyRunOnFinalInputs,
+            "level-1 > level-2: instance override wins when both instance and type are set on same node"
         );
     }
 
