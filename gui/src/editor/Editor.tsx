@@ -11,13 +11,13 @@ import { reifyLanguage } from './reifyLanguage';
 import { updateSource, saveFile, openFile as bridgeOpenFile } from '../bridge';
 import { createLspClient } from './lspClient';
 import { reifyCompletionSource } from './completions';
-import { createDiagnosticsListener, lspDiagnosticToCodeMirror, type CmDiagnostic } from './diagnostics';
+import { createDiagnosticsListener, lspDiagnosticToCodeMirror, diagnosticInfoToCmDiagnostic, type CmDiagnostic } from './diagnostics';
 import { reifyHoverTooltip } from './hover';
 import { reifyGotoDefinition, gotoDefinitionCommand } from './gotoDefinition';
 import { createNavHistory } from '../hooks/useNavHistory';
 import type { NavEntry } from '../hooks/useNavHistory';
 import type { createEditorStore } from '../stores/editorStore';
-import type { FileData, SourceLocation } from '../types';
+import type { FileData, SourceLocation, DiagnosticInfo } from '../types';
 import { errorMessage } from '../utils/errorClassifier';
 import { isSameFile, normalizePath } from '../utils/pathUtils';
 import styles from './Editor.module.css';
@@ -45,6 +45,12 @@ export interface EditorProps {
    * across call sites.
    */
   onSaveConflict?: (file: FileData) => void;
+  /**
+   * Compile-time diagnostics from the engine (via engineStore.compileDiagnostics).
+   * Filtered to the active file and merged with LSP diagnostics in the CodeMirror
+   * lint layer so neither channel clobbers the other.
+   */
+  compileDiagnostics?: DiagnosticInfo[];
 }
 
 export function Editor(props: EditorProps) {
@@ -63,6 +69,30 @@ export function Editor(props: EditorProps) {
 
   // Current URI — updated on file switch, read by LSP extension getters
   let currentUri = 'file:///untitled.ri';
+
+  // Merge sinks for the two diagnostic channels.
+  // setDiagnostics replaces the entire lint set on each dispatch, so both
+  // producers (LSP listener + compile-diagnostics effect) update their own
+  // slot and then call applyMergedDiagnostics() which dispatches their union.
+  let lspCmDiagnostics: CmDiagnostic[] = [];
+  let compileCmDiagnostics: CmDiagnostic[] = [];
+
+  function applyMergedDiagnostics() {
+    if (!view) return;
+    const docLength = view.state.doc.length;
+    // Guard against stale offsets from BOTH channels: neither the compile-diagnostics
+    // effect nor the LSP listener re-runs on every keystroke.  Typing mutates the view
+    // doc directly, so if the doc shrinks before fresh diagnostics arrive, stored
+    // from/to values may exceed the new doc length and cause setDiagnostics'
+    // RangeSet build to throw.  The LSP/compile debounces share EDITOR_DEBOUNCE_MS,
+    // so the compile effect can re-dispatch a now-stale lspCmDiagnostics set whose
+    // offsets the LSP listener computed against a longer doc.  Filter the merged
+    // union against the live doc so neither channel can dispatch stale ranges.
+    const validDiags = [...lspCmDiagnostics, ...compileCmDiagnostics].filter(
+      (d) => d.from >= 0 && d.from <= d.to && d.to <= docLength,
+    );
+    view.dispatch(setDiagnostics(view.state, validDiags));
+  }
 
   // Bounded back/forward navigation-history stack (max 50 entries).
   // Pure closure, no SolidJS dependency.
@@ -331,7 +361,7 @@ export function Editor(props: EditorProps) {
       if (!view) return;
       // Only apply diagnostics for the currently active file
       if (event.uri !== currentUri) return;
-      const diagnostics = event.diagnostics
+      lspCmDiagnostics = event.diagnostics
         .map((d) => {
           try {
             return lspDiagnosticToCodeMirror(d, view!.state.doc);
@@ -341,8 +371,8 @@ export function Editor(props: EditorProps) {
         })
         .filter((d): d is CmDiagnostic => d !== null);
 
-      // Apply diagnostics to the editor via setDiagnostics
-      view!.dispatch(setDiagnostics(view!.state, diagnostics));
+      // Merge with compile diagnostics and dispatch
+      applyMergedDiagnostics();
     }).then((unlisten) => {
       if (diagnosticsListenerCancelled) {
         unlisten?.(); // Component already unmounted — tear down immediately
@@ -360,6 +390,17 @@ export function Editor(props: EditorProps) {
     // Cancel any pending debounced operations from the previous file
     clearTimeout(debounceTimer);
     clearTimeout(lspDebounceTimer);
+
+    // Discard previous-file CmDiagnostics from both channels.  Their from/to
+    // offsets were computed against the old document; re-using them after the view
+    // switches to the new (possibly shorter) document would inject phantom squiggles
+    // (FLASH) or crash the CodeMirror RangeSet build (CRASH).  Both slots are reset
+    // here so the clearing is self-contained — correctness does not depend on the
+    // compile-diagnostics effect running after this one.  The URI-guarded LSP listener
+    // repopulates lspCmDiagnostics when the server re-publishes for the new file; the
+    // compile-diagnostics effect recomputes compileCmDiagnostics on the activeFile change.
+    lspCmDiagnostics = [];
+    compileCmDiagnostics = [];
 
     const oldUri = currentUri;
     previousActiveFile = activeFile;
@@ -382,6 +423,10 @@ export function Editor(props: EditorProps) {
       view.setState(EditorState.create({ doc: newContent, extensions }));
     }
 
+    // Dispatch the now-empty merged set so no stale squiggle persists after the
+    // document replacement above.  Self-contained — no cross-effect ordering needed.
+    applyMergedDiagnostics();
+
     // Close old document and open new one in the LSP server.
     // Chain off fileOpsPromise to serialize rapid file switches.
     lspVersion++;
@@ -393,6 +438,25 @@ export function Editor(props: EditorProps) {
         return lspClient.didOpen(newUri, newContent, version);
       })
       .catch((err: unknown) => console.error('LSP file switch error:', err));
+  });
+
+  // Map compile diagnostics from the engine store into the CodeMirror lint layer,
+  // merged with the existing LSP channel so neither clobbers the other.
+  createEffect(() => {
+    const diags = props.compileDiagnostics;
+    const activeFile = props.store.state.activeFile;
+    if (!view) return;
+    compileCmDiagnostics = (diags ?? [])
+      .filter((d) => activeFile && isSameFile(d.file_path, activeFile))
+      .map((d) => {
+        try {
+          return diagnosticInfoToCmDiagnostic(d, view!.state.doc);
+        } catch {
+          return null;
+        }
+      })
+      .filter((d): d is CmDiagnostic => d !== null);
+    applyMergedDiagnostics();
   });
 
   // Sync store content → CodeMirror view for the active file.

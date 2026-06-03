@@ -80,6 +80,40 @@ fn xt_apply_force(x: &SpatialTransform6, f: &SpatialVector6) -> SpatialVector6 {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+/// Joint compliance parameters for spring-loaded and damped joints.
+///
+/// Used in the RNEA backward pass to compute additive spring and damping
+/// force contributions per PRD §7.1 (task ι).
+///
+/// * `spring_rate` — spring stiffness k (N·m/rad for revolute, N/m for
+///   prismatic); `None` means no spring force.
+/// * `damping` — viscous damping coefficient c (N·m·s/rad or N·s/m);
+///   `None` means no damping force.
+/// * `neutral` — rest joint coordinate (same units as `position`);
+///   unused when `spring_rate` is `None`.
+/// * `position` — current joint coordinate (`snap.value` at call time);
+///   unused when `spring_rate` is `None`.
+///
+/// **1-DOF only.** Multi-DOF spring/damping is deferred to a later v0.3
+/// follow-up (PRD §11.2).  A multi-DOF joint with `spring_rate` or
+/// `damping` set will panic in release via an always-on assert in
+/// [`inverse_dynamics_open_chain`]; a multi-DOF link with both
+/// coefficients `None` will not panic (no terms are applied).
+pub struct JointCompliance {
+    /// Spring stiffness k: N·m/rad (revolute) or N/m (prismatic).
+    /// `None` → no spring contribution.
+    pub spring_rate: Option<f64>,
+    /// Viscous damping coefficient c: N·m·s/rad or N·s/m.
+    /// `None` → no damping contribution.
+    pub damping: Option<f64>,
+    /// Rest joint coordinate (same units as `position`).
+    /// Unused when `spring_rate` is `None`.
+    pub neutral: f64,
+    /// Current joint coordinate (`snap.value` at call time).
+    /// Unused when `spring_rate` is `None`.
+    pub position: f64,
+}
+
 /// Per-link descriptor supplied to [`inverse_dynamics_open_chain`].
 ///
 /// Links must be ordered in spanning-tree topological order so that every
@@ -119,6 +153,14 @@ pub struct RneaLink {
     pub q_dot: Vec<f64>,
     /// Generalized acceleration (one entry per subspace column / DOF).
     pub q_ddot: Vec<f64>,
+    /// Optional spring/damping compliance for this joint.
+    ///
+    /// `None` → no compliance contribution (identical τ output to pre-ι).
+    /// `Some(c)` → additive spring and/or damping terms are applied in the
+    /// τ-reshape step: `τ += −k·(position − neutral) − c_damp·q̇[0]`.
+    ///
+    /// **1-DOF only** — see [`JointCompliance`] and PRD §11.2.
+    pub compliance: Option<JointCompliance>,
 }
 
 /// Returns `[0.0, 0.0, -9.81]` — the PRD §12 Q1 default gravity vector (m/s²).
@@ -219,17 +261,46 @@ pub fn inverse_dynamics_open_chain(links: &[RneaLink], gravity: [f64; 3]) -> Vec
         }
     }
 
-    // τ_i[c] = S_i[c] · f_i
+    // τ_i[c] = S_i[c] · f_i  +  spring/damping additive terms (PRD §7.1)
     links
         .iter()
         .enumerate()
-        .map(|(i, link)| link.subspace.iter().map(|s| sv_dot(s, &f[i])).collect())
+        .map(|(i, link)| {
+            let mut tau_i: Vec<f64> = link.subspace.iter().map(|s| sv_dot(s, &f[i])).collect();
+            if let Some(c) = &link.compliance {
+                // Guard: spring/damping is 1-DOF only in v0.3 (PRD §11.2).
+                // An always-on assert (not debug_assert!) matches the module's
+                // existing topological-order convention (rnea.rs:166) — a panic
+                // is better than silently-wrong torques in release builds.
+                if c.spring_rate.is_some() || c.damping.is_some() {
+                    assert_eq!(
+                        link.subspace.len(),
+                        1,
+                        "spring/damping compliance is 1-DOF only in v0.3 \
+                         (PRD §11.2); joint {i} has {} DOF",
+                        link.subspace.len()
+                    );
+                    assert!(
+                        !link.q_dot.is_empty(),
+                        "spring/damping compliance: joint {i} q_dot is empty \
+                         (expected 1 entry for a 1-DOF joint)",
+                    );
+                }
+                if let Some(k) = c.spring_rate {
+                    tau_i[0] += -k * (c.position - c.neutral);
+                }
+                if let Some(c_damp) = c.damping {
+                    tau_i[0] += -c_damp * link.q_dot[0];
+                }
+            }
+            tau_i
+        })
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{default_gravity, inverse_dynamics_open_chain, RneaLink};
+    use super::{default_gravity, inverse_dynamics_open_chain, JointCompliance, RneaLink};
     use crate::dynamics::spatial::{Frame3, SpatialTransform6, SpatialVector6};
 
     /// Build the `(w, x, y, z)` unit quaternion for a rotation of `theta`
@@ -309,6 +380,7 @@ mod tests {
             inertia_about_com: [[0.0; 3]; 3], // point mass
             q_dot: vec![0.0],
             q_ddot: vec![0.0],
+            compliance: None,
         };
 
         let gravity = default_gravity(); // [0, 0, −9.81]
@@ -436,6 +508,7 @@ mod tests {
                 inertia_about_com: [[0.0, 0.0, 0.0], [0.0, 1.0 / 12.0, 0.0], [0.0, 0.0, 0.0]],
                 q_dot: vec![qd1],
                 q_ddot: vec![qdd1],
+                compliance: None,
             };
 
             // Link 1: revolute about +y at the tip of link 0 ([l1, 0, 0] = [1, 0, 0]
@@ -454,6 +527,7 @@ mod tests {
                 inertia_about_com: [[0.0, 0.0, 0.0], [0.0, 1.0 / 12.0, 0.0], [0.0, 0.0, 0.0]],
                 q_dot: vec![qd2],
                 q_ddot: vec![qdd2],
+                compliance: None,
             };
 
             let tau = inverse_dynamics_open_chain(&[link0, link1], default_gravity());
@@ -465,6 +539,198 @@ mod tests {
             assert_close(&format!("sample {si} joint 0"), tau[0][0], expected[0]);
             assert_close(&format!("sample {si} joint 1"), tau[1][0], expected[1]);
         }
+    }
+
+    /// Build a single-pendulum link for the spring and damping compliance tests.
+    ///
+    /// Geometry matches `single_pendulum_static_gravity_torque`: 1 kg point mass
+    /// at com = [0, 0, −0.1], revolute about +y, joint angle −30°.
+    ///
+    /// `q_dot` is the generalized velocity (rad/s); `q_ddot` is always 0 for the
+    /// compliance tests.  `compliance` is forwarded directly onto the link.
+    fn pendulum_link(q_dot: f64, compliance: Option<JointCompliance>) -> RneaLink {
+        let theta = std::f64::consts::PI / 6.0;
+        let (half_sin, half_cos) = ((theta / 2.0).sin(), (theta / 2.0).cos());
+        let q = [half_cos, 0.0, -half_sin, 0.0]; // (w,x,y,z) — −30° about y
+        RneaLink {
+            parent: None,
+            parent_to_child: SpatialTransform6::from_frame3(&Frame3::new(q, [0.0, 0.0, 0.0])),
+            subspace: vec![SpatialVector6::from_angular_linear([0.0, 1.0, 0.0], [0.0, 0.0, 0.0])],
+            mass: 1.0,
+            com: [0.0, 0.0, -0.1],
+            inertia_about_com: [[0.0; 3]; 3],
+            q_dot: vec![q_dot],
+            q_ddot: vec![0.0],
+            compliance,
+        }
+    }
+
+    // ── spring-pendulum additive term (PRD §10.1 row 7) ───────────────────────
+    //
+    // Reuses the single_pendulum_static_gravity_torque geometry: 1 kg point
+    // mass at com=[0,0,−0.1], revolute about +y, −30° joint angle.
+    //
+    // Run inverse_dynamics_open_chain twice on otherwise-identical links:
+    //   (a) compliance: None  →  baseline τ ≈ 0.4905 N·m
+    //   (b) compliance: Some(JointCompliance { spring_rate: Some(k=2.0),
+    //                        damping: None, neutral: π/12 (15°),
+    //                        position: π/6 (30°) })
+    //
+    // Spring displacement: π/6 − π/12 = π/12.
+    // Expected additive term: −2·(π/12) = −π/6.
+    //
+    // Physical sign check: position (30°) > neutral (15°) → restoring spring
+    // force → contribution NEGATIVE → spring_tau < baseline_tau.
+    //
+    // Independent numeric oracle: −π/6 is derived from the parameter
+    // arithmetic (−2·(π/12)) without reference to the production formula.
+    #[test]
+    fn spring_pendulum_additive_term() {
+        use std::f64::consts::PI;
+
+        let k       = 2.0_f64;
+        let neutral = PI / 12.0; // 15° — spring rest angle
+        let position = PI / 6.0; // 30° — current angle (> neutral)
+
+        let baseline_link = pendulum_link(0.0, None);
+        let spring_link = pendulum_link(
+            0.0,
+            Some(JointCompliance { spring_rate: Some(k), damping: None, neutral, position }),
+        );
+
+        let gravity = default_gravity();
+        let tau_baseline = inverse_dynamics_open_chain(&[baseline_link], gravity);
+        let tau_spring   = inverse_dynamics_open_chain(&[spring_link], gravity);
+
+        assert_eq!(tau_baseline.len(), 1);
+        assert_eq!(tau_spring.len(), 1);
+
+        // Sanity: baseline ≈ 0.4905 N·m  (m·g·L·sin 30°)
+        let expected_baseline = 0.4905_f64;
+        assert!(
+            (tau_baseline[0][0] - expected_baseline).abs() < 1e-6,
+            "baseline: expected {expected_baseline}, got {}",
+            tau_baseline[0][0]
+        );
+
+        // Physical sign check: positive displacement from neutral → restoring
+        // (negative) spring contribution.
+        assert!(
+            tau_spring[0][0] < tau_baseline[0][0],
+            "spring must reduce τ for position > neutral: \
+             spring={}, baseline={}",
+            tau_spring[0][0],
+            tau_baseline[0][0]
+        );
+
+        // Independent numeric oracle: displacement = π/6 − π/12 = π/12;
+        // Δτ = −k·(π/12) = −2·(π/12) = −π/6.
+        // Derived from parameter arithmetic only — NOT from the production formula.
+        let expected_delta = -PI / 6.0;
+        let actual_delta   = tau_spring[0][0] - tau_baseline[0][0];
+        assert!(
+            (actual_delta - expected_delta).abs() < 1e-12,
+            "spring Δτ: expected {expected_delta:.15}, got {actual_delta:.15}, err={:.2e}",
+            (actual_delta - expected_delta).abs()
+        );
+    }
+
+    // ── damping additive term (PRD §7.1) ──────────────────────────────────────
+    //
+    // 1-DOF revolute joint with nonzero q_dot, testing the damping path only.
+    // Uses the single-pendulum geometry (−30°, 1 kg point mass at −0.1 m) with
+    // q_dot = [omega] nonzero so the −c·q̇[0] term is non-trivial.
+    //
+    // Run twice:
+    //   (a) compliance: None  →  baseline τ
+    //   (b) compliance: Some(JointCompliance { spring_rate: None, damping: Some(c=3.5),
+    //                        neutral: 0.0, position: 0.0 })
+    //
+    // Physical sign check: omega > 0 → damping resists motion → contribution
+    // NEGATIVE → damp_tau < baseline_tau.
+    //
+    // Independent numeric oracle: −c·q̇ = −3.5·1.7 = −5.95, computed from
+    // the concrete parameter values, not from the production formula.
+    #[test]
+    fn damping_additive_term() {
+        let omega  = 1.7_f64; // nonzero so damping term is active
+        let c_damp = 3.5_f64;
+
+        let baseline_link = pendulum_link(omega, None);
+        let damp_link = pendulum_link(
+            omega,
+            Some(JointCompliance {
+                spring_rate: None,
+                damping: Some(c_damp),
+                neutral: 0.0,
+                position: 0.0,
+            }),
+        );
+
+        let gravity = default_gravity();
+        let tau_baseline = inverse_dynamics_open_chain(&[baseline_link], gravity);
+        let tau_damp     = inverse_dynamics_open_chain(&[damp_link], gravity);
+
+        assert_eq!(tau_baseline.len(), 1);
+        assert_eq!(tau_damp.len(), 1);
+
+        // Physical sign check: positive velocity → damping opposes motion →
+        // negative contribution.
+        assert!(
+            tau_damp[0][0] < tau_baseline[0][0],
+            "damping must reduce τ for positive velocity: \
+             damp={}, baseline={}",
+            tau_damp[0][0],
+            tau_baseline[0][0]
+        );
+
+        // Independent numeric oracle: −c·q̇ = −3.5·1.7 = −5.95.
+        // (product of concrete constants; NOT derived from the production formula)
+        let expected_delta = -5.95_f64;
+        let actual_delta   = tau_damp[0][0] - tau_baseline[0][0];
+        assert!(
+            (actual_delta - expected_delta).abs() < 1e-12,
+            "damping Δτ: expected {expected_delta:.15}, got {actual_delta:.15}, err={:.2e}",
+            (actual_delta - expected_delta).abs()
+        );
+    }
+
+    // ── multi-DOF compliance guard (PRD §11.2) ────────────────────────────────
+    //
+    // A 2-DOF joint with compliance set must panic with a message containing
+    // "1-DOF" (always-on assert, not debug_assert!).  This mirrors the
+    // module's existing always-on-assert convention (topological-order check)
+    // that prefers a panic over silently-wrong torques in release builds.
+    //
+    // Without the guard the code silently applies the spring term to tau_i[0]
+    // and returns; therefore the #[should_panic] test fails (did not panic)
+    // until step-6 adds the assert.
+    #[test]
+    #[should_panic(expected = "1-DOF")]
+    fn multi_dof_compliance_panics() {
+        // 2-DOF joint: revolute about +y and prismatic along +z.
+        let link = RneaLink {
+            parent: None,
+            parent_to_child: SpatialTransform6::from_frame3(&Frame3::identity()),
+            subspace: vec![
+                SpatialVector6::from_angular_linear([0.0, 1.0, 0.0], [0.0, 0.0, 0.0]),
+                SpatialVector6::from_angular_linear([0.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+            ],
+            mass: 1.0,
+            com: [0.0, 0.0, 0.0],
+            inertia_about_com: [[0.1, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.3]],
+            q_dot: vec![0.5, 0.0],
+            q_ddot: vec![0.0, 0.0],
+            compliance: Some(JointCompliance {
+                spring_rate: Some(1.0),
+                damping: None,
+                neutral: 0.0,
+                position: 0.1,
+            }),
+        };
+
+        // Must panic with "1-DOF" in the message.
+        let _ = inverse_dynamics_open_chain(&[link], default_gravity());
     }
 
     // ── multi-DOF joint subspace accumulation ─────────────────────────────────
@@ -513,6 +779,7 @@ mod tests {
             inertia_about_com: [[0.1, 0.0, 0.0], [0.0, i_y, 0.0], [0.0, 0.0, 0.3]],
             q_dot: vec![0.0, 0.0],
             q_ddot: vec![alpha, a_z],
+            compliance: None,
         };
 
         let tau = inverse_dynamics_open_chain(&[link], default_gravity());

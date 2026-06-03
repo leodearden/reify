@@ -155,6 +155,7 @@ impl LanguageServer for ReifyLanguageServer {
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
                 completion_provider: Some(CompletionOptions::default()),
+                document_symbol_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             ..Default::default()
@@ -349,6 +350,25 @@ impl LanguageServer for ReifyLanguageServer {
 
         let items = crate::completion::compute_completions(&text, &uri, position);
         Ok(Some(CompletionResponse::Array(items)))
+    }
+
+    async fn document_symbol(
+        &self,
+        params: DocumentSymbolParams,
+    ) -> Result<Option<DocumentSymbolResponse>> {
+        let uri = params.text_document.uri;
+
+        // Brief read lock: snapshot the document text, then release before the
+        // (pure, CPU-only) symbol walk — mirrors the hover/completion handlers.
+        let state = self.state.read().await;
+        let text = match state.documents.get(&uri) {
+            Some(doc) => doc.text.clone(),
+            None => return Ok(None),
+        };
+        drop(state);
+
+        let symbols = crate::analysis::compute_document_symbols(&text, &uri);
+        Ok(Some(DocumentSymbolResponse::Nested(symbols)))
     }
 
     async fn shutdown(&self) -> Result<()> {
@@ -682,6 +702,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn initialize_advertises_document_symbol_provider() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        let init_result = server
+            .initialize(InitializeParams::default())
+            .await
+            .unwrap();
+
+        assert!(
+            init_result.capabilities.document_symbol_provider.is_some(),
+            "should advertise document_symbol_provider (task 4207 η)"
+        );
+    }
+
+    #[tokio::test]
     async fn did_open_stores_document_and_runs_pipeline() {
         let (service, _socket) = test_service();
         let server = service.inner();
@@ -853,6 +888,55 @@ mod tests {
                 );
             }
         }
+    }
+
+    // --- task 4207 η: document_symbol handler tests ---
+
+    #[tokio::test]
+    async fn document_symbol_handler_returns_nested_symbols() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        let uri = open_bracket_source(server).await;
+
+        let result = server
+            .document_symbol(DocumentSymbolParams {
+                text_document: TextDocumentIdentifier { uri },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        match result {
+            Some(DocumentSymbolResponse::Nested(syms)) => {
+                assert_eq!(syms.len(), 1, "bracket_source has one top-level symbol");
+                assert_eq!(syms[0].name, "Bracket");
+            }
+            other => panic!("expected Some(Nested(..)), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn document_symbol_unknown_uri_returns_none() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+
+        // Never opened — the document is not in the store.
+        let result = server
+            .document_symbol(DocumentSymbolParams {
+                text_document: TextDocumentIdentifier {
+                    uri: Url::parse("file:///never_opened.ri").unwrap(),
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            result.is_none(),
+            "document_symbol for an unknown URI should return Ok(None), got {result:?}"
+        );
     }
 
     #[tokio::test]

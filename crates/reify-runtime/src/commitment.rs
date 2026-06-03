@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use reify_eval::cache::NodeId;
+use reify_ir::NodeTraits;
 // Re-export the canonical NodeKind from reify-types so all existing call sites
 // (including reify_runtime::commitment::NodeKind in tests and concurrent_eval.rs)
 // continue to resolve transparently. The From<&NodeId> bridge impl lives in
@@ -96,6 +97,64 @@ impl NodePolicyOverrides {
             return *o;
         }
         NodeCommitmentOverride::default()
+    }
+
+    /// Resolve the effective [`NodeCommitmentOverride`] for `node_id` using the
+    /// full kind+traits-aware five-level precedence chain (PRD §6).
+    ///
+    /// Precedence (highest → lowest):
+    /// 1. **Instance override** — exact match on `node_id`
+    /// 2. **Type override** — match on the node's [`NodeKind`]
+    /// 3. **Config-file override** — `[node_overrides]` from `reify.toml`
+    ///    (reserved slot; owned by GR-007 task 3578, depends_on this task)
+    /// 4. **Kind+traits default** — [`default_overrides(kind, traits)`](default_overrides)
+    ///    (absent [`NodeTraits::COMMITTABLE`] → `AlwaysCancelWhenStale`; present → `CommitIfSlow`)
+    /// 5. (Future) **Global fallback** — unconditional project default (not yet implemented)
+    ///
+    /// Level 4 subsumes the old hard `CommitIfSlow` default when `traits` are known.
+    /// The existing single-arg [`resolve`](Self::resolve) (consumed by the scheduler at
+    /// `concurrent.rs:358`) is **left unchanged** — level-4 is NOT wired into the
+    /// scheduler until task η/3581 (B4) lands the IMMEDIATE→never-cancelled short-circuit.
+    pub fn resolve_with_traits(
+        &self,
+        node_id: &NodeId,
+        traits: NodeTraits,
+    ) -> NodeCommitmentOverride {
+        // Level 1: instance override
+        if let Some(o) = self.instance_overrides.get(node_id) {
+            return *o;
+        }
+        let kind = NodeKind::from(node_id);
+        // Level 2: type override
+        if let Some(o) = self.type_overrides.get(&kind) {
+            return *o;
+        }
+        // Level 3: reify.toml [node_overrides] — reserved; task 3578 (GR-007)
+        // Level 4: kind+traits-derived default (PRD §5 B3 / arch §7.6 row 4)
+        default_overrides(kind, traits)
+    }
+}
+
+/// Return the kind+traits-derived commitment-policy default (PRD §5 B3).
+///
+/// Implements the level-4 slot in the five-level precedence chain (arch §7.6 row 4):
+/// - Traits **contain** [`NodeTraits::COMMITTABLE`] → [`NodeCommitmentOverride::CommitIfSlow`]
+/// - Traits **lack** `COMMITTABLE` → [`NodeCommitmentOverride::AlwaysCancelWhenStale`]
+///
+/// The function is a pure COMMITTABLE-presence test; `_kind` is retained in the
+/// signature to match the PRD §5 B3 contract shape and preserve forward-compatibility
+/// for a future kind-specific override (e.g., a B4-era Value short-circuit).
+///
+/// **Q-3 note (PRD §12):** `default_overrides(Value, IMMEDIATE)` returns
+/// `AlwaysCancelWhenStale` because `IMMEDIATE` does not include `COMMITTABLE`.
+/// This is intentional: task η/3581 (B4) will add an IMMEDIATE→never-cancelled
+/// short-circuit at the scheduler before `resolve_with_traits` is wired into
+/// scheduler dispatch, making the cosmetic mismatch moot.
+pub fn default_overrides(_kind: NodeKind, traits: NodeTraits) -> NodeCommitmentOverride {
+    if !traits.contains(NodeTraits::COMMITTABLE) {
+        NodeCommitmentOverride::AlwaysCancelWhenStale
+    } else {
+        NodeCommitmentOverride::CommitIfSlow
     }
 }
 
@@ -729,6 +788,120 @@ mod tests {
         assert_eq!(
             overrides.resolve(&node_a),
             NodeCommitmentOverride::OnlyRunOnFinalInputs
+        );
+    }
+
+    // --- resolve_with_traits tests (PRD §6 levels 1, 2, 4) ---
+
+    /// Documents that `_kind` is currently inert: every NodeKind variant paired
+    /// with identical traits produces the same result, confirming `default_overrides`
+    /// is a pure COMMITTABLE-presence test (PRD §5 B3 verbatim).
+    ///
+    /// `_kind` is retained in the signature for forward-compatibility with the
+    /// B4/η Value short-circuit; this test makes that inertness explicit so
+    /// readers and callers aren't misled into thinking kind affects the result.
+    #[test]
+    fn default_overrides_kind_arg_is_inert() {
+        let committable = NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE);
+        for kind in [
+            NodeKind::Value,
+            NodeKind::Constraint,
+            NodeKind::Compute,
+            NodeKind::Realization,
+            NodeKind::Resolution,
+        ] {
+            assert_eq!(
+                default_overrides(kind, committable),
+                NodeCommitmentOverride::CommitIfSlow,
+                "{kind:?}: same COMMITTABLE traits → CommitIfSlow regardless of kind"
+            );
+            assert_eq!(
+                default_overrides(kind, NodeTraits::empty()),
+                NodeCommitmentOverride::AlwaysCancelWhenStale,
+                "{kind:?}: same empty traits → AlwaysCancelWhenStale regardless of kind"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_with_traits_consults_default_overrides_at_level_4() {
+        let overrides = NodePolicyOverrides::new();
+
+        // COMMITTABLE-bearing traits → CommitIfSlow (level-4 fires, B3 branch: has COMMITTABLE)
+        let committable = NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE);
+        let compute = make_compute_node("E", 0);
+        assert_eq!(
+            overrides.resolve_with_traits(&compute, committable),
+            NodeCommitmentOverride::CommitIfSlow,
+            "level-4: COMMITTABLE present → CommitIfSlow"
+        );
+
+        // Empty traits → AlwaysCancelWhenStale (level-4 fires, B3 branch: absent COMMITTABLE)
+        let constraint = make_constraint_node("E", 0);
+        assert_eq!(
+            overrides.resolve_with_traits(&constraint, NodeTraits::empty()),
+            NodeCommitmentOverride::AlwaysCancelWhenStale,
+            "level-4: empty traits (no COMMITTABLE) → AlwaysCancelWhenStale"
+        );
+
+        // IMMEDIATE traits → AlwaysCancelWhenStale (level-4: IMMEDIATE lacks COMMITTABLE)
+        let value = make_node("v");
+        assert_eq!(
+            overrides.resolve_with_traits(&value, NodeTraits::IMMEDIATE),
+            NodeCommitmentOverride::AlwaysCancelWhenStale,
+            "level-4: IMMEDIATE (no COMMITTABLE) → AlwaysCancelWhenStale (Q-3)"
+        );
+    }
+
+    #[test]
+    fn resolve_with_traits_respects_instance_then_type_precedence() {
+        let mut overrides = NodePolicyOverrides::new();
+        let node_a = make_compute_node("E", 0);
+        let node_b = make_compute_node("E", 1);
+
+        // Level 1: instance override wins regardless of traits
+        overrides.set_instance(
+            node_a.clone(),
+            NodeCommitmentOverride::OnlyRunOnFinalInputs,
+        );
+        // Even with COMMITTABLE-bearing traits, instance override wins
+        assert_eq!(
+            overrides.resolve_with_traits(&node_a, NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE)),
+            NodeCommitmentOverride::OnlyRunOnFinalInputs,
+            "level-1: instance override wins over level-4 default"
+        );
+        // Even with empty traits, instance override wins
+        assert_eq!(
+            overrides.resolve_with_traits(&node_a, NodeTraits::empty()),
+            NodeCommitmentOverride::OnlyRunOnFinalInputs,
+            "level-1: instance override wins over level-4 regardless of traits"
+        );
+
+        // Level 2: type override wins when no instance override, regardless of traits
+        overrides.set_type(NodeKind::Compute, NodeCommitmentOverride::AlwaysCancelWhenStale);
+        // node_b has no instance override → type override wins (level 2)
+        // Even with COMMITTABLE-bearing traits that would flip level-4 to CommitIfSlow
+        assert_eq!(
+            overrides.resolve_with_traits(&node_b, NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE)),
+            NodeCommitmentOverride::AlwaysCancelWhenStale,
+            "level-2: type override wins over level-4 default"
+        );
+        assert_eq!(
+            overrides.resolve_with_traits(&node_b, NodeTraits::empty()),
+            NodeCommitmentOverride::AlwaysCancelWhenStale,
+            "level-2: type override wins over level-4 regardless of traits"
+        );
+
+        // Confirm level-1 > level-2 when BOTH apply to the same node:
+        // node_a is Compute (type override = AlwaysCancelWhenStale is now active)
+        // AND has an instance override (OnlyRunOnFinalInputs). Level-1 must win.
+        assert_eq!(
+            overrides.resolve_with_traits(
+                &node_a,
+                NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE),
+            ),
+            NodeCommitmentOverride::OnlyRunOnFinalInputs,
+            "level-1 > level-2: instance override wins when both instance and type are set on same node"
         );
     }
 

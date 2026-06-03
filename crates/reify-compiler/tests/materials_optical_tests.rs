@@ -58,21 +58,23 @@ fn optical_module_loads_with_no_errors_and_one_trait() {
     );
 }
 
-// ─── (b) OpticallyCharacterized refines MaterialSpec with 4 members ──────────
+// ─── (b) OpticallyCharacterized: 1 required + 3 optional members ─────────────
 
-/// OpticallyCharacterized must refine MaterialSpec and declare four required
-/// members. The composite-dimension param `absorption_coefficient` is now
-/// tightened to `AbsorptionCoeff` (1/m) by task #3115; the other three stay
-/// Real (refractive_index and transmittance are genuine-dimensionless,
-/// reference_thickness is sibling task #3113's territory).
+/// OpticallyCharacterized must refine MaterialSpec and declare exactly one
+/// required member (refractive_index) plus three optional params with
+/// `= undef` defaults (absorption_coefficient, transmittance,
+/// reference_thickness), which become optional in task #4241 γ.
 ///
-/// Per-member expected type:
+/// Required:
 ///   refractive_index        → Type::Real (genuine-dimensionless)
+///
+/// Optional (DefaultKind::Param in oc.defaults):
 ///   absorption_coefficient  → Type::Scalar { dimension: ABSORPTION_COEFF }
-///   transmittance           → Type::Real (genuine-dimensionless)
-///   reference_thickness     → Type::Real (sibling task #3113)
+///                             (= undef; type tightened by task #3115)
+///   transmittance           → Type::Real (= undef; genuine-dimensionless)
+///   reference_thickness     → Type::Real (= undef; sibling task #3113)
 #[test]
-fn optically_characterized_refines_material_spec_with_four_members() {
+fn optically_characterized_has_one_required_and_three_optional_members() {
     let module = load_stdlib_module();
 
     let oc = module
@@ -87,18 +89,38 @@ fn optically_characterized_refines_material_spec_with_four_members() {
         oc.refinements
     );
 
+    // Exactly one required member: refractive_index.
     assert_eq!(
         oc.required_members.len(),
-        4,
-        "OpticallyCharacterized should have exactly 4 required members, got: {:?}",
+        1,
+        "OpticallyCharacterized should have exactly 1 required member, got: {:?}",
         oc.required_members
             .iter()
             .map(|r| &r.name)
             .collect::<Vec<_>>()
     );
 
-    let expected_members: [(&str, Type); 4] = [
-        ("refractive_index", Type::Real),
+    let req = oc
+        .required_members
+        .iter()
+        .find(|r| r.name == "refractive_index")
+        .expect("OpticallyCharacterized missing required member 'refractive_index'");
+    match &req.kind {
+        RequirementKind::Param(ty) => assert_eq!(
+            ty,
+            &Type::Real,
+            "refractive_index expected Type::Real, got {:?}",
+            ty
+        ),
+        other => panic!(
+            "refractive_index should be RequirementKind::Param, got {:?}",
+            other
+        ),
+    }
+
+    // Three optional params must appear in oc.defaults as DefaultKind::Param with the
+    // correct cell_type — guarding against silent regressions that revert or mis-type them.
+    let expected_optional: [(&str, Type); 3] = [
         (
             "absorption_coefficient",
             Type::Scalar {
@@ -108,31 +130,30 @@ fn optically_characterized_refines_material_spec_with_four_members() {
         ("transmittance", Type::Real),
         ("reference_thickness", Type::Real),
     ];
-
-    for (expected_name, expected_ty) in &expected_members {
-        let req = oc
-            .required_members
+    for (param_name, expected_ty) in &expected_optional {
+        let default = oc
+            .defaults
             .iter()
-            .find(|r| r.name == *expected_name)
+            .find(|d| d.name.as_deref() == Some(param_name))
             .unwrap_or_else(|| {
                 panic!(
-                    "OpticallyCharacterized missing required member '{}', got: {:?}",
-                    expected_name,
-                    oc.required_members
+                    "OpticallyCharacterized missing optional default for '{}', defaults: {:?}",
+                    param_name,
+                    oc.defaults
                         .iter()
-                        .map(|r| &r.name)
+                        .map(|d| &d.name)
                         .collect::<Vec<_>>()
                 )
             });
-        match &req.kind {
-            RequirementKind::Param(ty) => assert_eq!(
-                ty, expected_ty,
-                "OpticallyCharacterized member '{}' expected {:?}, got {:?}",
-                expected_name, expected_ty, ty
+        match &default.kind {
+            DefaultKind::Param { cell_type, .. } => assert_eq!(
+                cell_type, expected_ty,
+                "OpticallyCharacterized optional param '{}' expected cell_type {:?}, got {:?}",
+                param_name, expected_ty, cell_type
             ),
             other => panic!(
-                "OpticallyCharacterized member '{}' should be Param, got {:?}",
-                expected_name, other
+                "OpticallyCharacterized optional param '{}' should be DefaultKind::Param, got {:?}",
+                param_name, other
             ),
         }
     }

@@ -1908,3 +1908,87 @@ describe('engineStore reconcileToTree — mesh pruning (step-1)', () => {
     });
   });
 });
+
+// ── reconcileToTree — cross-root snapshot guard (task 4251) ──────────────────
+describe('engineStore reconcileToTree — cross-root snapshot guard (task 4251)', () => {
+  it('Test A: fully-disjoint snapshot from a different design root does not prune the current design meshes', () => {
+    // If the store holds meshes for CapstanDrive.* but the snapshot only lists
+    // PrinterFrame.* nodes, the snapshot is stale/cross-root and pruning must be skipped.
+    createRoot((dispose) => {
+      const spy = vi.fn();
+      const store = createEngineStore({ onEntityRemoved: spy });
+
+      const meshA: MeshData = {
+        entity_path: 'CapstanDrive.capstan#realization0',
+        vertices: new Float32Array([0, 1, 2]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: null,
+      };
+      const meshB: MeshData = {
+        entity_path: 'CapstanDrive.shuttle.plate#realization0',
+        vertices: new Float32Array([3, 4, 5]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: null,
+      };
+
+      store.applyMeshUpdate(meshA);
+      store.applyMeshUpdate(meshB);
+      expect(Object.keys(store.state.meshes)).toHaveLength(2);
+
+      // Stale snapshot from a different design root — shares NO paths with the current design
+      store.reconcileToTree([
+        makeTreeNode('PrinterFrame.gantry'),
+        makeTreeNode('PrinterFrame.bed'),
+      ]);
+
+      // Both current-design meshes must be retained — cross-root guard must have blocked pruning
+      expect(store.state.meshes['CapstanDrive.capstan#realization0']).toBeDefined();
+      expect(store.state.meshes['CapstanDrive.shuttle.plate#realization0']).toBeDefined();
+      // onEntityRemoved must NOT have been called at all
+      expect(spy).not.toHaveBeenCalled();
+
+      dispose();
+    });
+  });
+
+  it('Test B (boundary pin): partial-overlap snapshot still prunes the non-overlapping orphan', () => {
+    // When at least ONE store entity overlaps the snapshot, the cross-root guard must NOT
+    // engage, so legitimate single-orphan pruning still fires.
+    createRoot((dispose) => {
+      const spy = vi.fn();
+      const store = createEngineStore({ onEntityRemoved: spy });
+
+      // Live mesh: owner 'CapstanDrive.shuttle.plate' IS in the snapshot
+      const liveMesh: MeshData = {
+        entity_path: 'CapstanDrive.shuttle.plate#realization0',
+        vertices: new Float32Array([0, 1, 2]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: null,
+      };
+      // Orphan mesh: owner 'ShuttlePlates' is NOT in the snapshot
+      const orphanMesh: MeshData = {
+        entity_path: 'ShuttlePlates#realization0',
+        vertices: new Float32Array([3, 4, 5]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: null,
+      };
+
+      store.applyMeshUpdate(liveMesh);
+      store.applyMeshUpdate(orphanMesh);
+      expect(Object.keys(store.state.meshes)).toHaveLength(2);
+
+      // Partial-overlap snapshot: live mesh owner is present, orphan owner is absent
+      store.reconcileToTree([makeTreeNode('CapstanDrive.shuttle.plate')]);
+
+      // Orphan must be pruned (overlap exists, so cross-root guard does NOT engage)
+      expect(store.state.meshes['ShuttlePlates#realization0']).toBeUndefined();
+      // Live mesh must be retained
+      expect(store.state.meshes['CapstanDrive.shuttle.plate#realization0']).toBeDefined();
+      // onEntityRemoved fired for the orphan only
+      expect(spy).toHaveBeenCalledWith('ShuttlePlates#realization0');
+      expect(spy).toHaveBeenCalledTimes(1);
+
+      dispose();
+    });
+  });
+});

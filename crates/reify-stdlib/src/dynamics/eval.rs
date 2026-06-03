@@ -478,6 +478,7 @@ fn snapshot_inverse_dynamics(
             inertia_about_com,
             q_dot: q_dot[bi].clone(),
             q_ddot: q_ddot[bi].clone(),
+            compliance: None,
         });
     }
 

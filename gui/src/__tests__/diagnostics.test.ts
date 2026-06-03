@@ -11,7 +11,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 }));
 
 import { listen } from '@tauri-apps/api/event';
-import { createDiagnosticsListener, lspDiagnosticToCodeMirror } from '../editor/diagnostics';
+import { createDiagnosticsListener, lspDiagnosticToCodeMirror, diagnosticInfoSeverityToCm, diagnosticInfoToCmDiagnostic } from '../editor/diagnostics';
 
 const mockListen = vi.mocked(listen);
 
@@ -109,6 +109,109 @@ describe('diagnostics listener lifecycle', () => {
     expect(unlisten).toHaveBeenCalled();
     // And unlistenRef should NOT have been set
     expect(unlistenRef).toBeUndefined();
+  });
+});
+
+describe('diagnosticInfoSeverityToCm', () => {
+  it('maps Error to error', () => {
+    expect(diagnosticInfoSeverityToCm('Error')).toBe('error');
+  });
+
+  it('maps Warning to warning', () => {
+    expect(diagnosticInfoSeverityToCm('Warning')).toBe('warning');
+  });
+
+  it('maps Info to info', () => {
+    expect(diagnosticInfoSeverityToCm('Info')).toBe('info');
+  });
+
+  it('maps unknown/other strings to info', () => {
+    expect(diagnosticInfoSeverityToCm('unknown')).toBe('info');
+    expect(diagnosticInfoSeverityToCm('')).toBe('info');
+    expect(diagnosticInfoSeverityToCm('HINT')).toBe('info');
+  });
+});
+
+describe('diagnosticInfoToCmDiagnostic', () => {
+  // Mock doc: line 1 spans [0..29], line 2 spans [30..49]
+  const mockDoc = {
+    lines: 2,
+    line: (n: number) => {
+      if (n === 1) return { from: 0, to: 29 };
+      if (n === 2) return { from: 30, to: 49 };
+      throw new Error(`line ${n} out of range`);
+    },
+  };
+
+  it('maps a typical Error diagnostic to a CmDiagnostic', () => {
+    const diag = {
+      file_path: '/project/src/bracket.ri',
+      line: 1,
+      column: 5,   // 1-based
+      end_line: 1,
+      end_column: 14, // 1-based
+      severity: 'Error',
+      message: 'unresolved name: rot_to_z',
+      code: null,
+    };
+
+    const result = diagnosticInfoToCmDiagnostic(diag, mockDoc as any);
+
+    expect(result).not.toBeNull();
+    expect(result!.from).toBe(4);   // line 1 starts at 0, col 5 => offset 4
+    expect(result!.to).toBe(13);    // col 14 => offset 13
+    expect(result!.severity).toBe('error');
+    expect(result!.message).toBe('unresolved name: rot_to_z');
+  });
+
+  it('clamps to to line.to when end_column exceeds line length', () => {
+    const diag = {
+      file_path: '/project/src/bracket.ri',
+      line: 1,
+      column: 1,
+      end_line: 1,
+      end_column: 999, // beyond line length
+      severity: 'Warning',
+      message: 'wide diagnostic',
+      code: null,
+    };
+
+    const result = diagnosticInfoToCmDiagnostic(diag, mockDoc as any);
+    expect(result).not.toBeNull();
+    expect(result!.to).toBe(29); // clamped to line 1.to
+  });
+
+  it('returns null when line is out of range (line > doc.lines)', () => {
+    const diag = {
+      file_path: '/project/src/bracket.ri',
+      line: 999,  // beyond doc
+      column: 1,
+      end_line: 999,
+      end_column: 5,
+      severity: 'Error',
+      message: 'out of range',
+      code: null,
+    };
+
+    const result = diagnosticInfoToCmDiagnostic(diag, mockDoc as any);
+    expect(result).toBeNull();
+  });
+
+  it('maps source field to compile', () => {
+    const diag = {
+      file_path: '/project/src/bracket.ri',
+      line: 1,
+      column: 1,
+      end_line: 1,
+      end_column: 5,
+      severity: 'Info',
+      message: 'hint',
+      code: null,
+    };
+
+    const result = diagnosticInfoToCmDiagnostic(diag, mockDoc as any);
+    expect(result).not.toBeNull();
+    expect(result!.source).toBe('compile');
   });
 });
 

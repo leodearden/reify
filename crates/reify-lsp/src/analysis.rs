@@ -5,7 +5,9 @@ use reify_ast::{Declaration, ParsedModule};
 pub use reify_ast::{MemberSpanInfo, find_named_member_span};
 use reify_core::{ModulePath, SourceSpan, Type, ValueCellId};
 use reify_ir::Value;
-use tower_lsp::lsp_types::Url;
+use tower_lsp::lsp_types::{DocumentSymbol, Range, SymbolKind, Url};
+
+use crate::convert::{offset_to_position, span_to_range};
 
 /// Extract a module name from a file URI.
 ///
@@ -347,6 +349,310 @@ pub fn count_members_recursive(members: &[reify_ast::MemberDecl]) -> (usize, usi
 /// on Value itself so that adding a new variant only requires editing value.rs.
 pub fn format_value(value: &Value) -> String {
     value.format_hover()
+}
+
+/// Compute a hierarchical [`DocumentSymbol`] tree for `source` (task 4207 η).
+///
+/// This is a purely SYNTACTIC outline: it parses the module via
+/// [`reify_compiler::parse_with_stdlib`] (the same prelude-aware parse used by
+/// goto-def) and walks `parsed.declarations` WITHOUT compiling or
+/// constraint-checking. It is deliberately kept distinct from the outline's
+/// semantic realization tree (`get_entity_tree`) per PRD design decision 5 —
+/// the symbol list reflects declaration structure, not evaluation.
+///
+/// Top-level declarations map to symbols as: structure→STRUCT,
+/// occurrence→CLASS, trait→INTERFACE, enum→ENUM, fn→FUNCTION. All other
+/// top-level declarations (import/unit/type-alias/constraint-def/field/
+/// purpose/module) are not navigable symbols and are skipped.
+pub fn compute_document_symbols(source: &str, uri: &Url) -> Vec<DocumentSymbol> {
+    let module_name = module_name_from_uri(uri);
+    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
+
+    let mut symbols = Vec::new();
+    for decl in &parsed.declarations {
+        match decl {
+            Declaration::Structure(s) => {
+                symbols.push(make_symbol(
+                    &s.name,
+                    SymbolKind::STRUCT,
+                    span_to_range(source, s.span),
+                    name_selection_range(source, s.span, &s.name),
+                    children_or_none(members_to_symbols(source, &s.members)),
+                ));
+            }
+            Declaration::Occurrence(o) => {
+                symbols.push(make_symbol(
+                    &o.name,
+                    SymbolKind::CLASS,
+                    span_to_range(source, o.span),
+                    name_selection_range(source, o.span, &o.name),
+                    children_or_none(members_to_symbols(source, &o.members)),
+                ));
+            }
+            Declaration::Trait(t) => {
+                symbols.push(make_symbol(
+                    &t.name,
+                    SymbolKind::INTERFACE,
+                    span_to_range(source, t.span),
+                    name_selection_range(source, t.span, &t.name),
+                    children_or_none(members_to_symbols(source, &t.members)),
+                ));
+            }
+            Declaration::Enum(e) => {
+                // Each variant becomes an ENUM_MEMBER child. Named-payload
+                // variant fields (`Circle { radius: Length }`) are not expanded
+                // into grandchildren for this task.
+                let variants = e
+                    .variants
+                    .iter()
+                    .map(|v| {
+                        make_symbol(
+                            &v.name,
+                            SymbolKind::ENUM_MEMBER,
+                            span_to_range(source, v.span),
+                            name_selection_range(source, v.span, &v.name),
+                            None,
+                        )
+                    })
+                    .collect();
+                symbols.push(make_symbol(
+                    &e.name,
+                    SymbolKind::ENUM,
+                    span_to_range(source, e.span),
+                    name_selection_range(source, e.span, &e.name),
+                    children_or_none(variants),
+                ));
+            }
+            Declaration::Function(f) => {
+                symbols.push(make_symbol(
+                    &f.name,
+                    SymbolKind::FUNCTION,
+                    span_to_range(source, f.span),
+                    name_selection_range(source, f.span, &f.name),
+                    None,
+                ));
+            }
+            // All other top-level declarations are not navigable symbols:
+            // Import, Unit, TypeAlias, Constraint (ConstraintDef), Field,
+            // Purpose, and Module have no stable jump target and are skipped.
+            _ => {}
+        }
+    }
+    symbols
+}
+
+/// Convert a possibly-empty child list into the `children` field of a
+/// [`DocumentSymbol`]: `None` when there are no navigable members, `Some(_)`
+/// otherwise. Keeps leaf declarations as `children: None` rather than
+/// `Some(vec![])`.
+fn children_or_none(children: Vec<DocumentSymbol>) -> Option<Vec<DocumentSymbol>> {
+    if children.is_empty() {
+        None
+    } else {
+        Some(children)
+    }
+}
+
+/// Recursively convert a member list into child [`DocumentSymbol`]s (task 4207 η).
+///
+/// Mirrors the recursion shape of [`count_members_recursive`] /
+/// [`find_named_member_span`]: `where`/`else` ([`reify_ast::MemberDecl::GuardedGroup`])
+/// and match-arm ([`reify_ast::MemberDecl::MatchArmDeclGroup`]) members are
+/// FLATTENED up to the owning declaration's children — no synthetic guard nodes —
+/// so guarded and match-arm params/lets stay discoverable for symbol-jump. Named
+/// members map as: param→FIELD, let→VARIABLE, sub→OBJECT, port→INTERFACE; subs
+/// and ports form true nested nodes (a sub's specialization body and a port's
+/// internal members become grandchildren). Unlabeled constraints, connects,
+/// chains, minimize/maximize, and meta blocks have no stable identifier to jump
+/// to and are skipped.
+///
+/// Recursion is bounded by [`reify_ast::MAX_MEMBER_NESTING_DEPTH`] to prevent
+/// stack overflow on pathological input, matching the AST member-walk helpers.
+fn members_to_symbols(source: &str, members: &[reify_ast::MemberDecl]) -> Vec<DocumentSymbol> {
+    members_to_symbols_depth(source, members, 0)
+}
+
+fn members_to_symbols_depth(
+    source: &str,
+    members: &[reify_ast::MemberDecl],
+    depth: usize,
+) -> Vec<DocumentSymbol> {
+    use reify_ast::MemberDecl;
+    if depth > reify_ast::MAX_MEMBER_NESTING_DEPTH {
+        return Vec::new();
+    }
+    let mut symbols = Vec::new();
+    for member in members {
+        match member {
+            MemberDecl::Param(p) => symbols.push(make_symbol(
+                &p.name,
+                SymbolKind::FIELD,
+                span_to_range(source, p.span),
+                name_selection_range(source, p.span, &p.name),
+                None,
+            )),
+            MemberDecl::Let(l) => symbols.push(make_symbol(
+                &l.name,
+                SymbolKind::VARIABLE,
+                span_to_range(source, l.span),
+                name_selection_range(source, l.span, &l.name),
+                None,
+            )),
+            // where/else members flatten up to the owning declaration.
+            MemberDecl::GuardedGroup(g) => {
+                symbols.extend(members_to_symbols_depth(source, &g.members, depth + 1));
+                symbols.extend(members_to_symbols_depth(source, &g.else_members, depth + 1));
+            }
+            // match-arm members flatten up to the owning declaration.
+            MemberDecl::MatchArmDeclGroup(g) => {
+                for arm in &g.arms {
+                    symbols.extend(members_to_symbols_depth(
+                        source,
+                        std::slice::from_ref(&*arm.member),
+                        depth + 1,
+                    ));
+                }
+            }
+            // sub-components nest their specialization-body members (when the
+            // `sub` opens a `{ … }` body) as grandchildren; a bare `sub` is a leaf.
+            MemberDecl::Sub(s) => {
+                let body = s
+                    .body
+                    .as_ref()
+                    .map(|b| members_to_symbols_depth(source, b, depth + 1))
+                    .unwrap_or_default();
+                symbols.push(make_symbol(
+                    &s.name,
+                    SymbolKind::OBJECT,
+                    span_to_range(source, s.span),
+                    name_selection_range(source, s.span, &s.name),
+                    children_or_none(body),
+                ));
+            }
+            // ports nest their internal members as grandchildren.
+            MemberDecl::Port(port) => symbols.push(make_symbol(
+                &port.name,
+                SymbolKind::INTERFACE,
+                span_to_range(source, port.span),
+                name_selection_range(source, port.span, &port.name),
+                children_or_none(members_to_symbols_depth(source, &port.members, depth + 1)),
+            )),
+            // Constraints/connects/chains/minimize/maximize/meta are not emitted
+            // here — they have no stable identifier to jump to.
+            _ => {}
+        }
+    }
+    symbols
+}
+
+/// Build a [`DocumentSymbol`] with every field set explicitly.
+///
+/// `lsp-types` 0.94 marks `DocumentSymbol.deprecated` as `#[deprecated]` and
+/// provides no `Default`, so the field cannot be omitted; centralizing the
+/// `#[allow(deprecated)]` here keeps the verify/clippy pipeline clean while
+/// every construction site stays a one-liner (PRD design decision 6).
+#[allow(deprecated)]
+fn make_symbol(
+    name: &str,
+    kind: SymbolKind,
+    range: Range,
+    selection_range: Range,
+    children: Option<Vec<DocumentSymbol>>,
+) -> DocumentSymbol {
+    DocumentSymbol {
+        name: name.to_string(),
+        detail: None,
+        kind,
+        tags: None,
+        deprecated: None,
+        range,
+        selection_range,
+        children,
+    }
+}
+
+/// Compute the `selection_range` (the name token) for a declaration whose full
+/// span is `span` and whose declared name is `name`.
+///
+/// Declaration AST nodes carry only `name: String` plus the full declaration
+/// span (no separate name-token span), so the name's byte offset must be
+/// recovered from the source. LSP requires `selection_range ⊆ range` and ideally
+/// on the name token; this performs a *word-boundary* search bounded to the
+/// declaration's own span, falling back to `span.start` when the name cannot be
+/// located (defensive; should not happen for well-formed declarations).
+fn name_selection_range(source: &str, span: SourceSpan, name: &str) -> Range {
+    let name_offset = find_name_offset_in_span(source, span, name);
+    // Clamp the selection end to the declaration span's end so the LSP
+    // `selection_range ⊆ range` invariant holds even for degenerate or
+    // error-recovery spans shorter than the name. When the name is located
+    // the match already fits inside the span (`name_offset + name.len() ≤
+    // span.end`), so this clamp is a no-op there; it only constrains the
+    // `span.start` fallback, where `span.start + name.len()` could otherwise
+    // push the selection end past `span.end` (and thus past `range.end`).
+    let name_end = (name_offset + name.len() as u32).min(span.end);
+    Range {
+        start: offset_to_position(source, name_offset),
+        end: offset_to_position(source, name_end),
+    }
+}
+
+/// Find the byte offset of `name` as a *whole identifier* within
+/// `[span.start, span.end)`, returning `span.start` if no word-boundary match
+/// is found.
+///
+/// A naive substring search is unsafe — e.g. the member name `a` would match
+/// inside the `param` keyword — so a match must have non-identifier neighbours
+/// (or a source boundary) on both sides. Search bounds are clamped to the
+/// source length and snapped forward to UTF-8 character boundaries, mirroring
+/// the safety pattern in `convert::offset_to_position` and
+/// `goto_def::find_name_offset_in_decl`.
+fn find_name_offset_in_span(source: &str, span: SourceSpan, name: &str) -> u32 {
+    if name.is_empty() {
+        return span.start;
+    }
+    let len = source.len();
+    let mut start = (span.start as usize).min(len);
+    let mut end = (span.end as usize).min(len);
+    // Snap both ends forward to valid UTF-8 boundaries so the slice is valid
+    // even when tree-sitter error-recovery spans land mid-character.
+    while start < len && !source.is_char_boundary(start) {
+        start += 1;
+    }
+    while end < len && !source.is_char_boundary(end) {
+        end += 1;
+    }
+    if start >= end {
+        return span.start;
+    }
+
+    let hay = &source[start..end];
+    let bytes = source.as_bytes();
+    let name_len = name.len();
+    let mut search_from = 0usize;
+    while search_from < hay.len() {
+        let Some(rel) = hay[search_from..].find(name) else {
+            break;
+        };
+        let abs = start + search_from + rel; // absolute byte offset of the match
+        // Left and right neighbours must be non-identifier bytes (or source
+        // boundaries) for this to be a whole-word match.
+        let left_ok = abs == 0 || !is_ident_byte(bytes[abs - 1]);
+        let right = abs + name_len;
+        let right_ok = right >= len || !is_ident_byte(bytes[right]);
+        if left_ok && right_ok {
+            return abs as u32;
+        }
+        search_from += rel + 1;
+    }
+    span.start
+}
+
+/// Whether `b` is an identifier byte (ASCII alphanumeric or underscore).
+///
+/// Local to this module — mirrors `convert::is_ident_byte` (which is private)
+/// so the document-symbol name search stays scoped to analysis.rs.
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
 }
 
 #[cfg(test)]
@@ -1656,5 +1962,272 @@ mod tests {
             "AnalysisContext: stdlib source should compile without errors; \
              got: {errors:?}"
         );
+    }
+
+    // --- compute_document_symbols tests (task 4207 η) ---
+
+    #[test]
+    fn compute_document_symbols_single_structure_top_level() {
+        use tower_lsp::lsp_types::SymbolKind;
+        let source = "structure Bracket { param width: Scalar = 80mm }";
+        let symbols = compute_document_symbols(source, &test_uri());
+        assert_eq!(
+            symbols.len(),
+            1,
+            "should return exactly one top-level symbol for one structure"
+        );
+        let bracket = &symbols[0];
+        assert_eq!(bracket.name, "Bracket");
+        assert_eq!(bracket.kind, SymbolKind::STRUCT);
+        // range covers the full declaration, which starts on line 0.
+        assert_eq!(bracket.range.start.line, 0);
+        // selection_range is the "Bracket" name token: line 0, chars 10..17
+        // ("structure " is 10 chars; "Bracket" is 7 chars).
+        assert_eq!(bracket.selection_range.start.line, 0);
+        assert_eq!(bracket.selection_range.start.character, 10);
+        assert_eq!(bracket.selection_range.end.line, 0);
+        assert_eq!(bracket.selection_range.end.character, 17);
+    }
+
+    /// Regression (task 4207 η amendment): `name_selection_range` must preserve
+    /// the LSP `selection_range ⊆ range` invariant even for a degenerate span
+    /// shorter than the name. Here the span is 2 bytes wide but the name is 7
+    /// bytes, so the word-boundary search fails and the `span.start` fallback
+    /// runs; without the end-clamp the selection end would be `0 + 7 = 7`,
+    /// pushing `selection_range.end` past `range.end`.
+    #[test]
+    fn name_selection_range_clamps_end_to_span_for_degenerate_span() {
+        let source = "Bracket";
+        let span = SourceSpan::new(0, 2);
+        let sel = name_selection_range(source, span, "Bracket");
+        let range = span_to_range(source, span);
+        assert!(
+            (sel.start.line, sel.start.character) >= (range.start.line, range.start.character),
+            "selection_range.start {:?} must be >= range.start {:?}",
+            sel.start,
+            range.start,
+        );
+        assert!(
+            (sel.end.line, sel.end.character) <= (range.end.line, range.end.character),
+            "selection_range.end {:?} must be clamped within range.end {:?}",
+            sel.end,
+            range.end,
+        );
+    }
+
+    /// Assert `sym.selection_range` lies within `sym.range` and covers exactly
+    /// `sym.name` in `source`. Shared across the document-symbol tests.
+    fn assert_selection_on_name(source: &str, sym: &DocumentSymbol) {
+        let r = &sym.range;
+        let sr = &sym.selection_range;
+        assert!(
+            (sr.start.line, sr.start.character) >= (r.start.line, r.start.character),
+            "selection_range.start {:?} should be >= range.start {:?} for {}",
+            sr.start,
+            r.start,
+            sym.name
+        );
+        assert!(
+            (sr.end.line, sr.end.character) <= (r.end.line, r.end.character),
+            "selection_range.end {:?} should be <= range.end {:?} for {}",
+            sr.end,
+            r.end,
+            sym.name
+        );
+        let start = crate::convert::position_to_offset(source, sr.start);
+        let end = crate::convert::position_to_offset(source, sr.end);
+        assert_eq!(
+            &source[start..end],
+            sym.name,
+            "selection_range should cover the name token for {}",
+            sym.name
+        );
+    }
+
+    #[test]
+    fn compute_document_symbols_members_as_children() {
+        use tower_lsp::lsp_types::SymbolKind;
+        let source = reify_test_support::bracket_source();
+        let symbols = compute_document_symbols(source, &test_uri());
+        assert_eq!(symbols.len(), 1, "bracket_source has one structure");
+        let bracket = &symbols[0];
+        assert_eq!(bracket.name, "Bracket");
+
+        let children = bracket
+            .children
+            .as_ref()
+            .expect("Bracket should have children");
+        // 5 params + 2 lets = 7 named members; the 3 unlabeled constraints
+        // are NOT navigable symbols and must be excluded.
+        assert_eq!(
+            children.len(),
+            7,
+            "expected 7 named members (constraints excluded), got: {:?}",
+            children.iter().map(|c| c.name.as_str()).collect::<Vec<_>>()
+        );
+
+        // Source order: the 5 params, then volume, then body.
+        let expected: [(&str, SymbolKind); 7] = [
+            ("width", SymbolKind::FIELD),
+            ("height", SymbolKind::FIELD),
+            ("thickness", SymbolKind::FIELD),
+            ("fillet_radius", SymbolKind::FIELD),
+            ("hole_diameter", SymbolKind::FIELD),
+            ("volume", SymbolKind::VARIABLE),
+            ("body", SymbolKind::VARIABLE),
+        ];
+        for (child, (name, kind)) in children.iter().zip(expected.iter()) {
+            assert_eq!(&child.name, name, "child name/order mismatch");
+            assert_eq!(child.kind, *kind, "child {name} kind mismatch");
+            assert!(
+                child.children.is_none() || child.children.as_ref().unwrap().is_empty(),
+                "leaf member {name} should have no children"
+            );
+            assert_selection_on_name(source, child);
+        }
+    }
+
+    #[test]
+    fn compute_document_symbols_occurrence_and_trait() {
+        use tower_lsp::lsp_types::SymbolKind;
+
+        // --- occurrence → CLASS with param FIELD + let VARIABLE children ---
+        let occ_source =
+            "occurrence def Joint {\n    param diameter: Scalar = 10mm\n    let radius = diameter / 2\n}";
+        let occ_symbols = compute_document_symbols(occ_source, &test_uri());
+        assert_eq!(occ_symbols.len(), 1, "one occurrence → one top-level symbol");
+        let joint = &occ_symbols[0];
+        assert_eq!(joint.name, "Joint");
+        assert_eq!(joint.kind, SymbolKind::CLASS);
+        assert_selection_on_name(occ_source, joint);
+        let occ_children = joint
+            .children
+            .as_ref()
+            .expect("Joint should have children");
+        assert_eq!(occ_children.len(), 2, "Joint has diameter + radius");
+        assert_eq!(occ_children[0].name, "diameter");
+        assert_eq!(occ_children[0].kind, SymbolKind::FIELD);
+        assert_eq!(occ_children[1].name, "radius");
+        assert_eq!(occ_children[1].kind, SymbolKind::VARIABLE);
+        for c in occ_children {
+            assert_selection_on_name(occ_source, c);
+        }
+
+        // --- trait → INTERFACE with param FIELD child ---
+        let trait_source = "trait Rigid {\n    param mass: Scalar = 5mm\n}";
+        let trait_symbols = compute_document_symbols(trait_source, &test_uri());
+        assert_eq!(trait_symbols.len(), 1, "one trait → one top-level symbol");
+        let rigid = &trait_symbols[0];
+        assert_eq!(rigid.name, "Rigid");
+        assert_eq!(rigid.kind, SymbolKind::INTERFACE);
+        assert_selection_on_name(trait_source, rigid);
+        let trait_children = rigid
+            .children
+            .as_ref()
+            .expect("Rigid should have children");
+        assert_eq!(trait_children.len(), 1, "Rigid has mass");
+        assert_eq!(trait_children[0].name, "mass");
+        assert_eq!(trait_children[0].kind, SymbolKind::FIELD);
+        assert_selection_on_name(trait_source, &trait_children[0]);
+    }
+
+    #[test]
+    fn compute_document_symbols_enum_variants() {
+        use tower_lsp::lsp_types::SymbolKind;
+        let source = "enum Shape { Point, Circle { radius: Length } }";
+        let symbols = compute_document_symbols(source, &test_uri());
+        assert_eq!(symbols.len(), 1, "one enum → one top-level symbol");
+        let shape = &symbols[0];
+        assert_eq!(shape.name, "Shape");
+        assert_eq!(shape.kind, SymbolKind::ENUM);
+        assert_selection_on_name(source, shape);
+
+        let variants = shape
+            .children
+            .as_ref()
+            .expect("Shape should have variant children");
+        assert_eq!(variants.len(), 2, "Shape has Point + Circle in source order");
+        assert_eq!(variants[0].name, "Point");
+        assert_eq!(variants[0].kind, SymbolKind::ENUM_MEMBER);
+        assert_eq!(variants[1].name, "Circle");
+        assert_eq!(variants[1].kind, SymbolKind::ENUM_MEMBER);
+        for v in variants {
+            // range covers the variant span; selection_range sits on the name.
+            assert_selection_on_name(source, v);
+            assert!(
+                v.children.is_none() || v.children.as_ref().unwrap().is_empty(),
+                "variant {} should have no grandchildren in this task",
+                v.name
+            );
+        }
+    }
+
+    #[test]
+    fn compute_document_symbols_fn_and_excludes_non_symbol_decls() {
+        use tower_lsp::lsp_types::SymbolKind;
+        let source = "import std.math\nunit meter : Length\nfn area(w: Scalar) -> Scalar { w }";
+        let symbols = compute_document_symbols(source, &test_uri());
+        // import + unit are NOT navigable symbols; only the fn is.
+        assert_eq!(
+            symbols.len(),
+            1,
+            "only the fn should be a symbol (import + unit excluded), got: {:?}",
+            symbols.iter().map(|s| s.name.as_str()).collect::<Vec<_>>()
+        );
+        let area = &symbols[0];
+        assert_eq!(area.name, "area");
+        assert_eq!(area.kind, SymbolKind::FUNCTION);
+        assert!(
+            area.children.is_none() || area.children.as_ref().unwrap().is_empty(),
+            "fn is a leaf symbol (params are not surfaced as children)"
+        );
+        assert_selection_on_name(source, area);
+    }
+
+    #[test]
+    fn compute_document_symbols_sub_port_and_guarded() {
+        use tower_lsp::lsp_types::SymbolKind;
+        let source = r#"structure Assembly {
+    param cond : Bool = true
+    sub motor = Motor()
+    port intake : MechPort { param d : Length = 5mm }
+    where cond {
+        param guarded_x : Scalar = 1mm
+    }
+}"#;
+        let symbols = compute_document_symbols(source, &test_uri());
+        assert_eq!(symbols.len(), 1, "one structure → one top-level symbol");
+        let assembly = &symbols[0];
+        assert_eq!(assembly.name, "Assembly");
+        let children = assembly
+            .children
+            .as_ref()
+            .expect("Assembly should have children");
+        let find = |name: &str| children.iter().find(|c| c.name == name);
+
+        // sub motor → OBJECT
+        let motor = find("motor").expect("motor sub should be a child symbol");
+        assert_eq!(motor.kind, SymbolKind::OBJECT);
+        assert_selection_on_name(source, motor);
+
+        // port intake → INTERFACE, with port-internal param d → FIELD grandchild
+        let intake = find("intake").expect("intake port should be a child symbol");
+        assert_eq!(intake.kind, SymbolKind::INTERFACE);
+        assert_selection_on_name(source, intake);
+        let intake_children = intake
+            .children
+            .as_ref()
+            .expect("intake port should have internal members");
+        let d = intake_children
+            .iter()
+            .find(|c| c.name == "d")
+            .expect("port-internal param d should be a grandchild");
+        assert_eq!(d.kind, SymbolKind::FIELD);
+        assert_selection_on_name(source, d);
+
+        // where-block param guarded_x flattened as a direct child of the structure
+        let guarded = find("guarded_x").expect("guarded_x should be flattened as a direct child");
+        assert_eq!(guarded.kind, SymbolKind::FIELD);
+        assert_selection_on_name(source, guarded);
     }
 }

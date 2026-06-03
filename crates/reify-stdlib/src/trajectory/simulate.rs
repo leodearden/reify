@@ -457,6 +457,7 @@ pub(crate) fn build_rnea_links_for_sample(
             inertia_about_com: l.inertia_about_com,
             q_dot,
             q_ddot,
+            compliance: None,
         });
     }
     links

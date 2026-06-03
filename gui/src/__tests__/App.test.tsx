@@ -54,15 +54,17 @@ vi.mock('../viewport', () => ({
   },
 }));
 
-// Mock Editor (requires CodeMirror DOM APIs) — capture store, onOpen, and scrollToLocation for tests
+// Mock Editor (requires CodeMirror DOM APIs) — capture store, onOpen, scrollToLocation, and compileDiagnostics for tests
 let capturedEditorStore: any = null;
 let capturedEditorOnOpen: (() => void) | undefined = undefined;
 let capturedEditorScrollToLocation: (() => any) | undefined = undefined;
+let capturedEditorCompileDiagnostics: any = undefined;
 vi.mock('../editor/Editor', () => ({
   Editor: (props: any) => {
     capturedEditorStore = props.store;
     capturedEditorOnOpen = props.onOpen;
     capturedEditorScrollToLocation = props.scrollToLocation;
+    capturedEditorCompileDiagnostics = props.compileDiagnostics;
     const el = document.createElement('div');
     el.setAttribute('data-testid', 'editor-container');
     el.textContent = 'Editor Mock';
@@ -164,6 +166,7 @@ beforeEach(() => {
   capturedEditorStore = null;
   capturedEditorOnOpen = undefined;
   capturedEditorScrollToLocation = undefined;
+  capturedEditorCompileDiagnostics = undefined;
   mockFlyToEntity.mockClear();
   // Reset bridge mocks to defaults (clearAllMocks only clears call history, not implementations)
   vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [] });
@@ -5889,5 +5892,160 @@ describe('App refreshEntityTree wires reconcileToTree (step-7)', () => {
       expect(meshKeys).not.toContain(orphanMeshKey);
       expect(meshKeys).toContain(liveMeshKey);
     });
+  });
+});
+
+// ── App epoch/staleness guard (task 4251 step-3/step-4) ─────────────────────
+//
+// Scenario: an in-flight bridgeGetEntityTree() fetch that was issued BEFORE an
+// engine reinit (i.e. before a new design was loaded) must be DROPPED when it
+// resolves, so its (partially-stale) reconcileToTree call does not prune meshes
+// that belong to the freshly-loaded design.
+//
+// The stale snapshot is deliberately crafted to be a PARTIAL overlap with the
+// current design (it contains CapstanDrive.capstan but NOT
+// CapstanDrive.shuttle.plate). This means the step-2 cross-root guard does
+// NOT engage — the test isolates the epoch/staleness guard implemented in step-4.
+describe('App epoch/staleness guard for refreshEntityTree (task 4251)', () => {
+  function makeNode(entity_path: string, children: any[] = []) {
+    return {
+      entity_path,
+      kind: 'structure' as const,
+      type_name: null,
+      has_mesh: true,
+      trait_geometry: false,
+      freshness: 'final' as const,
+      children,
+    };
+  }
+
+  it('stale in-flight entity-tree snapshot fetched before an engine reinit does not prune the freshly-loaded design', async () => {
+    // Design A: loaded by getInitialState during initApp
+    const designAState: GuiState = {
+      meshes: [
+        {
+          entity_path: 'PrinterFrame.gantry#r0',
+          vertices: new Float32Array([0, 1, 2]),
+          indices: new Uint32Array([0, 1, 2]),
+          normals: null,
+        },
+      ],
+      values: [],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+      tensegrity_wires: [],
+    };
+
+    // Design B: loaded directly via initFromState (simulates a file-switch reinit)
+    const designBState: GuiState = {
+      meshes: [
+        {
+          entity_path: 'CapstanDrive.capstan#r0',
+          vertices: new Float32Array([0, 1, 2]),
+          indices: new Uint32Array([0, 1, 2]),
+          normals: null,
+        },
+        {
+          entity_path: 'CapstanDrive.shuttle.plate#r0',
+          vertices: new Float32Array([3, 4, 5]),
+          indices: new Uint32Array([0, 1, 2]),
+          normals: null,
+        },
+      ],
+      values: [],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+      tensegrity_wires: [],
+    };
+
+    // Deferred promise for the FIRST getEntityTree call (the stale in-flight fetch).
+    // It is issued during initApp → initFromState → onEngineReinitialized → refreshEntityTree.
+    const staleDeferred = deferred<any[]>();
+
+    vi.mocked(bridge.getInitialState).mockResolvedValue(designAState);
+    // First call: stale, stays in-flight for the duration of the test
+    vi.mocked(bridge.getEntityTree).mockReturnValueOnce(staleDeferred.promise);
+    // Subsequent calls (from the reinit's refreshEntityTree): return design B's tree immediately
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([
+      makeNode('CapstanDrive.capstan'),
+      makeNode('CapstanDrive.shuttle.plate'),
+    ]);
+
+    await renderAndWaitForReady();
+
+    // Capture the engine store exposed through DualViewport props
+    const engine = capturedDualViewportProps.engineStore;
+    expect(engine).toBeDefined();
+
+    // Trigger a reinit with design B — fires onEngineReinitialized → epoch bump
+    // (step-4 will add this) + fresh refreshEntityTree against design B's tree.
+    engine.initFromState(designBState);
+
+    // Wait for the fresh post-reinit fetch to resolve and reconcile design B's meshes.
+    // Both B meshes are present because the fresh tree lists both.
+    await waitFor(() => {
+      const meshKeys = Object.keys(engine.state.meshes);
+      expect(meshKeys).toContain('CapstanDrive.capstan#r0');
+      expect(meshKeys).toContain('CapstanDrive.shuttle.plate#r0');
+    });
+
+    // Now resolve the stale in-flight fetch with a PARTIAL-overlap tree.
+    // It includes CapstanDrive.capstan (shared with design B) so the step-2
+    // cross-root guard does NOT engage. The only guard that should stop pruning
+    // is the epoch/staleness guard implemented in step-4.
+    staleDeferred.resolve([makeNode('CapstanDrive.capstan')]);
+
+    // Flush the macrotask queue so the stale .then callback (and any further
+    // microtask hops it spawns) is guaranteed to have run before we assert.
+    // Using flushMacrotasks() rather than bare await Promise.resolve() ticks
+    // is more durable: a setTimeout barrier drains all pending microtasks
+    // first, so if the resolve path ever gains an extra microtask hop the
+    // assertion ordering remains correct.
+    await flushMacrotasks();
+
+    // Epoch guard (step-4) must have dropped the stale snapshot.
+    // Both B meshes must survive — shuttle.plate must NOT have been pruned.
+    expect(Object.keys(engine.state.meshes)).toContain('CapstanDrive.capstan#r0');
+    expect(Object.keys(engine.state.meshes)).toContain('CapstanDrive.shuttle.plate#r0');
+    // The viewport must stay active (not collapse to 'No active viewport')
+    expect(capturedDualViewportProps.designViewportActive()).toBe(true);
+  });
+});
+
+describe('App forwards compileDiagnostics to Editor (task-4252)', () => {
+  it('passes engineStore.state.compileDiagnostics to the Editor compileDiagnostics prop', async () => {
+    const errorDiag = {
+      file_path: '/project/src/bracket.ri',
+      line: 3,
+      column: 5,
+      end_line: 3,
+      end_column: 14,
+      severity: 'Error',
+      message: 'unresolved name: rot_to_z',
+      code: null,
+    };
+
+    // Seed getInitialState with an Error compile diagnostic
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [errorDiag],
+      tensegrity_wires: [],
+    } as any);
+
+    await renderAndWaitForReady();
+
+    // App should forward the compile_diagnostics from the engine store to <Editor>
+    expect(capturedEditorCompileDiagnostics).toBeDefined();
+    expect(capturedEditorCompileDiagnostics).toContainEqual(
+      expect.objectContaining({ severity: 'Error', message: 'unresolved name: rot_to_z' }),
+    );
   });
 });

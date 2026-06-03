@@ -61,7 +61,9 @@ function makeStores(phase: 'idle' | 'evaluating' | 'error' = 'idle'): DebugStore
         currentMessageId: null,
       },
     },
-    viewState: { resetToDefaultView: vi.fn() },
+    viewState: {
+      resetToDefaultView: vi.fn(),
+    },
   };
 }
 

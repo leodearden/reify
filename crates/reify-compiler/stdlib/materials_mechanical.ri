@@ -39,6 +39,15 @@
 
 // ── Base material trait ──────────────────────────────────────────────────────
 
+// TemperatureDependent marks structures that carry a reference temperature for
+// thermal analysis. The param is optional: conformers that do not supply it
+// inherit the standard ambient-temperature default (293.15 K ≈ 20 °C).
+// Temperature is the one deviation from the module's all-Real convention for
+// this new trait (PRD D3); K resolves via stdlib/units.ri under #no_prelude.
+trait TemperatureDependent {
+    param reference_temperature : Temperature = 293.15K
+}
+
 // MaterialSpec is the trait-level contract every material-like structure
 // must satisfy. The canonical first-class `Material` struct (below) provides
 // a concrete value type for callers that want to supply a material by
@@ -70,20 +79,27 @@ structure def Material {
 
 // Young's modulus (Pa), Poisson's ratio (dimensionless), shear modulus (Pa).
 // All use Real pending Pressure type introduction.
+// Physical range: poissons_ratio is strictly between 0 and 0.5 for conventional
+// isotropic materials (excludes auxetic ν<0 and incompressible ν=0.5 limits).
+// shear_modulus is optional (= undef): conformers may omit it when G is not
+// independently measured (derivable from E and ν for isotropic materials).
 trait Elastic {
     param youngs_modulus : Real
     param poissons_ratio : Real // dimensionless
-    param shear_modulus : Real
+    param shear_modulus : Real = undef // optional — omit when not independently measured
+    constraint 0 < poissons_ratio < 0.5
 }
 
 // ── Strength ─────────────────────────────────────────────────────────────────
 
 // yield_strength, uts (ultimate tensile strength), compressive_strength all
 // in Pa (using Real). The constraint enforces uts >= yield_strength.
+// compressive_strength is optional (= undef): many material datasheets report
+// tensile data only; compressive data may not be available for all conformers.
 trait Strong {
     param yield_strength : Real
     param uts : Real
-    param compressive_strength : Real
+    param compressive_strength : Real = undef // optional — omit when not reported
     constraint uts >= yield_strength
 }
 
@@ -117,9 +133,11 @@ trait FractureTough : MaterialSpec {
 
 // elongation: % elongation at break; reduction_of_area: % cross-section reduction.
 // Both dimensionless fractions — use Real.
+// reduction_of_area is optional (= undef): elongation is the more commonly
+// reported ductility metric; area reduction may be absent in standard datasheets.
 trait Ductile {
     param elongation : Real // dimensionless
-    param reduction_of_area : Real // dimensionless
+    param reduction_of_area : Real = undef // optional — omit when not reported
 }
 
 // ── Impact resistance ─────────────────────────────────────────────────────────

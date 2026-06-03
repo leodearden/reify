@@ -5,7 +5,8 @@ import { createSignal } from 'solid-js';
 import { EditorView, keymap } from '@codemirror/view';
 import { undo } from '@codemirror/commands';
 import { foldAll, unfoldAll, foldedRanges } from '@codemirror/language';
-import { diagnosticCount } from '@codemirror/lint';
+import { diagnosticCount, forEachDiagnostic } from '@codemirror/lint';
+import type { DiagnosticInfo } from '../types';
 import { createEditorStore } from '../stores/editorStore';
 import * as bridge from '../bridge';
 import type { FileData, SourceLocation } from '../types';
@@ -43,6 +44,16 @@ function setupStore(files: FileData[] = [file1]) {
   const store = createEditorStore();
   for (const f of files) store.openFile(f);
   return store;
+}
+
+/** Capture the Tauri diagnostics event handler so we can fire events manually. */
+function setupListenCapture() {
+  let diagnosticsHandler: ((event: { payload: any }) => void) | undefined;
+  mockListen.mockImplementation(async (_event: any, handler: any) => {
+    diagnosticsHandler = handler;
+    return vi.fn(); // unlisten
+  });
+  return () => diagnosticsHandler;
 }
 
 describe('Editor mounting', () => {
@@ -480,16 +491,6 @@ describe('Editor LSP init error callback', () => {
 });
 
 describe('Editor diagnostics URI filtering', () => {
-  /** Capture the Tauri diagnostics event handler so we can fire events manually. */
-  function setupListenCapture() {
-    let diagnosticsHandler: ((event: { payload: any }) => void) | undefined;
-    mockListen.mockImplementation(async (_event: any, handler: any) => {
-      diagnosticsHandler = handler;
-      return vi.fn(); // unlisten
-    });
-    return () => diagnosticsHandler;
-  }
-
   const sampleDiagnostic = {
     range: {
       start: { line: 0, character: 0 },
@@ -1526,5 +1527,245 @@ describe('Editor F12 go-to-definition', () => {
     await vi.waitFor(() => {
       expect(view.state.selection.main.head).toBe(28);
     });
+  });
+});
+
+describe('Editor compile diagnostics', () => {
+  // A compile Error diagnostic whose file_path matches file1
+  const errorDiagForActiveFile: DiagnosticInfo = {
+    file_path: file1.path,
+    line: 1,
+    column: 11,
+    end_line: 1,
+    end_column: 20,
+    severity: 'Error',
+    message: 'unresolved name: rot_to_z',
+    code: null,
+  };
+
+  it('(a) rendering with an active-file compile diagnostic shows count === 1 with error severity', () => {
+    setupListenCapture();
+    const store = setupStore([file1]);
+    render(() => (
+      <Editor store={store} compileDiagnostics={[errorDiagForActiveFile]} />
+    ));
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    expect(diagnosticCount(view.state)).toBe(1);
+
+    const severities: string[] = [];
+    forEachDiagnostic(view.state, (d) => severities.push(d.severity));
+    expect(severities).toContain('error');
+  });
+
+  it('(b) a compile diagnostic for a DIFFERENT file is NOT applied (count stays 0)', () => {
+    setupListenCapture();
+    const store = setupStore([file1]);
+    render(() => (
+      <Editor
+        store={store}
+        compileDiagnostics={[{ ...errorDiagForActiveFile, file_path: '/project/src/other.ri' }]}
+      />
+    ));
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    expect(diagnosticCount(view.state)).toBe(0);
+  });
+
+  it('(c) compile diagnostic + LSP diagnostic coexist (count === 2, neither clobbers the other)', () => {
+    const getHandler = setupListenCapture();
+    const store = setupStore([file1]);
+    render(() => (
+      <Editor store={store} compileDiagnostics={[errorDiagForActiveFile]} />
+    ));
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Compile diagnostic should already be applied (1)
+    expect(diagnosticCount(view.state)).toBe(1);
+
+    // Fire an LSP diagnostics event for the active file
+    const handler = getHandler();
+    expect(handler).toBeDefined();
+    handler!({
+      payload: {
+        uri: 'file:///project/src/bracket.ri',
+        diagnostics: [
+          {
+            range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
+            severity: 2,
+            message: 'lsp warning',
+          },
+        ],
+      },
+    });
+
+    // Both should coexist: count === 2
+    expect(diagnosticCount(view.state)).toBe(2);
+  });
+
+  it('(d) clearing compileDiagnostics prop removes the compile squiggle', () => {
+    setupListenCapture();
+    const store = setupStore([file1]);
+    const [diags, setDiags] = createSignal<DiagnosticInfo[]>([errorDiagForActiveFile]);
+    render(() => <Editor store={store} compileDiagnostics={diags()} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    expect(diagnosticCount(view.state)).toBe(1);
+
+    // Clear the compile diagnostics
+    setDiags([]);
+
+    expect(diagnosticCount(view.state)).toBe(0);
+  });
+
+  it('(e) CRASH (same-file) — stale LSP offset beyond a shrunk doc must not throw when the compile effect re-dispatches', () => {
+    // Regression for esc-4252-74: applyMergedDiagnostics filtered only
+    // compileCmDiagnostics against the live doc length and spread lspCmDiagnostics
+    // unguarded. Same-file race: the LSP listener stores offsets against the long
+    // doc → the user types/deletes so the view doc shrinks (typing mutates the view
+    // directly; neither diagnostic effect re-runs on keystrokes) → a compileDiagnostics
+    // update fires the compile effect → applyMergedDiagnostics re-dispatches the now
+    // out-of-range lspCmDiagnostics into the shrunk doc → CodeMirror RangeSet build
+    // throws. The fix filters the merged union, so neither channel can dispatch stale
+    // ranges.
+    const getHandler = setupListenCapture();
+    const store = setupStore([file1]);
+    const [diags, setDiags] = createSignal<DiagnosticInfo[]>([]);
+    render(() => <Editor store={store} compileDiagnostics={diags()} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    const handler = getHandler();
+    expect(handler).toBeDefined();
+
+    // LSP diagnostic for file1 at LSP line 1 (0-based) chars 0-5 → CM offsets [20, 25],
+    // valid in file1's 42-char doc.
+    handler!({
+      payload: {
+        uri: 'file:///project/src/bracket.ri',
+        diagnostics: [{
+          range: { start: { line: 1, character: 0 }, end: { line: 1, character: 5 } },
+          severity: 1,
+          message: 'file1 deep error',
+        }],
+      },
+    });
+    expect(diagnosticCount(view.state)).toBe(1);
+
+    // Shrink the doc directly (simulates the user deleting text). The diagnostic
+    // effects do NOT re-run, so lspCmDiagnostics still holds the stale [20, 25].
+    view.dispatch({ changes: { from: 5, to: view.state.doc.length } });
+    expect(view.state.doc.length).toBe(5);
+
+    // A compileDiagnostics update (fresh empty array → new reference) re-runs the
+    // compile effect → applyMergedDiagnostics. Under the bug the stale LSP [20, 25] is
+    // dispatched into the 5-char doc and throws. After the fix the merged union is
+    // filtered, so this is a no-op (no crash) and the stale LSP squiggle is dropped.
+    expect(() => setDiags([])).not.toThrow();
+    expect(diagnosticCount(getEditorView(container).state)).toBe(0);
+  });
+});
+
+describe('Editor compile diagnostics: stale LSP cleared on file switch', () => {
+  it('(a) FLASH — file2 LSP squiggle does NOT leak into file1 after switch', () => {
+    const getHandler = setupListenCapture();
+    const store = setupStore([file2, file1]);
+    store.setActiveFile(file2.path);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    const handler = getHandler();
+    expect(handler).toBeDefined();
+
+    // Fire LSP diagnostics for file2 URI at range [0, 5]
+    handler!({
+      payload: {
+        uri: 'file:///project/src/mount.ri',
+        diagnostics: [{
+          range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
+          severity: 1,
+          message: 'stale diagnostic from file2',
+        }],
+      },
+    });
+    expect(diagnosticCount(view.state)).toBe(1);
+
+    // Switch to file1 — stale lspCmDiagnostics [0,5] must NOT be re-dispatched.
+    // Under the bug the compile effect calls applyMergedDiagnostics() with the un-cleared
+    // lspCmDiagnostics, so count stays 1 instead of going to 0.
+    store.setActiveFile(file1.path);
+
+    expect(diagnosticCount(getEditorView(container).state)).toBe(0);
+  });
+
+  it('(b) CRASH — stale LSP offset beyond new doc length must not throw or leave squiggle', () => {
+    const getHandler = setupListenCapture();
+    const store = setupStore([file1, file2]);
+    store.setActiveFile(file1.path);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    const handler = getHandler();
+    expect(handler).toBeDefined();
+
+    // LSP diagnostic for file1 at LSP line 1 (0-based), chars 0-5.
+    // lspDiagnosticToCodeMirror maps this to CM offsets from=20, to=25
+    // (file1 line-2 starts at offset 20 in the 42-char doc).
+    // [20, 25] is valid in file1 but exceeds file2's 18-char doc.
+    handler!({
+      payload: {
+        uri: 'file:///project/src/bracket.ri',
+        diagnostics: [{
+          range: { start: { line: 1, character: 0 }, end: { line: 1, character: 5 } },
+          severity: 1,
+          message: 'file1 deep error',
+        }],
+      },
+    });
+    expect(diagnosticCount(view.state)).toBe(1);
+
+    // Under the bug: the compile effect re-dispatches the stale [20, 25] into file2's
+    // 18-char doc → CodeMirror RangeSet build throws a RangeError.
+    // After the fix: lspCmDiagnostics is cleared in the file-switch effect before the
+    // compile effect runs, so applyMergedDiagnostics dispatches [] — no crash.
+    expect(() => store.setActiveFile(file2.path)).not.toThrow();
+
+    // Stale squiggle must be absent in file2 view
+    expect(diagnosticCount(getEditorView(container).state)).toBe(0);
+  });
+
+  it('(c) ROBUSTNESS — after file switch the LSP channel still applies new-file diagnostics', () => {
+    const getHandler = setupListenCapture();
+    const store = setupStore([file1, file2]);
+    store.setActiveFile(file1.path);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+
+    // Switch to file2 (lspCmDiagnostics must be cleared, not permanently disabled)
+    store.setActiveFile(file2.path);
+
+    const handler = getHandler();
+    expect(handler).toBeDefined();
+
+    // Fire LSP event for file2 at a valid range [0, 5] (file2 is 18 chars)
+    handler!({
+      payload: {
+        uri: 'file:///project/src/mount.ri',
+        diagnostics: [{
+          range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
+          severity: 2,
+          message: 'file2 warning',
+        }],
+      },
+    });
+
+    // The LSP slot was cleared (not disabled) so the new-file event produces exactly 1 squiggle.
+    expect(diagnosticCount(getEditorView(container).state)).toBe(1);
   });
 });

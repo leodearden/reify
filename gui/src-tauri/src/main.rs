@@ -278,7 +278,7 @@ fn update_source(
 ) -> Result<reify_gui::types::GuiState, String> {
     emit_status(&app, "evaluating");
     let _idle = IdleGuard(app.clone());
-    let result = reify_gui::commands::update_source_impl(&state.engine, &path, &content);
+    let result = reify_gui::commands::reload_for_watch_impl(&state.engine, &path, &content);
     if let Ok(ref gui_state) = result {
         let delta = compute_delta(&state.last_state, gui_state);
         emit_delta(&app, &delta);

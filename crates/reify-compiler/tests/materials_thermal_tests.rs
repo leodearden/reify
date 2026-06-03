@@ -56,22 +56,25 @@ fn thermal_module_loads_with_no_errors() {
     );
 }
 
-// ─── (b) ThermallyCharacterized has MaterialSpec refinement and 6 members ────
+// ─── (b) ThermallyCharacterized: 3 required + 3 optional members ─────────────
 
-/// ThermallyCharacterized must refine MaterialSpec and declare six required
-/// members. Three composite-dimension params are now tightened to dimensioned
-/// scalar types by task #3115; the three temperature params remain Real
-/// (their tightening belongs to sibling task #3112).
+/// ThermallyCharacterized must refine MaterialSpec and declare exactly three
+/// required members (the dimensioned scalar types tightened by task #3115)
+/// plus three optional params with `= undef` defaults (the temperature-point
+/// params that become optional in task #4241 γ; their tightening to Temperature
+/// belongs to sibling task #3112).
 ///
-/// Per-member expected type:
+/// Required:
 ///   thermal_conductivity     → Type::Scalar { dimension: THERMAL_CONDUCTIVITY }
 ///   specific_heat            → Type::Scalar { dimension: SPECIFIC_HEAT }
 ///   thermal_expansion        → Type::Scalar { dimension: THERMAL_EXPANSION }
-///   melting_point            → Type::Real (sibling task #3112)
-///   max_service_temperature  → Type::Real (sibling task #3112)
-///   glass_transition         → Type::Real (sibling task #3112)
+///
+/// Optional (DefaultKind::Param in tc.defaults):
+///   melting_point            → Type::Real (= undef; sibling task #3112)
+///   max_service_temperature  → Type::Real (= undef; sibling task #3112)
+///   glass_transition         → Type::Real (= undef; sibling task #3112)
 #[test]
-fn thermally_characterized_refines_material_spec_with_six_members() {
+fn thermally_characterized_has_three_required_and_three_optional_members() {
     let module = load_stdlib_module();
 
     let tc = module
@@ -87,18 +90,18 @@ fn thermally_characterized_refines_material_spec_with_six_members() {
         tc.refinements
     );
 
-    // Exactly six own required members.
+    // Exactly three own required members (the dimensioned scalar types).
     assert_eq!(
         tc.required_members.len(),
-        6,
-        "ThermallyCharacterized should have exactly 6 required members, got: {:?}",
+        3,
+        "ThermallyCharacterized should have exactly 3 required members, got: {:?}",
         tc.required_members
             .iter()
             .map(|r| &r.name)
             .collect::<Vec<_>>()
     );
 
-    let expected_members: [(&str, Type); 6] = [
+    let expected_required: [(&str, Type); 3] = [
         (
             "thermal_conductivity",
             Type::Scalar {
@@ -117,12 +120,9 @@ fn thermally_characterized_refines_material_spec_with_six_members() {
                 dimension: DimensionVector::THERMAL_EXPANSION,
             },
         ),
-        ("melting_point", Type::Real),
-        ("max_service_temperature", Type::Real),
-        ("glass_transition", Type::Real),
     ];
 
-    for (expected_name, expected_ty) in &expected_members {
+    for (expected_name, expected_ty) in &expected_required {
         let req = tc
             .required_members
             .iter()
@@ -140,12 +140,44 @@ fn thermally_characterized_refines_material_spec_with_six_members() {
         match &req.kind {
             RequirementKind::Param(ty) => assert_eq!(
                 ty, expected_ty,
-                "ThermallyCharacterized member '{}' expected {:?}, got {:?}",
+                "ThermallyCharacterized required member '{}' expected {:?}, got {:?}",
                 expected_name, expected_ty, ty
             ),
             other => panic!(
-                "ThermallyCharacterized member '{}' should be Param, got {:?}",
+                "ThermallyCharacterized required member '{}' should be Param, got {:?}",
                 expected_name, other
+            ),
+        }
+    }
+
+    // Three optional params must appear in tc.defaults as DefaultKind::Param with the
+    // correct cell_type (Type::Real for all three; tightening to Temperature belongs to
+    // sibling task #3112 and will update these assertions).
+    let optional_params = ["melting_point", "max_service_temperature", "glass_transition"];
+    for param_name in &optional_params {
+        let default = tc
+            .defaults
+            .iter()
+            .find(|d| d.name.as_deref() == Some(param_name))
+            .unwrap_or_else(|| {
+                panic!(
+                    "ThermallyCharacterized missing optional default for '{}', defaults: {:?}",
+                    param_name,
+                    tc.defaults
+                        .iter()
+                        .map(|d| &d.name)
+                        .collect::<Vec<_>>()
+                )
+            });
+        match &default.kind {
+            DefaultKind::Param { cell_type, .. } => assert_eq!(
+                cell_type, &Type::Real,
+                "ThermallyCharacterized optional param '{}' expected Type::Real, got {:?}",
+                param_name, cell_type
+            ),
+            other => panic!(
+                "ThermallyCharacterized optional param '{}' should be DefaultKind::Param, got {:?}",
+                param_name, other
             ),
         }
     }
