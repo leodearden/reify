@@ -524,6 +524,10 @@ const App: Component = () => {
   const [scrollToLocation, setScrollToLocation] = createSignal<SourceLocation | null>(null);
   let flyToEntityFn: ((entityPath: string) => void) | undefined;
   let fitToViewFn: (() => void) | undefined;
+  // Live-buffer getter: Editor hands App a closure over the active CM view so
+  // save/re-evaluate consumers read the current doc rather than the stale store
+  // snapshot.  Mirrors the flyToEntityRef/fitToViewRef child→parent handle pattern.
+  let getLiveEditorContent: (() => string | null) | undefined;
 
   // Both the compile badge and the tessellation badge call this handler — both are
   // toggles. Clicking either badge while the panel is already open will close it rather
@@ -790,12 +794,18 @@ const App: Component = () => {
   }
 
   function handleReEvaluate() {
-    // Re-evaluate the active file
+    // Re-evaluate the active file using the LIVE buffer content.
+    // getLiveEditorContent?.() reads the current CM view document rather than
+    // the stale store snapshot (anti-loop invariant: store content is only
+    // updated at file-open/reload time, never during typing).  Falls back to
+    // file.content when the handle is not wired (e.g. in App tests that don't
+    // opt in to the live-content handle).
     const activeFile = editorStore.state.activeFile;
     if (activeFile) {
       const file = editorStore.state.openFiles.find((f) => f.path === activeFile);
       if (file) {
-        bridgeUpdateSource(file.path, file.content).catch((err) =>
+        const content = getLiveEditorContent?.() ?? file.content;
+        bridgeUpdateSource(file.path, content).catch((err) =>
           showToast(`Re-evaluation failed: ${errorMessage(err)}`, 'error'),
         );
       }
@@ -1486,7 +1496,7 @@ const App: Component = () => {
                 onFileClick={handleFileClick}
               />
               <FileTabs store={editorStore} />
-              <Editor store={editorStore} scrollToLocation={scrollToLocation} onOpen={handleOpen} onError={(msg) => showToast(msg, 'error')} onSaveConflict={(file) => showSaveConflictPrompt(file)} compileDiagnostics={engineStore.state.compileDiagnostics} />
+              <Editor store={editorStore} scrollToLocation={scrollToLocation} onOpen={handleOpen} onError={(msg) => showToast(msg, 'error')} onSaveConflict={(file) => showSaveConflictPrompt(file)} compileDiagnostics={engineStore.state.compileDiagnostics} liveContentRef={(fn) => { getLiveEditorContent = fn; }} />
             </div>
             <Splitter orientation="vertical" onResize={handleLeftResize} data-testid="splitter-left" />
             <div data-testid="viewport-panel" class={styles.viewportPanel}>
