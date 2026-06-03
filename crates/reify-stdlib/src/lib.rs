@@ -110,9 +110,9 @@ mod orientation;
 mod snapshot;
 mod stackup;
 mod supports;
-mod tolerancing;
 mod sweep;
 mod tensegrity;
+mod tolerancing;
 mod trajectory;
 mod trig;
 

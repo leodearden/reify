@@ -106,8 +106,11 @@ fn iso_it_tolerance(args: &[Value]) -> Value {
 /// Compute effective tolerance zone given tolerance value, material condition,
 /// and bonus departure.
 ///
-/// - `RFS`       → zone = tolerance_value (departure ignored)
-/// - `MMC`/`LMC` → zone = tolerance_value + bonus_departure
+/// - `RFS`       → zone = tolerance_value (`bonus_departure` is truly ignored;
+///   `args[2]` need not be a valid LENGTH scalar for `RFS`)
+/// - `MMC`/`LMC` → zone = tolerance_value + bonus_departure.  `bonus_departure`
+///   must be a finite LENGTH scalar; a computed zone that is negative (e.g.
+///   tol=1e-4, departure=−2e-4) is physically meaningless and returns `Undef`.
 /// - Any other variant / non-enum / wrong type_name → `Value::Undef`
 fn effective_tolerance_zone(args: &[Value]) -> Value {
     if args.len() != 3 {
@@ -117,15 +120,24 @@ fn effective_tolerance_zone(args: &[Value]) -> Value {
         Some(v) => v,
         None => return Value::Undef,
     };
-    let departure = match validate_dimensioned_scalar(&args[2], DimensionVector::LENGTH) {
-        Some(v) => v,
-        None => return Value::Undef,
-    };
     let zone = match &args[1] {
         Value::Enum { type_name, variant } if type_name == "MaterialCondition" => {
             match variant.as_str() {
+                // RFS: bonus departure is semantically irrelevant; skip validation.
                 "RFS" => tol,
-                "MMC" | "LMC" => tol + departure,
+                // MMC / LMC: validate departure and guard the sum.
+                "MMC" | "LMC" => {
+                    let departure =
+                        match validate_dimensioned_scalar(&args[2], DimensionVector::LENGTH) {
+                            Some(v) => v,
+                            None => return Value::Undef,
+                        };
+                    let zone = tol + departure;
+                    if zone < 0.0 {
+                        return Value::Undef;
+                    }
+                    zone
+                }
                 _ => return Value::Undef,
             }
         }
@@ -551,5 +563,96 @@ mod tests {
         // Unrecognised function → None
         let d = super::diagnose("totally_unknown", &[]);
         assert!(d.is_none(), "unknown function should return None from diagnose");
+    }
+
+    // ─── amendment tests (reviewer suggestions) ───────────────────────────────
+
+    /// Suggestion 1+2: negative zone (tol + departure < 0) should return Undef.
+    #[test]
+    fn efz_mmc_negative_zone_is_undef() {
+        // tol=1e-4, departure=-2e-4 → zone = -1e-4 < 0 → Undef
+        assert!(
+            crate::eval_builtin(
+                "effective_tolerance_zone",
+                &[len(1e-4), mc("MMC"), len(-2e-4)]
+            )
+            .is_undef(),
+            "negative zone (tol + departure < 0) for MMC should return Undef"
+        );
+    }
+
+    /// Suggestion 2: RFS truly ignores bonus_departure — even an invalid departure
+    /// (non-LENGTH) should not cause Undef when the condition is RFS.
+    #[test]
+    fn efz_rfs_ignores_invalid_departure_type() {
+        // RFS: departure arg is ignored; Value::Real is not a LENGTH scalar but
+        // should not trigger Undef since departure is irrelevant for RFS.
+        let result = crate::eval_builtin(
+            "effective_tolerance_zone",
+            &[len(1e-4), mc("RFS"), Value::Real(2e-5)],
+        );
+        let zone = scalar_si(&result);
+        assert_rel_close(
+            zone,
+            1e-4,
+            1e-9,
+            "RFS zone should equal tolerance_value regardless of departure type",
+        );
+    }
+
+    /// Suggestion 3: non-LENGTH bonus_departure for MMC returns Undef.
+    #[test]
+    fn efz_mmc_rejects_non_length_departure() {
+        // MMC with Value::Real (not a LENGTH scalar) for departure → Undef.
+        assert!(
+            crate::eval_builtin(
+                "effective_tolerance_zone",
+                &[len(1e-4), mc("MMC"), Value::Real(2e-5)]
+            )
+            .is_undef(),
+            "non-LENGTH bonus_departure for MMC should return Undef"
+        );
+    }
+
+    /// Suggestion 3: diagnose returns Some(Error) for inverted range (min > max).
+    #[test]
+    fn diagnose_iso_it_inverted_range_returns_error() {
+        use reify_core::Severity;
+        // min=50mm > max=30mm → out-of-envelope (inverted), well-typed → Some(Error)
+        let d = super::diagnose(
+            "iso_it_tolerance",
+            &[Value::Int(7), len(0.050), len(0.030)],
+        );
+        let diag = d.expect("inverted range should return Some(Diagnostic)");
+        assert_eq!(
+            diag.severity,
+            Severity::Error,
+            "inverted-range diagnostic should be Error severity"
+        );
+    }
+
+    /// Suggestion 3: diagnose returns Some(Error) for zero nominal size.
+    #[test]
+    fn diagnose_iso_it_zero_size_returns_error() {
+        use reify_core::Severity;
+        // min=0 → non-positive → out-of-envelope, well-typed → Some(Error)
+        let d = super::diagnose(
+            "iso_it_tolerance",
+            &[Value::Int(7), len(0.0), len(0.010)],
+        );
+        let diag = d.expect("zero nominal size should return Some(Diagnostic)");
+        assert_eq!(
+            diag.severity,
+            Severity::Error,
+            "zero-size diagnostic should be Error severity"
+        );
+    }
+
+    /// Suggestion 3: diagnose returns None for wrong arity (ill-typed → parse returns None → ?).
+    #[test]
+    fn diagnose_iso_it_wrong_arity_returns_none() {
+        // 2 args → parse_iso_well_typed returns None → diagnose returns None (not an error).
+        let d = super::diagnose("iso_it_tolerance", &[Value::Int(7), len(0.018)]);
+        assert!(d.is_none(), "wrong arity should return None (not a diagnosable error)");
     }
 }
