@@ -451,6 +451,69 @@ describe('shortcuts — navigation entries', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Command palette + symbol-jump shortcut entries (task-4208)
+// ---------------------------------------------------------------------------
+
+describe('shortcuts — commandPalette and symbolJump entries', () => {
+  it('SHORTCUTS contains a commandPalette entry', () => {
+    const entry = SHORTCUTS.find((s) => s.id === 'commandPalette');
+    expect(entry).toBeDefined();
+  });
+
+  it('commandPalette entry has key "Ctrl+Shift+P", truthy description, and is not disabled', () => {
+    const entry = SHORTCUTS.find((s) => s.id === 'commandPalette');
+    expect(entry?.key).toBe('Ctrl+Shift+P');
+    expect(entry?.description).toBeTruthy();
+    expect(entry?.disabled).not.toBe(true);
+  });
+
+  it('SHORTCUTS contains a symbolJump entry', () => {
+    const entry = SHORTCUTS.find((s) => s.id === 'symbolJump');
+    expect(entry).toBeDefined();
+  });
+
+  it('symbolJump entry has key "Ctrl+Shift+O", truthy description, and is not disabled', () => {
+    const entry = SHORTCUTS.find((s) => s.id === 'symbolJump');
+    expect(entry?.key).toBe('Ctrl+Shift+O');
+    expect(entry?.description).toBeTruthy();
+    expect(entry?.disabled).not.toBe(true);
+  });
+
+  it('getShortcut("commandPalette") is defined (id flows into ShortcutId union)', () => {
+    expect(getShortcut('commandPalette')).toBeDefined();
+  });
+
+  it('getShortcut("symbolJump") is defined (id flows into ShortcutId union)', () => {
+    expect(getShortcut('symbolJump')).toBeDefined();
+  });
+
+  it('commandPalette bind matches Ctrl+Shift+P keydown', () => {
+    const entry = getShortcut('commandPalette');
+    expect(entry?.bind).toBeDefined();
+    expect(matchesEvent(entry!.bind!, new KeyboardEvent('keydown', { key: 'p', ctrlKey: true, shiftKey: true }))).toBe(true);
+    // shift required — Ctrl+P alone must not match
+    expect(matchesEvent(entry!.bind!, new KeyboardEvent('keydown', { key: 'p', ctrlKey: true, shiftKey: false }))).toBe(false);
+  });
+
+  it('symbolJump bind matches Ctrl+Shift+O keydown', () => {
+    const entry = getShortcut('symbolJump');
+    expect(entry?.bind).toBeDefined();
+    expect(matchesEvent(entry!.bind!, new KeyboardEvent('keydown', { key: 'o', ctrlKey: true, shiftKey: true }))).toBe(true);
+    // must not match the existing 'open' Ctrl+O (no shift)
+    expect(matchesEvent(entry!.bind!, new KeyboardEvent('keydown', { key: 'o', ctrlKey: true, shiftKey: false }))).toBe(false);
+  });
+
+  it('symbolJump bind does NOT match the open shortcut bind (Ctrl+O)', () => {
+    const openEntry = getShortcut('open');
+    const symbolJumpEntry = getShortcut('symbolJump');
+    expect(openEntry?.bind).toBeDefined();
+    expect(symbolJumpEntry?.bind).toBeDefined();
+    // Ctrl+Shift+O event should not match the open bind (shift:false prevents it)
+    expect(matchesEvent(openEntry!.bind!, new KeyboardEvent('keydown', { key: 'o', ctrlKey: true, shiftKey: true }))).toBe(false);
+  });
+});
+
 describe('shortcuts.ts source documentation', () => {
   it('does not contain brittle KeyboardHelp.tsx: file:line reference', () => {
     expect(SRC).not.toContain('KeyboardHelp.tsx:');
