@@ -6,6 +6,7 @@ export const THEME_TOKENS: Record<string, string> = {
   textSecondary: '#a6adc8',
   textMuted: '#6c7086',
   accent: '#89b4fa',
+  selection: '#ff9500',
   accentHover: '#74c7ec',
   border: '#45475a',
   error: '#f38ba8',
