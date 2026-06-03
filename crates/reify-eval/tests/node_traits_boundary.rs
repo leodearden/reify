@@ -82,6 +82,52 @@ fn node_traits_map_with_node_id_instance_wins_over_kind() {
     assert_eq!(m.resolve(&value_node()), NodeTraits::IMMEDIATE);
 }
 
+// ── T2 (PRD §9 / §5 B3): default_overrides(kind, kind.default_traits()) ─────────
+//
+// Pins the architecture-specified commitment-override default for every NodeKind:
+//   - Compute / Realization / Resolution → CommitIfSlow  (WARM_STARTABLE|COMMITTABLE has COMMITTABLE)
+//   - Constraint → AlwaysCancelWhenStale                 (empty traits, no COMMITTABLE)
+//   - Value → AlwaysCancelWhenStale                      (IMMEDIATE, no COMMITTABLE; Q-3 resolution)
+//
+// PRD §5 B3: "absent COMMITTABLE → always cancellable; present → CommitIfSlow".
+// The AlwaysCancelWhenStale for Value is safe because task η/3581 (B4) will
+// short-circuit Value cancellation at the scheduler before resolve_with_traits
+// is wired into scheduler dispatch.
+
+use reify_runtime::commitment::{default_overrides, NodeCommitmentOverride};
+
+#[test]
+fn t2_default_overrides_matches_arch_kind_defaults() {
+    // COMMITTABLE kinds → CommitIfSlow
+    assert_eq!(
+        default_overrides(NodeKind::Compute, NodeKind::Compute.default_traits()),
+        NodeCommitmentOverride::CommitIfSlow,
+        "Compute: WARM_STARTABLE|COMMITTABLE → CommitIfSlow"
+    );
+    assert_eq!(
+        default_overrides(NodeKind::Realization, NodeKind::Realization.default_traits()),
+        NodeCommitmentOverride::CommitIfSlow,
+        "Realization: WARM_STARTABLE|COMMITTABLE → CommitIfSlow"
+    );
+    assert_eq!(
+        default_overrides(NodeKind::Resolution, NodeKind::Resolution.default_traits()),
+        NodeCommitmentOverride::CommitIfSlow,
+        "Resolution: WARM_STARTABLE|COMMITTABLE → CommitIfSlow"
+    );
+
+    // Non-COMMITTABLE kinds → AlwaysCancelWhenStale
+    assert_eq!(
+        default_overrides(NodeKind::Constraint, NodeKind::Constraint.default_traits()),
+        NodeCommitmentOverride::AlwaysCancelWhenStale,
+        "Constraint: empty traits → AlwaysCancelWhenStale"
+    );
+    assert_eq!(
+        default_overrides(NodeKind::Value, NodeKind::Value.default_traits()),
+        NodeCommitmentOverride::AlwaysCancelWhenStale,
+        "Value: IMMEDIATE (no COMMITTABLE) → AlwaysCancelWhenStale (Q-3)"
+    );
+}
+
 // ── T5 (PRD §9 / §5 B5): bidirectional default_traits ↔ WarmStartableRegistry ──
 //
 // These cases pin that `ConcurrentScheduler::execute_with_config` consults the
