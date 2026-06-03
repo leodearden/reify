@@ -487,6 +487,43 @@ describe('StatusBar Claude status indicator', () => {
   });
 });
 
+describe('StatusBar constraint pill accessible labels', () => {
+  it('each constraint pill has aria-label and title with count and status', () => {
+    const constraints: Record<string, ConstraintData> = {
+      n1: makeConstraint('n1', 'satisfied'),
+      n2: makeConstraint('n2', 'satisfied'),
+      n3: makeConstraint('n3', 'violated'),
+      n4: makeConstraint('n4', 'indeterminate'),
+      n5: makeConstraint('n5', 'indeterminate'),
+      n6: makeConstraint('n6', 'indeterminate'),
+    };
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={constraints}
+      />
+    ));
+    const satisfiedPill = document.querySelector('[data-status="satisfied"]') as HTMLElement;
+    const violatedPill = document.querySelector('[data-status="violated"]') as HTMLElement;
+    const indeterminatePill = document.querySelector('[data-status="indeterminate"]') as HTMLElement;
+
+    expect(satisfiedPill).toBeTruthy();
+    expect(violatedPill).toBeTruthy();
+    expect(indeterminatePill).toBeTruthy();
+
+    // aria-label and title must contain count + status word
+    expect(satisfiedPill.getAttribute('aria-label')).toMatch(/2\s*satisfied/i);
+    expect(satisfiedPill.getAttribute('title')).toMatch(/2\s*satisfied/i);
+
+    expect(violatedPill.getAttribute('aria-label')).toMatch(/1\s*violated/i);
+    expect(violatedPill.getAttribute('title')).toMatch(/1\s*violated/i);
+
+    expect(indeterminatePill.getAttribute('aria-label')).toMatch(/3\s*indeterminate/i);
+    expect(indeterminatePill.getAttribute('title')).toMatch(/3\s*indeterminate/i);
+  });
+});
+
 describe('StatusBar merged diagnostics rendering', () => {
   function makeDiag(severity: string, message = 'test error'): DiagnosticInfo {
     return {
