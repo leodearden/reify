@@ -1954,4 +1954,147 @@ mod tests {
              (snapshot discards spanning-tree q, no closed-chain routing at snapshot entry)"
         );
     }
+
+    // ── step-1 RED: joint_compliance unit tests ───────────────────────────────
+    //
+    // Tests for `joint_compliance(joint: &Value, position: Option<f64>)`
+    // (returns `Option<JointCompliance>`). Will not compile until step-2 adds
+    // the helper. Five cases:
+    //  (a) plain revolute Map (no compliant keys) + position=Some → None
+    //  (b) compliant Map (spring_rate=2.0, neutral=π/12) + position=Some(π/6)
+    //      → Some { spring_rate=Some(2.0), damping=None, neutral≈π/12, position≈π/6 }
+    //  (c) same compliant Map + position=None → None
+    //      (spring needs position; damping=Option(None) → neither term → None)
+    //  (d) damping-only Map (no spring_rate key) + position=None
+    //      → Some { spring_rate=None, damping=Some(3.5), neutral=0.0, position=0.0 }
+    //  (e) Option-wrapped spring_rate (Value::Option(Some(Scalar{2.0}))) unwraps
+    //      the same as bare Scalar.
+
+    /// Build a compliant revolute joint Map mirroring make_flexure_joint's shape:
+    /// kind="revolute" + spring_rate=Scalar{ROTATIONAL_STIFFNESS} +
+    /// damping=Option(None) + neutral=Scalar{ANGLE}.
+    fn compliant_revolute_joint(spring_rate_val: f64, neutral_angle: f64) -> Value {
+        let mut m = BTreeMap::new();
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("revolute".to_string()),
+        );
+        m.insert(
+            Value::String("spring_rate".to_string()),
+            Value::Scalar {
+                si_value: spring_rate_val,
+                dimension: DimensionVector::ROTATIONAL_STIFFNESS,
+            },
+        );
+        m.insert(
+            Value::String("damping".to_string()),
+            Value::Option(None),
+        );
+        m.insert(
+            Value::String("neutral".to_string()),
+            Value::angle(neutral_angle),
+        );
+        Value::Map(m)
+    }
+
+    /// (a) Plain revolute joint (kind/axis/range only) with position=Some → None.
+    #[test]
+    fn joint_compliance_plain_joint_returns_none() {
+        use crate::eval_builtin;
+        use std::f64::consts::PI;
+        let axis_y = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let range = Value::Range {
+            lower: Some(Box::new(Value::angle(-PI))),
+            upper: Some(Box::new(Value::angle(PI))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        };
+        let plain_joint = eval_builtin("revolute", &[axis_y, range]);
+        assert!(
+            joint_compliance(&plain_joint, Some(PI / 6.0)).is_none(),
+            "a plain revolute joint (no compliant keys) must return None"
+        );
+    }
+
+    /// (b) Compliant revolute Map with position=Some → Some with correct fields.
+    #[test]
+    fn joint_compliance_compliant_joint_with_position_returns_some() {
+        use std::f64::consts::PI;
+        let joint = compliant_revolute_joint(2.0, PI / 12.0);
+        let c = joint_compliance(&joint, Some(PI / 6.0))
+            .expect("compliant joint with position must return Some");
+        assert!(
+            (c.spring_rate.expect("spring_rate must be Some") - 2.0).abs() < 1e-12,
+            "spring_rate"
+        );
+        assert!(c.damping.is_none(), "damping must be None (was Option(None))");
+        assert!((c.neutral - PI / 12.0).abs() < 1e-12, "neutral ≈ π/12");
+        assert!((c.position - PI / 6.0).abs() < 1e-12, "position ≈ π/6");
+    }
+
+    /// (c) Same compliant Map with position=None → None.
+    /// spring needs position; damping=Option(None) → neither term present → None.
+    #[test]
+    fn joint_compliance_compliant_joint_without_position_returns_none() {
+        use std::f64::consts::PI;
+        let joint = compliant_revolute_joint(2.0, PI / 12.0);
+        assert!(
+            joint_compliance(&joint, None).is_none(),
+            "spring-only compliant joint (damping=None) without position must return None"
+        );
+    }
+
+    /// (d) Damping-only Map + position=None → Some { spring_rate=None, damping=Some(3.5), ... }.
+    /// Damping applies even without position (position/neutral default to 0.0).
+    #[test]
+    fn joint_compliance_damping_only_without_position_returns_some() {
+        let mut m = BTreeMap::new();
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("revolute".to_string()),
+        );
+        m.insert(
+            Value::String("damping".to_string()),
+            Value::Real(3.5),
+        );
+        let joint = Value::Map(m);
+        let c = joint_compliance(&joint, None)
+            .expect("damping-only joint must return Some even without position");
+        assert!(c.spring_rate.is_none(), "spring_rate must be None");
+        assert!(
+            (c.damping.expect("damping must be Some") - 3.5).abs() < 1e-12,
+            "damping"
+        );
+        assert!(c.neutral == 0.0, "neutral defaults to 0.0");
+        assert!(c.position == 0.0, "position defaults to 0.0 when None");
+    }
+
+    /// (e) Option-wrapped spring_rate unwraps the same as a bare Scalar.
+    #[test]
+    fn joint_compliance_option_wrapped_spring_rate_unwraps() {
+        use std::f64::consts::PI;
+        let mut m = BTreeMap::new();
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("revolute".to_string()),
+        );
+        m.insert(
+            Value::String("spring_rate".to_string()),
+            Value::Option(Some(Box::new(Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::ROTATIONAL_STIFFNESS,
+            }))),
+        );
+        m.insert(
+            Value::String("neutral".to_string()),
+            Value::angle(PI / 12.0),
+        );
+        let joint = Value::Map(m);
+        let c = joint_compliance(&joint, Some(PI / 6.0))
+            .expect("Option-wrapped spring_rate must unwrap and return Some");
+        assert!(
+            (c.spring_rate.expect("spring_rate must be Some") - 2.0).abs() < 1e-12,
+            "spring_rate from Option wrapper"
+        );
+    }
 }
