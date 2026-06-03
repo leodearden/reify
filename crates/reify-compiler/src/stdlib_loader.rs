@@ -249,6 +249,20 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
             // references no other stdlib module → zero ordering constraints;
             // tail-append is safe. Reconstruction per PRD §Slice C.
             ("std.fields", include_str!("../stdlib/fields.ri")),
+            // `std.determinacy.purposes` ships the two standard determinacy-check
+            // purposes (simulation_ready + design_review, PRD §5) that are merged
+            // into every user module via merge_prelude_purposes (task-4016 ζ).
+            //
+            // MUST be LAST in the source list: the sequential prelude build runs
+            // merge_prelude_purposes for each user compile, but NOT during the
+            // intra-stdlib build itself. Placing this module last means no other
+            // stdlib module is compiled after it during load_stdlib(), so none
+            // inadvertently inherit the standard purposes during prelude construction
+            // — stdlib-internal count/hash goldens stay byte-stable.
+            (
+                "std.determinacy.purposes",
+                include_str!("../stdlib/determinacy_purposes.ri"),
+            ),
         ];
 
         // SEQUENTIAL COMPILATION WITH GROWING PRELUDE: each module is compiled
