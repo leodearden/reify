@@ -14,8 +14,43 @@ use crate::helpers::{sanitize_value, validate_dimensioned_scalar};
 /// Returns `Some(value)` if the name is a recognised tolerancing function,
 /// `None` otherwise (so the dispatch chain in `lib.rs` can fall through).
 pub(crate) fn eval_tolerancing(name: &str, args: &[Value]) -> Option<Value> {
-    let _ = (name, args);
-    None
+    Some(match name {
+        "effective_tolerance_zone" => effective_tolerance_zone(args),
+        _ => return None,
+    })
+}
+
+// ─── private helpers ─────────────────────────────────────────────────────────
+
+/// Compute effective tolerance zone given tolerance value, material condition,
+/// and bonus departure.
+///
+/// - `RFS`       → zone = tolerance_value (departure ignored)
+/// - `MMC`/`LMC` → zone = tolerance_value + bonus_departure
+/// - Any other variant / non-enum / wrong type_name → `Value::Undef`
+fn effective_tolerance_zone(args: &[Value]) -> Value {
+    if args.len() != 3 {
+        return Value::Undef;
+    }
+    let tol = match validate_dimensioned_scalar(&args[0], DimensionVector::LENGTH) {
+        Some(v) => v,
+        None => return Value::Undef,
+    };
+    let departure = match validate_dimensioned_scalar(&args[2], DimensionVector::LENGTH) {
+        Some(v) => v,
+        None => return Value::Undef,
+    };
+    let zone = match &args[1] {
+        Value::Enum { type_name, variant } if type_name == "MaterialCondition" => {
+            match variant.as_str() {
+                "RFS" => tol,
+                "MMC" | "LMC" => tol + departure,
+                _ => return Value::Undef,
+            }
+        }
+        _ => return Value::Undef,
+    };
+    sanitize_value(Value::Scalar { si_value: zone, dimension: DimensionVector::LENGTH })
 }
 
 /// Pure classifier: given the name and args of a stdlib call that returned
