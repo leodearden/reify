@@ -778,6 +778,67 @@ mod tests {
             Some(DiagnosticCode::DynamicsBodyMassPropsArity)
         );
     }
+
+    // ── step-1: GeometryHandle body routes kernel queries into geometric fields ─
+
+    #[test]
+    fn try_eval_body_mass_props_routes_kernel_query_into_geometric_fields() {
+        use reify_core::RealizationNodeId;
+        use reify_ir::GeometryHandleId;
+
+        // Body cell holds a GeometryHandle with kernel_handle 7.
+        let body_cell = ValueCellId::new("Design", "body");
+        let rho_cell = ValueCellId::new("Design", "rho");
+        let mut values = ValueMap::new();
+        values.insert(
+            body_cell.clone(),
+            Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new("Design", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: GeometryHandleId(7),
+            },
+        );
+        values.insert(rho_cell.clone(), Value::Real(2000.0));
+
+        // Injected inertia: distinct diagonal so all three diagonal entries differ.
+        let injected_inertia = Value::List(vec![
+            Value::List(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]),
+            Value::List(vec![Value::Real(0.0), Value::Real(2.0), Value::Real(0.0)]),
+            Value::List(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(3.0)]),
+        ]);
+        let kernel = MockGeometryKernel::new()
+            .with_volume_result(GeometryHandleId(7), Value::Real(3.0))
+            .with_center_of_mass_result(
+                GeometryHandleId(7),
+                2000.0,
+                Value::String("{\"x\":0.01,\"y\":0.02,\"z\":0.03}".to_string()),
+            )
+            .with_inertia_tensor_result(GeometryHandleId(7), 2000.0, injected_inertia);
+
+        let expr = call_expr("body_mass_props", &[body_cell, rho_cell]);
+        let mut diags = Vec::new();
+        let result = try_eval_body_mass_props(&expr, &values, &kernel, &mut diags)
+            .expect("recognised body_mass_props with GeometryHandle must return Some");
+
+        // mass = density × volume = 2000.0 × 3.0 = 6000.0 kg
+        let (mass, com, inertia) = mass_props_fields(&result);
+        assert_close(mass, 6000.0, "mass");
+        assert_close(com[0], 0.01, "com[0]");
+        assert_close(com[1], 0.02, "com[1]");
+        assert_close(com[2], 0.03, "com[2]");
+        assert_close(inertia[0][0], 1.0, "inertia[0][0]");
+        assert_close(inertia[1][1], 2.0, "inertia[1][1]");
+        assert_close(inertia[2][2], 3.0, "inertia[2][2]");
+        assert_close(inertia[0][1], 0.0, "inertia[0][1]");
+        assert_close(inertia[1][0], 0.0, "inertia[1][0]");
+        // Explicit density suppresses the default-water warning.
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.code != Some(DiagnosticCode::DynamicsDefaultDensity)),
+            "explicit density must suppress the default-water warning, got: {diags:?}"
+        );
+    }
 }
 
 // ── inverse_dynamics ComputeNode trampoline (task RBD-ι) ─────────────────────
