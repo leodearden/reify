@@ -127,6 +127,7 @@ export const MenuBar: Component<MenuBarProps> = (props) => {
           <div style={{ position: 'relative' }}>
             <button
               class={openMenu() === menu.id ? `${styles.trigger} ${styles.triggerOpen}` : styles.trigger}
+              data-testid={`menu-trigger-${menu.id}`}
               onClick={() => toggleMenu(menu.id)}
               onMouseEnter={() => switchMenu(menu.id)}
             >
@@ -141,6 +142,7 @@ export const MenuBar: Component<MenuBarProps> = (props) => {
                       <button
                         class={isDisabled ? `${styles.item} ${styles.itemDisabled}` : styles.item}
                         role="menuitem"
+                        data-testid={`menu-item-${item.shortcutId}`}
                         disabled={isDisabled}
                         onClick={() => handleItemClick(item.action ? props[item.action] : undefined)}
                       >
