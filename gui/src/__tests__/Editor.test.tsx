@@ -5,7 +5,8 @@ import { createSignal } from 'solid-js';
 import { EditorView, keymap } from '@codemirror/view';
 import { undo } from '@codemirror/commands';
 import { foldAll, unfoldAll, foldedRanges } from '@codemirror/language';
-import { diagnosticCount } from '@codemirror/lint';
+import { diagnosticCount, forEachDiagnostic } from '@codemirror/lint';
+import type { DiagnosticInfo } from '../types';
 import { createEditorStore } from '../stores/editorStore';
 import * as bridge from '../bridge';
 import type { FileData, SourceLocation } from '../types';
@@ -1526,5 +1527,108 @@ describe('Editor F12 go-to-definition', () => {
     await vi.waitFor(() => {
       expect(view.state.selection.main.head).toBe(28);
     });
+  });
+});
+
+describe('Editor compile diagnostics', () => {
+  /** Capture the Tauri diagnostics event handler (LSP) for merge tests. */
+  function setupListenCapture() {
+    let diagnosticsHandler: ((event: { payload: any }) => void) | undefined;
+    mockListen.mockImplementation(async (_event: any, handler: any) => {
+      diagnosticsHandler = handler;
+      return vi.fn();
+    });
+    return () => diagnosticsHandler;
+  }
+
+  // A compile Error diagnostic whose file_path matches file1
+  const errorDiagForActiveFile: DiagnosticInfo = {
+    file_path: file1.path,
+    line: 1,
+    column: 11,
+    end_line: 1,
+    end_column: 20,
+    severity: 'Error',
+    message: 'unresolved name: rot_to_z',
+    code: null,
+  };
+
+  it('(a) rendering with an active-file compile diagnostic shows count === 1 with error severity', () => {
+    setupListenCapture();
+    const store = setupStore([file1]);
+    render(() => (
+      <Editor store={store} compileDiagnostics={[errorDiagForActiveFile]} />
+    ));
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    expect(diagnosticCount(view.state)).toBe(1);
+
+    const severities: string[] = [];
+    forEachDiagnostic(view.state, (d) => severities.push(d.severity));
+    expect(severities).toContain('error');
+  });
+
+  it('(b) a compile diagnostic for a DIFFERENT file is NOT applied (count stays 0)', () => {
+    setupListenCapture();
+    const store = setupStore([file1]);
+    render(() => (
+      <Editor
+        store={store}
+        compileDiagnostics={[{ ...errorDiagForActiveFile, file_path: '/project/src/other.ri' }]}
+      />
+    ));
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    expect(diagnosticCount(view.state)).toBe(0);
+  });
+
+  it('(c) compile diagnostic + LSP diagnostic coexist (count === 2, neither clobbers the other)', () => {
+    const getHandler = setupListenCapture();
+    const store = setupStore([file1]);
+    render(() => (
+      <Editor store={store} compileDiagnostics={[errorDiagForActiveFile]} />
+    ));
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Compile diagnostic should already be applied (1)
+    expect(diagnosticCount(view.state)).toBe(1);
+
+    // Fire an LSP diagnostics event for the active file
+    const handler = getHandler();
+    expect(handler).toBeDefined();
+    handler!({
+      payload: {
+        uri: 'file:///project/src/bracket.ri',
+        diagnostics: [
+          {
+            range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
+            severity: 2,
+            message: 'lsp warning',
+          },
+        ],
+      },
+    });
+
+    // Both should coexist: count === 2
+    expect(diagnosticCount(view.state)).toBe(2);
+  });
+
+  it('(d) clearing compileDiagnostics prop removes the compile squiggle', () => {
+    setupListenCapture();
+    const store = setupStore([file1]);
+    const [diags, setDiags] = createSignal<DiagnosticInfo[]>([errorDiagForActiveFile]);
+    render(() => <Editor store={store} compileDiagnostics={diags()} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    expect(diagnosticCount(view.state)).toBe(1);
+
+    // Clear the compile diagnostics
+    setDiags([]);
+
+    expect(diagnosticCount(view.state)).toBe(0);
   });
 });
