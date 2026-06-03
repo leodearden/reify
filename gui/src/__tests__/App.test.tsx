@@ -6069,6 +6069,9 @@ describe('App warm-pool debug panel placement (task 4279)', () => {
     // Overlay wrapper must exist
     expect(screen.getByTestId('warm-pool-debug-overlay')).toBeTruthy();
 
+    // Panel must be inside the overlay wrapper
+    expect(screen.getByTestId('warm-pool-debug-overlay').contains(screen.getByTestId('warm-pool-debug-panel'))).toBe(true);
+
     // Panel must NOT be a descendant of the side-panel grid
     const sidePanel = screen.getByTestId('side-panel');
     expect(sidePanel.contains(screen.getByTestId('warm-pool-debug-panel'))).toBe(false);

@@ -94,6 +94,8 @@
   overflow: hidden;
 }
 
+/* Debug-only read-only HUD; pointer-events:none is intentional — if interactive
+   controls are added later, remove this on the wrapper (the panel already sets it). */
 .warmPoolDebugOverlay {
   position: fixed;
   bottom: 40px;
