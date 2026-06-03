@@ -338,7 +338,16 @@ pub fn try_eval_body_mass_props(
         Some(h) => {
             let err: std::cell::RefCell<Option<reify_ir::QueryError>> =
                 std::cell::RefCell::new(None);
+            // INVARIANT: eval_body_mass_props_core calls geom_query exactly once
+            // (l.188 — single `geom_query(density)` call after density resolution).
+            // If the core ever called the closure more than once, only the LAST
+            // error would be captured and any prior successful triple would be
+            // silently overwritten with the (0,0,0) sentinel, producing wrong mass
+            // properties with no diagnostic. The debug_assert below makes that
+            // contract violation fail loudly under any test run.
+            let invocation_count = std::cell::Cell::new(0u32);
             let q = |d: f64| {
+                invocation_count.set(invocation_count.get() + 1);
                 match query_body_mass_props_from_kernel(kernel, h, d) {
                     Ok(triple) => triple,
                     Err(e) => {
@@ -348,6 +357,15 @@ pub fn try_eval_body_mass_props(
                 }
             };
             let mp = eval_body_mass_props_core(body, density_arg, q, diagnostics);
+            debug_assert_eq!(
+                invocation_count.get(),
+                1,
+                "eval_body_mass_props_core invoked geom_query {} time(s); expected \
+                 exactly 1 — the RefCell error-capture assumes a single call and \
+                 would silently overwrite errors with (0,0,0) sentinels on a \
+                 multi-call core",
+                invocation_count.get()
+            );
             if let Some(e) = err.borrow().as_ref() {
                 // Defensive downgrade: a kernel error for any of the three
                 // mass-properties queries (Volume / CenterOfMass / InertiaTensor)
@@ -959,6 +977,146 @@ mod tests {
                 .iter()
                 .all(|d| d.code != Some(DiagnosticCode::DynamicsDefaultDensity)),
             "explicit density must suppress the default-water warning, got: {diags:?}"
+        );
+    }
+
+    // ── malformed-reply defensive paths in query_body_mass_props_from_kernel ──
+    //
+    // The three ok_or_else / parse_xyz_value / inertia_3x3_from_value branches
+    // in query_body_mass_props_from_kernel are exercised below. Each should
+    // propagate the error through the closure capture, triggering the Undef
+    // downgrade and the kernel-failure Warning — the same contract as a missing
+    // kernel result.
+
+    /// Partial kernel failure: Volume query succeeds but CenterOfMass is not
+    /// injected (returns Err). The error must propagate out of the closure,
+    /// downgrading all geometric fields to Undef and emitting a Warning.
+    #[test]
+    fn try_eval_body_mass_props_partial_failure_after_volume_downgrades_to_undef() {
+        use reify_core::RealizationNodeId;
+        use reify_ir::GeometryHandleId;
+
+        let body_cell = ValueCellId::new("Design", "body");
+        let rho_cell = ValueCellId::new("Design", "rho");
+        let mut values = ValueMap::new();
+        values.insert(
+            body_cell.clone(),
+            Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new("Design", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: GeometryHandleId(11),
+            },
+        );
+        values.insert(rho_cell.clone(), Value::Real(2000.0));
+
+        // Volume injected and succeeds; CenterOfMass is NOT injected → Err on
+        // the second query, exercising the partial-failure path.
+        let kernel = MockGeometryKernel::new()
+            .with_volume_result(GeometryHandleId(11), Value::Real(5.0));
+
+        let expr = call_expr("body_mass_props", &[body_cell, rho_cell]);
+        let mut diags = Vec::new();
+        let result = try_eval_body_mass_props(&expr, &values, &kernel, &mut diags)
+            .expect("partial kernel failure must still return Some(MassProperties)");
+
+        assert_deferred_mass_props(&result);
+        let warnings: Vec<_> = diags
+            .iter()
+            .filter(|d| d.severity == Severity::Warning)
+            .collect();
+        assert!(
+            !warnings.is_empty(),
+            "partial kernel failure must emit at least one Warning, got: {diags:?}"
+        );
+    }
+
+    /// Malformed Volume reply: the mock returns `Value::String("not-a-number")`
+    /// for the Volume query. `cell_f64` returns `None`, which `ok_or_else`
+    /// converts to a `QueryError`. All geometric fields must downgrade to Undef
+    /// and exactly one Warning must be emitted.
+    #[test]
+    fn try_eval_body_mass_props_malformed_volume_reply_downgrades_to_undef() {
+        use reify_core::RealizationNodeId;
+        use reify_ir::GeometryHandleId;
+
+        let body_cell = ValueCellId::new("Design", "body");
+        let rho_cell = ValueCellId::new("Design", "rho");
+        let mut values = ValueMap::new();
+        values.insert(
+            body_cell.clone(),
+            Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new("Design", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: GeometryHandleId(13),
+            },
+        );
+        values.insert(rho_cell.clone(), Value::Real(2000.0));
+
+        // Volume reply is non-numeric: cell_f64 returns None → ok_or_else →
+        // QueryError → defensive Undef + Warning.
+        let kernel = MockGeometryKernel::new()
+            .with_volume_result(GeometryHandleId(13), Value::String("not-a-number".to_string()));
+
+        let expr = call_expr("body_mass_props", &[body_cell, rho_cell]);
+        let mut diags = Vec::new();
+        let result = try_eval_body_mass_props(&expr, &values, &kernel, &mut diags)
+            .expect("malformed Volume reply must still return Some(MassProperties)");
+
+        assert_deferred_mass_props(&result);
+        let warnings: Vec<_> = diags
+            .iter()
+            .filter(|d| d.severity == Severity::Warning)
+            .collect();
+        assert!(
+            !warnings.is_empty(),
+            "malformed Volume reply must emit at least one Warning, got: {diags:?}"
+        );
+    }
+
+    /// Malformed CenterOfMass JSON: Volume succeeds but the CoM reply is not a
+    /// valid `{"x":_,"y":_,"z":_}` JSON string. `parse_xyz_value` fails,
+    /// propagating a `QueryError` that triggers the Undef downgrade + Warning.
+    #[test]
+    fn try_eval_body_mass_props_malformed_com_json_downgrades_to_undef() {
+        use reify_core::RealizationNodeId;
+        use reify_ir::GeometryHandleId;
+
+        let body_cell = ValueCellId::new("Design", "body");
+        let rho_cell = ValueCellId::new("Design", "rho");
+        let mut values = ValueMap::new();
+        values.insert(
+            body_cell.clone(),
+            Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new("Design", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: GeometryHandleId(15),
+            },
+        );
+        values.insert(rho_cell.clone(), Value::Real(2000.0));
+
+        // Volume is valid; CenterOfMass reply is malformed JSON → parse_xyz_value
+        // fails → QueryError → defensive Undef + Warning.
+        let kernel = MockGeometryKernel::new()
+            .with_volume_result(GeometryHandleId(15), Value::Real(5.0))
+            .with_center_of_mass_result(
+                GeometryHandleId(15),
+                2000.0,
+                Value::String("not-valid-json".to_string()),
+            );
+
+        let expr = call_expr("body_mass_props", &[body_cell, rho_cell]);
+        let mut diags = Vec::new();
+        let result = try_eval_body_mass_props(&expr, &values, &kernel, &mut diags)
+            .expect("malformed CoM JSON must still return Some(MassProperties)");
+
+        assert_deferred_mass_props(&result);
+        let warnings: Vec<_> = diags
+            .iter()
+            .filter(|d| d.severity == Severity::Warning)
+            .collect();
+        assert!(
+            !warnings.is_empty(),
+            "malformed CenterOfMass JSON must emit at least one Warning, got: {diags:?}"
         );
     }
 }

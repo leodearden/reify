@@ -194,8 +194,13 @@ fn body_mass_props_box_evals_to_computed_mass_properties() {
         (mass - expected_mass).abs()
     );
 
-    // ── com: Value::Point of 3 finite LENGTH-dimensioned scalars ─────────────
-    // Exact placement is box-origin-convention-dependent; assert shape only.
+    // ── com: Value::Point of 3 LENGTH-dimensioned scalars at (0, 0, 0) ──────
+    // OCCT creates box(W,H,D) centered at the origin — corner at
+    // (-W/2, -H/2, -D/2) — so the centroid is (0, 0, 0) in the model frame
+    // (confirmed: occt_wrapper.cpp make_box uses gp_Pnt(-width/2, -height/2,
+    // -depth/2) as the BRepPrimAPI_MakeBox corner). Both CenterOfMass and the
+    // inertia formulas are consistent: the (1/12)m(…) formula is centroidal, so
+    // the centroid location is well-defined and can be pinned at 1e-9 m.
     let com = data.fields.get("com").expect("com field");
     let comps = match com {
         Value::Point(v) => v,
@@ -208,8 +213,10 @@ fn body_mass_props_box_evals_to_computed_mass_properties() {
                 if *dimension == DimensionVector::LENGTH =>
             {
                 assert!(
-                    si_value.is_finite(),
-                    "com[{i}] must be finite, got {si_value}"
+                    (si_value - 0.0_f64).abs() < tol,
+                    "com[{i}]: expected 0.0 m (box centred at origin), got {si_value:.6e} m \
+                     (delta {:.3e}, tol {tol:.0e})",
+                    si_value.abs()
                 );
             }
             other => panic!(
