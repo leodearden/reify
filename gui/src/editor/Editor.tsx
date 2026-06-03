@@ -51,6 +51,17 @@ export interface EditorProps {
    * lint layer so neither channel clobbers the other.
    */
   compileDiagnostics?: DiagnosticInfo[];
+  /**
+   * Called once in onMount with a getter () => string | null that returns the
+   * LIVE CodeMirror document for the active file at call time.  App stores this
+   * getter and invokes it at save/re-evaluate time so those consumers read the
+   * actual buffer rather than the stale store snapshot.
+   *
+   * Mirrors the flyToEntityRef / fitToViewRef child→parent handle pattern
+   * (App.tsx:1507-1508).  Returns null if the view has been destroyed or is
+   * not yet mounted.
+   */
+  liveContentRef?: (getter: () => string | null) => void;
 }
 
 export function Editor(props: EditorProps) {
@@ -341,6 +352,12 @@ export function Editor(props: EditorProps) {
     const state = EditorState.create({ doc, extensions });
 
     view = new EditorView({ state, parent: containerRef });
+
+    // Hand the parent a getter for the live buffer content so App can read the
+    // active file's current document at save/re-evaluate time.  The getter
+    // closes over the component-local `view` variable, which is always the live
+    // EditorView for whatever file is currently active.
+    props.liveContentRef?.(() => view?.state.doc.toString() ?? null);
 
     // Expose editor view for the debug bridge (REIFY_DEBUG=1)
     if (window.__REIFY_DEBUG__) {
