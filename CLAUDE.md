@@ -4,6 +4,15 @@
 
 The orchestrator verify pipeline requires `sccache` on PATH (install via `cargo install sccache`). `orchestrator.yaml` sets `RUSTC_WRAPPER=sccache` and `CARGO_INCREMENTAL=0` to share a rustc cache across worktrees; rationale and design in `~/.claude/plans/playful-hopping-nygaard.md`.
 
+### Manifold prebuilt C++ libs
+
+All four native kernels link **prebuilt** libs from `/opt/reify-deps` — OCCT, OpenVDB, and gmsh always have, and manifold now joins them. `manifold-csg-sys`'s `build.rs` would otherwise clone `elalish/manifold` and cmake-build the whole C++ tree (manifold + builtin TBB + builtin Clipper2 + manifoldc) from source in **every** worktree (~4× per worktree, 56 MB clone + ~227 MB OUT_DIR each), which on a cold cache pushed merge verifies past their inner timeouts (exit 124).
+
+Instead, `scripts/build-manifold-deps.sh` builds those libs **once per host** into `/opt/reify-deps/manifold/lib`, and a `links`-name override in `.cargo/config.toml` (`[target.x86_64-unknown-linux-gnu.manifold]`) makes Cargo **skip the from-source build entirely** and link the prebuilt static libs. `setup-dev.sh` runs the build script for you. The override is target-scoped to `x86_64-unknown-linux-gnu`, so wasm/emscripten builds keep their own FetchContent path.
+
+- **A `manifold-csg-sys` pin bump requires re-running `scripts/build-manifold-deps.sh`** (it tracks the version in `Cargo.lock` + the upstream `MANIFOLD_VERSION` tag and stamps `/opt/reify-deps/manifold/VERSION`).
+- `scripts/check-manifold-deps.sh` is a preflight guard wired into `verify.sh` as the first Rust step: it fails verify with a clear "run the deps script" message if the prebuilt is missing or version-drifted, instead of a cryptic linker error mid-compile.
+
 ### Single-command GUI launch
 
 From a clean checkout, two wrapper scripts collapse the full sidecar → npm install → npm build → cargo build → launch pipeline into a single command. Both scripts export `LD_LIBRARY_PATH` for OCCT's bundled snap shared libraries automatically — no need to set it yourself.

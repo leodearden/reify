@@ -551,6 +551,14 @@ add_test_passes() {
 }
 
 build_plan() {
+    # manifold prebuilt guard: fail fast (with a clear "run the deps script"
+    # message) if the prebuilt manifold libs that .cargo/config.toml's
+    # [target.*.manifold] override links are missing or version-drifted —
+    # before any multi-minute compile turns that into a cryptic linker error.
+    if [ "$RUN_RUST" -eq 1 ]; then
+        add "./scripts/check-manifold-deps.sh"
+    fi
+
     # tree-sitter parser regeneration is a Rust-build prerequisite.
     if [ "$RUN_RUST" -eq 1 ]; then
         add "./scripts/tree-sitter-generate.sh"
