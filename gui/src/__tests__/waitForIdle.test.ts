@@ -64,6 +64,15 @@ function makeStores(phase: 'idle' | 'evaluating' | 'error' = 'idle'): DebugStore
     viewState: {
       resetToDefaultView: vi.fn(),
     },
+    layout: {
+      state: {
+        editorWidth: 300,
+        sideWidth: 300,
+        designTreeHeight: 160,
+        propertyHeight: 200,
+        constraintHeight: 140,
+      },
+    },
   };
 }
 

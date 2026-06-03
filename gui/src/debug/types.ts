@@ -48,6 +48,16 @@ export interface DebugStores {
   viewState: {
     resetToDefaultView: () => void;
   };
+  /** Pane/splitter dimensions (read-only for L0; C2/resize_panes will add setters). */
+  layout: {
+    state: {
+      editorWidth: number;
+      sideWidth: number;
+      designTreeHeight: number;
+      propertyHeight: number;
+      constraintHeight: number;
+    };
+  };
 }
 
 /** Three.js viewport references set by Viewport.tsx onMount. */
