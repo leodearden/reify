@@ -867,9 +867,11 @@ const App: Component = () => {
   };
   useKeyboardShortcuts(shortcutCallbacks);
 
-  // Palette symbol fetch — mirrors the file:// URI pattern in Editor.tsx:104-108
+  // Palette symbol fetch — uses the same URI normalisation as Editor.tsx:104-108
+  // so the request URI matches the uri used at didOpen time.
   function pathToUri(filePath: string): string {
-    return `file://${filePath}`;
+    if (filePath.startsWith('file://')) return filePath;
+    return `file://${filePath.startsWith('/') ? '' : '/'}${filePath}`;
   }
 
   async function fetchPaletteSymbols() {

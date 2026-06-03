@@ -167,6 +167,12 @@ export function createLspClient(): LspClient {
     },
 
     async documentSymbol(uri: string): Promise<DocumentSymbol[]> {
+      // CONTRACT: Reify's LSP server always returns DocumentSymbolResponse::Nested
+      // (a DocumentSymbol[] with range / selectionRange / children fields).
+      // The alternative SymbolInformation[] shape (which carries `location`
+      // instead of range/selectionRange) is NOT supported here — if the server
+      // ever changes this, the downstream flattenSymbols / symbolToLocation helpers
+      // in commandPaletteFilter.ts must also be updated.
       const response = await lspRequest('textDocument/documentSymbol', {
         textDocument: { uri },
       });

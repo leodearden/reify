@@ -215,4 +215,53 @@ describe('CommandPalette', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(runCommand).not.toHaveBeenCalled();
   });
+
+  // ── failure modes ──────────────────────────────────────────────────────────
+
+  it('does not crash and does not call onClose when fetchSymbols rejects', async () => {
+    const rejectingFetch = vi.fn().mockRejectedValue(new Error('LSP error'));
+    const { unmount } = render(() => (
+      <CommandPalette
+        getCommands={() => COMMANDS}
+        runCommand={runCommand}
+        fetchSymbols={rejectingFetch}
+        filePath="main.ri"
+        onJumpToLocation={onJumpToLocation}
+        onClose={onClose}
+        initialMode="symbol"
+      />
+    ));
+    await waitFor(() => expect(rejectingFetch).toHaveBeenCalled());
+    // The palette must remain open; onClose should NOT have been called.
+    expect(onClose).not.toHaveBeenCalled();
+    // Enter on the empty/error list should be a no-op (no jump, no close).
+    const input = screen.getByRole('textbox');
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onJumpToLocation).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  it('shows empty state and Enter is a no-op when fetchSymbols resolves to []', async () => {
+    const emptyFetch = vi.fn().mockResolvedValue([]);
+    render(() => (
+      <CommandPalette
+        getCommands={() => COMMANDS}
+        runCommand={runCommand}
+        fetchSymbols={emptyFetch}
+        filePath="main.ri"
+        onJumpToLocation={onJumpToLocation}
+        onClose={onClose}
+        initialMode="symbol"
+      />
+    ));
+    await waitFor(() => expect(emptyFetch).toHaveBeenCalled());
+    // An empty-state indicator should be visible.
+    await waitFor(() => expect(screen.getByText('No symbols found')).toBeTruthy());
+    // Enter on the empty list is a no-op.
+    const input = screen.getByRole('textbox');
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onJumpToLocation).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
 });

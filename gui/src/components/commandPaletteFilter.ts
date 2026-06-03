@@ -154,9 +154,20 @@ export function filterSymbols(flat: FlatSymbol[], query: string): FlatSymbol[] {
  * line.from + column - 1 (1-based column). Both start and end of the
  * returned SourceLocation use the symbol's selection-start so the cursor
  * lands precisely at the symbol name.
+ *
+ * NOTE: This function assumes the symbol was produced from a DocumentSymbol
+ * response (selectionRange is always present). A SymbolInformation entry
+ * carries `location` instead and will have selectionRange === undefined;
+ * the guard below falls back to the origin (1,1) rather than throwing.
  */
 export function symbolToLocation(sym: FlatSymbol, filePath: string): SourceLocation {
-  const { line, character } = sym.selectionRange.start;
+  const sr = sym.selectionRange;
+  if (!sr) {
+    // Defensive fallback: SymbolInformation shape — should not happen with Reify's
+    // DocumentSymbol-only LSP contract, but avoids a TypeError on Enter.
+    return { file_path: filePath, line: 1, column: 1, end_line: 1, end_column: 1 };
+  }
+  const { line, character } = sr.start;
   return {
     file_path: filePath,
     line: line + 1,

@@ -99,3 +99,10 @@
   font-size: 12px;
   color: var(--reify-text-muted, #6c7086);
 }
+
+.emptyState {
+  color: var(--reify-text-muted, #6c7086);
+  font-style: italic;
+  cursor: default;
+  pointer-events: none;
+}

@@ -11,7 +11,7 @@
  * The component is entirely self-contained for keyboard events on its own input,
  * so it does not collide with the global useKeyboardShortcuts handler.
  */
-import { createSignal, createMemo, createEffect, onMount, For } from 'solid-js';
+import { createSignal, createMemo, createEffect, onMount, For, Show } from 'solid-js';
 import type { DocumentSymbol } from '../editor/lspClient';
 import type { SourceLocation } from '../types';
 import type { ShortcutId } from '../shortcuts';
@@ -54,6 +54,7 @@ export function CommandPalette(props: CommandPaletteProps) {
   const [selectedIndex, setSelectedIndex] = createSignal(0);
   const [symbols, setSymbols] = createSignal<DocumentSymbol[]>([]);
   const [symbolsLoaded, setSymbolsLoaded] = createSignal(false);
+  const [symbolLoadError, setSymbolLoadError] = createSignal(false);
 
   let inputRef: HTMLInputElement | undefined;
 
@@ -75,10 +76,19 @@ export function CommandPalette(props: CommandPaletteProps) {
   /** Call fetchSymbols once; subsequent transitions reuse the cached result. */
   function loadSymbols() {
     if (symbolsLoaded()) return;
-    props.fetchSymbols().then((syms) => {
-      setSymbols(syms);
-      setSymbolsLoaded(true);
-    });
+    props
+      .fetchSymbols()
+      .then((syms) => {
+        setSymbols(syms);
+        setSymbolsLoaded(true);
+      })
+      .catch(() => {
+        // On failure: surface an error state and mark loaded so we don't
+        // retry on every keystroke.
+        setSymbols([]);
+        setSymbolLoadError(true);
+        setSymbolsLoaded(true);
+      });
   }
 
   // Load symbols as soon as symbol mode becomes active.
@@ -204,6 +214,11 @@ export function CommandPalette(props: CommandPaletteProps) {
               }
             }}
           </For>
+          <Show when={isSymbolMode() && symbolsLoaded() && currentList().length === 0}>
+            <li class={`${styles.item} ${styles.emptyState}`} role="option" aria-disabled="true">
+              {symbolLoadError() ? 'Failed to load symbols' : 'No symbols found'}
+            </li>
+          </Show>
         </ul>
       </div>
     </div>
