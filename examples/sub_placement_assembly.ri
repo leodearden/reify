@@ -1,0 +1,32 @@
+// Multi-level containment assembly example — Sub-Placement & Surfacing PRD §0 / §8.
+//
+// Demonstrates declarative `at`-placement across THREE nesting levels with NO
+// manual lift transforms (`translate(self.sub.body, …)` ceremony is gone).
+// The assembled hierarchy:
+//
+//   Arm  ─── sub motor : Motor  at +100 mm X
+//              └── sub shaft : Shaft  at +100 mm X (relative to Motor)
+//
+// World-AABB goldens (all boxes OCCT-centered, half-extent each side):
+//   Arm           box(40mm,20mm,20mm)  pose identity  → X[−0.02,  0.02] Y[−0.01, 0.01] Z[−0.01, 0.01]
+//   Arm.motor     box(40mm,30mm,30mm)  pose +100 mm X → X[ 0.08,  0.12] Y[−0.015,0.015] Z[−0.015,0.015]
+//   Arm.motor.shaft box(40mm,10mm,10mm) pose +200 mm X → X[ 0.18,  0.22] Y[−0.005,0.005] Z[−0.005,0.005]
+//
+// Shaft at depth 2: composed pose = Arm(identity) ∘ Motor(+100 mm X) ∘ Shaft(+100 mm X)
+// → net offset +200 mm X.  Proves PRD §4.2 arbitrary-depth compose_pose_chain.
+//
+// STEP export (reify build): 3 MANIFOLD_SOLID_BREP at composed world coordinates.
+
+structure Shaft {
+    let body = box(40mm, 10mm, 10mm)
+}
+
+structure Motor {
+    let body = box(40mm, 30mm, 30mm)
+    sub shaft : Shaft at transform3(orient_identity(), vec3(100mm, 0mm, 0mm))
+}
+
+structure Arm {
+    let body = box(40mm, 20mm, 20mm)
+    sub motor : Motor at transform3(orient_identity(), vec3(100mm, 0mm, 0mm))
+}
