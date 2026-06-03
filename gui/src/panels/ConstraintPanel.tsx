@@ -85,6 +85,11 @@ export const ConstraintPanel: Component<ConstraintPanelProps> = (props) => {
 
   function handleActionsClick(e: MouseEvent, constraint: ConstraintData) {
     e.stopPropagation();
+    // Toggle: if the menu is already open (for any constraint), close it.
+    if (contextMenu() !== null) {
+      setContextMenu(null);
+      return;
+    }
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     openContextMenu(constraint, rect.right, rect.bottom);
   }
@@ -153,6 +158,7 @@ export const ConstraintPanel: Component<ConstraintPanelProps> = (props) => {
                   </span>
                   <Show when={props.onAskClaude}>
                     <button
+                      type="button"
                       data-testid={`constraint-actions-${constraint.node_id}`}
                       class={styles.actionsBtn}
                       aria-label="Constraint actions"
@@ -194,6 +200,7 @@ export const ConstraintPanel: Component<ConstraintPanelProps> = (props) => {
             style={{ position: 'absolute', left: `${menu().x}px`, top: `${menu().y}px` }}
           >
             <button
+              type="button"
               class={styles.contextMenuItem}
               onClick={() => handleAskClaude(menu().constraint)}
             >

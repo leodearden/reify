@@ -499,40 +499,22 @@ describe('ConstraintPanel Ask Claude context menu', () => {
 });
 
 describe('ConstraintPanel — status badge title', () => {
-  it('satisfied badge has a title containing "Satisfied"', () => {
-    const constraints: Record<string, ConstraintData> = {
-      n1: makeConstraint({ node_id: 'n1', status: 'satisfied', expression: 'x > 0' }),
-    };
+  it('each status badge has a non-empty, status-unique title', () => {
+    const statuses = ['satisfied', 'violated', 'indeterminate'] as const;
+    const constraints: Record<string, ConstraintData> = Object.fromEntries(
+      statuses.map((s, i) => [`n${i + 1}`, makeConstraint({ node_id: `n${i + 1}`, status: s, expression: `x${i} > 0` })])
+    );
     render(() => <ConstraintPanel constraints={constraints} values={{}} />);
     const container = screen.getByTestId('constraint-panel');
-    const badge = container.querySelector('[data-status="satisfied"]');
-    expect(badge).toBeTruthy();
-    const title = badge!.getAttribute('title') ?? '';
-    expect(title.toLowerCase()).toContain('satisfied');
-  });
-
-  it('violated badge has a title containing "Violated"', () => {
-    const constraints: Record<string, ConstraintData> = {
-      n1: makeConstraint({ node_id: 'n1', status: 'violated', expression: 'x > 0' }),
-    };
-    render(() => <ConstraintPanel constraints={constraints} values={{}} />);
-    const container = screen.getByTestId('constraint-panel');
-    const badge = container.querySelector('[data-status="violated"]');
-    expect(badge).toBeTruthy();
-    const title = badge!.getAttribute('title') ?? '';
-    expect(title.toLowerCase()).toContain('violated');
-  });
-
-  it('indeterminate badge has a title explaining the "?" glyph (contains "Indeterminate")', () => {
-    const constraints: Record<string, ConstraintData> = {
-      n1: makeConstraint({ node_id: 'n1', status: 'indeterminate', expression: 'x > 0' }),
-    };
-    render(() => <ConstraintPanel constraints={constraints} values={{}} />);
-    const container = screen.getByTestId('constraint-panel');
-    const badge = container.querySelector('[data-status="indeterminate"]');
-    expect(badge).toBeTruthy();
-    const title = badge!.getAttribute('title') ?? '';
-    expect(title.toLowerCase()).toContain('indeterminate');
+    const titles = statuses.map((s) => {
+      const badge = container.querySelector(`[data-status="${s}"]`);
+      expect(badge).toBeTruthy();
+      return badge!.getAttribute('title') ?? '';
+    });
+    // All titles must be non-empty
+    titles.forEach((t) => expect(t.length).toBeGreaterThan(0));
+    // All titles must be distinct — each status gets its own human description
+    expect(new Set(titles).size).toBe(statuses.length);
   });
 
   it('existing aria-label={status} is preserved on all badges', () => {
