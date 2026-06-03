@@ -1098,17 +1098,34 @@ enum PointCloudFormat { PLY, PCD, XYZ, LAS }
 
 ## 10. `std.analysis`
 
+**Type aliases.** `Stress` (= `Pressure`) and `Strain` (= `Dimensionless`) are user-facing spelling aliases — both resolve to the same `Type::Scalar` dimension as their base and are interchangeable in dimensional algebra.
+
 ```
 trait Analysis {
-    param mesh_resolution : Length = undef
-    param convergence_target : Real = undef
+    param yield_strength : Real        // material yield strength for safety-factor (Pa; Real placeholder)
+    constraint yield_strength > 0
 }
 
 trait AnalysisResult {
-    param source : String
-    param mesh : Geometry = undef
+    param von_mises_stress    : Real
+    param principal_stress_1  : Real
+    param principal_stress_2  : Real
+    param principal_stress_3  : Real
+    param max_shear_stress    : Real
+    param safety_factor_value : Real
+    constraint von_mises_stress >= 0
+    constraint max_shear_stress >= 0
+    constraint safety_factor_value > 0
 }
 ```
+
+`AnalysisResult` is a **structural contract**: each param uses `Real` as a
+dimension-agnostic placeholder (the runtime stress builtins below produce
+correctly-dimensioned values, e.g. `Scalar<Pressure>` for the stresses and a
+dimensionless `Real` for `safety_factor_value`), and the trait does **not**
+participate in dimension checking — it will not reject dimensioned conforming
+values. (The v0.1 doc's `mesh_resolution`/`convergence_target` on `Analysis`
+and `source`/`mesh` on `AnalysisResult` were never shipped — task 341.)
 
 **Stress post-processing (`std.analysis.stress`):**
 
@@ -1144,7 +1161,11 @@ fn remap_field<D, Q: Dimension>(field: Field<D, Scalar<Q>>, from_range: Range<Sc
 fn threshold<D, Q: Dimension>(field: Field<D, Scalar<Q>>, value: Scalar<Q>) -> Field<D, Bool>
 ```
 
-**Differential operators (all `@optimized`):**
+**Differential operators** — prelude builtins implemented natively in
+`reify-expr` (`calculus.rs`) / `reify-stdlib`, **not** `.ri` `fn` declarations.
+The `@optimized` annotation attaches only to `.ri` `fn` / `constraint def`
+bodies (e.g. the solver/modal/dynamics fns), so it does **not** apply to these
+built-in operators:
 
 ```
 fn gradient<N: Nat, Q: Dimension>(field: Field<Point<N,Length>, Scalar<Q>>) -> Field<Point<N,Length>, Vector<N, Q/Length>>
