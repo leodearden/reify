@@ -548,3 +548,59 @@ describe('ConstraintPanel — status badge title', () => {
     expect(container.querySelector('[data-status="indeterminate"]')!.getAttribute('aria-label')).toBe('indeterminate');
   });
 });
+
+describe('ConstraintPanel — visible actions affordance', () => {
+  const values: Record<string, ValueData> = {
+    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50' }),
+  };
+
+  it('when onAskClaude is provided, each row renders an actions button with correct testid and aria-label', () => {
+    const constraints: Record<string, ConstraintData> = {
+      n1: makeConstraint({ node_id: 'n1', status: 'violated', expression: 'x > 0' }),
+      n2: makeConstraint({ node_id: 'n2', status: 'satisfied', expression: 'y > 0' }),
+    };
+    const onAskClaude = vi.fn();
+    render(() => (
+      <ConstraintPanel constraints={constraints} values={values} onAskClaude={onAskClaude} />
+    ));
+    const btn1 = screen.getByTestId('constraint-actions-n1');
+    expect(btn1).toBeTruthy();
+    expect(btn1.getAttribute('aria-label')).toBe('Constraint actions');
+    const btn2 = screen.getByTestId('constraint-actions-n2');
+    expect(btn2).toBeTruthy();
+    expect(btn2.getAttribute('aria-label')).toBe('Constraint actions');
+  });
+
+  it('clicking the actions button opens constraint-context-menu with Ask Claude option', () => {
+    const constraint = makeConstraint({
+      node_id: 'n1',
+      status: 'violated',
+      expression: 'x > 0',
+      parameter_ids: ['c1'],
+    });
+    const onAskClaude = vi.fn();
+    render(() => (
+      <ConstraintPanel
+        constraints={{ n1: constraint }}
+        values={values}
+        onAskClaude={onAskClaude}
+      />
+    ));
+    const btn = screen.getByTestId('constraint-actions-n1');
+    fireEvent.click(btn);
+    expect(screen.getByTestId('constraint-context-menu')).toBeTruthy();
+    expect(screen.getByText('Ask Claude about this constraint')).toBeTruthy();
+  });
+
+  it('when onAskClaude is omitted, actions button is NOT rendered', () => {
+    const constraint = makeConstraint({
+      node_id: 'n1',
+      status: 'violated',
+      expression: 'x > 0',
+    });
+    render(() => (
+      <ConstraintPanel constraints={{ n1: constraint }} values={values} />
+    ));
+    expect(screen.queryByTestId('constraint-actions-n1')).toBeNull();
+  });
+});
