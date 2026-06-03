@@ -1788,6 +1788,7 @@ mod tests {
             height,
             tip_force,
             None,
+            &[],
         );
         // Solve with the anisotropic identity-frame lift path.
         let (aniso_result, _) = solve_cantilever_fea(
@@ -1797,6 +1798,7 @@ mod tests {
             height,
             tip_force,
             None,
+            &[],
         );
 
         // Both must converge.
@@ -1906,6 +1908,7 @@ mod tests {
             height,
             tip_force,
             None,
+            &[],
         );
 
         // Analytic σ_max = 6·P·L / (b·h²) — independent of material stiffness.
@@ -2063,6 +2066,7 @@ mod tests {
             height,
             1000.0,
             None,
+            &[],
         );
 
         // Expected mesh counts: nz=6, nx=round(0.8/0.1*6)=48, ny=1
