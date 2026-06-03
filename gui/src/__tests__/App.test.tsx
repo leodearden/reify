@@ -54,17 +54,19 @@ vi.mock('../viewport', () => ({
   },
 }));
 
-// Mock Editor (requires CodeMirror DOM APIs) — capture store, onOpen, scrollToLocation, and compileDiagnostics for tests
+// Mock Editor (requires CodeMirror DOM APIs) — capture store, onOpen, scrollToLocation, compileDiagnostics, and liveContentRef for tests
 let capturedEditorStore: any = null;
 let capturedEditorOnOpen: (() => void) | undefined = undefined;
 let capturedEditorScrollToLocation: (() => any) | undefined = undefined;
 let capturedEditorCompileDiagnostics: any = undefined;
+let capturedEditorLiveContentRef: ((getter: () => string | null) => void) | undefined = undefined;
 vi.mock('../editor/Editor', () => ({
   Editor: (props: any) => {
     capturedEditorStore = props.store;
     capturedEditorOnOpen = props.onOpen;
     capturedEditorScrollToLocation = props.scrollToLocation;
     capturedEditorCompileDiagnostics = props.compileDiagnostics;
+    capturedEditorLiveContentRef = props.liveContentRef;
     const el = document.createElement('div');
     el.setAttribute('data-testid', 'editor-container');
     el.textContent = 'Editor Mock';
@@ -171,6 +173,7 @@ beforeEach(() => {
   capturedEditorOnOpen = undefined;
   capturedEditorScrollToLocation = undefined;
   capturedEditorCompileDiagnostics = undefined;
+  capturedEditorLiveContentRef = undefined;
   mockFlyToEntity.mockClear();
   // Reset bridge mocks to defaults (clearAllMocks only clears call history, not implementations)
   vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [] });
@@ -1640,6 +1643,52 @@ describe('App F5 re-evaluate multi-file', () => {
     expect(vi.mocked(bridge.updateSource)).not.toHaveBeenCalledWith(
       '/project/bracket.ri',
       expect.anything(),
+    );
+  });
+});
+
+describe('App F5 re-evaluate uses live buffer content', () => {
+  it('F5 sends the live buffer content (from liveContentRef getter), not the stale store snapshot', async () => {
+    // Arrange: one file loaded
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [{ path: '/project/bracket.ri', content: 'INITIAL' }],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+      tensegrity_wires: [],
+    });
+    vi.mocked(bridge.updateSource).mockResolvedValue(undefined as any);
+
+    render(() => <App />);
+    await waitFor(() => expect(screen.getByTestId('app-layout')).toBeTruthy());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+    await waitFor(() => expect(capturedEditorLiveContentRef).toBeDefined());
+
+    // Store snapshot stays 'INITIAL' — simulate that no updateFileContent was called
+    // (the store file content is still what it was at open time)
+    const storeFile = capturedEditorStore!.state.openFiles.find(
+      (f: any) => f.path === '/project/bracket.ri',
+    );
+    expect(storeFile?.content).toBe('INITIAL');
+
+    // Wire the live content getter to return 'LIVE-EVAL', simulating a user
+    // having typed into the editor (view doc diverged from store snapshot)
+    capturedEditorLiveContentRef!(() => 'LIVE-EVAL');
+
+    vi.mocked(bridge.updateSource).mockClear();
+
+    // Act: press F5 to trigger handleReEvaluate
+    fireEvent.keyDown(document, { key: 'F5' });
+
+    // Assert: updateSource must be called with the LIVE content, not 'INITIAL'
+    await waitFor(() => {
+      expect(vi.mocked(bridge.updateSource)).toHaveBeenCalledTimes(1);
+    });
+    expect(vi.mocked(bridge.updateSource)).toHaveBeenCalledWith(
+      '/project/bracket.ri',
+      'LIVE-EVAL',
     );
   });
 });
