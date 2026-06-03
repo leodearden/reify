@@ -1,8 +1,9 @@
 import { describe, it, expect } from "vitest";
 import * as path from "node:path";
 import * as fs from "node:fs";
-import { getByPath, evaluateAssertion, FIXTURES, VALUE_SCENARIOS } from "./assertions";
-import type { Assertion, ValueScenario } from "./assertions";
+import { getByPath, evaluateAssertion, FIXTURES, VALUE_SCENARIOS, runValueScenario } from "./assertions";
+import type { Assertion, ValueScenario, ScenarioDeps } from "./assertions";
+import type { RpcResult } from "./rpc";
 import { resolveRepoRoot } from "./paths";
 
 describe("getByPath", () => {
@@ -121,5 +122,65 @@ describe("VALUE_SCENARIOS", () => {
         expected: 1,
       });
     }
+  });
+});
+
+describe("runValueScenario", () => {
+  const scenario = VALUE_SCENARIOS.find((s) => s.name === "store_state_meshcount_small_cube")!;
+
+  it("(a) openFixture ok + tool returns engine.meshCount===1 → passed=true, no failures", async () => {
+    const deps: ScenarioDeps = {
+      openFixture: async (_rel: string): Promise<RpcResult<unknown>> => ({ ok: true, value: null }),
+      callTool: async (_tool: string, _args: Record<string, unknown>): Promise<RpcResult<unknown>> => ({
+        ok: true,
+        value: { engine: { meshCount: 1 } },
+      }),
+    };
+    const result = await runValueScenario(deps, scenario);
+    expect(result.passed).toBe(true);
+    expect(result.failures).toHaveLength(0);
+  });
+
+  it("(b) callTool returns engine.meshCount===2 → passed=false, failure mentions engine.meshCount", async () => {
+    const deps: ScenarioDeps = {
+      openFixture: async (_rel: string): Promise<RpcResult<unknown>> => ({ ok: true, value: null }),
+      callTool: async (_tool: string, _args: Record<string, unknown>): Promise<RpcResult<unknown>> => ({
+        ok: true,
+        value: { engine: { meshCount: 2 } },
+      }),
+    };
+    const result = await runValueScenario(deps, scenario);
+    expect(result.passed).toBe(false);
+    expect(result.failures.some((f) => f.includes("engine.meshCount"))).toBe(true);
+  });
+
+  it("(c) openFixture fails → passed=false, failure mentions open_file, tool NOT called", async () => {
+    let toolCalled = false;
+    const deps: ScenarioDeps = {
+      openFixture: async (_rel: string): Promise<RpcResult<unknown>> => ({
+        ok: false,
+        error: "file not found",
+      }),
+      callTool: async (_tool: string, _args: Record<string, unknown>): Promise<RpcResult<unknown>> => {
+        toolCalled = true;
+        return { ok: true, value: null };
+      },
+    };
+    const result = await runValueScenario(deps, scenario);
+    expect(result.passed).toBe(false);
+    expect(result.failures.some((f) => f.includes("open_file"))).toBe(true);
+    expect(toolCalled).toBe(false);
+  });
+
+  it("(d) callTool returns error → passed=false", async () => {
+    const deps: ScenarioDeps = {
+      openFixture: async (_rel: string): Promise<RpcResult<unknown>> => ({ ok: true, value: null }),
+      callTool: async (_tool: string, _args: Record<string, unknown>): Promise<RpcResult<unknown>> => ({
+        ok: false,
+        error: "tool failed",
+      }),
+    };
+    const result = await runValueScenario(deps, scenario);
+    expect(result.passed).toBe(false);
   });
 });
