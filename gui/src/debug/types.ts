@@ -83,6 +83,12 @@ export interface ReifyDebugContext {
   editorView?: EditorView;
   /** Reactive accessor — true when test-mode is enabled (animations frozen). */
   testMode?: Accessor<boolean>;
+  /** MenuBar registration: openMenu accessor reports which menu is currently open (null = closed). */
+  menuBar?: { openMenu: Accessor<string | null> };
+  /** DesignTree registration: expanded accessor reports the set of expanded entity paths. */
+  designTree?: { expanded: Accessor<Set<string>> };
+  /** ConstraintPanel registration: expandedNodes accessor reports the set of expanded constraint node ids. */
+  constraintPanel?: { expandedNodes: Accessor<Set<string>> };
 }
 
 declare global {
