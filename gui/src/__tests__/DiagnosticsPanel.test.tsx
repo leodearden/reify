@@ -411,3 +411,78 @@ describe('DiagnosticsPanel', () => {
     expect(loadDiagnosticsPanelSize()).toEqual({ width: 1050, height: 620 });
   });
 });
+
+describe('DiagnosticsPanel header close button', () => {
+  beforeAll(() => {
+    globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
+  });
+  beforeEach(() => {
+    localStorage.clear();
+    capturedResizeCallback = null;
+  });
+
+  it('when open, diagnostics-header-close element exists', () => {
+    render(() => (
+      <DiagnosticsPanel
+        open={true}
+        diagnostics={[]}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+      />
+    ));
+    expect(screen.getByTestId('diagnostics-header-close')).toBeTruthy();
+  });
+
+  it('diagnostics-header-close is in the header region (before the list container in DOM order)', () => {
+    const diag: DiagnosticEntry = { ...makeDiag('Error', { message: 'some error' }), source: 'compile' };
+    render(() => (
+      <DiagnosticsPanel
+        open={true}
+        diagnostics={[diag]}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+      />
+    ));
+    const headerClose = screen.getByTestId('diagnostics-header-close');
+    const list = document.querySelector(`.${styles.list}`) as HTMLElement;
+
+    expect(headerClose).toBeTruthy();
+    expect(list).toBeTruthy();
+
+    // The header close button must NOT be inside the .list container
+    expect(list.contains(headerClose)).toBe(false);
+
+    // The header close button must come before the .list in DOM order
+    const position = headerClose.compareDocumentPosition(list);
+    // Node.DOCUMENT_POSITION_FOLLOWING = 4 — list comes after headerClose
+    expect(position & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('clicking diagnostics-header-close invokes onClose exactly once', () => {
+    const onClose = vi.fn();
+    render(() => (
+      <DiagnosticsPanel
+        open={true}
+        diagnostics={[]}
+        onClose={onClose}
+        onNavigate={vi.fn()}
+      />
+    ));
+    fireEvent.click(screen.getByTestId('diagnostics-header-close'));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('diagnostics-header-close has aria-label matching /close/i', () => {
+    render(() => (
+      <DiagnosticsPanel
+        open={true}
+        diagnostics={[]}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+      />
+    ));
+    const btn = screen.getByTestId('diagnostics-header-close');
+    const label = btn.getAttribute('aria-label') ?? '';
+    expect(label).toMatch(/close/i);
+  });
+});
