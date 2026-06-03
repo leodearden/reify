@@ -1,6 +1,6 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent, within } from '@solidjs/testing-library';
-import { createRoot } from 'solid-js';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { render, screen, fireEvent, within, waitFor } from '@solidjs/testing-library';
+import { createRoot, createSignal } from 'solid-js';
 import { DesignTree } from '../panels/DesignTree';
 import { createViewStateStore } from '../stores/viewStateStore';
 import type { EntityTreeNode } from '../types';
@@ -1162,5 +1162,90 @@ describe('DesignTree — hover sync', () => {
     expect(onHover).toHaveBeenLastCalledWith(null);
     fireEvent.mouseEnter(screen.getByTestId('tree-row-Root.B'));
     expect(onHover).toHaveBeenLastCalledWith('Root.B');
+  });
+});
+
+describe('DesignTree — selected-row reveal', () => {
+  let scrollSpy: ReturnType<typeof vi.fn>;
+
+  afterEach(() => {
+    // Restore the original (no-op or undefined) prototype method after each test.
+    // This ensures the spy does not leak between tests.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    delete (Element.prototype as any).scrollIntoView;
+  });
+
+  it('(a) auto-expand: rendering with a deep selectedEntity reveals the row', () => {
+    // Build Root > A > a1 (starts fully collapsed)
+    const nodes = [
+      makeNode({
+        entity_path: 'Root',
+        children: [
+          makeNode({
+            entity_path: 'Root.A',
+            children: [makeNode({ entity_path: 'Root.A.a1' })],
+          }),
+        ],
+      }),
+    ];
+    const store = makeStore(nodes);
+    render(() => (
+      <DesignTree tree={nodes} viewStateStore={store} selectedEntity="Root.A.a1" />
+    ));
+    // The deep row must be visible (ancestors auto-expanded)
+    expect(screen.getByTestId('tree-row-Root.A.a1')).toBeTruthy();
+  });
+
+  it('(b) scrollIntoView: called on the selected row after expand', async () => {
+    scrollSpy = vi.fn();
+    Element.prototype.scrollIntoView = scrollSpy;
+
+    const nodes = [
+      makeNode({
+        entity_path: 'Root',
+        children: [
+          makeNode({
+            entity_path: 'Root.A',
+            children: [makeNode({ entity_path: 'Root.A.a1' })],
+          }),
+        ],
+      }),
+    ];
+    const store = makeStore(nodes);
+    render(() => (
+      <DesignTree tree={nodes} viewStateStore={store} selectedEntity="Root.A.a1" />
+    ));
+    await waitFor(() => expect(scrollSpy).toHaveBeenCalled());
+  });
+
+  it('(c) reactivity: switching selectedEntity to a different collapsed branch reveals new row', async () => {
+    // Two separate subtrees, each initially collapsed
+    const nodes = [
+      makeNode({
+        entity_path: 'Root.A',
+        children: [makeNode({ entity_path: 'Root.A.a1' })],
+      }),
+      makeNode({
+        entity_path: 'Root.B',
+        children: [makeNode({ entity_path: 'Root.B.b1' })],
+      }),
+    ];
+    const store = makeStore(nodes);
+    const [selectedEntity, setSelectedEntity] = createSignal<string>('Root.A.a1');
+
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        selectedEntity={selectedEntity()}
+      />
+    ));
+
+    // First selection: Root.A.a1 should be visible
+    expect(screen.getByTestId('tree-row-Root.A.a1')).toBeTruthy();
+
+    // Switch to the other branch
+    setSelectedEntity('Root.B.b1');
+    await waitFor(() => expect(screen.queryByTestId('tree-row-Root.B.b1')).toBeTruthy());
   });
 });
