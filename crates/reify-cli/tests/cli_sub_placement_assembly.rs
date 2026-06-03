@@ -64,18 +64,28 @@ fn build_sub_placement_assembly_three_product_solids_aux_excluded() {
     );
 
     // (e) No-manual-lift structural acceptance: the example uses `at` placement
-    //     and contains zero `translate(self.` lift expressions.
-    //     This is the §0 invariant — the ceremony is gone.
+    //     and contains zero `translate(self.` lift expressions (§0 invariant).
+    //
+    //     Strip comment lines before checking so that comment prose such as
+    //     "Shaft at depth 2" or "placed at +100 mm Y" cannot satisfy the
+    //     positive assertion in the absence of real DSL placement clauses.
     let example_source = std::fs::read_to_string(common::example_path("sub_placement_assembly.ri"))
         .expect("examples/sub_placement_assembly.ri must be readable");
 
+    let code_only: String = example_source
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
     assert!(
-        example_source.contains(" at "),
-        "example must contain at least one `at` placement clause (declarative placement)"
+        code_only.contains(" at "),
+        "example code must contain at least one `at` placement clause (declarative placement); \
+         got code lines:\n{code_only}"
     );
     assert!(
-        !example_source.contains("translate(self."),
-        "example must not contain `translate(self.` manual-lift expressions \
+        !code_only.contains("translate(self."),
+        "example code must not contain `translate(self.` manual-lift expressions \
          (§0: the ceremony is gone)"
     );
 }

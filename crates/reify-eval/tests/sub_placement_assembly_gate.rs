@@ -117,8 +117,6 @@ fn mesh_aabb(mesh: &reify_ir::Mesh) -> ([f32; 3], [f32; 3]) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Compile the committed example and assert zero Error-severity diagnostics.
-///
-/// RED until step-2 creates `examples/sub_placement_assembly.ri`.
 #[test]
 fn example_compiles_clean() {
     let source = std::fs::read_to_string(EXAMPLE_SRC)
@@ -150,10 +148,10 @@ fn example_compiles_clean() {
 /// - `Arm.motor.shaft#realization[0]` present, visible (Shaft's body at depth 2).
 /// - No standalone `Motor#realization[0]` or `Shaft#realization[0]` (contained
 ///   children are suppressed from the root set).
-/// - Total surface count == 3 (aux fixture not yet in the example).
+/// - Total surface count >= 3 (exact count == 4 is locked by
+///   `assembly_has_four_surfaces_with_aux_hidden`).
 ///
 /// ACTIVE (no `#[ignore]`): Mock-kernel runs without OCCT.
-/// RED until step-2 creates the example file.
 #[test]
 fn visible_chain_surfaces_at_composed_paths() {
     let source = std::fs::read_to_string(EXAMPLE_SRC)
@@ -359,8 +357,6 @@ fn product_bodies_surface_at_composed_world_aabb() {
 /// - No standalone `Fixture#realization[0]` (contained child suppressed).
 ///
 /// ACTIVE (no `#[ignore]`): Mock-kernel runs without OCCT.
-/// RED until step-4 adds `aux sub fixture : Fixture` to the example (currently
-/// only 3 surfaces exist so the `len() == 4` assertion fails).
 #[test]
 fn assembly_has_four_surfaces_with_aux_hidden() {
     let source = std::fs::read_to_string(EXAMPLE_SRC)
@@ -386,7 +382,7 @@ fn assembly_has_four_surfaces_with_aux_hidden() {
         .templates
         .iter()
         .find(|t| t.name == "Fixture")
-        .expect("Fixture template not found (add aux sub fixture : Fixture to Arm in step-4)");
+        .expect("Fixture template not found in compiled module");
 
     let arm_path = root_realization_path(arm, "body");
     let motor_path = composed_path(motor, "Arm.motor", "body");
