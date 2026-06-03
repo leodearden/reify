@@ -25,6 +25,16 @@ If the `reify` binary is already built, two equivalent CLI entry points work wit
 - **`reify gui --debug <file.ri>`** — `--mcp` is accepted as an alias for `--debug`.
 - **`reify gui-debug <file.ri>`** — sugar for `gui --debug`; both route through the same code path and propagate `REIFY_DEBUG=1` to the spawned `reify-gui` subprocess.
 
+## Landing on main
+
+Prefer the orchestrator's merge queue (`/merge-queue`) to land a task branch. When the orchestrator is congested or down and you must land directly, use **`scripts/land.sh <task-branch>`** — the *only* sanctioned manual-landing path:
+
+- It refuses to run unless you are on `main` with a **clean working tree** (the `pre-merge-commit` gate verifies the *whole* working tree, so unrelated dirt would otherwise force a false-negative — the original reason direct landings reached for `--no-verify`).
+- It runs a real `git merge --no-ff` (**not** `--no-verify`), so `hooks/pre-merge-commit` runs the full `--scope all --profile both` gate.
+- It marks the main-gate sentinel so `hooks/reference-transaction` records the resulting `refs/heads/main` move as **sanctioned**.
+
+**Never** land on `main` with raw `git merge --no-verify`, `git update-ref refs/heads/main`, `git reset`, or `commit-tree`+`update-ref` plumbing. Those skip the verify gate *and* trip the `reference-transaction` tripwire (which logs every unsanctioned `main` move, and hard-aborts it once `REIFY_MAIN_GATE_ENFORCE=1` is set). The tripwire ships **warn-only** by default; `REIFY_MAIN_GATE_BYPASS=1` is the break-glass allow. The gate fires only when git hooks are wired (`core.hooksPath=hooks`).
+
 ## Memory Usage
 
 ### When to read memory

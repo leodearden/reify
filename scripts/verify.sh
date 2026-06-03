@@ -589,17 +589,30 @@ build_plan() {
 
     # GUI ecosystem (npm). Rust changes imply these too; they are fast. Only
     # meaningful when there is a GUI check to run — the GUI has a test side
-    # (npm test) and a lint side (npm run typecheck) but no `cargo check`
+    # (npm test) and a typecheck (npm run typecheck) but no `cargo check`
     # analogue, so a pure typecheck action skips it entirely (verify.sh's own
     # `typecheck` action is cargo-check-only; the GUI ecosystem has no equivalent).
+    #
+    # The GUI typecheck (tsc --noEmit) now runs whenever this block runs — on the
+    # TEST side as well as the lint side — not lint-only as before. Rationale: the
+    # orchestrator's inner TDD loop runs `verify.sh test --scope branch` (npm test
+    # = vitest), which never type-checks; a type-only break that renders fine at
+    # runtime (e.g. a solid-js <Show> function-child rejected by the non-keyed
+    # overload) therefore stayed invisible through development and only surfaced at
+    # lint/merge time — by which point, since any Rust change forces RUN_GUI=1, it
+    # blocks every task's branch verify on an inherited error. Putting tsc on the
+    # test side catches this class in the cheap inner loop. The block is built ONCE
+    # (not per-profile), so a single `&& npm run typecheck` means action=all runs it
+    # exactly once — no double-run.
     if [ "$RUN_GUI" -eq 1 ] && { [ "$DO_TEST" -eq 1 ] || [ "$DO_LINT" -eq 1 ]; }; then
-        local gui_inner="npm ci"
-        [ "$DO_LINT" -eq 1 ] && gui_inner+=" && npm run typecheck"
+        # typecheck always (whenever the block runs, test OR lint); npm test only
+        # on the test side.
+        local gui_inner="npm ci && npm run typecheck"
         [ "$DO_TEST" -eq 1 ] && gui_inner+=" && npm test"
         add "if test -d gui; then $(wrap_subshell gui 15 "$gui_inner"); fi"
 
-        local sidecar_inner="npm ci"
-        [ "$DO_LINT" -eq 1 ] && sidecar_inner+=" && npm run typecheck && npm run typecheck:test"
+        # sidecar has no vitest side; both typecheck passes run whenever the block does.
+        local sidecar_inner="npm ci && npm run typecheck && npm run typecheck:test"
         add "if test -f gui/sidecar/package-lock.json; then $(wrap_subshell gui/sidecar 10 "$sidecar_inner"); fi"
 
         add "if test -f tree-sitter-reify/package-lock.json; then $(wrap_subshell tree-sitter-reify 10 "npm ci"); fi"

@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# hooks/reference-transaction — tripwire for moves of refs/heads/main.
+#
+# This is the ONLY git hook that fires on a *local* `git reset` / `git update-ref`
+# / fast-forward of a branch ref — the exact operations that pre-commit and
+# pre-merge-commit miss (those fire only when a commit / merge-commit is created).
+# A pre-push hook would not help: landing happens on the LOCAL main, not via push.
+#
+# It is a TRIPWIRE, never a verify-runner: it fires on EVERY ref update in EVERY
+# worktree (every task-branch commit included), so it must stay lightweight and
+# return fast for everything that is not a refs/heads/main move in the 'prepared'
+# state.
+#
+# Sanctioned vs unsanctioned is decided by a file sentinel (hooks/main-gate-lib.sh):
+# the sanctioned paths (pre-commit after project-checks pass, pre-merge-commit
+# after verify passes, scripts/land.sh) mark it; this hook consumes it. A main
+# move WITH the sentinel is sanctioned; WITHOUT it is unsanctioned.
+#
+# Rollout is staged (warn now, enforce later):
+#   - default            : warn-only — log sanctioned/unsanctioned, never abort.
+#   - REIFY_MAIN_GATE_ENFORCE=1 : hard-abort an unsanctioned main move (exit 1).
+#   - REIFY_MAIN_GATE_BYPASS=1  : always allow (break-glass), still logged.
+#
+# Deliberately runs WITHOUT `set -e`: a warn-only tripwire must never abort a ref
+# update because of an unexpected internal error. The only non-zero exit is the
+# explicit ENFORCE path.
+
+STATE="${1:-}"
+
+# Only the 'prepared' state can abort the transaction; 'committed' and 'aborted'
+# are post-facto notifications whose exit codes git ignores. Bail fast otherwise
+# (this also covers the common case: most ref updates are not on main).
+if [ "$STATE" != "prepared" ]; then
+    exit 0
+fi
+
+# Resolve the shared lib relative to this script (robust across the main repo,
+# linked worktrees, and throwaway test repos — the lib always sits beside us).
+_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null)" || exit 0
+if [ -f "$_self_dir/main-gate-lib.sh" ]; then
+    # shellcheck source=hooks/main-gate-lib.sh
+    . "$_self_dir/main-gate-lib.sh"
+else
+    # Missing helper — fail open: never block a ref update on our own absence.
+    exit 0
+fi
+
+# stdin: one "<old-oid> <new-oid> <ref-name>" line per ref in this transaction.
+while read -r _old _new _ref; do
+    [ "$_ref" = "refs/heads/main" ] || continue
+
+    if [ "${REIFY_MAIN_GATE_BYPASS:-}" = "1" ]; then
+        main_gate_log "bypass (REIFY_MAIN_GATE_BYPASS=1) main move ${_old} -> ${_new}"
+        continue
+    fi
+
+    sentinel="$(main_gate_sentinel)"
+    if [ -e "$sentinel" ]; then
+        rm -f "$sentinel" 2>/dev/null
+        main_gate_log "sanctioned main move ${_old} -> ${_new}"
+        continue
+    fi
+
+    main_gate_log "UNSANCTIONED main move ${_old} -> ${_new}"
+    if [ "${REIFY_MAIN_GATE_ENFORCE:-}" = "1" ]; then
+        main_gate_log "ENFORCE on (REIFY_MAIN_GATE_ENFORCE=1) — aborting transaction"
+        exit 1
+    fi
+    # warn-only default: allow the move (logged above).
+done
+
+exit 0
