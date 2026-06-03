@@ -131,6 +131,36 @@
   white-space: nowrap;
 }
 
+.filterBar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 0;
+  flex-shrink: 0;
+}
+
+.filterChip {
+  padding: 2px 8px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  font-family: var(--reify-font-mono, monospace);
+  cursor: pointer;
+  border: 1px solid var(--reify-surface1, #45475a);
+  background: transparent;
+  color: var(--reify-text-muted, #6c7086);
+}
+
+.filterChip:hover {
+  border-color: var(--reify-text-muted, #6c7086);
+  color: var(--reify-text, #cdd6f4);
+}
+
+.filterChipActive {
+  background: var(--reify-surface1, #45475a);
+  color: var(--reify-text, #cdd6f4);
+}
+
 .emptyState {
   display: block;
   padding: 16px 0;

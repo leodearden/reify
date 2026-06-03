@@ -8,6 +8,8 @@ import {
   saveDiagnosticsPanelSize,
   computeDefaultDialogSize,
 } from '../hooks/diagnosticsPanelPersistence';
+import { filterDiagnostics } from './diagnosticsView';
+import type { DiagnosticSource } from './diagnosticsView';
 
 /** Panel-facing wrapper that extends the wire-format DiagnosticInfo with a
  *  frontend-only source tag. The `source` field is never sent by the Rust
@@ -24,8 +26,52 @@ export interface DiagnosticsPanelProps {
   onNavigate: (d: DiagnosticEntry) => void;
 }
 
+const ALL_SOURCES: DiagnosticSource[] = ['compile', 'tessellation'];
+const ALL_SEVERITIES = ['Error', 'Warning', 'Info'];
+
 export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
   const [lineWrap, setLineWrap] = createSignal(loadDiagnosticsLineWrap() ?? false);
+
+  // Filter state — default all-selected so every diagnostic is visible on open.
+  const [selectedSources, setSelectedSources] = createSignal<Set<DiagnosticSource>>(
+    new Set(ALL_SOURCES)
+  );
+  const [selectedSeverities, setSelectedSeverities] = createSignal<Set<string>>(
+    new Set(ALL_SEVERITIES)
+  );
+
+  // Available severity options derived from the full (unfiltered) props.diagnostics.
+  const availableSeverities = createMemo(() => {
+    const seen = new Set<string>();
+    for (const d of props.diagnostics) seen.add(d.severity);
+    return ALL_SEVERITIES.filter(s => seen.has(s));
+  });
+
+  // Filtered list used for rendering rows.
+  const filteredDiagnostics = createMemo(() =>
+    filterDiagnostics(props.diagnostics, {
+      sources: selectedSources(),
+      severities: selectedSeverities(),
+    })
+  );
+
+  function toggleSource(source: DiagnosticSource) {
+    setSelectedSources(prev => {
+      const next = new Set(prev);
+      if (next.has(source)) next.delete(source);
+      else next.add(source);
+      return next;
+    });
+  }
+
+  function toggleSeverity(severity: string) {
+    setSelectedSeverities(prev => {
+      const next = new Set(prev);
+      if (next.has(severity)) next.delete(severity);
+      else next.add(severity);
+      return next;
+    });
+  }
 
   let dialogRef: HTMLDivElement | undefined;
 
@@ -158,6 +204,37 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
             </button>
           </div>
 
+          <Show when={props.diagnostics.length > 0}>
+            <div class={styles.filterBar}>
+              <For each={ALL_SOURCES}>
+                {(source) => (
+                  <button
+                    type="button"
+                    class={`${styles.filterChip}${selectedSources().has(source) ? ` ${styles.filterChipActive}` : ''}`}
+                    data-testid={`diagnostics-filter-source-${source}`}
+                    aria-pressed={selectedSources().has(source)}
+                    onClick={() => toggleSource(source)}
+                  >
+                    {source}
+                  </button>
+                )}
+              </For>
+              <For each={availableSeverities()}>
+                {(severity) => (
+                  <button
+                    type="button"
+                    class={`${styles.filterChip}${selectedSeverities().has(severity) ? ` ${styles.filterChipActive}` : ''}`}
+                    data-testid={`diagnostics-filter-severity-${severity}`}
+                    aria-pressed={selectedSeverities().has(severity)}
+                    onClick={() => toggleSeverity(severity)}
+                  >
+                    {severity}
+                  </button>
+                )}
+              </For>
+            </div>
+          </Show>
+
           <Show
             when={props.diagnostics.length > 0}
             fallback={
@@ -165,7 +242,7 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
             }
           >
             <div class={styles.list}>
-              <For each={props.diagnostics}>
+              <For each={filteredDiagnostics()}>
                 {(diag) => (
                   <div
                     class={styles.row}
