@@ -2509,6 +2509,21 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
         | (Value::Complex { re, im, dimension }, Value::Int(a)) => {
             guard_dimensionless_complex(*a as f64 + re, *im, *dimension)
         }
+        // Dimensionless Scalar +/- Real or Int: a dimensionless quantity IS a pure
+        // number, so the result is Value::Real. The `is_dimensionless()` guard keeps
+        // DIMENSIONED scalars (e.g. Length + Real) falling through to Undef.
+        (Value::Scalar { si_value, dimension }, Value::Real(r))
+        | (Value::Real(r), Value::Scalar { si_value, dimension })
+            if dimension.is_dimensionless() =>
+        {
+            Value::Real(si_value + r)
+        }
+        (Value::Scalar { si_value, dimension }, Value::Int(n))
+        | (Value::Int(n), Value::Scalar { si_value, dimension })
+            if dimension.is_dimensionless() =>
+        {
+            Value::Real(si_value + *n as f64)
+        }
         (Value::String(a), Value::String(b)) => Value::String(format!("{}{}", a, b)),
         // Component-wise Tensor addition (with rank-2 validation)
         (Value::Tensor(a), Value::Tensor(b)) => {
@@ -2595,6 +2610,29 @@ fn eval_sub(lv: &Value, rv: &Value) -> Value {
         // Complex{re,im,DIMENSIONLESS} - Int(a) → Complex{ re: re-a, im }
         (Value::Complex { re, im, dimension }, Value::Int(a)) => {
             guard_dimensionless_complex(re - *a as f64, *im, *dimension)
+        }
+        // Dimensionless Scalar - Real/Int and Real/Int - dimensionless Scalar.
+        // Subtraction is non-commutative, so each ordering is a separate arm.
+        // The `is_dimensionless()` guard keeps DIMENSIONED scalars → Undef.
+        (Value::Scalar { si_value, dimension }, Value::Real(r))
+            if dimension.is_dimensionless() =>
+        {
+            Value::Real(si_value - r)
+        }
+        (Value::Real(r), Value::Scalar { si_value, dimension })
+            if dimension.is_dimensionless() =>
+        {
+            Value::Real(r - si_value)
+        }
+        (Value::Scalar { si_value, dimension }, Value::Int(n))
+            if dimension.is_dimensionless() =>
+        {
+            Value::Real(si_value - *n as f64)
+        }
+        (Value::Int(n), Value::Scalar { si_value, dimension })
+            if dimension.is_dimensionless() =>
+        {
+            Value::Real(*n as f64 - si_value)
         }
         // Component-wise Tensor subtraction (with rank-2 validation)
         (Value::Tensor(a), Value::Tensor(b)) => {
