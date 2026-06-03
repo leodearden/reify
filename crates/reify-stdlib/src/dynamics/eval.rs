@@ -329,12 +329,33 @@ fn frame3_from_transform_value(v: &Value) -> Option<Frame3> {
 /// `List<JointForce>` (one per body, in mechanism `bodies` / id order), or
 /// `Value::Undef` on any malformed input (matching the mechanism/snapshot/body
 /// eval_builtin convention).
+///
+/// ## Flexure-joint spring limitation
+///
+/// Joints that carry a `spring_rate` key (produced by the PRB flexure builtins
+/// — `prb_notch_circular`, `prb_cantilever_beam`, etc.) will **not** contribute
+/// their spring restoring torque (`−k·(q − neutral)`) on this entry point.
+/// The snapshot body record does not retain the scalar joint coordinate `q`
+/// (it is consumed by the FK walk inside `snapshot()` and is unavailable
+/// here), so the spring term cannot be computed.  Silently emitting a
+/// finite-but-incomplete torque for a sprung flexure is the accepted v1
+/// trade-off; fixing it would require `snapshot()` to persist `q`, which
+/// is out of this module's eval.rs-only scope (task ι §design).
+///
+/// **Viscous damping** (`−c·q̇`) depends only on `q̇`, which IS supplied via
+/// `q_dot`, and applies correctly on both entry points whenever the joint Map
+/// carries a `damping` key.
+///
+/// To obtain the full spring-plus-damping torque for flexure joints use the
+/// trajectory entry point (`inverse_dynamics_lower` / [`inverse_dynamics_sample`]),
+/// which supplies the per-body joint coordinate `q` at each sample.
 fn eval_inverse_dynamics_at_snapshot(args: &[Value]) -> Value {
     if args.len() != 4 {
         return Value::Undef;
     }
     // Spring torque unavailable on the snapshot path: the snapshot body
     // record does not retain the scalar joint coordinate (task ι §design).
+    // See the doc comment above for the user-facing rationale.
     match snapshot_inverse_dynamics(&args[0], &args[1], &args[2], &args[3], None) {
         Some(forces) => Value::List(forces),
         None => Value::Undef,
@@ -2440,5 +2461,112 @@ mod tests {
             (torque - expected).abs() < 1e-6,
             "plain joint no-regression: expected {expected} N·m, got {torque}"
         );
+    }
+
+    // ── amend: 1-DOF gate for multi-DOF joints with stray compliance keys ─────────
+    //
+    // The eval-layer gate (`if subspaces[bi].len() == 1`) prevents compliance from
+    // being attached to multi-DOF joints, blocking the rnea always-on assertion
+    // (PRD §11.2) that panics when spring_rate/damping is set on a joint with
+    // subspace.len() != 1.  This test locks in that defence: a 2-DOF cylindrical
+    // joint Map carrying a stray spring_rate key must yield a finite CylForce
+    // result rather than panicking.  If the gate were removed the rnea assert
+    // would fire and no pre-amendment test would catch the regression.
+
+    /// A 2-DOF cylindrical joint Map with a stray `spring_rate` key must
+    /// return a finite `CylForce` result (the gate sets `compliance = None`),
+    /// rather than panicking in the rnea layer's 1-DOF-only assertion.
+    #[test]
+    fn multi_dof_joint_with_stray_spring_rate_suppresses_compliance() {
+        use crate::eval_builtin;
+        use std::f64::consts::PI;
+
+        // Build a standard 2-DOF cylindrical joint (translation + rotation along +z).
+        let axis_z =
+            Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let length_range = Value::Range {
+            lower: Some(Box::new(Value::length(-1.0))),
+            upper: Some(Box::new(Value::length(1.0))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        };
+        let angle_range = Value::Range {
+            lower: Some(Box::new(Value::angle(-PI))),
+            upper: Some(Box::new(Value::angle(PI))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        };
+        let base_cyl = eval_builtin("cylindrical", &[axis_z, length_range, angle_range]);
+
+        // Inject a stray spring_rate key — simulating a hand-built multi-DOF Map
+        // (e.g. a user who manually adds a compliance key to a cylindrical joint).
+        let cyl_with_spring = match base_cyl {
+            Value::Map(mut m) => {
+                m.insert(
+                    Value::String("spring_rate".to_string()),
+                    Value::Scalar {
+                        si_value: 2.0,
+                        dimension: DimensionVector::ROTATIONAL_STIFFNESS,
+                    },
+                );
+                Value::Map(m)
+            }
+            other => panic!("cylindrical() must return a Value::Map, got {other:?}"),
+        };
+
+        // Build a single-body mechanism using the keyed cylindrical joint.
+        let mp = mass_properties_fixture(1.0, [0.0, 0.0, 0.0], [[0.0; 3]; 3]);
+        let mech0 = eval_builtin("mechanism", &[]);
+        let mech = eval_builtin("body", &[mech0, mp, cyl_with_spring.clone()]);
+        assert!(
+            matches!(mech, Value::Map(_)),
+            "body() must yield a Mechanism Map"
+        );
+
+        // Snapshot at d = 0 m, θ = 0 rad (identity transform).
+        // A cylindrical binding value is a 2-element List: [Length, Angle].
+        let binding = eval_builtin(
+            "bind",
+            &[
+                cyl_with_spring,
+                Value::List(vec![Value::length(0.0), Value::angle(0.0)]),
+            ],
+        );
+        let snap = eval_builtin("snapshot", &[mech.clone(), Value::List(vec![binding])]);
+        assert!(matches!(snap, Value::Map(_)), "snapshot() must return a Map");
+
+        // 2-DOF velocities / accelerations (cylindrical has DOF = 2).
+        let q_dot = Value::List(vec![Value::Real(0.0), Value::Real(0.0)]);
+        let q_ddot = Value::List(vec![Value::Real(0.0), Value::Real(0.0)]);
+
+        // MUST NOT PANIC — the 1-DOF gate suppresses compliance on the 2-DOF
+        // cylindrical joint, preventing the rnea always-on assertion from firing.
+        let result = eval_dynamics(
+            "inverse_dynamics_at_snapshot_lower",
+            &[mech, snap, q_dot, q_ddot],
+        )
+        .expect("inverse_dynamics_at_snapshot_lower is a recognised intrinsic");
+
+        // Result must be a List<JointForce> — NOT Undef — confirming the gate
+        // allowed the RNEA to run (with compliance = None) rather than failing.
+        let forces = match &result {
+            Value::List(f) => f,
+            other => panic!("expected List<JointForce>, got {other:?}"),
+        };
+        assert_eq!(forces.len(), 1, "one joint → one JointForce");
+        let value = field(&forces[0], "JointForce", "value");
+        // A cylindrical joint produces CylForce { components: List<Real> } (DOF = 2).
+        let comps = match field(value, "CylForce", "components") {
+            Value::List(c) => c,
+            other => panic!("CylForce.components must be a List, got {other:?}"),
+        };
+        assert_eq!(comps.len(), 2, "CylForce must have exactly 2 components");
+        for (i, c) in comps.iter().enumerate() {
+            let v = num(c);
+            assert!(
+                v.is_finite(),
+                "CylForce.components[{i}] must be finite (gate suppressed compliance), got {v}"
+            );
+        }
     }
 }
