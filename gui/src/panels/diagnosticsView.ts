@@ -32,6 +32,32 @@ export function diagnosticKey(d: DiagnosticEntry): string {
 // groupDiagnostics
 // ────────────────────────────────────────────────────────────
 
+// ────────────────────────────────────────────────────────────
+// filterDiagnostics
+// ────────────────────────────────────────────────────────────
+
+export interface DiagnosticFilter {
+  /** Which pipeline sources to include. */
+  sources: Set<DiagnosticSource>;
+  /** Which severity levels to include (e.g. 'Error', 'Warning', 'Info'). */
+  severities: Set<string>;
+}
+
+/** Returns entries where d.source is in filter.sources AND d.severity is in
+ *  filter.severities, preserving input order. */
+export function filterDiagnostics(
+  diags: DiagnosticEntry[],
+  filter: DiagnosticFilter
+): DiagnosticEntry[] {
+  return diags.filter(
+    (d) => filter.sources.has(d.source) && filter.severities.has(d.severity)
+  );
+}
+
+// ────────────────────────────────────────────────────────────
+// groupDiagnostics
+// ────────────────────────────────────────────────────────────
+
 /** Collapses identical diagnostics (same diagnosticKey) into GroupedDiagnostic
  *  entries preserving first-occurrence order.  The representative `diagnostic`
  *  in each group is the first occurrence in the input array. */
