@@ -289,6 +289,7 @@ fn process_category_traits_each_refine_process() {
                 .collect::<Vec<_>>()
         );
 
+        // Declaration order is a compiler contract: required_members preserves source order.
         for (i, (member_name, expected_type)) in expected_members.iter().enumerate() {
             assert_eq!(
                 t.required_members[i].name, *member_name,
@@ -529,10 +530,16 @@ structure def MilledBracket : Subtracting {
         .value_cells
         .iter()
         .find(|vc| vc.id.member == "min_feature_size")
-        .expect(
-            "MilledBracket should have a 'min_feature_size' value cell; \
-             found: {:?}",
-        );
+        .unwrap_or_else(|| {
+            panic!(
+                "MilledBracket should have a 'min_feature_size' value cell; found: {:?}",
+                bracket
+                    .value_cells
+                    .iter()
+                    .map(|vc| &vc.id.member)
+                    .collect::<Vec<_>>()
+            )
+        });
 
     assert_eq!(
         mfs_cell.cell_type,
