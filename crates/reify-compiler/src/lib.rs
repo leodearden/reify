@@ -241,6 +241,40 @@ pub fn merge_prelude_functions(
     result
 }
 
+/// Merge is_pub prelude purposes into the user module's compiled_purposes.
+///
+/// Appends each prelude pub purpose whose name is not already present in
+/// `user_purposes` (first-wins shadow: a user-defined purpose overrides any
+/// stdlib purpose of the same name).
+///
+/// This propagates standard purposes (e.g. `simulation_ready`, `design_review`
+/// from `std.determinacy.purposes`) into every user module compiled against the
+/// stdlib, without requiring an explicit import — matching the global-prelude
+/// model used for functions, units, and type aliases.
+///
+/// Only `is_pub` purposes are merged; private prelude purposes remain scoped to
+/// their declaring module.
+///
+/// `std.determinacy.purposes` is registered LAST in `stdlib_loader::load_stdlib`
+/// so that no other stdlib module inherits standard purposes during intra-stdlib
+/// sequential compilation — stdlib-internal compiled_purposes counts and content
+/// hashes remain stable. Only user modules (compiled against the full stdlib) gain
+/// the standard purposes. (task-4016 ζ)
+pub fn merge_prelude_purposes(
+    user_purposes: Vec<CompiledPurpose>,
+    prelude_refs: &[&CompiledModule],
+) -> Vec<CompiledPurpose> {
+    let mut result = user_purposes;
+    for module in prelude_refs {
+        for p in &module.compiled_purposes {
+            if p.is_pub && !result.iter().any(|up| up.name == p.name) {
+                result.push(p.clone());
+            }
+        }
+    }
+    result
+}
+
 /// Compile a parsed module using a pre-built [`PreludeContext`].
 ///
 /// Like [`compile_with_prelude`] but skips re-flattening prelude enum
@@ -402,6 +436,15 @@ pub fn compile_with_prelude_context(
     compile_builder::post_passes::phase_augment_composed_captures(&mut compile_ctx);
 
     let compiled_purposes = compile_builder::post_passes::phase_purposes(&mut compile_ctx, parsed);
+    // Merge is_pub prelude purposes (e.g. simulation_ready/design_review from
+    // std.determinacy.purposes) into the user module's compiled_purposes.
+    // Respects #no_prelude via the prelude_refs.is_empty() guard — when the
+    // pragma is active, prelude_refs is already &[] so no merge occurs.
+    let compiled_purposes = if prelude_refs.is_empty() {
+        compiled_purposes
+    } else {
+        merge_prelude_purposes(compiled_purposes, prelude_refs)
+    };
     let content_hash =
         compile_builder::hash::compute_module_hash(&compile_ctx, parsed, &compiled_purposes);
 
