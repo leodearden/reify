@@ -633,6 +633,103 @@ describe('DiagnosticsPanel repeated-warning collapse (grouping)', () => {
   });
 });
 
+describe('DiagnosticsPanel filter+group interaction', () => {
+  beforeAll(() => {
+    globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
+  });
+  beforeEach(() => {
+    localStorage.clear();
+    capturedResizeCallback = null;
+  });
+
+  it('grouped rows survive source toggle and repeat-count recomputes correctly', () => {
+    // Two identical compile errors + one tessellation warning.
+    const sameCompileError: DiagnosticEntry = {
+      ...makeDiag('Error', { file_path: 'x.ri', line: 1, column: 1, message: 'dup compile error' }),
+      source: 'compile',
+    };
+    const tessWarning: DiagnosticEntry = {
+      ...makeDiag('Warning', { file_path: 'y.ri', line: 2, column: 1, message: 'tess warning' }),
+      source: 'tessellation',
+    };
+
+    render(() => (
+      <DiagnosticsPanel
+        open={true}
+        diagnostics={[sameCompileError, sameCompileError, tessWarning]}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+      />
+    ));
+
+    // Default: grouping ON, all filters ON → 2 rows (compile group of 2 + tess group of 1).
+    let rows = document.querySelectorAll('[data-testid="diagnostic-row"]');
+    expect(rows.length).toBe(2);
+
+    // Filter out tessellation → only the compile group remains (1 row, count badge = "2").
+    fireEvent.click(screen.getByTestId('diagnostics-filter-source-tessellation'));
+    rows = document.querySelectorAll('[data-testid="diagnostic-row"]');
+    expect(rows.length).toBe(1);
+
+    const badge = screen.getByTestId('diagnostic-repeat-count');
+    expect(badge.textContent).toContain('2');
+  });
+
+  it('filtering everything out shows a "no diagnostics match" message instead of an empty list', () => {
+    const diag: DiagnosticEntry = {
+      ...makeDiag('Error', { message: 'only compile error' }),
+      source: 'compile',
+    };
+    render(() => (
+      <DiagnosticsPanel
+        open={true}
+        diagnostics={[diag]}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+      />
+    ));
+
+    // Deselect the only source — all rows disappear.
+    fireEvent.click(screen.getByTestId('diagnostics-filter-source-compile'));
+
+    const panel = screen.getByTestId('diagnostics-panel');
+    expect(panel.textContent).toMatch(/no diagnostics match/i);
+    expect(document.querySelectorAll('[data-testid="diagnostic-row"]').length).toBe(0);
+  });
+
+  it('Info severity chip does not render when no Info diagnostics are present', () => {
+    const warningOnly: DiagnosticEntry = {
+      ...makeDiag('Warning', { message: 'warning only' }),
+      source: 'compile',
+    };
+    render(() => (
+      <DiagnosticsPanel
+        open={true}
+        diagnostics={[warningOnly]}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+      />
+    ));
+    expect(screen.queryByTestId('diagnostics-filter-severity-Info')).toBeNull();
+  });
+
+  it('Info severity chip renders when Info diagnostics are present', () => {
+    const entries: DiagnosticEntry[] = [
+      { ...makeDiag('Warning', { message: 'warning' }), source: 'compile' },
+      { ...makeDiag('Info', { message: 'info note' }), source: 'compile' },
+    ];
+    render(() => (
+      <DiagnosticsPanel
+        open={true}
+        diagnostics={entries}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+      />
+    ));
+    expect(screen.getByTestId('diagnostics-filter-severity-Info')).toBeTruthy();
+  });
+});
+
 describe('DiagnosticsPanel header close button', () => {
   beforeAll(() => {
     globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;

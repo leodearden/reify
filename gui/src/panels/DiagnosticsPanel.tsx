@@ -37,14 +37,30 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
     new Set(ALL_SOURCES)
   );
   const [selectedSeverities, setSelectedSeverities] = createSignal<Set<string>>(
-    new Set(ALL_SEVERITIES)
+    // Union ALL_SEVERITIES with any severities actually present at mount time so that
+    // unrecognized severity values (e.g. 'Hint', 'Note') are visible by default and
+    // receive a toggle chip rather than being silently filtered out.
+    new Set([...ALL_SEVERITIES, ...props.diagnostics.map(d => d.severity)])
   );
 
   // Available severity options derived from the full (unfiltered) props.diagnostics.
+  // Renders known severities in priority order first, then any unrecognized ones, so
+  // future backend severity values always get a chip.
   const availableSeverities = createMemo(() => {
     const seen = new Set<string>();
     for (const d of props.diagnostics) seen.add(d.severity);
-    return ALL_SEVERITIES.filter(s => seen.has(s));
+    return [
+      ...ALL_SEVERITIES.filter(s => seen.has(s)),
+      ...[...seen].filter(s => !ALL_SEVERITIES.includes(s)),
+    ];
+  });
+
+  // Available source options derived from the full (unfiltered) props.diagnostics.
+  // Only sources actually present receive a chip, consistent with availableSeverities.
+  const availableSources = createMemo(() => {
+    const seen = new Set<DiagnosticSource>();
+    for (const d of props.diagnostics) seen.add(d.source);
+    return ALL_SOURCES.filter(s => seen.has(s));
   });
 
   // Filtered list used for rendering rows.
@@ -218,7 +234,7 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
 
           <Show when={props.diagnostics.length > 0}>
             <div class={styles.filterBar}>
-              <For each={ALL_SOURCES}>
+              <For each={availableSources()}>
                 {(source) => (
                   <button
                     type="button"
@@ -257,9 +273,13 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
           </Show>
 
           <Show
-            when={props.diagnostics.length > 0}
+            when={displayedGroups().length > 0}
             fallback={
-              <span class={styles.emptyState}>No diagnostics</span>
+              <span class={styles.emptyState}>
+                {props.diagnostics.length > 0
+                  ? 'No diagnostics match the current filters'
+                  : 'No diagnostics'}
+              </span>
             }
           >
             <div class={styles.list}>
