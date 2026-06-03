@@ -197,6 +197,7 @@ vi.mock('three-mesh-bvh', () => ({
 }));
 
 import { createSelection } from '../../viewport/selection';
+import { THEME_TOKENS } from '../../theme';
 import {
   Scene,
   PerspectiveCamera,
@@ -1553,6 +1554,23 @@ describe('createSelection', () => {
       // New wireframe should reference the new geometry
       const wireframe2 = mockSceneAdd.mock.calls[0][0];
       expect(wireframe2.geometry.sourceGeometry).toBe(newGeom);
+    });
+  });
+
+  describe('selection color is high-contrast and distinct from hover', () => {
+    it('wireframe material color equals THEME_TOKENS.selection (not accent)', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { selection } = setup(meshMap);
+
+      selection.setSelected('A');
+
+      const wireframe = mockSceneAdd.mock.calls[0][0];
+      expect(wireframe.material.color).toBe(THEME_TOKENS.selection);
+    });
+
+    it('THEME_TOKENS.selection is distinct from THEME_TOKENS.accent (hover color)', () => {
+      expect(THEME_TOKENS.selection).not.toBe(THEME_TOKENS.accent);
     });
   });
 
