@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createRoot } from 'solid-js';
-import { useKeyboardShortcuts, hasCallbackWiring } from '../hooks/useKeyboardShortcuts';
+import { useKeyboardShortcuts, hasCallbackWiring, paletteCommands, runCommand } from '../hooks/useKeyboardShortcuts';
 import { SHORTCUTS } from '../shortcuts';
 
 describe('useKeyboardShortcuts', () => {
@@ -533,5 +533,179 @@ describe('hasCallbackWiring invariant', () => {
       if (!hasCallbackWiring(s.id)) continue;
       expect(s.bind, `wired shortcut "${s.id}" must have a bind`).toBeDefined();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Command palette + symbol-jump shortcut dispatch (task-4208)
+// ---------------------------------------------------------------------------
+
+describe('useKeyboardShortcuts — command palette shortcuts', () => {
+  let dispose: () => void;
+
+  afterEach(() => {
+    dispose?.();
+  });
+
+  it('Ctrl+Shift+P calls onCommandPalette', () => {
+    const onCommandPalette = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onCommandPalette });
+      return d;
+    });
+
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'p', ctrlKey: true, shiftKey: true, bubbles: true }),
+    );
+    expect(onCommandPalette).toHaveBeenCalledTimes(1);
+  });
+
+  it('Ctrl+Shift+O calls onSymbolJump', () => {
+    const onSymbolJump = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onSymbolJump });
+      return d;
+    });
+
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'o', ctrlKey: true, shiftKey: true, bubbles: true }),
+    );
+    expect(onSymbolJump).toHaveBeenCalledTimes(1);
+  });
+
+  it('Ctrl+Shift+P on an <input> STILL calls onCommandPalette (typing-context exempt)', () => {
+    const onCommandPalette = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onCommandPalette });
+      return d;
+    });
+
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    try {
+      input.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'p', ctrlKey: true, shiftKey: true, bubbles: true }),
+      );
+      expect(onCommandPalette).toHaveBeenCalledTimes(1);
+    } finally {
+      document.body.removeChild(input);
+    }
+  });
+
+  it('Ctrl+Shift+O on an <input> STILL calls onSymbolJump (typing-context exempt)', () => {
+    const onSymbolJump = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onSymbolJump });
+      return d;
+    });
+
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    try {
+      input.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'o', ctrlKey: true, shiftKey: true, bubbles: true }),
+      );
+      expect(onSymbolJump).toHaveBeenCalledTimes(1);
+    } finally {
+      document.body.removeChild(input);
+    }
+  });
+
+  it('Ctrl+Shift+P on a contentEditable element STILL calls onCommandPalette (typing-context exempt)', () => {
+    const onCommandPalette = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onCommandPalette });
+      return d;
+    });
+
+    const div = document.createElement('div');
+    div.contentEditable = 'true';
+    Object.defineProperty(div, 'isContentEditable', { get: () => true, configurable: true });
+    document.body.appendChild(div);
+    try {
+      div.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'p', ctrlKey: true, shiftKey: true, bubbles: true }),
+      );
+      expect(onCommandPalette).toHaveBeenCalledTimes(1);
+    } finally {
+      document.body.removeChild(div);
+    }
+  });
+
+  it('Ctrl+O on an <input> does NOT call onOpen (regression guard: non-palette shortcuts stay guarded)', () => {
+    const onOpen = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onOpen });
+      return d;
+    });
+
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    try {
+      input.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'o', ctrlKey: true, bubbles: true }),
+      );
+      expect(onOpen).not.toHaveBeenCalled();
+    } finally {
+      document.body.removeChild(input);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// paletteCommands() and runCommand() (task-4208)
+// ---------------------------------------------------------------------------
+
+describe('paletteCommands', () => {
+  it('returns an array of objects with id, title, and key fields', () => {
+    const cmds = paletteCommands();
+    expect(Array.isArray(cmds)).toBe(true);
+    for (const cmd of cmds) {
+      expect(typeof cmd.id).toBe('string');
+      expect(typeof cmd.title).toBe('string');
+      expect(typeof cmd.key).toBe('string');
+    }
+  });
+
+  it('includes the save command', () => {
+    const cmds = paletteCommands();
+    expect(cmds.some((c) => c.id === 'save')).toBe(true);
+  });
+
+  it('includes the open command', () => {
+    const cmds = paletteCommands();
+    expect(cmds.some((c) => c.id === 'open')).toBe(true);
+  });
+
+  it('excludes commandPalette and symbolJump from the list (palette-control ids)', () => {
+    const cmds = paletteCommands();
+    expect(cmds.some((c) => c.id === 'commandPalette')).toBe(false);
+    expect(cmds.some((c) => c.id === 'symbolJump')).toBe(false);
+  });
+
+  it('excludes disabled shortcuts (undo, redo)', () => {
+    const cmds = paletteCommands();
+    expect(cmds.some((c) => c.id === 'undo')).toBe(false);
+    expect(cmds.some((c) => c.id === 'redo')).toBe(false);
+  });
+
+  it('excludes entries with no bind (fitToView)', () => {
+    const cmds = paletteCommands();
+    expect(cmds.some((c) => c.id === 'fitToView')).toBe(false);
+  });
+});
+
+describe('runCommand', () => {
+  it('runCommand("save", {onSave}) invokes onSave once', () => {
+    const onSave = vi.fn();
+    runCommand('save', { onSave });
+    expect(onSave).toHaveBeenCalledTimes(1);
+  });
+
+  it('runCommand for an unwired id is a no-op', () => {
+    // 'fitToView' has no bind and no wiring
+    const spy = vi.fn();
+    expect(() => runCommand('fitToView', { onSave: spy })).not.toThrow();
+    expect(spy).not.toHaveBeenCalled();
   });
 });
