@@ -1,7 +1,7 @@
 // Multi-level containment assembly example — Sub-Placement & Surfacing PRD §0 / §8.
 //
 // Demonstrates declarative `at`-placement across THREE nesting levels with NO
-// manual lift transforms (`translate(self.sub.body, …)` ceremony is gone).
+// manual lift transforms (the old manual-lift ceremony is gone).
 // The assembled hierarchy:
 //
 //   Arm  ─── sub motor   : Motor   at +100 mm X
