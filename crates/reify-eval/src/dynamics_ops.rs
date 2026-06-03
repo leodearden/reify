@@ -224,6 +224,7 @@ fn body_geometry_handle(body: &Value) -> Option<reify_ir::GeometryHandleId> {
 /// Returns `(mass, com, inertia)` on success, or a [`reify_ir::QueryError`] on
 /// the first failing/malformed query. The caller is responsible for emitting
 /// diagnostics and downgrading to `Value::Undef` on error.
+#[allow(clippy::type_complexity)]
 fn query_body_mass_props_from_kernel(
     kernel: &dyn reify_ir::GeometryKernel,
     handle: reify_ir::GeometryHandleId,
