@@ -19,6 +19,18 @@ pub use helpers::complex_phase;
 /// stackup builtin returns `Value::Undef`.
 pub use stackup::diagnose as stackup_diagnose;
 
+/// Public re-export of the ISO tolerancing diagnostic classifier (task α).
+///
+/// Flags `iso_it_tolerance` out-of-envelope calls (well-typed args that fall
+/// outside IT5–IT18 / ≤500 mm) with a `Severity::Error` Diagnostic.
+/// Returns `None` for valid calls, for `effective_tolerance_zone`, and for
+/// non-tolerancing names.
+///
+/// Wiring this into `reify-expr`'s diagnostic sink (like `stackup_diagnose`
+/// at `reify-expr/src/lib.rs:1271`) is a deferred consumer hookup outside α's
+/// two-file scope; α ships the classifier + re-export, unit-tested in isolation.
+pub use tolerancing::diagnose as tolerancing_diagnose;
+
 /// Public re-export of the multi-load-case FEA error classifier.
 ///
 /// Called by `crates/reify-expr/src/lib.rs` at the builtin fallthrough arm to
@@ -98,6 +110,7 @@ mod orientation;
 mod snapshot;
 mod stackup;
 mod supports;
+mod tolerancing;
 mod sweep;
 mod tensegrity;
 mod trajectory;
@@ -162,6 +175,9 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         return v;
     }
     if let Some(v) = stackup::eval_stackup(name, args) {
+        return v;
+    }
+    if let Some(v) = tolerancing::eval_tolerancing(name, args) {
         return v;
     }
     if let Some(v) = sweep::eval_sweep(name, args) {
