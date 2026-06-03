@@ -46,6 +46,16 @@ function setupStore(files: FileData[] = [file1]) {
   return store;
 }
 
+/** Capture the Tauri diagnostics event handler so we can fire events manually. */
+function setupListenCapture() {
+  let diagnosticsHandler: ((event: { payload: any }) => void) | undefined;
+  mockListen.mockImplementation(async (_event: any, handler: any) => {
+    diagnosticsHandler = handler;
+    return vi.fn(); // unlisten
+  });
+  return () => diagnosticsHandler;
+}
+
 describe('Editor mounting', () => {
   it('renders container div with data-testid', () => {
     const store = setupStore();
@@ -481,16 +491,6 @@ describe('Editor LSP init error callback', () => {
 });
 
 describe('Editor diagnostics URI filtering', () => {
-  /** Capture the Tauri diagnostics event handler so we can fire events manually. */
-  function setupListenCapture() {
-    let diagnosticsHandler: ((event: { payload: any }) => void) | undefined;
-    mockListen.mockImplementation(async (_event: any, handler: any) => {
-      diagnosticsHandler = handler;
-      return vi.fn(); // unlisten
-    });
-    return () => diagnosticsHandler;
-  }
-
   const sampleDiagnostic = {
     range: {
       start: { line: 0, character: 0 },
@@ -1531,16 +1531,6 @@ describe('Editor F12 go-to-definition', () => {
 });
 
 describe('Editor compile diagnostics', () => {
-  /** Capture the Tauri diagnostics event handler (LSP) for merge tests. */
-  function setupListenCapture() {
-    let diagnosticsHandler: ((event: { payload: any }) => void) | undefined;
-    mockListen.mockImplementation(async (_event: any, handler: any) => {
-      diagnosticsHandler = handler;
-      return vi.fn();
-    });
-    return () => diagnosticsHandler;
-  }
-
   // A compile Error diagnostic whose file_path matches file1
   const errorDiagForActiveFile: DiagnosticInfo = {
     file_path: file1.path,
@@ -1681,16 +1671,6 @@ describe('Editor compile diagnostics', () => {
 });
 
 describe('Editor compile diagnostics: stale LSP cleared on file switch', () => {
-  /** Capture the Tauri diagnostics event handler (same pattern as other describe blocks). */
-  function setupListenCapture() {
-    let capturedHandler: ((event: { payload: any }) => void) | undefined;
-    mockListen.mockImplementation(async (_event: any, handler: any) => {
-      capturedHandler = handler;
-      return vi.fn();
-    });
-    return () => capturedHandler;
-  }
-
   it('(a) FLASH — file2 LSP squiggle does NOT leak into file1 after switch', () => {
     const getHandler = setupListenCapture();
     const store = setupStore([file2, file1]);

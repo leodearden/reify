@@ -89,7 +89,7 @@ export function Editor(props: EditorProps) {
     // offsets the LSP listener computed against a longer doc.  Filter the merged
     // union against the live doc so neither channel can dispatch stale ranges.
     const validDiags = [...lspCmDiagnostics, ...compileCmDiagnostics].filter(
-      (d) => d.from <= docLength && d.to <= docLength,
+      (d) => d.from >= 0 && d.from <= d.to && d.to <= docLength,
     );
     view.dispatch(setDiagnostics(view.state, validDiags));
   }
