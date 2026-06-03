@@ -72,11 +72,21 @@ export const ConstraintPanel: Component<ConstraintPanelProps> = (props) => {
       .filter((v): v is ValueData => v != null);
   }
 
+  function openContextMenu(constraint: ConstraintData, x: number, y: number) {
+    setContextMenu({ constraint, x, y });
+    document.addEventListener('click', handleDismissMenu, { once: true });
+  }
+
   function handleContextMenu(e: MouseEvent, constraint: ConstraintData) {
     if (!props.onAskClaude) return;
     e.preventDefault();
-    setContextMenu({ constraint, x: e.clientX, y: e.clientY });
-    document.addEventListener('click', handleDismissMenu, { once: true });
+    openContextMenu(constraint, e.clientX, e.clientY);
+  }
+
+  function handleActionsClick(e: MouseEvent, constraint: ConstraintData) {
+    e.stopPropagation();
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    openContextMenu(constraint, rect.right, rect.bottom);
   }
 
   function handleDismissMenu() {
@@ -141,6 +151,17 @@ export const ConstraintPanel: Component<ConstraintPanelProps> = (props) => {
                   <span class={styles.statusBadge} data-status={constraint.status} aria-label={constraint.status} title={statusTitle(constraint.status)}>
                     {statusIcon(constraint.status)}
                   </span>
+                  <Show when={props.onAskClaude}>
+                    <button
+                      data-testid={`constraint-actions-${constraint.node_id}`}
+                      class={styles.actionsBtn}
+                      aria-label="Constraint actions"
+                      title="Constraint actions"
+                      onClick={(e: MouseEvent) => handleActionsClick(e, constraint)}
+                    >
+                      ⋯
+                    </button>
+                  </Show>
                 </div>
                 <Show when={isExpanded(constraint.node_id) && isExpandable(constraint.status)}>
                   <div class={styles.details}>
