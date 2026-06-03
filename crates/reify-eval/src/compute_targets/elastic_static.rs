@@ -1314,6 +1314,56 @@ mod tests {
     use super::*;
     use reify_solver_elastic::{AnisotropicMaterial, OrthotropicMaterial};
 
+    // ── task 4264: PressureLoad bridge ────────────────────────────────────────
+
+    /// step-1 RED (task 4264): extract_pressure_loads reads PressureLoad items
+    /// and ignores PointLoad items in the same list.
+    ///
+    /// Fixture: a Value::List containing one PressureLoad and one PointLoad.
+    /// Expected: extract_pressure_loads returns exactly one PressureSpec whose
+    /// fields match the PressureLoad input; the PointLoad is silently ignored.
+    ///
+    /// RED: PressureSpec and extract_pressure_loads don't exist yet.
+    #[test]
+    fn extract_pressure_loads_reads_pressure_and_ignores_point_load() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        // Build a PressureLoad StructureInstance
+        let mut pressure_fields = PersistentMap::new();
+        pressure_fields = pressure_fields.insert("magnitude".to_string(), Value::Real(1.0e6));
+        pressure_fields = pressure_fields.insert(
+            "face".to_string(),
+            Value::String("x_max".to_string()),
+        );
+        pressure_fields = pressure_fields.insert(
+            "direction".to_string(),
+            Value::String("normal".to_string()),
+        );
+        let pressure_load = Value::StructureInstance(Arc::new(StructureInstanceData {
+            type_name: "PressureLoad".to_string(),
+            type_id: StructureTypeId(u32::MAX),
+            fields: pressure_fields,
+        }));
+
+        // Build a PointLoad StructureInstance (should be ignored)
+        let mut point_fields = PersistentMap::new();
+        point_fields = point_fields.insert("force".to_string(), Value::Real(500.0));
+        let point_load = Value::StructureInstance(Arc::new(StructureInstanceData {
+            type_name: "PointLoad".to_string(),
+            type_id: StructureTypeId(u32::MAX),
+            fields: point_fields,
+        }));
+
+        let loads = Value::List(Arc::new(vec![pressure_load, point_load]));
+
+        let specs = extract_pressure_loads(&loads);
+
+        assert_eq!(specs.len(), 1, "expected exactly 1 PressureSpec, got {}", specs.len());
+        assert_eq!(specs[0].magnitude, 1.0e6);
+        assert_eq!(specs[0].face, "x_max");
+        assert_eq!(specs[0].direction, "normal");
+    }
+
     /// step-3 RED (task δ/3780): orthotropic ConstantField cantilever tip-deflection
     /// band test at L/h = 8.
     ///
