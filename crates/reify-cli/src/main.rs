@@ -840,11 +840,11 @@ fn cmd_doc(args: &[String]) -> ExitCode {
         }
         for (name, body) in pages {
             let file_path = out_dir.join(&name);
-            if let Some(parent) = file_path.parent() {
-                if let Err(e) = std::fs::create_dir_all(parent) {
-                    eprintln!("Error writing {}: {}", parent.display(), e);
-                    return ExitCode::FAILURE;
-                }
+            if let Some(parent) = file_path.parent()
+                && let Err(e) = std::fs::create_dir_all(parent)
+            {
+                eprintln!("Error writing {}: {}", parent.display(), e);
+                return ExitCode::FAILURE;
             }
             if let Err(e) = std::fs::write(&file_path, body.as_bytes()) {
                 eprintln!("Error writing {}: {}", file_path.display(), e);
