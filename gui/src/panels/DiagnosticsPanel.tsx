@@ -8,8 +8,8 @@ import {
   saveDiagnosticsPanelSize,
   computeDefaultDialogSize,
 } from '../hooks/diagnosticsPanelPersistence';
-import { filterDiagnostics } from './diagnosticsView';
-import type { DiagnosticSource } from './diagnosticsView';
+import { filterDiagnostics, groupDiagnostics } from './diagnosticsView';
+import type { DiagnosticSource, GroupedDiagnostic } from './diagnosticsView';
 
 /** Panel-facing wrapper that extends the wire-format DiagnosticInfo with a
  *  frontend-only source tag. The `source` field is never sent by the Rust
@@ -54,6 +54,18 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
       severities: selectedSeverities(),
     })
   );
+
+  // Grouping toggle — ON by default to collapse repeated identical diagnostics.
+  const [grouping, setGrouping] = createSignal(true);
+
+  // Displayed groups: either deduped (grouping ON) or 1:1 with count=1 (grouping OFF).
+  const displayedGroups = createMemo((): GroupedDiagnostic[] => {
+    const filtered = filteredDiagnostics();
+    if (grouping()) {
+      return groupDiagnostics(filtered);
+    }
+    return filtered.map(d => ({ diagnostic: d, count: 1 }));
+  });
 
   function toggleSource(source: DiagnosticSource) {
     setSelectedSources(prev => {
@@ -232,6 +244,15 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
                   </button>
                 )}
               </For>
+              <button
+                type="button"
+                class={`${styles.filterChip}${grouping() ? ` ${styles.filterChipActive}` : ''}`}
+                data-testid="diagnostics-group-toggle"
+                aria-pressed={grouping()}
+                onClick={() => setGrouping(g => !g)}
+              >
+                Collapse repeated
+              </button>
             </div>
           </Show>
 
@@ -242,32 +263,40 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
             }
           >
             <div class={styles.list}>
-              <For each={filteredDiagnostics()}>
-                {(diag) => (
+              <For each={displayedGroups()}>
+                {(group) => (
                   <div
                     class={styles.row}
                     data-testid="diagnostic-row"
-                    onClick={() => props.onNavigate(diag)}
+                    onClick={() => props.onNavigate(group.diagnostic)}
                     role="button"
                     tabindex="0"
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' || e.key === ' ') {
                         e.preventDefault();
-                        props.onNavigate(diag);
+                        props.onNavigate(group.diagnostic);
                       }
                     }}
                   >
-                    <span class={severityClass(diag.severity)}>
-                      {diag.severity}
+                    <span class={severityClass(group.diagnostic.severity)}>
+                      {group.diagnostic.severity}
                     </span>
                     <span
                       data-testid="diagnostic-source-chip"
-                      class={sourceChipClass(diag.source)}
+                      class={sourceChipClass(group.diagnostic.source)}
                     >
-                      {diag.source}
+                      {group.diagnostic.source}
                     </span>
-                    <span class={styles.location}>{locationLabel(diag)}</span>
-                    <span class={styles.message}>{diag.message}</span>
+                    <span class={styles.location}>{locationLabel(group.diagnostic)}</span>
+                    <span class={styles.message}>{group.diagnostic.message}</span>
+                    <Show when={group.count > 1}>
+                      <span
+                        class={styles.repeatCount}
+                        data-testid="diagnostic-repeat-count"
+                      >
+                        x{group.count}
+                      </span>
+                    </Show>
                   </div>
                 )}
               </For>

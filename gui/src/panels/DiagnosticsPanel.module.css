@@ -131,6 +131,18 @@
   white-space: nowrap;
 }
 
+.repeatCount {
+  padding: 1px 5px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--reify-font-mono, monospace);
+  color: var(--reify-text-muted, #6c7086);
+  background: rgba(108, 112, 134, 0.2);
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
 .filterBar {
   display: flex;
   flex-wrap: wrap;
