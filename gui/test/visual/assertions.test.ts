@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
 import * as path from "node:path";
 import * as fs from "node:fs";
-import { getByPath, evaluateAssertion, FIXTURES } from "./assertions";
-import type { Assertion } from "./assertions";
+import { getByPath, evaluateAssertion, FIXTURES, VALUE_SCENARIOS } from "./assertions";
+import type { Assertion, ValueScenario } from "./assertions";
 import { resolveRepoRoot } from "./paths";
 
 describe("getByPath", () => {
@@ -89,6 +89,37 @@ describe("FIXTURES catalogue", () => {
     for (const [name, relPath] of Object.entries(FIXTURES)) {
       const absPath = path.join(repoRoot, relPath);
       expect(fs.existsSync(absPath), `fixture '${name}' missing at ${absPath}`).toBe(true);
+    }
+  });
+});
+
+describe("VALUE_SCENARIOS", () => {
+  it("is a non-empty array", () => {
+    expect(Array.isArray(VALUE_SCENARIOS)).toBe(true);
+    expect(VALUE_SCENARIOS.length).toBeGreaterThan(0);
+  });
+
+  it("every scenario.fixture is a valid key of FIXTURES", () => {
+    const validKeys = Object.keys(FIXTURES);
+    for (const scenario of VALUE_SCENARIOS) {
+      expect(validKeys).toContain(scenario.fixture);
+    }
+  });
+
+  it("contains store_state_meshcount_small_cube with correct shape", () => {
+    const scenario: ValueScenario | undefined = VALUE_SCENARIOS.find(
+      (s) => s.name === "store_state_meshcount_small_cube",
+    );
+    expect(scenario).toBeDefined();
+    if (scenario) {
+      expect(scenario.fixture).toBe("small_cube");
+      expect(scenario.tool).toBe("store_state");
+      expect(scenario.args).toEqual({});
+      expect(scenario.assertions).toContainEqual({
+        path: "engine.meshCount",
+        op: "equals",
+        expected: 1,
+      });
     }
   });
 });
