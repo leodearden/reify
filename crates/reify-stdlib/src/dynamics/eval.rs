@@ -333,7 +333,9 @@ fn eval_inverse_dynamics_at_snapshot(args: &[Value]) -> Value {
     if args.len() != 4 {
         return Value::Undef;
     }
-    match snapshot_inverse_dynamics(&args[0], &args[1], &args[2], &args[3]) {
+    // Spring torque unavailable on the snapshot path: the snapshot body
+    // record does not retain the scalar joint coordinate (task ι §design).
+    match snapshot_inverse_dynamics(&args[0], &args[1], &args[2], &args[3], None) {
         Some(forces) => Value::List(forces),
         None => Value::Undef,
     }
@@ -347,11 +349,20 @@ fn eval_inverse_dynamics_at_snapshot(args: &[Value]) -> Value {
 /// `bodies` (id) order: each joint consumes `dof_count` consecutive cells (per
 /// the joint's motion-subspace column count), so the total length must equal
 /// Σ dof. A 1-DOF revolute pendulum takes a length-1 list (`[q̇]`).
+///
+/// `positions` carries the per-body joint coordinate `q` in `bodies` order,
+/// used to apply the spring term `−k·(q − neutral)` in [`JointCompliance`].
+/// Pass `Some(values)` on the trajectory path (the sample's `values` slice);
+/// pass `None` on the snapshot path — the snapshot body record does not retain
+/// the scalar joint coordinate (it is consumed by the FK walk), so spring
+/// torque is unavailable there and is silently omitted.  Viscous damping
+/// `−c·q̇` depends only on `q̇` and applies on **both** paths.
 fn snapshot_inverse_dynamics(
     mechanism: &Value,
     snapshot: &Value,
     q_dot_arg: &Value,
     q_ddot_arg: &Value,
+    positions: Option<&[Value]>,
 ) -> Option<Vec<Value>> {
     // ── mechanism validation (kind="mechanism", no error) ──
     let mech = match mechanism {
@@ -488,6 +499,23 @@ fn snapshot_inverse_dynamics(
                 xc.compose(&SpatialTransform6::from_frame3(&parent_frame).inverse())
             }
         };
+        // ── compliance bridge (task ι) ───────────────────────────────────────
+        // Gate on 1-DOF (subspace column count == 1) to avoid the rnea
+        // always-on multi-DOF panic (PRD §11.2). Flexure joints are always
+        // revolute/prismatic, so this guard never fires in practice — it is
+        // defence-in-depth for a hand-built multi-DOF Map carrying a stray
+        // spring_rate key.
+        // Spring gating: positions carries the per-body q on the trajectory
+        // path (Some(values)); the snapshot path passes None because the
+        // snapshot body record does not retain the scalar coordinate.
+        let joint_pos = positions
+            .and_then(|p| p.get(bi))
+            .and_then(compliance_cell_f64);
+        let compliance = if subspaces[bi].len() == 1 {
+            joint_compliance(at_joints[bi], joint_pos)
+        } else {
+            None
+        };
         links.push(RneaLink {
             parent: parent_idx[bi].map(|pb| pos[pb]),
             parent_to_child,
@@ -497,7 +525,7 @@ fn snapshot_inverse_dynamics(
             inertia_about_com,
             q_dot: q_dot[bi].clone(),
             q_ddot: q_ddot[bi].clone(),
-            compliance: None,
+            compliance,
         });
     }
 
@@ -541,7 +569,6 @@ fn map_str<'a>(map: &'a BTreeMap<Value, Value>, key: &str) -> Option<&'a str> {
 /// Both bare-`Scalar` and `Value::Option(Some(Scalar))` shapes are accepted
 /// for all three compliant fields (via [`compliance_cell_f64`]), covering the
 /// shape `make_flexure_joint` emits today and any future wrapped form.
-#[allow(dead_code)] // dead_code annotation removed in step-4 when wired into the link loop
 fn joint_compliance(joint: &Value, position: Option<f64>) -> Option<JointCompliance> {
     let m = match joint {
         Value::Map(m) => m,
@@ -771,7 +798,9 @@ pub fn inverse_dynamics_sample(mechanism: &Value, sample: &Value) -> Option<Vec<
     if is_closed {
         closed_chain_inverse_dynamics(mechanism, &snapshot, &bindings, vels, accels)
     } else {
-        snapshot_inverse_dynamics(mechanism, &snapshot, vels, accels)
+        // Pass the sample's `values` slice so snapshot_inverse_dynamics can
+        // supply joint positions to joint_compliance (spring term).
+        snapshot_inverse_dynamics(mechanism, &snapshot, vels, accels, Some(values))
     }
 }
 
