@@ -5397,6 +5397,79 @@ describe('App handleSave conflict prompt: Overwrite', () => {
   });
 });
 
+// ─── Conflict prompt: Overwrite uses live buffer content ─────────────────────
+
+describe('App handleSave conflict prompt: Overwrite uses live buffer', () => {
+  const testState: GuiState = {
+    meshes: [],
+    values: [],
+    constraints: [],
+    files: [
+      { path: '/project/bracket.ri', content: 'STALE' },
+    ],
+    tessellation_diagnostics: [],
+    compile_diagnostics: [],
+    tensegrity_wires: [],
+  };
+
+  let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
+
+  beforeEach(() => {
+    fileChangedCallback = undefined;
+    vi.mocked(bridge.onFileChanged).mockImplementation(async (cb: any) => {
+      fileChangedCallback = cb;
+      return () => {};
+    });
+    vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
+  });
+
+  it('clicking Overwrite saves the live buffer content (from liveContentRef), not the stale store snapshot', async () => {
+    // The conflict prompt is created when Ctrl+S fires on an externally-changed
+    // file.  The Overwrite action must save the live CM buffer, not the stale
+    // store snapshot that was captured at open time.
+    vi.mocked(bridge.saveFile).mockResolvedValue(undefined);
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: '/project/bracket.ri', content: 'unused' });
+
+    render(() => <App />);
+    await waitFor(() => expect(fileChangedCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+    await waitFor(() => expect(capturedEditorLiveContentRef).toBeDefined());
+
+    // Set up dirty + externally-changed state; store snapshot stays 'STALE'
+    capturedEditorStore.setActiveFile('/project/bracket.ri');
+    capturedEditorStore.markDirty('/project/bracket.ri');
+    capturedEditorStore.markExternallyChanged('/project/bracket.ri');
+
+    // Wire the live content getter to simulate the user having typed
+    capturedEditorLiveContentRef!(() => 'LIVE-OVERWRITE');
+
+    // Trigger handleSave via Ctrl+S — shows conflict prompt (file is externally-changed)
+    fireEvent.keyDown(document, { key: 's', ctrlKey: true });
+
+    // Wait for the conflict toast with Overwrite button to appear
+    let conflictToast: HTMLElement | undefined;
+    await waitFor(() => {
+      const toasts = screen.getAllByTestId('toast');
+      conflictToast = toasts.find((t) =>
+        t.textContent?.includes(EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG),
+      );
+      expect(conflictToast).toBeTruthy();
+    });
+
+    // Click the Overwrite action button
+    const overwriteBtn = within(conflictToast!).getByRole('button', { name: SAVE_CONFLICT_OVERWRITE_LABEL });
+    fireEvent.click(overwriteBtn);
+
+    // bridgeSaveFile must be called with the LIVE buffer content, not 'STALE'
+    await waitFor(() => {
+      expect(vi.mocked(bridge.saveFile)).toHaveBeenCalledWith(
+        '/project/bracket.ri',
+        'LIVE-OVERWRITE',
+      );
+    });
+  });
+});
+
 // ─── Save-conflict resolution clears the reload-prompt banner ────────────────
 
 describe('App save-conflict resolution clears the reload-prompt banner', () => {
