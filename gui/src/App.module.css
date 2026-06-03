@@ -94,6 +94,14 @@
   overflow: hidden;
 }
 
+.warmPoolDebugOverlay {
+  position: fixed;
+  bottom: 40px;
+  left: 16px;
+  z-index: 150;
+  pointer-events: none;
+}
+
 .toastContainer {
   position: fixed;
   bottom: 40px;
