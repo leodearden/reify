@@ -377,8 +377,26 @@ fn members_region(members: &[MemberDecl]) -> Option<SourceSpan> {
 }
 
 /// The source span of a member statement, for the member kinds that carry one and
-/// can appear in an entity body. Returns `None` for kinds whose span we do not
-/// need here (they neither bound a scope region nor introduce a tracked binding).
+/// can appear in an entity body.
+///
+/// CRITICAL invariant: this must return `Some` for **every** member kind that
+/// [`collect_uses`] descends into, because [`members_region`] derives the flat
+/// `entity_region` bounding box from these spans, and [`resolve_use`] only resolves
+/// a use to the correct outer binding when that use falls inside a binding region.
+/// A use collected from a member whose span were dropped here (and positioned after
+/// the last spannable member) would land past `entity_region.end`, be contained by
+/// no binding region, and fall through `resolve_use`'s last-registered fallback —
+/// mis-attributing a top-level `connect`/`chain`/`forall`/match-arm use to the
+/// innermost (e.g. guarded or port-local) binding under shadowing (Invariant 1).
+/// So `Connect`/`Chain`/`ForallConnect`/`ForallConstraint`/`MatchArmDeclGroup` —
+/// all walked by `collect_uses` — are spanned here too.
+///
+/// The match is exhaustive (no wildcard) so adding a new `MemberDecl` variant is a
+/// compile error that forces a deliberate decision here, keeping `member_span` and
+/// `collect_uses` from drifting apart. The three kinds returning `None`
+/// (`Fn`/`AssociatedType`/`MetaBlock`) are exactly the ones `collect_uses` does not
+/// walk: a fn body opens its own param scope (deferred), and associated-type /
+/// meta blocks carry no tracked binding or collected use.
 fn member_span(member: &MemberDecl) -> Option<SourceSpan> {
     match member {
         MemberDecl::Param(p) => Some(p.span),
@@ -390,7 +408,13 @@ fn member_span(member: &MemberDecl) -> Option<SourceSpan> {
         MemberDecl::Maximize(m) => Some(m.span),
         MemberDecl::GuardedGroup(g) => Some(g.span),
         MemberDecl::Port(p) => Some(p.span),
-        _ => None,
+        MemberDecl::Connect(c) => Some(c.span),
+        MemberDecl::Chain(c) => Some(c.span),
+        MemberDecl::ForallConnect(f) => Some(f.span),
+        MemberDecl::ForallConstraint(f) => Some(f.span),
+        MemberDecl::MatchArmDeclGroup(g) => Some(g.span),
+        // Not walked by `collect_uses` — no tracked binding or collected use.
+        MemberDecl::Fn(_) | MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) => None,
     }
 }
 
@@ -1695,6 +1719,86 @@ structure S {
             from_port_use.declaration,
             span_of(w[2], "width"),
             "the port-body use must bind to the port-local declaration"
+        );
+    }
+
+    // --- regression (esc-4201-123): trailing connect/forall/chain/match member
+    // span must extend entity_region so its uses resolve to the outer binding ---
+
+    #[test]
+    fn collect_references_trailing_forall_use_resolves_to_outer_not_shadow() {
+        // Regression: `member_span` used to return None for Connect/Chain/
+        // ForallConnect/ForallConstraint/MatchArmDeclGroup, even though
+        // `collect_uses` walks all of them. `members_region` (which builds the flat
+        // `entity_region` bounding box) therefore stopped at the last param/let/
+        // sub/port/guarded member. A use living in a `forall`/connect/chain/match
+        // member positioned AFTER that — here the `tracked` in the trailing
+        // `forall v in tracked: …` — fell past `entity_region.end`, was contained by
+        // NO binding region, and hit `resolve_use`'s last-registered fallback. With
+        // a guarded redeclaration present (registered last, deepest), that fallback
+        // mis-attributed the top-level forall use to the GUARDED binding (Invariant 1
+        // violation). The fix spans those five member kinds so the trailing use
+        // falls inside the depth-0 entity region and resolves to the outer binding.
+        let source = "\
+structure S {
+    param tracked: Scalar = 1mm
+    param enabled: Bool = true
+    where enabled {
+        param tracked: Scalar = 2mm
+    }
+    forall v in tracked: constraint v > 0mm
+}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("trailing"));
+        assert!(
+            parsed.errors.is_empty(),
+            "trailing-forall fixture must parse clean: {:?}",
+            parsed.errors
+        );
+
+        let t = occurrences(source, "tracked");
+        assert_eq!(
+            t.len(),
+            3,
+            "top decl, guarded decl, and the trailing forall-collection use"
+        );
+        // t[0]=top decl, t[1]=guarded decl, t[2]=use in `forall v in tracked`.
+
+        // --- Cursor on the TOP-LEVEL decl → owns t[0] (decl) + t[2] (forall use).
+        // Before the fix t[2] was attributed to the guarded binding instead. ---
+        let top = collect_references(source, &parsed, offset_to_position(source, t[0] as u32), true)
+            .expect("top-level tracked declaration resolves");
+        assert_eq!(top.kind, RefSymbolKind::Param);
+        assert_eq!(top.declaration, span_of(t[0], "tracked"));
+        assert_eq!(
+            top.references,
+            vec![span_of(t[0], "tracked"), span_of(t[2], "tracked")],
+            "top-level tracked owns its decl + the trailing forall use"
+        );
+
+        // --- Cursor on the GUARDED decl → owns t[1] only; the trailing forall use
+        // t[2] must NOT leak into it (the mis-attribution the fix removes). ---
+        let guarded =
+            collect_references(source, &parsed, offset_to_position(source, t[1] as u32), false)
+                .expect("guarded tracked declaration resolves");
+        assert_eq!(guarded.declaration, span_of(t[1], "tracked"));
+        assert!(
+            guarded.references.is_empty(),
+            "guarded tracked has no in-branch use and must NOT capture the forall use: {:?}",
+            guarded.references
+        );
+        assert!(
+            !guarded.references.contains(&span_of(t[2], "tracked")),
+            "the trailing forall use must not be mis-attributed to the guarded binding"
+        );
+
+        // --- Cursor on the forall use itself resolves to the TOP-LEVEL decl. ---
+        let from_use =
+            collect_references(source, &parsed, offset_to_position(source, t[2] as u32), false)
+                .expect("trailing forall use resolves");
+        assert_eq!(
+            from_use.declaration,
+            span_of(t[0], "tracked"),
+            "the trailing forall use must bind to the outer (top-level) declaration"
         );
     }
 }
