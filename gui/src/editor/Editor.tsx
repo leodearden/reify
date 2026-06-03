@@ -11,13 +11,13 @@ import { reifyLanguage } from './reifyLanguage';
 import { updateSource, saveFile, openFile as bridgeOpenFile } from '../bridge';
 import { createLspClient } from './lspClient';
 import { reifyCompletionSource } from './completions';
-import { createDiagnosticsListener, lspDiagnosticToCodeMirror, type CmDiagnostic } from './diagnostics';
+import { createDiagnosticsListener, lspDiagnosticToCodeMirror, diagnosticInfoToCmDiagnostic, type CmDiagnostic } from './diagnostics';
 import { reifyHoverTooltip } from './hover';
 import { reifyGotoDefinition, gotoDefinitionCommand } from './gotoDefinition';
 import { createNavHistory } from '../hooks/useNavHistory';
 import type { NavEntry } from '../hooks/useNavHistory';
 import type { createEditorStore } from '../stores/editorStore';
-import type { FileData, SourceLocation } from '../types';
+import type { FileData, SourceLocation, DiagnosticInfo } from '../types';
 import { errorMessage } from '../utils/errorClassifier';
 import { isSameFile, normalizePath } from '../utils/pathUtils';
 import styles from './Editor.module.css';
@@ -45,6 +45,12 @@ export interface EditorProps {
    * across call sites.
    */
   onSaveConflict?: (file: FileData) => void;
+  /**
+   * Compile-time diagnostics from the engine (via engineStore.compileDiagnostics).
+   * Filtered to the active file and merged with LSP diagnostics in the CodeMirror
+   * lint layer so neither channel clobbers the other.
+   */
+  compileDiagnostics?: DiagnosticInfo[];
 }
 
 export function Editor(props: EditorProps) {
@@ -63,6 +69,20 @@ export function Editor(props: EditorProps) {
 
   // Current URI — updated on file switch, read by LSP extension getters
   let currentUri = 'file:///untitled.ri';
+
+  // Merge sinks for the two diagnostic channels.
+  // setDiagnostics replaces the entire lint set on each dispatch, so both
+  // producers (LSP listener + compile-diagnostics effect) update their own
+  // slot and then call applyMergedDiagnostics() which dispatches their union.
+  let lspCmDiagnostics: CmDiagnostic[] = [];
+  let compileCmDiagnostics: CmDiagnostic[] = [];
+
+  function applyMergedDiagnostics() {
+    if (!view) return;
+    view.dispatch(
+      setDiagnostics(view.state, [...lspCmDiagnostics, ...compileCmDiagnostics]),
+    );
+  }
 
   // Bounded back/forward navigation-history stack (max 50 entries).
   // Pure closure, no SolidJS dependency.
@@ -331,7 +351,7 @@ export function Editor(props: EditorProps) {
       if (!view) return;
       // Only apply diagnostics for the currently active file
       if (event.uri !== currentUri) return;
-      const diagnostics = event.diagnostics
+      lspCmDiagnostics = event.diagnostics
         .map((d) => {
           try {
             return lspDiagnosticToCodeMirror(d, view!.state.doc);
@@ -341,8 +361,8 @@ export function Editor(props: EditorProps) {
         })
         .filter((d): d is CmDiagnostic => d !== null);
 
-      // Apply diagnostics to the editor via setDiagnostics
-      view!.dispatch(setDiagnostics(view!.state, diagnostics));
+      // Merge with compile diagnostics and dispatch
+      applyMergedDiagnostics();
     }).then((unlisten) => {
       if (diagnosticsListenerCancelled) {
         unlisten?.(); // Component already unmounted — tear down immediately
@@ -393,6 +413,25 @@ export function Editor(props: EditorProps) {
         return lspClient.didOpen(newUri, newContent, version);
       })
       .catch((err: unknown) => console.error('LSP file switch error:', err));
+  });
+
+  // Map compile diagnostics from the engine store into the CodeMirror lint layer,
+  // merged with the existing LSP channel so neither clobbers the other.
+  createEffect(() => {
+    const diags = props.compileDiagnostics;
+    const activeFile = props.store.state.activeFile;
+    if (!view) return;
+    compileCmDiagnostics = (diags ?? [])
+      .filter((d) => activeFile && isSameFile(d.file_path, activeFile))
+      .map((d) => {
+        try {
+          return diagnosticInfoToCmDiagnostic(d, view!.state.doc);
+        } catch {
+          return null;
+        }
+      })
+      .filter((d): d is CmDiagnostic => d !== null);
+    applyMergedDiagnostics();
   });
 
   // Sync store content → CodeMirror view for the active file.
