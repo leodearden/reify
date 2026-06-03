@@ -664,3 +664,119 @@ fn doc_listed_in_top_level_usage() {
         "top-level usage hint must list 'doc <file>', got stderr: {stderr}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// --stdlib / --out tests (step-5 / task-3565)
+// ---------------------------------------------------------------------------
+
+/// Helper: return a unique temp dir path for a test.  Creates a fresh
+/// directory under the system temp dir; the caller is responsible for the
+/// lifetime (we don't clean up in these tests since they run isolated).
+fn stdlib_out_dir(suffix: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("reify-test-stdlib-doc-{suffix}"));
+    // Remove any stale remnant then create fresh.
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp out dir");
+    dir
+}
+
+/// `reify doc --stdlib --out <dir>` must exit 0, write `<dir>/index.html`
+/// whose contents include ElasticMaterial, Bounded, and Manifold, and write
+/// at least one other `*.html` file under `<dir>` (a per-symbol page).
+#[test]
+fn doc_stdlib_produces_html_pages() {
+    let out_dir = stdlib_out_dir("produces");
+    let dir_str = out_dir.to_string_lossy().into_owned();
+    let (status, stdout, stderr) = run_doc(&["--stdlib", "--out", &dir_str]);
+
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "reify doc --stdlib --out <dir> must exit 0.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    // index.html must exist and contain the known symbol names.
+    let index_path = out_dir.join("index.html");
+    assert!(
+        index_path.exists(),
+        "index.html must be created at {:?}",
+        index_path
+    );
+    let index_contents = std::fs::read_to_string(&index_path)
+        .unwrap_or_else(|e| panic!("read index.html failed: {e}"));
+    assert!(
+        index_contents.contains("ElasticMaterial"),
+        "index.html must contain 'ElasticMaterial'; got (truncated):\n{}",
+        &index_contents[..index_contents.len().min(3000)]
+    );
+    assert!(
+        index_contents.contains("Bounded"),
+        "index.html must contain 'Bounded'; got (truncated):\n{}",
+        &index_contents[..index_contents.len().min(3000)]
+    );
+    assert!(
+        index_contents.contains("Manifold"),
+        "index.html must contain 'Manifold'; got (truncated):\n{}",
+        &index_contents[..index_contents.len().min(3000)]
+    );
+
+    // At least one per-symbol .html file must exist somewhere under <dir>.
+    let html_files: Vec<_> = walkdir_html(&out_dir)
+        .into_iter()
+        .filter(|p| p.file_name().and_then(|n| n.to_str()) != Some("index.html"))
+        .collect();
+    assert!(
+        !html_files.is_empty(),
+        "expected at least one per-symbol .html page under {:?}; only index.html found",
+        out_dir
+    );
+}
+
+/// Recursive walk helper: collect all .html files under `dir`.
+fn walkdir_html(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut results = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                results.extend(walkdir_html(&path));
+            } else if path.extension().and_then(|e| e.to_str()) == Some("html") {
+                results.push(path);
+            }
+        }
+    }
+    results
+}
+
+/// `reify doc --stdlib` without `--out` must exit 2 and print the usage hint.
+#[test]
+fn doc_stdlib_without_out_exits_two() {
+    let (status, _stdout, stderr) = run_doc(&["--stdlib"]);
+    assert_eq!(
+        status.code(),
+        Some(2),
+        "reify doc --stdlib without --out must exit 2.\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("Usage: reify doc"),
+        "stderr must contain 'Usage: reify doc'; got: {stderr}"
+    );
+}
+
+/// `reify doc --stdlib --out <dir> --format json` must exit 2 because
+/// --stdlib is HTML-only.
+#[test]
+fn doc_stdlib_rejects_json_format() {
+    let out_dir = stdlib_out_dir("rejects-json");
+    let dir_str = out_dir.to_string_lossy().into_owned();
+    let (status, _stdout, stderr) = run_doc(&["--stdlib", "--out", &dir_str, "--format", "json"]);
+    assert_eq!(
+        status.code(),
+        Some(2),
+        "reify doc --stdlib --format json must exit 2.\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("Usage: reify doc"),
+        "stderr must contain 'Usage: reify doc'; got: {stderr}"
+    );
+}
