@@ -1,10 +1,10 @@
 import { describe, it, expect } from "vitest";
 import * as path from "node:path";
 import * as fs from "node:fs";
-import { getByPath, evaluateAssertion, FIXTURES, VALUE_SCENARIOS, runValueScenario } from "./assertions";
-import type { Assertion, ValueScenario, ScenarioDeps } from "./assertions";
-import type { RpcResult } from "./rpc";
-import { resolveRepoRoot } from "./paths";
+import { getByPath, evaluateAssertion, FIXTURES, VALUE_SCENARIOS, runValueScenario } from "./assertions.js";
+import type { Assertion, ValueScenario, ScenarioDeps } from "./assertions.js";
+import type { RpcResult } from "./rpc.js";
+import { resolveRepoRoot } from "./paths.js";
 
 describe("getByPath", () => {
   it("resolves a two-segment dotted path engine.meshCount", () => {
@@ -76,6 +76,60 @@ describe("evaluateAssertion", () => {
     if (!result.ok) {
       expect(result.message).toContain("a");
     }
+  });
+
+  // deepEqual contract — nested objects, arrays, key-order insensitivity
+  it("'equals' passes for nested objects regardless of key insertion order", () => {
+    const a: Assertion = { path: "root", op: "equals", expected: { a: { y: 2, x: 1 } } };
+    const result = evaluateAssertion({ root: { a: { x: 1, y: 2 } } }, a);
+    expect(result.ok).toBe(true);
+  });
+
+  it("'equals' passes for equal arrays in the same order", () => {
+    const a: Assertion = { path: "items", op: "equals", expected: [1, 2, 3] };
+    const result = evaluateAssertion({ items: [1, 2, 3] }, a);
+    expect(result.ok).toBe(true);
+  });
+
+  it("'equals' fails when array elements differ", () => {
+    const a: Assertion = { path: "items", op: "equals", expected: [1, 2, 3] };
+    const result = evaluateAssertion({ items: [1, 2, 4] }, a);
+    expect(result.ok).toBe(false);
+  });
+
+  it("'equals' fails on array length mismatch", () => {
+    const a: Assertion = { path: "items", op: "equals", expected: [1, 2] };
+    const result = evaluateAssertion({ items: [1, 2, 3] }, a);
+    expect(result.ok).toBe(false);
+  });
+
+  it("'equals' fails when array is compared against an object", () => {
+    const a: Assertion = { path: "v", op: "equals", expected: { 0: 1 } };
+    const result = evaluateAssertion({ v: [1] }, a);
+    expect(result.ok).toBe(false);
+  });
+
+  // Edge cases: unknown op, non-numeric atLeast
+  it("unknown op returns ok===false with 'unknown op' in message", () => {
+    // Cast through unknown to simulate a caller passing an unsupported op at runtime
+    const a = { path: "x", op: "bogus" } as unknown as Assertion;
+    const result = evaluateAssertion({ x: 1 }, a);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.message).toContain("unknown op");
+    }
+  });
+
+  it("'atLeast' fails when actual is undefined (missing path)", () => {
+    const a: Assertion = { path: "missing", op: "atLeast", expected: 1 };
+    const result = evaluateAssertion({ x: 5 }, a);
+    expect(result.ok).toBe(false);
+  });
+
+  it("'atLeast' fails when actual is a non-numeric string", () => {
+    const a: Assertion = { path: "v", op: "atLeast", expected: 1 };
+    const result = evaluateAssertion({ v: "hello" }, a);
+    expect(result.ok).toBe(false);
   });
 });
 
@@ -177,7 +231,7 @@ describe("runValueScenario", () => {
     expect(toolCalled).toBe(false);
   });
 
-  it("(d) callTool returns error → passed=false", async () => {
+  it("(d) callTool returns error → passed=false, failure mentions tool name", async () => {
     const deps: ScenarioDeps = {
       openFixture: async (_rel: string): Promise<RpcResult<unknown>> => ({ ok: true, value: null }),
       callTool: async (_tool: string, _args: Record<string, unknown>): Promise<RpcResult<unknown>> => ({
@@ -187,5 +241,6 @@ describe("runValueScenario", () => {
     };
     const result = await runValueScenario(deps, scenario);
     expect(result.passed).toBe(false);
+    expect(result.failures.some((f) => f.includes(scenario.tool))).toBe(true);
   });
 });

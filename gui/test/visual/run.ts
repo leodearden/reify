@@ -383,7 +383,7 @@ function shutdown(exitCode: number): void {
 process.on("SIGINT", () => shutdown(130));
 process.on("SIGTERM", () => shutdown(143));
 
-const MODE = process.argv.includes("value") ? "value" : "visual";
+const MODE = process.argv[2] === "value" ? "value" : "visual";
 const harness = MODE === "value" ? runValueScenarios() : main();
 
 harness
