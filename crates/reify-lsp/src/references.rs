@@ -198,14 +198,21 @@ struct Binding {
 }
 
 /// Collect every binding named `name` reachable from `members` — the flat entity
-/// body plus every nested `where`/`else` branch — tagged with each binding's
-/// scope region and nesting depth.
+/// body plus every nested scope (`where`/`else` branches, port bodies, sub
+/// specialization bodies / keyed overrides, match-arm member clusters) — tagged
+/// with each binding's scope region and nesting depth.
 ///
 /// Within a single scope the order mirrors `CompilationScope` registration:
 /// params first (source order), then lets (source order), so a later `let`
-/// shadows an earlier same-named `param`. Guarded branches are then layered on as
+/// shadows an earlier same-named `param`. Nested scopes are then layered on as
 /// deeper scopes. See `crates/reify-compiler/src/scope.rs` as the source of truth
 /// for precedence (mirrored, not reused, per the plan).
+///
+/// Invariant: binding collection MUST descend into exactly the member lists
+/// [`collect_uses`] descends into (enumerated by [`child_member_scopes`]) so the
+/// two traversals never drift — otherwise a nested redeclaration is invisible to
+/// resolution and a nested use is mis-attributed to an outer binding (Invariant 1
+/// for nested scopes).
 fn collect_bindings(members: &[MemberDecl], name: &str, source: &str) -> Vec<Binding> {
     // The flat entity body is the outermost scope; its region must contain every
     // top-level use. The bounding box of all top-level members covers them all
@@ -221,10 +228,14 @@ fn collect_bindings(members: &[MemberDecl], name: &str, source: &str) -> Vec<Bin
 /// Register every binding of `name` in `members`, scope by scope, into `out`.
 ///
 /// Params are registered before lets within this scope (params→lets→autos, last
-/// registration winning), then each `GuardedGroup`'s `where` and `else` branches
-/// are recursed into as nested scopes at `depth + 1`, each bounded by that
-/// branch's byte region. A guarded binding therefore shadows an outer same-named
-/// binding only within its branch region (the where/else clause of Invariant 1).
+/// registration winning), then every nested member-list scope this scope opens —
+/// the [`child_member_scopes`] of each member: guarded `where`/`else` branches,
+/// port bodies, sub bodies / keyed overrides, and match-arm members — is recursed
+/// into at `depth + 1`, each bounded by that child's byte region. A nested binding
+/// therefore shadows an outer same-named binding only within its region (the
+/// where/else/port/sub/match clause of Invariant 1). These are exactly the lists
+/// [`collect_uses`] descends into, so binding registration and use collection
+/// stay symmetric and never drift.
 fn collect_bindings_in_scope(
     members: &[MemberDecl],
     name: &str,
@@ -296,25 +307,57 @@ fn collect_bindings_in_scope(
             });
         }
     }
-    // Recurse into guarded branches as deeper scopes. Each branch's region is the
-    // bounding box of its own members, so a use inside the branch resolves to the
-    // guarded binding while a use outside it falls back to the outer scope.
+    // Recurse into every nested member-list scope this member opens — guarded
+    // `where`/`else` branches, port bodies, sub specialization bodies / keyed
+    // overrides, and match-arm member clusters — i.e. EXACTLY the member lists
+    // `collect_uses` descends into (enumerated by `child_member_scopes`). Binding
+    // registration MUST mirror use collection here or the two drift: a nested
+    // redeclaration is registered one level deeper, bounded by its own members'
+    // byte region, so it shadows an outer same-named binding only within that
+    // region (Invariant 1 for nested scopes). A nested use of a NON-redeclared
+    // outer name registers no nested binding and still resolves outward by region
+    // containment.
     for member in members {
-        if let MemberDecl::GuardedGroup(g) = member {
-            if let Some(where_region) = members_region(&g.members) {
-                collect_bindings_in_scope(&g.members, name, source, where_region, depth + 1, out);
-            }
-            if let Some(else_region) = members_region(&g.else_members) {
-                collect_bindings_in_scope(
-                    &g.else_members,
-                    name,
-                    source,
-                    else_region,
-                    depth + 1,
-                    out,
-                );
+        for child in child_member_scopes(member) {
+            if let Some(region) = members_region(child) {
+                collect_bindings_in_scope(child, name, source, region, depth + 1, out);
             }
         }
+    }
+}
+
+/// The nested member-list scopes that live directly inside `member` — EXACTLY the
+/// member lists [`collect_uses`] descends into: a `GuardedGroup`'s `where` and
+/// `else` branches, a `Port` body, a `Sub`'s specialization body and each keyed
+/// block's overrides, and a `MatchArmDeclGroup`'s per-arm member clusters.
+///
+/// [`collect_bindings_in_scope`] recurses into these to register nested bindings,
+/// while `collect_uses` recurses into the same lists (plus their member-level
+/// expressions) to collect uses. Keeping the two traversals reading off the same
+/// child-scope set is what stops a nested redeclaration from being invisible to
+/// binding resolution (the regression pinned by
+/// `collect_references_port_body_redeclaration_owns_its_scope`). Each returned
+/// slice is bounded by its own [`members_region`] when recursed.
+fn child_member_scopes(member: &MemberDecl) -> Vec<&[MemberDecl]> {
+    match member {
+        MemberDecl::GuardedGroup(g) => vec![g.members.as_slice(), g.else_members.as_slice()],
+        MemberDecl::Port(p) => vec![p.members.as_slice()],
+        MemberDecl::Sub(s) => {
+            let mut scopes: Vec<&[MemberDecl]> = Vec::new();
+            if let Some(body) = &s.body {
+                scopes.push(body.as_slice());
+            }
+            for entry in &s.keyed_members {
+                scopes.push(entry.overrides.as_slice());
+            }
+            scopes
+        }
+        MemberDecl::MatchArmDeclGroup(g) => g
+            .arms
+            .iter()
+            .map(|arm| std::slice::from_ref(&*arm.member))
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
