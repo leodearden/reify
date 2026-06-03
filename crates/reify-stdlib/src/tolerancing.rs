@@ -142,13 +142,33 @@ fn effective_tolerance_zone(args: &[Value]) -> Value {
 /// - unrecognised function names (non-tolerancing builtins, user functions, etc.)
 /// - valid in-envelope calls to `iso_it_tolerance`
 /// - any call to `effective_tolerance_zone`
+/// - ill-typed args (wrong arity, wrong types) — parse_iso_well_typed returns None
+///   and the `?` early-exits the function
 ///
 /// Returns `Some(Diagnostic)` for out-of-envelope but well-typed calls to
 /// `iso_it_tolerance` (grade outside IT5–IT18 or nominal size outside
 /// `(0, 500mm]` or inverted/zero range).
+///
+/// Note: the diagnostic is code-less (`Diagnostic::error` sets `code: None`).
+/// Adding a `DiagnosticCode` variant would expand the change to `reify-core` and
+/// its exhaustive code-enumeration tests — outside α's two-file scope (see design).
 pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
-    let _ = (name, args);
-    None
+    match name {
+        "iso_it_tolerance" => {
+            let (grade, min_mm, max_mm) = parse_iso_well_typed(args)?;
+            let in_env =
+                it_grade_factor(grade).is_some() && iso_size_in_envelope(min_mm, max_mm);
+            if in_env {
+                None
+            } else {
+                Some(Diagnostic::error(
+                    "E_TolerancingOutOfEnvelope: iso_it_tolerance supports \
+                     IT5\u{2013}IT18 for nominal sizes \u{2264} 500 mm",
+                ))
+            }
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
