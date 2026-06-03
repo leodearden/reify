@@ -645,9 +645,16 @@ fn joint_compliance(joint: &Value, position: Option<f64>) -> Option<JointComplia
     if spring_rate.is_none() && damping.is_none() {
         return None;
     }
-    let neutral = map_get(m, "neutral")
-        .and_then(compliance_cell_f64)
-        .unwrap_or(0.0);
+    // Absent neutral → 0.0 (sensible default); present-but-malformed →
+    // return None (fail-honest: a bad neutral shifts the equilibrium without
+    // any signal, which is worse than ignoring the whole compliance record).
+    let neutral = match map_get(m, "neutral") {
+        None => 0.0,
+        Some(v) => match compliance_cell_f64(v) {
+            Some(n) => n,
+            None => return None,
+        },
+    };
     Some(JointCompliance {
         spring_rate,
         damping,
@@ -2251,6 +2258,39 @@ mod tests {
         assert!(
             (c.spring_rate.expect("spring_rate must be Some") - 2.0).abs() < 1e-12,
             "spring_rate from Option wrapper"
+        );
+    }
+
+    /// Present-but-malformed `neutral` (NaN scalar) must make `joint_compliance`
+    /// return `None` rather than silently defaulting to 0.0, which would shift
+    /// the spring equilibrium without any signal (fail-honest convention).
+    #[test]
+    fn joint_compliance_malformed_neutral_returns_none() {
+        let mut m = BTreeMap::new();
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("revolute".to_string()),
+        );
+        m.insert(
+            Value::String("spring_rate".to_string()),
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::ROTATIONAL_STIFFNESS,
+            },
+        );
+        // neutral present but NaN → compliance_cell_f64 returns None (non-finite
+        // filtered) → joint_compliance must return None, not default to 0.0.
+        m.insert(
+            Value::String("neutral".to_string()),
+            Value::Scalar {
+                si_value: f64::NAN,
+                dimension: DimensionVector::ANGLE,
+            },
+        );
+        let joint = Value::Map(m);
+        assert!(
+            joint_compliance(&joint, Some(std::f64::consts::PI / 6.0)).is_none(),
+            "malformed (NaN) neutral must make joint_compliance return None"
         );
     }
 
