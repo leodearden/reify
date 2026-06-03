@@ -111,6 +111,7 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
           aria-label={`Show ${pluralize(props.tessellationDiagnostics?.length ?? 0, 'tessellation diagnostic')}`}
           onClick={() => props.onToggleDiagnostics?.()}
         >
+          <span class={styles.pipelineLabel}>Tessellation</span>
           <DiagBadgeContent getSummary={diagnosticSummary} />
         </button>
       </Show>
@@ -123,8 +124,33 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
           aria-label={`Show ${pluralize(props.compileDiagnostics?.length ?? 0, 'compile diagnostic')}`}
           onClick={() => props.onToggleDiagnostics?.()}
         >
+          <span class={styles.pipelineLabel}>Compile</span>
           <DiagBadgeContent getSummary={compileSummary} />
         </button>
+      </Show>
+      <Show
+        when={
+          (props.tessellationDiagnostics?.length ?? 0) > 0 &&
+          (props.compileDiagnostics?.length ?? 0) > 0
+        }
+      >
+        {() => {
+          const total =
+            (props.tessellationDiagnostics?.length ?? 0) +
+            (props.compileDiagnostics?.length ?? 0);
+          return (
+            <>
+              <span class={styles.divider} />
+              <span
+                class={`${styles.section} ${styles.diagnosticsTotal}`}
+                data-testid="diagnostics-total"
+                aria-label={`${total} ${total === 1 ? 'diagnostic' : 'diagnostics'} total`}
+              >
+                {total}
+              </span>
+            </>
+          );
+        }}
       </Show>
       <span class={styles.divider} />
       <span class={styles.section}>
