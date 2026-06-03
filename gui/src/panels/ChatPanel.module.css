@@ -35,26 +35,28 @@
 
 .inputArea {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-end;
   gap: 6px;
-  padding: 8px 12px;
+  padding: 8px 12px 10px;
   border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .textarea {
-  flex: 1;
+  flex: 1 1 100%;
   resize: none;
-  min-height: 36px;
-  max-height: 120px;
-  padding: 8px 10px;
+  min-height: 44px;
+  max-height: 160px;
+  padding: 9px 10px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 6px;
   background: var(--reify-surface0);
   color: var(--reify-text);
   font-family: inherit;
   font-size: 13px;
-  line-height: 1.4;
+  line-height: 1.5;
   outline: none;
+  box-sizing: border-box;
 }
 
 .textarea:focus {
