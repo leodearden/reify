@@ -650,10 +650,7 @@ fn joint_compliance(joint: &Value, position: Option<f64>) -> Option<JointComplia
     // any signal, which is worse than ignoring the whole compliance record).
     let neutral = match map_get(m, "neutral") {
         None => 0.0,
-        Some(v) => match compliance_cell_f64(v) {
-            Some(n) => n,
-            None => return None,
-        },
+        Some(v) => compliance_cell_f64(v)?,
     };
     Some(JointCompliance {
         spring_rate,
