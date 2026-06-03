@@ -210,7 +210,7 @@ struct Binding {
 /// for precedence (mirrored, not reused, per the plan).
 ///
 /// Invariant: binding collection MUST descend into exactly the member lists
-/// [`collect_uses`] descends into (enumerated by [`child_member_scopes`]) so the
+/// [`collect_uses`] descends into (visited by [`for_each_child_scope`]) so the
 /// two traversals never drift — otherwise a nested redeclaration is invisible to
 /// resolution and a nested use is mis-attributed to an outer binding (Invariant 1
 /// for nested scopes).
@@ -230,8 +230,9 @@ fn collect_bindings(members: &[MemberDecl], name: &str, source: &str) -> Vec<Bin
 ///
 /// Params are registered before lets within this scope (params→lets→autos, last
 /// registration winning), then every nested member-list scope this scope opens —
-/// the [`child_member_scopes`] of each member: guarded `where`/`else` branches,
-/// port bodies, sub bodies / keyed overrides, and match-arm members — is recursed
+/// the child scopes of each member (see [`for_each_child_scope`]): guarded
+/// `where`/`else` branches, port bodies, sub bodies / keyed overrides, and
+/// match-arm members — is recursed
 /// into at `depth + 1`, each bounded by that child's byte region. A nested binding
 /// therefore shadows an outer same-named binding only within its region (the
 /// where/else/port/sub/match clause of Invariant 1). These are exactly the lists
@@ -253,65 +254,53 @@ fn collect_bindings_in_scope(
     if depth as usize > MAX_MEMBER_NESTING_DEPTH {
         return;
     }
+    // Single registration pass with two buckets. Params register before lets
+    // within a scope (params→lets→autos, last registration winning) so a later
+    // `let x` shadows an earlier `param x`: params go straight to `out`, while
+    // lets, subs and ports defer into `rest` and are appended after — preserving
+    // the only registration ordering shadowing resolution depends on. Sub and port
+    // names share the value namespace but do not collide with a param/let name in
+    // practice, so their source-order position within `rest` is immaterial. `rest`
+    // does not allocate until the first deferred binding, so the common
+    // single-binding lookup stays allocation-free. (Replaces four sequential passes
+    // over `members`.)
+    let mut rest: Vec<Binding> = Vec::new();
     for member in members {
-        if let MemberDecl::Param(p) = member
-            && p.name == name
-        {
-            out.push(Binding {
-                // A `param x = auto` / `auto(free)` binding classifies as Auto.
+        match member {
+            // A `param x = auto` / `auto(free)` binding classifies as Auto.
+            MemberDecl::Param(p) if p.name == name => out.push(Binding {
                 kind: classify_auto(p.default.as_ref(), RefSymbolKind::Param),
                 decl_token: name_token_span(source, p.span, name),
                 region,
                 depth,
-            });
-        }
-    }
-    for member in members {
-        if let MemberDecl::Let(l) = member
-            && l.name == name
-        {
-            out.push(Binding {
-                // A `let x = auto` binding likewise classifies as Auto.
+            }),
+            // A `let x = auto` binding likewise classifies as Auto.
+            MemberDecl::Let(l) if l.name == name => rest.push(Binding {
                 kind: classify_auto(Some(&l.value), RefSymbolKind::Let),
                 decl_token: name_token_span(source, l.span, name),
                 region,
                 depth,
-            });
-        }
-    }
-    // Sub-components and ports are value-member bindings whose names are
-    // referenceable identifiers, so register them too. They are appended after
-    // params/lets at this scope level; a sub/port name does not collide with a
-    // param/let name in practice, so their relative registration order does not
-    // affect shadowing resolution here.
-    for member in members {
-        if let MemberDecl::Sub(s) = member
-            && s.name == name
-        {
-            out.push(Binding {
+            }),
+            MemberDecl::Sub(s) if s.name == name => rest.push(Binding {
                 kind: RefSymbolKind::Sub,
                 decl_token: name_token_span(source, s.span, name),
                 region,
                 depth,
-            });
-        }
-    }
-    for member in members {
-        if let MemberDecl::Port(p) = member
-            && p.name == name
-        {
-            out.push(Binding {
+            }),
+            MemberDecl::Port(p) if p.name == name => rest.push(Binding {
                 kind: RefSymbolKind::Port,
                 decl_token: name_token_span(source, p.span, name),
                 region,
                 depth,
-            });
+            }),
+            _ => {}
         }
     }
+    out.append(&mut rest);
     // Recurse into every nested member-list scope this member opens — guarded
     // `where`/`else` branches, port bodies, sub specialization bodies / keyed
     // overrides, and match-arm member clusters — i.e. EXACTLY the member lists
-    // `collect_uses` descends into (enumerated by `child_member_scopes`). Binding
+    // `collect_uses` descends into (visited by `for_each_child_scope`). Binding
     // registration MUST mirror use collection here or the two drift: a nested
     // redeclaration is registered one level deeper, bounded by its own members'
     // byte region, so it shadows an outer same-named binding only within that
@@ -319,46 +308,49 @@ fn collect_bindings_in_scope(
     // outer name registers no nested binding and still resolves outward by region
     // containment.
     for member in members {
-        for child in child_member_scopes(member) {
+        for_each_child_scope(member, |child| {
             if let Some(region) = members_region(child) {
                 collect_bindings_in_scope(child, name, source, region, depth + 1, out);
             }
-        }
+        });
     }
 }
 
-/// The nested member-list scopes that live directly inside `member` — EXACTLY the
-/// member lists [`collect_uses`] descends into: a `GuardedGroup`'s `where` and
-/// `else` branches, a `Port` body, a `Sub`'s specialization body and each keyed
-/// block's overrides, and a `MatchArmDeclGroup`'s per-arm member clusters.
+/// Invoke `visit` once for each nested member-list scope that lives directly
+/// inside `member` — EXACTLY the member lists [`collect_uses`] descends into: a
+/// `GuardedGroup`'s `where` and `else` branches, a `Port` body, a `Sub`'s
+/// specialization body and each keyed block's overrides, and a
+/// `MatchArmDeclGroup`'s per-arm member clusters.
 ///
-/// [`collect_bindings_in_scope`] recurses into these to register nested bindings,
-/// while `collect_uses` recurses into the same lists (plus their member-level
+/// [`collect_bindings_in_scope`] uses this to recurse into nested bindings, while
+/// `collect_uses` recurses into the same lists (plus their member-level
 /// expressions) to collect uses. Keeping the two traversals reading off the same
 /// child-scope set is what stops a nested redeclaration from being invisible to
 /// binding resolution (the regression pinned by
-/// `collect_references_port_body_redeclaration_owns_its_scope`). Each returned
-/// slice is bounded by its own [`members_region`] when recursed.
-fn child_member_scopes(member: &MemberDecl) -> Vec<&[MemberDecl]> {
+/// `collect_references_port_body_redeclaration_owns_its_scope`). The callback form
+/// avoids allocating a `Vec` of child slices per member; each visited slice is
+/// bounded by its own [`members_region`] when recursed.
+fn for_each_child_scope(member: &MemberDecl, mut visit: impl FnMut(&[MemberDecl])) {
     match member {
-        MemberDecl::GuardedGroup(g) => vec![g.members.as_slice(), g.else_members.as_slice()],
-        MemberDecl::Port(p) => vec![p.members.as_slice()],
+        MemberDecl::GuardedGroup(g) => {
+            visit(g.members.as_slice());
+            visit(g.else_members.as_slice());
+        }
+        MemberDecl::Port(p) => visit(p.members.as_slice()),
         MemberDecl::Sub(s) => {
-            let mut scopes: Vec<&[MemberDecl]> = Vec::new();
             if let Some(body) = &s.body {
-                scopes.push(body.as_slice());
+                visit(body.as_slice());
             }
             for entry in &s.keyed_members {
-                scopes.push(entry.overrides.as_slice());
+                visit(entry.overrides.as_slice());
             }
-            scopes
         }
-        MemberDecl::MatchArmDeclGroup(g) => g
-            .arms
-            .iter()
-            .map(|arm| std::slice::from_ref(&*arm.member))
-            .collect(),
-        _ => Vec::new(),
+        MemberDecl::MatchArmDeclGroup(g) => {
+            for arm in &g.arms {
+                visit(std::slice::from_ref(&*arm.member));
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1137,6 +1129,95 @@ structure S {
                 "param and let reference sets must be disjoint: {s:?}"
             );
         }
+    }
+
+    // --- amend (test_coverage): cursor on a FULLY-SHADOWED param declaration ---
+
+    #[test]
+    fn collect_references_shadowed_param_declaration_owns_only_itself() {
+        // When a `param x` is fully shadowed by a same-named `let x` in one flat
+        // body, every use of `x` binds to the let (last registration wins). So a
+        // cursor on the SHADOWED param's declaration yields a reference set that is
+        // ONLY the declaration token — it owns no uses — and a rename driven from
+        // it edits just that declaration, leaving the let and its uses untouched.
+        // This is a defensible consequence of the last-registration-wins model
+        // (renaming the dead param does not, and must not, capture the live let's
+        // uses); this test pins it so the behavior is intentional and locked.
+        let source = "\
+structure S {
+    param x: Scalar = 1mm
+    let x = 2mm
+    let uses = x + x
+}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("shadowdecl"));
+        let xs = occurrences(source, "x");
+        assert_eq!(xs.len(), 4, "param x, let x, and two uses of x");
+        // xs[0]=param decl, xs[1]=let decl, xs[2]/xs[3]=uses (bound to the let).
+
+        let param_pos = offset_to_position(source, xs[0] as u32);
+
+        // include_declaration=true → the reference set is EXACTLY the declaration
+        // token: the shadowed param owns no uses.
+        let with_decl = collect_references(source, &parsed, param_pos, true)
+            .expect("the shadowed param declaration still resolves to its own binding");
+        assert_eq!(with_decl.kind, RefSymbolKind::Param);
+        assert_eq!(with_decl.declaration, span_of(xs[0], "x"));
+        assert_eq!(
+            with_decl.references,
+            vec![span_of(xs[0], "x")],
+            "the shadowed param owns only its declaration token — no uses"
+        );
+
+        // include_declaration=false → no references at all (the uses bind to the let).
+        let without_decl = collect_references(source, &parsed, param_pos, false)
+            .expect("shadowed param declaration resolves");
+        assert!(
+            without_decl.references.is_empty(),
+            "a fully-shadowed param has zero uses: {:?}",
+            without_decl.references
+        );
+
+        // The rename it drives edits ONLY the declaration token — not the let
+        // declaration (xs[1]) nor the let's uses (xs[2], xs[3]).
+        let uri = Url::parse("file:///shadowdecl.ri").unwrap();
+        let edit = compute_rename(source, &parsed, &uri, param_pos, "renamed")
+            .expect("the shadowed param declaration is renameable");
+        let edits = edit
+            .changes
+            .expect("changes present")
+            .get(&uri)
+            .expect("edits for uri")
+            .clone();
+        assert_eq!(
+            edits.len(),
+            1,
+            "renaming the shadowed param edits exactly its declaration token"
+        );
+        assert_eq!(
+            edits[0].range,
+            span_to_range(source, span_of(xs[0], "x")),
+            "the sole edit targets the param declaration token"
+        );
+        for off in [xs[1], xs[2], xs[3]] {
+            let forbidden = span_to_range(source, span_of(off, "x"));
+            assert!(
+                edits.iter().all(|e| e.range != forbidden),
+                "the let declaration/uses must NOT be renamed: {forbidden:?}"
+            );
+        }
+
+        // Applying the single edit yields source that re-parses clean — the
+        // shadowed-declaration rename is non-corrupting (Invariant 5).
+        let start = position_to_offset(source, edits[0].range.start);
+        let end = position_to_offset(source, edits[0].range.end);
+        let mut buffer = source.to_string();
+        buffer.replace_range(start..end, "renamed");
+        let reparsed = reify_syntax::parse(&buffer, ModulePath::single("shadowdecl"));
+        assert!(
+            reparsed.errors.is_empty(),
+            "renaming only the shadowed param must re-parse clean: {:?}\n{buffer}",
+            reparsed.errors
+        );
     }
 
     // --- step-11: guarded-block visibility/shadowing (Boundary row 3) ---
