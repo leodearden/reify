@@ -1551,4 +1551,107 @@ structure Probe {
             "collect_references must be idempotent"
         );
     }
+
+    // --- step-23: asymmetric scope recursion regression (port-body redeclaration) ---
+
+    #[test]
+    fn collect_references_port_body_redeclaration_owns_its_scope() {
+        // Regression: binding collection must descend into the SAME nested member
+        // lists the use walker descends into. `collect_uses` recurses into port
+        // bodies, but `collect_bindings_in_scope` used to recurse only into guarded
+        // branches — so a port-local redeclaration was never registered, and
+        // `resolve_use` mis-attributed the port-body use to the OUTER binding.
+        //
+        // Here a port body redeclares `param width` (shadowing the entity-level
+        // one) and uses it in `param inner`. The top-level `width` and the
+        // port-local `width` must own disjoint reference sets, neither leaking
+        // across the port boundary (Invariant 1 for nested scopes).
+        let source = "\
+structure S {
+    param width: Scalar = 1mm
+    param outer: Scalar = width
+    port mount : Flange {
+        param width: Scalar = 2mm
+        param inner: Scalar = width
+    }
+}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("portredec"));
+        // Premise: a port body holding multiple params parses clean (verified
+        // against examples/m8_ports.ri and the step-21 port-body fixture).
+        assert!(
+            parsed.errors.is_empty(),
+            "port-redeclaration fixture must parse clean: {:?}",
+            parsed.errors
+        );
+
+        // Four `width` offsets; "Scalar"/"Flange"/"outer"/"inner"/"mount" contain
+        // no "width", so the count is exactly 4.
+        let w = occurrences(source, "width");
+        assert_eq!(
+            w.len(),
+            4,
+            "top decl, top use, port-local decl, port-body use"
+        );
+        // w[0]=top decl, w[1]=top use (param outer default),
+        // w[2]=port-local decl, w[3]=port-body use (param inner default).
+
+        // --- (a) Cursor on the TOP-LEVEL decl → owns w[0] (decl) + w[1] (top use);
+        // the port-body use w[3] is ABSENT. ---
+        let top = collect_references(source, &parsed, offset_to_position(source, w[0] as u32), true)
+            .expect("top-level width declaration resolves");
+        assert_eq!(top.kind, RefSymbolKind::Param);
+        assert_eq!(top.declaration, span_of(w[0], "width"));
+        assert_eq!(
+            top.references,
+            vec![span_of(w[0], "width"), span_of(w[1], "width")],
+            "top-level width owns its decl + the top-level use only"
+        );
+        assert!(
+            !top.references.contains(&span_of(w[3], "width")),
+            "the port-body use must NOT leak into the top-level width's set"
+        );
+
+        // --- (b) Cursor on the PORT-LOCAL decl token → owns w[2] (decl) + w[3]
+        // (port-body use); the top-level use w[1] is ABSENT. ---
+        let port =
+            collect_references(source, &parsed, offset_to_position(source, w[2] as u32), true)
+                .expect("port-local width declaration resolves");
+        assert_eq!(port.kind, RefSymbolKind::Param);
+        assert_eq!(port.declaration, span_of(w[2], "width"));
+        assert_eq!(
+            port.references,
+            vec![span_of(w[2], "width"), span_of(w[3], "width")],
+            "port-local width owns its decl + the port-body use only"
+        );
+        assert!(
+            !port.references.contains(&span_of(w[1], "width")),
+            "the top-level use must NOT leak into the port-local width's set"
+        );
+
+        // --- (c) The two reference sets are disjoint (share no span). ---
+        for s in &top.references {
+            assert!(
+                !port.references.contains(s),
+                "top-level and port-local reference sets must be disjoint: {s:?}"
+            );
+        }
+
+        // --- Cursor-on-use resolves to the correct declaration on each side. ---
+        let from_top_use =
+            collect_references(source, &parsed, offset_to_position(source, w[1] as u32), false)
+                .expect("top-level use resolves");
+        assert_eq!(
+            from_top_use.declaration,
+            span_of(w[0], "width"),
+            "the top-level use must bind to the top-level declaration"
+        );
+        let from_port_use =
+            collect_references(source, &parsed, offset_to_position(source, w[3] as u32), false)
+                .expect("port-body use resolves");
+        assert_eq!(
+            from_port_use.declaration,
+            span_of(w[2], "width"),
+            "the port-body use must bind to the port-local declaration"
+        );
+    }
 }
