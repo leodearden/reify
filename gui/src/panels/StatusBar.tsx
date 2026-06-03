@@ -154,13 +154,28 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
       </Show>
       <span class={styles.divider} />
       <span class={styles.section}>
-        <span class={styles.constraintCount} data-status="satisfied">
+        <span
+          class={styles.constraintCount}
+          data-status="satisfied"
+          title={`${constraintSummary().satisfied} satisfied`}
+          aria-label={`${constraintSummary().satisfied} satisfied`}
+        >
           {constraintSummary().satisfied}
         </span>
-        <span class={styles.constraintCount} data-status="violated">
+        <span
+          class={styles.constraintCount}
+          data-status="violated"
+          title={`${constraintSummary().violated} violated`}
+          aria-label={`${constraintSummary().violated} violated`}
+        >
           {constraintSummary().violated}
         </span>
-        <span class={styles.constraintCount} data-status="indeterminate">
+        <span
+          class={styles.constraintCount}
+          data-status="indeterminate"
+          title={`${constraintSummary().indeterminate} indeterminate`}
+          aria-label={`${constraintSummary().indeterminate} indeterminate`}
+        >
           {constraintSummary().indeterminate}
         </span>
       </span>
