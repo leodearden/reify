@@ -673,7 +673,11 @@ const App: Component = () => {
       }
     }
     try {
-      await bridgeSaveFile(result.file.path, result.file.content);
+      // Read the LIVE buffer rather than the stale store snapshot.
+      // Falls back to result.file.content when the handle is not wired
+      // (e.g. App tests that mock Editor without wiring liveContentRef).
+      const content = getLiveEditorContent?.() ?? result.file.content;
+      await bridgeSaveFile(result.file.path, content);
       editorStore.markClean(result.file.path);
     } catch (err) {
       showToast(`Save failed: ${errorMessage(err)}`, 'error');
