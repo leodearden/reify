@@ -70,6 +70,10 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
 
   const compileSummary = createMemo(() => summarize(props.compileDiagnostics));
 
+  const diagnosticsTotal = createMemo(
+    () => (props.tessellationDiagnostics?.length ?? 0) + (props.compileDiagnostics?.length ?? 0),
+  );
+
   function claudeStatusText(status: SessionStatus): string {
     switch (status) {
       case 'thinking': return 'thinking...';
@@ -134,23 +138,14 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
           (props.compileDiagnostics?.length ?? 0) > 0
         }
       >
-        {() => {
-          const total =
-            (props.tessellationDiagnostics?.length ?? 0) +
-            (props.compileDiagnostics?.length ?? 0);
-          return (
-            <>
-              <span class={styles.divider} />
-              <span
-                class={`${styles.section} ${styles.diagnosticsTotal}`}
-                data-testid="diagnostics-total"
-                aria-label={`${total} ${total === 1 ? 'diagnostic' : 'diagnostics'} total`}
-              >
-                {total}
-              </span>
-            </>
-          );
-        }}
+        <span class={styles.divider} />
+        <span
+          class={`${styles.section} ${styles.diagnosticsTotal}`}
+          data-testid="diagnostics-total"
+          aria-label={`${diagnosticsTotal()} ${diagnosticsTotal() === 1 ? 'diagnostic' : 'diagnostics'} total`}
+        >
+          {diagnosticsTotal()}
+        </span>
       </Show>
       <span class={styles.divider} />
       <span class={styles.section}>
