@@ -556,3 +556,79 @@ fn aux_fixture_surfaces_at_composed_world_aabb() {
         );
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// step-5: §8.4 placed-distance seam gate (OCCT-gated)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// OCCT seam-lock gate: `distance_between_placed` returns the PLACED world face
+/// gaps between each pair of product solids in the committed example.
+///
+/// All three solids are collinear on the X axis with full Y/Z overlap, so
+/// BRepExtrema computes exact planar-face distances:
+///
+/// | Pair                          | World faces         | Gap    |
+/// |-------------------------------|---------------------|--------|
+/// | Arm ↔ Arm.motor               | 0.02 m ↔ 0.08 m    | 0.06 m |
+/// | Arm.motor ↔ Arm.motor.shaft   | 0.12 m ↔ 0.18 m    | 0.06 m |
+/// | Arm ↔ Arm.motor.shaft         | 0.02 m ↔ 0.18 m    | 0.16 m |
+///
+/// Tolerance 1e-6 m (f64): planar-face BRepExtrema is exact for aligned boxes.
+///
+/// This test is a seam-lock (capability delivered by T7/3905); no production
+/// code change is required.
+#[test]
+#[ignore = "requires OCCT"]
+fn placed_distances_match_composed_world_gaps() {
+    let source = std::fs::read_to_string(EXAMPLE_SRC)
+        .expect("examples/sub_placement_assembly.ri must exist");
+    let compiled = compile_source_with_stdlib(&source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    let arm = compiled.templates.iter().find(|t| t.name == "Arm").expect("Arm");
+    let motor = compiled.templates.iter().find(|t| t.name == "Motor").expect("Motor");
+    let shaft = compiled.templates.iter().find(|t| t.name == "Shaft").expect("Shaft");
+
+    let arm_path = root_realization_path(arm, "body");
+    let motor_path = composed_path(motor, "Arm.motor", "body");
+    let shaft_path = composed_path(shaft, "Arm.motor.shaft", "body");
+
+    let mut engine = occt_engine_direct();
+
+    let tol = 1e-6_f64;
+
+    // Arm ↔ Arm.motor: face gap = 0.08 − 0.02 = 0.06 m.
+    let d_arm_motor = engine
+        .distance_between_placed(&compiled, &arm_path, &motor_path)
+        .expect("distance_between_placed(arm, motor) must return Some");
+    assert!(
+        (d_arm_motor - 0.06).abs() < tol,
+        "arm↔motor distance expected 0.06 m, got {d_arm_motor} m \
+         (composed placement not applied to distance query?)"
+    );
+
+    // Arm.motor ↔ Arm.motor.shaft: face gap = 0.18 − 0.12 = 0.06 m.
+    let d_motor_shaft = engine
+        .distance_between_placed(&compiled, &motor_path, &shaft_path)
+        .expect("distance_between_placed(motor, shaft) must return Some");
+    assert!(
+        (d_motor_shaft - 0.06).abs() < tol,
+        "motor↔shaft distance expected 0.06 m, got {d_motor_shaft} m"
+    );
+
+    // Arm ↔ Arm.motor.shaft: face gap = 0.18 − 0.02 = 0.16 m.
+    let d_arm_shaft = engine
+        .distance_between_placed(&compiled, &arm_path, &shaft_path)
+        .expect("distance_between_placed(arm, shaft) must return Some");
+    assert!(
+        (d_arm_shaft - 0.16).abs() < tol,
+        "arm↔shaft distance expected 0.16 m, got {d_arm_shaft} m \
+         (3-level compose_pose_chain not reflected in distance?)"
+    );
+}
