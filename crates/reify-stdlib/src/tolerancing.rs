@@ -16,8 +16,74 @@ use crate::helpers::{sanitize_value, validate_dimensioned_scalar};
 pub(crate) fn eval_tolerancing(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
         "effective_tolerance_zone" => effective_tolerance_zone(args),
+        "iso_it_tolerance" => iso_it_tolerance(args),
         _ => return None,
     })
+}
+
+// ─── iso_it_tolerance helpers ────────────────────────────────────────────────
+
+/// Look up the IT grade factor for grades IT5–IT18.
+///
+/// Returns `None` for grades outside this range (IT4, IT19+, negatives).
+fn it_grade_factor(grade: i64) -> Option<f64> {
+    match grade {
+        5 => Some(7.0),
+        6 => Some(10.0),
+        7 => Some(16.0),
+        8 => Some(25.0),
+        9 => Some(40.0),
+        10 => Some(64.0),
+        11 => Some(100.0),
+        12 => Some(160.0),
+        13 => Some(250.0),
+        14 => Some(400.0),
+        15 => Some(640.0),
+        16 => Some(1000.0),
+        17 => Some(1600.0),
+        18 => Some(2500.0),
+        _ => None,
+    }
+}
+
+/// Parse `iso_it_tolerance` arguments, returning `(grade, min_mm, max_mm)`.
+///
+/// Requires exactly 3 args: `Value::Int(grade)`, two finite LENGTH scalars.
+/// Returns `None` on wrong arity or wrong types; the size/range validity gate
+/// is applied separately in `iso_it_tolerance` (and reused by `diagnose`).
+fn parse_iso_well_typed(args: &[Value]) -> Option<(i64, f64, f64)> {
+    if args.len() != 3 {
+        return None;
+    }
+    let grade = match &args[0] {
+        Value::Int(n) => *n,
+        _ => return None,
+    };
+    let min_si = validate_dimensioned_scalar(&args[1], DimensionVector::LENGTH)?;
+    let max_si = validate_dimensioned_scalar(&args[2], DimensionVector::LENGTH)?;
+    Some((grade, min_si * 1e3, max_si * 1e3))
+}
+
+/// Compute ISO 286-1 standard tolerance (IT grade) for a given grade and size range.
+///
+/// Formula: D = √(min_mm · max_mm), i = 0.45·∛D + 0.001·D, tol = factor·i.
+/// Returns the tolerance as a finite LENGTH scalar in SI metres, or `Value::Undef`
+/// for unsupported grades, wrong arg types, or out-of-envelope sizes (after step-6).
+fn iso_it_tolerance(args: &[Value]) -> Value {
+    let (grade, min_mm, max_mm) = match parse_iso_well_typed(args) {
+        Some(t) => t,
+        None => return Value::Undef,
+    };
+    let factor = match it_grade_factor(grade) {
+        Some(f) => f,
+        None => return Value::Undef,
+    };
+    // NOTE: nominal-size envelope gate (positivity, inversion, ≤500mm) is added
+    // in step-6; ISO-cell tests only require the formula to be correct.
+    let d = (min_mm * max_mm).sqrt();
+    let i = 0.45 * d.cbrt() + 0.001 * d;
+    let tol_um = factor * i;
+    sanitize_value(Value::Scalar { si_value: tol_um * 1e-6, dimension: DimensionVector::LENGTH })
 }
 
 // ─── private helpers ─────────────────────────────────────────────────────────
