@@ -121,6 +121,10 @@ pub(crate) fn eval_matrix(name: &str, args: &[Value]) -> Option<Value> {
                     build_matrix_value(3, 3, &inv_data, inv_dim)
                 }
                 _ => {
+                    // Near-singular but non-exactly-singular matrices pass
+                    // try_inverse()'s pivot threshold and return a large-valued
+                    // inverse rather than Undef — consistent with the 2×2/3×3
+                    // arms, which also only return Undef when det == 0.0 exactly.
                     let m = DMatrix::from_row_slice(n, n, &data);
                     match m.try_inverse() {
                         Some(inv) => {
@@ -1194,6 +1198,58 @@ mod tests {
             ),
             other => panic!("expected Real(720.0), got {:?}", other),
         }
+    }
+
+    /// Pin the behavioral contract from the determinant N≥4 comment: for a
+    /// singular 4×4 matrix `determinant` returns Real (≈0, not Undef) while
+    /// `inverse` returns Undef.  The two ops use independent singularity tests
+    /// (LU det vs try_inverse pivot threshold) so asserting both on the same
+    /// input ensures neither silently changes to Undef or diverges in the future.
+    #[test]
+    fn det_vs_inverse_singular_contract_4x4() {
+        // Rank-1 matrix (all rows are multiples of [1,2,3,4]) — exactly singular.
+        let m = eval_builtin(
+            "matrix",
+            &[Value::List(vec![
+                Value::List(vec![
+                    Value::Real(1.0),
+                    Value::Real(2.0),
+                    Value::Real(3.0),
+                    Value::Real(4.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(2.0),
+                    Value::Real(4.0),
+                    Value::Real(6.0),
+                    Value::Real(8.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(3.0),
+                    Value::Real(6.0),
+                    Value::Real(9.0),
+                    Value::Real(12.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(4.0),
+                    Value::Real(8.0),
+                    Value::Real(12.0),
+                    Value::Real(16.0),
+                ]),
+            ])],
+        );
+        // determinant: singular → Real (≈0), never Undef — LU path always yields a value.
+        assert!(
+            matches!(
+                eval_builtin("determinant", std::slice::from_ref(&m)),
+                Value::Real(_)
+            ),
+            "determinant of singular 4×4 must return Real (not Undef)"
+        );
+        // inverse: try_inverse() detects exact rank deficiency → Undef.
+        assert!(
+            eval_builtin("inverse", std::slice::from_ref(&m)).is_undef(),
+            "inverse of singular 4×4 must return Undef"
+        );
     }
 
     /// 5×5 inverse: A·A⁻¹ ≈ I₅ — max residual < 1e-9.
