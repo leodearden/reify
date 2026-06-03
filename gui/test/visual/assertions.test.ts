@@ -1,6 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { getByPath, evaluateAssertion } from "./assertions";
+import * as path from "node:path";
+import * as fs from "node:fs";
+import { getByPath, evaluateAssertion, FIXTURES } from "./assertions";
 import type { Assertion } from "./assertions";
+import { resolveRepoRoot } from "./paths";
 
 describe("getByPath", () => {
   it("resolves a two-segment dotted path engine.meshCount", () => {
@@ -71,6 +74,21 @@ describe("evaluateAssertion", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.message).toContain("a");
+    }
+  });
+});
+
+describe("FIXTURES catalogue", () => {
+  it("contains exactly the 5 expected keys (sorted)", () => {
+    const keys = Object.keys(FIXTURES).sort();
+    expect(keys).toEqual(["all_severities", "broken_syntax", "empty", "large_assembly", "small_cube"]);
+  });
+
+  it("every fixture file exists on disk", () => {
+    const repoRoot = resolveRepoRoot(import.meta.url);
+    for (const [name, relPath] of Object.entries(FIXTURES)) {
+      const absPath = path.join(repoRoot, relPath);
+      expect(fs.existsSync(absPath), `fixture '${name}' missing at ${absPath}`).toBe(true);
     }
   });
 });
