@@ -1409,6 +1409,98 @@ mod tests {
         assert_eq!(specs[0].magnitude, 1.0e6);
         assert_eq!(specs[0].face, "x_max");
         assert_eq!(specs[0].direction, "normal");
+
+        // Also assert that a bare empty list → empty Vec.
+        let empty_specs = extract_pressure_loads(&Value::List(vec![]));
+        assert!(empty_specs.is_empty(), "empty list should return empty Vec");
+    }
+
+    /// step-3 RED (task 4264): box_face_pressure_conserves_resultant.
+    ///
+    /// Build a unit-cube [0,1]^3 mesh with 8 corner nodes and the standard
+    /// 6-tet Freudenthal connectivity (same hex split as solve_cantilever_fea).
+    /// Verify:
+    ///   (a) collect_box_face_triangles for x_max returns triangles whose
+    ///       total area equals 1.0 (±1e-9).
+    ///   (b) assemble_box_face_pressures with magnitude=1.0 on x_max yields
+    ///       global resultant Σf = (-1, 0, 0) within abs 1e-9 (pressure is
+    ///       inward on x_max → -x; Σf = -p·A·x̂).
+    ///
+    /// Achievability basis: kernel apply_traction_load already proves
+    /// Σf = face_area·traction (neumann.rs conservation tests + Lamé test 4113);
+    /// a tiling of the face sums to total area exactly.
+    ///
+    /// RED: collect_box_face_triangles / assemble_box_face_pressures / box_face_plane
+    ///      do not exist yet.
+    #[test]
+    fn box_face_pressure_conserves_resultant() {
+        // Unit-cube mesh: 8 corner nodes of [0,1]^3.
+        let coords: Vec<[f64; 3]> = vec![
+            [0.0, 0.0, 0.0], // 0
+            [1.0, 0.0, 0.0], // 1
+            [1.0, 1.0, 0.0], // 2
+            [0.0, 1.0, 0.0], // 3
+            [0.0, 0.0, 1.0], // 4
+            [1.0, 0.0, 1.0], // 5
+            [1.0, 1.0, 1.0], // 6
+            [0.0, 1.0, 1.0], // 7
+        ];
+        // Freudenthal 6-tet split — identical to the single-hex case in
+        // solve_cantilever_fea (c[0..7] = nodes 0..7 for hx=hy=hz=0).
+        let tets: Vec<[usize; 4]> = vec![
+            [0, 1, 2, 6], // T0
+            [0, 2, 3, 6], // T1
+            [0, 5, 1, 6], // T2
+            [0, 3, 7, 6], // T3
+            [0, 4, 5, 6], // T4
+            [0, 7, 4, 6], // T5
+        ];
+
+        // (a) Collect triangles on the x_max face (axis=0, at_max=true, extent=1.0).
+        let tris = collect_box_face_triangles(&coords, &tets, 0, true, 1.0, 1e-9);
+        assert!(!tris.is_empty(), "x_max should have boundary triangles");
+
+        // Sum triangle areas; each triangle area = ½|cross(ab, ac)|.
+        let total_area: f64 = tris
+            .iter()
+            .map(|tri| {
+                let a = coords[tri[0]];
+                let b = coords[tri[1]];
+                let c = coords[tri[2]];
+                let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+                let cross = [
+                    ab[1] * ac[2] - ab[2] * ac[1],
+                    ab[2] * ac[0] - ab[0] * ac[2],
+                    ab[0] * ac[1] - ab[1] * ac[0],
+                ];
+                0.5 * (cross[0].powi(2) + cross[1].powi(2) + cross[2].powi(2)).sqrt()
+            })
+            .sum();
+        assert!(
+            (total_area - 1.0).abs() < 1e-9,
+            "x_max face area should be 1.0 for unit cube, got {total_area}"
+        );
+
+        // (b) Assemble pressure loads; check global resultant Σf = (-1, 0, 0).
+        let mut f = vec![0.0_f64; 3 * coords.len()];
+        let specs = [PressureSpec {
+            magnitude: 1.0,
+            face: "x_max".to_string(),
+            direction: "normal".to_string(),
+        }];
+        assemble_box_face_pressures(&mut f, &coords, &tets, &specs, 1.0, 1.0, 1.0);
+
+        let (sum_x, sum_y, sum_z) =
+            f.chunks_exact(3).fold((0.0_f64, 0.0_f64, 0.0_f64), |(sx, sy, sz), dof| {
+                (sx + dof[0], sy + dof[1], sz + dof[2])
+            });
+        assert!(
+            (sum_x - (-1.0)).abs() < 1e-9,
+            "Σfx should be -1.0 (inward on x_max), got {sum_x}"
+        );
+        assert!(sum_y.abs() < 1e-9, "Σfy should be 0.0, got {sum_y}");
+        assert!(sum_z.abs() < 1e-9, "Σfz should be 0.0, got {sum_z}");
     }
 
     /// step-3 RED (task δ/3780): orthotropic ConstantField cantilever tip-deflection
