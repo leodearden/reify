@@ -2212,18 +2212,20 @@ mod tests {
     // Tolerance 1e-7 is well within central-difference O(ε²) accuracy.
 
     /// Independent FD helper: central-difference column for perturbing
-    /// `target_idx_a` (index in vals_a, or None) AND `target_idx_b` (index
-    /// in vals_b, or None) simultaneously.
+    /// `target_idx.0` (index in vals_a, or None) AND `target_idx.1` (index
+    /// in vals_b, or None) simultaneously. The two indices travel as one
+    /// `(chain_a, chain_b)` pair — they describe a single target joint's
+    /// occurrence sites (also keeps the arg count within clippy's limit).
     fn fd_column(
         chain_a: &[Value],
         vals_a: &[JointValue],
         chain_b: &[Value],
         vals_b: &[JointValue],
-        target_idx_a: Option<usize>,
-        target_idx_b: Option<usize>,
+        target_idx: (Option<usize>, Option<usize>),
         storage_c: usize,
         eps: f64,
     ) -> [f64; 6] {
+        let (target_idx_a, target_idx_b) = target_idx;
         let mut va_plus = vals_a.to_vec();
         let mut va_minus = vals_a.to_vec();
         let mut vb_plus = vals_b.to_vec();
@@ -2274,9 +2276,8 @@ mod tests {
         // Column for jA: perturb jA in BOTH chains (index 0 in chain_a, index 0 in chain_b).
         let expected_a = fd_column(
             &chain_a, &vals_a, &chain_b, &vals_b,
-            Some(0), // chain_a index 0
-            Some(0), // chain_b index 0
-            0,       // storage component 0 (Scalar)
+            (Some(0), Some(0)), // chain_a index 0, chain_b index 0
+            0,                  // storage component 0 (Scalar)
             eps,
         );
         for k in 0..6 {
@@ -2290,9 +2291,8 @@ mod tests {
         // Column for jB: perturb jB only in chain_b (index 1), chain_a unchanged.
         let expected_b = fd_column(
             &chain_a, &vals_a, &chain_b, &vals_b,
-            None,    // chain_a — jB absent
-            Some(1), // chain_b index 1
-            0,       // storage component 0 (Scalar)
+            (None, Some(1)), // chain_a — jB absent; chain_b index 1
+            0,               // storage component 0 (Scalar)
             eps,
         );
         for k in 0..6 {
@@ -2306,23 +2306,22 @@ mod tests {
         // ── case 2: target = [jC] (absent from both chains) ──────────────────
         // jC is not in chain_a or chain_b → zero column (no perturbation site).
         let cols_c = super::loop_residual_jacobian_by_joint(
-            &chain_a, &vals_a, &chain_b, &vals_b, &[j_c.clone()], eps,
+            &chain_a, &vals_a, &chain_b, &vals_b, std::slice::from_ref(&j_c), eps,
         )
         .expect("jC absent → Some(zero-column), not None");
 
         assert_eq!(cols_c.len(), 1, "one target joint → one column");
-        for k in 0..6 {
+        for (k, &col_val) in cols_c[0].iter().enumerate() {
             assert!(
-                cols_c[0][k].abs() < 1e-12,
-                "col_jC[{k}] expected zero (jC absent from both chains), got {}",
-                cols_c[0][k]
+                col_val.abs() < 1e-12,
+                "col_jC[{k}] expected zero (jC absent from both chains), got {col_val}"
             );
         }
 
         // ── case 3: eps <= 0 → None ───────────────────────────────────────────
         assert!(
             super::loop_residual_jacobian_by_joint(
-                &chain_a, &vals_a, &chain_b, &vals_b, &[j_a.clone()], 0.0
+                &chain_a, &vals_a, &chain_b, &vals_b, std::slice::from_ref(&j_a), 0.0
             )
             .is_none(),
             "eps=0 must return None"
