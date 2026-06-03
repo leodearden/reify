@@ -33,6 +33,7 @@ import { createEditorStore } from './stores/editorStore';
 import { createSelectionStore } from './stores/selectionStore';
 import { createClaudeStore } from './stores/claudeStore';
 import { createViewStateStore } from './stores/viewStateStore';
+import { createLayoutStore } from './stores/layoutStore';
 import { createViewportStore, type CameraState } from './stores/viewportStore';
 import { createDefPreviewStore } from './stores/defPreviewStore';
 import { createMechanismStore } from './stores/mechanismStore';
@@ -85,7 +86,7 @@ import {
   SAVE_CONFLICT_RELOAD_LABEL,
   SAVE_CONFLICT_OVERWRITE_LABEL,
 } from './editor/messages';
-import { loadPanelLayout, savePanelLayout, clampPanelHeightsToFit } from './hooks/useLayoutPersistence';
+import { clampPanelHeightsToFit } from './hooks/useLayoutPersistence';
 import { createSerializationErrorCoalescer } from './hooks/useSerializationErrorCoalescer';
 import { loadSidecar, saveSidecar } from './stores/sidecarPersistence';
 import { loadViewPersistence, createDebouncedSaver, type DebouncedSaver } from './stores/viewPersistence';
@@ -96,11 +97,6 @@ import styles from './App.module.css';
 export const NEW_FILE_TEMPLATE = '// New design\n';
 const MIN_PANEL_WIDTH = 150;
 const MIN_PANEL_HEIGHT = 80;
-const DEFAULT_EDITOR_WIDTH = 300;
-const DEFAULT_SIDE_WIDTH = 300;
-const DEFAULT_DESIGN_TREE_HEIGHT = 160;
-const DEFAULT_PROPERTY_HEIGHT = 200;
-const DEFAULT_CONSTRAINT_HEIGHT = 140;
 const CHAT_MIN_HEIGHT = 160;
 const SPLITTER_THICKNESS = 4;
 
@@ -469,26 +465,7 @@ const App: Component = () => {
     });
   }
 
-  const savedLayout = loadPanelLayout();
-  const [editorWidth, setEditorWidth] = createSignal(savedLayout?.editorWidth ?? DEFAULT_EDITOR_WIDTH);
-  const [sideWidth, setSideWidth] = createSignal(savedLayout?.sideWidth ?? DEFAULT_SIDE_WIDTH);
-  const [designTreeHeight, setDesignTreeHeight] = createSignal(savedLayout?.designTreeHeight ?? DEFAULT_DESIGN_TREE_HEIGHT);
-  const [propertyHeight, setPropertyHeight] = createSignal(savedLayout?.propertyHeight ?? DEFAULT_PROPERTY_HEIGHT);
-  const [constraintHeight, setConstraintHeight] = createSignal(savedLayout?.constraintHeight ?? DEFAULT_CONSTRAINT_HEIGHT);
-
-  // Debounced persistence of panel layout dimensions
-  let saveTimeout: ReturnType<typeof setTimeout> | undefined;
-  createEffect(() => {
-    const layout = {
-      editorWidth: editorWidth(),
-      sideWidth: sideWidth(),
-      designTreeHeight: designTreeHeight(),
-      propertyHeight: propertyHeight(),
-      constraintHeight: constraintHeight(),
-    };
-    clearTimeout(saveTimeout);
-    saveTimeout = setTimeout(() => savePanelLayout(layout), 300);
-  });
+  const layoutStore = createLayoutStore();
 
   // Init phase: loading → ready | error
   const [initPhase, setInitPhase] = createSignal<'loading' | 'ready' | 'error'>('loading');
@@ -1127,6 +1104,7 @@ const App: Component = () => {
           selection: selectionStore,
           claude: claudeStore,
           viewState: viewStateStore,
+          layout: layoutStore,
         });
         if (!alive) {
           unsub();
@@ -1308,14 +1286,14 @@ const App: Component = () => {
 
   function handleLeftResize(delta: number) {
     const cw = mainRef?.clientWidth ?? 0;
-    const maxWidth = cw > 0 ? cw - sideWidth() - MIN_PANEL_WIDTH - 8 : Infinity;
-    setEditorWidth((w) => Math.min(maxWidth, Math.max(MIN_PANEL_WIDTH, w + delta)));
+    const maxWidth = cw > 0 ? cw - layoutStore.state.sideWidth - MIN_PANEL_WIDTH - 8 : Infinity;
+    layoutStore.setEditorWidth((w) => Math.min(maxWidth, Math.max(MIN_PANEL_WIDTH, w + delta)));
   }
 
   function handleRightResize(delta: number) {
     const cw = mainRef?.clientWidth ?? 0;
-    const maxWidth = cw > 0 ? cw - editorWidth() - MIN_PANEL_WIDTH - 8 : Infinity;
-    setSideWidth((w) => Math.min(maxWidth, Math.max(MIN_PANEL_WIDTH, w - delta)));
+    const maxWidth = cw > 0 ? cw - layoutStore.state.editorWidth - MIN_PANEL_WIDTH - 8 : Infinity;
+    layoutStore.setSideWidth((w) => Math.min(maxWidth, Math.max(MIN_PANEL_WIDTH, w - delta)));
   }
 
   // Re-flow side-panel sub-panel heights so they fit `sidePanelRef.clientHeight`.
@@ -1329,9 +1307,9 @@ const App: Component = () => {
     if (ch <= 0) return;
     const clamped = clampPanelHeightsToFit(
       {
-        designTree: designTreeHeight(),
-        property: propertyHeight(),
-        constraint: constraintHeight(),
+        designTree: layoutStore.state.designTreeHeight,
+        property: layoutStore.state.propertyHeight,
+        constraint: layoutStore.state.constraintHeight,
       },
       ch,
       {
@@ -1342,14 +1320,14 @@ const App: Component = () => {
       },
     );
     if (
-      clamped.designTree !== designTreeHeight() ||
-      clamped.property !== propertyHeight() ||
-      clamped.constraint !== constraintHeight()
+      clamped.designTree !== layoutStore.state.designTreeHeight ||
+      clamped.property !== layoutStore.state.propertyHeight ||
+      clamped.constraint !== layoutStore.state.constraintHeight
     ) {
       batch(() => {
-        setDesignTreeHeight(clamped.designTree);
-        setPropertyHeight(clamped.property);
-        setConstraintHeight(clamped.constraint);
+        layoutStore.setDesignTreeHeight(clamped.designTree);
+        layoutStore.setPropertyHeight(clamped.property);
+        layoutStore.setConstraintHeight(clamped.constraint);
       });
     }
   }
@@ -1360,28 +1338,28 @@ const App: Component = () => {
   function reservedForOthers(currentSignal: 'designTree' | 'property' | 'constraint'): number {
     const splitters = (chatOpen() ? 3 : 2) * SPLITTER_THICKNESS;
     const chatFloor = chatOpen() ? CHAT_MIN_HEIGHT : 0;
-    const designTree = currentSignal === 'designTree' ? 0 : designTreeHeight();
-    const property = currentSignal === 'property' ? 0 : propertyHeight();
-    const constraint = currentSignal === 'constraint' ? 0 : constraintHeight();
+    const designTree = currentSignal === 'designTree' ? 0 : layoutStore.state.designTreeHeight;
+    const property = currentSignal === 'property' ? 0 : layoutStore.state.propertyHeight;
+    const constraint = currentSignal === 'constraint' ? 0 : layoutStore.state.constraintHeight;
     return designTree + property + constraint + chatFloor + splitters;
   }
 
   function handleDesignTreeResize(delta: number) {
     const ch = sidePanelRef?.clientHeight ?? 0;
     const maxHeight = ch > 0 ? ch - reservedForOthers('designTree') : Infinity;
-    setDesignTreeHeight((h) => Math.min(maxHeight, Math.max(MIN_PANEL_HEIGHT, h + delta)));
+    layoutStore.setDesignTreeHeight((h) => Math.min(maxHeight, Math.max(MIN_PANEL_HEIGHT, h + delta)));
   }
 
   function handleSideResize(delta: number) {
     const ch = sidePanelRef?.clientHeight ?? 0;
     const maxHeight = ch > 0 ? ch - reservedForOthers('property') : Infinity;
-    setPropertyHeight((h) => Math.min(maxHeight, Math.max(MIN_PANEL_HEIGHT, h + delta)));
+    layoutStore.setPropertyHeight((h) => Math.min(maxHeight, Math.max(MIN_PANEL_HEIGHT, h + delta)));
   }
 
   function handleConstraintResize(delta: number) {
     const ch = sidePanelRef?.clientHeight ?? 0;
     const maxHeight = ch > 0 ? ch - reservedForOthers('constraint') : Infinity;
-    setConstraintHeight((h) => Math.min(maxHeight, Math.max(MIN_PANEL_HEIGHT, h + delta)));
+    layoutStore.setConstraintHeight((h) => Math.min(maxHeight, Math.max(MIN_PANEL_HEIGHT, h + delta)));
   }
 
   function handleViewportSelect(entityPath: string | null, modifiers?: { ctrl: boolean; shift: boolean }) {
@@ -1499,7 +1477,7 @@ const App: Component = () => {
           <div
             ref={mainRef}
             class={styles.main}
-            style={{ 'grid-template-columns': `${editorWidth()}px 4px 1fr 4px ${sideWidth()}px` }}
+            style={{ 'grid-template-columns': `${layoutStore.state.editorWidth}px 4px 1fr 4px ${layoutStore.state.sideWidth}px` }}
           >
             <div data-testid="editor-panel" class={styles.editorPanel}>
               <FileBrowser
@@ -1540,7 +1518,7 @@ const App: Component = () => {
                 const hasMech = mechanismStore.state.descriptors.length > 0;
                 const hasAR = engineStore.state.autoResolve.active;
                 const hasChat = chatOpen();
-                const base = `${designTreeHeight()}px 4px ${propertyHeight()}px 4px`;
+                const base = `${layoutStore.state.designTreeHeight}px 4px ${layoutStore.state.propertyHeight}px 4px`;
                 // Middle tracks: one `auto` per optional panel present (autoResolve then
                 // mechanism). No splitter between cons and the first optional panel — adding
                 // one would shift subsequent children up a track and collapse chat into 4px.
@@ -1549,10 +1527,10 @@ const App: Component = () => {
                   ...(hasMech ? ['auto'] : []),
                 ];
                 const midStr = midTracks.length > 0
-                  ? `${constraintHeight()}px ${midTracks.join(' ')}`
+                  ? `${layoutStore.state.constraintHeight}px ${midTracks.join(' ')}`
                   : null;
                 if (hasChat) {
-                  return `${base} ${midStr ?? `${constraintHeight()}px`} 4px minmax(${CHAT_MIN_HEIGHT}px, 1fr)`;
+                  return `${base} ${midStr ?? `${layoutStore.state.constraintHeight}px`} 4px minmax(${CHAT_MIN_HEIGHT}px, 1fr)`;
                 }
                 return midStr
                   ? `${base} ${midStr}`
