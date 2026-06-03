@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@solidjs/testing-library';
 import { MenuBar } from '../panels/MenuBar';
 import { getShortcut } from '../shortcuts';
@@ -383,5 +383,54 @@ describe('MenuBar — trigger data-testid', () => {
     fireEvent.click(screen.getByTestId('menu-trigger-edit'));
     expect(screen.getByTestId('menu-item-undo')).not.toBeNull();
     expect(screen.getByTestId('menu-item-redo')).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// task-4295: MenuBar openMenu ctx exposure
+// ---------------------------------------------------------------------------
+
+describe('MenuBar — openMenu ctx exposure', () => {
+  beforeEach(() => {
+    (window as any).__REIFY_DEBUG__ = { stores: {} as any };
+  });
+  afterEach(() => {
+    delete (window as any).__REIFY_DEBUG__;
+  });
+
+  it('registers menuBar.openMenu as a function on __REIFY_DEBUG__ after render', () => {
+    render(() => <MenuBar />);
+    expect(typeof (window as any).__REIFY_DEBUG__.menuBar?.openMenu).toBe('function');
+  });
+
+  it('openMenu() returns null initially (no menu open)', () => {
+    render(() => <MenuBar />);
+    expect((window as any).__REIFY_DEBUG__.menuBar.openMenu()).toBeNull();
+  });
+
+  it('openMenu() returns "file" after clicking File trigger', () => {
+    render(() => <MenuBar />);
+    fireEvent.click(screen.getByTestId('menu-trigger-file'));
+    expect((window as any).__REIFY_DEBUG__.menuBar.openMenu()).toBe('file');
+  });
+
+  it('openMenu() returns "view" after switching from File to View', () => {
+    render(() => <MenuBar />);
+    fireEvent.click(screen.getByTestId('menu-trigger-file'));
+    fireEvent.mouseEnter(screen.getByTestId('menu-trigger-view'));
+    expect((window as any).__REIFY_DEBUG__.menuBar.openMenu()).toBe('view');
+  });
+
+  it('deletes menuBar on unmount', () => {
+    const { unmount } = render(() => <MenuBar />);
+    unmount();
+    expect((window as any).__REIFY_DEBUG__.menuBar).toBeUndefined();
+  });
+});
+
+describe('MenuBar — no-ctx guard', () => {
+  it('renders without throwing when __REIFY_DEBUG__ is absent', () => {
+    delete (window as any).__REIFY_DEBUG__;
+    expect(() => render(() => <MenuBar />)).not.toThrow();
   });
 });
