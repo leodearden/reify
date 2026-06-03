@@ -116,6 +116,7 @@ vi.mock('../bridge', () => ({
   claudeClearSession: vi.fn().mockResolvedValue(undefined),
   subscribeToClaudeEvents: vi.fn().mockResolvedValue(() => {}),
   isDebugEnabled: vi.fn().mockResolvedValue(false),
+  onWarmPoolEvent: vi.fn().mockResolvedValue(() => {}),
   getKernelStatus: vi.fn().mockResolvedValue({ available: true, message: null }),
   onKernelStatus: vi.fn().mockResolvedValue(() => {}),
   getContainingDefinition: vi.fn().mockResolvedValue(null),
@@ -131,6 +132,9 @@ vi.mock('../bridge', () => ({
   onSolverProgress: vi.fn().mockResolvedValue(() => {}),
   cancelSolve: vi.fn().mockResolvedValue(undefined),
 }));
+
+// Mock debug module so dynamic import('./debug') in App.tsx resolves without invoking the real bridge.
+vi.mock('../debug', () => ({ initDebugBridge: vi.fn().mockResolvedValue(() => {}) }));
 
 // Mock persistence modules so App.tsx's persistence calls can be intercepted.
 vi.mock('../stores/sidecarPersistence', () => ({
@@ -195,6 +199,8 @@ beforeEach(() => {
   vi.mocked((bridge as any).getMechanismDescriptors).mockResolvedValue([]);
   vi.mocked((bridge as any).onSolverProgress).mockResolvedValue(() => {});
   vi.mocked((bridge as any).cancelSolve).mockResolvedValue(undefined);
+  vi.mocked((bridge as any).onWarmPoolEvent).mockResolvedValue(() => {});
+  vi.mocked(bridge.isDebugEnabled).mockResolvedValue(false);
 });
 
 afterEach(() => {
@@ -6047,5 +6053,34 @@ describe('App forwards compileDiagnostics to Editor (task-4252)', () => {
     expect(capturedEditorCompileDiagnostics).toContainEqual(
       expect.objectContaining({ severity: 'Error', message: 'unresolved name: rot_to_z' }),
     );
+  });
+});
+
+// ── WarmPoolDebugPanel placement (task 4279) ─────────────────────────────────
+
+describe('App warm-pool debug panel placement (task 4279)', () => {
+  it('DEBUG ON: panel renders outside side-panel grid, in floating overlay', async () => {
+    vi.mocked(bridge.isDebugEnabled).mockResolvedValue(true);
+    await renderAndWaitForReady();
+
+    // Panel must be visible behind the debug affordance
+    await waitFor(() => expect(screen.getByTestId('warm-pool-debug-panel')).toBeTruthy());
+
+    // Overlay wrapper must exist
+    expect(screen.getByTestId('warm-pool-debug-overlay')).toBeTruthy();
+
+    // Panel must NOT be a descendant of the side-panel grid
+    const sidePanel = screen.getByTestId('side-panel');
+    expect(sidePanel.contains(screen.getByTestId('warm-pool-debug-panel'))).toBe(false);
+
+    // Side-panel grid invariant: tracked children == template tracks (no 8px strip)
+    expect(countGridTracks(sidePanel.style.gridTemplateRows)).toBe(sidePanel.children.length);
+  });
+
+  it('DEBUG OFF: neither panel nor overlay renders in the layout', async () => {
+    await renderAndWaitForReady();
+
+    expect(screen.queryByTestId('warm-pool-debug-panel')).toBeNull();
+    expect(screen.queryByTestId('warm-pool-debug-overlay')).toBeNull();
   });
 });
