@@ -497,3 +497,54 @@ describe('ConstraintPanel Ask Claude context menu', () => {
     expect(screen.queryByTestId('constraint-context-menu')).toBeNull();
   });
 });
+
+describe('ConstraintPanel — status badge title', () => {
+  it('satisfied badge has a title containing "Satisfied"', () => {
+    const constraints: Record<string, ConstraintData> = {
+      n1: makeConstraint({ node_id: 'n1', status: 'satisfied', expression: 'x > 0' }),
+    };
+    render(() => <ConstraintPanel constraints={constraints} values={{}} />);
+    const container = screen.getByTestId('constraint-panel');
+    const badge = container.querySelector('[data-status="satisfied"]');
+    expect(badge).toBeTruthy();
+    const title = badge!.getAttribute('title') ?? '';
+    expect(title.toLowerCase()).toContain('satisfied');
+  });
+
+  it('violated badge has a title containing "Violated"', () => {
+    const constraints: Record<string, ConstraintData> = {
+      n1: makeConstraint({ node_id: 'n1', status: 'violated', expression: 'x > 0' }),
+    };
+    render(() => <ConstraintPanel constraints={constraints} values={{}} />);
+    const container = screen.getByTestId('constraint-panel');
+    const badge = container.querySelector('[data-status="violated"]');
+    expect(badge).toBeTruthy();
+    const title = badge!.getAttribute('title') ?? '';
+    expect(title.toLowerCase()).toContain('violated');
+  });
+
+  it('indeterminate badge has a title explaining the "?" glyph (contains "Indeterminate")', () => {
+    const constraints: Record<string, ConstraintData> = {
+      n1: makeConstraint({ node_id: 'n1', status: 'indeterminate', expression: 'x > 0' }),
+    };
+    render(() => <ConstraintPanel constraints={constraints} values={{}} />);
+    const container = screen.getByTestId('constraint-panel');
+    const badge = container.querySelector('[data-status="indeterminate"]');
+    expect(badge).toBeTruthy();
+    const title = badge!.getAttribute('title') ?? '';
+    expect(title.toLowerCase()).toContain('indeterminate');
+  });
+
+  it('existing aria-label={status} is preserved on all badges', () => {
+    const constraints: Record<string, ConstraintData> = {
+      n1: makeConstraint({ node_id: 'n1', status: 'satisfied', expression: 'a > 0' }),
+      n2: makeConstraint({ node_id: 'n2', status: 'violated', expression: 'b > 0' }),
+      n3: makeConstraint({ node_id: 'n3', status: 'indeterminate', expression: 'c > 0' }),
+    };
+    render(() => <ConstraintPanel constraints={constraints} values={{}} />);
+    const container = screen.getByTestId('constraint-panel');
+    expect(container.querySelector('[data-status="satisfied"]')!.getAttribute('aria-label')).toBe('satisfied');
+    expect(container.querySelector('[data-status="violated"]')!.getAttribute('aria-label')).toBe('violated');
+    expect(container.querySelector('[data-status="indeterminate"]')!.getAttribute('aria-label')).toBe('indeterminate');
+  });
+});
