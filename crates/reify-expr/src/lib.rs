@@ -2468,6 +2468,9 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
             if ad != bd {
                 Value::Undef // dimension mismatch
             } else {
+                // Intentionally returns Scalar{dimension} even when dimension is DIMENSIONLESS.
+                // Scalar+Real/Int below returns Real for the mixed case — the asymmetry is
+                // accepted: eval_eq/eval_cmp normalize both forms via as_f64().
                 Value::Scalar {
                     si_value: a + b,
                     dimension: *ad,
@@ -2509,9 +2512,13 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
         | (Value::Complex { re, im, dimension }, Value::Int(a)) => {
             guard_dimensionless_complex(*a as f64 + re, *im, *dimension)
         }
-        // Dimensionless Scalar +/- Real or Int: a dimensionless quantity IS a pure
-        // number, so the result is Value::Real. The `is_dimensionless()` guard keeps
-        // DIMENSIONED scalars (e.g. Length + Real) falling through to Undef.
+        // Dimensionless Scalar + Real or Int: additive dimension-safety requires
+        // both operands to be dimensionless — you cannot add a bare number to a
+        // Length. The `is_dimensionless()` guard enforces this; DIMENSIONED scalars
+        // fall through to Undef. Result is Value::Real (not Scalar{DIMENSIONLESS})
+        // because the operand is already a bare number.
+        // Note: eval_mul/eval_div have no such guard — scaling a dimensioned quantity
+        // by a pure number is always legal and preserves the dimension.
         (Value::Scalar { si_value, dimension }, Value::Real(r))
         | (Value::Real(r), Value::Scalar { si_value, dimension })
             if dimension.is_dimensionless() =>
@@ -2563,6 +2570,9 @@ fn eval_sub(lv: &Value, rv: &Value) -> Value {
             if ad != bd {
                 Value::Undef // dimension mismatch
             } else {
+                // Intentionally returns Scalar{dimension} even when dimension is DIMENSIONLESS.
+                // See the corresponding eval_add note for why this asymmetry with Scalar-Real
+                // is accepted.
                 Value::Scalar {
                     si_value: a - b,
                     dimension: *ad,
@@ -2612,8 +2622,12 @@ fn eval_sub(lv: &Value, rv: &Value) -> Value {
             guard_dimensionless_complex(re - *a as f64, *im, *dimension)
         }
         // Dimensionless Scalar - Real/Int and Real/Int - dimensionless Scalar.
-        // Subtraction is non-commutative, so each ordering is a separate arm.
-        // The `is_dimensionless()` guard keeps DIMENSIONED scalars → Undef.
+        // Additive dimension-safety: both operands must be dimensionless (you
+        // cannot subtract a bare number from a Length). DIMENSIONED scalars fall
+        // through to Undef. Subtraction is non-commutative, so each ordering is
+        // a separate arm. Note: eval_mul/eval_div scale any-dimension scalars
+        // without this guard — scaling preserves dimension; addition/subtraction
+        // do not.
         (Value::Scalar { si_value, dimension }, Value::Real(r))
             if dimension.is_dimensionless() =>
         {

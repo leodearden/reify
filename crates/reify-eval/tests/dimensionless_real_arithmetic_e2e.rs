@@ -4,7 +4,9 @@
 //! Root cause: eval_add and eval_sub had no (Scalar, Real) / (Real, Scalar) /
 //! (Scalar, Int) / (Int, Scalar) arms, so a dimensionless Scalar (e.g. the
 //! result of 100mm / 4mm) added to a Real silently produced Value::Undef.
-//! eval_mul and eval_div already handled these arms; this suite is the
+//! eval_mul and eval_div handle Scalar*Real/Int without a dimensionless guard
+//! (scaling a dimensioned quantity by a number is always legal); add/sub needed
+//! a new guarded arm restricted to dimensionless operands. This suite is the
 //! integration gate that confirms the fix composes through the real compiler
 //! and eval pipeline.
 //!
