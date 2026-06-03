@@ -189,20 +189,84 @@ fn process_base_trait_requires_duration_time_and_cost_money() {
 // ─── step-5: process-category traits ─────────────────────────────────────────
 
 /// Each of the seven process-category traits must refine exactly [Process] and
-/// have an empty own required_members (requirements are inherited via refinement).
+/// expose exactly the §8 capability params as own required_members, in declaration order.
+/// (`CompiledTrait.required_members` holds only a trait's OWN declared members;
+/// inherited `duration`/`cost` from Process are NOT listed there.)
 #[test]
 fn process_category_traits_each_refine_process() {
-    let categories = [
-        "Subtracting",
-        "Adding",
-        "Forming",
-        "Joining",
-        "Parting",
-        "SurfaceTreating",
-        "HeatTreating",
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let angle = Type::Scalar {
+        dimension: DimensionVector::ANGLE,
+    };
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    let temperature = Type::Scalar {
+        dimension: DimensionVector::TEMPERATURE,
+    };
+    let time_t = Type::Scalar {
+        dimension: DimensionVector::TIME,
+    };
+
+    // (trait_name, [(member_name, expected_type)])
+    let categories: Vec<(&str, Vec<(&str, Type)>)> = vec![
+        (
+            "Subtracting",
+            vec![
+                ("tool_access", Type::Geometry),
+                ("min_feature_size", length.clone()),
+                ("achievable_finish", length.clone()),
+            ],
+        ),
+        (
+            "Adding",
+            vec![
+                ("layer_thickness", length.clone()),
+                ("min_feature_size", length.clone()),
+                ("build_volume", Type::Geometry),
+            ],
+        ),
+        (
+            "Forming",
+            vec![
+                ("min_bend_radius", length.clone()),
+                ("max_draw_depth", length.clone()),
+                ("draft_angle", angle.clone()),
+            ],
+        ),
+        (
+            "Joining",
+            vec![
+                ("joint_strength", pressure.clone()),
+                ("reversible", Type::Bool),
+            ],
+        ),
+        (
+            "Parting",
+            vec![
+                ("kerf_width", length.clone()),
+                ("min_feature_size", length.clone()),
+            ],
+        ),
+        (
+            "SurfaceTreating",
+            vec![
+                ("coating_thickness", length.clone()),
+                ("achievable_finish", length.clone()),
+            ],
+        ),
+        (
+            "HeatTreating",
+            vec![
+                ("treatment_temperature", temperature.clone()),
+                ("hold_duration", time_t.clone()),
+            ],
+        ),
     ];
 
-    for name in &categories {
+    for (name, expected_members) in &categories {
         let t = find_trait(name);
 
         assert_eq!(
@@ -213,16 +277,31 @@ fn process_category_traits_each_refine_process() {
             t.refinements
         );
 
-        assert!(
-            t.required_members.is_empty(),
-            "trait '{}' should have no own required_members (inherited via refinement), \
-             got: {:?}",
+        assert_eq!(
+            t.required_members.len(),
+            expected_members.len(),
+            "trait '{}' should have exactly {} own required_members; got: {:?}",
             name,
+            expected_members.len(),
             t.required_members
                 .iter()
                 .map(|r| &r.name)
                 .collect::<Vec<_>>()
         );
+
+        for (i, (member_name, expected_type)) in expected_members.iter().enumerate() {
+            assert_eq!(
+                t.required_members[i].name, *member_name,
+                "trait '{}' required_members[{}] should be '{}', got '{}'",
+                name, i, member_name, t.required_members[i].name
+            );
+            assert_eq!(
+                param_type(name, member_name),
+                *expected_type,
+                "trait '{}' member '{}' should have type {:?}",
+                name, member_name, expected_type
+            );
+        }
     }
 }
 
