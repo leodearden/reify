@@ -949,6 +949,14 @@ mod tests {
         assert!(is_geometry_function("cylinder_centered"));
     }
 
+    // --- Cone (task-4156) ---
+
+    #[test]
+    fn is_geometry_function_cone_recognized() {
+        // RED until step-6 adds "cone" to GEOMETRY_FUNCTION_NAMES.
+        assert!(is_geometry_function("cone"));
+    }
+
     // --- Geometry query helpers (task 2320 step-1) ---
     //
     // Sibling list to `GEOMETRY_FUNCTION_NAMES` for the three monomorphic

@@ -324,7 +324,7 @@ fn op_array_assigns_curve_to_curve_op_and_preserves_through_transform() {
 
 // ─── infer_primitive — per-PrimitiveKind lookup ─────────────────────────────
 
-/// Every current `PrimitiveKind` (Box/Cylinder/Sphere/Tube) is fully
+/// Every current `PrimitiveKind` (Box/Cylinder/Sphere/Tube/Cone) is fully
 /// Bounded+Connected+Convex. When an Unbounded primitive lands (e.g.
 /// `half_space`, `extrude_infinite`), this test must be updated to
 /// expect `InferredTraits::none()` (or the appropriate subset) for those
@@ -335,11 +335,13 @@ fn infer_primitive_kind_yields_all_three_traits() {
     // Iterate every variant via a fixed array so the test is exhaustive.
     // If a new `PrimitiveKind` variant is added, the array length annotation
     // forces a compile error here, which forces the test to be re-considered.
-    let cases: [PrimitiveKind; 4] = [
+    // RED until step-6 adds PrimitiveKind::Cone to types.rs.
+    let cases: [PrimitiveKind; 5] = [
         PrimitiveKind::Box,
         PrimitiveKind::Cylinder,
         PrimitiveKind::Sphere,
         PrimitiveKind::Tube,
+        PrimitiveKind::Cone,
     ];
     for kind in cases {
         assert_eq!(

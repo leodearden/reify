@@ -3615,4 +3615,86 @@ mod tests {
             "Error diagnostic must have a label at the conditional span"
         );
     }
+
+    // --- cone() compiler dispatch (task-4156, step-5 RED) ---
+
+    /// `cone(10mm, 5mm, 20mm)` must compile to a single
+    /// `CompiledGeometryOp::Primitive { kind: PrimitiveKind::Cone }` with three
+    /// named args: `bottom_radius`, `top_radius`, `height`.
+    ///
+    /// RED until step-6 adds the "cone" arm in `compile_geometry_call` and
+    /// adds `PrimitiveKind::Cone` to `types.rs`.
+    #[test]
+    fn compile_geometry_call_cone_3args_returns_primitive_cone() {
+        let expr = make_call_with_arity("cone", 3);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        let ops = result.expect("cone(_, _, _) should produce ops");
+        assert_eq!(ops.len(), 1, "cone must produce exactly 1 op");
+        match &ops[0] {
+            CompiledGeometryOp::Primitive { kind, args } => {
+                assert_eq!(
+                    *kind,
+                    PrimitiveKind::Cone,
+                    "cone op must have kind PrimitiveKind::Cone"
+                );
+                let names: Vec<&str> = args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(
+                    names,
+                    vec!["bottom_radius", "top_radius", "height"],
+                    "cone arg names must be bottom_radius / top_radius / height"
+                );
+            }
+            other => panic!("expected Primitive(Cone), got {:?}", other),
+        }
+        assert!(diagnostics.is_empty(), "cone(_, _, _) must emit no diagnostics");
+    }
+
+    /// `cone(10mm, 5mm)` (2 args) must emit an arity diagnostic and return `None`.
+    ///
+    /// RED until step-6 adds the "cone" arm in `compile_geometry_call`.
+    #[test]
+    fn compile_geometry_call_cone_wrong_arity_emits_diagnostic() {
+        let expr = make_call_with_arity("cone", 2);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        assert!(
+            result.is_none(),
+            "cone with 2 args must return None (arity error)"
+        );
+        assert!(
+            !diagnostics.is_empty(),
+            "cone with 2 args must emit at least one diagnostic"
+        );
+    }
 }

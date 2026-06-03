@@ -1082,7 +1082,8 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
         GeometryOp::Box { .. }
         | GeometryOp::Cylinder { .. }
         | GeometryOp::Sphere { .. }
-        | GeometryOp::Tube { .. } => ParentHandles::Inline([z, z], 0),
+        | GeometryOp::Tube { .. }
+        | GeometryOp::Cone { .. } => ParentHandles::Inline([z, z], 0),
 
         // Curve constructors — no parent handles.
         GeometryOp::LineSegment { .. }
@@ -1202,6 +1203,7 @@ fn substitute_op_parents(
         | GeometryOp::Cylinder { .. }
         | GeometryOp::Sphere { .. }
         | GeometryOp::Tube { .. }
+        | GeometryOp::Cone { .. }
         | GeometryOp::LineSegment { .. }
         | GeometryOp::Arc { .. }
         | GeometryOp::Helix { .. }
@@ -1291,6 +1293,7 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
         GeometryOp::Cylinder { .. } => Operation::PrimitiveCylinder,
         GeometryOp::Sphere { .. } => Operation::PrimitiveSphere,
         GeometryOp::Tube { .. } => Operation::PrimitiveTube,
+        GeometryOp::Cone { .. } => Operation::PrimitiveCone,
 
         // Booleans
         GeometryOp::Union { .. } => Operation::BooleanUnion,
@@ -1408,7 +1411,9 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
         // Primitives — sources (no geometric input); classified as BRep to
         // document the conscious 'not a Mesh-accepting consumer' decision and
         // satisfy the strum-completeness test (test d, step-3).
-        PrimitiveBox | PrimitiveCylinder | PrimitiveSphere | PrimitiveTube => Some(BREP_ONLY),
+        PrimitiveBox | PrimitiveCylinder | PrimitiveSphere | PrimitiveTube | PrimitiveCone => {
+            Some(BREP_ONLY)
+        }
 
         // Curves — sources (no geometric input); same rationale as Primitives.
         CurveLineSegment | CurveArc | CurveHelix | CurveInterpCurve | CurveBezierCurve

@@ -277,6 +277,8 @@ pub enum Operation {
     PrimitiveSphere,
     /// Tube primitive (hollow cylinder).
     PrimitiveTube,
+    /// Cone (or frustum) primitive along Z axis.
+    PrimitiveCone,
 
     // ── Modify (local edits to a single shape) ──────────────────────────────
     /// Fillet (round) edges by radius.
@@ -534,6 +536,16 @@ pub enum GeometryOp {
         inner_r: Value,
         height: Value,
     },
+    /// Create a cone or frustum primitive along Z axis.
+    ///
+    /// `bottom_radius` is the radius at Z=0; `top_radius` at Z=height.
+    /// Setting `top_radius == 0` yields a pointed cone (apex at top).
+    /// Requires at least one radius > 0 (both-zero is a degenerate line).
+    Cone {
+        bottom_radius: Value,
+        top_radius: Value,
+        height: Value,
+    },
     /// Boolean union.
     Union {
         left: GeometryHandleId,
@@ -785,6 +797,7 @@ impl GeometryOp {
             GeometryOp::Cylinder { .. } => "Cylinder",
             GeometryOp::Sphere { .. } => "Sphere",
             GeometryOp::Tube { .. } => "Tube",
+            GeometryOp::Cone { .. } => "Cone",
             GeometryOp::Union { .. } => "Union",
             GeometryOp::Difference { .. } => "Difference",
             GeometryOp::Intersection { .. } => "Intersection",

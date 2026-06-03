@@ -1981,6 +1981,37 @@ impl OcctKernel {
                 ffi::ffi::boolean_cut(&outer_shape, &inner_shape)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            GeometryOp::Cone {
+                bottom_radius,
+                top_radius,
+                height,
+            } => {
+                let bottom_r = extract_f64(bottom_radius)?;
+                let top_r = extract_f64(top_radius)?;
+                let h = extract_f64(height)?;
+                if !(bottom_r.is_finite() && bottom_r >= 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "cone bottom_radius must be finite and non-negative".into(),
+                    ));
+                }
+                if !(top_r.is_finite() && top_r >= 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "cone top_radius must be finite and non-negative".into(),
+                    ));
+                }
+                if bottom_r == 0.0 && top_r == 0.0 {
+                    return Err(GeometryError::OperationFailed(
+                        "cone both radii are zero — degenerate line, at least one radius must be positive".into(),
+                    ));
+                }
+                if !(h.is_finite() && h > 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "cone height must be a finite positive value".into(),
+                    ));
+                }
+                ffi::ffi::make_cone(bottom_r, top_r, h)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
             GeometryOp::Union { left, right } => {
                 let l = self.get_shape(*left)?;
                 let r = self.get_shape(*right)?;
