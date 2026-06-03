@@ -23,6 +23,14 @@ function statusIcon(status: string): string {
   }
 }
 
+function statusTitle(status: string): string {
+  switch (status) {
+    case 'satisfied': return 'Satisfied \u2014 constraint holds';
+    case 'violated': return 'Violated \u2014 constraint is not met';
+    default: return 'Indeterminate \u2014 not yet evaluated';
+  }
+}
+
 export const ConstraintPanel: Component<ConstraintPanelProps> = (props) => {
   const [expandedNodes, setExpandedNodes] = createSignal<Set<string>>(new Set());
   const [contextMenu, setContextMenu] = createSignal<{ constraint: ConstraintData; x: number; y: number } | null>(null);
@@ -130,7 +138,7 @@ export const ConstraintPanel: Component<ConstraintPanelProps> = (props) => {
                     </span>
                   </Show>
                   <span class={styles.expression}>{constraint.expression}</span>
-                  <span class={styles.statusBadge} data-status={constraint.status} aria-label={constraint.status}>
+                  <span class={styles.statusBadge} data-status={constraint.status} aria-label={constraint.status} title={statusTitle(constraint.status)}>
                     {statusIcon(constraint.status)}
                   </span>
                 </div>
