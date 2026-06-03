@@ -1,0 +1,25 @@
+// Fixture for B4/B5 guard-eval CLI integration locks.
+//
+// B4: vg=ActiveSat — guard condition (flag > 0mm) = true (1mm > 0mm) →
+//     active arm fires, constraint val > 10mm = true (20mm > 10mm) → Satisfied.
+//
+// B5: vg=UndefFlag — guard condition (flag > 0mm) = Undef (flag = auto) →
+//     Kleene U⇒U=U → implication is Undef → Indeterminate (NOT Violated).
+//     This contrasts with B8 where geometry-undef → Violated.
+purpose vg(s : Structure) {
+    where s.flag > 0mm {
+        constraint s.val > 10mm
+    }
+}
+
+structure ActiveSat {
+    param flag : Length = 1mm
+    param val : Length = 20mm
+}
+
+// UndefFlag — both flag and val are auto: flag>0mm = Undef, val>10mm = Undef.
+// Kleene U⇒U=U → Indeterminate. (If val were determined, U⇒T=T → Satisfied.)
+structure UndefFlag {
+    param flag : Length = auto
+    param val : Length = auto
+}

@@ -1,0 +1,18 @@
+// Fixture for B3 scalar-let CLI integration lock.
+//
+// sl=Pos: let m = 10mm - 3mm = 7mm; constraint 7mm > 0mm → Satisfied.
+// sl=Neg: let m = 3mm - 10mm = -7mm; constraint -7mm > 0mm → Violated.
+purpose sl(s : Structure) {
+    let m = s.a - s.b
+    constraint m > 0mm
+}
+
+structure Pos {
+    param a : Length = 10mm
+    param b : Length = 3mm
+}
+
+structure Neg {
+    param a : Length = 3mm
+    param b : Length = 10mm
+}
