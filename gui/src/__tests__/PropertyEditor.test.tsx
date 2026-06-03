@@ -1148,3 +1148,47 @@ describe('PropertyEditor freshness badge title', () => {
     expect(badge.getAttribute('aria-label')).toBe('freshness intermediate');
   });
 });
+
+describe('PropertyEditor — selection breadcrumb header', () => {
+  it('(a) with selectedEntity="Bracket.width" renders selection-breadcrumb with leaf "width"', () => {
+    render(() => (
+      <PropertyEditor
+        values={EDITABLE_C1}
+        selectedEntity="Bracket.width"
+        onSetParameter={vi.fn()}
+      />
+    ));
+    // Breadcrumb container must be present
+    expect(screen.getByTestId('selection-breadcrumb')).toBeTruthy();
+    // Leaf crumb must display the last segment
+    const leaf = screen.getByTestId('breadcrumb-leaf');
+    expect(leaf.textContent).toBe('width');
+  });
+
+  it('(b) with selectedEntity={null} shows "No selection" placeholder', () => {
+    render(() => (
+      <PropertyEditor
+        values={{}}
+        selectedEntity={null}
+        onSetParameter={vi.fn()}
+      />
+    ));
+    expect(screen.getByTestId('selection-breadcrumb')).toBeTruthy();
+    expect(screen.getByText('No selection')).toBeTruthy();
+  });
+
+  it('(b) panel-title "Parameters" still renders alongside the breadcrumb', () => {
+    render(() => (
+      <PropertyEditor
+        values={{}}
+        selectedEntity={null}
+        onSetParameter={vi.fn()}
+      />
+    ));
+    // The existing "Parameters" title must remain
+    const title = screen.getByText('Parameters');
+    expect(title).toBeTruthy();
+    // Breadcrumb should also be present
+    expect(screen.getByTestId('selection-breadcrumb')).toBeTruthy();
+  });
+});
