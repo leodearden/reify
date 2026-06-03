@@ -109,6 +109,39 @@ fn simulation_ready_determined_material_passes() {
     );
 }
 
+/// simulation_ready with auto (constrained) material param violates — guard-active-Violated.
+///
+/// The material guard (`where exists p in material_params: constrained(p)`) FIRES because
+/// `mat` is auto → constrained(mat)=true. The guard body requires
+/// `forall p in material_params: determined(p)` — but mat is auto (not determined) →
+/// body = false → Violated → SomeViolated → exit non-zero.
+///
+/// This locks the guard-active branch described in the determinacy_purposes.ri doc comment:
+/// "constrained() and determined() are mutually exclusive states, so this arm can only
+/// fire Violated". Geometry (width=80mm) is fully determined, so the geometry constraint
+/// alone would pass; the violation is exclusively from the guard-active material branch.
+#[test]
+fn simulation_ready_auto_material_guard_active_violates() {
+    let (status, stdout, stderr) = common::run_with_args(&[
+        "check",
+        "--purpose",
+        "simulation_ready=Part",
+        &common::fixture_path("stdlib_sim_ready_material_active.ri"),
+    ]);
+
+    assert!(
+        !status.success(),
+        "simulation_ready=Part with auto material should exit non-zero \
+         (guard active → Violated)\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("Some constraints violated."),
+        "stdout should contain 'Some constraints violated.' for guard-active branch; \
+         got: {stdout}"
+    );
+}
+
 // ── step-5: design_review — stdlib purpose end-to-end CLI ────────────────────
 
 /// design_review PASS: a structure with all-auto params is in design-review state.
