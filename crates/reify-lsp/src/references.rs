@@ -30,6 +30,7 @@ use reify_core::SourceSpan;
 use tower_lsp::lsp_types::{Position, Range, TextEdit, Url, WorkspaceEdit};
 
 use crate::analysis::{enclosing_decl_at, name_token_span};
+use crate::completion::{BODY_KEYWORDS, EXPR_KEYWORDS, TOP_LEVEL_KEYWORDS};
 use crate::convert::{find_word_at_offset, position_to_offset, span_to_range};
 
 /// The kind of symbol a [`ReferenceSet`] resolves to.
@@ -808,6 +809,48 @@ fn is_renameable(kind: RefSymbolKind) -> bool {
     )
 }
 
+/// Whether `new_name` is a legal Reify identifier suitable as a rename target.
+///
+/// `compute_rename` writes `new_name` verbatim into every declaration ∪ reference
+/// name-token span, so a `new_name` that is not a legal identifier — empty,
+/// containing whitespace or punctuation (`foo bar`, `foo-bar`), starting with a
+/// digit (`2x`), or a reserved keyword (`let`, `param`, …) — would produce source
+/// that no longer re-parses cleanly, violating the re-parse-clean half of
+/// Invariant 5. LSP clients do not generally validate the proposed name against a
+/// language's identifier grammar, so `compute_rename` (the producer the later
+/// server wiring consumes) is the contract surface that must reject these before
+/// emitting any edit.
+///
+/// Grammar: a non-empty token whose first byte is ASCII alphabetic or `_` and
+/// whose remaining bytes are ASCII alphanumeric or `_` (mirroring
+/// `convert::is_ident_byte`, which defines what `find_word_at_offset` treats as an
+/// identifier), and which is not a reserved keyword.
+fn is_valid_rename_identifier(new_name: &str) -> bool {
+    let mut bytes = new_name.bytes();
+    match bytes.next() {
+        // First byte must be a letter or underscore (rejects empty and `2x`).
+        Some(b) if b.is_ascii_alphabetic() || b == b'_' => {}
+        _ => return false,
+    }
+    // Remaining bytes must all be identifier bytes (rejects whitespace and
+    // punctuation: `foo bar`, `foo-bar`).
+    if !bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        return false;
+    }
+    // A reserved keyword would re-parse as that construct rather than an
+    // identifier, corrupting the buffer.
+    !is_reserved_keyword(new_name)
+}
+
+/// Whether `name` is a reserved Reify keyword (and therefore not a valid rename
+/// target). Reuses the LSP completion crate's keyword tables — the same lists the
+/// editor offers as completions — so the refusal set never drifts from them.
+fn is_reserved_keyword(name: &str) -> bool {
+    TOP_LEVEL_KEYWORDS.contains(&name)
+        || BODY_KEYWORDS.contains(&name)
+        || EXPR_KEYWORDS.contains(&name)
+}
+
 /// Compute a [`WorkspaceEdit`] that renames the binding under the cursor.
 ///
 /// The edit covers declaration ∪ references with one `TextEdit` per name-token
@@ -820,10 +863,12 @@ pub fn compute_rename(
     pos: Position,
     new_name: &str,
 ) -> Option<WorkspaceEdit> {
-    // An empty or whitespace-only new name would blank the identifier tokens and
-    // corrupt the buffer (violating the re-parse-clean half of Invariant 5), so
-    // refuse it outright before producing any edits.
-    if new_name.trim().is_empty() {
+    // A `new_name` that is not a legal Reify identifier — empty, whitespace,
+    // punctuation, digit-leading, or a reserved keyword — would corrupt the
+    // identifier tokens so the buffer no longer re-parses cleanly (violating the
+    // re-parse-clean half of Invariant 5), so refuse it outright before producing
+    // any edits.
+    if !is_valid_rename_identifier(new_name) {
         return None;
     }
 
@@ -1525,6 +1570,54 @@ structure S {
             compute_rename(source, &parsed, &uri, pos, "   ").is_none(),
             "whitespace-only new name must be refused"
         );
+    }
+
+    // --- amend (robustness): compute_rename refuses illegal identifier new_names ---
+
+    #[test]
+    fn compute_rename_rejects_invalid_identifiers() {
+        // compute_rename writes new_name verbatim into every name-token span, so a
+        // new_name that is not a legal Reify identifier must be refused (None)
+        // before any edit is produced — otherwise the renamed buffer no longer
+        // re-parses cleanly (the re-parse-clean half of Invariant 5). LSP clients do
+        // not generally validate the proposed name, so this guard lives in the
+        // producer.
+        let source = reify_test_support::bracket_source();
+        let parsed = reify_syntax::parse(source, ModulePath::single("bracket"));
+        let uri = Url::parse("file:///bracket.ri").unwrap();
+        let width = occurrences(source, "width");
+        // Cursor on a renameable `width` use — only the new_name should gate here.
+        let pos = offset_to_position(source, width[1] as u32);
+
+        // Sanity: a legal identifier is accepted (so the refusals below are
+        // attributable to the new_name, not the cursor).
+        assert!(
+            compute_rename(source, &parsed, &uri, pos, "span").is_some(),
+            "a legal identifier new_name must be accepted"
+        );
+        assert!(
+            compute_rename(source, &parsed, &uri, pos, "_ok2").is_some(),
+            "underscore-leading alphanumeric identifier is legal"
+        );
+
+        // Illegal new_names: whitespace, punctuation, digit-leading, and reserved
+        // keywords all fail the identifier grammar and must return None.
+        for bad in [
+            "",         // empty
+            "   ",      // whitespace only
+            "foo bar",  // embedded whitespace
+            "foo-bar",  // punctuation
+            "2x",       // leading digit
+            "let",      // reserved keyword (body)
+            "param",    // reserved keyword (body)
+            "structure", // reserved keyword (top-level)
+            "if",       // reserved keyword (expression)
+        ] {
+            assert!(
+                compute_rename(source, &parsed, &uri, pos, bad).is_none(),
+                "illegal/keyword new_name {bad:?} must be refused"
+            );
+        }
     }
 
     // --- step-21: completeness + determinism (Invariants 2 & 3) ---
