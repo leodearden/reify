@@ -150,7 +150,9 @@ fn thermally_characterized_has_three_required_and_three_optional_members() {
         }
     }
 
-    // Three optional params must appear in tc.defaults as DefaultKind::Param.
+    // Three optional params must appear in tc.defaults as DefaultKind::Param with the
+    // correct cell_type (Type::Real for all three; tightening to Temperature belongs to
+    // sibling task #3112 and will update these assertions).
     let optional_params = ["melting_point", "max_service_temperature", "glass_transition"];
     for param_name in &optional_params {
         let default = tc
@@ -167,12 +169,17 @@ fn thermally_characterized_has_three_required_and_three_optional_members() {
                         .collect::<Vec<_>>()
                 )
             });
-        assert!(
-            matches!(default.kind, DefaultKind::Param { .. }),
-            "ThermallyCharacterized optional param '{}' should be DefaultKind::Param, got {:?}",
-            param_name,
-            default.kind
-        );
+        match &default.kind {
+            DefaultKind::Param { cell_type, .. } => assert_eq!(
+                cell_type, &Type::Real,
+                "ThermallyCharacterized optional param '{}' expected Type::Real, got {:?}",
+                param_name, cell_type
+            ),
+            other => panic!(
+                "ThermallyCharacterized optional param '{}' should be DefaultKind::Param, got {:?}",
+                param_name, other
+            ),
+        }
     }
 }
 

@@ -101,16 +101,31 @@ structure RefractoryOmit : Refractory {
         check_errors
     );
 
-    // At least one constraint result is Indeterminate (the omitted max_service_temperature).
-    let has_indeterminate = check_result
+    // Locate all constraint results for the RefractoryOmit entity specifically.
+    // RefractoryOmit inherits exactly one constraint from Refractory:
+    //   `max_service_temperature >= 1500.0`
+    // Asserting count == 1 pins the test to that specific constraint — if additional
+    // inherited constraints are added later the count check will flag the mismatch and
+    // prompt a more specific assertion, rather than the test silently passing for the
+    // wrong constraint.
+    let refractory_omit_constraints: Vec<_> = check_result
         .constraint_results
         .iter()
-        .any(|cr| cr.satisfaction == Satisfaction::Indeterminate);
-    assert!(
-        has_indeterminate,
-        "Expected at least one Indeterminate constraint result for RefractoryOmit \
-         (max_service_temperature omitted), got: {:?}",
-        check_result.constraint_results
+        .filter(|cr| cr.id.entity == "RefractoryOmit")
+        .collect();
+    assert_eq!(
+        refractory_omit_constraints.len(),
+        1,
+        "Expected exactly 1 constraint result for RefractoryOmit \
+         (the inherited max_service_temperature >= 1500.0), got: {:?}",
+        refractory_omit_constraints
+    );
+    assert_eq!(
+        refractory_omit_constraints[0].satisfaction,
+        Satisfaction::Indeterminate,
+        "RefractoryOmit max_service_temperature >= 1500.0 should be Indeterminate \
+         (max_service_temperature omitted → undef input via Kleene), got: {:?}",
+        refractory_omit_constraints[0].satisfaction
     );
 
     // Zero Violated — omitting an optional param must never trigger a constraint violation.

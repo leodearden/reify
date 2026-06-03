@@ -118,13 +118,19 @@ fn optically_characterized_has_one_required_and_three_optional_members() {
         ),
     }
 
-    // Three optional params must appear in oc.defaults as DefaultKind::Param.
-    let optional_params = [
-        "absorption_coefficient",
-        "transmittance",
-        "reference_thickness",
+    // Three optional params must appear in oc.defaults as DefaultKind::Param with the
+    // correct cell_type — guarding against silent regressions that revert or mis-type them.
+    let expected_optional: [(&str, Type); 3] = [
+        (
+            "absorption_coefficient",
+            Type::Scalar {
+                dimension: DimensionVector::ABSORPTION_COEFF,
+            },
+        ),
+        ("transmittance", Type::Real),
+        ("reference_thickness", Type::Real),
     ];
-    for param_name in &optional_params {
+    for (param_name, expected_ty) in &expected_optional {
         let default = oc
             .defaults
             .iter()
@@ -139,12 +145,17 @@ fn optically_characterized_has_one_required_and_three_optional_members() {
                         .collect::<Vec<_>>()
                 )
             });
-        assert!(
-            matches!(default.kind, DefaultKind::Param { .. }),
-            "OpticallyCharacterized optional param '{}' should be DefaultKind::Param, got {:?}",
-            param_name,
-            default.kind
-        );
+        match &default.kind {
+            DefaultKind::Param { cell_type, .. } => assert_eq!(
+                cell_type, expected_ty,
+                "OpticallyCharacterized optional param '{}' expected cell_type {:?}, got {:?}",
+                param_name, expected_ty, cell_type
+            ),
+            other => panic!(
+                "OpticallyCharacterized optional param '{}' should be DefaultKind::Param, got {:?}",
+                param_name, other
+            ),
+        }
     }
 }
 
