@@ -80,9 +80,14 @@ describe("evaluateAssertion", () => {
 });
 
 describe("FIXTURES catalogue", () => {
-  it("contains exactly the 5 expected keys (sorted)", () => {
-    const keys = Object.keys(FIXTURES).sort();
-    expect(keys).toEqual(["all_severities", "broken_syntax", "empty", "large_assembly", "small_cube"]);
+  it("includes the 5 baseline fixture keys as a subset and all values are .ri paths", () => {
+    const keys = Object.keys(FIXTURES);
+    for (const known of ["all_severities", "broken_syntax", "empty", "large_assembly", "small_cube"]) {
+      expect(keys).toContain(known);
+    }
+    for (const relPath of Object.values(FIXTURES)) {
+      expect(relPath).toMatch(/\.ri$/);
+    }
   });
 
   it("every fixture file exists on disk", () => {

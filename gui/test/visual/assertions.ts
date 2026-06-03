@@ -88,10 +88,30 @@ export type Assertion = {
 
 type AssertionResult = { ok: true } | { ok: false; message: string };
 
+// Key-order-insensitive recursive deep equality. Returns true iff a and b are
+// structurally equal regardless of object key insertion order.
+function deepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a)) {
+    const aa = a as unknown[];
+    const bb = b as unknown[];
+    return aa.length === (bb as unknown[]).length && aa.every((v, i) => deepEqual(v, (bb as unknown[])[i]));
+  }
+  const aRec = a as Record<string, unknown>;
+  const bRec = b as Record<string, unknown>;
+  const aKeys = Object.keys(aRec).sort();
+  const bKeys = Object.keys(bRec).sort();
+  if (aKeys.length !== bKeys.length) return false;
+  return aKeys.every((k, i) => k === bKeys[i] && deepEqual(aRec[k], bRec[k]));
+}
+
 /**
  * Evaluate a single declarative assertion against a value.
  *
- * - 'equals': deep comparison via JSON.stringify (structural equality)
+ * - 'equals': recursive deep equality (key-order insensitive); a missing path
+ *   always fails — undefined is never considered equal to any expected value.
  * - 'atLeast': actual must be a number >= Number(expected)
  * - 'exists': actual must not be undefined
  *
@@ -102,8 +122,15 @@ export function evaluateAssertion(value: unknown, a: Assertion): AssertionResult
 
   switch (a.op) {
     case "equals": {
-      const ok = JSON.stringify(actual) === JSON.stringify(a.expected);
-      if (ok) return { ok: true };
+      // Treat a missing path as an explicit failure regardless of expected,
+      // preventing a false pass when expected is also omitted.
+      if (actual === undefined) {
+        return {
+          ok: false,
+          message: `${a.path}: expected equals ${JSON.stringify(a.expected)}, got undefined (path missing)`,
+        };
+      }
+      if (deepEqual(actual, a.expected)) return { ok: true };
       return {
         ok: false,
         message: `${a.path}: expected equals ${JSON.stringify(a.expected)}, got ${JSON.stringify(actual)}`,
@@ -122,6 +149,8 @@ export function evaluateAssertion(value: unknown, a: Assertion): AssertionResult
       if (actual !== undefined) return { ok: true };
       return { ok: false, message: `${a.path}: expected exists, got undefined` };
     }
+    default:
+      return { ok: false, message: `unknown op: ${String(a.op)}` };
   }
 }
 
