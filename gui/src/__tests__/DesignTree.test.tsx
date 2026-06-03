@@ -1062,6 +1062,36 @@ describe('DesignTree — reverse hover highlight (Edge B)', () => {
   });
 });
 
+describe('DesignTree — eye-icon title', () => {
+  it('eye-icon button has a title attribute containing "Visibility" and "cycle"', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    render(() => <DesignTree tree={nodes} viewStateStore={store} />);
+    const eyeBtn = screen.getByTestId('eye-icon-Root.A');
+    const title = eyeBtn.getAttribute('title') ?? '';
+    expect(title.toLowerCase()).toContain('visibility');
+    expect(title.toLowerCase()).toContain('cycle');
+  });
+
+  it('eye-icon title includes current effective status', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    render(() => <DesignTree tree={nodes} viewStateStore={store} />);
+    const eyeBtn = screen.getByTestId('eye-icon-Root.A');
+    // Default effective is 'show' — title should mention it
+    const title = eyeBtn.getAttribute('title') ?? '';
+    expect(title.toLowerCase()).toContain('show');
+  });
+
+  it('eye-icon existing aria-label still equals effective status (unchanged contract)', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    render(() => <DesignTree tree={nodes} viewStateStore={store} />);
+    const eyeBtn = screen.getByTestId('eye-icon-Root.A');
+    expect(eyeBtn.getAttribute('aria-label')).toBe('show');
+  });
+});
+
 describe('DesignTree — chevron affordance', () => {
   it('collapsed chevron has aria-label and title containing "Expand"', () => {
     const nodes = [
