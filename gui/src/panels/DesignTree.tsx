@@ -56,9 +56,52 @@ function flattenVisible(nodes: EntityTreeNode[], expandedSet: Set<string>): stri
   return result;
 }
 
+/**
+ * DFS search that returns the entity_path of every ancestor of `target` in
+ * `nodes` (exclusive of `target` itself). Returns an empty array when `target`
+ * is a root node or is not found. Modelled on `flattenVisible`.
+ */
+function findAncestorPaths(nodes: EntityTreeNode[], target: string): string[] {
+  const ancestors: string[] = [];
+  function visit(node: EntityTreeNode, path: string[]): boolean {
+    if (node.entity_path === target) return true;
+    for (const child of node.children) {
+      if (visit(child, [...path, node.entity_path])) {
+        ancestors.push(...path, node.entity_path);
+        return true;
+      }
+    }
+    return false;
+  }
+  for (const node of nodes) visit(node, []);
+  return ancestors;
+}
+
 const DesignTree: Component<Props> = (props) => {
   const [expanded, setExpanded] = createSignal<Set<string>>(new Set());
   const [menu, setMenu] = createSignal<MenuState | null>(null);
+
+  // Selected-row reveal: when the selected entity changes, auto-expand its
+  // ancestors (additive only — never collapses manual user expansion) and
+  // scroll the row into view once it is in the DOM.
+  createEffect(() => {
+    const target = props.selectedEntity;
+    if (!target) return;
+    const ancestors = findAncestorPaths(props.tree, target);
+    if (ancestors.length > 0) {
+      setExpanded((prev) => {
+        const next = new Set(prev);
+        for (const p of ancestors) next.add(p);
+        return next;
+      });
+    }
+    // Defer the scroll so the newly-expanded rows are committed to the DOM first.
+    // Guard with optional chaining: jsdom does not implement scrollIntoView.
+    queueMicrotask(() => {
+      const row = document.querySelector(`[data-testid="tree-row-${target}"]`);
+      (row as Element | null)?.scrollIntoView?.({ block: 'nearest' });
+    });
+  });
 
   // Stale paths: present in explicit overrides but absent from the current tree.
   // Used to apply greyed styling to forward-compat stale-row display.
