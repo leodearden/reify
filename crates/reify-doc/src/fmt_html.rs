@@ -1,9 +1,10 @@
 //! Self-contained HTML5 formatter for the DocModel.
 //!
 //! Public surface:
-//! - [`render_html`] — the single entry point that renders a [`DocModel`]
-//!   (and an optional [`crate::cross_refs::CrossRefs`] index) to one
-//!   self-contained HTML5 document with an embedded stylesheet.
+//! - [`render_html`] — renders a [`DocModel`] to one self-contained HTML5
+//!   document with an embedded stylesheet.
+//! - [`render_html_pages`] — renders a [`DocModel`] to a vec of
+//!   `(filename, html)` pairs: `index.html` first, then one page per item.
 //!
 //! The formatter mirrors the section structure of [`crate::fmt_markdown`]:
 //! per-module H1 + doc paragraphs, a TOC with grouped links, one `<section>`
@@ -200,6 +201,184 @@ pub fn render_html(model: &DocModel, cross_refs: Option<&CrossRefs>) -> String {
     out.push_str("</body>\n");
     out.push_str("</html>\n");
     out
+}
+
+/// Render a [`DocModel`] as a `Vec` of `(filename, html)` pairs: an
+/// `index.html` first (full HTML5 doc whose `<nav>` links to every per-symbol
+/// page), then one full HTML5 page per item.
+///
+/// **Filename scheme** — mirrors [`crate::fmt_markdown`]'s split layout:
+/// - Single-module: `{kind_slug}-{name}.html` (flat, siblings of `index.html`)
+/// - Multi-module: `{module}/{kind_slug}-{name}.html` (one subdir per module)
+///
+/// Each per-symbol page embeds the full HTML document shell (DOCTYPE / head /
+/// EMBEDDED_STYLESHEET) and includes an `<a href>` back-link to the index
+/// (`"index.html"` when flat, `"../index.html"` when module-prefixed).
+///
+/// `cross_refs` is optional — when `None` the per-item "Conforms to" / "Used
+/// by" sections are omitted (same semantics as [`render_html`]).
+pub fn render_html_pages(model: &DocModel, cross_refs: Option<&CrossRefs>) -> Vec<(String, String)> {
+    let xref_index = cross_refs.map(CrossRefIndex::new);
+    let multi_module = model.modules.len() > 1;
+    let mut pages: Vec<(String, String)> = Vec::new();
+
+    // -----------------------------------------------------------------------
+    // 1. Build index.html
+    // -----------------------------------------------------------------------
+    {
+        let mut idx = String::new();
+        let title = model
+            .modules
+            .first()
+            .map(|m| m.path.as_str())
+            .unwrap_or("reify-doc");
+        push_doc_head(&mut idx, title);
+        idx.push_str("<body>\n");
+
+        // The index page has a TOC whose links point to per-symbol HTML files.
+        // For multi-module models we emit an <h2> per module with grouped <ul>
+        // lists whose <a href> targets are `{module}/{kind}-{name}.html`.
+        // For single-module models we emit an <h1> + flat <ul> links.
+        for module in &model.modules {
+            let items_for_toc: Vec<&ItemDoc> = module
+                .items
+                .iter()
+                .filter(|i| find_annotation(i.annotations(), "test").is_none())
+                .collect();
+            if multi_module {
+                idx.push_str("<h2>");
+                escape_into(&mut idx, &module.path);
+                idx.push_str("</h2>\n");
+                if let Some(doc) = module.doc.as_deref() {
+                    emit_paragraphs(&mut idx, doc);
+                }
+                // TOC section (nav) for this module, with file-target links.
+                render_toc_for_pages(&mut idx, &items_for_toc, Some(module.path.as_str()));
+            } else {
+                idx.push_str("<h1>");
+                escape_into(&mut idx, &module.path);
+                idx.push_str("</h1>\n");
+                if let Some(doc) = module.doc.as_deref() {
+                    emit_paragraphs(&mut idx, doc);
+                }
+                render_toc_for_pages(&mut idx, &items_for_toc, None);
+            }
+        }
+
+        idx.push_str("</body>\n</html>\n");
+        pages.push(("index.html".to_string(), idx));
+    }
+
+    // -----------------------------------------------------------------------
+    // 2. Per-item pages
+    // -----------------------------------------------------------------------
+    for module in &model.modules {
+        let module_prefix: Option<&str> = if multi_module {
+            Some(module.path.as_str())
+        } else {
+            None
+        };
+        let back_href = if multi_module {
+            "../index.html"
+        } else {
+            "index.html"
+        };
+
+        for item in &module.items {
+            let filename = html_item_filename(item, module_prefix);
+            let mut body = String::new();
+            push_doc_head(&mut body, item.name());
+            body.push_str("<body>\n");
+            // Back-link to the index.
+            body.push_str("<p><a href=\"");
+            escape_into(&mut body, back_href);
+            body.push_str("\">← Index</a></p>\n");
+            render_item(&mut body, item, xref_index.as_ref());
+            body.push_str("</body>\n</html>\n");
+            pages.push((filename, body));
+        }
+    }
+
+    pages
+}
+
+// ---------------------------------------------------------------------------
+// Private helpers for render_html_pages
+// ---------------------------------------------------------------------------
+
+/// Emit the HTML5 document head — DOCTYPE, <html>, <head>, <style> — for a
+/// page titled `title`.  Caller must then open and close `<body>`.
+fn push_doc_head(out: &mut String, title: &str) {
+    out.push_str("<!DOCTYPE html>\n");
+    out.push_str("<html lang=\"en\">\n");
+    out.push_str("<head>\n");
+    out.push_str("<meta charset=\"utf-8\">\n");
+    out.push_str("<title>");
+    escape_into(out, title);
+    out.push_str("</title>\n");
+    out.push_str("<style>\n");
+    out.push_str(EMBEDDED_STYLESHEET);
+    out.push_str("</style>\n");
+    out.push_str("</head>\n");
+}
+
+/// Build the per-item filename for multi-page HTML output: `{kind_slug}-{name}.html`,
+/// optionally prefixed by `{module}/` when `module_prefix` is `Some`.
+fn html_item_filename(item: &ItemDoc, module_prefix: Option<&str>) -> String {
+    let base = format!("{}-{}.html", item.kind_slug(), item.name());
+    match module_prefix {
+        Some(p) => format!("{p}/{base}"),
+        None => base,
+    }
+}
+
+/// Render a `<nav>` TOC for a page whose `<a href>` entries point to sibling
+/// HTML files rather than `#anchor` fragments.
+///
+/// - `module_prefix`: when `Some(p)`, links are `{p}/{kind}-{name}.html`;
+///   when `None`, links are `{kind}-{name}.html` (flat).
+/// - Items are grouped by kind (Traits → Structures → …) and sorted
+///   alphabetically within each group, matching `render_toc`'s contract.
+/// - No-op when `items` is empty.
+fn render_toc_for_pages(out: &mut String, items: &[&ItemDoc], module_prefix: Option<&str>) {
+    if items.is_empty() {
+        return;
+    }
+    const GROUPS: &[&str] = &[
+        "Traits",
+        "Structures",
+        "Occurrences",
+        "Enums",
+        "Functions",
+        "Constants",
+    ];
+    out.push_str("<nav>\n");
+    out.push_str("<h2>Contents</h2>\n");
+    for &group in GROUPS {
+        let mut in_group: Vec<&&ItemDoc> = items.iter().filter(|i| i.group() == group).collect();
+        if in_group.is_empty() {
+            continue;
+        }
+        in_group.sort_by(|a, b| a.name().cmp(b.name()));
+        out.push_str("<h3>");
+        out.push_str(group);
+        out.push_str("</h3>\n");
+        out.push_str("<ul>\n");
+        for it in in_group {
+            let href = match module_prefix {
+                Some(p) => format!("{}/{}-{}.html", p, it.kind_slug(), it.name()),
+                None => format!("{}-{}.html", it.kind_slug(), it.name()),
+            };
+            let escaped_name = html_escape(it.name());
+            out.push_str("<li><a href=\"");
+            escape_into(out, &href);
+            out.push_str("\">");
+            out.push_str(&escaped_name);
+            out.push_str("</a></li>\n");
+        }
+        out.push_str("</ul>\n");
+    }
+    out.push_str("</nav>\n");
 }
 
 /// Emit a doc-comment string as one or more `<p>...</p>` blocks.
