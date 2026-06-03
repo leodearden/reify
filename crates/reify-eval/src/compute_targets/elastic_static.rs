@@ -1609,6 +1609,56 @@ mod tests {
         assert!(sum_z.abs() < 1e-9, "Σfz should be 0.0, got {sum_z}");
     }
 
+    /// step-5 RED (task 4264): solve_cantilever_fea_with_x_max_pressure_compresses_inward.
+    ///
+    /// Geometry: length=1.0 m, width=0.1 m, height=0.1 m, isotropic steel
+    /// (E=200 GPa, ν=0.3). tip_force=0.0, pressures=[PressureSpec{magnitude:1e6,
+    /// face:"x_max", direction:"normal"}] — root face x=0 is auto-clamped.
+    ///
+    /// Expected (sign-only, no tight magnitude band):
+    /// - result.converged == true
+    /// - mean of result.u[3*n+0] over tip_nodes < 0  (inward -x displacement)
+    /// - result.max_von_mises is finite and > 0
+    ///
+    /// RED: solve_cantilever_fea does not yet accept a `pressures` parameter.
+    #[test]
+    fn solve_cantilever_fea_with_x_max_pressure_compresses_inward() {
+        let iso = IsotropicElastic { youngs_modulus: 200e9_f64, poisson_ratio: 0.3_f64 };
+        let model = MaterialModel::Isotropic(iso);
+        let length = 1.0_f64;
+        let width = 0.1_f64;
+        let height = 0.1_f64;
+        let tip_force = 0.0_f64;
+        let pressures = [PressureSpec {
+            magnitude: 1.0e6,
+            face: "x_max".to_string(),
+            direction: "normal".to_string(),
+        }];
+
+        let (result, _warm) =
+            solve_cantilever_fea(&model, length, width, height, tip_force, None, &pressures);
+
+        assert!(result.converged, "FEA must converge under x_max pressure");
+
+        // Mean x-displacement over tip nodes must be negative (inward on -x).
+        let tip_ux: f64 = result
+            .tip_nodes
+            .iter()
+            .map(|&n| result.u[3 * n])
+            .sum::<f64>()
+            / result.tip_nodes.len().max(1) as f64;
+        assert!(
+            tip_ux < 0.0,
+            "mean tip u_x should be < 0 (inward) under x_max pressure, got {tip_ux}"
+        );
+
+        assert!(
+            result.max_von_mises.is_finite() && result.max_von_mises > 0.0,
+            "max_von_mises must be finite > 0, got {}",
+            result.max_von_mises
+        );
+    }
+
     /// step-3 RED (task δ/3780): orthotropic ConstantField cantilever tip-deflection
     /// band test at L/h = 8.
     ///
