@@ -66,14 +66,21 @@
   border: none;
   color: var(--reify-text-muted, #888);
   cursor: pointer;
-  font-size: 10px;
-  padding: 0 2px;
+  font-size: 12px;
+  padding: 0;
   line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  min-height: 22px;
+  flex-shrink: 0;
 }
 
 .chevronPlaceholder {
   display: inline-block;
-  width: 16px;
+  width: 22px;
+  flex-shrink: 0;
 }
 
 .name {

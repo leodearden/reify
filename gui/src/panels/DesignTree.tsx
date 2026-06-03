@@ -194,6 +194,8 @@ const DesignTree: Component<Props> = (props) => {
               data-testid={`chevron-${node.entity_path}`}
               onClick={(e) => { e.stopPropagation(); toggleExpand(node.entity_path); }}
               aria-expanded={expanded().has(node.entity_path)}
+              aria-label={expanded().has(node.entity_path) ? 'Collapse' : 'Expand'}
+              title={expanded().has(node.entity_path) ? 'Collapse' : 'Expand'}
             >
               {expanded().has(node.entity_path) ? '▾' : '▸'}
             </button>
