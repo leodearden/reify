@@ -26,9 +26,6 @@ export const DEFAULT_DESIGN_TREE_HEIGHT = 160;
 export const DEFAULT_PROPERTY_HEIGHT = 200;
 export const DEFAULT_CONSTRAINT_HEIGHT = 140;
 
-// Re-export the PanelLayout type as LayoutState for naming consistency
-export type LayoutState = PanelLayout;
-
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
@@ -47,24 +44,20 @@ export function createLayoutStore() {
   });
 
   // -------------------------------------------------------------------------
-  // Setters — accept a plain value or a functional updater
-  // (Solid's leaf-path setter natively supports updater functions)
+  // Setters — accept a plain value or a functional updater.
+  // The `as any` cast is localised here; Solid's leaf-path setter natively
+  // supports updater functions so the cast is safe for all 5 dimensions.
   // -------------------------------------------------------------------------
 
-  const setEditorWidth = (v: number | ((prev: number) => number)) =>
-    setState('editorWidth', v as any);
+  type Updater = number | ((prev: number) => number);
+  const makeSetter = (key: keyof PanelLayout) => (v: Updater) =>
+    setState(key, v as any);
 
-  const setSideWidth = (v: number | ((prev: number) => number)) =>
-    setState('sideWidth', v as any);
-
-  const setDesignTreeHeight = (v: number | ((prev: number) => number)) =>
-    setState('designTreeHeight', v as any);
-
-  const setPropertyHeight = (v: number | ((prev: number) => number)) =>
-    setState('propertyHeight', v as any);
-
-  const setConstraintHeight = (v: number | ((prev: number) => number)) =>
-    setState('constraintHeight', v as any);
+  const setEditorWidth = makeSetter('editorWidth');
+  const setSideWidth = makeSetter('sideWidth');
+  const setDesignTreeHeight = makeSetter('designTreeHeight');
+  const setPropertyHeight = makeSetter('propertyHeight');
+  const setConstraintHeight = makeSetter('constraintHeight');
 
   // -------------------------------------------------------------------------
   // Debounced persistence

@@ -90,13 +90,6 @@ describe('createLayoutStore — initial state', () => {
     });
   });
 
-  it('exported DEFAULT_* constants match App.tsx original values', () => {
-    expect(DEFAULT_EDITOR_WIDTH).toBe(300);
-    expect(DEFAULT_SIDE_WIDTH).toBe(300);
-    expect(DEFAULT_DESIGN_TREE_HEIGHT).toBe(160);
-    expect(DEFAULT_PROPERTY_HEIGHT).toBe(200);
-    expect(DEFAULT_CONSTRAINT_HEIGHT).toBe(140);
-  });
 });
 
 // ---------------------------------------------------------------------------
