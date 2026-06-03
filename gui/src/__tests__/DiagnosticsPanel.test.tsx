@@ -412,6 +412,111 @@ describe('DiagnosticsPanel', () => {
   });
 });
 
+describe('DiagnosticsPanel source/severity filtering', () => {
+  beforeAll(() => {
+    globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
+  });
+  beforeEach(() => {
+    localStorage.clear();
+    capturedResizeCallback = null;
+  });
+
+  function makeCompileError(message: string): DiagnosticEntry {
+    return { ...makeDiag('Error', { message }), source: 'compile' };
+  }
+  function makeTessWarning(message: string): DiagnosticEntry {
+    return { ...makeDiag('Warning', { message }), source: 'tessellation' };
+  }
+
+  it('filter controls render when diagnostics are present: source toggles + severity toggles', () => {
+    const diags: DiagnosticEntry[] = [
+      makeCompileError('compA'),
+      makeTessWarning('tessB'),
+    ];
+    render(() => (
+      <DiagnosticsPanel
+        open={true}
+        diagnostics={diags}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+      />
+    ));
+    expect(screen.getByTestId('diagnostics-filter-source-compile')).toBeTruthy();
+    expect(screen.getByTestId('diagnostics-filter-source-tessellation')).toBeTruthy();
+    expect(screen.getByTestId('diagnostics-filter-severity-Error')).toBeTruthy();
+    expect(screen.getByTestId('diagnostics-filter-severity-Warning')).toBeTruthy();
+  });
+
+  it('by default both messages are visible', () => {
+    const diags: DiagnosticEntry[] = [
+      makeCompileError('compA'),
+      makeTessWarning('tessB'),
+    ];
+    render(() => (
+      <DiagnosticsPanel
+        open={true}
+        diagnostics={diags}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+      />
+    ));
+    const panel = screen.getByTestId('diagnostics-panel');
+    expect(panel.textContent).toContain('compA');
+    expect(panel.textContent).toContain('tessB');
+  });
+
+  it('clicking tessellation source toggle hides tessellation entries, keeps compile entries', () => {
+    const diags: DiagnosticEntry[] = [
+      makeCompileError('compA'),
+      makeTessWarning('tessB'),
+    ];
+    render(() => (
+      <DiagnosticsPanel
+        open={true}
+        diagnostics={diags}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+      />
+    ));
+    fireEvent.click(screen.getByTestId('diagnostics-filter-source-tessellation'));
+    const panel = screen.getByTestId('diagnostics-panel');
+    expect(panel.textContent).toContain('compA');
+    expect(panel.textContent).not.toContain('tessB');
+  });
+
+  it('clicking Error severity toggle hides Error entries, keeps Warning entries', () => {
+    const diags: DiagnosticEntry[] = [
+      makeCompileError('compA'),
+      makeTessWarning('tessB'),
+    ];
+    render(() => (
+      <DiagnosticsPanel
+        open={true}
+        diagnostics={diags}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+      />
+    ));
+    fireEvent.click(screen.getByTestId('diagnostics-filter-severity-Error'));
+    const panel = screen.getByTestId('diagnostics-panel');
+    expect(panel.textContent).not.toContain('compA');
+    expect(panel.textContent).toContain('tessB');
+  });
+
+  it('filter controls are NOT rendered when diagnostics list is empty', () => {
+    render(() => (
+      <DiagnosticsPanel
+        open={true}
+        diagnostics={[]}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+      />
+    ));
+    expect(screen.queryByTestId('diagnostics-filter-source-compile')).toBeNull();
+    expect(screen.queryByTestId('diagnostics-filter-severity-Error')).toBeNull();
+  });
+});
+
 describe('DiagnosticsPanel header close button', () => {
   beforeAll(() => {
     globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
