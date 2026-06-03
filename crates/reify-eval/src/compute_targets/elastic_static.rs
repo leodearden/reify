@@ -251,8 +251,23 @@ pub fn solve_elastic_static_trampoline(
     let width = extract_scalar_si(&value_inputs[2]);
     let height = extract_scalar_si(&value_inputs[3]);
 
-    // ── (3) Sum tip-force magnitudes from PointLoad list ─────────────────────
+    // ── (3) Extract loads from value_inputs[4] (List of StructureInstances) ──
+    //
+    // Two load kinds are bridged here (task 4264):
+    //
+    //   PointLoad   — `force: Real` → scalar tip_force (distributed as -Z point
+    //                 loads across the tip-face nodes via apply_point_load).
+    //
+    //   PressureLoad — `magnitude: Real, face: String, direction: String` →
+    //                 face-traction assembled via apply_traction_load(f,
+    //                 FaceOrder::P1Tri, …) into the same f vector.
+    //                 Supported face selectors: x_min, x_max, y_min, y_max,
+    //                 z_min, z_max. Unknown/empty face → silent no-op (v1).
+    //
+    // Both extractors iterate the same Value::List and accumulate into disjoint
+    // targets — they compose: a scene may mix PointLoad and PressureLoad.
     let tip_force = extract_tip_force(&value_inputs[4]);
+    let pressures = extract_pressure_loads(&value_inputs[4]);
 
     // ── (3b) Shell-route dispatch (task 3594/δ) ──────────────────────────────
     //
@@ -427,7 +442,7 @@ pub fn solve_elastic_static_trampoline(
 
     // ── (6) Delegate to shared FEA helper ────────────────────────────────────
     let (fea, fresh_warm) =
-        solve_cantilever_fea(&model, length, width, height, tip_force, prior_cg, &[]);
+        solve_cantilever_fea(&model, length, width, height, tip_force, prior_cg, &pressures);
 
     // ── (7) Build ElasticResult StructureInstance ────────────────────────────
     //

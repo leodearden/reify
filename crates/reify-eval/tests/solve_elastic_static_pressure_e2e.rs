@@ -17,7 +17,6 @@
 //   - max_von_mises is finite > 0; displacement has non-zero samples → PASS.
 
 use reify_core::{DimensionVector, Severity, ValueCellId};
-use reify_eval::ComputeOutcome;
 use reify_ir::{FieldSourceKind, Value};
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
