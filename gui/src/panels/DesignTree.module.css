@@ -100,14 +100,27 @@
   border: none;
   color: var(--reify-text, #ddd);
   cursor: pointer;
-  font-size: 12px;
-  padding: 0 2px;
-  opacity: 0.7;
+  font-size: 14px;
+  padding: 0;
+  opacity: 0.6;
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  min-height: 22px;
 }
 
-.eyeIcon:hover {
+.eyeIcon:hover,
+.row:hover .eyeIcon {
   opacity: 1;
+}
+
+.eyeIcon:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--reify-accent, #89b4fa);
+  outline-offset: 1px;
+  border-radius: 2px;
 }
 
 .stale {

@@ -216,6 +216,7 @@ const DesignTree: Component<Props> = (props) => {
             class={styles.eyeIcon}
             data-testid={`eye-icon-${node.entity_path}`}
             aria-label={eff()}
+            title={`Visibility: ${eff()} — click to cycle`}
             onClick={(e) => {
               e.stopPropagation();
               const sel = effectiveSelected();
