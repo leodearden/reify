@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, fireEvent, within, waitFor } from '@solidjs/testing-library';
 import { createRoot, createSignal } from 'solid-js';
 import { DesignTree } from '../panels/DesignTree';
@@ -1335,5 +1335,57 @@ describe('DesignTree — selected-row reveal', () => {
     ).not.toThrow();
     // No ancestor expansion occurred for a missing path
     expect(screen.queryByTestId('tree-row-Root.A')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// task-4295: DesignTree expanded ctx exposure
+// ---------------------------------------------------------------------------
+
+describe('DesignTree — expanded ctx exposure', () => {
+  beforeEach(() => {
+    (window as any).__REIFY_DEBUG__ = { stores: {} as any };
+  });
+  afterEach(() => {
+    delete (window as any).__REIFY_DEBUG__;
+  });
+
+  it('registers designTree.expanded as a function on __REIFY_DEBUG__ after render', () => {
+    const store = makeStore([]);
+    render(() => <DesignTree tree={[]} viewStateStore={store} />);
+    expect(typeof (window as any).__REIFY_DEBUG__.designTree?.expanded).toBe('function');
+  });
+
+  it('expanded() returns an empty Set initially', () => {
+    const store = makeStore([]);
+    render(() => <DesignTree tree={[]} viewStateStore={store} />);
+    const expanded = (window as any).__REIFY_DEBUG__.designTree.expanded();
+    expect(expanded instanceof Set).toBe(true);
+    expect(expanded.size).toBe(0);
+  });
+
+  it('expanded() reflects chevron click — contains entity path after toggle', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A', children: [makeNode({ entity_path: 'Root.A.a1' })] }),
+    ];
+    const store = makeStore(nodes);
+    render(() => <DesignTree tree={nodes} viewStateStore={store} />);
+    fireEvent.click(screen.getByTestId('chevron-Root.A'));
+    expect((window as any).__REIFY_DEBUG__.designTree.expanded().has('Root.A')).toBe(true);
+  });
+
+  it('deletes designTree on unmount', () => {
+    const store = makeStore([]);
+    const { unmount } = render(() => <DesignTree tree={[]} viewStateStore={store} />);
+    unmount();
+    expect((window as any).__REIFY_DEBUG__.designTree).toBeUndefined();
+  });
+});
+
+describe('DesignTree — no-ctx guard', () => {
+  it('renders without throwing when __REIFY_DEBUG__ is absent', () => {
+    delete (window as any).__REIFY_DEBUG__;
+    const store = makeStore([]);
+    expect(() => render(() => <DesignTree tree={[]} viewStateStore={store} />)).not.toThrow();
   });
 });
