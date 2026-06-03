@@ -98,6 +98,41 @@ impl NodePolicyOverrides {
         }
         NodeCommitmentOverride::default()
     }
+
+    /// Resolve the effective [`NodeCommitmentOverride`] for `node_id` using the
+    /// full kind+traits-aware five-level precedence chain (PRD §6).
+    ///
+    /// Precedence (highest → lowest):
+    /// 1. **Instance override** — exact match on `node_id`
+    /// 2. **Type override** — match on the node's [`NodeKind`]
+    /// 3. **Config-file override** — `[node_overrides]` from `reify.toml`
+    ///    (reserved slot; owned by GR-007 task 3578, depends_on this task)
+    /// 4. **Kind+traits default** — [`default_overrides(kind, traits)`](default_overrides)
+    ///    (absent [`NodeTraits::COMMITTABLE`] → `AlwaysCancelWhenStale`; present → `CommitIfSlow`)
+    /// 5. (Future) **Global fallback** — unconditional project default (not yet implemented)
+    ///
+    /// Level 4 subsumes the old hard `CommitIfSlow` default when `traits` are known.
+    /// The existing single-arg [`resolve`](Self::resolve) (consumed by the scheduler at
+    /// `concurrent.rs:358`) is **left unchanged** — level-4 is NOT wired into the
+    /// scheduler until task η/3581 (B4) lands the IMMEDIATE→never-cancelled short-circuit.
+    pub fn resolve_with_traits(
+        &self,
+        node_id: &NodeId,
+        traits: NodeTraits,
+    ) -> NodeCommitmentOverride {
+        // Level 1: instance override
+        if let Some(o) = self.instance_overrides.get(node_id) {
+            return *o;
+        }
+        let kind = NodeKind::from(node_id);
+        // Level 2: type override
+        if let Some(o) = self.type_overrides.get(&kind) {
+            return *o;
+        }
+        // Level 3: reify.toml [node_overrides] — reserved; task 3578 (GR-007)
+        // Level 4: kind+traits-derived default (PRD §5 B3 / arch §7.6 row 4)
+        default_overrides(kind, traits)
+    }
 }
 
 /// Return the kind+traits-derived commitment-policy default (PRD §5 B3).
