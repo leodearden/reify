@@ -480,3 +480,104 @@ fn example_process_ri_compiles_clean() {
             .collect::<Vec<_>>()
     );
 }
+
+// ─── step-3 (task-4273): β conformance signal ─────────────────────────────────
+
+/// β conformance lock — part (a): a complete Subtracting conformer compiles clean
+/// and its `min_feature_size` value cell is readable with the correct type.
+///
+/// Uses `compile_source_with_stdlib` at the same altitude as
+/// `example_process_ri_compiles_clean`. Numeric evaluation of capability
+/// members is exercised downstream by γ/δ via `reify check`/`eval` on examples.
+#[test]
+fn subtracting_conformer_with_all_params_compiles_clean_and_exposes_min_feature_size() {
+    let source = r#"
+import std.process
+
+structure def MilledBracket : Subtracting {
+    param duration : Time = 30min
+    param cost : Money = 50USD
+    param tool_access : Solid = box(10mm, 20mm, 30mm)
+    param min_feature_size : Length = 1mm
+    param achievable_finish : Length = 0.01mm
+}
+"#;
+
+    let compiled = compile_source_with_stdlib(source);
+
+    // (a-1) Zero error-severity diagnostics.
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "MilledBracket with all Subtracting params should compile clean; errors: {:?}",
+        errors
+    );
+
+    // (a-2) The compiled MilledBracket template exposes a `min_feature_size` value cell
+    //       with the correct type (Type::Scalar{LENGTH}).
+    let bracket = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "MilledBracket")
+        .expect("MilledBracket template should be present after clean compile");
+
+    let mfs_cell = bracket
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "min_feature_size")
+        .expect(
+            "MilledBracket should have a 'min_feature_size' value cell; \
+             found: {:?}",
+        );
+
+    assert_eq!(
+        mfs_cell.cell_type,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH
+        },
+        "MilledBracket.min_feature_size cell_type should be Type::Scalar{{LENGTH}}"
+    );
+}
+
+/// β conformance lock — part (b): a Subtracting conformer OMITTING `min_feature_size`
+/// emits a `missing required member 'min_feature_size'` error diagnostic.
+///
+/// This is the durable lock for the conformance contract consumed by γ.
+#[test]
+fn subtracting_conformer_missing_min_feature_size_emits_missing_member_error() {
+    let source = r#"
+import std.process
+
+structure def IncompleteMilled : Subtracting {
+    param duration : Time = 30min
+    param cost : Money = 50USD
+    param tool_access : Solid = box(10mm, 20mm, 30mm)
+    param achievable_finish : Length = 0.01mm
+}
+"#;
+    // Note: `min_feature_size` is intentionally omitted.
+
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        !errors.is_empty(),
+        "IncompleteMilled omitting 'min_feature_size' should emit an error diagnostic"
+    );
+
+    let error_msg = format!("{:?}", errors);
+    assert!(
+        error_msg.contains("missing required member") && error_msg.contains("min_feature_size"),
+        "error should mention 'missing required member' and 'min_feature_size', got: {}",
+        error_msg
+    );
+}
