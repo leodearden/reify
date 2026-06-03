@@ -139,13 +139,24 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
             resize: 'both',
           }}
         >
-          <h2
-            id="diagnostics-panel-title"
-            data-testid="panel-title-diagnostics"
-            class={styles.title}
-          >
-            Diagnostics ({props.diagnostics.length})
-          </h2>
+          <div class={styles.dialogHeader}>
+            <h2
+              id="diagnostics-panel-title"
+              data-testid="panel-title-diagnostics"
+              class={styles.title}
+            >
+              Diagnostics ({props.diagnostics.length})
+            </h2>
+            <button
+              type="button"
+              class={styles.headerCloseButton}
+              data-testid="diagnostics-header-close"
+              aria-label="Close diagnostics"
+              onClick={() => props.onClose()}
+            >
+              ×
+            </button>
+          </div>
 
           <Show
             when={props.diagnostics.length > 0}
