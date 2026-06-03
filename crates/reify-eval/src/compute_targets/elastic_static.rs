@@ -125,11 +125,12 @@ use reify_ir::{
 use crate::persistent_cache::ShellChannels;
 use reify_solver_elastic::{
     AnisotropicMaterial, AssemblyElement, AssemblyMode, CgSolverOptions, CgWarmState,
-    ConstantField, DirichletBc, ElementOrder, GridSpec, IsotropicElastic, OrthotropicMaterial,
-    SolverMode, StressElement, TransverseIsotropicMaterial, apply_dirichlet_row_elimination,
-    apply_point_load, assemble_global_stiffness, element_stiffness,
-    element_stiffness_p1_with_field, element_stress_p1, recover_nodal_stress_p1,
-    resample_multi_nodal_to_grid, solve_cg_with_warm_state, tet_volume_p1,
+    ConstantField, DirichletBc, ElementOrder, FaceOrder, GridSpec, IsotropicElastic,
+    OrthotropicMaterial, SolverMode, StressElement, TransverseIsotropicMaterial,
+    apply_dirichlet_row_elimination, apply_point_load, apply_traction_load,
+    assemble_global_stiffness, element_stiffness, element_stiffness_p1_with_field,
+    element_stress_p1, recover_nodal_stress_p1, resample_multi_nodal_to_grid,
+    solve_cg_with_warm_state, tet_volume_p1,
 };
 
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
@@ -1305,6 +1306,111 @@ pub(crate) fn extract_pressure_loads(val: &Value) -> Vec<PressureSpec> {
         }
     }
     result
+}
+
+/// Map a face-name string to `(axis, at_max, extent, inward_normal)`.
+///
+/// Coordinates are assumed to run `[0, length] × [0, width] × [0, height]`.
+/// The inward normal is the negative of the outward surface normal (pressure
+/// pushes inward).  Supported names mirror the `modal_ops.rs` x_min/x_max/…
+/// convention (eps=1e-9 plane predicate).  Any unrecognized or empty face name
+/// returns `None` (silent no-op in v1 — validation is owned by task 4092).
+fn box_face_plane(
+    face: &str,
+    length: f64,
+    width: f64,
+    height: f64,
+) -> Option<(usize, bool, f64, [f64; 3])> {
+    // (axis, at_max, extent, inward_normal)
+    match face {
+        "x_min" => Some((0, false, 0.0, [1.0, 0.0, 0.0])),
+        "x_max" => Some((0, true, length, [-1.0, 0.0, 0.0])),
+        "y_min" => Some((1, false, 0.0, [0.0, 1.0, 0.0])),
+        "y_max" => Some((1, true, width, [0.0, -1.0, 0.0])),
+        "z_min" => Some((2, false, 0.0, [0.0, 0.0, 1.0])),
+        "z_max" => Some((2, true, height, [0.0, 0.0, -1.0])),
+        _ => None,
+    }
+}
+
+/// Collect boundary face triangles from a tetrahedral mesh on a given plane.
+///
+/// The plane is characterized by (`axis`, `at_max`, `extent`, `eps`):
+/// - `axis`   — 0 = x, 1 = y, 2 = z
+/// - `at_max` — `true`: the plane is at `extent` (upper); `false`: at 0 (lower).
+/// - `extent` — physical coordinate of the plane.
+/// - `eps`    — point-on-plane tolerance (1e-9 recommended).
+///
+/// For each tet's 4 triangular faces, a face is included if all 3 of its nodes
+/// satisfy the plane predicate (`coord[axis] >= extent - eps` for at_max,
+/// `coord[axis] <= eps` for lower).  A boundary face belongs to exactly one tet
+/// so there is no double-counting.
+fn collect_box_face_triangles(
+    coords: &[[f64; 3]],
+    tets: &[[usize; 4]],
+    axis: usize,
+    at_max: bool,
+    extent: f64,
+    eps: f64,
+) -> Vec<[usize; 3]> {
+    // Four triangular faces of a tet [a, b, c, d]:
+    const FACE_IDX: [[usize; 3]; 4] = [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]];
+
+    let on_plane = |node: usize| -> bool {
+        let coord = coords[node][axis];
+        if at_max { coord >= extent - eps } else { coord <= eps }
+    };
+
+    let mut result = Vec::new();
+    for tet in tets {
+        for fi in &FACE_IDX {
+            let n0 = tet[fi[0]];
+            let n1 = tet[fi[1]];
+            let n2 = tet[fi[2]];
+            if on_plane(n0) && on_plane(n1) && on_plane(n2) {
+                result.push([n0, n1, n2]);
+            }
+        }
+    }
+    result
+}
+
+/// Apply face-pressure tractions from `pressures` into the global force vector `f`.
+///
+/// For each `PressureSpec`:
+/// 1. Resolve the face name via `box_face_plane` (unrecognized face → skip).
+/// 2. Collect boundary triangles on that plane via `collect_box_face_triangles`.
+/// 3. For each triangle, call `apply_traction_load(f, FaceOrder::P1Tri, …)`.
+///
+/// The traction vector is `magnitude · inward_normal`.  Only `"normal"` direction
+/// is supported in v1; other direction strings are treated as `"normal"`.
+/// Accumulates additively into `f` — composable with the existing tip point loads.
+fn assemble_box_face_pressures(
+    f: &mut [f64],
+    coords: &[[f64; 3]],
+    tets: &[[usize; 4]],
+    pressures: &[PressureSpec],
+    length: f64,
+    width: f64,
+    height: f64,
+) {
+    for spec in pressures {
+        let Some((axis, at_max, extent, inward_normal)) =
+            box_face_plane(&spec.face, length, width, height)
+        else {
+            continue; // unrecognized/empty face → silent no-op
+        };
+        let traction = [
+            spec.magnitude * inward_normal[0],
+            spec.magnitude * inward_normal[1],
+            spec.magnitude * inward_normal[2],
+        ];
+        let tris = collect_box_face_triangles(coords, tets, axis, at_max, extent, 1e-9);
+        for tri in &tris {
+            let tri_phys = [coords[tri[0]], coords[tri[1]], coords[tri[2]]];
+            apply_traction_load(f, FaceOrder::P1Tri, tri, &tri_phys, traction);
+        }
+    }
 }
 
 /// Extract `(ShellForce, shell_threshold)` from the `ElasticOptions`
