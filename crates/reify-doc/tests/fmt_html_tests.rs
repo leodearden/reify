@@ -5,7 +5,7 @@
 //! `tests/snapshots/` files without polluting the library binary.
 
 use reify_doc::cross_refs::CrossRefs;
-use reify_doc::fmt_html::render_html;
+use reify_doc::fmt_html::{render_html, render_html_pages};
 use reify_doc::model::{
     AnnotationDoc, ConstraintDoc, DocModel, ItemDoc, ItemHeader, ItemKind, ModuleDoc, ParamDoc,
     PortDoc,
@@ -2192,4 +2192,184 @@ fn snapshot_integration_full_v01_html() {
     let xrefs = build_integration_full_v01_cross_refs();
     let out = render_html(&model, Some(&xrefs));
     assert_or_update_snapshot("integration_full_v01.html", &out);
+}
+
+// ---------------------------------------------------------------------------
+// render_html_pages tests (step-1 / task-3565)
+// ---------------------------------------------------------------------------
+
+/// Multi-module DocModel: render_html_pages must return a Vec whose first
+/// entry is ("index.html", body) where body is a full HTML5 doc listing both
+/// symbols, and whose remaining entries contain module-prefixed per-symbol
+/// pages.
+#[test]
+fn render_html_pages_multi_module_layout() {
+    let model = DocModel {
+        modules: vec![
+            ModuleDoc {
+                path: "a".into(),
+                items: vec![ItemDoc {
+                    header: ItemHeader {
+                        name: "Alpha".into(),
+                        doc: None,
+                        is_pub: true,
+                        annotations: vec![],
+                        pragmas: vec![],
+                    },
+                    kind: ItemKind::Trait { members: vec![] },
+                }],
+                ..Default::default()
+            },
+            ModuleDoc {
+                path: "b".into(),
+                items: vec![ItemDoc {
+                    header: ItemHeader {
+                        name: "Beta".into(),
+                        doc: None,
+                        is_pub: true,
+                        annotations: vec![],
+                        pragmas: vec![],
+                    },
+                    kind: ItemKind::Structure {
+                        params: vec![],
+                        ports: vec![],
+                        constraints: vec![],
+                        sub_components: vec![],
+                        realizations: vec![],
+                        meta: vec![],
+                    },
+                }],
+                ..Default::default()
+            },
+        ],
+    };
+
+    let pages = render_html_pages(&model, None);
+
+    // (a) First entry must be ("index.html", ...).
+    assert!(!pages.is_empty(), "pages must not be empty");
+    let (ref idx_name, ref idx_body) = pages[0];
+    assert_eq!(idx_name, "index.html", "first page filename must be index.html");
+    // index.html must be a full HTML5 doc.
+    assert!(
+        idx_body.starts_with("<!DOCTYPE html>"),
+        "index.html must start with <!DOCTYPE html>; got:\n{idx_body}"
+    );
+    // index.html body must contain link text for both symbols.
+    assert!(
+        idx_body.contains("Alpha"),
+        "index.html must reference Alpha; got:\n{idx_body}"
+    );
+    assert!(
+        idx_body.contains("Beta"),
+        "index.html must reference Beta; got:\n{idx_body}"
+    );
+
+    // (b) Per-symbol pages exist with module-prefixed names.
+    let filenames: Vec<&str> = pages.iter().map(|(n, _)| n.as_str()).collect();
+    assert!(
+        filenames.contains(&"a/trait-Alpha.html"),
+        "expected page 'a/trait-Alpha.html' in {:?}",
+        filenames
+    );
+    assert!(
+        filenames.contains(&"b/structure-Beta.html"),
+        "expected page 'b/structure-Beta.html' in {:?}",
+        filenames
+    );
+
+    // Each per-symbol page must be a full HTML5 doc containing the item's
+    // section and a back-link to index.
+    let alpha_page = pages
+        .iter()
+        .find(|(n, _)| n == "a/trait-Alpha.html")
+        .map(|(_, b)| b)
+        .expect("a/trait-Alpha.html must exist");
+    assert!(
+        alpha_page.starts_with("<!DOCTYPE html>"),
+        "a/trait-Alpha.html must start with <!DOCTYPE html>"
+    );
+    assert!(
+        alpha_page.contains("<section id=\"Alpha\">"),
+        "a/trait-Alpha.html must contain Alpha section"
+    );
+    // Back-link: multi-module files live in a subdir, so "../index.html".
+    assert!(
+        alpha_page.contains("../index.html"),
+        "a/trait-Alpha.html must contain back-link '../index.html'"
+    );
+
+    let beta_page = pages
+        .iter()
+        .find(|(n, _)| n == "b/structure-Beta.html")
+        .map(|(_, b)| b)
+        .expect("b/structure-Beta.html must exist");
+    assert!(
+        beta_page.starts_with("<!DOCTYPE html>"),
+        "b/structure-Beta.html must start with <!DOCTYPE html>"
+    );
+    assert!(
+        beta_page.contains("<section id=\"Beta\">"),
+        "b/structure-Beta.html must contain Beta section"
+    );
+    assert!(
+        beta_page.contains("../index.html"),
+        "b/structure-Beta.html must contain back-link '../index.html'"
+    );
+}
+
+/// Single-module DocModel: render_html_pages must use flat filenames (no
+/// module prefix) and back-link to "index.html" (not "../index.html").
+#[test]
+fn render_html_pages_single_module_flat_layout() {
+    let model = DocModel {
+        modules: vec![ModuleDoc {
+            path: "m".into(),
+            items: vec![ItemDoc {
+                header: ItemHeader {
+                    name: "Alpha".into(),
+                    doc: None,
+                    is_pub: true,
+                    annotations: vec![],
+                    pragmas: vec![],
+                },
+                kind: ItemKind::Trait { members: vec![] },
+            }],
+            ..Default::default()
+        }],
+    };
+
+    let pages = render_html_pages(&model, None);
+
+    // First entry: index.html.
+    assert_eq!(pages[0].0, "index.html");
+
+    // Per-symbol page uses flat name (no module prefix).
+    let filenames: Vec<&str> = pages.iter().map(|(n, _)| n.as_str()).collect();
+    assert!(
+        filenames.contains(&"trait-Alpha.html"),
+        "expected flat filename 'trait-Alpha.html' in {:?}",
+        filenames
+    );
+    // Must NOT contain a module-prefixed variant.
+    assert!(
+        !filenames.contains(&"m/trait-Alpha.html"),
+        "single-module must NOT use module-prefixed filenames; got {:?}",
+        filenames
+    );
+
+    // Back-link is "index.html" (flat), not "../index.html".
+    let alpha_page = pages
+        .iter()
+        .find(|(n, _)| n == "trait-Alpha.html")
+        .map(|(_, b)| b)
+        .expect("trait-Alpha.html must exist");
+    assert!(
+        alpha_page.contains("index.html"),
+        "single-module back-link must target index.html"
+    );
+    assert!(
+        !alpha_page.contains("../index.html"),
+        "single-module back-link must NOT be '../index.html'"
+    );
 }
