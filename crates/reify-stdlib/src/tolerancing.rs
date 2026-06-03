@@ -369,14 +369,7 @@ mod tests {
 
     // Helper: returns true if v is a finite LENGTH-dimensioned Scalar.
     fn is_finite_length_scalar(v: &Value) -> bool {
-        match v {
-            Value::Scalar { si_value, dimension }
-                if *dimension == DimensionVector::LENGTH && si_value.is_finite() =>
-            {
-                true
-            }
-            _ => false,
-        }
+        matches!(v, Value::Scalar { si_value, dimension } if *dimension == DimensionVector::LENGTH && si_value.is_finite())
     }
 
     #[test]
