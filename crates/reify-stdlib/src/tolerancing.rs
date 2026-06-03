@@ -219,4 +219,48 @@ mod tests {
             "non-LENGTH tolerance_value should return Undef"
         );
     }
+
+    // ─── step-3: RED tests for iso_it_tolerance published ISO 286-1 cells ───
+
+    /// Extract µm from a LENGTH scalar result.
+    fn um(v: &Value) -> f64 {
+        scalar_si(v) * 1e6
+    }
+
+    #[test]
+    fn iso_it_tolerance_grade6_18_30mm() {
+        // IT6 @ Ø18–30: D=√(18·30)=23.238, ∛D=2.8537, i=1.3074, ×10=13.074 µm
+        let result = crate::eval_builtin(
+            "iso_it_tolerance",
+            &[Value::Int(6), len(0.018), len(0.030)],
+        );
+        // Must be a finite LENGTH scalar
+        let result_um = um(&result);
+        assert_rel_close(result_um, 13.074, 5e-3, "IT6@18-30 µm within 0.5%");
+        assert_eq!(result_um.round(), 13.0, "IT6@18-30 rounds to published cell 13 µm");
+    }
+
+    #[test]
+    fn iso_it_tolerance_grade7_30_50mm() {
+        // IT7 @ Ø30–50: D=√(30·50)=38.730, ∛D=3.3819, i=1.5606, ×16=24.969 µm
+        let result = crate::eval_builtin(
+            "iso_it_tolerance",
+            &[Value::Int(7), len(0.030), len(0.050)],
+        );
+        let result_um = um(&result);
+        assert_rel_close(result_um, 24.969, 5e-3, "IT7@30-50 µm within 0.5%");
+        assert_eq!(result_um.round(), 25.0, "IT7@30-50 rounds to published cell 25 µm");
+    }
+
+    #[test]
+    fn iso_it_tolerance_grade8_6_10mm() {
+        // IT8 @ Ø6–10: D=√(6·10)=7.746, ∛D=1.9786, i=0.89814, ×25=22.453 µm
+        let result = crate::eval_builtin(
+            "iso_it_tolerance",
+            &[Value::Int(8), len(0.006), len(0.010)],
+        );
+        let result_um = um(&result);
+        assert_rel_close(result_um, 22.453, 5e-3, "IT8@6-10 µm within 0.5%");
+        assert_eq!(result_um.round(), 22.0, "IT8@6-10 rounds to published cell 22 µm");
+    }
 }
