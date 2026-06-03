@@ -6165,6 +6165,7 @@ mod tests {
                 (Operation::PrimitiveCylinder, ReprKind::BRep),
                 (Operation::PrimitiveSphere, ReprKind::BRep),
                 (Operation::PrimitiveTube, ReprKind::BRep),
+                (Operation::PrimitiveCone, ReprKind::BRep),
                 (Operation::BooleanUnion, ReprKind::BRep),
                 (Operation::BooleanDifference, ReprKind::BRep),
                 (Operation::BooleanIntersection, ReprKind::BRep),

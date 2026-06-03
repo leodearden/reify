@@ -8688,4 +8688,88 @@ mod tests {
             &step_text
         );
     }
+
+    // --- Cone tests (task-4156) ---
+
+    #[test]
+    #[cfg(has_occt)]
+    fn kernel_cone_frustum_volume_matches_closed_form() {
+        // Frustum: bottom_r=0.010, top_r=0.005, height=0.020.
+        // Volume = (π/3)·h·(r1²+r1·r2+r2²)
+        //        = (π/3)·0.020·(1e-4 + 5e-5 + 2.5e-5) ≈ 3.665e-6 m³.
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let handle = kernel
+            .execute(&GeometryOp::Cone {
+                bottom_radius: Value::Real(0.010),
+                top_radius: Value::Real(0.005),
+                height: Value::Real(0.020),
+            })
+            .expect("Cone frustum execute should succeed");
+
+        let r1: f64 = 0.010;
+        let r2: f64 = 0.005;
+        let h: f64 = 0.020;
+        let expected = (std::f64::consts::PI / 3.0) * h * (r1 * r1 + r1 * r2 + r2 * r2);
+        assert_volume_near(&mut kernel, handle.id, expected, 0.02, "cone frustum");
+    }
+
+    #[test]
+    #[cfg(has_occt)]
+    fn kernel_cone_pointed_volume_matches_closed_form() {
+        // Pointed cone: bottom_r=0.010, top_r=0.0, height=0.020.
+        // Volume = (π/3)·h·r1² ≈ 2.094e-6 m³.
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let handle = kernel
+            .execute(&GeometryOp::Cone {
+                bottom_radius: Value::Real(0.010),
+                top_radius: Value::Real(0.0),
+                height: Value::Real(0.020),
+            })
+            .expect("Pointed cone execute should succeed");
+
+        let r1: f64 = 0.010;
+        let h: f64 = 0.020;
+        let expected = (std::f64::consts::PI / 3.0) * h * r1 * r1;
+        assert_volume_near(&mut kernel, handle.id, expected, 0.02, "cone pointed");
+    }
+
+    #[test]
+    #[cfg(has_occt)]
+    fn kernel_cone_negative_radius_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Cone {
+            bottom_radius: Value::Real(-0.001),
+            top_radius: Value::Real(0.005),
+            height: Value::Real(0.020),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Ok(_) => panic!("expected error for negative bottom_radius"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    #[cfg(has_occt)]
+    fn kernel_cone_both_zero_radii_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Cone {
+            bottom_radius: Value::Real(0.0),
+            top_radius: Value::Real(0.0),
+            height: Value::Real(0.020),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Ok(_) => panic!("expected error for both-zero radii (degenerate line)"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
 }
