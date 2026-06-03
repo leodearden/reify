@@ -10,7 +10,7 @@
 
 use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
 use reify_core::{ModulePath, Severity};
-use reify_ir::{ExportFormat, GeometryOp, GeometryQuery, Value};
+use reify_ir::{ExportFormat, GeometryOp};
 use reify_test_support::*;
 
 /// Exercises the full compile -> eval path for Cone (mock kernel).
@@ -88,9 +88,9 @@ fn cone_through_mock_kernel_emits_geometry_op_cone() {
 }
 
 /// Full-pipeline e2e for cone(frustum): source → parse → compile → Engine with
-/// real OcctKernel → build → non-empty geometry output; volume formula
-/// (π/3)*h*(r1²+r1*r2+r2²) verified within 2% relative error via a parallel
-/// direct OcctKernel query.
+/// real OcctKernel → build → non-empty geometry output (non-empty mesh vertices,
+/// triangles, and STEP export). Volume correctness is verified by the dedicated
+/// kernel unit tests (kernel_cone_frustum_volume_matches_closed_form).
 ///
 /// RED until step-6 wires the full compiler+eval pipeline.
 #[test]
@@ -188,39 +188,12 @@ fn cone_frustum_through_full_pipeline_matches_formula() {
         .geometry_output
         .expect("cone frustum should produce STEP geometry output");
     assert!(!step.is_empty(), "STEP output should be non-empty");
-
-    // ---- Volume verification (direct OcctKernel query) ----
-    let mut kernel = reify_kernel_occt::OcctKernel::new();
-    let handle = kernel
-        .execute(&GeometryOp::Cone {
-            bottom_radius: Value::Real(0.010),
-            top_radius: Value::Real(0.005),
-            height: Value::Real(0.020),
-        })
-        .expect("Cone frustum execute should succeed");
-    let vol = kernel
-        .query(&GeometryQuery::Volume(handle.id))
-        .expect("Volume query should succeed");
-    let v = vol.as_f64().expect("volume should be numeric");
-    // Frustum formula: (π/3)*h*(r1²+r1*r2+r2²)
-    // r1 = 10mm = 0.010 m, r2 = 5mm = 0.005 m, h = 20mm = 0.020 m
-    let r1: f64 = 0.010;
-    let r2: f64 = 0.005;
-    let h: f64 = 0.020;
-    let expected = std::f64::consts::PI / 3.0 * h * (r1 * r1 + r1 * r2 + r2 * r2);
-    let rel_err = (v - expected).abs() / expected;
-    assert!(
-        rel_err < 0.02,
-        "cone frustum volume should be ≈{:.3e} m³, got {:.3e} (rel_err={:.4})",
-        expected,
-        v,
-        rel_err
-    );
 }
 
 /// Full-pipeline e2e for cone(pointed apex, top_radius=0): source → parse →
-/// compile → Engine with real OcctKernel → build → non-empty geometry output;
-/// volume formula (π/3)*h*r1² verified within 2% relative error.
+/// compile → Engine with real OcctKernel → build → non-empty geometry output
+/// (non-empty mesh vertices and triangles). Volume correctness is verified by
+/// kernel_cone_pointed_volume_matches_closed_form in the kernel unit tests.
 ///
 /// RED until step-6 wires the full compiler+eval pipeline.
 #[test]
@@ -275,32 +248,6 @@ fn cone_pointed_through_full_pipeline_matches_formula() {
     let mesh = &tess_result.meshes[0].mesh;
     assert!(!mesh.vertices.is_empty(), "pointed cone mesh should have vertices");
     assert!(!mesh.indices.is_empty(), "pointed cone mesh should have triangles");
-
-    // ---- Volume verification ----
-    let mut kernel = reify_kernel_occt::OcctKernel::new();
-    let handle = kernel
-        .execute(&GeometryOp::Cone {
-            bottom_radius: Value::Real(0.010),
-            top_radius: Value::Real(0.0),
-            height: Value::Real(0.020),
-        })
-        .expect("Pointed cone execute should succeed");
-    let vol = kernel
-        .query(&GeometryQuery::Volume(handle.id))
-        .expect("Volume query should succeed");
-    let v = vol.as_f64().expect("volume should be numeric");
-    // Pointed cone formula: (π/3)*h*r1²
-    let r1: f64 = 0.010;
-    let h: f64 = 0.020;
-    let expected = std::f64::consts::PI / 3.0 * h * r1 * r1;
-    let rel_err = (v - expected).abs() / expected;
-    assert!(
-        rel_err < 0.02,
-        "pointed cone volume should be ≈{:.3e} m³, got {:.3e} (rel_err={:.4})",
-        expected,
-        v,
-        rel_err
-    );
 }
 
 /// Full-pipeline e2e: negative bottom_radius should surface as an Error-severity
