@@ -6131,4 +6131,145 @@ mod tests {
             );
         }
     }
+
+    fn dimensionless_val(v: f64) -> Value {
+        Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::DIMENSIONLESS,
+        }
+    }
+
+    // ── eval_add: dimensionless Scalar mixed-arm tests (task 4319) ────────────
+
+    #[test]
+    fn dscalar_add_real_is_real() {
+        let left = lit(dimensionless_val(25.0), Type::Real);
+        let right = lit(Value::Real(4.0), Type::Real);
+        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::Real);
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        match result {
+            Value::Real(v) => assert!((v - 29.0).abs() < 1e-12, "expected 29.0 got {v}"),
+            other => panic!("expected Real(29.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn real_add_dscalar_is_real() {
+        let left = lit(Value::Real(4.0), Type::Real);
+        let right = lit(dimensionless_val(25.0), Type::Real);
+        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::Real);
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        match result {
+            Value::Real(v) => assert!((v - 29.0).abs() < 1e-12, "expected 29.0 got {v}"),
+            other => panic!("expected Real(29.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dscalar_add_int_is_real() {
+        let left = lit(dimensionless_val(25.0), Type::Real);
+        let right = lit(Value::Int(4), Type::Int);
+        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::Real);
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        match result {
+            Value::Real(v) => assert!((v - 29.0).abs() < 1e-12, "expected 29.0 got {v}"),
+            other => panic!("expected Real(29.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn int_add_dscalar_is_real() {
+        let left = lit(Value::Int(4), Type::Int);
+        let right = lit(dimensionless_val(25.0), Type::Real);
+        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::Real);
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        match result {
+            Value::Real(v) => assert!((v - 29.0).abs() < 1e-12, "expected 29.0 got {v}"),
+            other => panic!("expected Real(29.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dimensioned_scalar_add_real_is_undef() {
+        // Scalar{LENGTH} + Real must NOT match the new dimensionless arm → Undef
+        let left = lit(mm_val(80.0), Type::length());
+        let right = lit(Value::Real(4.0), Type::Real);
+        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::Real);
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "expected Undef for dimensioned Scalar + Real"
+        );
+    }
+
+    // ── eval_sub: dimensionless Scalar mixed-arm tests (task 4319) ────────────
+
+    #[test]
+    fn dscalar_sub_real_is_real() {
+        let left = lit(dimensionless_val(25.0), Type::Real);
+        let right = lit(Value::Real(4.0), Type::Real);
+        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::Real);
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        match result {
+            Value::Real(v) => assert!((v - 21.0).abs() < 1e-12, "expected 21.0 got {v}"),
+            other => panic!("expected Real(21.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn real_sub_dscalar_is_real() {
+        let left = lit(Value::Real(4.0), Type::Real);
+        let right = lit(dimensionless_val(25.0), Type::Real);
+        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::Real);
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        match result {
+            Value::Real(v) => assert!((v - (-21.0)).abs() < 1e-12, "expected -21.0 got {v}"),
+            other => panic!("expected Real(-21.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dscalar_sub_int_is_real() {
+        let left = lit(dimensionless_val(25.0), Type::Real);
+        let right = lit(Value::Int(4), Type::Int);
+        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::Real);
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        match result {
+            Value::Real(v) => assert!((v - 21.0).abs() < 1e-12, "expected 21.0 got {v}"),
+            other => panic!("expected Real(21.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn int_sub_dscalar_is_real() {
+        let left = lit(Value::Int(4), Type::Int);
+        let right = lit(dimensionless_val(25.0), Type::Real);
+        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::Real);
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        match result {
+            Value::Real(v) => assert!((v - (-21.0)).abs() < 1e-12, "expected -21.0 got {v}"),
+            other => panic!("expected Real(-21.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dimensioned_scalar_sub_real_is_undef() {
+        // Scalar{LENGTH} - Real must NOT match the new dimensionless arm → Undef
+        let left = lit(mm_val(80.0), Type::length());
+        let right = lit(Value::Real(4.0), Type::Real);
+        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::Real);
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "expected Undef for dimensioned Scalar - Real"
+        );
+    }
 }
