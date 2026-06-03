@@ -64,11 +64,25 @@ fn parse_iso_well_typed(args: &[Value]) -> Option<(i64, f64, f64)> {
     Some((grade, min_si * 1e3, max_si * 1e3))
 }
 
+/// Validate that a nominal size range is within the supported ISO 286-1 envelope.
+///
+/// Returns `true` iff:
+/// - `min_mm > 0` and `max_mm > 0` (positive sizes)
+/// - `min_mm ≤ max_mm` (non-inverted range)
+/// - `max_mm ≤ 500.0` (within the standardised upper step bound, inclusive)
+///
+/// The 500 mm limit is the upper end of the standardised step ranges in
+/// ISO 286-1; the cube-root formula is only validated against published cells
+/// for sizes in the 3–500 mm range.
+fn iso_size_in_envelope(min_mm: f64, max_mm: f64) -> bool {
+    min_mm > 0.0 && max_mm > 0.0 && min_mm <= max_mm && max_mm <= 500.0
+}
+
 /// Compute ISO 286-1 standard tolerance (IT grade) for a given grade and size range.
 ///
 /// Formula: D = √(min_mm · max_mm), i = 0.45·∛D + 0.001·D, tol = factor·i.
 /// Returns the tolerance as a finite LENGTH scalar in SI metres, or `Value::Undef`
-/// for unsupported grades, wrong arg types, or out-of-envelope sizes (after step-6).
+/// for unsupported grades, wrong arg types, or out-of-envelope sizes.
 fn iso_it_tolerance(args: &[Value]) -> Value {
     let (grade, min_mm, max_mm) = match parse_iso_well_typed(args) {
         Some(t) => t,
@@ -78,8 +92,9 @@ fn iso_it_tolerance(args: &[Value]) -> Value {
         Some(f) => f,
         None => return Value::Undef,
     };
-    // NOTE: nominal-size envelope gate (positivity, inversion, ≤500mm) is added
-    // in step-6; ISO-cell tests only require the formula to be correct.
+    if !iso_size_in_envelope(min_mm, max_mm) {
+        return Value::Undef;
+    }
     let d = (min_mm * max_mm).sqrt();
     let i = 0.45 * d.cbrt() + 0.001 * d;
     let tol_um = factor * i;
