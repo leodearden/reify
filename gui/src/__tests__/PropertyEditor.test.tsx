@@ -1099,3 +1099,52 @@ describe('PropertyEditor freshness badge', () => {
     expect(determinacyBadge).toBeTruthy();
   });
 });
+
+describe('PropertyEditor freshness badge title', () => {
+  it('intermediate freshness badge has a title containing "intermediate"', () => {
+    const values: Record<string, ValueData> = {
+      c1: makeValue({ cell_id: 'c1', name: 'width', entity_path: 'Bracket.width', freshness: 'intermediate' }),
+    };
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={vi.fn()} />
+    ));
+    const badge = screen.getByTestId('freshness-badge-c1');
+    const title = badge.getAttribute('title') ?? '';
+    expect(title.toLowerCase()).toContain('intermediate');
+  });
+
+  it('pending freshness badge has a title containing "pending"', () => {
+    const values: Record<string, ValueData> = {
+      c1: makeValue({ cell_id: 'c1', name: 'width', entity_path: 'Bracket.width', freshness: 'pending' }),
+    };
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={vi.fn()} />
+    ));
+    const badge = screen.getByTestId('freshness-badge-c1');
+    const title = badge.getAttribute('title') ?? '';
+    expect(title.toLowerCase()).toContain('pending');
+  });
+
+  it('failed freshness badge has a title containing "failed"', () => {
+    const values: Record<string, ValueData> = {
+      c1: makeValue({ cell_id: 'c1', name: 'width', entity_path: 'Bracket.width', freshness: 'failed' }),
+    };
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={vi.fn()} />
+    ));
+    const badge = screen.getByTestId('freshness-badge-c1');
+    const title = badge.getAttribute('title') ?? '';
+    expect(title.toLowerCase()).toContain('failed');
+  });
+
+  it('freshness badge aria-label is preserved unchanged (freshness intermediate)', () => {
+    const values: Record<string, ValueData> = {
+      c1: makeValue({ cell_id: 'c1', name: 'width', entity_path: 'Bracket.width', freshness: 'intermediate' }),
+    };
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={vi.fn()} />
+    ));
+    const badge = screen.getByTestId('freshness-badge-c1');
+    expect(badge.getAttribute('aria-label')).toBe('freshness intermediate');
+  });
+});
