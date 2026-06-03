@@ -347,7 +347,17 @@ pub fn try_eval_body_mass_props(
                 }
             };
             let mp = eval_body_mass_props_core(body, density_arg, q, diagnostics);
-            if err.borrow().is_some() {
+            if let Some(e) = err.borrow().as_ref() {
+                // Defensive downgrade: a kernel error for any of the three
+                // mass-properties queries (Volume / CenterOfMass / InertiaTensor)
+                // degrades the geometric fields to Undef and emits one Warning
+                // (mirrors geometry_ops::dispatch_inertia_tensor's contract).
+                // The MassProperties PSD hook classifies Undef inertia as Skip,
+                // so no spurious E_DynamicsInertiaNotPSD is generated.
+                diagnostics.push(Diagnostic::warning(format!(
+                    "body_mass_props kernel query failed — geometric fields \
+                     (mass/com/inertia) set to Undef: {e}"
+                )));
                 Some(assemble_mass_properties(Value::Undef, Value::Undef, Value::Undef))
             } else {
                 Some(mp)
