@@ -473,10 +473,10 @@ fn snapshot_inverse_dynamics(
     // (→ `Value::Undef`) rather than a silently-misaligned spring torque,
     // matching the module's fail-honest convention (cf. the closed-chain
     // `loop_closures` guard at eval.rs:403-416).
-    if let Some(p) = positions {
-        if p.len() != n {
-            return None;
-        }
+    if let Some(p) = positions
+        && p.len() != n
+    {
+        return None;
     }
 
     let mut at_joints: Vec<&Value> = Vec::with_capacity(n);
