@@ -13,8 +13,9 @@ mod common;
 
 use common::assert_trait_constraint_binop;
 use reify_compiler::*;
-use reify_test_support::compile_source_with_stdlib;
+use reify_test_support::{check_source_with_stdlib, compile_source_with_stdlib};
 use reify_core::*;
+use reify_ir::Satisfaction;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -296,4 +297,124 @@ structure def CeramicLiner : Refractory {
                 .collect::<Vec<_>>()
         );
     }
+}
+
+// ─── (e) Refractory constraint: Satisfied / Violated with a defined Temperature ──
+
+/// A Refractory conformer with `max_service_temperature = 2050.0K` must evaluate
+/// the inherited `max_service_temperature >= 1500.0K` constraint as
+/// `Satisfaction::Satisfied`.
+///
+/// This pins the key correctness guarantee of the Real → Temperature tightening
+/// (task #3112): the dimensioned Temperature LHS and the `1500.0K` RHS share the
+/// same dimension, so the Engine evaluates the comparison to Satisfied rather
+/// than Indeterminate. Without this test a regression that left the comparison
+/// Indeterminate (e.g. a partial revert of the `K` suffix on the RHS, or a
+/// dimension-comparison bug) would pass the entire suite undetected.
+///
+/// Uses a top-level structure INSTANCE (no `def` keyword) so `Engine::check`
+/// evaluates the inherited constraint. Precedent: the analogous
+/// `refractory_omit_max_service_temperature_is_indeterminate` in
+/// `materials_thermal_optical_optionality_tests.rs`.
+#[test]
+fn refractory_constraint_satisfied_with_defined_temperature() {
+    // 2050.0K > 1500.0K → constraint must be Satisfied.
+    let source = r#"
+structure RefractorySatisfied : Refractory {
+    param density : Real = 3900.0
+    param name : String = "refractory_above_threshold"
+    param thermal_conductivity : ThermalConductivity = 30.0 * 1W / (1m * 1K)
+    param specific_heat : SpecificHeat = 880.0 * 1J / (1kg * 1K)
+    param thermal_expansion : ThermalExpansion = 0.0000081 / 1K
+    param max_service_temperature : Temperature = 2050.0K
+}
+"#;
+
+    let check_result = check_source_with_stdlib(source);
+
+    // No Error-severity check diagnostics.
+    let errors: Vec<_> = check_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "RefractorySatisfied check should produce no error diagnostics, got: {:?}",
+        errors
+    );
+
+    // Locate the constraint result for RefractorySatisfied.
+    // Asserting count == 1 pins the test to the single inherited Refractory constraint;
+    // if additional constraints are added later the count check will flag the mismatch
+    // rather than silently passing for the wrong constraint.
+    let constraints: Vec<_> = check_result
+        .constraint_results
+        .iter()
+        .filter(|cr| cr.id.entity == "RefractorySatisfied")
+        .collect();
+    assert_eq!(
+        constraints.len(),
+        1,
+        "Expected exactly 1 constraint result for RefractorySatisfied \
+         (the inherited max_service_temperature >= 1500.0K), got: {:?}",
+        constraints
+    );
+    assert_eq!(
+        constraints[0].satisfaction,
+        Satisfaction::Satisfied,
+        "RefractorySatisfied max_service_temperature >= 1500.0K should be Satisfied \
+         (2050.0K >= 1500.0K), got: {:?}",
+        constraints[0].satisfaction
+    );
+}
+
+/// A Refractory conformer with `max_service_temperature = 1000.0K` must evaluate
+/// the inherited `max_service_temperature >= 1500.0K` constraint as
+/// `Satisfaction::Violated`.
+///
+/// Complements `refractory_constraint_satisfied_with_defined_temperature` by
+/// pinning the below-threshold path so both sides of the dimensioned comparison
+/// are exercised.  A regression that made the comparison always return Satisfied
+/// (or Indeterminate) would be caught here.
+#[test]
+fn refractory_constraint_violated_below_threshold() {
+    // 1000.0K < 1500.0K → constraint must be Violated.
+    let source = r#"
+structure RefractoryViolated : Refractory {
+    param density : Real = 3900.0
+    param name : String = "refractory_below_threshold"
+    param thermal_conductivity : ThermalConductivity = 30.0 * 1W / (1m * 1K)
+    param specific_heat : SpecificHeat = 880.0 * 1J / (1kg * 1K)
+    param thermal_expansion : ThermalExpansion = 0.0000081 / 1K
+    param max_service_temperature : Temperature = 1000.0K
+}
+"#;
+
+    let check_result = check_source_with_stdlib(source);
+
+    // Note: the engine emits an Error-severity diagnostic for each Violated
+    // constraint, so we do NOT assert zero errors here — the violation IS the
+    // expected outcome.  Instead we verify the constraint_results directly.
+
+    // Locate the constraint result for RefractoryViolated.
+    let constraints: Vec<_> = check_result
+        .constraint_results
+        .iter()
+        .filter(|cr| cr.id.entity == "RefractoryViolated")
+        .collect();
+    assert_eq!(
+        constraints.len(),
+        1,
+        "Expected exactly 1 constraint result for RefractoryViolated \
+         (the inherited max_service_temperature >= 1500.0K), got: {:?}",
+        constraints
+    );
+    assert_eq!(
+        constraints[0].satisfaction,
+        Satisfaction::Violated,
+        "RefractoryViolated max_service_temperature >= 1500.0K should be Violated \
+         (1000.0K < 1500.0K), got: {:?}",
+        constraints[0].satisfaction
+    );
 }
