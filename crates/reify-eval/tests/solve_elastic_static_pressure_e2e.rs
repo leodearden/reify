@@ -1,20 +1,12 @@
-// step-7 RED (task 4264): e2e tests for PressureLoad flowing through the
-// elastic_static trampoline → solve_cantilever_fea → ElasticResult pipeline.
+// E2e tests verifying that PressureLoad flows through the elastic_static
+// trampoline → solve_cantilever_fea → ElasticResult pipeline (task 4264).
 //
-// Both tests are RED until step-8 wires `extract_pressure_loads` + passes the
-// pressure specs into `solve_cantilever_fea` inside the trampoline.
-//
-// Before step-8:
-//   - The trampoline passes `&[]` (empty pressures) to `solve_cantilever_fea`.
-//   - PressureLoad is never assembled into the force vector.
-//   - Result: max_von_mises == 0, displacement is all-zero.
-//   - Both tests assert finite > 0 / at least one non-zero sample → FAIL.
-//
-// After step-8:
-//   - `extract_pressure_loads` reads PressureLoad specs from `value_inputs[4]`.
-//   - The spec is passed to `solve_cantilever_fea`, which calls
-//     `assemble_box_face_pressures` → apply_traction_load.
-//   - max_von_mises is finite > 0; displacement has non-zero samples → PASS.
+// `extract_loads` reads both PointLoad and PressureLoad items from
+// value_inputs[4] in a single pass; `assemble_box_face_pressures` assembles
+// each PressureSpec's traction via apply_traction_load into the same force
+// vector as PointLoad tip loads.  Both the single-case (fea_pressure_smoke.ri)
+// and multi-case delegation (solve_load_cases → solve_elastic_static_trampoline)
+// paths are exercised here.
 
 use reify_core::{DimensionVector, Severity, ValueCellId};
 use reify_ir::{FieldSourceKind, Value};
@@ -86,9 +78,6 @@ fn extract_sampled_field_data(result: &Value, field: &str) -> Vec<f64> {
 //   - result.converged == Bool(true).
 //   - result.max_von_mises is Value::Scalar{dimension=PRESSURE, si_value finite>0}.
 //   - result.displacement Sampled field has ≥1 finite non-zero sample.
-//
-// RED until step-8: trampoline passes &[] → PressureLoad ignored →
-//   max_von_mises == 0, displacement all-zero.
 
 /// Single-case pressure smoke: `fea_pressure_smoke.ri` produces non-trivial fields.
 #[test]
@@ -151,8 +140,8 @@ fn e2e_pressure_box_produces_nontrivial_fields() {
 
     // ── (5) displacement Sampled field has ≥1 finite non-zero sample ──────────
     //
-    // Before step-8: all samples are 0 because no pressure force is assembled.
-    // After step-8: at least some nodes have non-zero axial displacement.
+    // At least some nodes must carry non-zero axial displacement; all-zero
+    // samples would indicate that no traction force was assembled into f.
     let disp_data = extract_sampled_field_data(result_val, "displacement");
     assert!(
         !disp_data.is_empty(),
@@ -177,9 +166,6 @@ fn e2e_pressure_box_produces_nontrivial_fields() {
 // Assert that the per-case ElasticResult in the `cases` Map has max_von_mises
 // finite > 0 — verifying PressureLoad is picked up through the multi_case
 // delegation path (multi_case.rs → solve_elastic_static_trampoline).
-//
-// RED until step-8: trampoline passes &[] → PressureLoad ignored →
-//   max_von_mises == 0.
 
 /// Multi-case via delegation: PressureLoad in a LoadCase produces non-trivial stress.
 #[allow(clippy::mutable_key_type)] // Value contains AtomicBool; map is read-only after construction

@@ -253,7 +253,8 @@ pub fn solve_elastic_static_trampoline(
 
     // ── (3) Extract loads from value_inputs[4] (List of StructureInstances) ──
     //
-    // Two load kinds are bridged here (task 4264):
+    // Two load kinds are bridged here (task 4264), read in a single pass by
+    // `extract_loads`:
     //
     //   PointLoad   — `force: Real` → scalar tip_force (distributed as -Z point
     //                 loads across the tip-face nodes via apply_point_load).
@@ -264,10 +265,9 @@ pub fn solve_elastic_static_trampoline(
     //                 Supported face selectors: x_min, x_max, y_min, y_max,
     //                 z_min, z_max. Unknown/empty face → silent no-op (v1).
     //
-    // Both extractors iterate the same Value::List and accumulate into disjoint
-    // targets — they compose: a scene may mix PointLoad and PressureLoad.
-    let tip_force = extract_tip_force(&value_inputs[4]);
-    let pressures = extract_pressure_loads(&value_inputs[4]);
+    // Both accumulate into disjoint targets and compose: a scene may mix
+    // PointLoad and PressureLoad in the same LoadCase.
+    let (tip_force, pressures) = extract_loads(&value_inputs[4]);
 
     // ── (3b) Shell-route dispatch (task 3594/δ) ──────────────────────────────
     //
@@ -1261,9 +1261,19 @@ fn extract_scalar_si(val: &Value) -> f64 {
     }
 }
 
-/// Sum `force` fields from all `PointLoad` StructureInstances in a `Value::List`.
-/// Each `PointLoad.force` is a `Value::Real`.
-fn extract_tip_force(val: &Value) -> f64 {
+/// Extract all load contributions from a `Value::List` of load `StructureInstance`s
+/// in a **single pass**, returning `(tip_force, pressures)`.
+///
+/// - `tip_force` — sum of the `force: Value::Real` fields from all `PointLoad`
+///   items (distributed as -Z point loads across the tip face by
+///   `solve_cantilever_fea`).
+/// - `pressures` — one `PressureSpec` per `PressureLoad` item; items of any
+///   other type (e.g. `FixedSupport`) are silently skipped.
+///
+/// Panics with a descriptive message if `val` is not a `Value::List`.
+/// A scene may mix `PointLoad` and `PressureLoad`; both accumulate into
+/// the same force vector `f` via their respective kernel primitives.
+fn extract_loads(val: &Value) -> (f64, Vec<PressureSpec>) {
     let items = match val {
         Value::List(v) => v,
         other => panic!(
@@ -1271,15 +1281,33 @@ fn extract_tip_force(val: &Value) -> f64 {
             other
         ),
     };
-    let mut total = 0.0f64;
+    let mut tip_force = 0.0f64;
+    let mut pressures = Vec::new();
     for item in items {
-        if let Value::StructureInstance(data) = item
-            && let Some(Value::Real(f)) = data.fields.get(&"force".to_string())
-        {
-            total += f;
+        if let Value::StructureInstance(data) = item {
+            if data.type_name == "PointLoad" {
+                if let Some(Value::Real(f)) = data.fields.get(&"force".to_string()) {
+                    tip_force += f;
+                }
+            } else if data.type_name == "PressureLoad" {
+                let magnitude = match data.fields.get(&"magnitude".to_string()) {
+                    Some(Value::Real(m)) => *m,
+                    Some(Value::Scalar { si_value, .. }) => *si_value,
+                    _ => continue,
+                };
+                let face = match data.fields.get(&"face".to_string()) {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => continue,
+                };
+                let direction = match data.fields.get(&"direction".to_string()) {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => "normal".to_string(),
+                };
+                pressures.push(PressureSpec { magnitude, face, direction });
+            }
         }
     }
-    total
+    (tip_force, pressures)
 }
 
 /// A single pressure load parsed from a `PressureLoad` StructureInstance.
@@ -1301,6 +1329,11 @@ pub(crate) struct PressureSpec {
 /// silently skipped — the caller is responsible for handling them separately.
 ///
 /// Returns an empty Vec if the list contains no `PressureLoad` items.
+///
+/// Production code uses the combined [`extract_loads`] (single pass over both
+/// `PointLoad` and `PressureLoad`).  This function is kept for targeted unit
+/// testing of the pressure-extraction path in isolation.
+#[cfg(test)]
 pub(crate) fn extract_pressure_loads(val: &Value) -> Vec<PressureSpec> {
     let items = match val {
         Value::List(v) => v,
@@ -1378,6 +1411,11 @@ fn collect_box_face_triangles(
     // Four triangular faces of a tet [a, b, c, d]:
     const FACE_IDX: [[usize; 3]; 4] = [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]];
 
+    // NOTE: `eps` is an **absolute** tolerance. For the current fixtures
+    // (SI-metre beams, node spacing >> 1e-9 m) this is safe. If sub-millimetre
+    // or sub-micron FEA geometries are ever supported, consider scaling eps
+    // relative to the relevant extent (e.g. `eps = 1e-9 * extent.max(1.0)`)
+    // so that the predicate remains meaningful at very small scales.
     let on_plane = |node: usize| -> bool {
         let coord = coords[node][axis];
         if at_max { coord >= extent - eps } else { coord <= eps }
@@ -1407,6 +1445,12 @@ fn collect_box_face_triangles(
 /// The traction vector is `magnitude · inward_normal`.  Only `"normal"` direction
 /// is supported in v1; other direction strings are treated as `"normal"`.
 /// Accumulates additively into `f` — composable with the existing tip point loads.
+///
+/// **Performance note:** the full tet mesh is scanned once per `PressureSpec`
+/// (O(|pressures| × n_tets)).  For the current fixtures (≤ 2 specs, small meshes)
+/// this is negligible.  If scenes with many distinct pressure faces become common,
+/// a future optimisation could collect boundary triangles per (axis, at_max) key
+/// in a single O(n_tets) pass and then index specs by their resolved face.
 fn assemble_box_face_pressures(
     f: &mut [f64],
     coords: &[[f64; 3]],
