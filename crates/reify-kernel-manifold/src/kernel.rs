@@ -154,20 +154,62 @@ impl Default for ManifoldKernel {
     }
 }
 
-/// Convert a [`Mesh`] into a [`Manifold`] by flattening vertices f32→f64 and
-/// indices u32→u64, then calling [`Manifold::from_mesh_f64`].
+/// Convert a [`Mesh`] into a [`Manifold`] by (1) bit-exact vertex welding,
+/// then (2) flattening f32→f64 / u32→u64 and calling [`Manifold::from_mesh_f64`].
 ///
-/// This is the canonical ingestion conversion used by both
+/// # Pre-ingest vertex weld
+///
+/// OCCT's tessellator emits per-face meshes: each quad face produces 4 fresh
+/// vertices even for corners shared with adjacent faces. Those bit-identical
+/// corner positions are NOT joined by index, so without welding
+/// `Manifold::from_mesh_f64` sees open boundary edges and returns
+/// `Err(ManifoldStatus(NotManifold))`.
+///
+/// The weld keys every xyz triple on its bit pattern
+/// `(x.to_bits(), y.to_bits(), z.to_bits())` (f32 → u32 triple) and replaces
+/// duplicates with the first-seen canonical vertex. Triangle winding is
+/// preserved because only vertex indices are remapped; corner order within
+/// each triangle is unchanged.
+///
+/// For already-welded input (every position unique) the dedup is a no-op and
+/// the indices are passed through unchanged, so existing well-formed meshes
+/// are unaffected.
+///
+/// # Callers
+///
+/// This is the canonical ingestion helper called by both
 /// [`GeometryKernel::ingest_mesh`] (production path) and the
-/// `unit_cube_manifold` test fixture (test-only path). Keeping it in one place
-/// prevents the two callers from drifting if the ingestion contract changes.
+/// `unit_cube_manifold` test fixture. Keeping the weld here ensures both
+/// callers benefit automatically.
 ///
-/// Returns `Err(String)` (the `Debug` representation of the underlying
-/// manifold3d error) if the mesh is not a valid closed orientable manifold.
+/// Returns `Err(String)` (the `Debug` repr of the underlying manifold3d error)
+/// if the mesh is not a valid closed orientable manifold after welding.
 pub(crate) fn manifold_from_reify_mesh(mesh: &Mesh) -> Result<Manifold, String> {
-    let vert_props_f64: Vec<f64> = mesh.vertices.iter().map(|&v| v as f64).collect();
-    let tri_indices_u64: Vec<u64> = mesh.indices.iter().map(|&i| i as u64).collect();
-    Manifold::from_mesh_f64(&vert_props_f64, 3, &tri_indices_u64)
+    // --- bit-exact vertex weld ---
+    // Map (x.to_bits(), y.to_bits(), z.to_bits()) → canonical vertex index.
+    let mut seen: HashMap<(u32, u32, u32), u64> = HashMap::new();
+    let mut canonical_f64: Vec<f64> = Vec::new();
+    // old_to_new[i] = canonical index for the i-th source vertex.
+    let mut old_to_new: Vec<u64> = Vec::with_capacity(mesh.vertices.len() / 3);
+
+    for xyz in mesh.vertices.chunks_exact(3) {
+        let (x, y, z) = (xyz[0], xyz[1], xyz[2]);
+        let key = (x.to_bits(), y.to_bits(), z.to_bits());
+        let next = canonical_f64.len() as u64 / 3;
+        let canonical_idx = *seen.entry(key).or_insert_with(|| {
+            canonical_f64.push(x as f64);
+            canonical_f64.push(y as f64);
+            canonical_f64.push(z as f64);
+            next
+        });
+        old_to_new.push(canonical_idx);
+    }
+
+    // Remap triangle indices through the weld map.
+    let tri_indices_u64: Vec<u64> =
+        mesh.indices.iter().map(|&i| old_to_new[i as usize]).collect();
+
+    Manifold::from_mesh_f64(&canonical_f64, 3, &tri_indices_u64)
         .map_err(|e| format!("{e:?}"))
 }
 
