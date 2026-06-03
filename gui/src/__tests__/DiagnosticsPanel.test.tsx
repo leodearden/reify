@@ -517,6 +517,122 @@ describe('DiagnosticsPanel source/severity filtering', () => {
   });
 });
 
+describe('DiagnosticsPanel repeated-warning collapse (grouping)', () => {
+  beforeAll(() => {
+    globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
+  });
+  beforeEach(() => {
+    localStorage.clear();
+    capturedResizeCallback = null;
+  });
+
+  function makeIdenticalTessWarning(message: string): DiagnosticEntry {
+    // All three fields (file/line/column/message) are the same — identical diagnostic
+    return {
+      ...makeDiag('Warning', { file_path: 'model.ri', line: 42, column: 7, message }),
+      source: 'tessellation',
+    };
+  }
+
+  it('three IDENTICAL entries collapse to one row with a repeat-count badge showing "3"', () => {
+    const repeatedDiag = makeIdenticalTessWarning('repeated warning');
+    const diags: DiagnosticEntry[] = [repeatedDiag, repeatedDiag, repeatedDiag];
+    render(() => (
+      <DiagnosticsPanel
+        open={true}
+        diagnostics={diags}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+      />
+    ));
+    // Exactly one row
+    const rows = document.querySelectorAll('[data-testid="diagnostic-row"]');
+    expect(rows.length).toBe(1);
+
+    // That row has a repeat-count badge
+    const badge = screen.getByTestId('diagnostic-repeat-count');
+    expect(badge).toBeTruthy();
+    expect(badge.textContent).toContain('3');
+  });
+
+  it('a group toggle data-testid="diagnostics-group-toggle" exists', () => {
+    const repeatedDiag = makeIdenticalTessWarning('repeated warning');
+    render(() => (
+      <DiagnosticsPanel
+        open={true}
+        diagnostics={[repeatedDiag, repeatedDiag, repeatedDiag]}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+      />
+    ));
+    expect(screen.getByTestId('diagnostics-group-toggle')).toBeTruthy();
+  });
+
+  it('toggling group-toggle OFF expands to three rows with no repeat-count badge', () => {
+    const repeatedDiag = makeIdenticalTessWarning('repeated warning');
+    const diags: DiagnosticEntry[] = [repeatedDiag, repeatedDiag, repeatedDiag];
+    render(() => (
+      <DiagnosticsPanel
+        open={true}
+        diagnostics={diags}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+      />
+    ));
+    // Start: one row, has badge
+    expect(document.querySelectorAll('[data-testid="diagnostic-row"]').length).toBe(1);
+
+    // Toggle grouping off
+    fireEvent.click(screen.getByTestId('diagnostics-group-toggle'));
+
+    // Now three rows
+    const rows = document.querySelectorAll('[data-testid="diagnostic-row"]');
+    expect(rows.length).toBe(3);
+
+    // No repeat-count badge visible
+    expect(screen.queryByTestId('diagnostic-repeat-count')).toBeNull();
+  });
+
+  it('clicking the collapsed row invokes onNavigate with the first representative entry', () => {
+    const first: DiagnosticEntry = { ...makeDiag('Warning', { file_path: 'model.ri', line: 42, column: 7, message: 'repeated warning' }), source: 'tessellation' };
+    const second: DiagnosticEntry = { ...makeDiag('Warning', { file_path: 'model.ri', line: 42, column: 7, message: 'repeated warning' }), source: 'tessellation' };
+    const third: DiagnosticEntry = { ...makeDiag('Warning', { file_path: 'model.ri', line: 42, column: 7, message: 'repeated warning' }), source: 'tessellation' };
+    const onNavigate = vi.fn();
+    render(() => (
+      <DiagnosticsPanel
+        open={true}
+        diagnostics={[first, second, third]}
+        onClose={vi.fn()}
+        onNavigate={onNavigate}
+      />
+    ));
+    // One collapsed row
+    const row = screen.getByTestId('diagnostic-row');
+    fireEvent.click(row);
+    expect(onNavigate).toHaveBeenCalledTimes(1);
+    // Called with the first (representative) entry
+    expect(onNavigate).toHaveBeenCalledWith(first);
+  });
+
+  it('regression: two DISTINCT entries render two rows, neither has a repeat-count badge', () => {
+    const diags: DiagnosticEntry[] = [
+      { ...makeDiag('Error', { message: 'distinct error A' }), source: 'compile' },
+      { ...makeDiag('Warning', { message: 'distinct warning B' }), source: 'tessellation' },
+    ];
+    render(() => (
+      <DiagnosticsPanel
+        open={true}
+        diagnostics={diags}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+      />
+    ));
+    const rows = document.querySelectorAll('[data-testid="diagnostic-row"]');
+    expect(rows.length).toBe(2);
+    expect(document.querySelectorAll('[data-testid="diagnostic-repeat-count"]').length).toBe(0);
+  });
+});
+
 describe('DiagnosticsPanel header close button', () => {
   beforeAll(() => {
     globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
