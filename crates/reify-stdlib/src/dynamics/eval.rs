@@ -453,6 +453,32 @@ fn snapshot_inverse_dynamics(
 
     // ── per-body fields: `at` joint, id, solid ──
     let n = bodies.len();
+
+    // ── fail-honest one-per-body positions invariant (task ι step-6) ───────────
+    // `positions` (when Some) is ONE ENTRY PER BODY in `bodies` order — it is
+    // NOT a flat per-DOF list.  `vels`/`accels` are the flat per-DOF lists
+    // (length = Σ dof), which is why ONLY they are run through `slice_generalized`
+    // (below).  Applying `slice_generalized` to `positions` would be WRONG:
+    // `positions.len() == n` (not Σ dof), so it would return `None` for any
+    // multi-DOF input and silently drop the spring term — a regression.
+    //
+    // The only caller that supplies `Some(positions)` is `inverse_dynamics_sample`,
+    // which passes the trajectory sample's `values` slice; `snapshot_for_sample`
+    // hard-checks `values.len() == bodies.len()` (eval.rs:862) before binding each
+    // `values[i]` to body i's joint.  Hence `positions[bi]` is exactly the value
+    // bound to body bi's joint → body bi's coordinate q by construction.
+    //
+    // This guard enforces that contract locally: any caller that violates it
+    // (e.g. passes a flat per-DOF slice of the wrong length) receives `None`
+    // (→ `Value::Undef`) rather than a silently-misaligned spring torque,
+    // matching the module's fail-honest convention (cf. the closed-chain
+    // `loop_closures` guard at eval.rs:403-416).
+    if let Some(p) = positions {
+        if p.len() != n {
+            return None;
+        }
+    }
+
     let mut at_joints: Vec<&Value> = Vec::with_capacity(n);
     let mut ids: Vec<i64> = Vec::with_capacity(n);
     let mut solids: Vec<&Value> = Vec::with_capacity(n);
@@ -526,7 +552,20 @@ fn snapshot_inverse_dynamics(
         // revolute/prismatic, so this guard never fires in practice — it is
         // defence-in-depth for a hand-built multi-DOF Map carrying a stray
         // spring_rate key.
-        // Spring gating: positions carries the per-body q on the trajectory
+        //
+        // `positions` is ONE ENTRY PER BODY in `bodies` order (NOT a flat
+        // per-DOF list).  `vels`/`accels` are the flat per-DOF lists (length
+        // = Σ dof) — that asymmetry is precisely why ONLY they are run through
+        // `slice_generalized` (above).  The length guard at the top of this
+        // function ensures `positions.len() == n` when `Some`, so `.get(bi)`
+        // is provably in range for all `bi` in `0..n`.
+        //
+        // NOTE: applying `slice_generalized` to `positions` would be WRONG —
+        // `positions.len() == n` (not Σ dof), so `slice_generalized` would
+        // return `None` for any multi-DOF input and silently drop the spring
+        // term (a regression).
+        //
+        // Spring gating: `positions` carries the per-body q on the trajectory
         // path (Some(values)); the snapshot path passes None because the
         // snapshot body record does not retain the scalar coordinate.
         let joint_pos = positions
