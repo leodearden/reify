@@ -25,7 +25,9 @@ import type { DiagnosticEntry } from './panels';
 import { WarmPoolDebugPanel } from './debug/WarmPoolDebugPanel';
 import { Splitter } from './components/Splitter';
 import { KeyboardHelp } from './components/KeyboardHelp';
-import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
+import { CommandPalette } from './components/CommandPalette';
+import { useKeyboardShortcuts, paletteCommands, runCommand } from './hooks/useKeyboardShortcuts';
+import { createLspClient } from './editor/lspClient';
 import { createEngineStore } from './stores/engineStore';
 import { createEditorStore } from './stores/editorStore';
 import { createSelectionStore } from './stores/selectionStore';
@@ -517,6 +519,10 @@ const App: Component = () => {
 
   // Keyboard help overlay state
   const [showHelp, setShowHelp] = createSignal(false);
+
+  // Command palette state
+  const [showPalette, setShowPalette] = createSignal(false);
+  const [paletteMode, setPaletteMode] = createSignal<'command' | 'symbol'>('command');
   const [exporting, setExporting] = createSignal(false);
   // Gate for REIFY_DEBUG=1 panels (WarmPoolDebugPanel, etc.) — set in initApp()
   const [debugEnabled, setDebugEnabled] = createSignal(false);
@@ -819,8 +825,9 @@ const App: Component = () => {
     }
   }
 
-  // Keyboard shortcuts
-  useKeyboardShortcuts({
+  // Keyboard shortcuts — shared callback object used by both the global handler
+  // and the palette's runCommand() so the two can never drift.
+  const shortcutCallbacks = {
     onNew: handleNew,
     onOpen: handleOpen,
     onSave: handleSave,
@@ -849,7 +856,27 @@ const App: Component = () => {
       const target = viewStateStore.getOrderedViewIds()[i];
       if (target) viewStateStore.switchView(target);
     },
-  });
+    onCommandPalette: () => {
+      setPaletteMode('command');
+      setShowPalette(true);
+    },
+    onSymbolJump: () => {
+      setPaletteMode('symbol');
+      setShowPalette(true);
+    },
+  };
+  useKeyboardShortcuts(shortcutCallbacks);
+
+  // Palette symbol fetch — mirrors the file:// URI pattern in Editor.tsx:104-108
+  function pathToUri(filePath: string): string {
+    return `file://${filePath}`;
+  }
+
+  async function fetchPaletteSymbols() {
+    const f = editorStore.state.activeFile;
+    if (!f) return [];
+    return createLspClient().documentSymbol(pathToUri(f));
+  }
 
   let alive = true;
   let unsub: (() => void) | undefined;
@@ -1419,6 +1446,17 @@ const App: Component = () => {
     <>
       <Show when={showHelp()}>
         <KeyboardHelp onClose={() => setShowHelp(false)} />
+      </Show>
+      <Show when={showPalette()}>
+        <CommandPalette
+          getCommands={paletteCommands}
+          runCommand={(id) => runCommand(id, shortcutCallbacks)}
+          fetchSymbols={fetchPaletteSymbols}
+          filePath={editorStore.state.activeFile ?? ''}
+          onJumpToLocation={(loc) => setScrollToLocation(loc)}
+          onClose={() => setShowPalette(false)}
+          initialMode={paletteMode()}
+        />
       </Show>
       <Show when={initPhase() === 'loading'}>
         <div data-testid="app-loading" class={styles.loading}>
