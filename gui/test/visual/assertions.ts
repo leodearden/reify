@@ -25,6 +25,22 @@ export function getByPath(obj: unknown, dotted: string): unknown {
   return current;
 }
 
+// ─── FIXTURES catalogue ───────────────────────────────────────────────────────
+
+/**
+ * Named fixture catalogue — name → repo-relative path.
+ *
+ * Values match the existing Scenario.fixture convention in run.ts so the same
+ * `path.join(REPO_ROOT, rel)` plumbing resolves both visual and value fixtures.
+ */
+export const FIXTURES = {
+  empty: "gui/test/fixtures/empty.ri",
+  small_cube: "gui/test/fixtures/small_cube.ri",
+  broken_syntax: "gui/test/fixtures/broken_syntax.ri",
+  large_assembly: "gui/test/fixtures/large_assembly.ri",
+  all_severities: "gui/test/fixtures/all_severities.ri",
+} as const;
+
 // ─── Assertion type + evaluateAssertion ──────────────────────────────────────
 
 export type Assertion = {
