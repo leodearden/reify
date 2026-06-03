@@ -106,6 +106,10 @@ const _SHORTCUTS_DEF = [
   { id: 'gotoDefinition', key: 'F12',   description: 'Go to definition', category: 'Editor' },
   { id: 'navBack',        key: 'Alt+←', description: 'Navigate back',    category: 'Editor' },
   { id: 'navForward',     key: 'Alt+→', description: 'Navigate forward', category: 'Editor' },
+  // Command palette and symbol-jump — global actions exempt from the typing-context
+  // guard in useKeyboardShortcuts so they open from any focus state (including the CM editor).
+  { id: 'commandPalette', key: 'Ctrl+Shift+P', description: 'Command palette', category: 'View', bind: { key: 'p', ctrl: true, shift: true } },
+  { id: 'symbolJump',     key: 'Ctrl+Shift+O', description: 'Go to symbol',    category: 'View', bind: { key: 'o', ctrl: true, shift: true } },
 ] as const satisfies readonly ShortcutDef[];
 
 /**
