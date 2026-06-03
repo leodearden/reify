@@ -109,9 +109,16 @@ export const MenuBar: Component<MenuBarProps> = (props) => {
     document.addEventListener('mousedown', handleMouseDown);
     document.addEventListener('keydown', handleKeyDown);
 
+    if (window.__REIFY_DEBUG__) {
+      window.__REIFY_DEBUG__.menuBar = { openMenu };
+    }
+
     onCleanup(() => {
       document.removeEventListener('mousedown', handleMouseDown);
       document.removeEventListener('keydown', handleKeyDown);
+      if (window.__REIFY_DEBUG__) {
+        delete window.__REIFY_DEBUG__.menuBar;
+      }
     });
   });
 
