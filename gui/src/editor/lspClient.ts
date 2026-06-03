@@ -9,10 +9,25 @@ import { invoke } from '@tauri-apps/api/core';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
+export interface Range {
+  start: { line: number; character: number };
+  end: { line: number; character: number };
+}
+
+export interface DocumentSymbol {
+  name: string;
+  detail?: string;
+  kind: number;
+  range: Range;
+  selectionRange: Range;
+  children?: DocumentSymbol[];
+}
+
 export interface ServerCapabilities {
   completionProvider?: unknown;
   hoverProvider?: boolean | unknown;
   definitionProvider?: boolean | unknown;
+  documentSymbolProvider?: boolean | unknown;
   textDocumentSync?: unknown;
 }
 
@@ -55,6 +70,7 @@ export interface LspClient {
   completion(uri: string, line: number, character: number): Promise<CompletionItem[]>;
   hover(uri: string, line: number, character: number): Promise<HoverResult | null>;
   gotoDefinition(uri: string, line: number, character: number): Promise<Location | null>;
+  documentSymbol(uri: string): Promise<DocumentSymbol[]>;
 }
 
 // ── Private helpers ────────────────────────────────────────────────────
@@ -148,6 +164,15 @@ export function createLspClient(): LspClient {
       const parsed = JSON.parse(response);
       if (!parsed || parsed === 'null') return null;
       return parsed as Location;
+    },
+
+    async documentSymbol(uri: string): Promise<DocumentSymbol[]> {
+      const response = await lspRequest('textDocument/documentSymbol', {
+        textDocument: { uri },
+      });
+      const parsed = JSON.parse(response);
+      if (!Array.isArray(parsed)) return [];
+      return parsed as DocumentSymbol[];
     },
   };
 }
