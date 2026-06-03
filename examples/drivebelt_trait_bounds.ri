@@ -70,12 +70,12 @@ structure def DriveBelt : ElasticallyDeformable + ImpactResistant + Damping {
 // CeramicLiner is an alumina-based refractory liner.  It satisfies:
 //   Refractory : ThermallyCharacterized : MaterialSpec
 //
-// Constraint from Refractory: max_service_temperature >= 1500.0
-// CeramicLiner.max_service_temperature = 2050.0 — well above the guard.
+// Constraint from Refractory: max_service_temperature >= 1500.0K
+// CeramicLiner.max_service_temperature = 2050.0K — well above the guard.
 //
 // thermal_conductivity / specific_heat / thermal_expansion use the named-dim
-// aliases introduced by task #3115; temperatures remain Real pending task
-// #3112.
+// aliases introduced by task #3115; temperature params tightened to Temperature
+// type by task #3112.
 structure def CeramicLiner : Refractory {
     // MaterialSpec
     param density : Real = 3900.0              // kg/m³ — alumina (Al₂O₃)
@@ -85,9 +85,9 @@ structure def CeramicLiner : Refractory {
     param thermal_conductivity : ThermalConductivity = 30.0W/(m*K)
     param specific_heat : SpecificHeat = 880.0J/(kg*K)
     param thermal_expansion : ThermalExpansion = 0.000008 / 1K  // 8.0e-6 coefficient of linear expansion
-    param melting_point : Real = 2072.0        // K
-    param max_service_temperature : Real = 2050.0 // K — clears Refractory >= 1500 guard
-    param glass_transition : Real = 0.0        // K — not applicable; 0 sentinel
+    param melting_point : Temperature = 2072.0K
+    param max_service_temperature : Temperature = 2050.0K // clears Refractory >= 1500K guard
+    param glass_transition : Temperature = 0.0K          // not applicable; 0K sentinel
 }
 
 // ── (2b) §6.4 gap-fill sample: Copper : Conductive ──────────────────────────

@@ -68,9 +68,9 @@ structure def ThermalOmit : ThermallyCharacterized {
 /// Indeterminate (Kleene three-valued logic: undef input → Indeterminate,
 /// not Violated). Zero Violated constraint results.
 ///
-/// RED: the `check_source_with_stdlib` helper panics on compile errors, so
-/// this test fails with a panic ("missing required member max_service_temperature")
-/// until step-2 adds `= undef` to the three temperature params.
+/// GREEN: the three temperature params carry `= undef` defaults (step-2) and
+/// Temperature type (task #3112). The constraint `max_service_temperature >= 1500.0K`
+/// evaluates to Indeterminate when max_service_temperature is undef (Kleene logic).
 ///
 /// Uses a top-level structure INSTANCE (no `def` keyword) so Engine::check
 /// evaluates the inherited constraint. Precedent: stdlib_prelude_tests.rs and
@@ -103,7 +103,7 @@ structure RefractoryOmit : Refractory {
 
     // Locate all constraint results for the RefractoryOmit entity specifically.
     // RefractoryOmit inherits exactly one constraint from Refractory:
-    //   `max_service_temperature >= 1500.0`
+    //   `max_service_temperature >= 1500.0K`
     // Asserting count == 1 pins the test to that specific constraint — if additional
     // inherited constraints are added later the count check will flag the mismatch and
     // prompt a more specific assertion, rather than the test silently passing for the
@@ -123,7 +123,7 @@ structure RefractoryOmit : Refractory {
     assert_eq!(
         refractory_omit_constraints[0].satisfaction,
         Satisfaction::Indeterminate,
-        "RefractoryOmit max_service_temperature >= 1500.0 should be Indeterminate \
+        "RefractoryOmit max_service_temperature >= 1500.0K should be Indeterminate \
          (max_service_temperature omitted → undef input via Kleene), got: {:?}",
         refractory_omit_constraints[0].satisfaction
     );

@@ -2,10 +2,11 @@
 // Provides thermal characterization trait definitions for engineering materials.
 //
 // Real-placeholder audit: see docs/notes/stdlib-real-placeholder-audit.md
-// Temperature params (melting_point, max_service_temperature, glass_transition) are
-// tightenable-now (task #3112); composite-dimension params (thermal_conductivity,
-// specific_heat, thermal_expansion) were tightened to dimensioned scalar types
-// (ThermalConductivity, SpecificHeat, ThermalExpansion) by task #3115.
+// Temperature params (melting_point, max_service_temperature, glass_transition) were
+// tightened from Real to Temperature by task #3112; composite-dimension params
+// (thermal_conductivity, specific_heat, thermal_expansion) were tightened to
+// dimensioned scalar types (ThermalConductivity, SpecificHeat, ThermalExpansion)
+// by task #3115.
 //
 // Spec reference: docs/reify-stdlib-reference.md §6.3 lines 680-694.
 // Audit reference: docs/notes/stdlib-trait-breadth-audit-v01.md §6.3 (CLOSED via task 2354).
@@ -28,7 +29,7 @@
 //     specific_heat         — J/(kg·K)
 //     thermal_expansion     — 1/K (coefficient of linear thermal expansion)
 //
-//   Optional (= undef; tightenable to Temperature by task #3112):
+//   Optional (= undef; Temperature type tightened by task #3112):
 //     melting_point         — K; undef for amorphous/composite materials
 //     max_service_temperature — K (upper operating limit); undef when not rated
 //     glass_transition      — K (Tg); genuinely undefined for crystalline
@@ -38,17 +39,17 @@ trait ThermallyCharacterized : MaterialSpec {
     param thermal_conductivity : ThermalConductivity
     param specific_heat : SpecificHeat
     param thermal_expansion : ThermalExpansion
-    param melting_point : Real = undef
-    param max_service_temperature : Real = undef
-    param glass_transition : Real = undef
+    param melting_point : Temperature = undef
+    param max_service_temperature : Temperature = undef
+    param glass_transition : Temperature = undef
 }
 
 // ── Refractory ───────────────────────────────────────────────────────────────
 
 // A refractory material is a ThermallyCharacterized material whose
-// max_service_temperature is at least 1500.0 (K-equivalent Real). The
-// constraint guards the contract that a refractory material retains
-// engineering utility at high-temperature operating conditions.
+// max_service_temperature is at least 1500 K. The constraint guards the
+// contract that a refractory material retains engineering utility at
+// high-temperature operating conditions.
 trait Refractory : ThermallyCharacterized {
-    constraint max_service_temperature >= 1500.0
+    constraint max_service_temperature >= 1500.0K
 }

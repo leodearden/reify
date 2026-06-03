@@ -117,9 +117,9 @@ Source: `crates/reify-compiler/stdlib/materials_thermal.ri`
 | 36 | `ThermallyCharacterized` trait | `thermal_conductivity` | `ThermalConductivity` ✓ | W/(m·K) | tightened-by-#3115 | task-E ✓ |
 | 37 | `ThermallyCharacterized` trait | `specific_heat` | `SpecificHeat` ✓ | J/(kg·K) | tightened-by-#3115 | task-E ✓ |
 | 38 | `ThermallyCharacterized` trait | `thermal_expansion` | `ThermalExpansion` ✓ | 1/K | tightened-by-#3115 | task-E ✓ |
-| 39 | `ThermallyCharacterized` trait | `melting_point` | `Real` | `Temperature` | tightenable-now | task-B |
-| 40 | `ThermallyCharacterized` trait | `max_service_temperature` | `Real` | `Temperature` | tightenable-now | task-B |
-| 41 | `ThermallyCharacterized` trait | `glass_transition` | `Real` | `Temperature` | tightenable-now | task-B |
+| 39 | `ThermallyCharacterized` trait | `melting_point` | `Temperature` ✓ | `Temperature` | tightened-by-#3112 | task-B ✓ |
+| 40 | `ThermallyCharacterized` trait | `max_service_temperature` | `Temperature` ✓ | `Temperature` | tightened-by-#3112 | task-B ✓ |
+| 41 | `ThermallyCharacterized` trait | `glass_transition` | `Temperature` ✓ | `Temperature` | tightened-by-#3112 | task-B ✓ |
 
 **Notes:**
 - `thermal_conductivity` (W/(m·K) = kg·m/s³/K), `specific_heat` (J/(kg·K) = m²/s²/K),
@@ -382,7 +382,7 @@ rejected by the dimension checker. **No follow-up task is filed for this module.
 | Label | Title | Scope | Task ID |
 |-------|-------|-------|---------|
 | task-A | Tighten `materials_mechanical.ri` dimensioned params | density→Density, youngs_modulus/shear_modulus→Pressure, yield_strength/uts/compressive_strength→Pressure, endurance_limit→Pressure, impact_energy→Energy; update conforming structures in examples/ and tests/ | #3111 |
-| task-B | Tighten `materials_thermal.ri` Temperature params | melting_point / max_service_temperature / glass_transition → Temperature; update call sites | #3112 |
+| task-B ✓ | Tighten `materials_thermal.ri` Temperature params | melting_point / max_service_temperature / glass_transition → Temperature; Refractory constraint updated to `>= 1500.0K`; call sites in examples/ and tests/ updated. | #3112 (resolved) |
 | task-C ✓ | Tighten `materials_optical.ri` `reference_thickness` | reference_thickness → Length; update call sites | #3113 (resolved) |
 | task-D | Tighten `structural_physical.ri` dimensioned params | volume→Volume, centroid_x/y/z→Length, moment_of_inertia→MomentOfInertia, max_deflection→Length, hardening_modulus→Pressure, max_service_temp→Temperature, seal_pressure_rating→Pressure; update call sites | #3114 |
 | task-E ✓ | Add named-dimension aliases for composite quantities | Introduced 9 aliases (ThermalConductivity, SpecificHeat, ThermalExpansion, ElectricResistivity, ElectricalConductivity, DielectricStrength, Stiffness, AbsorptionCoeff, FractureToughness — last needs fractional Length exponent, supported via new `from_rational_exps` helper) to NAMED_DIMENSIONS; resolver table-driven so no resolver changes needed. All 11 audit-identified blocked-composite sites tightened. Trait-level constraints (`stiffness > 0`, `resistivity < 0.0001`, etc.) rewritten to use dimensioned RHS literals (e.g. `> 0.0 * 1N / 1m`) — bare numeric RHS evaluated to Indeterminate at runtime because `eval_cmp` compares dimensions; see esc-3115-112 design note. | #3115 (resolved 2026-05-15) |

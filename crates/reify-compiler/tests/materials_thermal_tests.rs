@@ -70,9 +70,9 @@ fn thermal_module_loads_with_no_errors() {
 ///   thermal_expansion        → Type::Scalar { dimension: THERMAL_EXPANSION }
 ///
 /// Optional (DefaultKind::Param in tc.defaults):
-///   melting_point            → Type::Real (= undef; sibling task #3112)
-///   max_service_temperature  → Type::Real (= undef; sibling task #3112)
-///   glass_transition         → Type::Real (= undef; sibling task #3112)
+///   melting_point            → Type::Scalar { dimension: TEMPERATURE } (= undef; tightened by task #3112)
+///   max_service_temperature  → Type::Scalar { dimension: TEMPERATURE } (= undef; tightened by task #3112)
+///   glass_transition         → Type::Scalar { dimension: TEMPERATURE } (= undef; tightened by task #3112)
 #[test]
 fn thermally_characterized_has_three_required_and_three_optional_members() {
     let module = load_stdlib_module();
@@ -150,9 +150,12 @@ fn thermally_characterized_has_three_required_and_three_optional_members() {
         }
     }
 
-    // Three optional params must appear in tc.defaults as DefaultKind::Param with the
-    // correct cell_type (Type::Real for all three; tightening to Temperature belongs to
-    // sibling task #3112 and will update these assertions).
+    // Three optional params must appear in tc.defaults as DefaultKind::Param with
+    // cell_type = Type::Scalar { dimension: TEMPERATURE } — tightened from Real by
+    // task #3112.
+    let expected_optional_type = Type::Scalar {
+        dimension: DimensionVector::TEMPERATURE,
+    };
     let optional_params = ["melting_point", "max_service_temperature", "glass_transition"];
     for param_name in &optional_params {
         let default = tc
@@ -171,9 +174,9 @@ fn thermally_characterized_has_three_required_and_three_optional_members() {
             });
         match &default.kind {
             DefaultKind::Param { cell_type, .. } => assert_eq!(
-                cell_type, &Type::Real,
-                "ThermallyCharacterized optional param '{}' expected Type::Real, got {:?}",
-                param_name, cell_type
+                cell_type, &expected_optional_type,
+                "ThermallyCharacterized optional param '{}' expected {:?}, got {:?}",
+                param_name, expected_optional_type, cell_type
             ),
             other => panic!(
                 "ThermallyCharacterized optional param '{}' should be DefaultKind::Param, got {:?}",
@@ -228,7 +231,7 @@ fn refractory_refines_thermally_characterized_with_constraint() {
 ///     thermal_expansion, melting_point, max_service_temperature, glass_transition
 #[test]
 fn ceramic_liner_conforms_to_refractory_with_full_member_chain() {
-    // max_service_temperature = 2050.0 clears the >= 1500.0 Refractory constraint.
+    // max_service_temperature = 2050.0K clears the >= 1500.0K Refractory constraint.
     let source = r#"
 structure def CeramicLiner : Refractory {
     param density : Real = 3900.0
@@ -236,9 +239,9 @@ structure def CeramicLiner : Refractory {
     param thermal_conductivity : ThermalConductivity = 30.0 * 1W / (1m * 1K)
     param specific_heat : SpecificHeat = 880.0 * 1J / (1kg * 1K)
     param thermal_expansion : ThermalExpansion = 0.0000081 / 1K
-    param melting_point : Real = 2345.0
-    param max_service_temperature : Real = 2050.0
-    param glass_transition : Real = 0.0
+    param melting_point : Temperature = 2345.0K
+    param max_service_temperature : Temperature = 2050.0K
+    param glass_transition : Temperature = 0.0K
 }
 "#;
 
