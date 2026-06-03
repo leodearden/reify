@@ -5,6 +5,7 @@ import type { MenuAction } from './DesignTreeContextMenu';
 import { ViewSelector } from './ViewSelector';
 import type { ViewStateStore } from '../stores/viewStateStore';
 import type { EntityTreeNode } from '../types';
+import { registerDebugPanel } from '../debug/types';
 import styles from './DesignTree.module.css';
 
 interface Props {
@@ -84,6 +85,8 @@ function findAncestorPaths(nodes: EntityTreeNode[], target: string): string[] {
 const DesignTree: Component<Props> = (props) => {
   const [expanded, setExpanded] = createSignal<Set<string>>(new Set());
   const [menu, setMenu] = createSignal<MenuState | null>(null);
+
+  registerDebugPanel('designTree', { expanded });
 
   // Selected-row reveal: when the selected entity changes, auto-expand its
   // ancestors (additive only — never collapses manual user expansion) and
@@ -199,16 +202,9 @@ const DesignTree: Component<Props> = (props) => {
     document.addEventListener('click', handleDocumentClick, { capture: true });
     document.addEventListener('keydown', handleDocumentKeyDown);
 
-    if (window.__REIFY_DEBUG__) {
-      window.__REIFY_DEBUG__.designTree = { expanded };
-    }
-
     onCleanup(() => {
       document.removeEventListener('click', handleDocumentClick, { capture: true });
       document.removeEventListener('keydown', handleDocumentKeyDown);
-      if (window.__REIFY_DEBUG__) {
-        delete window.__REIFY_DEBUG__.designTree;
-      }
     });
   });
 

@@ -3,6 +3,7 @@
 import type { Scene, PerspectiveCamera, WebGLRenderer } from 'three';
 import type { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import type { EditorView } from '@codemirror/view';
+import { onMount, onCleanup } from 'solid-js';
 import type { Accessor } from 'solid-js';
 import type { FileData, GuiState } from '../types';
 
@@ -95,4 +96,28 @@ declare global {
   interface Window {
     __REIFY_DEBUG__?: ReifyDebugContext;
   }
+}
+
+/**
+ * Registers a panel accessor onto window.__REIFY_DEBUG__[key] on component mount
+ * and removes it on cleanup. Gated on ctx presence so production builds
+ * (no __REIFY_DEBUG__) are no-ops.
+ *
+ * The identity guard on cleanup prevents a late-running dismount from a prior
+ * instance from evicting a freshly-mounted second instance's registration.
+ */
+export function registerDebugPanel<K extends Exclude<keyof ReifyDebugContext, 'stores'>>(
+  key: K,
+  value: NonNullable<ReifyDebugContext[K]>,
+): void {
+  onMount(() => {
+    if (!window.__REIFY_DEBUG__) return;
+    window.__REIFY_DEBUG__[key] = value as ReifyDebugContext[K];
+    onCleanup(() => {
+      const ctx = window.__REIFY_DEBUG__;
+      if (ctx && (ctx as Partial<ReifyDebugContext>)[key] === value) {
+        delete (ctx as Partial<ReifyDebugContext>)[key];
+      }
+    });
+  });
 }

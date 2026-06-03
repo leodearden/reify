@@ -1,5 +1,6 @@
-import { type Component, createSignal, createMemo, For, Show, onMount, onCleanup } from 'solid-js';
+import { type Component, createSignal, createMemo, For, Show, onCleanup } from 'solid-js';
 import type { ConstraintData, ValueData } from '../types';
+import { registerDebugPanel } from '../debug/types';
 import styles from './ConstraintPanel.module.css';
 
 export interface ConstraintPanelProps {
@@ -34,6 +35,8 @@ function statusTitle(status: string): string {
 export const ConstraintPanel: Component<ConstraintPanelProps> = (props) => {
   const [expandedNodes, setExpandedNodes] = createSignal<Set<string>>(new Set());
   const [contextMenu, setContextMenu] = createSignal<{ constraint: ConstraintData; x: number; y: number } | null>(null);
+
+  registerDebugPanel('constraintPanel', { expandedNodes });
 
   const sortedConstraints = createMemo(() => {
     const list = Object.values(props.constraints);
@@ -114,17 +117,8 @@ export const ConstraintPanel: Component<ConstraintPanelProps> = (props) => {
     setContextMenu(null);
   }
 
-  onMount(() => {
-    if (window.__REIFY_DEBUG__) {
-      window.__REIFY_DEBUG__.constraintPanel = { expandedNodes };
-    }
-  });
-
   onCleanup(() => {
     document.removeEventListener('click', handleDismissMenu);
-    if (window.__REIFY_DEBUG__) {
-      delete window.__REIFY_DEBUG__.constraintPanel;
-    }
   });
 
   return (

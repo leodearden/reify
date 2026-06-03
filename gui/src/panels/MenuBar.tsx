@@ -5,6 +5,7 @@
 import { createSignal, onMount, onCleanup, Show, For } from 'solid-js';
 import type { Component } from 'solid-js';
 import { getShortcut, shortcutKey, type ShortcutId } from '../shortcuts';
+import { registerDebugPanel } from '../debug/types';
 import styles from './MenuBar.module.css';
 
 export interface MenuBarProps {
@@ -93,6 +94,8 @@ export const MenuBar: Component<MenuBarProps> = (props) => {
     closeMenu();
   }
 
+  registerDebugPanel('menuBar', { openMenu });
+
   onMount(() => {
     function handleMouseDown(e: MouseEvent) {
       if (containerRef && e.target instanceof Node && !containerRef.contains(e.target)) {
@@ -109,16 +112,9 @@ export const MenuBar: Component<MenuBarProps> = (props) => {
     document.addEventListener('mousedown', handleMouseDown);
     document.addEventListener('keydown', handleKeyDown);
 
-    if (window.__REIFY_DEBUG__) {
-      window.__REIFY_DEBUG__.menuBar = { openMenu };
-    }
-
     onCleanup(() => {
       document.removeEventListener('mousedown', handleMouseDown);
       document.removeEventListener('keydown', handleKeyDown);
-      if (window.__REIFY_DEBUG__) {
-        delete window.__REIFY_DEBUG__.menuBar;
-      }
     });
   });
 
