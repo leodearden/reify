@@ -1196,8 +1196,13 @@ describe('DesignTree — selected-row reveal', () => {
     expect(screen.getByTestId('tree-row-Root.A.a1')).toBeTruthy();
   });
 
-  it('(b) scrollIntoView: called on the selected row after expand', async () => {
-    scrollSpy = vi.fn();
+  it('(b) scrollIntoView: called on the selected row with { block: "nearest" }', async () => {
+    // Track which element's scrollIntoView was called via `this` context.
+    const scrolledElements: Element[] = [];
+    scrollSpy = vi.fn(function (this: Element, ...args: unknown[]) {
+      scrolledElements.push(this);
+      void args;
+    });
     Element.prototype.scrollIntoView = scrollSpy;
 
     const nodes = [
@@ -1215,7 +1220,13 @@ describe('DesignTree — selected-row reveal', () => {
     render(() => (
       <DesignTree tree={nodes} viewStateStore={store} selectedEntity="Root.A.a1" />
     ));
-    await waitFor(() => expect(scrollSpy).toHaveBeenCalled());
+    // The scroll must have used the correct options.
+    await waitFor(() =>
+      expect(scrollSpy).toHaveBeenCalledWith({ block: 'nearest' }),
+    );
+    // The element that was scrolled must be the selected row itself.
+    const row = screen.getByTestId('tree-row-Root.A.a1');
+    expect(scrolledElements).toContain(row);
   });
 
   it('(c) reactivity: switching selectedEntity to a different collapsed branch reveals new row', async () => {
@@ -1247,5 +1258,82 @@ describe('DesignTree — selected-row reveal', () => {
     // Switch to the other branch
     setSelectedEntity('Root.B.b1');
     await waitFor(() => expect(screen.queryByTestId('tree-row-Root.B.b1')).toBeTruthy());
+  });
+
+  it('(d) additive-only: a manually-expanded sibling branch stays expanded when selectedEntity moves', async () => {
+    // Branch B is manually expanded by the user, branch A is selected.
+    // Switching selection to A should expand A's ancestors but NOT collapse B.
+    const nodes = [
+      makeNode({
+        entity_path: 'Root.A',
+        children: [makeNode({ entity_path: 'Root.A.a1' })],
+      }),
+      makeNode({
+        entity_path: 'Root.B',
+        children: [makeNode({ entity_path: 'Root.B.b1' })],
+      }),
+    ];
+    const store = makeStore(nodes);
+    const [selectedEntity, setSelectedEntity] = createSignal<string | null>(null);
+
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        selectedEntity={selectedEntity()}
+      />
+    ));
+
+    // Manually expand Root.B via chevron click
+    fireEvent.click(screen.getByTestId('chevron-Root.B'));
+    expect(screen.getByTestId('tree-row-Root.B.b1')).toBeTruthy();
+
+    // Now select something deep in branch A — this should expand Root.A
+    setSelectedEntity('Root.A.a1');
+    await waitFor(() => expect(screen.queryByTestId('tree-row-Root.A.a1')).toBeTruthy());
+
+    // Root.B.b1 must still be visible (manual expand was NOT collapsed)
+    expect(screen.getByTestId('tree-row-Root.B.b1')).toBeTruthy();
+  });
+
+  it('(e) root-node selected: no throw, no extra expansion', () => {
+    // Selecting a root node has no ancestors — the effect should be a no-op
+    // (no expansion changes, no error thrown).
+    const nodes = [
+      makeNode({
+        entity_path: 'Root',
+        children: [makeNode({ entity_path: 'Root.A' })],
+      }),
+    ];
+    const store = makeStore(nodes);
+    // Root is a top-level node: findAncestorPaths returns []
+    expect(() =>
+      render(() => (
+        <DesignTree tree={nodes} viewStateStore={store} selectedEntity="Root" />
+      )),
+    ).not.toThrow();
+    // Root.A must remain hidden (the root has no expandable ancestors)
+    expect(screen.queryByTestId('tree-row-Root.A')).toBeNull();
+  });
+
+  it('(f) non-existent selectedEntity: no throw, no expansion', () => {
+    const nodes = [
+      makeNode({
+        entity_path: 'Root',
+        children: [makeNode({ entity_path: 'Root.A' })],
+      }),
+    ];
+    const store = makeStore(nodes);
+    expect(() =>
+      render(() => (
+        <DesignTree
+          tree={nodes}
+          viewStateStore={store}
+          selectedEntity="Root.DoesNotExist.missing"
+        />
+      )),
+    ).not.toThrow();
+    // No ancestor expansion occurred for a missing path
+    expect(screen.queryByTestId('tree-row-Root.A')).toBeNull();
   });
 });

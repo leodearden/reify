@@ -60,21 +60,25 @@ function flattenVisible(nodes: EntityTreeNode[], expandedSet: Set<string>): stri
  * DFS search that returns the entity_path of every ancestor of `target` in
  * `nodes` (exclusive of `target` itself). Returns an empty array when `target`
  * is a root node or is not found. Modelled on `flattenVisible`.
+ *
+ * Each ancestor is pushed exactly once: the `path` accumulator is built on
+ * the way *down* and flushed in one `result.push(...path)` call at the leaf,
+ * so there are no duplicate entries even at deep nesting levels.
  */
 function findAncestorPaths(nodes: EntityTreeNode[], target: string): string[] {
-  const ancestors: string[] = [];
+  const result: string[] = [];
   function visit(node: EntityTreeNode, path: string[]): boolean {
-    if (node.entity_path === target) return true;
+    if (node.entity_path === target) {
+      result.push(...path); // all ancestors flushed once at the leaf — no duplicates
+      return true;
+    }
     for (const child of node.children) {
-      if (visit(child, [...path, node.entity_path])) {
-        ancestors.push(...path, node.entity_path);
-        return true;
-      }
+      if (visit(child, [...path, node.entity_path])) return true;
     }
     return false;
   }
   for (const node of nodes) visit(node, []);
-  return ancestors;
+  return result;
 }
 
 const DesignTree: Component<Props> = (props) => {
