@@ -42,26 +42,67 @@ trait Process {
 
 // PRD §11.3 primary categories (Subtracting, Adding, Forming, Joining):
 // Material-removal processes (milling, turning, drilling, EDM, water-jet, …).
-trait Subtracting : Process {}
+// tool_access: the solid envelope the tool must reach into (Solid = Type::Geometry).
+// min_feature_size: smallest feature the process can reliably produce.
+// achievable_finish: surface roughness (Ra) the process can deliver.
+trait Subtracting : Process {
+    param tool_access : Solid
+    param min_feature_size : Length
+    param achievable_finish : Length
+}
 
 // Additive manufacturing (FDM, SLA, SLS, metal AM, …).
-trait Adding : Process {}
+// layer_thickness: slice height per deposited layer.
+// min_feature_size: smallest printable feature.
+// build_volume: maximum build envelope (Solid = Type::Geometry).
+trait Adding : Process {
+    param layer_thickness : Length
+    param min_feature_size : Length
+    param build_volume : Solid
+}
 
 // Material-deformation processes (forging, stamping, rolling, extrusion, …).
-trait Forming : Process {}
+// min_bend_radius: minimum inner radius achievable without cracking.
+// max_draw_depth: maximum draw / punch depth.
+// draft_angle: required taper on vertical walls for die release.
+trait Forming : Process {
+    param min_bend_radius : Length
+    param max_draw_depth : Length
+    param draft_angle : Angle
+}
 
 // Assembly / bonding processes (welding, brazing, adhesive, fastening, …).
-trait Joining : Process {}
+// joint_strength: tensile/shear strength of the joined interface.
+// reversible: whether the joint can be disassembled without destruction.
+trait Joining : Process {
+    param joint_strength : Pressure
+    param reversible : Bool
+}
 
 // Additional categories from task #333 scope:
 // Parting / separation (sawing, shearing, blanking, …).
-trait Parting : Process {}
+// kerf_width: material removed per cut.
+// min_feature_size: smallest separable feature.
+trait Parting : Process {
+    param kerf_width : Length
+    param min_feature_size : Length
+}
 
 // Surface finishing and coating (anodising, painting, plating, polishing, …).
-trait SurfaceTreating : Process {}
+// coating_thickness: applied layer thickness.
+// achievable_finish: resulting surface roughness (Ra).
+trait SurfaceTreating : Process {
+    param coating_thickness : Length
+    param achievable_finish : Length
+}
 
 // Thermal treatment (annealing, quenching, case-hardening, …).
-trait HeatTreating : Process {}
+// treatment_temperature: process soak temperature.
+// hold_duration: soak / dwell time at temperature.
+trait HeatTreating : Process {
+    param treatment_temperature : Temperature
+    param hold_duration : Time
+}
 
 // ── DFM rule trait ────────────────────────────────────────────────────────────
 // TRAIT SURFACE ONLY — this trait declares the interface for a DFM rule;
