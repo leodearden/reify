@@ -647,10 +647,53 @@ fn find_name_offset_in_span(source: &str, span: SourceSpan, name: &str) -> u32 {
     span.start
 }
 
+/// Narrow a member-statement span down to the span of just its NAME identifier
+/// token.
+///
+/// Searches forward from `member_span.start` for the first **whole-word**
+/// occurrence of `name` (a match whose neighbouring bytes are not identifier
+/// characters), returning `SourceSpan::new(name_start, name_start + name.len())`.
+/// Falls back to an empty span at `member_span.start` when `name` is not found.
+///
+/// The declaration name always follows its leading keyword
+/// (`param`/`let`/`sub`/`port`), so the first whole-word match is the declaration
+/// token. Whole-word matching (rather than the bare substring search in
+/// `goto_def::find_name_offset_in_decl`) guards against a longer identifier that
+/// merely contains `name` as a substring. The UTF-8 char-boundary snap mirrors
+/// `convert::offset_to_position`.
+///
+/// Reused by `references.rs` for the declaration name-token span, the
+/// `include_declaration` token, and the prepare/compute-rename declaration path.
+pub fn name_token_span(source: &str, member_span: SourceSpan, name: &str) -> SourceSpan {
+    let mut start = (member_span.start as usize).min(source.len());
+    // Snap forward to a valid UTF-8 boundary if we landed mid-character.
+    while start < source.len() && !source.is_char_boundary(start) {
+        start += 1;
+    }
+
+    let bytes = source.as_bytes();
+    let name_len = name.len();
+    for (rel, _) in source[start..].match_indices(name) {
+        let abs = start + rel;
+        // Whole-word check: neither the byte before nor the byte after the match
+        // may be an identifier character.
+        let prev_ok = abs == 0 || !is_ident_byte(bytes[abs - 1]);
+        let next = abs + name_len;
+        let next_ok = next >= bytes.len() || !is_ident_byte(bytes[next]);
+        if prev_ok && next_ok {
+            return SourceSpan::new(abs as u32, (abs + name_len) as u32);
+        }
+    }
+
+    SourceSpan::empty(member_span.start)
+}
+
 /// Whether `b` is an identifier byte (ASCII alphanumeric or underscore).
 ///
-/// Local to this module — mirrors `convert::is_ident_byte` (which is private)
-/// so the document-symbol name search stays scoped to analysis.rs.
+/// Local to this module — mirrors `convert::is_ident_byte` (which is private).
+/// Used both by the document-symbol name search
+/// ([`name_selection_range`] / [`find_name_offset_in_span`]) and by
+/// [`name_token_span`] for whole-word boundary checks.
 fn is_ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
@@ -2229,5 +2272,51 @@ mod tests {
         let guarded = find("guarded_x").expect("guarded_x should be flattened as a direct child");
         assert_eq!(guarded.kind, SymbolKind::FIELD);
         assert_selection_on_name(source, guarded);
+    }
+
+    // --- name_token_span tests (step-1) ---
+    //
+    // `name_token_span(source, member_span, name)` narrows a member-statement
+    // span down to the span of just the NAME identifier token. Expected offsets
+    // are derived from `source.find` so the assertions stay fixture-robust.
+
+    #[test]
+    fn name_token_span_param_width_covers_just_the_name() {
+        let source = "param width: Scalar = 80mm";
+        let member_span = SourceSpan::new(0, source.len() as u32);
+        let span = name_token_span(source, member_span, "width");
+        let start = source.find("width").unwrap() as u32;
+        let end = start + "width".len() as u32;
+        assert_eq!(span, SourceSpan::new(start, end));
+        assert_eq!(&source[span.start as usize..span.end as usize], "width");
+    }
+
+    #[test]
+    fn name_token_span_let_volume_covers_just_the_name() {
+        let source = "let volume = width * height * thickness";
+        let member_span = SourceSpan::new(0, source.len() as u32);
+        let span = name_token_span(source, member_span, "volume");
+        let start = source.find("volume").unwrap() as u32;
+        let end = start + "volume".len() as u32;
+        assert_eq!(span, SourceSpan::new(start, end));
+        assert_eq!(&source[span.start as usize..span.end as usize], "volume");
+    }
+
+    #[test]
+    fn name_token_span_indented_guarded_param_covers_just_the_name() {
+        // A guarded member's statement span begins at the indented `param`
+        // keyword. name_token_span must still land on the identifier token,
+        // searching forward from the (non-zero) member-span start.
+        let source = "        param guarded_x : Scalar = 5mm";
+        let decl_start = source.find("param").unwrap() as u32;
+        let member_span = SourceSpan::new(decl_start, source.len() as u32);
+        let span = name_token_span(source, member_span, "guarded_x");
+        let start = source.find("guarded_x").unwrap() as u32;
+        let end = start + "guarded_x".len() as u32;
+        assert_eq!(span, SourceSpan::new(start, end));
+        assert_eq!(
+            &source[span.start as usize..span.end as usize],
+            "guarded_x"
+        );
     }
 }
