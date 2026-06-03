@@ -2569,4 +2569,77 @@ mod tests {
             );
         }
     }
+
+    // ── step-5 RED: positions-length invariant for snapshot_inverse_dynamics ─────
+    //
+    // `snapshot_inverse_dynamics` must return `None` when supplied a `positions`
+    // slice whose length ≠ body count (the one-per-body invariant).
+    //
+    // Currently `positions.get(bi)` silently reads `positions[0]` for bi=0 and
+    // ignores the surplus entry (no length check exists), so the call returns
+    // `Some(forces)` instead of `None` — making this test RED until step-6 adds
+    // the guard `if p.len() != n { return None; }`.
+    //
+    // Setup: n=1 body (standard single-pendulum), positions slice length=2 →
+    // mismatch → expected None.  The vels/accels are valid length-1 lists so they
+    // cannot cause the failure; only the positions mismatch is the source.
+
+    /// Supplying a positions slice with length ≠ body count must yield `None`
+    /// (fail-honest one-per-body invariant: `positions[bi]` is body bi's joint
+    /// coordinate by construction in `snapshot_for_sample`, and any mismatch
+    /// means the caller is not supplying one position per body in bodies order).
+    #[test]
+    fn snapshot_inverse_dynamics_mismatched_positions_returns_none() {
+        use crate::eval_builtin;
+        use std::f64::consts::PI;
+
+        let theta = -PI / 6.0; // −30°
+
+        // Standard single-body pendulum mechanism (n = 1 body).
+        let mech = pendulum_mechanism();
+
+        // Extract the joint for bind().
+        let joint = match &mech {
+            Value::Map(m) => {
+                let bodies = match map_get(m, "bodies") {
+                    Some(Value::List(b)) => b,
+                    _ => panic!("mechanism missing bodies"),
+                };
+                let b0 = match &bodies[0] {
+                    Value::Map(bm) => bm,
+                    _ => panic!("body 0 not a Map"),
+                };
+                map_get(b0, "at").expect("body 0 missing at").clone()
+            }
+            _ => panic!("pendulum_mechanism must be a Map"),
+        };
+
+        // Build FK snapshot at θ = −30°.
+        let binding = eval_builtin("bind", &[joint, Value::angle(theta)]);
+        let snap = eval_builtin("snapshot", &[mech.clone(), Value::List(vec![binding])]);
+        assert!(matches!(snap, Value::Map(_)), "snapshot() must return a Map");
+
+        // Valid length-1 vels/accels (1-DOF revolute).
+        let q_dot = Value::List(vec![Value::Real(0.0)]);
+        let q_ddot = Value::List(vec![Value::Real(0.0)]);
+
+        // Deliberately mis-shaped positions: n=1 body but length=2.
+        // This violates the one-per-body invariant.  Currently the call succeeds
+        // silently (positions[0] is used, the surplus entry is ignored); after
+        // step-6 the guard returns None.
+        let positions: Vec<Value> = vec![Value::angle(theta), Value::angle(theta + 0.1)];
+
+        let result = snapshot_inverse_dynamics(
+            &mech,
+            &snap,
+            &q_dot,
+            &q_ddot,
+            Some(positions.as_slice()),
+        );
+        assert!(
+            result.is_none(),
+            "positions slice length != body count must return None \
+             (fail-honest one-per-body invariant)"
+        );
+    }
 }
