@@ -119,3 +119,62 @@ describe('ContextPicker', () => {
     expect(fileOption.closest('button')!.hasAttribute('disabled')).toBe(true);
   });
 });
+
+describe('ContextPicker trigger button accessibility', () => {
+  it('trigger button has aria-haspopup="menu"', () => {
+    render(() => (
+      <ContextPicker
+        onAttach={() => {}}
+        hasSelection={false}
+        hasDiagnostics={false}
+        hasViolatedConstraints={false}
+        hasActiveFile={false}
+      />
+    ));
+    const btn = screen.getByTestId('context-picker-btn');
+    expect(btn.getAttribute('aria-haspopup')).toBe('menu');
+  });
+
+  it('trigger button has aria-expanded="false" when dropdown is closed', () => {
+    render(() => (
+      <ContextPicker
+        onAttach={() => {}}
+        hasSelection={false}
+        hasDiagnostics={false}
+        hasViolatedConstraints={false}
+        hasActiveFile={false}
+      />
+    ));
+    const btn = screen.getByTestId('context-picker-btn');
+    expect(btn.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('trigger button has aria-expanded="true" after clicking to open dropdown', () => {
+    render(() => (
+      <ContextPicker
+        onAttach={() => {}}
+        hasSelection={true}
+        hasDiagnostics={true}
+        hasViolatedConstraints={false}
+        hasActiveFile={false}
+      />
+    ));
+    const btn = screen.getByTestId('context-picker-btn');
+    fireEvent.click(btn);
+    expect(btn.getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('trigger button has aria-label of "Attach context"', () => {
+    render(() => (
+      <ContextPicker
+        onAttach={() => {}}
+        hasSelection={false}
+        hasDiagnostics={false}
+        hasViolatedConstraints={false}
+        hasActiveFile={false}
+      />
+    ));
+    const btn = screen.getByTestId('context-picker-btn');
+    expect(btn.getAttribute('aria-label')).toBe('Attach context');
+  });
+});
