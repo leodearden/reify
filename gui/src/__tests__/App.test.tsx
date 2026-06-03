@@ -3146,6 +3146,47 @@ describe('App handleSave dirty-indicator and error handling', () => {
   });
 });
 
+describe('App handleSave uses live buffer content', () => {
+  it('Ctrl+S sends the live buffer content (from liveContentRef getter), not the stale store snapshot', async () => {
+    const path = '/project/test.ri';
+    vi.mocked(bridge.saveFile).mockResolvedValue(undefined);
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [{ path, content: 'STALE' }],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+      tensegrity_wires: [],
+    });
+
+    render(() => <App />);
+    await waitFor(() => expect(screen.getByTestId('app-layout')).toBeTruthy());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+    await waitFor(() => expect(capturedEditorLiveContentRef).toBeDefined());
+
+    // Set store content to 'STALE' and mark file not externally-changed
+    // so canSave returns ok — only the content argument changes
+    capturedEditorStore!.setActiveFile(path);
+    capturedEditorStore!.markDirty(path);
+    // Store snapshot stays 'STALE' — no updateFileContent called after open
+
+    // Wire the live content getter to return 'LIVE-SAVE'
+    capturedEditorLiveContentRef!(() => 'LIVE-SAVE');
+
+    vi.mocked(bridge.saveFile).mockClear();
+
+    // Trigger handleSave via global Ctrl+S shortcut
+    fireEvent.keyDown(document, { key: 's', ctrlKey: true });
+
+    // Assert live content was saved, NOT the stale store snapshot
+    await waitFor(() => {
+      expect(vi.mocked(bridge.saveFile)).toHaveBeenCalledTimes(1);
+    });
+    expect(vi.mocked(bridge.saveFile)).toHaveBeenCalledWith(path, 'LIVE-SAVE');
+  });
+});
+
 describe('App tessellation diagnostics end-to-end wiring', () => {
   let tessellationDiagnosticsCallback: ((diags: any[]) => void) | undefined;
 
