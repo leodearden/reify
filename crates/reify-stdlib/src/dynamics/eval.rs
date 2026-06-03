@@ -31,7 +31,8 @@
 
 use crate::dynamics::closed_chain::{reduce_constraint_rank, solve_closed_chain, DEFAULT_PIVOT_EPS};
 use crate::dynamics::rnea::{
-    assemble_joint_space_inertia, default_gravity, inverse_dynamics_open_chain, RneaLink,
+    assemble_joint_space_inertia, default_gravity, inverse_dynamics_open_chain, JointCompliance,
+    RneaLink,
 };
 use crate::dynamics::spatial::{Frame3, SpatialTransform6, SpatialVector6};
 use crate::joints::motion_subspace_columns;
@@ -56,6 +57,28 @@ fn cell_f64(v: &Value) -> Option<f64> {
         Value::Real(r) => Some(*r),
         Value::Scalar { si_value, .. } => Some(*si_value),
         _ => None,
+    }
+}
+
+/// Extract an `f64` from a compliant-field value cell: handles the
+/// `Value::Option(Some(inner))` wrapper (recursing into `inner`) and
+/// `Value::Option(None)` (→ `None`), plus all the bare shapes that
+/// `cell_f64` accepts (`Int` / `Real` / dimensioned `Scalar`).
+/// Non-finite values are filtered to `None`.
+///
+/// This mirrors `flexures::common::scalar_si` but delegates to `cell_f64`
+/// for the dimension-stripping step, accepting `Int` and `Real` as well as
+/// `Scalar`. Used by `joint_compliance` to read `spring_rate`, `damping`,
+/// and `neutral` from a flexure joint Map in either the bare-Scalar shape
+/// that `make_flexure_joint` emits today or an Option-wrapped future shape.
+fn compliance_cell_f64(v: &Value) -> Option<f64> {
+    match v {
+        Value::Option(Some(inner)) => compliance_cell_f64(inner),
+        Value::Option(None) => None,
+        other => {
+            let f = cell_f64(other)?;
+            if f.is_finite() { Some(f) } else { None }
+        }
     }
 }
 
@@ -500,6 +523,50 @@ fn map_str<'a>(map: &'a BTreeMap<Value, Value>, key: &str) -> Option<&'a str> {
         Some(Value::String(s)) => Some(s.as_str()),
         _ => None,
     }
+}
+
+/// Build a [`JointCompliance`] from the compliant-field keys of a joint
+/// `Value::Map` (`spring_rate`, `damping`, `neutral`), or `None` for joints
+/// that carry neither term (plain revolute / prismatic joints stay
+/// byte-identical to pre-ι behaviour, i.e. `compliance: None`).
+///
+/// `position` is the current joint coordinate `q`, required to apply the
+/// spring term `−k·(q − neutral)`.  When `position` is `None` (the
+/// `inverse_dynamics_at_snapshot` entry point cannot recover `q` from the
+/// snapshot because the snapshot body record does not retain the scalar
+/// coordinate), the `spring_rate` key is silently ignored; damping `−c·q̇`
+/// depends only on `q̇` and is applied on **both** entry points whenever the
+/// `damping` key is set.
+///
+/// Both bare-`Scalar` and `Value::Option(Some(Scalar))` shapes are accepted
+/// for all three compliant fields (via [`compliance_cell_f64`]), covering the
+/// shape `make_flexure_joint` emits today and any future wrapped form.
+#[allow(dead_code)] // dead_code annotation removed in step-4 when wired into the link loop
+fn joint_compliance(joint: &Value, position: Option<f64>) -> Option<JointCompliance> {
+    let m = match joint {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    // Spring term requires a known joint coordinate.
+    let spring_rate = if position.is_some() {
+        map_get(m, "spring_rate").and_then(compliance_cell_f64)
+    } else {
+        None
+    };
+    let damping = map_get(m, "damping").and_then(compliance_cell_f64);
+    // Neither term active → plain joint; return None (no regression).
+    if spring_rate.is_none() && damping.is_none() {
+        return None;
+    }
+    let neutral = map_get(m, "neutral")
+        .and_then(compliance_cell_f64)
+        .unwrap_or(0.0);
+    Some(JointCompliance {
+        spring_rate,
+        damping,
+        neutral,
+        position: position.unwrap_or(0.0),
+    })
 }
 
 /// The `kind` discriminant of a joint `Value::Map` (e.g. `"revolute"`).
