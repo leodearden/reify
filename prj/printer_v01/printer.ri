@@ -14,12 +14,15 @@
 // Rotate a leaf's local +Z onto a world axis with
 // `orient_axis_angle(vec3(1m,0,0), 90deg)` (→Y) / `(vec3(0,1m,0), 90deg)` (→X).
 //
-// CAVEAT (override drop): constructor-arg overrides at a `sub` site do NOT yet
-// flow into surfaced child geometry (child renders its DEFINITION DEFAULTS).
-// So all per-instance variation is via the `at` TRANSFORM, and sizes that must
-// agree are TUNED so the shared leaf default lines them up (e.g. rail length
-// 800mm == Y-rail centre-to-centre 2*y_rail_offset, so the gantry exactly spans
-// between the Y rails). Tracked gap (filed).
+// PER-INSTANCE SIZING (task 4147 — landed): constructor-arg overrides at a `sub`
+// site now flow into surfaced child geometry — the child RE-REALIZES with the
+// overridden params (verified to thread through expressions and multiple nesting
+// levels). So per-instance sizes are passed directly rather than tuned into a
+// shared leaf default: the X-gantry rails are BearingRod(length: 2*y_rail_offset)
+// and the Y rails BearingRod(length: y_rail_len); the tendon z-levels (z_a/z_b),
+// the idler fore/aft split, and the bearing OD are single-sourced (in DriveTendons
+// / CoreXY) and threaded down. (Earlier revisions TUNED shared leaf defaults
+// because overrides were dropped — that workaround is now retired.)
 //
 // COREXY GEOMETRY (agreed in design review):
 //  - Round rails => the X gantry is a STACKED PAIR (two rails) to constrain roll
@@ -43,7 +46,7 @@
 //    spread (x_rail_offset) to leave room for the crosses to thread between them.
 //    Idler routing pulleys (608ZZ + grooved sheave) stack at each Y-carriage
 //    corner. Deferred: the gantry-cross fore/aft split (crosses still run on y=0),
-//    live x_head/y_head tracking (blocked by the override drop below).
+//    live x_head/y_head tracking (a future live-input feature).
 //
 // VISIBILITY: reference geometry (build-volume box, bed travel centreline) is
 // `aux` — realised + inspectable but default_visible=false (GUI auto-hide is
@@ -76,8 +79,9 @@ pub structure AirBearing {
 }
 
 /// Precision-ground stainless rod (linear-rail rod): solid cylinder along local
-/// +Z, centred. Used for both Y rails and the X gantry rails (length tuned so
-/// the gantry spans exactly between the Y rails — see header CAVEAT).
+/// +Z, centred. Used for both Y rails and the X gantry rails; CoreXY overrides
+/// `length` per instance (Y rails = y_rail_len; X gantry rails = 2*y_rail_offset
+/// so the gantry spans exactly between the Y rails — task 4147 override fix).
 pub structure BearingRod {
     param diameter : Length = 60mm
     param length   : Length = 800mm
@@ -94,21 +98,6 @@ pub structure BearingRod {
 pub structure LinearTendon {
     param diameter : Length = 6mm
     param length   : Length = 800mm
-
-    let body = translate(cylinder(diameter / 2, length), 0mm, 0mm, 0mm - length / 2)
-
-    constraint diameter > 0mm
-    constraint length > 0mm
-}
-
-/// Half-length on-rail tendon span (carriage → rail end): a 6 mm cylinder along
-/// local +Z, centred. == half the 800 mm Y rail. CoreXY routes each belt along a
-/// rail on ONLY ONE side of the carriage (it turns onto the gantry cross at the
-/// carriage idler), so a rail belt run is a HALF span — not the full rail. The
-/// gantry crosses still use the full-length LinearTendon (via TendonQuad).
-pub structure HalfTendon {
-    param diameter : Length = 6mm
-    param length   : Length = 400mm
 
     let body = translate(cylinder(diameter / 2, length), 0mm, 0mm, 0mm - length / 2)
 
@@ -200,8 +189,8 @@ pub structure IdlerPulley {
 /// Used now for the GANTRY CROSSES only — the full 800mm == 2 * y_rail_offset
 /// carriage-to-carriage gantry span (spans reuse LinearTendon's 800mm default).
 /// The Y-rail runs are HALF spans (CoreXY turns each belt onto the gantry at the
-/// carriage), so they use RailTendons, not this. z_a/z_b kept in step with
-/// RailTendons / CarriageIdlers (override drop — task 4147).
+/// carriage), so they use RailTendons, not this. z_a/z_b are overridden by
+/// DriveTendons (the single source for the whole drive — task 4147 override fix).
 pub structure TendonQuad {
     /// Outer (belt A) half-separation above/below the axis.
     param z_a : Length = 80mm
@@ -230,26 +219,30 @@ pub structure TendonQuad {
 /// moment nulling, as on the cross. The half meets the gantry cross at y = 0 with
 /// a SHARP corner (the idler wrap profile is not modelled). This is the A-FRONT /
 /// B-BACK rail; the opposite rail gets the converse via a 180°-about-Z placement
-/// (DriveTendons), matching the idler fore/aft flip. z_a/z_b kept in step with
-/// TendonQuad / CarriageIdlers (override drop — task 4147).
+/// (DriveTendons), matching the idler fore/aft flip. z_a/z_b are overridden by
+/// DriveTendons (single source for the whole drive — task 4147 override fix).
 pub structure RailTendons {
     param z_a : Length = 80mm
     param z_b : Length = 55mm
 
     let rot_to_y = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)  // span runs along local +Y
-    // Centre offset = HalfTendon.length / 2, so a +half span is y∈[0,+400] (front)
-    // and a −half span is y∈[−400,0] (back) — both anchored on the cross line y=0.
-    let half     = 200mm
+    // Each rail belt run is a HALF span (carriage → rail end): a LinearTendon
+    // overridden to `span`. Centre offset = span / 2, so a +half span is
+    // y∈[0,+span] (front) and a −half span is y∈[−span,0] (back) — both anchored
+    // on the cross line y=0. (Was a separate HalfTendon leaf before the task-4147
+    // override fix; now just a length override on the one LinearTendon.)
+    let span     = 400mm
+    let half     = span / 2
     let neg_half = 0mm - half
     let neg_z_a  = 0mm - z_a
     let neg_z_b  = 0mm - z_b
 
     // Belt A → FRONT half, doubled ±z_a.
-    sub a_upper = HalfTendon() at transform3(rot_to_y, vec3(0mm, half, z_a))
-    sub a_lower = HalfTendon() at transform3(rot_to_y, vec3(0mm, half, neg_z_a))
+    sub a_upper = LinearTendon(length: span) at transform3(rot_to_y, vec3(0mm, half, z_a))
+    sub a_lower = LinearTendon(length: span) at transform3(rot_to_y, vec3(0mm, half, neg_z_a))
     // Belt B → BACK half, doubled ±z_b.
-    sub b_upper = HalfTendon() at transform3(rot_to_y, vec3(0mm, neg_half, z_b))
-    sub b_lower = HalfTendon() at transform3(rot_to_y, vec3(0mm, neg_half, neg_z_b))
+    sub b_upper = LinearTendon(length: span) at transform3(rot_to_y, vec3(0mm, neg_half, z_b))
+    sub b_lower = LinearTendon(length: span) at transform3(rot_to_y, vec3(0mm, neg_half, neg_z_b))
 
     constraint z_a > z_b
     constraint z_b > 0mm
@@ -259,8 +252,8 @@ pub structure RailTendons {
 /// A outer ±z_a, belt B inner ±z_b), each turning that belt from its Y-rail run
 /// onto the gantry cross. Vertical (local +Z) spin axes — the tendons wrap them
 /// in the horizontal plane. Stacked 25mm apart in Z (z_a−z_b) while each pulley
-/// is only ~10mm thick along its axis, so the four clear each other. z_a/z_b kept
-/// in step with TendonQuad (override drop — task 4147).
+/// is only ~10mm thick along its axis, so the four clear each other. z_a/z_b are
+/// overridden by DriveTendons (single source for the whole drive — task 4147 fix).
 ///
 /// FORE/AFT SPLIT: belt A's two pulleys sit FORWARD (+Y by ab_split) and belt B's
 /// two sit BEHIND (−Y by ab_split), so each belt's rope is tangent to the gantry-
@@ -274,8 +267,8 @@ pub structure CarriageIdlers {
     param z_b : Length = 55mm
     /// Fore/aft (Y) half-separation of the belt-A vs belt-B turn points. == r_pitch
     /// (== IdlerPulley sheave_od/2 = 18mm) so each turn point sits tangent to the
-    /// y = 0 cross tendon as the rope rides the rim (override drop — kept in step
-    /// with DriveTendons.r_pitch; task 4147).
+    /// y = 0 cross tendon as the rope rides the rim (overridden by DriveTendons to
+    /// its r_pitch — single source; task 4147 override fix).
     param ab_split : Length = 18mm
 
     let neg_z_a = 0mm - z_a
@@ -307,12 +300,20 @@ pub structure CarriageIdlers {
 /// into a full CoreXY loop (each Z layer a complete belt; the ±z pair is the
 /// moment-balanced double). PROVISIONAL beyond this point: the capstans (each taps
 /// a back-cross) are the next step. Deferred: the gantry-cross fore/aft split
-/// (crosses still run on y = 0) and live x_head/y_head tracking (sub-site
-/// overrides are dropped — CAVEAT).
+/// (crosses still run on y = 0) and live x_head/y_head tracking (a future
+/// live-input feature).
 pub structure DriveTendons {
-    /// Transverse position of each rail == the Y-rail axis (kept in step with
-    /// CoreXY.y_rail_offset so the tendons sit in the rail's vertical plane).
+    /// Transverse position of each rail == the Y-rail axis. CoreXY overrides this
+    /// with y_rail_offset so the tendons sit in the rail's vertical plane (single
+    /// source via the task-4147 override fix; was hand-kept-in-step).
     param rail_x : Length = 400mm
+    /// Outer (belt A) / inner (belt B) tendon Z half-separations — the SINGLE
+    /// SOURCE for the whole drive. Threaded down into TendonQuad / RailTendons /
+    /// CarriageIdlers and reused for the corner idlers / returns / back-crosses
+    /// below, so all twelve+ spans and every idler share one z_a/z_b. CoreXY
+    /// overrides z_a with its tendon_outer_z (which drives x_rail_offset).
+    param z_a : Length = 80mm
+    param z_b : Length = 55mm
 
     let rot_to_cross = orient_axis_angle(vec3(0mm, 0mm, 1m), 90deg)  // Y runs → gantry X-cross
     let flip_ab      = orient_axis_angle(vec3(0mm, 0mm, 1m), 180deg) // swap A↔B fore/aft (rails + idlers)
@@ -321,10 +322,10 @@ pub structure DriveTendons {
     // Y rails: HALF spans (RailTendons), A-front/B-back on the right; the left
     // rail is the CONVERSE via 180°-about-Z (the rail tendons lie on x = 0 in the
     // child frame, so the rotation only swaps the A/B fore/aft, not the rail X).
-    sub rail_r = RailTendons() at transform3(orient_identity(), vec3(rail_x,     0mm, 0mm))  // right Y rail
-    sub rail_l = RailTendons() at transform3(flip_ab,           vec3(neg_rail_x, 0mm, 0mm))  // left Y rail (converse)
+    sub rail_r = RailTendons(z_a: z_a, z_b: z_b) at transform3(orient_identity(), vec3(rail_x,     0mm, 0mm))  // right Y rail
+    sub rail_l = RailTendons(z_a: z_a, z_b: z_b) at transform3(flip_ab,           vec3(neg_rail_x, 0mm, 0mm))  // left Y rail (converse)
     // Gantry crosses: FULL-length quad turned 90° about Z.
-    sub cross  = TendonQuad() at transform3(rot_to_cross,      vec3(0mm,        0mm, 0mm))
+    sub cross  = TendonQuad(z_a: z_a, z_b: z_b) at transform3(rot_to_cross,      vec3(0mm,        0mm, 0mm))
 
     // Idler placement: TANGENT to the tendons it routes, not centred on the
     // rail×cross intersection. The rope rides the sheave at pitch radius r_pitch,
@@ -332,19 +333,20 @@ pub structure DriveTendons {
     // belt-B FORE/AFT split inside CarriageIdlers puts each turn point r_pitch off
     // the cross line (±Y) — so every tendon centreline is tangent to its rope's
     // pitch circle (a 90° wrap from rail run to gantry cross). r_pitch == IdlerPulley
-    // sheave_od/2 == CarriageIdlers.ab_split (rope rides the rim; override drop —
-    // task 4147). The stack CENTRE therefore sits on the cross line (y = 0); the
+    // sheave_od/2 and is threaded into CarriageIdlers.ab_split as the single
+    // source (task 4147 fix). The stack CENTRE therefore sits on the cross line (y = 0); the
     // fore/aft split alone carries the ±Y offset.
     let r_pitch    = 18mm
     let idler_in_r = rail_x - r_pitch         // right stack: inboard of the right rail
     let idler_in_l = neg_rail_x + r_pitch     // left stack: inboard of the left rail
 
-    // Right carriage: belt A turns in FRONT (+Y), belt B BEHIND (−Y).
-    sub idlers_r = CarriageIdlers() at transform3(orient_identity(), vec3(idler_in_r, 0mm, 0mm))
+    // Right carriage: belt A turns in FRONT (+Y), belt B BEHIND (−Y). z_a/z_b and
+    // the fore/aft split (ab_split == r_pitch) come from this struct — single source.
+    sub idlers_r = CarriageIdlers(z_a: z_a, z_b: z_b, ab_split: r_pitch) at transform3(orient_identity(), vec3(idler_in_r, 0mm, 0mm))
     // Left carriage: the CONVERSE (A behind, B in front). The 180°-about-Z
     // placement swaps the fore/aft split; the pulleys lie on the x = 0 axis, so
     // the X tangency offset (idler_in_l) is unaffected by the rotation.
-    sub idlers_l = CarriageIdlers() at transform3(flip_ab, vec3(idler_in_l, 0mm, 0mm))
+    sub idlers_l = CarriageIdlers(z_a: z_a, z_b: z_b, ab_split: r_pitch) at transform3(flip_ab, vec3(idler_in_l, 0mm, 0mm))
 
     // ── Corner idlers + front-to-back returns (rough-out) ───────────────────
     // Close each belt loop to the REAR (where the capstans sit) WITHOUT disturbing
@@ -362,10 +364,10 @@ pub structure DriveTendons {
     //    the rear.
     //
     // PROVISIONAL: the capstans + the final rear connection are the next step.
-    // z_a/z_b kept in step with the sub-structures (override drop — task 4147).
+    // (z_a/z_b are this struct's own params — the single source, see below.)
     let rot_to_y    = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)  // return runs along +Y
-    let z_a         = 80mm    // == TendonQuad / RailTendons / CarriageIdlers.z_a
-    let z_b         = 55mm    // == …z_b
+    // z_a / z_b are now params (single source, threaded into the subs above) and
+    // reused here for the corner idlers / returns / back-crosses.
     let neg_z_a     = 0mm - z_a
     let neg_z_b     = 0mm - z_b
     let rail_half   = 400mm   // == BearingRod.length / 2 — rail runs end at ±rail_half
@@ -430,8 +432,10 @@ pub structure DriveTendons {
 // sit at the gantry's current Y (y_head) and the head's X (x_head).
 
 pub structure CoreXY {
-    /// Y-rail centre-to-centre half-separation. 2*this == BearingRod.length so
-    /// the X gantry exactly spans between the Y rails (header CAVEAT).
+    /// Y-rail centre-to-centre half-separation. The X-gantry rail length is
+    /// DERIVED as 2*this (x_rail_len below) so the gantry exactly spans between
+    /// the Y rails — a length override now that task 4147 is fixed (was a shared
+    /// tuned BearingRod default; see header).
     param y_rail_offset : Length = 400mm
     /// Gantry position along Y (0 = mid travel) and toolhead position along X.
     param y_head : Length = 0mm
@@ -442,12 +446,14 @@ pub structure CoreXY {
     // (x_rail_offset − x_brg_radius) must clear the OUTERMOST gantry-cross tendon
     // (its surface at tendon_outer_z + tendon radius). The rail half-separation
     // is therefore a FORMULA of the tendon + bearing geometry, not a free dim:
-    // widen a tendon level or a bearing and the rails spread to suit. (Override
-    // drop forces these inputs to mirror the leaf defaults; task 4147 will let
-    // CoreXY read TendonQuad.z_a / AirBearing.outer_diameter directly instead.)
-    /// Outer (belt A) tendon Z level — MUST equal TendonQuad.z_a.
+    // widen a tendon level or a bearing and the rails spread to suit. These two
+    // dims are the SINGLE SOURCE — threaded DOWN into the leaves (task 4147
+    // override fix): tendon_outer_z → DriveTendons.z_a, and x_brg_radius*2 →
+    // AirBearing.outer_diameter — so the leaf defaults can no longer drift out of
+    // step with the clearance formula.
+    /// Outer (belt A) tendon Z level — drives DriveTendons.z_a (threaded).
     param tendon_outer_z  : Length = 80mm
-    /// X-rail bearing radius — MUST equal AirBearing.outer_diameter / 2.
+    /// X-rail bearing radius — drives AirBearing.outer_diameter = 2*this (threaded).
     param x_brg_radius    : Length = 45mm
     /// Radial clearance from the bearing inner face to the outer tendon surface
     /// (folds in the 3mm tendon radius).
@@ -459,35 +465,44 @@ pub structure CoreXY {
     /// in the outer tendon). Their midplane stays the Y-rail plane (z = 0).
     let x_rail_offset = tendon_outer_z + x_brg_radius + x_brg_clearance
 
+    // Rail lengths, now per-instance (task 4147 override fix) instead of a shared
+    // tuned BearingRod default: the X-gantry rails span carriage-to-carriage
+    // (== 2*y_rail_offset) while the Y rails run the full Y travel. Both are 800mm
+    // at the current envelope but no longer coupled — change y_rail_offset and only
+    // the X rails follow.
+    let x_rail_len = y_rail_offset * 2
+    let y_rail_len = 800mm
+
     let rot_to_y   = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)   // leaf +Z → +Y
     let rot_to_x   = orient_axis_angle(vec3(0mm, 1m, 0mm), 90deg)   // leaf +Z → +X
     let neg_y_rail = 0mm - y_rail_offset
     let neg_x_rail = 0mm - x_rail_offset
 
     // Fixed Y side-rails (run full Y).
-    sub y_rail_l = BearingRod() at transform3(rot_to_y, vec3(neg_y_rail, 0mm, 0mm))
-    sub y_rail_r = BearingRod() at transform3(rot_to_y, vec3(y_rail_offset, 0mm, 0mm))
+    sub y_rail_l = BearingRod(length: y_rail_len) at transform3(rot_to_y, vec3(neg_y_rail, 0mm, 0mm))
+    sub y_rail_r = BearingRod(length: y_rail_len) at transform3(rot_to_y, vec3(y_rail_offset, 0mm, 0mm))
 
     // Y carriages: a bearing riding each Y rail at the gantry's Y, plus a block
     // bridging up/down to the stacked gantry-rail ends.
-    sub y_carriage_l_brg = AirBearing()    at transform3(rot_to_y,        vec3(neg_y_rail,    y_head, 0mm))
-    sub y_carriage_r_brg = AirBearing()    at transform3(rot_to_y,        vec3(y_rail_offset, y_head, 0mm))
+    sub y_carriage_l_brg = AirBearing(outer_diameter: x_brg_radius * 2) at transform3(rot_to_y, vec3(neg_y_rail,    y_head, 0mm))
+    sub y_carriage_r_brg = AirBearing(outer_diameter: x_brg_radius * 2) at transform3(rot_to_y, vec3(y_rail_offset, y_head, 0mm))
     sub y_carriage_l_blk = CarriageBlock() at transform3(orient_identity(), vec3(neg_y_rail,    y_head, 0mm))
     sub y_carriage_r_blk = CarriageBlock() at transform3(orient_identity(), vec3(y_rail_offset, y_head, 0mm))
 
     // X gantry: two stacked rails along +X, straddling the Y-rail plane in Z,
     // ends meeting the two Y carriages.
-    sub x_rail_lower = BearingRod() at transform3(rot_to_x, vec3(0mm, y_head, neg_x_rail))
-    sub x_rail_upper = BearingRod() at transform3(rot_to_x, vec3(0mm, y_head, x_rail_offset))
+    sub x_rail_lower = BearingRod(length: x_rail_len) at transform3(rot_to_x, vec3(0mm, y_head, neg_x_rail))
+    sub x_rail_upper = BearingRod(length: x_rail_len) at transform3(rot_to_x, vec3(0mm, y_head, x_rail_offset))
 
     // Toolhead carriage riding the gantry at x_head: a bearing on each gantry
     // rail plus a bridging block.
-    sub head_brg_lower = AirBearing()    at transform3(rot_to_x,        vec3(x_head, y_head, neg_x_rail))
-    sub head_brg_upper = AirBearing()    at transform3(rot_to_x,        vec3(x_head, y_head, x_rail_offset))
+    sub head_brg_lower = AirBearing(outer_diameter: x_brg_radius * 2) at transform3(rot_to_x, vec3(x_head, y_head, neg_x_rail))
+    sub head_brg_upper = AirBearing(outer_diameter: x_brg_radius * 2) at transform3(rot_to_x, vec3(x_head, y_head, x_rail_offset))
     sub head_block     = CarriageBlock() at transform3(orient_identity(), vec3(x_head, y_head, 0mm))
 
     // CoreXY drive tendons (twelve spans: doubled A/B on both rails + crosses).
-    sub tendons = DriveTendons() at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+    // z_a/rail_x threaded down so tendon_outer_z + y_rail_offset are the single source.
+    sub tendons = DriveTendons(rail_x: y_rail_offset, z_a: tendon_outer_z) at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
 
     constraint y_rail_offset > 0mm
     constraint tendon_outer_z > 0mm
