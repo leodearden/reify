@@ -87,7 +87,8 @@ structure def CeramicLiner : Refractory {
     param thermal_expansion : ThermalExpansion = 0.000008 / 1K  // 8.0e-6 coefficient of linear expansion
     param melting_point : Temperature = 2072.0K
     param max_service_temperature : Temperature = 2050.0K // clears Refractory >= 1500K guard
-    param glass_transition : Temperature = 0.0K          // not applicable; 0K sentinel
+    // glass_transition omitted — genuinely undefined for crystalline/refractory materials;
+    // defaults to undef, which is Indeterminate under Kleene three-valued logic (correct).
 }
 
 // ── (2b) §6.4 gap-fill sample: Copper : Conductive ──────────────────────────
