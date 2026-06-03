@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use reify_eval::cache::NodeId;
+use reify_ir::NodeTraits;
 // Re-export the canonical NodeKind from reify-types so all existing call sites
 // (including reify_runtime::commitment::NodeKind in tests and concurrent_eval.rs)
 // continue to resolve transparently. The From<&NodeId> bridge impl lives in
@@ -96,6 +97,29 @@ impl NodePolicyOverrides {
             return *o;
         }
         NodeCommitmentOverride::default()
+    }
+}
+
+/// Return the kind+traits-derived commitment-policy default (PRD §5 B3).
+///
+/// Implements the level-4 slot in the five-level precedence chain (arch §7.6 row 4):
+/// - Traits **contain** [`NodeTraits::COMMITTABLE`] → [`NodeCommitmentOverride::CommitIfSlow`]
+/// - Traits **lack** `COMMITTABLE` → [`NodeCommitmentOverride::AlwaysCancelWhenStale`]
+///
+/// The function is a pure COMMITTABLE-presence test; `_kind` is retained in the
+/// signature to match the PRD §5 B3 contract shape and preserve forward-compatibility
+/// for a future kind-specific override (e.g., a B4-era Value short-circuit).
+///
+/// **Q-3 note (PRD §12):** `default_overrides(Value, IMMEDIATE)` returns
+/// `AlwaysCancelWhenStale` because `IMMEDIATE` does not include `COMMITTABLE`.
+/// This is intentional: task η/3581 (B4) will add an IMMEDIATE→never-cancelled
+/// short-circuit at the scheduler before `resolve_with_traits` is wired into
+/// scheduler dispatch, making the cosmetic mismatch moot.
+pub fn default_overrides(_kind: NodeKind, traits: NodeTraits) -> NodeCommitmentOverride {
+    if !traits.contains(NodeTraits::COMMITTABLE) {
+        NodeCommitmentOverride::AlwaysCancelWhenStale
+    } else {
+        NodeCommitmentOverride::CommitIfSlow
     }
 }
 
