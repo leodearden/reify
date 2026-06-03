@@ -41,6 +41,41 @@ export const FIXTURES = {
   all_severities: "gui/test/fixtures/all_severities.ri",
 } as const;
 
+// ─── ValueScenario type + VALUE_SCENARIOS catalogue ──────────────────────────
+
+/**
+ * A declarative value-assertion scenario: open a fixture, call a tool,
+ * assert on the returned JSON.
+ */
+export type ValueScenario = {
+  /** Unique identifier for the scenario */
+  name: string;
+  /** Key into FIXTURES — the .ri file to open before calling the tool */
+  fixture: keyof typeof FIXTURES;
+  /** MCP tool name to call (e.g. "store_state") */
+  tool: string;
+  /** Arguments to pass to the tool */
+  args: Record<string, unknown>;
+  /** Assertions to evaluate against the tool's returned JSON value */
+  assertions: Assertion[];
+};
+
+/**
+ * Catalogue of value-assertion scenarios.
+ *
+ * Primary scenario: open small_cube → call store_state → assert engine.meshCount === 1.
+ * Additional scenarios for other fixtures will be added by downstream tool-leaf tasks.
+ */
+export const VALUE_SCENARIOS: ValueScenario[] = [
+  {
+    name: "store_state_meshcount_small_cube",
+    fixture: "small_cube",
+    tool: "store_state",
+    args: {},
+    assertions: [{ path: "engine.meshCount", op: "equals", expected: 1 }],
+  },
+];
+
 // ─── Assertion type + evaluateAssertion ──────────────────────────────────────
 
 export type Assertion = {
