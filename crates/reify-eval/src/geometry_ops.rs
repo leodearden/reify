@@ -403,6 +403,11 @@ pub(crate) fn compile_geometry_op(
                     inner_r: eval_arg("inner_r")?,
                     height: eval_arg("height")?,
                 }),
+                PrimitiveKind::Cone => Ok(reify_ir::GeometryOp::Cone {
+                    bottom_radius: eval_arg("bottom_radius")?,
+                    top_radius: eval_arg("top_radius")?,
+                    height: eval_arg("height")?,
+                }),
             }
         }
         CompiledGeometryOp::Boolean { op, left, right } => {

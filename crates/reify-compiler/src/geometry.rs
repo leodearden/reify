@@ -1060,6 +1060,20 @@ pub(crate) fn compile_geometry_call(
                 ],
             }])
         }
+        "cone" => {
+            if !check_arg_count_exact("cone", compiled_args.len(), 3, expr.span, diagnostics) {
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Cone,
+                args: vec![
+                    ("bottom_radius".to_string(), it.next().unwrap()),
+                    ("top_radius".to_string(), it.next().unwrap()),
+                    ("height".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
         // --- Patterns ---
         // linear_pattern(target, dx, dy, dz, count, spacing)
         "linear_pattern" => {
@@ -1662,6 +1676,7 @@ mod tests {
         "cylinder_centered",
         "sphere",
         "tube",
+        "cone",
         "linear_pattern_2d",
         "arbitrary_pattern",
         "line_segment",
@@ -1694,10 +1709,10 @@ mod tests {
     /// Breakdown at time of writing:
     /// ```text
     /// GEOM_ARG_FUNCTIONS    19
-    /// NO_GEOM_ARG_FUNCTIONS 14  (added box_centered, cylinder_centered)
+    /// NO_GEOM_ARG_FUNCTIONS 15  (added box_centered, cylinder_centered, cone)
     /// boolean ops            5
     /// loft-variadic          2  (loft, loft_guided)
-    /// Total                 40
+    /// Total                 41
     /// ```
     ///
     /// **Maintenance rule:** whenever a new arm is added to `compile_geometry_call`,
@@ -1709,7 +1724,7 @@ mod tests {
     /// The constant is declared separately from the lists so any mutation of the lists
     /// that omits the corresponding increment will trip the assertion, prompting a
     /// conscious audit.
-    const EXPECTED_DISPATCH_COUNT: usize = 40;
+    const EXPECTED_DISPATCH_COUNT: usize = 41;
 
     #[test]
     fn geometry_arg_indices_covers_all_geom_arg_functions() {

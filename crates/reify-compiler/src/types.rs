@@ -1146,6 +1146,10 @@ pub enum PrimitiveKind {
     /// Hollow cylinder: `tube(outer_r, inner_r, height)`. Composed at the
     /// kernel layer as `boolean_cut` between two cylinders.
     Tube,
+    /// Cone or frustum: `cone(bottom_radius, top_radius, height)`.
+    /// Setting `top_radius == 0` yields a pointed apex natively via
+    /// `BRepPrimAPI_MakeCone`. Both radii zero is invalid (degenerate line).
+    Cone,
 }
 
 impl std::fmt::Display for PrimitiveKind {
@@ -1155,6 +1159,7 @@ impl std::fmt::Display for PrimitiveKind {
             PrimitiveKind::Cylinder => f.write_str("cylinder"),
             PrimitiveKind::Sphere => f.write_str("sphere"),
             PrimitiveKind::Tube => f.write_str("tube"),
+            PrimitiveKind::Cone => f.write_str("cone"),
         }
     }
 }
@@ -1506,6 +1511,7 @@ mod kind_display_tests {
             (PrimitiveKind::Cylinder, "cylinder"),
             (PrimitiveKind::Sphere, "sphere"),
             (PrimitiveKind::Tube, "tube"),
+            (PrimitiveKind::Cone, "cone"),
         ]);
     }
 

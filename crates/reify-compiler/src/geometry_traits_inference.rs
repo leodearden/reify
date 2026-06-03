@@ -238,7 +238,7 @@ impl InferredTraits {
 
 /// Look up the inferred traits for a primitive geometry kind.
 ///
-/// All four current variants (`Box`, `Cylinder`, `Sphere`, `Tube`) are
+/// All five current variants (`Box`, `Cylinder`, `Sphere`, `Tube`, `Cone`) are
 /// fully Bounded+Connected+Convex.
 ///
 /// # Future variants
@@ -253,7 +253,8 @@ pub const fn infer_primitive(kind: PrimitiveKind) -> InferredTraits {
         PrimitiveKind::Box
         | PrimitiveKind::Cylinder
         | PrimitiveKind::Sphere
-        | PrimitiveKind::Tube => InferredTraits::all(),
+        | PrimitiveKind::Tube
+        | PrimitiveKind::Cone => InferredTraits::all(),
     }
 }
 
@@ -643,7 +644,7 @@ pub fn try_infer_traits_for_function_call_in_env(
 ) -> Option<InferredTraits> {
     match name {
         // ─── Primitive constructors → all() ─────────────────────────────
-        "box" | "box_centered" | "cylinder" | "cylinder_centered" | "sphere" | "tube" => Some(InferredTraits::all()),
+        "box" | "box_centered" | "cylinder" | "cylinder_centered" | "sphere" | "tube" | "cone" => Some(InferredTraits::all()),
 
         // ─── Boolean combinators → recurse + combine_* ──────────────────
         "union" => {

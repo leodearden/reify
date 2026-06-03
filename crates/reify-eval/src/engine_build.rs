@@ -1449,6 +1449,7 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
             PrimitiveKind::Cylinder => Operation::PrimitiveCylinder,
             PrimitiveKind::Sphere => Operation::PrimitiveSphere,
             PrimitiveKind::Tube => Operation::PrimitiveTube,
+            PrimitiveKind::Cone => Operation::PrimitiveCone,
         },
         CompiledGeometryOp::Boolean { op, .. } => match op {
             BooleanOp::Union => Operation::BooleanUnion,
