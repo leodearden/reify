@@ -329,3 +329,59 @@ describe('MenuBar — File→New item', () => {
     expect(newItem.disabled).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// task-4295: menu-button testids
+// ---------------------------------------------------------------------------
+
+describe('MenuBar — trigger data-testid', () => {
+  it('File trigger has data-testid="menu-trigger-file"', () => {
+    render(() => <MenuBar />);
+    expect(screen.getByTestId('menu-trigger-file')).not.toBeNull();
+  });
+
+  it('Edit trigger has data-testid="menu-trigger-edit"', () => {
+    render(() => <MenuBar />);
+    expect(screen.getByTestId('menu-trigger-edit')).not.toBeNull();
+  });
+
+  it('View trigger has data-testid="menu-trigger-view"', () => {
+    render(() => <MenuBar />);
+    expect(screen.getByTestId('menu-trigger-view')).not.toBeNull();
+  });
+
+  it('Help trigger has data-testid="menu-trigger-help"', () => {
+    render(() => <MenuBar />);
+    expect(screen.getByTestId('menu-trigger-help')).not.toBeNull();
+  });
+
+  it('File items have data-testid="menu-item-new/open/save/export"', () => {
+    render(() => <MenuBar />);
+    fireEvent.click(screen.getByTestId('menu-trigger-file'));
+    expect(screen.getByTestId('menu-item-new')).not.toBeNull();
+    expect(screen.getByTestId('menu-item-open')).not.toBeNull();
+    expect(screen.getByTestId('menu-item-save')).not.toBeNull();
+    expect(screen.getByTestId('menu-item-export')).not.toBeNull();
+  });
+
+  it('View items have data-testid="menu-item-reEvaluate/fitToView/toggleChat"', () => {
+    render(() => <MenuBar />);
+    fireEvent.click(screen.getByTestId('menu-trigger-view'));
+    expect(screen.getByTestId('menu-item-reEvaluate')).not.toBeNull();
+    expect(screen.getByTestId('menu-item-fitToView')).not.toBeNull();
+    expect(screen.getByTestId('menu-item-toggleChat')).not.toBeNull();
+  });
+
+  it('Help items have data-testid="menu-item-help"', () => {
+    render(() => <MenuBar />);
+    fireEvent.click(screen.getByTestId('menu-trigger-help'));
+    expect(screen.getByTestId('menu-item-help')).not.toBeNull();
+  });
+
+  it('Edit items have data-testid="menu-item-undo/redo"', () => {
+    render(() => <MenuBar />);
+    fireEvent.click(screen.getByTestId('menu-trigger-edit'));
+    expect(screen.getByTestId('menu-item-undo')).not.toBeNull();
+    expect(screen.getByTestId('menu-item-redo')).not.toBeNull();
+  });
+});
