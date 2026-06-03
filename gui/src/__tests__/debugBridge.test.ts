@@ -68,6 +68,15 @@ function makeStores(selectedEntities: string[] = [], anchorEntity: string | null
       },
     },
     viewState: { resetToDefaultView: vi.fn() },
+    layout: {
+      state: {
+        editorWidth: 300,
+        sideWidth: 300,
+        designTreeHeight: 160,
+        propertyHeight: 200,
+        constraintHeight: 140,
+      },
+    },
   };
 }
 
@@ -1336,5 +1345,51 @@ describe('debug bridge dual-viewport binding regression', () => {
     expect(designMain._fitToView).toHaveBeenCalledTimes(1);
     // def-preview's fitToView must NOT have been called
     expect(defPreview.fitToView).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Layout ctx exposure (task-4294)
+// ---------------------------------------------------------------------------
+
+describe('debug bridge exposes layout on ctx', () => {
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  it('window.__REIFY_DEBUG__.stores.layout.state reflects the stub values', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    const ctx = window.__REIFY_DEBUG__;
+    expect(ctx).toBeDefined();
+    expect(ctx!.stores.layout.state.editorWidth).toBe(300);
+    expect(ctx!.stores.layout.state.sideWidth).toBe(300);
+    expect(ctx!.stores.layout.state.designTreeHeight).toBe(160);
+    expect(ctx!.stores.layout.state.propertyHeight).toBe(200);
+    expect(ctx!.stores.layout.state.constraintHeight).toBe(140);
+  });
+
+  it('custom stub values are readable from the ctx', async () => {
+    const storesWithCustomLayout = {
+      ...makeStores(),
+      layout: {
+        state: {
+          editorWidth: 450,
+          sideWidth: 380,
+          designTreeHeight: 175,
+          propertyHeight: 230,
+          constraintHeight: 120,
+        },
+      },
+    };
+    await initDebugBridge(storesWithCustomLayout);
+
+    const ctx = window.__REIFY_DEBUG__;
+    expect(ctx!.stores.layout.state.editorWidth).toBe(450);
+    expect(ctx!.stores.layout.state.sideWidth).toBe(380);
+    expect(ctx!.stores.layout.state.designTreeHeight).toBe(175);
+    expect(ctx!.stores.layout.state.propertyHeight).toBe(230);
+    expect(ctx!.stores.layout.state.constraintHeight).toBe(120);
   });
 });
