@@ -427,7 +427,7 @@ pub fn solve_elastic_static_trampoline(
 
     // ── (6) Delegate to shared FEA helper ────────────────────────────────────
     let (fea, fresh_warm) =
-        solve_cantilever_fea(&model, length, width, height, tip_force, prior_cg);
+        solve_cantilever_fea(&model, length, width, height, tip_force, prior_cg, &[]);
 
     // ── (7) Build ElasticResult StructureInstance ────────────────────────────
     //
@@ -699,6 +699,7 @@ pub(crate) fn solve_cantilever_fea(
     height: f64,
     tip_force: f64,
     prior_cg: Option<CgWarmState>,
+    pressures: &[PressureSpec],
 ) -> (CantileverFeaSolve, CgWarmState) {
     // ── Mesh ──────────────────────────────────────────────────────────────────
     //
@@ -848,6 +849,12 @@ pub(crate) fn solve_cantilever_fea(
     for &tn in &tip_nodes {
         apply_point_load(&mut f, tn, [0.0, 0.0, -force_per_tip]);
     }
+
+    // ── Face pressure loads (task 4264) ───────────────────────────────────────
+    //
+    // PressureLoad face tractions are accumulated into the same `f` vector.
+    // An empty `pressures` slice is a no-op, preserving the existing tip-only path.
+    assemble_box_face_pressures(&mut f, &coords, &tet_connectivity, pressures, length, width, height);
 
     // ── Dirichlet BCs: clamp all DOFs at root face (ix == 0) ─────────────────
     let root_nodes: Vec<usize> = (0..nz1)
@@ -1703,6 +1710,7 @@ mod tests {
             height,
             tip_force,
             None,
+            &[],
         );
 
         // Tip deflection = max |u_z| over tip-face nodes.
