@@ -290,6 +290,41 @@ describe('Editor save (Ctrl+S)', () => {
   });
 });
 
+describe('Editor liveContentRef prop', () => {
+  it('liveContentRef receives a getter that returns the live CM view document', () => {
+    // When App passes liveContentRef, Editor should call it in onMount with a
+    // getter () => view.state.doc.toString() | null so App can read the live
+    // buffer at save/re-evaluate time without per-keystroke store writes.
+    const fileA: FileData = { path: '/a.ri', content: 'INITIAL' };
+    const store = setupStore([fileA]);
+    vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined as any);
+
+    let captured: (() => string | null) | undefined;
+    render(() => (
+      <Editor
+        store={store}
+        liveContentRef={(getter) => {
+          captured = getter;
+        }}
+      />
+    ));
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // After mount, the getter must be wired and return the initial doc
+    expect(captured).toBeDefined();
+    expect(captured!()).toBe('INITIAL');
+
+    // Type 'X' at position 0 — view.doc becomes 'XINITIAL', store stays 'INITIAL'
+    view.dispatch({ changes: { from: 0, insert: 'X' } });
+
+    // Getter must reflect the live doc, not the stale store snapshot
+    expect(captured!()).toBe('XINITIAL');
+    const storeFile = store.state.openFiles.find((f) => f.path === fileA.path);
+    expect(storeFile!.content).toBe('INITIAL'); // confirm store unchanged
+  });
+});
+
 describe('Editor cursor tracking', () => {
   it('dispatching selection update sets cursor position in store', () => {
     const store = setupStore();
