@@ -756,6 +756,78 @@ mod tests {
         );
     }
 
+    // --- resolve_with_traits tests (PRD §6 levels 1, 2, 4) ---
+
+    #[test]
+    fn resolve_with_traits_consults_default_overrides_at_level_4() {
+        let overrides = NodePolicyOverrides::new();
+
+        // COMMITTABLE-bearing traits → CommitIfSlow (level-4 fires, B3 branch: has COMMITTABLE)
+        let committable = NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE);
+        let compute = make_compute_node("E", 0);
+        assert_eq!(
+            overrides.resolve_with_traits(&compute, committable),
+            NodeCommitmentOverride::CommitIfSlow,
+            "level-4: COMMITTABLE present → CommitIfSlow"
+        );
+
+        // Empty traits → AlwaysCancelWhenStale (level-4 fires, B3 branch: absent COMMITTABLE)
+        let constraint = make_constraint_node("E", 0);
+        assert_eq!(
+            overrides.resolve_with_traits(&constraint, NodeTraits::empty()),
+            NodeCommitmentOverride::AlwaysCancelWhenStale,
+            "level-4: empty traits (no COMMITTABLE) → AlwaysCancelWhenStale"
+        );
+
+        // IMMEDIATE traits → AlwaysCancelWhenStale (level-4: IMMEDIATE lacks COMMITTABLE)
+        let value = make_node("v");
+        assert_eq!(
+            overrides.resolve_with_traits(&value, NodeTraits::IMMEDIATE),
+            NodeCommitmentOverride::AlwaysCancelWhenStale,
+            "level-4: IMMEDIATE (no COMMITTABLE) → AlwaysCancelWhenStale (Q-3)"
+        );
+    }
+
+    #[test]
+    fn resolve_with_traits_respects_instance_then_type_precedence() {
+        let mut overrides = NodePolicyOverrides::new();
+        let node_a = make_compute_node("E", 0);
+        let node_b = make_compute_node("E", 1);
+
+        // Level 1: instance override wins regardless of traits
+        overrides.set_instance(
+            node_a.clone(),
+            NodeCommitmentOverride::OnlyRunOnFinalInputs,
+        );
+        // Even with COMMITTABLE-bearing traits, instance override wins
+        assert_eq!(
+            overrides.resolve_with_traits(&node_a, NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE)),
+            NodeCommitmentOverride::OnlyRunOnFinalInputs,
+            "level-1: instance override wins over level-4 default"
+        );
+        // Even with empty traits, instance override wins
+        assert_eq!(
+            overrides.resolve_with_traits(&node_a, NodeTraits::empty()),
+            NodeCommitmentOverride::OnlyRunOnFinalInputs,
+            "level-1: instance override wins over level-4 regardless of traits"
+        );
+
+        // Level 2: type override wins when no instance override, regardless of traits
+        overrides.set_type(NodeKind::Compute, NodeCommitmentOverride::AlwaysCancelWhenStale);
+        // node_b has no instance override → type override wins (level 2)
+        // Even with COMMITTABLE-bearing traits that would flip level-4 to CommitIfSlow
+        assert_eq!(
+            overrides.resolve_with_traits(&node_b, NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE)),
+            NodeCommitmentOverride::AlwaysCancelWhenStale,
+            "level-2: type override wins over level-4 default"
+        );
+        assert_eq!(
+            overrides.resolve_with_traits(&node_b, NodeTraits::empty()),
+            NodeCommitmentOverride::AlwaysCancelWhenStale,
+            "level-2: type override wins over level-4 regardless of traits"
+        );
+    }
+
     // --- NodeKind tests ---
 
     #[test]
