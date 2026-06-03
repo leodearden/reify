@@ -842,6 +842,54 @@ mod tests {
         );
     }
 
+    // ── step-3: kernel failure downgrades to Undef + Warning ─────────────────
+
+    #[test]
+    fn try_eval_body_mass_props_kernel_failure_downgrades_to_undef_with_warning() {
+        use reify_core::RealizationNodeId;
+        use reify_ir::GeometryHandleId;
+
+        // Body holds a GeometryHandle for handle 9; bare kernel has no injected
+        // results so the first query (Volume) returns Err immediately.
+        let body_cell = ValueCellId::new("Design", "body");
+        let rho_cell = ValueCellId::new("Design", "rho");
+        let mut values = ValueMap::new();
+        values.insert(
+            body_cell.clone(),
+            Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new("Design", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: GeometryHandleId(9),
+            },
+        );
+        // Explicit density suppresses W_DynamicsDefaultDensity so the only
+        // warning we see (after step-4) is the kernel-failure downgrade warning.
+        values.insert(rho_cell.clone(), Value::Real(2000.0));
+
+        // No injected results → every query returns Err.
+        let kernel = MockGeometryKernel::new();
+
+        let expr = call_expr("body_mass_props", &[body_cell, rho_cell]);
+        let mut diags = Vec::new();
+        let result = try_eval_body_mass_props(&expr, &values, &kernel, &mut diags)
+            .expect("kernel failure must still return Some(MassProperties)");
+
+        // All three geometric fields must be the deferred Undef sentinel.
+        assert_deferred_mass_props(&result);
+
+        // Must emit at least one Warning (the defensive kernel-failure downgrade).
+        // RED after step-2 because step-2 silently discards the error without
+        // emitting a diagnostic; step-4 adds the warning.
+        let warnings: Vec<_> = diags
+            .iter()
+            .filter(|d| d.severity == Severity::Warning)
+            .collect();
+        assert!(
+            !warnings.is_empty(),
+            "kernel failure must emit at least one Warning diagnostic, got: {diags:?}"
+        );
+    }
+
     // ── step-1: GeometryHandle body routes kernel queries into geometric fields ─
 
     #[test]
