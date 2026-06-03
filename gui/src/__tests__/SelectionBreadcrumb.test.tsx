@@ -53,9 +53,9 @@ describe('SelectionBreadcrumb', () => {
       <SelectionBreadcrumb path="Printer.motion.head_block#realization[0]" />
     ));
     const container = screen.getByTestId('selection-breadcrumb');
-    // Count elements with data-testid starting with "breadcrumb-crumb"
-    const crumbs = container.querySelectorAll('[data-testid^="breadcrumb-crumb"]');
-    // leaf is also a crumb, so total = number of segments
+    // Count ALL crumb elements — non-leaf crumbs use breadcrumb-crumb-N testids,
+    // the leaf uses breadcrumb-leaf; together they must equal the number of segments.
+    const crumbs = container.querySelectorAll('[data-testid^="breadcrumb-crumb"], [data-testid="breadcrumb-leaf"]');
     expect(crumbs.length).toBe(3);
   });
 

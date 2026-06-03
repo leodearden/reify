@@ -1,0 +1,29 @@
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--reify-text-secondary, #a6adc8);
+  min-height: 24px;
+}
+
+.crumb {
+  color: var(--reify-text-secondary, #a6adc8);
+}
+
+.leaf {
+  color: var(--reify-selection, #ff9500);
+  font-weight: 600;
+}
+
+.separator {
+  color: var(--reify-text-muted, #6c7086);
+  margin: 0 2px;
+}
+
+.placeholder {
+  color: var(--reify-text-muted, #6c7086);
+  font-style: italic;
+}
