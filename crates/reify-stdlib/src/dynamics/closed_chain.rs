@@ -268,7 +268,7 @@ pub fn reduce_constraint_rank(
         for b in &basis {
             scale_complement -= b[ri] * b[ri];
         }
-        row_scales.push(scale_complement.max(0.0).min(1.0));
+        row_scales.push(scale_complement.clamp(0.0, 1.0));
     }
 
     // Build the projected rows as an actual matrix for Gaussian elimination.
