@@ -5,6 +5,8 @@
  * Mirrors the established pure-module convention (diff.ts, rpc.ts, paths.ts).
  */
 
+import type { RpcResult } from "./rpc.js";
+
 // ─── getByPath ────────────────────────────────────────────────────────────────
 
 /**
@@ -121,4 +123,56 @@ export function evaluateAssertion(value: unknown, a: Assertion): AssertionResult
       return { ok: false, message: `${a.path}: expected exists, got undefined` };
     }
   }
+}
+
+// ─── ScenarioDeps + runValueScenario ─────────────────────────────────────────
+
+/**
+ * Injected I/O dependencies for runValueScenario.
+ * Enables unit-testing scenario logic with fake deps (no live GUI).
+ */
+export type ScenarioDeps = {
+  /** Open a fixture by repo-relative path; returns ok:true on success */
+  openFixture: (repoRelPath: string) => Promise<RpcResult<unknown>>;
+  /** Call a debug tool with args; returns ok:true with the JSON value */
+  callTool: (tool: string, args: Record<string, unknown>) => Promise<RpcResult<unknown>>;
+};
+
+/**
+ * Run a single value-assertion scenario using injected deps.
+ *
+ * Logic:
+ * 1. Call deps.openFixture(FIXTURES[scenario.fixture]) — on failure, push an
+ *    "open_file failed" message and return early (tool is NOT called).
+ * 2. Call deps.callTool(scenario.tool, scenario.args) — on failure push a
+ *    "<tool> failed" message.
+ * 3. Evaluate each assertion via evaluateAssertion, collecting failure messages.
+ * 4. Return { name, passed: failures.length===0, failures }.
+ */
+export async function runValueScenario(
+  deps: ScenarioDeps,
+  scenario: ValueScenario,
+): Promise<{ name: string; passed: boolean; failures: string[] }> {
+  const failures: string[] = [];
+
+  const openResult = await deps.openFixture(FIXTURES[scenario.fixture]);
+  if (!openResult.ok) {
+    failures.push(`open_file failed: ${openResult.error}`);
+    return { name: scenario.name, passed: false, failures };
+  }
+
+  const toolResult = await deps.callTool(scenario.tool, scenario.args);
+  if (!toolResult.ok) {
+    failures.push(`${scenario.tool} failed: ${toolResult.error}`);
+    return { name: scenario.name, passed: false, failures };
+  }
+
+  for (const assertion of scenario.assertions) {
+    const outcome = evaluateAssertion(toolResult.value, assertion);
+    if (!outcome.ok) {
+      failures.push(outcome.message);
+    }
+  }
+
+  return { name: scenario.name, passed: failures.length === 0, failures };
 }
