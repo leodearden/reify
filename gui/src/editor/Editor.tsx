@@ -230,7 +230,7 @@ export function Editor(props: EditorProps) {
         },
         {
           key: 'Mod-s',
-          run: () => {
+          run: (cmView) => {
             const path = props.store.state.activeFile;
             if (!path) return true;
             const result = props.store.canSave(path);
@@ -270,7 +270,14 @@ export function Editor(props: EditorProps) {
                 }
               }
             }
-            saveFile(result.file.path, result.file.content)
+            // Read the LIVE CodeMirror document rather than the stale store
+            // snapshot (result.file.content). The store's openFiles[].content is
+            // written only at file-open/reload time (anti-loop invariant), so it
+            // diverges from the buffer as soon as the user types.  Using the view
+            // arg provided by the CM6 keymap avoids any closure-over-undefined
+            // risk and requires no additional plumbing.
+            const liveContent = cmView.state.doc.toString();
+            saveFile(result.file.path, liveContent)
               .then(() => props.store.markClean(result.file.path))
               .catch((err: unknown) =>
                 props.onError?.(`Failed to save file: ${errorMessage(err)}`),
