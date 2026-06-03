@@ -520,3 +520,82 @@ describe('StatusBar merged diagnostics rendering', () => {
     expect(compileBadge.getAttribute('aria-label')).toContain('compile');
   });
 });
+
+describe('StatusBar pipeline labels and diagnostics total', () => {
+  function makeDiag(severity: string, message = 'test'): DiagnosticInfo {
+    return {
+      file_path: '<unknown>',
+      line: 1, column: 1, end_line: 1, end_column: 1,
+      severity,
+      message,
+      code: null,
+    };
+  }
+
+  it('tessellation-errors button visible textContent contains pipeline label /tessellation/i', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        tessellationDiagnostics={[makeDiag('Warning')]}
+      />
+    ));
+    const badge = screen.getByTestId('tessellation-errors');
+    expect(badge.textContent).toMatch(/tessellation/i);
+  });
+
+  it('diagnostics-count button visible textContent contains pipeline label /compile/i', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        compileDiagnostics={[makeDiag('Warning')]}
+      />
+    ));
+    const badge = screen.getByTestId('diagnostics-count');
+    expect(badge.textContent).toMatch(/compile/i);
+  });
+
+  it('diagnostics-total renders when BOTH arrays are non-empty and shows combined total', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        tessellationDiagnostics={[makeDiag('Warning')]}
+        compileDiagnostics={[makeDiag('Error'), makeDiag('Warning')]}
+      />
+    ));
+    const total = screen.getByTestId('diagnostics-total');
+    expect(total).toBeTruthy();
+    // Combined total is 1 + 2 = 3
+    expect(total.textContent).toContain('3');
+    expect(total.getAttribute('aria-label')).toMatch(/diagnostic/i);
+  });
+
+  it('diagnostics-total is NOT rendered when only tessellation has diagnostics', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        tessellationDiagnostics={[makeDiag('Warning')]}
+      />
+    ));
+    expect(screen.queryByTestId('diagnostics-total')).toBeNull();
+  });
+
+  it('diagnostics-total is NOT rendered when only compile has diagnostics', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        compileDiagnostics={[makeDiag('Warning')]}
+      />
+    ));
+    expect(screen.queryByTestId('diagnostics-total')).toBeNull();
+  });
+});
