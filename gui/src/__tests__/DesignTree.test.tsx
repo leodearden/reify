@@ -1062,6 +1062,37 @@ describe('DesignTree — reverse hover highlight (Edge B)', () => {
   });
 });
 
+describe('DesignTree — chevron affordance', () => {
+  it('collapsed chevron has aria-label and title containing "Expand"', () => {
+    const nodes = [
+      makeNode({
+        entity_path: 'Root.A',
+        children: [makeNode({ entity_path: 'Root.A.a1' })],
+      }),
+    ];
+    const store = makeStore(nodes);
+    render(() => <DesignTree tree={nodes} viewStateStore={store} />);
+    const chevron = screen.getByTestId('chevron-Root.A');
+    expect(chevron.getAttribute('aria-label')).toMatch(/expand/i);
+    expect(chevron.getAttribute('title')).toMatch(/expand/i);
+  });
+
+  it('expanded chevron has aria-label and title containing "Collapse"', () => {
+    const nodes = [
+      makeNode({
+        entity_path: 'Root.A',
+        children: [makeNode({ entity_path: 'Root.A.a1' })],
+      }),
+    ];
+    const store = makeStore(nodes);
+    render(() => <DesignTree tree={nodes} viewStateStore={store} />);
+    const chevron = screen.getByTestId('chevron-Root.A');
+    fireEvent.click(chevron);
+    expect(chevron.getAttribute('aria-label')).toMatch(/collapse/i);
+    expect(chevron.getAttribute('title')).toMatch(/collapse/i);
+  });
+});
+
 describe('DesignTree — hover sync', () => {
   it('mouseEnter on a row calls onHover with the entity path', () => {
     const nodes = [makeNode({ entity_path: 'Root.A' })];
