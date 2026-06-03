@@ -2164,4 +2164,252 @@ mod tests {
             "spring_rate from Option wrapper"
         );
     }
+
+    // ── step-3 RED: end-to-end compliance torque tests ────────────────────────
+    //
+    // These tests fail until step-4 wires joint_compliance into the link loop:
+    // currently compliance is hardcoded None, so every Δτ is 0.
+    //
+    // (a) TRAJECTORY SPRING: a compliant revolute (spring_rate=2.0 N·m/rad,
+    //     neutral=π/12 rad) driven at θ=π/6 (vels=accels=0) via the trajectory
+    //     path; Δτ = −k·(θ−neutral) = −2.0·(π/12) = −π/6 within 1e-12.
+    // (b) SNAPSHOT-PATH DAMPING: a damping-only revolute (c=3.5 N·m·s/rad) at
+    //     q̇=1.7 rad/s via the snapshot path; Δτ = −c·q̇ = −5.95 within 1e-12.
+    // (c) NO-REGRESSION: plain joint trajectory torque still ≈ 0.4905 N·m.
+
+    /// Build a plain-revolute joint extended with the supplied compliant keys,
+    /// mirroring make_flexure_joint. `spring_rate_opt`=Some(k) inserts
+    /// spring_rate=Scalar{k,ROTATIONAL_STIFFNESS} and neutral=Scalar{neutral_angle,ANGLE};
+    /// `damping_opt`=Some(c) inserts damping=Real(c); None inserts
+    /// damping=Option(None) (make_flexure_joint's current γ-scope shape).
+    fn make_compliant_revolute_joint(
+        spring_rate_opt: Option<f64>,
+        damping_opt: Option<f64>,
+        neutral_angle: f64,
+    ) -> Value {
+        use crate::eval_builtin;
+        use std::f64::consts::PI;
+        let axis_y =
+            Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let range = Value::Range {
+            lower: Some(Box::new(Value::angle(-PI))),
+            upper: Some(Box::new(Value::angle(PI))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        };
+        let base = eval_builtin("revolute", &[axis_y, range]);
+        match base {
+            Value::Map(mut m) => {
+                if let Some(k) = spring_rate_opt {
+                    m.insert(
+                        Value::String("spring_rate".to_string()),
+                        Value::Scalar {
+                            si_value: k,
+                            dimension: DimensionVector::ROTATIONAL_STIFFNESS,
+                        },
+                    );
+                    m.insert(
+                        Value::String("neutral".to_string()),
+                        Value::angle(neutral_angle),
+                    );
+                }
+                m.insert(
+                    Value::String("damping".to_string()),
+                    match damping_opt {
+                        Some(c) => Value::Real(c),
+                        None => Value::Option(None),
+                    },
+                );
+                Value::Map(m)
+            }
+            _ => panic!("revolute() must return a Value::Map"),
+        }
+    }
+
+    /// Extract the ScalarTorque magnitude from a trajectory-path result
+    /// (`List<List<JointForce>>`), sample index `si`, body index `bi`.
+    fn traj_torque(result: &Value, si: usize, bi: usize) -> f64 {
+        let per_sample = match result {
+            Value::List(s) => s,
+            other => panic!("expected List<List<JointForce>>, got {other:?}"),
+        };
+        let forces = match &per_sample[si] {
+            Value::List(f) => f,
+            other => panic!("expected List<JointForce> at sample {si}, got {other:?}"),
+        };
+        let value = field(&forces[bi], "JointForce", "value");
+        num(field(value, "ScalarTorque", "magnitude"))
+    }
+
+    /// Extract the ScalarTorque magnitude from a snapshot-path result
+    /// (`List<JointForce>`), body index `bi`.
+    fn snap_torque(result: &Value, bi: usize) -> f64 {
+        let forces = match result {
+            Value::List(f) => f,
+            other => panic!("expected List<JointForce>, got {other:?}"),
+        };
+        let value = field(&forces[bi], "JointForce", "value");
+        num(field(value, "ScalarTorque", "magnitude"))
+    }
+
+    /// (a) TRAJECTORY SPRING: compliant pendulum (spring_rate=2.0, neutral=π/12)
+    /// driven via trajectory path at θ=π/6, vels=accels=0.
+    /// Δτ = −k·(θ−neutral) = −2.0·(π/6−π/12) = −π/6 (within 1e-12).
+    #[test]
+    fn trajectory_spring_torque_delta() {
+        use crate::eval_builtin;
+        use std::f64::consts::PI;
+
+        let theta = PI / 6.0; // position > neutral → spring pushes back
+
+        // Compliant mechanism: spring_rate=2.0 N·m/rad, neutral=π/12 rad.
+        let compliant_joint =
+            make_compliant_revolute_joint(Some(2.0), None, PI / 12.0);
+        let compliant_mech = {
+            let mp = mass_properties_fixture(1.0, [0.0, 0.0, -0.1], [[0.0; 3]; 3]);
+            let mech0 = eval_builtin("mechanism", &[]);
+            eval_builtin("body", &[mech0, mp, compliant_joint])
+        };
+
+        // Plain mechanism for baseline (same geometry, no compliant keys).
+        let plain_mech = pendulum_mechanism();
+
+        // One-sample MotionTrajectory at θ=π/6, vels=0, accels=0.
+        let make_traj = |q: f64| {
+            mint_instance(
+                "MotionTrajectory",
+                vec![
+                    ("mechanism".to_string(), Value::Real(0.0)),
+                    (
+                        "samples".to_string(),
+                        Value::List(vec![trajectory_sample(0.0, q, 0.0, 0.0)]),
+                    ),
+                ],
+            )
+        };
+
+        let r_comp = eval_dynamics("inverse_dynamics_lower", &[compliant_mech, make_traj(theta)])
+            .expect("inverse_dynamics_lower recognised");
+        let r_plain = eval_dynamics("inverse_dynamics_lower", &[plain_mech, make_traj(theta)])
+            .expect("inverse_dynamics_lower recognised");
+
+        let tau_comp = traj_torque(&r_comp, 0, 0);
+        let tau_plain = traj_torque(&r_plain, 0, 0);
+
+        // Numeric oracle (from parameter arithmetic only): Δτ = −k·(θ−neutral)
+        let delta_expected = -2.0 * (PI / 6.0 - PI / 12.0); // = −π/6
+        let delta_got = tau_comp - tau_plain;
+        assert!(
+            (delta_got - delta_expected).abs() < 1e-12,
+            "spring Δτ: expected {delta_expected:.15} N·m, got {delta_got:.15}"
+        );
+        assert!(
+            tau_comp < tau_plain,
+            "restoring spring at position>neutral must reduce torque"
+        );
+    }
+
+    /// (b) SNAPSHOT-PATH DAMPING: damping-only pendulum (c=3.5) via snapshot
+    /// path at q̇=1.7 rad/s. Δτ = −c·q̇ = −5.95 (within 1e-12).
+    #[test]
+    fn snapshot_path_damping_torque_delta() {
+        use crate::eval_builtin;
+        use std::f64::consts::PI;
+
+        let theta = -PI / 6.0; // same angle as the static test (-30°)
+        let omega = 1.7_f64;
+
+        // Compliant mechanism: damping=3.5 N·m·s/rad, no spring.
+        let damping_joint =
+            make_compliant_revolute_joint(None, Some(3.5), 0.0);
+        let damping_mech = {
+            let mp = mass_properties_fixture(1.0, [0.0, 0.0, -0.1], [[0.0; 3]; 3]);
+            let mech0 = eval_builtin("mechanism", &[]);
+            eval_builtin("body", &[mech0, mp, damping_joint.clone()])
+        };
+
+        // Plain mechanism for baseline.
+        let plain_mech = pendulum_mechanism();
+
+        // Build snapshots by binding the joint to θ=-30°.
+        let make_snap = |mech: &Value, jnt: &Value| {
+            let binding = eval_builtin("bind", &[jnt.clone(), Value::angle(theta)]);
+            let s = eval_builtin("snapshot", &[mech.clone(), Value::List(vec![binding])]);
+            assert!(matches!(s, Value::Map(_)), "snapshot() must return a Map");
+            s
+        };
+
+        // Extract the plain joint from pendulum_mechanism's body.at for use
+        // in bind().
+        let plain_joint = {
+            match &plain_mech {
+                Value::Map(m) => {
+                    let bodies = match map_get(m, "bodies") {
+                        Some(Value::List(b)) => b,
+                        _ => panic!("mechanism missing bodies"),
+                    };
+                    let b0 = match &bodies[0] {
+                        Value::Map(bm) => bm,
+                        _ => panic!("body 0 not a Map"),
+                    };
+                    map_get(b0, "at").expect("body 0 missing at").clone()
+                }
+                _ => panic!("pendulum_mechanism must be a Map"),
+            }
+        };
+
+        let q_dot = Value::List(vec![Value::Real(omega)]);
+        let q_ddot = Value::List(vec![Value::Real(0.0)]);
+
+        let snap_damp = make_snap(&damping_mech, &damping_joint);
+        let snap_plain = make_snap(&plain_mech, &plain_joint);
+
+        let r_damp = eval_dynamics(
+            "inverse_dynamics_at_snapshot_lower",
+            &[damping_mech, snap_damp, q_dot.clone(), q_ddot.clone()],
+        )
+        .expect("inverse_dynamics_at_snapshot_lower recognised");
+        let r_plain = eval_dynamics(
+            "inverse_dynamics_at_snapshot_lower",
+            &[plain_mech, snap_plain, q_dot, q_ddot],
+        )
+        .expect("inverse_dynamics_at_snapshot_lower recognised");
+
+        let tau_damp = snap_torque(&r_damp, 0);
+        let tau_plain = snap_torque(&r_plain, 0);
+
+        // Oracle: Δτ = −c·q̇ = −3.5·1.7
+        let delta_expected = -3.5 * 1.7;
+        let delta_got = tau_damp - tau_plain;
+        assert!(
+            (delta_got - delta_expected).abs() < 1e-12,
+            "damping Δτ: expected {delta_expected:.15} N·m·s/rad, got {delta_got:.15}"
+        );
+    }
+
+    /// (c) NO-REGRESSION: plain-joint trajectory torque still matches static-
+    /// gravity baseline 0.4905 N·m after step-4 wires compliance.
+    #[test]
+    fn trajectory_plain_joint_no_regression() {
+        use std::f64::consts::PI;
+        let theta = -PI / 6.0;
+        let traj = mint_instance(
+            "MotionTrajectory",
+            vec![
+                ("mechanism".to_string(), Value::Real(0.0)),
+                (
+                    "samples".to_string(),
+                    Value::List(vec![trajectory_sample(0.0, theta, 0.0, 0.0)]),
+                ),
+            ],
+        );
+        let result = eval_dynamics("inverse_dynamics_lower", &[pendulum_mechanism(), traj])
+            .expect("inverse_dynamics_lower recognised");
+        let torque = traj_torque(&result, 0, 0);
+        let expected = 0.4905_f64;
+        assert!(
+            (torque - expected).abs() < 1e-6,
+            "plain joint no-regression: expected {expected} N·m, got {torque}"
+        );
+    }
 }
