@@ -233,11 +233,12 @@ fn visible_chain_surfaces_at_composed_paths() {
         );
     }
 
-    // Exactly 3 surfaces total (visible product chain; aux fixture not yet added).
-    assert_eq!(
-        result.meshes.len(),
-        3,
-        "exactly 3 product surfaces expected (aux not yet added); got {:?}",
+    // Exact surface-count ownership is in `assembly_has_four_surfaces_with_aux_hidden`
+    // (step-3), which asserts 4 once the aux fixture is added.  Here we only pin
+    // that AT LEAST the 3 product surfaces are present.
+    assert!(
+        result.meshes.len() >= 3,
+        "at least 3 product surfaces expected; got {:?}",
         paths
     );
 }
@@ -340,5 +341,218 @@ fn product_bodies_surface_at_composed_world_aabb() {
                 got_max[axis]
             );
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// step-3: Mock-kernel structural surfacing — full 4-surface set with aux fixture
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Mock-kernel gate: the complete assembly (arm + motor + shaft + aux fixture)
+/// surfaces exactly **4** meshes.
+///
+/// Asserts:
+/// - Total surface count == 4.
+/// - `Arm.fixture#realization[0]` is present with `default_visible == false` and
+///   a NON-EMPTY mesh payload (realized + tessellated + shipped, not skipped).
+/// - The three product surfaces remain `default_visible == true`.
+/// - No standalone `Fixture#realization[0]` (contained child suppressed).
+///
+/// ACTIVE (no `#[ignore]`): Mock-kernel runs without OCCT.
+/// RED until step-4 adds `aux sub fixture : Fixture` to the example (currently
+/// only 3 surfaces exist so the `len() == 4` assertion fails).
+#[test]
+fn assembly_has_four_surfaces_with_aux_hidden() {
+    let source = std::fs::read_to_string(EXAMPLE_SRC)
+        .expect("examples/sub_placement_assembly.ri must exist");
+    let compiled = compile_source_with_stdlib(&source);
+
+    let arm = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Arm")
+        .expect("Arm template not found");
+    let motor = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Motor")
+        .expect("Motor template not found");
+    let shaft = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Shaft")
+        .expect("Shaft template not found");
+    let fixture = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Fixture")
+        .expect("Fixture template not found (add aux sub fixture : Fixture to Arm in step-4)");
+
+    let arm_path = root_realization_path(arm, "body");
+    let motor_path = composed_path(motor, "Arm.motor", "body");
+    let shaft_path = composed_path(shaft, "Arm.motor.shaft", "body");
+    let fixture_path = composed_path(fixture, "Arm.fixture", "body");
+
+    let mut engine = mock_engine();
+    let result = engine.tessellate_realizations(&compiled);
+    let tess_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        tess_errors.is_empty(),
+        "unexpected tessellation errors: {:?}",
+        tess_errors
+    );
+
+    let paths: Vec<&str> = result
+        .meshes
+        .iter()
+        .map(|s| s.entity_path.as_str())
+        .collect();
+
+    // Exactly 4 surfaces: 3 product + 1 aux fixture.
+    assert_eq!(
+        result.meshes.len(),
+        4,
+        "exactly 4 surfaces expected (3 product + 1 aux fixture); got {:?}",
+        paths
+    );
+
+    // No standalone duplicate of the contained fixture child.
+    assert!(
+        !paths.contains(&"Fixture#realization[0]"),
+        "standalone `Fixture#realization[0]` must be suppressed; got {:?}",
+        paths
+    );
+
+    // The aux fixture surfaces under the composed path with default_visible == false
+    // and a NON-EMPTY mesh payload (it is realized + tessellated, just hidden).
+    let fixture_surface = result
+        .meshes
+        .iter()
+        .find(|s| s.entity_path == fixture_path)
+        .unwrap_or_else(|| {
+            panic!(
+                "aux fixture surface `{fixture_path}` must be present; got {:?}",
+                paths
+            )
+        });
+    assert!(
+        !fixture_surface.default_visible,
+        "aux fixture must surface with default_visible == false (hidden, not skipped)"
+    );
+    assert!(
+        !fixture_surface.mesh.vertices.is_empty(),
+        "aux fixture mesh payload must still be shipped (realized + tessellated)"
+    );
+
+    // The three product surfaces remain default_visible == true.
+    for (label, expected_path) in [
+        ("arm (depth 0)", &arm_path),
+        ("motor (depth 1)", &motor_path),
+        ("shaft (depth 2)", &shaft_path),
+    ] {
+        let surface = result
+            .meshes
+            .iter()
+            .find(|s| &s.entity_path == expected_path)
+            .unwrap_or_else(|| {
+                panic!("{label} surface `{expected_path}` must be present; got {:?}", paths)
+            });
+        assert!(
+            surface.default_visible,
+            "{label} surface must remain default_visible == true"
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// step-3: OCCT-gated golden-AABB for the aux fixture
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// OCCT gate: the aux fixture body surfaces at its composed world AABB with
+/// `default_visible == false`.
+///
+/// Fixture: `box(8mm,8mm,8mm)` centered at origin, placed `+100 mm Y` from Arm.
+/// World center: (0, 0.1, 0).
+/// AABB: X[−0.004, 0.004]  Y[0.096, 0.104]  Z[−0.004, 0.004].
+///
+/// Proves that aux subs are REALIZED + TRANSFORMED + TESSELLATED (not skipped)
+/// even though they are hidden from the default view.
+#[test]
+#[ignore = "requires OCCT"]
+fn aux_fixture_surfaces_at_composed_world_aabb() {
+    let source = std::fs::read_to_string(EXAMPLE_SRC)
+        .expect("examples/sub_placement_assembly.ri must exist");
+    let compiled = compile_source_with_stdlib(&source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    let fixture = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Fixture")
+        .expect("Fixture template not found");
+
+    let fixture_path = composed_path(fixture, "Arm.fixture", "body");
+
+    let mut engine = occt_engine_via_holder();
+    let result = engine.tessellate_realizations(&compiled);
+    let geom_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(geom_errors.is_empty(), "geometry errors: {:?}", geom_errors);
+
+    let fixture_surface = result
+        .meshes
+        .iter()
+        .find(|s| s.entity_path == fixture_path)
+        .unwrap_or_else(|| {
+            let all: Vec<&str> = result.meshes.iter().map(|s| s.entity_path.as_str()).collect();
+            panic!(
+                "aux fixture surface `{fixture_path}` must be present; surfaces: {:?}",
+                all
+            )
+        });
+
+    // The fixture is aux → hidden but payload present.
+    assert!(
+        !fixture_surface.default_visible,
+        "aux fixture must surface with default_visible == false"
+    );
+    assert!(
+        !fixture_surface.mesh.vertices.is_empty(),
+        "aux fixture mesh payload must be shipped (placement still applied)"
+    );
+
+    // Golden AABB: box(8mm) centered at origin translated +100 mm Y.
+    // Half-extent = 4 mm = 0.004 m; center Y = 0.1 m.
+    let (got_min, got_max) = mesh_aabb(&fixture_surface.mesh);
+    let exp_min = [-0.004_f32, 0.096, -0.004];
+    let exp_max = [0.004_f32, 0.104, 0.004];
+    let tol = 1e-5_f32;
+
+    for axis in 0..3 {
+        assert!(
+            (got_min[axis] - exp_min[axis]).abs() < tol,
+            "fixture min[{axis}] expected {}, got {} (aux placement not applied?)",
+            exp_min[axis],
+            got_min[axis]
+        );
+        assert!(
+            (got_max[axis] - exp_max[axis]).abs() < tol,
+            "fixture max[{axis}] expected {}, got {}",
+            exp_max[axis],
+            got_max[axis]
+        );
     }
 }
