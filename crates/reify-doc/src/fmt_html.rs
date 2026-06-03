@@ -157,17 +157,7 @@ pub fn render_html(model: &DocModel, cross_refs: Option<&CrossRefs>) -> String {
         .map(|m| m.path.as_str())
         .unwrap_or("reify-doc");
 
-    out.push_str("<!DOCTYPE html>\n");
-    out.push_str("<html lang=\"en\">\n");
-    out.push_str("<head>\n");
-    out.push_str("<meta charset=\"utf-8\">\n");
-    out.push_str("<title>");
-    escape_into(&mut out, title);
-    out.push_str("</title>\n");
-    out.push_str("<style>\n");
-    out.push_str(EMBEDDED_STYLESHEET);
-    out.push_str("</style>\n");
-    out.push_str("</head>\n");
+    push_doc_head(&mut out, title);
     out.push_str("<body>\n");
 
     for module in &model.modules {
@@ -284,7 +274,11 @@ pub fn render_html_pages(model: &DocModel, cross_refs: Option<&CrossRefs>) -> Ve
             "index.html"
         };
 
-        for item in &module.items {
+        for item in module
+            .items
+            .iter()
+            .filter(|i| find_annotation(i.annotations(), "test").is_none())
+        {
             let filename = html_item_filename(item, module_prefix);
             let mut body = String::new();
             push_doc_head(&mut body, item.name());
@@ -324,6 +318,10 @@ fn push_doc_head(out: &mut String, title: &str) {
 
 /// Build the per-item filename for multi-page HTML output: `{kind_slug}-{name}.html`,
 /// optionally prefixed by `{module}/` when `module_prefix` is `Some`.
+///
+/// Assumes item names are valid identifiers (no `/` or `..`) and are unique
+/// within their kind+module — both invariants hold for Reify's compiled stdlib
+/// and user modules (the compiler rejects duplicate definitions).
 fn html_item_filename(item: &ItemDoc, module_prefix: Option<&str>) -> String {
     let base = format!("{}-{}.html", item.kind_slug(), item.name());
     match module_prefix {

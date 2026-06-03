@@ -832,6 +832,9 @@ fn cmd_doc(args: &[String]) -> ExitCode {
         }
         // Build the stdlib doc model, render multi-page HTML, and write files.
         let model = reify_doc_build::build_stdlib_doc_model();
+        // Cross-refs (trait conformance) are omitted for now: build_cross_refs
+        // operates on a single module's templates while the stdlib spans many.
+        // A combined cross-refs pass is deferred to a follow-up task.
         let pages = reify_doc::fmt_html::render_html_pages(&model, None);
         let out_dir = std::path::PathBuf::from(output.as_deref().unwrap());
         if let Err(e) = std::fs::create_dir_all(&out_dir) {

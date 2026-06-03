@@ -2373,3 +2373,70 @@ fn render_html_pages_single_module_flat_layout() {
         "single-module back-link must NOT be '../index.html'"
     );
 }
+
+/// render_html_pages with Some(&CrossRefs): per-item pages must contain the
+/// "Conforms to" section when cross-ref data is available, exercising the
+/// xref_index wiring into per-item pages.
+#[test]
+fn render_html_pages_with_cross_refs() {
+    let model = DocModel {
+        modules: vec![ModuleDoc {
+            path: "mod".into(),
+            items: vec![
+                ItemDoc {
+                    header: ItemHeader {
+                        name: "Gamma".into(),
+                        doc: None,
+                        is_pub: true,
+                        annotations: vec![],
+                        pragmas: vec![],
+                    },
+                    kind: ItemKind::Trait { members: vec![] },
+                },
+                ItemDoc {
+                    header: ItemHeader {
+                        name: "Delta".into(),
+                        doc: None,
+                        is_pub: true,
+                        annotations: vec![],
+                        pragmas: vec![],
+                    },
+                    kind: ItemKind::Structure {
+                        params: vec![],
+                        ports: vec![],
+                        constraints: vec![],
+                        sub_components: vec![],
+                        realizations: vec![],
+                        meta: vec![],
+                    },
+                },
+            ],
+            ..Default::default()
+        }],
+    };
+
+    let mut xrefs = CrossRefs::default();
+    // Delta conforms to Gamma.
+    xrefs
+        .trait_to_conformers
+        .insert("Gamma".into(), vec!["Delta".into()]);
+
+    let pages = render_html_pages(&model, Some(&xrefs));
+
+    // Per-item page for Delta (the conformer) should contain "Conforms to: Gamma".
+    // "Conforms to" is rendered on the conformer's page (conformer_to_traits
+    // inverse map), not on the trait's page.
+    let delta_page = pages
+        .iter()
+        .find(|(n, _)| n == "structure-Delta.html")
+        .map(|(_, b)| b)
+        .expect("structure-Delta.html must exist");
+    assert!(
+        delta_page.contains("Conforms to"),
+        "structure-Delta.html must contain 'Conforms to' section; got:\n{delta_page}"
+    );
+    assert!(
+        delta_page.contains("Gamma"),
+        "structure-Delta.html 'Conforms to' must mention Gamma; got:\n{delta_page}"
+    );
+}
