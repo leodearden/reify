@@ -182,6 +182,7 @@ fn e2e_pressure_box_produces_nontrivial_fields() {
 //   max_von_mises == 0.
 
 /// Multi-case via delegation: PressureLoad in a LoadCase produces non-trivial stress.
+#[allow(clippy::mutable_key_type)] // Value contains AtomicBool; map is read-only after construction
 #[test]
 fn e2e_pressure_flows_through_multi_case() {
     let compiled = parse_and_compile_with_stdlib(PRESSURE_MULTI_CASE_SOURCE);
