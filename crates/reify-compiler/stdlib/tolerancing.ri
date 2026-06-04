@@ -207,12 +207,12 @@ structure def Fit {
 // ISO 286-1 tolerance grade entry.
 // grade: IT number (IT01, IT0, IT1..IT18 encoded as integer).
 // nominal_min / nominal_max: diameter range for which this grade applies.
-// tolerance_value: the actual tolerance width for this grade and range.
+// tolerance_value: derived from the ISO 286-1 table via iso_it_tolerance builtin.
 structure def ISOToleranceGrade {
     param grade : Int
     param nominal_min : Length
     param nominal_max : Length
-    param tolerance_value : Length
+    let tolerance_value = iso_it_tolerance(grade, nominal_min, nominal_max)
 }
 
 // ── Conforms constraint def ───────────────────────────────────────────────────
