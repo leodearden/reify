@@ -269,9 +269,15 @@ export function Viewport(props: ViewportProps) {
     // HashMap / serde_json insertion order: PREFERRED_FEA_CHANNELS is checked
     // first ('vonMises' for solids, 'vonMises_top' for shells), with a
     // lexicographic fallback for any other channel set.
+    //
+    // Performance: once autoEnabledOnce is true the guard returns early,
+    // avoiding a full mesh/channel scan on every subsequent props.meshes update.
+    // Reading feaStore.state.autoEnabledOnce also stops tracking props.meshes as
+    // a reactive dependency after the first fire, so the effect becomes dormant.
     if (props.feaModeStore) {
       const feaStore = props.feaModeStore;
       createEffect(() => {
+        if (feaStore.state.autoEnabledOnce) return;
         const channel = pickDefaultScalarChannel(props.meshes);
         if (channel !== undefined) feaStore.tryAutoEnable(channel);
       });

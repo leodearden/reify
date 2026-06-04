@@ -109,15 +109,45 @@ describe('pickDefaultScalarChannel', () => {
     };
     expect(pickDefaultScalarChannel(meshes)).toBe('vonMises');
   });
+
+  it('(k) preferred channel empty in mesh A but non-empty in mesh B → union picks it', () => {
+    // Union semantics: vonMises is empty in A but non-empty in B, so it enters the set.
+    const meshes = {
+      a: makeMesh({ vonMises: [] }),
+      b: makeMesh({ vonMises: [1] }),
+    };
+    expect(pickDefaultScalarChannel(meshes)).toBe('vonMises');
+  });
+
+  it('(l) preferred channel empty in both meshes, lower-preference non-empty in mesh B → lower-preference wins', () => {
+    // vonMises is always empty; vonMises_bottom is non-empty only in B.
+    // Expected: vonMises_bottom (first preferred name present in the union of non-empty channels).
+    const meshes = {
+      a: makeMesh({ vonMises: [] }),
+      b: makeMesh({ vonMises_bottom: [9] }),
+    };
+    expect(pickDefaultScalarChannel(meshes)).toBe('vonMises_bottom');
+  });
 });
 
 describe('PREFERRED_FEA_CHANNELS', () => {
-  it('equals the documented ordered list', () => {
-    expect(PREFERRED_FEA_CHANNELS).toEqual([
-      'vonMises',
-      'vonMises_top',
-      'vonMises_mid',
-      'vonMises_bottom',
-    ]);
+  // Assert the ordering invariants that matter for preference selection, without
+  // pinning the full array equality.  Adding a new preferred channel (e.g.
+  // 'vonMises_membrane') must not break these tests as long as it doesn't
+  // reorder the existing four entries relative to each other.
+  it("'vonMises' precedes 'vonMises_top'", () => {
+    const idx = (n: string) => PREFERRED_FEA_CHANNELS.indexOf(n);
+    expect(idx('vonMises')).toBeGreaterThanOrEqual(0);
+    expect(idx('vonMises_top')).toBeGreaterThanOrEqual(0);
+    expect(idx('vonMises')).toBeLessThan(idx('vonMises_top'));
+  });
+
+  it("'vonMises_top' precedes 'vonMises_mid' and 'vonMises_bottom'", () => {
+    const idx = (n: string) => PREFERRED_FEA_CHANNELS.indexOf(n);
+    expect(idx('vonMises_top')).toBeGreaterThanOrEqual(0);
+    expect(idx('vonMises_mid')).toBeGreaterThanOrEqual(0);
+    expect(idx('vonMises_bottom')).toBeGreaterThanOrEqual(0);
+    expect(idx('vonMises_top')).toBeLessThan(idx('vonMises_mid'));
+    expect(idx('vonMises_top')).toBeLessThan(idx('vonMises_bottom'));
   });
 });
