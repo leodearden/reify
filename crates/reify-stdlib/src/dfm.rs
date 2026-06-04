@@ -555,4 +555,38 @@ mod tests {
         );
         assert!(diags.is_empty(), "a fitting design surfaces no diagnostic");
     }
+
+    // ─── step-9: diagnose Undef path + non-DFM name guard ──────────────────
+
+    #[test]
+    fn diagnose_undef_emits_error_usage_diagnostic() {
+        // A `Value::Undef` result is a usage error (non-BoundingBox args, e.g. a
+        // raw Solid not resolved via bounding_box(...)): exactly one Error
+        // diagnostic, independent of any severity tag (drives step-10).
+        let diags = diagnose(
+            "fits_build_volume",
+            &[Value::Real(1.0), Value::Real(2.0)],
+            &Value::Undef,
+        );
+        assert_eq!(diags.len(), 1, "one usage-error diagnostic");
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(
+            diags[0].message.contains("E_DFM"),
+            "usage error carries the E_DFM prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_non_dfm_name_undef_is_empty() {
+        // A non-DFM builtin name short-circuits to empty even on Undef.
+        assert!(diagnose("box", &[], &Value::Undef).is_empty());
+    }
+
+    #[test]
+    fn diagnose_non_dfm_name_bool_is_empty() {
+        // A non-DFM name short-circuits to empty even with a Bool(false) result —
+        // the name guard dispatches before the result is inspected.
+        assert!(diagnose("stackup_rss", &[], &Value::Bool(false)).is_empty());
+    }
 }
