@@ -406,4 +406,104 @@ mod tests {
         let env = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
         assert_eq!(crate::eval_builtin("fits_build_volume", &[part, env]), Value::Bool(false));
     }
+
+    // ─── step-7: diagnose success path (DFMSeverity → Severity bridge) ──────
+
+    /// A non-fitting part/envelope pair: the part's X-extent (30 mm) exceeds the
+    /// envelope (20 mm), so `fits_build_volume` evaluates to `Bool(false)` — a
+    /// build-volume VIOLATION that `diagnose` classifies on the success path.
+    fn nonfitting_pair() -> (Value, Value) {
+        let part = bbox([0.0, 0.0, 0.0], [0.030, 0.010, 0.010]);
+        let env = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        (part, env)
+    }
+
+    #[test]
+    fn diagnose_violation_warning_severity() {
+        // Bool(false) + DFMSeverity.Warning → exactly one Warning diagnostic.
+        let (part, env) = nonfitting_pair();
+        let diags = diagnose(
+            "fits_build_volume",
+            &[part, env, dfm_sev("Warning")],
+            &Value::Bool(false),
+        );
+        assert_eq!(diags.len(), 1, "one violation diagnostic");
+        assert_eq!(diags[0].severity, Severity::Warning);
+        assert!(
+            diags[0].message.contains("W_DFM"),
+            "Warning message carries the W_DFM prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_violation_error_severity() {
+        let (part, env) = nonfitting_pair();
+        let diags = diagnose(
+            "fits_build_volume",
+            &[part, env, dfm_sev("Error")],
+            &Value::Bool(false),
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(
+            diags[0].message.contains("E_DFM"),
+            "Error message carries the E_DFM prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_violation_info_severity() {
+        let (part, env) = nonfitting_pair();
+        let diags = diagnose(
+            "fits_build_volume",
+            &[part, env, dfm_sev("Info")],
+            &Value::Bool(false),
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Info);
+        assert!(
+            diags[0].message.contains("I_DFM"),
+            "Info message carries the I_DFM prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_violation_rule_form_reads_severity_field() {
+        // The DFMRule structure-instance form: severity is read from its
+        // `severity` field (DFMSeverity.Error) → an Error diagnostic.
+        let (part, env) = nonfitting_pair();
+        let diags = diagnose(
+            "fits_build_volume",
+            &[part, env, dfm_rule("Error")],
+            &Value::Bool(false),
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(diags[0].message.contains("E_DFM"), "msg: {}", diags[0].message);
+    }
+
+    #[test]
+    fn diagnose_violation_defaults_to_warning_when_severity_absent() {
+        // No 3rd arg → default Warning (PRD: default Warning when absent).
+        let (part, env) = nonfitting_pair();
+        let diags = diagnose("fits_build_volume", &[part, env], &Value::Bool(false));
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn diagnose_fits_true_emits_no_diagnostic() {
+        // A fitting design (Bool(true)) is NOT a violation → empty Vec.
+        let part = bbox([0.0, 0.0, 0.0], [0.010, 0.010, 0.010]);
+        let env = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        let diags = diagnose(
+            "fits_build_volume",
+            &[part, env, dfm_sev("Warning")],
+            &Value::Bool(true),
+        );
+        assert!(diags.is_empty(), "a fitting design surfaces no diagnostic");
+    }
 }
