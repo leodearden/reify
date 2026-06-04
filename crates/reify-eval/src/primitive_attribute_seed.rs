@@ -40,8 +40,9 @@
 //! - `GeometryOp::Tube` — composed via `boolean_cut` at the kernel layer; its
 //!   per-result attribute attachment lands with task 8 (booleans) or a Tube-
 //!   specific follow-up.
-//! - `GeometryOp::Torus` — not yet present in `GeometryOp` (no FFI, no
-//!   compiler `PrimitiveKind`); will be added end-to-end as a separate task.
+//! - `GeometryOp::Torus` was wired end-to-end by task 4157 — its seeding arm
+//!   now lives below, sharing the Sphere semantics: all faces `Role::Side`,
+//!   all edges `Role::NewEdge`. (`Cone`/`Wedge` likewise have generic arms.)
 //! - Sweep / local-feature / boolean variants — tasks 5, 7, 8.
 //!
 //! ## Why pre-extracted face/edge handle slices?
@@ -182,6 +183,7 @@ fn is_seedable_primitive(op: &GeometryOp) -> bool {
             | GeometryOp::Sphere { .. }
             | GeometryOp::Cone { .. }
             | GeometryOp::Wedge { .. }
+            | GeometryOp::Torus { .. }
     )
 }
 
@@ -254,6 +256,15 @@ pub fn seed_primitive_attributes(
             // Cap/Side distinction in the current selector vocabulary (PRD δ
             // step 7). No vertex seeding — vertex_handles is intentionally
             // ignored (non-Box ops carry no analytic vertex attributes).
+            record_all_faces_as_side(table, face_handles, feature_id);
+            record_all_edges_as_new_edge(table, edge_handles, feature_id);
+            Ok(())
+        }
+        GeometryOp::Torus { .. } => {
+            // A torus has no caps, so it shares the Sphere/Box face-seeding
+            // semantics: every face is Role::Side with construction-order
+            // local_index, every edge Role::NewEdge. No analytic vertices, so
+            // vertex_handles is intentionally ignored.
             record_all_faces_as_side(table, face_handles, feature_id);
             record_all_edges_as_new_edge(table, edge_handles, feature_id);
             Ok(())
