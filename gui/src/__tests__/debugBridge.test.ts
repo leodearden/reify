@@ -1432,6 +1432,112 @@ describe('debug bridge get_diagnostics', () => {
 });
 
 // ---------------------------------------------------------------------------
+// debug bridge ui_outline (task-4297 step-3 RED → step-4 GREEN)
+// ---------------------------------------------------------------------------
+
+describe('debug bridge ui_outline', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    // Build a small semantic DOM for the test
+    const runBtn = document.createElement('button');
+    runBtn.setAttribute('data-testid', 'run-btn');
+    runBtn.textContent = 'Run';
+    document.body.appendChild(runBtn);
+
+    const stopBtn = document.createElement('button');
+    stopBtn.setAttribute('data-testid', 'stop-btn');
+    stopBtn.setAttribute('disabled', '');
+    stopBtn.textContent = 'Stop';
+    document.body.appendChild(stopBtn);
+
+    const designTree = document.createElement('div');
+    designTree.setAttribute('role', 'tree');
+    designTree.setAttribute('data-testid', 'design-tree');
+    designTree.textContent = 'Tree';
+    document.body.appendChild(designTree);
+
+    const hiddenBtn = document.createElement('button');
+    hiddenBtn.setAttribute('data-testid', 'hidden-btn');
+    hiddenBtn.style.display = 'none';
+    hiddenBtn.textContent = 'Hidden';
+    document.body.appendChild(hiddenBtn);
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+    document.body.innerHTML = '';
+  });
+
+  async function dispatchUiOutline(id: number) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command: 'ui_outline', params: {} } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('returns outline array with count === outline.length', async () => {
+    const result = await dispatchUiOutline(3000);
+    expect(Array.isArray(result.outline)).toBe(true);
+    expect(result.count).toBe(result.outline.length);
+    expect(typeof result.truncated).toBe('boolean');
+  });
+
+  it('every entry has required fields with correct types', async () => {
+    const result = await dispatchUiOutline(3001);
+    for (const entry of result.outline) {
+      expect(typeof entry.tagName).toBe('string');
+      expect(typeof entry.text).toBe('string');
+      expect(typeof entry.enabled).toBe('boolean');
+      // role may be string or null
+      expect(entry.role === null || typeof entry.role === 'string').toBe(true);
+      // testId may be string or null
+      expect(entry.testId === null || typeof entry.testId === 'string').toBe(true);
+    }
+  });
+
+  it('run-btn entry has enabled:true and testId:run-btn and text containing Run', async () => {
+    const result = await dispatchUiOutline(3002);
+    const runEntry = result.outline.find((e: any) => e.testId === 'run-btn');
+    expect(runEntry).toBeDefined();
+    expect(runEntry.enabled).toBe(true);
+    expect(runEntry.text).toMatch(/Run/);
+  });
+
+  it('stop-btn entry has enabled:false', async () => {
+    const result = await dispatchUiOutline(3003);
+    const stopEntry = result.outline.find((e: any) => e.testId === 'stop-btn');
+    expect(stopEntry).toBeDefined();
+    expect(stopEntry.enabled).toBe(false);
+  });
+
+  it('design-tree entry has role:tree', async () => {
+    const result = await dispatchUiOutline(3004);
+    const treeEntry = result.outline.find((e: any) => e.testId === 'design-tree');
+    expect(treeEntry).toBeDefined();
+    expect(treeEntry.role).toBe('tree');
+  });
+
+  it('hidden-btn (display:none) is excluded from outline', async () => {
+    const result = await dispatchUiOutline(3005);
+    const hiddenEntry = result.outline.find((e: any) => e.testId === 'hidden-btn');
+    expect(hiddenEntry).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Layout ctx exposure (task-4294)
 // ---------------------------------------------------------------------------
 
