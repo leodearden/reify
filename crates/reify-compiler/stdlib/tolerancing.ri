@@ -184,8 +184,8 @@ structure def Datum {
 structure def SurfaceFinish {
     param parameter : SurfaceParameter
     param value : Length
-    param direction : SurfaceDirection
-    param process : String
+    param direction : SurfaceDirection = SurfaceDirection.Multidirectional
+    param process : String = ""
 }
 
 // ── Fit ───────────────────────────────────────────────────────────────────────
