@@ -310,6 +310,84 @@ fn tool_defs() -> Vec<ToolDef> {
                 }
             }),
         },
+        // --- DOM/style/layout/window inspection tools (R1) ---
+        ToolDef {
+            name: "query_selector",
+            description: "Query a single DOM element by raw CSS selector. Returns { exists, tagName, testId, text, bounds, visible } on match, { exists: false } when no element matches, { error } on invalid selector or missing param.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "selector": {
+                        "type": "string",
+                        "description": "CSS selector string (e.g. '.cm-scroller', '[data-testid=\"editor\"]')"
+                    }
+                },
+                "required": ["selector"]
+            }),
+        },
+        ToolDef {
+            name: "query_selector_all",
+            description: "Query all DOM elements matching a raw CSS selector. Returns { count, elements: [...], truncated } (capped at 200 results), { count: 0, elements: [], truncated: false } when none match, { error } on invalid selector or missing param.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "selector": {
+                        "type": "string",
+                        "description": "CSS selector string"
+                    }
+                },
+                "required": ["selector"]
+            }),
+        },
+        ToolDef {
+            name: "get_layout_metrics",
+            description: "Read scroll/client/bounds metrics for a DOM element. Returns { exists, bounds, scroll: { top, left, width, height }, client: { width, height }, overflow: { horizontal, vertical } } where overflow.horizontal is true when scrollWidth > clientWidth (clipped/overflowing text).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "selector": {
+                        "type": "string",
+                        "description": "CSS selector string identifying the element to measure"
+                    }
+                },
+                "required": ["selector"]
+            }),
+        },
+        ToolDef {
+            name: "get_computed_style",
+            description: "Read computed CSS style for a DOM element. Returns { exists, style: { display, visibility, opacity, color, backgroundColor, fontSize, fontFamily, fontWeight, overflow, position, width, height } } by default; pass properties:[...] to request a custom subset.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "selector": {
+                        "type": "string",
+                        "description": "CSS selector string"
+                    },
+                    "properties": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional list of CSS property names to return (camelCase). When omitted, returns the default curated subset."
+                    }
+                },
+                "required": ["selector"]
+            }),
+        },
+        ToolDef {
+            name: "active_element",
+            description: "Return the currently focused DOM element: { testId, role, tagName }. testId and role are null when the element has no data-testid/role attribute. Returns { tagName: 'body', testId: null, role: null } when nothing specific is focused.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolDef {
+            name: "get_window_state",
+            description: "Return window geometry and focus state: { innerWidth, innerHeight, screenX, screenY, devicePixelRatio, focused }. All sizes are CSS/logical pixels. focused reflects document.hasFocus().",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
     ]
 }
 
@@ -1225,6 +1303,69 @@ mod tests {
             session_start > 0,
             "session_start_unix_ms must be > 0; got {session_start}"
         );
+    }
+
+    // step-1 RED → GREEN: all six new inspection tools must be registered in tool_defs()
+    // with the correct schema shape (object type, required arrays, non-empty description).
+    #[test]
+    fn tool_defs_registers_inspection_tools() {
+        let defs = tool_defs();
+
+        // Tools that require a "selector" param
+        let selector_tools = [
+            "query_selector",
+            "query_selector_all",
+            "get_layout_metrics",
+            "get_computed_style",
+        ];
+        for tool_name in selector_tools {
+            let entry = defs
+                .iter()
+                .find(|t| t.name == tool_name)
+                .unwrap_or_else(|| panic!("{tool_name} must be present in tool_defs()"));
+            let schema = &entry.input_schema;
+            assert_eq!(
+                schema["type"].as_str(),
+                Some("object"),
+                "{tool_name}: input_schema.type must be 'object'"
+            );
+            assert!(
+                !entry.description.is_empty(),
+                "{tool_name}: description must be non-empty"
+            );
+            let required = schema["required"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{tool_name}: required must be an array"));
+            assert!(
+                required.iter().any(|v| v.as_str() == Some("selector")),
+                "{tool_name}: 'selector' must be listed in required"
+            );
+        }
+
+        // Tools that require nothing (no required array or empty)
+        let no_param_tools = ["active_element", "get_window_state"];
+        for tool_name in no_param_tools {
+            let entry = defs
+                .iter()
+                .find(|t| t.name == tool_name)
+                .unwrap_or_else(|| panic!("{tool_name} must be present in tool_defs()"));
+            let schema = &entry.input_schema;
+            assert_eq!(
+                schema["type"].as_str(),
+                Some("object"),
+                "{tool_name}: input_schema.type must be 'object'"
+            );
+            assert!(
+                !entry.description.is_empty(),
+                "{tool_name}: description must be non-empty"
+            );
+            if let Some(required) = schema["required"].as_array() {
+                assert!(
+                    required.is_empty(),
+                    "{tool_name}: required array must be empty; got {required:?}"
+                );
+            }
+        }
     }
 
     // step-5 RED → GREEN: all five viewport-aware tools must expose an optional
