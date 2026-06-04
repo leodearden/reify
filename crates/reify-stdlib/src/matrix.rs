@@ -1,4 +1,4 @@
-use nalgebra::DMatrix;
+use nalgebra::{Complex, DMatrix};
 use reify_core::DimensionVector;
 use reify_ir::Value;
 
@@ -214,66 +214,76 @@ pub(crate) fn eval_matrix(name: &str, args: &[Value]) -> Option<Value> {
                     })
                 }
             };
-            match n {
-                1 => Value::List(vec![make_val(data[0])]),
-                2 => {
-                    // char poly: λ² - (a+d)λ + (ad-bc) = 0
-                    let (a, b) = (data[0], data[1]);
-                    let (c, d) = (data[2], data[3]);
-                    let tr = a + d;
-                    let det = a * d - b * c;
-                    let disc = tr * tr - 4.0 * det;
-                    if disc < 0.0 {
-                        return Value::Undef; // complex eigenvalues
-                    }
-                    let sqrt_disc = disc.sqrt();
-                    let mut eigs = vec![(tr + sqrt_disc) / 2.0, (tr - sqrt_disc) / 2.0];
-                    eigs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-                    Value::List(eigs.into_iter().map(make_val).collect())
+            let m = DMatrix::from_row_slice(n, n, &data);
+            // Exact symmetry check: data[i*n+j] == data[j*n+i] for all i<j.
+            let is_symmetric = (0..n).all(|i| (i + 1..n).all(|j| data[i * n + j] == data[j * n + i]));
+            if is_symmetric {
+                // Symmetric tridiagonalization + QR: guaranteed-real, exact to ~1e-14.
+                let mut eigs: Vec<f64> = m.symmetric_eigenvalues().iter().copied().collect();
+                eigs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                Value::List(eigs.into_iter().map(make_val).collect())
+            } else {
+                // General path: real-input Schur → complex eigenvalues.
+                let complex_eigs: Vec<Complex<f64>> =
+                    m.complex_eigenvalues().iter().copied().collect();
+                // Per-eigenvalue threshold: |im| ≤ 1e-9·(|λ| + 1). The +1 absolute
+                // floor prevents collapse toward zero for near-zero eigenvalues
+                // (re~1e-16, im~2e-16) that would otherwise be misclassified as
+                // complex. Using each eigenvalue's own modulus (not a global max_mag)
+                // prevents a dominant real eigenvalue from inflating the threshold
+                // enough to swallow a genuinely complex pair of much smaller magnitude.
+                if complex_eigs.iter().all(|c| c.im.abs() <= 1e-9 * (c.re.hypot(c.im) + 1.0)) {
+                    // Project to reals: imaginary parts are numerical noise.
+                    let mut real_eigs: Vec<f64> = complex_eigs.iter().map(|c| c.re).collect();
+                    real_eigs
+                        .sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    Value::List(real_eigs.into_iter().map(make_val).collect())
+                } else {
+                    // Genuinely complex spectrum: documented Undef (not silent).
+                    Value::Undef
                 }
-                3 => {
-                    let (a, b, c) = (data[0], data[1], data[2]);
-                    let (d, e, f) = (data[3], data[4], data[5]);
-                    let (g, h, i) = (data[6], data[7], data[8]);
-
-                    let p = a + e + i; // trace
-                    let q = (a * e - b * d) + (a * i - c * g) + (e * i - f * h);
-                    let r = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
-
-                    let p3 = p / 3.0;
-                    let alpha = q - p * p / 3.0;
-                    let beta = -2.0 * p * p * p / 27.0 + p * q / 3.0 - r;
-
-                    if alpha >= 0.0 {
-                        if alpha == 0.0 && beta == 0.0 {
-                            let root = p3;
-                            Value::List(vec![make_val(root), make_val(root), make_val(root)])
-                        } else if alpha == 0.0 {
-                            let t = (-beta).cbrt();
-                            let _ = t;
-                            Value::Undef
-                        } else {
-                            Value::Undef
-                        }
-                    } else {
-                        let neg_alpha = -alpha;
-                        let m = (neg_alpha / 3.0).sqrt();
-                        let cos_arg = -beta / (2.0 * m * m * m);
-                        let cos_arg = cos_arg.clamp(-1.0, 1.0);
-                        let theta = cos_arg.acos();
-                        let two_m = 2.0 * m;
-
-                        let mut eigs = vec![
-                            two_m * (theta / 3.0).cos() + p3,
-                            two_m * ((theta + 2.0 * std::f64::consts::PI) / 3.0).cos() + p3,
-                            two_m * ((theta + 4.0 * std::f64::consts::PI) / 3.0).cos() + p3,
-                        ];
-                        eigs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-                        Value::List(eigs.into_iter().map(make_val).collect())
-                    }
-                }
-                _ => Value::Undef,
             }
+        }),
+
+        "complex_eigenvalues" => unary(args, |v| {
+            let (n, ncols, data, dim) = match matrix_components_f64(v) {
+                Some(c) => c,
+                None => return Value::Undef,
+            };
+            if n != ncols {
+                return Value::Undef;
+            }
+            let m = DMatrix::from_row_slice(n, n, &data);
+            let raw_eigs: Vec<Complex<f64>> = m.complex_eigenvalues().iter().copied().collect();
+            // Eigenvalues of a finite real matrix are always finite; guard
+            // defensively so the returned List never mixes Complex and Undef
+            // variants (which would violate the List<Complex<Q>> contract).
+            if raw_eigs.iter().any(|c| !c.re.is_finite() || !c.im.is_finite()) {
+                return Value::Undef;
+            }
+            let mut items: Vec<Value> = raw_eigs
+                .iter()
+                .map(|c| Value::Complex {
+                    re: c.re,
+                    im: c.im,
+                    dimension: dim,
+                })
+                .collect();
+            // Canonical sort (re asc, then im asc) for deterministic output.
+            items.sort_by(|a, b| {
+                let (ar, ai) = match a {
+                    Value::Complex { re, im, .. } => (*re, *im),
+                    _ => (f64::INFINITY, f64::INFINITY),
+                };
+                let (br, bi) = match b {
+                    Value::Complex { re, im, .. } => (*re, *im),
+                    _ => (f64::INFINITY, f64::INFINITY),
+                };
+                ar.partial_cmp(&br)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then(ai.partial_cmp(&bi).unwrap_or(std::cmp::Ordering::Equal))
+            });
+            Value::List(items)
         }),
 
         _ => return None,
@@ -729,6 +739,212 @@ mod tests {
         } else {
             panic!("expected List, got {:?}", result);
         }
+    }
+
+    // --- N≥4 eigenvalues tests (step-1 RED / step-2 GREEN) ---
+
+    fn make_4x4_diag_dimensionless() -> Value {
+        eval_builtin(
+            "diag",
+            &[Value::List(vec![
+                Value::Real(3.0),
+                Value::Real(5.0),
+                Value::Real(7.0),
+                Value::Real(9.0),
+            ])],
+        )
+    }
+
+    fn make_4x4_diag_length() -> Value {
+        let l = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::LENGTH,
+        };
+        eval_builtin(
+            "diag",
+            &[Value::List(vec![l(3.0), l(5.0), l(7.0), l(9.0)])],
+        )
+    }
+
+    /// (a) 4×4 symmetric diagonal via `diag()` → [3,5,7,9] sorted ascending.
+    /// Today returns Undef (N≥4 gap). After fix: nalgebra symmetric_eigenvalues.
+    #[test]
+    fn eigenvalues_4x4_symmetric_diag() {
+        let m = make_4x4_diag_dimensionless();
+        let result = eval_builtin("eigenvalues", &[m]);
+        if let Value::List(items) = result {
+            assert_eq!(items.len(), 4);
+            let expected = [3.0, 5.0, 7.0, 9.0];
+            for (i, (&exp, got)) in expected.iter().zip(items.iter()).enumerate() {
+                let v = got.as_f64().unwrap_or_else(|| panic!("eigenvalue[{i}] not numeric"));
+                assert!(
+                    (v - exp).abs() < 1e-9,
+                    "eigenvalue[{i}]: expected {exp}, got {v}"
+                );
+            }
+        } else {
+            panic!("expected List, got {:?}", result);
+        }
+    }
+
+    /// (b) 4×4 non-symmetric upper-triangular via `matrix()` → [2,3,4,5].
+    /// Today returns Undef (N≥4 gap). After fix: project-to-real path.
+    #[test]
+    fn eigenvalues_4x4_upper_triangular_real_spectrum() {
+        let m = eval_builtin(
+            "matrix",
+            &[Value::List(vec![
+                Value::List(vec![
+                    Value::Real(2.0),
+                    Value::Real(1.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(3.0),
+                    Value::Real(1.0),
+                    Value::Real(0.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(4.0),
+                    Value::Real(1.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(5.0),
+                ]),
+            ])],
+        );
+        let result = eval_builtin("eigenvalues", &[m]);
+        if let Value::List(items) = result {
+            assert_eq!(items.len(), 4);
+            let expected = [2.0, 3.0, 4.0, 5.0];
+            for (i, (&exp, got)) in expected.iter().zip(items.iter()).enumerate() {
+                let v = got.as_f64().unwrap_or_else(|| panic!("eigenvalue[{i}] not numeric"));
+                assert!(
+                    (v - exp).abs() < 1e-9,
+                    "eigenvalue[{i}]: expected {exp}, got {v}"
+                );
+            }
+        } else {
+            panic!("expected List, got {:?}", result);
+        }
+    }
+
+    /// Non-symmetric, non-triangular 2×2 with a known all-real spectrum.
+    /// [[3,1],[2,4]] has char poly λ²-7λ+10=0 → eigenvalues 2 and 5 (exact).
+    /// This exercises the general (non-symmetric) → project-to-real branch and
+    /// confirms the noise-tolerance threshold handles small imaginary residuals.
+    #[test]
+    fn eigenvalues_non_symmetric_non_triangular_real_spectrum() {
+        let m = make_matrix(&[&[3.0, 1.0], &[2.0, 4.0]]);
+        let result = eval_builtin("eigenvalues", &[m]);
+        if let Value::List(items) = result {
+            assert_eq!(items.len(), 2, "expected 2 eigenvalues");
+            let expected = [2.0, 5.0];
+            for (i, (&exp, got)) in expected.iter().zip(items.iter()).enumerate() {
+                let v = got.as_f64().unwrap_or_else(|| panic!("eigenvalue[{i}] not numeric"));
+                assert!(
+                    (v - exp).abs() < 1e-9,
+                    "eigenvalue[{i}]: expected {exp}, got {v}"
+                );
+            }
+        } else {
+            panic!("expected List, got {:?}", result);
+        }
+    }
+
+    /// (c) 2×2 rotation matrix → Undef (complex spectrum ±i; documented, not silent).
+    /// Regression lock: behavior must be Undef both before and after the rewrite.
+    #[test]
+    fn eigenvalues_rotation_2x2_complex_spectrum_returns_undef() {
+        let m = make_matrix(&[&[0.0, -1.0], &[1.0, 0.0]]);
+        assert!(
+            eval_builtin("eigenvalues", &[m]).is_undef(),
+            "eigenvalues of rotation matrix (complex spectrum ±i) must return Undef"
+        );
+    }
+
+    /// (d) 4×4 LENGTH-dimensioned diagonal via `diag()` → List<Scalar<LENGTH>>.
+    /// Today returns Undef (N≥4 gap). After fix: List with Scalar dimension rule.
+    #[test]
+    fn eigenvalues_4x4_dimensioned_length_diag() {
+        let m = make_4x4_diag_length();
+        let result = eval_builtin("eigenvalues", &[m]);
+        if let Value::List(items) = result {
+            assert_eq!(items.len(), 4);
+            let expected_vals = [3.0, 5.0, 7.0, 9.0];
+            for (i, (&exp, got)) in expected_vals.iter().zip(items.iter()).enumerate() {
+                match got {
+                    Value::Scalar { si_value, dimension } => {
+                        assert!(
+                            (si_value - exp).abs() < 1e-9,
+                            "eigenvalue[{i}] si_value: expected {exp}, got {si_value}"
+                        );
+                        assert_eq!(
+                            *dimension,
+                            DimensionVector::LENGTH,
+                            "eigenvalue[{i}] dimension should be LENGTH"
+                        );
+                    }
+                    other => panic!("expected Scalar at [{i}], got {:?}", other),
+                }
+            }
+        } else {
+            panic!("expected List, got {:?}", result);
+        }
+    }
+
+    /// N≥4 complex spectrum → Undef: block-diagonal 4×4 with a 2×2 rotation
+    /// block plus two real diagonal entries.  Eigenvalues are ±i (complex) plus
+    /// 3 and 5 (real), so the spectrum is not all-real → `eigenvalues` must
+    /// return Undef, exercising the complex-spectrum Undef branch at N≥4.
+    #[test]
+    fn eigenvalues_4x4_complex_spectrum_returns_undef() {
+        // [[0,-1, 0, 0],
+        //  [1, 0, 0, 0],
+        //  [0, 0, 3, 0],
+        //  [0, 0, 0, 5]]
+        // Eigenvalues: ±i (rotation block), 3, 5 (diagonal block).
+        // |im| of ±i is 1.0; per-λ threshold 1e-9·|±i| = 1e-9 → 1.0 > 1e-9 → Undef.
+        let m = eval_builtin(
+            "matrix",
+            &[Value::List(vec![
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(-1.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(1.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(3.0),
+                    Value::Real(0.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(5.0),
+                ]),
+            ])],
+        );
+        assert!(
+            eval_builtin("eigenvalues", &[m]).is_undef(),
+            "eigenvalues of 4×4 with complex-spectrum block (±i) must return Undef"
+        );
     }
 
     #[test]
@@ -1283,5 +1499,144 @@ mod tests {
                 );
             }
         }
+    }
+
+    // --- complex_eigenvalues tests (step-3 RED / step-4 GREEN) ---
+
+    /// (a) 2×2 rotation [[0,-1],[1,0]] → {0+1i, 0-1i} (set-membership, ±1e-9).
+    /// Today the name is unknown → returns Undef. After fix: two Complex values.
+    #[test]
+    fn complex_eigenvalues_rotation_2x2() {
+        let m = make_matrix(&[&[0.0, -1.0], &[1.0, 0.0]]);
+        let result = eval_builtin("complex_eigenvalues", &[m]);
+        if let Value::List(items) = result {
+            assert_eq!(items.len(), 2, "expected 2 eigenvalues, got {:?}", items);
+            let has_pos_i = items.iter().any(|v| {
+                if let Value::Complex { re, im, dimension } = v {
+                    re.abs() < 1e-9
+                        && (im - 1.0).abs() < 1e-9
+                        && *dimension == DimensionVector::DIMENSIONLESS
+                } else {
+                    false
+                }
+            });
+            let has_neg_i = items.iter().any(|v| {
+                if let Value::Complex { re, im, dimension } = v {
+                    re.abs() < 1e-9
+                        && (im + 1.0).abs() < 1e-9
+                        && *dimension == DimensionVector::DIMENSIONLESS
+                } else {
+                    false
+                }
+            });
+            assert!(has_pos_i, "expected 0+1i in {:?}", items);
+            assert!(has_neg_i, "expected 0-1i in {:?}", items);
+        } else {
+            panic!("expected List, got {:?}", result);
+        }
+    }
+
+    /// (b) Real-spectrum diagonal [[3,0],[0,5]] → {3+0i, 5+0i}.
+    #[test]
+    fn complex_eigenvalues_real_spectrum_diagonal() {
+        let m = make_matrix(&[&[3.0, 0.0], &[0.0, 5.0]]);
+        let result = eval_builtin("complex_eigenvalues", &[m]);
+        if let Value::List(items) = result {
+            assert_eq!(items.len(), 2, "expected 2 eigenvalues");
+            // Both must be Complex with |im| < 1e-9
+            for item in &items {
+                if let Value::Complex { im, .. } = item {
+                    assert!(im.abs() < 1e-9, "imaginary part should be ~0, got {im}");
+                } else {
+                    panic!("expected Complex, got {:?}", item);
+                }
+            }
+            // Values should cover 3 and 5 (set-membership)
+            let has_3 = items.iter().any(|v| {
+                if let Value::Complex { re, .. } = v {
+                    (re - 3.0).abs() < 1e-9
+                } else {
+                    false
+                }
+            });
+            let has_5 = items.iter().any(|v| {
+                if let Value::Complex { re, .. } = v {
+                    (re - 5.0).abs() < 1e-9
+                } else {
+                    false
+                }
+            });
+            assert!(has_3, "expected 3+0i in {:?}", items);
+            assert!(has_5, "expected 5+0i in {:?}", items);
+        } else {
+            panic!("expected List, got {:?}", result);
+        }
+    }
+
+    /// (c) Block-diagonal 3×3 [[0,-1,0],[1,0,0],[0,0,2]] → {i,-i,2+0i} all present.
+    #[test]
+    fn complex_eigenvalues_block_diagonal_3x3() {
+        let m = make_matrix(&[&[0.0, -1.0, 0.0], &[1.0, 0.0, 0.0], &[0.0, 0.0, 2.0]]);
+        let result = eval_builtin("complex_eigenvalues", &[m]);
+        if let Value::List(items) = result {
+            assert_eq!(items.len(), 3, "expected 3 eigenvalues, got {:?}", items);
+            let has = |exp_re: f64, exp_im: f64| -> bool {
+                items.iter().any(|v| {
+                    if let Value::Complex { re, im, .. } = v {
+                        (re - exp_re).abs() < 1e-9 && (im - exp_im).abs() < 1e-9
+                    } else {
+                        false
+                    }
+                })
+            };
+            assert!(has(0.0, 1.0), "expected 0+1i in {:?}", items);
+            assert!(has(0.0, -1.0), "expected 0-1i in {:?}", items);
+            assert!(has(2.0, 0.0), "expected 2+0i in {:?}", items);
+        } else {
+            panic!("expected List, got {:?}", result);
+        }
+    }
+
+    /// (d) Dimensioned 2×2 of LENGTH scalars → Value::Complex{.., LENGTH}.
+    #[test]
+    fn complex_eigenvalues_dimensioned_2x2() {
+        let length_dim = DimensionVector::LENGTH;
+        let m = make_dimensioned_matrix(&[&[3.0, 0.0], &[0.0, 5.0]], length_dim);
+        let result = eval_builtin("complex_eigenvalues", &[m]);
+        if let Value::List(items) = result {
+            assert_eq!(items.len(), 2, "expected 2 eigenvalues");
+            for item in &items {
+                if let Value::Complex { dimension, .. } = item {
+                    assert_eq!(
+                        *dimension,
+                        length_dim,
+                        "complex eigenvalue dimension should be LENGTH"
+                    );
+                } else {
+                    panic!("expected Complex, got {:?}", item);
+                }
+            }
+        } else {
+            panic!("expected List, got {:?}", result);
+        }
+    }
+
+    /// (e) Guard: zero args → Undef.
+    #[test]
+    fn complex_eigenvalues_wrong_arg_count_returns_undef() {
+        assert!(eval_builtin("complex_eigenvalues", &[]).is_undef());
+    }
+
+    /// (e) Guard: non-square 2×3 → Undef.
+    #[test]
+    fn complex_eigenvalues_non_square_returns_undef() {
+        let m = make_matrix(&[&[1.0, 2.0, 3.0], &[4.0, 5.0, 6.0]]);
+        assert!(eval_builtin("complex_eigenvalues", &[m]).is_undef());
+    }
+
+    /// (e) Guard: non-matrix Value::Real → Undef.
+    #[test]
+    fn complex_eigenvalues_non_matrix_returns_undef() {
+        assert!(eval_builtin("complex_eigenvalues", &[Value::Real(5.0)]).is_undef());
     }
 }
