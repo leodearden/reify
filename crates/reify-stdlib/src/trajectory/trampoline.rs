@@ -41,6 +41,7 @@ use super::simulate::{
     ModalModel, ModeDesc, Pose3,
 };
 use super::spline::{BoundaryCondition, CubicSpline, KnotData, MultiJointSpline, QuinticSpline};
+use super::tots::{solve_tots, JointWaypoints, SqpConfig, TotsModel, TotsOutcome, TotsParams};
 
 /// The result-determining inputs of a `simulate_trajectory` forward-pass solve,
 /// used to decide whether a cached `EndEffectorTrack` result (`reify-eval`'s
@@ -633,10 +634,26 @@ const MAX_SHAPED_SAMPLES: usize = 1024;
 /// waypoints, so the landed echo-era assertions (which check those three fields
 /// are preserved) still hold.
 ///
+/// **TOTS arm** (`TOTSShaper`): dispatched FIRST (the impulse path cannot
+/// resolve a `TOTSShaper`). Marshal the profile's waypoints into a per-joint
+/// point-to-point spec ([`JointWaypoints`] — `start` / `interior…` / `end`), the
+/// shaper's scalar `velocity_limit` / `acceleration_limit` into the per-joint
+/// constraints, its `vibration_tolerance` into `vib_tol`, its `modes` into a
+/// [`ModalModel`] ([`value_to_modal_model`]), and its `max_iters` / `tol` into the
+/// [`SqpConfig`]; seed `t_initial` from the input profile's own duration (the
+/// un-optimised baseline). Run the time-optimal SQP loop ([`solve_tots`]) and
+/// re-emit the optimised `[start, interior…, end]` per joint at uniform fractions
+/// of the solved `T` (mirroring `tots::build_spline`'s knot layout), again
+/// preserving every non-`waypoints` field — so the move is genuinely *re-timed*,
+/// never an echo. `ConstraintInfeasible` ⇒ no feasible shaped profile exists ⇒
+/// `Undef`; `Converged` / `NonConvergence` (best-feasible iterate) ⇒ the re-timed
+/// `Profile`.
+///
 /// Returns [`Value::Undef`] for: a non-`StructureInstance` profile or shaper; an
-/// unrecognised shaper with no resolvable train — **including `TOTSShaper`**,
-/// whose heavy SQP arm lands in a later step (until then a `TOTSShaper` here is
-/// `Undef`, not a silent echo); or a profile that does not marshal to a spline.
+/// unrecognised shaper with no resolvable train (not in {ZV, ZVD, EI, Cascaded}
+/// and not a `TOTSShaper`); an impulse-arm profile that does not marshal to a
+/// spline, or a TOTS-arm profile with `< 2` / inconsistent waypoints; or a
+/// `TOTSShaper` whose problem is `ConstraintInfeasible`.
 ///
 /// New waypoints reuse the input waypoints' registered `type_id` / `type_name` /
 /// `version` so the shaped profile binds like the original; per-waypoint
@@ -648,13 +665,22 @@ pub fn input_shape_value(profile: &Value, shaper: &Value) -> Value {
     let Value::StructureInstance(profile_data) = profile else {
         return Value::Undef;
     };
-    if !matches!(shaper, Value::StructureInstance(_)) {
+    let Value::StructureInstance(shaper_data) = shaper else {
         return Value::Undef;
+    };
+
+    // ── TOTS arm — dispatch BEFORE the impulse-train path ───────────────────
+    // build_train_for_shaper returns None for a TOTSShaper (it only knows
+    // ZV/ZVD/EI/Cascaded), so the heavy time-optimal SQP solve must be reached
+    // here first. Real command re-timing (κ → π), not an echo: infeasible ⇒
+    // Undef, Converged / NonConvergence ⇒ the re-timed Profile.
+    if shaper_data.type_name == "TOTSShaper" {
+        return input_shape_tots(profile_data, shaper);
     }
 
     // Resolve the shaper to its impulse train. `build_train_for_shaper` returns
-    // None for an unrecognised shaper AND for a `TOTSShaper` (whose arm lands
-    // separately) — either ⇒ Undef here.
+    // None for an unrecognised shaper AND for a `TOTSShaper` (whose arm is above)
+    // — either ⇒ Undef here.
     let Some(train) = build_train_for_shaper(shaper) else {
         return Value::Undef;
     };
@@ -718,6 +744,225 @@ pub fn input_shape_value(profile: &Value, shaper: &Value) -> Value {
                 "t".to_string(),
                 Value::Scalar {
                     si_value: t,
+                    dimension: DimensionVector::TIME,
+                },
+            ),
+            ("values".to_string(), Value::List(values)),
+            ("vels".to_string(), Value::Option(None)),
+            ("accels".to_string(), Value::Option(None)),
+        ]
+        .into_iter()
+        .collect();
+        new_waypoints.push(Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: wp_type_id,
+            type_name: wp_type_name.clone(),
+            version: wp_version,
+            fields,
+        })));
+    }
+
+    // Preserve every profile field; replace only `waypoints`.
+    let new_fields = profile_data
+        .fields
+        .insert_functional("waypoints".to_string(), Value::List(new_waypoints));
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: profile_data.type_id,
+        type_name: profile_data.type_name.clone(),
+        version: profile_data.version,
+        fields: new_fields,
+    }))
+}
+
+/// Read numeric field `name` from a `StructureInstance`'s fields as `f64`,
+/// falling back to `default` when absent / non-numeric. Mirrors
+/// `input_shape::field_f64` — the single coercion path for the `TOTSShaper`'s
+/// scalar limit / solver fields.
+fn field_f64(data: &StructureInstanceData, name: &str, default: f64) -> f64 {
+    data.fields
+        .get(&name.to_string())
+        .and_then(read_scalar_si)
+        .unwrap_or(default)
+}
+
+/// Marshal a `PiecewisePolynomialProfile`'s waypoints into the per-joint TOTS
+/// point-to-point spec ([`JointWaypoints`]) plus the profile's baseline duration
+/// (`last.t − first.t`, the un-optimised `t_initial` seed).
+///
+/// Per joint `j`: `start = wp[0].values[j]`, `end = wp[last].values[j]`,
+/// `interior = [wp[1..last].values[j]]` (the optimisable waypoints). The scalar
+/// `vel_limit` / `acc_limit` / `max_force` are applied uniformly to every joint —
+/// the same uniform-placeholder convention `value_to_mechanism_model` uses for
+/// inertia (structured per-joint `actuator_limits` marshalling tightens when the
+/// kinematic-completion PRD lands).
+///
+/// Returns `None` (never panics) for `< 2` waypoints, a non-`List` `waypoints`
+/// field, a non-`StructureInstance` waypoint, a non-numeric `t` / `values`, an
+/// empty or inconsistent joint count, or a non-positive duration.
+fn profile_to_joint_waypoints(
+    profile_data: &StructureInstanceData,
+    vel_limit: f64,
+    acc_limit: f64,
+    max_force: f64,
+) -> Option<(Vec<JointWaypoints>, f64)> {
+    let Some(Value::List(wps)) = profile_data.fields.get(&"waypoints".to_string()) else {
+        return None;
+    };
+    if wps.len() < 2 {
+        return None;
+    }
+
+    let mut ts: Vec<f64> = Vec::with_capacity(wps.len());
+    let mut vals: Vec<Vec<f64>> = Vec::with_capacity(wps.len()); // [waypoint][joint]
+    for wp in wps {
+        let Value::StructureInstance(d) = wp else {
+            return None;
+        };
+        let t = read_scalar_si(d.fields.get(&"t".to_string())?)?;
+        let v = read_real_list(d.fields.get(&"values".to_string())?)?;
+        ts.push(t);
+        vals.push(v);
+    }
+
+    let n_joints = vals[0].len();
+    if n_joints == 0 || vals.iter().any(|v| v.len() != n_joints) {
+        return None;
+    }
+    let duration = ts[ts.len() - 1] - ts[0];
+    // Reject a non-positive, NaN, or infinite baseline duration (`!is_finite()`
+    // catches NaN/±inf; `<= 0.0` catches a zero/reversed knot span).
+    if duration <= 0.0 || !duration.is_finite() {
+        return None;
+    }
+
+    let n_wp = vals.len();
+    let joints = (0..n_joints)
+        .map(|j| JointWaypoints {
+            start: vals[0][j],
+            interior: (1..n_wp - 1).map(|i| vals[i][j]).collect(),
+            end: vals[n_wp - 1][j],
+            vel_limit,
+            acc_limit,
+            max_force,
+        })
+        .collect();
+    Some((joints, duration))
+}
+
+/// The `TOTSShaper` arm of [`input_shape_value`]: marshal the profile + shaper
+/// into the [`solve_tots`] inputs, run the time-optimal SQP loop, and re-emit the
+/// optimised command as a re-timed `Profile` (or [`Value::Undef`] when the
+/// problem is infeasible / the profile cannot be marshalled). See
+/// [`input_shape_value`]'s docs for the full contract.
+fn input_shape_tots(profile_data: &StructureInstanceData, shaper: &Value) -> Value {
+    let Value::StructureInstance(shaper_data) = shaper else {
+        // Unreachable: the caller dispatches here only for a StructureInstance.
+        return Value::Undef;
+    };
+
+    // Solver-parameterising scalar fields (defaults mirror `input_shape::run_tots`).
+    let vel_limit = field_f64(shaper_data, "velocity_limit", 100.0);
+    let acc_limit = field_f64(shaper_data, "acceleration_limit", 1000.0);
+    let max_force = field_f64(shaper_data, "force_limit", 1000.0);
+    let vib_tol = field_f64(shaper_data, "vibration_tolerance", 0.02);
+    let max_iters = field_f64(shaper_data, "max_iters", 100.0) as usize;
+    let tol = field_f64(shaper_data, "tol", 1e-6);
+
+    // Profile waypoints → per-joint P2P spec + baseline (un-optimised) duration.
+    let Some((joints, duration)) =
+        profile_to_joint_waypoints(profile_data, vel_limit, acc_limit, max_force)
+    else {
+        return Value::Undef;
+    };
+
+    // Modal model from the shaper's `modes` (value_to_modal_model reads the
+    // `modes` field — shared with ModalResult); mechanism from the profile's
+    // `mechanism` placeholder field (single-link unit-mass fallback).
+    let modal = value_to_modal_model(shaper);
+    let fallback_mech = Value::Real(0.0);
+    let mech_value = profile_data
+        .fields
+        .get(&"mechanism".to_string())
+        .unwrap_or(&fallback_mech);
+    let (mechanism, effector_locations) = value_to_mechanism_model(mech_value, modal.modes.len());
+
+    let params = TotsParams {
+        joints,
+        t_initial: duration,
+        vib_tol,
+        n_grid: 30,
+    };
+    let model = TotsModel {
+        mechanism,
+        modal,
+        effector_locations,
+    };
+    let config = SqpConfig {
+        max_iters,
+        tol,
+        ..Default::default()
+    };
+
+    let result = solve_tots(params, &model, &config);
+    match result.outcome {
+        // No feasible shaped profile exists (E_TrajectoryConstraintInfeasible).
+        TotsOutcome::ConstraintInfeasible => Value::Undef,
+        // Converged, or the solver's best-feasible iterate
+        // (W_TrajectorySolverNonConvergence) — both are valid shaped profiles.
+        TotsOutcome::Converged | TotsOutcome::NonConvergence => {
+            tots_result_to_profile(profile_data, &result.params)
+        }
+    }
+}
+
+/// Build the re-timed `PiecewisePolynomialProfile` `Value` from a solved
+/// [`TotsParams`]: one waypoint per TOTS knot (uniform fractions of the optimised
+/// `T`, mirroring `tots::build_spline`'s knot layout) carrying the optimised
+/// `[start, interior…, end]` per joint. Every non-`waypoints` field of the input
+/// profile is preserved verbatim — only the command is re-timed — and the new
+/// waypoints reuse the input waypoints' registered identity (sentinel fallback),
+/// exactly like the impulse arm.
+fn tots_result_to_profile(profile_data: &StructureInstanceData, params: &TotsParams) -> Value {
+    let t = params.t_initial;
+    let n_int = params.joints.first().map(|j| j.interior.len()).unwrap_or(0);
+    let n_knots = n_int + 2;
+
+    // Per-joint knot values: [start, interior…, end].
+    let knot_values: Vec<Vec<f64>> = params
+        .joints
+        .iter()
+        .map(|j| {
+            let mut v = Vec::with_capacity(n_knots);
+            v.push(j.start);
+            v.extend_from_slice(&j.interior);
+            v.push(j.end);
+            v
+        })
+        .collect();
+
+    // Waypoint identity reused from the input (sentinel fallback) — mirrors the
+    // impulse arm so the shaped profile binds like the original.
+    let (wp_type_id, wp_type_name, wp_version) =
+        match profile_data.fields.get(&"waypoints".to_string()) {
+            Some(Value::List(wps)) => match wps.first() {
+                Some(Value::StructureInstance(d)) => (d.type_id, d.type_name.clone(), d.version),
+                _ => (StructureTypeId(u32::MAX), "Waypoint".to_string(), 1),
+            },
+            _ => (StructureTypeId(u32::MAX), "Waypoint".to_string(), 1),
+        };
+
+    let mut new_waypoints = Vec::with_capacity(n_knots);
+    for i in 0..n_knots {
+        let ti = if n_knots > 1 {
+            i as f64 / (n_knots - 1) as f64 * t
+        } else {
+            0.0
+        };
+        let values: Vec<Value> = knot_values.iter().map(|kv| Value::Real(kv[i])).collect();
+        let fields: PersistentMap<String, Value> = [
+            (
+                "t".to_string(),
+                Value::Scalar {
+                    si_value: ti,
                     dimension: DimensionVector::TIME,
                 },
             ),
