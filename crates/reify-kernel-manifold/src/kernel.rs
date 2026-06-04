@@ -911,6 +911,23 @@ mod tests {
         }
     }
 
+    /// Convenience constructor for a `TopologyAttribute` with `Role::Side`,
+    /// `local_index: 0`, and no label or modification history.
+    ///
+    /// Shared by the provenance-walk tests in this module.  A companion copy
+    /// lives in `provenance.rs` tests; full consolidation into `test_fixtures`
+    /// is deferred because `test_fixtures.rs` is outside this task's scope lock.
+    #[cfg(feature = "test-fixtures")]
+    fn make_attr(name: &str) -> reify_ir::TopologyAttribute {
+        reify_ir::TopologyAttribute {
+            feature_id: FeatureId::new(name),
+            role: reify_ir::Role::Side,
+            local_index: 0,
+            user_label: None,
+            mod_history: vec![],
+        }
+    }
+
     /// Pins that `execute(GeometryOp::Union)` over two stored unit cubes
     /// returns `Ok(GeometryHandle { .. })`.
     ///
@@ -1768,16 +1785,12 @@ mod tests {
     /// verified-reachable from the landed egress test
     /// `union_meshgl64_exposes_provenance_and_merge_pairing_invariant` (task 4247).
     ///
-    /// # Fails until step-6 (correlate_facets impl lands)
-    ///
-    /// With the skeleton returning `Err`, `.expect(...)` panics.  Once
-    /// `correlate_facets` is implemented, all assertions pass.
     #[cfg(feature = "test-fixtures")]
     #[test]
     fn union_walk_correlates_surviving_facets_to_source_features() {
         use crate::test_fixtures::unit_cube_manifold;
         use crate::provenance::correlate_facets;
-        use reify_ir::{FeatureId, Role, TopologyAttribute};
+        use reify_ir::TopologyAttribute;
         use std::collections::{HashMap, HashSet};
 
         // Call as_original() to assign a stable non-negative tracking ID that
@@ -1808,20 +1821,8 @@ mod tests {
             "union run_original_id must contain both parent ids {id_a} and {id_b}; got {roi:?}"
         );
 
-        let attr_a = TopologyAttribute {
-            feature_id: FeatureId::new("featureA"),
-            role: Role::Side,
-            local_index: 0,
-            user_label: None,
-            mod_history: vec![],
-        };
-        let attr_b = TopologyAttribute {
-            feature_id: FeatureId::new("featureB"),
-            role: Role::Side,
-            local_index: 0,
-            user_label: None,
-            mod_history: vec![],
-        };
+        let attr_a = make_attr("featureA");
+        let attr_b = make_attr("featureB");
 
         let mut parent: HashMap<u32, TopologyAttribute> = HashMap::new();
         parent.insert(id_a, attr_a.clone());
@@ -1888,28 +1889,11 @@ mod tests {
     ///     ids that don't exist in `shapes`, empty table: must still return
     ///     `Ok(Discarded)` (the existing contract from the empty-kernel tests).
     ///
-    /// # Fails until step-8
-    ///
-    /// The current stub returns `Ok(Discarded)` unconditionally, so assertion
-    /// (a) panics on the `Propagated` variant match.
     #[cfg(feature = "test-fixtures")]
     #[test]
     fn propagate_attributes_returns_propagated_when_parent_provenance_present() {
         use crate::test_fixtures::unit_cube_mesh;
-        use reify_ir::{
-            FeatureId, GeometryOp, KernelAttributeOutcome, Role, TopologyAttribute,
-            TopologyAttributeTable,
-        };
-
-        fn make_attr(name: &str) -> TopologyAttribute {
-            TopologyAttribute {
-                feature_id: FeatureId::new(name),
-                role: Role::Side,
-                local_index: 0,
-                user_label: None,
-                mod_history: vec![],
-            }
-        }
+        use reify_ir::{GeometryOp, KernelAttributeOutcome, TopologyAttributeTable};
 
         // (a) Happy path: two ingested overlapping cubes, both annotated.
         let mut kernel = ManifoldKernel::new();
@@ -1946,6 +1930,23 @@ mod tests {
                  and the result mesh is non-empty; got {other:?}"
             ),
         }
+
+        // The table must be unchanged on the Propagated path.  Descriptor-keyed
+        // persistence is deferred to task 4262 (`propagate_attributes` takes `&self`;
+        // there is no descriptor store until 4262 lands).
+        assert!(
+            table.lookup(result_handle.id).is_none(),
+            "propagate_attributes must not write a result-handle entry on the Propagated path \
+             (descriptor-keyed persistence deferred to task 4262)"
+        );
+        assert!(
+            table.lookup(handle_a.id).is_some(),
+            "handle_a entry must be unchanged in the table after propagate_attributes"
+        );
+        assert!(
+            table.lookup(handle_b.id).is_some(),
+            "handle_b entry must be unchanged in the table after propagate_attributes"
+        );
 
         // (b) Degenerate path: empty kernel, synthetic handles not in shapes,
         //     empty table — must still return Ok(Discarded).

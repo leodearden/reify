@@ -128,18 +128,30 @@ fn correlate_from_vectors(
             num_tri
         ));
     }
+    let max_tri_vert = (num_tri as u64) * 3;
     for (i, &v) in run_index.iter().enumerate() {
         if v % 3 != 0 {
             return Err(format!(
                 "run_index[{i}]={v} is not divisible by 3 (flat tri-vert units required)"
             ));
         }
+        if v > max_tri_vert {
+            return Err(format!(
+                "run_index[{i}]={v} exceeds num_tri*3={max_tri_vert}"
+            ));
+        }
+        if i + 1 < run_index.len() && v > run_index[i + 1] {
+            return Err(format!(
+                "run_index is non-monotonic: run_index[{i}]={v} > run_index[{}]={}",
+                i + 1,
+                run_index[i + 1]
+            ));
+        }
     }
-    if run_index.last().copied().unwrap_or(0) != (num_tri as u64) * 3 {
+    if run_index.last().copied().unwrap_or(0) != max_tri_vert {
         return Err(format!(
-            "run_index last entry={} must equal num_tri*3={}",
+            "run_index last entry={} must equal num_tri*3={max_tri_vert}",
             run_index.last().copied().unwrap_or(0),
-            (num_tri as u64) * 3
         ));
     }
     if merge_from_vert.len() != merge_to_vert.len() {
@@ -369,6 +381,27 @@ mod tests {
             assert!(
                 result.is_err(),
                 "(e) merge_from_vert/merge_to_vert length mismatch must return Err"
+            );
+            assert!(!result.unwrap_err().is_empty());
+        }
+
+        // (f) non-monotonic run_index (interior entry > subsequent, all within bounds)
+        {
+            // run_index = [0, 9, 6, 12]: all divisible by 3, all <= 4*3=12,
+            // last entry == 12 ✓ — but run_index[1]=9 > run_index[2]=6, violating
+            // the non-decreasing invariant documented in the # Contract section.
+            let result = correlate_from_vectors(
+                4,
+                &[0u64, 9, 6, 12],
+                &[10u32, 20, 30],
+                &[100u64, 100, 200, 200],
+                &[],
+                &[],
+                &parent,
+            );
+            assert!(
+                result.is_err(),
+                "(f) non-monotonic run_index must return Err"
             );
             assert!(!result.unwrap_err().is_empty());
         }
