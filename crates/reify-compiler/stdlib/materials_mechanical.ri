@@ -131,12 +131,12 @@ trait FractureTough : MaterialSpec {
 
 // ── Ductility ─────────────────────────────────────────────────────────────────
 
-// elongation: % elongation at break; reduction_of_area: % cross-section reduction.
+// elongation_at_break: % strain-to-fracture; reduction_of_area: % cross-section reduction.
 // Both dimensionless fractions — use Real.
-// reduction_of_area is optional (= undef): elongation is the more commonly
+// reduction_of_area is optional (= undef): elongation_at_break is the more commonly
 // reported ductility metric; area reduction may be absent in standard datasheets.
 trait Ductile {
-    param elongation : Real // dimensionless
+    param elongation_at_break : Real // dimensionless
     param reduction_of_area : Real = undef // optional — omit when not reported
 }
 

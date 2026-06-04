@@ -339,7 +339,7 @@ fn strong_omits_compressive_strength_is_clean() {
 fn ductile_omits_reduction_of_area_is_clean() {
     let src = r#"
         structure def DuctileNoROA : Ductile {
-            param elongation : Real = 0.2
+            param elongation_at_break : Real = 0.2
         }
     "#;
     let compiled = compile_source_with_stdlib(src);
