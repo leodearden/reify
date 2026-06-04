@@ -1,5 +1,6 @@
-//! Engine-side trajectory vibration-evaluation primitives (PRD
-//! `docs/prds/v0_3/trajectory-input-shaping.md` §5.3, §11 Phase 2).
+//! Engine-side trajectory vibration-evaluation primitives and ComputeNode
+//! trampolines for `simulate_trajectory` and `input_shape` (PRD
+//! `docs/prds/v0_3/trajectory-input-shaping.md` §5.3, §11 Phase 2, task π).
 //!
 //! This module is the engine-side seam for *evaluating* the vibration behaviour
 //! of an input shaper, as opposed to *constructing* its impulse train (which
@@ -205,4 +206,258 @@ mod tests {
             "empty sweep (n_samples=0) should be +∞, got {worst}"
         );
     }
+}
+
+// ── simulate_trajectory ComputeNode trampoline ────────────────────────────────
+//
+// Mirrors `dynamics_ops::run_inverse_dynamics` / `solve_inverse_dynamics_trampoline`.
+// The pure Value→Value core (`reify_stdlib::simulate_trajectory_value`) lives in
+// reify-stdlib (where the θ pub(crate) types are visible); the engine-facing
+// trampoline wrapper and warm-state cache live here (reify-eval owns
+// ComputeOutcome/OpaqueState/CancellationHandle).
+
+use std::sync::Arc;
+
+use reify_ir::{OpaqueState, Value};
+use reify_stdlib::{InputShapeCacheKey, SimulateTrajectoryCacheKey};
+
+use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
+
+/// Warm-state cache entry for a completed `simulate_trajectory` dispatch.
+///
+/// Recovered on the next invocation via [`OpaqueState::downcast_ref`] and
+/// reused only when the incoming `SimulateTrajectoryCacheKey` matches (a cache
+/// HIT). Mirrors `dynamics_ops::InverseDynamicsCache` without the per-body
+/// solid-hash record (trajectory has no body-granular reuse optimisation).
+#[derive(Clone)]
+struct SimulateTrajectoryCache {
+    key: SimulateTrajectoryCacheKey,
+    /// Cached `EndEffectorTrack` `Value::StructureInstance`, held behind an
+    /// `Arc` so the mandatory cache-HIT re-donation is an O(1) refcount bump
+    /// rather than a second deep clone of the track data. The output-value-cell
+    /// copy pays an unavoidable deep clone (the engine cell owns a plain `Value`).
+    result: Arc<Value>,
+}
+
+impl SimulateTrajectoryCache {
+    /// Coarse heap-size estimate in bytes: the flat key plus the result tree.
+    fn estimated_size_bytes(&self) -> usize {
+        std::mem::size_of::<SimulateTrajectoryCacheKey>()
+            + value_size_estimate(self.result.as_ref())
+    }
+
+    /// Wrap this cache in an `OpaqueState` for donation to the warm-state pool,
+    /// sized by [`estimated_size_bytes`](Self::estimated_size_bytes).
+    fn into_opaque_state(self) -> (OpaqueState, usize) {
+        let size = self.estimated_size_bytes();
+        (OpaqueState::new(self, size), size)
+    }
+}
+
+/// Coarse heap-size estimate of a `Value` tree. Mirrors `dynamics_ops::value_size_estimate`.
+fn value_size_estimate(v: &Value) -> usize {
+    let base = std::mem::size_of::<Value>();
+    match v {
+        Value::String(s) => base + s.len(),
+        Value::List(items) => base + items.iter().map(value_size_estimate).sum::<usize>(),
+        Value::StructureInstance(d) => {
+            base + d.type_name.len()
+                + d.fields
+                    .iter()
+                    .map(|(k, val)| k.len() + value_size_estimate(val))
+                    .sum::<usize>()
+        }
+        _ => base,
+    }
+}
+
+/// Build the `Completed` outcome that donates `cache` as the node's warm state.
+/// Performs one deep clone of the result for the output value cell; the
+/// warm-state copy re-uses the same `Arc<Value>` (O(1) refcount bump).
+fn completed_donating_sim(cache: SimulateTrajectoryCache) -> ComputeOutcome {
+    let result = cache.result.as_ref().clone();
+    let (state, size_bytes) = cache.into_opaque_state();
+    let cost_per_byte = if size_bytes > 0 {
+        Some(1.0 / size_bytes as f64)
+    } else {
+        None
+    };
+    ComputeOutcome::Completed {
+        result,
+        new_warm_state: Some(state),
+        cost_per_byte,
+        diagnostics: Vec::new(),
+    }
+}
+
+/// Malformed-input short-circuit: `Value::Undef` with no warm state, mirroring
+/// `dynamics_ops::undef_outcome`.
+fn undef_outcome_sim() -> ComputeOutcome {
+    ComputeOutcome::Completed {
+        result: Value::Undef,
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: Vec::new(),
+    }
+}
+
+/// `@optimized("trajectory::simulate")` public `ComputeFn` for `fn
+/// simulate_trajectory` (registered in `compute_targets::register_compute_fns`).
+///
+/// Three `value_inputs`: `[profile, mech, modal]` (same order as the .ri fn).
+///
+/// Cooperative cancellation: polls on entry; a pre-cancelled handle returns
+/// `Cancelled` immediately without running the simulation.
+///
+/// Warm-state cache: on a completed run, donates the result under the
+/// `SimulateTrajectoryCacheKey(profile,mech,modal)` content-hash key.  A
+/// subsequent dispatch with identical inputs HITs the cache and returns the
+/// stored `EndEffectorTrack` without re-running `simulate_trajectory_value`.
+pub fn simulate_trajectory_trampoline(
+    value_inputs: &[Value],
+    _realization_inputs: &[RealizationReadHandle],
+    _options: &Value,
+    prior_warm_state: Option<&OpaqueState>,
+    cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    // Entry cancellation checkpoint (mirrors run_inverse_dynamics §0).
+    if cancellation.is_cancelled() {
+        return ComputeOutcome::Cancelled;
+    }
+
+    // Arity guard: simulate_trajectory(profile, mech, modal) — 3 value inputs.
+    if value_inputs.len() != 3 {
+        return undef_outcome_sim();
+    }
+    let profile = &value_inputs[0];
+    let mech = &value_inputs[1];
+    let modal = &value_inputs[2];
+
+    // Build the content-hash cache key over the three result-determining inputs.
+    let key = SimulateTrajectoryCacheKey::from_inputs(profile, mech, modal);
+
+    // ── cache HIT ─────────────────────────────────────────────────────────────
+    // If a prior warm state's key matches, re-donate it and return the cached
+    // EndEffectorTrack without re-running the simulation.
+    if let Some(cache) = prior_warm_state
+        .and_then(|s| s.downcast_ref::<SimulateTrajectoryCache>())
+        && cache.key.matches(&key)
+    {
+        return completed_donating_sim(cache.clone());
+    }
+
+    // ── cache MISS ────────────────────────────────────────────────────────────
+    // Delegate to the stdlib Value→Value composer (runs the full simulation).
+    let result = reify_stdlib::simulate_trajectory_value(profile, mech, modal);
+    if matches!(result, Value::Undef) {
+        return undef_outcome_sim();
+    }
+
+    let cache = SimulateTrajectoryCache {
+        key,
+        result: Arc::new(result),
+    };
+    completed_donating_sim(cache)
+}
+
+// ── input_shape ComputeNode trampoline ───────────────────────────────────────
+//
+// Mirrors simulate_trajectory_trampoline above, but for `input_shape(profile,
+// shaper)`.  TOTS (heavy, cache-valuable) and impulse ZV/ZVD/EI/Cascaded
+// (cheap real shaping) both route through the same trampoline; the
+// `input_shape_value` stdlib composer branches internally.
+
+/// Warm-state cache entry for a completed `input_shape` dispatch.
+#[derive(Clone)]
+struct InputShapeCache {
+    key: InputShapeCacheKey,
+    result: Arc<Value>,
+}
+
+impl InputShapeCache {
+    fn estimated_size_bytes(&self) -> usize {
+        std::mem::size_of::<InputShapeCacheKey>()
+            + value_size_estimate(self.result.as_ref())
+    }
+
+    fn into_opaque_state(self) -> (OpaqueState, usize) {
+        let size = self.estimated_size_bytes();
+        (OpaqueState::new(self, size), size)
+    }
+}
+
+fn completed_donating_shape(cache: InputShapeCache) -> ComputeOutcome {
+    let result = cache.result.as_ref().clone();
+    let (state, size_bytes) = cache.into_opaque_state();
+    let cost_per_byte = if size_bytes > 0 {
+        Some(1.0 / size_bytes as f64)
+    } else {
+        None
+    };
+    ComputeOutcome::Completed {
+        result,
+        new_warm_state: Some(state),
+        cost_per_byte,
+        diagnostics: Vec::new(),
+    }
+}
+
+fn undef_outcome_shape() -> ComputeOutcome {
+    ComputeOutcome::Completed {
+        result: Value::Undef,
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: Vec::new(),
+    }
+}
+
+/// `@optimized("trajectory::input_shape")` public `ComputeFn` for `fn
+/// input_shape` (registered in `compute_targets::register_compute_fns`).
+///
+/// Two `value_inputs`: `[profile, shaper]`.
+///
+/// Cooperative cancellation: polls on entry.
+///
+/// Warm-state cache: result keyed on `InputShapeCacheKey(profile,shaper)`.
+pub fn input_shape_trampoline(
+    value_inputs: &[Value],
+    _realization_inputs: &[RealizationReadHandle],
+    _options: &Value,
+    prior_warm_state: Option<&OpaqueState>,
+    cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    // Entry cancellation checkpoint.
+    if cancellation.is_cancelled() {
+        return ComputeOutcome::Cancelled;
+    }
+
+    // Arity guard: input_shape(profile, shaper) — 2 value inputs.
+    if value_inputs.len() != 2 {
+        return undef_outcome_shape();
+    }
+    let profile = &value_inputs[0];
+    let shaper = &value_inputs[1];
+
+    // Build the content-hash cache key.
+    let key = InputShapeCacheKey::from_inputs(profile, shaper);
+
+    // ── cache HIT ─────────────────────────────────────────────────────────────
+    if let Some(cache) = prior_warm_state
+        .and_then(|s| s.downcast_ref::<InputShapeCache>())
+        && cache.key.matches(&key)
+    {
+        return completed_donating_shape(cache.clone());
+    }
+
+    // ── cache MISS ────────────────────────────────────────────────────────────
+    let result = reify_stdlib::input_shape_value(profile, shaper);
+    if matches!(result, Value::Undef) {
+        return undef_outcome_shape();
+    }
+
+    let cache = InputShapeCache {
+        key,
+        result: Arc::new(result),
+    };
+    completed_donating_shape(cache)
 }
