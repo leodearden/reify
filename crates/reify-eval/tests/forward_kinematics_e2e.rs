@@ -18,7 +18,7 @@
 // (AtomicBool) trips clippy::mutable_key_type, but Ord/Hash on Value are by-design.
 #![allow(clippy::mutable_key_type)]
 
-use reify_core::ValueCellId;
+use reify_core::{DiagnosticCode, Severity, ValueCellId};
 use reify_ir::{Value, ValueMap};
 use reify_test_support::{
     collect_errors, decompose_point3, make_simple_engine, parse_and_compile_with_stdlib, read_f64,
@@ -246,12 +246,24 @@ fn forward_kinematics_errored_mechanism_propagates_undef_e2e() {
     let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
 
-    // Eval should not raise an Error-severity diagnostic just because a
-    // builtin returned Undef — Undef is a first-class value, not an error.
-    let eval_errors = collect_errors(&result.diagnostics);
-    assert!(
-        eval_errors.is_empty(),
-        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
+    // After task 4308, eval emits exactly one E_MECHANISM_DUPLICATE_SOLID Error
+    // diagnostic for the duplicate-solid mechanism (m2).  This replaces the
+    // pre-seam assertion that expected zero Error-severity diagnostics.
+    let duplicate_solid_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.code == Some(DiagnosticCode::MechanismDuplicateSolid)
+        })
+        .collect();
+    assert_eq!(
+        duplicate_solid_errors.len(),
+        1,
+        "eval must emit exactly one E_MECHANISM_DUPLICATE_SOLID Error for a duplicate-solid \
+         source; got {} matching diagnostic(s).\nAll diagnostics: {:#?}",
+        duplicate_solid_errors.len(),
+        result.diagnostics,
     );
 
     // s must be Undef — the errored mechanism short-circuits `snapshot()`.
