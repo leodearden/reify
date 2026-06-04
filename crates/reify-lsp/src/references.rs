@@ -1975,4 +1975,72 @@ structure S {
             "the trailing forall use must bind to the outer (top-level) declaration"
         );
     }
+
+    // --- step-1 (δ): documentHighlight producer == in-doc references incl. decl ---
+
+    #[test]
+    fn compute_document_highlights_equals_in_doc_references() {
+        // Boundary row 7: the occurrence-highlight set is EXACTLY the references
+        // set restricted to the active document, INCLUDING the declaration token.
+        // Because `collect_references` walks a single ParsedModule scoped to one
+        // entity body, every span it returns is inherently in-document, so the
+        // producer is a pure mapping of
+        // collect_references(.., include_declaration=true).references through
+        // `span_to_range`, each tagged `DocumentHighlightKind::TEXT`.
+        let source = reify_test_support::bracket_source();
+        let parsed = reify_syntax::parse(source, ModulePath::single("bracket"));
+
+        let width = occurrences(source, "width");
+        assert_eq!(width.len(), 4, "bracket fixture: 1 decl + 3 uses of width");
+
+        // Cursor on a `width` USE (the one in `let volume = width * ...`).
+        let pos = offset_to_position(source, width[1] as u32);
+
+        let highlights = compute_document_highlights(source, &parsed, pos)
+            .expect("cursor on a width use should produce document highlights");
+
+        // The reference set (declaration ∪ uses) is the producer's source of truth.
+        let refset = collect_references(source, &parsed, pos, true)
+            .expect("width use resolves to a ReferenceSet");
+        let expected_ranges: Vec<Range> = refset
+            .references
+            .iter()
+            .map(|&span| span_to_range(source, span))
+            .collect();
+        let actual_ranges: Vec<Range> = highlights.iter().map(|h| h.range).collect();
+
+        // Same ranges, same ascending order — the highlight set IS the in-doc
+        // reference set (incl. declaration).
+        assert_eq!(
+            actual_ranges, expected_ranges,
+            "highlight ranges must equal the in-doc reference set (incl. declaration), ascending"
+        );
+        // 1 declaration + 3 uses = 4 highlights.
+        assert_eq!(highlights.len(), 4, "width has 1 declaration + 3 uses");
+        // Every occurrence highlight is read/write-agnostic TEXT.
+        for h in &highlights {
+            assert_eq!(
+                h.kind,
+                Some(DocumentHighlightKind::TEXT),
+                "every occurrence highlight is kind TEXT"
+            );
+        }
+
+        // --- A non-resolvable cursor position yields None. ---
+        // A type-name token (`Scalar`) does not resolve to a local value-member
+        // binding, so collect_references → None → producer → None.
+        let scalar_off = source.find("Scalar").expect("Scalar present");
+        let scalar_pos = offset_to_position(source, scalar_off as u32);
+        assert!(
+            compute_document_highlights(source, &parsed, scalar_pos).is_none(),
+            "a type-name token is not resolvable, so it produces no highlights"
+        );
+        // A keyword (`structure`) is likewise non-resolvable.
+        let kw_off = source.find("structure").expect("structure keyword present");
+        let kw_pos = offset_to_position(source, kw_off as u32);
+        assert!(
+            compute_document_highlights(source, &parsed, kw_pos).is_none(),
+            "a keyword is not resolvable, so it produces no highlights"
+        );
+    }
 }
