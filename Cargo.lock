@@ -4615,6 +4615,7 @@ name = "reify-stdlib"
 version = "0.1.0"
 dependencies = [
  "faer",
+ "nalgebra",
  "reify-core",
  "reify-gcode",
  "reify-ir",

@@ -1,3 +1,4 @@
+use nalgebra::DMatrix;
 use reify_core::DimensionVector;
 use reify_ir::Value;
 
@@ -39,7 +40,17 @@ pub(crate) fn eval_matrix(name: &str, args: &[Value]) -> Option<Value> {
                     let (g, h, i) = (data[6], data[7], data[8]);
                     a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
                 }
-                _ => return Value::Undef, // only 1×1, 2×2, 3×3 supported
+                // N≥4: LU-based determinant. Two subtle differences from the
+                // closed forms above:
+                //   1. Singular inputs yield ~0 (e.g. 1e-14) rather than exact 0.0,
+                //      because LU pivoting accumulates floating-point error.
+                //   2. The inverse arm uses try_inverse()'s exact-pivot test, which
+                //      has a different (unrelated) threshold. For ill-conditioned
+                //      matrices near singularity the two ops can disagree: det may
+                //      be nonzero while try_inverse returns None (→ Undef), or vice
+                //      versa. This is consistent with the existing 2×2/3×3 contract
+                //      (singular→det≈0 value; singular→Undef for inverse).
+                _ => DMatrix::from_row_slice(n, n, &data).determinant(),
             };
             let result_dim = dim.pow(n as i8);
             if result_dim == DimensionVector::DIMENSIONLESS {
@@ -109,7 +120,25 @@ pub(crate) fn eval_matrix(name: &str, args: &[Value]) -> Option<Value> {
                     ];
                     build_matrix_value(3, 3, &inv_data, inv_dim)
                 }
-                _ => Value::Undef,
+                _ => {
+                    // Near-singular but non-exactly-singular matrices pass
+                    // try_inverse()'s pivot threshold and return a large-valued
+                    // inverse rather than Undef — consistent with the 2×2/3×3
+                    // arms, which also only return Undef when det == 0.0 exactly.
+                    let m = DMatrix::from_row_slice(n, n, &data);
+                    match m.try_inverse() {
+                        Some(inv) => {
+                            let mut inv_data = Vec::with_capacity(n * n);
+                            for i in 0..n {
+                                for j in 0..n {
+                                    inv_data.push(inv[(i, j)]);
+                                }
+                            }
+                            build_matrix_value(n, n, &inv_data, inv_dim)
+                        }
+                        None => Value::Undef,
+                    }
+                }
             }
         }),
 
@@ -834,5 +863,425 @@ mod tests {
             "determinant(AffineMap) must return Value::Real (dimensionless), got {:?}",
             result
         );
+    }
+
+    // --- N≥4 determinant tests (step-1 RED / step-2 GREEN) ---
+
+    /// Build the well-conditioned tridiagonal 4×4 [[2,1,0,0],[1,2,1,0],[0,1,2,1],[0,0,1,2]]
+    /// via the REAL `matrix()` constructor (anti-fake-done: no synthetic Value::Tensor).
+    /// Exact determinant = 5; condition number κ ≈ 9.47.
+    fn make_4x4_tridiagonal_dimensionless() -> Value {
+        eval_builtin(
+            "matrix",
+            &[Value::List(vec![
+                Value::List(vec![
+                    Value::Real(2.0),
+                    Value::Real(1.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(1.0),
+                    Value::Real(2.0),
+                    Value::Real(1.0),
+                    Value::Real(0.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(1.0),
+                    Value::Real(2.0),
+                    Value::Real(1.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(1.0),
+                    Value::Real(2.0),
+                ]),
+            ])],
+        )
+    }
+
+    /// Build the tridiagonal 4×4 with LENGTH-dimensioned cells via the real `matrix()` constructor.
+    fn make_4x4_tridiagonal_length() -> Value {
+        let l = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::LENGTH,
+        };
+        eval_builtin(
+            "matrix",
+            &[Value::List(vec![
+                Value::List(vec![l(2.0), l(1.0), l(0.0), l(0.0)]),
+                Value::List(vec![l(1.0), l(2.0), l(1.0), l(0.0)]),
+                Value::List(vec![l(0.0), l(1.0), l(2.0), l(1.0)]),
+                Value::List(vec![l(0.0), l(0.0), l(1.0), l(2.0)]),
+            ])],
+        )
+    }
+
+    /// (a) Happy path: det of well-conditioned 4×4 tridiagonal = 5 exactly.
+    /// G6 1e-9 floor (κ≈9.47; LU residual ~2e-15; 1e-9 clears by 6 orders).
+    #[test]
+    fn det_4x4_tridiagonal_is_5() {
+        let m = make_4x4_tridiagonal_dimensionless();
+        let result = eval_builtin("determinant", &[m]);
+        match result {
+            Value::Real(v) => assert!(
+                (v - 5.0).abs() < 1e-9,
+                "det of 4×4 tridiagonal expected 5.0, got {v}"
+            ),
+            other => panic!("expected Real(5.0), got {:?}", other),
+        }
+    }
+
+    /// (b) Singular 4×4 (zero last row): det ≈ 0 as Real, NOT Undef.
+    /// Matches 2×2/3×3 semantics: singular det → ~0 value, not Undef.
+    #[test]
+    fn det_4x4_singular_returns_zero_real_not_undef() {
+        let m = eval_builtin(
+            "matrix",
+            &[Value::List(vec![
+                Value::List(vec![
+                    Value::Real(1.0),
+                    Value::Real(2.0),
+                    Value::Real(3.0),
+                    Value::Real(4.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(5.0),
+                    Value::Real(6.0),
+                    Value::Real(7.0),
+                    Value::Real(8.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(9.0),
+                    Value::Real(10.0),
+                    Value::Real(11.0),
+                    Value::Real(12.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]),
+            ])],
+        );
+        match eval_builtin("determinant", &[m]) {
+            Value::Real(v) => assert!(
+                v.abs() < 1e-9,
+                "det of singular 4×4 expected ≈0, got {v}"
+            ),
+            other => panic!("expected Real(≈0.0), got {:?}", other),
+        }
+    }
+
+    /// (c) Dimensioned 4×4 tridiagonal (LENGTH cells) → det dim = LENGTH^4, si ≈ 5.0.
+    #[test]
+    fn det_4x4_dimensioned_length_cells() {
+        let m = make_4x4_tridiagonal_length();
+        let result = eval_builtin("determinant", &[m]);
+        let expected_dim = DimensionVector::LENGTH.pow(4);
+        match result {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!(
+                    (si_value - 5.0).abs() < 1e-9,
+                    "det si_value expected 5.0, got {si_value}"
+                );
+                assert_eq!(dimension, expected_dim, "det dimension mismatch");
+            }
+            other => panic!("expected Scalar{{si≈5.0, dim=LENGTH^4}}, got {:?}", other),
+        }
+    }
+
+    // --- N≥4 inverse tests (step-3 RED / step-4 GREEN) ---
+
+    /// Build a non-symmetric, well-conditioned upper-triangular 4×4:
+    ///   [[2,1,0,0],[0,3,1,0],[0,0,4,1],[0,0,0,5]]  det=120, κ≈2.5
+    ///
+    /// Non-symmetry is deliberate: for a symmetric matrix A=A^T the identity
+    /// A·A⁻¹≈I still holds even if the nalgebra extraction loop has i/j swapped
+    /// (because (A⁻¹)^T = (A^T)⁻¹ = A⁻¹).  For a non-symmetric matrix an
+    /// incorrect transpose in the read-back would give A·(A⁻¹)^T ≠ I, so the
+    /// A·A⁻¹≈I assertion actually catches row-major vs column-major layout bugs.
+    fn make_4x4_upper_triangular_dimensionless() -> Value {
+        eval_builtin(
+            "matrix",
+            &[Value::List(vec![
+                Value::List(vec![
+                    Value::Real(2.0),
+                    Value::Real(1.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(3.0),
+                    Value::Real(1.0),
+                    Value::Real(0.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(4.0),
+                    Value::Real(1.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(5.0),
+                ]),
+            ])],
+        )
+    }
+
+    /// (a) Happy path: inv(A)·A ≈ I₄ — max residual < 1e-9.
+    /// Uses the upper-triangular 4×4 (non-symmetric, det=120, κ≈2.5).
+    /// Non-symmetric so a transposed extraction in the nalgebra read-back is
+    /// actually caught by the A·A⁻¹≈I assertion (see make_4x4_upper_triangular_dimensionless).
+    #[test]
+    fn inverse_4x4_times_original_approx_identity() {
+        let m = make_4x4_upper_triangular_dimensionless();
+        let inv = eval_builtin("inverse", std::slice::from_ref(&m));
+
+        // Must not be Undef
+        assert!(
+            !inv.is_undef(),
+            "inverse of well-conditioned 4×4 should not be Undef, got {:?}",
+            inv
+        );
+
+        // Extract flat data for both A and A⁻¹
+        let (n_a, _, a_data, _) = matrix_components_f64(&m).expect("A must parse");
+        let (n_inv, _, inv_data, _) = matrix_components_f64(&inv).expect("inv must parse");
+        assert_eq!(n_a, 4);
+        assert_eq!(n_inv, 4);
+
+        // Compute A · A⁻¹ and assert ‖ · − I‖∞ < 1e-9
+        for r in 0..4 {
+            for c in 0..4 {
+                let product: f64 = (0..4).map(|k| a_data[r * 4 + k] * inv_data[k * 4 + c]).sum();
+                let expected = if r == c { 1.0 } else { 0.0 };
+                assert!(
+                    (product - expected).abs() < 1e-9,
+                    "A·A⁻¹[{r}][{c}] = {product}, expected {expected}"
+                );
+            }
+        }
+    }
+
+    /// (b) Singular 4×4 (zero last row) → inverse returns Undef.
+    #[test]
+    fn inverse_4x4_singular_returns_undef() {
+        let m = eval_builtin(
+            "matrix",
+            &[Value::List(vec![
+                Value::List(vec![
+                    Value::Real(1.0),
+                    Value::Real(2.0),
+                    Value::Real(3.0),
+                    Value::Real(4.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(5.0),
+                    Value::Real(6.0),
+                    Value::Real(7.0),
+                    Value::Real(8.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(9.0),
+                    Value::Real(10.0),
+                    Value::Real(11.0),
+                    Value::Real(12.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]),
+            ])],
+        );
+        assert!(
+            eval_builtin("inverse", &[m]).is_undef(),
+            "inverse of singular 4×4 should be Undef"
+        );
+    }
+
+    /// (c) Dimensioned 4×4 (LENGTH cells) → inverse dim = DIMENSIONLESS / LENGTH.
+    #[test]
+    fn inverse_4x4_dimensioned_length_cells() {
+        let m = make_4x4_tridiagonal_length();
+        let inv = eval_builtin("inverse", &[m]);
+
+        assert!(
+            !inv.is_undef(),
+            "inverse of dimensioned 4×4 should not be Undef"
+        );
+
+        let (_, _, _, inv_dim) = matrix_components_f64(&inv).expect("inv must parse");
+        let expected_dim = DimensionVector::DIMENSIONLESS.div(&DimensionVector::LENGTH);
+        assert_eq!(
+            inv_dim, expected_dim,
+            "inverse dim expected DIMENSIONLESS/LENGTH, got {:?}",
+            inv_dim
+        );
+    }
+
+    // --- N>4 (5×5) tests: confirm the general dense path beyond the 4×4 boundary ---
+
+    /// Non-symmetric upper-triangular 5×5 used for both det and inverse:
+    ///   [[2,1,0,0,0],[0,3,1,0,0],[0,0,4,1,0],[0,0,0,5,1],[0,0,0,0,6]]
+    ///   det = 2·3·4·5·6 = 720, κ ≈ product-of-ratio ≈ small.
+    ///
+    /// Non-symmetry matters: for a symmetric matrix A=A^T the nalgebra inverse
+    /// extraction `inv[(i,j)]` gives correct A·A⁻¹≈I even if i/j are swapped
+    /// (because (A⁻¹)^T=(A^T)⁻¹=A⁻¹).  For a non-symmetric matrix a transposed
+    /// read-back produces A·(A⁻¹)^T≠I, so the residual check is layout-sensitive.
+    fn make_5x5_upper_triangular() -> Value {
+        eval_builtin(
+            "matrix",
+            &[Value::List(vec![
+                Value::List(vec![
+                    Value::Real(2.0),
+                    Value::Real(1.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(3.0),
+                    Value::Real(1.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(4.0),
+                    Value::Real(1.0),
+                    Value::Real(0.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(5.0),
+                    Value::Real(1.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(6.0),
+                ]),
+            ])],
+        )
+    }
+
+    /// 5×5 determinant: upper-triangular matrix det = product of diagonal = 720.
+    /// G6 1e-9 floor; LU residual on a near-diagonal 5×5 is ~1e-13.
+    #[test]
+    fn det_5x5_upper_triangular_is_720() {
+        let m = make_5x5_upper_triangular();
+        let result = eval_builtin("determinant", &[m]);
+        match result {
+            Value::Real(v) => assert!(
+                (v - 720.0).abs() < 1e-9,
+                "det of 5×5 upper triangular expected 720.0, got {v}"
+            ),
+            other => panic!("expected Real(720.0), got {:?}", other),
+        }
+    }
+
+    /// Pin the behavioral contract from the determinant N≥4 comment: for a
+    /// singular 4×4 matrix `determinant` returns Real (≈0, not Undef) while
+    /// `inverse` returns Undef.  The two ops use independent singularity tests
+    /// (LU det vs try_inverse pivot threshold) so asserting both on the same
+    /// input ensures neither silently changes to Undef or diverges in the future.
+    #[test]
+    fn det_vs_inverse_singular_contract_4x4() {
+        // Rank-1 matrix (all rows are multiples of [1,2,3,4]) — exactly singular.
+        let m = eval_builtin(
+            "matrix",
+            &[Value::List(vec![
+                Value::List(vec![
+                    Value::Real(1.0),
+                    Value::Real(2.0),
+                    Value::Real(3.0),
+                    Value::Real(4.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(2.0),
+                    Value::Real(4.0),
+                    Value::Real(6.0),
+                    Value::Real(8.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(3.0),
+                    Value::Real(6.0),
+                    Value::Real(9.0),
+                    Value::Real(12.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(4.0),
+                    Value::Real(8.0),
+                    Value::Real(12.0),
+                    Value::Real(16.0),
+                ]),
+            ])],
+        );
+        // determinant: singular → Real (≈0), never Undef — LU path always yields a value.
+        assert!(
+            matches!(
+                eval_builtin("determinant", std::slice::from_ref(&m)),
+                Value::Real(_)
+            ),
+            "determinant of singular 4×4 must return Real (not Undef)"
+        );
+        // inverse: try_inverse() detects exact rank deficiency → Undef.
+        assert!(
+            eval_builtin("inverse", std::slice::from_ref(&m)).is_undef(),
+            "inverse of singular 4×4 must return Undef"
+        );
+    }
+
+    /// 5×5 inverse: A·A⁻¹ ≈ I₅ — max residual < 1e-9.
+    /// Non-symmetric matrix so a transposed read-back in the nalgebra extraction
+    /// is caught by the identity residual (see make_5x5_upper_triangular).
+    #[test]
+    fn inverse_5x5_times_original_approx_identity() {
+        let m = make_5x5_upper_triangular();
+        let inv = eval_builtin("inverse", std::slice::from_ref(&m));
+
+        assert!(
+            !inv.is_undef(),
+            "inverse of well-conditioned 5×5 should not be Undef, got {:?}",
+            inv
+        );
+
+        let (n_a, _, a_data, _) = matrix_components_f64(&m).expect("A must parse");
+        let (n_inv, _, inv_data, _) = matrix_components_f64(&inv).expect("inv must parse");
+        assert_eq!(n_a, 5);
+        assert_eq!(n_inv, 5);
+
+        // Compute A · A⁻¹ and assert ‖ · − I‖∞ < 1e-9
+        for r in 0..5 {
+            for c in 0..5 {
+                let product: f64 =
+                    (0..5).map(|k| a_data[r * 5 + k] * inv_data[k * 5 + c]).sum();
+                let expected = if r == c { 1.0 } else { 0.0 };
+                assert!(
+                    (product - expected).abs() < 1e-9,
+                    "A·A⁻¹[{r}][{c}] = {product}, expected {expected}"
+                );
+            }
+        }
     }
 }
