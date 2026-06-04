@@ -158,12 +158,12 @@ fn correlate_from_vectors(
         let start = run_index[r] as usize / 3;
         let end = run_index[r + 1] as usize / 3;
         let source = parent.get(&orig).cloned();
-        for tri in start..end {
+        for (i, &fid) in face_id[start..end].iter().enumerate() {
             out.push(FacetProvenance {
-                triangle: tri,
+                triangle: start + i,
                 descriptor: FacetDescriptor {
                     run_original_id: orig,
-                    face_id: face_id[tri],
+                    face_id: fid,
                 },
                 source: source.clone(),
             });
