@@ -89,12 +89,14 @@ export function createSelectionStore() {
    * Shared mutation helper: replaces selectedEntities with a deduped copy of `paths`
    * and sets selectedEntity to the last element (or null if empty).
    * Does NOT touch anchorEntity — callers manage anchor independently.
+   * Clears highlightedParams: any user-gesture selection drops stale constraint highlights.
    */
   function setEntitiesList(paths: string[]): void {
     const deduped = Array.from(new Set(paths));
     batch(() => {
       setState('selectedEntities', deduped);
       setState('selectedEntity', deduped.length > 0 ? deduped[deduped.length - 1] : null);
+      setState('highlightedParams', []);
     });
   }
 
@@ -109,12 +111,14 @@ export function createSelectionStore() {
         setState('selectedEntities', []);
         setState('selectedEntity', null);
         setState('anchorEntity', null);
+        setState('highlightedParams', []);
       });
     } else {
       batch(() => {
         setState('selectedEntities', [entityPath]);
         setState('selectedEntity', entityPath);
         setState('anchorEntity', entityPath);
+        setState('highlightedParams', []);
       });
     }
   }
@@ -128,6 +132,7 @@ export function createSelectionStore() {
       setState('selectedEntities', []);
       setState('selectedEntity', null);
       setState('anchorEntity', null);
+      setState('highlightedParams', []);
     });
   }
 
@@ -167,6 +172,7 @@ export function createSelectionStore() {
       }
       setState('selectedEntities', next);
       setState('selectedEntity', next.length > 0 ? next[next.length - 1] : null);
+      setState('highlightedParams', []);
     });
   }
 
