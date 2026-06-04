@@ -199,6 +199,16 @@ fn build_volume_usage_error() -> Diagnostic {
 ///   `Bool(true)` design fits and surfaces nothing.
 /// - Usage-error path — `Value::Undef` is a malformed call (non-BoundingBox args):
 ///   one [`Severity::Error`] diagnostic, independent of any severity tag.
+///
+/// DUPLICATE EMISSION: this classifier is stateless and re-runs on every
+/// evaluation, so a persistently-violating `fits_build_volume` (re-evaluated each
+/// frame or inside a loop) pushes a fresh `{I,W,E}_DFM_BUILD_VOLUME` diagnostic on
+/// every call — there is no dedup here. This matches the flexure violation
+/// warnings (`W_FlexureYielding` is likewise re-emitted per eval); only the
+/// flexure Info *advisory* carries a once-per-session dedup, and that lives in the
+/// reify-expr emission layer, not the classifier. If build-volume diagnostic spam
+/// becomes user-facing, fold it into that same session-scoped dedup follow-up
+/// rather than adding state here.
 pub fn diagnose(name: &str, args: &[Value], result: &Value) -> Vec<Diagnostic> {
     if name != "fits_build_volume" {
         return Vec::new();
