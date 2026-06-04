@@ -215,9 +215,9 @@ describe('SHORTCUTS bind fields', () => {
         // CodeMirror's foldKeymap inside the editor; useKeyboardShortcuts skips
         // them because the CM contentDOM is contentEditable (bails before matching).
         if (s.id === 'fold' || s.id === 'unfold' || s.id === 'foldAll' || s.id === 'unfoldAll') continue;
-        // gotoDefinition/navBack/navForward are display-only: dispatch is handled by
-        // the CM keymap in Editor.tsx; same rationale as fold entries above.
-        if (s.id === 'gotoDefinition' || s.id === 'navBack' || s.id === 'navForward') continue;
+        // gotoDefinition/navBack/navForward/rename are display-only: dispatch is handled
+        // by the CM keymap in Editor.tsx; same rationale as fold entries above.
+        if (s.id === 'gotoDefinition' || s.id === 'navBack' || s.id === 'navForward' || s.id === 'rename') continue;
         expect(s.bind, `shortcut "${s.id}" has a display key but no bind field`).toBeDefined();
       }
     }
@@ -448,6 +448,30 @@ describe('shortcuts — navigation entries', () => {
       const entry = SHORTCUTS.find((s) => s.id === id);
       expect(entry?.bind, `${id} must not have a bind field`).toBeUndefined();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rename shortcut entry (task-4203)
+// ---------------------------------------------------------------------------
+
+describe('shortcuts — rename entry', () => {
+  it('SHORTCUTS contains a rename entry with key "F2", truthy description, not disabled, category "Editor"', () => {
+    const entry = SHORTCUTS.find((s) => s.id === 'rename');
+    expect(entry, 'rename missing from SHORTCUTS').toBeDefined();
+    expect(entry?.key, 'rename key').toBe('F2');
+    expect(entry?.description, 'rename description').toBeTruthy();
+    expect(entry?.disabled, 'rename should not be disabled').not.toBe(true);
+    expect((entry as ShortcutDef & { category?: string })?.category, 'rename category').toBe('Editor');
+  });
+
+  it('rename entry has no bind field (display-only, dispatched by the editor F2 keymap)', () => {
+    const entry = SHORTCUTS.find((s) => s.id === 'rename');
+    expect(entry?.bind, 'rename must not have a bind field').toBeUndefined();
+  });
+
+  it('getShortcut("rename") is defined (id flows into ShortcutId union)', () => {
+    expect(getShortcut('rename')).toBeDefined();
   });
 });
 
