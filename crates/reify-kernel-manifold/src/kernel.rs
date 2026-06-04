@@ -751,6 +751,13 @@ impl GeometryKernel for ManifoldKernel {
                  manifold3d::from_mesh_f64 reported: {e}"
             ))
         })?;
+        // Tag each ingested mesh as an "original" so Manifold assigns it a stable,
+        // non-negative originalID that survives through boolean operations and
+        // appears in the result's `run_original_id` vector.  Without this call
+        // `original_id()` returns -1 and the provenance walk in
+        // `propagate_attributes` cannot correlate result triangles back to their
+        // source parent attribute.
+        let manifold = manifold.as_original();
         Ok(self.store(manifold))
     }
 
@@ -1700,5 +1707,121 @@ mod tests {
             "ManifoldKernel::ingest_mesh must accept an un-welded OCCT-style cube \
              once the weld is in place"
         );
+    }
+
+    /// Completion-condition test (task 3525): after a real Manifold union,
+    /// `correlate_facets` maps every surviving triangle back to a source attribute.
+    ///
+    /// # Premises pinned
+    ///
+    /// The property that `a.original_id()` and `b.original_id()` both appear in
+    /// the union's `run_original_id` is the Manifold provenance guarantee.  It is
+    /// verified-reachable from the landed egress test
+    /// `union_meshgl64_exposes_provenance_and_merge_pairing_invariant` (task 4247).
+    ///
+    /// # Fails until step-6 (correlate_facets impl lands)
+    ///
+    /// With the skeleton returning `Err`, `.expect(...)` panics.  Once
+    /// `correlate_facets` is implemented, all assertions pass.
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn union_walk_correlates_surviving_facets_to_source_features() {
+        use crate::test_fixtures::unit_cube_manifold;
+        use crate::provenance::correlate_facets;
+        use reify_ir::{FeatureId, Role, TopologyAttribute, TopologyAttributeTable};
+        use std::collections::{HashMap, HashSet};
+
+        // Call as_original() to assign a stable non-negative tracking ID that
+        // survives through boolean operations and appears in run_original_id.
+        // This mirrors the production ingest_mesh path (which also calls
+        // as_original() before storing), ensuring the test exercises the same
+        // provenance-tracking contract.
+        let a = unit_cube_manifold([0.0, 0.0, 0.0]).as_original();
+        let b = unit_cube_manifold([0.5, 0.0, 0.0]).as_original();
+
+        // Premise: both parents have distinct non-negative original_ids.
+        let id_a = a.original_id();
+        let id_b = b.original_id();
+        assert!(id_a >= 0, "a.original_id() must be >= 0 (Manifold provenance guarantee)");
+        assert!(id_b >= 0, "b.original_id() must be >= 0 (Manifold provenance guarantee)");
+        assert_ne!(id_a, id_b, "two distinct inputs must have distinct original_ids");
+
+        let id_a = id_a as u32;
+        let id_b = id_b as u32;
+
+        let union = a.union(&b);
+        let m = union.to_meshgl64();
+
+        // Premise: both parent ids appear in the union's run_original_id.
+        let roi: HashSet<u32> = m.run_original_id().into_iter().collect();
+        assert!(
+            roi.contains(&id_a) && roi.contains(&id_b),
+            "union run_original_id must contain both parent ids {id_a} and {id_b}; got {roi:?}"
+        );
+
+        let attr_a = TopologyAttribute {
+            feature_id: FeatureId::new("featureA"),
+            role: Role::Side,
+            local_index: 0,
+            user_label: None,
+            mod_history: vec![],
+        };
+        let attr_b = TopologyAttribute {
+            feature_id: FeatureId::new("featureB"),
+            role: Role::Side,
+            local_index: 0,
+            user_label: None,
+            mod_history: vec![],
+        };
+
+        let mut parent: HashMap<u32, TopologyAttribute> = HashMap::new();
+        parent.insert(id_a, attr_a.clone());
+        parent.insert(id_b, attr_b.clone());
+
+        let facets = correlate_facets(&m, &parent)
+            .expect("correlate_facets must succeed on a well-formed union MeshGL64");
+
+        // Every surviving triangle must be present.
+        assert_eq!(
+            facets.len(),
+            m.num_tri(),
+            "correlate_facets must produce one entry per triangle; got {} for {} tris",
+            facets.len(),
+            m.num_tri()
+        );
+
+        // Every facet must have a source (both parents are in the map).
+        for (i, f) in facets.iter().enumerate() {
+            assert!(
+                f.source.is_some(),
+                "facet {i} has run_original_id={} which is in the parent map; source must be Some",
+                f.descriptor.run_original_id
+            );
+        }
+
+        // Both feature ids must appear in the output.
+        let feature_ids: HashSet<String> = facets
+            .iter()
+            .map(|f| f.source.as_ref().unwrap().feature_id.to_string())
+            .collect();
+        assert!(
+            feature_ids.contains("featureA") && feature_ids.contains("featureB"),
+            "both featureA and featureB must appear in facet sources; got {feature_ids:?}"
+        );
+
+        // Per-facet consistency: each facet's source feature_id matches its run_original_id.
+        for (i, f) in facets.iter().enumerate() {
+            let expected_feature = if f.descriptor.run_original_id == id_a {
+                "featureA"
+            } else {
+                "featureB"
+            };
+            let actual_feature = f.source.as_ref().unwrap().feature_id.to_string();
+            assert_eq!(
+                actual_feature, expected_feature,
+                "facet {i}: run_original_id={} must map to {expected_feature}, got {actual_feature}",
+                f.descriptor.run_original_id
+            );
+        }
     }
 }
