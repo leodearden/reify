@@ -606,9 +606,18 @@ fn cmd_build(args: &[String]) -> ExitCode {
 /// and the terminal `build()`/`eval()` call differ.  Factoring the shared setup
 /// here eliminates the duplicated `.with_solver` + `register_compute_fns` block
 /// that would otherwise appear verbatim in each branch.
+///
+/// Both the FEA/buckling/modal trampolines (`register_compute_fns`) and the
+/// shell-extract trampoline (`register_shell_extract_compute_fns`) are registered
+/// here, mirroring the GUI's call pair (gui/src-tauri/src/engine.rs).  Without
+/// the shell-extract registration, shell-classified `@optimized("solver::elastic_static")`
+/// solves would hit `DispatchError::Failed` in `insert_shell_extract_upstream` and
+/// emit a misleading "falling back to tet meshing" warning even though the FEA
+/// trampoline independently re-classifies and runs the correct shell solve.
 fn configured_eval_engine(engine: reify_eval::Engine) -> reify_eval::Engine {
     let mut engine = engine.with_solver(Box::new(reify_constraints::DimensionalSolver));
     reify_eval::compute_targets::register_compute_fns(&mut engine);
+    reify_eval::register_shell_extract_compute_fns(&mut engine);
     engine
 }
 
