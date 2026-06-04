@@ -20,13 +20,69 @@
 use reify_ir::Value;
 use reify_core::Diagnostic;
 
+use crate::helpers::tensor_components_f64;
+
 /// Evaluate a DFM builtin by name.
 ///
 /// Returns `Some(value)` if `name` is a recognised DFM function, `None` otherwise
 /// (so the dispatch chain in `lib.rs` can fall through). Mirrors
 /// [`crate::stackup::eval_stackup`]'s `Option<Value>` fall-through convention.
-pub(crate) fn eval_dfm(_name: &str, _args: &[Value]) -> Option<Value> {
-    None
+pub(crate) fn eval_dfm(name: &str, args: &[Value]) -> Option<Value> {
+    Some(match name {
+        "fits_build_volume" => fits_build_volume(args),
+        _ => return None,
+    })
+}
+
+// --- fits_build_volume ---
+
+/// `fits_build_volume(part_bbox, envelope_bbox[, severity_or_rule]) -> Bool`.
+///
+/// Pure component-wise extent comparator: returns `Value::Bool(true)` iff the
+/// part's per-axis extent `<=` the envelope's on every axis (EXACT `<=`, no
+/// tolerance — PRD §3 G6, so equal extents fit). Both inputs must be
+/// `Value::BoundingBox` whose corners are finite 3-component LENGTH Point3s; the
+/// optional 3rd argument carries the rule's `DFMSeverity` for [`diagnose`] and is
+/// ignored by the boolean compute. Any malformed input yields `Value::Undef`.
+fn fits_build_volume(args: &[Value]) -> Value {
+    if !matches!(args.len(), 2 | 3) {
+        return Value::Undef;
+    }
+    let part = match parse_bbox_extents(&args[0]) {
+        Some(e) => e,
+        None => return Value::Undef,
+    };
+    let envelope = match parse_bbox_extents(&args[1]) {
+        Some(e) => e,
+        None => return Value::Undef,
+    };
+    // The optional 3rd arg (DFMSeverity / DFMRule) tags the violation severity for
+    // `diagnose`; it does not affect the fit. It is validated in step-4.
+    let fits = (0..3).all(|i| part[i] <= envelope[i]);
+    Value::Bool(fits)
+}
+
+/// Extract the per-axis extents `[x, y, z] = max - min` from a `Value::BoundingBox`.
+///
+/// Returns `None` for a non-`BoundingBox`, or a box whose `min`/`max` are not
+/// 3-component Point/Vector/Tensor numerics (via [`tensor_components_f64`], which
+/// also rejects mixed-dimension corners). LENGTH-dimension and finiteness guards
+/// are added in step-4.
+fn parse_bbox_extents(v: &Value) -> Option<[f64; 3]> {
+    let (min, max) = match v {
+        Value::BoundingBox { min, max } => (min, max),
+        _ => return None,
+    };
+    let (min_vals, _min_dim) = tensor_components_f64(min)?;
+    let (max_vals, _max_dim) = tensor_components_f64(max)?;
+    if min_vals.len() != 3 || max_vals.len() != 3 {
+        return None;
+    }
+    Some([
+        max_vals[0] - min_vals[0],
+        max_vals[1] - min_vals[1],
+        max_vals[2] - min_vals[2],
+    ])
 }
 
 /// Pure post-call DFM diagnostic classifier (the `DFMSeverity` bridge).
