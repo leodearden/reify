@@ -28,6 +28,9 @@ export async function navigateToSource(
   entityPath: string,
   deps: NavigateToSourceDeps,
 ): Promise<void> {
+  // selectEntity is a synchronous SolidJS store setter that cannot throw,
+  // so it is intentionally outside the try — the fallible step is the
+  // getSourceLocation await + scrollEditor inside the try block below.
   deps.selectEntity(entityPath);
   try {
     const location = await deps.getSourceLocation(entityPath);
