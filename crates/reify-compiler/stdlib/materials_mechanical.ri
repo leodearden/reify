@@ -4,7 +4,7 @@
 //
 // Real-placeholder audit: see docs/notes/stdlib-real-placeholder-audit.md
 // Dimensioned params (density, youngs_modulus, shear_modulus, yield_strength,
-// uts, compressive_strength, endurance_limit, impact_energy) are tightenable-now
+// ultimate_tensile_strength, compressive_strength, endurance_limit, impact_energy) are tightenable-now
 // (task #3111). fracture_toughness was previously blocked-composite and is
 // now tightened to the `FractureToughness` (Pa·√m) alias by task #3115.
 //
@@ -92,15 +92,15 @@ trait Elastic {
 
 // ── Strength ─────────────────────────────────────────────────────────────────
 
-// yield_strength, uts (ultimate tensile strength), compressive_strength all
-// in Pa (using Real). The constraint enforces uts >= yield_strength.
+// yield_strength, ultimate_tensile_strength (UTS), compressive_strength all
+// in Pa (using Real). The constraint enforces ultimate_tensile_strength >= yield_strength.
 // compressive_strength is optional (= undef): many material datasheets report
 // tensile data only; compressive data may not be available for all conformers.
 trait Strong {
     param yield_strength : Real
-    param uts : Real
+    param ultimate_tensile_strength : Real
     param compressive_strength : Real = undef // optional — omit when not reported
-    constraint uts >= yield_strength
+    constraint ultimate_tensile_strength >= yield_strength
 }
 
 // ── Hardness ─────────────────────────────────────────────────────────────────

@@ -306,15 +306,15 @@ fn elastic_omits_shear_modulus_is_clean() {
 
 /// Conforming structure that omits compressive_strength from Strong.
 /// Once compressive_strength gains `= undef`, this should compile cleanly.
-/// uts=400.0 >= yield_strength=250.0 keeps the uts>=yield_strength constraint satisfied.
+/// ultimate_tensile_strength=400.0 >= yield_strength=250.0 keeps the constraint satisfied.
 ///
 /// RED: compressive_strength is still required (no default) → MissingRequiredMember error.
 #[test]
 fn strong_omits_compressive_strength_is_clean() {
     let src = r#"
         structure def StrongNoCompr : Strong {
-            param yield_strength : Real = 250.0
-            param uts            : Real = 400.0
+            param yield_strength            : Real = 250.0
+            param ultimate_tensile_strength : Real = 400.0
         }
     "#;
     let compiled = compile_source_with_stdlib(src);

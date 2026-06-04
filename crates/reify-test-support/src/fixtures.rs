@@ -979,7 +979,7 @@ pub fn steel_strong_source() -> &'static str {
     r#"
 structure def Steel : Strong {
     param yield_strength : Real = 250.0
-    param uts : Real = 400.0
+    param ultimate_tensile_strength : Real = 400.0
     param compressive_strength : Real = 250.0
 }
 "#

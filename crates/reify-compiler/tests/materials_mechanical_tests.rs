@@ -128,7 +128,7 @@ fn elastic_trait_has_three_real_members() {
 // ─── step-5: Strong trait ────────────────────────────────────────────────────
 
 /// Step 5: Strong trait has 2 required members and at least 1 constraint
-/// default (the `uts >= yield_strength` constraint). (task α #4239:
+/// default (the `ultimate_tensile_strength >= yield_strength` constraint). (task α #4239:
 /// compressive_strength is now `= undef` optional → in `defaults`.)
 #[test]
 fn strong_trait_has_members_and_constraint_default() {
@@ -162,7 +162,7 @@ fn strong_trait_has_members_and_constraint_default() {
     );
     assert!(
         member_names.contains(&"ultimate_tensile_strength"),
-        "expected 'ultimate_tensile_strength' in Strong (β rename from 'uts')"
+        "expected 'ultimate_tensile_strength' in Strong (β #4240 renamed from old name)"
     );
     // compressive_strength is now optional (`= undef`, task α #4239) → it lives
     // in `defaults`, not `required_members`.
@@ -287,9 +287,9 @@ trait Elastic {
 
 trait Strong {
     param yield_strength : Real
-    param uts : Real
+    param ultimate_tensile_strength : Real
     param compressive_strength : Real
-    constraint uts >= yield_strength
+    constraint ultimate_tensile_strength >= yield_strength
 }
 
 structure def Steel : Elastic + Strong {
@@ -297,7 +297,7 @@ structure def Steel : Elastic + Strong {
     param poissons_ratio : Real = 0.3
     param shear_modulus : Real = 77.0
     param yield_strength : Real = 250.0
-    param uts : Real = 400.0
+    param ultimate_tensile_strength : Real = 400.0
     param compressive_strength : Real = 250.0
 }
 "#;
@@ -327,21 +327,21 @@ structure def Steel : Elastic + Strong {
 
 // ─── step-11: constraint injection into Steel ─────────────────────────────────
 
-/// Step 11: The constraint from Strong (`uts >= yield_strength`) is injected
-/// into a conforming Steel structure — template.constraints is non-empty.
+/// Step 11: The constraint from Strong (`ultimate_tensile_strength >= yield_strength`)
+/// is injected into a conforming Steel structure — template.constraints is non-empty.
 #[test]
 fn strong_constraint_injected_into_steel() {
     let source = r#"
 trait Strong {
     param yield_strength : Real
-    param uts : Real
+    param ultimate_tensile_strength : Real
     param compressive_strength : Real
-    constraint uts >= yield_strength
+    constraint ultimate_tensile_strength >= yield_strength
 }
 
 structure def Steel : Strong {
     param yield_strength : Real = 250.0
-    param uts : Real = 400.0
+    param ultimate_tensile_strength : Real = 400.0
     param compressive_strength : Real = 250.0
 }
 "#;
