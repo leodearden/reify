@@ -114,6 +114,42 @@ fn correlate_from_vectors(
 ) -> Result<Vec<FacetProvenance>, String> {
     let num_run = run_original_id.len();
 
+    if run_index.len() != num_run + 1 {
+        return Err(format!(
+            "run_index.len()={} must equal run_original_id.len()+1={}",
+            run_index.len(),
+            num_run + 1
+        ));
+    }
+    if face_id.len() != num_tri {
+        return Err(format!(
+            "face_id.len()={} must equal num_tri={}",
+            face_id.len(),
+            num_tri
+        ));
+    }
+    for (i, &v) in run_index.iter().enumerate() {
+        if v % 3 != 0 {
+            return Err(format!(
+                "run_index[{i}]={v} is not divisible by 3 (flat tri-vert units required)"
+            ));
+        }
+    }
+    if run_index.last().copied().unwrap_or(0) != (num_tri as u64) * 3 {
+        return Err(format!(
+            "run_index last entry={} must equal num_tri*3={}",
+            run_index.last().copied().unwrap_or(0),
+            (num_tri as u64) * 3
+        ));
+    }
+    if merge_from_vert.len() != merge_to_vert.len() {
+        return Err(format!(
+            "merge_from_vert.len()={} != merge_to_vert.len()={}",
+            merge_from_vert.len(),
+            merge_to_vert.len()
+        ));
+    }
+
     // Walk each run and emit one FacetProvenance per triangle.
     let mut out = Vec::with_capacity(num_tri);
     for r in 0..num_run {
@@ -133,8 +169,6 @@ fn correlate_from_vectors(
             });
         }
     }
-    // Suppress unused-variable warnings for merge vectors (used in step-4 validation).
-    let _ = (merge_from_vert, merge_to_vert);
     Ok(out)
 }
 
