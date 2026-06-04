@@ -7212,6 +7212,30 @@ mod tests {
         }
     }
 
+    // --- Torus tests (task-4157) ---
+
+    #[test]
+    fn make_torus_ffi_produces_correct_volume() {
+        // Pappus' theorem: a torus with major radius R and minor radius r has
+        // analytic volume V = 2π²·R·r². With R=20, r=5 → V = 2π²·20·25.
+        // BRepPrimAPI_MakeTorus produces the exact analytic solid, so the same
+        // 0.02 tolerance the revolve approximation meets is comfortably achievable.
+        if !crate::OCCT_AVAILABLE {
+            return;
+        }
+        let shape = ffi::ffi::make_torus(20.0, 5.0).expect("make_torus should succeed");
+        let vol = ffi::ffi::query_volume(&shape).expect("query_volume should work on torus");
+        let expected = 2.0 * std::f64::consts::PI.powi(2) * 20.0 * 25.0; // 2π²Rr²
+        let rel_err = (vol - expected).abs() / expected;
+        assert!(
+            rel_err < 0.02,
+            "expected torus volume ≈ {:.2}, got {:.2} (rel_err={:.4})",
+            expected,
+            vol,
+            rel_err
+        );
+    }
+
     // --- Pipe tests (task-324) ---
 
     #[test]
