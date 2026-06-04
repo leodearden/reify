@@ -1903,3 +1903,98 @@ describe('debug bridge press_tab', () => {
     expect(result.active_element.testId).toBe('valid');
   });
 });
+
+// ---------------------------------------------------------------------------
+// debug bridge tab_order (step-7 RED → step-8 GREEN)
+// ---------------------------------------------------------------------------
+
+describe('debug bridge tab_order', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    document.body.innerHTML = '';
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('(a) returns order array matching document order for a/b/c buttons', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    document.body.innerHTML = `
+      <button data-testid="a">A</button>
+      <button data-testid="b">B</button>
+      <button data-testid="c">C</button>
+    `;
+
+    const result = await dispatchCmd(6000, 'tab_order', {});
+    expect(result.order).toEqual([
+      { testId: 'a', tagName: 'button' },
+      { testId: 'b', tagName: 'button' },
+      { testId: 'c', tagName: 'button' },
+    ]);
+  });
+
+  it('(b) disabled and tabindex="-1" elements excluded from order', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    document.body.innerHTML = `
+      <button data-testid="a">A</button>
+      <button data-testid="skip-disabled" disabled>Skip</button>
+      <button data-testid="skip-neg" tabindex="-1">NegIdx</button>
+      <button data-testid="b">B</button>
+    `;
+
+    const result = await dispatchCmd(6001, 'tab_order', {});
+    const testIds = result.order.map((e: any) => e.testId);
+    expect(testIds).toContain('a');
+    expect(testIds).toContain('b');
+    expect(testIds).not.toContain('skip-disabled');
+    expect(testIds).not.toContain('skip-neg');
+  });
+
+  it('(c) empty body returns {order:[]}', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    document.body.innerHTML = '<div>no buttons</div>';
+    const result = await dispatchCmd(6002, 'tab_order', {});
+    expect(result.order).toEqual([]);
+  });
+
+  it('(d) rendered MenuBar yields chrome order starting with menu-trigger-file/edit/view/help', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    render(() => <MenuBar />);
+
+    const result = await dispatchCmd(6003, 'tab_order', {});
+    const testIds = result.order.map((e: any) => e.testId);
+    const chromeOrder = ['menu-trigger-file', 'menu-trigger-edit', 'menu-trigger-view', 'menu-trigger-help'];
+    // The four menu triggers must appear in MENU_DEFS order
+    const indices = chromeOrder.map((id) => testIds.indexOf(id));
+    expect(indices.every((i) => i !== -1)).toBe(true);
+    for (let i = 1; i < indices.length; i++) {
+      expect(indices[i]).toBeGreaterThan(indices[i - 1]);
+    }
+  });
+});
