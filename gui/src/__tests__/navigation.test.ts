@@ -207,5 +207,49 @@ describe('navigation', () => {
         dispose();
       });
     });
+
+    it('real-store integration: highlightedParams survive when no value matches (null entity path)', () => {
+      // The order invariant is equally fragile on the unmatched branch:
+      // selectEntity(null) → clearSelection clears highlightedParams, then
+      // setHighlightedParams must still apply the constraint IDs afterward.
+      // This was only covered by the older mock-based test where call order is
+      // invisible — this test exercises the real store so the clearing contract
+      // is verified end-to-end for the null-entity path.
+      createRoot((dispose) => {
+        const store = createSelectionStore();
+
+        const constraint: ConstraintData = {
+          node_id: 'n2',
+          expression: 'width > 10',
+          status: 'violated',
+          label: null,
+          parameter_ids: ['c1', 'c2'],
+        };
+        // No value has a cell_id that matches 'c1' or 'c2'
+        const values: ValueData[] = [
+          {
+            cell_id: 'unrelated',
+            name: 'depth',
+            value: '3',
+            unit: 'mm',
+            determinacy: 'determined',
+            entity_path: 'Shelf',
+            kind: 'Param',
+            freshness: 'final',
+          },
+        ];
+
+        navigateFromConstraint(constraint, values, {
+          selectEntity: store.selectEntity,
+          setHighlightedParams: store.setHighlightedParams,
+        });
+
+        // selectedEntity is null (no match found), but the highlight must survive
+        expect(store.state.selectedEntity).toBeNull();
+        expect(store.state.highlightedParams).toEqual(['c1', 'c2']);
+
+        dispose();
+      });
+    });
   });
 });

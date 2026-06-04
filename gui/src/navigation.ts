@@ -59,6 +59,17 @@ export async function navigateToEntity(
 
 // ── Constraint → Panels navigation ─────────────────────────────────
 
+/**
+ * Dependencies for navigateFromConstraint.
+ *
+ * ORDERING CONTRACT: `selectEntity` MUST be called before `setHighlightedParams`.
+ * `selectEntity` (→ selectSingle / clearSelection) clears `highlightedParams` as
+ * part of every ordinary selection change, so the highlight must be applied AFTER
+ * the entity selection to ensure it survives.  Callers that provide a custom
+ * `selectEntity` implementation should honour the same clearing convention, or the
+ * constraint-highlight feature will silently stop working without a test failure
+ * (the integration test in navigation.test.ts pins the observable invariant).
+ */
 export interface NavigateFromConstraintDeps {
   selectEntity: (entityPath: string | null) => void;
   setHighlightedParams: (ids: string[]) => void;
