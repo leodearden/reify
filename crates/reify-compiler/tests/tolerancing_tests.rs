@@ -778,27 +778,17 @@ structure def ProbeLMC {
 
 // ─── amend: Conforms Undef propagation ───────────────────────────────────────
 
-/// When effective_tolerance_zone returns Value::Undef (degenerate tolerance_value),
-/// the predicate `Undef >= measured_deviation` evaluates to Value::Undef, which
-/// SimpleConstraintChecker maps to Satisfaction::Indeterminate (never Satisfied).
+/// Pins the Conforms constraint behavior on degenerate tolerance_value inputs,
+/// confirming they never produce Satisfaction::Satisfied:
 ///
-/// This pins the constraint's behavior on degenerate inputs so that a future
-/// change does not silently make malformed tolerances pass as Satisfied.
+///   Zero tolerance_value: zone = 0mm; 0mm >= 0.15mm → false → Violated.
+///   Negative tolerance_value: effective_tolerance_zone returns Undef for
+///   sub-zero inputs (guarded against physically nonsensical zones), so the
+///   predicate evaluates to Undef, which SimpleConstraintChecker maps to
+///   Satisfaction::Indeterminate.
 ///
-/// The degenerate case is constructed by giving tolerance_value a zero value
-/// (0mm). effective_tolerance_zone requires a finite positive LENGTH — when
-/// tolerance_value = 0mm and departure = 0mm the zone is 0mm, so the predicate
-/// is 0mm >= 0.15mm → false → Violated, not Undef.
-///
-/// A truly Undef-producing path goes through a negative tolerance_value: the
-/// subtraction 0mm - 0.1mm = -0.1mm for tolerance_value=-0.1mm is a finite
-/// scalar, so effective_tolerance_zone still returns a scalar. Undef only
-/// arises from non-LENGTH or wrong-arity args, which cannot be produced via the
-/// typed .ri param.
-///
-/// Therefore: pin the zero-tolerance edge case (0mm zone < 0.15mm → Violated)
-/// and the strict-negative zone (tolerance_value negative, zone < 0 < measured →
-/// Violated), confirming malformed inputs never silently Satisfy.
+/// Both sub-cases anchor with a positive assertion (Violated / Indeterminate)
+/// so that a regression that drops the Conforms entry entirely does not pass.
 #[test]
 fn conforms_gdt_degenerate_never_satisfied() {
     // Zero tolerance_value: zone = 0mm, departure = 0mm → 0mm >= 0.15mm → false → Violated
@@ -822,8 +812,16 @@ structure def ProbeZero {
         "zero tolerance_value: Conforms must not be Satisfied, got: {:?}",
         result_zero.constraint_results
     );
+    assert!(
+        result_zero
+            .constraint_results
+            .iter()
+            .any(|e| e.satisfaction == Satisfaction::Violated),
+        "zero tolerance_value: Conforms must be Violated (0mm >= 0.15mm is false), got: {:?}",
+        result_zero.constraint_results
+    );
 
-    // Negative tolerance_value (via subtraction): zone negative → still < measured → Violated
+    // Negative tolerance_value: effective_tolerance_zone guards sub-zero inputs → Undef → Indeterminate
     let source_neg = r#"
 structure def TestTolNeg : GeometricTolerance {
     param tolerance_value : Length = 0mm - 0.1mm
@@ -842,6 +840,14 @@ structure def ProbeNeg {
             .iter()
             .any(|e| e.satisfaction == Satisfaction::Satisfied),
         "negative tolerance_value: Conforms must not be Satisfied, got: {:?}",
+        result_neg.constraint_results
+    );
+    assert!(
+        result_neg
+            .constraint_results
+            .iter()
+            .any(|e| e.satisfaction == Satisfaction::Indeterminate),
+        "negative tolerance_value: Conforms must be Indeterminate (negative zone → Undef), got: {:?}",
         result_neg.constraint_results
     );
 }
@@ -890,10 +896,27 @@ structure def Probe {
 
     // The derived let should resolve to Undef (iso_it_tolerance returns Undef for IT4)
     let cell_id = ValueCellId::new("Probe.g", "tolerance_value");
+    // Confirm Probe.g was actually instantiated — distinguishes "cell is Undef" from
+    // "sub-component was never resolved" (which would be a different kind of failure).
+    let probe_g_keys: Vec<_> = result
+        .values
+        .iter()
+        .filter(|(k, _)| k.entity == "Probe.g")
+        .collect();
+    assert!(
+        !probe_g_keys.is_empty(),
+        "Probe.g sub-component should have produced at least one value cell; \
+         got none — check sub-component resolution"
+    );
     match result.values.get(&cell_id) {
-        Some(Value::Undef) | None => {
-            // Expected: Undef or absent (both indicate the derived let did not
-            // produce a valid value, consistent with out-of-envelope inputs)
+        Some(Value::Undef) => {
+            // Expected: iso_it_tolerance returns Undef for out-of-envelope grade 4
+        }
+        None => {
+            // Acceptable current behavior: tolerancing_diagnose is not yet wired into
+            // reify-expr, so iso_it_tolerance may omit the Undef cell rather than
+            // surfacing it. Will need updating when tolerancing_diagnose fires.
+            // (Sub-component presence confirmed above via probe_g_keys.)
         }
         Some(other) => panic!(
             "out-of-envelope grade 4 should yield Undef tolerance_value, got {:?}",
