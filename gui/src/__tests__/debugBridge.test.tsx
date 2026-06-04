@@ -1793,3 +1793,113 @@ describe('debug bridge menu_state', () => {
     expect(redoItem.enabled).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// debug bridge press_tab (step-5 RED → step-6 GREEN)
+// ---------------------------------------------------------------------------
+
+describe('debug bridge press_tab', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    document.body.innerHTML = '';
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('(a) from body (no focus), press_tab focuses first tabbable and returns its descriptor', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    document.body.innerHTML = `
+      <button data-testid="a">A</button>
+      <button data-testid="b">B</button>
+      <button data-testid="c">C</button>
+    `;
+    document.body.focus();
+
+    const result = await dispatchCmd(5000, 'press_tab', {});
+    expect(result.active_element).toBeDefined();
+    expect(result.active_element.testId).toBe('a');
+    expect(result.active_element.tagName).toBe('button');
+    expect(document.activeElement?.getAttribute('data-testid')).toBe('a');
+  });
+
+  it('(b) pressing tab again advances to next tabbable', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    document.body.innerHTML = `
+      <button data-testid="a">A</button>
+      <button data-testid="b">B</button>
+      <button data-testid="c">C</button>
+    `;
+    document.body.focus();
+
+    await dispatchCmd(5001, 'press_tab', {});
+    const result = await dispatchCmd(5002, 'press_tab', {});
+    expect(result.active_element.testId).toBe('b');
+  });
+
+  it('(c) from last tabbable, press_tab wraps to first', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    document.body.innerHTML = `
+      <button data-testid="a">A</button>
+      <button data-testid="b">B</button>
+      <button data-testid="c">C</button>
+    `;
+
+    // Focus the last element manually
+    (document.querySelector('[data-testid="c"]') as HTMLElement).focus();
+
+    const result = await dispatchCmd(5003, 'press_tab', {});
+    expect(result.active_element.testId).toBe('a');
+  });
+
+  it('(d) with no tabbable elements, press_tab returns {active_element:null}', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    // Empty body has no focusable elements
+    document.body.innerHTML = '<div>no buttons</div>';
+
+    const result = await dispatchCmd(5004, 'press_tab', {});
+    expect(result.active_element).toBeNull();
+  });
+
+  it('(e) disabled buttons and tabindex="-1" elements are skipped', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    document.body.innerHTML = `
+      <button data-testid="skip-disabled" disabled>Disabled</button>
+      <button data-testid="skip-neg-tabindex" tabindex="-1">Neg</button>
+      <button data-testid="valid">Valid</button>
+    `;
+    document.body.focus();
+
+    const result = await dispatchCmd(5005, 'press_tab', {});
+    expect(result.active_element.testId).toBe('valid');
+  });
+});
