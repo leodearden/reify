@@ -5,7 +5,7 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import type { DebugStores, DebugViewport, ReifyDebugContext } from './types';
 import { convertRawGuiState } from '../types';
-import type { RawGuiState } from '../types';
+import type { RawGuiState, DiagnosticInfo } from '../types';
 import { Box3, Vector3 } from 'three';
 import type { Mesh, BufferGeometry } from 'three';
 import { testMode, setTestMode } from './testMode';
@@ -93,6 +93,19 @@ function describeElement(el: HTMLElement) {
   };
 }
 
+// Reshape a DiagnosticInfo into the get_diagnostics wire format.
+// Groups the flat line/column/end_line/end_column quad into a `range` object
+// matching PRD §3, with no field loss.
+function shapeDiagnostic(d: DiagnosticInfo) {
+  return {
+    severity: d.severity,
+    message: d.message,
+    code: d.code,
+    file_path: d.file_path,
+    range: { line: d.line, column: d.column, end_line: d.end_line, end_column: d.end_column },
+  };
+}
+
 // Validates selector param, queries the DOM, and returns either an error, the
 // matched element, or null (no match). Handlers map null → {exists:false}.
 function resolveElement(params: Record<string, unknown>): { error: string } | { el: Element | null } {
@@ -140,6 +153,20 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
           messageCount: claude.state.messages.length,
           currentMessageId: claude.state.currentMessageId,
         },
+      };
+    },
+
+    // --- R2: get_diagnostics (frontend-mediated, reads engineStore) ---
+
+    get_diagnostics: () => {
+      const { engine } = ctx.stores;
+      const compile = (engine.state.compileDiagnostics ?? []).map(shapeDiagnostic);
+      const tessellation = (engine.state.tessellationDiagnostics ?? []).map(shapeDiagnostic);
+      return {
+        compile,
+        tessellation,
+        compileCount: compile.length,
+        tessellationCount: tessellation.length,
       };
     },
 
