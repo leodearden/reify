@@ -33,7 +33,8 @@
 use reify_core::ContentHash;
 use reify_ir::Value;
 
-use super::simulate::{ModalModel, ModeDesc};
+use crate::dynamics::spatial::{Frame3, SpatialTransform6, SpatialVector6};
+use super::simulate::{EffectorLocation, LinkDesc, MechanismModel, ModalModel, ModeDesc};
 use super::spline::{BoundaryCondition, CubicSpline, KnotData, MultiJointSpline, QuinticSpline};
 
 /// The result-determining inputs of a `simulate_trajectory` forward-pass solve,
@@ -364,6 +365,102 @@ pub(crate) fn value_to_modal_model(modal: &Value) -> ModalModel {
         });
     }
     ModalModel { modes: out }
+}
+
+/// Read a body's `mass` field (a `StructureInstance` field or a `Map` entry) as
+/// `f64`. `None` if the body is neither shape, the field is absent, or the value
+/// is non-numeric — the caller then defaults to unit mass.
+#[allow(dead_code)]
+fn body_mass(body: &Value) -> Option<f64> {
+    match body {
+        Value::StructureInstance(d) => d.fields.get(&"mass".to_string()).and_then(read_scalar_si),
+        Value::Map(m) => m
+            .get(&Value::String("mass".to_string()))
+            .and_then(read_scalar_si),
+        _ => None,
+    }
+}
+
+/// Build one placeholder [`LinkDesc`]: an identity parent-to-child transform, a
+/// single prismatic-X motion DOF, the given mass, and a point-mass inertia (COM
+/// at the body origin, zero rotational inertia).
+///
+/// This is the uniform-`Real`-placeholder link shape used until the
+/// kinematic-completion PRD lands a real per-link inertia tensor (an OCCT
+/// geometry-kernel property not exposed at the `Value` layer). The θ core
+/// handles point-mass / minimal links gracefully (its mandated tests use exactly
+/// this single-link unit-mass fixture).
+#[allow(dead_code)]
+fn placeholder_link(mass: f64) -> LinkDesc {
+    LinkDesc {
+        parent_to_child: SpatialTransform6::from_frame3(&Frame3::identity()),
+        subspace: vec![SpatialVector6::from_array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0])],
+        mass,
+        com: [0.0; 3],
+        inertia_about_com: [[0.0; 3]; 3],
+    }
+}
+
+/// Marshal a mechanism `Value` into a [`MechanismModel`] plus the per-location
+/// modal-participation descriptors ([`EffectorLocation`]) the forward simulator
+/// needs (PRD §6.1; design-decision: placeholder / point-mass inertia).
+///
+/// `n_modes` is the modal model's mode count — the single end-effector
+/// [`EffectorLocation`]'s `mode_coeffs` default to unit participation
+/// (`vec![1.0; n_modes]`), so they must be sized to the modal model and cannot
+/// be derived from `mech` alone; the [`simulate_trajectory_value`] composer
+/// (which holds the marshalled [`ModalModel`]) passes its mode count.
+///
+/// Two arms:
+/// - A structured `Value::Map(kind = "mechanism")` carrying a non-empty
+///   `bodies : List` builds one [`placeholder_link`] per body, reading each
+///   body's `mass` (unit when absent). Per-body transforms remain identity (a
+///   documented placeholder — real `pose`/`world_transform` marshalling tightens
+///   when the kinematic-completion PRD lands).
+/// - Anything else — the `mechanism : Real` placeholder that flows across
+///   `trajectory.ri` today, an unrecognised variant, or an empty `bodies` list —
+///   falls back to a single identity-transform, unit-mass, prismatic-X link.
+///
+/// Never panics; always returns at least one link and exactly one effector
+/// location.
+#[allow(dead_code)]
+pub(crate) fn value_to_mechanism_model(
+    mech: &Value,
+    n_modes: usize,
+) -> (MechanismModel, Vec<EffectorLocation>) {
+    // The single end-effector location: unit per-mode participation, sized to
+    // the modal model.
+    let effector = vec![EffectorLocation {
+        mode_coeffs: vec![1.0; n_modes],
+    }];
+
+    // Structured arm: Value::Map(kind="mechanism") with a non-empty bodies list.
+    if let Value::Map(map) = mech {
+        let is_mechanism = matches!(
+            map.get(&Value::String("kind".to_string())),
+            Some(Value::String(k)) if k == "mechanism"
+        );
+        if is_mechanism {
+            if let Some(Value::List(bodies)) = map.get(&Value::String("bodies".to_string())) {
+                if !bodies.is_empty() {
+                    let links = bodies
+                        .iter()
+                        .map(|b| placeholder_link(body_mass(b).unwrap_or(1.0)))
+                        .collect();
+                    return (MechanismModel { links }, effector);
+                }
+            }
+        }
+    }
+
+    // Fallback: the Real placeholder / unrecognised / empty-bodies case → one
+    // identity-transform, unit-mass, prismatic-X link.
+    (
+        MechanismModel {
+            links: vec![placeholder_link(1.0)],
+        },
+        effector,
+    )
 }
 
 #[cfg(test)]
