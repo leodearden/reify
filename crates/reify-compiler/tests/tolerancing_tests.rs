@@ -934,6 +934,103 @@ structure def Probe {
     }
 }
 
+// ─── β-9: SurfaceFinish direction + process defaults (RED) ───────────────────
+
+/// β-9 RED: `direction` and `process` are currently required params on
+/// SurfaceFinish, so omitting them yields missing-argument compile errors.
+///
+/// After step-10 adds defaults:
+///   `param direction : SurfaceDirection = SurfaceDirection.Multidirectional`
+///   `param process   : String           = ""`
+///
+/// (a) Compile `structure def Probe { sub s = SurfaceFinish(parameter:
+///     SurfaceParameter.Ra, value: 1.6um) }` WITHOUT direction and process;
+///     assert zero Severity::Error diagnostics.
+/// (b) Eval and assert defaults: values[("Probe.s","direction")] ==
+///     Value::Enum("SurfaceDirection", "Multidirectional") and
+///     values[("Probe.s","process")] == Value::Str("").
+///
+/// RED because direction and process are required params → omitting them gives
+/// missing-argument errors.
+#[test]
+fn surface_finish_direction_process_defaults() {
+    // (a) Compile without direction/process: should have zero Error diagnostics ──
+    let source = r#"
+structure def Probe {
+    sub s = SurfaceFinish(parameter: SurfaceParameter.Ra, value: 1.6um)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "SurfaceFinish with omitted direction/process should compile without errors \
+         (both have defaults), got: {:?}",
+        compile_errors
+    );
+
+    // (b) Eval and assert default values ─────────────────────────────────────
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(eval_errors.is_empty(), "eval errors: {:?}", eval_errors);
+
+    // direction default: SurfaceDirection.Multidirectional
+    let dir_cell = ValueCellId::new("Probe.s", "direction");
+    let dir_value = result.values.get(&dir_cell).unwrap_or_else(|| {
+        let probe_keys: Vec<_> = result
+            .values
+            .iter()
+            .map(|(k, _)| k)
+            .filter(|k| k.entity.contains("Probe"))
+            .collect();
+        panic!(
+            "Probe.s.direction not found; Probe-related keys: {:?}",
+            probe_keys
+        )
+    });
+    assert_eq!(
+        *dir_value,
+        Value::Enum {
+            type_name: "SurfaceDirection".to_string(),
+            variant: "Multidirectional".to_string(),
+        },
+        "Probe.s.direction default should be SurfaceDirection.Multidirectional, got {:?}",
+        dir_value
+    );
+
+    // process default: empty string ""
+    let proc_cell = ValueCellId::new("Probe.s", "process");
+    let proc_value = result.values.get(&proc_cell).unwrap_or_else(|| {
+        let probe_keys: Vec<_> = result
+            .values
+            .iter()
+            .map(|(k, _)| k)
+            .filter(|k| k.entity.contains("Probe"))
+            .collect();
+        panic!(
+            "Probe.s.process not found; Probe-related keys: {:?}",
+            probe_keys
+        )
+    });
+    assert_eq!(
+        *proc_value,
+        Value::String("".to_string()),
+        "Probe.s.process default should be empty string, got {:?}",
+        proc_value
+    );
+}
+
 // ─── β-7: require_finish Bool free fn (RED) ──────────────────────────────────
 
 /// β-7 RED: `require_finish` does not exist yet; this test should fail with
