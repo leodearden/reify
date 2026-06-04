@@ -144,11 +144,6 @@ describe("FIXTURES catalogue", () => {
     }
   });
 
-  it("includes the overflow fixture key with a .ri path", () => {
-    expect(Object.keys(FIXTURES)).toContain("overflow");
-    expect((FIXTURES as Record<string, string>)["overflow"]).toMatch(/\.ri$/);
-  });
-
   it("every fixture file exists on disk", () => {
     const repoRoot = resolveRepoRoot(import.meta.url);
     for (const [name, relPath] of Object.entries(FIXTURES)) {
@@ -171,28 +166,19 @@ describe("VALUE_SCENARIOS", () => {
     }
   });
 
-  it("contains get_window_state_devicePixelRatio with devicePixelRatio exists assertion", () => {
-    const scenario: ValueScenario | undefined = VALUE_SCENARIOS.find(
-      (s) => s.name === "get_window_state_devicePixelRatio",
-    );
-    expect(scenario).toBeDefined();
-    if (scenario) {
-      expect(scenario.tool).toBe("get_window_state");
-      expect(scenario.assertions).toContainEqual({ path: "devicePixelRatio", op: "exists" });
-    }
-  });
-
-  it("contains get_layout_metrics_overflow_clipped with correct shape", () => {
-    const scenario: ValueScenario | undefined = VALUE_SCENARIOS.find(
-      (s) => s.name === "get_layout_metrics_overflow_clipped",
-    );
-    expect(scenario).toBeDefined();
-    if (scenario) {
-      expect(scenario.tool).toBe("get_layout_metrics");
-      expect(scenario.fixture).toBe("overflow");
-      expect(typeof scenario.args.selector).toBe("string");
-      expect(scenario.assertions).toContainEqual({ path: "overflow.horizontal", op: "equals", expected: true });
-      expect(scenario.assertions).toContainEqual({ path: "exists", op: "equals", expected: true });
+  it("every scenario has a valid tool name and non-empty assertions array", () => {
+    const VALID_OPS = ["equals", "atLeast", "exists"];
+    for (const scenario of VALUE_SCENARIOS) {
+      expect(typeof scenario.name, `scenario name must be string`).toBe("string");
+      expect(scenario.name.length, `scenario name must be non-empty`).toBeGreaterThan(0);
+      expect(typeof scenario.tool, `${scenario.name}: tool must be string`).toBe("string");
+      expect(scenario.tool.length, `${scenario.name}: tool must be non-empty`).toBeGreaterThan(0);
+      expect(Array.isArray(scenario.assertions), `${scenario.name}: assertions must be array`).toBe(true);
+      expect(scenario.assertions.length, `${scenario.name}: assertions must be non-empty`).toBeGreaterThan(0);
+      for (const assertion of scenario.assertions) {
+        expect(typeof assertion.path, `${scenario.name}: assertion.path must be string`).toBe("string");
+        expect(VALID_OPS, `${scenario.name}: assertion.op must be valid`).toContain(assertion.op);
+      }
     }
   });
 

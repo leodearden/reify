@@ -93,6 +93,18 @@ function describeElement(el: HTMLElement) {
   };
 }
 
+// Validates selector param, queries the DOM, and returns either an error, the
+// matched element, or null (no match). Handlers map null → {exists:false}.
+function resolveElement(params: Record<string, unknown>): { error: string } | { el: Element | null } {
+  const selector = params.selector as string;
+  if (!selector) return { error: 'selector is required' };
+  try {
+    return { el: document.querySelector(selector) };
+  } catch (e) {
+    return { error: (e as Error).message };
+  }
+}
+
 function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
   return {
     // --- Read commands (frontend-mediated) ---
@@ -265,16 +277,10 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
     // --- DOM/style/layout/window inspection tools (R1, task-4296) ---
 
     query_selector: (params) => {
-      const selector = params.selector as string;
-      if (!selector) return { error: 'selector is required' };
-      let el: Element | null;
-      try {
-        el = document.querySelector(selector);
-      } catch (e) {
-        return { error: (e as Error).message };
-      }
-      if (!el) return { exists: false };
-      return { exists: true, ...describeElement(el as HTMLElement) };
+      const r = resolveElement(params);
+      if ('error' in r) return { error: r.error };
+      if (!r.el) return { exists: false };
+      return { exists: true, ...describeElement(r.el as HTMLElement) };
     },
 
     query_selector_all: (params) => {
@@ -294,16 +300,10 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
     },
 
     get_layout_metrics: (params) => {
-      const selector = params.selector as string;
-      if (!selector) return { error: 'selector is required' };
-      let el: Element | null;
-      try {
-        el = document.querySelector(selector);
-      } catch (e) {
-        return { error: (e as Error).message };
-      }
-      if (!el) return { exists: false };
-      const h = el as HTMLElement;
+      const r = resolveElement(params);
+      if ('error' in r) return { error: r.error };
+      if (!r.el) return { exists: false };
+      const h = r.el as HTMLElement;
       const rect = h.getBoundingClientRect();
       return {
         exists: true,
@@ -318,23 +318,17 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
     },
 
     get_computed_style: (params) => {
-      const selector = params.selector as string;
-      if (!selector) return { error: 'selector is required' };
-      let el: Element | null;
-      try {
-        el = document.querySelector(selector);
-      } catch (e) {
-        return { error: (e as Error).message };
-      }
-      if (!el) return { exists: false };
-      const cs = window.getComputedStyle(el);
+      const r = resolveElement(params);
+      if ('error' in r) return { error: r.error };
+      if (!r.el) return { exists: false };
+      const cs = window.getComputedStyle(r.el);
       const props: string[] =
         Array.isArray(params.properties) && (params.properties as unknown[]).length > 0
           ? (params.properties as string[])
           : [...CURATED_STYLE_PROPS];
       const style: Record<string, string> = {};
       for (const prop of props) {
-        style[prop] = (cs as unknown as Record<string, string>)[prop] ?? cs.getPropertyValue(prop);
+        style[prop] = (cs as unknown as Record<string, string>)[prop] ?? '';
       }
       return { exists: true, style };
     },

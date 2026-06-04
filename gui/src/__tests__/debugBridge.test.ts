@@ -1373,107 +1373,10 @@ describe('debug bridge exposes layout on ctx', () => {
 });
 
 // ---------------------------------------------------------------------------
-// step-3 RED → step-4 GREEN: query_selector / query_selector_all
+// step-3 through step-10: R1 DOM/style/layout/window inspection tools
 // ---------------------------------------------------------------------------
 
-describe('debug bridge query_selector / query_selector_all', () => {
-  let capturedHandler: DebugRequestHandler | undefined;
-
-  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
-
-  beforeEach(async () => {
-    vi.clearAllMocks();
-    capturedHandler = undefined;
-    vi.mocked(listen).mockImplementation(async (_event, handler) => {
-      capturedHandler = handler as DebugRequestHandler;
-      return () => {};
-    });
-    const stores = makeStores();
-    await initDebugBridge(stores);
-  });
-
-  afterEach(() => {
-    delete window.__REIFY_DEBUG__;
-    // Remove any test elements added to document.body
-    document.body.innerHTML = '';
-  });
-
-  it('query_selector: existing element by data-testid returns exists:true with tagName/testId/bounds/visible', async () => {
-    const el = document.createElement('div');
-    el.setAttribute('data-testid', 'probe-a');
-    document.body.appendChild(el);
-
-    const result = await dispatchCmd(700, 'query_selector', { selector: '[data-testid="probe-a"]' });
-    expect(result.exists).toBe(true);
-    expect(result.tagName).toBe('div');
-    expect(result.testId).toBe('probe-a');
-    expect(result.bounds).toBeDefined();
-    expect(typeof result.visible).toBe('boolean');
-  });
-
-  it('query_selector: no match returns {exists:false}', async () => {
-    const result = await dispatchCmd(701, 'query_selector', { selector: '.no-such-element' });
-    expect(result.exists).toBe(false);
-  });
-
-  it('query_selector: invalid selector returns {error}', async () => {
-    const result = await dispatchCmd(702, 'query_selector', { selector: ':::' });
-    expect(typeof result.error).toBe('string');
-    expect(result.exists).toBeUndefined();
-  });
-
-  it('query_selector: missing selector returns {error: "selector is required"}', async () => {
-    const result = await dispatchCmd(703, 'query_selector', {});
-    expect(result.error).toBe('selector is required');
-  });
-
-  it('query_selector_all: returns count/elements/truncated for matches', async () => {
-    const el1 = document.createElement('span');
-    el1.className = 'probe-class';
-    const el2 = document.createElement('span');
-    el2.className = 'probe-class';
-    document.body.appendChild(el1);
-    document.body.appendChild(el2);
-
-    const result = await dispatchCmd(704, 'query_selector_all', { selector: '.probe-class' });
-    expect(result.count).toBe(2);
-    expect(Array.isArray(result.elements)).toBe(true);
-    expect(result.elements).toHaveLength(2);
-    expect(typeof result.truncated).toBe('boolean');
-    expect(result.truncated).toBe(false);
-  });
-
-  it('query_selector_all: no matches returns count:0 elements:[] truncated:false', async () => {
-    const result = await dispatchCmd(705, 'query_selector_all', { selector: '.no-such-class' });
-    expect(result.count).toBe(0);
-    expect(result.elements).toEqual([]);
-    expect(result.truncated).toBe(false);
-  });
-
-  it('query_selector_all: invalid selector returns {error}', async () => {
-    const result = await dispatchCmd(706, 'query_selector_all', { selector: ':::' });
-    expect(typeof result.error).toBe('string');
-  });
-
-  it('query_selector_all: missing selector returns {error: "selector is required"}', async () => {
-    const result = await dispatchCmd(707, 'query_selector_all', {});
-    expect(result.error).toBe('selector is required');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// step-5 RED → step-6 GREEN: get_layout_metrics
-// ---------------------------------------------------------------------------
-
-describe('debug bridge get_layout_metrics', () => {
+describe('debug bridge R1 inspection tools', () => {
   let capturedHandler: DebugRequestHandler | undefined;
 
   async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
@@ -1502,206 +1405,222 @@ describe('debug bridge get_layout_metrics', () => {
     document.body.innerHTML = '';
   });
 
-  it('returns exists:true with bounds/scroll/client/overflow for a matching element', async () => {
-    const el = document.createElement('div');
-    el.setAttribute('data-testid', 'scroller');
-    document.body.appendChild(el);
+  // step-3 RED → step-4 GREEN: query_selector / query_selector_all
+  describe('query_selector / query_selector_all', () => {
+    it('query_selector: existing element by data-testid returns exists:true with tagName/testId/bounds/visible', async () => {
+      const el = document.createElement('div');
+      el.setAttribute('data-testid', 'probe-a');
+      document.body.appendChild(el);
 
-    // jsdom does not lay out elements; stub scroll/client metrics
-    Object.defineProperty(el, 'scrollWidth', { configurable: true, value: 200 });
-    Object.defineProperty(el, 'clientWidth', { configurable: true, value: 100 });
-    Object.defineProperty(el, 'scrollHeight', { configurable: true, value: 50 });
-    Object.defineProperty(el, 'clientHeight', { configurable: true, value: 50 });
-    Object.defineProperty(el, 'scrollTop', { configurable: true, value: 0 });
-    Object.defineProperty(el, 'scrollLeft', { configurable: true, value: 0 });
-
-    const result = await dispatchCmd(800, 'get_layout_metrics', { selector: '[data-testid="scroller"]' });
-    expect(result.exists).toBe(true);
-    expect(result.bounds).toBeDefined();
-    expect(result.scroll).toBeDefined();
-    expect(typeof result.scroll.top).toBe('number');
-    expect(typeof result.scroll.left).toBe('number');
-    expect(typeof result.scroll.width).toBe('number');
-    expect(typeof result.scroll.height).toBe('number');
-    expect(result.client).toBeDefined();
-    expect(typeof result.client.width).toBe('number');
-    expect(typeof result.client.height).toBe('number');
-    expect(result.overflow).toBeDefined();
-    expect(typeof result.overflow.horizontal).toBe('boolean');
-    expect(typeof result.overflow.vertical).toBe('boolean');
-  });
-
-  it('overflow.horizontal is true when scrollWidth > clientWidth', async () => {
-    const el = document.createElement('div');
-    el.className = 'overflow-test';
-    document.body.appendChild(el);
-
-    Object.defineProperty(el, 'scrollWidth', { configurable: true, value: 300 });
-    Object.defineProperty(el, 'clientWidth', { configurable: true, value: 150 });
-    Object.defineProperty(el, 'scrollHeight', { configurable: true, value: 50 });
-    Object.defineProperty(el, 'clientHeight', { configurable: true, value: 50 });
-    Object.defineProperty(el, 'scrollTop', { configurable: true, value: 0 });
-    Object.defineProperty(el, 'scrollLeft', { configurable: true, value: 0 });
-
-    const result = await dispatchCmd(801, 'get_layout_metrics', { selector: '.overflow-test' });
-    expect(result.overflow.horizontal).toBe(true);
-    expect(result.overflow.vertical).toBe(false);
-  });
-
-  it('returns {exists:false} for no match', async () => {
-    const result = await dispatchCmd(802, 'get_layout_metrics', { selector: '.no-such-element' });
-    expect(result.exists).toBe(false);
-  });
-
-  it('returns {error} for missing selector', async () => {
-    const result = await dispatchCmd(803, 'get_layout_metrics', {});
-    expect(result.error).toBe('selector is required');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// step-7 RED → step-8 GREEN: get_computed_style
-// ---------------------------------------------------------------------------
-
-describe('debug bridge get_computed_style', () => {
-  let capturedHandler: DebugRequestHandler | undefined;
-
-  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
-
-  beforeEach(async () => {
-    vi.clearAllMocks();
-    capturedHandler = undefined;
-    vi.mocked(listen).mockImplementation(async (_event, handler) => {
-      capturedHandler = handler as DebugRequestHandler;
-      return () => {};
+      const result = await dispatchCmd(700, 'query_selector', { selector: '[data-testid="probe-a"]' });
+      expect(result.exists).toBe(true);
+      expect(result.tagName).toBe('div');
+      expect(result.testId).toBe('probe-a');
+      expect(result.bounds).toBeDefined();
+      expect(typeof result.visible).toBe('boolean');
     });
-    const stores = makeStores();
-    await initDebugBridge(stores);
-  });
 
-  afterEach(() => {
-    delete window.__REIFY_DEBUG__;
-    document.body.innerHTML = '';
-  });
-
-  it('returns exists:true with style object containing curated keys', async () => {
-    const el = document.createElement('div');
-    el.setAttribute('data-testid', 'styled');
-    el.style.display = 'none';
-    document.body.appendChild(el);
-
-    const result = await dispatchCmd(900, 'get_computed_style', { selector: '[data-testid="styled"]' });
-    expect(result.exists).toBe(true);
-    expect(result.style).toBeDefined();
-    // Must include the curated default keys
-    const curatedKeys = ['display', 'visibility', 'opacity', 'color', 'backgroundColor',
-      'fontSize', 'fontFamily', 'fontWeight', 'overflow', 'position', 'width', 'height'];
-    for (const key of curatedKeys) {
-      expect(Object.keys(result.style)).toContain(key);
-    }
-    expect(result.style.display).toBe('none');
-  });
-
-  it('with properties:["display"] returns style with only display key', async () => {
-    const el = document.createElement('div');
-    el.className = 'style-target';
-    document.body.appendChild(el);
-
-    const result = await dispatchCmd(901, 'get_computed_style', {
-      selector: '.style-target',
-      properties: ['display'],
+    it('query_selector: no match returns {exists:false}', async () => {
+      const result = await dispatchCmd(701, 'query_selector', { selector: '.no-such-element' });
+      expect(result.exists).toBe(false);
     });
-    expect(result.exists).toBe(true);
-    expect(result.style).toBeDefined();
-    expect(Object.keys(result.style)).toContain('display');
-    expect(Object.keys(result.style)).toHaveLength(1);
-  });
 
-  it('returns {exists:false} for no match', async () => {
-    const result = await dispatchCmd(902, 'get_computed_style', { selector: '.no-such-element' });
-    expect(result.exists).toBe(false);
-  });
-
-  it('returns {error} for missing selector', async () => {
-    const result = await dispatchCmd(903, 'get_computed_style', {});
-    expect(result.error).toBe('selector is required');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// step-9 RED → step-10 GREEN: active_element / get_window_state
-// ---------------------------------------------------------------------------
-
-describe('debug bridge active_element / get_window_state', () => {
-  let capturedHandler: DebugRequestHandler | undefined;
-
-  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
-
-  beforeEach(async () => {
-    vi.clearAllMocks();
-    capturedHandler = undefined;
-    vi.mocked(listen).mockImplementation(async (_event, handler) => {
-      capturedHandler = handler as DebugRequestHandler;
-      return () => {};
+    it('query_selector: invalid selector returns {error}', async () => {
+      const result = await dispatchCmd(702, 'query_selector', { selector: ':::' });
+      expect(typeof result.error).toBe('string');
+      expect(result.exists).toBeUndefined();
     });
-    const stores = makeStores();
-    await initDebugBridge(stores);
+
+    it('query_selector: missing selector returns {error: "selector is required"}', async () => {
+      const result = await dispatchCmd(703, 'query_selector', {});
+      expect(result.error).toBe('selector is required');
+    });
+
+    it('query_selector_all: returns count/elements/truncated for matches', async () => {
+      const el1 = document.createElement('span');
+      el1.className = 'probe-class';
+      const el2 = document.createElement('span');
+      el2.className = 'probe-class';
+      document.body.appendChild(el1);
+      document.body.appendChild(el2);
+
+      const result = await dispatchCmd(704, 'query_selector_all', { selector: '.probe-class' });
+      expect(result.count).toBe(2);
+      expect(Array.isArray(result.elements)).toBe(true);
+      expect(result.elements).toHaveLength(2);
+      expect(typeof result.truncated).toBe('boolean');
+      expect(result.truncated).toBe(false);
+    });
+
+    it('query_selector_all: no matches returns count:0 elements:[] truncated:false', async () => {
+      const result = await dispatchCmd(705, 'query_selector_all', { selector: '.no-such-class' });
+      expect(result.count).toBe(0);
+      expect(result.elements).toEqual([]);
+      expect(result.truncated).toBe(false);
+    });
+
+    it('query_selector_all: invalid selector returns {error}', async () => {
+      const result = await dispatchCmd(706, 'query_selector_all', { selector: ':::' });
+      expect(typeof result.error).toBe('string');
+    });
+
+    it('query_selector_all: missing selector returns {error: "selector is required"}', async () => {
+      const result = await dispatchCmd(707, 'query_selector_all', {});
+      expect(result.error).toBe('selector is required');
+    });
+
+    it('query_selector_all: truncates at 200 and sets truncated:true for >200 matches', async () => {
+      for (let i = 0; i < 201; i++) {
+        const el = document.createElement('span');
+        el.className = 'truncation-test';
+        document.body.appendChild(el);
+      }
+      const result = await dispatchCmd(708, 'query_selector_all', { selector: '.truncation-test' });
+      expect(result.count).toBe(201);
+      expect(result.elements).toHaveLength(200);
+      expect(result.truncated).toBe(true);
+    });
   });
 
-  afterEach(() => {
-    delete window.__REIFY_DEBUG__;
-    document.body.innerHTML = '';
+  // step-5 RED → step-6 GREEN: get_layout_metrics
+  describe('get_layout_metrics', () => {
+    it('returns exists:true with bounds/scroll/client/overflow for a matching element', async () => {
+      const el = document.createElement('div');
+      el.setAttribute('data-testid', 'scroller');
+      document.body.appendChild(el);
+
+      // jsdom does not lay out elements; stub scroll/client metrics
+      Object.defineProperty(el, 'scrollWidth', { configurable: true, value: 200 });
+      Object.defineProperty(el, 'clientWidth', { configurable: true, value: 100 });
+      Object.defineProperty(el, 'scrollHeight', { configurable: true, value: 50 });
+      Object.defineProperty(el, 'clientHeight', { configurable: true, value: 50 });
+      Object.defineProperty(el, 'scrollTop', { configurable: true, value: 0 });
+      Object.defineProperty(el, 'scrollLeft', { configurable: true, value: 0 });
+
+      const result = await dispatchCmd(800, 'get_layout_metrics', { selector: '[data-testid="scroller"]' });
+      expect(result.exists).toBe(true);
+      expect(result.bounds).toBeDefined();
+      expect(result.scroll).toBeDefined();
+      expect(typeof result.scroll.top).toBe('number');
+      expect(typeof result.scroll.left).toBe('number');
+      expect(typeof result.scroll.width).toBe('number');
+      expect(typeof result.scroll.height).toBe('number');
+      expect(result.client).toBeDefined();
+      expect(typeof result.client.width).toBe('number');
+      expect(typeof result.client.height).toBe('number');
+      expect(result.overflow).toBeDefined();
+      expect(typeof result.overflow.horizontal).toBe('boolean');
+      expect(typeof result.overflow.vertical).toBe('boolean');
+    });
+
+    it('overflow.horizontal is true when scrollWidth > clientWidth', async () => {
+      const el = document.createElement('div');
+      el.className = 'overflow-test';
+      document.body.appendChild(el);
+
+      Object.defineProperty(el, 'scrollWidth', { configurable: true, value: 300 });
+      Object.defineProperty(el, 'clientWidth', { configurable: true, value: 150 });
+      Object.defineProperty(el, 'scrollHeight', { configurable: true, value: 50 });
+      Object.defineProperty(el, 'clientHeight', { configurable: true, value: 50 });
+      Object.defineProperty(el, 'scrollTop', { configurable: true, value: 0 });
+      Object.defineProperty(el, 'scrollLeft', { configurable: true, value: 0 });
+
+      const result = await dispatchCmd(801, 'get_layout_metrics', { selector: '.overflow-test' });
+      expect(result.overflow.horizontal).toBe(true);
+      expect(result.overflow.vertical).toBe(false);
+    });
+
+    it('returns {exists:false} for no match', async () => {
+      const result = await dispatchCmd(802, 'get_layout_metrics', { selector: '.no-such-element' });
+      expect(result.exists).toBe(false);
+    });
+
+    it('returns {error} for missing selector', async () => {
+      const result = await dispatchCmd(803, 'get_layout_metrics', {});
+      expect(result.error).toBe('selector is required');
+    });
   });
 
-  it('active_element: returns tagName/testId/role of document.activeElement after focus()', async () => {
-    const input = document.createElement('input');
-    input.setAttribute('data-testid', 'my-input');
-    input.setAttribute('role', 'textbox');
-    document.body.appendChild(input);
-    input.focus();
+  // step-7 RED → step-8 GREEN: get_computed_style
+  describe('get_computed_style', () => {
+    it('returns exists:true with style object containing curated keys', async () => {
+      const el = document.createElement('div');
+      el.setAttribute('data-testid', 'styled');
+      el.style.display = 'none';
+      document.body.appendChild(el);
 
-    const result = await dispatchCmd(1000, 'active_element', {});
-    expect(result.tagName).toBe('input');
-    expect(result.testId).toBe('my-input');
-    expect(result.role).toBe('textbox');
+      const result = await dispatchCmd(900, 'get_computed_style', { selector: '[data-testid="styled"]' });
+      expect(result.exists).toBe(true);
+      expect(result.style).toBeDefined();
+      const curatedKeys = ['display', 'visibility', 'opacity', 'color', 'backgroundColor',
+        'fontSize', 'fontFamily', 'fontWeight', 'overflow', 'position', 'width', 'height'];
+      for (const key of curatedKeys) {
+        expect(Object.keys(result.style)).toContain(key);
+      }
+      expect(result.style.display).toBe('none');
+    });
+
+    it('with properties:["display"] returns style with only display key', async () => {
+      const el = document.createElement('div');
+      el.className = 'style-target';
+      document.body.appendChild(el);
+
+      const result = await dispatchCmd(901, 'get_computed_style', {
+        selector: '.style-target',
+        properties: ['display'],
+      });
+      expect(result.exists).toBe(true);
+      expect(result.style).toBeDefined();
+      expect(Object.keys(result.style)).toContain('display');
+      expect(Object.keys(result.style)).toHaveLength(1);
+    });
+
+    it('returns {exists:false} for no match', async () => {
+      const result = await dispatchCmd(902, 'get_computed_style', { selector: '.no-such-element' });
+      expect(result.exists).toBe(false);
+    });
+
+    it('returns {error} for missing selector', async () => {
+      const result = await dispatchCmd(903, 'get_computed_style', {});
+      expect(result.error).toBe('selector is required');
+    });
   });
 
-  it('active_element: returns tagName:body testId:null role:null when nothing focused', async () => {
-    // Blur everything by focusing body
-    (document.body as HTMLElement).focus();
+  // step-9 RED → step-10 GREEN: active_element / get_window_state
+  describe('active_element / get_window_state', () => {
+    it('active_element: returns tagName/testId/role of document.activeElement after focus()', async () => {
+      const input = document.createElement('input');
+      input.setAttribute('data-testid', 'my-input');
+      input.setAttribute('role', 'textbox');
+      document.body.appendChild(input);
+      input.focus();
 
-    const result = await dispatchCmd(1001, 'active_element', {});
-    expect(result.tagName).toBe('body');
-    expect(result.testId).toBeNull();
-    expect(result.role).toBeNull();
-  });
+      const result = await dispatchCmd(1000, 'active_element', {});
+      expect(result.tagName).toBe('input');
+      expect(result.testId).toBe('my-input');
+      expect(result.role).toBe('textbox');
+    });
 
-  it('get_window_state: returns numeric size/pos fields and boolean focused', async () => {
-    // Stub window.devicePixelRatio since jsdom does not set it
-    Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 2 });
+    it('active_element: returns tagName:body testId:null role:null when nothing focused', async () => {
+      (document.body as HTMLElement).focus();
 
-    const result = await dispatchCmd(1002, 'get_window_state', {});
-    expect(typeof result.innerWidth).toBe('number');
-    expect(typeof result.innerHeight).toBe('number');
-    expect(typeof result.screenX).toBe('number');
-    expect(typeof result.screenY).toBe('number');
-    expect(result.devicePixelRatio).toBe(2);
-    expect(typeof result.focused).toBe('boolean');
+      const result = await dispatchCmd(1001, 'active_element', {});
+      expect(result.tagName).toBe('body');
+      expect(result.testId).toBeNull();
+      expect(result.role).toBeNull();
+    });
+
+    it('get_window_state: returns numeric size/pos fields and boolean focused', async () => {
+      // Stub window.devicePixelRatio since jsdom does not set it
+      Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 2 });
+
+      const result = await dispatchCmd(1002, 'get_window_state', {});
+      expect(typeof result.innerWidth).toBe('number');
+      expect(typeof result.innerHeight).toBe('number');
+      expect(typeof result.screenX).toBe('number');
+      expect(typeof result.screenY).toBe('number');
+      expect(result.devicePixelRatio).toBe(2);
+      expect(typeof result.focused).toBe('boolean');
+    });
   });
 });
