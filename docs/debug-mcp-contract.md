@@ -196,3 +196,87 @@ then proves the derived center `(140, 70)` fires the element's click handler.
   its origin (see §5).
 - Downstream tools that introduce a new pixel frame MUST document the conversion
   and add a boundary test before landing.
+
+---
+
+## §4 Synthetic-event fidelity gaps
+
+Synthetic `PointerEvent` / `MouseEvent` dispatch (via `element.dispatchEvent(...)`)
+**fires JS event handlers** but has the following known gaps relative to real user
+input:
+
+| Capability | Synthetic events | Real user input |
+|------------|-----------------|-----------------|
+| JS event handlers | ✓ fires | ✓ fires |
+| CSS `:hover` pseudo-class | ✗ NOT applied | ✓ applied |
+| CSS `:active` pseudo-class | ✗ NOT applied | ✓ applied |
+| Native drag-and-drop (`dragstart`, `drop`) | ✗ not triggered | ✓ triggered |
+| OS / compositor hit-testing (`elementFromPoint`) | ✗ not involved | ✓ involved |
+| `focus` / `blur` side-effects (click on input) | partial — only if `focus()` called explicitly | ✓ automatic |
+
+**Practical implication:** tools that dispatch synthetic events can assert that
+JS-registered handlers fire (click handlers, React `onClick`, Three.js pointer
+listeners, etc.) but **cannot** assert CSS pseudo-class styling changes.  Tests
+must reflect this: they assert handler invocation, not visual state.
+
+This gap is accepted by the PRD (§0/§3 G6): the debug tools are designed for
+programmatic control of application logic, not pixel-perfect CSS rendering
+verification.
+
+**Guarded by:** `debugContract.test.ts` §pick↔raycast (step-7), which drives the
+real `createSelection` raycaster (a JS handler) and asserts `onSelect` was called —
+not that any CSS changed.
+
+---
+
+## §5 pick\_entity\_at ↔ raycast convention
+
+`pick_entity_at` (I2, future tool) answers: *which Three.js entity is under screen
+pixel (clientX, clientY)?*  It wraps the **same** `createSelection` + `Raycaster`
+path that is used for interactive mouse selection.
+
+### NDC formula
+
+Given a canvas whose `getBoundingClientRect()` returns `rect`:
+
+```
+NDC.x =  ((clientX - rect.left) / rect.width)  * 2 - 1
+NDC.y = -((clientY - rect.top)  / rect.height) * 2 + 1
+```
+
+Source: `gui/src/viewport/selection.ts` — `computeNDC()`.
+
+### Pick pipeline
+
+```
+screen pixel (clientX, clientY)
+  → computeNDC(event, rect)           # CSS-pixel → [-1, +1] NDC
+  → raycaster.setFromCamera(ndc, camera)
+  → raycaster.intersectObjects(meshes)
+  → intersections[0].object.name     # entity path string, or null if empty
+```
+
+`Mesh.prototype.raycast` is patched with `three-mesh-bvh`'s `acceleratedRaycast`
+(see `gui/src/viewport/selection.ts:28`).  If no BVH tree has been built for the
+geometry, `acceleratedRaycast` falls back to the standard Three.js face traversal
+transparently — no caller change is needed.
+
+### Query-only guarantee
+
+`pick_entity_at` is **query-only**: it does NOT mutate selection state, fire
+`onSelect`, or trigger any side-effects.  Its return value is the entity path string
+(or `null`) that the raycaster would resolve for the given screen coordinate.
+
+### Validation
+
+**Guarded by:** `debugContract.test.ts` §pick↔raycast (step-7), which builds a
+real `PerspectiveCamera` at `(0, 0, 5)` looking toward the origin, places a
+`BoxGeometry(1,1,1)` mesh named `'entity/box'` at the origin, and drives
+`createSelection` with:
+- canvas center `(400, 300)` → NDC `(0, 0)` → ray along `-Z` → hits box →
+  `onSelect('entity/box')`
+- far corner `(5, 5)` → NDC `≈ (-0.988, +0.983)` → misses box →
+  `onSelect(null)`
+
+This pins the screen→NDC→raycast convention before `pick_entity_at` (I2) is
+built on top of it.
