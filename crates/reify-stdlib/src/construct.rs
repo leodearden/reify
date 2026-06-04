@@ -52,11 +52,15 @@ pub(crate) fn eval_construct(name: &str, args: &[Value]) -> Option<Value> {
 /// dimensionless, else Scalar) wrapped in [`sanitize_value`]. Wrong arity, a
 /// non-`List` arg, or a malformed list (empty / mixed-dimension / non-numeric)
 /// collapses to [`Value::Undef`].
+///
+/// Extraction delegates to [`crate::helpers::list_components_f64`], the
+/// canonical List-accepting entry point that shares the `uniform_components_f64`
+/// core with `tensor_components_f64`.
 fn eval_vec(args: &[Value]) -> Value {
     if args.len() != 1 {
         return Value::Undef;
     }
-    let (vals, dim) = match list_components_f64(&args[0]) {
+    let (vals, dim) = match crate::helpers::list_components_f64(&args[0]) {
         Some(c) => c,
         None => return Value::Undef,
     };
@@ -99,11 +103,15 @@ fn eval_matrix(args: &[Value]) -> Value {
 /// (Real when dimensionless, dimensioned `Scalar` otherwise). Wrong arity, a
 /// non-`List` arg, or a malformed list (empty / mixed-dimension / non-numeric)
 /// collapses to [`Value::Undef`].
+///
+/// Extraction delegates to [`crate::helpers::list_components_f64`], the
+/// canonical List-accepting entry point that shares the `uniform_components_f64`
+/// core with `tensor_components_f64`.
 fn eval_diag(args: &[Value]) -> Value {
     if args.len() != 1 {
         return Value::Undef;
     }
-    let (vals, dim) = match list_components_f64(&args[0]) {
+    let (vals, dim) = match crate::helpers::list_components_f64(&args[0]) {
         Some(c) => c,
         None => return Value::Undef,
     };
@@ -134,34 +142,6 @@ fn eval_identity(args: &[Value]) -> Value {
     build_tensor_rank2(n, n, &data, DimensionVector::DIMENSIONLESS)
 }
 
-/// Extract uniform numeric components from a `Value::List` into
-/// `(values, element_dim)`.
-///
-/// Returns `None` (→ caller yields `Undef`) when the list is empty, mixes
-/// dimensions, or contains a non-numeric element. This is the `Value::List`
-/// analogue of `helpers::tensor_components_f64`, which deliberately rejects
-/// `Value::List` (it accepts only Vector/Tensor/Point) — the construction
-/// builtins receive their argument as an already-evaluated list literal, so a
-/// List-accepting extractor is required. Kept local to construct.rs rather than
-/// widening the shared `helpers.rs` surface (β/γ own that file).
-fn list_components_f64(v: &Value) -> Option<(Vec<f64>, DimensionVector)> {
-    let items = match v {
-        Value::List(items) if !items.is_empty() => items,
-        _ => return None,
-    };
-    let first_dim = items[0].dimension();
-    let mut vals = Vec::with_capacity(items.len());
-    for item in items {
-        if item.dimension() != first_dim {
-            return None; // mixed dimensions
-        }
-        match item.as_f64() {
-            Some(x) => vals.push(x),
-            None => return None, // non-numeric component
-        }
-    }
-    Some((vals, first_dim))
-}
 
 
 /// Build a rank-2 nested [`Value::Tensor`] (rows of `Tensor` cells) from flat

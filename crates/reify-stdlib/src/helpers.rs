@@ -294,22 +294,16 @@ pub(crate) fn validate_dimensionless_unit_axis_vec3(v: &Value) -> Option<[f64; 3
     Some([x, y, z])
 }
 
-/// Extract numeric components and consistent dimension from a Tensor value.
+/// Shared rank-1 guard loop: validates that `items` is non-empty, that all
+/// elements share the same dimension, and that all are numeric.
 ///
-/// Returns `Some((values, dimension))` if:
-/// - `v` is a `Value::Tensor`, `Value::Point`, or `Value::Vector` with at least one element.
-/// - All components support `as_f64()`.
-/// - All components share the same dimension (or all are dimensionless).
-///
-/// Returns `None` for non-Tensor/Point/Vector values, empty containers, non-numeric
-/// components, or containers with mixed dimensions.
-pub(crate) fn tensor_components_f64(v: &Value) -> Option<(Vec<f64>, DimensionVector)> {
-    let items = match v {
-        Value::Tensor(items) | Value::Point(items) | Value::Vector(items) if !items.is_empty() => {
-            items
-        }
-        _ => return None,
-    };
+/// Extracted so that [`tensor_components_f64`] (Tensor/Point/Vector containers)
+/// and [`list_components_f64`] (List container) share the same non-empty /
+/// dimension-consistency / numeric-extraction guards — guards live in ONE place.
+fn uniform_components_f64(items: &[Value]) -> Option<(Vec<f64>, DimensionVector)> {
+    if items.is_empty() {
+        return None;
+    }
     let first_dim = items[0].dimension();
     let mut vals = Vec::with_capacity(items.len());
     for item in items {
@@ -322,6 +316,40 @@ pub(crate) fn tensor_components_f64(v: &Value) -> Option<(Vec<f64>, DimensionVec
         }
     }
     Some((vals, first_dim))
+}
+
+/// Extract numeric components and consistent dimension from a Tensor value.
+///
+/// Returns `Some((values, dimension))` if:
+/// - `v` is a `Value::Tensor`, `Value::Point`, or `Value::Vector` with at least one element.
+/// - All components support `as_f64()`.
+/// - All components share the same dimension (or all are dimensionless).
+///
+/// Returns `None` for non-Tensor/Point/Vector values, empty containers, non-numeric
+/// components, or containers with mixed dimensions. Returns `None` for `Value::List` —
+/// use [`list_components_f64`] for that container.
+pub(crate) fn tensor_components_f64(v: &Value) -> Option<(Vec<f64>, DimensionVector)> {
+    match v {
+        Value::Tensor(items) | Value::Point(items) | Value::Vector(items) => {
+            uniform_components_f64(items)
+        }
+        _ => None,
+    }
+}
+
+/// Extract numeric components and consistent dimension from a `Value::List`.
+///
+/// The `Value::List` container analogue of [`tensor_components_f64`]: both
+/// delegate to [`uniform_components_f64`] so the non-empty /
+/// dimension-consistency / numeric-extraction guards live in one place.
+/// `tensor_components_f64` still rejects `Value::List` (contract preserved;
+/// existing callers unaffected). Used by `construct::eval_vec` and
+/// `construct::eval_diag`.
+pub(crate) fn list_components_f64(v: &Value) -> Option<(Vec<f64>, DimensionVector)> {
+    match v {
+        Value::List(items) => uniform_components_f64(items),
+        _ => None,
+    }
 }
 
 // SYNC: mirror of reify-expr::sanitize.rs tests — keep in sync
