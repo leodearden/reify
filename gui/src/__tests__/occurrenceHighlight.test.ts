@@ -1,10 +1,14 @@
-import { describe, it, expect } from 'vitest';
-import { EditorState } from '@codemirror/state';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { EditorState, type Extension } from '@codemirror/state';
+import { EditorView } from '@codemirror/view';
 import {
   highlightsToRanges,
   occurrenceHighlightField,
+  occurrenceHighlightExtension,
   setOccurrencesEffect,
 } from '../editor/occurrenceHighlight';
+import type { DocumentHighlight } from '../editor/lspClient';
+import { deferred } from './test-utils';
 
 // Doc-like mock in the diagnostics.test.ts style. LSP lines are 0-based;
 // doc.line(n) is 1-based, so LSP line L maps to doc.line(L + 1).
@@ -101,5 +105,107 @@ describe('occurrenceHighlightField', () => {
 
     const cleared = withMarks.update({ effects: setOccurrencesEffect.of([]) }).state;
     expect(marksOf(cleared).length).toBe(0);
+  });
+});
+
+// --- step-13/14: occurrenceHighlightExtension ViewPlugin (real jsdom EditorView) ---
+
+const DEBOUNCE = 150;
+
+/** Mount a standalone EditorView in jsdom with the given extension. */
+function mountView(docText: string, ext: Extension): EditorView {
+  const parent = document.createElement('div');
+  document.body.appendChild(parent);
+  return new EditorView({
+    state: EditorState.create({ doc: docText, extensions: [ext] }),
+    parent,
+  });
+}
+
+describe('occurrenceHighlightExtension', () => {
+  // doc 'abc\ndefgh': line 1 'abc' [0,3]; line 2 'defgh' [4,9].
+  // Cursor offset 5 → CM line 2 → LSP line 1, char 1.
+  const docText = 'abc\ndefgh';
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('clears existing decorations synchronously on a cursor move', () => {
+    const client = { documentHighlight: vi.fn(async () => [] as DocumentHighlight[]) };
+    const view = mountView(docText, occurrenceHighlightExtension(() => 'file:///a.ri', client, DEBOUNCE));
+
+    // Pre-populate marks, then move the cursor.
+    view.dispatch({ effects: setOccurrencesEffect.of([{ from: 4, to: 7 }]) });
+    expect(marksOf(view.state).length).toBe(1);
+
+    view.dispatch({ selection: { anchor: 5 } });
+    // Cleared in the SAME transaction — before any debounce timer fires.
+    expect(marksOf(view.state).length).toBe(0);
+    view.destroy();
+  });
+
+  it('requests documentHighlight only after the debounce, at the cursor 0-based line/char', async () => {
+    const client = { documentHighlight: vi.fn(async () => [] as DocumentHighlight[]) };
+    const view = mountView(docText, occurrenceHighlightExtension(() => 'file:///a.ri', client, DEBOUNCE));
+
+    view.dispatch({ selection: { anchor: 5 } });
+    expect(client.documentHighlight).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(DEBOUNCE - 1);
+    expect(client.documentHighlight).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(client.documentHighlight).toHaveBeenCalledTimes(1);
+    expect(client.documentHighlight).toHaveBeenCalledWith('file:///a.ri', 1, 1);
+    view.destroy();
+  });
+
+  it('paints the mapped decorations after the response resolves', async () => {
+    const client = { documentHighlight: vi.fn(async () => [hl(1, 0, 1, 3)] as DocumentHighlight[]) };
+    const view = mountView(docText, occurrenceHighlightExtension(() => 'file:///a.ri', client, DEBOUNCE));
+
+    view.dispatch({ selection: { anchor: 5 } });
+    await vi.advanceTimersByTimeAsync(DEBOUNCE);
+
+    // hl(1,0,1,3) → doc.line(2).from (4) + (0,3) = {from:4,to:7}.
+    expect(marksOf(view.state)).toEqual([{ from: 4, to: 7, cls: 'cm-occurrenceHighlight' }]);
+    view.destroy();
+  });
+
+  it('a second cursor move within the debounce window cancels the first request', async () => {
+    const client = { documentHighlight: vi.fn(async () => [] as DocumentHighlight[]) };
+    const view = mountView(docText, occurrenceHighlightExtension(() => 'file:///a.ri', client, DEBOUNCE));
+
+    view.dispatch({ selection: { anchor: 5 } });
+    vi.advanceTimersByTime(DEBOUNCE - 10); // first timer not yet fired
+    view.dispatch({ selection: { anchor: 2 } }); // resets the debounce
+    await vi.advanceTimersByTimeAsync(DEBOUNCE);
+
+    expect(client.documentHighlight).toHaveBeenCalledTimes(1);
+    view.destroy();
+  });
+
+  it('discards the response if the document URI changed while the request was in flight', async () => {
+    let uri = 'file:///a.ri';
+    const d = deferred<DocumentHighlight[]>();
+    const client = { documentHighlight: vi.fn(() => d.promise) };
+    const view = mountView(docText, occurrenceHighlightExtension(() => uri, client, DEBOUNCE));
+
+    view.dispatch({ selection: { anchor: 5 } });
+    vi.advanceTimersByTime(DEBOUNCE); // fire timer → request starts, captures uri='file:///a.ri'
+    expect(client.documentHighlight).toHaveBeenCalledTimes(1);
+
+    // File switch lands before the in-flight response resolves.
+    uri = 'file:///b.ri';
+    d.resolve([hl(1, 0, 1, 3)]);
+    await vi.advanceTimersByTimeAsync(1);
+
+    // Stale URI → result must be dropped, no decorations painted into the wrong buffer.
+    expect(marksOf(view.state).length).toBe(0);
+    view.destroy();
   });
 });
