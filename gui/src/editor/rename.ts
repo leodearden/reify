@@ -15,7 +15,7 @@
  *    or opens the inline field via injected UI callbacks.
  */
 import type { EditorView } from '@codemirror/view';
-import type { WorkspaceEdit } from './lspClient';
+import type { PrepareRenameResult, Range, WorkspaceEdit } from './lspClient';
 
 /**
  * Apply an LSP WorkspaceEdit's edits for `uri` to the editor as one transaction.
@@ -49,4 +49,109 @@ export function applyWorkspaceEdit(
 
   view.dispatch({ changes, userEvent: 'rename' });
   return true;
+}
+
+/**
+ * The LSP surface renameCommand depends on — a structural subset of LspClient.
+ * Injecting it (rather than importing the singleton) keeps the refuse/accept
+ * routing unit-testable with mocked prepareRename/rename.
+ */
+export interface RenameClient {
+  prepareRename(
+    uri: string,
+    line: number,
+    character: number,
+  ): Promise<PrepareRenameResult | null>;
+  rename(
+    uri: string,
+    line: number,
+    character: number,
+    newName: string,
+  ): Promise<WorkspaceEdit | null>;
+}
+
+/**
+ * Editor-supplied UI callbacks for the inline rename flow.
+ *
+ * Injected (rather than hard-wired DOM) so the command's routing can be tested
+ * without CodeMirror layout — the inline-field DOM lives in Editor.tsx.
+ */
+export interface RenameUi {
+  /**
+   * Open the inline rename field over `range`, pre-filled with `placeholder`.
+   * `onSubmit(newName)` runs the rename; `onCancel()` dismisses with no edit.
+   */
+  promptNewName(
+    view: EditorView,
+    range: Range,
+    placeholder: string,
+    onSubmit: (newName: string) => void,
+    onCancel: () => void,
+  ): void;
+  /** Show a transient "can't rename here" message (the Invariant-4 refusal). */
+  showCannotRename(view: EditorView): void;
+}
+
+/**
+ * Create a CodeMirror Command for F2 rename.
+ *
+ * Returns a `(view) => boolean` suitable for keymap.of in Editor.tsx. It reads
+ * the cursor from view.state.selection.main.head, derives the 0-based LSP
+ * line/character, and calls prepareRename:
+ *
+ *  - null target → ui.showCannotRename(view): the hard safety guard. A
+ *    non-renameable position (keyword/literal/builtin/type/decl/cross-module)
+ *    performs ZERO edits — only a transient message.
+ *  - non-null target → ui.promptNewName(...). On submit, rename() is requested
+ *    and its WorkspaceEdit applied via applyWorkspaceEdit (one CM dispatch that
+ *    flows through Editor.tsx's updateListener → backend sync + didChange).
+ *
+ * Always returns true so the F2 key is consumed. The view may be torn down while
+ * the async request is in flight, so the apply step guards view.dom.isConnected
+ * (mirrors gotoDefinition).
+ */
+export function renameCommand(
+  uriGetter: () => string,
+  client: RenameClient,
+  ui: RenameUi,
+): (view: EditorView) => boolean {
+  return (view: EditorView): boolean => {
+    const head = view.state.selection.main.head;
+    const line = view.state.doc.lineAt(head);
+    const lspLine = line.number - 1;
+    const lspChar = head - line.from;
+    const uri = uriGetter();
+
+    client
+      .prepareRename(uri, lspLine, lspChar)
+      .then((target) => {
+        if (!target) {
+          // Invariant-4 refusal: show the message, edit nothing.
+          ui.showCannotRename(view);
+          return;
+        }
+        ui.promptNewName(
+          view,
+          target.range,
+          target.placeholder,
+          (newName: string) => {
+            client
+              .rename(uri, lspLine, lspChar, newName)
+              .then((edit) => {
+                if (!edit) return;
+                // The field can outlive the editor — never dispatch to a dead view.
+                if (!view.dom.isConnected) return;
+                applyWorkspaceEdit(view, edit, uri);
+              })
+              .catch((err) => console.warn('rename: failed to apply edit', err));
+          },
+          () => {
+            // onCancel: the field dismisses itself; nothing to undo here.
+          },
+        );
+      })
+      .catch((err) => console.warn('rename: prepareRename failed', err));
+
+    return true; // Always consume the key.
+  };
 }
