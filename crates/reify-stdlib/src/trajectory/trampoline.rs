@@ -34,6 +34,8 @@ use reify_core::{ContentHash, DimensionVector};
 use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 
 use crate::dynamics::spatial::{Frame3, SpatialTransform6, SpatialVector6};
+use super::impulse_shaper::convolve_at;
+use super::input_shape::build_train_for_shaper;
 use super::simulate::{
     simulate_trajectory_core, EffectorLocation, EndEffectorTrackData, LinkDesc, MechanismModel,
     ModalModel, ModeDesc, Pose3,
@@ -599,6 +601,150 @@ pub fn simulate_trajectory_value(profile: &Value, mech: &Value, modal: &Value) -
         },
     };
     track_data_to_value(&track)
+}
+
+/// Per-original-knot-interval oversample factor for the impulse arm's shaped
+/// command grid — resolves the command curvature when the shaped waypoints are
+/// re-fit to a spline downstream.
+const SAMPLES_PER_KNOT_INTERVAL: usize = 16;
+/// Per-shaper-delay oversample factor — resolves the shaper's impulse steps (the
+/// breakpoints the convolution introduces at `knot + tᵢ`), so the Δ-extended
+/// command re-fits faithfully (this is what lets the ≥40 dB cancellation survive
+/// the round-trip through the downstream simulator's spline re-marshal).
+const SAMPLES_PER_SHAPER_DELAY: usize = 8;
+/// Upper bound on the shaped grid size — a backstop against a pathological
+/// `t_domain` / Δ ratio producing an unbounded waypoint count.
+const MAX_SHAPED_SAMPLES: usize = 1024;
+
+/// Compose `input_shape(profile, shaper)` at the `Value` layer — the deferred ζ
+/// REAL command-waveform shaping (impulse arm; PRD §5.3). `reify-eval`'s
+/// `input_shape_trampoline` calls this through the crate-root re-export (mirroring
+/// the `build_train_for_shaper` boundary).
+///
+/// **Impulse arm** (ZV / ZVD / EI / Cascaded): resolve the shaper to an
+/// [`ImpulseTrain`](super::impulse_shaper::ImpulseTrain)
+/// ([`build_train_for_shaper`]), marshal the profile command to a
+/// [`MultiJointSpline`] ([`value_to_multijoint_spline`]), then resample the
+/// convolved command `f_shaped(t) = Σ Aᵢ·command(t − tᵢ)` ([`convolve_at`]) on a
+/// uniform grid over the Δ-extended domain `[0, duration + trailing_time]`. The
+/// result is a fresh `PiecewisePolynomialProfile` whose `waypoints` carry the
+/// shaped command while **every other field** (`mechanism` / `boundary` /
+/// `spline_kind`) is preserved verbatim — real shaping changes ONLY the
+/// waypoints, so the landed echo-era assertions (which check those three fields
+/// are preserved) still hold.
+///
+/// Returns [`Value::Undef`] for: a non-`StructureInstance` profile or shaper; an
+/// unrecognised shaper with no resolvable train — **including `TOTSShaper`**,
+/// whose heavy SQP arm lands in a later step (until then a `TOTSShaper` here is
+/// `Undef`, not a silent echo); or a profile that does not marshal to a spline.
+///
+/// New waypoints reuse the input waypoints' registered `type_id` / `type_name` /
+/// `version` so the shaped profile binds like the original; per-waypoint
+/// `vels` / `accels` are emitted as `Option(None)` (the cubic re-fit ignores
+/// them — a quintic round-trip would additionally need the convolved derivative
+/// commands, out of scope for the impulse arm's cubic acceptance path).
+pub fn input_shape_value(profile: &Value, shaper: &Value) -> Value {
+    // Both args must be StructureInstances (the bad-args convention).
+    let Value::StructureInstance(profile_data) = profile else {
+        return Value::Undef;
+    };
+    if !matches!(shaper, Value::StructureInstance(_)) {
+        return Value::Undef;
+    }
+
+    // Resolve the shaper to its impulse train. `build_train_for_shaper` returns
+    // None for an unrecognised shaper AND for a `TOTSShaper` (whose arm lands
+    // separately) — either ⇒ Undef here.
+    let Some(train) = build_train_for_shaper(shaper) else {
+        return Value::Undef;
+    };
+    // Marshal the profile command; an unmarshallable profile cannot be shaped.
+    let Some(spline) = value_to_multijoint_spline(profile) else {
+        return Value::Undef;
+    };
+
+    let t_domain = spline.duration();
+    let delta = train.trailing_time();
+    let span = t_domain + delta;
+    let n_joints = spline.eval(0.0).len();
+
+    // Uniform resample spacing fine enough to resolve BOTH the command curvature
+    // (oversample the input knot intervals) and the shaper steps (oversample Δ).
+    let n_in = match profile_data.fields.get(&"waypoints".to_string()) {
+        Some(Value::List(wps)) => wps.len().max(2),
+        _ => 2,
+    };
+    let dt_curv = t_domain / ((n_in - 1) * SAMPLES_PER_KNOT_INTERVAL) as f64;
+    let dt = if delta > 0.0 {
+        dt_curv.min(delta / SAMPLES_PER_SHAPER_DELAY as f64)
+    } else {
+        dt_curv
+    };
+    let n_intervals = if dt > 0.0 && dt.is_finite() {
+        ((span / dt).ceil() as usize).clamp(1, MAX_SHAPED_SAMPLES - 1)
+    } else {
+        1
+    };
+    let n_out = n_intervals + 1;
+    let step = span / n_intervals as f64;
+
+    // Waypoint template: reuse the input waypoints' registered identity so the
+    // shaped profile's waypoints bind like the originals; sentinel fallback when
+    // the input shape is unavailable.
+    let (wp_type_id, wp_type_name, wp_version) =
+        match profile_data.fields.get(&"waypoints".to_string()) {
+            Some(Value::List(wps)) => match wps.first() {
+                Some(Value::StructureInstance(d)) => (d.type_id, d.type_name.clone(), d.version),
+                _ => (StructureTypeId(u32::MAX), "Waypoint".to_string(), 1),
+            },
+            _ => (StructureTypeId(u32::MAX), "Waypoint".to_string(), 1),
+        };
+
+    let mut new_waypoints = Vec::with_capacity(n_out);
+    for i in 0..n_out {
+        let t = (i as f64) * step;
+        let values: Vec<Value> = (0..n_joints)
+            .map(|j| {
+                Value::Real(convolve_at(
+                    &train,
+                    &|tau: f64| spline.eval(tau)[j],
+                    t_domain,
+                    t,
+                ))
+            })
+            .collect();
+        let fields: PersistentMap<String, Value> = [
+            (
+                "t".to_string(),
+                Value::Scalar {
+                    si_value: t,
+                    dimension: DimensionVector::TIME,
+                },
+            ),
+            ("values".to_string(), Value::List(values)),
+            ("vels".to_string(), Value::Option(None)),
+            ("accels".to_string(), Value::Option(None)),
+        ]
+        .into_iter()
+        .collect();
+        new_waypoints.push(Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: wp_type_id,
+            type_name: wp_type_name.clone(),
+            version: wp_version,
+            fields,
+        })));
+    }
+
+    // Preserve every profile field; replace only `waypoints`.
+    let new_fields = profile_data
+        .fields
+        .insert_functional("waypoints".to_string(), Value::List(new_waypoints));
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: profile_data.type_id,
+        type_name: profile_data.type_name.clone(),
+        version: profile_data.version,
+        fields: new_fields,
+    }))
 }
 
 #[cfg(test)]
