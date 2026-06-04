@@ -59,3 +59,4 @@ reify-lsp = { workspace = true, features = ["test-support"] }
 # in debug_server.rs once engine wiring (PRD #2947-#2949) lands.
 reify-mesh-morph = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
+tauri = { workspace = true, features = ["test"] }
