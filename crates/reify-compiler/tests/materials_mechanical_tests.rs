@@ -631,7 +631,7 @@ fn four_refining_traits_without_material_members_is_conformance_error() {
     // (trait_name, trait-specific params to include in the structure — inherited
     // MaterialSpec params deliberately omitted to trigger the conformance error)
     let cases: &[(&str, &str)] = &[
-        ("FatigueRated", "    param endurance_limit : Real = 500.0"),
+        ("FatigueRated", "    param fatigue_limit : Real = 500.0"),
         (
             "FractureTough",
             "    param fracture_toughness : FractureToughness = 50.0 * 1Pa * sqrt(1m)",
@@ -689,7 +689,7 @@ fn four_refining_traits_without_material_members_is_conformance_error() {
 fn four_refining_traits_with_all_material_members_conform_cleanly() {
     // (trait_name, trait-specific params to include alongside inherited density/name)
     let cases: &[(&str, &str)] = &[
-        ("FatigueRated", "    param endurance_limit : Real = 500.0"),
+        ("FatigueRated", "    param fatigue_limit : Real = 500.0"),
         (
             "FractureTough",
             "    param fracture_toughness : FractureToughness = 50.0 * 1Pa * sqrt(1m)",

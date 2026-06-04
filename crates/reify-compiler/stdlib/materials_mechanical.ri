@@ -4,7 +4,8 @@
 //
 // Real-placeholder audit: see docs/notes/stdlib-real-placeholder-audit.md
 // Dimensioned params (density, youngs_modulus, shear_modulus, yield_strength,
-// ultimate_tensile_strength, compressive_strength, endurance_limit, impact_energy) are tightenable-now
+// ultimate_tensile_strength, compressive_strength, fatigue_limit, fatigue_strength_at,
+// charpy_impact, izod_impact, impact_energy) are tightenable-now
 // (task #3111). fracture_toughness was previously blocked-composite and is
 // now tightened to the `FractureToughness` (Pa·√m) alias by task #3115.
 //
@@ -116,9 +117,15 @@ trait Hard {
 
 // ── Fatigue ───────────────────────────────────────────────────────────────────
 
-// Stress amplitude below which the material can sustain unlimited cycles (Pa, using Real).
+// Fatigue characterisation params (Pa, using Real; fatigue_cycles: Int).
+// All three params are optional (= undef): real datasheets rarely report all
+// three simultaneously. fatigue_limit is the stress amplitude for unlimited
+// cycles; fatigue_strength_at is the amplitude at fatigue_cycles cycles.
+// task β #4240: replaced single required endurance_limit with these three optionals.
 trait FatigueRated : MaterialSpec {
-    param endurance_limit : Real
+    param fatigue_limit : Real = undef        // optional — stress amplitude for unlimited cycles
+    param fatigue_strength_at : Real = undef  // optional — stress amplitude at fatigue_cycles
+    param fatigue_cycles : Int = undef        // optional — cycle count for fatigue_strength_at
 }
 
 // ── Fracture toughness ────────────────────────────────────────────────────────
