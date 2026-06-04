@@ -217,7 +217,7 @@ fn real_occt_tessellated_union_ingests_and_unions_through_manifold() {
 
     // Build two 10×10×10 OCCT BRep boxes with 50% X-overlap (dx=5).
     // Mirror the two_box_kernel fixture from interference_integration.rs.
-    let mut occt = reify_kernel_occt::OcctKernelHandle::spawn();
+    let occt = reify_kernel_occt::OcctKernelHandle::spawn();
 
     let box_a = occt
         .execute(&GeometryOp::Box {
