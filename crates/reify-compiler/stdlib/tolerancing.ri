@@ -42,10 +42,13 @@ structure def DimensionalTolerance {
 // Base trait for all geometric tolerance types.
 // feature uses Real pending a dedicated Geometry type.
 // material_condition specifies MMC, LMC, or RFS modifier.
+// nominal_zone: the tolerance zone width at zero bonus departure (departure=0mm),
+//   equivalent to tolerance_value for all condition modifiers.
 trait GeometricTolerance {
     param tolerance_value : Length
     param feature : Real
-    param material_condition : MaterialCondition
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+    let nominal_zone = effective_tolerance_zone(tolerance_value, material_condition, 0mm)
 }
 
 // Form tolerances constrain shape without a datum reference.

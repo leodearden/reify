@@ -219,13 +219,26 @@ fn geometric_tolerance_trait_and_subtrait_hierarchy() {
         .collect();
     assert!(
         gt_member_names.contains(&"tolerance_value"),
-        "GeometricTolerance should have 'tolerance_value' member, got: {:?}",
+        "GeometricTolerance should have 'tolerance_value' required member, got: {:?}",
         gt_member_names
     );
+    // material_condition has a trait-level default (= MaterialCondition.RFS) so it
+    // lives in `defaults`, not `required_members`. Verify the default is present.
+    let gt_default_names: Vec<Option<&str>> = gt
+        .defaults
+        .iter()
+        .map(|d| d.name.as_deref())
+        .collect();
     assert!(
-        gt_member_names.contains(&"material_condition"),
-        "GeometricTolerance should have 'material_condition' member, got: {:?}",
-        gt_member_names
+        gt_default_names.contains(&Some("material_condition")),
+        "GeometricTolerance should have 'material_condition' in defaults (has RFS default), got: {:?}",
+        gt_default_names
+    );
+    // nominal_zone is also a trait-level derived let default (β).
+    assert!(
+        gt_default_names.contains(&Some("nominal_zone")),
+        "GeometricTolerance should have 'nominal_zone' in defaults, got: {:?}",
+        gt_default_names
     );
 
     // FormTolerance refines GeometricTolerance
@@ -673,9 +686,19 @@ fn geometric_tolerance_nominal_zone_inherited_let() {
     );
 
     // (b) Eval: Probe.f.nominal_zone == 0.05mm = 5e-5m (departure=0mm → zone==tol) ──
+    //
+    // NOTE: The eval engine resolves sub-component templates from the user's compiled
+    // module only (not the stdlib). Use a locally-defined conforming structure so the
+    // engine can find it. material_condition is supplied explicitly to ensure the source
+    // compiles both before and after step-2 adds the trait-level RFS default.
     let source = r#"
+structure def TestFlat : GeometricTolerance {
+    param tolerance_value : Length = 0.05mm
+    param feature : Real = 0.0
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+}
 structure def Probe {
-    sub f = Flatness(tolerance_value: 0.05mm)
+    sub f = TestFlat(tolerance_value: 0.05mm)
 }
 "#;
     let compiled = parse_and_compile_with_stdlib(source);
