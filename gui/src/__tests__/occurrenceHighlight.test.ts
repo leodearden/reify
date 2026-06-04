@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { highlightsToRanges } from '../editor/occurrenceHighlight';
+import { EditorState } from '@codemirror/state';
+import {
+  highlightsToRanges,
+  occurrenceHighlightField,
+  setOccurrencesEffect,
+} from '../editor/occurrenceHighlight';
 
 // Doc-like mock in the diagnostics.test.ts style. LSP lines are 0-based;
 // doc.line(n) is 1-based, so LSP line L maps to doc.line(L + 1).
@@ -47,5 +52,54 @@ describe('highlightsToRanges', () => {
 
   it('returns [] for empty input', () => {
     expect(highlightsToRanges([], mockDoc as any)).toEqual([]);
+  });
+});
+
+// --- step-11/12: decoration StateField + setOccurrencesEffect (real CodeMirror) ---
+
+/** Collect (from, to, class) of every mark in the field's DecorationSet. */
+function marksOf(state: EditorState) {
+  const decos = state.field(occurrenceHighlightField);
+  const out: { from: number; to: number; cls: string | undefined }[] = [];
+  const iter = decos.iter();
+  while (iter.value !== null) {
+    out.push({ from: iter.from, to: iter.to, cls: iter.value.spec.class });
+    iter.next();
+  }
+  return out;
+}
+
+describe('occurrenceHighlightField', () => {
+  const doc = 'structure Bracket {\n  let volume = width * width\n}';
+
+  it('holds no decorations initially', () => {
+    const state = EditorState.create({ doc, extensions: [occurrenceHighlightField] });
+    expect(marksOf(state).length).toBe(0);
+  });
+
+  it('builds cm-occurrenceHighlight marks at the effect ranges', () => {
+    const state = EditorState.create({ doc, extensions: [occurrenceHighlightField] });
+    const next = state.update({
+      effects: setOccurrencesEffect.of([
+        { from: 22, to: 27 },
+        { from: 30, to: 35 },
+      ]),
+    }).state;
+
+    expect(marksOf(next)).toEqual([
+      { from: 22, to: 27, cls: 'cm-occurrenceHighlight' },
+      { from: 30, to: 35, cls: 'cm-occurrenceHighlight' },
+    ]);
+  });
+
+  it('clears all decorations on an empty effect', () => {
+    const withMarks = EditorState.create({
+      doc,
+      extensions: [occurrenceHighlightField],
+    }).update({ effects: setOccurrencesEffect.of([{ from: 22, to: 27 }]) }).state;
+    expect(marksOf(withMarks).length).toBe(1);
+
+    const cleared = withMarks.update({ effects: setOccurrencesEffect.of([]) }).state;
+    expect(marksOf(cleared).length).toBe(0);
   });
 });
