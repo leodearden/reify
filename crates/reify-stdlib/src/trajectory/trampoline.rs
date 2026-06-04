@@ -30,6 +30,56 @@
 //! Populated incrementally across task π's TDD steps (cache keys → marshalling
 //! → composers → accessors).
 
+use reify_core::ContentHash;
+use reify_ir::Value;
+
+/// The result-determining inputs of a `simulate_trajectory` forward-pass solve,
+/// used to decide whether a cached `EndEffectorTrack` result (`reify-eval`'s
+/// `trajectory_ops` warm state) can be reused for a new call.
+///
+/// Three [`ContentHash`]es — one per `simulate_trajectory(profile, mech, modal)`
+/// input ([`Value::content_hash`]). A full per-field match certifies the cached
+/// result for reuse (a cache HIT). The user-observable signals map directly:
+/// identical inputs ⇒ all hashes match ⇒ HIT; a profile control-point change ⇒
+/// `profile_hash` differs ⇒ MISS (invalidation).
+///
+/// Compared via [`matches`](SimulateTrajectoryCacheKey::matches) — per-field
+/// `ContentHash` equality. `Copy`/`Debug` but deliberately NOT `PartialEq` (the
+/// single comparison path is `matches`, exactly mirroring
+/// `dynamics::trampoline::InverseDynamicsCacheKey`); `Value::content_hash`
+/// canonicalizes `NaN` and preserves `-0.0`, so comparison is collision-free
+/// and deterministic.
+#[derive(Clone, Copy, Debug)]
+pub struct SimulateTrajectoryCacheKey {
+    /// Content hash of the profile `Value` (`profile.content_hash()`).
+    pub profile_hash: ContentHash,
+    /// Content hash of the mechanism `Value` (`mech.content_hash()`).
+    pub mech_hash: ContentHash,
+    /// Content hash of the modal-result `Value` (`modal.content_hash()`).
+    pub modal_hash: ContentHash,
+}
+
+impl SimulateTrajectoryCacheKey {
+    /// Build a key from the three `simulate_trajectory` inputs, each hashed via
+    /// [`Value::content_hash`].
+    pub fn from_inputs(profile: &Value, mech: &Value, modal: &Value) -> Self {
+        Self {
+            profile_hash: profile.content_hash(),
+            mech_hash: mech.content_hash(),
+            modal_hash: modal.content_hash(),
+        }
+    }
+
+    /// `true` iff every field hash equals `other`'s — i.e. a cached result built
+    /// for `other` may be reused for `self` (a cache HIT). Per-field
+    /// `ContentHash` equality is symmetric and collision-free.
+    pub fn matches(&self, other: &SimulateTrajectoryCacheKey) -> bool {
+        self.profile_hash == other.profile_hash
+            && self.mech_hash == other.mech_hash
+            && self.modal_hash == other.modal_hash
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
