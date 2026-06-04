@@ -37,7 +37,7 @@
 use reify_core::{ComputeNodeId, DimensionVector, ValueCellId, VersionId};
 use reify_eval::cache::{CachedResult, NodeCache, NodeId};
 use reify_eval::deps::DependencyTrace;
-use reify_eval::{CancellationHandle, ComputeFn};
+use reify_eval::{CancellationHandle, ComputeFn, DispatchError};
 use reify_ir::{DeterminacyState, Freshness, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_test_support::make_simple_engine;
 
@@ -330,5 +330,57 @@ fn simulate_trajectory_profile_change_forces_miss() {
     assert!(
         matches!(&value_miss, Value::StructureInstance(d) if d.type_name == "EndEffectorTrack"),
         "MISS recompute must return a valid EndEffectorTrack, got {value_miss:?}",
+    );
+}
+
+// ── (e) PRE-CANCELLED → Err(DispatchError::Cancelled), VC stays Pending ──────
+
+/// A pre-cancelled [`CancellationHandle`] must drive the `simulate_trajectory`
+/// trampoline to `ComputeOutcome::Cancelled` (the on-entry poll short-circuits
+/// before any marshalling / `simulate_trajectory_core` call), so
+/// `run_compute_dispatch` returns `Err(DispatchError::Cancelled)` and leaves
+/// the seeded output VC `Freshness::Pending` (prior best on display) rather
+/// than `Final`.
+///
+/// Mirrors `modal_compute_node::modal_dispatch_precancelled_leaves_output_vc_pending`.
+/// GREEN immediately after step-24: the entry cancellation checkpoint was
+/// added in that step alongside the warm-state cache logic.
+#[test]
+fn simulate_trajectory_precancelled_leaves_output_vc_pending() {
+    let mut engine = engine_with_simulate_target();
+
+    let cell = ValueCellId::new("SimTrajFixture", "result");
+    let c_id = ComputeNodeId::new("SimTrajFixture", 0);
+    seed_final_output(&mut engine, &cell);
+
+    let inputs = simulate_value_inputs(1.0);
+
+    // Pre-cancel before dispatch.
+    let handle = CancellationHandle::new();
+    handle.cancel();
+
+    let result = engine.run_compute_dispatch(
+        &c_id,
+        std::slice::from_ref(&cell),
+        "trajectory::simulate",
+        &inputs,
+        &[],
+        &Value::Undef,
+        &handle,
+        VersionId(2),
+    );
+
+    assert!(
+        matches!(result, Err(DispatchError::Cancelled)),
+        "pre-cancelled simulate_trajectory dispatch must return Err(DispatchError::Cancelled), \
+         got {result:?}",
+    );
+
+    let node = NodeId::Value(cell.clone());
+    assert!(
+        matches!(engine.freshness(&node), Freshness::Pending { .. }),
+        "cancelled dispatch must leave the output VC Pending (prior best on display); \
+         got {:?}",
+        engine.freshness(&node),
     );
 }
