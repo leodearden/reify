@@ -165,6 +165,9 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
     if let Some(v) = stackup::eval_stackup(name, args) {
         return v;
     }
+    if let Some(v) = dfm::eval_dfm(name, args) {
+        return v;
+    }
     if let Some(v) = sweep::eval_sweep(name, args) {
         return v;
     }
