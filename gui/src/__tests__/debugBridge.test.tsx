@@ -1706,3 +1706,90 @@ describe('debug bridge open_menu', () => {
     expect(window.__REIFY_DEBUG__!.menuBar!.openMenu()).toBe('file');
   });
 });
+
+// ---------------------------------------------------------------------------
+// debug bridge menu_state (step-3 RED → step-4 GREEN)
+// ---------------------------------------------------------------------------
+
+describe('debug bridge menu_state', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(async () => {
+    cleanup();
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('(a) with no menu open, menu_state returns {open:null, items:[]}', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    render(() => <MenuBar />);
+
+    const result = await dispatchCmd(4000, 'menu_state', {});
+    expect(result.open).toBeNull();
+    expect(result.items).toEqual([]);
+  });
+
+  it('(b) after opening file menu, menu_state returns open:"file" and items for new/open/save/export', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    render(() => <MenuBar />);
+
+    await dispatchCmd(4001, 'open_menu', { name: 'file' });
+    const result = await dispatchCmd(4002, 'menu_state', {});
+
+    expect(result.open).toBe('file');
+    expect(Array.isArray(result.items)).toBe(true);
+    expect(result.items.length).toBeGreaterThan(0);
+
+    // File menu has new/open/save/export
+    const testIds = result.items.map((i: any) => i.testId);
+    expect(testIds).toContain('menu-item-new');
+    expect(testIds).toContain('menu-item-open');
+    expect(testIds).toContain('menu-item-save');
+    expect(testIds).toContain('menu-item-export');
+
+    // Each item has label and enabled fields
+    const openItem = result.items.find((i: any) => i.testId === 'menu-item-open');
+    expect(openItem).toBeDefined();
+    expect(typeof openItem.label).toBe('string');
+    expect(openItem.label.length).toBeGreaterThan(0);
+    expect(typeof openItem.enabled).toBe('boolean');
+    expect(openItem.enabled).toBe(true);
+  });
+
+  it('(c) edit menu items undo/redo report enabled:false (registry-disabled)', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    render(() => <MenuBar />);
+
+    await dispatchCmd(4003, 'open_menu', { name: 'edit' });
+    const result = await dispatchCmd(4004, 'menu_state', {});
+
+    expect(result.open).toBe('edit');
+    const undoItem = result.items.find((i: any) => i.testId === 'menu-item-undo');
+    const redoItem = result.items.find((i: any) => i.testId === 'menu-item-redo');
+    expect(undoItem).toBeDefined();
+    expect(redoItem).toBeDefined();
+    expect(undoItem.enabled).toBe(false);
+    expect(redoItem.enabled).toBe(false);
+  });
+});
