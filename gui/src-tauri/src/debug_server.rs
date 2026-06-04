@@ -1368,6 +1368,55 @@ mod tests {
         }
     }
 
+    // task-4297 step-5 RED → step-6 GREEN: R2 tools get_diagnostics and ui_outline
+    // must be registered in tool_defs() with correct schema shape and the ui_outline
+    // description must explicitly label it a DOM approximation / not an AX tree.
+    #[test]
+    fn tool_defs_registers_r2_inspection_tools() {
+        let defs = tool_defs();
+
+        // Both R2 tools take no required params.
+        let r2_tools = ["get_diagnostics", "ui_outline"];
+        for tool_name in r2_tools {
+            let entry = defs
+                .iter()
+                .find(|t| t.name == tool_name)
+                .unwrap_or_else(|| panic!("{tool_name} must be present in tool_defs()"));
+            let schema = &entry.input_schema;
+            assert_eq!(
+                schema["type"].as_str(),
+                Some("object"),
+                "{tool_name}: input_schema.type must be 'object'"
+            );
+            assert!(
+                !entry.description.is_empty(),
+                "{tool_name}: description must be non-empty"
+            );
+            if let Some(required) = schema["required"].as_array() {
+                assert!(
+                    required.is_empty(),
+                    "{tool_name}: required array must be empty; got {required:?}"
+                );
+            }
+        }
+
+        // PRD §4.2 / G6: ui_outline must be labelled as a DOM approximation,
+        // NOT a true accessibility tree. Pin the contract via substring check.
+        let ui_outline = defs
+            .iter()
+            .find(|t| t.name == "ui_outline")
+            .expect("ui_outline must be present in tool_defs()");
+        let desc_lower = ui_outline.description.to_lowercase();
+        assert!(
+            desc_lower.contains("approximation"),
+            "ui_outline description must contain 'approximation' (PRD §4.2 labelled-contract)"
+        );
+        assert!(
+            desc_lower.contains("accessibility"),
+            "ui_outline description must contain 'accessibility' (PRD §4.2 labelled-contract)"
+        );
+    }
+
     // step-5 RED → GREEN: all five viewport-aware tools must expose an optional
     // viewportId property in their schemas. Consolidated into one table-driven test
     // so adding a sixth tool is a one-line change (amend: suggestion-4).
