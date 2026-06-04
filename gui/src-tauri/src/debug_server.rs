@@ -388,6 +388,45 @@ fn tool_defs() -> Vec<ToolDef> {
                 "properties": {}
             }),
         },
+        // C1 app-chrome tools (frontend-mediated via debug_bridge.query_frontend catch-all)
+        ToolDef {
+            name: "open_menu",
+            description: "Open a top-level app menu by name (file|edit|view|help) by driving the MenuBar trigger; returns {ok, open}.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Menu name to open: file, edit, view, or help."
+                    }
+                },
+                "required": ["name"]
+            }),
+        },
+        ToolDef {
+            name: "menu_state",
+            description: "Report the currently-open menu and the open menu's per-item enabled-state, read from the rendered DOM.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolDef {
+            name: "press_tab",
+            description: "Advance keyboard focus to the next focusable element in document order and report where document.activeElement lands.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolDef {
+            name: "tab_order",
+            description: "Report the forward-Tab focus traversal order (document-order focusable elements).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
     ]
 }
 
