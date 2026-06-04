@@ -388,6 +388,23 @@ fn tool_defs() -> Vec<ToolDef> {
                 "properties": {}
             }),
         },
+        // --- R2 inspection tools (task-4297) — frontend-mediated, dispatched via query_frontend ---
+        ToolDef {
+            name: "get_diagnostics",
+            description: "Structured dump of the engine's compile and tessellation diagnostics (severity, message, code, source range) read from the real engineStore.compileDiagnostics + tessellationDiagnostics. Returns { compile: Diag[], tessellation: Diag[], compileCount, tessellationCount } where Diag = { severity, message, code, file_path, range: { line, column, end_line, end_column } }.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolDef {
+            name: "ui_outline",
+            description: "DOM-derived semantic text snapshot of visible UI elements in document order. Returns { outline: Node[], count, truncated } where Node = { tagName, role, testId, text, enabled }. Captures buttons, inputs, [role], [data-testid], and other interactive elements visible in the render tree (computed display != none && visibility != hidden). This is a pragmatic DOM APPROXIMATION — NOT a true accessibility tree (true AX tree support deferred to tracker AX-1). Capped at 500 elements.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
     ]
 }
 
