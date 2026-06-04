@@ -33,6 +33,8 @@
 use reify_core::ContentHash;
 use reify_ir::Value;
 
+use super::spline::{BoundaryCondition, CubicSpline, KnotData, MultiJointSpline, QuinticSpline};
+
 /// The result-determining inputs of a `simulate_trajectory` forward-pass solve,
 /// used to decide whether a cached `EndEffectorTrack` result (`reify-eval`'s
 /// `trajectory_ops` warm state) can be reused for a new call.
@@ -118,6 +120,182 @@ impl InputShapeCacheKey {
     /// `ContentHash` equality is symmetric and collision-free.
     pub fn matches(&self, other: &InputShapeCacheKey) -> bool {
         self.profile_hash == other.profile_hash && self.shaper_hash == other.shaper_hash
+    }
+}
+
+// ── Value→core marshalling ──────────────────────────────────────────────────
+//
+// The deferred β `Value`→`MultiJointSpline` marshalling (and, in later steps,
+// the modal / mechanism / track marshalling). These helpers are `pub(crate)`
+// internal — `reify-eval` reaches the trajectory core only through the
+// `simulate_trajectory_value` / `input_shape_value` composers (steps 14 / 16),
+// which call these. Tagged `#[allow(dead_code)]` until those composers consume
+// them, mirroring `spline.rs`'s own dead-code suppression (the spline math is
+// fully tested but its Value wiring lands incrementally across π's TDD steps).
+
+/// Read a numeric stdlib field as `f64` — a dimensioned `Scalar` (SI magnitude),
+/// a `Real`, or an `Int`. Any other variant yields `None`. Mirrors
+/// `input_shape::read_scalar_si` / `modal_ops::read_scalar_si`.
+#[allow(dead_code)]
+fn read_scalar_si(val: &Value) -> Option<f64> {
+    match val {
+        Value::Scalar { si_value, .. } => Some(*si_value),
+        Value::Real(r) => Some(*r),
+        Value::Int(n) => Some(*n as f64),
+        _ => None,
+    }
+}
+
+/// Read a `Value::List<numeric>` into `Vec<f64>` (each element via
+/// [`read_scalar_si`]). `None` if `val` is not a `List` or any element is
+/// non-numeric.
+#[allow(dead_code)]
+fn read_real_list(val: &Value) -> Option<Vec<f64>> {
+    let Value::List(items) = val else {
+        return None;
+    };
+    items.iter().map(read_scalar_si).collect()
+}
+
+/// Read an optional per-waypoint `List<JointValue>` field (`vels` / `accels`):
+/// `Value::Option(Some(list))` → `Some(vec)`; `Value::Option(None)`, an absent
+/// field, or a non-numeric list → `None`. The `None` return is the "no
+/// per-knot derivative data" case the cubic path tolerates and the quintic
+/// path rejects.
+#[allow(dead_code)]
+fn read_opt_real_list(val: Option<&Value>) -> Option<Vec<f64>> {
+    match val {
+        Some(Value::Option(Some(inner))) => read_real_list(inner),
+        _ => None,
+    }
+}
+
+/// Marshal a `PiecewisePolynomialProfile` `Value` into a [`MultiJointSpline`]
+/// — the deferred β `Value`→spline boundary (PRD §4.1).
+///
+/// Reads the four eval-path fields:
+/// - `waypoints : List<Waypoint>` — each `Waypoint` carries a `t` (`Time`
+///   scalar, SI seconds), a `values : List<JointValue>` (per-joint positions),
+///   and optional `vels` / `accels` (`Option<List<JointValue>>`). At least two
+///   waypoints are required; all must share the same joint count (≥ 1).
+/// - `spline_kind : SplineKind` — the enum tag selects degree:
+///   `CubicSpline` → [`CubicSpline::fit`] per joint; `QuinticSpline` →
+///   [`QuinticSpline::fit`] per joint (which needs every waypoint's `vels` AND
+///   `accels`).
+/// - `boundary : BoundaryCondition` — for the cubic path, the `StructureInstance`
+///   `type_name` dispatches the [`BoundaryCondition`]: `NaturalSpline` →
+///   `Natural`, `PeriodicSpline` → `Periodic`, `ClampedSpline` → `Clamped`
+///   (reading the per-joint `start_velocity` / `end_velocity` lists, which must
+///   match the joint count). The quintic Hermite path is fully determined by
+///   per-knot value/vel/accel and ignores `boundary`.
+///
+/// Returns `None` (never panics) for any malformed / degenerate input: a
+/// non-`StructureInstance`, a missing / non-`List` `waypoints`, `< 2`
+/// waypoints, an inconsistent or empty joint count, a non-numeric `t` / value,
+/// an unrecognised `boundary` tag (cubic path) or `spline_kind` variant, a
+/// degenerate knot set (`CubicSpline::fit` / `QuinticSpline::fit` returning
+/// `None`), or a quintic profile missing per-waypoint `vels` / `accels`.
+#[allow(dead_code)]
+pub(crate) fn value_to_multijoint_spline(profile: &Value) -> Option<MultiJointSpline> {
+    let Value::StructureInstance(data) = profile else {
+        return None;
+    };
+
+    // waypoints : List<Waypoint>, at least two.
+    let Some(Value::List(wps)) = data.fields.get(&"waypoints".to_string()) else {
+        return None;
+    };
+    if wps.len() < 2 {
+        return None;
+    }
+
+    // Parse each waypoint's t / values / (optional) vels / accels.
+    let mut ts: Vec<f64> = Vec::with_capacity(wps.len());
+    let mut vals: Vec<Vec<f64>> = Vec::with_capacity(wps.len()); // [waypoint][joint]
+    let mut vels: Vec<Option<Vec<f64>>> = Vec::with_capacity(wps.len());
+    let mut accels: Vec<Option<Vec<f64>>> = Vec::with_capacity(wps.len());
+    for wp in wps {
+        let Value::StructureInstance(wp_data) = wp else {
+            return None;
+        };
+        let t = read_scalar_si(wp_data.fields.get(&"t".to_string())?)?;
+        let v = read_real_list(wp_data.fields.get(&"values".to_string())?)?;
+        ts.push(t);
+        vals.push(v);
+        vels.push(read_opt_real_list(wp_data.fields.get(&"vels".to_string())));
+        accels.push(read_opt_real_list(wp_data.fields.get(&"accels".to_string())));
+    }
+
+    // Consistent, non-empty joint count across all waypoints.
+    let n_joints = vals[0].len();
+    if n_joints == 0 || vals.iter().any(|v| v.len() != n_joints) {
+        return None;
+    }
+
+    // spline_kind enum tag selects polynomial degree.
+    let Some(Value::Enum { variant, .. }) = data.fields.get(&"spline_kind".to_string()) else {
+        return None;
+    };
+
+    match variant.as_str() {
+        "CubicSpline" => {
+            // boundary dispatch (per-joint velocities for Clamped).
+            let Value::StructureInstance(b) = data.fields.get(&"boundary".to_string())? else {
+                return None;
+            };
+            let clamped_vels: Option<(Vec<f64>, Vec<f64>)> = if b.type_name == "ClampedSpline" {
+                let start = read_real_list(b.fields.get(&"start_velocity".to_string())?)?;
+                let end = read_real_list(b.fields.get(&"end_velocity".to_string())?)?;
+                if start.len() != n_joints || end.len() != n_joints {
+                    return None;
+                }
+                Some((start, end))
+            } else {
+                None
+            };
+
+            let mut joints = Vec::with_capacity(n_joints);
+            for j in 0..n_joints {
+                let values_j: Vec<f64> = vals.iter().map(|v| v[j]).collect();
+                let bc = match b.type_name.as_str() {
+                    "NaturalSpline" => BoundaryCondition::Natural,
+                    "PeriodicSpline" => BoundaryCondition::Periodic,
+                    "ClampedSpline" => {
+                        let (start, end) = clamped_vels.as_ref().unwrap();
+                        BoundaryCondition::Clamped {
+                            start_vel: start[j],
+                            end_vel: end[j],
+                        }
+                    }
+                    _ => return None, // unrecognised boundary tag
+                };
+                joints.push(CubicSpline::fit(&ts, &values_j, &bc)?);
+            }
+            MultiJointSpline::new_cubic(joints)
+        }
+        "QuinticSpline" => {
+            let mut joints = Vec::with_capacity(n_joints);
+            for j in 0..n_joints {
+                let mut knots = Vec::with_capacity(wps.len());
+                for i in 0..wps.len() {
+                    // Quintic Hermite needs every waypoint's vel AND accel.
+                    let vel = vels[i].as_ref()?;
+                    let acc = accels[i].as_ref()?;
+                    if vel.len() != n_joints || acc.len() != n_joints {
+                        return None;
+                    }
+                    knots.push(KnotData {
+                        t: ts[i],
+                        value: vals[i][j],
+                        vel: vel[j],
+                        accel: acc[j],
+                    });
+                }
+                joints.push(QuinticSpline::fit(&knots)?);
+            }
+            MultiJointSpline::new_quintic(joints)
+        }
+        _ => None, // unrecognised spline_kind variant
     }
 }
 
@@ -394,8 +572,11 @@ mod tests {
         );
     }
 
-    /// Boundary dispatch: a `PeriodicSpline` (needs ≥3 waypoints with matching
-    /// endpoint values) is read into `BoundaryCondition::Periodic` and marshals.
+    /// Boundary dispatch: a `PeriodicSpline` is read into
+    /// `BoundaryCondition::Periodic` and marshals. The cyclic periodic solver
+    /// needs ≥3 unknowns (`n-1 ≥ 3`, i.e. ≥4 waypoints) and matching endpoint
+    /// values to close the loop — mirror `spline.rs`'s own periodic fixture (a
+    /// sine sampled over one full period, endpoints equal).
     #[test]
     fn value_to_spline_periodic_cubic_dispatches_boundary() {
         let profile = pp_profile(
@@ -403,6 +584,8 @@ mod tests {
                 waypoint(0.0, &[0.0], None, None),
                 waypoint(1.0, &[1.0], None, None),
                 waypoint(2.0, &[0.0], None, None),
+                waypoint(3.0, &[-1.0], None, None),
+                waypoint(4.0, &[0.0], None, None),
             ],
             instance("PeriodicSpline", vec![]),
             spline_kind("CubicSpline"),
@@ -410,7 +593,7 @@ mod tests {
         let spline = value_to_multijoint_spline(&profile)
             .expect("a well-formed periodic-cubic profile must marshal to Some");
         assert!(matches!(spline, MultiJointSpline::Cubic(_)));
-        assert!((spline.duration() - 2.0).abs() < SPLINE_TOL);
+        assert!((spline.duration() - 4.0).abs() < SPLINE_TOL);
     }
 
     /// cubic-vs-quintic selection: `SplineKind::QuinticSpline` + per-waypoint
