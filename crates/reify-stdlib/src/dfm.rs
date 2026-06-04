@@ -18,7 +18,7 @@
 //!   rule argument; a `Value::Undef` result is a usage error.
 
 use reify_ir::Value;
-use reify_core::Diagnostic;
+use reify_core::{Diagnostic, DimensionVector, Severity};
 
 use crate::helpers::tensor_components_f64;
 
@@ -56,26 +56,39 @@ fn fits_build_volume(args: &[Value]) -> Value {
         Some(e) => e,
         None => return Value::Undef,
     };
-    // The optional 3rd arg (DFMSeverity / DFMRule) tags the violation severity for
-    // `diagnose`; it does not affect the fit. It is validated in step-4.
+    // The optional 3rd arg tags the violation severity for `diagnose` (a bare
+    // DFMSeverity enum or a DFMRule structure-instance). It does NOT affect the
+    // fit, but a malformed tag is a usage error → Undef.
+    if args.len() == 3 && parse_dfm_severity(&args[2]).is_none() {
+        return Value::Undef;
+    }
     let fits = (0..3).all(|i| part[i] <= envelope[i]);
     Value::Bool(fits)
 }
 
 /// Extract the per-axis extents `[x, y, z] = max - min` from a `Value::BoundingBox`.
 ///
-/// Returns `None` for a non-`BoundingBox`, or a box whose `min`/`max` are not
-/// 3-component Point/Vector/Tensor numerics (via [`tensor_components_f64`], which
-/// also rejects mixed-dimension corners). LENGTH-dimension and finiteness guards
-/// are added in step-4.
+/// Returns `None` (→ the caller yields `Value::Undef`) unless `v` is a
+/// `Value::BoundingBox` whose `min` and `max` corners are each a finite,
+/// 3-component LENGTH `Point`/`Vector`/`Tensor`. [`tensor_components_f64`] already
+/// rejects non-container, empty, non-numeric, and internally-mixed-dimension
+/// corners; on top of that we require exactly 3 components, the LENGTH dimension on
+/// BOTH corners (which also rejects a min/max dimension mismatch), and finite
+/// coordinates (so a NaN/inf corner cannot corrupt the extent compare).
 fn parse_bbox_extents(v: &Value) -> Option<[f64; 3]> {
     let (min, max) = match v {
         Value::BoundingBox { min, max } => (min, max),
         _ => return None,
     };
-    let (min_vals, _min_dim) = tensor_components_f64(min)?;
-    let (max_vals, _max_dim) = tensor_components_f64(max)?;
+    let (min_vals, min_dim) = tensor_components_f64(min)?;
+    let (max_vals, max_dim) = tensor_components_f64(max)?;
     if min_vals.len() != 3 || max_vals.len() != 3 {
+        return None;
+    }
+    if min_dim != DimensionVector::LENGTH || max_dim != DimensionVector::LENGTH {
+        return None;
+    }
+    if !min_vals.iter().all(|x| x.is_finite()) || !max_vals.iter().all(|x| x.is_finite()) {
         return None;
     }
     Some([
@@ -83,6 +96,33 @@ fn parse_bbox_extents(v: &Value) -> Option<[f64; 3]> {
         max_vals[1] - min_vals[1],
         max_vals[2] - min_vals[2],
     ])
+}
+
+/// Parse the rule's `DFMSeverity` from a single `fits_build_volume` 3rd argument.
+///
+/// Accepts either a bare `Value::Enum { type_name: "DFMSeverity", variant }` or a
+/// DFMRule `Value::StructureInstance` carrying a `severity` field of that enum, and
+/// maps the `Info` / `Warning` / `Error` variant to the matching [`Severity`].
+/// Returns `None` if `v` is neither shape, or carries an unrecognized variant. This
+/// both rejects a malformed 3rd arg in [`fits_build_volume`] and is the shape-reader
+/// the [`diagnose`] severity bridge reuses (where absence falls back to a default).
+fn parse_dfm_severity(v: &Value) -> Option<Severity> {
+    let variant = match v {
+        Value::Enum { type_name, variant } if type_name == "DFMSeverity" => variant.as_str(),
+        Value::StructureInstance(data) => match data.fields.get("severity") {
+            Some(Value::Enum { type_name, variant }) if type_name == "DFMSeverity" => {
+                variant.as_str()
+            }
+            _ => return None,
+        },
+        _ => return None,
+    };
+    match variant {
+        "Info" => Some(Severity::Info),
+        "Warning" => Some(Severity::Warning),
+        "Error" => Some(Severity::Error),
+        _ => None,
+    }
 }
 
 /// Pure post-call DFM diagnostic classifier (the `DFMSeverity` bridge).
