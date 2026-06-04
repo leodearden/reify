@@ -239,3 +239,9 @@ fn symmetric_tolerance(nominal: Length, deviation: Length) -> Length {
 fn limit_tolerance(upper: Length, lower: Length) -> Length {
     upper - lower
 }
+
+// Asserts that a surface finish specification is non-trivial (value > 0mm).
+// feature is a Real placeholder for the feature geometry; δ/#3116 will flip to Geometry.
+fn require_finish(feature: Real, finish: SurfaceFinish) -> Bool {
+    finish.value > 0mm
+}

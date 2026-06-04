@@ -635,11 +635,11 @@ fn full_module_integrity() {
         module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
     );
 
-    // 2 functions
+    // 3 functions: symmetric_tolerance, limit_tolerance, require_finish (β adds require_finish)
     assert_eq!(
         module.functions.len(),
-        2,
-        "expected 2 functions (symmetric_tolerance, limit_tolerance), got: {:?}",
+        3,
+        "expected 3 functions (symmetric_tolerance, limit_tolerance, require_finish), got: {:?}",
         module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
     );
 
