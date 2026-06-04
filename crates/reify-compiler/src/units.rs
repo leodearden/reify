@@ -55,6 +55,7 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
     "bezier",
     "nurbs",
     "tube",
+    "torus",
     "pipe",
     "box_centered",
     "cylinder_centered",
