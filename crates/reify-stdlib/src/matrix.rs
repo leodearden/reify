@@ -226,12 +226,11 @@ pub(crate) fn eval_matrix(name: &str, args: &[Value]) -> Option<Value> {
                 // General path: real-input Schur → complex eigenvalues.
                 let complex_eigs: Vec<Complex<f64>> =
                     m.complex_eigenvalues().iter().copied().collect();
-                let max_mag: f64 = complex_eigs
-                    .iter()
-                    .map(|c| c.re.hypot(c.im))
-                    .fold(0.0_f64, |a, b| a.max(b));
-                let threshold = 1e-9 * max_mag;
-                if complex_eigs.iter().all(|c| c.im.abs() <= threshold) {
+                // Per-eigenvalue relative threshold: |im| ≤ 1e-9·|λ|. Using
+                // each eigenvalue's own modulus (not a global max_mag) prevents
+                // a dominant real eigenvalue from inflating the threshold enough
+                // to swallow a genuinely complex pair of much smaller magnitude.
+                if complex_eigs.iter().all(|c| c.im.abs() <= 1e-9 * c.re.hypot(c.im)) {
                     // Project to reals: imaginary parts are numerical noise.
                     let mut real_eigs: Vec<f64> = complex_eigs.iter().map(|c| c.re).collect();
                     real_eigs
@@ -253,15 +252,19 @@ pub(crate) fn eval_matrix(name: &str, args: &[Value]) -> Option<Value> {
                 return Value::Undef;
             }
             let m = DMatrix::from_row_slice(n, n, &data);
-            let mut items: Vec<Value> = m
-                .complex_eigenvalues()
+            let raw_eigs: Vec<Complex<f64>> = m.complex_eigenvalues().iter().copied().collect();
+            // Eigenvalues of a finite real matrix are always finite; guard
+            // defensively so the returned List never mixes Complex and Undef
+            // variants (which would violate the List<Complex<Q>> contract).
+            if raw_eigs.iter().any(|c| !c.re.is_finite() || !c.im.is_finite()) {
+                return Value::Undef;
+            }
+            let mut items: Vec<Value> = raw_eigs
                 .iter()
-                .map(|c| {
-                    sanitize_value(Value::Complex {
-                        re: c.re,
-                        im: c.im,
-                        dimension: dim,
-                    })
+                .map(|c| Value::Complex {
+                    re: c.re,
+                    im: c.im,
+                    dimension: dim,
                 })
                 .collect();
             // Canonical sort (re asc, then im asc) for deterministic output.
@@ -870,6 +873,53 @@ mod tests {
         } else {
             panic!("expected List, got {:?}", result);
         }
+    }
+
+    /// N≥4 complex spectrum → Undef: block-diagonal 4×4 with a 2×2 rotation
+    /// block plus two real diagonal entries.  Eigenvalues are ±i (complex) plus
+    /// 3 and 5 (real), so the spectrum is not all-real → `eigenvalues` must
+    /// return Undef, exercising the complex-spectrum Undef branch at N≥4.
+    #[test]
+    fn eigenvalues_4x4_complex_spectrum_returns_undef() {
+        // [[0,-1, 0, 0],
+        //  [1, 0, 0, 0],
+        //  [0, 0, 3, 0],
+        //  [0, 0, 0, 5]]
+        // Eigenvalues: ±i (rotation block), 3, 5 (diagonal block).
+        // |im| of ±i is 1.0; per-λ threshold 1e-9·|±i| = 1e-9 → 1.0 > 1e-9 → Undef.
+        let m = eval_builtin(
+            "matrix",
+            &[Value::List(vec![
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(-1.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(1.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(3.0),
+                    Value::Real(0.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(5.0),
+                ]),
+            ])],
+        );
+        assert!(
+            eval_builtin("eigenvalues", &[m]).is_undef(),
+            "eigenvalues of 4×4 with complex-spectrum block (±i) must return Undef"
+        );
     }
 
     #[test]
